@@ -91,6 +91,15 @@ fn snake_case(operation_id: &str) -> String {
     out
 }
 
+/// The 1.5.5 per-kind roots 1.6.0 removes (ADMIN-API-1.6 §0.2, CON-6).
+const REMOVED_IN_1_6: [&str; 5] = [
+    "/api/v1/admin/models",
+    "/api/v1/admin/providers",
+    "/api/v1/admin/pools",
+    "/api/v1/admin/export",
+    "/api/v1/admin/identity-providers",
+];
+
 /// The table test required by the crate's design brief: for every one of the 66 operations the
 #[test]
 fn every_1_5_5_fixture_operation_resolves_to_the_right_verb_and_scope() {
@@ -116,6 +125,19 @@ fn every_1_5_5_fixture_operation_resolves_to_the_right_verb_and_scope() {
             };
             read_only_rows += usize::from(expected_read_only);
 
+            // ADMIN-API-1.6 §0.2 (CON-6): the 1.5.5 per-kind operations are removed in 1.6.0 in favour
+            // of `/kinds`; each must resolve to NO row, so it answers the unmounted 404.
+            if REMOVED_IN_1_6.iter().any(|root| {
+                path.strip_prefix(root)
+                    .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+            }) {
+                assert!(
+                    find_verb(&method, path).is_none(),
+                    "{method} {path} is removed in 1.6.0 and must resolve to no table row"
+                );
+                checked += 1;
+                continue;
+            }
             let (entry, _) = find_verb(&method, path).unwrap_or_else(|| {
                 panic!("no table row matches fixture operation {method} {path}")
             });

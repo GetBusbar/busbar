@@ -7,7 +7,7 @@
 //! the arm's body and un-ignores it in its own MR (red first, then green).
 
 #[test]
-#[ignore = "owner: W1-H1"]
+#[ignore = "owner: W1-H1 (blocked: entry::guard, GetBusbar/busbar#272)"]
 fn random_and_crypto_inside_a_poll() {
     todo!("owner: W1-H1 (C-CRYPTO-AWAIT)")
 }

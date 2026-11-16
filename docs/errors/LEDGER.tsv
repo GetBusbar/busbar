@@ -124,6 +124,7 @@ BUSBAR-7098	trust-verify-unreachable	1.6.0
 BUSBAR-7099	plane-task-abandon-unrecorded	1.6.0
 BUSBAR-7106	plane-record-kind-reserved	1.6.0
 BUSBAR-7107	plane-record-write-kernel-kind	1.6.0
+BUSBAR-7108	plane-judge-unavailable	1.6.0
 BUSBAR-8001	revocation-resync-outstanding	1.6.0
 BUSBAR-8002	revocation-resync-failed	1.6.0
 BUSBAR-8003	governance-key-reserved-namespace-collision	1.6.0
@@ -281,3 +282,8 @@ BUSBAR-9023	expired-writer-close-failed	1.6.0
 BUSBAR-9024	expired-writers-remaining	1.6.0
 BUSBAR-9201	composition-transport-unprovided	1.6.0
 BUSBAR-3170	config-grammar-changed	1.6.0
+BUSBAR-8031	unit-flush-batch-reduced	1.6.0
+BUSBAR-7110	plane-usage-undeclared	1.6.0
+BUSBAR-7111	plane-usage-rounded	1.6.0
+BUSBAR-6018	plugin-error-codes-refused	1.6.0
+BUSBAR-6019	plugin-error-number-undeclared	1.6.0

@@ -12,7 +12,14 @@ use serde_json::{json, Value};
 
 use common::upstream::{Answer, Responder};
 
-include!(concat!(env!("OUT_DIR"), "/door_cells_files.rs"));
+/// Every linked plane's black-box case directory: `krate=dir;` rows the build script states.
+fn door_blackbox() -> Vec<(&'static str, &'static str)> {
+    env!("BUSBAR_DOOR_BLACKBOX")
+        .split(';')
+        .filter(|row| !row.is_empty())
+        .filter_map(|row| row.split_once('='))
+        .collect()
+}
 
 const SCHEMA: &str = "blackbox/1";
 
@@ -1620,8 +1627,8 @@ fn run_dir(krate: &str, dir: &Path) -> Vec<String> {
 
 #[test]
 fn every_linked_doors_black_box_cases_run_against_the_real_binary() {
-    let failures: Vec<String> = DOOR_BLACKBOX
-        .iter()
+    let failures: Vec<String> = door_blackbox()
+        .into_iter()
         .flat_map(|(krate, dir)| {
             if dir.is_empty() {
                 vec![format!(

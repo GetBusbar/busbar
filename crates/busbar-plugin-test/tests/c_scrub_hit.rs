@@ -23,6 +23,10 @@ const V1: &str = "alpha-7Q2x-secret";
 const V2: &str = "bravo-9K4m-secret";
 const V3: &str = "charlie-3T8p-secret";
 
+/// The vault instance id of the 1,000-round test: above every id its rounds use (10..1010), so no round runs as
+/// the vault itself (which custody refuses as a cycle).
+const VAULT_INSTANCE: u64 = 1_000_000;
+
 fn masked(scrub: &Scrub, value: &str) -> bool {
     !scrub
         .text(&format!("token {value} rejected"))
@@ -192,7 +196,7 @@ fn window(round: usize) -> Duration {
 async fn a_publish_waits_for_register_and_the_publish_first_control_is_red() {
     let fx = Fixture::new();
     let vault = Vault::new(&[("db", V1)], Some(60));
-    fx.source("vault", 900, Arc::clone(&vault));
+    fx.source("vault", VAULT_INSTANCE, Arc::clone(&vault));
     let park = Park::install(&fx, false);
 
     // 1,000 rounds: v1 registered, the lease expires on a rotation to v2, chain A misses and parks before its

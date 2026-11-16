@@ -161,9 +161,13 @@ async fn actual_signed_reader_preserves_credential_body_gate_and_revocation_cust
     let native_config = config;
     let native_plugins = plugin_config;
     let native_core = crate::root::real_store::core_over(
-        busbar_kernel::appbuild::bootstrap_config_store(&native_config, &native_plugins)
-            .await
-            .expect("actual Store opens for native startup"),
+        busbar_kernel::appbuild::bootstrap_config_store(
+            &native_config,
+            &native_plugins,
+            &busbar_kernel::preflight::Unopened,
+        )
+        .await
+        .expect("actual Store opens for native startup"),
     )
     .await;
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(

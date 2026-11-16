@@ -424,6 +424,14 @@ pub(crate) const SECRET_BEARING_TYPES: &[(&str, SecretBearing)] = &[
         ),
     ),
     (
+        "Steps",
+        SecretBearing::NotInResolvedConfig(
+            "the boot walk's step table (busbar::root::min3_boot): it holds a clone of `auth.signing_key`, \
+             copied from `AuthCfg`, which IS walked, so the reference is already enumerated and validated; \
+             `Steps` is built from a loaded `RootCfg` and is never part of it.",
+        ),
+    ),
+    (
         "StdioCommand",
         SecretBearing::NotInResolvedConfig(
             "MIN-3 (IF §12.1, W0-ABI stub): an `upstreams.<name>` stdio command. It is not part of \
@@ -544,6 +552,31 @@ pub(crate) const SECRET_BEARING_TYPES: &[(&str, SecretBearing)] = &[
             "the `#[cfg(test)]` neutral source fixture's table row in \
              `busbar-core-connector::spawn_env` (52237f7b88), standing in for a secret source in \
              config-time custody tests; a test fixture, never part of `RootCfg`.",
+        ),
+    ),
+    (
+        "Ingress",
+        SecretBearing::NotInResolvedConfig(
+            "the root binary's signed-route verifier bundle built at boot from process custody \
+             (`busbar::root::port_mount`); its `secrets` closure hands back the webhook secret \
+             reference the operator configured, already reported by the walk of the plane's \
+             section; a runtime carrier, never part of `RootCfg`.",
+        ),
+    ),
+    (
+        "RefEntry",
+        SecretBearing::NotInResolvedConfig(
+            "one `Bindings.refs` entry of the plugin-config binder: a runtime carrier built FROM \
+             the references the walk already reported, holding the resolved value's digest only; \
+             never part of `RootCfg`.",
+        ),
+    ),
+    (
+        "World",
+        SecretBearing::NotInResolvedConfig(
+            "the `#[cfg(test)]` registry fixture in `busbar-kernel::custody`'s own unit tests \
+             (bindings, scrub sets, secret sources, audit rows and a clock); a test fixture, \
+             never a config type and never part of `RootCfg`.",
         ),
     ),
 ];

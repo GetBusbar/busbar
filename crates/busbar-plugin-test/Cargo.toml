@@ -23,9 +23,10 @@ name = "transport_fixture"
 path = "tests/fixtures/transport_fixture.rs"
 crate-type = ["cdylib"]
 
-[[example]]
+[[bin]]
 name = "carrier_target"
 path = "tests/fixtures/carrier_target.rs"
+required-features = ["target-http"]
 
 # The stream target's own line framer (its cdylib), and a stream target over it run as a process.
 [[example]]
@@ -33,9 +34,14 @@ name = "framer_fixture"
 path = "tests/fixtures/framer_fixture.rs"
 crate-type = ["cdylib"]
 
-[[example]]
+[[bin]]
 name = "framer_target"
 path = "tests/fixtures/framer_target.rs"
+required-features = ["target"]
+
+[[test]]
+name = "canary_scan"
+path = "tests/canary_scan.rs"
 
 [[test]]
 name = "host"
@@ -48,6 +54,18 @@ path = "tests/r131_core_3a.rs"
 [[test]]
 name = "r131_core_3b"
 path = "tests/r131_core_3b.rs"
+
+[[test]]
+name = "r131_core_6"
+path = "tests/r131_core_6.rs"
+
+[[test]]
+name = "r131_core_7"
+path = "tests/r131_core_7.rs"
+
+[[test]]
+name = "sdk_surface"
+path = "tests/sdk_surface.rs"
 
 [[test]]
 name = "store_no_growth_case"
@@ -74,7 +92,10 @@ path = "tests/cases.rs"
 # its test caller binding). `target-http` adds the carrier: hyper and hyper-util, no hand-written codec,
 # no direct h2, no tonic. Every crate here is already in core's lock.
 target = ["dep:sonic-rs"]
-target-http = ["target", "dep:hyper", "dep:hyper-util", "dep:http-body-util", "dep:tokio"]
+target-http = ["target", "dep:hyper", "dep:hyper-util", "dep:http-body-util", "tokio/net"]
+# STH-ROWS D-7: the contract's caller seal for a plugin repository's test host, a loud dev-only opt-in on
+# its `busbar-plugin-test` DEV edge (the guard `test_seal_is_dev_only` allows this forward, never a normal edge).
+test-seal = ["busbar-contract/test-seal"]
 
 [dependencies]
 zeroize = { workspace = true }
@@ -86,12 +107,15 @@ sonic-rs = { workspace = true, optional = true }
 hyper = { workspace = true, optional = true }
 hyper-util = { workspace = true, optional = true }
 http-body-util = { workspace = true, optional = true }
-tokio = { workspace = true, optional = true, features = ["rt", "net", "time", "sync"] }
+tokio = { workspace = true, features = ["rt", "time", "sync"] }
+tracing = { workspace = true }
 
 [target.'cfg(not(target_env = "msvc"))'.dev-dependencies]
 tikv-jemallocator = { workspace = true }
 
 [dev-dependencies]
+# W1-K8B: the head-authority and card-redirect arms build URLs.
+url = { workspace = true }
 # The bridge fixture image (W1-A3, `tests/bridge_fixture.rs`) is wired by hand over busbar-ffi's safe adapter and host
 # API, as `plugin!` wires an image; never `host` here (the loader side reaches it through busbar-plugin-abi).
 busbar-ffi = { path = "../busbar-ffi" }
@@ -99,8 +123,14 @@ busbar-contract = { path = "../busbar-contract", features = ["test-seal"] }
 # W1-K2: the custody arms of C-SCRUB and C-SCRUB-HIT drive the kernel's custody, with its `conformance` miss-path
 # probe (IF §14 round 19). A dev edge only: a plugin repository resolving this facade never sees it.
 busbar-kernel = { path = "../busbar-kernel", features = ["conformance"] }
+# W2-K8P: C-PROVISION drives the provisioning mount and the guard admin (busbar-core-admin `provision`) over
+# axum requests. Dev edges only.
+busbar-core-admin = { path = "../busbar-core-admin" }
+axum = { workspace = true }
 # The facade's own tests drive its targets; CI's test and red-proof jobs pass none of its features.
-busbar-plugin-test = { path = ".", features = ["target-http"] }
+# W1-A12: the case files drive MemIo (IF §9, feature `memio`).
+busbar-plugin-abi = { path = "../busbar-plugin-abi", features = ["memio"] }
+busbar-plugin-test = { path = ".", features = ["target-http", "test-seal"] }
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time", "sync"] }
 
 [lints]

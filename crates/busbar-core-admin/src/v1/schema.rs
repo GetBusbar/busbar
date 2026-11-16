@@ -6,16 +6,6 @@ use serde::Serialize;
 
 use crate::v1::contract::{AdminError, HookView};
 
-/// `GET /pools`: summary pages by default or with `detail=false`; live member-status pages with
-/// `detail=true`. Untagged because both branches retain the existing `{items, next_cursor}` envelope.
-/// Use an inclusive union: empty pages (and permissive summary schemas) can match both branches.
-#[derive(Serialize, JsonSchema)]
-#[serde(untagged)]
-pub enum PoolListView {
-    Summary(crate::v1::contract::Page<crate::v1::contract::PoolView>),
-    Detailed(crate::v1::contract::Page<crate::v1::contract::PoolDetailView>),
-}
-
 /// Virtual-key metadata: the `key_meta()` shape returned by `GET /keys/{id}`, `PATCH /keys/{id}`,
 /// and as each item of `GET /keys`. Never the secret or its hash. 1.5.0: keys are PURE AUTH, no
 /// inline limits; `allowed_pools` is `null` = all pools, `[]` = no pools; `group` names the
@@ -362,9 +352,9 @@ pub struct ConfigSettingsView {
 
     /// The current effective root-section overlay (only the fields the operator has set; base
     /// `config.yaml` stands for the rest). An arbitrary JSON object (the `RootSettings` projection),
-    /// REDACTED by `service::redact_settings_bags`: every opaque `settings:` bag inside it (today
-    /// `store.settings`, whose `url` is a credential in busbar's own docs) appears as
-    /// `settings_keys`: sorted key names, no values. Same on the GET and on the PUT echo.
+    /// PROJECTED by `service::redact_settings_bags` through the secret rule (`v1/secret_rule.rs`): every
+    /// secret position (a secret-named field, an undeclared key of a `settings:` bag) is
+    /// `{set, secret_ref}`, never a value or a hash. Same on the GET and on the PUT echo.
     ///
     /// This field NAME is frozen wire and is the response ENVELOPE member, not a plugin settings
     /// bag; the redaction applies to the bags nested INSIDE it.

@@ -12,6 +12,25 @@ mod govern;
 pub(crate) mod hooks;
 pub mod host;
 mod money;
+pub mod plane_judge;
+pub mod port;
+pub mod port_admin;
+pub mod port_auth;
+pub mod port_billing;
+pub mod port_carrier;
+pub mod port_channels;
+pub mod port_charge;
+pub mod port_egress;
+pub mod port_intents;
+pub mod port_money;
+pub mod port_observations;
+pub mod port_probes;
+pub mod port_routes;
+pub mod port_serve;
+pub mod port_services;
+pub mod port_session;
+pub mod port_upstream;
+pub mod port_work;
 pub(crate) use money::observation_budget_id;
 pub(crate) mod needs;
 mod probe;
@@ -22,6 +41,7 @@ pub mod route_tables;
 pub mod serve;
 pub mod slots;
 mod timing;
+pub mod usage;
 #[cfg(feature = "test-support")]
 #[doc(hidden)]
 pub use timing::forward_instrumentation;
@@ -49,7 +69,7 @@ use busbar_contract::services::Caller;
 use tokio::sync::{watch, Notify};
 
 pub use answer::PlaneAnswer;
-pub use cancel::{CancelBill, Checkpoint, MoneySeam};
+pub use cancel::{CancelBill, Checkpoint, MoneySeam, OpenUnitEvidence};
 #[cfg(test)]
 pub(crate) use far_end::tests::lent_on_egress;
 pub use far_end::{
@@ -486,6 +506,9 @@ pub struct Arrival {
     pub fields: HeadFields,
     /// The caller's body, kept for every attempt.
     pub body: bytes::Bytes,
+    /// IF §12.23: the line-carrier id (`PlaneReq.carrier`): non-zero exactly on a line read by `serve_lines`, 0 on
+    /// every other arrival. Only the host line carrier sets it; no client field can.
+    pub carrier: u64,
 }
 
 /// What `arrive` said.

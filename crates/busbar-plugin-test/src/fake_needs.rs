@@ -331,6 +331,18 @@ impl FakeNeeds {
             .collect()
     }
 
+    /// Every record the plugin holds through RECORD, as (plugin identity, configured instance name, key, value), in
+    /// key order.
+    pub fn records(&self) -> Vec<(String, String, Vec<u8>, Vec<u8>)> {
+        self.lock()
+            .records
+            .iter()
+            .map(|((plugin, name, key), value)| {
+                (plugin.clone(), name.clone(), key.clone(), value.clone())
+            })
+            .collect()
+    }
+
     /// How many chains ended with a `release` (§10.5: exactly one per chain that made a NEED).
     pub fn released(&self) -> u64 {
         self.lock().released

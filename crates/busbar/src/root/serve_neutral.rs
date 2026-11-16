@@ -209,6 +209,7 @@ impl DataRoutes {
                 })
                 .collect(),
             body,
+            carrier: 0,
         };
         let principal = match gov.key() {
             Some(key) => PrincipalId::new(key.id.as_str()),
@@ -559,7 +560,7 @@ impl<C: Output> FramedOutput<C> {
         let inner = Arc::clone(&self.inner);
         serve_framed::close_with(&self.stream, move |stream| {
             if let Ok(closing) = stream.close_response() {
-                inner.trailers(closing.fields);
+                Output::trailers(&*inner, closing.fields);
             }
         });
     }
@@ -570,7 +571,7 @@ impl<C: Output> FramedOutput<C> {
             // The stream is home: finish it now, straight from the borrowed status words.
             drop(slot);
             if let Ok(closing) = stream.finish_response(status, message, details) {
-                self.inner.trailers(closing.fields);
+                Output::trailers(&*self.inner, closing.fields);
             }
             return;
         }
@@ -582,7 +583,7 @@ impl<C: Output> FramedOutput<C> {
         let inner = Arc::clone(&self.inner);
         slot.then = Some(Box::new(move |mut stream: FramedStream| {
             if let Ok(closing) = stream.finish_response(status, &message, &details) {
-                inner.trailers(closing.fields);
+                Output::trailers(&*inner, closing.fields);
             }
         }));
     }
@@ -596,7 +597,7 @@ impl<C: Output> FramedOutput<C> {
                 self.inner.stated().is_some(),
             ) {
                 if self.inner.stated().is_some() {
-                    self.inner.trailers(closing.fields);
+                    Output::trailers(&*self.inner, closing.fields);
                 } else {
                     self.inner
                         .complete_head(closing.status.unwrap_or(rendered.status), closing.fields);
@@ -677,7 +678,7 @@ impl<C: Output> Stated for FramedOutput<C> {
         let inner = Arc::clone(&self.inner);
         serve_framed::close_with(&self.stream, move |mut stream| {
             if let Ok(closing) = stream.refuse_response(&[], refusal_status(reason), true) {
-                inner.trailers(closing.fields);
+                Output::trailers(&*inner, closing.fields);
             }
         });
     }

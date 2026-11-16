@@ -64,7 +64,7 @@ impl Canary {
 /// One thing a black box can see.
 #[derive(Debug, Clone)]
 pub struct Sink {
-    /// Its class and name, e.g. `log:node`, `admin:/api/v1/admin/providers`, `abi:op:open.settings`.
+    /// Its class and name, e.g. `log:node`, `admin:/api/v1/admin/keys`, `abi:op:open.settings`.
     pub name: String,
     /// Where, within the class (a plugin label, a file, a request).
     pub at: String,

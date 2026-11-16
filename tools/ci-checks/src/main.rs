@@ -21,12 +21,17 @@
 //!   overlay's separation, key and upgrade-page checks (`migrate_overlay.rs`).
 //! - `migrate-size`: the migrator's separation and anchor gates, with its sizes printed
 //!   (`migrate_size.rs`).
-//!
 //! - `fleet-manifest`: `fleet/deps.toml`'s `[min3-closure]` and `plugins.yaml`'s 33 ported and 2 archived
 //!   repos (IF §15 rules 1a, 1b).
 //! - `c-transport`, `export-streams`, `no-licence`, `core-scan`: source checks over core (C-TRANSPORT
 //!   test 11, C-EXPORT-STREAMS, C-NO-LICENCE (a), the §15.8 core scan). `loc-report` prints per-file
 //!   production and test lines (a report, no gate).
+//! - `rule-13`: a dlopened library leaves the loader only by IF §11.1's two exits (IF §15 rule 13, I13).
+//! - `oracle <sub> ...`: the data logic `bin/oracle` launches (`oracle.rs`): premise widening, the
+//!   shard split and its proofs, and the readers its ci-run and replay sections need (BLD-6).
+//!   `oracle run <sub> ...` is `bin/oracle` itself (`oracle_run.rs`, `oracle_judge.rs`,
+//!   `oracle_selftest.rs`): the judge fetched and held to its digest, `ci-run`, `record`, `replay`,
+//!   `diff`, the shard commands and the selftests; the shell file only builds this and calls it.
 //! - With arguments, the first one naming the check: `template-drift`, `patch-drift`, `no-host-link`,
 //!   `plugin-rules` and `c-alias`, run from a plugin repo's CI against the repo or its files.
 //!
@@ -46,8 +51,16 @@ use syn::{
     Attribute, Expr, ExprLit, ImplItem, Item, ItemMod, Lit, Meta, Token, TraitItem, UseTree,
 };
 
+mod migrate;
+mod migrate_overlay;
+mod migrate_size;
+mod oracle;
+mod oracle_judge;
+mod oracle_run;
+mod oracle_selftest;
+
 /// Checks over core's own tree: with no argument every one runs.
-const CHECKS: [&str; 14] = [
+const CHECKS: [&str; 15] = [
     "no-getrandom",
     "crypto-graph",
     "fleet-manifest",
@@ -55,6 +68,7 @@ const CHECKS: [&str; 14] = [
     "export-streams",
     "no-licence",
     "core-scan",
+    "rule-13",
     "migrate-flag-text",
     "migrate-retired-words",
     "migrate-anchors",
@@ -81,10 +95,8 @@ mod core_scan;
 mod core_src;
 mod fleet;
 mod host_link;
-mod migrate;
-mod migrate_overlay;
-mod migrate_size;
 mod plugin_rules;
+mod rule13;
 mod supply;
 /// The crypto seam: `busbar-crypto` and `busbar-crypto-backend` (crate directories and packages).
 const SEAM: &str = "busbar-crypto";
@@ -99,6 +111,14 @@ const BACKEND_ONLY: [&str; 1] = ["curve25519-dalek"];
 fn main() -> ExitCode {
     let root = repo_root();
     let args: Vec<String> = std::env::args().skip(1).collect();
+    // `oracle <sub> ...`: bin/oracle's data logic (oracle.rs), answering with its own stdout, stderr
+    // and exit status rather than as a check.
+    if let Some(("oracle", rest)) = args
+        .split_first()
+        .map(|(first, rest)| (first.as_str(), rest))
+    {
+        return oracle::run(rest);
+    }
     // A check that takes arguments is named first and owns the rest of the command line.
     let (names, rest): (Vec<&str>, &[String]) = match args.split_first() {
         None => (CHECKS.to_vec(), &[]),
@@ -110,17 +130,6 @@ fn main() -> ExitCode {
         let outcome = match name {
             "no-getrandom" => no_getrandom(&root),
             "crypto-graph" => crypto_graph(&root),
-            "fleet-manifest" => fleet::fleet_manifest(&root),
-            "c-alias" => fleet::c_alias(&root, rest),
-            "c-transport" => core_src::c_transport(&root),
-            "export-streams" => core_src::export_streams(&root),
-            "no-licence" => core_src::no_licence(&root),
-            "core-scan" => core_scan::core_scan(&root, rest),
-            "loc-report" => core_src::loc_report(&root),
-            "template-drift" => supply::template_drift_cli(rest),
-            "patch-drift" => supply::patch_drift_cli(&root, rest),
-            "no-host-link" => host_link::no_host_link(rest),
-            "plugin-rules" => plugin_rules::plugin_rules(rest),
             "migrate-flag-text" => migrate::flag_text(&root),
             "migrate-retired-words" => migrate::retired_words(&root),
             "migrate-anchors" => migrate::anchors(&root),
@@ -128,6 +137,18 @@ fn main() -> ExitCode {
             "migrate-overlay-keys" => migrate_overlay::hook_keys(&root),
             "migrate-overlay-docs" => migrate_overlay::docs(&root),
             "migrate-size" => migrate_size::run(&root),
+            "fleet-manifest" => fleet::fleet_manifest(&root),
+            "c-alias" => fleet::c_alias(&root, rest),
+            "c-transport" => core_src::c_transport(&root),
+            "export-streams" => core_src::export_streams(&root),
+            "no-licence" => core_src::no_licence(&root),
+            "core-scan" => core_scan::core_scan(&root, rest),
+            "rule-13" => rule13::rule_13(&root),
+            "loc-report" => core_src::loc_report(&root),
+            "template-drift" => supply::template_drift_cli(rest),
+            "patch-drift" => supply::patch_drift_cli(&root, rest),
+            "no-host-link" => host_link::no_host_link(rest),
+            "plugin-rules" => plugin_rules::plugin_rules(rest),
             other => Err(format!(
                 "unknown check `{other}` (checks: {}; with arguments: {})",
                 CHECKS.join(", "),
@@ -621,8 +642,8 @@ fn reached(tree: &str, crates: &[&str], outside: &str) -> Vec<String> {
 mod tests;
 
 #[cfg(test)]
-mod checks_tests;
-
-#[cfg(test)]
 #[path = "migrate_size_tests.rs"]
 mod migrate_size_tests;
+
+#[cfg(test)]
+mod checks_tests;

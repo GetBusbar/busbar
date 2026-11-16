@@ -436,6 +436,7 @@ dependencies = [
  "http",
  "idna",
  "indexmap",
+ "jsonschema",
  "libc",
  "memchr",
  "percent-encoding",
@@ -463,6 +464,7 @@ dependencies = [
  "base64 0.22.1",
  "busbar-contract",
  "busbar-kernel",
+ "busbar-plugin-abi",
  "flate2",
  "hex",
  "schemars",
@@ -482,6 +484,7 @@ dependencies = [
  "busbar-contract",
  "busbar-kernel",
  "busbar-kernel-egress",
+ "busbar-plugin-abi",
  "busbar-plugin-loader",
  "crc32fast",
  "dimpl",
@@ -489,6 +492,8 @@ dependencies = [
  "futures",
  "hex",
  "http",
+ "http-body-util",
+ "hyper",
  "hyper-util",
  "libc",
  "mime",
@@ -776,6 +781,7 @@ dependencies = [
  "arc-swap",
  "async-trait",
  "axum",
+ "backon",
  "base64 0.22.1",
  "busbar-contract",
  "busbar-kernel-audit",
@@ -796,6 +802,7 @@ dependencies = [
  "loom",
  "metrics",
  "metrics-util",
+ "rustls-pki-types",
  "schemars",
  "serde",
  "serde_json",
@@ -838,6 +845,7 @@ version = "1.6.0"
 dependencies = [
  "busbar-contract",
  "busbar-kernel-breaker",
+ "busbar-plugin-abi",
  "foldhash 0.2.0",
  "futures",
 ]
@@ -998,6 +1006,7 @@ dependencies = [
  "base64 0.22.1",
  "busbar-crypto",
  "busbar-ffi",
+ "crossbeam-queue",
  "hex",
  "percent-encoding",
  "zerocopy",
@@ -1010,6 +1019,7 @@ version = "1.6.0"
 dependencies = [
  "arc-swap",
  "busbar-contract",
+ "busbar-ffi",
  "busbar-plugin-abi",
  "flate2",
  "foldhash 0.2.0",
@@ -1390,6 +1400,15 @@ name = "crossbeam-epoch"
 version = "0.9.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2d6914041f254d6e9176c01941b21115dcfb7089e55135a35411081bd106ef3f"
+dependencies = [
+ "crossbeam-utils",
+]
+
+[[package]]
+name = "crossbeam-queue"
+version = "0.3.14"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "03e8bd762f7479489c70ed6c768ddca99d7296857de437a68dcb2a94365b3fae"
 dependencies = [
  "crossbeam-utils",
 ]

@@ -212,6 +212,8 @@ fn judge_with_plugins(
         }
     }
 
+    errors.extend(instance_ids::instance_id_collisions(cfg));
+
     refused_provider_destinations(cfg, advisories);
 
     let provider_names: HashSet<&str> = cfg.providers.keys().map(|s| s.as_str()).collect();
@@ -1199,6 +1201,9 @@ fn validate_limits_with(
     use crate::config::{REQUEST_BODY_MAX_BYTES_CEIL, REQUEST_BODY_MAX_BYTES_FLOOR};
 
     validate_limit_ceilings(limits, errors);
+    if let Err(refusals) = limits.drain_settings() {
+        errors.extend(refusals);
+    }
 
     if limits.upstream_request_timeout_secs < 1 {
         errors.push(coded::config_setting_out_of_range("limits.upstream_request_timeout_secs must be >= 1 (0 would time out every upstream call \
@@ -1336,6 +1341,9 @@ fn validate_limit_ceilings(limits: &crate::config::LimitsResolved, errors: &mut 
 
         upstream_http1_only: _,
         upstream_h2_prior_knowledge: _,
+
+        drain_timeout: _,
+        max_pending_checkpoints: _,
     } = limits;
     let secs = [
         (
@@ -1938,7 +1946,19 @@ fn judge_operator(cfg: &RootCfg, errors: &mut Vec<String>, advisories: &mut Advi
         refuse(errors, text);
     }
 
-    if cfg.admin_auth.iter().any(|name| name.trim().is_empty()) {
+    // J38 (OPERATOR-FROM-ADMITTED-AUTH r3.1): no operator row plus no admin_auth is refused. The
+    // `[keys]` default (ADMIN-API MR2) stands only when something configures keys: the data-plane
+    // chain names `keys`. A bare `[keys]` with no operator row and no keys chain is that default.
+    let keys_chain = cfg.auth.as_ref().is_some_and(|auth| {
+        auth.chain
+            .iter()
+            .any(|e| e.module == crate::config::KEYS_MODULE)
+    });
+    let keys_default_only = no_operator
+        && !keys_chain
+        && cfg.admin_auth.len() == 1
+        && cfg.admin_auth[0] == crate::config::KEYS_MODULE;
+    if keys_default_only || cfg.admin_auth.iter().any(|name| name.trim().is_empty()) {
         refuse(errors, operator::no_default_admin_chain());
     }
 
@@ -2186,7 +2206,9 @@ pub fn metadata_enforced_entries() -> Vec<String> {
 
 pub mod deal;
 mod destinations;
+pub mod instance_ids;
 pub use destinations::{validate_provider_destinations, ProviderDestination};
+pub use instance_ids::{instance_id_collisions, CORE_INSTANCES};
 
 pub(crate) mod secret_refs;
 mod undeclared_secret_refs;
@@ -2705,3 +2727,7 @@ mod boot_advice_tests;
 #[cfg(test)]
 #[path = "tests/operator_third_party_tests.rs"]
 mod operator_third_party_tests;
+
+#[cfg(test)]
+#[path = "tests/instance_id_tests.rs"]
+mod instance_id_tests;

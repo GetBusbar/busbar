@@ -13,7 +13,7 @@ mod transport_door;
 
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::{mpsc, Arc};
 use std::time::Duration;
@@ -351,18 +351,12 @@ fn a_served_target_dropped_unfinished_with_a_gap_panics() {
     drop(served);
 }
 
-/// The facade's `[[example]]` binary `name`, built beside this test by `cargo test`.
+/// The facade's `[[bin]]` fixture `name`: cargo builds it beside this test and nextest archives it.
 fn example(name: &str) -> PathBuf {
-    let exe = std::env::current_exe().expect("the test binary");
-    let profile = exe
-        .parent()
-        .and_then(Path::parent)
-        .expect("target/<profile>/deps/<test>");
-    let path = profile
-        .join("examples")
-        .join(format!("{name}{}", std::env::consts::EXE_SUFFIX));
-    assert!(path.is_file(), "no example {}", path.display());
-    path
+    PathBuf::from(match name {
+        "carrier_target" => env!("CARGO_BIN_EXE_carrier_target"),
+        other => panic!("no fixture binary {other}"),
+    })
 }
 
 /// A fresh scratch directory for one test.

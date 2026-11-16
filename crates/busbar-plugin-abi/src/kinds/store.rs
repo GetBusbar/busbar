@@ -1,496 +1,722 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The store kind: the `Store` trait and the `store` module (IF §8.1, §10.4). W0-ABI stub: frozen signatures, `todo!()` bodies; W1-A5 fills it.
+//! The store kind: the `Store` trait and the `store` module (IF §8, §10.4), one `kind!` block (W1-A4b).
 
-crate::kind::kind_stub! {
+crate::kind! {
     /// A store is a database driver. It runs the backend protocol and reports facts. Core owns candidates,
     /// retries, readback and the R0 import of its own records (MIGRATE-ON-BOOT r6 §6). Round 30: the commit is
     /// STORE-TRANSACTIONS §2.5 M1 with G1 and G2 (§2.4 N1-N13), which origin/dev f6e2cf05d7 already carries
     /// (contract abi/store/v4.rs:443-458, persistence.rs `Decision` with Fenced/Stale, `commit(candidate, key:
     /// CommitKey)` :625; §16.146). The store converts its own physical format in `open` (§7.2, round 31), with its own driver.
-    pub trait Store: Send + Sync + 'static {
+    pub trait Store: kind = 1, abi = 3 {
+        views {
+        }
+        pods {
+        /// UTC interval; flags TIME_NOT_BEFORE | TIME_BEFORE; zero = unguarded.
+        pub struct TimeGuard {
+            pub flags: u32,
+            pub _r: u32,
+            pub not_before: u64,
+            pub before: u64,
+        }
+        /// Exact replay identity (unchanged from v4.rs AttemptId).
+        pub struct AttemptId {
+            pub dataset: [u8; 16],
+            pub writer: [u8; 16],
+            pub operation: [u8; 16],
+            pub writer_epoch: u64,
+            pub execution_epoch: u64,
+        }
+        pub struct ReadHead {
+            pub dataset: [u8; 16],
+            pub guard: TimeGuard,
+        }
+        /// Tail = key bytes.
+        pub struct AddressRec {
+            pub namespace: [u8; 16],
+        }
+        pub struct ScanHead {
+            pub dataset: [u8; 16],
+            pub namespace: [u8; 16],
+            pub flags: u32,
+            pub max_rows: u32,
+            pub generation: u64,
+            pub max_bytes: u64,
+        }
+        /// Round 30 (N1): slot < MAX_SLOTS with seq ≥ 1, or SLOT_SELF_FENCED with seq 0; anything else Refused.
+        pub struct CandHead {
+            pub id: AttemptId,
+            pub codec: u32,
+            pub slot: u32,
+            pub seq: u64,
+            pub guard: TimeGuard,
+        }
+        /// Tail = key (key_len) then expected bytes.
+        pub struct PredicateRec {
+            pub namespace: [u8; 16],
+            pub tag: u32,
+            pub key_len: u32,
+        }
+        /// Tail = key (key_len) then value bytes.
+        pub struct MutationRec {
+            pub namespace: [u8; 16],
+            pub tag: u32,
+            pub key_len: u32,
+            pub exact_length: u64,
+        }
+        pub struct ReadDone {
+            pub code: u32,
+            pub _r: u32,
+            pub observed_at: u64,
+            pub authority: [u8; 16],
+        }
+        /// Tail = value bytes; one per requested address, in request order.
+        pub struct ValueRec {
+            pub found: u32,
+            pub _r: u32,
+        }
+        pub struct ScanDone {
+            pub code: u32,
+            pub continuation: u32,
+            pub generation: u64,
+        }
+        /// Tail = key (key_len) then value.
+        pub struct RowRec {
+            pub key_len: u32,
+            pub _r: u32,
+        }
+        pub struct Committed {
+            pub code: u32,
+            pub _r: u32,
+            pub observed_at: u64,
+            pub authority: [u8; 16],
+        }
+        pub struct ClockRec {
+            pub observed_at: u64,
+            pub authority: [u8; 16],
+        }
+        /// One R0 cell (MIGRATE-ON-BOOT r6 §4; replaces contract `legacy_row.rs` Cell, byte-identical to
+        /// `abi::sdk::store::cells`). kind = CELL_*; INT: tail = i64 LE; REAL: tail = f64 bits LE; TEXT/BLOB:
+        /// tail = bytes; NULL: no tail. An R0 value is CELL records in the fixed column order of its table.
+        pub struct CellRec {
+            pub kind: u32,
+            pub _r: u32,
+        }
+        /// The opened backend's facts (busbar-contract persistence.rs BackendInfo, field for field):
+        /// dataset = persistent identity of the selected dataset; atomic_domain = the one native atomicity
+        /// domain covering every namespace of it; clock_authority = the authority every time-bearing op
+        /// reports (READ_DONE/COMMITTED/CLOCK `authority` must equal it); physical_version = the store's own
+        /// physical format after `migrate`; durability = DUR_*. 56 bytes, no padding.
+        pub struct InfoRec {
+            pub dataset: [u8; 16],
+            pub atomic_domain: [u8; 16],
+            pub clock_authority: [u8; 16],
+            pub physical_version: u32,
+            pub durability: u32,
+        }
+        }
+        tags {
+            /// read request: one READ_HEAD then ADDRESS*.
+            READ_HEAD = 0x0100;
+            ADDRESS = 0x0101;
+            /// scan request: SCAN_HEAD, SCAN_PREFIX, SCAN_AFTER (only with SCAN_AFTER flag).
+            SCAN_HEAD = 0x0102;
+            SCAN_PREFIX = 0x0103;
+            SCAN_AFTER = 0x0104;
+            /// commit candidate: CAND_HEAD, FENCE*, PREDICATE*, MUTATION*, RESULT. FENCE is a PredicateRec body (N9).
+            CAND_HEAD = 0x0105;
+            PREDICATE = 0x0106;
+            MUTATION = 0x0107;
+            RESULT = 0x0108;
+            FENCE = 0x0109;
+            /// answers.
+            READ_DONE = 0x0110;
+            VALUE = 0x0111;
+            SCAN_DONE = 0x0112;
+            ROW = 0x0113;
+            NEXT = 0x0114;
+            COMMITTED = 0x0115;
+            CLOCK = 0x0116;
+            /// `info` answer: exactly one INFO (InfoRec).
+            INFO = 0x0117;
+            /// R0 cell (CellRec + tail), written by the store's own `migrate` into IMPORT_NS values and read by
+            /// core's R0 step through the ordinary `scan`. 0x0120..=0x0122 and 0x0124..=0x0127 are retired
+            /// (round 4's `native` vocabulary, deleted in round 5).
+            CELL = 0x0123;
+        }
+        consts {
+            REQUIRED: u64 = 0b11111;
+        /// Round 11, describe fact bit (D_FACTS): this store does blocking local-file I/O (fsync, file locks,
+        /// SQLite `busy_timeout` sleeps) inside its polls and never NEEDs. Core makes every entry of such an
+        /// instance on its store lane (a blocking-pool thread, never a tokio worker) under the store-lane
+        /// ceilings (§10.6, §11.3), and refuses any NEED from it (FAULT NeedNotAllowed, §6.1).
+            F_BLOCKING_FILE: u64 = 0b1;
+        /// Round 12, describe fact bit (D_FACTS; MIGRATE-ON-BOOT r15 item (f)): what this store holds is lost
+        /// when the process ends (today's `MARK_EPHEMERAL` / linked `ephemeral`). Static: core reads it at
+        /// `Registry::add`, before any instance opens, for its kind-generic absent-store rule (§12.10 item 1).
+        /// An instance's `info` must answer DUR_EPHEMERAL exactly when this bit is set; a mismatch refuses
+        /// the open (`OpenError::Config { code: R_INVALID, text }`, core text "the store's `info` durability
+        /// disagrees with its describe facts") before any read or write.
+            FB_EPHEMERAL: u64 = 0b10;
+        /// InfoRec.durability (persistence.rs Durability): state lost with the process / acknowledged on
+        /// authoritative local storage / acknowledged by a durable quorum (async replicas are not a quorum).
+            DUR_EPHEMERAL: u32 = 1;
+            DUR_LOCAL: u32 = 2;
+            DUR_QUORUM: u32 = 3;
+            TIME_NOT_BEFORE: u32 = 1;
+            TIME_BEFORE: u32 = 2;
+            PREDICATE_ABSENT: u32 = 1;
+            PREDICATE_EXACT: u32 = 2;
+            MUTATION_PUT: u32 = 1;
+            MUTATION_DELETE: u32 = 2;
+            MUTATION_DELETE_RANGE: u32 = 3;
+            READ_VALUES: u32 = 1;
+            READ_TIME_GUARD_FAILED: u32 = 2;
+            SCAN_FLAG_AFTER: u32 = 1;
+            SCAN_FLAG_GENERATION: u32 = 2;
+            SCAN_FLAG_ALLOW_CHANGE: u32 = 4;
+            SCAN_PAGE: u32 = 1;
+            SCAN_STALE: u32 = 2;
+            SCAN_EXHAUSTED: u32 = 1;
+            SCAN_CONTINUE: u32 = 2;
+            COMMIT_APPLIED: u32 = 1;
+            COMMIT_CONDITION_CONFLICT: u32 = 2;
+            COMMIT_TIME_GUARD_FAILED: u32 = 3;
+        /// Round 30 (N2-N4, f6e2cf05d7 v4.rs:443-458 byte for byte): 5 = FENCED: a fence failed; this send applied
+        /// nothing. 6 = STALE: the slot already evaluated a later sequence; this send applied nothing and never will.
+            COMMIT_OPID_CONFLICT: u32 = 4;
+            COMMIT_FENCED: u32 = 5;
+            COMMIT_STALE: u32 = 6;
+            SLOT_SELF_FENCED: u32 = u32::MAX;
+            MAX_SLOTS: u32 = 65_536;
+            CODEC_VERSION: u32 = 1;
+            CELL_NULL: u32 = 0;
+            CELL_INT: u32 = 1;
+            CELL_REAL: u32 = 2;
+            CELL_TEXT: u32 = 3;
+            CELL_BLOB: u32 = 4;
+        /// The R0 import namespace (MIGRATE-ON-BOOT r6 §4): written only by this store's own `migrate`, with its
+        /// own driver, into a namespace verified empty first; core reserves it in FST admission and drains it.
+        /// Key = R0 table tag (u8) ‖ PK cells; value = CELL* in the table's fixed column order.
+            IMPORT_NS: [u8; 16] = *b"busbar.import.r0";
+        /// Slot records (G1): key writer16 ‖ slot u32 BE; the only mutation is DeleteRange{writer16, 20}, the store's per-writer delete.
+            SLOT_NS: [u8; 16] = *b"busbar.slot.v1\0\0";
+        /// Generation records (G2: never a mutation; a condition's key is a 16-byte namespace N and locks N).
+            GENERATION_NS: [u8; 16] = *b"busbar.scan.v1\0\0";
+        /// R0 table tags. SUMMARY (one row): physical from-version; per tag 1-7 `source_rows`, `emitted`,
+        /// `consumed` (0; core-maintained); `headless_cells`; source digest. KEY / CREDENTIAL / METERING: the
+        /// sqlite v1.0.6 column order of `keys` / `credentials` / `usage_metering`. REVISION: store revision
+        /// (i64). DENY: sub, reason, created_at. USAGE: one cell per 1.5.5 bucket key: flags (bit 0 =
+        /// R0_HEADLESS), bucket key cells, window_start, requests, billable_requests, then per model: model,
+        /// requests, billable_requests, tokens_input, tokens_output, tokens_cache_read, tokens_cache_write.
+        /// AUDIT: seq, ts, action, resource, outcome, principal, prev_hash, hash. Counts stay in 1.5.5 whole
+        /// units; a u64 above i64::MAX is refused BOUNDS.
+            R0_SUMMARY: u8 = 0;
+            R0_KEY: u8 = 1;
+            R0_CREDENTIAL: u8 = 2;
+            R0_REVISION: u8 = 3;
+            R0_DENY: u8 = 4;
+            R0_USAGE: u8 = 5;
+            R0_METERING: u8 = 6;
+            R0_AUDIT: u8 = 7;
+            R0_HEADLESS: u32 = 1;
+            M_READ: u64 = 1 << 0;
+            M_SCAN: u64 = 1 << 1;
+            M_COMMIT: u64 = 1 << 2;
+            M_CLOCK: u64 = 1 << 3;
+            M_INFO: u64 = 1 << 4;
+        }
         /// Coherent multi-address read at one serialization point. Answer: READ_DONE, then one VALUE per ADDRESS
         /// in order (none if READ_TIME_GUARD_FAILED).
-        fn read(
-            &self,
-            h: &'static crate::host::Host,
-            req: crate::need::ChainBytes,
-        ) -> impl core::future::Future<Output = Result<crate::records::Reply, crate::fail::Fail>> + Send;
+        async fn read(&self, h: &'static Host, req: ChainBytes) -> Result<Reply, Fail>;
         /// One ordered namespace page. Answer: SCAN_DONE, ROW* (≤ max_rows, ≤ max_bytes), NEXT if SCAN_CONTINUE.
-        fn scan(
-            &self,
-            h: &'static crate::host::Host,
-            req: crate::need::ChainBytes,
-        ) -> impl core::future::Future<Output = Result<crate::records::Reply, crate::fail::Fail>> + Send;
+        async fn scan(&self, h: &'static Host, req: ChainBytes) -> Result<Reply, Fail>;
         /// One atomic native transaction: STORE-TRANSACTIONS §2.5 M1 (slot record, FENCEs, guard, predicates,
         /// mutations). Answer: COMMITTED (code COMMIT_APPLIED..=COMMIT_STALE), with no RESULT (N5). Evaluated
         /// verdicts are answers (OK + COMMITTED). FAILED means unevaluated or unknown; core resolves it by readback.
         /// G1: a DeleteRange on SLOT_NS deletes the writer's slot records. G2: the SDK decode FAULTs any other
         /// SLOT_NS mutation, any GENERATION_NS mutation, and any condition on GENERATION_NS whose key is not 16 bytes.
-        fn commit(
-            &self,
-            h: &'static crate::host::Host,
-            cand: crate::need::ChainBytes,
-        ) -> impl core::future::Future<Output = Result<crate::records::Reply, crate::fail::Fail>> + Send;
+        async fn commit(&self, h: &'static Host, cand: ChainBytes) -> Result<Reply, Fail>;
         /// Authoritative UTC for `dataset` (16 bytes). Answer: CLOCK.
-        fn clock(
-            &self,
-            h: &'static crate::host::Host,
-            dataset: crate::need::ChainBytes,
-        ) -> impl core::future::Future<Output = Result<crate::records::Reply, crate::fail::Fail>> + Send;
+        async fn clock(&self, h: &'static Host, dataset: ChainBytes) -> Result<Reply, Fail>;
         /// Cold, pure: the facts of the backend this instance opened. Called by the store adapter exactly once,
         /// right after `open` returns INSTANCE and before any other method; the answer is cached for the
         /// instance's life (`PersistenceBackend::info`). Answer: exactly one INFO. An instance whose facts
         /// change (a different dataset after failover) is a new instance: core reopens it.
-        fn info(
-            &self,
-            h: &crate::host::Host,
-            out: &mut crate::records::Out<'_>,
-        ) -> Result<(), crate::fail::Fail>;
+        sync fn info(&self, h: &Host, out: &mut Out<'_>) -> Result<(), Fail>;
+
+        extras {
+            /// The host side of the store kind: a typed face over busbar-ffi's `Instance` (IF §10.4).
+            /// `live` points into the plugin image and is valid because `inst` holds the image (I13).
+            #[cfg(feature = "host")]
+            pub struct Proxy {
+                inst: std::sync::Arc<crate::host_side::driver::Instance>,
+                live: std::sync::Arc<busbar_ffi::host::Instance<Marker>>,
+            }
+
+            #[cfg(feature = "host")]
+            impl Proxy {
+                /// Bind. Done by the loader only, after admit; None when `inst` is not a store instance.
+                pub fn bind(inst: std::sync::Arc<crate::host_side::driver::Instance>) -> Option<Self> {
+                    let live = inst.live::<Marker>()?;
+                    Some(Proxy { inst, live })
+                }
+
+                pub fn instance(&self) -> &std::sync::Arc<crate::host_side::driver::Instance> {
+                    &self.inst
+                }
+
+                pub fn read<'a, N: crate::host_side::needs::Needs>(
+                    &'a self,
+                    drv: &'a mut crate::host_side::driver::Driver<'a, N>,
+                    req: crate::host_side::pool::PooledOut,
+                ) -> impl core::future::Future<
+                    Output = Result<crate::host_side::answer::OwnedAnswer, crate::fail::CallError>,
+                > + Send
+                + 'a {
+                    use crate::host_side::proxy;
+                    use crate::plugin::__rt::Arg;
+                    proxy::chain::<Marker, _, _>(&self.inst, drv, proxy::entry(M_READ), req, |req, lease| {
+                        let _ = req;
+                        let (bufs, at) = proxy::staged(req);
+                        self.live
+                            .start1(|vt| &vt.read, bufs, |b| Arg::bytes(b.get(at)), lease)
+                            .into()
+                    })
+                }
+
+                pub fn scan<'a, N: crate::host_side::needs::Needs>(
+                    &'a self,
+                    drv: &'a mut crate::host_side::driver::Driver<'a, N>,
+                    req: crate::host_side::pool::PooledOut,
+                ) -> impl core::future::Future<
+                    Output = Result<crate::host_side::answer::OwnedAnswer, crate::fail::CallError>,
+                > + Send
+                + 'a {
+                    use crate::host_side::proxy;
+                    use crate::plugin::__rt::Arg;
+                    proxy::chain::<Marker, _, _>(&self.inst, drv, proxy::entry(M_SCAN), req, |req, lease| {
+                        let _ = req;
+                        let (bufs, at) = proxy::staged(req);
+                        self.live
+                            .start1(|vt| &vt.scan, bufs, |b| Arg::bytes(b.get(at)), lease)
+                            .into()
+                    })
+                }
+
+                pub fn commit<'a, N: crate::host_side::needs::Needs>(
+                    &'a self,
+                    drv: &'a mut crate::host_side::driver::Driver<'a, N>,
+                    req: crate::host_side::pool::PooledOut,
+                ) -> impl core::future::Future<
+                    Output = Result<crate::host_side::answer::OwnedAnswer, crate::fail::CallError>,
+                > + Send
+                + 'a {
+                    use crate::host_side::proxy;
+                    use crate::plugin::__rt::Arg;
+                    proxy::chain::<Marker, _, _>(&self.inst, drv, proxy::entry(M_COMMIT), req, |req, lease| {
+                        let _ = req;
+                        let (bufs, at) = proxy::staged(req);
+                        self.live
+                            .start1(|vt| &vt.commit, bufs, |b| Arg::bytes(b.get(at)), lease)
+                            .into()
+                    })
+                }
+
+                pub fn clock<'a, N: crate::host_side::needs::Needs>(
+                    &'a self,
+                    drv: &'a mut crate::host_side::driver::Driver<'a, N>,
+                    req: crate::host_side::pool::PooledOut,
+                ) -> impl core::future::Future<
+                    Output = Result<crate::host_side::answer::OwnedAnswer, crate::fail::CallError>,
+                > + Send
+                + 'a {
+                    use crate::host_side::proxy;
+                    use crate::plugin::__rt::Arg;
+                    proxy::chain::<Marker, _, _>(&self.inst, drv, proxy::entry(M_CLOCK), req, |req, lease| {
+                        let _ = req;
+                        let (bufs, at) = proxy::staged(req);
+                        self.live
+                            .start1(|vt| &vt.clock, bufs, |b| Arg::bytes(b.get(at)), lease)
+                            .into()
+                    })
+                }
+
+                pub fn info<'o>(
+                    &self,
+                    buf: &'o mut crate::host_side::pool::PooledOut,
+                ) -> Result<crate::host_side::answer::Answer<'o>, crate::fail::CallError> {
+                    crate::host_side::proxy::sync(&self.inst, crate::host_side::proxy::entry(M_INFO), buf, |lease| {
+                        self.live.call0(|vt| &vt.info, lease)
+                    })
+                }
+
+            }
+        }
     }
 }
 
-pub mod store {
-    //! The store kind's records, constants and method bits (IF §8.1), and its host-side `Proxy` (§10.4).
+/// Plugin-side typed helpers every store shares (STORE-TRANSACTIONS Decision 299 §2.4 "SDK plumbing", r39 "MIN-3
+/// home"; W1-A5). They sit outside the `kind!` block, so they are not FP-hashed: `Verdict`, `SlotRow` with its
+/// packed codec and replay mapping, `holds`, `prelude_order`, the commit decode with its G2 `match` and the
+/// `CommitHead` carrier, and the receipt-era refusal. A store depends on busbar-plugin-abi only, so nothing here
+/// names busbar-contract: the replay mapping yields the wire `Committed` record, not a `Decision`.
+pub mod plumbing {
+    use super::store::{
+        self as wire, AttemptId, CandHead, Committed, MutationRec, PredicateRec, TimeGuard,
+    };
+    use crate::records::{Rec, RecErr, Records, tag};
 
-    /// UTC interval; flags TIME_NOT_BEFORE | TIME_BEFORE; zero = unguarded.
-    #[repr(C)]
-    #[derive(
-        Clone,
-        Copy,
-        zerocopy::FromBytes,
-        zerocopy::IntoBytes,
-        zerocopy::Immutable,
-        zerocopy::KnownLayout,
-    )]
-    pub struct TimeGuard {
-        pub flags: u32,
-        pub _r: u32,
-        pub not_before: u64,
-        pub before: u64,
+    /// `physical_version` of a receipt-era dataset; M4 refuses it at `open`.
+    pub const RECEIPT_ERA_VERSION: u32 = 1;
+    /// The one explanation every store gives for a receipt-era dataset.
+    pub const RECEIPT_ERA_REFUSAL: &str =
+        "pre-release receipt-era dataset; recreate it or re-run the 1.5.5 migration";
+
+    /// A recorded evaluation, stored as the wire `COMMIT_*` code.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum Verdict {
+        /// `COMMIT_APPLIED`.
+        Applied = 1,
+        /// `COMMIT_CONDITION_CONFLICT`.
+        Conflict = 2,
+        /// `COMMIT_TIME_GUARD_FAILED`.
+        TimeGuard = 3,
     }
-    /// Exact replay identity (unchanged from v4.rs AttemptId).
-    #[repr(C)]
-    #[derive(
-        Clone,
-        Copy,
-        zerocopy::FromBytes,
-        zerocopy::IntoBytes,
-        zerocopy::Immutable,
-        zerocopy::KnownLayout,
-    )]
-    pub struct AttemptId {
-        pub dataset: [u8; 16],
-        pub writer: [u8; 16],
-        pub operation: [u8; 16],
-        pub writer_epoch: u64,
-        pub execution_epoch: u64,
+
+    /// A stored slot row that cannot be decoded.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct Corrupt;
+
+    impl Verdict {
+        /// The stored byte.
+        pub fn to_u8(self) -> u8 {
+            self as u8
+        }
+        /// The wire `COMMIT_*` code.
+        pub fn code(self) -> u32 {
+            u32::from(self as u8)
+        }
+        /// Decode a stored byte; anything else is a corrupt row.
+        pub fn from_u8(code: u8) -> Result<Self, Corrupt> {
+            match code {
+                1 => Ok(Self::Applied),
+                2 => Ok(Self::Conflict),
+                3 => Ok(Self::TimeGuard),
+                _ => Err(Corrupt),
+            }
+        }
     }
-    #[repr(C)]
-    #[derive(
-        Clone,
-        Copy,
-        zerocopy::FromBytes,
-        zerocopy::IntoBytes,
-        zerocopy::Immutable,
-        zerocopy::KnownLayout,
-    )]
-    pub struct ReadHead {
-        pub dataset: [u8; 16],
-        pub guard: TimeGuard,
-    }
-    /// Tail = key bytes.
-    #[repr(C)]
-    #[derive(
-        Clone,
-        Copy,
-        zerocopy::FromBytes,
-        zerocopy::IntoBytes,
-        zerocopy::Immutable,
-        zerocopy::KnownLayout,
-    )]
-    pub struct AddressRec {
-        pub namespace: [u8; 16],
-    }
-    #[repr(C)]
-    #[derive(
-        Clone,
-        Copy,
-        zerocopy::FromBytes,
-        zerocopy::IntoBytes,
-        zerocopy::Immutable,
-        zerocopy::KnownLayout,
-    )]
-    pub struct ScanHead {
-        pub dataset: [u8; 16],
-        pub namespace: [u8; 16],
-        pub flags: u32,
-        pub max_rows: u32,
-        pub generation: u64,
-        pub max_bytes: u64,
-    }
-    /// Round 30 (N1): slot < MAX_SLOTS with seq ≥ 1, or SLOT_SELF_FENCED with seq 0; anything else Refused.
-    #[repr(C)]
-    #[derive(
-        Clone,
-        Copy,
-        zerocopy::FromBytes,
-        zerocopy::IntoBytes,
-        zerocopy::Immutable,
-        zerocopy::KnownLayout,
-    )]
-    pub struct CandHead {
-        pub id: AttemptId,
-        pub codec: u32,
-        pub slot: u32,
+
+    /// One (writer, slot) row: the last evaluated sequence, its fingerprint, verdict and serialization time.
+    /// A missing row is `seq == 0`.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct SlotRow {
+        /// Last evaluated lease sequence.
         pub seq: u64,
-        pub guard: TimeGuard,
+        /// Candidate fingerprint of that evaluation.
+        pub fp: [u8; 32],
+        /// Its verdict.
+        pub verdict: Verdict,
+        /// Its serialization time, in Unix seconds.
+        pub observed: u64,
     }
-    /// Tail = key (key_len) then expected bytes.
-    #[repr(C)]
-    #[derive(
-        Clone,
-        Copy,
-        zerocopy::FromBytes,
-        zerocopy::IntoBytes,
-        zerocopy::Immutable,
-        zerocopy::KnownLayout,
-    )]
-    pub struct PredicateRec {
+
+    const PACKED_MAGIC: &[u8; 4] = b"BVS1";
+    /// Length of [`SlotRow::encode_packed`].
+    pub const PACKED_LEN: usize = 4 + 8 + 32 + 1 + 8;
+
+    /// What M1 step 2 does with an incoming `(seq, fp)` against the slot's row.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum Judgement {
+        /// No row, or an earlier sequence: evaluate and write the row.
+        Fresh,
+        /// Equal sequence and fingerprint: answer the recorded verdict, write nothing.
+        Replay,
+        /// Equal sequence, different fingerprint: `COMMIT_OPID_CONFLICT`, write nothing.
+        OpIdConflict,
+        /// The row holds a later sequence: `COMMIT_STALE`, write nothing.
+        Stale,
+    }
+
+    impl SlotRow {
+        /// The recorded answer an equal-sequence replay returns, at its original time.
+        pub fn replay(&self, authority: [u8; 16]) -> Committed {
+            Committed {
+                code: self.verdict.code(),
+                _r: 0,
+                observed_at: self.observed,
+                authority,
+            }
+        }
+
+        /// Packed value for key-value stores: `'BVS1' | seq LE8 | fp32 | verdict u8 | observed LE8`.
+        pub fn encode_packed(&self) -> [u8; PACKED_LEN] {
+            let mut out = [0; PACKED_LEN];
+            out[..4].copy_from_slice(PACKED_MAGIC);
+            out[4..12].copy_from_slice(&self.seq.to_le_bytes());
+            out[12..44].copy_from_slice(&self.fp);
+            out[44] = self.verdict.to_u8();
+            out[45..].copy_from_slice(&self.observed.to_le_bytes());
+            out
+        }
+
+        /// Decode [`Self::encode_packed`]; any other length, magic or verdict is `Corrupt`.
+        pub fn decode_packed(bytes: &[u8]) -> Result<Self, Corrupt> {
+            let bytes: &[u8; PACKED_LEN] = bytes.try_into().map_err(|_| Corrupt)?;
+            if &bytes[..4] != PACKED_MAGIC {
+                return Err(Corrupt);
+            }
+            let word = |at: usize| {
+                let mut w = [0; 8];
+                w.copy_from_slice(&bytes[at..at + 8]);
+                u64::from_le_bytes(w)
+            };
+            let mut fp = [0; 32];
+            fp.copy_from_slice(&bytes[12..44]);
+            Ok(Self {
+                seq: word(4),
+                fp,
+                verdict: Verdict::from_u8(bytes[44])?,
+                observed: word(45),
+            })
+        }
+    }
+
+    /// M1 step 2 over the slot's current row (`None` = no row).
+    pub fn judge(row: Option<&SlotRow>, seq: u64, fp: &[u8; 32]) -> Judgement {
+        match row {
+            Some(row) if row.seq > seq => Judgement::Stale,
+            Some(row) if row.seq == seq && row.fp == *fp => Judgement::Replay,
+            Some(row) if row.seq == seq => Judgement::OpIdConflict,
+            _ => Judgement::Fresh,
+        }
+    }
+
+    /// One condition against the pre-mutation state: `PREDICATE_ABSENT` needs no live value, `PREDICATE_EXACT`
+    /// needs exactly `expected`; any other tag never holds (the decode already FAULTed it).
+    pub fn holds(tag: u32, expected: &[u8], current: Option<&[u8]>) -> bool {
+        match tag {
+            wire::PREDICATE_ABSENT => current.is_none(),
+            wire::PREDICATE_EXACT => current == Some(expected),
+            _ => false,
+        }
+    }
+
+    /// How an address takes part in M1 step 0.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum Use {
+        /// A `read` address: locks its namespace shared.
+        Read,
+        /// A FENCE or PREDICATE: shared; on `GENERATION_NS` it locks the namespace its 16-byte key names (G2).
+        Condition,
+        /// A MUTATION: locks its namespace exclusive.
+        Mutation,
+    }
+
+    /// Step 0's lock set and acquisition order (N12): each namespace once, in byte order, exclusive when any
+    /// item mutates it. Input is `(namespace, key, use)`.
+    pub fn prelude_order<'a>(
+        items: impl IntoIterator<Item = (&'a [u8; 16], &'a [u8], Use)>,
+    ) -> Vec<([u8; 16], bool)> {
+        let mut out: Vec<([u8; 16], bool)> = Vec::new();
+        for (namespace, key, how) in items {
+            let target = match how {
+                Use::Condition if *namespace == wire::GENERATION_NS => {
+                    <[u8; 16]>::try_from(key).unwrap_or(*namespace)
+                }
+                _ => *namespace,
+            };
+            let exclusive = how == Use::Mutation;
+            match out.binary_search_by(|(held, _)| held.cmp(&target)) {
+                Ok(at) => {
+                    if let Some(held) = out.get_mut(at) {
+                        held.1 |= exclusive;
+                    }
+                }
+                Err(at) => out.insert(at, (target, exclusive)),
+            }
+        }
+        out
+    }
+
+    /// One decoded FENCE or PREDICATE: `expected` is empty for `PREDICATE_ABSENT`.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct Cond<'a> {
         pub namespace: [u8; 16],
         pub tag: u32,
-        pub key_len: u32,
+        pub key: &'a [u8],
+        pub expected: &'a [u8],
     }
-    /// Tail = key (key_len) then value bytes.
-    #[repr(C)]
-    #[derive(
-        Clone,
-        Copy,
-        zerocopy::FromBytes,
-        zerocopy::IntoBytes,
-        zerocopy::Immutable,
-        zerocopy::KnownLayout,
-    )]
-    pub struct MutationRec {
+
+    /// One decoded MUTATION. `value` is empty for a Delete or DeleteRange (whose `key` is the prefix and
+    /// `exact_length` the matched key length).
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct Mut<'a> {
         pub namespace: [u8; 16],
         pub tag: u32,
-        pub key_len: u32,
+        pub key: &'a [u8],
+        pub value: &'a [u8],
         pub exact_length: u64,
     }
-    #[repr(C)]
-    #[derive(
-        Clone,
-        Copy,
-        zerocopy::FromBytes,
-        zerocopy::IntoBytes,
-        zerocopy::Immutable,
-        zerocopy::KnownLayout,
-    )]
-    pub struct ReadDone {
-        pub code: u32,
-        pub _r: u32,
-        pub observed_at: u64,
-        pub authority: [u8; 16],
-    }
-    /// Tail = value bytes; one per requested address, in request order.
-    #[repr(C)]
-    #[derive(
-        Clone,
-        Copy,
-        zerocopy::FromBytes,
-        zerocopy::IntoBytes,
-        zerocopy::Immutable,
-        zerocopy::KnownLayout,
-    )]
-    pub struct ValueRec {
-        pub found: u32,
-        pub _r: u32,
-    }
-    #[repr(C)]
-    #[derive(
-        Clone,
-        Copy,
-        zerocopy::FromBytes,
-        zerocopy::IntoBytes,
-        zerocopy::Immutable,
-        zerocopy::KnownLayout,
-    )]
-    pub struct ScanDone {
-        pub code: u32,
-        pub continuation: u32,
-        pub generation: u64,
-    }
-    /// Tail = key (key_len) then value.
-    #[repr(C)]
-    #[derive(
-        Clone,
-        Copy,
-        zerocopy::FromBytes,
-        zerocopy::IntoBytes,
-        zerocopy::Immutable,
-        zerocopy::KnownLayout,
-    )]
-    pub struct RowRec {
-        pub key_len: u32,
-        pub _r: u32,
-    }
-    #[repr(C)]
-    #[derive(
-        Clone,
-        Copy,
-        zerocopy::FromBytes,
-        zerocopy::IntoBytes,
-        zerocopy::Immutable,
-        zerocopy::KnownLayout,
-    )]
-    pub struct Committed {
-        pub code: u32,
-        pub _r: u32,
-        pub observed_at: u64,
-        pub authority: [u8; 16],
-    }
-    #[repr(C)]
-    #[derive(
-        Clone,
-        Copy,
-        zerocopy::FromBytes,
-        zerocopy::IntoBytes,
-        zerocopy::Immutable,
-        zerocopy::KnownLayout,
-    )]
-    pub struct ClockRec {
-        pub observed_at: u64,
-        pub authority: [u8; 16],
-    }
-    /// One R0 cell (MIGRATE-ON-BOOT r6 §4; replaces contract `legacy_row.rs` Cell, byte-identical to
-    /// `abi::sdk::store::cells`). kind = CELL_*; INT: tail = i64 LE; REAL: tail = f64 bits LE; TEXT/BLOB:
-    /// tail = bytes; NULL: no tail. An R0 value is CELL records in the fixed column order of its table.
-    #[repr(C)]
-    #[derive(
-        Clone,
-        Copy,
-        zerocopy::FromBytes,
-        zerocopy::IntoBytes,
-        zerocopy::Immutable,
-        zerocopy::KnownLayout,
-    )]
-    pub struct CellRec {
-        pub kind: u32,
-        pub _r: u32,
-    }
-    /// The opened backend's facts (busbar-contract persistence.rs BackendInfo, field for field):
-    /// dataset = persistent identity of the selected dataset; atomic_domain = the one native atomicity
-    /// domain covering every namespace of it; clock_authority = the authority every time-bearing op
-    /// reports (READ_DONE/COMMITTED/CLOCK `authority` must equal it); physical_version = the store's own
-    /// physical format after `migrate`; durability = DUR_*. 56 bytes, no padding.
-    #[repr(C)]
-    #[derive(
-        Clone,
-        Copy,
-        zerocopy::FromBytes,
-        zerocopy::IntoBytes,
-        zerocopy::Immutable,
-        zerocopy::KnownLayout,
-    )]
-    pub struct InfoRec {
-        pub dataset: [u8; 16],
-        pub atomic_domain: [u8; 16],
-        pub clock_authority: [u8; 16],
-        pub physical_version: u32,
-        pub durability: u32,
+
+    /// The commit's dedupe key after N1 validation.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum CommitSlot {
+        /// `slot < MAX_SLOTS`, `seq >= 1`.
+        Slotted { slot: u32, seq: u64 },
+        /// `SLOT_SELF_FENCED` with `seq == 0`.
+        SelfFenced,
     }
 
-    pub mod tag {
-        /// read request: one READ_HEAD then ADDRESS*.
-        pub const READ_HEAD: u16 = 0x0100;
-        pub const ADDRESS: u16 = 0x0101;
-        /// scan request: SCAN_HEAD, SCAN_PREFIX, SCAN_AFTER (only with SCAN_AFTER flag).
-        pub const SCAN_HEAD: u16 = 0x0102;
-        pub const SCAN_PREFIX: u16 = 0x0103;
-        pub const SCAN_AFTER: u16 = 0x0104;
-        /// commit candidate: CAND_HEAD, FENCE*, PREDICATE*, MUTATION*, RESULT. FENCE is a PredicateRec body (N9).
-        pub const CAND_HEAD: u16 = 0x0105;
-        pub const PREDICATE: u16 = 0x0106;
-        pub const MUTATION: u16 = 0x0107;
-        pub const RESULT: u16 = 0x0108;
-        pub const FENCE: u16 = 0x0109;
-        /// answers.
-        pub const READ_DONE: u16 = 0x0110;
-        pub const VALUE: u16 = 0x0111;
-        pub const SCAN_DONE: u16 = 0x0112;
-        pub const ROW: u16 = 0x0113;
-        pub const NEXT: u16 = 0x0114;
-        pub const COMMITTED: u16 = 0x0115;
-        pub const CLOCK: u16 = 0x0116;
-        /// `info` answer: exactly one INFO (InfoRec).
-        pub const INFO: u16 = 0x0117;
-        /// R0 cell (CellRec + tail), written by the store's own `migrate` into IMPORT_NS values and read by
-        /// core's R0 step through the ordinary `scan`. 0x0120..=0x0122 and 0x0124..=0x0127 are retired
-        /// (round 4's `native` vocabulary, deleted in round 5).
-        pub const CELL: u16 = 0x0123;
+    /// The carrier for decoded fences (one, in the SDK): the validated head and the FENCE records.
+    #[derive(Clone)]
+    pub struct CommitHead<'a> {
+        pub id: AttemptId,
+        pub codec: u32,
+        pub guard: TimeGuard,
+        pub slot: CommitSlot,
+        pub fences: Vec<Cond<'a>>,
     }
 
-    pub const REQUIRED: u64 = 0b11111;
-    /// Round 11, describe fact bit (D_FACTS): this store does blocking local-file I/O (fsync, file locks,
-    /// SQLite `busy_timeout` sleeps) inside its polls and never NEEDs. Core makes every entry of such an
-    /// instance on its store lane (a blocking-pool thread, never a tokio worker) under the store-lane
-    /// ceilings (§10.6, §11.3), and refuses any NEED from it (FAULT NeedNotAllowed, §6.1).
-    pub const F_BLOCKING_FILE: u64 = 0b1;
-    /// Round 12, describe fact bit (D_FACTS; MIGRATE-ON-BOOT r15 item (f)): what this store holds is lost
-    /// when the process ends (today's `MARK_EPHEMERAL` / linked `ephemeral`). Static: core reads it at
-    /// `Registry::add`, before any instance opens, for its kind-generic absent-store rule (§12.10 item 1).
-    /// An instance's `info` must answer DUR_EPHEMERAL exactly when this bit is set; a mismatch refuses
-    /// the open (`OpenError::Config { code: R_INVALID, text }`, core text "the store's `info` durability
-    /// disagrees with its describe facts") before any read or write.
-    pub const FB_EPHEMERAL: u64 = 0b10;
-    /// InfoRec.durability (persistence.rs Durability): state lost with the process / acknowledged on
-    /// authoritative local storage / acknowledged by a durable quorum (async replicas are not a quorum).
-    pub const DUR_EPHEMERAL: u32 = 1;
-    pub const DUR_LOCAL: u32 = 2;
-    pub const DUR_QUORUM: u32 = 3;
-    pub const TIME_NOT_BEFORE: u32 = 1;
-    pub const TIME_BEFORE: u32 = 2;
-    pub const PREDICATE_ABSENT: u32 = 1;
-    pub const PREDICATE_EXACT: u32 = 2;
-    pub const MUTATION_PUT: u32 = 1;
-    pub const MUTATION_DELETE: u32 = 2;
-    pub const MUTATION_DELETE_RANGE: u32 = 3;
-    pub const READ_VALUES: u32 = 1;
-    pub const READ_TIME_GUARD_FAILED: u32 = 2;
-    pub const SCAN_FLAG_AFTER: u32 = 1;
-    pub const SCAN_FLAG_GENERATION: u32 = 2;
-    pub const SCAN_FLAG_ALLOW_CHANGE: u32 = 4;
-    pub const SCAN_PAGE: u32 = 1;
-    pub const SCAN_STALE: u32 = 2;
-    pub const SCAN_EXHAUSTED: u32 = 1;
-    pub const SCAN_CONTINUE: u32 = 2;
-    pub const COMMIT_APPLIED: u32 = 1;
-    pub const COMMIT_CONDITION_CONFLICT: u32 = 2;
-    pub const COMMIT_TIME_GUARD_FAILED: u32 = 3;
-    /// Round 30 (N2-N4, f6e2cf05d7 v4.rs:443-458 byte for byte): 5 = FENCED: a fence failed; this send applied
-    /// nothing. 6 = STALE: the slot already evaluated a later sequence; this send applied nothing and never will.
-    pub const COMMIT_OPID_CONFLICT: u32 = 4;
-    pub const COMMIT_FENCED: u32 = 5;
-    pub const COMMIT_STALE: u32 = 6;
-    pub const SLOT_SELF_FENCED: u32 = u32::MAX;
-    pub const MAX_SLOTS: u32 = 65_536;
-    pub const CODEC_VERSION: u32 = 1;
-    pub const CELL_NULL: u32 = 0;
-    pub const CELL_INT: u32 = 1;
-    pub const CELL_REAL: u32 = 2;
-    pub const CELL_TEXT: u32 = 3;
-    pub const CELL_BLOB: u32 = 4;
-    /// The R0 import namespace (MIGRATE-ON-BOOT r6 §4): written only by this store's own `migrate`, with its
-    /// own driver, into a namespace verified empty first; core reserves it in FST admission and drains it.
-    /// Key = R0 table tag (u8) ‖ PK cells; value = CELL* in the table's fixed column order.
-    pub const IMPORT_NS: [u8; 16] = *b"busbar.import.r0";
-    /// Slot records (G1): key writer16 ‖ slot u32 BE; the only mutation is DeleteRange{writer16, 20}, the store's per-writer delete.
-    pub const SLOT_NS: [u8; 16] = *b"busbar.slot.v1\0\0";
-    /// Generation records (G2: never a mutation; a condition's key is a 16-byte namespace N and locks N).
-    pub const GENERATION_NS: [u8; 16] = *b"busbar.scan.v1\0\0";
-    /// R0 table tags. SUMMARY (one row): physical from-version; per tag 1-7 `source_rows`, `emitted`,
-    /// `consumed` (0; core-maintained); `headless_cells`; source digest. KEY / CREDENTIAL / METERING: the
-    /// sqlite v1.0.6 column order of `keys` / `credentials` / `usage_metering`. REVISION: store revision
-    /// (i64). DENY: sub, reason, created_at. USAGE: one cell per 1.5.5 bucket key: flags (bit 0 =
-    /// R0_HEADLESS), bucket key cells, window_start, requests, billable_requests, then per model: model,
-    /// requests, billable_requests, tokens_input, tokens_output, tokens_cache_read, tokens_cache_write.
-    /// AUDIT: seq, ts, action, resource, outcome, principal, prev_hash, hash. Counts stay in 1.5.5 whole
-    /// units; a u64 above i64::MAX is refused BOUNDS.
-    pub const R0_SUMMARY: u8 = 0;
-    pub const R0_KEY: u8 = 1;
-    pub const R0_CREDENTIAL: u8 = 2;
-    pub const R0_REVISION: u8 = 3;
-    pub const R0_DENY: u8 = 4;
-    pub const R0_USAGE: u8 = 5;
-    pub const R0_METERING: u8 = 6;
-    pub const R0_AUDIT: u8 = 7;
-    pub const R0_HEADLESS: u32 = 1;
-
-    pub const KIND: crate::types::KindCode = crate::types::KindCode::Store;
-    pub const ABI: u32 = 3;
-    pub const FP: u64 = 0; // W0-ABI stub value; kind! computes it (W1-A4).
-
-    pub const M_READ: u64 = 1 << 0;
-    pub const M_SCAN: u64 = 1 << 1;
-    pub const M_COMMIT: u64 = 1 << 2;
-    pub const M_CLOCK: u64 = 1 << 3;
-    pub const M_INFO: u64 = 1 << 4;
-    pub const ALL: u64 = M_READ | M_SCAN | M_COMMIT | M_CLOCK | M_INFO;
-
-    // W0-ABI: `Vt` (fields read, scan, commit, clock, info are unsafe extern "C" fn pointers) and the
-    // `vt::<T>()` shims are unsafe; they land with W1-A4 (`kind!`) under an escapes.json admission.
-
-    /// `vt` points into the plugin image; it is valid because `inst` holds the image (I13), and it is never
-    /// handed out with a lifetime longer than `&self`.
-    #[cfg(feature = "host")]
-    pub struct Proxy {
-        // W0-ABI: fields `inst: Arc<Instance>` and `vt: NonNull<Vt>` land with W1-A4; `vt` needs the unsafe
-        // `Vt`, and the `unsafe impl Send/Sync for Proxy` and `pub unsafe fn bind` land with it.
-        _stub: core::marker::PhantomData<std::sync::Arc<crate::host_side::driver::Instance>>,
+    /// A decoded commit candidate, borrowed from the request.
+    #[derive(Clone)]
+    pub struct Commit<'a> {
+        pub head: CommitHead<'a>,
+        pub predicates: Vec<Cond<'a>>,
+        pub mutations: Vec<Mut<'a>>,
+        pub result: &'a [u8],
     }
 
-    #[cfg(feature = "host")]
-    impl Proxy {
-        pub fn instance(&self) -> &std::sync::Arc<crate::host_side::driver::Instance> {
-            let _ = &self._stub;
-            todo!()
+    /// Why a commit request is not run.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum CommitErr {
+        /// A malformed buffer or a G2 violation: the caller FAULTs before the store runs.
+        Fault(RecErr),
+        /// N1: a slot and sequence that are neither slotted nor self-fenced: REFUSED.
+        Refused,
+    }
+
+    const SIZE: CommitErr = CommitErr::Fault(RecErr::Size);
+
+    /// The next record, skipping the generic `METRIC` records any answer or request may carry.
+    fn next<'a>(recs: &mut Records<'a>) -> Result<Option<Rec<'a>>, CommitErr> {
+        loop {
+            match recs.next_rec() {
+                None => return Ok(None),
+                Some(Err(e)) => return Err(CommitErr::Fault(e)),
+                Some(Ok(rec)) if rec.tag == tag::METRIC => {}
+                Some(Ok(rec)) => return Ok(Some(rec)),
+            }
         }
+    }
 
-        pub fn read<'a, N: crate::host_side::needs::Needs>(
-            &'a self,
-            drv: &'a mut crate::host_side::driver::Driver<'a, N>,
-            req: crate::host_side::pool::PooledOut,
-        ) -> impl core::future::Future<
-            Output = Result<crate::host_side::answer::OwnedAnswer, crate::fail::CallError>,
-        > + Send
-        + 'a {
-            let _ = (&self._stub, drv, req);
-            async move { todo!() }
+    /// FENCE or PREDICATE: a `PredicateRec`, its key, then (EXACT only) the expected bytes. G2: a condition on
+    /// `GENERATION_NS` names a namespace, so its key is exactly 16 bytes.
+    fn cond<'a>(rec: &Rec<'a>) -> Result<Cond<'a>, CommitErr> {
+        let (head, tail) = rec.pod_tail::<PredicateRec>().map_err(CommitErr::Fault)?;
+        let key_len = usize::try_from(head.key_len).map_err(|_| SIZE)?;
+        let (key, expected) = tail.split_at_checked(key_len).ok_or(SIZE)?;
+        match head.tag {
+            wire::PREDICATE_ABSENT if expected.is_empty() => {}
+            wire::PREDICATE_EXACT => {}
+            _ => return Err(SIZE),
         }
+        if head.namespace == wire::GENERATION_NS && key.len() != 16 {
+            return Err(SIZE);
+        }
+        Ok(Cond {
+            namespace: head.namespace,
+            tag: head.tag,
+            key,
+            expected,
+        })
+    }
 
-        pub fn scan<'a, N: crate::host_side::needs::Needs>(
-            &'a self,
-            drv: &'a mut crate::host_side::driver::Driver<'a, N>,
-            req: crate::host_side::pool::PooledOut,
-        ) -> impl core::future::Future<
-            Output = Result<crate::host_side::answer::OwnedAnswer, crate::fail::CallError>,
-        > + Send
-        + 'a {
-            let _ = (&self._stub, drv, req);
-            async move { todo!() }
+    /// MUTATION: a `MutationRec`, its key, then (PUT only) the value. G2: a `SLOT_NS` mutation is only
+    /// `DeleteRange{16-byte prefix, exact length 20}`, and `GENERATION_NS` is never mutated.
+    fn mutation<'a>(rec: &Rec<'a>) -> Result<Mut<'a>, CommitErr> {
+        let (head, tail) = rec.pod_tail::<MutationRec>().map_err(CommitErr::Fault)?;
+        let key_len = usize::try_from(head.key_len).map_err(|_| SIZE)?;
+        let (key, value) = tail.split_at_checked(key_len).ok_or(SIZE)?;
+        let shaped = match head.tag {
+            wire::MUTATION_PUT => head.exact_length == 0,
+            wire::MUTATION_DELETE => head.exact_length == 0 && value.is_empty(),
+            wire::MUTATION_DELETE_RANGE => value.is_empty(),
+            _ => false,
+        };
+        let allowed = if head.namespace == wire::SLOT_NS {
+            head.tag == wire::MUTATION_DELETE_RANGE && key.len() == 16 && head.exact_length == 20
+        } else {
+            head.namespace != wire::GENERATION_NS
+        };
+        if !shaped || !allowed {
+            return Err(SIZE);
         }
+        Ok(Mut {
+            namespace: head.namespace,
+            tag: head.tag,
+            key,
+            value,
+            exact_length: head.exact_length,
+        })
+    }
 
-        pub fn commit<'a, N: crate::host_side::needs::Needs>(
-            &'a self,
-            drv: &'a mut crate::host_side::driver::Driver<'a, N>,
-            req: crate::host_side::pool::PooledOut,
-        ) -> impl core::future::Future<
-            Output = Result<crate::host_side::answer::OwnedAnswer, crate::fail::CallError>,
-        > + Send
-        + 'a {
-            let _ = (&self._stub, drv, req);
-            async move { todo!() }
+    /// Decode a commit request: `CAND_HEAD, FENCE*, PREDICATE*, MUTATION*, RESULT`, with N1 on the head and
+    /// G2 (N13) on every record. `METRIC` records are skipped.
+    pub fn decode_commit(mut req: Records<'_>) -> Result<Commit<'_>, CommitErr> {
+        let first = next(&mut req)?.ok_or(CommitErr::Fault(RecErr::Truncated))?;
+        if first.tag != wire::tag::CAND_HEAD {
+            return Err(CommitErr::Fault(RecErr::Unknown(first.tag)));
         }
-
-        pub fn clock<'a, N: crate::host_side::needs::Needs>(
-            &'a self,
-            drv: &'a mut crate::host_side::driver::Driver<'a, N>,
-            req: crate::host_side::pool::PooledOut,
-        ) -> impl core::future::Future<
-            Output = Result<crate::host_side::answer::OwnedAnswer, crate::fail::CallError>,
-        > + Send
-        + 'a {
-            let _ = (&self._stub, drv, req);
-            async move { todo!() }
+        let cand = first.pod::<CandHead>().map_err(CommitErr::Fault)?;
+        let slot = if cand.slot < wire::MAX_SLOTS && cand.seq >= 1 {
+            CommitSlot::Slotted {
+                slot: cand.slot,
+                seq: cand.seq,
+            }
+        } else if cand.slot == wire::SLOT_SELF_FENCED && cand.seq == 0 {
+            CommitSlot::SelfFenced
+        } else {
+            return Err(CommitErr::Refused);
+        };
+        let (mut fences, mut predicates, mut mutations) = (Vec::new(), Vec::new(), Vec::new());
+        let mut stage = 0u8;
+        let result = loop {
+            let rec = next(&mut req)?.ok_or(CommitErr::Fault(RecErr::Truncated))?;
+            match rec.tag {
+                wire::tag::FENCE if stage == 0 => fences.push(cond(&rec)?),
+                wire::tag::PREDICATE if stage <= 1 => {
+                    stage = 1;
+                    predicates.push(cond(&rec)?);
+                }
+                wire::tag::MUTATION if stage <= 2 => {
+                    stage = 2;
+                    mutations.push(mutation(&rec)?);
+                }
+                wire::tag::RESULT => break rec.body,
+                other => return Err(CommitErr::Fault(RecErr::Unknown(other))),
+            }
+        };
+        if let Some(extra) = next(&mut req)? {
+            return Err(CommitErr::Fault(RecErr::Unknown(extra.tag)));
         }
-
-        pub fn info<'o>(
-            &self,
-            buf: &'o mut crate::host_side::pool::PooledOut,
-        ) -> Result<crate::host_side::answer::Answer<'o>, crate::fail::CallError> {
-            let _ = (&self._stub, buf);
-            todo!()
-        }
+        Ok(Commit {
+            head: CommitHead {
+                id: cand.id,
+                codec: cand.codec,
+                guard: cand.guard,
+                slot,
+                fences,
+            },
+            predicates,
+            mutations,
+            result,
+        })
     }
 }
+
+#[cfg(test)]
+#[path = "store_plumbing_tests.rs"]
+mod plumbing_tests;

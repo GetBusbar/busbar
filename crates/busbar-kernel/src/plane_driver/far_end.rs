@@ -271,6 +271,36 @@ pub struct UnitRoute {
     /// ANSWERED with a failure is not retried on another; its answer reaches the plane as it came.
     /// A walk still moves on before anything was answered.
     pub once: bool,
+    /// The plane instance's core-held `insecure_transport.accept` (TRANSPORT-SECURITY-POLICY §3). `Some` = every
+    /// dial this unit makes is judged by `transport_verdict` before the connector sees it (a plaintext target is
+    /// refused unless the set holds PLAINTEXT); `None` = the legacy path, judged by the connector's guard alone
+    /// (O1, owner undecided).
+    pub accept: Option<busbar_plugin_abi::host_side::caller::Accept>,
+}
+
+/// Whether `url` may be dialled under `accept`: `transport_verdict` with the TLS mode the URL's scheme states
+/// (`https://` and `wss://` are TLS, every other scheme is not). `WaiveVerify` still dials verified: the
+/// connector's open takes no unverified mode, which is stricter than the acceptance allows, never looser.
+#[must_use]
+pub(super) fn dial_admitted(
+    accept: Option<busbar_plugin_abi::host_side::caller::Accept>,
+    url: &str,
+) -> bool {
+    use busbar_plugin_abi::host_side::caller::{transport_verdict, Verdict};
+    use busbar_plugin_abi::need::need_flag::{TLS_NONE, TLS_REQUIRED};
+    let Some(accept) = accept else {
+        return true;
+    };
+    let named = |prefix: &str| {
+        url.get(..prefix.len())
+            .is_some_and(|p| p.eq_ignore_ascii_case(prefix))
+    };
+    let tls = if named("https://") || named("wss://") {
+        TLS_REQUIRED
+    } else {
+        TLS_NONE
+    };
+    !matches!(transport_verdict(accept, tls, url), Verdict::Refuse)
 }
 
 impl Default for UnitRoute {
@@ -286,6 +316,7 @@ impl Default for UnitRoute {
             leg: 0,
             caller_credential: None,
             once: false,
+            accept: None,
         }
     }
 }
@@ -672,6 +703,13 @@ impl EgressFarEnd<'_> {
         self
     }
 
+    /// Judges every dial of this far end under the plane instance's core-held `accept` ([`UnitRoute::accept`]).
+    #[must_use]
+    pub fn accepting(mut self, accept: busbar_plugin_abi::host_side::caller::Accept) -> Self {
+        self.route.accept = Some(accept);
+        self
+    }
+
     fn facts_of(&self, member: &Member) -> Option<&MemberFacts> {
         self.described.as_ref().and_then(|d| d.get(&member.name))
     }
@@ -816,6 +854,10 @@ fn join(base: &str, target: &[u8]) -> String {
         String::from_utf8_lossy(target)
     )
 }
+
+/// The audit action of an upstream dial the instance's `insecure_transport` does not cover (the connector's own
+/// action for a refused Need, TRANSPORT-SECURITY-POLICY §4).
+pub(crate) const INSECURE_TRANSPORT_REFUSED: &str = "egress.insecure_transport_refused";
 
 fn split(url: &str) -> (&str, &str) {
     let rest = url.split_once("://").map_or(url, |(_, r)| r);
@@ -1462,6 +1504,25 @@ impl EgressFarEnd<'_> {
             return false;
         };
         let url = join(&base_url, &request.target);
+        if !dial_admitted(self.route.accept, &url) {
+            let destination = split(&url).0.rsplit('@').next().unwrap_or_default();
+            // TRANSPORT-SECURITY-POLICY §4 "Visibility": every refusal is an audit row, as the connector writes
+            // for a Need (`dest:<host>:<instance>`; the walk's pool is the plane instance's).
+            crate::audit_ring::AUDIT.record_by(
+                INSECURE_TRANSPORT_REFUSED,
+                &format!("dest:{destination}:{}", self.route.pool),
+                crate::audit_ring::OUTCOME_REJECTED,
+                "system",
+            );
+            tracing::warn!(
+                action = INSECURE_TRANSPORT_REFUSED,
+                destination,
+                "an upstream dial was refused: no insecure_transport acceptance covers it"
+            );
+            self.lock().unsent = Some(RefusalCode::UnsentOpenRefused);
+            self.settle_attempt(&record);
+            return false;
+        }
 
         let (located, carried) = match e
             .conns
@@ -2329,6 +2390,18 @@ impl FarEnd for EgressFarEnd<'_> {
     }
 
     fn judged(&self, token: &Pass<Route>, fault: u8) {
+        self.judged_stating(token, fault, None);
+    }
+
+    /// The plane's wait joins the answer's own (the longer one holds) before the verdict is recorded, so the
+    /// breaker's classification and the walk's exhaustion wait read it (IF §12.3).
+    fn judged_waiting(&self, token: &Pass<Route>, fault: u8, retry_after_s: Option<u64>) {
+        if let Some(wait) = retry_after_s {
+            let mut w = self.lock();
+            if let Some(held) = w.live.as_mut().and_then(|live| live.unjudged.as_mut()) {
+                held.retry_after = Some(held.retry_after.map_or(wait, |stated| stated.max(wait)));
+            }
+        }
         self.judged_stating(token, fault, None);
     }
 

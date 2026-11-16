@@ -1242,6 +1242,11 @@ pub(crate) struct Served {
     pub(crate) nests: Option<NestRoutes>,
     /// In the order the planes were bound.
     pub(crate) planes: Vec<ServedPlane>,
+    /// The MIN-3 plane instances served through their ports (`PortDriver`), in the order they were opened.
+    pub(crate) ports: Vec<busbar_kernel::plane_driver::port::PortSeat>,
+    /// What bills the requests those ports serve (their unit admission and settlement); `None` = no governance
+    /// book, so a port request is not a billed unit (audit rows only).
+    pub(crate) billing: Option<busbar_kernel::plane_driver::port_billing::PortBilling>,
     /// The posting site the planes' money steps post an abandoned end to, and the units' facts are
     /// opened on while they run: the process's one node's.
     pub(crate) post: Option<Arc<crate::root::plane_node::NodeEndPost>>,
@@ -2030,6 +2035,7 @@ impl DataRoutes {
             target: target.as_bytes().to_vec(),
             fields,
             body: body.clone(),
+            carrier: 0,
         };
         let principal = match gov.key() {
             Some(key) => PrincipalId::new(key.id.as_str()),
@@ -2069,6 +2075,7 @@ impl DataRoutes {
         session: std::num::NonZeroU64,
     ) -> (SessionDoor, Arrival, Bytes) {
         let (door, mut arrival, body) = self.arrived(plane, claim, req);
+        arrival.carrier = session.get();
         arrival.fields.push((
             busbar_contract::abi::host::service::CARRIER_SESSION_FIELD
                 .as_bytes()
@@ -2286,6 +2293,7 @@ impl DataRoutes {
             target: nest.ask.target.into_bytes(),
             fields: Vec::new(),
             body: bytes::Bytes::from(nest.ask.body),
+            carrier: 0,
         };
         let nesting = Nesting {
             parent,
@@ -2346,6 +2354,7 @@ impl DataRoutes {
             served.live.current()
         };
         let started = std::time::Instant::now();
+        caller.began(started);
         let claim = arrival.claim;
         let app_for_metrics = Arc::clone(&app);
         let node = self.post.node();
@@ -2444,6 +2453,7 @@ impl DataRoutes {
                 nesting.as_ref().map(|n| &n.parent),
                 live.facts.audit_kind,
                 admission,
+                Some(super::plane_node::Timing { started, caller }),
             ),
         )
         .await;
@@ -3062,6 +3072,10 @@ pub(crate) struct IngressCaller {
     pub(crate) arrived: Mutex<Option<Bytes>>,
     /// The unit's node-qualified id, once the drive minted the unit: the reply's `X-Request-Id`.
     pub(crate) unit_id: Arc<Mutex<Option<HeaderValue>>>,
+    /// When the drive began the unit, once it has.
+    pub(crate) began: std::sync::OnceLock<std::time::Instant>,
+    /// Nanoseconds from `began` to the first successful body write; `0` until one.
+    pub(crate) first_write_ns: std::sync::atomic::AtomicU64,
 }
 
 pub(crate) type Head = (u32, HeadFields);
@@ -3115,6 +3129,8 @@ impl IngressCaller {
             stated: std::sync::atomic::AtomicU32::new(0),
             arrived: Mutex::new(Some(body)),
             unit_id: Arc::clone(&unit_id),
+            began: std::sync::OnceLock::new(),
+            first_write_ns: std::sync::atomic::AtomicU64::new(0),
         };
         (
             caller,
@@ -3140,11 +3156,29 @@ pub(crate) trait Stated {
 
     /// The drive minted the unit this caller is answered for: `id` is its node-qualified id.
     fn minted(&self, _id: busbar_kernel_audit::UnitId) {}
+
+    /// The drive began the unit at `at`: the clock its first write is read against.
+    fn began(&self, _at: std::time::Instant) {}
+
+    /// Nanoseconds from the unit's start to its first successful body write, `0` before one (or
+    /// for a caller that does not measure it).
+    fn first_write_ns(&self) -> u64 {
+        0
+    }
 }
 
 impl Stated for IngressCaller {
     fn stated(&self) -> Option<u32> {
         IngressCaller::stated(self)
+    }
+
+    fn began(&self, at: std::time::Instant) {
+        let _first = self.began.set(at);
+    }
+
+    fn first_write_ns(&self) -> u64 {
+        self.first_write_ns
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     fn minted(&self, id: busbar_kernel_audit::UnitId) {
@@ -3176,7 +3210,22 @@ impl CallerEnd for IngressCaller {
     }
 
     async fn write(&self, bytes: &[u8]) -> bool {
-        self.body.send(Bytes::copy_from_slice(bytes)).await.is_ok()
+        let sent = self.body.send(Bytes::copy_from_slice(bytes)).await.is_ok();
+        // The first successful write is the unit's time to first byte (§9): one monotonic read,
+        // then a relaxed load per later write.
+        if sent
+            && self
+                .first_write_ns
+                .load(std::sync::atomic::Ordering::Relaxed)
+                == 0
+        {
+            if let Some(began) = self.began.get() {
+                let ns = u64::try_from(began.elapsed().as_nanos()).unwrap_or(u64::MAX);
+                self.first_write_ns
+                    .store(ns.max(1), std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+        sent
     }
 }
 

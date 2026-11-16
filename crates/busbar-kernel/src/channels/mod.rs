@@ -1,13 +1,33 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Shared upstream channels: one long-lived stdio child or held HTTP request shared by many plane sessions, and the session signal registry (IF §12.19). W0-ABI stub: frozen signatures, `todo!()` bodies; W1-K8A fills it.
+//! Shared upstream channels: one long-lived stdio child or held HTTP request shared by many plane sessions, and the session signal registry (IF §12.19). The attachment side is real; the stdio/HTTP carrier driver (spawn, framing, demux) builds a `Link` per generation and calls `Attachment::linked` (W1-K8A).
 
 use busbar_plugin_abi::host_side::caller::{BoxFut, Caller};
 use busbar_plugin_abi::records::Records;
 
 use crate::plugin_records::RecordsDenied;
 use crate::upstreams::UpstreamDef;
+use link::Link;
+use std::sync::Arc;
+use tokio::sync::mpsc;
+
+pub mod ask_line;
+pub mod carrier;
+#[cfg(test)]
+mod carrier_tests;
+pub mod frame;
+#[cfg(test)]
+mod frame_tests;
+pub mod line_carriers;
+pub mod link;
+pub mod respawn;
+pub mod signals;
+pub mod stdio;
+#[cfg(test)]
+mod stdio_tests;
+#[cfg(test)]
+mod tests;
 
 /// One long-lived upstream connection shared by many plane sessions: a stdio child (CARRIER_STDIO) or a held
 /// HTTP request (CARRIER_HTTP, e.g. legacy MCP SSE). Key = (plane plugin, plane instance name, upstream name,
@@ -63,26 +83,49 @@ pub struct Attachment {
     pub slot: u64,
     pub greet: bool,
     pub ready_tail: Box<[u8]>,
-    // W0-ABI: the private `rx` (the receiver of demuxed inbound messages) lands with W1-K8A.
-    _stub: core::marker::PhantomData<Box<[u8]>>,
+    rx: mpsc::Receiver<ChannelMsg>,
+    link: Arc<Link>,
 }
 impl Attachment {
+    /// Built by the carrier driver for each attach: `rx` carries the slot's demuxed inbound messages.
+    #[must_use]
+    pub fn linked(
+        link: Arc<Link>,
+        generation: u64,
+        slot: u64,
+        greet: bool,
+        ready_tail: Box<[u8]>,
+        rx: mpsc::Receiver<ChannelMsg>,
+    ) -> Self {
+        link.attach();
+        Self {
+            generation,
+            slot,
+            greet,
+            ready_tail,
+            rx,
+            link,
+        }
+    }
     /// Round 18: `ask` = the EX_MSG carried MSG_ASK (enters the ask line; under CH_SERIAL waits its turn).
     pub fn send<'a>(
         &'a mut self,
         message: &'a [u8],
         ask: bool,
     ) -> BoxFut<'a, Result<(), RecordsDenied>> {
-        let _ = (&self._stub, message, ask);
-        todo!()
+        Box::pin(async move {
+            self.link
+                .send(self.slot, message, ask)
+                .map_err(|()| RecordsDenied::Unavailable)
+        })
     }
     pub fn ready(&mut self, tail: &[u8]) {
-        let _ = (&self._stub, tail);
-        todo!()
+        if self.greet {
+            self.link.ready(tail);
+        }
     }
     pub fn recv(&mut self) -> BoxFut<'_, Option<ChannelMsg>> {
-        let _ = &self._stub;
-        todo!()
+        Box::pin(async move { self.rx.recv().await.or(Some(ChannelMsg::Ended)) })
     }
 }
 pub enum ChannelMsg {
@@ -105,4 +148,10 @@ pub trait SessionSignals: Send + Sync + 'static {
         flags: u32,
         bytes: &[u8],
     ) -> u32;
+}
+
+impl Drop for Attachment {
+    fn drop(&mut self) {
+        self.link.detach(self.slot, self.greet);
+    }
 }

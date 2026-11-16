@@ -56,9 +56,13 @@ async fn base_store_bootstrap_and_effective_build_share_the_same_opened_store() 
         },
     )];
     let cfg = config;
-    let opened = busbar_kernel::appbuild::bootstrap_config_store(&cfg, &plugin_config)
-        .await
-        .unwrap();
+    let opened = busbar_kernel::appbuild::bootstrap_config_store(
+        &cfg,
+        &plugin_config,
+        &busbar_kernel::preflight::Unopened,
+    )
+    .await
+    .unwrap();
     let opened = crate::root::real_store::core_over(opened).await;
     let calls = opened.clone();
     let backend = busbar_kernel::config::overlay::OverlayStore::from_core(calls.clone()).unwrap();
@@ -142,9 +146,13 @@ async fn a_cross_node_sibling_update_and_intervening_get_cannot_authorize_a_stal
             sha256: Some(digest),
         },
     )];
-    let opened = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
-        .await
-        .unwrap();
+    let opened = busbar_kernel::appbuild::bootstrap_config_store(
+        &config,
+        &plugin_config,
+        &busbar_kernel::preflight::Unopened,
+    )
+    .await
+    .unwrap();
     let opened = crate::root::real_store::core_over(opened).await;
     let calls = opened.clone();
     let backend = busbar_kernel::config::overlay::OverlayStore::from_core(calls.clone()).unwrap();
@@ -282,9 +290,13 @@ async fn bootstrap_opens_the_anchor_before_requiring_modules_whose_pins_it_must_
         )
         .unwrap(),
     );
-    let opened = busbar_kernel::appbuild::bootstrap_config_store(&cfg, &plugin_config)
-        .await
-        .unwrap();
+    let opened = busbar_kernel::appbuild::bootstrap_config_store(
+        &cfg,
+        &plugin_config,
+        &busbar_kernel::preflight::Unopened,
+    )
+    .await
+    .unwrap();
     let opened = crate::root::real_store::core_over(opened).await;
     assert_ne!(opened.info().dataset.0, [0; 16]);
     assert!(
@@ -358,9 +370,13 @@ async fn root_recovery_can_run_before_hydration_without_changing_standalone_buil
             },
         )];
         let cfg = config;
-        let opened = busbar_kernel::appbuild::bootstrap_config_store(&cfg, &plugin_config)
-            .await
-            .unwrap();
+        let opened = busbar_kernel::appbuild::bootstrap_config_store(
+            &cfg,
+            &plugin_config,
+            &busbar_kernel::preflight::Unopened,
+        )
+        .await
+        .unwrap();
         let opened = crate::root::real_store::core_over(opened).await;
         let records = Arc::clone(&opened);
         let id = "vk_recovery_boot_order";

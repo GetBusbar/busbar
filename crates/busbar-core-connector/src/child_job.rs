@@ -38,9 +38,9 @@ pub fn private_directory(path: &Path) -> Result<(), Error> {
 /// Owns both the helper and its OS process tree. Drop stops the tree.
 pub struct ContainedChild {
     // Rust drops fields in declaration order: stop the tree before Child's
-    // kill-on-drop guard hands the leader to Tokio's orphan reaper. Held for its drop alone.
+    // kill-on-drop guard hands the leader to Tokio's orphan reaper. The job is held for its drop alone.
     _job: platform::Job,
-    _child: Child,
+    child: Child,
 }
 
 impl std::fmt::Debug for ContainedChild {
@@ -63,10 +63,18 @@ impl ContainedChild {
             let _ = child.wait().await;
             return Err(error);
         }
-        Ok(Self {
-            _job: job,
-            _child: child,
-        })
+        Ok(Self { _job: job, child })
+    }
+
+    /// The child's stdin, once, when the command piped it. Taking a pipe never exposes wait or try_wait, so
+    /// the leader's PID stays reserved for the group signal until the owner drops.
+    pub fn take_stdin(&mut self) -> Option<tokio::process::ChildStdin> {
+        self.child.stdin.take()
+    }
+
+    /// The child's stdout, once, when the command piped it.
+    pub fn take_stdout(&mut self) -> Option<tokio::process::ChildStdout> {
+        self.child.stdout.take()
     }
 }
 

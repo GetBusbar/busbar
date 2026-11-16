@@ -530,54 +530,6 @@ pub(crate) struct VerifySince {
     wall: u64,
 }
 
-/// `GET /plane-facts`: what a plane this node serves declares about itself.
-#[cfg(feature = "openapi-schema")]
-#[derive(Serialize, JsonSchema)]
-pub(crate) struct PlaneFactsView {
-    /// The plane's registry key.
-    plane: String,
-    /// Whether it is the fallback catch-all plane.
-    fallback: bool,
-    /// The config section whose presence declares the plane.
-    config_section: String,
-    owned_config_sections: Vec<String>,
-    scope_kinds: Vec<String>,
-    subject_noun: String,
-    admin_noun: String,
-    audit_kind: String,
-    billable_classes: Vec<PlaneFactsClass>,
-    fee_units: Vec<String>,
-    metric_families: Vec<PlaneFactsMetric>,
-    served_op_classes: Vec<PlaneFactsServed>,
-    /// The plane-record kinds the plane keeps; `POST /plane-record-write` writes only these.
-    record_kinds: Vec<String>,
-}
-
-/// One billable class a plane ledgers.
-#[cfg(feature = "openapi-schema")]
-#[derive(Serialize, JsonSchema)]
-pub(crate) struct PlaneFactsClass {
-    class: String,
-    family: String,
-}
-
-/// One metric family a plane emits.
-#[cfg(feature = "openapi-schema")]
-#[derive(Serialize, JsonSchema)]
-pub(crate) struct PlaneFactsMetric {
-    name: String,
-    kind: String,
-    label_keys: Vec<String>,
-}
-
-/// One operation class a plane serves one level down.
-#[cfg(feature = "openapi-schema")]
-#[derive(Serialize, JsonSchema)]
-pub(crate) struct PlaneFactsServed {
-    op: String,
-    name: String,
-}
-
 /// `POST /plane-record-write`: one plane record, upserted by `(kind, id)`.
 #[cfg(feature = "openapi-schema")]
 #[derive(Deserialize, JsonSchema)]
@@ -776,27 +728,6 @@ fn doc_for(
         ],
     };
     Some(match verb {
-        KernelVerb::GetTelemetry => VerbDoc {
-            summary: "Bounded request-phase telemetry snapshot",
-            description: "An admin read of already-collected request-phase metrics. At most 32 \
-                identities and 65536 JSON bytes; omitted identities are explicitly counted. \
-                Counts, microsecond sums, bins and uptime are exact decimal strings. Bins are \
-                exclusive, not Prometheus cumulative buckets. The process boot nonce survives \
-                config reloads and scrapes; uptime_since_start_ms is monotonic time since shared process \
-                generation initialization (first info read or recorder setup), not OS process creation. \
-                LlmProducerDrive ends at producer completion; \
-                MountedResponseReady ends when the response is returned, before its body completes. \
-                Neither phase measures completed client delivery. This opens no outbound connection."
-                .to_string(),
-            success: Success::Json(
-                schema_of(gen.subschema_for::<super::telemetry::TelemetryView>()),
-                "A bounded cumulative snapshot; no-store",
-            ),
-            request: None,
-            query: Vec::new(),
-            errors: vec![unavailable_503("telemetry collection is disabled, unavailable, or could not produce a bounded snapshot")],
-        },
-
         KernelVerb::GetWhoami => VerbDoc {
             summary: "Who the admin chain says the caller is, and what the caller may do",
             description: "The caller's principal, the credential behind it (`operator`, `key`, \
@@ -811,7 +742,7 @@ fn doc_for(
             ),
             request: None,
             query: Vec::new(),
-            errors: Vec::new(),
+            errors: vec![unavailable_503("the node could not take the read")],
         },
 
         KernelVerb::ChainBreak => VerbDoc {
@@ -888,35 +819,71 @@ fn doc_for(
                  past the range it is served in",
             )],
         },
-        KernelVerb::PlaneFacts => VerbDoc {
-            summary: "What a plane this node serves declares about itself",
-            description: "The plane's registry key, config sections, grant kinds, nouns, billable \
-                          classes, fee units, metric families and served operation classes. A \
-                          read: it mutates nothing and needs `read-only`."
+        KernelVerb::GetKinds => VerbDoc {
+            summary: "What exists: every kind, by category",
+            description: "One row per kind: the seven engine kinds (one per registered plane) and \
+                `core`, core's own subsystems. `category` is the engine kind; `kind` is the id \
+                a client routes on. `instance_count` counts the running instances; `views` and \
+                `record_attributes` are on the row when every instance declares the same \
+                descriptors (`descriptors_uniform`). The ETag is `/info.kinds_revision`. Pages \
+                with `cursor` and `limit`."
                 .to_string(),
             success: Success::Json(
-                schema_of(gen.subschema_for::<PlaneFactsView>()),
-                "The plane's declared facts",
+                schema_of(gen.subschema_for::<super::kinds::doc::KindsPage>()),
+                "A page of kinds",
             ),
             request: None,
-            query: vec![json!({
-                "name": "plane", "in": "query", "required": true,
-                "schema": {"type": "string"},
-                "description": "The registry key of a plane this node serves.",
-            })],
-            errors: vec![
-                (
-                    "400",
-                    "`invalid_request`: `plane is required`".to_string(),
-                ),
-                (
-                    "404",
-                    "`not_found`: ``plane `<key>` not found`` — no plane is registered under the \
-                     key, or this node does not configure it"
-                        .to_string(),
-                ),
-                unavailable_503("the node could not take the unit"),
-            ],
+            query: super::kinds::doc::query(&["category", "cursor", "limit"]),
+            errors: vec![unavailable_503("the node could not take the read")],
+        },
+        KernelVerb::GetKindInstances => VerbDoc {
+            summary: "What is running: a kind's instances",
+            description: "One row per instance: `id`, `name`, `plugin` (null for a core \
+                instance; the image's own name, version and publisher otherwise), `state`, \
+                `labels` and `etag`. Instance ids are unique across the deployment. Pages with \
+                `cursor` and `limit`."
+                .to_string(),
+            success: Success::Json(
+                schema_of(gen.subschema_for::<super::kinds::doc::InstancesPage>()),
+                "A page of instances",
+            ),
+            request: None,
+            query: super::kinds::doc::query(&["cursor", "limit"]),
+            errors: vec![unavailable_503("the node could not take the read")],
+        },
+        KernelVerb::GetKindInstance => VerbDoc {
+            summary: "Describe one instance",
+            description: "Exactly the list-row members and `config` (under the secret rule: a \
+                secret position is `{set, secret_ref}`), `config_schema` (the image's schema, \
+                with `x-sensitive` beside `x-busbar-secret`), `state` and `state_schema` (the \
+                instance's own answer; core writes nothing into them), `runtime` (what core \
+                holds about a plugin instance; null for a core instance), `health`, `links`, \
+                `views` and `actions`."
+                .to_string(),
+            success: Success::Json(
+                schema_of(gen.subschema_for::<super::kinds::doc::Describe>()),
+                "The instance",
+            ),
+            request: None,
+            query: Vec::new(),
+            errors: vec![unavailable_503("the node could not take the read")],
+        },
+        KernelVerb::GetKindInstanceView => VerbDoc {
+            summary: "One view of an instance: generic rows",
+            description: "`{fields, rows, next_cursor, as_of}`: each row a positional array in \
+                `fields` order, each cell in its type's one wire encoding. \
+                `filter=<field>:<value>` (repeatable) is an exact match on a dimension or id \
+                field. Times are in milliseconds, steps in seconds."
+                .to_string(),
+            success: Success::Json(
+                schema_of(gen.subschema_for::<super::kinds::doc::ViewPage>()),
+                "A page of rows",
+            ),
+            request: None,
+            query: super::kinds::doc::query(&[
+                "from_ms", "to_ms", "step_s", "filter", "cursor", "limit",
+            ]),
+            errors: vec![unavailable_503("the view could not be read")],
         },
         KernelVerb::RecoveryList => VerbDoc {
             summary: "Inspect retained raw ledger operations requiring recovery",
@@ -1031,7 +998,7 @@ fn doc_for(
             summary: "Upsert one record of a plane this node serves",
             description: "Upserted by `(kind, id)` through the plane-facing store the planes \
                           persist through, and only for a `kind` the named plane declares in its \
-                          `record_kinds` (`GET /plane-facts` lists them). `body` is stored as its \
+                          `record_kinds` (the plane instance's `runtime.plane.facts` lists them). `body` is stored as its \
                           JSON bytes and never decoded by the store; `terminal` is the retention \
                           disposition. Honors an `Idempotency-Key` header (per-principal, ~10min \
                           replay): a retry with the same key and body answers the first answer."
@@ -1314,6 +1281,31 @@ fn doc_for(
                 ),
                 unavailable_503("the Store could not read the operation"),
             ],
+        },
+        KernelVerb::GetConfigTree => VerbDoc {
+            summary: "The whole configuration, declared or effective, under the secret rule",
+            description: "`view=effective` (the default) is the resolved generation: every section \
+                the kernel reads back (plugin and plane sections included) and `process`, the \
+                command-line and environment inputs. `view=declared` is the configuration as \
+                written, by `layer`: `base` (the operator's file as it stands), `overlay` (the \
+                Store overlay's per-section documents, tombstones, document-patch paths and \
+                version) or `merged` (both side by side, the default). `section=<dotted key>` \
+                narrows the sections served. Every secret position (a secret-named field, a \
+                plugin setting the plugin did not declare public, a private key) is \
+                `{set, secret_ref}`: never a value, never a hash of one; public key material is \
+                a `sha256` fingerprint. `digest` is over the projected sections. The ETag is the \
+                config ETag."
+                .to_string(),
+            success: Success::Json(
+                schema_of(gen.subschema_for::<super::config_tree::ConfigTreeView>()),
+                "The configuration tree",
+            ),
+            request: None,
+            query: super::config_tree::QUERY_DOC
+                .iter()
+                .filter_map(|param| busbar_contract::json::parse_foreign(param.as_bytes()).ok())
+                .collect(),
+            errors: vec![unavailable_503("the node could not take the read")],
         },
         KernelVerb::PutHooksNameAttachmentsTarget
         | KernelVerb::DeleteHooksNameAttachmentsTarget => {

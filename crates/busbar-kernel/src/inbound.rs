@@ -38,7 +38,7 @@ pub const LINE_OPEN: &str = "the line's auth is none: it has no auth to call";
 
 pub(crate) const POINT_UNNEEDED: &str = "the line's auth needs no call at this point";
 
-pub const PEER_BYTES: &str = "a peer-point call presents no unit, no request and no body";
+pub(crate) const PEER_BYTES: &str = "a peer-point call presents no unit, no request and no body";
 
 pub const PEER_CONNECTIONS_MAX: usize = 65_536;
 
@@ -51,7 +51,7 @@ pub const UNIT_FOREIGN: &str = "the unit is not one the kernel minted for this r
 
 pub const UNIT_UNMINTED: &str = "the kernel could not mint the request's unit";
 
-pub const CONN_MISMATCH: &str =
+pub(crate) const CONN_MISMATCH: &str =
     "the call names another connection than the one its framing's calls named";
 
 pub(crate) const CAUSE_UNKNOWN: &str = "the refusal names no cause the kernel answers";
@@ -2520,7 +2520,7 @@ impl Inbound {
                             .ok_or(UNIT_FOREIGN)?;
                         if deadline_passed(deadline) || !points.has(AuthPoint::HeadBody) {
                             me.preflight_keys(target, keys.index)?;
-                            me.record(target, keys.index, &keys.provider, Judging::Nothing, &table);
+                            me.record(target, keys.index, keys.provider, Judging::Nothing, &table);
                             return me.answer(target, unit, peer);
                         }
                         if point != AuthPoint::HeadBody {
@@ -2568,7 +2568,7 @@ impl Inbound {
                                     ),
                                     None => Judging::Nothing,
                                 };
-                                me.record(target, keys.index, &keys.provider, judging, &table);
+                                me.record(target, keys.index, keys.provider, judging, &table);
                                 return me.answer(target, unit, peer);
                             }
                         }
@@ -2650,7 +2650,7 @@ impl Inbound {
                     PositionWork::Verify => {}
                 }
                 if position_deadline_expired(deadline) {
-                    me.record(target, p.index, &p.provider, Judging::Nothing, &table);
+                    me.record(target, p.index, p.provider, Judging::Nothing, &table);
                     break;
                 }
                 let calls = match &p.kind {
@@ -2661,14 +2661,14 @@ impl Inbound {
                         me.record(
                             target,
                             p.index,
-                            &p.provider,
+                            p.provider,
                             Judging::Keys(original.as_deref().unwrap_or(&head), &derived, None),
                             &table,
                         );
                         continue;
                     }
                     PositionKind::Plugin(None) => {
-                        me.record(target, p.index, &p.provider, Judging::Nothing, &table);
+                        me.record(target, p.index, p.provider, Judging::Nothing, &table);
                         continue;
                     }
                     PositionKind::Plugin(Some(calls)) => Arc::clone(calls),
@@ -2715,7 +2715,7 @@ impl Inbound {
                     Some(a) => Judging::Answer(a),
                     None => Judging::Nothing,
                 };
-                me.record(target, p.index, &p.provider, judging, &table);
+                me.record(target, p.index, p.provider, judging, &table);
             }
             me.answer(target, unit, peer)
         })

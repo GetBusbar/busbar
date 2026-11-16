@@ -5,6 +5,9 @@
 //! command line, ready file, verdict and exit code. `/hello` answers which image took it and for
 //! which caller; `/unserved` answers that it is not served, which fails the run.
 
+#![forbid(unsafe_code)]
+#![doc(test(attr(forbid(unsafe_code))))]
+
 use busbar_plugin_test::target::carrier::{Reply, Request, Routes};
 use busbar_plugin_test::target::Target;
 

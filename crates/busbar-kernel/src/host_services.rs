@@ -22,6 +22,7 @@ mod observations_runtime;
 
 #[path = "host_recovery.rs"]
 mod recovery_runtime;
+pub(crate) use recovery_runtime::recovery_binding_of;
 pub use recovery_runtime::RecoveryWork;
 
 pub const QUEUE_FULL: &str = "the record write queue is full";
@@ -1006,7 +1007,7 @@ pub struct KernelServices {
 
     disk: Arc<crate::host_disk::DiskLane>,
 
-    sessions: Mutex<HashMap<u64, CarrierSession>>,
+    sessions: crate::channels::line_carriers::LineCarriers,
 
     verify: crate::host_verify::VerifyBook,
 
@@ -1015,15 +1016,7 @@ pub struct KernelServices {
     tickets: OnceLock<Arc<dyn TicketPress>>,
 }
 
-struct CarrierSession {
-    incarnation: busbar_contract::services::Incarnation,
-
-    principal: Arc<str>,
-
-    sink: CarrierSink,
-}
-
-pub type CarrierSink = Arc<dyn Fn(&[u8]) -> bool + Send + Sync>;
+pub use crate::channels::line_carriers::CarrierSink;
 
 pub(crate) const SESSION_EMIT_ACTION: &str = "session.emit";
 
@@ -1131,7 +1124,7 @@ impl KernelServices {
                 NEST_DEPTH_MAX as usize + 1,
             )),
             disk: Arc::default(),
-            sessions: Mutex::default(),
+            sessions: crate::channels::line_carriers::LineCarriers::new(),
             verify: crate::host_verify::VerifyBook::default(),
             outbound: crate::host_outbound::Custody::default(),
             credentials: None,
@@ -1256,27 +1249,20 @@ impl KernelServices {
     }
 
     pub fn open_carrier_session(&self, caller: &Caller, principal: &str, sink: CarrierSink) -> u64 {
-        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-        let number = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let principal = crate::off_path::host_services::intern(principal);
         self.sessions
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(number, {
-                let principal = crate::off_path::host_services::intern(principal);
-                CarrierSession {
-                    incarnation: caller.incarnation().clone(),
-                    principal,
-                    sink,
-                }
-            });
-        number
+            .open(caller.incarnation(), principal, sink)
+            .get()
     }
 
     pub fn close_carrier_session(&self, session: u64) {
-        self.sessions
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(&session);
+        self.sessions.end(session);
+    }
+
+    /// The line carriers (IF §12.23): a plane's `PlaneOut::Emit` goes through `emit_from_plane`.
+    #[must_use]
+    pub fn line_carriers(&self) -> &crate::channels::line_carriers::LineCarriers {
+        &self.sessions
     }
 
     pub(crate) fn dispatch_hook_child(&self, nest: Nest, done: NestDone) {
@@ -1373,6 +1359,13 @@ impl KernelServices {
     pub fn with_dest_judge(mut self, judge: Arc<dyn DestJudge>) -> Self {
         self.judge = Some(judge);
         self
+    }
+
+    /// The destination judge this host runs `dest.judge` under, if one is installed: the plane port's JUDGE
+    /// intents ask the same guard.
+    #[must_use]
+    pub fn installed_dest_judge(&self) -> Option<Arc<dyn DestJudge>> {
+        self.judge.clone()
     }
 
     #[must_use]
@@ -2307,6 +2300,16 @@ impl KernelServices {
             .await
     }
 
+    /// Every unit still open in the planes registered for cleanup (every composed plane), read
+    /// once at exit for the drain's `open_at_exit` lines (SHUTDOWN-HANG F4).
+    pub fn open_unit_evidence(&self) -> Vec<crate::plane_driver::OpenUnitEvidence> {
+        let drivers = {
+            let mut registered = self.plane_cleanup.lock().unwrap_or_else(|e| e.into_inner());
+            crate::off_path::host_services::live_planes(&mut registered)
+        };
+        crate::off_path::host_services::open_unit_evidence(drivers)
+    }
+
     pub async fn flushes(&self) {
         use futures::StreamExt as _;
         let every = crate::host_records::FLUSH_INTERVAL;
@@ -2701,17 +2704,11 @@ impl HostServices for KernelServices {
                 }))
             }
             InspectionQuery::CarrierSessions { sessions } => {
-                let open = self
-                    .sessions
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 let observations = sessions
                     .iter()
                     .map(|session| SessionObservation {
                         session: *session,
-                        live: open
-                            .get(session)
-                            .is_some_and(|held| &held.incarnation == caller.incarnation()),
+                        live: self.sessions.is_open(caller.incarnation(), *session),
                     })
                     .collect();
                 Ok(InspectionObservation::CarrierSessions(observations))
@@ -3168,20 +3165,9 @@ impl HostServices for KernelServices {
     }
 
     fn session_emit(&self, caller: &Caller, session: u64, bytes: &[u8]) -> Stored {
-        let open = self
-            .sessions
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(&session)
-            .filter(|s| &s.incarnation == caller.incarnation())
-            .map(|s| (Arc::clone(&s.sink), Arc::clone(&s.principal)));
-        let Some((sink, principal)) = open else {
+        let Some(principal) = self.sessions.emit(caller.incarnation(), session, bytes) else {
             return Stored::refused(SESSION_NOT_OPEN);
         };
-        if !sink(bytes) {
-            self.close_carrier_session(session);
-            return Stored::refused(SESSION_NOT_OPEN);
-        }
 
         // `session:<u64>` is at most 28 bytes: the audit subject is spelled on the stack.
         let mut subject = [0u8; 28];

@@ -142,16 +142,6 @@ fn answer(value: &serde_json::Value) -> Result<AdminAnswer, GovernanceError> {
         .map_err(|_| GovernanceError::Store)
 }
 
-fn query_param<'t>(target: &'t str, name: &str) -> Option<&'t str> {
-    let (_, query) = target.split_once('?')?;
-    let query = query.split('#').next().unwrap_or(query);
-    query
-        .split('&')
-        .filter_map(|pair| pair.split_once('='))
-        .find(|(key, _)| *key == name)
-        .map(|(_, value)| value)
-}
-
 pub(crate) async fn verify_effect(
     ledger: &dyn LedgerView,
     audit: Option<&dyn AuditView>,
@@ -209,49 +199,6 @@ pub(crate) async fn verify_effect(
         "identity_holds": identity_holds,
         "discrepancies": 0,
         "ok": findings.is_empty() && identity_holds,
-    }))
-}
-
-pub(crate) fn plane_facts_effect(
-    target: &str,
-    planes: &(dyn Fn(&str) -> Option<PlaneDeclaration> + Send + Sync),
-) -> Result<AdminAnswer, GovernanceError> {
-    let Some(key) = query_param(target, "plane").filter(|k| !k.is_empty()) else {
-        return Ok(refused(400, "invalid_request", "plane is required"));
-    };
-    let Some(decl) = planes(key) else {
-        return Ok(refused(
-            404,
-            "not_found",
-            &format!("plane `{key}` not found"),
-        ));
-    };
-    answer(&serde_json::json!({
-        "plane": decl.key,
-        "fallback": decl.fallback,
-        "config_section": decl.config_section,
-        "owned_config_sections": decl.owned_config_sections,
-        "scope_kinds": decl.scope_kinds,
-        "subject_noun": decl.subject_noun,
-        "admin_noun": decl.admin_noun,
-        "audit_kind": decl.audit_kind,
-        "billable_classes": decl
-            .billable_classes
-            .iter()
-            .map(|c| serde_json::json!({"class": c.class, "family": c.family}))
-            .collect::<Vec<_>>(),
-        "fee_units": decl.fee_units,
-        "metric_families": decl
-            .metric_families
-            .iter()
-            .map(|m| serde_json::json!({"name": m.name, "kind": m.kind, "label_keys": m.label_keys}))
-            .collect::<Vec<_>>(),
-        "served_op_classes": decl
-            .served_op_classes
-            .iter()
-            .map(|s| serde_json::json!({"op": s.op.as_str(), "name": s.name}))
-            .collect::<Vec<_>>(),
-        "record_kinds": decl.record_kinds,
     }))
 }
 

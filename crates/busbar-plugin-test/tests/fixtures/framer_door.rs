@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The host target's own stream framer: an SDK-authored LINE framer (`FRAMING_STREAM`,
-//! `FACT_ACCEPTS`) the stream target serves (`tests/target_stream.rs`, `[[example]]
+//! `FACT_ACCEPTS`) the stream target serves (`tests/target_stream.rs`, `[[bin]]
 //! framer_target`). Each connection's lines are text messages on stream 1, and an EMIT writes its
 //! bytes and a newline to the wire. It hands at most eight frame bytes and eight wire bytes per
 //! answer and owes the rest (`YIELD_MORE`), so every exchange crosses re-calls.

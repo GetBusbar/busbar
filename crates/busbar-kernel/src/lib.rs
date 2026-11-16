@@ -22,6 +22,10 @@ extern crate self as busbar_kernel;
 pub(crate) use alloc_gate_instrument::CountingJemalloc;
 
 #[cfg(all(test, not(target_env = "msvc")))]
+#[global_allocator]
+static GLOBAL: CountingJemalloc = CountingJemalloc;
+
+#[cfg(all(test, not(target_env = "msvc")))]
 #[path = "tests/alloc_gate_instrument.rs"]
 mod alloc_gate_instrument;
 
@@ -542,6 +546,8 @@ pub mod channels;
 pub mod connections;
 pub mod custody;
 pub mod directory;
+// W2-K8P: the CA-5 hold (Holds, HoldSet) and the mass-deprovision guard cell (IF §12.29).
+pub mod holds;
 pub mod issued;
 pub mod media;
 pub mod path_claims;
@@ -630,7 +636,7 @@ pub fn boot_route_paths_of(app: &state::App) -> Vec<String> {
     app.boot_route_paths.iter().cloned().collect()
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 #[path = "tests/real_store.rs"]
 pub(crate) mod real_store;
 

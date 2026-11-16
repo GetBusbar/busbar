@@ -157,6 +157,13 @@ pub fn current_request_id() -> String {
     })
 }
 
+/// The id of the admin request in flight, or `None` outside one (an audit row written by no
+/// request carries no `request_id`).
+#[must_use]
+pub fn request_id_in_scope() -> Option<String> {
+    REQUEST_ID.try_with(Clone::clone).ok()
+}
+
 /// `r_` and the sixteen hex digits of a request counter value.
 #[must_use]
 pub fn request_id_of(counter: u64) -> String {
@@ -282,7 +289,10 @@ pub fn scope_details(needed_scope: &str) -> serde_json::Value {
 
 /// [`scope_details`] naming the verb the refused call needed (per-verb authorization, MR2).
 #[must_use]
-pub fn scope_details_for(needed_scope: &str, needed_verb: Option<&str>) -> serde_json::Value {
+pub(crate) fn scope_details_for(
+    needed_scope: &str,
+    needed_verb: Option<&str>,
+) -> serde_json::Value {
     serde_json::json!({ "needed_scope": needed_scope, "needed_verb": needed_verb })
 }
 

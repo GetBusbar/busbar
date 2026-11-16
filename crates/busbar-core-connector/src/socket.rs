@@ -94,6 +94,30 @@ impl Write for &Sock {
 }
 
 impl Sock {
+    /// The far end's IP address, when this is a TCP stream that is connected.
+    #[must_use]
+    pub fn peer_ip(&self) -> Option<std::net::IpAddr> {
+        match self {
+            Self::Tcp(s) => s.peer_addr().ok().map(|a| a.ip()),
+            #[cfg(unix)]
+            Self::Unix(_) => None,
+        }
+    }
+
+    /// Whether the socket is idle and open: nothing to read, no error, not closed by the far end.
+    /// A look at the kernel's buffer (`MSG_PEEK`) that consumes nothing; anything else than "would
+    /// block" (data waiting, EOF, an error) is not idle.
+    #[must_use]
+    pub fn idle_and_open(&self) -> bool {
+        let mut byte = [std::mem::MaybeUninit::<u8>::uninit(); 1];
+        let peeked = match self {
+            Self::Tcp(s) => socket2::SockRef::from(s).peek(&mut byte),
+            #[cfg(unix)]
+            Self::Unix(s) => socket2::SockRef::from(s).peek(&mut byte),
+        };
+        matches!(peeked, Err(e) if e.kind() == io::ErrorKind::WouldBlock)
+    }
+
     /// Shut down `how`.
     pub fn shutdown(&self, how: Shutdown) -> io::Result<()> {
         match self {

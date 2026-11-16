@@ -24,7 +24,7 @@ pub(crate) fn composes_over(name: &str) -> String {
 /// The sentence of `value`, spelled only when a refusal or failure is answered.
 #[cold]
 pub(crate) fn display_text(value: &dyn Display) -> String {
-    value.to_string()
+    format!("{value}")
 }
 
 /// `prefix` and the sentence of `value`, spelled only when a refusal or failure is answered.
@@ -42,13 +42,13 @@ pub(crate) fn refusal_text(text: &str) -> String {
 /// The text of a carrier crossing that did not answer READY ([`crate::carrier::text`]).
 #[cold]
 pub(crate) fn crossing_text(error: &[u8]) -> String {
-    String::from_utf8_lossy(error).into_owned()
+    format!("{}", String::from_utf8_lossy(error))
 }
 
 /// A failed I/O op's sentence.
 #[cold]
 pub(crate) fn io_error_text(error: &io::Error) -> String {
-    error.to_string()
+    format!("{error}")
 }
 
 /// The refusal of a unix-domain dial no socket answers.

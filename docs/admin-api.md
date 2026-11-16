@@ -32,7 +32,7 @@ A role may instead (or as well) be granted admin verbs ONE BY ONE with `verbs:` 
 
 | Class | Budget | Covers |
 |---|---|---|
-| config | 10/min | `POST /config/apply`, `PUT /config/settings`, `POST /config/reload`, `POST /config/rollback`, `PUT /admin-auth`, `DELETE /overlay/{section}`, `POST /plugins/reload`, `POST /plugins/rollback`, `POST /restart`, and the named-definition-map writes `PUT /identity-providers/{name}`, `PATCH /identity-providers/{name}/settings`, `DELETE /identity-providers/{name}`, `PUT /export/{name}`, `PATCH /export/{name}/settings`, `DELETE /export/{name}`, `PUT /tools/{name}`, `PATCH /tools/{name}/settings`, `DELETE /tools/{name}`, `PUT /agents/{name}`, `PATCH /agents/{name}/settings`, `DELETE /agents/{name}`, plus the MCP trust verb `POST /tools/{name}/connect` and the A2A trust verbs `POST /agents/{name}/connect` and `POST /agents/{name}/approve` (the blast-radius set: each rebuilds and swaps the whole App. The trust verb does not rebuild it, but it reaches an operator-named endpoint on the estate and replaces the recorded observation, which can demote a server, so it takes the same 10/min budget rather than the 6x-looser CRUD one; the A2A pair is the same shape: the preview reaches the registered agent's card endpoint, and the approval moves a registration into service) |
+| config | 10/min | `POST /config/apply`, `PUT /config/settings`, `POST /config/reload`, `POST /config/rollback`, `PUT /admin-auth`, `DELETE /overlay/{section}`, `POST /plugins/reload`, `POST /plugins/rollback`, `POST /restart`, and the named-definition-map writes `PUT /tools/{name}`, `PATCH /tools/{name}/settings`, `DELETE /tools/{name}`, `PUT /agents/{name}`, `PATCH /agents/{name}/settings`, `DELETE /agents/{name}`, plus the MCP trust verb `POST /tools/{name}/connect` and the A2A trust verbs `POST /agents/{name}/connect` and `POST /agents/{name}/approve` (the blast-radius set: each rebuilds and swaps the whole App. The trust verb does not rebuild it, but it reaches an operator-named endpoint on the estate and replaces the recorded observation, which can demote a server, so it takes the same 10/min budget rather than the 6x-looser CRUD one; the A2A pair is the same shape: the preview reaches the registered agent's card endpoint, and the approval moves a registration into service) |
 | CRUD | 60/min | every other mutation: hooks, keys, groups, cache flush, and the 1.6.0 mutating verbs (`adjust`, `ledger/amend-rate-history`, `ledger/recovery/list`, `ledger/recovery/resolve`, `plane-record-write`, `commit-upgrade`, `chain-break`, `store-restore`, `trust/approve`, `trust/revoke`), **and `/config/validate`** (a dry-run never contends with the config budget) |
 | plugin-inspect | 30/min | `POST /plugins/inspect` ONLY. It gets its own dedicated bucket, not the shared CRUD budget (decompressing + parsing an attacker-controlled archive is a heavier, mutation-like cost profile per call than an ordinary CRUD mutation, and a fleet-wide upgrade preview would otherwise burn the same 60/min an operator needs for real mutating work in that window) and not unmetered either, despite being `read-only` scope |
 
@@ -117,7 +117,7 @@ Every list endpoint speaks one envelope: `{ "items": [...], "next_cursor": "..."
 | `GET /config/versions` | 100 | 1000 |
 | `GET /groups` | 200 | 1000 |
 
-The topology reads (`/pools`, `/models`, `/providers`, `/hooks`, `/plugins`) return the same envelope in a single page (`next_cursor: null`). They are bounded by static config. `/groups` is cursor-paginated like `/keys`/`/audit`/`/config/versions` instead: `plan_mint_group` auto-provisions a leaf group per self-service key mint, so the group tree grows at runtime and is not safe to return unbounded.
+The topology reads (`/hooks`, `/plugins`) return the same envelope in a single page (`next_cursor: null`). They are bounded by static config. `/groups` is cursor-paginated like `/keys`/`/audit`/`/config/versions` instead: `plan_mint_group` auto-provisions a leaf group per self-service key mint, so the group tree grows at runtime and is not safe to return unbounded.
 
 Numeric limits on legacy keys/groups/audit/versions lists are clamped to 1–1000. Groups/audit/versions use their default for malformed values; keys refuses malformed values. These existing parser differences remain part of v1.
 
@@ -260,9 +260,9 @@ from the path alone (the document explains them itself, under `info.x-busbar-mar
   mounted only on a node whose config carries that `<section>:` block. On any other node its path
   answers `404 not_found`, exactly as a path the surface has never had, and the document that node
   serves leaves the operation out (with every schema only it references).
-- **`x-busbar-since: 1.6.0`** — one of the 22 operations 1.6.0 adds to the closed verb table, answered
-  by the node's administrative loop: the 14 kernel verbs (ten money-governance verbs, three
-  trust verbs and the telemetry read), the five ledger views and the three audit-chain reads.
+- **`x-busbar-since: 1.6.0`** — one of the 21 operations 1.6.0 adds to the closed verb table, answered
+  by the node's administrative loop: the 13 kernel verbs (ten money-governance verbs, three
+  trust verbs), the five ledger views and the three audit-chain reads.
 
 `GET /api/v1/admin/ledger/openapi.json` serves the full document, unfiltered.
 
@@ -271,8 +271,10 @@ The 1.6.0 kernel verbs (each is served; every mutation is audited and spends the
 | Operation | Path | Scope | Does |
 | --- | --- | --- | --- |
 | `verify` | `GET /api/v1/admin/verify` | `read-only` | Verify this node's ledger: every sealed checkpoint re-hashes to its body, no node sequence goes backwards, the book is measured against the last checkpoint, and postings reconcile with the previous release's rows. A failed verification is still `200`: `ok` is the answer and `findings` says why |
-| `get_telemetry` | `GET /api/v1/admin/telemetry` | `read-only` | Bounded snapshot of collected request-phase duration counts, sums and exclusive bins; no outbound connection |
-| `plane_facts` | `GET /api/v1/admin/plane-facts?plane=` | `read-only` | What a plane this node serves declares about itself (config sections, grant kinds, billable classes, record kinds, operation classes) |
+| `get_kinds` | `GET /api/v1/admin/kinds[?category=]` | `read-only` | What exists: every kind (the seven engine kinds, one per registered plane, and `core`), with its instance count. The ETag is `/info.kinds_revision` |
+| `get_kind_instances` | `GET /api/v1/admin/kinds/{kind}/instances` | `read-only` | What is running: a kind's instances, each with `plugin`, `state` and `etag` |
+| `get_kind_instance` | `GET /api/v1/admin/kinds/{kind}/instances/{id}` | `read-only` | Describe one instance: `config` (under the secret rule), `config_schema`, `state`, `state_schema`, `runtime` (for a plane, `runtime.plane.facts` is what the plane declares about itself), `health`, `links`, `views`, `actions` |
+| `get_kind_instance_view` | `GET /api/v1/admin/kinds/{kind}/instances/{id}/views/{view}` | `read-only` | One view's rows, positional in `fields` order (for example `core/routing` view `pools`: live per-member pool status) |
 | `plane_record_write` | `POST /api/v1/admin/plane-record-write` | `full` | Upsert one record, by `(kind, id)`, of a kind the named plane declares. `body` must be present and must not be JSON null; omission or null returns `400 invalid_request` (`body is required`). Honors `Idempotency-Key` |
 | `adjust` | `POST /api/v1/admin/adjust` | `full` | Correct a recorded unit's counts (below) |
 | `recovery_list` | `POST /api/v1/admin/ledger/recovery/list` | `full` | Inspect retained ledger operations whose landing outcome needs an operator verdict (below); observation only, spends the ordinary CRUD rate budget |
@@ -381,10 +383,7 @@ operation exists elsewhere.
 | Endpoint | Returns |
 |---|---|
 | `GET /info` | `version`, `build` (the **compiled-in plugin proof**: `auth_modules`, `hook_plugins`, the always-true `weighted_floor`), `uptime_seconds`, `started_at` (epoch of process start, the boot-epoch marker: `config_version` resets on restart, so a changed `started_at` reads as "new epoch", never "reverted"), `topology` (pool/model/provider counts), `config_persistence` (whether API changes survive restart), `config_version` (monotonic, +1 per apply, drift detection), `overlay_ignored` (present and `true` when the process was booted with `--ignore-overlay`; a later reload/apply re-merges the overlay) |
-| `GET /pools` | Every pool with its member models and SWRR weights. **`?detail=true`** inlines each member's live status (the same row shape as `/pools/{name}`): the whole topology-with-health in one call |
-| `GET /pools/{name}` | One pool's **live** per-member status: `usable` + `cooldown_remaining_seconds` (breaker), `available_concurrency`, `inflight`, `latency_ms` (EWMA), `ok`/`err` tallies, `dead`, and **`trip_count`** + `last_trip_at`, a monotonic Closed→Open trip counter, so alerting diffs the count instead of trying to catch a breaker episode live |
-| `GET /models` | Every model lane and its upstream provider |
-| `GET /providers` | Distinct providers and how many lanes route through each |
+| `GET /kinds/core/instances/routing` | Routing configuration (`config.models`, `config.providers`, `config.pools`); its view `pools` serves each pool member's **live** status: `usable` + `cooldown_remaining_seconds` (breaker), `available_concurrency`, `inflight`, `latency_ms` (EWMA), `ok`/`err` tallies, `dead`, and `trip_count` + `last_trip_at`. `/pools`, `/models` and `/providers` are removed in 1.6.0 (see the migration guide) |
 
 `GET /info` doubles as the **compliance-by-compilation proof**: `build.auth_modules`/`build.hook_plugins` reflect the actual binary. A build compiled with `--no-default-features` reports empty lists: a provable, not merely configured, smaller surface.
 
@@ -675,11 +674,13 @@ curl -s -H "x-admin-token: $TOK" http://localhost:8081/api/v1/admin/hooks/compre
 curl -s -X DELETE -H "x-admin-token: $TOK" http://localhost:8081/api/v1/admin/hooks/compress
 ```
 
-### Named-definition maps: `identity-providers`, `export`, `tools`, `agents`
+### Named-definition maps: `tools`, `agents`
 
-Each top-level named-definition map (`name -> {module, settings, ...}`) has the same five
-operations under its own root. `tools` and `agents` are plane operations (`x-busbar-plane`):
-mounted only on a node whose config carries that section.
+Each plane-owned named-definition map (`name -> {url, ...}`) has the same five operations under its
+own root. They are plane operations (`x-busbar-plane`): mounted only on a node whose config carries
+that section. The 1.5.5 `/identity-providers` and `/export` maps are removed in 1.6.0: read their
+instances at `/kinds/auth/instances` and `/kinds/export/instances`, and write their sections
+through `PUT /config/settings` and `POST /config/apply`.
 
 | Endpoint | Does |
 |---|---|
@@ -753,7 +754,7 @@ curl -s -X DELETE -H "x-admin-token: $TOK" \
 curl -s -H "x-admin-token: $TOK" http://localhost:8081/api/v1/admin/info
 
 # The whole topology with live health, in one call
-curl -s -H "x-admin-token: $TOK" 'http://localhost:8081/api/v1/admin/pools?detail=true'
+curl -s -H "x-admin-token: $TOK" http://localhost:8081/api/v1/admin/kinds/core/instances/routing/views/pools
 
 # Preview a config change without applying it
 curl -s -X POST -H "x-admin-token: $TOK" -H 'content-type: application/json' \
@@ -770,54 +771,6 @@ curl -s -X POST -H "x-admin-token: $TOK" -H "If-Match: $ETAG" -H 'content-type: 
 ## The freeze
 
 **v1 is frozen, additive-only.** New fields may appear in any view; no field is ever removed or repurposed; no error `code` ever changes meaning; the scope matrix and the mount prefix are pinned by tests. A breaking change would ship as `/admin/v2/` alongside v1, never in place. Build against v1 and it keeps working.
-
-### Bounded request telemetry
-
-`GET /api/v1/admin/telemetry` uses the existing admin read-only authority. It reads metrics already
-collected by the configured recorder; it neither enables collection nor forwards requests to a
-plugin or upstream. Disabled or unavailable collection returns `503 unavailable`, never invented
-zero measurements. Successful responses use `Cache-Control: no-store`.
-
-The response contains a random 128-bit hexadecimal `process_boot_nonce`, `uptime_since_start_ms`,
-`captured_at_unix_ms`, `upper_bounds_ms`, `identities`, `omitted_identities`, `truncated`, and `dropped`. The nonce is stable
-across scrapes and config reloads, and changes with a new process. Uptime is monotonic elapsed
-milliseconds since shared process-generation initialization (first use), not the operating system's
-process-creation time. Reading `GET /info` may establish that epoch before metrics are enabled.
-`captured_at_unix_ms` is engine wall-clock Unix milliseconds sampled during capture, separately from
-monotonic uptime or consumer receive time. Invalid or out-of-range engine wall time is unavailable.
-Counts, microsecond sums, bins, omission/drop counters and timestamps are unsigned decimal strings,
-including values above JavaScript's exact-number range.
-
-Each identity names `plane`, `phase`, `pool`, and `ingress_protocol`; its `count`, `errors`, `client_errors`, `sum_us`, and
-16 `bins` are cumulative in that process and read coherently. `errors` counts the existing
-`error` and `exhausted` outcomes (including HTTP 503); `client_errors` counts HTTP 4xx. They use
-the same observed phase event as count and duration, not a separate completion claim. Each bin is exclusive: values are
-at most its inclusive upper bound and greater than the preceding bound. The upper bounds in
-milliseconds are `[1,5,10,25,50,100,250,500,1000,2500,5000,10000,30000,60000,120000,null]`;
-the final null means positive infinity. The bins sum to count. These are not Prometheus cumulative
-buckets. Durations are individually truncated to whole microseconds before accumulation.
-
-`LlmProducerDrive` ends when the model producer drive returns; buffered body bytes can still be
-pending. `MountedResponseReady` ends when a mounted handler returns its response, before its
-body completes. Neither measures completed client delivery or proves a successful body transfer.
-Cancellation that bypasses those observation points contributes no completion measurement.
-
-At most 32 identities and 65536 JSON bytes are returned. This response-body cap is distinct from
-any transport frame cap or forwarding envelope; callers must account for their own framing. Selection is lexical and stable; labels
-over 256 UTF-8 bytes and identities beyond either limit are omitted. `omitted_identities` reports
-the number omitted and `truncated` says whether it is nonzero; missing identities are not zeroes.
-The fixed `dropped` fields are `invalid_duration`, `integer_overflow`, `series_capacity`,
-`boot_nonce_unavailable`, `histogram_capacity`, and `unregistered_labels`. Drop counters are
-cumulative diagnostics, not one atomic snapshot with every other counter. Clients should reset
-their delta baseline when the process nonce changes and must retain the measured phase labels.
-
-`GET /api/v1/admin/info` also returns the same `process_boot_nonce`, even when metrics are disabled.
-It initializes only the process generation, without creating a recorder or histogram buffers.
-The value is a 32-character lowercase hexadecimal string, or null if OS randomness failed.
-A caller can compare this nonce before and after an approved restart, including restarts within
-one wall-clock second. Existing `started_at`, `uptime_seconds`, and configuration fields retain
-their meanings; null nonce is unavailable identity, not proof of either a restart or continuity.
-
 
 ### Additional authored host and plane metadata
 

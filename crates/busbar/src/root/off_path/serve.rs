@@ -476,7 +476,10 @@ pub(crate) async fn compose_served_checked(
         if !doors.is_empty() {
             tracing::warn!("door planes stay unopened: no governance book to settle on");
         }
-        let served = Served::default();
+        let served = Served {
+            ports: crate::root::min3_boot::seats(),
+            ..Served::default()
+        };
         check(&served)?;
         return Ok(served);
     };
@@ -490,6 +493,15 @@ pub(crate) async fn compose_served_checked(
     });
     let site = Arc::clone(&post);
     let caller_migration = gov.clone();
+    let port_billing = busbar_kernel::plane_driver::port_billing::PortBilling::new(
+        Arc::new(PlaneMoney::new(
+            Arc::clone(&gov),
+            Arc::clone(&post) as Arc<dyn busbar_kernel::plane_driver::EndPost>,
+        )),
+        Arc::clone(&gov),
+        crate::root::plane_node::node().kernel_and_keys().1,
+        Arc::new(busbar_kernel::plane_driver::CoreAudit),
+    );
     let money = move || {
         Arc::new(PlaneMoney::new(
             Arc::clone(&gov),
@@ -519,6 +531,7 @@ pub(crate) async fn compose_served_checked(
             .await?;
     }
     served.post = Some(post);
+    served.billing = Some(port_billing);
     let binds = check(&served)?;
 
     if !binds.is_empty() {
@@ -868,6 +881,7 @@ pub(crate) async fn compose_planes_over(
 ) -> Result<Served, String> {
     let mut served = Served {
         tables: tables.clone(),
+        ports: crate::root::min3_boot::seats(),
         ..Served::default()
     };
     let Some(kernel) = late.kernel() else {
@@ -3541,7 +3555,7 @@ pub(crate) fn attach_nest_routes(kernel: Option<Arc<KernelServices>>, routes: Ne
 
 pub(crate) fn public_routes(served: &Served) -> Vec<PlaneRouteSpec> {
     let tables = &served.tables;
-    let tail = served
+    let mut tail: Vec<PlaneRouteSpec> = served
         .planes
         .iter()
         .flat_map(|p| p.snapshot.admin_routes.iter())
@@ -3578,6 +3592,12 @@ pub(crate) fn public_routes(served: &Served) -> Vec<PlaneRouteSpec> {
             })
         })
         .collect();
+    // The MIN-3 plane instances serve their data routes through their ports (PLANE-BOOT-MOUNT).
+    tail.extend(crate::root::port_mount::routes(
+        &served.ports,
+        crate::root::min3_boot::signed_ingress(),
+        served.billing.as_ref(),
+    ));
     tail
 }
 
@@ -4082,6 +4102,7 @@ impl DataRoutes {
                         work.reference().into_bytes(),
                     )],
                     body: bytes::Bytes::new(),
+                    carrier: 0,
                 };
                 let principal = PrincipalId::new(key.id.as_str());
                 let (caller, reply) = IngressCaller::new();

@@ -92,6 +92,9 @@ busbar-contract = { path = "../busbar-contract" }
 hex = { workspace = true }
 # The MIN-3 plugin interface, core side (ABI-MIN3-INTERFACE §10, §11).
 busbar-plugin-abi = { path = "../busbar-plugin-abi", features = ["host"] }
+# The plugin boundary (UNSAFE-MIN r3.1): admit opens, bounds-checks and admits images through its `image` module
+# (the `host` dependent role in unsafe.yaml).
+busbar-ffi = { path = "../busbar-ffi", features = ["host"] }
 libloading = { workspace = true }
 tokio = { workspace = true, features = ["rt", "time", "sync"] }
 futures = { workspace = true }

@@ -216,12 +216,32 @@ impl Admitted {
         }
     }
 
+    /// A compiled-in header held as the `&'static Plugin` the SDK suites' frozen signatures take (IF §14).
+    /// Safe: `Plugin`'s fields are private, so a `'static` one is a `LinkedPlugin`'s (`plugin()`). It runs the
+    /// null check `linked` runs, and the loader's admission still scans the stamp (A1).
+    pub fn from_header(plugin: &'static Plugin) -> Result<Admitted, ImageError> {
+        let admitted = Admitted {
+            plugin: core::ptr::from_ref(plugin).expose_provenance(),
+        };
+        match admitted.null_field() {
+            Some(field) => Err(ImageError::Null(field)),
+            None => Ok(admitted),
+        }
+    }
+
     /// The header.
     pub fn header(&self) -> &'static Plugin {
         let p = core::ptr::with_exposed_provenance::<Plugin>(self.plugin);
         // SAFETY: the address is a `LinkedPlugin` static or the bounds-checked header of an image whose
         // library `admit` leaked, so it is never unmapped (I13); the header is immutable.
         unsafe { &*p }
+    }
+
+    /// `former_names` as checked UTF-8 (`add` and the admit path compared it with the signed manifest already);
+    /// empty when the header states bytes that are not UTF-8.
+    pub fn former_names(&self) -> &'static str {
+        let names: Bytes<'static> = self.header().former_names_raw().bytes();
+        core::str::from_utf8(names.get()).unwrap_or("")
     }
 
     /// The stamp bytes.

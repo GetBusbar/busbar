@@ -453,6 +453,55 @@ impl Mutant {
         self.retail::<PlaneTail>(KindCode::Plane, |t| t.answer_layout = n)
     }
 
+    /// The door states no kind tail (STH-ROWS D-3): its `kind_tail` is NULL.
+    #[must_use]
+    pub fn no_tail(self) -> Self {
+        self.restate(|st| st.kind_tail = std::ptr::null())
+    }
+
+    /// The kind tail's head states size `n` (STH-ROWS D-3): an older, shorter tail. The leaked
+    /// copy is the whole tail, so every byte the head states is still readable.
+    ///
+    /// # Panics
+    /// When the door is neither a plane's nor a transport's, states no kind tail, or `n` is more
+    /// than the host's tail size.
+    #[must_use]
+    pub fn tail_size(self, n: u32) -> Self {
+        let plane = self
+            .parts
+            .as_ref()
+            .is_some_and(|p| p.kind == KindCode::Plane as u32);
+        if plane {
+            self.retail::<PlaneTail>(KindCode::Plane, |t| {
+                assert!(
+                    n as usize <= std::mem::size_of::<PlaneTail>(),
+                    "a tail is cut, never grown, beyond the tail's own size"
+                );
+                t.head.size = n;
+            })
+        } else {
+            self.retail::<TransportTail>(KindCode::Transport, |t| {
+                assert!(
+                    n as usize <= std::mem::size_of::<TransportTail>(),
+                    "a tail is cut, never grown, beyond the tail's own size"
+                );
+                t.head.size = n;
+            })
+        }
+    }
+
+    /// A plane's tail states no streaming media types (STH-ROWS D-3): the list is NULL and 0.
+    ///
+    /// # Panics
+    /// When the door is not a plane's.
+    #[must_use]
+    pub fn no_streaming_types(self) -> Self {
+        self.retail::<PlaneTail>(KindCode::Plane, |t| {
+            t.streaming_content_types = std::ptr::null();
+            t.streaming_content_types_len = 0;
+        })
+    }
+
     /// The door's READY answers FAILED with `text` (every crossing counted by
     /// [`Mutant::failed_readies`]).
     #[must_use]
@@ -614,7 +663,9 @@ impl Mutant {
                 p.ops = std::ptr::from_ref(Box::leak(Box::new(table))).cast::<OpsHead>();
             }
             // SAFETY: the parts are a real `'static` door's: its Statement (or a leaked copy of
-            // it with one scalar or `'static` string changed), its ops table (or a leaked copy of
+            // it with one scalar or `'static` string changed, its kind tail NULL, or its kind tail
+            // a leaked whole copy whose head states a size no larger than the copy or whose plane
+            // media list is NULL and 0), its ops table (or a leaked copy of
             // it whose one framer op is this bank's corrupting op, or whose served lane ops are
             // this bank's dropping ops, each forwarding every crossing to the op it replaced
             // under the same convention) and its kind, and a replaced READY is this bank's, which

@@ -857,30 +857,6 @@ fn load_entry(
     let mut errors = Vec::new();
     let m = matcher(i, &d.matches).map_err(|e| vec![e])?;
     let scope = format!("destinations[{i}] ({})", d.matches.trim());
-    if d.plaintext {
-        let exact = matches!(m, Matcher::Host(_))
-            || matches!(m, Matcher::Net(ip, len) if len == if ip.is_ipv4() { 32 } else { 128 });
-        if !exact {
-            errors.push(format!(
-                "{}: advanced.tls.destinations[{i}]: `plaintext: true` is accepted only on an exact \
-                 host or IP, never on a wildcard or a CIDR (`{}`)",
-                diag::CONFIG_PLAINTEXT_ENTRY_NOT_EXACT.banner(),
-                d.matches.trim()
-            ));
-        }
-        if !d.trust_anchors.is_empty()
-            || d.include_roots
-            || !d.pin_spki_sha256.is_empty()
-            || d.client_identity.is_some()
-        {
-            errors.push(format!(
-                "{}: advanced.tls.destinations[{i}]: a `plaintext: true` entry admits plaintext only; \
-                 it cannot also list trust_anchors, include_roots, pin_spki_sha256 or \
-                 client_identity (write a separate entry for TLS settings)",
-                diag::CONFIG_TLS_DESTINATION_INVALID.banner()
-            ));
-        }
-    }
     let mut anchors = Vec::new();
     for (j, src) in d.trust_anchors.iter().enumerate() {
         let key = format!("advanced.tls.destinations[{i}].trust_anchors[{j}]");
@@ -920,7 +896,9 @@ fn load_entry(
         include_roots: d.include_roots,
         pins,
         identity,
-        plaintext: d.plaintext,
+        // The `plaintext` row is deleted from `advanced.tls.destinations` (parse refuses it; transport
+        // security is `insecure_transport`), so no entry admits plaintext.
+        plaintext: false,
     })
 }
 

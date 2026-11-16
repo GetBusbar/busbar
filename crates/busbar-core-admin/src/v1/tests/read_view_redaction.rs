@@ -156,9 +156,21 @@ fn unparseable_named_definitions_project_only_an_actual_module() {
 #[cfg(feature = "openapi-schema")]
 #[test]
 fn named_definition_module_schema_matches_omitted_or_string_output() {
-    let doc = super::json::openapi_doc();
+    // `openapi_doc()` carries these two schemas only when an installed plane lists named
+    // definitions (the generating test binary installs none), so read them from the generator the
+    // document is built with, under the same settings.
+    let mut generator = schemars::generate::SchemaSettings::draft2020_12()
+        .with(|s| {
+            s.definitions_path = "/components/schemas".into();
+            s.meta_schema = None;
+        })
+        .for_serialize()
+        .into_generator();
+    generator.subschema_for::<crate::v1::contract::NamedDefView>();
+    generator.subschema_for::<super::json::named_map::MutatedDefView>();
+    let schemas = serde_json::Value::Object(generator.definitions().clone());
     for name in ["NamedDefView", "MutatedDefView"] {
-        let schema = &doc["components"]["schemas"][name];
+        let schema = &schemas[name];
         assert_eq!(schema["properties"]["module"]["type"], "string", "{name}");
         assert!(
             !schema["required"]

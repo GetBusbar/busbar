@@ -23,6 +23,7 @@ use crate::v1::contract::{
 };
 
 pub(crate) use busbar_kernel::audit_ring as audit;
+use busbar_kernel::plane_driver::port_admin;
 use busbar_kernel::state::AppHandle;
 
 #[cfg(feature = "openapi-schema")]
@@ -47,13 +48,15 @@ impl AdminTransport for JsonV1 {
         #[cfg_attr(not(test), allow(clippy::let_and_return))]
         let router = Router::new()
             .route("/info", get(info))
-            .route("/telemetry", get(telemetry::get))
             .route("/operations/{key}", get(generation::get_operation))
+            .route("/kinds", get(kinds::list))
+            .route("/kinds/{kind}/instances", get(kinds::instances))
+            .route("/kinds/{kind}/instances/{id}", get(kinds::describe))
+            .route(
+                "/kinds/{kind}/instances/{id}/views/{view}",
+                get(kinds::view),
+            )
             .route("/whoami", get(whoami::get))
-            .route("/pools", get(list_pools))
-            .route("/pools/{name}", get(get_pool))
-            .route("/models", get(list_models))
-            .route("/providers", get(list_providers))
             .route(PATH_HOOKS, get(list_hooks).post(register_hook))
             .route(
                 "/hooks/{name}",
@@ -99,6 +102,7 @@ impl AdminTransport for JsonV1 {
             .route("/config", get(get_config))
             .route("/audit", get(get_audit))
             .route(PATH_CONFIG_VALIDATE, post(validate_config))
+            .route("/config/tree", get(config_tree::get))
             .route("/config/versions", get(list_config_versions))
             .route("/config/versions/{v}", get(get_config_version))
             .route("/config/diff", get(config_diff))
@@ -265,11 +269,60 @@ async fn plane_serve_or_not_found(
     State(handle): State<Arc<AppHandle>>,
     req: axum::extract::Request,
 ) -> Response {
+    let (parts, body) = req.into_parts();
+    // A MIN-3 plane instance's ROUTE_ADMIN route: the operator chain admitted this request already.
+    if port_admin::serves(parts.method.as_str(), parts.uri.path()) {
+        return port_admin_response(parts, body).await;
+    }
+    let req = axum::extract::Request::from_parts(parts, body);
     let tables = handle.load().serve_tables.clone();
     tables
         .answer(req)
         .await
         .unwrap_or_else(|| err_json(&AdminError::not_found("resource")))
+}
+
+/// The most body bytes a plane admin request may carry.
+const PLANE_ADMIN_BODY_MAX: usize = 1 << 20;
+
+/// The answer of the MIN-3 plane instance whose admin route the request names (see `port_admin`).
+async fn port_admin_response(
+    parts: axum::http::request::Parts,
+    body: axum::body::Body,
+) -> Response {
+    let Ok(body) = axum::body::to_bytes(body, PLANE_ADMIN_BODY_MAX).await else {
+        return err_json(&AdminError::Validation(
+            "the request body is over the plane admin limit".to_owned(),
+        ));
+    };
+    static REQUEST_IDS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let request = port_admin::AdminRequest {
+        method: parts.method.as_str().to_owned(),
+        path: parts.uri.path().to_owned(),
+        query: parts.uri.query().unwrap_or_default().to_owned(),
+        headers: parts
+            .headers
+            .iter()
+            .map(|(name, value)| (name.as_str().to_owned(), value.as_bytes().to_vec()))
+            .collect(),
+        body: body.to_vec(),
+        request_id: REQUEST_IDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+        now_s: busbar_kernel::store::now(),
+    };
+    let Some((status, fields, body)) = port_admin::answer(request).await else {
+        return err_json(&AdminError::not_found("resource"));
+    };
+    let mut response = Response::new(axum::body::Body::from(body));
+    *response.status_mut() = StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY);
+    for (name, value) in fields {
+        if let (Ok(name), Ok(value)) = (
+            axum::http::HeaderName::from_bytes(&name),
+            axum::http::HeaderValue::from_bytes(&value),
+        ) {
+            response.headers_mut().append(name, value);
+        }
+    }
+    response
 }
 
 pub(crate) fn unconfigured_plane(
@@ -614,7 +667,10 @@ fn with_config_etag(mut resp: Response, version: u64) -> Response {
 }
 
 mod config_document;
+mod config_tree;
+pub(crate) mod kinds;
 mod plane_input_schemas;
+mod views;
 pub use plane_input_schemas::install_plane_input_schemas;
 #[cfg(feature = "openapi-schema")]
 mod config_forms;
@@ -625,10 +681,10 @@ mod generation;
 mod hook_attachments;
 pub(crate) use hook_attachments::attachments_of;
 mod handlers;
+pub(crate) mod metrics;
 #[cfg(feature = "openapi-schema")]
 mod replay_metadata;
 mod settings_edit;
-pub(super) mod telemetry;
 mod whoami;
 pub(crate) use handlers::*;
 pub(crate) use whoami::who_of as whoami_of;
@@ -665,3 +721,7 @@ pub use handlers::credential_flush_response_for_test;
 #[cfg(test)]
 #[path = "tests/admin_grant_tests.rs"]
 mod admin_grant_tests;
+
+#[cfg(test)]
+#[path = "tests/audit_feed_tests.rs"]
+mod audit_feed_tests;

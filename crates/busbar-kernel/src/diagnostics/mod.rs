@@ -926,6 +926,24 @@ diagnostics! {
         "`POST /api/v1/admin/plane-record-write` named a record kind the kernel keeps its own records under (`audit`, `usage_residual`, `demotion`, `trust_decision` or `ticket`). A plane may declare one of these (plane-mcp declares `demotion`), but the rows under it are the kernel's own, for example its durable demotion record of a quarantined upstream, and no write made in a plane's name may alter them. busbar answers `403 forbidden` naming the kind, writes nothing, and seals the refusal on the administrative audit ring as `rejected`.",
         "Do not write kernel records through the plane record verb. To lift a quarantine, approve the counterparty with `POST /api/v1/admin/trust/approve`, which clears its durable demotion. Write a plane's own records under a kind that is not the kernel's.";
 
+    /// A plane's JUDGE intent ran with no destination judge installed: core answers `DEST_INTERNAL` (fail closed).
+    PLANE_JUDGE_UNAVAILABLE = 7108, Plane, Actionable, "plane-judge-unavailable", "1.6.0", false,
+        "A plane's destination judge is not installed (every JUDGE answers internal)",
+        "A plane asked core to judge a destination (the JUDGE intent) and the process has no destination judge installed, so core answered `DEST_INTERNAL` (fail closed) for it, and every later JUDGE answers the same until a judge is installed. The plane never learns an address, and a plane that dials nothing is unaffected. busbar logs this once per process.",
+        "Install the destination judge the process builds at boot (the egress guard that backs `dest.judge`), then restart. Until then a plane that depends on JUDGE refuses the destinations it would have judged.";
+
+    /// A plane reported USAGE for a class its Statement never declared; core drops it and audits `plane_usage_undeclared`.
+    PLANE_USAGE_UNDECLARED = 7110, Plane, Actionable, "plane-usage-undeclared", "1.6.0", false,
+        "A plane reported usage for a class it never declared (the usage is dropped)",
+        "A plane instance reported USAGE (or an expected or observed count) under a billable class its Statement does not declare (`D_USAGE_CLASS`). busbar drops the count: nothing is checkpointed or billed for it, and the unit's other classes are unaffected. Each drop is audited as `plane_usage_undeclared` (verdict `degraded`) under the request's principal, naming the unit and the class.",
+        "Fix the plane to report only classes it declares, or declare the class in the plane's Statement and rebuild it. Until then the dropped usage is not billed.";
+
+    /// A plane reported USAGE with more than six decimal places; core rounds it half-even to micro-units and audits `plane_usage_rounded`.
+    PLANE_USAGE_ROUNDED = 7111, Plane, BenignRecurring, "plane-usage-rounded", "1.6.0", false,
+        "A plane reported usage with a scale past micro-units (the quantity is rounded)",
+        "A plane instance reported USAGE with a scale above 6. The ledger counts in micro-units, so busbar rounded the quantity half-even to six decimal places before checkpointing or billing it. Each rounding is audited as `plane_usage_rounded` (verdict `degraded`) under the request's principal, naming the unit and the class.",
+        "None needed for a plane that reports at most nine decimal places and tolerates micro-unit rounding. If the rounding matters, have the plane report in a coarser unit so the quantity fits six decimal places.";
+
     TRUST_VERIFY_REFUSED_ON_DRIFT = 7097, Plane, BenignRecurring, "trust-verify-refused-on-drift", "1.6.0", true,
         "Verify-on-call refused a call because the upstream's advertised surface drifted — RETIRED",
         "RETIRED. Nothing emits this code: the verify-on-call gate that refused a drifted call is deleted (Q128 p8#3); a registration whose upstream drifted is demoted by the trust book.",
@@ -1145,6 +1163,19 @@ diagnostics! {
         "Plugin-supplied text exceeded its cap and was cut",
         "A plugin or hook sent text longer than its documented cap: a hook reject message, a metric help, label, unit or label value, or a plugin diagnostic message or field. busbar kept the first `cap` sanitised characters exactly as 1.5.5 did, with nothing appended (for a reject whose kept text is all whitespace, clients see the default reject message instead). This warning fires once per plugin and field for the life of the process; `busbar_plugin_text_cut_total{plugin,field}` counts over-cap values received in plugin and hook replies (counted at parse, including values in metrics later refused).",
         "Shorten the named plugin's text for the named field to within the cap; the log gives the cap and the text's length after sanitising (control and format characters removed).";
+
+    /// A plugin's D_ERRORS declaration is malformed: the plugin is admitted, its error codes are dropped (PLUGIN-ERROR-CODES §2.4). WARN once at admission, beside one `plugin.error_codes_refused` audit row.
+    PLUGIN_ERROR_CODES_REFUSED = 6018, Plugins, Actionable, "plugin-error-codes-refused", "1.6.0", false,
+        "A plugin's error-number declaration was refused; it runs without error codes",
+        "The plugin declared its error numbers (D_ERRORS) in a form core does not accept: more than one declaration, an empty, odd or over-long body, a number 0 or above 9999, numbers out of ascending order (or repeated), or a plugin name that cannot form a code. The plugin was admitted and serves; its failures and log lines carry their text with no `BUSBAR-<plugin>-NNNN` code. `have` names the fault (counts, numbers and byte positions only) and `want` the accepted form. The image's admission record carries the same fault.",
+        "Report the plugin to its author: its declared numbers must be 1..=256 numbers, each 1..=9999, strictly ascending, under a name matching ^[a-z][a-z0-9-]{0,63}$ that does not end in '-'. Nothing to change in the configuration.";
+
+    /// A plugin reported an error number it did not declare in D_ERRORS (PLUGIN-ERROR-CODES §2.5). WARN once per instance slot; the text is kept without a code; no audit row.
+    PLUGIN_ERROR_NUMBER_UNDECLARED = 6019, Plugins, Actionable, "plugin-error-number-undeclared", "1.6.0", false,
+        "A plugin reported an error number it did not declare",
+        "A plugin failed a call or wrote a log line with an error number that is not in its D_ERRORS declaration (or declared none), or above 9999. Core kept the plugin's text and wrote no `BUSBAR-<plugin>-NNNN` code for it. This warning fires once per instance; the instance keeps serving.",
+        "Report the plugin to its author with the logged `number`: the plugin's docs/diagnostics.json and its declared numbers disagree (its C-ERRORS conformance case catches this in its own CI).";
+
 
     /// A group `/usage` read could not derive a bucket's usage from the governance store. Read-path fault.
     GROUP_USAGE_READ_FAILED = 8018, Governance, Actionable, "group-usage-read-failed", "1.6.0", false,
@@ -1858,6 +1889,12 @@ diagnostics! {
         "Governed admission paused (draining, or finished requests await settlement)",
         "New governed requests are refused with a 503: either the gateway is shutting down (cause=drain, reason drain, retry on another instance) or the number of finished governed requests whose spend still awaits settlement in the store reached its cap (cause=custody_full, reason durability_unavailable, Retry-After 1). Running requests and streams are never refused, and every refusal is audited on its unit. Logged once per episode; an Info line follows when the backlog falls below 90% of the cap.",
         "For custody_full, check the store's latency and throughput: settlement is slower than governed arrival. For drain, route traffic to another instance until this one restarts.";
+
+    /// The store refused a whole unit checkpoint batch; the rest of that flush uses smaller batches.
+    UNIT_FLUSH_BATCH_REDUCED = 8031, Governance, Actionable, "unit-flush-batch-reduced", "1.6.0", false,
+        "A unit checkpoint flush batch was refused whole; smaller batches were used",
+        "The settlement flusher writes finished and running governed units to the store in batches, one write per batch. The store refused a whole batch with no effect (for example a candidate above its size limit) while this writer still held its authority, so the flusher halved the batch size for the rest of that batch of up to 128 items and retried each half. Nothing is lost or written twice. The b field is the batch size it ended with. Logged at most once per batch.",
+        "None if it is rare. If it repeats on every flush, the store's per-write limit is below the flusher's batch of 128 items: raise the store's candidate size limit, or expect settlement to take more round trips.";
 
     /// A writer that never retired was closed, but its shutdown.drain_incomplete record could not be queued.
     SHUTDOWN_DRAIN_INCOMPLETE_UNRECORDED = 9021, Boot, Actionable, "shutdown-drain-incomplete-unrecorded", "1.6.0", false,

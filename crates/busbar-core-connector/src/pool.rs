@@ -663,7 +663,7 @@ impl Pools {
                     break Take::Lent(line);
                 }
                 let Some(claimed) = claimed else {
-                    break self.miss(&mut *map, shard, key, claim && candidate, vacant);
+                    break self.miss(&mut map, shard, key, claim && candidate, vacant);
                 };
                 claimed
             };

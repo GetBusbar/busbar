@@ -10,7 +10,7 @@ use busbar_kernel_egress::ports::DestinationId;
 use foldhash::HashMap;
 use tokio::sync::Semaphore;
 
-use crate::root::egress_ports::{LabelBound, MemberPermits, WalkTelemetry};
+use crate::root::egress_ports::{LabelBound, MemberPermits, Wait, WalkTelemetry};
 
 impl MemberPermits {
     /// The members' permits, built once per configured walk.
@@ -63,5 +63,19 @@ impl WalkTelemetry {
             depths: Mutex::new(HashMap::default()),
             bound: LabelBound::default(),
         }
+    }
+}
+
+impl MemberPermits {
+    /// A wait-for-any's pending acquisitions: one per limited destination, in the given order,
+    /// built when the walk has to queue (every named member is at capacity).
+    pub(crate) fn waits(&self, destinations: &[DestinationId]) -> Vec<(DestinationId, Wait)> {
+        let mut waits = Vec::with_capacity(destinations.len());
+        for d in destinations {
+            if let Some(slots) = self.limits.get(d) {
+                waits.push((*d, Box::pin(Arc::clone(slots).acquire_owned()) as Wait));
+            }
+        }
+        waits
     }
 }

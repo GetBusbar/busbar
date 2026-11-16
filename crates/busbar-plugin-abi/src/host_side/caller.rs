@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The host-side caller identity, instance limits and the transport-security verdict (IF §10.3, §48). W0-ABI stub: frozen signatures, `todo!()` bodies; W1-H1 fills it (`transport_verdict` is filled, S3-STORE-TLS).
+//! The host-side caller identity, instance limits and the transport-security verdict (IF §10.3, §48; W1-H1).
 
+use core::cell::Cell;
+use core::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 use crate::types::KindCode;
@@ -17,14 +19,18 @@ pub struct CallStack {
     pub depth: u8,
 }
 impl CallStack {
+    /// Whether `instance` is on the stack. Only the first `depth` ids count (a `depth` past 4 reads as 4).
     pub fn contains(&self, instance: u64) -> bool {
-        let _ = instance;
-        todo!()
+        let depth = usize::from(self.depth).min(self.ids.len());
+        self.ids.iter().take(depth).any(|&id| id == instance)
     }
     /// None when depth is already 4 (custody then refuses: CustodyDenied::Cycle).
     pub fn push(self, instance: u64) -> Option<CallStack> {
-        let _ = instance;
-        todo!()
+        let mut next = self;
+        let slot = next.ids.get_mut(usize::from(self.depth))?;
+        *slot = instance;
+        next.depth = self.depth.checked_add(1)?;
+        Some(next)
     }
 }
 
@@ -84,7 +90,26 @@ pub struct Caller<'a> {
 /// C-RMW counts it once per thread, never per chain. Ordinals overflow only after 2^32 thread births plus
 /// counter wraps, which no process reaches; debug builds assert it.
 pub fn next_chain() -> u64 {
-    todo!()
+    let mut ord = ORDINAL.get();
+    let mut n = COUNTER.get();
+    if ord == 0 || n == u32::MAX {
+        ord = ORDINALS.fetch_add(1, Ordering::Relaxed);
+        debug_assert!(ord < 1 << 32, "chain-id thread ordinals exhausted");
+        ORDINAL.set(ord);
+        n = 0;
+    }
+    COUNTER.set(n + 1);
+    (ord << 32) | u64::from(n)
+}
+
+/// The next thread ordinal; starts at 1 and is never decremented, so no chain id is 0 or reused.
+static ORDINALS: AtomicU64 = AtomicU64::new(1);
+
+std::thread_local! {
+    /// This thread's ordinal (0 = none taken yet).
+    static ORDINAL: Cell<u64> = const { Cell::new(0) };
+    /// The low 32 bits of this thread's next chain id.
+    static COUNTER: Cell<u32> = const { Cell::new(0) };
 }
 
 /// Round 8 (§12.22): core-owned per-instance limits, operator config `<kind>.<name>.limits` beside `module`.
@@ -308,5 +333,84 @@ mod tests {
             transport_verdict(VERIFIED_ONLY, TLS_NONE | egress, "h:1"),
             Verdict::Refuse
         );
+    }
+}
+
+#[cfg(test)]
+mod stack_tests {
+    use super::*;
+
+    #[test]
+    fn a_stack_holds_four_ids_and_refuses_a_fifth() {
+        let mut stack = CallStack::default();
+        assert!(
+            !stack.contains(0),
+            "an empty stack holds nothing, not even id 0"
+        );
+        for id in 1..=4 {
+            stack = stack.push(id).expect("room for four");
+            assert!(stack.contains(id));
+        }
+        assert_eq!(stack.depth, 4);
+        assert_eq!(stack.ids, [1, 2, 3, 4]);
+        assert!(stack.push(5).is_none(), "depth 4 is full");
+        assert!(!stack.contains(5));
+    }
+
+    #[test]
+    fn contains_reads_only_the_live_depth() {
+        let stack = CallStack {
+            ids: [7, 8, 9, 10],
+            depth: 2,
+        };
+        assert!(stack.contains(7) && stack.contains(8));
+        assert!(
+            !stack.contains(9) && !stack.contains(10),
+            "ids past depth are dead"
+        );
+        let corrupt = CallStack {
+            ids: [1, 2, 3, 4],
+            depth: 200,
+        };
+        assert!(corrupt.contains(4), "a depth past 4 reads as 4");
+        assert!(corrupt.push(5).is_none());
+    }
+
+    #[test]
+    fn chain_ids_are_never_zero_and_never_repeat_on_a_thread() {
+        let first = next_chain();
+        let second = next_chain();
+        assert_ne!(first, 0);
+        assert_ne!(first, second);
+        assert_eq!(first >> 32, second >> 32, "one ordinal per thread");
+        assert_eq!(second, first + 1);
+    }
+
+    #[test]
+    fn chain_ids_never_collide_across_threads() {
+        let ids: Vec<Vec<u64>> = (0..8)
+            .map(|_| std::thread::spawn(|| (0..1_000).map(|_| next_chain()).collect::<Vec<_>>()))
+            .map(|t| t.join().expect("thread"))
+            .collect();
+        let mut all: Vec<u64> = ids.into_iter().flatten().collect();
+        let n = all.len();
+        all.sort_unstable();
+        all.dedup();
+        assert_eq!(all.len(), n, "every chain id is unique");
+        assert!(
+            all.iter().all(|&id| id >> 32 != 0),
+            "every id carries a non-zero ordinal"
+        );
+    }
+
+    #[test]
+    fn a_wrapping_counter_takes_a_fresh_ordinal() {
+        let before = next_chain();
+        COUNTER.set(u32::MAX - 1);
+        let last = next_chain();
+        assert_eq!(last, ((before >> 32) << 32) | u64::from(u32::MAX - 1));
+        let wrapped = next_chain();
+        assert_ne!(wrapped >> 32, before >> 32, "a fresh ordinal");
+        assert_eq!(wrapped & 0xFFFF_FFFF, 0);
     }
 }

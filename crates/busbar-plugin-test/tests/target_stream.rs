@@ -185,18 +185,12 @@ fn a_failing_ready_image_is_refused_at_start() {
     unarmed.finish().expect("nothing was asked");
 }
 
-/// The facade's `[[example]]` binary `name`, built beside this test by `cargo test`.
+/// The facade's `[[bin]]` fixture `name`: cargo builds it beside this test and nextest archives it.
 fn example(name: &str) -> PathBuf {
-    let exe = std::env::current_exe().expect("the test binary");
-    let profile = exe
-        .parent()
-        .and_then(Path::parent)
-        .expect("target/<profile>/deps/<test>");
-    let path = profile
-        .join("examples")
-        .join(format!("{name}{}", std::env::consts::EXE_SUFFIX));
-    assert!(path.is_file(), "no example {}", path.display());
-    path
+    PathBuf::from(match name {
+        "framer_target" => env!("CARGO_BIN_EXE_framer_target"),
+        other => panic!("no fixture binary {other}"),
+    })
 }
 
 /// A fresh scratch directory for one test.

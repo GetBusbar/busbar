@@ -1853,7 +1853,11 @@ role_bindings:
     assert_eq!(ad["contractors"].allowed_pools, Some(vec![]));
     assert_eq!(ad["everyone"].allowed_pools, None, "omitted = ALL pools");
 
-    assert_eq!(auth.admin_auth, [crate::config::operator_provider()]);
+    assert_eq!(
+        auth.admin_auth,
+        crate::config::default_admin_auth_names(),
+        "an omitted admin_auth is the default admin chain"
+    );
 }
 
 #[test]
@@ -2205,7 +2209,7 @@ fn test_caller_in_hook_groups_scope() {
 fn test_resolve_projects_admin_auth_names() {
     install_normal_root_metadata();
     let cfg = resolve(&base_deploy(), &HashMap::new()).expect("resolve");
-    assert_eq!(cfg.admin_auth, [crate::config::operator_provider()]);
+    assert_eq!(cfg.admin_auth, [crate::config::operator_provider(), "keys"]);
 
     let mut deploy = base_deploy();
     let op = crate::config::operator_provider();
@@ -2232,7 +2236,7 @@ fn test_resolve_projects_admin_auth_names() {
     let mut deploy = base_deploy();
     deploy.auth = Some(busbar_contract::yaml::from_str("chain: [keys]\n").expect("auth parses"));
     let cfg = resolve(&deploy, &HashMap::new()).expect("resolve");
-    assert_eq!(cfg.admin_auth, [crate::config::operator_provider()]);
+    assert_eq!(cfg.admin_auth, [crate::config::operator_provider(), "keys"]);
 }
 
 #[test]
@@ -2739,8 +2743,8 @@ fn core_sections_parse_directly_and_are_named_in_unknown_field_errors() {
          `admin_listen`, `config`, `providers_file`, `oauth_as`, `credentials`, `admin_tls`, \
          `admin_require_mtls`, `auth`, `identity-providers`, `providers`, `models`, `pools`, \
          `hooks`, `groups`, `rate_card`, `plugin_rate_cards`, `per_request_fee`, `store`, \
-         `secrets`, `advanced`, `export`, `plugins`, `security`, `limits`, `health`, `routing` at \
-         line 3 column 1"
+         `secrets`, `advanced`, `export`, `plugins`, `security`, `limits`, `health`, `routing`, \
+         `telemetry` at line 3 column 1"
     );
     for field in ["oauth_as", "credentials"] {
         let duplicate =

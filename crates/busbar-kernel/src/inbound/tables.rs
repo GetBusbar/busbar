@@ -98,11 +98,14 @@ impl<K: Copy + PartialEq, V> ByFraming<K, V> {
     }
 }
 
+/// One framing's units, keyed by `(owner, stream)`.
+type StreamUnits = HashMap<(u64, u64), SmallVec<[u64; 1]>>;
+
 /// The live units by id, and by the `(owner, stream)` of the framing each belongs to.
 #[derive(Default)]
 pub(super) struct Units {
     by_id: HashMap<u64, UnitState>,
-    by_stream: HashMap<u64, HashMap<(u64, u64), SmallVec<[u64; 1]>>>,
+    by_stream: HashMap<u64, StreamUnits>,
 }
 
 impl Units {
@@ -120,6 +123,7 @@ impl Units {
         self.by_id.contains_key(id)
     }
 
+    #[cfg(test)]
     pub(super) fn len(&self) -> usize {
         self.by_id.len()
     }

@@ -1,0 +1,15 @@
+[package]
+# core's linked-table generator as a library, for build scripts that must not carry the generator's source in
+# an `include!` of their own (testing/oracle/build.rs). The source stays in crates/busbar/src/linked_gen.rs,
+# shared verbatim with crates/busbar/build.rs and its generator test; this crate only mounts it. Excluded from
+# the root workspace (a build-dependency of the oracle's own workspace; it builds nothing in the root).
+name = "busbar-linked-gen"
+version = "1.6.0"
+publish = false
+edition = "2021"
+rust-version = "1.97"
+description = "busbar's linked-table generator (crates/busbar/src/linked_gen.rs) as a build-dependency library."
+license = "Apache-2.0"
+
+[lib]
+path = "src/lib.rs"

@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use crate::audit::journal::NeutralBody;
 use crate::audit::stream_registry::{self, Decode, StreamRecord};
 use crate::audit::{verify_chain, ChainBreak, Framing};
-use crate::audit_ring::{AuditEntry, MAX_AUDIT_ENTRIES};
+use crate::audit_ring::{AuditData, AuditEntry, MAX_AUDIT_ENTRIES};
 use crate::host_records_async::{AsyncHistory, HistoryCollection, HistoryMode, HistoryOutcome};
 use crate::persistence::facade::CoreStore;
 use crate::store::plane_view::{encode, KIND_AUDIT};
@@ -81,6 +81,253 @@ pub(crate) fn audit_suffix_safe(
     push_lp(&mut out, principal.as_bytes());
     out
 }
+
+/// Everything an audit row says besides its position in the chain (ADMIN-API-1.6 section 7.2).
+/// The five legacy fields come first; the rest are the scheme 3 fields.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AuditRowInput {
+    pub action: String,
+    pub resource: String,
+    pub outcome: String,
+    pub principal: String,
+    pub config_generation: Option<String>,
+    pub sections_changed: Vec<String>,
+    pub request_id: Option<String>,
+    pub idempotency_key: Option<String>,
+    pub kind: Option<String>,
+    pub instance: Option<String>,
+    /// `info`, `warning` or `error`; empty is `info`.
+    pub severity: String,
+    pub message: String,
+    pub data: AuditData,
+}
+
+/// The first byte of a scheme 3 suffix. Scheme 1 starts with `|` and scheme 2 with 0x00.
+const ROW_SUFFIX_MARKER: u8 = 0x03;
+
+fn push_opt(out: &mut Vec<u8>, value: Option<&str>) {
+    match value {
+        None => push_lp(out, &[0]),
+        Some(text) => {
+            let mut field = Vec::with_capacity(text.len() + 1);
+            field.push(1);
+            field.extend_from_slice(text.as_bytes());
+            push_lp(out, &field);
+        }
+    }
+}
+
+/// The bytes scheme 3 seals for one row (the recipe is on `AuditEntry::hash`).
+pub(crate) fn row_suffix(ts: u64, row: &AuditRowInput) -> Vec<u8> {
+    let mut out = vec![ROW_SUFFIX_MARKER];
+    push_lp(&mut out, &ts.to_be_bytes());
+    push_lp(&mut out, row.action.as_bytes());
+    push_lp(&mut out, row.resource.as_bytes());
+    push_lp(&mut out, row.outcome.as_bytes());
+    push_lp(&mut out, row.principal.as_bytes());
+    push_opt(&mut out, row.config_generation.as_deref());
+    push_opt(&mut out, row.request_id.as_deref());
+    push_opt(&mut out, row.idempotency_key.as_deref());
+    push_opt(&mut out, row.kind.as_deref());
+    push_opt(&mut out, row.instance.as_deref());
+    out.extend_from_slice(&(row.sections_changed.len() as u64).to_be_bytes());
+    for section in &row.sections_changed {
+        push_lp(&mut out, section.as_bytes());
+    }
+    let severity = if row.severity.is_empty() {
+        crate::audit_ring::SEVERITIES[0]
+    } else {
+        row.severity.as_str()
+    };
+    push_lp(&mut out, severity.as_bytes());
+    push_lp(&mut out, row.message.as_bytes());
+    push_lp(&mut out, row.data.as_str().as_bytes());
+    out
+}
+
+/// A sealed suffix read back: its `ts`, the scheme it was sealed under and the row.
+pub(crate) struct ParsedSuffix {
+    pub(crate) ts: u64,
+    pub(crate) scheme: u8,
+    pub(crate) row: AuditRowInput,
+}
+
+fn lossy(bytes: Vec<u8>) -> String {
+    String::from_utf8(bytes).unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned())
+}
+
+fn take_opt(rest: &mut &[u8]) -> Option<String> {
+    let field = take_lp(rest);
+    match field.split_first() {
+        Some((1, text)) => Some(String::from_utf8_lossy(text).into_owned()),
+        _ => None,
+    }
+}
+
+fn ts_of(bytes: &[u8]) -> u64 {
+    let mut buf = [0u8; 8];
+    let n = bytes.len().min(8);
+    buf[..n].copy_from_slice(&bytes[..n]);
+    u64::from_be_bytes(buf)
+}
+
+/// Read a sealed suffix of any scheme. A scheme 1 or 2 suffix reads with the row defaults
+/// (severity `info`, no `data`); a damaged scheme 3 suffix reads as far as it goes and never panics.
+pub(crate) fn parse_suffix_entry(content: &[u8]) -> ParsedSuffix {
+    let Some(mut rest) = content.strip_prefix(&[ROW_SUFFIX_MARKER]) else {
+        let (ts, action, resource, outcome, principal, scheme) = parse_audit_suffix(content);
+        return ParsedSuffix {
+            ts,
+            scheme,
+            row: AuditRowInput {
+                action,
+                resource,
+                outcome,
+                principal,
+                severity: crate::audit_ring::SEVERITIES[0].to_string(),
+                ..Default::default()
+            },
+        };
+    };
+    let ts = ts_of(&take_lp(&mut rest));
+    let action = lossy(take_lp(&mut rest));
+    let resource = lossy(take_lp(&mut rest));
+    let outcome = lossy(take_lp(&mut rest));
+    let principal = lossy(take_lp(&mut rest));
+    let config_generation = take_opt(&mut rest);
+    let request_id = take_opt(&mut rest);
+    let idempotency_key = take_opt(&mut rest);
+    let kind = take_opt(&mut rest);
+    let instance = take_opt(&mut rest);
+    let count = match rest.split_first_chunk::<8>() {
+        Some((count, after)) => {
+            rest = after;
+            u64::from_be_bytes(*count)
+        }
+        None => {
+            rest = &[];
+            0
+        }
+    };
+    let mut sections_changed = Vec::new();
+    for _ in 0..count {
+        if rest.is_empty() {
+            break;
+        }
+        sections_changed.push(lossy(take_lp(&mut rest)));
+    }
+    let severity = lossy(take_lp(&mut rest));
+    let message = lossy(take_lp(&mut rest));
+    let data = AuditData::from_json(&lossy(take_lp(&mut rest))).unwrap_or_default();
+    ParsedSuffix {
+        ts,
+        scheme: crate::audit_ring::AUDIT_SCHEME_ROW,
+        row: AuditRowInput {
+            action,
+            resource,
+            outcome,
+            principal,
+            config_generation,
+            sections_changed,
+            request_id,
+            idempotency_key,
+            kind,
+            instance,
+            severity,
+            message,
+            data,
+        },
+    }
+}
+
+/// The entry for a sealed suffix at its chain position.
+fn entry_of(
+    seq: u64,
+    prev_hash: String,
+    hash: String,
+    parsed: ParsedSuffix,
+    recorded_here: bool,
+) -> AuditEntry {
+    let ParsedSuffix { ts, scheme, row } = parsed;
+    AuditEntry {
+        seq,
+        ts,
+        action: row.action,
+        resource: row.resource,
+        outcome: row.outcome,
+        principal: row.principal,
+        prev_hash,
+        hash,
+        scheme,
+        config_generation: row.config_generation,
+        sections_changed: row.sections_changed,
+        request_id: row.request_id,
+        idempotency_key: row.idempotency_key,
+        kind: row.kind,
+        instance: row.instance,
+        severity: row.severity,
+        message: row.message,
+        data: row.data,
+        recorded_here,
+    }
+}
+
+/// Every action the engine writes to the admin audit (ADMIN-API-1.6 section 7.2). The set is closed:
+/// `action=` matches these names and their nouns, and `components.x-busbar-audit-actions` publishes
+/// it. Sorted by byte order. `keyset.rotated`, `plugin.health`, `plugin.reloaded`, `store.connected`
+/// and `store.disconnected` are the engine events section 17 writes; they are published ahead of
+/// their emitters.
+pub const AUDIT_ACTIONS: &[&str] = &[
+    "admin.forbidden",
+    "admin.rate_limited",
+    "admin.restart",
+    "auth.admin_chain_put",
+    "auth.cache_flush",
+    "auth.operator.accepted",
+    "auth.operator.inert",
+    "auth.operator.refused",
+    "config.apply",
+    "config.document",
+    "config.egress_proxy",
+    "config.reload",
+    "config.rollback",
+    "config.settings",
+    "credential.at_rest.open",
+    "credential.at_rest.rewrap",
+    "diagnostic.raised",
+    "group.create",
+    "group.delete",
+    "group.patch",
+    "group.provision",
+    "group.replace",
+    "hook.delete",
+    "hook.register",
+    "hook.replace",
+    "hook.settings",
+    "key.create",
+    "key.delete",
+    "key.patch",
+    "key.revoke",
+    "key.rotate",
+    "keyset.rotated",
+    "node.boot",
+    "node.drain",
+    "overlay.reset",
+    "plugin.health",
+    "plugin.install",
+    "plugin.need",
+    "plugin.op",
+    "plugin.open",
+    "plugin.refusals",
+    "plugin.reload",
+    "plugin.reloaded",
+    "plugin.remove",
+    "plugin.rollback",
+    "plugin.trust",
+    "signing_key.report",
+    "store.connected",
+    "store.disconnected",
+];
 
 pub(crate) fn admin_suffix(
     ts: u64,
@@ -189,19 +436,13 @@ fn reframe_audit(scope: &str, body: &[u8]) -> RecordStoreResult<StreamRecord> {
 
 pub(crate) fn audit_entry_from_body(_scope: &str, body: &[u8]) -> RecordStoreResult<AuditEntry> {
     let nb = decode_audit_body(body)?;
-    let (ts, action, resource, outcome, principal, scheme) = parse_audit_suffix(&nb.content);
-    Ok(AuditEntry {
-        seq: nb.seq,
-        ts,
-        action,
-        resource,
-        outcome,
-        principal,
-        prev_hash: nb.prev_hash,
-        hash: nb.hash,
-        scheme,
-        recorded_here: false,
-    })
+    Ok(entry_of(
+        nb.seq,
+        nb.prev_hash,
+        nb.hash,
+        parse_suffix_entry(&nb.content),
+        false,
+    ))
 }
 
 /// What a boot restore actually found. Every number is reported rather than summed: they mean
@@ -245,6 +486,7 @@ pub struct PlaneAuditLog {
 }
 
 /// One keyset read of the live ring (`GET /audit`): rows strictly after `after` in `seq` order.
+#[derive(Default)]
 pub struct AuditQuery<'a> {
     /// Resume strictly after this `seq` (ascending: greater; descending: smaller). `None` starts at
     /// the oldest (ascending) or newest (descending) retained row.
@@ -254,11 +496,17 @@ pub struct AuditQuery<'a> {
     /// Each entry is an exact `noun.verb` or a bare `noun` that matches every `noun.*`. Empty admits all.
     pub actions: &'a [&'a str],
     pub resource: Option<&'a str>,
+    /// `info`, `warning` or `error`: exact.
+    pub severity: Option<&'a str>,
+    /// The engine kind of the instance a row is about: exact.
+    pub kind: Option<&'a str>,
+    /// The instance a row is about: exact.
+    pub instance: Option<&'a str>,
 }
 
 /// Whether `action` is admitted by an `action=` filter: an entry with a dot is an exact action name,
 /// a dot-free entry is a noun and admits its whole family.
-pub fn action_admitted(filter: &[&str], action: &str) -> bool {
+pub(crate) fn action_admitted(filter: &[&str], action: &str) -> bool {
     filter.is_empty()
         || filter.iter().any(|f| {
             if f.contains('.') {
@@ -267,6 +515,17 @@ pub fn action_admitted(filter: &[&str], action: &str) -> bool {
                 action.split('.').next() == Some(*f)
             }
         })
+}
+
+/// Whether `query`'s action, resource, severity, kind and instance filters admit `entry`.
+fn query_admits(query: &AuditQuery<'_>, entry: &AuditEntry) -> bool {
+    action_admitted(query.actions, &entry.action)
+        && query.resource.is_none_or(|r| entry.resource == r)
+        && query.severity.is_none_or(|s| entry.severity == s)
+        && query.kind.is_none_or(|k| entry.kind.as_deref() == Some(k))
+        && query
+            .instance
+            .is_none_or(|i| entry.instance.as_deref() == Some(i))
 }
 
 pub static AUDIT_LOG: std::sync::LazyLock<PlaneAuditLog> =
@@ -394,10 +653,7 @@ impl PlaneAuditLog {
                 return Err(oldest - 1);
             }
         }
-        let admitted = |e: &&AuditEntry| {
-            action_admitted(query.actions, &e.action)
-                && query.resource.is_none_or(|r| e.resource == r)
-        };
+        let admitted = |e: &&AuditEntry| query_admits(query, e);
         let mut items: Vec<AuditEntry> = if query.descending {
             q.iter()
                 .rev()
@@ -433,6 +689,60 @@ impl PlaneAuditLog {
             // An ascending read that reached the tail is caught up; a descending list is a
             // finite inventory and proves nothing about coverage.
             complete: !query.descending && !has_more,
+            truncated: has_more,
+            items,
+        })
+    }
+
+    /// `list_after`, but an ascending read is answered from the Store when this node has one: the
+    /// admin chain is one deployment-wide log, so a row another node appended, or one older than the
+    /// ring's 1000 rows or than this process, is served too. Falls back to the ring when no Store
+    /// is attached or it cannot be read.
+    pub async fn list_after_store(
+        &self,
+        query: &AuditQuery<'_>,
+    ) -> Result<crate::audit_ring::AuditPage, u64> {
+        if query.descending {
+            return self.list_after(query);
+        }
+        let Some(native) = native_owner(self.kind_id).filter(|n| n.ready.load(Ordering::Acquire))
+        else {
+            return self.list_after(query);
+        };
+        let Ok(records) = native.history.list(KIND_AUDIT, &PlaneSelector::All).await else {
+            return self.list_after(query);
+        };
+        let mut rows: Vec<AuditEntry> = records
+            .iter()
+            .filter(|record| record.kind == KIND_AUDIT)
+            .filter_map(|record| audit_entry_from_body(&record.id, &record.body).ok())
+            .collect();
+        rows.sort_by_key(|entry| entry.seq);
+        rows.dedup_by_key(|entry| entry.seq);
+        let retained_from = rows.first().map(|entry| entry.seq);
+        let retained_to = rows.last().map(|entry| entry.seq);
+        if let (Some(after), Some(oldest)) = (query.after, retained_from) {
+            if after.saturating_add(1) < oldest {
+                return Err(oldest - 1);
+            }
+        }
+        let limit = query.limit.clamp(1, MAX_AUDIT_ENTRIES);
+        let mut items: Vec<AuditEntry> = rows
+            .into_iter()
+            .filter(|entry| query.after.is_none_or(|after| entry.seq > after))
+            .filter(|entry| query_admits(query, entry))
+            .take(limit + 1)
+            .collect();
+        let has_more = items.len() > limit;
+        items.truncate(limit);
+        Ok(crate::audit_ring::AuditPage {
+            returned_from: items.first().map(|e| e.seq.to_string()),
+            returned_to: items.last().map(|e| e.seq.to_string()),
+            retained_from: retained_from.map(|seq| seq.to_string()),
+            retained_to: retained_to.map(|seq| seq.to_string()),
+            retention_limit: MAX_AUDIT_ENTRIES.to_string(),
+            semantics: "keyset".into(),
+            complete: !has_more,
             truncated: has_more,
             items,
         })
@@ -478,6 +788,7 @@ const MAX_PENDING_AUDIT: usize = 256;
 #[derive(Default)]
 pub struct AuditRequest {
     confirmations: Mutex<Vec<Arc<AtomicBool>>>,
+    context: Mutex<RequestAudit>,
     failed: AtomicBool,
 }
 
@@ -507,6 +818,77 @@ pub fn scope_request_sync<T>(request: Option<Arc<AuditRequest>>, work: impl FnOn
         Some(request) => AUDIT_REQUEST.sync_scope(request, work),
         None => work(),
     }
+}
+
+/// What one admin request tells the rows it causes (ADMIN-API-1.6 section 7.2).
+#[derive(Default)]
+struct RequestAudit {
+    idempotency_key: Option<String>,
+    /// Reads the config generation the request's change published; called when an applied row is
+    /// written, after the change committed.
+    generation: Option<Arc<dyn Fn() -> u64 + Send + Sync>>,
+    sections: Vec<String>,
+}
+
+fn with_context(set: impl FnOnce(&mut RequestAudit)) {
+    if let Some(request) = current_request() {
+        set(&mut request.context.lock().unwrap_or_else(|e| e.into_inner()));
+    }
+}
+
+/// The `Idempotency-Key` of the request in flight; its rows carry it.
+pub fn note_idempotency_key(key: &str) {
+    with_context(|ctx| ctx.idempotency_key = Some(key.to_string()));
+}
+
+/// Where the request in flight reads the config generation its change published. Set only for a
+/// config-changing request: its applied rows then carry `config_generation`.
+pub fn note_generation_source(source: Arc<dyn Fn() -> u64 + Send + Sync>) {
+    with_context(|ctx| ctx.generation = Some(source));
+}
+
+/// The config sections the request in flight changed; its applied rows carry them.
+pub fn note_sections_changed(sections: Vec<String>) {
+    with_context(|ctx| ctx.sections = sections);
+}
+
+/// Fill what `row` leaves unset from the request in flight: its id, its `Idempotency-Key`, and, on an
+/// applied row only (a rejected one changed nothing), the generation and sections it changed.
+pub(crate) fn stamp_request_context(row: &mut AuditRowInput) {
+    if row.request_id.is_none() {
+        row.request_id = crate::admin::gate::request_id_in_scope();
+    }
+    let Some(request) = current_request() else {
+        return;
+    };
+    let (key, generation, sections) = {
+        let ctx = request.context.lock().unwrap_or_else(|e| e.into_inner());
+        (
+            ctx.idempotency_key.clone(),
+            ctx.generation.clone(),
+            ctx.sections.clone(),
+        )
+    };
+    if row.idempotency_key.is_none() {
+        row.idempotency_key = key;
+    }
+    if row.outcome == busbar_contract::vocab::OUTCOME_APPLIED {
+        if row.config_generation.is_none() {
+            row.config_generation = generation.map(|read| read().to_string());
+        }
+        if row.sections_changed.is_empty() {
+            row.sections_changed = sections;
+        }
+    }
+}
+
+/// Write one row under hash scheme 3, stamped with the request in flight.
+pub fn emit_row_now(mut row: AuditRowInput) {
+    stamp_request_context(&mut row);
+    let suffix = row_suffix(busbar_kernel::store::now(), &row);
+    drain_pending_audit();
+    enqueue_pending_audit(ADMIN_LOG, suffix, EventOrigin::Mutation);
+    drain_pending_audit();
 }
 
 fn request_failed() {
@@ -994,6 +1376,9 @@ pub enum PluginRefusal {
     /// Another op of the instance answered with a diagnostic its Statement declares, at error: a
     /// refusal it met while serving (an IdP destination it refused, say).
     Op,
+    /// The image's D_ERRORS declaration was malformed (PLUGIN-ERROR-CODES §2.4): it loaded without error codes,
+    /// flagged.
+    ErrorCodes,
 }
 
 impl PluginRefusal {
@@ -1004,6 +1389,7 @@ impl PluginRefusal {
             Self::Need => "plugin.need",
             Self::Open => "plugin.open",
             Self::Op => "plugin.op",
+            Self::ErrorCodes => "plugin.error_codes_refused",
         }
     }
 
@@ -1011,9 +1397,43 @@ impl PluginRefusal {
     pub const fn outcome(self) -> &'static str {
         match self {
             Self::Trust | Self::Need | Self::Op => busbar_contract::vocab::OUTCOME_REJECTED,
-            Self::Open | Self::Unverified => busbar_contract::vocab::OUTCOME_DEGRADED,
+            Self::Open | Self::Unverified | Self::ErrorCodes => {
+                busbar_contract::vocab::OUTCOME_DEGRADED
+            }
         }
     }
+}
+
+/// The fixed `want` of every refused D_ERRORS declaration (PLUGIN-ERROR-CODES §2.4).
+pub const ERROR_CODES_WANT: &str = "1..=256 numbers, each 1..=9999, strictly ascending; name ^[a-z][a-z0-9-]{0,63}$ not ending '-'";
+
+/// A malformed D_ERRORS declaration (IF §50, PLUGIN-ERROR-CODES §2.4): the image is admitted without codes. One
+/// WARN line (BUSBAR-6018, `field`, `have`, `want`) and one `plugin.error_codes_refused` row (outcome `degraded`),
+/// held like every plugin refusal until the audit chain opens. `have` is the registry's fault text (counts,
+/// numbers and positions only, never a plugin byte); `file` and `library_sha256` name the image.
+pub fn record_error_codes_refused(kind: &str, file: &str, library_sha256: &str, have: &str) {
+    let diag = crate::diagnostics::PLUGIN_ERROR_CODES_REFUSED.banner();
+    tracing::warn!(
+        diag = %diag,
+        kind,
+        file,
+        library_sha256,
+        field = "errors",
+        have,
+        want = ERROR_CODES_WANT,
+        "plugin error numbers refused; the plugin is admitted and runs without error codes"
+    );
+    let refusal = PluginRefusal::ErrorCodes;
+    PLUGIN_REFUSALS.raise(
+        HeldRefusal {
+            ts: busbar_kernel::store::now(),
+            action: refusal.action(),
+            outcome: refusal.outcome(),
+            resource: plugin_refusal_resource(kind, file, have),
+            origin: EventOrigin::for_plugin_refusal(refusal, kind),
+        },
+        seal_refusal,
+    );
 }
 
 pub const PLUGIN_REFUSAL_PRINCIPAL: &str = "host";
@@ -1216,8 +1636,10 @@ pub async fn register_test_audit_stream(app: &Arc<crate::state::App>) {
         .expect("native audit test setup drains");
 }
 
-#[cfg(test)]
-pub(crate) async fn ensure_global_audit_stream_registered() {
+/// Register the process-wide audit stream over a fresh in-memory store (once), so rows written by a
+/// test reach the ring.
+#[cfg(any(test, feature = "test-support"))]
+pub async fn ensure_global_audit_stream_registered() {
     static REGISTERED: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
     REGISTERED
         .get_or_init(|| async {
@@ -1446,7 +1868,8 @@ fn prepare_native(
         AUDIT_DIGESTS_SCOPE,
     );
     let hash = crate::audit::digest(&framed);
-    let (ts, action, resource, outcome, principal, scheme) = parse_audit_suffix(&pending.suffix);
+    let parsed = parse_suffix_entry(&pending.suffix);
+    let ts = parsed.ts;
     let body = encode(&NeutralBody {
         seq,
         prev_hash: prev_hash.clone(),
@@ -1464,18 +1887,7 @@ fn prepare_native(
             disposition: PlaneDisposition::Active,
             body,
         },
-        entry: AuditEntry {
-            seq,
-            ts,
-            action,
-            resource,
-            outcome,
-            principal,
-            prev_hash,
-            hash,
-            scheme,
-            recorded_here: true,
-        },
+        entry: entry_of(seq, prev_hash, hash, parsed, true),
     })
 }
 async fn drain_native(
@@ -1694,3 +2106,7 @@ pub fn held_operator_rows() -> Vec<String> {
 #[cfg(test)]
 #[path = "tests/audit_keyset_tests.rs"]
 mod keyset_tests;
+
+#[cfg(test)]
+#[path = "tests/audit_row_tests.rs"]
+mod row_tests;

@@ -5,7 +5,7 @@
 // `src/linked_gen.rs` (which `include!`s it), and mounted alone by the test-source generator
 // test, which reads rows and nothing else.
 
-pub(crate) fn metadata_map(manifest: &str, table: &str) -> Vec<(String, String)> {
+pub fn metadata_map(manifest: &str, table: &str) -> Vec<(String, String)> {
     let header = format!("[{table}]");
     let (mut in_table, mut present) = (false, false);
     let mut rows = Vec::new();

@@ -158,33 +158,7 @@ impl KernelServices {
             .and_then(|unit| self.units.get(unit))
             .and_then(|unit| unit.principal.clone())
             .ok_or("recovery requires an authenticated principal")?;
-        let now = (self.wall_ms)() / 1000;
-        if key.id.is_empty()
-            || key.generation_hash.is_empty()
-            || !key.enabled
-            || key.deleted_at.is_some()
-            || key.expires_at.is_some_and(|at| at <= now)
-        {
-            return Err("recovery requires a live principal binding");
-        }
-        // Suggested authentication cache TTL is not a verified credential expiration. Never
-        // invent indefinite recovery authority from an external role assertion lacking it.
-        if crate::governance::bound_admission(&key).is_some() && key.expires_at.is_none() {
-            return Err("external recovery requires the original authentication expiry");
-        }
-        if self
-            .standing
-            .get()
-            .is_none_or(|standing| standing(&key, now).is_none())
-        {
-            return Err("recovery principal has no current standing");
-        }
-        Ok(crate::host_work::RecoveryBinding {
-            principal: key.id.clone(),
-            generation: key.generation_hash.clone(),
-            created_at: key.created_at,
-            expires_at: key.expires_at,
-        })
+        recovery_binding_of(&key, (self.wall_ms)() / 1000, self.standing.get())
     }
 
     /// Scan one native Store page, retaining pagination across ticks. Only the opened instance
@@ -326,6 +300,42 @@ impl KernelServices {
         }
         Err("caller binding contention")
     }
+}
+
+/// The recovery binding governance captures for `key` at `now` (seconds): the id, generation and expiry the
+/// recovery scheduler re-resolves standing from. Shared by the unit-bound `work_open` and the plane port's
+/// store-backed WORK (`plane_driver::port_work`).
+///
+/// # Errors
+/// Why the key has no recoverable standing: not a live principal, an external role with no original expiry, or no
+/// current standing (none attached, or governance no longer permits it).
+pub(crate) fn recovery_binding_of(
+    key: &Arc<busbar_contract::records::VirtualKey>,
+    now: u64,
+    standing: Option<&Standing>,
+) -> Result<crate::host_work::RecoveryBinding, &'static str> {
+    if key.id.is_empty()
+        || key.generation_hash.is_empty()
+        || !key.enabled
+        || key.deleted_at.is_some()
+        || key.expires_at.is_some_and(|at| at <= now)
+    {
+        return Err("recovery requires a live principal binding");
+    }
+    // Suggested authentication cache TTL is not a verified credential expiration. Never
+    // invent indefinite recovery authority from an external role assertion lacking it.
+    if crate::governance::bound_admission(key).is_some() && key.expires_at.is_none() {
+        return Err("external recovery requires the original authentication expiry");
+    }
+    if standing.is_none_or(|standing| standing(key, now).is_none()) {
+        return Err("recovery principal has no current standing");
+    }
+    Ok(crate::host_work::RecoveryBinding {
+        principal: key.id.clone(),
+        generation: key.generation_hash.clone(),
+        created_at: key.created_at,
+        expires_at: key.expires_at,
+    })
 }
 
 /// Decodes a stored caller binding row: exactly one valid caller reference, the same pseudonymous

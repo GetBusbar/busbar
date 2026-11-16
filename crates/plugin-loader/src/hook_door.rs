@@ -1477,6 +1477,9 @@ impl HookAxis for HookRows {
     }
 }
 
+mod port;
+pub use port::{HookOpener, PortHook, PortRows, CONFIGURE_IS_RECONFIGURE};
+
 #[cfg(test)]
 #[path = "tests/hook_door_tests.rs"]
 mod tests;

@@ -446,7 +446,9 @@ fn leading_zero_into_an_integer_field_is_refused() {
     struct Mode {
         mode: u32,
     }
-    assert!(yaml::from_str::<Mode>("mode: 0644\n").is_err());
+    if let Ok(Mode { mode }) = yaml::from_str::<Mode>("mode: 0644\n") {
+        panic!("a zero-prefixed integer was accepted as {mode}");
+    }
 }
 
 /// Tags are found anywhere in a document, keys included, for readers that must refuse or carry

@@ -45,7 +45,7 @@ fn step_2b_reads_none_and_2c_reads_the_stored_id() {
 }
 
 #[test]
-#[ignore = "owner: W1-H1"]
+#[ignore = "owner: W1-H1 (blocked: entry::guard, GetBusbar/busbar#272)"]
 fn the_conformance_injection_answers_all_zero_without_unwinding() {
     todo!("owner: W1-H1 (C-DEPLOYMENT-ID)")
 }

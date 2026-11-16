@@ -19,12 +19,14 @@
 //! `busbar_contract::crypto`; no plugin loader, no store driver.
 
 #![forbid(unsafe_code)]
+#![doc(test(attr(forbid(unsafe_code))))]
 
 use std::ffi::OsString;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
 mod absent_store;
+pub mod allow_dest;
 mod catalog;
 #[cfg(any(test, feature = "counted"))]
 pub mod counted;
@@ -37,10 +39,16 @@ mod overlay;
 mod overlay_hooks;
 pub mod patch;
 pub mod records;
+mod settle;
 mod steps;
+mod styles;
 mod templates;
 
 pub use overlay::{Selected, SelectedBy};
+pub use settle::{
+    apply_settled, section as core_cfg_section, write_secrets, Applied, CoreCfg, SecretFile,
+    Settled,
+};
 
 /// Count one entry of `$field` in a test build (§9 C1 (sz2)); nothing in a shipped one.
 macro_rules! entered {
@@ -195,6 +203,12 @@ pub struct Facts {
     pub env: Env,
     /// The working directory a relative `BUSBAR_PROVIDERS` is read from, as 1.5.5 read it (1k).
     pub cwd: PathBuf,
+    /// The linked store images declaring `store::FB_EPHEMERAL` (`Registry::ephemeral_stores`), the MIN-3 absent-store
+    /// fact (IF §12.10 item 1): `Some` and the document names no store module, exactly one is named, zero or several
+    /// refuse CONFIG. `None` on today's ABI, where the 1.5.5-shape constant stands (1d).
+    pub ephemeral_stores: Option<Vec<String>>,
+    /// How `allow_dest` resolves a provider host name (once, at migrate time).
+    pub resolve: allow_dest::Resolve,
 }
 
 impl Facts {
@@ -209,6 +223,8 @@ impl Facts {
             catalog_keys,
             env,
             cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+            ephemeral_stores: None,
+            resolve: allow_dest::system_resolve,
         }
     }
 }
@@ -219,6 +235,7 @@ impl fmt::Debug for Facts {
             .field("open_units", &self.open_units)
             .field("catalog_keys", &self.catalog_keys)
             .field("cwd", &self.cwd)
+            .field("ephemeral_stores", &self.ephemeral_stores)
             .finish_non_exhaustive()
     }
 }
@@ -284,9 +301,54 @@ pub struct Plan {
     /// The 1.5.5 overlay path 1b selected (`None`: locked, or not a 1.5.5 source).
     overlay: Option<overlay::Selected>,
     ignore_overlay: bool,
+    /// The styles `resolve_styles` resolved the deferred bindings with, re-applied by the write's re-run.
+    styles: Vec<(String, Vec<String>)>,
 }
 
 impl Plan {
+    /// `config::resolve_styles` (IF §12.10 item 3, §12.18): after every image is admitted and before
+    /// `boot_plan`, the gateway hands the styles the admitted auth images declared
+    /// (`Registry::outbound_styles`); each deferred `{"$style": w}` binding of the plan becomes the
+    /// identity of the unique image declaring `w`. The boot then reads the resolved document, and the write
+    /// re-applies the same resolution to its re-run. Called directly, in process: no frame.
+    ///
+    /// # Errors
+    /// CONFIG naming the binding and the style when none, or several, declare it.
+    #[cold]
+    #[inline(never)]
+    pub fn resolve_styles(&mut self, styles: &[(&str, &[&str])]) -> Result<(), Refusal> {
+        entered!(other);
+        let (text, lines) = styles::resolve(&self.planned, styles)?;
+        self.planned = text;
+        self.report.extend(lines);
+        self.styles = styles
+            .iter()
+            .map(|(identity, words)| {
+                (
+                    (*identity).to_owned(),
+                    words.iter().map(|word| (*word).to_owned()).collect(),
+                )
+            })
+            .collect();
+        Ok(())
+    }
+
+    /// The resolved styles as `resolve` takes them.
+    fn with_styles<T>(&self, then: impl FnOnce(&[(&str, &[&str])]) -> T) -> T {
+        let words: Vec<Vec<&str>> = self
+            .styles
+            .iter()
+            .map(|(_, words)| words.iter().map(String::as_str).collect())
+            .collect();
+        let view: Vec<(&str, &[&str])> = self
+            .styles
+            .iter()
+            .zip(&words)
+            .map(|((identity, _), words)| (identity.as_str(), words.as_slice()))
+            .collect();
+        then(&view)
+    }
+
     /// The lines the boot logs at WARN (an overlay that is not folded, each dropped plugin pin).
     #[must_use]
     pub fn warnings(&self) -> &[String] {
@@ -413,6 +475,7 @@ pub fn plan(inputs: &Inputs<'_>) -> Result<Plan, Refusal> {
         warnings,
         overlay: selected,
         ignore_overlay: inputs.ignore_overlay,
+        styles: Vec::new(),
     })
 }
 
@@ -460,6 +523,23 @@ pub enum Written {
 #[cold]
 #[inline(never)]
 pub fn write(plan: &Plan, check: Check<'_>) -> Result<Written, Refusal> {
+    write_settled(plan, &[], check)
+}
+
+/// [`write`] with what each instance's `open` settled (IF §7.2): after the re-run, the answers are
+/// applied to the re-run document (the bags, CORE_CFG filed, LIFT pointers lifted: [`apply_settled`]),
+/// the boot's strict parse judges that document, and the lifted secret files (5a) are written before
+/// the catalog and the stamped document. No settled answer, no change: this is [`write`].
+///
+/// # Errors
+/// As [`write`]; CONFIG naming the instance index for a settled answer core cannot file.
+#[cold]
+#[inline(never)]
+pub fn write_settled(
+    plan: &Plan,
+    settled: &[Settled],
+    check: Check<'_>,
+) -> Result<Written, Refusal> {
     entered!(write);
     let _held = lock::Held::take(&plan.path)?;
     if let Some(selected) = &plan.overlay {
@@ -482,7 +562,7 @@ pub fn write(plan: &Plan, check: Check<'_>) -> Result<Written, Refusal> {
             plan.path.display()
         )));
     }
-    let again = chain(
+    let mut again = chain(
         &plan.path,
         &now,
         plan.from,
@@ -490,6 +570,10 @@ pub fn write(plan: &Plan, check: Check<'_>) -> Result<Written, Refusal> {
         read.as_ref(),
         &mut Vec::new(),
     )?;
+    if !plan.styles.is_empty() {
+        let (resolved, _) = plan.with_styles(|styles| styles::resolve(&again.text, styles))?;
+        again.text = resolved;
+    }
     if again.text != plan.planned || again.catalog != plan.catalog {
         return Err(Refusal::Config(format!(
             "the upgrade of {} did not plan the same document twice from the same bytes ({}); \
@@ -503,12 +587,15 @@ pub fn write(plan: &Plan, check: Check<'_>) -> Result<Written, Refusal> {
             )
         )));
     }
+    let applied = apply_settled(&again.text, &plan.path, settled, false, plan.facts.env)?;
+    again.text = applied.text().to_owned();
     judge(&again, &plan.facts, check)?;
     let backup = files::sibling(&plan.path, BACKUP_SUFFIX);
     files::backup_absent_or_equal(&backup, now.as_bytes())?;
     if let Some(read) = &read {
         overlay::backup_absent_or_equal(read)?;
     }
+    write_secrets(applied.secrets())?;
     if let Some(planned) = &again.catalog {
         catalog::write(planned)?;
     }

@@ -195,6 +195,7 @@ pub(super) async fn apply(
         origin,
         note,
     } = audit;
+    let ceiling_actor = actor.to_owned();
     let out = config_transaction(handle, move |txn| {
         let snapshot = txn.app().clone();
         if let Some(error) = stale_if_match(expected, snapshot.config_version) {
@@ -300,6 +301,11 @@ pub(super) async fn apply(
             let base_hook_names = cfg.hooks.keys().cloned().collect();
             let base_group_names = cfg.groups.keys().cloned().collect();
             busbar_kernel::config::overlay::merge_into(&mut cfg, doc.clone());
+            if let Some(rejection) =
+                trust_ceiling_rejection(&snapshot.identity_providers, &cfg.identity_providers, &ceiling_actor)
+            {
+                return Ok(Outcome::Value(Err(rejection)));
+            }
             let overlay = (!loaded.config_locked).then(|| store.clone());
             let (mut next, rotate, limits) = Box::pin(busbar_kernel::build_app_from_config(
                 cfg,
@@ -380,6 +386,43 @@ pub(super) async fn apply(
             Err(err_json(&error))
         }
     }
+}
+
+/// THE TRUST-CEILING RULE at the document door (S2-ADM-05): a provider's `max_admin_scope` is
+/// immutable upward through every admin write. `live` is the installed generation's providers,
+/// `candidate` the patched document's. A raise (a new provider counts from the default `read-only`)
+/// is refused 409 `trust_ceiling_raise` before anything is written, with a `rejected` audit row
+/// naming the provider.
+pub(super) fn trust_ceiling_rejection(
+    live: &busbar_kernel::config::IdentityProviders,
+    candidate: &busbar_kernel::config::IdentityProviders,
+    actor: &str,
+) -> Option<(AdminError, crate::v1::contract::taxonomy::Cond)> {
+    use crate::v1::contract::Scope;
+    let ceiling = |token: Option<&str>| token.and_then(Scope::parse).unwrap_or(Scope::ReadOnly);
+    for (name, provider) in candidate {
+        let old = ceiling(live.get(name).and_then(|p| p.max_admin_scope.as_deref()));
+        let requested_token = provider.max_admin_scope.as_deref();
+        let requested = ceiling(requested_token);
+        if old.allows(requested) {
+            continue;
+        }
+        super::audit::AUDIT.record_by(
+            "config.document",
+            &format!("identity-providers:{name}"),
+            super::audit::OUTCOME_REJECTED,
+            actor,
+        );
+        return Some((
+            AdminError::Conflict(format!(
+                "refusing to RAISE `identity-providers.{name}.max_admin_scope` to `{}` through the admin API: the trust ceiling caps the admin authority obtainable through this identity provider, so raising it is a privilege escalation this API does not perform. Lower it here, or raise it in config.yaml (current ceiling: `{}`)",
+                requested_token.unwrap_or(busbar_kernel::config::DEFAULT_MAX_ADMIN_SCOPE),
+                old.as_str()
+            )),
+            crate::v1::contract::taxonomy::Cond::TrustCeilingRaise,
+        ));
+    }
+    None
 }
 
 /// THE `document_patch` DOOR (OPERATOR-FROM-ADMITTED-AUTH §000.1): the composed patch may not touch
@@ -556,6 +599,66 @@ fn restart_paths(paths: &[String]) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn providers(body: &str) -> busbar_kernel::config::IdentityProviders {
+        busbar_kernel::config::deploy_from_yaml_str(
+            &format!("identity-providers:\n{body}"),
+            &busbar_kernel::config::Grammar::empty(),
+        )
+        .expect("the identity-providers block parses")
+        .identity_providers
+    }
+
+    fn corp(scope: &str) -> busbar_kernel::config::IdentityProviders {
+        providers(&format!(
+            "  corp:\n    module: corp-idp\n    max_admin_scope: {scope}\n"
+        ))
+    }
+
+    /// S2-ADM-05: the refusal to raise `max_admin_scope` lived only on the removed named-map
+    /// PUT/PATCH. `PUT /config/settings` must refuse the same raise (409 `trust_ceiling_raise`) and
+    /// leave a `rejected` audit row naming the provider.
+    #[tokio::test]
+    async fn raising_a_provider_ceiling_through_the_document_door_is_refused_and_audited() {
+        use crate::v1::contract::taxonomy::Cond;
+        busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
+        busbar_kernel::audit::auditlog::ensure_global_audit_stream_registered().await;
+        let live = corp("read-only");
+        assert!(trust_ceiling_rejection(&live, &corp("read-only"), "ceiling-admin").is_none());
+        assert!(trust_ceiling_rejection(&corp("full"), &live, "ceiling-admin").is_none());
+        let (error, cond) = trust_ceiling_rejection(&live, &corp("full"), "ceiling-admin")
+            .expect("raising read-only to full is refused");
+        assert_eq!(cond, Cond::TrustCeilingRaise);
+        assert!(
+            matches!(&error, AdminError::Conflict(text)
+                if text.contains("identity-providers.corp.max_admin_scope")),
+            "the refusal names the provider: {error:?}"
+        );
+        let (_, new_cond) = trust_ceiling_rejection(
+            &live,
+            &providers("  fresh:\n    module: corp-idp\n    max_admin_scope: full\n"),
+            "ceiling-admin",
+        )
+        .expect("a new provider cannot start above the default read-only ceiling");
+        assert_eq!(new_cond, Cond::TrustCeilingRaise);
+        busbar_kernel::audit::auditlog::flush_pending()
+            .await
+            .expect("the rejected rows reach the audit ring");
+        let rows = busbar_kernel::audit::auditlog::AUDIT_LOG.list_filtered(
+            0,
+            busbar_kernel::audit_ring::MAX_AUDIT_ENTRIES,
+            Some("config.document"),
+            None,
+        );
+        for resource in ["identity-providers:corp", "identity-providers:fresh"] {
+            assert!(
+                rows.iter().any(|row| row.resource == resource
+                    && row.outcome == "rejected"
+                    && row.principal == "ceiling-admin"),
+                "a rejected audit row names {resource}"
+            );
+        }
+    }
 
     #[test]
     fn document_request_refuses_retired_persist_in_every_form() {

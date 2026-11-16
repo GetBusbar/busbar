@@ -54,6 +54,9 @@ fn site(code: u16, level: Level, names: &[String]) -> &'static Site {
 }
 
 pub fn emit(diag: &Diagnostic, level: Level, message: &str, fields: &[(String, String)]) {
+    if diag.severity == super::Severity::Actionable {
+        crate::audit::events::note_diagnostic(diag.code, diag.slug);
+    }
     let names: Vec<String> = fields.iter().map(|(k, _)| k.clone()).collect();
     let site = site(diag.code, level, &names);
     let meta: &'static Metadata<'static> = site.0.get().expect("set when the callsite was made");

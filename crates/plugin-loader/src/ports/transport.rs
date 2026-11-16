@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The transport port (IF §11.3). W0-ABI stub: frozen signatures, `todo!()` bodies; L9 fills it.
+//! The transport port (IF §11.3): the frozen trait the connector drives, implemented over the kind's proxy by
+//! `adapters::transport::TransportAdapter`.
 
 use busbar_plugin_abi::records::Records;
 

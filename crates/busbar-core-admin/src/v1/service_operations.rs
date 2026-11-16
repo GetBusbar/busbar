@@ -46,60 +46,6 @@ impl AdminService {
         }
     }
 
-    pub(crate) fn telemetry(
-        &self,
-    ) -> Result<crate::v1::json::telemetry::TelemetryView, AdminError> {
-        use crate::v1::json::telemetry::{
-            Dropped, ExactU64, Identity, Phase, TelemetryView, MAX_IDENTITIES, UPPER_BOUNDS_MS,
-        };
-        let snapshot =
-            busbar_kernel::snapshot::request_snapshot(MAX_IDENTITIES).ok_or_else(|| {
-                AdminError::Unavailable("telemetry collection is disabled or unavailable".into())
-            })?;
-        let mut identities = Vec::with_capacity(snapshot.identities.len());
-        for row in snapshot.identities {
-            let phase = match row.phase.as_str() {
-                "LlmProducerDrive" => Phase::LlmProducerDrive,
-                "MountedResponseReady" => Phase::MountedResponseReady,
-                _ => {
-                    return Err(AdminError::Unavailable(
-                        "telemetry phase is not supported".into(),
-                    ))
-                }
-            };
-            identities.push(Identity {
-                plane: row.plane,
-                phase,
-                pool: row.pool,
-                ingress_protocol: row.ingress_protocol,
-                count: ExactU64(row.count),
-                errors: ExactU64(row.errors),
-                client_errors: ExactU64(row.client_errors),
-                sum_us: ExactU64(row.sum_us),
-                bins: row.bins.map(ExactU64),
-            });
-        }
-        let [invalid_duration, integer_overflow, series_capacity, boot_nonce_unavailable, histogram_capacity, unregistered_labels] =
-            snapshot.dropped.map(ExactU64);
-        Ok(TelemetryView {
-            process_boot_nonce: snapshot.process_boot_nonce,
-            uptime_since_start_ms: ExactU64(snapshot.uptime_ms),
-            captured_at_unix_ms: ExactU64(snapshot.captured_at_unix_ms),
-            upper_bounds_ms: UPPER_BOUNDS_MS,
-            identities,
-            omitted_identities: ExactU64(snapshot.omitted_identities),
-            truncated: snapshot.omitted_identities != 0,
-            dropped: Dropped {
-                invalid_duration,
-                integer_overflow,
-                series_capacity,
-                boot_nonce_unavailable,
-                histogram_capacity,
-                unregistered_labels,
-            },
-        })
-    }
-
     pub(crate) async fn info(&self) -> Result<InfoView, AdminError> {
         let live = busbar_kernel::persistence::boot_identity::live();
         let nodes = match live {
@@ -145,6 +91,7 @@ impl AdminService {
             },
             config_persistence: self.app.overlay_path.is_some(),
             config_version: self.app.config_version,
+            kinds_revision: crate::v1::json::kinds::kinds_revision(&self.app),
             config_generation: self
                 .app
                 .config_generation
@@ -175,16 +122,6 @@ impl AdminService {
             .collect();
         pool_views.sort_by(|a, b| a.name.cmp(&b.name));
         Ok(Page::single(pool_views))
-    }
-
-    pub(crate) async fn get_pool(&self, name: &str) -> Result<PoolDetailView, AdminError> {
-        let view = self.app.engine_tables_view();
-
-        if !view.pools().iter().any(|(n, _)| *n == name) {
-            return Err(AdminError::not_found(format!("pool `{name}`")));
-        }
-        let members = view.pool_members(name);
-        Ok(self.pool_detail(name, &members))
     }
 
     fn pool_detail(&self, name: &str, members: &[(usize, u32)]) -> PoolDetailView {
@@ -1751,6 +1688,9 @@ fn fold_series(
     Ok(())
 }
 
+/// One day of usage: its start, its fetched counts and its observations.
+type UsageDay = (u64, (FetchedUsage<Count>, Vec<ObservationRecord>));
+
 /// The whole range, priced row by row exactly as the single-day read prices, then summed per
 /// requested dimension tuple. An unpriced lane or class makes its cell `priced: false` with a null
 /// spend; it never refuses the read.
@@ -1759,7 +1699,7 @@ pub(super) fn project_usage_series(
     history: Option<Arc<busbar_kernel::cost::History>>,
     snapshot: Option<busbar_kernel::cost::EntryKey>,
     now: u64,
-    days: Vec<(u64, (FetchedUsage<Count>, Vec<ObservationRecord>))>,
+    days: Vec<UsageDay>,
     spec: &SeriesSpec,
 ) -> Result<crate::v1::contract::UsageSeries, AdminError> {
     use crate::v1::contract::{SeriesUsage, UsageSeries, UsageSeriesRow};

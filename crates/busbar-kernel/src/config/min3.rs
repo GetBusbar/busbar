@@ -159,3 +159,185 @@ pub fn check_upstream_credentials(min3: &Min3Config) -> Result<(), Vec<String>> 
     let _ = min3;
     Ok(())
 }
+
+/// The longest any `limits` duration may be (IF §12.22).
+pub(crate) const MAX_LIMIT_MS: u64 = 600_000;
+/// The most concurrent port calls `limits.max_inflight` may name (IF §12.22).
+pub const MAX_INFLIGHT: u64 = 65_535;
+/// The longest a reason may be (TRANSPORT-SECURITY-POLICY §4).
+pub(crate) const MAX_REASON_CHARS: usize = 256;
+
+/// `<kind>.<name>.limits` as written: the grammar of the object, before validation. A key outside these four
+/// (`plaintext` included: the row is deleted) is refused as unknown.
+#[derive(Clone, Copy, Debug, Default, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LimitsDoc {
+    #[serde(default)]
+    pub timeout_ms: u64,
+    #[serde(default)]
+    pub connect_timeout_ms: u64,
+    #[serde(default)]
+    pub max_inflight: u64,
+    #[serde(default)]
+    pub stream_stall_ms: u64,
+}
+
+impl LimitsDoc {
+    /// Validates the object (numbers at most 600,000 ms and 65,535 in flight; `stream_stall_ms` 0 or
+    /// 1,000..=600,000) and returns the parsed limits. `path` is the instance's config path (`store.main`); the
+    /// refusal names `<path>.limits.<key>`.
+    pub fn resolve(self, path: &str) -> Result<InstanceLimitsCfg, String> {
+        let ms = |key: &str, v: u64| -> Result<u32, String> {
+            if v > MAX_LIMIT_MS {
+                return Err(format!(
+                    "{path}.limits.{key} is {v}: at most {MAX_LIMIT_MS} milliseconds"
+                ));
+            }
+            Ok(v as u32)
+        };
+        let stall = self.stream_stall_ms;
+        if stall != 0 && !(1_000..=MAX_LIMIT_MS).contains(&stall) {
+            return Err(format!(
+                "{path}.limits.stream_stall_ms is {stall}: 0 (the default) or 1000..={MAX_LIMIT_MS} milliseconds"
+            ));
+        }
+        if self.max_inflight > MAX_INFLIGHT {
+            return Err(format!(
+                "{path}.limits.max_inflight is {}: at most {MAX_INFLIGHT} calls in flight",
+                self.max_inflight
+            ));
+        }
+        Ok(InstanceLimitsCfg {
+            timeout_ms: ms("timeout_ms", self.timeout_ms)?,
+            connect_timeout_ms: ms("connect_timeout_ms", self.connect_timeout_ms)?,
+            max_inflight: self.max_inflight as u32,
+            stream_stall_ms: stall as u32,
+        })
+    }
+}
+
+/// One `accept` word.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum AcceptWord {
+    Plaintext,
+    UnverifiedTls,
+}
+
+/// `accept: <word>` or `accept: [<word>, ...]`.
+#[derive(serde::Deserialize)]
+#[serde(untagged)]
+enum AcceptDoc {
+    One(AcceptWord),
+    Many(Vec<AcceptWord>),
+}
+
+/// `<kind>.<name>.insecure_transport` as written (TRANSPORT-SECURITY-POLICY §4): the grammar of the object,
+/// before validation. An unknown key is refused.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InsecureTransportDoc {
+    accept: AcceptDoc,
+    #[serde(default)]
+    reason: Option<String>,
+}
+
+/// A validated `insecure_transport`: the acceptance and the human's reason.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InsecureTransport {
+    pub accept: busbar_plugin_abi::host_side::caller::Accept,
+    pub reason: Box<str>,
+}
+
+impl InsecureTransportDoc {
+    /// Validates the object: `accept` is `plaintext`, `unverified_tls` or a non-empty list of distinct words;
+    /// `reason` is present, 1..=256 printable characters, no newline and not the `<why ...>` placeholder core
+    /// prints in BUSBAR-3160/3161. Every refusal is BUSBAR-3163 naming `<path>.insecure_transport.<key>`.
+    pub fn resolve(self, path: &str) -> Result<InsecureTransport, String> {
+        use busbar_plugin_abi::host_side::caller::Accept;
+        let words = match self.accept {
+            AcceptDoc::One(w) => vec![w],
+            AcceptDoc::Many(v) => v,
+        };
+        if words.is_empty() {
+            return Err(format!(
+                "BUSBAR-3163: {path}.insecure_transport.accept is an empty list: name plaintext, unverified_tls or both"
+            ));
+        }
+        let mut bits = 0u8;
+        for w in &words {
+            let bit = match w {
+                AcceptWord::Plaintext => Accept::PLAINTEXT,
+                AcceptWord::UnverifiedTls => Accept::UNVERIFIED_TLS,
+            };
+            if bits & bit != 0 {
+                return Err(format!(
+                    "BUSBAR-3163: {path}.insecure_transport.accept repeats a value: each of plaintext and unverified_tls is named once"
+                ));
+            }
+            bits |= bit;
+        }
+        let reason = self.reason.unwrap_or_default();
+        let bad = if reason.trim().is_empty() {
+            Some("is missing or empty: say why this instance may not use verified TLS")
+        } else if reason.chars().count() > MAX_REASON_CHARS {
+            Some("is longer than 256 characters")
+        } else if reason.chars().any(char::is_control) {
+            Some("holds a newline or a control character: one printable line")
+        } else if reason.trim_start().starts_with("<why") {
+            Some("is the <why ...> placeholder: write the real reason")
+        } else {
+            None
+        };
+        if let Some(why) = bad {
+            return Err(format!(
+                "BUSBAR-3163: {path}.insecure_transport.reason {why}"
+            ));
+        }
+        Ok(InsecureTransport {
+            accept: Accept(bits),
+            reason: reason.into(),
+        })
+    }
+}
+
+impl InsecureTransport {
+    /// The `accept` words as the audit row, the admin API and the warning print them.
+    #[must_use]
+    pub fn accept_words(&self) -> Vec<&'static str> {
+        use busbar_plugin_abi::host_side::caller::Accept;
+        let mut words = Vec::new();
+        if self.accept.0 & Accept::PLAINTEXT != 0 {
+            words.push("plaintext");
+        }
+        if self.accept.0 & Accept::UNVERIFIED_TLS != 0 {
+            words.push("unverified_tls");
+        }
+        words
+    }
+
+    /// The BUSBAR-3162 warning line, logged at every boot and every kept reload (policy §4 "Visibility").
+    /// `endpoints` is the instance's declared endpoints as `dest (class, note)`; empty = none declared yet.
+    #[must_use]
+    pub fn warning_line(&self, path: &str, module: &str, endpoints: &[String]) -> String {
+        let accept = self.accept_words();
+        let accept = if accept.len() == 1 {
+            accept[0].to_owned()
+        } else {
+            format!("[{}]", accept.join(", "))
+        };
+        let dests = if endpoints.is_empty() {
+            "no declared endpoint uses this yet".to_owned()
+        } else {
+            endpoints.join(", ")
+        };
+        format!(
+            "BUSBAR-3162: {path} (module {module}) runs with insecure_transport: accept {accept} for {dests}. Anything sent to it, credentials included, can be read and altered by anyone who can intercept the network path. Reason: \"{}\". Remove {path}.insecure_transport once the server offers verifiable TLS.",
+            self.reason
+        )
+    }
+}
+
+#[cfg(test)]
+#[path = "tests/min3_tests.rs"]
+mod tests;

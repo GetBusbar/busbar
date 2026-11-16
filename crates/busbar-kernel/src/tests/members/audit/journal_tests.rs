@@ -151,12 +151,13 @@ fn an_edited_journal_body_decodes_to_a_record_the_chain_walk_refuses() {
     let records = sealed(1);
     let mut body = journal_body(&records[0]).expect("the body fits");
 
-    let needle = 120u64.to_be_bytes();
+    // The current recipes frame a quantity as text: a 4-byte length, then its digits.
+    let needle = [0, 0, 0, 3, b'1', b'2', b'0'];
     let at = body
-        .windows(8)
+        .windows(needle.len())
         .position(|w| w == needle)
         .expect("the quantity is in the body");
-    body[at + 7] = 121;
+    body[at + needle.len() - 1] = b'1';
     let tampered = from_journal_body(&body, &declared).unwrap().unwrap();
     assert_eq!(tampered.usage.lines[0].quantity, 121);
     assert_eq!(

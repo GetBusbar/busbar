@@ -215,10 +215,13 @@ pub struct LinkedFormer {
     pub former_names: &'static [&'static str],
 }
 
+/// A door's Statement name and the rewrites it states: each rewrite's code, from and to.
+type StatementRewrites = (String, Vec<(u32, String, String)>);
+
 /// A door's Statement name and the rewrites it states; `None` when it does not read back.
 fn door_statement(
     door: busbar_contract::abi::mechanism::door::DoorFn,
-) -> Option<(String, Vec<(u32, String, String)>)> {
+) -> Option<StatementRewrites> {
     let bytes = crate::root::loader::dispatch::rendering_of(door).ok()?;
     let statement = busbar_contract::abi::mechanism::rendering::read(&bytes).ok()?;
     Some((statement.name, statement.rewrites))
@@ -650,6 +653,8 @@ pub(crate) const HOST_SERIES: &[&str] = &[
     busbar_kernel::snapshot::PLUGIN_TEXT_CUT_TOTAL,
     busbar_kernel::snapshot::JOURNAL_QUARANTINED_TOTAL,
     busbar_kernel::snapshot::STORE_SLOTS,
+    busbar_kernel::snapshot::UNIT_CHECKPOINTS_TERMINAL,
+    busbar_kernel::snapshot::GOVERNED_ADMISSIONS_LIVE,
     busbar_kernel::snapshot::REQUESTS_TOTAL,
     busbar_kernel::snapshot::BREAKER_TRIPS_TOTAL,
     busbar_kernel::snapshot::FAILOVERS_TOTAL,
@@ -659,6 +664,7 @@ pub(crate) const HOST_SERIES: &[&str] = &[
     busbar_kernel::snapshot::PLANE_REQUEST_DURATION_SECONDS,
     busbar_kernel::snapshot::LANE_REQUEST_DURATION_SECONDS,
     busbar_kernel::snapshot::UNIT_REFUSALS_TOTAL,
+    busbar_kernel::snapshot::BUILD_INFO,
     busbar_kernel::snapshot::ADMISSION_DENIED_TOTAL,
     busbar_kernel::snapshot::METERING_PENDING_COALESCED_TOTAL,
     busbar_kernel::snapshot::PLUGIN_REQUEST_HEADERS_TRUNCATED_TOTAL,

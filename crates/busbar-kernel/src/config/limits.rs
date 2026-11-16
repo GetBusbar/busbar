@@ -304,7 +304,7 @@ impl Default for HealthDefaultsCfg {
 }
 
 /// Default `telemetry.retention_seconds`.
-pub const DEFAULT_TELEMETRY_RETENTION_SECONDS: u64 = 300;
+pub(crate) const DEFAULT_TELEMETRY_RETENTION_SECONDS: u64 = 300;
 
 /// Default `telemetry.max_lane_series`: lanes that get their own `busbar_lane_request_duration_seconds`
 /// series before the rest fold into `target="other"`.
@@ -384,6 +384,24 @@ impl Default for ExportLimits {
     }
 }
 
+/// `advanced.shutdown.drain_timeout`'s floor, in seconds.
+pub const MIN_DRAIN_TIMEOUT_SECS: u64 = 1;
+
+/// `advanced.governance.max_pending_checkpoints`'s default per second of drain budget: the
+/// finished units the networked store settles in that second (SHUTDOWN-HANG F4a).
+pub const PENDING_CHECKPOINTS_PER_DRAIN_SECOND: u64 = 1_000;
+
+/// The shutdown drain's two settings, resolved and range-checked
+/// ([`LimitsResolved::drain_settings`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DrainSettings {
+    /// `advanced.shutdown.drain_timeout`: the budget from the first shutdown signal to exit.
+    pub drain_timeout: std::time::Duration,
+    /// `advanced.governance.max_pending_checkpoints`: the terminal-backlog cap of governed
+    /// admission.
+    pub max_pending_checkpoints: u64,
+}
+
 /// Fully-resolved operational limits, projected onto `RootCfg` by `resolve`. Grouped here so the
 /// startup wiring (`limits::install` + the explicit main.rs/store threading) reads a flat
 /// struct rather than re-walking optional config sections.
@@ -428,6 +446,12 @@ pub struct LimitsResolved {
     pub default_probe_interval_secs: u64,
     pub default_probe_timeout_secs: u64,
     pub default_policy_timeout_ms: u64,
+    /// `advanced.shutdown.drain_timeout`, as written (`None`: the default). BOOT-TIME; read
+    /// through [`LimitsResolved::drain_settings`], which validation also runs.
+    pub drain_timeout: Option<String>,
+    /// `advanced.governance.max_pending_checkpoints`, as written (`None`: derived from the
+    /// drain budget). Read through [`LimitsResolved::drain_settings`].
+    pub max_pending_checkpoints: Option<u64>,
 }
 
 impl Default for LimitsResolved {
@@ -478,6 +502,73 @@ impl LimitsResolved {
             default_probe_interval_secs: health.default_probe_interval_secs,
             default_probe_timeout_secs: health.default_probe_timeout_secs,
             default_policy_timeout_ms: routing.default_policy_timeout_ms,
+            drain_timeout: advanced.shutdown.drain_timeout.clone(),
+            max_pending_checkpoints: advanced.governance.max_pending_checkpoints,
+        }
+    }
+
+    /// The shutdown drain's budget and the terminal-backlog cap (SHUTDOWN-HANG F4, F4a). Never
+    /// clamped: a value that does not parse, or is out of range, is a refusal that names the key,
+    /// what was written and the range. Validation runs this, so boot refuses before serving.
+    pub fn drain_settings(&self) -> Result<DrainSettings, Vec<String>> {
+        let mut refusals: Vec<String> = Vec::new();
+        let drain_timeout = match self.drain_timeout.as_deref() {
+            None => Some(crate::governance::drain::DEFAULT_DRAIN_TIMEOUT),
+            Some(written) => match crate::config::parse::parse_duration_secs(written) {
+                Ok(secs) if secs >= MIN_DRAIN_TIMEOUT_SECS => {
+                    Some(std::time::Duration::from_secs(secs))
+                }
+                Ok(secs) => {
+                    refusals.push(
+                        crate::diagnostics::coded::config_setting_out_of_range(format!(
+                            "advanced.shutdown.drain_timeout '{written}' ({secs} s) is below the \
+                             minimum of {MIN_DRAIN_TIMEOUT_SECS} s: the drain needs at least one \
+                             second to settle spend, flush the journal and retire the writer. Set \
+                             it to 1s or more, or omit it for the default of 20s"
+                        ))
+                        .into(),
+                    );
+                    None
+                }
+                Err(why) => {
+                    refusals.push(
+                        crate::diagnostics::coded::config_setting_out_of_range(format!(
+                            "advanced.shutdown.drain_timeout '{written}' is not a duration ({why}); \
+                             write <number><s|m|h|d>, at least 1s (for example 30s), or omit it \
+                             for the default of 20s"
+                        ))
+                        .into(),
+                    );
+                    None
+                }
+            },
+        };
+        let max_pending_checkpoints = match self.max_pending_checkpoints {
+            Some(0) => {
+                refusals.push(
+                    crate::diagnostics::coded::config_setting_out_of_range(
+                        "advanced.governance.max_pending_checkpoints is 0; it must be >= 1 (0 \
+                         would refuse every governed request). It caps the finished governed \
+                         requests awaiting settlement in the store; omit it for the default of \
+                         1,000 per second of advanced.shutdown.drain_timeout",
+                    )
+                    .into(),
+                );
+                None
+            }
+            Some(cap) => Some(cap),
+            None => drain_timeout.map(|budget| {
+                PENDING_CHECKPOINTS_PER_DRAIN_SECOND.saturating_mul(budget.as_secs())
+            }),
+        };
+        match (drain_timeout, max_pending_checkpoints) {
+            (Some(drain_timeout), Some(max_pending_checkpoints)) if refusals.is_empty() => {
+                Ok(DrainSettings {
+                    drain_timeout,
+                    max_pending_checkpoints,
+                })
+            }
+            _ => Err(refusals),
         }
     }
 

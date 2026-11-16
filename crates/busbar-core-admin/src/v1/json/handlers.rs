@@ -34,75 +34,6 @@ pub(crate) async fn info(State(handle): State<Arc<AppHandle>>) -> Response {
     respond(StatusCode::OK, service(&handle).info().await)
 }
 
-pub(crate) async fn list_pools(
-    State(handle): State<Arc<AppHandle>>,
-    Query(q): Query<std::collections::HashMap<String, String>>,
-) -> Response {
-    let w = ok_or_respond!(boxed cursor::window(&q, "pools", "", crate::v1::contract::LIST_LIMIT_DEFAULT));
-    match q.get("detail").map(String::as_str) {
-        Some("true") => {
-            return respond(
-                StatusCode::OK,
-                cursor::paged(
-                    service(&handle).list_pools_detailed().await,
-                    &w,
-                    "pools",
-                    |p| p.name.clone(),
-                ),
-            )
-        }
-
-        Some(other) if other != "false" => {
-            return err_json(&AdminError::Validation(
-                "invalid `detail`: expected true|false".into(),
-            ))
-        }
-        _ => {}
-    }
-    respond(
-        StatusCode::OK,
-        cursor::paged(service(&handle).list_pools().await, &w, "pools", |p| {
-            p.name.clone()
-        }),
-    )
-}
-
-pub(crate) async fn get_pool(
-    State(handle): State<Arc<AppHandle>>,
-    Path(name): Path<String>,
-) -> Response {
-    respond(StatusCode::OK, service(&handle).get_pool(&name).await)
-}
-
-pub(crate) async fn list_models(
-    State(handle): State<Arc<AppHandle>>,
-    Query(q): Query<std::collections::HashMap<String, String>>,
-) -> Response {
-    let w = ok_or_respond!(boxed cursor::window(&q, "models", "", crate::v1::contract::LIST_LIMIT_DEFAULT));
-    respond(
-        StatusCode::OK,
-        cursor::paged(service(&handle).list_models().await, &w, "models", |m| {
-            m.model.clone()
-        }),
-    )
-}
-
-pub(crate) async fn list_providers(
-    State(handle): State<Arc<AppHandle>>,
-    Query(q): Query<std::collections::HashMap<String, String>>,
-) -> Response {
-    let w = ok_or_respond!(boxed cursor::window(&q, "providers", "", crate::v1::contract::LIST_LIMIT_DEFAULT));
-    respond(
-        StatusCode::OK,
-        cursor::paged(
-            service(&handle).list_providers().await,
-            &w,
-            "providers",
-            |p| p.upstream.clone(),
-        ),
-    )
-}
-
 pub(crate) async fn list_hooks(
     State(handle): State<Arc<AppHandle>>,
     Query(q): Query<std::collections::HashMap<String, String>>,
@@ -1731,6 +1662,14 @@ pub(crate) async fn get_audit(
             Cond::InvalidQueryValue,
         )
     };
+    if q.contains_key("kinds") {
+        return invalid("kinds: no such parameter; filter with `action=` and `kind=`");
+    }
+    let severity = match q.get("severity").map(String::as_str) {
+        None => None,
+        Some(s) if busbar_kernel::audit_ring::SEVERITIES.contains(&s) => Some(s),
+        Some(_) => return invalid("severity: expected info|warning|error"),
+    };
     let descending = match q.get("order").map(String::as_str) {
         None | Some("desc") => true,
         Some("asc") => false,
@@ -1770,6 +1709,9 @@ pub(crate) async fn get_audit(
         limit: w.limit,
         actions: &actions,
         resource: q.get("resource").map(String::as_str),
+        severity,
+        kind: q.get("kind").map(String::as_str),
+        instance: q.get("instance").map(String::as_str),
     };
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(wait);
     let page = loop {
@@ -1777,7 +1719,7 @@ pub(crate) async fn get_audit(
         let notified = AUDIT_LOG.notified();
         tokio::pin!(notified);
         notified.as_mut().enable();
-        match AUDIT_LOG.list_after(&read) {
+        match AUDIT_LOG.list_after_store(&read).await {
             Err(oldest) => {
                 return cursor::expired(cursor::encode(
                     "audit",
@@ -1788,9 +1730,12 @@ pub(crate) async fn get_audit(
             Ok(page) if !page.items.is_empty() || descending || wait == 0 => break page,
             Ok(page) => {
                 let left = deadline.saturating_duration_since(std::time::Instant::now());
-                if left.is_zero() || tokio::time::timeout(left, notified).await.is_err() {
+                if left.is_zero() {
                     break page;
                 }
+                // Re-read at least once a second: a row another node appended pulses no `Notify` here.
+                let slice = left.min(std::time::Duration::from_secs(1));
+                let _ = tokio::time::timeout(slice, notified).await;
             }
         }
     };
@@ -2891,6 +2836,15 @@ async fn current_root_settings(
     (root, revision, status)
 }
 
+/// The shorthand the running generation admits, which the secret rule reads `{word: value}`
+/// references against.
+fn settings_sugars(app: &busbar_kernel::state::App) -> busbar_contract::secret_ref::Sugars {
+    app.grammar
+        .get()
+        .map(|grammar| grammar.sugars.clone())
+        .unwrap_or_default()
+}
+
 pub(crate) async fn get_config_settings(State(handle): State<Arc<AppHandle>>) -> Response {
     let dispatch = tracing::dispatcher::get_default(|d| d.clone());
     let read = config_transaction(&handle, move |txn| {
@@ -2913,6 +2867,7 @@ pub(crate) async fn get_config_settings(State(handle): State<Arc<AppHandle>>) ->
     let settings = crate::v1::service::redact_settings_bags(
         serde_json::to_value(root.authoring(&busbar_kernel::seal::acquire()))
             .unwrap_or_else(|_| json!({})),
+        &settings_sugars(&current),
     );
     with_config_etag(
         ok_json(
@@ -2920,7 +2875,7 @@ pub(crate) async fn get_config_settings(State(handle): State<Arc<AppHandle>>) ->
             &json!({
                 "applied": false,
                 "config_version": current.config_version,
-                // already reduced every bag inside `settings` to its key names.
+                // already projected every secret position inside `settings` to {set, secret_ref}.
                 "settings": settings,
                 "settings_source": "desired_root_overlay",
                 "desired_revision": desired_revision,
@@ -3117,6 +3072,7 @@ pub(crate) async fn put_config_settings(
             let settings = crate::v1::service::redact_settings_bags(
                 serde_json::to_value(merged.authoring(&busbar_kernel::seal::acquire()))
                     .unwrap_or_else(|_| json!({})),
+                &settings_sugars(&installed),
             );
             with_config_etag(
                 ok_json(
@@ -3124,7 +3080,7 @@ pub(crate) async fn put_config_settings(
                     &json!({
                         "applied": true,
                         "config_version": installed.config_version,
-                        // above has already reduced every bag inside `settings` to its key names.
+                        // above has already projected every secret position inside `settings` to {set, secret_ref}.
                         "settings": settings,
                         "configuration": configuration,
                         "reload_to_apply": reload_to_apply,
@@ -3606,12 +3562,6 @@ pub(crate) const V1_GET_PATHS: &[(&str, &str)] = &[
         "/info",
         "Version, compiled-in plugin proof, uptime, topology",
     ),
-    (
-        "/pools",
-        "Pool topology (members + weights). ?detail=true inlines live member status (one call, no N+1)",
-    ),
-    ("/models", "Model lanes + upstream providers"),
-    ("/providers", "Distinct providers + lane counts"),
     (PATH_HOOKS, "Hook registry (definitions)"),
     (
         PATH_GROUPS,
@@ -3880,22 +3830,6 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         }),
     );
     paths.insert(
-        ap("/pools/{name}"),
-        json!({
-            "get": {
-                "summary": "Live per-member status of one pool (breaker/concurrency/latency)",
-                "security": [{"adminToken": []}],
-                "parameters": [{
-                    "name": "name", "in": "path", "required": true,
-                    "schema": {"type": "string"}
-                }],
-                RESPONSES_KEY: {
-                    "200": {"description": "OK"},
-                }
-            }
-        }),
-    );
-    paths.insert(
         ap("/groups/{name}/usage"),
         json!({
             "get": {
@@ -4074,7 +4008,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
     );
     if let Some(auth_path) = paths.get_mut(&ap(PATH_ADMIN_AUTH)) {
         auth_path["put"] = json!({
-            "summary": "Replace the admin_auth chain at runtime, dry-run guarded (the calling credentials must hold full scope under the NEW chain, else 409). Live until the next reload/restart",
+            "summary": "Replace the admin_auth chain at runtime, dry-run guarded (the calling credentials must still pass under the NEW chain, else 409). Live until the next reload/restart",
             "security": [{"adminToken": []}],
             RESPONSES_KEY: {
                 "200": {"description": "The resource + apply metadata: `{configured, modules, applied, config_version, note}`"},
@@ -4370,6 +4304,21 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                     "Filter by exact resource (e.g. `hook:x`)",
                     false,
                 ),
+                (
+                    "severity",
+                    "Filter by severity: `info`, `warning` or `error`",
+                    false,
+                ),
+                (
+                    "kind",
+                    "Filter by the engine kind of the instance a row is about",
+                    false,
+                ),
+                (
+                    "instance",
+                    "Filter by the instance a row is about",
+                    false,
+                ),
                 ("limit", "Page size (default 200, max 1000)", false),
                 (
                     "cursor",
@@ -4435,43 +4384,11 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
             ],
         ),
         (
-            "/pools",
-            &[
-                (
-                    "detail",
-                    "`true` inlines each member's live status (same row shape as /pools/{name})",
-                    false,
-                ),
-                ("limit", "Page size (default 200, max 1000)", false),
-                (
-                    "cursor",
-                    "Opaque continuation cursor from `next_cursor`",
-                    false,
-                ),
-            ],
-        ),
-        (
             "/groups",
             PAGE_PARAMS,
         ),
         (
-            "/models",
-            PAGE_PARAMS,
-        ),
-        (
-            "/providers",
-            PAGE_PARAMS,
-        ),
-        (
             "/hooks",
-            PAGE_PARAMS,
-        ),
-        (
-            "/identity-providers",
-            PAGE_PARAMS,
-        ),
-        (
-            "/export",
             PAGE_PARAMS,
         ),
     ];
@@ -4526,7 +4443,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         .iter()
         .map(|(p, m)| ((*p).to_string(), *m))
         .collect();
-    for section in busbar_kernel::config::named_map::NamedMapSection::sections() {
+    for section in super::named_map::routed_sections() {
         let root = section.path_root();
         if_match_guarded.push((format!("{root}/{{name}}"), "put"));
         if_match_guarded.push((format!("{root}/{{name}}"), "delete"));
@@ -4649,15 +4566,11 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
 
     use crate::v1::contract::{
         AdminAuthView, AuthView, ConfigValidateView, EffectiveConfigView, GroupView,
-        HookHealthView, HookView, InfoView, ModelView, NamedDefView, Page, PluginInstallView,
-        PluginReloadView, PluginView, PoolDetailView, ProviderView, UsageView,
+        HookHealthView, HookView, InfoView, NamedDefView, Page, PluginInstallView,
+        PluginReloadView, PluginView, UsageView,
     };
 
     typed!("/info", "get", "200", InfoView);
-    typed!("/pools", "get", "200", sview::PoolListView);
-    typed!("/pools/{name}", "get", "200", PoolDetailView);
-    typed!("/models", "get", "200", Page<ModelView>);
-    typed!("/providers", "get", "200", Page<ProviderView>);
 
     typed!(PATH_HOOKS, "get", "200", Page<HookView>);
     typed!(PATH_HOOKS, "post", "201", HookView);
@@ -4906,7 +4819,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         })
     );
 
-    for section in busbar_kernel::config::named_map::NamedMapSection::sections() {
+    for section in super::named_map::routed_sections() {
         let root = section.path_root();
         let item = format!("{root}/{{name}}");
         let settings = format!("{root}/{{name}}/settings");
@@ -4930,13 +4843,6 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
             super::named_map::settings_request_schema()
         );
     }
-
-    typed!(
-        "/export/{name}",
-        "delete",
-        "200",
-        super::named_map::PendingRestartRemovalView
-    );
 
     let mut schemas = gen.definitions().clone();
     schemas.insert(
@@ -5063,6 +4969,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
             "x-busbar-reasons": reasons_component(),
             "x-busbar-plugin-refusals": busbar_kernel::admin::reasons::PLUGIN_REFUSALS,
             "x-busbar-unit-reasons": unit_reasons_component(),
+            "x-busbar-audit-actions": audit_actions_component(),
             "securitySchemes": {
                 "adminToken": {"type": "apiKey", "in": "header", "name": OPENAPI_ADMIN_TOKEN_HEADER},
                 "bearerAuth": {"type": "http", "scheme": "bearer",
@@ -5097,6 +5004,22 @@ fn reasons_component() -> serde_json::Value {
                 .collect();
         }
         table.insert(row.reason.to_string(), entry);
+    }
+    serde_json::Value::Object(table)
+}
+
+/// `components.x-busbar-audit-actions` (ADMIN-API-1.6 section 7.2): the closed set of actions an
+/// audit row carries. `action=` matches these names, and their nouns (the part before the first dot).
+/// Each row says what its `data` holds: an object, with members typed per action.
+#[cfg(feature = "openapi-schema")]
+fn audit_actions_component() -> serde_json::Value {
+    let mut table = serde_json::Map::new();
+    for action in busbar_kernel::audit::auditlog::AUDIT_ACTIONS {
+        table.insert(
+            (*action).to_string(),
+            json!({"noun": action.split('.').next().unwrap_or_default(),
+                   "data_schema": {"type": "object", "additionalProperties": true}}),
+        );
     }
     serde_json::Value::Object(table)
 }
@@ -5162,8 +5085,16 @@ pub(crate) async fn openapi(State(handle): State<Arc<AppHandle>>) -> Response {
 }
 
 pub(super) async fn render_openapi(configured: impl Fn(&str) -> bool + Send + 'static) -> Response {
+    render_openapi_of(openapi_json, configured).await
+}
+
+/// [`render_openapi`] over the document `committed` produces.
+pub(super) async fn render_openapi_of(
+    committed: impl FnOnce() -> String + Send + 'static,
+    configured: impl Fn(&str) -> bool + Send + 'static,
+) -> Response {
     let served = tokio::task::spawn_blocking(move || {
-        let committed = openapi_json();
+        let committed = committed();
         openapi_for_configured_planes(&committed, configured).unwrap_or(committed)
     })
     .await;

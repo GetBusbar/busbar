@@ -82,6 +82,117 @@ pub(crate) fn dlclose_on_worker(lib: Library) {
     });
 }
 
+/// Why admit step 8 opened no image.
+#[cfg(unix)]
+pub(crate) enum Unopened {
+    /// The verified bytes could not be staged unchanged, or the native load guard refused them.
+    Stage(String),
+    /// busbar-ffi refused the image: dlopen failed, or a step-9 header check failed (the library, if one was
+    /// loaded, has already been dropped on the permanent worker).
+    Image(busbar_ffi::image::ImageError),
+    /// The image's initializer or `busbar_plugin()` panicked on the worker.
+    Panicked,
+}
+
+/// Admit steps 8-9 (IF §11.1): `busbar_ffi::image::Opened::open` (dlopen, `busbar_plugin()`, the H4 bounds
+/// check of the header, the stamp, the kind table and `former_names`) on the permanent ffi worker, the only
+/// thread that runs an image's code before admission.
+#[cfg(unix)]
+fn open_on_worker(
+    path: &std::ffi::OsStr,
+    bytes: &[u8],
+) -> Result<busbar_ffi::image::Opened, Unopened> {
+    match crate::ffi_thread::on_plugin_thread(|| {
+        crate::ffi_thread::debug_assert_permanent("dlopen");
+        busbar_ffi::image::Opened::open(path, bytes)
+    }) {
+        Ok(opened) => opened.map_err(Unopened::Image),
+        Err(_) => Err(Unopened::Panicked),
+    }
+}
+
+/// Exit b (IF §11.1, I13): a refused image's library is dropped on the permanent ffi worker.
+#[cfg(unix)]
+pub(crate) fn close_on_worker(opened: busbar_ffi::image::Opened) {
+    #[cfg(test)]
+    crate::UNLOADS_ON_WORKER.with(|n| n.set(n.get() + 1));
+    let _ = crate::ffi_thread::on_plugin_thread(move || {
+        crate::ffi_thread::debug_assert_permanent("dlclose");
+        opened.close();
+    });
+}
+
+/// Admit step 8 (IF §11.1): stage the verified bytes under the native load guard (a sealed memfd on Linux, else
+/// the pinned private temp file, re-verified at its name around the open) and open them through busbar-ffi on
+/// the permanent worker. The returned `Staged` is held with the image for the life of the process (I13).
+#[cfg(unix)]
+pub(crate) fn open_image(
+    bytes: &[u8],
+    display: &str,
+) -> Result<(busbar_ffi::image::Opened, Staged), Unopened> {
+    if let Some(guard) = NATIVE_LOAD_GUARD.get() {
+        guard(bytes, display).map_err(Unopened::Stage)?;
+    }
+    #[cfg(test)]
+    STAGED_HERE.with(|n| n.set(n.get() + 1));
+    #[cfg(target_os = "linux")]
+    {
+        match sealed_memfd(bytes) {
+            Ok(fd) => {
+                let path = memfd_name(&fd);
+                let staged = Staged::Memfd { fd: Some(fd) };
+                match open_on_worker(std::ffi::OsStr::new(&path), bytes) {
+                    Ok(opened) => return Ok((opened, staged)),
+                    Err(Unopened::Image(busbar_ffi::image::ImageError::Load(e))) => {
+                        eprintln!(
+                            "[warn] memfd load failed for plugin '{display}' ({}); falling back to \
+                             private temp staging",
+                            loader_error(&e)
+                        );
+                    }
+                    Err(refused) => return Err(refused),
+                }
+            }
+            Err(e) => {
+                eprintln!(
+                    "[warn] memfd load unavailable for plugin '{display}' ({e}); falling back to \
+                     private temp staging"
+                );
+            }
+        }
+    }
+    let (path, pin) = stage_temp_file(bytes).map_err(Unopened::Stage)?;
+    let abandon = |pin: std::fs::File, path: &PathBuf| {
+        drop(pin);
+        release_temp_file(path);
+    };
+    if let Err(why) = verify_pinned(&pin, &path, bytes) {
+        abandon(pin, &path);
+        return Err(Unopened::Stage(format!("its staged file {why}")));
+    }
+    let opened = match open_on_worker(std::ffi::OsStr::new(&path), bytes) {
+        Ok(opened) => opened,
+        Err(refused) => {
+            abandon(pin, &path);
+            return Err(refused);
+        }
+    };
+    if let Err(why) = verify_pinned(&pin, &path, bytes) {
+        close_on_worker(opened);
+        abandon(pin, &path);
+        return Err(Unopened::Stage(format!(
+            "its staged file changed while it was loading ({why}); unloaded"
+        )));
+    }
+    Ok((
+        opened,
+        Staged::TempFile {
+            path,
+            pin: Some(pin),
+        },
+    ))
+}
+
 /// The door of the library at `path`, loaded through this module and kept for the life of the
 /// process: for a harness that wraps a dropped-in door itself (`dist/default` `tests/canary`).
 /// Refused once the native load guard is installed, like every standalone path load.
@@ -554,6 +665,19 @@ fn load_via_staged_file(
 
 #[cfg(target_os = "linux")]
 fn load_via_memfd(bytes: &[u8], display: &str) -> Result<(Library, Staged), String> {
+    let fd = sealed_memfd(bytes)?;
+    let path = memfd_name(&fd);
+    // SAFETY: same operator-trust as any plugin load; the fd content is exactly the verified bytes
+    // and is not reachable by path from any other process's namespace. The name is not held by any
+    // resident image: a released image that stays resident keeps its fd, so `N` is not free.
+    let lib = crate::stage::dlopen_on_worker(std::ffi::OsStr::new(&path))
+        .map_err(|e| format!("failed to load plugin '{display}' from memfd: {e}"))?;
+    Ok((lib, Staged::Memfd { fd: Some(fd) }))
+}
+
+/// A memfd holding exactly `bytes`, sealed against every later write, grow and shrink.
+#[cfg(target_os = "linux")]
+pub(crate) fn sealed_memfd(bytes: &[u8]) -> Result<std::os::fd::OwnedFd, String> {
     use std::os::fd::{AsRawFd as _, FromRawFd as _, OwnedFd};
     // Raw `syscall(SYS_memfd_create, ...)` rather than the named `libc::memfd_create` wrapper:
     // the wrapper is only a LINK-time convenience symbol some libc.so/cross-sysroots omit even
@@ -605,13 +729,7 @@ fn load_via_memfd(bytes: &[u8], display: &str) -> Result<(Library, Staged), Stri
             std::io::Error::last_os_error()
         ));
     }
-    let path = memfd_name(&fd);
-    // SAFETY: same operator-trust as any plugin load; the fd content is exactly the verified bytes
-    // and is not reachable by path from any other process's namespace. The name is not held by any
-    // resident image: a released image that stays resident keeps its fd, so `N` is not free.
-    let lib = crate::stage::dlopen_on_worker(std::ffi::OsStr::new(&path))
-        .map_err(|e| format!("failed to load plugin '{display}' from memfd: {e}"))?;
-    Ok((lib, Staged::Memfd { fd: Some(fd) }))
+    Ok(fd)
 }
 
 #[cfg(target_os = "linux")]

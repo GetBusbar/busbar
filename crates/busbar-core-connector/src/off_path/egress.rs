@@ -408,6 +408,15 @@ pub(crate) mod guard {
 
     use crate::guard::{canonical, norm, Allow, Entry, Metadata, ALLOW_KEY};
 
+    /// The node's own front door as the guard keeps it: the listen ports and the canonical
+    /// addresses the listeners are bound to, built once per configuration commit.
+    pub fn own_node(ports: &[u16], bound: &[IpAddr]) -> crate::guard::OwnNode {
+        let mut node = crate::guard::OwnNode::default();
+        node.ports.extend_from_slice(ports);
+        node.ips.extend(bound.iter().copied().map(canonical));
+        node
+    }
+
     /// An `advanced.allow_destinations` entry as [`strict`] reads it: unbracketed, lowercased, one
     fn fold(entry: &str) -> String {
         let h = entry.trim_start_matches('[').trim_end_matches(']');

@@ -107,7 +107,15 @@ pub(crate) async fn build_app(
     } else if let Some(overlay) = &overlay {
         overlay.core_store_handle()?
     } else {
-        core_over(busbar_kernel::appbuild::bootstrap_config_store(&cfg, &plugins).await?).await
+        core_over(
+            busbar_kernel::appbuild::bootstrap_config_store(
+                &cfg,
+                &plugins,
+                &busbar_kernel::preflight::Unopened,
+            )
+            .await?,
+        )
+        .await
     };
     busbar_kernel::appbuild::build_app_from_config_with_store(
         cfg,

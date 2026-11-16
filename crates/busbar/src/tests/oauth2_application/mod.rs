@@ -392,9 +392,13 @@ async fn build_application(
         } else {
             Ok::<_, String>(
                 crate::root::real_store::core_over(
-                    busbar_kernel::appbuild::bootstrap_config_store(&config, &plugins)
-                        .await
-                        .expect("the actual backend opens"),
+                    busbar_kernel::appbuild::bootstrap_config_store(
+                        &config,
+                        &plugins,
+                        &busbar_kernel::preflight::Unopened,
+                    )
+                    .await
+                    .expect("the actual backend opens"),
                 )
                 .await,
             )
@@ -418,9 +422,13 @@ async fn build_application(
                     .unwrap()
             } else {
                 crate::root::real_store::core_over(
-                    busbar_kernel::appbuild::bootstrap_config_store(&config, &plugins)
-                        .await
-                        .expect("the actual backend opens"),
+                    busbar_kernel::appbuild::bootstrap_config_store(
+                        &config,
+                        &plugins,
+                        &busbar_kernel::preflight::Unopened,
+                    )
+                    .await
+                    .expect("the actual backend opens"),
                 )
                 .await
             }

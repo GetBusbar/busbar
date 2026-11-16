@@ -4,7 +4,8 @@
 //! The C-layout values both sides of the boundary share (UNSAFE-MIN §2.2, §2.3; IF §2, §5, §6.2).
 //!
 //! `unsafe` here: the three non-empty view reads, the `Out` write view, the `RawLent` read, the view
-//! argument read, the `ChainBytes` read and `Send for ChainBytes`.
+//! argument read, the `ChainBytes` read and `Send`/`Sync` for `Shared` (the one impl pair the views and the
+//! `Plugin` header derive theirs from).
 
 #![allow(unsafe_code)]
 
@@ -18,7 +19,7 @@ mechanism! {
 /// Fields are private: a Rust producer builds one only from a `&'a [u8]`.
 #[repr(C)]
 #[derive(Clone, Copy)]
-pub struct Bytes<'a> { ptr: *const u8, len: usize, _l: PhantomData<&'a [u8]> }
+pub struct Bytes<'a> { ptr: Shared<u8>, len: usize, _l: PhantomData<&'a [u8]> }
 
 /// Borrowed UTF-8. The producer guarantees UTF-8 (every Rust producer builds it from `&str`); `get` does
 /// not re-validate, and core re-validates every `Str` it turns into a core string.
@@ -29,7 +30,7 @@ pub struct Str<'a>(Bytes<'a>);
 /// Borrowed array of `T: View`, under the same empty rule.
 #[repr(C)]
 #[derive(Clone, Copy)]
-pub struct Slice<'a, T: View> { ptr: *const T, len: usize, _l: PhantomData<&'a [T]> }
+pub struct Slice<'a, T: View> { ptr: Shared<T>, len: usize, _l: PhantomData<&'a [T]> }
 
 /// A name/value pair (headers, query params, claims).
 #[repr(C)]
@@ -120,6 +121,36 @@ pub struct HostFns {
 pub struct Host { ctx: usize, fns: HostFns }
 }
 
+/// A read-only, non-owning pointer inside a lifetime-branded view (`Bytes<'a>`, `Slice<'a, T>`, the
+/// `Plugin` header's two image pointers). The one place the pointer-carrying views get `Send`/`Sync`, so
+/// `Bytes`, `Str`, `Slice`, `Pair` and `Plugin` derive them structurally. `repr(transparent)`: the layout
+/// is that of `*const T`.
+#[repr(transparent)]
+pub(crate) struct Shared<T>(*const T);
+
+impl<T> Clone for Shared<T> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+impl<T> Copy for Shared<T> {}
+
+impl<T> Shared<T> {
+    pub(crate) const fn new(p: *const T) -> Self {
+        Shared(p)
+    }
+    pub(crate) const fn get(self) -> *const T {
+        self.0
+    }
+}
+
+// SAFETY: a `Shared<T>` is only ever a pointer to memory that is immutable for the view's lifetime and is
+// only read through a shared `&[T]`, so it is semantically `&'a T`, which is `Send` and `Sync` exactly
+// when `T: Sync`.
+unsafe impl<T: Sync> Send for Shared<T> {}
+// SAFETY: as above; sharing the pointer shares only reads of `T`.
+unsafe impl<T: Sync> Sync for Shared<T> {}
+
 /// The brand behind `Ctx<'e>` and `RawLent<'e>`. It has no constructor: the only `'e` that exists is
 /// the fresh one `Host::scoped` hands its closure.
 pub struct EntryScope<'e>(PhantomData<*mut &'e ()>);
@@ -133,6 +164,13 @@ pub(crate) mod seal {
         fn chain(arg: super::Arg<'_, Self>, id: &super::ChainId) -> Self::Chained;
     }
 }
+
+/// Byte offset of `RawOut::ptr` (a private field), for busbar-plugin-abi's C-HEADER static asserts (IF §7.8).
+pub const RAW_OUT_PTR_AT: usize = core::mem::offset_of!(RawOut, ptr);
+/// Byte offset of `RawOut::len`.
+pub const RAW_OUT_LEN_AT: usize = core::mem::offset_of!(RawOut, len);
+/// Byte offset of `RawOut::cap`.
+pub const RAW_OUT_CAP_AT: usize = core::mem::offset_of!(RawOut, cap);
 
 /// Types allowed inside an input view: `Copy`, C layout, only pointer, length and `View` fields.
 /// Sealed: busbar-ffi implements it for the view types it defines (here and in `vt`).
@@ -153,13 +191,13 @@ impl View for u64 {}
 
 impl<'a> Bytes<'a> {
     pub const EMPTY: Bytes<'static> = Bytes {
-        ptr: NonNull::<u8>::dangling().as_ptr().cast_const(),
+        ptr: Shared::new(NonNull::<u8>::dangling().as_ptr().cast_const()),
         len: 0,
         _l: PhantomData,
     };
     pub const fn new(s: &'a [u8]) -> Self {
         Bytes {
-            ptr: s.as_ptr(),
+            ptr: Shared::new(s.as_ptr()),
             len: s.len(),
             _l: PhantomData,
         }
@@ -171,12 +209,12 @@ impl<'a> Bytes<'a> {
         }
         // SAFETY: a non-empty `Bytes<'a>` is built only by `new` from a `&'a [u8]` (or by the trusted
         // foreign caller under the same contract), so `ptr` is valid for `len` bytes for `'a`.
-        unsafe { core::slice::from_raw_parts(self.ptr, self.len) }
+        unsafe { core::slice::from_raw_parts(self.ptr.get(), self.len) }
     }
     /// Host side: the address and length, for the image bounds check (never dereferenced).
     #[cfg(feature = "host")]
     pub(crate) fn span(self) -> (usize, usize) {
-        (self.ptr.addr(), self.len)
+        (self.ptr.get().addr(), self.len)
     }
     pub const fn len(self) -> usize {
         self.len
@@ -212,13 +250,13 @@ impl<'a> Str<'a> {
 
 impl<'a, T: View> Slice<'a, T> {
     pub const EMPTY: Self = Slice {
-        ptr: NonNull::<T>::dangling().as_ptr().cast_const(),
+        ptr: Shared::new(NonNull::<T>::dangling().as_ptr().cast_const()),
         len: 0,
         _l: PhantomData,
     };
     pub const fn new(s: &'a [T]) -> Self {
         Slice {
-            ptr: s.as_ptr(),
+            ptr: Shared::new(s.as_ptr()),
             len: s.len(),
             _l: PhantomData,
         }
@@ -231,7 +269,7 @@ impl<'a, T: View> Slice<'a, T> {
         // SAFETY: a non-empty `Slice<'a, T>` is built only by `new` from a `&'a [T]` (or by the trusted
         // foreign caller), so `ptr` is aligned and valid for `len` values of `T` for `'a`; `T: View` is
         // `Copy` with no invalid bit patterns a producer could have written.
-        unsafe { core::slice::from_raw_parts(self.ptr, self.len) }
+        unsafe { core::slice::from_raw_parts(self.ptr.get(), self.len) }
     }
     pub const fn len(self) -> usize {
         self.len
@@ -680,16 +718,16 @@ impl Drop for CurrentGuard {
 /// keeps every argument and result buffer of a chain until its token retires, and `CURRENT` names a
 /// chain only during that chain's polls. `!Sync`, `Send`.
 pub struct ChainBytes {
-    ptr: *const u8,
+    ptr: Shared<u8>,
     len: usize,
     id: ChainId,
     _ns: PhantomData<Cell<()>>,
 }
 
-// SAFETY: the bytes are host memory the host keeps alive for the whole chain and never mutates, and
+// `Send` comes from `Shared<u8>`: the bytes are host memory the host keeps alive for the whole chain and
+// never mutates, and
 // every read is gated on `CURRENT == id`, which holds only on a thread that is polling this chain, so
 // moving the handle to another thread (the future migrating between resumes) cannot make a read unsound.
-unsafe impl Send for ChainBytes {}
 
 impl ChainBytes {
     /// Checks `CURRENT == self.id`, then calls `f`. Any other thread or chain: panic (FAULT StaleHandle).
@@ -704,7 +742,7 @@ impl ChainBytes {
         // argument or result buffer that the host keeps alive and unchanged until this chain's token
         // retires; `CURRENT == id` proves this chain is being polled on this thread now, so it is alive.
         // The slice is higher-ranked in `f` and cannot escape the call.
-        f(unsafe { core::slice::from_raw_parts(self.ptr, self.len) })
+        f(unsafe { core::slice::from_raw_parts(self.ptr.get(), self.len) })
     }
     pub fn len(&self) -> usize {
         self.len
@@ -728,13 +766,13 @@ mod tests {
     fn an_empty_view_reads_empty_whatever_its_pointer() {
         let bytes = [
             Bytes {
-                ptr: core::ptr::null(),
+                ptr: Shared::new(core::ptr::null()),
                 len: 0,
                 _l: PhantomData,
             },
             Bytes::EMPTY,
             Bytes {
-                ptr: core::ptr::without_provenance(1),
+                ptr: Shared::new(core::ptr::without_provenance(1)),
                 len: 0,
                 _l: PhantomData,
             },
@@ -746,12 +784,12 @@ mod tests {
         }
         let slices: [Slice<'static, u64>; 2] = [
             Slice {
-                ptr: core::ptr::null(),
+                ptr: Shared::new(core::ptr::null()),
                 len: 0,
                 _l: PhantomData,
             },
             Slice {
-                ptr: core::ptr::without_provenance(3),
+                ptr: Shared::new(core::ptr::without_provenance(3)),
                 len: 0,
                 _l: PhantomData,
             },
@@ -760,6 +798,22 @@ mod tests {
             assert!(s.get().is_empty());
         }
         assert!(RawLent::EMPTY.get().is_empty());
+    }
+
+    /// C-SEND-SYNC: the borrowed views cross threads like `&[u8]`/`&[T]` (the kernel holds `&[Pair]`
+    /// across an await in a `Send` future). Compile-time only.
+    #[test]
+    fn the_views_are_send_and_sync() {
+        fn send_sync<T: Send + Sync>() {}
+        send_sync::<Bytes<'static>>();
+        send_sync::<Str<'static>>();
+        send_sync::<Slice<'static, u64>>();
+        send_sync::<Slice<'static, Pair<'static>>>();
+        send_sync::<Pair<'static>>();
+        send_sync::<&[Pair<'static>]>();
+        send_sync::<crate::Plugin>();
+        fn send<T: Send>() {}
+        send::<ChainBytes>();
     }
 
     #[test]
@@ -777,7 +831,7 @@ mod tests {
         let arg = Arg::bytes(Bytes::new(b"xyz"));
         assert_eq!(arg.get().get(), b"xyz");
         assert_eq!(Arg::str(Str::new("s")).get().get(), "s");
-        assert!(!Bytes::new(&[]).ptr.is_null());
+        assert!(!Bytes::new(&[]).ptr.get().is_null());
     }
 
     extern "C" fn grow_to_64(_ctx: Ctx<'_>, raw: &mut RawOut, need: usize) -> bool {

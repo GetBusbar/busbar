@@ -40,7 +40,6 @@ use busbar_core_connector::listen::DEFAULT_HANDSHAKE_TIMEOUT;
 use busbar_core_connector::listen::{AcceptLimits, Listening};
 
 #[cfg(not(target_env = "msvc"))]
-
 pub(crate) fn build_info_line() -> String {
     format!(
         "profile={profile} opt-level={opt} lto={lto} debug-assertions={da} pgo={pgo} \
@@ -685,7 +684,9 @@ async fn run(
             format!("base Store settings: {error}"),
         ))
     });
-    let dest = BootstrapDestJudge::new(root::connector::dest_judge(&base_cfg));
+    let guard_judge = root::connector::dest_judge(&base_cfg);
+    let boot_guard = guard_judge.guard().clone();
+    let dest = BootstrapDestJudge::new(guard_judge);
     let commit_guard: Arc<dyn busbar_kernel::host_services::DestJudge> = dest.clone();
     let (credentials, credential_handle) = root::credentials::AppCredentials::late();
     root::serve::compose(dest.clone(), &late_services, credentials);
@@ -712,6 +713,16 @@ async fn run(
             &[base_cfg.listen.as_str(), base_cfg.admin_listen.as_str()],
         );
         root::connector::install_trust_store(&base_cfg, false);
+        // The MIN-3 registry boots here, before the Store opens and before any listener serves: images, the
+        // kernel's sides, then 2a, 2b, the deployment point, 2c. Without a MIN-3 store image the old path boots.
+        root::min3_boot::run(
+            &base_cfg,
+            &deploy.plugins,
+            boot_guard,
+            late_services.kernel(),
+        )
+        .await
+        .unwrap_or_else(|error| die(boot_error("MIN-3 plugin boot refused", error)));
         let prepared_store = busbar_kernel::appbuild::prepare_config_store(&base_cfg, &deploy.plugins)
             .await
             .unwrap_or_else(|error| die(store_boot_refusal(principal_transition.is_some(), error)));
@@ -1189,6 +1200,12 @@ async fn run(
     let admin_tls_cfg = cfg.admin_tls.clone();
     let req_body_max = cfg.limits.request_body_max_bytes;
     let max_inbound = cfg.limits.max_inbound_concurrent;
+    // `advanced.shutdown.drain_timeout` and `advanced.governance.max_pending_checkpoints`;
+    // validation already refused a value out of range, so this never clamps.
+    let drain_settings = cfg
+        .limits
+        .drain_settings()
+        .unwrap_or_else(|refusals| die_list("shutdown drain settings refused:", refusals));
 
     root::registry::check_or_exit(LINKED.claims);
 
@@ -1679,6 +1696,8 @@ async fn run(
             app_handle.clone(),
         ));
     }
+    // Durable plane WORK binds a principal's recovery standing through governance from here on.
+    root::min3_boot::attach_governance(app_handle.clone());
 
     #[cfg(distribution_root)]
     if let Some(book) = &book {
@@ -1721,10 +1740,10 @@ async fn run(
         app_handle.attach_on_swap(spawn);
     }
 
-    // SHUTDOWN-HANG F4: one drain owner holds the budget from the first broadcast to exit.
-    let drain_clock = busbar_kernel::governance::drain::DrainClock::new(
-        busbar_kernel::governance::drain::DEFAULT_DRAIN_TIMEOUT,
-    );
+    // SHUTDOWN-HANG F4: one drain owner holds the budget from the first broadcast to exit. The
+    // budget and the terminal-backlog cap are `drain_settings`, read beside the other limits.
+    let drain_clock =
+        busbar_kernel::governance::drain::DrainClock::new(drain_settings.drain_timeout);
     let drain = root::shutdown::ShutdownDrain::new(Arc::clone(&drain_clock));
     let (shutdown_tx, _keep_open) = tokio::sync::broadcast::channel::<()>(1);
     // Persistence failure can request shutdown before a listener exists. A watch
@@ -1771,6 +1790,10 @@ async fn run(
     let _ = signal_handoff.send(());
 
     let governance = app_handle.load().governance.clone();
+    if let Some(gov) = &governance {
+        gov.admissions()
+            .set_cap(drain_settings.max_pending_checkpoints);
+    }
     let budget_flusher = governance.clone().map(|gov| {
         tokio::spawn(root::measurements::maintenance(
             busbar_kernel::governance::run_budget_flusher(

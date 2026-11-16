@@ -156,6 +156,16 @@ impl From<NeedErr> for Fail {
 /// (the backend refuses the alg) is the REFUSED R_UNSUPPORTED verdict.
 impl From<CryptoErr> for Fail {
     fn from(e: CryptoErr) -> Self {
+        // FU3 (B30): `check` judges a configuration, never a credential, so a crypto Err there is the module
+        // failing, not a verdict on a setting: FAILED, whatever the status (`Limit` keeps its own code).
+        if IN_CHECK.get() {
+            return match e {
+                CryptoErr::Limit => Fail::failed(failed::F_LIMIT),
+                CryptoErr::Bad | CryptoErr::Unavailable | CryptoErr::Invalid | CryptoErr::Rng => {
+                    Fail::failed(failed::F_UNAVAILABLE)
+                }
+            };
+        }
         match e {
             CryptoErr::Bad => Fail::refused(refused::R_DENIED),
             CryptoErr::Unavailable => Fail::refused(refused::R_UNSUPPORTED),
@@ -164,6 +174,25 @@ impl From<CryptoErr> for Fail {
             CryptoErr::Rng => Fail::failed(failed::F_UNAVAILABLE),
         }
     }
+}
+
+std::thread_local! {
+    /// True while the shim runs the plugin's `check` on this thread (FU3). A `const` `Cell<bool>` has no destructor
+    /// (I13: abi's plugin-side thread-locals have none).
+    static IN_CHECK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Runs `f` (the plugin's `check`) with `From<CryptoErr> for Fail` in its FU3 mode, restoring the flag even if `f`
+/// unwinds (the shim's `catch_unwind` sits outside).
+pub(crate) fn in_check<R>(f: impl FnOnce() -> R) -> R {
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            IN_CHECK.set(self.0);
+        }
+    }
+    let _restore = Restore(IN_CHECK.replace(true));
+    f()
 }
 
 /// Round 15: the most FAIL detail bytes the shim writes (C: `BB_FAIL_TEXT_WIRE_MAX`). Not the display length:
@@ -263,4 +292,7 @@ pub enum FaultReason {
     BadInstance,
     /// A token from the wrong space (chain vs session, bit 63) or with a stale generation.
     BadToken,
+    /// A once rule the host found a session answer to break (a second or late FORWARD, an item out of place, a
+    /// USAGE it may not keep; §8.6): charged by the host, not found by the adapter's decode.
+    OnceRule,
 }

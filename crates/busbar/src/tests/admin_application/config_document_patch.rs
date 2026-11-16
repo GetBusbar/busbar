@@ -209,9 +209,13 @@ async fn document_patch_is_durable_conditional_and_preserves_hidden_base_configu
     let config = busbar_kernel::config::resolve(&deploy, &defs).unwrap();
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
-        .await
-        .expect("the actual configured Store opens");
+    let anchor = busbar_kernel::appbuild::bootstrap_config_store(
+        &config,
+        &plugin_config,
+        &busbar_kernel::preflight::Unopened,
+    )
+    .await
+    .expect("the actual configured Store opens");
     let anchor = crate::root::real_store::core_over(anchor).await;
     let overlay = OverlayStore::from_core(anchor.clone())
         .expect("the actual Store supports conditional config persistence");
@@ -931,9 +935,13 @@ pub(super) async fn ephemeral_admin(
     let config = busbar_kernel::config::resolve(&deploy, &defs).unwrap();
     let boot_rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let opened = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
-        .await
-        .expect("the actual configured Store opens");
+    let opened = busbar_kernel::appbuild::bootstrap_config_store(
+        &config,
+        &plugin_config,
+        &busbar_kernel::preflight::Unopened,
+    )
+    .await
+    .expect("the actual configured Store opens");
     let anchor = crate::root::real_store::core_over(Arc::new(
         crate::root::real_store::EphemeralInfo(opened),
     ))

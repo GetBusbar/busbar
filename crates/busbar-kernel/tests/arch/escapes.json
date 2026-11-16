@@ -56,6 +56,7 @@
     "crates/plugin-loader/src/tests/dispatch_tests.rs": 1
   },
   "forbid": [
+    "ci/hop/src/main.rs",
     "crates/busbar-contract/src/caps/mod.rs",
     "crates/busbar-contract/src/json_grammar.rs",
     "crates/busbar-contract/src/secure.rs",
@@ -64,6 +65,7 @@
     "crates/busbar-core-admin/src/lib.rs",
     "crates/busbar-core-connector/src/tls/mod.rs",
     "crates/busbar-core-oauth2/src/lib.rs",
+    "crates/busbar-crypto/src/lib.rs",
     "crates/busbar-kernel-audit/src/bin/busbar-audit-verify.rs",
     "crates/busbar-kernel-audit/src/lib.rs",
     "crates/busbar-kernel-breaker/src/lib.rs",
@@ -75,8 +77,11 @@
     "crates/busbar-kernel-ledger/src/usage/mod.rs",
     "crates/busbar-kernel-wal/src/lib.rs",
     "crates/busbar-migrate/src/lib.rs",
+    "crates/busbar-plugin-abi/src/lib.rs",
     "crates/busbar-plugin-bench/src/lib.rs",
     "crates/busbar-plugin-test/src/lib.rs",
+    "crates/busbar-plugin-test/tests/fixtures/carrier_target.rs",
+    "crates/busbar-plugin-test/tests/fixtures/framer_target.rs",
     "crates/busbar/src/main.rs",
     "tools/ci-checks/src/main.rs"
   ],

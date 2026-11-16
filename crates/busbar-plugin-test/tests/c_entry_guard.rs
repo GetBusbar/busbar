@@ -10,7 +10,7 @@
 //! the arm's body and un-ignores it in its own MR (red first, then green).
 
 #[test]
-#[ignore = "owner: W1-H1"]
+#[ignore = "owner: W1-H1 (blocked: entry::guard, GetBusbar/busbar#272)"]
 fn grow_to_16_mib_and_the_arena_is_zero_when_the_open_step_returns() {
     todo!("owner: W1-H1 (C-ENTRY-GUARD)")
 }

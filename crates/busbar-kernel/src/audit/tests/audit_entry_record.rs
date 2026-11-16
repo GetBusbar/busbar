@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use crate::audit::{ChainLabels, ChainedRecord, Digest, Framing};
-use crate::audit_ring::{AuditEntry, AUDIT_SCHEME_LENGTH_PREFIXED};
+use crate::audit_ring::{AuditEntry, AUDIT_SCHEME_LENGTH_PREFIXED, AUDIT_SCHEME_ROW};
 
 const ADMIN_LOG: &str = "admin";
 
@@ -25,7 +25,7 @@ impl ChainedRecord for AuditEntry {
     const FRAMING: Framing = Framing::PipeSeparated;
 
     fn framing(&self) -> Framing {
-        if self.scheme == AUDIT_SCHEME_LENGTH_PREFIXED {
+        if self.scheme == AUDIT_SCHEME_LENGTH_PREFIXED || self.scheme == AUDIT_SCHEME_ROW {
             Framing::LengthPrefixed
         } else {
             Framing::PipeSeparated
@@ -62,6 +62,7 @@ impl ChainedRecord for AuditEntry {
             recorded_here: true,
 
             scheme: AUDIT_SCHEME_LENGTH_PREFIXED,
+            ..Default::default()
         }
     }
 
@@ -70,6 +71,31 @@ impl ChainedRecord for AuditEntry {
     }
 
     fn digest_fields(&self, d: &mut Digest) {
+        if self.scheme == AUDIT_SCHEME_ROW {
+            let row = crate::audit::auditlog::AuditRowInput {
+                action: self.action.clone(),
+                resource: self.resource.clone(),
+                outcome: self.outcome.clone(),
+                principal: self.principal.clone(),
+                config_generation: self.config_generation.clone(),
+                sections_changed: self.sections_changed.clone(),
+                request_id: self.request_id.clone(),
+                idempotency_key: self.idempotency_key.clone(),
+                kind: self.kind.clone(),
+                instance: self.instance.clone(),
+                severity: self.severity.clone(),
+                message: self.message.clone(),
+                data: self.data.clone(),
+            };
+            d.raw(&crate::audit::frame_prelude(
+                Framing::PipeSeparated,
+                &self.prev_hash,
+                None,
+                self.seq,
+            ))
+            .raw(&crate::audit::auditlog::row_suffix(self.ts, &row));
+            return;
+        }
         if self.scheme == AUDIT_SCHEME_LENGTH_PREFIXED {
             d.raw(&crate::audit::frame_prelude(
                 Framing::PipeSeparated,

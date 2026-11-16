@@ -139,11 +139,15 @@ pub enum PlaneOut<'o> {
         flags: u32,
         description: &'o str,
     },
+    /// MINT (§12.11 `TicketMint`): `flags` = MINT_ONCE?, `prefix` = MT_PREFIX, `record` = MT_RECORD.
     Mint {
         check: u32,
+        flags: u32,
         ttl_s: u64,
         scope: Option<&'o str>,
         audience: Option<&'o str>,
+        prefix: Option<&'o str>,
+        record: Option<&'o [u8]>,
     },
     Sign {
         check: u32,
@@ -274,6 +278,7 @@ pub struct TrustItem<'a> {
 }
 
 /// Round 23: `cred_header` = the route's D_ROUTE_CRED_HEADER, lowercase (§8.6, §12.11 "Route credential header").
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RouteInfo {
     pub route: u32,
     pub methods: u32,
@@ -283,6 +288,7 @@ pub struct RouteInfo {
     pub cred_header: Option<Box<str>>,
 }
 
+#[derive(Clone, Debug, PartialEq)]
 pub struct UsageClass {
     pub class: Box<str>,
     pub unit: u32,
@@ -320,6 +326,11 @@ pub trait PlanePort: Send + Sync + 'static {
     fn facts(&self) -> u64;
     /// D_TICK_S, if declared.
     fn tick_s(&self) -> Option<u64>;
+    /// D_ADMIN_OPENAPI: the OpenAPI fragment of the plane's ROUTE_ADMIN routes (round 8), for the admin document.
+    fn admin_openapi(&self) -> Option<&str>;
+    /// Charges this plane's image for a once rule core found one of its answers to break (IF §8.6: handled
+    /// exactly as an adapter FAULT): the instance is quarantined and `plugin_fault` audited.
+    fn charge(&self, reason: busbar_plugin_abi::fail::FaultReason);
     /// Ok(session) even when the plane answered locally; core then calls `end`. A REFUSED/FAILED answer (no
     /// token, §10.4) is Err(PortError::Refused/Failed) and no session exists; core renders the refusal.
     fn request(

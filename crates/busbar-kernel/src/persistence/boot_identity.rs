@@ -61,6 +61,102 @@ struct RetireState {
 pub struct WriterRetirements {
     gate: tokio::sync::Mutex<()>,
     state: Mutex<RetireState>,
+    #[cfg(test)]
+    hooks: RetireHooks,
+}
+
+/// Test-only: one held step. `reached` is notified when the step is reached; `release` lets it go.
+#[cfg(test)]
+#[derive(Default)]
+pub(crate) struct TestHold {
+    pub(crate) reached: tokio::sync::Notify,
+    pub(crate) release: tokio::sync::Notify,
+}
+
+#[cfg(test)]
+impl TestHold {
+    pub(crate) async fn pass(&self) {
+        self.reached.notify_one();
+        self.release.notified().await;
+    }
+}
+
+/// Test-only: what one `settle` retry answered (SHUTDOWN-HANG 8.15).
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SettleAnswer {
+    Decided,
+    NoEffect,
+    Busy,
+    Unresolved,
+    /// The retry was refused (`UnknownOperation`: another driver collected the decision).
+    Unknown,
+    /// After `Unknown`, `gate` was free: the entry was removed as lost.
+    Lost,
+}
+
+#[cfg(test)]
+impl SettleAnswer {
+    fn of(result: &super::commit::SubmitResult) -> Self {
+        use super::commit::SubmitResult as R;
+        match result {
+            R::Decided(_) => Self::Decided,
+            R::NoEffect(_) => Self::NoEffect,
+            R::Busy => Self::Busy,
+            R::Uncertain | R::Reconcile => Self::Unresolved,
+        }
+    }
+}
+
+#[cfg(test)]
+#[derive(Default)]
+struct RetireHooks {
+    decision: Mutex<Option<Arc<TestHold>>>,
+    settle: Mutex<Vec<SettleAnswer>>,
+}
+
+#[cfg(test)]
+impl WriterRetirements {
+    /// Holds the next `retire_after` whose submit returns, after the CoreStore's decision and
+    /// before `take_decided`.
+    pub(crate) fn hold_decision(&self, hold: Arc<TestHold>) {
+        *self
+            .hooks
+            .decision
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) = Some(hold);
+    }
+
+    fn armed_decision(&self) -> Option<Arc<TestHold>> {
+        self.hooks
+            .decision
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take()
+    }
+
+    async fn decision_reached(&self) {
+        if let Some(hold) = self.armed_decision() {
+            hold.pass().await;
+        }
+    }
+
+    fn note(&self, answer: SettleAnswer) {
+        self.hooks
+            .settle
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .push(answer);
+    }
+
+    /// Every `settle` retry answer so far, in order.
+    pub(crate) fn settle_answers(&self) -> Vec<SettleAnswer> {
+        self.hooks
+            .settle
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
+    }
 }
 impl WriterRetirements {
     fn state(&self) -> std::sync::MutexGuard<'_, RetireState> {
@@ -249,8 +345,10 @@ impl WriterRetirements {
             result: Secret::default(),
         })
         .map_err(error)?;
-        // A record is owed only for a writer that never retired: its row still admits it.
-        let seen = seen.filter(|_| old.admits(epoch));
+        // A record is owed only for a writer that never retired: its row still has a live
+        // execution epoch. `epoch` is the dataset's writer epoch, not one of the row's execution
+        // epochs, so `admits(epoch)` would miss a writer that rolled its epoch and died (#258).
+        let seen = seen.filter(|_| !old.live().is_empty());
         {
             let mut state = self.state();
             if let Some(seen) = &seen {
@@ -266,6 +364,8 @@ impl WriterRetirements {
                 return Err(error(cause));
             }
         };
+        #[cfg(test)]
+        self.decision_reached().await;
         match submission.result {
             SubmitResult::Decided(decision) => {
                 self.take_decided(target, matches!(*decision, native::Decision::Applied(_)));
@@ -346,17 +446,27 @@ impl WriterRetirements {
                     .retry(PendingId(candidate.candidate().id.operation))
                     .await
                 {
-                    Ok(submission) => match submission.result {
-                        SubmitResult::Decided(decision) => self.take_decided(
-                            target,
-                            matches!(*decision, native::Decision::Applied(_)),
-                        ),
-                        SubmitResult::NoEffect(_) => self.take_decided(target, false),
-                        SubmitResult::Uncertain | SubmitResult::Busy | SubmitResult::Reconcile => {}
-                    },
+                    Ok(submission) => {
+                        #[cfg(test)]
+                        self.note(SettleAnswer::of(&submission.result));
+                        match submission.result {
+                            SubmitResult::Decided(decision) => self.take_decided(
+                                target,
+                                matches!(*decision, native::Decision::Applied(_)),
+                            ),
+                            SubmitResult::NoEffect(_) => self.take_decided(target, false),
+                            SubmitResult::Uncertain
+                            | SubmitResult::Busy
+                            | SubmitResult::Reconcile => {}
+                        }
+                    }
                     Err(_) => {
+                        #[cfg(test)]
+                        self.note(SettleAnswer::Unknown);
                         // Decided by another driver. If none is in flight, nobody holds it.
                         if let Ok(_free) = self.gate.try_lock() {
+                            #[cfg(test)]
+                            self.note(SettleAnswer::Lost);
                             let lost = self.state().pending.remove(&target);
                             if let Some((_, Some(seen))) = lost {
                                 undrained_records().lost(&seen);
@@ -1075,6 +1185,9 @@ pub struct ExpiredWriters {
     pub rows: Vec<ExpiredWriter>,
     pub remaining: usize,
     pub invalid: usize,
+    /// Other writers' leases not yet expired for the grace: live, never closed, reported as
+    /// F5's `skipped_live`.
+    pub live: usize,
 }
 
 impl BootIdentity {
@@ -1082,7 +1195,7 @@ impl BootIdentity {
     /// epoch first, excluding this process's own writer. The gate is taken once per page, so
     /// this process's own lease refresh waits at most one page. The scan is an inventory, not
     /// a proof: every close is re-checked by the store.
-    pub async fn expired_writers(
+    pub(crate) async fn expired_writers(
         &self,
         grace_ms: u64,
         max: usize,
@@ -1160,9 +1273,11 @@ impl BootIdentity {
             ..ExpiredWriters::default()
         };
         for (target, lease_key, lease, expires_ms) in leases {
-            if target == (own.writer_epoch, own.writer)
-                || now_ms < expires_ms.saturating_add(grace_ms)
-            {
+            if target == (own.writer_epoch, own.writer) {
+                continue;
+            }
+            if now_ms < expires_ms.saturating_add(grace_ms) {
+                out.live += 1;
                 continue;
             }
             if out.rows.len() >= max {
@@ -1184,7 +1299,7 @@ impl BootIdentity {
 
     /// Deletes a closed writer's lease row, guarded by the exact bytes scanned. A row another
     /// process deleted or changed first makes this a no-op.
-    pub async fn delete_writer_lease(&self, row: &ExpiredWriter) -> Result<bool, String> {
+    pub(crate) async fn delete_writer_lease(&self, row: &ExpiredWriter) -> Result<bool, String> {
         let _gate = self.records.gate.lock().await;
         self.records.resume().await?;
         self.records
@@ -1204,7 +1319,7 @@ impl BootIdentity {
 }
 
 /// At most this many writers closed per start; the next start continues.
-pub const EXPIRED_PASS_MAX: usize = 256;
+pub(crate) const EXPIRED_PASS_MAX: usize = 256;
 
 /// The start-up predecessor task's owner (SEALING-FIX §3.6.2; this design ships its F5 step and
 /// its fence settle). Its own `WriterRetirements` records into the process-wide ledger.
@@ -1256,6 +1371,7 @@ impl PredecessorFence {
         };
         pass.invalid = scan.invalid;
         pass.remaining = scan.remaining;
+        pass.skipped_live = scan.live;
         'writers: for row in &scan.rows {
             if stopped() {
                 break;
@@ -1503,3 +1619,11 @@ impl NodeLease {
 #[cfg(test)]
 #[path = "tests/boot_identity_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/expired_writers_tests.rs"]
+mod expired_writers_tests;
+
+#[cfg(test)]
+#[path = "tests/fence_settle_tests.rs"]
+mod fence_settle_tests;

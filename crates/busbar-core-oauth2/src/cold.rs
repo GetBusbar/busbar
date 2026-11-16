@@ -46,3 +46,19 @@ pub(crate) fn authorization_error_page(status: http::StatusCode, body: &[u8]) ->
         description = super::routes::Escaped(description),
     )
 }
+
+/// A swap that lost every one of its attempts to a concurrent writer.
+#[cold]
+#[inline(never)]
+pub(crate) fn no_version_won(kind_name: &str, attempts: u32) -> StorageError {
+    StorageError::new(format!(
+        "oauth_as store: {kind_name}: no version won in {attempts} attempts"
+    ))
+}
+
+/// A signing key the store lost between the write and the read that follows it.
+#[cold]
+#[inline(never)]
+pub(crate) fn signing_key_not_kept() -> String {
+    "the store did not keep the signing key".to_string()
+}

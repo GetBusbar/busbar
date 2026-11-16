@@ -238,3 +238,54 @@ fn the_open_units_are_the_boots_facts_and_the_boots_parse_judges_them() {
     assert_eq!(std::fs::read_to_string(&path).unwrap(), source);
     assert_eq!(scratch.names(), ["config.yaml", "providers.yaml"]);
 }
+
+/// C-TRANSPORT policy §8 test 13 (`upgrade_from_155_shape_carries_acceptance`, WBS rule 10): a
+/// 1.5.5-shaped config with the printed `insecure_transport` line added under an instance block
+/// plans, stamps and keeps the key byte for byte, in the base config (1d, the patch writer), in an
+/// overlay-held hook (1c's `HookCfg` conversion sets the key aside and puts it back) and in an
+/// overlay named-map instance.
+#[test]
+fn upgrade_from_155_shape_carries_acceptance() {
+    const LINE: &str =
+        "{ accept: plaintext, reason: \"pg sidecar on the pod network; INFRA-142\" }";
+    let base = format!(
+        "listen: 0.0.0.0:8080\nstore:\n  module: pg\n  settings: {{url: 'postgres://db/x?sslmode=disable'}}\n  insecure_transport: {LINE}\nidentity-providers:\n  corp-ldap:\n    module: ldap\n    settings: {{url: 'ldap://dc1.corp'}}\n    insecure_transport: {LINE}\n"
+    );
+    let (written, _) = upgrade(&base, &facts());
+    assert_eq!(
+        written
+            .matches(&format!("insecure_transport: {LINE}"))
+            .count(),
+        2,
+        "both blocks keep the line byte for byte:\n{written}"
+    );
+    assert!(written.starts_with("config_version: 1\n"));
+
+    let scratch = Scratch::new();
+    let path = scratch.deployment(
+        "listen: 0.0.0.0:8080\nstore: {module: pg, settings: {url: x}}\nmodels:\n  m: {provider: p}\n",
+    );
+    scratch.file(
+        crate::overlay::DEFAULT_OVERLAY_FILENAME,
+        r#"{"version": 1,
+  "hooks": {"wr": {"kind": "gate", "module": "webrequest", "insecure_transport": {"accept": "plaintext", "reason": "loopback collector"}}},
+  "named_maps": {"export": {"otlp1": {"module": "otlp", "settings": {"url": "http://127.0.0.1:4318"}, "insecure_transport": {"accept": "plaintext", "reason": "loopback collector"}}}}}"#,
+    );
+    let planned = plan(&Inputs::new(&path, &facts(), &accept))
+        .unwrap_or_else(|refusal| panic!("planned: {refusal}"));
+    let tree = crate::patch::document(planned.planned()).expect("a mapping");
+    let hook = busbar_contract::yaml::ValueExt::get(&tree, "hooks")
+        .and_then(|hooks| busbar_contract::yaml::ValueExt::get(hooks, "wr"))
+        .expect("the overlay hook is folded");
+    let reason = |value: Option<&busbar_contract::yaml::Value>| {
+        value
+            .and_then(|value| busbar_contract::yaml::ValueExt::get(value, "insecure_transport"))
+            .and_then(|value| busbar_contract::yaml::ValueExt::get(value, "reason"))
+            .and_then(busbar_contract::yaml::ValueExt::as_str)
+            .map(str::to_owned)
+    };
+    assert_eq!(reason(Some(hook)).as_deref(), Some("loopback collector"));
+    let exporter = busbar_contract::yaml::ValueExt::get(&tree, "export")
+        .and_then(|export| busbar_contract::yaml::ValueExt::get(export, "otlp1"));
+    assert_eq!(reason(exporter).as_deref(), Some("loopback collector"));
+}

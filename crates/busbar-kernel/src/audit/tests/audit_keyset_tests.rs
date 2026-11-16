@@ -18,6 +18,7 @@ fn append(log: &PlaneAuditLog, seq: u64, action: &str) {
             hash: seq.to_string(),
             scheme: crate::audit_ring::AUDIT_SCHEME_PIPE,
             recorded_here: false,
+            ..Default::default()
         },
         "admin",
         Vec::new(),
@@ -32,6 +33,7 @@ fn query<'a>(after: Option<u64>, descending: bool, actions: &'a [&'a str]) -> Au
         limit: 100,
         actions,
         resource: None,
+        ..Default::default()
     }
 }
 

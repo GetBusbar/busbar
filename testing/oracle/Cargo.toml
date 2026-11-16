@@ -34,6 +34,7 @@ busbar-contract = { path = "../../crates/busbar-contract", features = ["test-sea
 busbar-plugin-loader = { path = "../../crates/plugin-loader", features = ["test-support"] }
 busbar-kernel = { path = "../../crates/busbar-kernel", features = ["test-support"] }
 busbar-core-connector = { path = "../../crates/busbar-core-connector", features = ["test-support"] }
+busbar-migrations = { path = "../../crates/busbar-migrations" }
 serde_json = "1"
 hex = "0.4.3"
 base64 = "0.22"
@@ -46,14 +47,11 @@ opentelemetry-proto = { version = "0.32", default-features = false, features = [
 prost = { version = "0.14", default-features = false, features = ["std"] }
 
 [build-dependencies]
+busbar-linked-gen = { path = "../../crates/busbar-linked-gen" }
 serde_json = "1"
 
 # The oracle binaries. Each is a dist/default test file, by path. root-tests (busbar-release ci/core.yml)
 # reads these names and leaves them to `oracle`.
-[[test]]
-name = "migration_corpus"
-path = "../../dist/default/tests/migration_corpus.rs"
-
 [[test]]
 name = "validate_matches_the_1_5_5_golden"
 path = "../../dist/default/tests/validate_matches_the_1_5_5_golden.rs"

@@ -3,7 +3,7 @@ resolver = "2"
 # dist/default and testing/oracle (the black-box oracle) are their own workspaces; the root crate depends on
 # no plugin. busbar-crypto-backend is its own lock root so a private build can [patch] a backend of the same
 # name in.
-exclude = ["dist/default", "testing/oracle", "tools/system-hammer", "crates/busbar-crypto-backend"]
+exclude = ["dist/default", "testing/oracle", "crates/busbar-linked-gen", "tools/system-hammer", "crates/busbar-crypto-backend"]
 members = [
     "crates/busbar",
     "crates/busbar-core-connector",
@@ -54,6 +54,8 @@ bytes = "1"
 close_fds = "=0.3.2"
 core_affinity = "0.8"
 crc32fast = "1"
+# The host buffer pool's per-class bounded MPMC queues (busbar-plugin-abi[host], IF §10.1, AGREED 209).
+crossbeam-queue = { version = "0.3", default-features = false, features = ["std"] }
 # The DTLS protocol engine only, no default features: its crypto provider is the backend's.
 dimpl = { version = "=0.7.4", default-features = false }
 # 3.x dropped its `std` feature (core::error::Error); no default features keeps pkcs8/pem, rand_core and zeroize out.
