@@ -442,8 +442,7 @@ pub fn trust_policy(
     let mut policy =
         super::loader::sign::TrustPolicy::from_config(super::loader::sign::TrustInput {
             publishers: &cfg.publisher_keys(),
-            allow_unsigned: cfg.trust.allow_unsigned,
-            allow_third_party: cfg.trust.allow_third_party,
+            allow_untrusted: cfg.trust.allow_untrusted,
             min_versions: &cfg.min_versions,
             first_party_floors: &cfg.first_party_floors,
             binary_version,

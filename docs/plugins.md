@@ -151,11 +151,13 @@ plugins:
   enabled: true          # master switch, default false: off = nothing in the dir ever loads
   dir: plugins           # where the tarballs live
   trust:
-    publishers:          # third-party signing keys only; busbar's own key is embedded
+    publishers:          # scoped third-party authorities; Busbar's roots are embedded
       - name: acme
-        public_key: "<64-hex ed25519 public key>"
-    allow_unsigned: false
-    allow_third_party: false
+        plugins: [acme-store-dynamo]
+        keys:
+          - public_key: "<64-hex ed25519 public key>"
+            revoked: false
+    allow_untrusted: false
   min_versions:
     acme-store-dynamo: "2.0.0"
 
@@ -167,6 +169,18 @@ store:
 With `enabled: false` (or the block absent) a tarball in the directory is inert: Busbar does not
 read it, and referencing a plugin store (`store.module: <store-plugin>`) fails boot with an error naming
 `plugins.enabled`. See [configuration.md](configuration.md#plugins) for the field reference.
+
+Verified Busbar releases and valid signatures from configured publishers admit automatically.
+A configured publisher can sign only the exact canonical names in its `plugins` list; aliases do
+not expand that scope. Add a replacement key alongside the old key to overlap a rotation, then
+mark the old key `revoked: true` after deploying replacement artifacts. A revoked key never
+admits an artifact. Duplicate publisher identities or public keys and empty scopes are refused.
+
+`allow_untrusted: true` permits unsigned or unknown-publisher code, recorded as unverified in
+audit and administration. It never permits an invalid signature from a configured publisher,
+an invalid Busbar seal, an altered library, an out-of-scope name, a revoked key, an incompatible
+ABI or a trusted version-floor failure. Signature trust establishes provenance, not extra runtime
+permissions. Disabling dynamic plugins does not disable linked built-ins.
 
 ## Building a store plugin
 
@@ -482,7 +496,8 @@ BUSBAR_SIGN_KEY=9f2c... busbar-plugin-pack pack \
 The tool computes the `sha256` binding, signs the canonical manifest, self-checks the result
 against the same structural validation Busbar runs at load, and writes the tarball. For local
 development, `--allow-unsigned` (with no `BUSBAR_SIGN_KEY`) packages an unsigned tarball that
-Busbar loads only under `plugins.trust.allow_unsigned: true`.
+Busbar loads only under `plugins.trust.allow_untrusted: true`, with an unknown publisher name.
+An unsigned artifact claiming a configured publisher or Busbar is a hard refusal.
 
 `--kind` selects the plugin kind (`store` / `secret` / `auth` / `hook` / `export` / `plane` / `transport`). A `kind: hook` pack adds
 the grant-declaration flags `--needs-prompt <no|ro|rw>` and `--needs-user <no|ro>`, which stamp the
@@ -527,14 +542,14 @@ get code executed, and a compromised or replayed plugin must not load.
 2. **Signature trust, not location trust.** A plugin loads because its manifest signature verifies,
    not because of where the file sits. Busbar's release public key is embedded in the binary, so
    busbar-signed plugins are trusted with zero configuration. Third-party publishers must be
-   explicitly allowlisted by key. Unsigned or unknown-publisher plugins are logged and skipped
-   unless the operator sets the matching explicit opt-in (`allow_unsigned` / `allow_third_party`),
+   explicitly allowlisted by key and exact plugin names. Unsigned or unknown-publisher plugins are logged and skipped
+   unless the operator sets `allow_untrusted`,
    and a skipped plugin is never `dlopen`ed: its initialization code never runs, not at boot, not
    from the admin catalog, not from `--list-plugins`. A build whose crypto backend admits no
    external plugin (`EXTERNAL_PLUGINS = false`, a FIPS build) loads only a dropped-in plugin that
    verifies against busbar's embedded release key. It refuses everything else (code
    `external_crypto`, BUSBAR-6002, a rejected `plugin.trust` audit record) whatever `publishers`,
-   `allow_unsigned` or `allow_third_party` say. Compiled-in plugins are built in the same build and
+   `allow_untrusted` says. Compiled-in plugins are built in the same build and
    are unaffected.
 3. **Anti-downgrade.** A validly-signed but OLD release is still a signed artifact an attacker can
    replay. First-party plugins are automatically floored at the **highest version of that plugin

@@ -3352,6 +3352,7 @@ pub(crate) async fn plugin_schema(
         );
         if let Some(row) = loadable.as_ref() {
             selection["configuration"] = loaded_plugin_configuration(&current, row);
+            selection["trust"] = json!(loaded_image_trust(&current, row));
         }
         return ok_json(StatusCode::OK, &selection);
     }
@@ -3361,7 +3362,7 @@ pub(crate) async fn plugin_schema(
         }
         return err_json(&AdminError::not_found(format!("plugin `{name}`")));
     };
-    let trust = verdict_trust(&loadable.trust);
+    let trust = loaded_image_trust(&current, &loadable);
     let (schema, schema_error) = manifest_schema(loadable.settings_schema.as_deref());
     ok_json(
         StatusCode::OK,
@@ -3433,10 +3434,10 @@ fn hook_schema_selection(
     restart_required_default: Option<bool>,
 ) -> serde_json::Value {
     if described.is_some() {
-        return json!({ "name": name, "schema": described, "schema_error": null, "trust": trust, "source": "describe", "kind": kind, "restart_required_default": restart_required_default });
+        return json!({ "name": name, "schema": described, "schema_error": null, "trust": crate::v1::contract::PluginTrustView::from_verification(false, if trust == "trusted" {"trusted"} else if trust == "rejected" {"rejected"} else {"unverified"}, &Default::default()), "source": "describe", "kind": kind, "restart_required_default": restart_required_default });
     }
     let (schema, schema_error) = manifest_schema(settings_schema);
-    json!({ "name": name, "schema": schema, "schema_error": schema_error, "trust": trust, "source": fallback_source, "kind": kind, "restart_required_default": restart_required_default })
+    json!({ "name": name, "schema": schema, "schema_error": schema_error, "trust": crate::v1::contract::PluginTrustView::from_verification(false, if trust == "trusted" {"trusted"} else if trust == "rejected" {"rejected"} else {"unverified"}, &Default::default()), "source": fallback_source, "kind": kind, "restart_required_default": restart_required_default })
 }
 
 #[cfg(test)]
@@ -5402,4 +5403,18 @@ mod archive_precondition_contract_tests {
                 .any(|p| p == field));
         }
     }
+}
+
+fn loaded_image_trust(
+    app: &busbar_kernel::state::App,
+    row: &busbar_contract::plugin_rows::Row,
+) -> crate::v1::contract::PluginTrustView {
+    crate::v1::contract::PluginTrustView::from_verification(
+        app.hook_env.registry.signature_present(&row.name),
+        verdict_trust(&row.trust),
+        &app.hook_env
+            .registry
+            .verification(&row.name)
+            .unwrap_or_default(),
+    )
 }

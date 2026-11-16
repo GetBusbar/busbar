@@ -337,3 +337,50 @@ mod tests;
 
 mod opening;
 pub use opening::{ExportOpening, PreparedExport};
+
+/// Why bytes already in export custody were terminally discarded.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExportDropReason {
+    QueueFull,
+    Stopped,
+    AttemptsExhausted,
+    Refused,
+    ForeignDestination,
+    Expired,
+    /// Only discarded bytes: retained ciphertext with an unavailable key is not a loss.
+    KeyUnavailable,
+}
+
+impl ExportDropReason {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::QueueFull => "queue_full",
+            Self::Stopped => "stopped",
+            Self::AttemptsExhausted => "attempts_exhausted",
+            Self::Refused => "refused",
+            Self::ForeignDestination => "foreign_destination",
+            Self::Expired => "expired",
+            Self::KeyUnavailable => "key_unavailable",
+        }
+    }
+}
+
+/// Delivery loss, pre-custody refusal and audit integrity are distinct facts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExportLossKind {
+    Dropped(ExportDropReason),
+    CaptureRefused,
+    IntegrityFailed,
+}
+
+/// First-loss facts retained by the host observer before transfer into native audit custody.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExportLossFacts {
+    pub instance: String,
+    /// Wall-clock seconds when loss was first observed, not the eventual retry time.
+    pub observed_at: u64,
+    /// Dropped line count, or occurrence count for capture/integrity failures.
+    pub count: u64,
+    pub kind: ExportLossKind,
+}

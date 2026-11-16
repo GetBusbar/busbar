@@ -239,7 +239,7 @@ pub fn config_document(config: &busbar_kernel::config::PluginsCfg) -> serde_json
         .iter()
         .map(|p| {
             serde_json::json!({
-                "name": p.name, "public_key": p.public_key
+                "name": p.name, "plugins": p.plugins, "keys": p.keys.iter().map(|key| serde_json::json!({"public_key": key.public_key, "revoked": key.revoked})).collect::<Vec<_>>()
             })
         })
         .collect();
@@ -258,8 +258,7 @@ pub fn config_document(config: &busbar_kernel::config::PluginsCfg) -> serde_json
         .collect();
     serde_json::json!({
         "enabled": config.enabled, "dir": config.dir, "min_versions": config.min_versions,
-        "trust": {"publishers": publishers, "allow_unsigned": config.trust.allow_unsigned,
-            "allow_third_party": config.trust.allow_third_party}, "fetch": fetch
+        "trust": {"publishers": publishers, "allow_untrusted": config.trust.allow_untrusted}, "fetch": fetch
     })
 }
 
@@ -311,7 +310,21 @@ pub(crate) fn trusted_config_with_key(
         .publishers
         .push(busbar_kernel::config::PluginPublisher {
             name: FIXTURE_PUBLISHER.into(),
-            public_key: hex::encode(signing_key.verifying_key().as_bytes()),
+            plugins: archives
+                .iter()
+                .map(|path| {
+                    crate::root::loader::unpack(
+                        &std::fs::read(path).expect("fixture archive reads"),
+                    )
+                    .expect("fixture archive unpacks")
+                    .manifest
+                    .name
+                })
+                .collect(),
+            keys: vec![busbar_kernel::config::PluginPublisherKey {
+                public_key: hex::encode(signing_key.verifying_key().as_bytes()),
+                revoked: false,
+            }],
         });
     config
 }
