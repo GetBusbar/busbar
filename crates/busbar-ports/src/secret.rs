@@ -8,7 +8,7 @@ use std::sync::Arc;
 use busbar_contract::secure::SecureVec;
 use busbar_plugin_abi::host_side::caller::BoxFut;
 
-use crate::ports::{CallCx, PortError};
+use crate::{CallCx, PortError};
 
 // The IF types `value` as `zeroize::Zeroizing<Vec<u8>>`; the workspace bans `Zeroizing` crate-wide
 // (clippy-crate-wide/clippy.toml, owner 2026-11-14), so the stub uses its named replacement `SecureVec`.
@@ -27,6 +27,7 @@ pub trait SecretPort: Send + Sync + 'static {
 
 /// One D_SUGAR item (§8.2), tagged with the declaring plugin's verified identity (core-internal; never shown to
 /// any plugin).
+#[derive(Clone)]
 pub struct SugarDecl {
     pub identity: Arc<str>,
     pub role: u32,

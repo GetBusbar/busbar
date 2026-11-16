@@ -7,7 +7,7 @@ use busbar_plugin_abi::auth::{self as abi, tag as t, IssuedShapeRec};
 use busbar_plugin_abi::host_side::answer::Answer;
 use busbar_plugin_abi::records::{tag, Full, RecErr, Records, U32Rec, Writer};
 
-use crate::ports::auth::{AuthIn, IssuedShape, LoginIn, ServeIn, ServeOut, UpstreamIn};
+use crate::auth::{AuthIn, IssuedShape, LoginIn, ServeIn, ServeOut, UpstreamIn};
 
 /// The longest id prefix a shape may carry, the id length ceiling and the secret length range (IF §8.3).
 const PREFIX_MAX: usize = 16;

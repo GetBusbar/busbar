@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use busbar_plugin_abi::host_side::caller::BoxFut;
 
 /// Field-for-field today's busbar-contract `IssuedShape`; it lives in plugin-loader (IF §12.8).
-pub use busbar_plugin_loader::ports::auth::IssuedShape;
+pub use busbar_ports::auth::IssuedShape;
 
 /// Core-issued credentials (today's records.secret, e.g. kind "sigv4"), looked up for auth ISSUED_WANTED.
 /// Only for an auth instance the operator config grants `kind`; otherwise behaves as unknown. Unknown ids

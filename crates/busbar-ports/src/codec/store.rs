@@ -5,8 +5,6 @@
 //! `kinds::store::store`; every answer is decoded from the records of an OK `Answer`. Each decoder is a thin
 //! call over a function of `Records`, so the grammar is testable without a driver.
 
-use std::sync::OnceLock;
-
 use busbar_contract::persistence::{
     self as owned, control, Address, BackendInfo, ClockObservation, CommitKey, DatasetId, Decision,
     Durability, ExpectedValue, Mutation, Page, Predicate, PreparedCandidate, Read, ReadResult,
@@ -20,16 +18,6 @@ use busbar_plugin_abi::kinds::store::store as wire;
 use busbar_plugin_abi::records::{tag, Full, Pod, Rec, RecErr, Records, Writer};
 
 type Seal = dyn KernelSeal + Send + Sync;
-
-static SEAL: OnceLock<Box<Seal>> = OnceLock::new();
-
-/// W1-A5. The owner of the kernel's `Secret<Vec<u8>>` values hands the loader no seal through the frozen
-/// signatures, so the one that reads a candidate's bytes onto the wire is installed once, by core, before any
-/// store commit (an owner question in the W1-A5 handoff). Until then `encode_candidate` writes nothing and
-/// answers `Full`. Returns false when a seal was already installed.
-pub fn install_seal(seal: Box<Seal>) -> bool {
-    SEAL.set(seal).is_ok()
-}
 
 /// The wire guard of an optional UTC interval; zero = unguarded.
 fn guard(time: Option<owned::TimeGuard>) -> wire::TimeGuard {
@@ -179,8 +167,8 @@ pub fn encode_candidate(
     w: &mut impl Writer,
     c: &PreparedCandidate,
     key: &CommitKey,
+    seal: &(dyn KernelSeal + Send + Sync),
 ) -> Result<(), Full> {
-    let seal: &Seal = &**SEAL.get().ok_or(Full)?;
     let candidate = c.candidate();
     let (slot, seq) = key.wire();
     let head = wire::CandHead {

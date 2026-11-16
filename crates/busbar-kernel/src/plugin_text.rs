@@ -10,11 +10,11 @@
 //! one-string displays, where the prefix is added after the cut, so a plugin keeps its full 512 bytes.
 
 use busbar_plugin_abi::host_side::scrub::{fail_text, Scrub};
-use busbar_plugin_loader::ports::PortError;
+use busbar_ports::PortError;
 
 /// The resolved code (IF §11.2): `Copy` over `&'static`, `Display` = `BUSBAR-{plugin}-{number:04}`, which can never
 /// start like a core `BUSBAR-[0-9]{4}` code. The loader's type, so the kernel renders exactly what it resolved.
-pub use busbar_plugin_loader::instance::PluginCode;
+pub use busbar_ports::PluginCode;
 
 /// The JSON member that holds the plugin's raw text.
 pub(crate) const TEXT_MEMBER: &str = "text";

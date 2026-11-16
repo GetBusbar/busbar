@@ -58,7 +58,7 @@ use busbar_plugin_loader::admit::Admitted;
 use busbar_plugin_loader::instance::{
     Ceilings, InstanceSpec, OpenError, OpenedPort, Registry, StoreSeal,
 };
-use busbar_plugin_loader::ports::store::StoreHandle;
+use busbar_ports::store::StoreHandle;
 
 use busbar_kernel::teller::Kernel;
 use busbar_kernel::upstreams::ConfiguredUpstreams;

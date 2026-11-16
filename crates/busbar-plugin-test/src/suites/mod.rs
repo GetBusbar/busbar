@@ -28,8 +28,8 @@ pub use busbar_plugin_abi::plugin::Plugin;
 /// The case-input types the suite signatures and case structs mention, public so a plugin's tests name them
 /// as `busbar_plugin_test::suites::{AuthIn, PlaneIn, Pair, Plugin}` (IF §14).
 pub use busbar_plugin_abi::types::Pair;
-pub use busbar_plugin_loader::ports::auth::AuthIn;
-pub use busbar_plugin_loader::ports::plane::PlaneIn;
+pub use busbar_ports::auth::AuthIn;
+pub use busbar_ports::plane::PlaneIn;
 
 use crate::fake_needs::FakeNeeds;
 

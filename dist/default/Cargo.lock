@@ -488,6 +488,7 @@ dependencies = [
  "busbar-kernel-egress",
  "busbar-plugin-abi",
  "busbar-plugin-loader",
+ "busbar-ports",
  "crc32fast",
  "dimpl",
  "foldhash 0.2.0",
@@ -607,6 +608,7 @@ dependencies = [
  "busbar-plane-mcp",
  "busbar-plane-streaming",
  "busbar-plugin-loader",
+ "busbar-ports",
  "busbar-secret-env",
  "busbar-secret-file",
  "busbar-store-memory",
@@ -794,6 +796,7 @@ dependencies = [
  "busbar-kernel-wal",
  "busbar-plugin-abi",
  "busbar-plugin-loader",
+ "busbar-ports",
  "bytes",
  "foldhash 0.2.0",
  "futures",
@@ -1022,6 +1025,7 @@ dependencies = [
  "busbar-contract",
  "busbar-ffi",
  "busbar-plugin-abi",
+ "busbar-ports",
  "flate2",
  "foldhash 0.2.0",
  "futures",
@@ -1037,6 +1041,15 @@ dependencies = [
  "tokio",
  "tracing",
  "windows-sys 0.61.2",
+ "zeroize",
+]
+
+[[package]]
+name = "busbar-ports"
+version = "1.6.0"
+dependencies = [
+ "busbar-contract",
+ "busbar-plugin-abi",
  "zeroize",
 ]
 

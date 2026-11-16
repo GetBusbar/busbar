@@ -20,10 +20,10 @@ use busbar_plugin_abi::fail::refused::R_INVALID;
 use busbar_plugin_abi::host_side::answer::Answer;
 use busbar_plugin_abi::host_side::HOST;
 use busbar_plugin_abi::records::{tag, Records};
-use busbar_plugin_loader::ports::export::ExportPort;
-use busbar_plugin_loader::ports::PortError;
 use busbar_plugin_test::fake_needs::FakeNeeds;
 use busbar_plugin_test::suites::harness::Harness;
+use busbar_ports::export::ExportPort;
+use busbar_ports::PortError;
 
 /// `render` scopes: fill the out buffer then return `Err(Full)`; write records then refuse; answer OK.
 const SCOPE_FULL: u32 = 1;
