@@ -121,9 +121,6 @@ pub struct Durability {
     /// book's lock, so the notary reads the head without taking it.
     pub(crate) head: Arc<HeadFeed>,
 
-    /// The WAL `node_seq` of the newest audit line read back at reopen (0 for none).
-    resumed_head_node_seq: u64,
-
     /// THE RECORDS READ AT REOPEN, kept only until the own-node restart seal walks them
     /// ([`restart_seal::seal_own_node`], SEALING-FIX §3.6.1: "no extra store read"), then taken.
     boot_records: Vec<JournalRecord>,
@@ -547,7 +544,6 @@ pub(crate) async fn build_on_store(
         resumed: true,
         audit_hints: None,
         head: Arc::new(HeadFeed::default()),
-        resumed_head_node_seq: 0,
         boot_records: Vec::new(),
     };
     let mut findings = Vec::new();
@@ -557,8 +553,9 @@ pub(crate) async fn build_on_store(
             .await
             .map_err(|error| native_open_error(error.to_string()))?;
     }
-    durability.resume_audit(&records);
-    durability.publish_resumed_head();
+    durability
+        .resume_audit(&records)
+        .map_err(native_open_error)?;
     findings.extend(
         durability
             .audit_findings

@@ -110,10 +110,11 @@ pub fn verify_linked_window(records: &[AuditLinkedRecord]) -> Result<(), String>
 }
 
 impl AuditChain {
-    /// Resume the chain tail from a checked mixed window. This checks digest/link continuity;
-    /// callers establish Bootstrap/stamp authority separately before trusting the history.
+    /// Reconstruct the claimed tail of a mixed window, like [`AuditChain::resume`]. This is
+    /// NOT integrity or authority verification: boot must retain a damaged tail's position so
+    /// it can report a break without reusing old sequence numbers. Call verify_linked_window
+    /// and the authority walk separately before authenticating history.
     pub fn resume_linked(records: &[AuditLinkedRecord]) -> Result<Self, String> {
-        verify_linked_window(records)?;
         let mut chain = Self::new();
         for record in records {
             match record {
@@ -123,7 +124,10 @@ impl AuditChain {
         }
         if let Some(last) = records.last() {
             chain = chain.sealing_as(last.node());
-            chain.tail_hash = last.fingerprint()?.to_string();
+            chain.tail_hash = match last {
+                AuditLinkedRecord::Unit(record) => record.hash.clone(),
+                AuditLinkedRecord::NotaryKey(record) => record.fingerprint.to_string(),
+            };
             chain.next_seq = last
                 .chain_seq()
                 .checked_add(1)

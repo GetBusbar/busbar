@@ -75,7 +75,7 @@ impl AuditServices {
     ) -> std::io::Result<(Self, CheckpointHandle)> {
         let clock = Arc::new(OnceLock::new());
         let delegated =
-            (notary.key_id() != bootstrap.key_id()).then(|| notary.public_key().clone());
+            (notary.public_key() != bootstrap.public_key()).then(|| notary.public_key().clone());
         let signers = signer::spawn(notary, bootstrap, Arc::clone(&clock))?;
         let services = AuditServices {
             node,
