@@ -168,7 +168,7 @@ struct Denied {
     revision: u64,
 }
 fn encode<T: Serialize>(record: &T) -> Result<Vec<u8>> {
-    serde_json::to_vec(&Record { version: 1, record }).map_err(|_| corrupt())
+    busbar_contract::json::to_vec(&Record { version: 1, record }).map_err(|_| corrupt())
 }
 fn decode<T: DeserializeOwned>(
     bytes: &Secret<Vec<u8>>,
@@ -195,7 +195,7 @@ fn decode<T: DeserializeOwned>(
             return Err(corrupt());
         }
     }
-    let record: Record<T> = serde_json::from_slice(bytes).map_err(|_| corrupt())?;
+    let record: Record<T> = busbar_contract::json::parse(bytes).map_err(|_| corrupt())?;
     if record.version != 1 {
         return Err(corrupt());
     }

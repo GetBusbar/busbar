@@ -2,6 +2,13 @@
 
 Hooks let your policy inspect, steer, or rewrite a request before it reaches an upstream. A **gate** can affect execution; a **tap** observes without deciding. Busbar bounds hook execution and applies the configured `on_error` behavior when a gate fails. Use `on_error: reject` when a request must not continue without its required check.
 
+When a rewrite fails and `on_error` names a fallback hook, core sends the fallback
+the original request projection, subject to that hook's content grants. Partial or
+malformed rewrite output is never forwarded. The fallback's read must be recorded
+before content is sent; audit failure refuses the request. A fallback rejection
+refuses the request, while an abstention preserves the original body. If every
+fallback fails, the chain's configured terminal applies.
+
 A hook is a **`kind: hook` plugin**: the same signed-tarball, in-process plugin ABI that store, secret, and auth plugins use. There is no other hook transport: the built-in out-of-process `socket` and `webhook` transports were retired in 1.5.0. Out-of-process isolation is available through the first-party **`busbar-hook-webrequest`** plugin, which forwards each per-request hook call to an HTTPS sidecar. Write a hook once and it runs against all six LLM protocols and every provider, with failover and circuit breaking underneath it, in one hop.
 
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 340" role="img" aria-label="A gate controls execution; a tap observes it. Taps run at their configured stages. The diagram shows a response-stage tap." style="width:100%;height:auto;font-family:ui-sans-serif,system-ui,sans-serif">

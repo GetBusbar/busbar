@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use base64::Engine as _;
+use busbar_contract::json;
 
 use super::{
     bearer_constraint, is_dpop_bound, refuse_bound_session, Refusal, SenderConstraint,
@@ -10,7 +11,7 @@ use super::{
 
 const B64: base64::engine::GeneralPurpose = base64::engine::general_purpose::URL_SAFE_NO_PAD;
 
-fn jwt(claims: serde_json::Value) -> String {
+fn jwt(claims: json::Value) -> String {
     format!(
         "{}.{}.c2ln",
         B64.encode(r#"{"alg":"ES256","typ":"at+jwt"}"#),
@@ -21,23 +22,21 @@ fn jwt(claims: serde_json::Value) -> String {
 #[test]
 fn a_malformed_jkt_is_bound() {
     assert!(is_dpop_bound(&jwt(
-        serde_json::json!({ "sub": "a", "cnf": { "jkt": "0ZcOCORZNYy-DWpqq30jZyJGHTN0d2HglBV3uiguA4I" } })
+        json::json!({ "sub": "a", "cnf": { "jkt": "0ZcOCORZNYy-DWpqq30jZyJGHTN0d2HglBV3uiguA4I" } })
     )));
-    assert!(!is_dpop_bound(&jwt(serde_json::json!({ "sub": "a" }))));
+    assert!(!is_dpop_bound(&jwt(json::json!({ "sub": "a" }))));
     assert!(!is_dpop_bound(&jwt(
-        serde_json::json!({ "sub": "a", "cnf": { "x5t#S256": "abc" } })
+        json::json!({ "sub": "a", "cnf": { "x5t#S256": "abc" } })
     )));
     // Any cnf.jkt, whatever its type, demands a proof: a malformed one can only be refused.
     for jkt in [
-        serde_json::json!(7),
-        serde_json::json!(123),
-        serde_json::json!({}),
-        serde_json::json!(null),
+        json::json!(7),
+        json::json!(123),
+        json::json!({}),
+        json::json!(null),
     ] {
         assert!(
-            is_dpop_bound(&jwt(
-                serde_json::json!({ "sub": "a", "cnf": { "jkt": jkt } })
-            )),
+            is_dpop_bound(&jwt(json::json!({ "sub": "a", "cnf": { "jkt": jkt } }))),
             "cnf.jkt {jkt} is bound"
         );
     }
@@ -78,7 +77,7 @@ fn carried(carrier: &'static str, token: &str) -> axum::http::HeaderMap {
 
 #[test]
 fn an_unbound_bearer_is_judged_exactly_as_before() {
-    let unbound = jwt(serde_json::json!({ "sub": "a" }));
+    let unbound = jwt(json::json!({ "sub": "a" }));
     for carrier in ["authorization", "x-api-key"] {
         assert!(matches!(
             bearer_constraint(&carried(carrier, &unbound), &carriers()),
@@ -93,7 +92,7 @@ fn an_unbound_bearer_is_judged_exactly_as_before() {
 
 #[test]
 fn with_an_authorization_server_a_dpop_bound_bearer_is_refused() {
-    let bound = jwt(serde_json::json!({ "sub": "a", "cnf": { "jkt": "abc" } }));
+    let bound = jwt(json::json!({ "sub": "a", "cnf": { "jkt": "abc" } }));
     for carrier in ["authorization", "x-api-key"] {
         assert!(
             matches!(
@@ -112,7 +111,7 @@ fn with_an_authorization_server_a_dpop_bound_bearer_is_refused() {
 #[test]
 fn without_an_authorization_server_a_dpop_bound_bearer_is_refused() {
     // The bearer judgement no longer depends on the deployment: a bound token is bound.
-    let bound = jwt(serde_json::json!({ "sub": "a", "cnf": { "jkt": "abc" } }));
+    let bound = jwt(json::json!({ "sub": "a", "cnf": { "jkt": "abc" } }));
     for carrier in ["authorization", "x-api-key"] {
         assert!(
             matches!(
@@ -131,7 +130,7 @@ fn without_an_authorization_server_a_dpop_bound_bearer_is_refused() {
 
 #[test]
 fn the_bound_bearer_constraint_applies_before_exchange() {
-    let bound = jwt(serde_json::json!({ "sub": "a", "cnf": { "jkt": "abc" } }));
+    let bound = jwt(json::json!({ "sub": "a", "cnf": { "jkt": "abc" } }));
     assert!(matches!(
         bearer_constraint(&carried("authorization", &bound), &carriers()),
         SenderConstraint::Refused(_)
@@ -140,7 +139,7 @@ fn the_bound_bearer_constraint_applies_before_exchange() {
         bearer_constraint(&carried("authorization", &bound), &carriers()),
         SenderConstraint::Refused(Refusal::BoundBearer)
     ));
-    let unbound = jwt(serde_json::json!({ "sub": "a" }));
+    let unbound = jwt(json::json!({ "sub": "a" }));
     assert!(matches!(
         bearer_constraint(&carried("authorization", &unbound), &carriers()),
         SenderConstraint::Unconstrained
@@ -149,8 +148,8 @@ fn the_bound_bearer_constraint_applies_before_exchange() {
 
 #[test]
 fn without_an_authorization_server_exchange_bearer_constraints_are_refused() {
-    let bound = jwt(serde_json::json!({ "sub": "a", "cnf": { "jkt": "abc" } }));
-    let unbound = jwt(serde_json::json!({ "sub": "a" }));
+    let bound = jwt(json::json!({ "sub": "a", "cnf": { "jkt": "abc" } }));
+    let unbound = jwt(json::json!({ "sub": "a" }));
     assert!(
         matches!(
             bearer_constraint(&carried("authorization", &bound), &carriers()),
@@ -169,8 +168,8 @@ fn without_an_authorization_server_exchange_bearer_constraints_are_refused() {
 
 #[test]
 fn a_bound_token_cannot_hide_behind_another_carrier_or_occurrence() {
-    let bound = jwt(serde_json::json!({ "sub": "a", "cnf": { "jkt": "abc" } }));
-    let unbound = jwt(serde_json::json!({ "sub": "a" }));
+    let bound = jwt(json::json!({ "sub": "a", "cnf": { "jkt": "abc" } }));
+    let unbound = jwt(json::json!({ "sub": "a" }));
     let behind_bearer = format!("Bearer {unbound}");
     for headers in [
         presenting(&[("authorization", &behind_bearer), ("x-api-key", &bound)]),
@@ -248,8 +247,8 @@ fn a_bound_line_session_credential_is_refused_and_recorded() {
         .with_ansi(false)
         .with_max_level(tracing::Level::DEBUG)
         .finish();
-    let bound = jwt(serde_json::json!({ "sub": "a", "cnf": { "jkt": {} } }));
-    let unbound = jwt(serde_json::json!({ "sub": "a" }));
+    let bound = jwt(json::json!({ "sub": "a", "cnf": { "jkt": {} } }));
+    let unbound = jwt(json::json!({ "sub": "a" }));
     let (refused, admitted) = tracing::subscriber::with_default(subscriber, || {
         tracing::callsite::rebuild_interest_cache();
         (

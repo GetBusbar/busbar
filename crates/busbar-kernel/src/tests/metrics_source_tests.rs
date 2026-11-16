@@ -1,4 +1,5 @@
 use super::*;
+use busbar_contract::json::{self, JsonContainerTrait, JsonValueTrait};
 
 fn ordered_families(families: &[Family]) -> Vec<Family> {
     let mut ordered = families.to_vec();
@@ -21,8 +22,8 @@ fn ordered_families(families: &[Family]) -> Vec<Family> {
 }
 
 fn workload() {
-    let recording: Vec<serde_json::Value> =
-        serde_json::from_str(busbar_contract::abi::sdk::test_support::metrics::RECORDING)
+    let recording: Vec<json::Value> =
+        json::parse_str(busbar_contract::abi::sdk::test_support::metrics::RECORDING)
             .expect("the kind's neutral recording");
     for record in recording {
         let name = record["name"].as_str().unwrap().to_owned();
@@ -71,7 +72,7 @@ fn source_preserves_the_kinds_raw_metric_vector() {
     )));
     metrics::with_local_recorder(&source, workload);
     let expected: Vec<Family> =
-        serde_json::from_str(busbar_contract::abi::sdk::test_support::metrics::SNAPSHOT)
+        json::parse_str(busbar_contract::abi::sdk::test_support::metrics::SNAPSHOT)
             .expect("the kind's raw snapshot vector");
     let actual = source.snapshot();
     assert_eq!(ordered_families(&actual), ordered_families(&expected));

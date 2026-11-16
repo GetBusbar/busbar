@@ -3,6 +3,7 @@
 
 use super::*;
 use crate::persistence::facade::{Limits, WriterAuthority};
+use busbar_contract::json::{self, JsonValueMutTrait as _};
 use busbar_contract::persistence::{
     control, BackendInfo, Call, ClockObservation, DatasetId, Durability, Page, PersistenceBackend,
     Scan,
@@ -47,7 +48,7 @@ impl PersistenceBackend for Backend {
             dataset: DatasetId([1; 16]),
             atomic_domain: [2; 16],
             clock_authority: [3; 16],
-            physical_version: busbar_contract::abi::sdk::store::v4::slot::PHYSICAL_VERSION,
+            physical_version: busbar_contract::persistence::PHYSICAL_VERSION,
             durability: Durability::Ephemeral,
         }
     }
@@ -394,26 +395,26 @@ async fn exact_rewrap_cas_and_strict_versioned_records_preserve_scope_semantics(
         .await
         .unwrap());
     let at = row(b'K', "owner").unwrap();
-    let mut value: serde_json::Value = serde_json::from_slice(&encode(&key).unwrap()).unwrap();
-    value["record"]["future_field"] = serde_json::json!([]);
+    let mut value: json::Value = json::parse_value(&encode(&key).unwrap()).unwrap();
+    value["record"]["future_field"] = json::json!([]);
     backend
         .state
         .lock()
         .unwrap()
         .rows
-        .insert(at.clone(), Secret::new(serde_json::to_vec(&value).unwrap()));
+        .insert(at.clone(), Secret::new(json::to_vec(&value).unwrap()));
     assert!(store.identity().get_key("owner").await.is_err());
     value["record"]
         .as_object_mut()
         .unwrap()
-        .remove("future_field");
+        .remove(&"future_field");
     value["version"] = 2.into();
     backend
         .state
         .lock()
         .unwrap()
         .rows
-        .insert(at, Secret::new(serde_json::to_vec(&value).unwrap()));
+        .insert(at, Secret::new(json::to_vec(&value).unwrap()));
     assert!(store.identity().get_key("owner").await.is_err());
 }
 #[test]

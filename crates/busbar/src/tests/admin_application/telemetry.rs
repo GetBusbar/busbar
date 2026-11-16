@@ -3,6 +3,8 @@
 
 use std::collections::HashSet;
 use std::sync::Arc;
+
+use busbar_contract::json::{self, JsonValueTrait};
 const TOKEN: &str = "admintok";
 
 struct Scratch(std::path::PathBuf);
@@ -163,7 +165,7 @@ async fn info_process_generation_is_available_without_metrics_and_changes_on_res
         .await
         .unwrap();
     assert_eq!(info.status(), 200);
-    let info: serde_json::Value = info.json().await.unwrap();
+    let info = json::parse_value(&info.bytes().await.unwrap()).unwrap();
     let nonce = info["process_boot_nonce"]
         .as_str()
         .expect("native OS randomness is available")
@@ -180,15 +182,18 @@ async fn info_process_generation_is_available_without_metrics_and_changes_on_res
     let mut next = (*handle.load()).clone();
     next.config_version += 1;
     handle.swap(Arc::new(next)).await;
-    let reloaded: serde_json::Value = client
-        .get(&info_url)
-        .bearer_auth(TOKEN)
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
+    let reloaded = json::parse_value(
+        &client
+            .get(&info_url)
+            .bearer_auth(TOKEN)
+            .send()
+            .await
+            .unwrap()
+            .bytes()
+            .await
+            .unwrap(),
+    )
+    .unwrap();
     assert_eq!(reloaded["process_boot_nonce"], nonce);
     assert_eq!(
         reloaded["config_version"].as_u64().unwrap(),
@@ -196,15 +201,18 @@ async fn info_process_generation_is_available_without_metrics_and_changes_on_res
     );
     assert!(!busbar_kernel::snapshot::recorder_installed());
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(60));
-    let again: serde_json::Value = client
-        .get(&info_url)
-        .bearer_auth(TOKEN)
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
+    let again = json::parse_value(
+        &client
+            .get(&info_url)
+            .bearer_auth(TOKEN)
+            .send()
+            .await
+            .unwrap()
+            .bytes()
+            .await
+            .unwrap(),
+    )
+    .unwrap();
     assert_eq!(again["process_boot_nonce"], nonce);
     server.abort();
     let _ = server.await;
@@ -280,7 +288,7 @@ async fn admin_metrics_without_export() {
     let bytes = axum::body::to_bytes(response.into_body(), 1 << 22)
         .await
         .unwrap();
-    let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let body = json::parse_value(&bytes).unwrap();
     assert!(body["families"]
         .as_array()
         .unwrap()

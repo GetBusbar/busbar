@@ -4,6 +4,7 @@
 use super::*;
 use crate::config::groups::{GroupCfg, LimitCfg, LimitMetric, LimitWindow};
 use crate::config::RateEntryCfg;
+use busbar_contract::json::{self, JsonValueTrait};
 use busbar_contract::records::{
     VirtualKey, RESERVED_UNITS, UNIT_CACHE_READ, UNIT_CACHE_WRITE, UNIT_INPUT, UNIT_OUTPUT,
 };
@@ -1035,15 +1036,15 @@ fn omitted_cache_write_rate_prices_at_input() {
     let omitted: RateEntryCfg =
         busbar_contract::yaml::from_str("{input_utok: 2.5, output_utok: 10}")
             .expect("a rate entry");
-    let bytes = serde_json::to_value(&omitted).expect("serializes");
+    let bytes = json::to_value(&omitted).expect("serializes");
     assert!(
         bytes.get("cache_write_utok").is_none(),
         "an unset write rate is not emitted as 0: {bytes}"
     );
-    let back: RateEntryCfg = serde_json::from_value(bytes).expect("round-trips");
+    let back: RateEntryCfg = json::from_value(&bytes).expect("round-trips");
     assert_eq!(back, omitted);
     assert_eq!(
-        serde_json::to_value(&back)
+        json::to_value(&back)
             .expect("serializes")
             .get("cache_write_utok"),
         None

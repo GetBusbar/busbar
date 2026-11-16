@@ -14,12 +14,13 @@
 
 use core::future::{ready, Future};
 use std::collections::{BTreeMap, VecDeque};
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use busbar_plugin_abi::host_side::caller::Caller;
 use busbar_plugin_abi::host_side::needs::{
     ConnId, DirNeed, FetchNeed, NeedErr, NeedOut, Needs, OpenNeed, RecordNeed, TlsMode,
 };
+use busbar_plugin_abi::host_side::scrub::Scrub;
 
 /// One step of a scripted conn.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -165,10 +166,15 @@ struct State {
     released: u64,
 }
 
+/// The scrub set of the instance that owns a watchdog slot: `Registry::scrub_of`, as the kernel attaches it to
+/// custody (`SecretCustody::attach`, busbar root `min3_boot.rs`).
+pub type ScrubOf = Arc<dyn Fn(u32) -> Option<Arc<Scrub>> + Send + Sync>;
+
 /// A scriptable `Needs` for plugin CI (IF §14). Suites run `Registry<FakeNeeds>`.
 #[derive(Default)]
 pub struct FakeNeeds {
     state: Mutex<State>,
+    scrubs: Mutex<Option<ScrubOf>>,
 }
 
 /// The next id in `ids` for `instance`: 1, 2, 3, ... per instance, never repeated.
@@ -243,12 +249,33 @@ impl FakeNeeds {
 
     /// The value custody returns for the secret the operator config holds at `pointer` (the suite binds the
     /// config, so the plugin only ever sees the handle). Handles are numbered from 1 in the order of these calls,
-    /// the order the suite binds the pointers in.
+    /// the order the suite binds the pointers in. For a D_REF_PATH reference, `pointer` is its concrete pointer:
+    /// the suite binder writes this value there, as a JSON string, before `check` and `open` (a reference with no
+    /// value scripted is refused, as custody's failed resolve is).
     pub fn secret(&mut self, pointer: &str, value: &[u8]) -> &mut Self {
         self.state()
             .secrets
             .push((pointer.to_owned(), value.to_vec()));
         self
+    }
+
+    /// Custody's scrub registration (§12.2 step 5, I14): from here on every SECRET this double answers is first
+    /// registered, under its handle, in the scrub set `scrub_of` names for the asking chain's slot, and only then
+    /// handed to the plugin (register, then publish), as the kernel's custody does once the boot attaches
+    /// `Registry::scrub_of` to it. A suite attaches its registry's after the harness is built:
+    /// `h.needs().attach_scrubs(Arc::new(move |slot| weak.upgrade()?.registry().scrub_of(slot)))`. Without it no
+    /// value is registered (a plugin's FAIL text and log lines are then scrubbed of nothing it resolved).
+    pub fn attach_scrubs(&self, scrub_of: ScrubOf) {
+        *self.scrubs.lock().unwrap_or_else(PoisonError::into_inner) = Some(scrub_of);
+    }
+
+    /// The first value `secret` scripted for `pointer`.
+    pub(crate) fn secret_at(&self, pointer: &str) -> Option<Vec<u8>> {
+        self.lock()
+            .secrets
+            .iter()
+            .find(|(at, _)| at == pointer)
+            .map(|(_, value)| value.clone())
     }
 
     /// Scripted kernel answers for plane intents (ENTITLE grants, MINT/SIGN outputs, CONNECT states, rendezvous).
@@ -558,13 +585,24 @@ impl Needs for FakeNeeds {
         handle: u32,
         res: &mut NeedOut<'_>,
     ) -> impl Future<Output = Result<(), NeedErr>> + Send {
-        let _ = cx;
         let value = usize::try_from(handle)
             .ok()
             .and_then(|handle| handle.checked_sub(1))
             .and_then(|at| self.lock().secrets.get(at).map(|(_, value)| value.clone()));
         let answer = match value {
-            Some(value) => res.put0(&value),
+            Some(value) => {
+                // Register, then publish (custody's order, §12.2 step 5): the scrub set masks the value before
+                // the plugin holds it.
+                let scrub_of = self
+                    .scrubs
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .clone();
+                if let Some(scrub) = scrub_of.and_then(|scrub_of| scrub_of(cx.slot)) {
+                    scrub.register(handle, &[value.as_slice()]);
+                }
+                res.put0(&value)
+            }
             None => Err(NeedErr::Denied),
         };
         ready(answer)

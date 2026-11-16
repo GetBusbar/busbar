@@ -21,7 +21,7 @@ fn idp() -> &'static Idp {
         .expect("the IdP's P-256 signing key");
         let point = &signing_key.public_key();
         let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD;
-        let jwks = serde_json::json!({"keys": [{
+        let jwks = busbar_contract::json::json!({"keys": [{
             "kty": "EC", "crv": "P-256", "kid": KEY_ID, "alg": "ES256", "use": "sig",
             "x": b64.encode(&point[1..33]), "y": b64.encode(&point[33..65]),
         }]})
@@ -70,7 +70,7 @@ fn idp() -> &'static Idp {
                     ("200 OK", jwks.clone())
                 } else if request.starts_with(b"GET /pending/.well-known/openid-configuration HTTP/1.1\r\n") {
                     std::thread::sleep(std::time::Duration::from_secs(3));
-                    ("200 OK",serde_json::json!({
+                    ("200 OK",busbar_contract::json::json!({
                         "issuer":format!("{issuer}/pending"),"jwks_uri":format!("{issuer}/jwks"),
                         "authorization_endpoint":format!("{issuer}/authorize"),
                         "token_endpoint":format!("{issuer}/token"),
@@ -83,15 +83,15 @@ fn idp() -> &'static Idp {
                         .unwrap_or_default();
                     *observed.lock().unwrap().entry(code.clone()).or_default() += 1;
                     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
-                    let header = b64.encode(serde_json::json!({"alg":"ES256","typ":"JWT","kid":KEY_ID}).to_string());
-                    let claims = b64.encode(serde_json::json!({
+                    let header = b64.encode(busbar_contract::json::json!({"alg":"ES256","typ":"JWT","kid":KEY_ID}).to_string());
+                    let claims = b64.encode(busbar_contract::json::json!({
                         "iss":issuer,"aud":"oauth-hosted","sub":"alice","roles":["members"],
                         "iat":now,"exp":now+3600,"nonce":code,
                     }).to_string());
                     let input = format!("{header}.{claims}");
                     let signature = signing_key.sign_fixed(input.as_bytes()).expect("sign actual IdP token");
                     let token = format!("{input}.{}",b64.encode(signature));
-                    ("200 OK",serde_json::json!({"token_type":"Bearer","access_token":"local-oidc-access","id_token":token}).to_string())
+                    ("200 OK",busbar_contract::json::json!({"token_type":"Bearer","access_token":"local-oidc-access","id_token":token}).to_string())
                 } else {
                     ("404 Not Found", "{}".into())
                 };

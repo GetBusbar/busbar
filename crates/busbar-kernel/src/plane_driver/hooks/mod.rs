@@ -240,6 +240,20 @@ pub struct UnitHooks {
     pub dialect: String,
 }
 
+struct RewriteReads<'a> {
+    reads: &'a HookRead,
+    dialect: &'a str,
+}
+
+#[async_trait::async_trait]
+impl busbar_contract::hooks::ReadRecorder for RewriteReads<'_> {
+    async fn record(&self, hook: &str, identity: bool) -> bool {
+        (self.reads)(&[hook], None, self.dialect, identity)
+            .await
+            .is_ok()
+    }
+}
+
 impl std::fmt::Debug for UnitHooks {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("UnitHooks")
@@ -2025,7 +2039,16 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                     .await
                     .map_err(|_| fault_veto())?;
             }
-            let outcome = hook.transform(&req, *timeout).await;
+            let outcome = hook
+                .transform_recording(
+                    &req,
+                    *timeout,
+                    &RewriteReads {
+                        reads: &hooks.reads,
+                        dialect: &view.dialect,
+                    },
+                )
+                .await;
             drop(req);
             drop(view);
             ran.push(rewrite_applied(hook.name(), &outcome));
@@ -2062,6 +2085,33 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
 
                         Ok(_) | Err(_) => {
                             drop(arena);
+                            let view = cur.view();
+                            let req =
+                                view.request(hooks.request_id, &pool, true, None, &hooks.requested);
+                            let fallback = hook
+                                .fallback_rewrite_recording(
+                                    &req,
+                                    &RewriteReads {
+                                        reads: &hooks.reads,
+                                        dialect: &view.dialect,
+                                    },
+                                )
+                                .await;
+                            drop(req);
+                            drop(view);
+                            if matches!(
+                                fallback,
+                                Some(TransformOutcome::Failed { .. } | TransformOutcome::Abstain)
+                            ) {
+                                continue;
+                            }
+                            if let Some(TransformOutcome::Reject { status, message }) = fallback {
+                                let shape = ShapeFacts::of(&cur.view());
+                                drop(cur);
+                                self.lock().hooked = Some((hooks, shape));
+                                let (status, message) = gated::rewrite_refusal(status, &message);
+                                return Err(veto(status, message));
+                            }
                             let (status, message) = gated::refused_rewrite(&**hook, &pool, ran);
                             let shape = ShapeFacts::of(&cur.view());
                             drop(cur);
@@ -2779,7 +2829,17 @@ impl SessionStage {
                     words: crate::cold::hooks_audit_unconfirmed(),
                 };
             }
-            match hook.transform(&req, *timeout).await {
+            match hook
+                .transform_recording(
+                    &req,
+                    *timeout,
+                    &RewriteReads {
+                        reads: &hooks.reads,
+                        dialect: &view.dialect,
+                    },
+                )
+                .await
+            {
                 TransformOutcome::Rewrite(rw) => {
                     return StageAnswer::Rewrote {
                         index: u32::try_from(i).unwrap_or(u32::MAX),

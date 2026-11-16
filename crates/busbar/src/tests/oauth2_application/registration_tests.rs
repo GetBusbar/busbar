@@ -40,7 +40,7 @@ async fn register(origin: &str, body: &str) -> u16 {
 }
 
 fn registration(name: &str) -> String {
-    serde_json::json!({
+    busbar_contract::json::json!({
         "redirect_uris": [REDIRECT_URI],
         "token_endpoint_auth_method": "none",
         "response_types": ["code"],

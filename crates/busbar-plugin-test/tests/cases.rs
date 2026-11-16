@@ -286,6 +286,8 @@ mod c_sugar;
 mod c_suite_export;
 #[path = "c_suite_secret.rs"]
 mod c_suite_secret;
+#[path = "c_suite_transport.rs"]
+mod c_suite_transport;
 #[path = "c_ticket_either.rs"]
 mod c_ticket_either;
 #[path = "c_tls_key.rs"]
@@ -346,12 +348,16 @@ mod min3_endpoints;
 mod min3_export;
 #[path = "fixtures/min3_export_fail.rs"]
 mod min3_export_fail;
+#[path = "fixtures/min3_export_metrics.rs"]
+mod min3_export_metrics;
 #[path = "fixtures/min3_second.rs"]
 mod min3_second;
 #[path = "fixtures/min3_secret.rs"]
 mod min3_secret;
 #[path = "fixtures/min3_store.rs"]
 mod min3_store;
+#[path = "fixtures/min3_transport.rs"]
+mod min3_transport;
 
 /// Every `tests/*.rs` is wired: a module of this binary or a `[[test]]` target of the manifest
 /// (`autotests = false`, so an unwired file would never run).

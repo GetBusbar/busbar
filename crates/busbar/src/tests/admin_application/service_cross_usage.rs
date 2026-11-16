@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use crate::root::test_plugins as plugins;
+use busbar_contract::json::{self, JsonValueTrait};
 use busbar_kernel::cost::{
     self as ledger_cost, Author, CardEntryDraft, History, LedgerEntry, RateCard, TierRates,
 };
@@ -34,7 +35,7 @@ fn card(micro_per_token: f64) -> RateCard {
 }
 
 fn enforcement_groups() -> BTreeMap<String, busbar_kernel::config::GroupCfg> {
-    serde_json::from_value(serde_json::json!({
+    json::from_value(&json::json!({
         (GROUP): {"limits": [{"tokens": u64::MAX, "per": "day"}]}
     }))
     .expect("the actual day enforcement group parses")
@@ -341,7 +342,7 @@ async fn one_recorded_usage_is_one_number_on_every_surface() {
         .await
         .unwrap();
     assert_eq!(response.status().as_u16(), 200);
-    let view: serde_json::Value = response.json().await.expect("usage read");
+    let view = json::parse_value(&response.bytes().await.expect("usage read")).expect("usage read");
     let admin = view["total"]["spend_micros"]
         .as_i64()
         .expect("the usage figure");

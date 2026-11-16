@@ -109,6 +109,10 @@ pub mod stamp;
 pub mod grant;
 // The restart walk (SEALING-FIX §3.6.0): run at boot and by the predecessor sealer, never per
 // request.
+/// Common chain decoding and integrity checks, including certificate rows.
+pub mod linked_record;
+/// Per-boot notary certificates, signed by the Bootstrap capability.
+pub mod notary_key;
 pub mod restart;
 // busbar:request-path
 #[cfg_attr(

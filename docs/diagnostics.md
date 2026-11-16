@@ -283,8 +283,19 @@ The oldest audit line no stamp covers yet is older than the alert threshold (ten
 
 **What to do:** Look for BUSBAR-2049 just before this line and act on its reason. The gauge audit_unstamped_age_ms shows the current age.
 
+<a id="terminal-audit-stage-failed"></a>
+### BUSBAR-2051 — A request terminal audit original could not be staged
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `terminal-audit-stage-failed`
+
+The journal refused the terminal audit original before native confirmation. The request fails instead of reporting success without its audit evidence; an already streaming response terminates with an error. The journal and audit chain positions do not advance for the refused original. The counter busbar_audit_stage_failures_total counts these failures.
+
+**What to do:** Check store availability and journal custody pressure. A closed journal can also indicate shutdown. Do not assume an upstream operation was undone when its terminal audit failed.
+
 <a id="audit-sealed-after-restart"></a>
-### BUSBAR-2051 — An unstamped audit tail was sealed after a restart
+### BUSBAR-2052 — An unstamped audit tail was sealed after a restart
 
 - **Severity:** benign_recurring
 - **Since:** 1.6.0
@@ -295,7 +306,7 @@ A busbar process stopped before its audit notary stamped its last lines. On rest
 **What to do:** None: this is the designed outcome of a crash. Look for the crash itself (exit code, kill, host restart) if it was not expected.
 
 <a id="audit-chain-broken-at-boot"></a>
-### BUSBAR-2052 — An audit chain is broken after its last valid stamp; the tail is recorded, never sealed
+### BUSBAR-2053 — An audit chain is broken after its last valid stamp; the tail is recorded, never sealed
 
 - **Severity:** actionable
 - **Since:** 1.6.0
@@ -306,7 +317,7 @@ On restart the walk from a node's last valid audit stamp to its tail failed: a l
 **What to do:** Treat the named lines as unauthenticated until explained: compare the store with a backup or the export of earlier audit pages. The fields node, last_good, unsealed_from, unsealed_to and reason locate the damage.
 
 <a id="audit-predecessor-refused"></a>
-### BUSBAR-2053 — A crashed predecessor on this host was not sealed
+### BUSBAR-2054 — A crashed predecessor on this host was not sealed
 
 - **Severity:** actionable
 - **Since:** 1.6.0
@@ -317,7 +328,7 @@ The start-up predecessor sealer found a node on this host that it may not seal: 
 **What to do:** For host_unknown, set HOSTNAME to a value unique to the machine. For assignment or seal_row_invalid, treat the store as tampered until explained. For the rest, check the store and start the next process on the host.
 
 <a id="audit-predecessor-seal-failed"></a>
-### BUSBAR-2054 — Sealing a crashed predecessor is failing and is retried
+### BUSBAR-2055 — Sealing a crashed predecessor is failing and is retried
 
 - **Severity:** actionable
 - **Since:** 1.6.0

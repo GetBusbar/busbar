@@ -601,3 +601,9 @@ receives identity-provider settings, not deployment credential references.
 The upgrade boot folds the 1.5.5 overlay file into config.yaml and keeps the file as
 `<overlay>.1.5.5` ([the 1.5.5 overlay file](#the-155-overlay-file)); there is no separate import
 step, and a stamped boot never reads an overlay file.
+
+## Retired TLS upgrade flag
+
+`UPGRADE_VERIFY_OFF` is refused in 1.6.0 for every egress class, including operator
+infrastructure. Plugins must use the Need API and its core-held
+`insecure_transport` policy; a plugin flag cannot disable certificate verification.

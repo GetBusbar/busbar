@@ -1,6 +1,7 @@
 //! Tests for `verbs.rs`. Lifted out of the implementation file so its line count
 
 use super::*;
+use busbar_contract::json::JsonValueTrait as _;
 
 /// The root's view of a row and this module's own view of it are the same row. If they ever
 #[test]
@@ -67,12 +68,12 @@ fn find_verb_resolves_a_concrete_request() {
 }
 
 /// The pinned fixture, parsed once per test that reads it.
-fn fixture() -> serde_json::Value {
+fn fixture() -> busbar_contract::json::Value {
     let text = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../../testing/shadow-oracle/fixtures/openapi-1.5.5.json"
     ));
-    serde_json::from_str(text).expect("fixture is valid JSON")
+    busbar_contract::json::parse_value(text.as_bytes()).expect("fixture is valid JSON")
 }
 
 /// Mechanically converts a `PascalCase` `operationId` (`GetKeysIdUsage`) to this crate's own

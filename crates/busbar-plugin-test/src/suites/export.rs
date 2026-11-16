@@ -19,6 +19,8 @@ use crate::fake_needs::FakeNeeds;
 
 /// STREAM_COUNT (§8.5, round 33): ids 0..=9.
 const STREAM_COUNT: u32 = 10;
+/// The metrics snapshot stream: pulled through `render`, never pushed through `deliver`.
+const STREAM_METRICS: u32 = 0;
 const STREAM_TRACES: u32 = 2;
 /// `prompts` and `completions` have no producer and are never sent (C-EXPORT-STREAMS (d)).
 const RESERVED: [u32; 2] = [7, 8];
@@ -93,6 +95,11 @@ pub(super) fn run(plugin: &'static Plugin, config: &[u8], needs: FakeNeeds) {
     // Generic: an export plugin's own config bytes that cannot be a config are refused, never a fault.
     let junk = h.check("suite-junk", b"\xff\xfe not a config");
     assert!(junk.is_err(), "export suite: a non-document config opened");
+
+    // DRY_RUN of the suite's own config: the ENDPOINTs it declares are what every Need below must match.
+    if let Err(e) = h.check("suite-check", config) {
+        panic!("export suite: check refused the suite's own config: {e:?}");
+    }
 
     // Open, and again under a second name (instances do not share state).
     let port = h
@@ -176,15 +183,21 @@ pub(super) fn run(plugin: &'static Plugin, config: &[u8], needs: FakeNeeds) {
         }
     }
 
-    // C-EXPORT-DELIVERY (d): deliveries. The first declared stream, one line, must be taken; every other
-    // declared stream, an empty batch and a resend (same id, attempt + 1) may be refused or failed by what the
-    // suite's `needs` script but must never fault, and an answer must satisfy the invariants.
+    // C-EXPORT-DELIVERY (d): deliveries. The first declared record stream (any but STREAM_METRICS: core never
+    // pushes a metrics snapshot, and `deliver` is optional when every declared stream is metrics), one line, must
+    // be taken; a metrics-only exporter owes no delivery. Every declared stream, an empty batch and a resend (same
+    // id, attempt + 1) may be refused or failed by what the suite's `needs` script but must never fault, and an
+    // answer must satisfy the invariants.
     let line: &[u8] = br#"{"suite":"line"}"#;
     let one: [&[u8]; 1] = [line];
-    let first = declared[0];
-    let got = deliver(&h, &*port, first, 1, 1, &one)
-        .unwrap_or_else(|e| panic!("export suite: first delivery on stream {first} failed: {e:?}"));
-    check_delivered("first delivery", &got, &one, ceiling);
+    let record_stream = declared.iter().copied().find(|&s| s != STREAM_METRICS);
+    if let Some(first) = record_stream {
+        let got = deliver(&h, &*port, first, 1, 1, &one).unwrap_or_else(|e| {
+            panic!("export suite: first delivery on stream {first} failed: {e:?}")
+        });
+        check_delivered("first delivery", &got, &one, ceiling);
+    }
+    let first = record_stream.unwrap_or(declared[0]);
 
     let mut id = 2u64;
     for &stream in &declared {
@@ -232,4 +245,5 @@ pub(super) fn run(plugin: &'static Plugin, config: &[u8], needs: FakeNeeds) {
         refusals.len() == 1,
         "export suite: unexpected refusals: {refusals:?}"
     );
+    h.assert_needs_declared("export");
 }
