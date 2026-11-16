@@ -19,6 +19,7 @@
 //! `busbar_contract::crypto`; no plugin loader, no store driver.
 
 #![forbid(unsafe_code)]
+#![doc(test(attr(forbid(unsafe_code))))]
 
 use std::ffi::OsString;
 use std::fmt;

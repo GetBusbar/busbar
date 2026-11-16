@@ -276,7 +276,6 @@ crate::kind! {
                 > + Send
                 + 'a {
                     use crate::host_side::proxy;
-                    #[allow(unused_imports)]
                     use crate::plugin::__rt::Arg;
                     proxy::chain::<Marker, _, _>(&self.inst, drv, proxy::entry(M_READ), req, |req, lease| {
                         let _ = req;
@@ -296,7 +295,6 @@ crate::kind! {
                 > + Send
                 + 'a {
                     use crate::host_side::proxy;
-                    #[allow(unused_imports)]
                     use crate::plugin::__rt::Arg;
                     proxy::chain::<Marker, _, _>(&self.inst, drv, proxy::entry(M_SCAN), req, |req, lease| {
                         let _ = req;
@@ -316,7 +314,6 @@ crate::kind! {
                 > + Send
                 + 'a {
                     use crate::host_side::proxy;
-                    #[allow(unused_imports)]
                     use crate::plugin::__rt::Arg;
                     proxy::chain::<Marker, _, _>(&self.inst, drv, proxy::entry(M_COMMIT), req, |req, lease| {
                         let _ = req;
@@ -336,7 +333,6 @@ crate::kind! {
                 > + Send
                 + 'a {
                     use crate::host_side::proxy;
-                    #[allow(unused_imports)]
                     use crate::plugin::__rt::Arg;
                     proxy::chain::<Marker, _, _>(&self.inst, drv, proxy::entry(M_CLOCK), req, |req, lease| {
                         let _ = req;
@@ -351,10 +347,6 @@ crate::kind! {
                     &self,
                     buf: &'o mut crate::host_side::pool::PooledOut,
                 ) -> Result<crate::host_side::answer::Answer<'o>, crate::fail::CallError> {
-                    #[allow(unused_imports)]
-                    use crate::plugin::__rt::Arg;
-                    #[allow(unused_imports)]
-                    use crate::types::{Bytes, Str};
                     crate::host_side::proxy::sync(&self.inst, crate::host_side::proxy::entry(M_INFO), buf, |lease| {
                         self.live.call0(|vt| &vt.info, lease)
                     })

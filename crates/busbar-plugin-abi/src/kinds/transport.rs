@@ -359,10 +359,7 @@ crate::kind! {
                     (Option<SessionHandle>, crate::host_side::answer::Answer<'o>),
                     crate::fail::CallError,
                 > {
-                    #[allow(unused_imports)]
                     use crate::plugin::__rt::Arg;
-                    #[allow(unused_imports)]
-                    use crate::types::{Bytes, Str};
                     let (session, answer) = crate::host_side::proxy::opener::<Marker>(
                         &self.inst,
                         crate::host_side::proxy::entry(M_BEGIN),
@@ -385,10 +382,7 @@ crate::kind! {
                     buf: &'o mut crate::host_side::pool::PooledOut,
                     role: u32,
                 ) -> Result<crate::host_side::answer::Answer<'o>, crate::fail::CallError> {
-                    #[allow(unused_imports)]
                     use crate::plugin::__rt::Arg;
-                    #[allow(unused_imports)]
-                    use crate::types::{Bytes, Str};
                     crate::host_side::proxy::sync(&self.inst, crate::host_side::proxy::entry(M_OFFER), buf, |lease| {
                         self.live.call1(|vt| &vt.offer, Arg::u32(role), lease)
                     })
@@ -416,10 +410,8 @@ crate::kind! {
                     buf: &'o mut crate::host_side::pool::PooledOut,
                     bytes: &[u8],
                 ) -> Result<crate::host_side::answer::Answer<'o>, crate::fail::CallError> {
-                    #[allow(unused_imports)]
                     use crate::plugin::__rt::Arg;
-                    #[allow(unused_imports)]
-                    use crate::types::{Bytes, Str};
+                    use crate::types::Bytes;
                     crate::host_side::proxy::sync(&self.inst, crate::host_side::proxy::entry(M_INGEST), buf, |lease| {
                         self.session.call1(|vt| &vt.ingest, Arg::bytes(Bytes::new(bytes)), lease)
                     })
@@ -433,10 +425,8 @@ crate::kind! {
                     arg: u32,
                     bytes: &[u8],
                 ) -> Result<crate::host_side::answer::Answer<'o>, crate::fail::CallError> {
-                    #[allow(unused_imports)]
                     use crate::plugin::__rt::Arg;
-                    #[allow(unused_imports)]
-                    use crate::types::{Bytes, Str};
+                    use crate::types::Bytes;
                     crate::host_side::proxy::sync(&self.inst, crate::host_side::proxy::entry(M_EMIT), buf, |lease| {
                         self.session.call4(
                             |vt| &vt.emit,
@@ -455,10 +445,6 @@ crate::kind! {
                     &mut self,
                     buf: &'o mut crate::host_side::pool::PooledOut,
                 ) -> Result<crate::host_side::answer::Answer<'o>, crate::fail::CallError> {
-                    #[allow(unused_imports)]
-                    use crate::plugin::__rt::Arg;
-                    #[allow(unused_imports)]
-                    use crate::types::{Bytes, Str};
                     crate::host_side::proxy::sync(&self.inst, crate::host_side::proxy::entry(M_TIMER), buf, |lease| {
                         self.session.call0(|vt| &vt.timer, lease)
                     })
@@ -471,10 +457,8 @@ crate::kind! {
                     flags: u32,
                     bytes: &[u8],
                 ) -> Result<crate::host_side::answer::Answer<'o>, crate::fail::CallError> {
-                    #[allow(unused_imports)]
                     use crate::plugin::__rt::Arg;
-                    #[allow(unused_imports)]
-                    use crate::types::{Bytes, Str};
+                    use crate::types::Bytes;
                     crate::host_side::proxy::sync(&self.inst, crate::host_side::proxy::entry(M_DATAGRAM), buf, |lease| {
                         self.session.call3(
                             |vt| &vt.datagram,
@@ -490,10 +474,8 @@ crate::kind! {
                     ev: u32,
                     arg: &[u8],
                 ) -> Result<crate::host_side::answer::Answer<'o>, crate::fail::CallError> {
-                    #[allow(unused_imports)]
                     use crate::plugin::__rt::Arg;
-                    #[allow(unused_imports)]
-                    use crate::types::{Bytes, Str};
+                    use crate::types::Bytes;
                     crate::host_side::proxy::sync(&self.inst, crate::host_side::proxy::entry(M_EVENT), buf, |lease| {
                         self.session.call2(
                             |vt| &vt.event,

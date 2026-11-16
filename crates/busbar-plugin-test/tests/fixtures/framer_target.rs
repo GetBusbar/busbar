@@ -6,6 +6,9 @@
 //! leg. Its mutant flips the first wire byte of the first EMIT (§11.6); with
 //! `FRAMER_TARGET_MUTANT=failing-ready` it is one whose READY fails instead.
 
+#![forbid(unsafe_code)]
+#![doc(test(attr(forbid(unsafe_code))))]
+
 mod framer_door;
 
 use busbar_contract::abi::transport::slot;

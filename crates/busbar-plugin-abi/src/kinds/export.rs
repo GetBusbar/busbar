@@ -195,7 +195,6 @@ crate::kind! {
                 > + Send
                 + 'a {
                     use crate::host_side::proxy;
-                    #[allow(unused_imports)]
                     use crate::plugin::__rt::Arg;
                     proxy::chain::<Marker, _, _>(&self.inst, drv, proxy::entry(M_DELIVER), req, move |req, lease| {
                         let _ = req;
@@ -217,10 +216,8 @@ crate::kind! {
                     scope: u32,
                     snapshot: &[u8],
                 ) -> Result<crate::host_side::answer::Answer<'o>, crate::fail::CallError> {
-                    #[allow(unused_imports)]
                     use crate::plugin::__rt::Arg;
-                    #[allow(unused_imports)]
-                    use crate::types::{Bytes, Str};
+                    use crate::types::Bytes;
                     crate::host_side::proxy::sync(&self.inst, crate::host_side::proxy::entry(M_RENDER), buf, |lease| {
                         self.live.call2(|vt| &vt.render, Arg::u32(scope), Arg::bytes(Bytes::new(snapshot)), lease)
                     })
@@ -236,7 +233,6 @@ crate::kind! {
                 > + Send
                 + 'a {
                     use crate::host_side::proxy;
-                    #[allow(unused_imports)]
                     use crate::plugin::__rt::Arg;
                     proxy::chain::<Marker, _, _>(&self.inst, drv, proxy::entry(M_CONFIRM), req, move |req, lease| {
                         let _ = req;

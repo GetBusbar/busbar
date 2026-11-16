@@ -33,12 +33,9 @@ use crate::fake_needs::FakeNeeds;
 
 /// What one answer's sink saw, owned so it outlives the call.
 #[derive(Default)]
-#[allow(dead_code)]
 struct Tally {
     streams: BTreeSet<u64>,
     heads: Vec<u64>,
-    writes: usize,
-    sends: usize,
     closes: usize,
     full: Vec<u64>,
     writable: Vec<u64>,
@@ -50,8 +47,7 @@ struct Tally {
 impl Tally {
     fn note(&mut self, out: &TransportOut<'_>) {
         match out {
-            TransportOut::Write(_) => self.writes += 1,
-            TransportOut::SendTo { .. } => self.sends += 1,
+            TransportOut::Write(_) | TransportOut::SendTo { .. } => {}
             TransportOut::Close { .. } => self.closes += 1,
             TransportOut::StreamHead { stream, .. } => {
                 self.streams.insert(*stream);

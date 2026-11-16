@@ -1049,10 +1049,8 @@ crate::kind! {
                     (Option<SessionHandle>, crate::host_side::answer::Answer<'o>),
                     crate::fail::CallError,
                 > {
-                    #[allow(unused_imports)]
                     use crate::plugin::__rt::Arg;
-                    #[allow(unused_imports)]
-                    use crate::types::{Bytes, Str};
+                    use crate::types::Bytes;
                     let (session, answer) = crate::host_side::proxy::opener::<Marker>(
                         &self.inst,
                         crate::host_side::proxy::entry(M_REQUEST),
@@ -1082,10 +1080,8 @@ crate::kind! {
                     what: u32,
                     arg: &[u8],
                 ) -> Result<crate::host_side::answer::Answer<'o>, crate::fail::CallError> {
-                    #[allow(unused_imports)]
                     use crate::plugin::__rt::Arg;
-                    #[allow(unused_imports)]
-                    use crate::types::{Bytes, Str};
+                    use crate::types::Bytes;
                     crate::host_side::proxy::sync(&self.inst, crate::host_side::proxy::entry(M_RENDER), buf, |lease| {
                         self.live.call3(
                             |vt| &vt.render,
@@ -1105,7 +1101,6 @@ crate::kind! {
                 > + Send
                 + 'a {
                     use crate::host_side::proxy;
-                    #[allow(unused_imports)]
                     use crate::plugin::__rt::Arg;
                     proxy::chain::<Marker, _, _>(&self.inst, drv, proxy::entry(M_ADMIN), req, move |req, lease| {
                         let _ = req;
@@ -1129,10 +1124,7 @@ crate::kind! {
                     (Option<SessionHandle>, crate::host_side::answer::Answer<'o>),
                     crate::fail::CallError,
                 > {
-                    #[allow(unused_imports)]
                     use crate::plugin::__rt::Arg;
-                    #[allow(unused_imports)]
-                    use crate::types::{Bytes, Str};
                     let (session, answer) = crate::host_side::proxy::opener::<Marker>(
                         &self.inst,
                         crate::host_side::proxy::entry(M_PROBE),
@@ -1156,9 +1148,7 @@ crate::kind! {
                     key: &str,
                     message: &[u8],
                 ) -> Result<crate::host_side::answer::Answer<'o>, crate::fail::CallError> {
-                    #[allow(unused_imports)]
                     use crate::plugin::__rt::Arg;
-                    #[allow(unused_imports)]
                     use crate::types::{Bytes, Str};
                     crate::host_side::proxy::sync(&self.inst, crate::host_side::proxy::entry(M_DEMUX), buf, |lease| {
                         self.live.call2(
@@ -1192,10 +1182,7 @@ crate::kind! {
                     buf: &'o mut crate::host_side::pool::PooledOut,
                     target: &Target<'_>,
                 ) -> Result<crate::host_side::answer::Answer<'o>, crate::fail::CallError> {
-                    #[allow(unused_imports)]
                     use crate::plugin::__rt::Arg;
-                    #[allow(unused_imports)]
-                    use crate::types::{Bytes, Str};
                     crate::host_side::proxy::sync(&self.inst, crate::host_side::proxy::entry(M_UPSTREAM), buf, |lease| {
                         self.session.call1(|vt| &vt.upstream, Arg::view(target), lease)
                     })
@@ -1209,10 +1196,8 @@ crate::kind! {
                     flags: u32,
                     bytes: &[u8],
                 ) -> Result<crate::host_side::answer::Answer<'o>, crate::fail::CallError> {
-                    #[allow(unused_imports)]
                     use crate::plugin::__rt::Arg;
-                    #[allow(unused_imports)]
-                    use crate::types::{Bytes, Str};
+                    use crate::types::Bytes;
                     crate::host_side::proxy::sync(&self.inst, crate::host_side::proxy::entry(M_PIECE), buf, |lease| {
                         self.session.call4(
                             |vt| &vt.piece,
@@ -1247,10 +1232,8 @@ crate::kind! {
                     buf: &'o mut crate::host_side::pool::PooledOut,
                     conversation: &[u8],
                 ) -> Result<crate::host_side::answer::Answer<'o>, crate::fail::CallError> {
-                    #[allow(unused_imports)]
                     use crate::plugin::__rt::Arg;
-                    #[allow(unused_imports)]
-                    use crate::types::{Bytes, Str};
+                    use crate::types::Bytes;
                     crate::host_side::proxy::sync(&self.inst, crate::host_side::proxy::entry(M_REWRITE), buf, |lease| {
                         self.session.call1(|vt| &vt.rewrite, Arg::bytes(Bytes::new(conversation)), lease)
                     })
