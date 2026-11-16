@@ -939,7 +939,10 @@ impl Harness {
     }
 
     /// Open with an explicit spec through the same refusal recorder as the ordinary harness.
-    pub(crate) fn open_store_spec(&self, spec: &InstanceSpec<'_>) -> Result<StoreHandle, OpenError> {
+    pub(crate) fn open_store_spec(
+        &self,
+        spec: &InstanceSpec<'_>,
+    ) -> Result<StoreHandle, OpenError> {
         self.noted(self.block_on(self.registry.open_store(spec)))
     }
 
