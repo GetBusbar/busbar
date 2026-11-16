@@ -256,6 +256,9 @@ The thousands digit is the area.
 | [BUSBAR-7099](/docs/1.6/errors/BUSBAR-7099/) | Abandoned plane task could not be transitioned to canceled (durable store write failed) — RETIRED *(retired)* | 1.6.0 |
 | [BUSBAR-7106](/docs/1.6/errors/BUSBAR-7106/) | A plane declares a record kind the kernel keeps its own records under (the plane is refused) | 1.6.0 |
 | [BUSBAR-7107](/docs/1.6/errors/BUSBAR-7107/) | An admin plane record write named a kernel record kind (the write is refused) | 1.6.0 |
+| [BUSBAR-7108](/docs/1.6/errors/BUSBAR-7108/) | A plane's destination judge is not installed (every JUDGE answers internal) | 1.6.0 |
+| [BUSBAR-7110](/docs/1.6/errors/BUSBAR-7110/) | A plane reported usage for a class it never declared (the usage is dropped) | 1.6.0 |
+| [BUSBAR-7111](/docs/1.6/errors/BUSBAR-7111/) | A plane reported usage with a scale past micro-units (the quantity is rounded) | 1.6.0 |
 
 ## 8xxx: Governance & cost
 

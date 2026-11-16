@@ -26,9 +26,12 @@ use busbar_plugin_loader::ports::plane::PlaneIn;
 use std::sync::{Arc, OnceLock};
 
 use super::port_auth::{plain_refusal, TicketDoor};
+use super::port_carrier::{write_channels, CarrierSession, Mapped};
 use super::port_intents::{Detach, Namespace, Resolver};
 use super::port_money::{AuditRow, PortMoney};
-use super::port_session::{Answer, Calls, Effects, Forward, SessionError, Task, ToClient};
+use super::port_session::{
+    hand_out, Answer, Calls, Effects, Forward, SessionError, Task, ToClient,
+};
 use super::port_upstream::{run_attempts, Attempted, Members, UpSend, Wants};
 use super::usage::{Ending, SessionUsage};
 use super::AuditSink;
@@ -168,6 +171,10 @@ pub struct Drive<'a> {
     pub refusals: &'a dyn RefusalMap,
     pub effects: &'a dyn Effects,
     pub books: &'a dyn Books,
+    /// The carrier of this request: CHANNEL intents attach through it, EX_MSG writes go to the channels it attached,
+    /// and a session that holds a channel, a media bridge, a wake time or a DETACH is pumped until it ends
+    /// ([`CarrierSession::pump`]). `None` = no carrier: a CHANNEL is `P_ERROR` and the session ends with its walk.
+    pub carrier: Option<&'a CarrierSession>,
 }
 
 /// What a session produced.
@@ -189,7 +196,12 @@ pub struct Ran {
     pub finished: bool,
 }
 
-fn absorb(ran: &mut Ran, forward: &mut Option<Forward>, answers: Vec<Answer>, books: &dyn Books) {
+pub(super) fn absorb(
+    ran: &mut Ran,
+    forward: &mut Option<Forward>,
+    answers: Vec<Answer>,
+    books: &dyn Books,
+) {
     for answer in answers {
         ran.client.extend(answer.client);
         for row in &answer.audits {
@@ -236,8 +248,17 @@ fn drive_task<K: Calls + ?Sized>(
 ) -> Result<Ran, SessionError> {
     let mut ran = Ran::default();
     let mut forward = None;
+    if let (Some(carrier), Some(first_forward)) = (drive.carrier, &first.forward) {
+        // A CHANNEL in this answer attaches to the target the FORWARD pins, before any walk.
+        carrier
+            .map
+            .point_wanted(&Wants::from_facts(&first_forward.wants));
+    }
     let answers = task.resolve(first, drive.resolver, drive.effects)?;
+    let written = write_channels(task, &answers, drive.resolver, drive.effects)?;
     absorb(&mut ran, &mut forward, answers, drive.books);
+    absorb(&mut ran, &mut None, written, drive.books);
+    hand_out(drive.effects, &mut ran.client);
     if let Some(forward) = forward {
         let (Some(members), Some(send)) = (drive.members.as_deref_mut(), drive.send.as_deref_mut())
         else {
@@ -245,6 +266,14 @@ fn drive_task<K: Calls + ?Sized>(
         };
         let wants = Wants::from_facts(&forward.wants);
         let model = wants.model.clone().unwrap_or_default();
+        let mut mapped;
+        let members: &mut dyn Members = match drive.carrier {
+            Some(carrier) => {
+                mapped = Mapped::new(members, &carrier.map);
+                &mut mapped
+            }
+            None => members,
+        };
         let walked = run_attempts(
             task,
             &wants,
@@ -262,6 +291,7 @@ fn drive_task<K: Calls + ?Sized>(
                 ..
             } => {
                 ran.client.extend(client);
+                hand_out(drive.effects, &mut ran.client);
                 ran.member = Some(member);
                 ran.attempts = attempts;
             }
@@ -272,6 +302,9 @@ fn drive_task<K: Calls + ?Sized>(
             }
         }
     }
+    if let Some(carrier) = drive.carrier {
+        carrier.pump(task, &mut ran, drive.resolver, drive.effects, drive.books)?;
+    }
     let mut last = task.end(drive.effects)?;
     // STORE, COMMIT and PUSH of the end answer apply; a session that has ended can be told no result.
     let end_intents = std::mem::take(&mut last.intents);
@@ -280,6 +313,7 @@ fn drive_task<K: Calls + ?Sized>(
     }
     absorb(&mut ran, &mut None, vec![last], drive.books);
     ran.usage = task.usage().clone();
+    hand_out(drive.effects, &mut ran.client);
     drive.books.ended(Ending::End, &ran.usage);
     Ok(ran)
 }

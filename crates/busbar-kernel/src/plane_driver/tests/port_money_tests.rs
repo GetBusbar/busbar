@@ -174,7 +174,8 @@ fn a_dropped_class_is_audited_degraded_under_the_principal_once_per_checkpoint()
     m.checkpoint(&ctx(), &usage(&[("images", 2, 0, SRC_REPORTED)]), None);
     let rows = audits.0.lock().unwrap();
     assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].0, "plane_usage_class_undeclared");
+    assert_eq!(rows[0].0, super::ACTION_UNDECLARED);
+    assert_eq!(rows[0].0, "plane_usage_undeclared");
     assert!(rows[0].1.contains("images"));
     assert_eq!(rows[0].2, busbar_contract::vocab::OUTCOME_DEGRADED);
 }
@@ -278,4 +279,40 @@ fn an_audit_row_goes_to_the_chain_under_the_principal_and_an_unknown_verdict_is_
         resource: "b".into(),
     };
     assert!(m.audit(&unknown, None).is_err());
+}
+
+#[test]
+fn the_usage_audit_actions_are_registered_diagnostics_named_by_their_slug() {
+    use crate::diagnostics::{PLANE_USAGE_ROUNDED, PLANE_USAGE_UNDECLARED, REGISTRY};
+    for (action, diag) in [
+        (super::ACTION_UNDECLARED, &PLANE_USAGE_UNDECLARED),
+        (super::ACTION_ROUNDED, &PLANE_USAGE_ROUNDED),
+    ] {
+        assert_eq!(action, diag.slug.replace('-', "_"));
+        assert!(
+            REGISTRY.iter().any(|d| d.code == diag.code),
+            "{action} is in the catalog"
+        );
+    }
+    assert_eq!(
+        PLANE_USAGE_UNDECLARED.class,
+        busbar_contract::diagnostic::Class::Plane
+    );
+}
+
+#[test]
+fn a_fraction_past_micro_units_is_audited_rounded_degraded_once_per_class() {
+    let audits = Arc::new(Audits::default());
+    let m = money(Arc::new(Seam::default()), Arc::clone(&audits));
+    m.checkpoint(
+        &ctx(),
+        &usage(&[("tokens", 1_234_567_891, 9, SRC_REPORTED)]),
+        Some("alice"),
+    );
+    let rows = audits.0.lock().unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].0, super::ACTION_ROUNDED);
+    assert!(rows[0].1.contains("tokens"));
+    assert_eq!(rows[0].2, busbar_contract::vocab::OUTCOME_DEGRADED);
+    assert_eq!(rows[0].3, "alice");
 }

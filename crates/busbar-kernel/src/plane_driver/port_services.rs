@@ -14,6 +14,7 @@ use tokio::runtime::Handle;
 
 use super::plane_judge::PlaneJudge;
 use super::port_channels::Held;
+use crate::channels::ChannelMsg;
 use crate::connections::CallerConnections;
 use crate::media::{MediaBridge, MediaRendezvous};
 use crate::plane_grants::{Entitlements, HostSigner, Tickets};
@@ -117,5 +118,12 @@ impl Held for MediaHeld {
 
     fn refusal(&self) -> Option<String> {
         self.bridge.refusal().map(str::to_owned)
+    }
+
+    fn recv(&mut self) -> BoxFut<'_, Option<ChannelMsg>> {
+        Box::pin(async move {
+            self.bridge.closed().await;
+            Some(ChannelMsg::Ended)
+        })
     }
 }

@@ -17,18 +17,20 @@
 
 use std::time::Duration;
 
+use busbar_contract::abi::transport::fields::lines;
+use busbar_plugin_abi::fail::refused::R_NO_ROUTE;
 use busbar_plugin_abi::plane::{
-    ATT_DECLINE, ATT_HARD, ATT_RETRY, FC_SERVER, FROM_UPSTREAM, F_PROBE_OK, P_BODY, P_END, P_HEAD,
-    W_AFFINITY, W_CAPABILITY, W_MAX_TOKENS, W_MODEL, W_STREAM, W_UPSTREAM,
+    ATT_DECLINE, ATT_HARD, ATT_RETRY, FC_SERVER, FROM_UPSTREAM, F_PROBE_OK, P_BODY, P_END, P_ERROR,
+    P_HEAD, P_TRAILERS, W_AFFINITY, W_CAPABILITY, W_MAX_TOKENS, W_MODEL, W_STREAM, W_UPSTREAM,
 };
-use busbar_plugin_abi::records::Reply;
+use busbar_plugin_abi::records::{self, Reply, Writer};
 use busbar_plugin_abi::types::{Bytes, Pair, Str};
-use busbar_plugin_loader::encode::plane::encode_upstream_head;
+use busbar_plugin_loader::encode::plane::{encode_refusal, encode_upstream_head};
 use busbar_plugin_loader::ports::plane::TargetIn;
 use busbar_plugin_loader::ports::{FactVal, PortError};
 
 use super::port_session::{
-    AttemptItem, Calls, Effects, SessionError, Task, ToClient, UpExchange, Violation,
+    hand_out, AttemptItem, Calls, Effects, SessionError, Task, ToClient, UpExchange, Violation,
 };
 use super::HeadFields;
 use crate::retry::{Retry, RetryPolicy, RetrySite};
@@ -148,15 +150,65 @@ pub struct UpReply {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SendFailed;
 
+/// One piece of a reply after its head.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Chunk {
+    /// Body bytes, as the far end delivered them.
+    Body(Vec<u8>),
+    /// The far end's fields after its body, as the transport's field block.
+    Trailers(Vec<u8>),
+}
+
+/// The rest of a reply being read.
+pub trait UpChunks {
+    /// The next piece; `Ok(None)` = the reply ended. `Err` = it was cut (a failed connection, an expired
+    /// deadline).
+    fn next(&mut self) -> Result<Option<Chunk>, SendFailed>;
+}
+
+/// A reply whose head has arrived and whose rest is read piece by piece, so a streamed reply reaches the plane
+/// (and through it the client) as it is produced instead of joined into one body.
+pub struct UpOpen<'a> {
+    pub status: u16,
+    pub headers: HeadFields,
+    pub rest: Box<dyn UpChunks + 'a>,
+}
+
+/// A whole body as a stream of at most one chunk.
+struct Whole(Option<Vec<u8>>);
+
+impl UpChunks for Whole {
+    fn next(&mut self) -> Result<Option<Chunk>, SendFailed> {
+        Ok(self.0.take().filter(|b| !b.is_empty()).map(Chunk::Body))
+    }
+}
+
 /// The carrier: core adds the host, the carrier's defaults and the credential and sends the exchange.
 pub trait UpSend {
+    /// The whole reply. A carrier that streams implements [`open`](Self::open) and need not implement this one's
+    /// buffering; a carrier that does not stream implements this one and gets `open` for free.
     fn send(&mut self, member: &Candidate, exchange: &UpExchange) -> Result<UpReply, SendFailed>;
+
+    /// The reply's head and a reader for the rest. The default reads the whole reply with [`send`](Self::send).
+    fn open<'a>(
+        &'a mut self,
+        member: &Candidate,
+        exchange: &UpExchange,
+    ) -> Result<UpOpen<'a>, SendFailed> {
+        let reply = self.send(member, exchange)?;
+        Ok(UpOpen {
+            status: reply.status,
+            headers: reply.headers,
+            rest: Box::new(Whole(Some(reply.body))),
+        })
+    }
 }
 
 /// How the walk ended.
 #[derive(Debug)]
 pub enum Attempted {
-    /// A member served: what the client sees so far, and the verdict that said so (`None` = implied ATT_OK).
+    /// A member served: what the client sees so far (nothing when a [`ClientSink`](super::port_session::ClientSink)
+    /// took it as it came), and the verdict that said so (`None` = implied ATT_OK).
     Served {
         client: Vec<ToClient>,
         member: Box<str>,
@@ -167,10 +219,9 @@ pub enum Attempted {
     Exhausted { attempts: u32 },
 }
 
-/// The reply as the pieces it is fed in: HEAD (H_STATUS, PAIR*), BODY when it has bytes, END.
-fn reply_pieces(reply: &UpReply) -> Result<Vec<(u32, Vec<u8>)>, SessionError> {
-    let pairs: Vec<Pair<'_>> = reply
-        .headers
+/// The reply's head as the piece it is fed in: H_STATUS, PAIR*.
+fn head_piece(status: u16, headers: &HeadFields) -> Result<Vec<u8>, SessionError> {
+    let pairs: Vec<Pair<'_>> = headers
         .iter()
         .filter_map(|(name, value)| {
             let name = std::str::from_utf8(name).ok().filter(|n| !n.is_empty())?;
@@ -181,47 +232,116 @@ fn reply_pieces(reply: &UpReply) -> Result<Vec<(u32, Vec<u8>)>, SessionError> {
         })
         .collect();
     let mut head = Reply::new();
-    encode_upstream_head(&mut head, reply.status, &pairs, None, None)
+    encode_upstream_head(&mut head, status, &pairs, None, None)
         .map_err(|_| SessionError::Encode)?;
-    let mut pieces = vec![(P_HEAD, head.as_bytes().to_vec())];
-    if !reply.body.is_empty() {
-        pieces.push((P_BODY, reply.body.clone()));
+    Ok(head.as_bytes().to_vec())
+}
+
+/// The far end's trailing fields as the PAIR* a TRAILERS piece carries.
+fn trailer_piece(block: &[u8]) -> Result<Vec<u8>, SessionError> {
+    let mut out = Reply::new();
+    for (name, value) in lines(block) {
+        if let Some(name) = std::str::from_utf8(name).ok().filter(|n| !n.is_empty()) {
+            out.put_pair(records::tag::PAIR, name, value)
+                .map_err(|_| SessionError::Encode)?;
+        }
     }
-    pieces.push((P_END, Vec::new()));
-    Ok(pieces)
+    Ok(out.as_bytes().to_vec())
 }
 
 /// What feeding a reply produced.
+#[derive(Default)]
 struct Fed {
+    /// Client items not yet handed to a sink (all of them without one).
     client: Vec<ToClient>,
     attempt: Option<AttemptItem>,
+    /// The client's response has begun: the plane wrote an item for it.
+    began: bool,
+    /// The reply was cut before the client's response began: nothing reached the plane's decision, the member
+    /// failed over.
+    broken: bool,
+    /// The client went away; the rest of the reply is let go.
+    gone: bool,
 }
 
 fn failing(attempt: Option<&AttemptItem>) -> bool {
     attempt.is_some_and(|a| matches!(a.verdict, ATT_RETRY | ATT_HARD))
 }
 
-/// Feeds `reply` to exchange 0 as `piece(FROM_UPSTREAM)`; stops at the first failing verdict.
+/// One `piece(FROM_UPSTREAM)`. `false` = stop reading: a failing verdict, or the client went away.
+fn step<K: Calls + ?Sized>(
+    task: &mut Task<'_, K>,
+    fed: &mut Fed,
+    flags: u32,
+    bytes: &[u8],
+    effects: &dyn Effects,
+) -> Result<bool, SessionError> {
+    let answer = task.piece(FROM_UPSTREAM, 0, flags, bytes, effects)?;
+    fed.client.extend(answer.client);
+    if answer.attempt.is_some() {
+        fed.attempt = answer.attempt;
+    }
+    if failing(fed.attempt.as_ref()) {
+        return Ok(false);
+    }
+    // An item for the client means the plane decided (the attempt rule: it writes the response or it fails the
+    // attempt with nothing for the client), so it goes out at once when a sink takes it.
+    fed.began |= !fed.client.is_empty();
+    if !hand_out(effects, &mut fed.client) {
+        fed.gone = true;
+        return Ok(false);
+    }
+    Ok(true)
+}
+
+/// Feeds the reply to exchange 0 as `piece(FROM_UPSTREAM)`: HEAD, then BODY and TRAILERS as they arrive, END.
+/// Stops at the first failing verdict. A reply cut after the client's response began is `P_ERROR` (one REFUSAL
+/// to render in-stream); cut before, the member fails over.
 fn feed<K: Calls + ?Sized>(
     task: &mut Task<'_, K>,
-    reply: &UpReply,
+    mut reply: UpOpen<'_>,
     effects: &dyn Effects,
 ) -> Result<Fed, SessionError> {
-    let mut fed = Fed {
-        client: Vec::new(),
-        attempt: None,
-    };
-    for (flags, bytes) in reply_pieces(reply)? {
-        let answer = task.piece(FROM_UPSTREAM, 0, flags, &bytes, effects)?;
-        fed.client.extend(answer.client);
-        if answer.attempt.is_some() {
-            fed.attempt = answer.attempt;
-        }
-        if failing(fed.attempt.as_ref()) {
-            break;
+    let mut fed = Fed::default();
+    let head = head_piece(reply.status, &reply.headers)?;
+    if !step(task, &mut fed, P_HEAD, &head, effects)? {
+        return Ok(fed);
+    }
+    loop {
+        match reply.rest.next() {
+            Ok(Some(Chunk::Body(bytes))) => {
+                if !bytes.is_empty() && !step(task, &mut fed, P_BODY, &bytes, effects)? {
+                    return Ok(fed);
+                }
+            }
+            Ok(Some(Chunk::Trailers(block))) => {
+                let bytes = trailer_piece(&block)?;
+                if !step(task, &mut fed, P_TRAILERS, &bytes, effects)? {
+                    return Ok(fed);
+                }
+            }
+            Ok(None) => {
+                step(task, &mut fed, P_END, &[], effects)?;
+                return Ok(fed);
+            }
+            Err(SendFailed) => {
+                if fed.began {
+                    let mut refusal = Reply::new();
+                    encode_refusal(
+                        &mut refusal,
+                        502,
+                        R_NO_ROUTE,
+                        "the upstream failed before its reply ended",
+                    )
+                    .map_err(|_| SessionError::Encode)?;
+                    step(task, &mut fed, P_ERROR, refusal.as_bytes(), effects)?;
+                } else {
+                    fed.broken = true;
+                }
+                return Ok(fed);
+            }
         }
     }
-    Ok(fed)
 }
 
 fn exchange_zero(exchanges: Vec<UpExchange>) -> Result<UpExchange, SessionError> {
@@ -257,18 +377,20 @@ pub fn run_attempts<K: Calls + ?Sized>(
             continue;
         }
         let exchange = exchange_zero(answer.exchanges)?;
-        let Ok(reply) = send.send(&member, &exchange) else {
-            members.failed(
-                &member,
-                &Failure {
-                    verdict: ATT_RETRY,
-                    class: FC_SERVER,
-                    retry_after_s: 0,
-                },
-            );
+        let unsent = Failure {
+            verdict: ATT_RETRY,
+            class: FC_SERVER,
+            retry_after_s: 0,
+        };
+        let Ok(reply) = send.open(&member, &exchange) else {
+            members.failed(&member, &unsent);
             continue;
         };
-        let fed = feed(task, &reply, effects)?;
+        let fed = feed(task, reply, effects)?;
+        if fed.broken {
+            members.failed(&member, &unsent);
+            continue;
+        }
         if let Some(a) = fed
             .attempt
             .as_ref()
@@ -325,10 +447,10 @@ pub fn probe_member<K: Calls + ?Sized>(
         return Ok(ProbeOutcome::Declined);
     }
     let exchange = exchange_zero(answer.exchanges)?;
-    let Ok(reply) = send.send(member, &exchange) else {
+    let Ok(reply) = send.open(member, &exchange) else {
         return Ok(ProbeOutcome::Unhealthy);
     };
-    feed(&mut task, &reply, effects)?;
+    feed(&mut task, reply, effects)?;
     let last = task.end(effects)?;
     let well = last
         .facts

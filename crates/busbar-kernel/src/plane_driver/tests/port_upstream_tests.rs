@@ -818,3 +818,346 @@ fn a_failed_probe_call_waits_by_the_probe_site_of_the_retry_policy() {
     );
     assert_eq!(probe_wait(&Policy, 3, &nope()), None);
 }
+
+// ---- streamed replies ---------------------------------------------------------------------------------
+
+use super::{Chunk, UpChunks, UpOpen};
+use crate::plane_driver::port_session::ClientSink;
+use busbar_plugin_abi::plane::{P_ERROR, P_TRAILERS};
+
+/// A client sink that keeps what it was handed, in order.
+#[derive(Default)]
+struct Tap {
+    got: Mutex<Vec<ToClient>>,
+    gone: AtomicBool,
+}
+
+impl ClientSink for Tap {
+    fn items(&self, items: Vec<ToClient>) -> bool {
+        self.got.lock().unwrap().extend(items);
+        !self.gone.load(Ordering::SeqCst)
+    }
+}
+
+struct Streaming(Arc<Tap>);
+
+impl Effects for Streaming {
+    fn emit(&self, _: u64, _: &[u8]) {}
+
+    fn client(&self) -> Option<&dyn ClientSink> {
+        Some(&*self.0)
+    }
+}
+
+/// How many items the sink held each time the far end was asked for its next chunk.
+type Seen = Arc<Mutex<Vec<usize>>>;
+
+struct Reader {
+    items: VecDeque<Result<Chunk, SendFailed>>,
+    tap: Arc<Tap>,
+    seen: Seen,
+}
+
+impl UpChunks for Reader {
+    fn next(&mut self) -> Result<Option<Chunk>, SendFailed> {
+        self.seen
+            .lock()
+            .unwrap()
+            .push(self.tap.got.lock().unwrap().len());
+        match self.items.pop_front() {
+            None => Ok(None),
+            Some(Ok(chunk)) => Ok(Some(chunk)),
+            Some(Err(e)) => Err(e),
+        }
+    }
+}
+
+/// A carrier that streams: each reply is a status and the chunks it yields after its head.
+struct Streamer {
+    replies: VecDeque<(u16, Vec<Result<Chunk, SendFailed>>)>,
+    tap: Arc<Tap>,
+    seen: Seen,
+}
+
+impl UpSend for Streamer {
+    fn send(&mut self, _: &Candidate, _: &UpExchange) -> Result<UpReply, SendFailed> {
+        Err(SendFailed)
+    }
+
+    fn open<'a>(&'a mut self, _: &Candidate, _: &UpExchange) -> Result<UpOpen<'a>, SendFailed> {
+        let (status, chunks) = self.replies.pop_front().ok_or(SendFailed)?;
+        Ok(UpOpen {
+            status,
+            headers: vec![(b"content-type".to_vec(), b"text/event-stream".to_vec())],
+            rest: Box::new(Reader {
+                items: chunks.into(),
+                tap: Arc::clone(&self.tap),
+                seen: Arc::clone(&self.seen),
+            }),
+        })
+    }
+}
+
+fn streamer(replies: Vec<(u16, Vec<Result<Chunk, SendFailed>>)>) -> (Streamer, Arc<Tap>, Seen) {
+    let tap = Arc::new(Tap::default());
+    let seen = Seen::default();
+    (
+        Streamer {
+            replies: replies.into(),
+            tap: Arc::clone(&tap),
+            seen: Arc::clone(&seen),
+        },
+        tap,
+        seen,
+    )
+}
+
+fn forwarding() -> Plane {
+    Plane {
+        request: vec![It::Forward],
+        ..Plane::default()
+    }
+}
+
+fn flags_fed(plane: &Plane) -> Vec<u32> {
+    plane
+        .piece_log
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(_, _, flags, _)| *flags)
+        .collect()
+}
+
+#[test]
+fn a_streamed_reply_is_fed_a_chunk_at_a_time_and_reaches_the_client_as_it_is_written() {
+    let plane = forwarding();
+    queue(&plane, vec![head("ok")]);
+    pieces(
+        &plane,
+        vec![
+            vec![
+                It::Respond(200),
+                It::Header("content-type", b"text/event-stream"),
+            ],
+            vec![It::Body(b"one")],
+            vec![It::Body(b"two")],
+            vec![It::End],
+        ],
+    );
+    let mut members = walk(&["a"]);
+    let (mut far, tap, seen) = streamer(vec![(
+        200,
+        vec![
+            Ok(Chunk::Body(b"1".to_vec())),
+            Ok(Chunk::Body(b"2".to_vec())),
+        ],
+    )]);
+    let effects = Streaming(Arc::clone(&tap));
+    let mut task = begin(&plane);
+    let out = run_attempts(
+        &mut task,
+        &Wants::default(),
+        "chat",
+        "m",
+        &mut members,
+        &mut far,
+        &effects,
+    )
+    .unwrap();
+    assert_eq!(flags_fed(&plane), vec![P_HEAD, P_BODY, P_BODY, P_END]);
+    let got = tap.got.lock().unwrap().clone();
+    assert!(matches!(got[0], ToClient::Head { status: 200, .. }));
+    assert_eq!(
+        &got[1..],
+        &[
+            ToClient::Body(b"one".to_vec()),
+            ToClient::Body(b"two".to_vec()),
+            ToClient::End
+        ]
+    );
+    let Attempted::Served { client, .. } = out else {
+        panic!("served");
+    };
+    assert!(client.is_empty(), "the sink took every item");
+    // Before the far end was asked for its first chunk the head had been handed out, and before its second, the
+    // first body: nothing waited for the reply to end.
+    assert_eq!(*seen.lock().unwrap(), vec![1, 2, 3]);
+}
+
+#[test]
+fn a_failing_verdict_on_the_head_hands_the_client_nothing_and_the_next_member_serves() {
+    let plane = forwarding();
+    queue(&plane, vec![head("one"), head("two")]);
+    pieces(
+        &plane,
+        vec![
+            vec![It::Attempt(ATT_RETRY, FC_SERVER, 0)],
+            vec![It::Respond(200), It::Body(b"ok"), It::End],
+            vec![],
+            vec![],
+        ],
+    );
+    let mut members = walk(&["a", "b"]);
+    let (mut far, tap, _) = streamer(vec![
+        (500, vec![Ok(Chunk::Body(b"boom".to_vec()))]),
+        (200, vec![]),
+    ]);
+    let effects = Streaming(Arc::clone(&tap));
+    let mut task = begin(&plane);
+    run_attempts(
+        &mut task,
+        &Wants::default(),
+        "chat",
+        "m",
+        &mut members,
+        &mut far,
+        &effects,
+    )
+    .unwrap();
+    assert_eq!(
+        members.failed,
+        vec![("a".to_string(), ATT_RETRY, FC_SERVER, 0)]
+    );
+    assert_eq!(members.served, vec!["b"]);
+    let got = tap.got.lock().unwrap().clone();
+    assert!(
+        got.iter()
+            .all(|i| !matches!(i, ToClient::Body(b) if b == b"boom")),
+        "the failed member's reply never reached the client: {got:?}"
+    );
+}
+
+#[test]
+fn a_reply_cut_before_the_client_response_began_fails_the_member_over() {
+    let plane = forwarding();
+    queue(&plane, vec![head("one"), head("two")]);
+    pieces(
+        &plane,
+        vec![vec![], vec![], vec![It::Respond(200), It::End]],
+    );
+    let mut members = walk(&["a", "b"]);
+    let (mut far, tap, _) = streamer(vec![(200, vec![Err(SendFailed)]), (200, vec![])]);
+    let effects = Streaming(tap);
+    let mut task = begin(&plane);
+    let out = run_attempts(
+        &mut task,
+        &Wants::default(),
+        "chat",
+        "m",
+        &mut members,
+        &mut far,
+        &effects,
+    )
+    .unwrap();
+    assert_eq!(
+        members.failed,
+        vec![("a".to_string(), ATT_RETRY, FC_SERVER, 0)]
+    );
+    assert_eq!(members.served, vec!["b"]);
+    assert!(matches!(out, Attempted::Served { attempts: 2, .. }));
+}
+
+#[test]
+fn a_reply_cut_after_the_client_response_began_is_a_p_error_and_the_member_stays_served() {
+    let plane = forwarding();
+    queue(&plane, vec![head("one")]);
+    pieces(
+        &plane,
+        vec![vec![It::Respond(200)], vec![It::Body(b"half")], vec![]],
+    );
+    let mut members = walk(&["a"]);
+    let (mut far, tap, _) = streamer(vec![(
+        200,
+        vec![Ok(Chunk::Body(b"h".to_vec())), Err(SendFailed)],
+    )]);
+    let effects = Streaming(tap);
+    let mut task = begin(&plane);
+    run_attempts(
+        &mut task,
+        &Wants::default(),
+        "chat",
+        "m",
+        &mut members,
+        &mut far,
+        &effects,
+    )
+    .unwrap();
+    assert_eq!(flags_fed(&plane), vec![P_HEAD, P_BODY, P_ERROR]);
+    let refusal = plane.piece_log.lock().unwrap()[2].3.clone();
+    assert!(
+        !refusal.is_empty(),
+        "one REFUSAL record to render in-stream"
+    );
+    assert_eq!(members.served, vec!["a"]);
+    assert!(members.failed.is_empty());
+}
+
+#[test]
+fn the_far_end_s_trailing_fields_are_fed_as_pair_records() {
+    let plane = forwarding();
+    queue(&plane, vec![head("one")]);
+    pieces(&plane, vec![vec![It::Respond(200)], vec![], vec![], vec![]]);
+    let mut members = walk(&["a"]);
+    let (mut far, tap, _) = streamer(vec![(
+        200,
+        vec![
+            Ok(Chunk::Body(b"b".to_vec())),
+            Ok(Chunk::Trailers(b"grpc-status: 0\r\n".to_vec())),
+        ],
+    )]);
+    let effects = Streaming(tap);
+    let mut task = begin(&plane);
+    run_attempts(
+        &mut task,
+        &Wants::default(),
+        "chat",
+        "m",
+        &mut members,
+        &mut far,
+        &effects,
+    )
+    .unwrap();
+    assert_eq!(flags_fed(&plane), vec![P_HEAD, P_BODY, P_TRAILERS, P_END]);
+    let trailers = plane.piece_log.lock().unwrap()[2].3.clone();
+    let mut found = Vec::new();
+    for rec in Records::new(&trailers) {
+        let rec = rec.unwrap();
+        assert_eq!(rec.tag, g::PAIR);
+        found.push(rec);
+    }
+    assert_eq!(found.len(), 1);
+}
+
+#[test]
+fn a_client_that_went_away_stops_the_reading() {
+    let plane = forwarding();
+    queue(&plane, vec![head("one")]);
+    pieces(
+        &plane,
+        vec![vec![It::Respond(200), It::Body(b"x")], vec![It::Body(b"y")]],
+    );
+    let mut members = walk(&["a"]);
+    let (mut far, tap, seen) = streamer(vec![(
+        200,
+        vec![
+            Ok(Chunk::Body(b"1".to_vec())),
+            Ok(Chunk::Body(b"2".to_vec())),
+        ],
+    )]);
+    tap.gone.store(true, Ordering::SeqCst);
+    let effects = Streaming(Arc::clone(&tap));
+    let mut task = begin(&plane);
+    run_attempts(
+        &mut task,
+        &Wants::default(),
+        "chat",
+        "m",
+        &mut members,
+        &mut far,
+        &effects,
+    )
+    .unwrap();
+    assert_eq!(flags_fed(&plane), vec![P_HEAD]);
+    assert!(seen.lock().unwrap().is_empty(), "no chunk was read");
+}

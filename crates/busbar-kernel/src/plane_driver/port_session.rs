@@ -10,9 +10,9 @@
 //! client response: FORWARD (with its wants and EXPECTs) is accepted in the `request` answer or in a
 //! `piece(FROM_CORE)` answer, once, and never after the response began or beside a to-client item. A second or
 //! late FORWARD is handled exactly as an adapter FAULT: the session ends (the handle is dropped, which cancels it)
-//! and the caller learns [`Violation`]. The loader has no entry that charges an image for a violation core finds
-//! itself; the violation is logged by the caller and counted in `plane_session_violations_total` (a gap recorded
-//! in PLANE-DRIVER.md).
+//! and the caller learns [`Violation`]; [`super::port_charge::charge`] hands it to the port's `charge` entry, which
+//! charges the image as the loader does for a break its own decode finds (the instance quarantined, `plugin_fault`
+//! audited).
 //!
 //! The calls are synchronous (a port's methods run the plugin on its worker); a driver runs a task inside
 //! `spawn_blocking`. The [`Calls`] trait is the seam the tests fake: `PlaneSession` is an ffi handle, so a core
@@ -332,6 +332,28 @@ pub struct Answer {
 pub trait Effects {
     /// `PlaneOut::Emit`: bytes for a line carrier (§12.23).
     fn emit(&self, carrier: u64, bytes: &[u8]);
+
+    /// Where the client's items go as the plane writes them (a streamed reply). `None` = they are collected and
+    /// returned when the session ends.
+    fn client(&self) -> Option<&dyn ClientSink> {
+        None
+    }
+}
+
+/// The client side of a streamed reply: items are handed over as they are decided, in the order the plane wrote
+/// them, instead of being joined into one answer.
+pub trait ClientSink: Send + Sync {
+    /// Takes `items`. `false` = the client went away: nothing more is wanted, and the far end is let go.
+    fn items(&self, items: Vec<ToClient>) -> bool;
+}
+
+/// Hands `items` to the effects' [`ClientSink`] when it has one (leaving `items` empty), else keeps them.
+/// `false` = the client went away.
+pub fn hand_out(effects: &dyn Effects, items: &mut Vec<ToClient>) -> bool {
+    match effects.client() {
+        Some(sink) if !items.is_empty() => sink.items(std::mem::take(items)),
+        _ => true,
+    }
 }
 
 /// The once rules of one session.

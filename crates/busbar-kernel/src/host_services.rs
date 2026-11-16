@@ -22,6 +22,7 @@ mod observations_runtime;
 
 #[path = "host_recovery.rs"]
 mod recovery_runtime;
+pub(crate) use recovery_runtime::recovery_binding_of;
 pub use recovery_runtime::RecoveryWork;
 
 pub const QUEUE_FULL: &str = "the record write queue is full";
@@ -1358,6 +1359,13 @@ impl KernelServices {
     pub fn with_dest_judge(mut self, judge: Arc<dyn DestJudge>) -> Self {
         self.judge = Some(judge);
         self
+    }
+
+    /// The destination judge this host runs `dest.judge` under, if one is installed: the plane port's JUDGE
+    /// intents ask the same guard.
+    #[must_use]
+    pub fn dest_judge(&self) -> Option<Arc<dyn DestJudge>> {
+        self.judge.clone()
     }
 
     #[must_use]

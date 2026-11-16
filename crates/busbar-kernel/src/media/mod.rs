@@ -51,6 +51,11 @@ pub trait MediaLeg: Send + Sync + 'static {
     fn answer<'a>(&'a self, description: &'a str) -> BoxFut<'a, Result<Lines, RecordsDenied>>;
     /// Close the session now (core refused it).
     fn close(&self);
+    /// Resolves once the session has closed (the far end went away, or `close` ran): the plane session that holds the
+    /// bridge is told. The default never resolves.
+    fn closed(&self) -> BoxFut<'_, ()> {
+        Box::pin(std::future::pending())
+    }
 }
 
 /// A carrier's answer: the transport's RENDEZVOUS text and the leg it began.
@@ -172,6 +177,10 @@ impl MediaBridge {
             }
             Ok(())
         })
+    }
+    /// Resolves once the media session has closed: what a plane session holding this bridge waits on.
+    pub fn closed(&self) -> BoxFut<'_, ()> {
+        self.leg.closed()
     }
     /// The text of `remote`'s refusal (the P_RV_FAILED REFUSAL text), once it closed the session.
     pub fn refusal(&self) -> Option<&str> {

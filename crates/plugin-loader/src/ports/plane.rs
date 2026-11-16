@@ -328,6 +328,9 @@ pub trait PlanePort: Send + Sync + 'static {
     fn tick_s(&self) -> Option<u64>;
     /// D_ADMIN_OPENAPI: the OpenAPI fragment of the plane's ROUTE_ADMIN routes (round 8), for the admin document.
     fn admin_openapi(&self) -> Option<&str>;
+    /// Charges this plane's image for a once rule core found one of its answers to break (IF §8.6: handled
+    /// exactly as an adapter FAULT): the instance is quarantined and `plugin_fault` audited.
+    fn charge(&self, reason: busbar_plugin_abi::fail::FaultReason);
     /// Ok(session) even when the plane answered locally; core then calls `end`. A REFUSED/FAILED answer (no
     /// token, §10.4) is Err(PortError::Refused/Failed) and no session exists; core renders the refusal.
     fn request(

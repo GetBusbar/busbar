@@ -363,6 +363,19 @@ impl MediaLeg for Leg {
     fn close(&self) {
         self.close_now();
     }
+
+    fn closed(&self) -> BoxFut<'_, ()> {
+        Box::pin(async move {
+            loop {
+                let mut changed = std::pin::pin!(self.cell.changed.notified());
+                changed.as_mut().enable();
+                if self.cell.lock().session.is_closed() {
+                    return;
+                }
+                changed.await;
+            }
+        })
+    }
 }
 
 /// The connector's datagram carriers over one datagram transport (the instance serving protocol "webrtc").

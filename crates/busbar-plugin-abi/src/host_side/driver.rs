@@ -225,6 +225,12 @@ impl Instance {
     pub fn is_live(&self) -> bool {
         self.cell.is_live(self.epoch)
     }
+    /// Charges this instance for a contract break the host found in one of its answers (§8.6 once rules): the FAULT
+    /// sink's instance-owned arm (quarantine, audit `plugin_fault`), exactly as a break the decode finds. Returns
+    /// the call error a caller may hand back.
+    pub fn charge(&self, reason: FaultReason) -> CallError {
+        report_fault(self.slot, false, reason)
+    }
     /// CAS (epoch, LIVE) → (epoch, QUARANTINED) on the slot's state word; the watchdog's `SlotTable::hung` and the
     /// entry guard's FAULT path both land here.
     pub fn quarantine(&self) {

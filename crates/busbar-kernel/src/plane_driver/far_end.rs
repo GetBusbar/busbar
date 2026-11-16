@@ -271,6 +271,36 @@ pub struct UnitRoute {
     /// ANSWERED with a failure is not retried on another; its answer reaches the plane as it came.
     /// A walk still moves on before anything was answered.
     pub once: bool,
+    /// The plane instance's core-held `insecure_transport.accept` (TRANSPORT-SECURITY-POLICY §3). `Some` = every
+    /// dial this unit makes is judged by `transport_verdict` before the connector sees it (a plaintext target is
+    /// refused unless the set holds PLAINTEXT); `None` = the legacy path, judged by the connector's guard alone
+    /// (O1, owner undecided).
+    pub accept: Option<busbar_plugin_abi::host_side::caller::Accept>,
+}
+
+/// Whether `url` may be dialled under `accept`: `transport_verdict` with the TLS mode the URL's scheme states
+/// (`https://` and `wss://` are TLS, every other scheme is not). `WaiveVerify` still dials verified: the
+/// connector's open takes no unverified mode, which is stricter than the acceptance allows, never looser.
+#[must_use]
+pub(super) fn dial_admitted(
+    accept: Option<busbar_plugin_abi::host_side::caller::Accept>,
+    url: &str,
+) -> bool {
+    use busbar_plugin_abi::host_side::caller::{transport_verdict, Verdict};
+    use busbar_plugin_abi::need::need_flag::{TLS_NONE, TLS_REQUIRED};
+    let Some(accept) = accept else {
+        return true;
+    };
+    let named = |prefix: &str| {
+        url.get(..prefix.len())
+            .is_some_and(|p| p.eq_ignore_ascii_case(prefix))
+    };
+    let tls = if named("https://") || named("wss://") {
+        TLS_REQUIRED
+    } else {
+        TLS_NONE
+    };
+    !matches!(transport_verdict(accept, tls, url), Verdict::Refuse)
 }
 
 impl Default for UnitRoute {
@@ -286,6 +316,7 @@ impl Default for UnitRoute {
             leg: 0,
             caller_credential: None,
             once: false,
+            accept: None,
         }
     }
 }
@@ -669,6 +700,13 @@ impl EgressFarEnd<'_> {
     #[must_use]
     pub fn signals(mut self, signals: Arc<dyn MemberSignals>) -> Self {
         self.signals = Some(signals);
+        self
+    }
+
+    /// Judges every dial of this far end under the plane instance's core-held `accept` ([`UnitRoute::accept`]).
+    #[must_use]
+    pub fn accepting(mut self, accept: busbar_plugin_abi::host_side::caller::Accept) -> Self {
+        self.route.accept = Some(accept);
         self
     }
 
@@ -1462,6 +1500,16 @@ impl EgressFarEnd<'_> {
             return false;
         };
         let url = join(&base_url, &request.target);
+        if !dial_admitted(self.route.accept, &url) {
+            tracing::warn!(
+                action = "egress.insecure_transport_refused",
+                destination = split(&url).0.rsplit('@').next().unwrap_or_default(),
+                "an upstream dial was refused: no insecure_transport acceptance covers it"
+            );
+            self.lock().unsent = Some(RefusalCode::UnsentOpenRefused);
+            self.settle_attempt(&record);
+            return false;
+        }
 
         let (located, carried) = match e
             .conns

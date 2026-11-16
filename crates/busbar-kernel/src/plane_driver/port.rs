@@ -25,16 +25,21 @@ use crate::channels::line_carriers::{CarrierSink, LineCarriers};
 use crate::host_services::KernelServices;
 
 use super::port_auth::{
-    admit, refuse, subject_identity, Admitted, Credentials, NoTickets, Principal, TicketDoor,
+    admit, catalog, refuse, subject_identity, Admitted, Credentials, NoTickets, Principal,
+    TicketDoor,
 };
+use super::port_carrier::PortCarrier;
 use super::port_channels::{decode_tick, TickOut};
+use super::port_charge::charge;
+use super::port_egress::{PortUpstream, SessionFacts};
 use super::port_intents::{IntentHost, Namespace, Resolver};
 use super::port_money::write_audit;
 use super::port_money::PortMoney;
 use super::port_routes::{admin_catalog, admin_hydrate, plan, Mounted, PortRoutes};
 use super::port_serve::{run_session, AuditOnly, Books, Drive, Ran, UnitBooks};
-use super::port_session::{run_local, Effects, SessionError, ToClient};
+use super::port_session::{run_local, ClientSink, Effects, SessionError, ToClient};
 use super::port_upstream::{Members, UpSend};
+
 use super::{AuditSink, CoreAudit};
 use crate::push::PushQueue;
 use crate::refusal::{ClientRefusal, RefusalMap};
@@ -71,6 +76,23 @@ impl Effects for LineEffects<'_> {
     }
 }
 
+/// A served request's effects: the line carriers' emits, and the client's streamed items when the route layer
+/// gave a sink.
+struct ServeEffects<'a> {
+    lines: LineEffects<'a>,
+    client: Option<Arc<dyn ClientSink>>,
+}
+
+impl Effects for ServeEffects<'_> {
+    fn emit(&self, carrier: u64, bytes: &[u8]) {
+        self.lines.emit(carrier, bytes);
+    }
+
+    fn client(&self) -> Option<&dyn ClientSink> {
+        self.client.as_deref()
+    }
+}
+
 /// The response line without its terminator: the to-client BODY bytes. RESPOND's status, the head and the end
 /// carry nothing on a line; empty writes nothing. A message item has no line form.
 fn line_of(items: Vec<ToClient>) -> Result<Vec<u8>, LineRefused> {
@@ -104,6 +126,12 @@ pub struct PortSeat {
     pub intents: Arc<dyn IntentHost>,
     /// The instance's record namespace (§12.5): the caller its pushes are queued under.
     pub who: Namespace,
+    /// The egress walk a FORWARD runs over (`PortEgress`); `None` = this instance forwards nothing yet (its
+    /// pool is not configured: a FORWARD fails `NotDriven`).
+    pub upstream: Option<Arc<dyn PortUpstream>>,
+    /// The channel carrier a session's CHANNEL, EX_MSG, WAKE_AT and DETACH run over (`PortCarrier`); `None` = this
+    /// instance has no carrier yet: a CHANNEL is `P_ERROR` and a session ends with its walk.
+    pub carrier: Option<Arc<PortCarrier>>,
 }
 
 impl PortSeat {
@@ -175,6 +203,8 @@ pub struct PortDriver {
     line: Option<LineRoute>,
     routes: PortRoutes,
     tickets: Arc<dyn TicketDoor>,
+    /// The declared usage classes (D_USAGE_CLASS) in the Statement's order: a unit count's class indexes them.
+    usage: Arc<[String]>,
 }
 
 impl PortDriver {
@@ -200,6 +230,11 @@ impl PortDriver {
             effective: m.effective,
             path: m.pattern.clone(),
         });
+        let usage: Arc<[String]> = port
+            .usage_classes()
+            .iter()
+            .map(|u| u.class.to_string())
+            .collect();
         Ok(Self {
             port,
             services,
@@ -209,7 +244,14 @@ impl PortDriver {
             line,
             routes,
             tickets: Arc::new(NoTickets),
+            usage,
         })
+    }
+
+    /// The instance's declared usage classes, in the order a unit count's class indexes them.
+    #[must_use]
+    pub fn usage_classes(&self) -> Arc<[String]> {
+        Arc::clone(&self.usage)
     }
 
     /// The routes this instance declares, sorted by where core mounts them.
@@ -261,6 +303,7 @@ impl PortDriver {
             .data
             .iter()
             .chain(&self.routes.upgrade)
+            .chain(&self.routes.admin)
             .find(|m| m.route == input.route)
             .cloned()
             .ok_or(ServeError::NoRoute)?;
@@ -279,7 +322,10 @@ impl PortDriver {
             principal,
             unit,
             upstream,
+            client,
+            carrier,
             intents,
+            models,
             ..
         } = input;
         let port = Arc::clone(&self.port);
@@ -300,7 +346,10 @@ impl PortDriver {
                 principal,
                 unit,
                 upstream,
+                client,
+                carrier,
                 &*intents,
+                &models,
             )
         })
         .await
@@ -518,7 +567,10 @@ fn run_line(
             let refusal = refusal_of(route.id, &error, refusals);
             line_of(refuse(port, &req, &refusal, &effects))
         }
-        Err(error) => Err(LineRefused::Session(error)),
+        Err(error) => {
+            charge(port, &error);
+            Err(LineRefused::Session(error))
+        }
     }
 }
 
@@ -553,9 +605,16 @@ pub struct ServeIn<'a> {
     /// The unit the request bills to; `None` = not a billed unit (audit rows only).
     pub unit: Option<Unit>,
     /// The member walk and the far end for a FORWARD; `None` = the route never forwards.
-    pub upstream: Option<(Box<dyn Members + Send>, Box<dyn UpSend + Send>)>,
+    pub upstream: Option<Arc<dyn PortUpstream>>,
+    /// Where the client's items go as they are decided (a streamed reply); `None` = they are collected in [`Ran`].
+    pub client: Option<Arc<dyn ClientSink>>,
+    /// The seat's channel carrier (`PortSeat::carrier`).
+    pub carrier: Option<Arc<PortCarrier>>,
     /// What the plane's intents run against.
     pub intents: Arc<dyn IntentHost>,
+    /// The model names a ROUTE_CATALOG route lists (the principal's view, `endpoints::catalog_names`); empty for any
+    /// other route.
+    pub models: Vec<String>,
 }
 
 /// How a request ended, for the route layer.
@@ -588,10 +647,16 @@ fn serve_blocking(
     http: HttpIn,
     principal: Option<Arc<str>>,
     unit: Option<Unit>,
-    upstream: Option<(Box<dyn Members + Send>, Box<dyn UpSend + Send>)>,
+    upstream: Option<Arc<dyn PortUpstream>>,
+    client: Option<Arc<dyn ClientSink>>,
+    carrier: Option<Arc<PortCarrier>>,
     intents: &dyn IntentHost,
+    models: &[String],
 ) -> Result<Served, ServeError> {
-    let effects = LineEffects { carriers, owner };
+    let effects = ServeEffects {
+        lines: LineEffects { carriers, owner },
+        client,
+    };
     let headers: Vec<Pair<'_>> = http
         .headers
         .iter()
@@ -623,16 +688,28 @@ fn serve_blocking(
         }
     };
     let req = build(admitted.auth, &admitted.identity, admitted.ticket_record());
+    if route.catalog {
+        // A ROUTE_CATALOG route lists models: the plane renders core's list in its dialect, no session runs.
+        let names: Vec<&str> = models.iter().map(String::as_str).collect();
+        return match catalog(port, &req, &names, &effects) {
+            Ok(client) => Ok(Served::Ran(Ran {
+                client,
+                ..Ran::default()
+            })),
+            Err(error) => Err(ServeError::Session(error)),
+        };
+    }
     let resolver = match principal.as_deref() {
         Some(subject) => Resolver::new(intents, None).with_principal(subject, &admitted.identity),
         None => Resolver::new(intents, None),
     }
     .with_route(route.route);
-    let dialect = port.dialects().first().map_or("", |d| &**d);
-    let (mut members, mut send) = match upstream {
-        Some((members, send)) => (Some(members), Some(send)),
-        None => (None, None),
+    let session = carrier.as_ref().map(|carrier| carrier.session());
+    let resolver = match &session {
+        Some(session) => resolver.with_channels(&session.host),
+        None => resolver,
     };
+    let dialect = port.dialects().first().map_or("", |d| &**d);
     let ran = {
         let unit_books = unit
             .as_ref()
@@ -645,20 +722,38 @@ fn serve_blocking(
             Some(books) => books,
             None => &audit_books,
         };
-        run_session(
-            port,
-            &req,
-            &http.body,
-            Drive {
-                resolver: &resolver,
-                members: members.as_deref_mut().map(|m| m as &mut dyn Members),
-                send: send.as_deref_mut().map(|s| s as &mut dyn UpSend),
-                dialect,
-                refusals,
-                effects: &effects,
-                books,
-            },
-        )
+        let go = |members: Option<&mut dyn Members>, send: Option<&mut dyn UpSend>| {
+            run_session(
+                port,
+                &req,
+                &http.body,
+                Drive {
+                    resolver: &resolver,
+                    members,
+                    send,
+                    dialect,
+                    refusals,
+                    effects: &effects,
+                    books,
+                    carrier: session.as_ref(),
+                },
+            )
+        };
+        match &upstream {
+            Some(upstream) => {
+                let facts = SessionFacts {
+                    unit: unit
+                        .as_ref()
+                        .map_or(busbar_contract::UnitKey::new(0), |u| u.ctx.key),
+                };
+                let mut ran = None;
+                upstream.walk(facts, &mut |members, send| {
+                    ran = Some(go(Some(members), Some(send)));
+                });
+                ran.unwrap_or(Err(SessionError::NotDriven))
+            }
+            None => go(None, None),
+        }
     };
     match ran {
         Ok(ran) => Ok(Served::Ran(ran)),
@@ -666,7 +761,10 @@ fn serve_blocking(
             let refusal = refusal_of(route.route, &error, refusals);
             Ok(Served::Refused(refuse(port, &req, &refusal, &effects)))
         }
-        Err(error) => Err(ServeError::Session(error)),
+        Err(error) => {
+            charge(port, &error);
+            Err(ServeError::Session(error))
+        }
     }
 }
 #[cfg(test)]
