@@ -5,6 +5,7 @@
 //! optional CONFIG and CORE_CFG*. The decoder is kind-blind. It stops before a last record tagged
 //! `export::tag::CUSTODY`, which A9's `decode_ceiling` reads; any other record there is `RecErr::Unknown`.
 
+use busbar_contract::json::{self, JsonContainerTrait, JsonValueTrait};
 use busbar_plugin_abi::host_side::answer::Answer;
 use busbar_plugin_abi::host_side::caller::InstanceLimits;
 use busbar_plugin_abi::kinds::export::export::tag::CUSTODY;
@@ -47,12 +48,15 @@ pub fn settled_limits(base: InstanceLimits, a: &Answer<'_>) -> InstanceLimits {
 
 /// [`settled_limits`] over one LIMITS value (a JSON object): unknown keys and non-numbers are ignored.
 pub fn with_limits_json(mut base: InstanceLimits, json: &[u8]) -> InstanceLimits {
-    let Ok(serde_json::Value::Object(map)) = serde_json::from_slice(json) else {
+    let Ok(value) = json::parse_value(json) else {
+        return base;
+    };
+    let Some(map) = value.as_object() else {
         return base;
     };
     let pick = |key: &str, cap: u32| {
         map.get(key)
-            .and_then(serde_json::Value::as_u64)
+            .and_then(json::Value::as_u64)
             .map(|v| u32::try_from(v).unwrap_or(cap).min(cap))
     };
     if base.timeout_ms == 0 {

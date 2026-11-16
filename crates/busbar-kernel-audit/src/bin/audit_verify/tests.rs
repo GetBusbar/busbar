@@ -593,13 +593,13 @@ fn v7_records_verify_against_the_published_page() {
         "u_00112233445566778899aabbccddeeff"
     );
     let mut tampered = range.clone();
-    tampered["records"][1]["labels"][0]["value"] = json!("billing");
+    tampered["records"][1]["labels"][0]["value"] = json::json!("billing");
     assert!(
         verify(&keys(), &tampered, Some(&head)).is_err(),
         "a label is digested"
     );
     let mut tampered = range.clone();
-    tampered["records"][1]["user"] = json!("u_ffeeddccbbaa99887766554433221100");
+    tampered["records"][1]["user"] = json::json!("u_ffeeddccbbaa99887766554433221100");
     assert!(
         verify(&keys(), &tampered, Some(&head)).is_err(),
         "the user is digested"
@@ -607,7 +607,7 @@ fn v7_records_verify_against_the_published_page() {
     let mut stripped = range.clone();
     let second = stripped["records"][1].as_object_mut().unwrap();
     for member in ["user_present", "user", "labels_count", "labels"] {
-        second.remove(member);
+        second.remove(&member);
     }
     assert!(
         verify(&keys(), &stripped, Some(&head)).is_err(),
