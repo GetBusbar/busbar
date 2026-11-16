@@ -8,7 +8,7 @@
 //! the arm's body and un-ignores it in its own MR (red first, then green).
 
 #[test]
-#[ignore = "owner: W1-L2; blocked (re-checked on dev 2026-11-16): no test constructor for Registry<N> (Needs impl, ConfigBinder, Ceilings, a static Host) and no second-identity MIN-3 fixture image exist in busbar-plugin-test on dev"]
+#[ignore = "owner: W1-L2; blocked (re-checked on dev 2026-11-16): the Registry (Harness) and a second-identity image now exist, but no fixture logs a secret from close (the probe keeps no Host in its Drop) and the slot-not-reused-until-close-returns half is not observable: SlotTable and SlotLease are registry internals with no public reuse probe"]
 fn a_close_log_line_is_attributed_and_scrubbed_and_the_slot_waits() {
     todo!("owner: W1-L2 (C-CLOSE-LOG)")
 }

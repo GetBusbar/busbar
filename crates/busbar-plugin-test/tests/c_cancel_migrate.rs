@@ -8,7 +8,7 @@
 //! the arm's body and un-ignores it in its own MR (red first, then green).
 
 #[test]
-#[ignore = "owner: W1-L2; blocked (re-checked on dev 2026-11-16): no test constructor for Registry<N> (Needs impl, ConfigBinder, Ceilings, a static Host) and no second-identity MIN-3 fixture image exist in busbar-plugin-test on dev"]
+#[ignore = "owner: W1-L2; blocked (re-checked on dev 2026-11-16): the Registry (Harness) and a second-identity secret image now exist, but this arm cancels a store `migrate` chain parked mid-NEED and needs a MIN-3 store fixture whose migrate NEEDs (fixtures/min3_store.rs, store-export lane); the probe image in min3_second.rs is a secret, and its open-chain cancels run as c_cancel_open"]
 fn dropping_the_boot_future_mid_open_cancels_once() {
     todo!("owner: W1-L2 (C-CANCEL-MIGRATE)")
 }

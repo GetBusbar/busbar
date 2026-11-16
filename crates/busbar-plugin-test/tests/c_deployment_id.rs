@@ -57,7 +57,7 @@ fn the_id_never_equals_a_run_of_the_keyset_seed() {
 }
 
 #[test]
-#[ignore = "owner: W1-L2; blocked (re-checked on dev 2026-11-16): no test constructor for Registry<N> (Needs impl, ConfigBinder, Ceilings, a static Host) and no second-identity MIN-3 fixture image exist in busbar-plugin-test on dev"]
+#[ignore = "owner: W1-L2; blocked (re-checked on dev 2026-11-16): the Registry (Harness) exists, but the arm needs core's boot steps 2a/2b/2c with set_deployment between the 2b re-check and the first 2c migrate, and the store row busbar.deployment.v1/id; the loader's boot_plan orders phases only and boot does not yet open them through the MIN-3 Registry (min3_boot configured(), OUTSTANDING rows 7 to 10)"]
 fn the_2a_and_2b_recheck_sees_the_id_before_any_2c_open() {
     todo!("owner: W1-L2 (C-DEPLOYMENT-ID)")
 }

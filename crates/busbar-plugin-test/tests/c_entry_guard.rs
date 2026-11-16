@@ -16,7 +16,7 @@ fn grow_to_16_mib_and_the_arena_is_zero_when_the_open_step_returns() {
 }
 
 #[test]
-#[ignore = "owner: W1-L2; blocked (re-checked on dev 2026-11-16): no test constructor for Registry<N> (Needs impl, ConfigBinder, Ceilings, a static Host) and no second-identity MIN-3 fixture image exist in busbar-plugin-test on dev"]
+#[ignore = "owner: W1-L2; blocked (re-checked on dev 2026-11-16): the Registry (Harness) and a second-identity image now exist, but no fixture logs a secret from describe and close or answers 64 KiB through a grown buffer, and the probe image logs only from resolve"]
 fn describe_open_and_close_log_lines_are_attributed_and_scrubbed_and_64_kib_answers_pass() {
     todo!("owner: W1-L2 (C-ENTRY-GUARD)")
 }

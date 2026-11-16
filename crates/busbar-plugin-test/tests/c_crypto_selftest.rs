@@ -111,7 +111,7 @@ fn self_test_through_host_vt_on_the_stub_backend() {
     todo!("owner: busbar#262 (C-CRYPTO-SELFTEST)")
 }
 #[test]
-#[ignore = "owner: W1-L2; blocked (re-checked on dev 2026-11-16): no test constructor for Registry<N> (Needs impl, ConfigBinder, Ceilings, a static Host) and no second-identity MIN-3 fixture image exist in busbar-plugin-test on dev"]
+#[ignore = "owner: W1-L2; blocked (re-checked on dev 2026-11-16): the Registry (Harness) exists, but the arm needs a stub busbar-crypto-backend that fails its self-test after N calls (a facade build of busbar-plugin-abi, not this crate) and the crypto_self_test_failed audit row and plugin_host_fault_total metric, which are the kernel watchdog (OUTSTANDING row 5), absent from this crate's reachable surface"]
 fn one_crypto_self_test_failed_row_and_metric_within_a_tick() {
     todo!("owner: W1-L2 (C-CRYPTO-SELFTEST)")
 }
