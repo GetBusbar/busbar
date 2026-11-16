@@ -194,21 +194,14 @@ mod tests {
     }
 
     #[test]
-    fn boot_listener_and_shutdown_changes_are_not_live_limits() {
+    fn boot_listener_changes_are_not_live_limits() {
         let boot = baseline();
         let mut next = boot.clone();
         next.listen = "127.0.0.1:9090".into();
-        next.limits.drain_timeout = Some("45s".into());
-        next.limits.max_pending_checkpoints = Some(77);
         next.limits.request_body_max_bytes += 1;
-        assert_eq!(
-            next.changed(&boot),
-            [
-                "/listen",
-                "/advanced/shutdown/drain_timeout",
-                "/advanced/governance/max_pending_checkpoints"
-            ]
-        );
+        // Removed advanced keys remain refused by config's
+        // removed_operational_knobs_are_rejected test; they cannot become restart state.
+        assert_eq!(next.changed(&boot), ["/listen"]);
         assert!(boot.changed(&boot).is_empty());
         // Rebuilding another generation cannot reset the immutable boot comparison.
         assert_eq!(next.clone().changed(&boot), next.changed(&boot));
