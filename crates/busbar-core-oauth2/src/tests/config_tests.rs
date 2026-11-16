@@ -440,3 +440,53 @@ fn an_absolute_url_split_differently_by_the_dialling_stack_is_refused_at_boot() 
         );
     }
 }
+
+fn resolve_with_admin_listen(
+    admin_listen: &str,
+) -> Result<busbar_kernel::config::RootCfg, Vec<String>> {
+    crate::testkit::install_test_seam();
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        serde_json::json!({
+            "providers": {},
+            "models": {},
+            "admin_listen": admin_listen,
+            "admin_require_mtls": false,
+            "oauth_as": { "issuer": "https://gw.example.com" },
+        }),
+        &busbar_kernel::config::Grammar::empty(),
+    )
+    .expect("the document parses");
+    busbar_kernel::config::resolve(&deploy, &std::collections::HashMap::new())
+}
+
+/// #140: the operator approval pages live on the admin listener and the authorization server
+/// publishes that listener's address. Busbar can only know the address a browser reaches when
+/// `admin_listen` is loopback (reached on-host, over `ssh -L` or `kubectl port-forward`, all of
+/// which keep host and port), so any other `admin_listen` refuses `oauth_as:` at boot, naming the fix.
+#[test]
+fn oauth_as_with_a_non_loopback_admin_listener_is_refused_naming_the_tunnel() {
+    for admin_listen in [
+        "0.0.0.0:8081",
+        "[::]:8081",
+        "10.0.0.5:8081",
+        "gw.example.com:8081",
+        "127.0.0.1:0",
+    ] {
+        let refused = resolve_with_admin_listen(admin_listen)
+            .expect_err("oauth_as with a non-loopback admin_listen must refuse the config");
+        assert!(
+            refused.iter().any(|e| e.starts_with("BUSBAR-3129: ")
+                && e.contains("admin_listen")
+                && e.contains(admin_listen)
+                && e.contains("ssh -L")
+                && e.contains("kubectl port-forward")),
+            "{admin_listen}: the refusal is config-section-invalid and names the remedy: {refused:?}"
+        );
+    }
+    for admin_listen in ["127.0.0.1:8081", "localhost:8081", "[::1]:8081"] {
+        assert!(
+            resolve_with_admin_listen(admin_listen).is_ok(),
+            "{admin_listen} is loopback, so oauth_as resolves"
+        );
+    }
+}

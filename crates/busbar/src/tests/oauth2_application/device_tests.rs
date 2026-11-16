@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::{
-    application_with_resource_auth,
+    application_with_resource_auth_at,
     browser::{send, Jar},
 };
 use base64::Engine as _;
@@ -57,6 +57,8 @@ impl Key {
 
 struct Subject {
     origin: String,
+    /// The admin listener's origin, where the operator's approval page lives.
+    admin: String,
     app: Arc<busbar_kernel::state::App>,
     client: reqwest::Client,
     key: Key,
@@ -65,6 +67,7 @@ struct Subject {
 async fn setup() -> Subject {
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let (admin_listener, admin_listen) = super::bind_admin().await;
     let origin = format!("https://{}", listener.local_addr().unwrap());
     let key = Key::new();
     let config = OauthAsCfg {
@@ -80,13 +83,11 @@ async fn setup() -> Subject {
         }],
         ..Default::default()
     };
-    let app = application_with_resource_auth(Some(&config), None, true).await;
-    let router = busbar_kernel::build_router(Arc::clone(&app));
-    tokio::spawn(async move {
-        super::serve_tls(listener, router).await;
-    });
+    let app = application_with_resource_auth_at(Some(&config), true, &admin_listen).await;
+    super::serve_split(Arc::clone(&app), listener, admin_listener, true);
     Subject {
         origin,
+        admin: format!("http://{admin_listen}"),
         app,
         client: super::client_builder()
             .redirect(reqwest::redirect::Policy::none())
@@ -407,5 +408,123 @@ async fn the_browser_device_routes_require_admin_and_public_registration_keeps_i
     assert_eq!(
         error["error"], "unauthorized_client",
         "a pre-existing code-only registration does not gain device permission"
+    );
+}
+
+fn assert_framing_refused(headers: &reqwest::header::HeaderMap, what: &str) {
+    let header = |name: &str| {
+        headers
+            .get(name)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default()
+            .to_string()
+    };
+    assert_eq!(header("cache-control"), "no-store", "{what}");
+    assert_eq!(header("x-frame-options"), "DENY", "{what}");
+    assert!(
+        header("content-security-policy").contains("frame-ancestors 'none'"),
+        "{what}"
+    );
+    assert_eq!(header("referrer-policy"), "no-referrer", "{what}");
+}
+
+/// #140: the device approval page is an operator page, so it lives on the admin listener and the
+/// grant names that listener; and the operator sees WHAT they approve before any approve control
+/// exists (RFC 8628 s5.4).
+#[tokio::test]
+async fn the_verification_uri_names_the_admin_listener_and_the_page_confirms_before_approving() {
+    let subject = setup().await;
+    let (origin, admin, client) = (
+        subject.origin.clone(),
+        subject.admin.clone(),
+        subject.client.clone(),
+    );
+    let mut form = credentials(&subject, &subject.key);
+    form.push(("scope", "read".into()));
+    let response = client
+        .post(format!("{origin}/device_authorization"))
+        .form(&form)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let grant: Value = response.json().await.unwrap();
+    assert_eq!(
+        grant["verification_uri"],
+        format!("{admin}/oauth/device"),
+        "the published verification page is the admin listener's: {grant}"
+    );
+    let user_code = grant["user_code"].as_str().unwrap().to_string();
+
+    for path in [
+        format!("/device?user_code={user_code}"),
+        format!("/oauth/device?user_code={user_code}"),
+    ] {
+        let response = client.get(format!("{origin}{path}")).send().await.unwrap();
+        let status = response.status();
+        let page = response.text().await.unwrap();
+        assert_ne!(status, 200, "the public listener serves {path}: {page}");
+        assert!(
+            !page.contains(CLIENT) && !page.contains("csrf_token"),
+            "the public listener renders the operator page at {path}: {page}"
+        );
+    }
+
+    let mut jar = Jar::new(false);
+    let (status, headers, entry) = send(
+        &client,
+        &mut jar,
+        reqwest::Method::GET,
+        &format!("{admin}/oauth/device"),
+        None,
+    )
+    .await;
+    assert_eq!(status, 200, "the code-entry form renders: {entry}");
+    assert!(entry.contains("name=\"user_code\""), "{entry}");
+    assert!(
+        !entry.contains("value=\"approve\""),
+        "no approve control before the operator has seen the request: {entry}"
+    );
+    assert_framing_refused(&headers, "the entry form");
+
+    let (status, headers, page) = send(
+        &client,
+        &mut jar,
+        reqwest::Method::GET,
+        &format!("{admin}/oauth/device?user_code={user_code}"),
+        None,
+    )
+    .await;
+    assert_eq!(status, 200, "the confirm page renders: {page}");
+    assert_framing_refused(&headers, "the confirm page");
+    let approve_at = page
+        .find("value=\"approve\"")
+        .expect("the confirm page carries the approve control");
+    assert!(
+        page[..approve_at].contains(CLIENT) && page[..approve_at].contains("read"),
+        "the client and the scope are named before the approve control: {page}"
+    );
+    assert!(
+        jar.header_for("/oauth/device").is_some(),
+        "the confirm page binds its form to this browser"
+    );
+
+    let (status, _, refused) = send(
+        &client,
+        &mut jar,
+        reqwest::Method::GET,
+        &format!("{admin}/oauth/device?user_code=NOPE-NOPE"),
+        None,
+    )
+    .await;
+    assert!(status.is_client_error(), "{status}: {refused}");
+    assert!(
+        !refused.contains("csrf_token") && !refused.contains("value=\"approve\""),
+        "an unknown code gets a refusal and no form: {refused}"
+    );
+    assert_eq!(
+        poll(&subject, &grant).await.1["error"],
+        "authorization_pending",
+        "looking at the request decided nothing"
     );
 }

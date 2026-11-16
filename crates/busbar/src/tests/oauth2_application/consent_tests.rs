@@ -17,10 +17,20 @@ pub(super) async fn serve(
     scopes: &[&str],
     guarded: bool,
 ) -> (String, Arc<busbar_kernel::state::App>) {
+    let (origin, _admin, app) = serve_at(scopes, guarded).await;
+    (origin, app)
+}
+
+/// The deployment on its two listeners: `(data origin, admin origin, app)`.
+pub(super) async fn serve_at(
+    scopes: &[&str],
+    guarded: bool,
+) -> (String, String, Arc<busbar_kernel::state::App>) {
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind");
+    let (admin_listener, admin_listen) = super::bind_admin().await;
     let origin = format!("http://{}", listener.local_addr().expect("address"));
     let oauth = OauthAsCfg {
         issuer: origin.clone(),
@@ -31,6 +41,7 @@ pub(super) async fn serve(
         "providers": {}, "models": {},
         "oauth_as": oauth.authoring(&busbar_kernel::seal::acquire()),
         "auth": {"chain":[],"admin_auth":[]},
+        "admin_listen": admin_listen,
         "advanced": {"allow_destinations":["127.0.0.1"]},
     });
     if guarded {
@@ -50,14 +61,11 @@ pub(super) async fn serve(
         });
     }
     let app = application_with_document(document).await;
-    let router = busbar_kernel::build_router(Arc::clone(&app));
-    tokio::spawn(async move {
-        axum::serve(listener, router).await.expect("serve");
-    });
-    (origin, app)
+    super::serve_split(Arc::clone(&app), listener, admin_listener, false);
+    (origin, format!("http://{admin_listen}"), app)
 }
 
-async fn register_client(origin: &str, redirect: &str, scopes: &str) -> String {
+pub(super) async fn register_client(origin: &str, redirect: &str, scopes: &str) -> String {
     let response = reqwest::Client::new()
         .post(format!("{origin}/register"))
         .json(&serde_json::json!({
