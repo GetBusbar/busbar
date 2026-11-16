@@ -933,6 +933,27 @@ fn added(
     }
 }
 
+#[test]
+fn one_impl_trait_move_needs_no_admission() {
+    let before = BTreeMap::from([("old/ports.rs".into(), vec!["AuthPort".into()])]);
+    let now = BTreeMap::from([("new/auth.rs".into(), vec!["AuthPort".into()])]);
+    let mut failures = Vec::new();
+    added(&now, &before, &BTreeMap::new(), "traits", &mut failures);
+    assert!(failures.is_empty(), "a trait move is not a new trait: {failures:?}");
+}
+
+#[test]
+fn one_impl_retained_trait_does_not_authorize_another_definition() {
+    let before = BTreeMap::from([("old/ports.rs".into(), vec!["AuthPort".into()])]);
+    let now = BTreeMap::from([
+        ("old/ports.rs".into(), vec!["AuthPort".into()]),
+        ("new/auth.rs".into(), vec!["AuthPort".into()]),
+    ]);
+    let mut failures = Vec::new();
+    added(&now, &before, &BTreeMap::new(), "traits", &mut failures);
+    assert_eq!(failures.len(), 1);
+}
+
 fn shrink_only(now: &Lints, before: &Lints, failures: &mut Vec<String>) {
     for key in now.admitted.keys() {
         let still_new = key.split_once(' ').is_some_and(|(file, name)| {
