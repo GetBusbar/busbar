@@ -343,7 +343,7 @@ pub(crate) fn to_yaml(value: &json::Value, path: &str, o: &str) -> Result<Value,
     }
     if let Some(members) = value.as_object() {
         let mut out: Pairs = Vec::new();
-        for (key, member) in members.iter() {
+        for (key, member) in ordered(members) {
             let path = format!("{path}.{key}");
             out.push((text(key, &path, o)?, to_yaml(member, &path, o)?));
         }
