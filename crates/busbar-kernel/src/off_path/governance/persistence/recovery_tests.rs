@@ -1835,7 +1835,15 @@ async fn shared_carried_evidence_survives_until_the_last_operation_releases() {
     recovery.carry([1; 16], Some(evidence));
     recovery.carry([1; 16], Some(evidence));
     recovery.carry([2; 16], Some(evidence));
+    recovery.carry(
+        [1; 16],
+        Some(Carried {
+            seq: 2,
+            hash: [8; 32],
+        }),
+    );
     recovery.release([1; 16]);
+    assert!(recovery.carried(2).is_none());
     assert_eq!(
         recovery.carried(1).map(|value| value.hash),
         Some(evidence.hash)
