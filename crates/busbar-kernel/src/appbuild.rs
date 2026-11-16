@@ -1397,23 +1397,11 @@ async fn open_config_store(
         .encode()
         .map_err(|error| failed(error.to_string()))?
         .into_exposed(&crate::seal::lend());
-    let limits = cfg
-        .min3
-        .limits
-        .get(&(Box::from(STORE_INSTANCE), Box::from(STORE_INSTANCE)))
-        .map_or_else(Default::default, |limits| {
-            busbar_plugin_abi::host_side::caller::InstanceLimits {
-                timeout_ms: limits.timeout_ms,
-                connect_timeout_ms: limits.connect_timeout_ms,
-                max_inflight: limits.max_inflight,
-                ..Default::default()
-            }
-        });
     let spec = busbar_plugin_loader::instance::InstanceSpec {
         identity: &store.module,
         name: STORE_INSTANCE,
         config_json: &config_json,
-        limits,
+        limits: instance_limits(cfg, STORE_INSTANCE, STORE_INSTANCE),
         public_url: None,
         caller_upstreams: &[],
     };
@@ -1425,7 +1413,27 @@ async fn open_config_store(
 }
 
 /// The store's configured instance name: its config section key.
-const STORE_INSTANCE: &str = "store";
+pub const STORE_INSTANCE: &str = "store";
+
+/// The `<section>.<name>.limits` the operator stated for an instance (IF §12.22), as the registry takes them;
+/// every field 0 (the kind's default) when none is stated.
+pub fn instance_limits(
+    cfg: &config::RootCfg,
+    section: &str,
+    name: &str,
+) -> busbar_plugin_abi::host_side::caller::InstanceLimits {
+    cfg.min3
+        .limits
+        .get(&(Box::from(section), Box::from(name)))
+        .map_or_else(Default::default, |limits| {
+            busbar_plugin_abi::host_side::caller::InstanceLimits {
+                timeout_ms: limits.timeout_ms,
+                connect_timeout_ms: limits.connect_timeout_ms,
+                max_inflight: limits.max_inflight,
+                ..Default::default()
+            }
+        })
+}
 
 /// Core's own words for a refused store open, with the code only (IF §12.16: the plugin's text is never
 /// interpolated into a core message).

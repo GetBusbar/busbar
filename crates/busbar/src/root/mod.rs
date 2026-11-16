@@ -194,6 +194,8 @@ pub(crate) mod measurements;
 /// The migrate-on-boot seam: step 1 (the stamp) and step 5 (the write and re-exec).
 pub(crate) mod migrate;
 pub mod migration_secrets;
+/// The boot's MIN-3 registry: Need handlers, image admission, the boot walk (ROOT-BOOT).
+pub(crate) mod min3_boot;
 // busbar:request-path
 #[cfg_attr(
     not(test),

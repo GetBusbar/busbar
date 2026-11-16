@@ -677,7 +677,7 @@ fn load_via_memfd(bytes: &[u8], display: &str) -> Result<(Library, Staged), Stri
 
 /// A memfd holding exactly `bytes`, sealed against every later write, grow and shrink.
 #[cfg(target_os = "linux")]
-fn sealed_memfd(bytes: &[u8]) -> Result<std::os::fd::OwnedFd, String> {
+pub(crate) fn sealed_memfd(bytes: &[u8]) -> Result<std::os::fd::OwnedFd, String> {
     use std::os::fd::{AsRawFd as _, FromRawFd as _, OwnedFd};
     // Raw `syscall(SYS_memfd_create, ...)` rather than the named `libc::memfd_create` wrapper:
     // the wrapper is only a LINK-time convenience symbol some libc.so/cross-sysroots omit even
