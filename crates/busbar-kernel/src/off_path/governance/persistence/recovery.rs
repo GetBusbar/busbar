@@ -757,9 +757,10 @@ struct Pending {
     predecessor: Option<Secret<Vec<u8>>>,
     run: Arc<StagedRun>,
     selection_proof: Option<Arc<VerifiedHead>>,
-    /// A re-driven uncertain attempt met a definite no-effect: its first crossing may still
-    /// land, so it is never resubmitted and only reconciliation resolves it.
-    reconciling: bool,
+    /// The last crossing definitely applied nothing and our authority was lost or could not be
+    /// read: every later drive repeats only the authority read until it passes, so nothing is
+    /// resubmitted under lost authority (owner ruling 2026-11-16).
+    authority_first: bool,
     /// Who may drive this staged original (SHUTDOWN-HANG F3.2).
     owner: Owner,
 }
@@ -781,8 +782,8 @@ struct BatchAttempt {
     /// The proof the attempt CASes against, retained under the publication driver before any
     /// native claim; `None` until its first crossing and after a definite no-effect re-arm.
     proof: Option<Arc<VerifiedHead>>,
-    /// A re-driven in-doubt attempt met a definite no-effect: never resubmitted.
-    reconciling: bool,
+    /// As `Pending::authority_first`, for the whole batch.
+    authority_first: bool,
 }
 #[derive(Clone)]
 struct PendingAdoption {
@@ -859,6 +860,10 @@ enum Crossed {
         conflict: bool,
         why: RecoveryError,
     },
+    /// A re-driven in-doubt attempt met a definite no-effect with our authority intact (owner
+    /// ruling 2026-11-16): the same members, re-armed under a new operation id, to re-select
+    /// whole against the live head.
+    Reselect(BatchAttempt),
 }
 
 /// Scoped recovery domain owner. Its only backend is the opened CoreStore and
@@ -1320,7 +1325,65 @@ fn applied(result: WriteResult) -> Result<bool, RecoveryError> {
         )),
     }
 }
+/// What one single-operation selection crossing decided.
+enum Selected {
+    Applied,
+    /// A definite condition conflict: nothing applied.
+    Conflict,
+    /// A definite no-effect refusal of the whole candidate (a fence answers like a size refusal).
+    Refused(RecoveryError),
+}
+fn selection_outcome(result: WriteResult) -> Result<Selected, RecoveryError> {
+    match result {
+        WriteResult::Submitted(submission) => match submission.result {
+            SubmitResult::Decided(decision) => match decision.as_ref() {
+                Decision::Applied(_) => Ok(Selected::Applied),
+                Decision::ConditionConflict => Ok(Selected::Conflict),
+                Decision::TimeGuardFailed { .. } => Ok(Selected::Refused(unavailable(
+                    "recovery temporal guard refused",
+                ))),
+                _ => Err(unavailable("recovery candidate requires reconciliation")),
+            },
+            SubmitResult::NoEffect(failure) => Ok(Selected::Refused(unavailable(failure))),
+            _ => Err(unavailable(
+                "recovery candidate remains retained and unconfirmed",
+            )),
+        },
+        WriteResult::Busy => Err(unavailable(
+            "recovery candidate has an active native submission",
+        )),
+    }
+}
 impl StoreRecovery {
+    /// The entry's last crossing resolved with no effect: nothing is retained, and the next
+    /// crossing re-selects the same staged original against the live head.
+    fn clear_retained(&self, operation: [u8; 16]) {
+        if let Some(pending) = self
+            .state
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .pending
+            .get_mut(&operation)
+        {
+            pending.selection_proof = None;
+            pending.authority_first = false;
+        }
+    }
+    /// Our authority is lost or unread after a crossing that applied nothing: the staged original
+    /// is kept for the successor, nothing is retained, and every later drive repeats only the
+    /// authority read (owner ruling 2026-11-16: never resubmitted).
+    fn hold_for_authority(&self, operation: [u8; 16]) {
+        if let Some(pending) = self
+            .state
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .pending
+            .get_mut(&operation)
+        {
+            pending.selection_proof = None;
+            pending.authority_first = true;
+        }
+    }
     async fn persist_at(&self, event: &RecoveryEvent) -> Result<(), RecoveryError> {
         let _driving = self.drive(event.operation_id)?;
         let saved = {
@@ -1369,7 +1432,7 @@ impl StoreRecovery {
                 predecessor: current.map(|(_, raw)| raw),
                 run,
                 selection_proof: None,
-                reconciling: false,
+                authority_first: false,
                 owner: Owner::Single,
             };
             self.state
@@ -1379,15 +1442,17 @@ impl StoreRecovery {
                 .insert(event.operation_id, pending.clone());
             pending
         };
-        if pending.reconciling {
-            return Err(unavailable(
-                "recovery candidate remains retained and unconfirmed",
-            ));
+        let operation = event.operation_id;
+        if pending.authority_first {
+            // (owner ruling 2026-11-16) Our authority was lost or unread after a crossing that
+            // applied nothing: only the authority read repeats until it passes.
+            self.authority().await?;
+            self.clear_retained(operation);
         }
         // A retained proof means an earlier crossing of this exact attempt has an
         // unknown outcome (cancelled or reply lost).
-        let redrive = pending.selection_proof.is_some();
-        if !redrive {
+        let mut retained = pending.selection_proof.clone();
+        if retained.is_none() {
             self.journal
                 .confirm(&pending.run)
                 .await
@@ -1399,57 +1464,78 @@ impl StoreRecovery {
                 carried_of(&pending.run, pending.record.node_seq),
             );
         }
-        let selection = Selection {
-            operation_id: event.operation_id,
-            address: address(&event.operation_id),
-            expected: pending
-                .predecessor
-                .clone()
-                .map_or(ExpectedValue::Absent, ExpectedValue::Exact),
-            value: Secret::new(serde_json::to_vec(&pending.head).map_err(|e| invalid_from(&e))?),
-        };
-        // Built and submitted under the journal's publication driver against its
-        // live head (or the exact retained proof). The proof is saved into this
-        // pending entry under the driver, before any native claim.
-        let operation = event.operation_id;
-        let (_, result) = self
-            .journal
-            .change_live(
-                std::slice::from_ref(&pending.record),
-                LiveChange::Select {
-                    selection,
-                    guards: &[],
-                },
-                pending.selection_proof.clone(),
-                &|proof: &Arc<VerifiedHead>| self.retain_pending(operation, proof),
-            )
-            .await
-            .map_err(unavailable)?;
-        if fenced_shape(&result) {
-            // (F2.1(1)) A fenced in-doubt send, or a fenced or stale decision, is never re-selected.
-            // Our authority decides it: lost, it is `Authority`; otherwise the attempt stays
-            // retained for reconciliation, as today.
-            self.authority().await?;
-        }
-        let selected = applied(result)?;
-        if !selected && redrive {
-            // The re-drive's no-effect does not resolve the earlier crossing, which
-            // may still land: keep the exact attempt and never resubmit it.
-            if let Some(saved) = self
-                .state
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .pending
-                .get_mut(&event.operation_id)
-            {
-                saved.reconciling = true;
+        let value = serde_json::to_vec(&pending.head).map_err(|e| invalid_from(&e))?;
+        // At most two crossings: a re-drive of the retained attempt, then (after a definite
+        // no-effect and our authority read) one re-select of the same staged original.
+        let selected = loop {
+            let redrive = retained.is_some();
+            let selection = Selection {
+                operation_id: operation,
+                address: address(&operation),
+                expected: pending
+                    .predecessor
+                    .clone()
+                    .map_or(ExpectedValue::Absent, ExpectedValue::Exact),
+                value: Secret::new(value.clone()),
+            };
+            // Built and submitted under the journal's publication driver against its
+            // live head (or the exact retained proof). The proof is saved into this
+            // pending entry under the driver, before any native claim.
+            let (_, result) = self
+                .journal
+                .change_live(
+                    std::slice::from_ref(&pending.record),
+                    LiveChange::Select {
+                        selection,
+                        guards: &[],
+                    },
+                    retained.take(),
+                    &|proof: &Arc<VerifiedHead>| self.retain_pending(operation, proof),
+                )
+                .await
+                .map_err(unavailable)?;
+            if fenced_shape(&result) {
+                // (F2.1(1)) A fenced in-doubt send, or a fenced or stale decision, is never
+                // re-selected. Our authority decides it: lost, it is `Authority` and the attempt
+                // is never resubmitted; otherwise it stays retained for reconciliation.
+                if let Err(lost) = self.authority().await {
+                    self.hold_for_authority(operation);
+                    return Err(lost);
+                }
             }
-            return Err(unavailable(
-                "recovery candidate remains retained and unconfirmed",
-            ));
-        }
+            match selection_outcome(result)? {
+                Selected::Applied => break true,
+                Selected::Conflict if !redrive => break false,
+                Selected::Conflict => {
+                    // (F2.1(1), owner ruling 2026-11-16 "Re-select, after authority check") The
+                    // re-drive resubmitted the retained attempt under its own commit key, and the
+                    // store answers an attempt that already applied as Applied: this condition
+                    // conflict is a definitive no-effect. Our authority first: lost, it is
+                    // `Authority` and nothing is resubmitted; otherwise the same staged original
+                    // is re-selected once under current custody.
+                    if let Err(lost) = self.authority().await {
+                        self.hold_for_authority(operation);
+                        return Err(lost);
+                    }
+                    self.clear_retained(operation);
+                }
+                Selected::Refused(why) => {
+                    // A definite no-effect that is not a condition (a refusal of the whole
+                    // candidate): a fence answers like a size refusal, so our authority first
+                    // (F3.2 step 4 for a batch of one). Lost, nothing is resubmitted; otherwise
+                    // the next drive re-selects the same staged original.
+                    if let Err(lost) = self.authority().await {
+                        self.hold_for_authority(operation);
+                        return Err(lost);
+                    }
+                    self.clear_retained(operation);
+                    return Err(why);
+                }
+            }
+        };
         if !selected {
-            self.no_effect(event, pending.predecessor.as_ref()).await?;
+            self.no_effect(event, &pending.head, pending.predecessor.as_ref())
+                .await?;
         } else {
             self.verify_written_checkpoint(event).await?;
         }
@@ -1507,17 +1593,22 @@ impl StoreRecovery {
         self.journal.confirm_with(&[]).await.map_err(unavailable)
     }
 
-    /// A definitive no-effect on a candidate's first crossing (SHUTDOWN-HANG F2.1), classified by
-    /// one read of its selection row. Ok when another driver selected this exact candidate.
+    /// A definitive no-effect on a candidate's first crossing (SHUTDOWN-HANG F2.1(2)), classified
+    /// by one read of its selection row:
+    /// - our head: another driver applied this exact candidate; Ok after the post-write
+    ///   verification;
+    /// - our predecessor: the CAS ran under the driver against the live head, so it failed on our
+    ///   custody or on one of our originals. Our authority decides: lost, `Authority` (never
+    ///   resubmitted); intact, a changed original (`Corrupt`). The entry is kept;
+    /// - anything else: another candidate won the row, and this entry can never apply: discarded.
     async fn no_effect(
         &self,
         event: &RecoveryEvent,
+        ours: &Head,
         predecessor: Option<&Secret<Vec<u8>>>,
     ) -> Result<(), RecoveryError> {
-        // Unchanged: the CAS ran under the driver against the live head, so it failed on our
-        // custody (fenced, epoch moved) or on one of our originals; neither is another selector,
-        // and the entry is kept.
-        let current = head(&self.store, &event.operation_id).await?;
+        let operation = event.operation_id;
+        let current = head(&self.store, &operation).await?;
         let unchanged = match (current.as_ref(), predecessor) {
             (None, None) => true,
             (Some((_, row)), Some(previous)) => {
@@ -1526,25 +1617,31 @@ impl StoreRecovery {
             _ => false,
         };
         if unchanged {
-            if let Some(saved) = self
-                .state
+            return Err(match self.journal.confirm_with(&[]).await {
+                Err(lost) => {
+                    self.hold_for_authority(operation);
+                    unavailable(lost)
+                }
+                Ok(()) => {
+                    self.clear_retained(operation);
+                    invalid("journal original differs at computed ordinal (Corrupt)")
+                }
+            });
+        }
+        if current.as_ref().is_none_or(|(tip, _)| tip != ours) {
+            self.state
                 .lock()
                 .unwrap_or_else(|p| p.into_inner())
                 .pending
-                .get_mut(&event.operation_id)
-            {
-                saved.selection_proof = None;
-            }
-            return Err(match self.journal.confirm_with(&[]).await {
-                Err(lost) => unavailable(lost),
-                Ok(()) => invalid("journal original differs at computed ordinal (Corrupt)"),
-            });
+                .remove(&operation);
+            return Err(RecoveryError::Conflict(
+                "another recovery candidate won selection".into(),
+            ));
         }
-        // A definitive no-effect may coincide with another exact selector.
-        // Its complete current ancestry remains the only acceptable proof.
-        // This node's ownership is re-proved first, then the selection.
-        // Only a genuine selection conflict discards the pending work; a
-        // transient refusal keeps it and the next attempt re-proves (PERFPASS-F2 T2c).
+        // Another driver selected this exact candidate. Its complete current ancestry remains the
+        // only acceptable proof: this node's ownership is re-proved first, then the selection.
+        // Only a genuine selection conflict discards the pending work; a transient refusal keeps
+        // it and the next attempt re-proves (PERFPASS-F2 T2c).
         let verified = async {
             let mut history = self.continuing();
             self.owned_with_history(&mut history).await?;
@@ -1558,23 +1655,15 @@ impl StoreRecovery {
                     .lock()
                     .unwrap_or_else(|p| p.into_inner())
                     .pending
-                    .remove(&event.operation_id);
+                    .remove(&operation);
                 Err(RecoveryError::Conflict(
                     "another recovery candidate won selection".into(),
                 ))
             }
             Err(error) => {
-                if let Some(saved) = self
-                    .state
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .pending
-                    .get_mut(&event.operation_id)
-                {
-                    // The definite no-effect resolved that attempt: the next
-                    // one proves against the live head again.
-                    saved.selection_proof = None;
-                }
+                // The definite no-effect resolved that attempt: the next one proves against the
+                // live head again.
+                self.clear_retained(operation);
                 Err(error)
             }
         }
@@ -2000,7 +2089,7 @@ impl StoreRecovery {
                 predecessor: current.map(|(_, raw)| raw),
                 run: run.clone(),
                 selection_proof: None,
-                reconciling: false,
+                authority_first: false,
                 owner: Owner::Single,
             });
         }
@@ -2018,7 +2107,7 @@ impl StoreRecovery {
             operation: crate::door::op_id().0,
             members,
             proof: None,
-            reconciling: false,
+            authority_first: false,
         };
         state.batch = Some(attempt.clone());
         Ok(attempt)
@@ -2103,6 +2192,7 @@ impl StoreRecovery {
                         .await;
                     out.extend(verified);
                 }
+                Ok(Crossed::Reselect(attempt)) => work.push(attempt),
                 Err(why) => {
                     out.extend(members.iter().map(|member| (*member, Err(why.clone()))));
                     blocked = Some(why);
@@ -2123,8 +2213,8 @@ impl StoreRecovery {
                         work.push(head);
                     } else if let Err(lost) = self.authority().await {
                         // Fenced, or not read: re-armed whole, still the unresolved batch; the
-                        // next pass repeats only this check after its no-effect.
-                        self.rearm(attempt);
+                        // next pass repeats only this check, and nothing crosses until it passes.
+                        self.rearm(attempt, true);
                         out.extend(members.iter().map(|member| (*member, Err(lost.clone()))));
                         blocked = Some(lost);
                     } else {
@@ -2169,10 +2259,22 @@ impl StoreRecovery {
             state.batch = Some(attempt.clone());
             rows
         };
-        if attempt.reconciling {
-            return Err(unavailable(
-                "recovery batch remains retained and unconfirmed",
-            ));
+        if attempt.authority_first {
+            // (owner ruling 2026-11-16) Our authority was lost or unread after a crossing that
+            // applied nothing: only the authority read repeats, and nothing crosses until it
+            // passes. The batch stays unresolved meanwhile.
+            self.authority().await?;
+            attempt.authority_first = false;
+            if let Some(batch) = self
+                .state
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .batch
+                .as_mut()
+                .filter(|batch| batch.id == attempt.id)
+            {
+                batch.authority_first = false;
+            }
         }
         let redrive = attempt.proof.is_some();
         if !redrive {
@@ -2232,27 +2334,27 @@ impl StoreRecovery {
             }
             Err(BatchFailed::Unresolved(why)) => {
                 if fenced {
-                    // (F2.1(1)) Never re-selected; lost authority names itself.
-                    self.authority().await?;
+                    // (F2.1(1)) Never re-selected; lost authority names itself, and the attempt
+                    // is never resubmitted.
+                    if let Err(lost) = self.authority().await {
+                        self.rearm(attempt, true);
+                        return Err(lost);
+                    }
                 }
                 Err(why)
             }
             Err(BatchFailed::Definite { .. }) if redrive => {
-                // The re-drive's no-effect does not resolve the earlier crossing, which may still
-                // land: keep the exact attempt, never resubmit it.
-                if let Some(batch) = self
-                    .state
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .batch
-                    .as_mut()
-                    .filter(|batch| batch.id == attempt.id)
-                {
-                    batch.reconciling = true;
+                // (F2.1(1), owner ruling 2026-11-16 "Re-select, after authority check") The
+                // re-drive resubmitted the retained attempt under its own commit key, and the
+                // store answers an attempt that already applied as Applied: this no-effect is
+                // definitive. Our authority first: lost, `Authority`, and nothing crosses again
+                // until it passes; otherwise every member's staged original is re-selected once,
+                // whole, under a new operation id against the live head.
+                if let Err(lost) = self.authority().await {
+                    self.rearm(attempt, true);
+                    return Err(lost);
                 }
-                Err(unavailable(
-                    "recovery batch remains retained and unconfirmed",
-                ))
+                Ok(Crossed::Reselect(self.rearm(attempt, false)))
             }
             Err(BatchFailed::Definite { conflict, why }) => {
                 attempt.proof = Some(used);
@@ -2284,20 +2386,25 @@ impl StoreRecovery {
                     (
                         operation,
                         pending.event.clone(),
+                        pending.head.clone(),
                         pending.predecessor.clone(),
                     )
                 })
             })
         };
-        let Some((operation, event, predecessor)) = freed else {
+        let Some((operation, event, ours, predecessor)) = freed else {
             return Err(why);
         };
         if !conflict {
-            // A refusal of this one candidate: our authority first, never retried as benign.
-            self.authority().await?;
+            // A refusal of this one candidate: our authority first, never retried as benign; lost,
+            // nothing crosses again until it passes.
+            if let Err(lost) = self.authority().await {
+                self.hold_for_authority(operation);
+                return Err(lost);
+            }
             return Err(why);
         }
-        self.no_effect(&event, predecessor.as_ref()).await?;
+        self.no_effect(&event, &ours, predecessor.as_ref()).await?;
         // Another driver selected this exact candidate.
         self.state
             .lock()
@@ -2319,7 +2426,7 @@ impl StoreRecovery {
                 operation: crate::door::op_id().0,
                 members: members.to_vec(),
                 proof: None,
-                reconciling: false,
+                authority_first: false,
             }
         };
         let head = half(first);
@@ -2328,14 +2435,17 @@ impl StoreRecovery {
     }
 
     /// The same members under a new operation id, against the live head on the next crossing;
-    /// still the unresolved batch.
-    fn rearm(&self, attempt: BatchAttempt) {
-        self.state.lock().unwrap_or_else(|p| p.into_inner()).batch = Some(BatchAttempt {
+    /// still the unresolved batch, which is returned. With `authority_first` the next crossing
+    /// first repeats the authority read, and nothing crosses until it passes.
+    fn rearm(&self, attempt: BatchAttempt, authority_first: bool) -> BatchAttempt {
+        let rearmed = BatchAttempt {
             operation: crate::door::op_id().0,
             proof: None,
-            reconciling: false,
+            authority_first,
             ..attempt
-        });
+        };
+        self.state.lock().unwrap_or_else(|p| p.into_inner()).batch = Some(rearmed.clone());
+        rearmed
     }
 
     fn clear_batch(&self) {
