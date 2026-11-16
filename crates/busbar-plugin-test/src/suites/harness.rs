@@ -77,6 +77,12 @@ impl MemBinder {
         Self::default()
     }
 
+    /// A binder that resolves D_REF_PATH references from `needs` (not wired yet).
+    pub fn over(needs: Arc<FakeNeeds>) -> Self {
+        let _ = needs;
+        Self::default()
+    }
+
     fn table(&self) -> MutexGuard<'_, HashMap<u64, Bound>> {
         self.bound.lock().unwrap_or_else(PoisonError::into_inner)
     }
@@ -758,6 +764,92 @@ mod tests {
         assert_eq!(text(&["list", "1", "v"]).as_deref(), Some("s3"));
         assert_eq!(text(&["keep"]).as_deref(), Some("x"));
         assert_eq!(restored.as_object().map(|o| o.len()), Some(3));
+    }
+
+    /// `resolve_refs` on the harness runtime, as the registry drives it before `check` and `open`.
+    fn resolved(binder: &MemBinder, instance: u64, bound: Vec<u8>) -> Result<Vec<u8>, BindError> {
+        let rt = crate::test_rt::TestRuntime::new().unwrap();
+        rt.block_on(binder.resolve_refs(instance, bound))
+            .map(SecureVec::into_vec)
+    }
+
+    fn text_at(doc: &Value, at: &str) -> Option<String> {
+        facade::pointer(doc, at)
+            .and_then(|v| v.as_str())
+            .map(str::to_owned)
+    }
+
+    #[test]
+    fn resolve_refs_writes_the_scripted_value_at_each_ref_path_and_unbind_restores() {
+        let mut needs = FakeNeeds::new();
+        needs.secret("/token", b"the-token");
+        needs.secret("/list/1/v", b"second");
+        let binder = MemBinder::over(Arc::new(needs));
+        let config =
+            br#"{"token":{"env":"T"},"list":[{"v":"plain"},{"v":{"env":"V"}}],"keep":"x"}"#;
+        let bound = binder
+            .bind(3, config, &[], &[], &[], &["/token", "/list/*/v"])
+            .unwrap();
+        // `bind` leaves a reference in place until `resolve_refs`.
+        let doc: Value = facade::parse_value(&bound).unwrap();
+        assert_eq!(text_at(&doc, "/token/env").as_deref(), Some("T"));
+        let resolved = resolved(&binder, 3, bound).unwrap();
+        let doc: Value = facade::parse_value(&resolved).unwrap();
+        assert_eq!(text_at(&doc, "/token").as_deref(), Some("the-token"));
+        assert_eq!(text_at(&doc, "/list/0/v").as_deref(), Some("plain"));
+        assert_eq!(text_at(&doc, "/list/1/v").as_deref(), Some("second"));
+        assert_eq!(text_at(&doc, "/keep").as_deref(), Some("x"));
+        let back = binder.unbind_refs(3, &resolved).unwrap();
+        let restored: Value = facade::parse_value(&back).unwrap();
+        assert_eq!(text_at(&restored, "/token/env").as_deref(), Some("T"));
+        assert_eq!(text_at(&restored, "/list/0/v").as_deref(), Some("plain"));
+        assert_eq!(text_at(&restored, "/list/1/v/env").as_deref(), Some("V"));
+        assert_eq!(text_at(&restored, "/keep").as_deref(), Some("x"));
+        // A resolved value anywhere no ref path names is never written back.
+        let err = binder
+            .unbind_refs(3, br#"{"elsewhere":"the-token"}"#)
+            .unwrap_err();
+        assert!(matches!(err, BindError::NotAReference { .. }));
+    }
+
+    #[test]
+    fn a_ref_with_no_scripted_value_is_refused_as_a_bad_reference() {
+        let binder = MemBinder::new();
+        let bound = binder
+            .bind(4, br#"{"token":{"env":"T"}}"#, &[], &[], &[], &["/token"])
+            .unwrap();
+        let err = resolved(&binder, 4, bound).unwrap_err();
+        assert!(
+            matches!(&err, BindError::BadReference { pointer, .. } if &**pointer == "/token"),
+            "{err:?}"
+        );
+        // A plain string at a ref path is left as is; a node that is neither is not a reference.
+        let bound = binder
+            .bind(5, br#"{"token":"plain"}"#, &[], &[], &[], &["/token"])
+            .unwrap();
+        let doc: Value = facade::parse_value(&resolved(&binder, 5, bound).unwrap()).unwrap();
+        assert_eq!(text_at(&doc, "/token").as_deref(), Some("plain"));
+        let err = binder
+            .bind(6, br#"{"token":7}"#, &[], &[], &[], &["/token"])
+            .unwrap_err();
+        assert!(matches!(err, BindError::NotAReference { .. }));
+    }
+
+    #[test]
+    fn an_empty_pointer_binds_the_whole_document() {
+        let binder = MemBinder::new();
+        let config = br#"{"path":"/var/log/busbar.jsonl","keep":3}"#;
+        let bound = binder.bind(8, config, &[], &[], &[""], &[]).unwrap();
+        let doc: Value = facade::parse_value(&bound).unwrap();
+        assert_eq!(doc.get(DEST).and_then(count), Some(1));
+        assert_eq!(doc.as_object().map(|o| o.len()), Some(1));
+        let back = binder.unbind_refs(8, &bound).unwrap();
+        let restored: Value = facade::parse_value(&back).unwrap();
+        assert_eq!(
+            text_at(&restored, "/path").as_deref(),
+            Some("/var/log/busbar.jsonl")
+        );
+        assert_eq!(restored.get("keep").and_then(count), Some(3));
     }
 
     #[test]
