@@ -217,7 +217,7 @@ impl ProbeRequest {
             return Err(Error::Invalid);
         }
         writer_inventory_digest(&self.old_writers)?;
-        if serde_json::to_vec(self).map_err(|_| Error::Invalid)?.len() > MAX_INPUT_BYTES {
+        if crate::json::to_vec(self).map_err(|_| Error::Invalid)?.len() > MAX_INPUT_BYTES {
             return Err(Error::Invalid);
         }
         Ok(())
@@ -300,7 +300,7 @@ fn text(value: &str, max: usize) -> bool {
     !value.trim().is_empty() && value.len() <= max && !value.chars().any(char::is_control)
 }
 fn hash<T: Serialize + ?Sized>(domain: &[u8], value: &T) -> Result<[u8; 32], Error> {
-    let bytes = serde_json::to_vec(value).map_err(|_| Error::Invalid)?;
+    let bytes = crate::json::to_vec(value).map_err(|_| Error::Invalid)?;
     let mut digest = Sha256::new();
     digest.update(domain);
     digest.update(&bytes[..]);

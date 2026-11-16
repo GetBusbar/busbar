@@ -58,7 +58,7 @@ fn the_remaining_kinds_shapes_are_constructible() {
         state: ChallengeState(vec![2]),
         rounds_left: 1,
     };
-    let _: SecretRef = serde_json::from_value(serde_json::json!({
+    let _: SecretRef = busbar_contract::json::from_value(&busbar_contract::json::json!({
         "module":"fixture-source", "settings":{"slot":"fixture-key"}
     }))
     .unwrap();

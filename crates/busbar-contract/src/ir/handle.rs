@@ -87,7 +87,7 @@ pub mod handle_impl {
         fn prepare_for_ingress(&mut self, _ingress_protocol: &str, _now_epoch: u64) {}
 
         /// Capture the ORIGINAL ingress request body — called once (when the caller has a
-        fn apply_request_echo(&mut self, _ingress_request_body: &serde_json::Value) {}
+        fn apply_request_echo(&mut self, _ingress_request_body: &crate::json::Value) {}
 
         /// Re-emit a buffered response as the `ingress_protocol` dialect's native STREAM bytes (an
         fn wrap_buffered_as_stream(
