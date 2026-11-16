@@ -120,16 +120,6 @@ impl Root {
             self.limits.upstream_h2_prior_knowledge,
             boot.limits.upstream_h2_prior_knowledge
         );
-        changed!(
-            "/advanced/shutdown/drain_timeout",
-            self.limits.drain_timeout,
-            boot.limits.drain_timeout
-        );
-        changed!(
-            "/advanced/governance/max_pending_checkpoints",
-            self.limits.max_pending_checkpoints,
-            boot.limits.max_pending_checkpoints
-        );
         paths
     }
 }
@@ -200,7 +190,8 @@ mod tests {
         next.listen = "127.0.0.1:9090".into();
         next.limits.request_body_max_bytes += 1;
         // Removed advanced keys remain refused by config's
-        // removed_operational_knobs_are_rejected test; they cannot become restart state.
+        // removed_pre_release_limits_and_drain_keys_are_refused_as_unknown test;
+        // they cannot become restart state.
         assert_eq!(next.changed(&boot), ["/listen"]);
         assert!(boot.changed(&boot).is_empty());
         // Rebuilding another generation cannot reset the immutable boot comparison.
