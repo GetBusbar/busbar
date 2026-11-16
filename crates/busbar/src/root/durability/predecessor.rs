@@ -28,7 +28,7 @@ use busbar_kernel::persistence::boot_identity::{
 };
 use busbar_kernel_audit::{
     break_body, break_from_journal_body, stamp_body, stamp_from_journal_body, walk_tail,
-    AuditVerifyingKey, BreakAt, BreakNotice, BreakReason, Stamp, TailItem, WalkContext,
+    AuditVerifyingKey, BreakAt, BreakNotice, BreakReason, Stamp, StampKind, TailItem, WalkContext,
     WalkOutcome,
 };
 use tokio::sync::watch;
@@ -647,17 +647,26 @@ impl Sealer {
 
     /// A present seal row is trusted only if it decodes, names the node and verifies.
     fn check_row(&mut self, id: u64, row: &[u8]) {
-        let valid = SealRow::parse(row).is_ok_and(|row| match row.outcome {
-            SealOutcome::Clean { .. } => true,
-            SealOutcome::Stamp(body) => stamp_from_journal_body(&body)
-                .ok()
-                .flatten()
-                .is_some_and(|s| s.node == id && s.verify(&self.key).is_ok()),
-            SealOutcome::Break(body) => break_from_journal_body(&body)
-                .ok()
-                .flatten()
-                .is_some_and(|b| b.node == id && b.verify(&self.key).is_ok()),
-        });
+        let valid =
+            SealRow::parse(row).is_ok_and(|row| match row.outcome {
+                SealOutcome::Clean { .. } => true,
+                SealOutcome::Stamp(body) => stamp_from_journal_body(&body)
+                    .ok()
+                    .flatten()
+                    .is_some_and(|s| {
+                        s.node == id
+                            && s.sealer == row.sealer
+                            && s.kind == StampKind::AfterRestart
+                            && s.key_cert == 0
+                            && s.verify(&self.key).is_ok()
+                    }),
+                SealOutcome::Break(body) => break_from_journal_body(&body)
+                    .ok()
+                    .flatten()
+                    .is_some_and(|b| {
+                        b.node == id && b.sealer == row.sealer && b.verify(&self.key).is_ok()
+                    }),
+            });
         if valid {
             self.done.skipped += 1;
         } else {
