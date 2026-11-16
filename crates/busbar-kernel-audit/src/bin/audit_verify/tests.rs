@@ -607,7 +607,7 @@ fn v7_records_verify_against_the_published_page() {
     let mut stripped = range.clone();
     let second = stripped["records"][1].as_object_mut().unwrap();
     for member in ["user_present", "user", "labels_count", "labels"] {
-        second.remove(member);
+        second.remove(&member);
     }
     assert!(
         verify(&keys(), &stripped, Some(&head)).is_err(),
