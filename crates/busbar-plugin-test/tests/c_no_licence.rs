@@ -74,7 +74,7 @@ fn a_stamp_with_flag_2_or_4_format_1_or_size_320_is_stamp_malformed() {
 }
 
 #[test]
-#[ignore = "owner: W1-X1"]
+#[ignore = "blocked: arm (a) is X1's CI source-scan job (doc/identifier/literal lexer over abi, loader, header, CI sources); no scanner exists on dev and cannot be validated without a build; owner W1-X1"]
 fn no_licence_word_in_the_abi_loader_header_or_ci_sources() {
     todo!("owner: W1-X1 (C-NO-LICENCE)")
 }

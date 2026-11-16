@@ -8,7 +8,7 @@
 //! the arm's body and un-ignores it in its own MR (red first, then green).
 
 #[test]
-#[ignore = "owner: W1-C1B; the core arm needs a constructible TransportSession (L9 fills SessionHandle): it runs as busbar-core-connector dtls::session::tests / dtls::carrier::tests over a scripted Live"]
+#[ignore = "blocked: needs a constructible TransportSession (L9 fills SessionHandle); runs as busbar-core-connector dtls::session::tests / dtls::carrier::tests over a scripted Live, and busbar-core-connector is not a dev-dependency here"]
 fn rendezvous_checks_route_by_ufrag() {
     todo!("owner: W1-C1B (C-ICE)")
 }
