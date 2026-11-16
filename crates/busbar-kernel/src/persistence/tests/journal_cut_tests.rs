@@ -423,6 +423,11 @@ async fn kept_rows_and_the_audit_tail_enter_the_base() {
     assert_eq!(stored.keep.len(), 1);
     assert_eq!(stored.keep[0].node_seq, boot_seq);
     let walked = owner.read_node_walk(7, READ).await.unwrap();
+    assert_eq!(
+        walked.base_tail,
+        Some(expected),
+        "audit readers receive the tail from the same base as their retained rows"
+    );
     assert_eq!(walked.kept.len(), 1, "the kept copy is walked first");
     assert_eq!(walked.kept[0].class, RecordClass::Bootstrap);
     assert_eq!(walked.kept[0].node_seq, boot_seq);
