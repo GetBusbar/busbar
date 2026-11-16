@@ -470,6 +470,11 @@ impl Notary {
         let mut cut = cut;
         self.cut_due = false;
         let floor = self.cut_floor();
+        // A Store crossing may not answer before C3. Publish the undecided state before
+        // spawning it so the shutdown snapshot cannot call an in-flight cut settled.
+        self.progress
+            .journal_cut_retained
+            .store(true, Ordering::Release);
         self.cut = CutSeat::Running(tokio::spawn(async move {
             let progress = cut.truncate_through(floor).await;
             (cut, progress)

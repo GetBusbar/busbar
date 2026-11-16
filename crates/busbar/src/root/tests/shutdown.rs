@@ -70,8 +70,10 @@ async fn fixture_with_running_cut(clock: Arc<DrainClock>) -> (Fixture, Arc<Flush
         .unwrap();
     }
     gate.entered().await;
-    assert!(fixture.book.audit.as_ref().unwrap().cut_retained(),
-        "an in-flight cut is reported retained before its first Store answer");
+    assert!(
+        fixture.book.audit.as_ref().unwrap().cut_retained(),
+        "an in-flight cut is reported retained before its first Store answer"
+    );
     (fixture, gate)
 }
 
