@@ -49,11 +49,13 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use busbar_contract::abi::mechanism::call::{
-    AbiStr, Blob, Outcome, BLOB_JSON, BLOB_OCTETS, BLOB_SECRET,
+    AbiStr, Blob, InHead, OutHead, Outcome, BLOB_JSON, BLOB_OCTETS, BLOB_SECRET,
 };
 use busbar_contract::abi::mechanism::check::HARD_MAX_BYTES;
 use busbar_contract::abi::mechanism::door::DoorFn;
-use busbar_contract::abi::mechanism::lifecycle::{slot as life, OpenIn, OpenOut};
+use busbar_contract::abi::mechanism::lifecycle::{
+    slot as life, GenIn, OpenIn, OpenOut, RefreshIn, TickIn, TickOut,
+};
 use busbar_contract::abi::sdk::door::{blank_in, blank_out, KindSlot, RawDoorFn};
 use busbar_contract::abi::sdk::out::Scalar;
 use busbar_contract::abi::sdk::test_support::loans::{Buf, Loans, Pairs};
@@ -67,8 +69,9 @@ use crate::dispatch::kinds::{
 };
 use crate::dispatch::plugin::str_bytes;
 use crate::dispatch::{
-    lifecycle, load_dropped_bytes, load_linked, rendering_of, Bind, ConnTable, DispatchConfig,
-    Dispatcher, Frame, InFrame, Kind, LinkedRow, LoadError, NoSink, OutFrame, Plugin, Recall,
+    in_head, lifecycle, load_dropped_bytes, load_linked, out_head, rendering_of, Bind, ConnTable,
+    DispatchConfig, Dispatcher, Frame, InFrame, Kind, LinkedRow, LoadError, NoSink, OutFrame,
+    Plugin, Recall,
 };
 
 /// Why a host refused to load or open an image.
@@ -265,12 +268,9 @@ impl Host {
 
     /// The dispatcher, rebuilt from the stated config and services.
     fn rebuild(&mut self) {
-        // RED (STH-ROWS D-5): each builder still rebuilds from its own argument alone.
         let callers = Arc::clone(&self.callers);
-        self.dispatcher = Arc::new(match self.services.take() {
-            Some(services) => {
-                Dispatcher::with_services(DispatchConfig::default(), services, callers)
-            }
+        self.dispatcher = Arc::new(match &self.services {
+            Some(services) => Dispatcher::with_services(self.config, Arc::clone(services), callers),
             None => Dispatcher::new(self.config, callers),
         });
     }
@@ -436,11 +436,12 @@ pub struct Life {
 }
 
 impl Life {
-    /// RED (STH-ROWS D-1a/D-1b): no lifecycle crossing is built yet.
-    fn unbuilt() -> Self {
+    /// The answer of a lifecycle crossing on `plugin`, its lease handed back.
+    fn crossed<K: Kind>(plugin: &Plugin<K>, called: crate::dispatch::Called) -> Self {
+        lifecycle::release(plugin, called.lease);
         Self {
-            outcome: Outcome::Fault,
-            error: None,
+            outcome: called.outcome,
+            error: called.error,
             next_tick_ns: None,
         }
     }
@@ -456,8 +457,9 @@ pub struct Loaded<K: Kind> {
 impl<K: Openable> Loaded<K> {
     /// VALIDATE `settings` (JSON) on the bound, unopened instance.
     pub fn validate(&mut self, settings: &[u8]) -> Life {
-        let _ = settings;
-        Life::unbuilt()
+        let called =
+            lifecycle::validate_call(&self.plugin, lifecycle::blob(settings, BLOB_JSON, 0));
+        Life::crossed(&self.plugin, called)
     }
 
     /// OPEN only, with `settings` (JSON) and `secrets` lent as [`Host::open_lent`] lends them;
@@ -501,8 +503,9 @@ impl<K: Kind> Opening<K> {
 
 impl<K: Kind> Drop for Opening<K> {
     fn drop(&mut self) {
-        // RED (STH-ROWS D-1a): an opening leaks unclosed.
-        std::mem::forget(self.plugin.take());
+        if let Some(plugin) = self.plugin.take() {
+            lifecycle::close(&plugin);
+        }
     }
 }
 
@@ -594,48 +597,100 @@ impl<K: Kind> Opened<K> {
     /// While a pending crossing on this instance is neither resumed nor leaked.
     pub fn validate(&mut self, settings: &[u8]) -> Life {
         self.idle();
-        let _ = settings;
-        Life::unbuilt()
+        let plugin = self.instance();
+        let called = lifecycle::validate_call(plugin, lifecycle::blob(settings, BLOB_JSON, 0));
+        Life::crossed(plugin, called)
     }
 
-    /// REFRESH to `generation` with `settings` (JSON) and `secrets` (STH-ROWS D-1b).
+    /// REFRESH to `generation` with `settings` (JSON) and `secrets`, each lent as a
+    /// `BLOB_SECRET` octet blob for the call only, as OPEN lends them (STH-ROWS D-1b).
     ///
     /// # Panics
     /// While a pending crossing on this instance is neither resumed nor leaked.
     pub fn refresh(&mut self, settings: &[u8], secrets: &[&[u8]], generation: u64) -> Life {
         self.idle();
-        let _ = (settings, secrets, generation);
-        Life::unbuilt()
+        let lent: Vec<Blob> = secrets
+            .iter()
+            .map(|s| lifecycle::blob(s, BLOB_OCTETS, BLOB_SECRET))
+            .collect();
+        let mut i = RefreshIn {
+            head: in_head(),
+            generation,
+            settings: lifecycle::blob(settings, BLOB_JSON, 0),
+            secrets: std::ptr::null(),
+            secrets_len: 0,
+        };
+        if !lent.is_empty() {
+            i.secrets = lent.as_ptr();
+            i.secrets_len = lent.len();
+        }
+        let mut f = Frame::new(i, out_head());
+        let plugin = self.instance();
+        let called = plugin.call(life::REFRESH, &mut f);
+        Life::crossed(plugin, called)
     }
 
-    /// TICK at `now_ns` (STH-ROWS D-1b).
+    /// TICK at `now_ns`; a READY answer carries the plugin's `next_tick_ns` (STH-ROWS D-1b).
     ///
     /// # Panics
     /// While a pending crossing on this instance is neither resumed nor leaked.
     pub fn tick(&mut self, now_ns: u64) -> Life {
         self.idle();
-        let _ = now_ns;
-        Life::unbuilt()
+        let mut f = Frame::new(
+            TickIn {
+                head: in_head(),
+                now_ns,
+            },
+            TickOut {
+                head: out_head(),
+                next_tick_ns: 0,
+            },
+        );
+        let plugin = self.instance();
+        let called = plugin.call(life::TICK, &mut f);
+        let mut ticked = Life::crossed(plugin, called);
+        if ticked.outcome == Outcome::Ready {
+            ticked.next_tick_ns = Some(f.out.next_tick_ns);
+        }
+        ticked
     }
 
-    /// RETIRE `generation` (STH-ROWS D-1b).
+    /// RETIRE `generation`, after its drain (STH-ROWS D-1b).
     ///
     /// # Panics
     /// While a pending crossing on this instance is neither resumed nor leaked.
     pub fn retire(&mut self, generation: u64) -> Life {
         self.idle();
-        let _ = generation;
-        Life::unbuilt()
+        let mut f = Frame::new(
+            GenIn {
+                head: in_head(),
+                generation,
+            },
+            out_head(),
+        );
+        let plugin = self.instance();
+        let called = plugin.call(life::RETIRE, &mut f);
+        Life::crossed(plugin, called)
     }
 
-    /// CLOSE now (STH-ROWS D-1b). RED: nothing crosses, and the instance leaks.
+    /// CLOSE now, and its answer; the drop that follows sends no second CLOSE (STH-ROWS D-1b).
     ///
     /// # Panics
-    /// While a pending crossing on this instance is neither resumed nor leaked.
+    /// While a pending crossing on this instance is neither resumed nor leaked: the panic comes
+    /// before any CLOSE, and the unwinding drop poisons the instance as a forgotten crossing does.
     pub fn close(mut self) -> Life {
         self.idle();
-        std::mem::forget(self.plugin.take());
-        Life::unbuilt()
+        let plugin = self
+            .plugin
+            .take()
+            .expect("an open instance holds its plugin until drop");
+        let mut f: Frame<InHead, OutHead> = Frame::new(in_head(), out_head());
+        let called = plugin.call(life::CLOSE, &mut f);
+        Life {
+            outcome: called.outcome,
+            error: called.error,
+            next_tick_ns: None,
+        }
     }
 
     /// Kind op `I` with `loans` as its `in`, through the loader's real crossing.
