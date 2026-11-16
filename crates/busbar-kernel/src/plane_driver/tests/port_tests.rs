@@ -83,7 +83,9 @@ fn an_emit_goes_to_its_carrier_at_once_not_into_the_response_line() {
 fn an_emit_to_a_carrier_another_instance_owns_is_dropped_and_counted() {
     let carriers = LineCarriers::new();
     let (sink, seen) = recording();
-    let id = carriers.open(&owner("other"), Arc::from("anon"), sink).get();
+    let id = carriers
+        .open(&owner("other"), Arc::from("anon"), sink)
+        .get();
     let mut answer = LineAnswer::default();
     answer.take(
         PlaneOut::Emit {
