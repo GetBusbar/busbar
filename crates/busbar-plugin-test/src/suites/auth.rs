@@ -172,3 +172,91 @@ pub(super) fn run(
     );
     harness.assert_needs_declared("auth");
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use busbar_plugin_abi::auth::{tag, AuthReq};
+    use busbar_plugin_abi::fail::{refused::R_CONFIG, Fail};
+    use busbar_plugin_abi::host::Host;
+    use busbar_plugin_abi::need::ChainBytes;
+    use busbar_plugin_abi::plugin::{Describe, Endpoints, Open};
+    use busbar_plugin_abi::records::{Out, Writer};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static VERIFIES: AtomicUsize = AtomicUsize::new(0);
+    static REFRESHES: AtomicUsize = AtomicUsize::new(0);
+    pub struct RawAuth;
+    impl Open for RawAuth {
+        async fn open(_: &'static Host, _: ChainBytes) -> Result<Self, Fail> {
+            Ok(Self)
+        }
+        fn check(_: &Host, config: &[u8], _: &mut Endpoints<'_>) -> Result<(), Fail> {
+            busbar_contract::json::parse_value(config)
+                .map(|_| ())
+                .map_err(|_| Fail::refused(R_CONFIG))
+        }
+        fn describe(d: &mut Describe<'_>) {
+            d.schema(r#"{"type":"object"}"#);
+            d.methods(abi::M_VERIFY | abi::M_REFRESH);
+            d.item_text(tag::D_CRED_HEADER, "authorization");
+        }
+    }
+    impl busbar_plugin_abi::Auth for RawAuth {
+        fn verify(&self, _: &Host, req: &AuthReq<'_>, out: &mut Out<'_>) -> Result<(), Fail> {
+            VERIFIES.fetch_add(1, Ordering::SeqCst);
+            match req.path.get() {
+                "/issued" => {
+                    out.put_text(tag::ISSUED_WANTED, "key")
+                        .map_err(|_| Fail::refused(R_CONFIG))?;
+                    Ok(())
+                }
+                _ => Err(Fail::refused(abi::KEYS_STALE)),
+            }
+        }
+        async fn refresh(
+            &self,
+            _: &'static Host,
+        ) -> Result<busbar_plugin_abi::records::Reply, Fail> {
+            REFRESHES.fetch_add(1, Ordering::SeqCst);
+            Ok(busbar_plugin_abi::records::Reply::new())
+        }
+    }
+    busbar_plugin_abi::plugin!(Auth, RawAuth, name: "fixture-raw-auth");
+
+    #[test]
+    fn suite_observes_issued_wanted_and_keys_stale_without_host_retries() {
+        let request = |path| busbar_ports::auth::AuthIn {
+            method: "GET",
+            path,
+            query: "",
+            authority: "example",
+            headers: &[],
+            peer: "",
+            tls_peer_cert: &[],
+            body: &[],
+            now_s: 1000,
+        };
+        let cases = [
+            AuthCase {
+                req: request("/issued"),
+                expect: Expect::IssuedWanted("key"),
+            },
+            AuthCase {
+                req: request("/stale"),
+                expect: Expect::KeysStale,
+            },
+        ];
+        run(&PLUGIN, b"{}", FakeNeeds::new(), &cases);
+        assert_eq!(
+            VERIFIES.load(Ordering::SeqCst),
+            2,
+            "one port call makes one plugin call"
+        );
+        assert_eq!(
+            REFRESHES.load(Ordering::SeqCst),
+            0,
+            "the loader never refreshes a raw answer"
+        );
+    }
+}

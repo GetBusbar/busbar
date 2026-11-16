@@ -3,11 +3,8 @@
 
 //! The auth adapter: `AuthPort` over the auth kind's `Proxy` (IF §11.3, §8.3).
 //!
-//! Sync `verify` runs inline on the thread-local sync buffers and finishes without boxing. Everything that needs
-//! a second step boxes once: ISSUED_WANTED (the issued-credential lookup, then the same method again), REPLAY
-//! (the claim), KEYS_STALE (one single-flight, rate-limited `refresh`, then the same verify once more) and every
-//! `verify_io`. A request view never crosses an await (`abi::Pair` is not `Sync`): what a second step needs is
-//! copied into an owned snapshot of the encoded request before the box is built.
+//! Each verify invocation makes exactly one plugin call. Sync verification returns inline;
+//! verify_io snapshots its request before awaiting the plugin. The kernel owns lookup, refresh and replay.
 
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
@@ -48,7 +45,6 @@ pub struct AuthAdapter<N: Needs> {
 
 impl<N: Needs> AuthAdapter<N> {
     /// `describe` = the image's describe records (D_CRED_HEADER*, D_ISSUED_KIND?, D_ISSUED_SHAPE?);
-    /// `unknown_key_refresh` = `auth.unknown_key_refresh_s` (default 30 s, at least 5 s, §12.11).
     pub fn new(
         proxy: Proxy,
         needs: Arc<N>,
@@ -620,10 +616,7 @@ fn unsupported(what: &'static str) -> PortError {
     }
 }
 
-/// A REFUSED verify answer (§8.3): NOT_MINE is `Ok(Some(NotMine))`; KEYS_STALE is `Ok(None)` (refresh once, then
-/// verify again); R_UNSUPPORTED is `Err(PortError::Refused)`, never a verdict (C-CRYPTO-SELFTEST (f): a host
-/// crypto algorithm the module does not offer is not a credential judgement, so nothing caches it as one; the
-/// adapter adds the resolved ERROR); every other code is `Rejected` (`rejected`).
+/// Decodes the raw refusal. KEYS_STALE remains a host-policy input; unsupported is a port error.
 pub fn verify_refusal(code: u32, text: &str, scrub: &Scrub) -> Result<VerifyAnswer, PortError> {
     match code {
         abi::NOT_MINE => Ok(VerifyAnswer::NotMine),
@@ -641,7 +634,7 @@ pub fn verify_refusal(code: u32, text: &str, scrub: &Scrub) -> Result<VerifyAnsw
     }
 }
 
-/// `Verdict::Rejected` with the plugin's text scrubbed, then cut (§12.16, `scrub::fail_text`): one lock-free
+/// `VerifyAnswer::Refused` with the plugin's text scrubbed, then cut (§12.16, `scrub::fail_text`): one lock-free
 /// snapshot read and one scan, the B-SYNC REFUSED arm's whole text path.
 pub fn rejected(code: u32, text: &str, scrub: &Scrub) -> VerifyAnswer {
     VerifyAnswer::Refused {

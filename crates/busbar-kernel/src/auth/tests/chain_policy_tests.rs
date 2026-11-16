@@ -22,10 +22,11 @@ struct Checks {
     allow: AtomicBool,
     claims: AtomicUsize,
     issued: AtomicUsize,
+    epoch: AtomicUsize,
 }
 impl IdentityPolicy for Checks {
     fn epoch(&self) -> u64 {
-        1
+        self.epoch.load(Ordering::SeqCst) as u64
     }
     fn authorize(&self, _: u64, _: &Identity, _: &AuthIn<'_>) -> Result<(), u32> {
         if self.allow.load(Ordering::SeqCst) {
@@ -64,6 +65,9 @@ impl ReplayGuard for Checks {
 struct Port {
     calls: AtomicUsize,
     issued: bool,
+    stale: bool,
+    plain: bool,
+    refreshes: AtomicUsize,
 }
 fn unsupported<'a, T: Send + 'a>() -> BoxFut<'a, Result<T, PortError>> {
     Box::pin(async {
@@ -77,18 +81,32 @@ impl AuthPort for Port {
         0
     }
     fn cred_headers(&self) -> &[Box<str>] {
-        &[]
+        static HEADER: std::sync::LazyLock<Box<str>> =
+            std::sync::LazyLock::new(|| Box::from("authorization"));
+        if self.plain {
+            std::slice::from_ref(&*HEADER)
+        } else {
+            &[]
+        }
     }
     fn issued_kind(&self) -> Option<&str> {
         Some("sigv4")
     }
     fn verify<'a>(&'a self, _: CallCx, _: &AuthIn<'_>, issued: Option<&[u8]>) -> Verify<'a> {
         self.calls.fetch_add(1, Ordering::SeqCst);
+        if self.stale {
+            return Verify::Done(Ok(VerifyAnswer::KeysStale));
+        }
         if self.issued {
             if let Some(value) = issued {
                 assert_eq!(value, b"secret");
             }
             return Verify::Done(Ok(VerifyAnswer::IssuedWanted("key".into())));
+        }
+        if self.plain {
+            return Verify::Done(Ok(VerifyAnswer::Identity(Identity::from_ticket(
+                "alice", "chat",
+            ))));
         }
         let mut out = Reply::new();
         out.put_text(tag::ID_SUBJECT, "alice").unwrap();
@@ -104,7 +122,11 @@ impl AuthPort for Port {
         Verify::Done(Ok(VerifyAnswer::Identity(id)))
     }
     fn refresh<'a>(&'a self, _: CallCx) -> BoxFut<'a, Result<Option<u32>, PortError>> {
-        unsupported()
+        Box::pin(async {
+            self.refreshes.fetch_add(1, Ordering::SeqCst);
+            tokio::task::yield_now().await;
+            Ok(Some(60))
+        })
     }
     fn login<'a>(
         &'a self,
@@ -169,6 +191,7 @@ async fn denied_policy_does_not_consume_replay_and_successful_replay_is_uncached
         allow: AtomicBool::new(false),
         claims: AtomicUsize::new(0),
         issued: AtomicUsize::new(0),
+        epoch: AtomicUsize::new(1),
     };
     let services = AuthServices {
         issued: &checks,
@@ -178,6 +201,9 @@ async fn denied_policy_does_not_consume_replay_and_successful_replay_is_uncached
     let port = Port {
         calls: AtomicUsize::new(0),
         issued: false,
+        stale: false,
+        plain: false,
+        refreshes: AtomicUsize::new(0),
     };
     let keys = KeyRefresh::new(Duration::from_secs(30));
     let who = caller();
@@ -213,6 +239,7 @@ async fn repeated_issued_wanted_performs_one_lookup_and_one_retry() {
         allow: AtomicBool::new(true),
         claims: AtomicUsize::new(0),
         issued: AtomicUsize::new(0),
+        epoch: AtomicUsize::new(1),
     };
     let services = AuthServices {
         issued: &checks,
@@ -222,6 +249,9 @@ async fn repeated_issued_wanted_performs_one_lookup_and_one_retry() {
     let port = Port {
         calls: AtomicUsize::new(0),
         issued: true,
+        stale: false,
+        plain: false,
+        refreshes: AtomicUsize::new(0),
     };
     let keys = KeyRefresh::new(Duration::from_secs(30));
     let who = caller();
@@ -240,4 +270,164 @@ async fn repeated_issued_wanted_performs_one_lookup_and_one_retry() {
     assert_eq!(checks.issued.load(Ordering::SeqCst), 1);
     assert_eq!(port.calls.load(Ordering::SeqCst), 2);
     assert_eq!(checks.claims.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn concurrent_stale_requests_share_refresh_and_each_retry_is_bounded() {
+    let checks = Checks {
+        allow: AtomicBool::new(true),
+        claims: AtomicUsize::new(0),
+        issued: AtomicUsize::new(0),
+        epoch: AtomicUsize::new(1),
+    };
+    let services = AuthServices {
+        issued: &checks,
+        replay: &checks,
+        policy: &checks,
+    };
+    let port = Port {
+        calls: AtomicUsize::new(0),
+        issued: false,
+        stale: true,
+        plain: false,
+        refreshes: AtomicUsize::new(0),
+    };
+    let keys = KeyRefresh::new(Duration::from_secs(30));
+    let who = caller();
+    let instance = ChainInstance {
+        id: 1,
+        port: &port,
+        caller: &who,
+        keys: &keys,
+        holds: &[],
+    };
+    let cache = Verdicts::new(VerdictPolicy::default());
+    let req = request();
+    let (a, b) = tokio::join!(
+        verify_cached(&services, &cache, instance, cx(), &req),
+        verify_cached(&services, &cache, instance, cx(), &req)
+    );
+    for outcome in [a, b] {
+        assert!(
+            matches!(outcome,Ok(Verdict::Rejected{code,..}) if code == busbar_plugin_abi::auth::BAD_CREDENTIAL)
+        );
+    }
+    assert_eq!(port.calls.load(Ordering::SeqCst), 4);
+    assert_eq!(port.refreshes.load(Ordering::SeqCst), 1);
+    assert!(matches!(
+        verify_cached(&services, &cache, instance, cx(), &req).await,
+        Ok(Verdict::Rejected { .. })
+    ));
+    assert_eq!(port.calls.load(Ordering::SeqCst), 5);
+    assert_eq!(port.refreshes.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn concurrent_replay_requests_compete_after_policy_and_only_one_admits() {
+    let checks = Checks {
+        allow: AtomicBool::new(true),
+        claims: AtomicUsize::new(0),
+        issued: AtomicUsize::new(0),
+        epoch: AtomicUsize::new(1),
+    };
+    let services = AuthServices {
+        issued: &checks,
+        replay: &checks,
+        policy: &checks,
+    };
+    let port = Port {
+        calls: AtomicUsize::new(0),
+        issued: false,
+        stale: false,
+        plain: false,
+        refreshes: AtomicUsize::new(0),
+    };
+    let keys = KeyRefresh::new(Duration::from_secs(30));
+    let who = caller();
+    let instance = ChainInstance {
+        id: 1,
+        port: &port,
+        caller: &who,
+        keys: &keys,
+        holds: &[],
+    };
+    let cache = Verdicts::new(VerdictPolicy::default());
+    let req = request();
+    let (a, b) = tokio::join!(
+        verify_cached(&services, &cache, instance, cx(), &req),
+        verify_cached(&services, &cache, instance, cx(), &req)
+    );
+    let outcomes = [a, b];
+    assert_eq!(
+        outcomes
+            .iter()
+            .filter(|x| matches!(x, Ok(Verdict::Identity(_))))
+            .count(),
+        1
+    );
+    assert_eq!(outcomes.iter().filter(|x| matches!(x,Ok(Verdict::Rejected{code,..}) if *code == busbar_plugin_abi::fail::refused::R_REPLAYED)).count(),1);
+    assert_eq!(checks.claims.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn cache_hits_recheck_policy_and_new_policy_epochs_reverify() {
+    let checks = Checks {
+        allow: AtomicBool::new(true),
+        claims: AtomicUsize::new(0),
+        issued: AtomicUsize::new(0),
+        epoch: AtomicUsize::new(1),
+    };
+    let services = AuthServices {
+        issued: &checks,
+        replay: &checks,
+        policy: &checks,
+    };
+    let port = Port {
+        calls: AtomicUsize::new(0),
+        issued: false,
+        stale: false,
+        plain: true,
+        refreshes: AtomicUsize::new(0),
+    };
+    let keys = KeyRefresh::new(Duration::from_secs(30));
+    let who = caller();
+    let instance = ChainInstance {
+        id: 1,
+        port: &port,
+        caller: &who,
+        keys: &keys,
+        holds: &[],
+    };
+    let cache = Verdicts::new(VerdictPolicy::default());
+    let req = request();
+    assert!(matches!(
+        verify_cached(&services, &cache, instance, cx(), &req).await,
+        Ok(Verdict::Identity(_))
+    ));
+    assert!(matches!(
+        verify_cached(&services, &cache, instance, cx(), &req).await,
+        Ok(Verdict::Identity(_))
+    ));
+    assert_eq!(port.calls.load(Ordering::SeqCst), 1);
+    checks.allow.store(false, Ordering::SeqCst);
+    assert!(matches!(
+        verify_cached(&services, &cache, instance, cx(), &req).await,
+        Ok(Verdict::PolicyRejected { .. })
+    ));
+    assert_eq!(
+        port.calls.load(Ordering::SeqCst),
+        1,
+        "a cached cryptographic verdict still goes through current policy"
+    );
+    checks.allow.store(true, Ordering::SeqCst);
+    checks.epoch.store(2, Ordering::SeqCst);
+    assert!(matches!(
+        verify_cached(&services, &cache, instance, cx(), &req).await,
+        Ok(Verdict::Identity(_))
+    ));
+    assert_eq!(
+        port.calls.load(Ordering::SeqCst),
+        2,
+        "policy epoch is part of the cache key"
+    );
 }

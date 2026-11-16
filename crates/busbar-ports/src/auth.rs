@@ -91,8 +91,7 @@ impl Identity {
         self.expires_at_s
     }
 
-    /// The REPLAY claim (key, ttl_s). The adapter has already claimed it (§12.11 `ReplayGuard`) before
-    /// returning `Verdict::Identity`; a lost claim is returned as `Rejected { code: R_REPLAYED }`.
+    /// The raw REPLAY claim (key, ttl_s); kernel policy runs before its atomic claim.
     pub fn replay(&self) -> Option<(&[u8], u64)> {
         self.replay.as_ref().map(|(key, ttl_s)| (&key[..], *ttl_s))
     }

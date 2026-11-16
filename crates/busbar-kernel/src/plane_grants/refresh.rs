@@ -26,7 +26,7 @@ struct State {
     round: Option<Round>,
 }
 
-/// KEYS_STALE handling, owned by the auth adapter (L5) with this core policy: per auth instance, at most one
+/// Kernel-owned KEYS_STALE handling: per auth instance, at most one
 /// `refresh` in flight (later KEYS_STALE verifies await the same one), and at most one started per
 /// `min_interval` (config `auth.unknown_key_refresh_s`, default 30 s, min 5 s). After it completes, the verify
 /// runs once more; a second KEYS_STALE or a declined refresh => `Verdict::Rejected { code: BAD_CREDENTIAL }`.

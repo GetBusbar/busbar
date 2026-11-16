@@ -644,6 +644,19 @@ mod tests {
     }
 
     #[test]
+    fn policy_epochs_never_share_a_cached_identity() {
+        let cache = book(4_096);
+        let old = key(1, 9);
+        lead(cache.start(old, 0)).settle(&Ok((Who(1), Some(60))), 0);
+        let current = VerdictKey {
+            policy_epoch: 1,
+            ..old
+        };
+        assert!(matches!(cache.start(current, 1), VerdictGet::Lead(_)));
+        assert_eq!(hit(cache.start(old, 1)), Some(Who(1)));
+    }
+
+    #[test]
     fn the_tick_hands_a_lapsed_lead_to_a_follower() {
         let cache = book(4_096);
         let _hung = lead(cache.start(key(1, 1), 0));
