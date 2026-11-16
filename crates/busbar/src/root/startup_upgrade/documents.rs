@@ -1369,6 +1369,8 @@ mod tests {
                 serde_json::json!({"password":"historical", "database":"original"}),
             )
             .unwrap(),
+            limits: None,
+            insecure_transport: None,
         });
         let mut target = original.clone();
         edit_store(
@@ -1415,6 +1417,8 @@ mod tests {
         let original = Some(config::StoreCfg {
             module: "custom".into(),
             settings: serde_json::from_value(serde_json::json!({"password":"captured"})).unwrap(),
+            limits: None,
+            insecure_transport: None,
         });
         let mut target = original.clone();
         edit_store(

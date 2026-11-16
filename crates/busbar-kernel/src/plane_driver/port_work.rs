@@ -19,6 +19,7 @@
 //! through its unit-bound `work_*` services: it opens the instance's private [`ScopedStore`] itself, over the same
 //! row format, so a row written here reads back through `Work::read` and the recovery scan alike.
 
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 
@@ -30,16 +31,19 @@ use busbar_plugin_abi::plane::{WORK_LIVE, WORK_SETTLED};
 use busbar_plugin_abi::records::{tag as g, Records};
 
 use super::port_intents::DurableWork;
-use crate::host_services::WallMs;
+use crate::host_services::{ActiveSet, RecoveryWork, WallMs};
 use crate::host_work::{
     owner_of, parse_reference, reference_text, refusal, RecoveryBinding, Reference, Work, WorkBook,
     WorkBounds, WORK_SCHEMA,
 };
 use crate::persistence::facade::CoreStore;
-use crate::persistence::scoped::{Outcome, ScopedStore};
+use crate::persistence::scoped::{Cursor, Outcome, ScopedStore};
 
 /// The kind a plane's WORK row is kept under (the row's own `kind` field; the schema is [`WORK_SCHEMA`]).
 const KIND: &str = "plane";
+
+/// Recovered work items handed back per scan (the admitted instances' scheduler batch).
+const RECOVERY_BATCH: usize = 8;
 
 /// What governance captures for a principal at open: the recovery binding of the live principal `subject` at
 /// `now_s`, or why it has none (no live principal, no current standing, an external role with no expiry).
@@ -105,6 +109,18 @@ pub struct StoreWork {
     wall_ms: WallMs,
     /// The recovery scheduler is running (`supports_work_recovery`'s gate): without it no paid work is opened.
     ready: AtomicBool,
+    /// Each instance's recovery scan: its cursor and the rows of the page not yet handed out.
+    scans: tokio::sync::Mutex<foldhash::HashMap<Arc<str>, Scan>>,
+    /// The rows a recovery session holds in this process.
+    active: ActiveSet,
+}
+
+/// One instance's recovery scan state, kept across scheduler ticks so slow polls never restart it from the first
+/// row.
+#[derive(Default)]
+struct Scan {
+    cursor: Option<Cursor>,
+    pending: VecDeque<(Vec<u8>, busbar_contract::Secret<Vec<u8>>)>,
 }
 
 impl StoreWork {
@@ -117,6 +133,8 @@ impl StoreWork {
             bounds: WorkBounds::DEFAULT,
             wall_ms,
             ready: AtomicBool::new(false),
+            scans: tokio::sync::Mutex::default(),
+            active: ActiveSet::default(),
         }
     }
 
@@ -320,6 +338,50 @@ impl DurableWork for StoreWork {
                 self.book.cancel_settle(handle);
                 Err(R_UNSUPPORTED)
             }
+        })
+    }
+
+    /// One bounded batch of the instance's live, recovery-bound rows with a poll target, from a scan kept across
+    /// calls (today's `KernelServices::recovery_work` over the same rows). A row a recovery session holds is skipped
+    /// until its `RecoveryWork` drops. No store yet = nothing to recover.
+    fn recoverable<'a>(
+        &'a self,
+        plane: &'a Caller<'_>,
+    ) -> BoxFut<'a, Result<Vec<RecoveryWork>, &'static str>> {
+        Box::pin(async move {
+            if self.store.get().is_none() {
+                return Ok(Vec::new());
+            }
+            let (rows, instance) = self
+                .rows(plane)
+                .await
+                .map_err(|_| "recovery namespace unavailable")?;
+            let mut scans = self.scans.lock().await;
+            let scan = scans.entry(Arc::clone(&instance)).or_default();
+            if scan.pending.is_empty() {
+                let page = match rows
+                    .page(WORK_SCHEMA.as_str(), &[], scan.cursor.as_ref())
+                    .await
+                {
+                    Ok(page) => page,
+                    Err(_) => {
+                        scan.cursor = None;
+                        return Err("recovery scan failed");
+                    }
+                };
+                scan.cursor = page.next;
+                scan.pending.extend(page.rows);
+            }
+            let active = &self.active;
+            Ok(crate::off_path::host_services::recovery_batch(
+                &instance,
+                &mut scan.pending,
+                RECOVERY_BATCH,
+                |reference| active.claim(&instance, reference),
+                |reference, binding, target| {
+                    active.item(Arc::clone(&instance), reference, binding, target)
+                },
+            ))
         })
     }
 }

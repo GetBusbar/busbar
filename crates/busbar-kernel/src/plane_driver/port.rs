@@ -22,7 +22,7 @@ use busbar_plugin_loader::ports::plane::{PlaneIn, PlanePort};
 use busbar_plugin_loader::ports::{CallCx, PortError};
 
 use crate::channels::line_carriers::{CarrierSink, LineCarriers};
-use crate::host_services::KernelServices;
+use crate::host_services::{KernelServices, RecoveryWork};
 
 use super::port_auth::{
     admit, catalog, refuse, subject_identity, Admitted, Credentials, NoTickets, Principal,
@@ -33,11 +33,12 @@ use super::port_channels::{decode_tick, TickOut};
 use super::port_charge::charge;
 use super::port_egress::{PortUpstream, SessionFacts};
 use super::port_intents::{IntentHost, Namespace, Resolver};
-use super::port_money::write_audit;
 use super::port_money::PortMoney;
-use super::port_routes::{admin_catalog, admin_hydrate, plan, Mounted, PortRoutes};
+use super::port_routes::{
+    admin_catalog, admin_hydrate, plan, recovery_request, recovery_route, Mounted, PortRoutes,
+};
 use super::port_serve::{run_session, AuditOnly, Books, Drive, Ran, UnitBooks};
-use super::port_session::{run_local, ClientSink, Effects, SessionError, ToClient};
+use super::port_session::{ClientSink, Effects, SessionError, ToClient};
 use super::port_upstream::{Members, UpSend};
 
 use super::{AuditSink, CoreAudit};
@@ -185,14 +186,6 @@ impl std::fmt::Debug for PortSeat {
     }
 }
 
-#[derive(Clone)]
-struct LineRoute {
-    id: u32,
-    /// The effective class set (IF §12.11) the route runs under; a line classifies each request within it.
-    effective: u32,
-    path: Box<str>,
-}
-
 /// A plane instance served through its port.
 pub struct PortDriver {
     port: Arc<dyn PlanePort>,
@@ -200,7 +193,6 @@ pub struct PortDriver {
     caller: Caller,
     refusals: Arc<dyn RefusalMap>,
     audit: Arc<dyn AuditSink>,
-    line: Option<LineRoute>,
     routes: PortRoutes,
     tickets: Arc<dyn TicketDoor>,
     /// The declared usage classes (D_USAGE_CLASS) in the Statement's order: a unit count's class indexes them.
@@ -225,11 +217,6 @@ impl PortDriver {
                 text: e.to_string(),
                 error: None,
             })?;
-        let line = routes.line.as_ref().map(|m| LineRoute {
-            id: m.route,
-            effective: m.effective,
-            path: m.pattern.clone(),
-        });
         let usage: Arc<[String]> = port
             .usage_classes()
             .iter()
@@ -241,7 +228,6 @@ impl PortDriver {
             caller,
             refusals,
             audit: Arc::new(CoreAudit),
-            line,
             routes,
             tickets: Arc::new(NoTickets),
             usage,
@@ -401,7 +387,7 @@ impl PortDriver {
     /// Whether the plane declares a `ROUTE_LINE` route.
     #[must_use]
     pub fn serves_lines(&self) -> bool {
-        self.line.is_some()
+        self.routes.line.is_some()
     }
 
     /// Opens a line carrier owned by this instance, serving as `principal`, written through `sink`.
@@ -430,42 +416,6 @@ impl PortDriver {
         if let Err(error) = self.port.admin(cx, ADMIN_CARRIER_END, &arg).await {
             tracing::warn!(?error, carrier = carrier.get(), "plane carrier end failed");
         }
-    }
-
-    /// Serves one line of `carrier`: `request`, then `end`. The response line, without its terminator, is empty
-    /// when the plane wrote no body. The plane's calls are synchronous, so they run off the executor.
-    pub async fn answer_line(
-        &self,
-        carrier: NonZeroU64,
-        request_id: u64,
-        line: Vec<u8>,
-        from: &LineCaller,
-    ) -> Result<Vec<u8>, LineRefused> {
-        let route = self.line.clone().ok_or(LineRefused::NoLineRoute)?;
-        let admission = admit_line(route.id, route.effective, from, &*self.refusals).await;
-        let refusals = Arc::clone(&self.refusals);
-        let audit = Arc::clone(&self.audit);
-        let principal = Arc::clone(&from.principal);
-        let port = Arc::clone(&self.port);
-        let services = Arc::clone(&self.services);
-        let owner = self.caller.incarnation().clone();
-        tokio::task::spawn_blocking(move || {
-            run_line(
-                &*port,
-                &*refusals,
-                &*audit,
-                &principal,
-                services.line_carriers(),
-                &owner,
-                &route,
-                admission,
-                carrier.get(),
-                request_id,
-                &line,
-            )
-        })
-        .await
-        .map_err(|_| LineRefused::Cancelled)?
     }
 }
 
@@ -519,29 +469,140 @@ where
     build
 }
 
-/// One line: admission, then `request` and `end`. A refused admission, or a `request` the plane refused or
-/// failed, is rendered by the plane (`render(RENDER_REFUSAL)`) and its body is the response line.
-#[allow(clippy::too_many_arguments)]
-fn run_line(
-    port: &dyn PlanePort,
-    refusals: &dyn RefusalMap,
-    audit: &dyn AuditSink,
-    principal: &str,
-    carriers: &LineCarriers,
-    owner: &Incarnation,
-    route: &LineRoute,
+/// What a seat's core-built sessions (a line, a recovery poll) run against, owned so they can move onto a blocking
+/// thread: the driver's plane and books, and the seat's intents, walk and carrier.
+struct Seated {
+    port: Arc<dyn PlanePort>,
+    refusals: Arc<dyn RefusalMap>,
+    audit: Arc<dyn AuditSink>,
+    services: Arc<KernelServices>,
+    owner: Incarnation,
+    intents: Arc<dyn IntentHost>,
+    upstream: Option<Arc<dyn PortUpstream>>,
+    carrier: Option<Arc<PortCarrier>>,
+}
+
+impl Seated {
+    /// A session's effects: emits to the line carriers; no client sink (the items are collected).
+    fn effects(&self) -> ServeEffects<'_> {
+        ServeEffects {
+            lines: LineEffects {
+                carriers: self.services.line_carriers(),
+                owner: &self.owner,
+            },
+            client: None,
+        }
+    }
+}
+
+/// Why a durable-work poll was not delivered (§12.24 step 3).
+#[derive(Debug)]
+pub enum RecoverRefused {
+    /// The work target lies on none of the instance's ROUTE_RECOVERY routes.
+    NoRecoveryRoute,
+    Session(ServeError),
+}
+
+impl PortSeat {
+    fn seated(&self) -> Seated {
+        Seated {
+            port: Arc::clone(&self.driver.port),
+            refusals: Arc::clone(&self.driver.refusals),
+            audit: Arc::clone(&self.driver.audit),
+            services: Arc::clone(&self.driver.services),
+            owner: self.driver.caller.incarnation().clone(),
+            intents: Arc::clone(&self.intents),
+            upstream: self.upstream.clone(),
+            carrier: self.carrier.clone(),
+        }
+    }
+
+    /// Serves one line of `carrier` (IF §12.23 rule 3): admitted as the carrier's principal, then driven like any
+    /// other session (FORWARD over this seat's walk, intents, upstream exchanges, channels, `end`). The response line,
+    /// without its terminator, is the to-client BODY bytes, empty when the plane wrote none; EMITs went to their
+    /// carriers before it. The plane's calls are synchronous, so they run off the executor.
+    ///
+    /// # Errors
+    /// [`LineRefused`]: no line route, a broken session, or a cancelled task.
+    pub async fn answer_line(
+        &self,
+        carrier: NonZeroU64,
+        request_id: u64,
+        line: Vec<u8>,
+        from: &LineCaller,
+    ) -> Result<Vec<u8>, LineRefused> {
+        let route = self
+            .driver
+            .routes
+            .line
+            .clone()
+            .ok_or(LineRefused::NoLineRoute)?;
+        let admission =
+            admit_line(route.route, route.effective, from, &*self.driver.refusals).await;
+        // Caller-scoped records, WORK and audit rows take a verified principal only.
+        let principal = from.authenticated.then(|| Arc::clone(&from.principal));
+        let seated = self.seated();
+        tokio::task::spawn_blocking(move || {
+            line_blocking(
+                &seated,
+                &route,
+                admission,
+                principal.as_deref(),
+                carrier.get(),
+                request_id,
+                &line,
+            )
+        })
+        .await
+        .map_err(|_| LineRefused::Cancelled)?
+    }
+
+    /// Delivers one durable-work poll (IF §12.24 step 3): `recovery_request` on the ROUTE_RECOVERY route the work's
+    /// target lies on, as the restored principal `subject`, driven like any session with a client side that discards.
+    /// Core infers nothing from the answer: the plane settles the work itself, or the row is polled again.
+    ///
+    /// # Errors
+    /// [`RecoverRefused`]: no recovery route for the target, or the session broke.
+    pub async fn recover(
+        &self,
+        work: &RecoveryWork,
+        subject: &str,
+        request_id: u64,
+    ) -> Result<(), RecoverRefused> {
+        let route = recovery_route(&self.driver.routes, work.target())
+            .cloned()
+            .ok_or(RecoverRefused::NoRecoveryRoute)?;
+        let reference = work.reference();
+        let target = Box::<str>::from(work.target());
+        let subject = Box::<str>::from(subject);
+        let seated = self.seated();
+        tokio::task::spawn_blocking(move || {
+            recover_blocking(&seated, &route, &reference, &subject, &target, request_id)
+        })
+        .await
+        .map_err(|_| RecoverRefused::Session(ServeError::Cancelled))?
+        .map_err(RecoverRefused::Session)
+    }
+}
+
+/// One line on a blocking thread: a refused admission is rendered by the plane (`render(RENDER_REFUSAL)`), else the
+/// whole session; either way the body is the response line.
+fn line_blocking(
+    seated: &Seated,
+    route: &Mounted,
     admission: Result<Admitted, ClientRefusal>,
+    principal: Option<&str>,
     carrier: u64,
     request_id: u64,
     line: &[u8],
 ) -> Result<Vec<u8>, LineRefused> {
-    let effects = LineEffects { carriers, owner };
+    let effects = seated.effects();
     let build = one_lifetime(|auth, identity, ticket_record| PlaneIn {
-        route: route.id,
+        route: route.route,
         flags: 0,
         auth,
         method: "POST",
-        path: &route.path,
+        path: &route.pattern,
         query: "",
         headers: &[],
         identity,
@@ -555,29 +616,60 @@ fn run_line(
         Err(refusal) => {
             let lowest = route.effective & route.effective.wrapping_neg();
             let req = build(lowest, &[], &[]);
-            return line_of(refuse(port, &req, &refusal, &effects));
+            return line_of(refuse(&*seated.port, &req, &refusal, &effects));
         }
     };
     let req = build(admitted.auth, &admitted.identity, admitted.ticket_record());
-    // A session dropped without `end` is a cancel (§10.4); the plane answers locally on a line, so it ends.
-    match run_local(port, &req, line, &effects) {
-        Ok(local) => {
-            for row in &local.audits {
-                if write_audit(audit, row, Some(principal)).is_err() {
-                    tracing::warn!(action = &*row.action, "a plane audit row was not accepted");
-                }
-            }
-            line_of(local.client)
-        }
-        Err(SessionError::Port(error)) => {
-            let refusal = refusal_of(route.id, &error, refusals);
-            line_of(refuse(port, &req, &refusal, &effects))
-        }
-        Err(error) => {
-            charge(port, &error);
-            Err(LineRefused::Session(error))
-        }
+    let served = drive_blocking(
+        &*seated.port,
+        &*seated.refusals,
+        &*seated.audit,
+        &effects,
+        route.route,
+        &req,
+        line,
+        principal,
+        None,
+        seated.upstream.as_ref(),
+        seated.carrier.as_ref(),
+        &*seated.intents,
+    );
+    match served {
+        Ok(Served::Ran(ran)) => line_of(ran.client),
+        Ok(Served::Refused(items)) => line_of(items),
+        Err(ServeError::Session(error)) => Err(LineRefused::Session(error)),
+        Err(ServeError::NoRoute) => Err(LineRefused::NoLineRoute),
+        Err(ServeError::Cancelled) => Err(LineRefused::Cancelled),
     }
+}
+
+/// One recovery poll on a blocking thread. What the plane answers the (absent) client is dropped.
+fn recover_blocking(
+    seated: &Seated,
+    route: &Mounted,
+    work: &str,
+    subject: &str,
+    target: &str,
+    request_id: u64,
+) -> Result<(), ServeError> {
+    let effects = seated.effects();
+    let identity = subject_identity(subject);
+    let req = recovery_request(route, work, &identity, target, request_id);
+    drive_blocking(
+        &*seated.port,
+        &*seated.refusals,
+        &*seated.audit,
+        &effects,
+        route.route,
+        &req,
+        &[],
+        Some(subject),
+        None,
+        seated.upstream.as_ref(),
+        seated.carrier.as_ref(),
+        &*seated.intents,
+    )
+    .map(|_| ())
 }
 
 /// One request of a mounted route, as the route layer read it.
@@ -705,24 +797,57 @@ fn serve_blocking(
             Err(error) => Err(ServeError::Session(error)),
         };
     }
-    let resolver = match principal.as_deref() {
-        Some(subject) => Resolver::new(intents, None).with_principal(subject, &admitted.identity),
+    drive_blocking(
+        port,
+        refusals,
+        audit,
+        &effects,
+        route.route,
+        &req,
+        &http.body,
+        principal.as_deref(),
+        unit.as_ref(),
+        upstream.as_ref(),
+        carrier.as_ref(),
+        intents,
+    )
+}
+
+/// One admitted request's whole session, on a blocking thread, for every origin (a mounted route, a line, a
+/// recovery poll): intents resolved under the verified `principal`, a FORWARD walked over `upstream`, channels over
+/// `carrier`, the books (`unit`, else audit rows only). A request the plane refused or failed is rendered by the
+/// plane; a broken session charges the image.
+#[allow(clippy::too_many_arguments)]
+fn drive_blocking(
+    port: &dyn PlanePort,
+    refusals: &dyn RefusalMap,
+    audit: &dyn AuditSink,
+    effects: &ServeEffects<'_>,
+    route: u32,
+    req: &PlaneIn<'_>,
+    body: &[u8],
+    principal: Option<&str>,
+    unit: Option<&Unit>,
+    upstream: Option<&Arc<dyn PortUpstream>>,
+    carrier: Option<&Arc<PortCarrier>>,
+    intents: &dyn IntentHost,
+) -> Result<Served, ServeError> {
+    let resolver = match principal {
+        Some(subject) => Resolver::new(intents, None).with_principal(subject, req.identity),
         None => Resolver::new(intents, None),
     }
-    .with_route(route.route);
-    let session = carrier.as_ref().map(|carrier| carrier.session());
+    .with_route(route);
+    let session = carrier.map(|carrier| carrier.session());
     let resolver = match &session {
         Some(session) => resolver.with_channels(&session.host),
         None => resolver,
     };
     let dialect = port.dialects().first().map_or("", |d| &**d);
     let ran = {
-        let unit_books = unit
-            .as_ref()
-            .map(|u| UnitBooks::new(&u.money, &u.ctx, principal.as_deref()));
+        let unit_books = unit.map(|u| UnitBooks::new(&u.money, &u.ctx, principal));
         let audit_books = AuditOnly {
             sink: audit,
-            principal: principal.as_deref(),
+            principal,
         };
         let books: &dyn Books = match &unit_books {
             Some(books) => books,
@@ -731,8 +856,8 @@ fn serve_blocking(
         let go = |members: Option<&mut dyn Members>, send: Option<&mut dyn UpSend>| {
             run_session(
                 port,
-                &req,
-                &http.body,
+                req,
+                body,
                 Drive {
                     resolver: &resolver,
                     // The casts shorten each trait object's own lifetime bound to the borrow (the one `Drive` lifetime):
@@ -741,18 +866,16 @@ fn serve_blocking(
                     send: send.map(|s| s as &mut dyn UpSend),
                     dialect,
                     refusals,
-                    effects: &effects,
+                    effects,
                     books,
                     carrier: session.as_ref(),
                 },
             )
         };
-        match &upstream {
+        match upstream {
             Some(upstream) => {
                 let facts = SessionFacts {
-                    unit: unit
-                        .as_ref()
-                        .map_or(busbar_contract::UnitKey::new(0), |u| u.ctx.key),
+                    unit: unit.map_or(busbar_contract::UnitKey::new(0), |u| u.ctx.key),
                 };
                 let mut ran = None;
                 upstream.walk(facts, &mut |members, send| {
@@ -766,8 +889,8 @@ fn serve_blocking(
     match ran {
         Ok(ran) => Ok(Served::Ran(ran)),
         Err(SessionError::Port(error)) => {
-            let refusal = refusal_of(route.route, &error, refusals);
-            Ok(Served::Refused(refuse(port, &req, &refusal, &effects)))
+            let refusal = refusal_of(route, &error, refusals);
+            Ok(Served::Refused(refuse(port, req, &refusal, effects)))
         }
         Err(error) => {
             charge(port, &error);
@@ -775,6 +898,7 @@ fn serve_blocking(
         }
     }
 }
+
 #[cfg(test)]
 #[path = "tests/port_tests.rs"]
 mod tests;
