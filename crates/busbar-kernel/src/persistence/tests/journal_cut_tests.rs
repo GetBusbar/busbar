@@ -345,8 +345,8 @@ async fn cut_versus_readers_restarts_and_never_reads_corrupt() {
     assert_eq!(owner.read_node_records(7, READ).await.unwrap(), fresh);
     assert!(journal_walk_restarts() > restarts, "the walk restarted");
 
-    backend.state.lock().unwrap().rows = before;
-    cut_during_next_walk(&backend, after);
+    backend.state.lock().unwrap().rows.clone_from(&before);
+    cut_during_next_walk(&backend, after.clone());
     let restarts = journal_walk_restarts();
     let newest = proof.head.sequence;
     let record = journal.read_verified_record(&proof, newest).await.unwrap();
@@ -361,6 +361,10 @@ async fn cut_versus_readers_restarts_and_never_reads_corrupt() {
         owner.locate(&proof, 1),
         Err(RuntimeError::Truncated)
     ));
+    // Begin at the old base, then replace it during the first replay read. A historical
+    // snapshot must report the loss of its prefix even when the cut races its walk.
+    backend.state.lock().unwrap().rows = before;
+    cut_during_next_walk(&backend, after);
     assert!(matches!(
         journal
             .snapshot(crate::persistence::journal::historical::SnapshotBudget {
