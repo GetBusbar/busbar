@@ -16,8 +16,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+use busbar_contract::json::{self, json, JsonValueTrait, Value};
 use busbar_plugin_loader::sign::{Manifest, SigningKey};
-use serde_json::{json, Value};
 
 const ADMIN: &str = "released-sqlite-startup-admin";
 // Native CI records new keys and timestamps on each invocation. Pin the writer
@@ -118,7 +118,9 @@ print(json.dumps({'keys':keys,'bucket':int(buckets[0][0])}))
         "released SQLite observation failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    Ok((original, serde_json::from_slice(&output.stdout)?))
+    let source = json::parse_value(&output.stdout)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
+    Ok((original, source))
 }
 
 struct Workspace(PathBuf);
@@ -195,7 +197,7 @@ print(json.dumps({'native':u,'physical':physical,'checkpoints':checkpoints,'sour
         "native migration observation failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    serde_json::from_slice(&output.stdout).unwrap()
+    json::parse_value(&output.stdout).unwrap()
 }
 
 fn stage_plugin(work: &Path) -> Value {
@@ -312,7 +314,7 @@ async fn ready(
         status.is_success(),
         "healthy server's admin usage refused {status}: {usage}"
     );
-    let usage: Value = serde_json::from_str(&usage).unwrap();
+    let usage: Value = json::parse_value(usage.as_bytes()).unwrap();
     assert_eq!(usage["total"]["requests"], 5);
     assert_eq!(usage["total"]["tokens_input"].as_f64(), Some(47.0));
     assert_eq!(usage["total"]["tokens_output"].as_f64(), Some(35.0));
@@ -402,7 +404,7 @@ rate_card:
 advanced:
   usage_flush_interval_ms: 3600000
 "#,
-        database = serde_json::to_string(&work.0.join("governance.db")).unwrap()
+        database = json::to_string(&work.0.join("governance.db")).unwrap()
     );
     std::fs::write(work.0.join("config.yaml"), &config)?;
     std::fs::write(
