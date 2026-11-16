@@ -21,8 +21,11 @@ busbar-kernel-audit = { path = "../busbar-kernel-audit" }
 busbar-kernel-breaker = { path = "../busbar-kernel-breaker" }
 busbar-kernel-identity = { path = "../busbar-kernel-identity" }
 # The MIN-3 plugin interface, core side: `Caller`, `BoxFut`, the Need types the §12 kernel contracts name
-# (ABI-MIN3-INTERFACE §10, §12). A leaf crate; never plugin-loader here (wave 0).
+# (ABI-MIN3-INTERFACE §10, §12). A leaf crate.
 busbar-plugin-abi = { path = "../busbar-plugin-abi", features = ["host"] }
+# The port types custody, the credential cache and the verdict cache name (`CallCx`, `PortError`, `SecretPort`,
+# `OutboundAnswer`, `Identity`, `Verdict`; IF §11.3, §12.2, §12.28). The loader never names the kernel.
+busbar-plugin-loader = { path = "../plugin-loader" }
 # Only under the non-default `timing` feature.
 libc = { workspace = true, optional = true }
 axum = { workspace = true }
@@ -62,6 +65,9 @@ loom-model = ["dep:loom"]
 test-support = ["busbar-kernel-identity/test-support"]
 # Default off: `timeit!` expands to `()`.
 timing = ["dep:libc"]
+# Never on in a normal build: custody's miss-path probe for C-SCRUB-HIT's publish-order arm (IF §14 round 19). Enabled
+# only from a [dev-dependencies] table; the shipped binary's feature tree must not show it.
+conformance = []
 
 [dev-dependencies]
 busbar-plugin-loader = { path = "../plugin-loader", features = ["test-support"] }

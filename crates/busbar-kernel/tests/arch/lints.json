@@ -31,7 +31,10 @@
       "crates/busbar-kernel/src/audit/mod.rs": ["ChainedRecord"],
       "crates/busbar-kernel/src/auth/login_limits/mod.rs": ["CredentialDoor"],
       "crates/busbar-kernel/src/auth/self_keys.rs": ["SelfGroupProvisioner", "SelfServeKeys"],
+      "crates/busbar-kernel/src/auth/verdicts.rs": ["VerdictCache"],
       "crates/busbar-kernel/src/config/settings_public.rs": ["PublicSettings"],
+      "crates/busbar-kernel/src/custody/cred.rs": ["CredentialCache"],
+      "crates/busbar-kernel/src/custody/mod.rs": ["SecretCustody"],
       "crates/busbar-kernel/src/door.rs": ["PoolView"],
       "crates/busbar-kernel/src/durable.rs": ["DurableFs"],
       "crates/busbar-kernel/src/governance/mod.rs": ["IntoStoreResult"],
@@ -110,5 +113,9 @@
       "crates/busbar-kernel/src/trust/validate.rs": "trust::validate::Grant is one scope or egress grant a visibility check needs (Copy by design), not the capability token"
     }
   },
-  "admitted": {}
+  "admitted": {
+    "crates/busbar-kernel/src/auth/verdicts.rs VerdictCache": "W1-K2: IF 12.28 freezes VerdictCache as the auth chain's seam (K8 drives begin/settle through it); its one impl is core's cache built from VerifyBook. Owner approval is the CODEOWNERS review of this MR",
+    "crates/busbar-kernel/src/custody/cred.rs CredentialCache": "W1-K2: IF 12.2 freezes CredentialCache (not dyn, consumers generic over C: CredentialCache); its one impl is core's CredCache. Owner approval is the CODEOWNERS review of this MR",
+    "crates/busbar-kernel/src/custody/mod.rs SecretCustody": "W1-K2: IF 12.2 freezes SecretCustody (RPITIT, HostNeeds and the connector generic over C: SecretCustody); its one impl is core's Custody. Owner approval is the CODEOWNERS review of this MR"
+  }
 }
