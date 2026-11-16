@@ -273,40 +273,43 @@ async fn probe_routes_are_public_and_head_has_no_body() {
         false,
         crate::root::listener::deferred_dispatch_layer,
     )
-    .layer(axum::Extension(probes));
-    for path in ["/livez", "/readyz"] {
-        for method in ["GET", "HEAD"] {
-            let response = router
-                .clone()
-                .oneshot(
-                    axum::http::Request::builder()
-                        .method(method)
-                        .uri(path)
-                        .body(axum::body::Body::empty())
-                        .unwrap(),
-                )
-                .await
-                .unwrap();
-            assert_eq!(
-                response.status(),
-                200,
-                "{method} {path} without credentials"
-            );
-            assert_eq!(
-                response.headers()["content-type"],
-                "text/plain; charset=utf-8"
-            );
-            let body = axum::body::to_bytes(response.into_body(), 1024)
-                .await
-                .unwrap();
-            assert_eq!(
-                body.as_ref(),
-                if method == "HEAD" {
-                    b"".as_slice()
-                } else {
-                    b"ok".as_slice()
-                }
-            );
+    .layer(axum::Extension(probes.clone()));
+    let data = kernel::router::build_router(handle.load()).layer(axum::Extension(probes));
+    for router in [router, data] {
+        for path in ["/livez", "/readyz"] {
+            for method in ["GET", "HEAD"] {
+                let response = router
+                    .clone()
+                    .oneshot(
+                        axum::http::Request::builder()
+                            .method(method)
+                            .uri(path)
+                            .body(axum::body::Body::empty())
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    response.status(),
+                    200,
+                    "{method} {path} without credentials"
+                );
+                assert_eq!(
+                    response.headers()["content-type"],
+                    "text/plain; charset=utf-8"
+                );
+                let body = axum::body::to_bytes(response.into_body(), 1024)
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    body.as_ref(),
+                    if method == "HEAD" {
+                        b"".as_slice()
+                    } else {
+                        b"ok".as_slice()
+                    }
+                );
+            }
         }
     }
 }
