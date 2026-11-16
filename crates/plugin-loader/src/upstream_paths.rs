@@ -3,7 +3,7 @@
 
 #[cfg(test)]
 mod tests {
-    use busbar_plugin_abi::records::{tag, MaskRec, Records, Reply};
+    use busbar_plugin_abi::records::{tag, MaskRec, Records, Reply, Writer};
     use busbar_plugin_abi::types::KindCode;
 
     fn decode(
