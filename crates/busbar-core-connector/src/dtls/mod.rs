@@ -3,7 +3,12 @@
 
 //! `busbar-core-connector::dtls` — the DTLS engine: transport encryption over a DATAGRAM carrier,
 
+mod carrier;
+mod session;
 pub mod stun;
+
+pub use carrier::{DatagramCarrier, LogAudit, MediaListeners, MediaRoute};
+pub use session::MediaAudit;
 
 use foldhash::{HashMap, HashMapExt as _, HashSet, HashSetExt as _};
 use std::collections::VecDeque;
@@ -13,6 +18,7 @@ use std::time::{Duration, Instant};
 
 use busbar_contract::crypto;
 use busbar_contract::secure::SecureVec;
+use busbar_plugin_abi::kinds::transport::transport::{FP_SHA256, FP_SHA384, FP_SHA512};
 pub use stun::IceCredentials;
 
 /// How many distinct heard paths (and, apart, admitted candidates) one association remembers.
@@ -216,7 +222,9 @@ pub struct Association {
     cert: Arc<SessionCert>,
     role: Role,
     keys: stun::Keys,
-    remote_fingerprint: [u8; 32],
+    /// The far end's certificate digest under its FP_* algorithm; `None` until a session learns it (SECURE).
+    /// No handshake starts while it is `None`.
+    remote_fingerprint: Option<(u32, Vec<u8>)>,
     dtls: Option<dimpl::Dtls>,
     /// Paths a verified check came from, and when the last one did.
     pub(crate) heard: HashMap<SocketAddr, Instant>,
@@ -267,6 +275,23 @@ impl Association {
         remote: &IceCredentials,
         remote_fingerprint: [u8; 32],
     ) -> Self {
+        let mut association = Self::pending(cert, local);
+        association.set_credentials(local, remote);
+        let _ = association.accept_peer(role, FP_SHA256, &remote_fingerprint);
+        association
+    }
+
+    /// An association for a session that has only its own ICE credentials so far (a MIN-3 session: its
+    /// ICE_TERMS come first, the far end's credentials and the SECURE fingerprint later). It hears and
+    /// verifies checks at once; no handshake starts until [`Self::set_peer`].
+    #[must_use]
+    pub fn pending(cert: Arc<SessionCert>, local: &IceCredentials) -> Self {
+        let remote = IceCredentials {
+            ufrag: String::new(),
+            pwd: String::new(),
+        };
+        let role = Role::Server;
+        let remote_fingerprint = None;
         let mut tie_breaker = [0_u8; 8];
         let _ = crypto::fill(&mut tie_breaker);
         Association {
@@ -274,7 +299,7 @@ impl Association {
             ingest_calls: 0,
             cert,
             role,
-            keys: stun::Keys::new(local, remote),
+            keys: stun::Keys::new(local, &remote),
             remote_fingerprint,
             dtls: None,
             heard: HashMap::new(),
@@ -297,6 +322,49 @@ impl Association {
             peer_verified: false,
             failed: None,
         }
+    }
+
+    /// Replace both sides' ICE credentials (a later ICE_TERMS: the far end's credentials learned, or an
+    /// ICE restart's new ones). Checks already heard stay heard; probes in flight keep their old key.
+    pub fn set_credentials(&mut self, local: &IceCredentials, remote: &IceCredentials) {
+        self.keys = stun::Keys::new(local, remote);
+    }
+
+    /// The far end's DTLS role and certificate digest under `alg` (an FP_* code), from SECURE. Refused (`false`)
+    /// for an algorithm or length this host does not check, or a different answer once a handshake began.
+    /// A handshake starts here when a path is already bound.
+    pub fn set_peer(&mut self, role: Role, alg: u32, digest: &[u8], now: Instant) -> bool {
+        if !self.accept_peer(role, alg, digest) {
+            return false;
+        }
+        if self.bound.is_some() && self.dtls.is_none() {
+            self.start_dtls(now);
+            self.drive();
+        }
+        true
+    }
+
+    /// [`Self::set_peer`]'s record of the far end's role and digest, without starting a handshake.
+    fn accept_peer(&mut self, role: Role, alg: u32, digest: &[u8]) -> bool {
+        let want = match alg {
+            FP_SHA256 => 32,
+            FP_SHA384 => 48,
+            FP_SHA512 => 64,
+            _ => return false,
+        };
+        if digest.len() != want {
+            return false;
+        }
+        if self.dtls.is_some() {
+            return self.role == role
+                && self
+                    .remote_fingerprint
+                    .as_ref()
+                    .is_some_and(|(a, d)| *a == alg && d.as_slice() == digest);
+        }
+        self.role = role;
+        self.remote_fingerprint = Some((alg, Vec::from(digest)));
+        true
     }
 
     /// One datagram in from `path` (RFC 7983 demux; module docs). [`Verdict::Raw`] tells the caller
@@ -333,7 +401,7 @@ impl Association {
                 Verdict::Raw
             }
             Class::Dtls => {
-                if self.bound == Some(path) {
+                if self.bound == Some(path) && self.dtls.is_some() {
                     if let Some(dtls) = self.dtls.as_mut() {
                         if let Err(e) = dtls.handle_packet(datagram) {
                             self.fail(dtls_failed(&e));
@@ -341,7 +409,9 @@ impl Association {
                         }
                     }
                     self.drive();
-                } else if (self.heard.contains_key(&path) || self.candidates.contains(&path))
+                } else if (self.bound == Some(path)
+                    || self.heard.contains_key(&path)
+                    || self.candidates.contains(&path))
                     && self.early.len() < MAX_EARLY
                 {
                     let at = self.early_bytes.len();
@@ -438,6 +508,11 @@ impl Association {
         self.candidates.insert(path);
         self.probe(path, now);
         true
+    }
+
+    /// Say ICE-CONTROLLING (`true`) or ICE-CONTROLLED in core's probes (a session's ICE_TERMS flag).
+    pub fn set_controlling(&mut self, controlling: bool) {
+        self.controlling = controlling;
     }
 
     /// Make this the dialling side (module docs): core's probes say ICE-CONTROLLING, and only a
@@ -646,24 +721,45 @@ impl Association {
         }
         self.next_consent = Some(due);
         if self.dtls.is_none() {
-            let provider = match crypto::dtls::dtls_provider() {
-                Ok(p) => p,
-                Err(e) => return self.fail(dtls_failed(&e)),
-            };
-            let config = match dimpl::Config::builder()
-                .with_crypto_provider(provider)
-                .build()
-            {
-                Ok(c) => c,
-                Err(e) => return self.fail(dtls_failed(&e)),
-            };
-            let mut dtls = dimpl::Dtls::new_12(Arc::new(config), self.cert.dimpl(), now);
-            dtls.set_active(self.role == Role::Client);
-            if let Err(e) = dtls.handle_timeout(now) {
-                return self.fail(dtls_failed(&e));
+            // No handshake without the far end's digest: the early datagrams wait for `set_peer`.
+            if self.remote_fingerprint.is_some() {
+                self.start_dtls(now);
             }
-            self.dtls = Some(dtls);
+            return;
         }
+        self.replay_early(path, now);
+        self.drive();
+    }
+
+    /// Begin the handshake on the bound path, now that the far end's digest is known, and replay what
+    /// that path sent before it.
+    fn start_dtls(&mut self, now: Instant) {
+        let Some(path) = self.bound else {
+            return;
+        };
+        let provider = match crypto::dtls::dtls_provider() {
+            Ok(p) => p,
+            Err(e) => return self.fail(dtls_failed(&e)),
+        };
+        let config = match dimpl::Config::builder()
+            .with_crypto_provider(provider)
+            .build()
+        {
+            Ok(c) => c,
+            Err(e) => return self.fail(dtls_failed(&e)),
+        };
+        let mut dtls = dimpl::Dtls::new_12(Arc::new(config), self.cert.dimpl(), now);
+        dtls.set_active(self.role == Role::Client);
+        if let Err(e) = dtls.handle_timeout(now) {
+            return self.fail(dtls_failed(&e));
+        }
+        self.dtls = Some(dtls);
+        self.replay_early(path, now);
+        self.drive();
+    }
+
+    /// Replay the DTLS datagrams `path` sent while it was heard but unbound (or the handshake unstarted).
+    fn replay_early(&mut self, path: SocketAddr, now: Instant) {
         let mut early = std::mem::take(&mut self.early);
         let mut bytes = std::mem::take(&mut self.early_bytes);
         for (from, span) in early.drain(..) {
@@ -717,7 +813,7 @@ impl Association {
                     }
                 }
                 dimpl::Output::PeerCert(der) => {
-                    if sha256(der) != self.remote_fingerprint {
+                    if !self.peer_matches(der) {
                         self.fail(Failure::Fingerprint);
                         break;
                     }
@@ -765,6 +861,22 @@ impl Association {
 
 fn sha256(bytes: &[u8]) -> [u8; 32] {
     crypto::sha256(bytes)
+}
+
+impl Association {
+    /// Whether the far end's certificate `der` hashes, under the algorithm SECURE named, to the digest it
+    /// gave. `false` with no digest known: a handshake never completes unchecked.
+    fn peer_matches(&self, der: &[u8]) -> bool {
+        let Some((alg, digest)) = self.remote_fingerprint.as_ref() else {
+            return false;
+        };
+        match *alg {
+            FP_SHA256 => crypto::ct_eq(&crypto::sha256(der), digest),
+            FP_SHA384 => crypto::ct_eq(&crypto::sha384(der), digest),
+            FP_SHA512 => crypto::ct_eq(&crypto::sha512(der), digest),
+            _ => false,
+        }
+    }
 }
 
 /// `bytes` as colon-separated upper-case hex pairs, written straight into the formatter.
