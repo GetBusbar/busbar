@@ -320,3 +320,67 @@ fn more_than_max_bindings_is_too_many() {
         Err(BindError::TooMany)
     ));
 }
+
+#[test]
+fn reference_resolution_uses_each_opens_explicit_source_and_actual_slot() {
+    struct Scoped {
+        id: u64,
+        slot: u32,
+        value: &'static str,
+    }
+    impl RefSource for Scoped {
+        fn resolve<'a>(
+            &'a self,
+            id: u64,
+            slot: u32,
+            _: &'a SecretRef,
+        ) -> BoxFut<'a, Option<SecureVec>> {
+            Box::pin(async move {
+                assert_eq!(
+                    (id, slot),
+                    (self.id, self.slot),
+                    "actual reservation metadata reaches custody"
+                );
+                Some(SecureVec::from(self.value.as_bytes()))
+            })
+        }
+    }
+    let binder = Binder::new(sugars(), Vec::new());
+    let config = bytes(&json!({"path": {"env": "DB"}}));
+    let first = binder
+        .bind(19, &config, &[], &[], &[], &["/path"])
+        .expect("first bind");
+    let second = binder
+        .bind(23, &config, &[], &[], &[], &["/path"])
+        .expect("second bind");
+    let first_source = Scoped {
+        id: 19,
+        slot: 7,
+        value: "/first",
+    };
+    let second_source = Scoped {
+        id: 23,
+        slot: 11,
+        value: "/second",
+    };
+    let first = run(binder.resolve_refs(19, 7, first, &first_source)).expect("first resolves");
+    let second = run(binder.resolve_refs(23, 11, second, &second_source)).expect("second resolves");
+    assert_eq!(read(first.as_slice()), json!({"path": "/first"}));
+    assert_eq!(read(second.as_slice()), json!({"path": "/second"}));
+    assert_eq!(
+        read(
+            &binder
+                .unbind_refs(19, first.as_slice())
+                .expect("first reference mapping")
+        ),
+        read(&config)
+    );
+    assert_eq!(
+        read(
+            &binder
+                .unbind_refs(23, second.as_slice())
+                .expect("second reference mapping")
+        ),
+        read(&config)
+    );
+}
