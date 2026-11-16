@@ -41,9 +41,16 @@ fn notary_over_clock(
     every_ms: u64,
     clock: Option<Arc<busbar_kernel::governance::drain::DrainClock>>,
 ) -> NotaryTask {
-    let (notary, bootstrap) = AuditSigningKey::from_seed(&SEED)
-        .into_grants(LiveSigner::SameAsBootstrap)
-        .unwrap();
+    notary_over_signer(book, every_ms, clock, LiveSigner::SameAsBootstrap)
+}
+
+fn notary_over_signer(
+    book: &Arc<Mutex<Durability>>,
+    every_ms: u64,
+    clock: Option<Arc<busbar_kernel::governance::drain::DrainClock>>,
+    live: LiveSigner,
+) -> NotaryTask {
+    let (notary, bootstrap) = AuditSigningKey::from_seed(&SEED).into_grants(live).unwrap();
     let signers = signer::spawn(
         NotaryCap::new(notary),
         BootstrapSigner::new(bootstrap),
@@ -394,6 +401,27 @@ async fn first_shutdown_broadcast_stops_new_cuts_before_notary_stop() {
     );
 }
 
+/// A real signer with a forced 5 ms KMS round trip, on the detached signer thread.
+struct SlowNotary {
+    inner: busbar_contract::crypto::LocalSigner,
+    signs: Arc<std::sync::atomic::AtomicU64>,
+}
+impl busbar_contract::crypto::Signer for SlowNotary {
+    fn public_key(&self) -> &busbar_contract::crypto::PublicKey {
+        busbar_contract::crypto::Signer::public_key(&self.inner)
+    }
+    fn sign(
+        &self,
+        msg: &[u8],
+        out: &mut Vec<u8>,
+    ) -> Result<(), busbar_contract::crypto::SignError> {
+        std::thread::sleep(Duration::from_millis(5));
+        self.signs
+            .fetch_add(1, std::sync::atomic::Ordering::Release);
+        busbar_contract::crypto::Signer::sign(&self.inner, msg, out)
+    }
+}
+
 /// Test 30(g): non-audit originals make the WAL advance much faster than the audit chain.
 /// The live cut must follow the stamp's WAL position, without passing its audit target.
 #[tokio::test]
@@ -416,7 +444,16 @@ async fn interleaved_non_audit_rows_do_not_stop_the_retention_floor() {
         .await
         .unwrap(),
     ));
-    let task = notary_over(&book, 1);
+    let signs = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let task = notary_over_signer(
+        &book,
+        1,
+        None,
+        LiveSigner::Delegated(Box::new(SlowNotary {
+            inner: busbar_contract::crypto::LocalSigner::from_seed(&SEED).unwrap(),
+            signs: signs.clone(),
+        })),
+    );
     let count = 3 * RETAIN_TAIL;
     for unit in 1..=count {
         let other = journal
@@ -451,6 +488,15 @@ async fn interleaved_non_audit_rows_do_not_stop_the_retention_floor() {
     stamped_through(&task, count).await;
     let base = journal.base_tail().unwrap();
     assert!(base.node_seq - base.chain_seq >= 3 * RETAIN_TAIL);
+    assert!(
+        base.node_seq
+            <= task
+                .progress()
+                .stamped_node_seq
+                .load(std::sync::atomic::Ordering::Acquire)
+    );
+    assert!(signs.load(std::sync::atomic::Ordering::Acquire) > 1);
+
     task.stop().await.unwrap();
 }
 
