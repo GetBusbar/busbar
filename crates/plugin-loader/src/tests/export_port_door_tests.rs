@@ -556,3 +556,34 @@ fn a_later_stop_request_cannot_extend_the_first_deadline() {
         "deadline loss must not look like a clean drain"
     );
 }
+
+#[test]
+fn declared_scopes_are_get_routes_before_the_pump_starts() {
+    use busbar_contract::abi::mechanism::route::{RouteAuth, RouteMethod};
+    let (mut port, _) = Double::new(&[x::STREAM_METRICS]);
+    Arc::get_mut(&mut port).unwrap().scopes.push(ScopeInfo {
+        scope: x::SCOPE_HOOKS,
+        path: "/observations/hooks".into(),
+    });
+    let door = PortDoor::prepare(
+        "observations",
+        port,
+        Arc::new(Disk::default()),
+        &InstanceLimits::default(),
+    );
+    let paths: Vec<_> = door
+        .routes()
+        .iter()
+        .map(|route| route.path.as_str())
+        .collect();
+    assert_eq!(paths, ["/metrics", "/observations/hooks"]);
+    assert!(door
+        .routes()
+        .iter()
+        .all(|route| { route.method == RouteMethod::Get && route.auth == RouteAuth::None }));
+    assert_eq!(door.public_routes(), ["/metrics", "/observations/hooks"]);
+    assert!(
+        door.pump.lock().unwrap().is_none(),
+        "route assembly never starts the delivery worker"
+    );
+}
