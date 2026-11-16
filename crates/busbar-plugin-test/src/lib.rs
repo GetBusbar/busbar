@@ -26,7 +26,9 @@ pub mod target;
 /// The Q24 wipe proof: plant a canary, drop it, scan `/proc/self/mem`, assert it is absent.
 pub use busbar_contract::abi::sdk::test_support::canary;
 pub use busbar_contract::abi::sdk::test_support::cpu;
-pub use busbar_contract::abi::sdk::test_support::loans::{Buf, List, Loans};
+pub use busbar_contract::abi::sdk::test_support::loans::{
+    Buf, List, Loans, SecretBlobs, SignalArg,
+};
 pub use busbar_contract::abi::sdk::test_support::mutant::Mutant;
 pub use busbar_contract::abi::sdk::test_support::watch::{Block, Freed, Watch};
 pub use busbar_contract::abi::sdk::test_support::zeroed;
@@ -39,7 +41,8 @@ pub use busbar_plugin_loader::dispatch::kinds::{
 };
 pub use busbar_plugin_loader::dispatch::{rendering_of, ConnTable, LoadError};
 pub use busbar_plugin_loader::test_host::{
-    both, Answer, Called, Host, Image, Life, Loaded, Opened, Opening, Pending, Refused,
+    both, Answer, Called, Done, Host, Image, Life, Loaded, Opened, Opening, Pending, Refused,
+    Submitted, TimedOut,
 };
 pub use fake_needs::{ConnScript, FakeNeeds};
 pub use services::Services;

@@ -47,15 +47,17 @@ use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
+use std::time::Duration;
 
 use busbar_contract::abi::mechanism::call::{
-    AbiStr, Blob, InHead, OutHead, Outcome, BLOB_JSON, BLOB_OCTETS, BLOB_SECRET,
+    AbiStr, Blob, DeadlineClass, InHead, OutHead, Outcome, BLOB_JSON, BLOB_OCTETS, BLOB_SECRET,
 };
 use busbar_contract::abi::mechanism::check::HARD_MAX_BYTES;
 use busbar_contract::abi::mechanism::door::DoorFn;
 use busbar_contract::abi::mechanism::lifecycle::{
     slot as life, GenIn, OpenIn, OpenOut, RefreshIn, TickIn, TickOut,
 };
+use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::sdk::door::{blank_in, blank_out, KindSlot, RawDoorFn};
 use busbar_contract::abi::sdk::out::Scalar;
 use busbar_contract::abi::sdk::test_support::loans::{Buf, Loans, Pairs};
@@ -68,10 +70,11 @@ use crate::dispatch::kinds::{
     transport::Transport,
 };
 use crate::dispatch::plugin::str_bytes;
+use crate::dispatch::Done as Settled;
 use crate::dispatch::{
     in_head, lifecycle, load_dropped_bytes, load_linked, out_head, rendering_of, Bind, ConnTable,
     DispatchConfig, Dispatcher, Frame, InFrame, Kind, LinkedRow, LoadError, NoSink, OutFrame,
-    Plugin, Recall,
+    Plugin, Recall, Reply,
 };
 
 /// Why a host refused to load or open an image.
@@ -336,6 +339,7 @@ impl Host {
         Ok(Opened {
             plugin: Some(plugin),
             flight: Rc::new(Cell::new(0)),
+            dispatcher: Arc::clone(&self.dispatcher),
         })
     }
 
@@ -495,6 +499,7 @@ impl<K: Kind> Opening<K> {
             Ok(()) => Ok(Opened {
                 plugin: self.plugin.take(),
                 flight: Rc::new(Cell::new(0)),
+                dispatcher: Arc::clone(&self.dispatcher),
             }),
             Err(text) => Err((Refused::Ready(text), self)),
         }
@@ -566,6 +571,8 @@ pub type OutOf<K, const I: u32> = <<K as Kind>::Ops as KindSlot<I>>::Out;
 pub struct Opened<K: Kind> {
     plugin: Option<Plugin<K>>,
     flight: Rc<Cell<u32>>,
+    /// The dispatcher a ticketed submission crosses (STH-ROWS D-6).
+    dispatcher: Arc<Dispatcher>,
 }
 
 impl<K: Kind> Opened<K> {
@@ -717,6 +724,53 @@ impl<K: Kind> Opened<K> {
         self.answer(loans, frame, called, I)
     }
 
+    /// Kind op `I` with `loans` as its `in`, submitted on a fresh ticket through the dispatcher's
+    /// real ticketed path (STH-ROWS D-6): the op may PEND, be cancelled, or answer SHORT and be
+    /// resubmitted once on the same ticket. A submission borrows the instance, so neither `call`
+    /// nor a lifecycle method compiles while one lives; several may overlap, as production's
+    /// ticketed submissions do. The loans stay on this thread: the dispatcher is handed only the
+    /// frame, whose `in` is the sealed copy and names only storage the loans own.
+    ///
+    /// # Panics
+    /// When the dispatcher mints no ticket on its first worker.
+    pub fn submit<const I: u32>(
+        &self,
+        loans: Loans<InOf<K, I>>,
+    ) -> Submitted<'_, InOf<K, I>, OutOf<K, I>>
+    where
+        K::Ops: KindSlot<I>,
+        InOf<K, I>: InFrame + Pairs,
+        OutOf<K, I>: OutFrame,
+    {
+        let plugin = self.instance();
+        let dispatcher: &Dispatcher = &self.dispatcher;
+        let ticket = dispatcher
+            .mint(0)
+            .expect("the test host's dispatcher mints a ticket on its first worker");
+        let blank = blank_out::<OutOf<K, I>>();
+        let mut loans = loans;
+        let frame = Frame::new(loans.seal(), blank);
+        let resend: Resend<'_, InOf<K, I>, OutOf<K, I>> =
+            Box::new(move |frame: Frame<InOf<K, I>, OutOf<K, I>>| {
+                dispatcher.submit(plugin, ticket, I, frame, DeadlineClass::Call, 0)
+            });
+        let reply = resend(frame);
+        self.flight.set(self.flight.get() + 1);
+        Submitted {
+            lane: Some(Lane {
+                dispatcher,
+                resend,
+                release: Box::new(move |lease: u64| lifecycle::release(plugin, lease)),
+                flight: Rc::clone(&self.flight),
+                ticket,
+                blank,
+                loans: Some(loans),
+                resubmitted: false,
+            }),
+            reply: Some(reply),
+        }
+    }
+
     fn answer<In: Copy + 'static, Out: Copy>(
         &self,
         loans: Loans<In>,
@@ -842,6 +896,22 @@ pub struct Pending<In, Out> {
     recall: Option<Recall>,
     slot: u32,
     flight: Rc<Cell<u32>>,
+}
+
+impl<In: InFrame + Pairs, Out: OutFrame> Pending<In, Out> {
+    /// Grows the loans before the one re-call (STH-ROWS D-8): `grow` sets a bigger buffer (or any
+    /// field) through the loans' own setters, and the `in` is sealed again into the pending frame.
+    /// Storage `grow` replaces is retired, not freed, until the loans drop. Nothing of the first
+    /// call's head is carried: the host stamps every head field again on the re-call.
+    #[must_use]
+    pub fn regrow(mut self, grow: impl FnOnce(&mut Loans<In>)) -> Self {
+        let (Some(loans), Some(frame)) = (self.loans.as_mut(), self.frame.as_mut()) else {
+            unreachable!("a pending crossing holds its loans until it is spent")
+        };
+        grow(&mut *loans);
+        frame.input = loans.seal();
+        self
+    }
 }
 
 impl<In: InFrame, Out: OutFrame> Pending<In, Out> {
@@ -1012,4 +1082,299 @@ pub fn admit_cdylib(
         std::fs::read(&path).unwrap_or_else(|e| panic!("read the cdylib {}: {e}", path.display()));
     let manifest = test_manifest(&bytes, former_names)?;
     admit_bytes(&bytes, &manifest)
+}
+
+/// How long a settled submission waits for its worker's retirement barrier before its loans are
+/// leaked instead of freed.
+const BARRIER: Duration = Duration::from_secs(5);
+
+/// A submission's re-send on its own ticket.
+type Resend<'o, In, Out> = Box<dyn Fn(Frame<In, Out>) -> Reply<In, Out> + 'o>;
+
+/// What a ticketed submission holds until its loans are freed or leaked: its ticket, its loans
+/// and the instance's shared flight counter (raised while it lives).
+struct Lane<'o, In, Out> {
+    dispatcher: &'o Dispatcher,
+    resend: Resend<'o, In, Out>,
+    release: Box<dyn Fn(u64) + 'o>,
+    flight: Rc<Cell<u32>>,
+    ticket: Ticket,
+    /// A blank `out`, for a resubmission's fresh frame.
+    blank: Out,
+    loans: Option<Loans<In>>,
+    /// Whether this is already the one resubmission a SHORT answer earned.
+    resubmitted: bool,
+}
+
+impl<In, Out> Lane<'_, In, Out> {
+    /// A settled op: its loans freed and its ticket recycled once the worker's retirement barrier
+    /// passes; leaked, with the instance left poisoned, when it does not.
+    fn settle(mut self) {
+        if self.dispatcher.retirement_barrier(self.ticket, BARRIER) {
+            drop(self.loans.take());
+            self.dispatcher.recycle(self.ticket);
+            self.flight.set(self.flight.get().saturating_sub(1));
+        } else {
+            std::mem::forget(self.loans.take());
+        }
+    }
+
+    /// Leaks the loans on purpose, so every pointer the plugin may hold stays valid, and frees
+    /// the instance for its next call.
+    fn leak(mut self) {
+        std::mem::forget(self.loans.take());
+        self.flight.set(self.flight.get().saturating_sub(1));
+    }
+
+    /// Leaks the loans and leaves the instance poisoned: CLOSE is skipped when it drops.
+    fn poison(mut self) {
+        std::mem::forget(self.loans.take());
+    }
+}
+
+/// The lane and the reply of a submission that is being spent.
+fn spent<'o, In, Out>(
+    lane: &mut Option<Lane<'o, In, Out>>,
+    reply: &mut Option<Reply<In, Out>>,
+) -> (Lane<'o, In, Out>, Reply<In, Out>) {
+    match (lane.take(), reply.take()) {
+        (Some(lane), Some(reply)) => (lane, reply),
+        _ => unreachable!("a submission holds its loans until it is spent"),
+    }
+}
+
+/// The reply waited for, up to `within`.
+fn waited<'o, In: InFrame, Out: OutFrame>(
+    lane: Lane<'o, In, Out>,
+    reply: Reply<In, Out>,
+    within: Duration,
+) -> Result<Done<'o, In, Out>, TimedOut<'o, In, Out>> {
+    match reply.wait(within) {
+        Some(settled) => Ok(Done::of(lane, settled)),
+        None => Err(TimedOut {
+            lane: Some(lane),
+            reply: Some(reply),
+        }),
+    }
+}
+
+/// A ticketed submission in flight (STH-ROWS D-6): it holds its loans, and gives no access to
+/// them, until it is [`Done`]. Spend it with [`Submitted::wait`] or [`Submitted::cancel`].
+/// Dropped unspent (or forgotten), its loans leak, the instance is poisoned (CLOSE skipped), and
+/// the drop panics unless the thread already is.
+pub struct Submitted<'o, In, Out> {
+    lane: Option<Lane<'o, In, Out>>,
+    reply: Option<Reply<In, Out>>,
+}
+
+impl<'o, In: InFrame, Out: OutFrame> Submitted<'o, In, Out> {
+    /// The op's answer, waited for up to `within`.
+    pub fn wait(mut self, within: Duration) -> Result<Done<'o, In, Out>, TimedOut<'o, In, Out>> {
+        let (lane, reply) = spent(&mut self.lane, &mut self.reply);
+        waited(lane, reply, within)
+    }
+
+    /// The client drops the op, as production's caller does at its deadline: the dispatcher
+    /// CANCELs it on its ticket, and the answer, waited for up to `within`, carries the kind's
+    /// disposition ([`Done::disposition`]).
+    pub fn cancel(mut self, within: Duration) -> Result<Done<'o, In, Out>, TimedOut<'o, In, Out>> {
+        let (lane, reply) = spent(&mut self.lane, &mut self.reply);
+        lane.dispatcher.drop_client(lane.ticket);
+        waited(lane, reply, within)
+    }
+}
+
+impl<In, Out> Drop for Submitted<'_, In, Out> {
+    fn drop(&mut self) {
+        let Some(lane) = self.lane.take() else {
+            return;
+        };
+        lane.poison();
+        if !std::thread::panicking() {
+            panic!("a submission was dropped unspent: wait() or cancel() it");
+        }
+    }
+}
+
+/// A submission whose answer did not come within the wait. Wait again, or leak its loans.
+/// Dropped otherwise, it poisons the instance as an unspent [`Submitted`] does.
+pub struct TimedOut<'o, In, Out> {
+    lane: Option<Lane<'o, In, Out>>,
+    reply: Option<Reply<In, Out>>,
+}
+
+impl<'o, In: InFrame, Out: OutFrame> TimedOut<'o, In, Out> {
+    /// The op's answer, waited for up to `within` more.
+    pub fn wait(mut self, within: Duration) -> Result<Done<'o, In, Out>, Self> {
+        let (lane, reply) = spent(&mut self.lane, &mut self.reply);
+        waited(lane, reply, within)
+    }
+
+    /// The client drops the op, as [`Submitted::cancel`] does, and its answer is waited for up to
+    /// `within`.
+    pub fn cancel(mut self, within: Duration) -> Result<Done<'o, In, Out>, Self> {
+        let (lane, reply) = spent(&mut self.lane, &mut self.reply);
+        lane.dispatcher.drop_client(lane.ticket);
+        waited(lane, reply, within)
+    }
+
+    /// Leaks the loans on purpose and frees the instance for its next call; the client drops the
+    /// op as the reply goes.
+    pub fn leak_loans(mut self) {
+        if let Some(lane) = self.lane.take() {
+            lane.leak();
+        }
+    }
+}
+
+impl<In, Out> Drop for TimedOut<'_, In, Out> {
+    fn drop(&mut self) {
+        let Some(lane) = self.lane.take() else {
+            return;
+        };
+        lane.poison();
+        if !std::thread::panicking() {
+            panic!("a timed-out submission was dropped: wait() again or leak_loans() it");
+        }
+    }
+}
+
+/// A settled submission (STH-ROWS D-6), read as an [`Answer`] is, while the instance's lease on
+/// it is held. Dropped, the lease is released, then the loans are freed and the ticket recycled
+/// once the worker's retirement barrier passes (leaked otherwise). It never panics in `Drop`.
+pub struct Done<'o, In, Out> {
+    lane: Option<Lane<'o, In, Out>>,
+    out: Option<Out>,
+    outcome: Outcome,
+    error: Option<Vec<u8>>,
+    lease: u64,
+    short: bool,
+    disposition: Option<u32>,
+}
+
+impl<'o, In, Out> Done<'o, In, Out> {
+    fn of(lane: Lane<'o, In, Out>, settled: Settled<In, Out>) -> Self {
+        Self {
+            lane: Some(lane),
+            out: settled.frame.map(|f| f.out),
+            outcome: settled.outcome,
+            error: settled.error,
+            lease: settled.lease,
+            short: settled.short,
+            disposition: settled.disposition,
+        }
+    }
+
+    /// The `out` the op answered.
+    fn answered(&self) -> &Out {
+        self.out
+            .as_ref()
+            .expect("the op was faulted mid-crossing or detached: no `out` came back")
+    }
+
+    /// The authoritative outcome.
+    #[must_use]
+    pub fn outcome(&self) -> Outcome {
+        self.outcome
+    }
+
+    /// The error text, copied, for a FAILED or REFUSED answer.
+    #[must_use]
+    pub fn error(&self) -> Option<&[u8]> {
+        self.error.as_deref()
+    }
+
+    /// Whether the answer is one the kind calls SHORT: resubmit it once with grown loans.
+    #[must_use]
+    pub fn short(&self) -> bool {
+        self.short
+    }
+
+    /// The kind's `CancelOut.disposition` when the op ended through CANCEL; `None` when it did
+    /// not, or when the CANCEL faulted.
+    #[must_use]
+    pub fn disposition(&self) -> Option<u32> {
+        self.disposition
+    }
+
+    /// A scalar of the `out`, copied.
+    ///
+    /// # Panics
+    /// When no `out` came back (the op was faulted mid-crossing).
+    #[must_use]
+    pub fn get<T: Scalar>(&self, pick: impl FnOnce(&Out) -> T) -> T {
+        pick(self.answered())
+    }
+
+    /// A plugin-owned string of the `out`, copied after the host's own bounds check.
+    ///
+    /// # Panics
+    /// When no `out` came back (the op was faulted mid-crossing).
+    #[must_use]
+    pub fn text(&self, pick: impl FnOnce(&Out) -> AbiStr) -> Option<Vec<u8>> {
+        str_bytes(pick(self.answered())).map(<[u8]>::to_vec)
+    }
+
+    /// A plugin-owned payload of the `out`, copied when it is within the host's hard cap.
+    ///
+    /// # Panics
+    /// When no `out` came back (the op was faulted mid-crossing).
+    #[must_use]
+    pub fn blob(&self, pick: impl FnOnce(&Out) -> Blob) -> Vec<u8> {
+        let b = pick(self.answered());
+        if b.len > HARD_MAX_BYTES as usize {
+            return Vec::new();
+        }
+        lifecycle::copy_blob(b)
+    }
+
+    /// The values a host buffer the loans lent holds after the op.
+    #[must_use]
+    pub fn read<E: Scalar>(&self, key: &Buf<E>) -> &[E] {
+        match self.lane.as_ref().and_then(|l| l.loans.as_ref()) {
+            Some(loans) => loans.read(key),
+            None => &[],
+        }
+    }
+}
+
+impl<'o, In: InFrame + Pairs, Out: OutFrame> Done<'o, In, Out> {
+    /// The one resubmission a SHORT answer earned, on the same ticket: `grow` grows the loans
+    /// (storage it replaces is retired until the loans drop), the lease is handed back, and the
+    /// loans are sealed into a fresh frame. A second SHORT is the dispatcher's FAULT.
+    ///
+    /// # Panics
+    /// When the answer is not SHORT, or already answers a resubmission.
+    pub fn resubmit(mut self, grow: impl FnOnce(&mut Loans<In>)) -> Submitted<'o, In, Out> {
+        assert!(self.short, "only a SHORT answer is resubmitted");
+        assert!(
+            self.lane.as_ref().is_some_and(|l| !l.resubmitted),
+            "a SHORT answer is resubmitted once"
+        );
+        let Some(mut lane) = self.lane.take() else {
+            unreachable!("checked above")
+        };
+        (lane.release)(std::mem::take(&mut self.lease));
+        let Some(loans) = lane.loans.as_mut() else {
+            unreachable!("a lane holds its loans until it settles")
+        };
+        grow(&mut *loans);
+        let frame = Frame::new(loans.seal(), lane.blank);
+        let reply = (lane.resend)(frame);
+        lane.resubmitted = true;
+        Submitted {
+            lane: Some(lane),
+            reply: Some(reply),
+        }
+    }
+}
+
+impl<In, Out> Drop for Done<'_, In, Out> {
+    fn drop(&mut self) {
+        let Some(lane) = self.lane.take() else {
+            return;
+        };
+        (lane.release)(std::mem::take(&mut self.lease));
+        lane.settle();
+    }
 }
