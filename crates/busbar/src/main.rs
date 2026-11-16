@@ -1089,6 +1089,8 @@ async fn run(
     };
 
     let response_headers_cfg = deploy.advanced.response_headers.clone();
+    // `audit.seal_every` (SEALING-FIX §3.4): the notary's stamp cadence, validated 1-1000 ms.
+    let audit_seal_every = deploy.audit.seal_every;
 
     busbar_kernel::plane_driver::configure_route_policy_headers(response_headers_cfg.route_policy);
     busbar_kernel::router::configure_server_timing(response_headers_cfg.server_timing);
@@ -1810,6 +1812,10 @@ async fn run(
 
     busbar_kernel::boot::start_planes(&app_handle).unwrap_or_else(|e| die(e));
     let predecessor = spawn_predecessor_task(governance.as_ref(), control_work.shutdown_rx.clone());
+    // SEALING-FIX §3.3: the audit notary, after `Ready`, on this control runtime.
+    if let Some(audit) = book.as_ref().and_then(|book| book.audit.as_ref()) {
+        audit.start_notary(audit_seal_every, Arc::clone(&drain_clock));
+    }
 
     let mut threads: Vec<std::thread::JoinHandle<()>> = Vec::new();
     let mut admin: Option<std::pin::Pin<Box<dyn std::future::Future<Output = ()> + '_>>> = None;

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+use busbar_contract::json::{self, JsonValueTrait};
 use std::path::Path;
 
 const ISSUER: &str = "https://issuer.e2e.invalid";
@@ -20,7 +21,7 @@ fn idp() -> &'static Idp {
         .expect("the IdP's P-256 signing key");
         let point = &signing_key.public_key();
         let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD;
-        let jwks = serde_json::json!({"keys": [{
+        let jwks = json::json!({"keys": [{
             "kty": "EC", "crv": "P-256", "kid": KEY_ID, "alg": "ES256", "use": "sig",
             "x": b64.encode(&point[1..33]), "y": b64.encode(&point[33..65]),
         }]})
@@ -118,7 +119,7 @@ pub fn token_with_claims(sub: &str, roles: &[&str], aud: &str, extra: serde_json
         .as_secs();
     let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD;
     let header = b64.encode(
-        serde_json::to_vec(&serde_json::json!({
+        json::to_vec(&json::json!({
             "alg": "ES256", "typ": "JWT", "kid": KEY_ID,
         }))
         .expect("JWT header"),
@@ -221,9 +222,9 @@ pub fn bind_key(secret: &[u8; 32], plain: &str, audience: &str) -> String {
         .strip_prefix("bbk_")
         .unwrap_or_else(|| panic!("not a busbar key: {plain}"));
     let payload = body.split('.').next().expect("a payload");
-    let claims: serde_json::Value =
-        serde_json::from_slice(&b64.decode(payload).expect("base64 claims")).expect("JSON claims");
-    let mut bound = serde_json::json!({
+    let claims: json::Value =
+        json::parse_value(&b64.decode(payload).expect("base64 claims")).expect("JSON claims");
+    let mut bound = json::json!({
         "sub": claims["sub"],
         "exp": claims["exp"],
         "kid": claims["kid"],
@@ -232,7 +233,7 @@ pub fn bind_key(secret: &[u8; 32], plain: &str, audience: &str) -> String {
     if let Some(g) = claims.get("g") {
         bound["g"] = g.clone();
     }
-    let raw = serde_json::to_vec(&bound).expect("claims serialize");
+    let raw = json::to_vec(&bound).expect("claims serialize");
     let sig = busbar_contract::crypto::ed25519::SigningKey::from_seed(secret)
         .expect("the signing key is a valid Ed25519 seed")
         .sign(&raw);

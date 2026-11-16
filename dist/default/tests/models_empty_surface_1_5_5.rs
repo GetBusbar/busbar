@@ -10,12 +10,14 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 use std::time::{Duration, Instant};
 
+use busbar_contract::json::{self, JsonValueTrait};
+
 const GOLDEN: &str = include_str!(
     "../../../testing/shadow-oracle/golden/1.5.5/cells/neutrality__models-empty__surface.json"
 );
 
-fn golden(request: &str) -> (u16, serde_json::Value) {
-    let cell: serde_json::Value = serde_json::from_str(GOLDEN).expect("the golden cell parses");
+fn golden(request: &str) -> (u16, json::Value) {
+    let cell = json::parse_value(GOLDEN.as_bytes()).expect("the golden cell parses");
     let step = cell["body"]["json"]["steps"]
         .as_array()
         .expect("the cell's steps")
@@ -44,9 +46,12 @@ fn cell_providers() -> String {
         env!("CARGO_MANIFEST_DIR"),
         "/../../testing/shadow-oracle/cells.json"
     );
-    let cells: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(path).expect("the oracle's cells"))
-            .expect("the cells parse");
+    let cells = json::parse_value(
+        std::fs::read_to_string(path)
+            .expect("the oracle's cells")
+            .as_bytes(),
+    )
+    .expect("the cells parse");
     let cell = cells["cells"]
         .as_array()
         .expect("the cell list")
@@ -120,11 +125,11 @@ fn log_of(dir: &Path) -> String {
     std::fs::read_to_string(dir.join("out.log")).unwrap_or_default()
 }
 
-fn masked(body: &str) -> serde_json::Value {
-    let mut v: serde_json::Value =
-        serde_json::from_str(body).unwrap_or_else(|e| panic!("a JSON body ({e}): {body}"));
+fn masked(body: &str) -> json::Value {
+    let mut v =
+        json::parse_value(body.as_bytes()).unwrap_or_else(|e| panic!("a JSON body ({e}): {body}"));
     if v.get("request_id").is_some() {
-        v["request_id"] = serde_json::json!("<ID>");
+        v["request_id"] = json::json!("<ID>");
     }
     v
 }
@@ -182,7 +187,7 @@ fn a_document_writing_models_empty_answers_with_the_1_5_5_bytes() {
     assert_eq!(status, 405, "{body}");
     assert_eq!(
         masked(&body),
-        serde_json::json!({"error": {"code": null, "message": "method not allowed for this resource",
+        json::json!({"error": {"code": null, "message": "method not allowed for this resource",
             "param": null, "type": "invalid_request_error"}}),
     );
 
