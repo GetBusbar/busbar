@@ -3,6 +3,7 @@
 //! synchronous RecordStore adapter participates in these paths.
 use super::*;
 use crate::governance::persistence::prices::tests::{attach, Backend};
+use busbar_contract::export_calls::ExportDropReason;
 use busbar_contract::persistence::{Candidate, Mutation, PreparedCandidate, CANDIDATE_VERSION};
 
 async fn fixture() -> (
@@ -184,7 +185,7 @@ async fn export_loss_transfer_keeps_first_facts_and_confirms_only_the_original()
     let facts = ExportLossFacts {
         instance: "export.test".into(),
         observed_at: 123,
-        lines: 7,
+        count: 7,
         kind: ExportLossKind::Dropped(ExportDropReason::QueueFull),
     };
     let request = Arc::new(AuditRequest::default());
@@ -220,7 +221,7 @@ async fn export_loss_transfer_keeps_first_facts_and_confirms_only_the_original()
     let rows = log.list_filtered(0, 10, None, None);
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].ts, facts.observed_at);
-    assert!(rows[0].resource.contains("export.test"));
+    assert_eq!(rows[0].instance.as_deref(), Some(facts.instance.as_str()));
     assert!(rows[0].resource.contains("queue_full"));
     assert!(rows[0].resource.contains("7"));
 }
@@ -232,7 +233,7 @@ async fn dropping_export_loss_receipt_does_not_cancel_native_audit_custody() {
     let facts = ExportLossFacts {
         instance: "export.test".into(),
         observed_at: 456,
-        lines: 1,
+        count: 1,
         kind: ExportLossKind::IntegrityFailed,
     };
     drop(enqueue_export_failure(&queue, &facts).unwrap());
