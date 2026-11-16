@@ -642,16 +642,6 @@ compiled-in backend would. Signing answers "is this the artifact its publisher s
 and current"; it does not sandbox the publisher. Allowlist publishers you would be willing to link
 into the binary.
 
-## Licensing a plugin
-
-A license check is the plugin author's concern, not the gateway's. If a plugin needs one, put a `licenseKey` (or any
-key it expects) in that plugin's `settings:`, and let the plugin validate it on `open`. The value
-may be a `SecretRef`, in which case the core resolves it against the secret backend **before** the
-settings cross the ABI, so a raw key never has to sit in plaintext config, is never logged, and is
-never written back to the overlay (only the reference is persisted). An unresolvable ref fails the
-load fail-closed. Use the current host credential contract for secret custody; a
-license policy does not grant a plugin access to another plugin or to core persistence.
-
 ## Inspecting and validating
 
 ```sh
