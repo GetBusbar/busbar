@@ -593,6 +593,10 @@ This historical conversion lives in the one-shot configuration migrator because 
 OAuth plugin has no outbound-binding migration entry; its generic auth migration surface
 receives identity-provider settings, not deployment credential references.
 
+## Removed pre-release keys
+
+- `limits.hook_content_max_bytes`: removed; a content-granted hook always sees the whole content (the old default of unlimited). A config that sets it is refused as an unknown key.
+
 ## Released 1.5.5 persistent configuration
 
 The upgrade boot folds the 1.5.5 overlay file into config.yaml and keeps the file as

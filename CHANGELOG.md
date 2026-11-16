@@ -1287,10 +1287,6 @@ each dialect translates, field by field, is listed in the generated
 - **Documents, audio and video now cross protocols** instead of being converted to an empty text
   block with no warning. Every dialect reads and writes attachments in its own native slot. Where a
   target genuinely cannot express one it is dropped with a `warn!` naming it.
-- **`limits.hook_content_max_bytes` bounds the model-plane content a content-granted hook is
-  shown** (default `0`, unlimited; a non-zero ceiling is opt-in). Over-cap content is omitted whole rather than truncated,
-  and `busbar_hook_content_truncated_total` counts it. The cap is applied on the model plane's two
-  projections and not yet on the MCP/A2A gate projection.
 - **Client ID Metadata Documents are accepted**, so a `client_id` that is an HTTPS URL is fetched
   through the SSRF guard, validated, and used as an ephemeral public client that is never stored.
   Registration still confers nothing beyond the `default_grant` ceiling, which is empty until you
