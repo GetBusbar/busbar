@@ -2063,6 +2063,12 @@ pub fn render_markdown_for(catalog: &[&Diagnostic]) -> String {
          `diag` field. Find the code below for what it means, whether it needs action, and what \
          to do. This page is generated from the code — do not edit by hand.\n\n",
     );
+    out.push_str(
+        "A plugin that declares its own error numbers writes them as `BUSBAR-<plugin>-NNNN` \
+         (for example `BUSBAR-acme-0042`), with the plugin's own name and never in the `diag` \
+         field. Those codes belong to the plugin, not to this catalog; core does not vouch for \
+         their text.\n\n",
+    );
     out.push_str("Codes are grouped by class (the thousands digit).\n\n");
     for class in Class::ALL {
         let mut rows: Vec<&Diagnostic> = catalog

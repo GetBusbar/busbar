@@ -2,6 +2,8 @@
 
 Every operator-facing log line from busbar carries a stable `BUSBAR-NNNN` code in its `diag` field. Find the code below for what it means, whether it needs action, and what to do. This page is generated from the code — do not edit by hand.
 
+A plugin that declares its own error numbers writes them as `BUSBAR-<plugin>-NNNN` (for example `BUSBAR-acme-0042`), with the plugin's own name and never in the `diag` field. Those codes belong to the plugin, not to this catalog; core does not vouch for their text.
+
 Codes are grouped by class (the thousands digit).
 
 ## 1xxx — Durability & write-through
