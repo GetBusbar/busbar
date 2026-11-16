@@ -723,3 +723,7 @@ pub(crate) async fn run(
     }
     Ok(true)
 }
+
+#[cfg(test)]
+#[path = "tests/min3_boot.rs"]
+mod tests;
