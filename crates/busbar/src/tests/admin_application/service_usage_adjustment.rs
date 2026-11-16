@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use crate::root::test_plugins as plugins;
+use busbar_contract::json::{self, JsonValueTrait};
 use busbar_contract::records::VirtualKey;
 use busbar_kernel::governance::{AdjustRefused, Adjustment, GovState};
 use std::collections::BTreeMap;
@@ -222,11 +223,7 @@ async fn an_adjust_of_a_units_counts_moves_the_served_usage_figure() {
     let addr = listener.local_addr().unwrap();
     let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
     let client = reqwest::Client::new();
-    async fn total(
-        client: &reqwest::Client,
-        addr: std::net::SocketAddr,
-        day: u64,
-    ) -> serde_json::Value {
+    async fn total(client: &reqwest::Client, addr: std::net::SocketAddr, day: u64) -> json::Value {
         let response = client
             .get(format!("http://{addr}/api/v1/admin/usage?window={day}"))
             .header("x-admin-token", "admintok")
@@ -234,7 +231,7 @@ async fn an_adjust_of_a_units_counts_moves_the_served_usage_figure() {
             .await
             .unwrap();
         assert_eq!(response.status().as_u16(), 200);
-        response.json::<serde_json::Value>().await.unwrap()["total"].clone()
+        json::parse_value(&response.bytes().await.unwrap()).unwrap()["total"].clone()
     }
     let before = total(&client, addr, day).await;
     assert_eq!(

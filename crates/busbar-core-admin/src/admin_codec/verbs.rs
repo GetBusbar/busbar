@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
 //! The pure `(method, path) -> verb` match over the closed verb table in [`crate::verb`].
 
 use crate::verb::{admin_rows, VerbRow, VerbScope};

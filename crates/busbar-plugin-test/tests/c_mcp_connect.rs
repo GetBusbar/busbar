@@ -8,7 +8,7 @@
 //! the arm's body and un-ignores it in its own MR (red first, then green).
 
 #[test]
-#[ignore = "owner: W1-K10"]
+#[ignore = "owner: W1-K10; blocked (re-checked on dev 2026-11-16): busbar-kernel connections/mod.rs is still the 65-line W0 stub (OUTSTANDING row 3: no CallerConnections impl, no callback route), so CONNECT BEGIN/COMPLETE/refresh/revoke have nothing to drive; plus the auth-oauth and plane-mcp P arms"]
 fn connect_core_arms() {
     todo!("owner: W1-K10 (C-MCP-CONNECT)")
 }

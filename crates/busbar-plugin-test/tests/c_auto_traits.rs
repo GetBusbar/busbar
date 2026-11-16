@@ -12,8 +12,8 @@
 
 use busbar_plugin_abi::{auth, export, hook, plane, secret, store, transport};
 use busbar_plugin_loader::instance::{InstanceSpec, Registry, SlotLease};
-use busbar_plugin_loader::ports::plane::PlaneSession;
 use busbar_plugin_test::FakeNeeds;
+use busbar_ports::plane::PlaneSession;
 
 fn send_sync<T: Send + Sync>() {}
 

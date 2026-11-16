@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use axum::Router;
+use busbar_contract::json;
 use std::collections::HashSet;
 use std::sync::Arc;
 
@@ -41,7 +42,7 @@ async fn split_admin_listener_no_double_exposure() {
         .expect("the actual distribution declares its linked OpenAI provider dialect");
     let definitions = std::collections::HashMap::from([(
         "test-provider".to_string(),
-        serde_json::from_value::<busbar_kernel::config::ProviderDef>(serde_json::json!({
+        json::from_value::<busbar_kernel::config::ProviderDef>(&json::json!({
             "protocol": protocol,
             "base_url": "http://127.0.0.1:1",
         }))

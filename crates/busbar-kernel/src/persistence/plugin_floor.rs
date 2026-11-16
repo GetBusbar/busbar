@@ -182,7 +182,7 @@ impl PluginFloor {
         )
     }
     /// Checks the loaded set against the host's release keys floor and, when `raise`,
-    /// lifts the floor to the set's LOWEST keys version (LICENSING.md 2.12 rule F1).
+    /// lifts the floor to the set's LOWEST keys version.
     /// Raising to the highest member would make a host that loads a mixed set (for
     /// example an enterprise file still sealed at k5 beside public files at k7)
     /// refuse its own unchanged set on the next boot. A uniform set raises the

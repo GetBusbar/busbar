@@ -121,7 +121,7 @@ fn prepare(
         return Err("invalid store witness");
     }
     let digest = Sha256::digest(
-        serde_json::to_vec(receipt).map_err(|_| "invalid bootstrap receipt encoding")?,
+        busbar_contract::json::to_vec(receipt).map_err(|_| "invalid bootstrap receipt encoding")?,
     )
     .to_vec();
     Ok(PreparedReceipt {

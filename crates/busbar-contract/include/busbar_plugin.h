@@ -151,11 +151,11 @@ extern "C" {
 #define BB_STORE_COMMIT_STALE UINT32_C(6) /* The slot already evaluated a later sequence; this send applied nothing and never will. */
 #define BB_STORE_SLOT_SELF_FENCED UINT32_C(0xffffffff) /* Slot value of a self-fenced candidate, which must carry sequence zero. */
 #define BB_STORE_MAX_SLOTS UINT32_C(0x10000) /* Exclusive upper bound of a writer's queue slots; each store keeps at most this many */
-#define BB_STORE_LAYOUT_FINGERPRINT UINT64_C(0x5f47532174fb052b) /* Fingerprint of the primitive shapes, independent from the legacy business layout. */
+#define BB_STORE_LAYOUT_FINGERPRINT UINT64_C(0xb74ff4246792db2d) /* Fingerprint of the primitive shapes, independent from the legacy business layout. */
 
 /* secret */
 #define BB_SECRET_ABI_VERSION UINT32_C(2) /* The secret kind's ABI version. */
-#define BB_SECRET_LAYOUT_FINGERPRINT UINT64_C(0x305714fde3324815) /* The secret kind's layout fingerprint ([`crate::abi::mechanism::layout`]): the fold of */
+#define BB_SECRET_LAYOUT_FINGERPRINT UINT64_C(0x52fda1049968af93) /* The secret kind's layout fingerprint ([`crate::abi::mechanism::layout`]): the fold of */
 #define BB_SECRET_SLOT_RESOLVE UINT32_C(9) /* `resolve`. */
 #define BB_SECRET_SLOT_CHECK UINT32_C(10) /* `check`. */
 #define BB_SECRET_KIND_SLOTS UINT32_C(2) /* How many slots the secret kind adds after the shared lifecycle (`resolve` and `check`). */
@@ -175,7 +175,7 @@ extern "C" {
 #define BB_AUTH_FIELDS_HARD_MAX UINT32_C(64) /* The hard maximum of `needed_fields`: no style writes more auth fields than this. Also the */
 #define BB_AUTH_EXT_OUTBOUND_SETTINGS_CHECK "auth.outbound-settings-check" /* Pure outbound settings validation support: Statement value `b"\x01"`; on lifecycle */
 #define BB_AUTH_ABI_VERSION UINT32_C(3) /* The auth kind's ABI version: v1.5.5 shipped `2` (`AUTH_ABI_VERSION`), so 1.6.0 ships `3`. */
-#define BB_AUTH_LAYOUT_FINGERPRINT UINT64_C(0x5b57a4ca0d0cd422) /* The auth kind's layout fingerprint ([`crate::abi::mechanism::layout`]): the fold of */
+#define BB_AUTH_LAYOUT_FINGERPRINT UINT64_C(0x7f8289d571846432) /* The auth kind's layout fingerprint ([`crate::abi::mechanism::layout`]): the fold of */
 #define BB_AUTH_SLOT_VERIFY UINT32_C(9) /* `verify`. */
 #define BB_AUTH_SLOT_BEGIN_LOGIN UINT32_C(10) /* `begin_login`. */
 #define BB_AUTH_SLOT_COMPLETE_LOGIN UINT32_C(11) /* `complete_login`. */
@@ -248,7 +248,7 @@ extern "C" {
 
 /* hook */
 #define BB_HOOK_ABI_VERSION UINT32_C(2) /* The hook kind's ABI version: v1.5.5 shipped `1`, so 1.6.0 ships `2`. */
-#define BB_HOOK_LAYOUT_FINGERPRINT UINT64_C(0x554fa343936df174) /* The hook kind's layout fingerprint ([`crate::abi::mechanism::layout`]): the fold of */
+#define BB_HOOK_LAYOUT_FINGERPRINT UINT64_C(0x714c2d6e34092fa0) /* The hook kind's layout fingerprint ([`crate::abi::mechanism::layout`]): the fold of */
 #define BB_HOOK_SLOT_DECIDE UINT32_C(9) /* `decide`. */
 #define BB_HOOK_SLOT_TRANSFORM UINT32_C(10) /* `transform`. */
 #define BB_HOOK_SLOT_NOTIFY UINT32_C(11) /* `notify`. */
@@ -313,7 +313,7 @@ extern "C" {
 
 /* export */
 #define BB_EXPORT_ABI_VERSION UINT32_C(3) /* The export kind's ABI version: v1.5.5 shipped `2`, so 1.6.0 ships `3`. */
-#define BB_EXPORT_LAYOUT_FINGERPRINT UINT64_C(0xfe016c85b529734e) /* The export kind's layout fingerprint ([`crate::abi::mechanism::layout`]): the fold of */
+#define BB_EXPORT_LAYOUT_FINGERPRINT UINT64_C(0xe1324b294edbab7e) /* The export kind's layout fingerprint ([`crate::abi::mechanism::layout`]): the fold of */
 #define BB_EXPORT_SLOT_DELIVER UINT32_C(9) /* `deliver`. */
 #define BB_EXPORT_SLOT_SCRAPE UINT32_C(10) /* `scrape`. */
 #define BB_EXPORT_SLOT_STATUS UINT32_C(11) /* `status`. */
@@ -348,7 +348,7 @@ extern "C" {
 #define BB_PLANE_VERSION UINT32_C(1) /* The sole supported descriptor version. */
 #define BB_PLANE_NO_PARENT UINT32_C(0xffffffff) /* No parent collection. */
 #define BB_PLANE_ABI_VERSION UINT32_C(1) /* The plane kind's initial released ABI; v1.5.5 had no plane kind ABI. */
-#define BB_PLANE_LAYOUT_FINGERPRINT UINT64_C(0xf333cffc6e7801db) /* The plane kind's layout fingerprint ([`crate::abi::mechanism::layout`]): the fold of */
+#define BB_PLANE_LAYOUT_FINGERPRINT UINT64_C(0x3943afecefc5949d) /* The plane kind's layout fingerprint ([`crate::abi::mechanism::layout`]): the fold of */
 #define BB_PLANE_SLOT_ARRIVE UINT32_C(9) /* Classify an arrival. */
 #define BB_PLANE_SLOT_ON_PIECE UINT32_C(10) /* One piece of a unit's bytes. */
 #define BB_PLANE_SLOT_REFUSAL UINT32_C(11) /* Render a refusal in the unit's dialect. */
@@ -499,7 +499,7 @@ extern "C" {
 #define BB_TRANSPORT_EXT_GUEST_CURRENT "guest.current" /* A reply confirming that the stream may use a previously decoded policy identity. */
 #define BB_TRANSPORT_EXT_LISTENER_BINDINGS "listener-bindings" /* Statement extension carrying a JSON array of [`ListenerBinding`] records. */
 #define BB_TRANSPORT_ABI_VERSION UINT32_C(1) /* The transport kind's initial released ABI; v1.5.5 had no transport kind ABI. */
-#define BB_TRANSPORT_LAYOUT_FINGERPRINT UINT64_C(0x284b380003b951b8) /* The transport kind's layout fingerprint ([`crate::abi::mechanism::layout`]): the fold of */
+#define BB_TRANSPORT_LAYOUT_FINGERPRINT UINT64_C(0x4aa149ac9c634294) /* The transport kind's layout fingerprint ([`crate::abi::mechanism::layout`]): the fold of */
 #define BB_TRANSPORT_SLOT_LISTEN UINT32_C(9) /* Carrier: bind a listener. */
 #define BB_TRANSPORT_SLOT_ACCEPT UINT32_C(10) /* Carrier: accept one connection. */
 #define BB_TRANSPORT_SLOT_DIAL UINT32_C(11) /* Carrier: dial a destination. */
@@ -679,37 +679,36 @@ extern "C" {
 #define BB_HSVC_OP_TRUST_DUE UINT32_C(12) /* `trust.due`. */
 #define BB_HSVC_OP_VERIFY_LOOKUP UINT32_C(13) /* `verify.lookup`. */
 #define BB_HSVC_OP_VERIFY_STORE UINT32_C(14) /* `verify.store`. */
-#define BB_HSVC_OP_ENTITLEMENT_CHECK UINT32_C(15) /* `entitlement.check`. */
-#define BB_HSVC_OP_CONTENT_SCAN UINT32_C(16) /* `content.scan`. */
-#define BB_HSVC_OP_HOOK_CALL UINT32_C(17) /* `hook.call`. */
-#define BB_HSVC_OP_RANDOM_FILL UINT32_C(18) /* `random.fill`. */
-#define BB_HSVC_OP_NEED_ADMIT UINT32_C(19) /* `need.admit`. */
-#define BB_HSVC_OP_TRUST_VERIFY UINT32_C(20) /* `trust.verify`. */
-#define BB_HSVC_OP_RECORDS_SECRET UINT32_C(21) /* `records.secret`. */
-#define BB_HSVC_OP_DISK_APPEND UINT32_C(22) /* `disk.append`. */
-#define BB_HSVC_OP_SNAPSHOT_READ UINT32_C(23) /* `snapshot.read`. */
-#define BB_HSVC_OP_TRUST_SIGHT_ITEM UINT32_C(24) /* `trust.sight_item`. */
-#define BB_HSVC_OP_TRUST_SERVES UINT32_C(25) /* `trust.serves`. */
-#define BB_HSVC_OP_TRUST_DECIDE UINT32_C(26) /* `trust.decide`. */
-#define BB_HSVC_OP_TRUST_STATE UINT32_C(27) /* `trust.state`. */
-#define BB_HSVC_OP_SESSION_EMIT UINT32_C(28) /* `session.emit`. */
-#define BB_HSVC_OP_AUTH_CALL UINT32_C(29) /* `auth.call`. */
-#define BB_HSVC_OP_UNIT_HAND_IN UINT32_C(30) /* `unit.hand_in`. */
-#define BB_HSVC_OP_UNIT_REFUSE UINT32_C(31) /* `unit.refuse`. */
-#define BB_HSVC_OP_TICKET_MINT UINT32_C(32) /* `ticket.mint`. */
-#define BB_HSVC_OP_TICKET_TAKE UINT32_C(33) /* `ticket.take`. */
-#define BB_HSVC_OP_WORK_STATUS UINT32_C(34) /* `work.status`: instance-scoped, read-only durable receipt status. */
-#define BB_HSVC_OP_OUTBOUND_AUTHORIZE UINT32_C(35) /* `outbound.authorize`: publish, bind, revoke or prepare scoped outbound custody. */
-#define BB_HSVC_OP_HOOK_CHILD UINT32_C(36) /* Invocation-scoped, configured hook child dispatch. */
-#define BB_HSVC_OP_DIRECTORY_GET UINT32_C(37) /* `directory.get` ([`super::directory`]). */
-#define BB_HSVC_OP_DIRECTORY_LOOKUP UINT32_C(38) /* `directory.lookup`. */
-#define BB_HSVC_OP_DIRECTORY_SCAN UINT32_C(39) /* `directory.scan`. */
-#define BB_HSVC_OP_DIRECTORY_COUNT UINT32_C(40) /* `directory.count`. */
-#define BB_HSVC_OP_DIRECTORY_CREATE UINT32_C(41) /* `directory.create`. */
-#define BB_HSVC_OP_DIRECTORY_APPLY UINT32_C(42) /* `directory.apply`. */
-#define BB_HSVC_OP_DIRECTORY_DELETE UINT32_C(43) /* `directory.delete`. */
-#define BB_HSVC_OP_MIGRATE_ADMIT UINT32_C(44) /* `migrate.admit`: whether the boot can seal a store's recoverable 1.5.5 credentials. */
-#define BB_HSVC_SERVICES UINT32_C(45) /* How many services [`HostSlots`] holds. */
+#define BB_HSVC_OP_CONTENT_SCAN UINT32_C(15) /* `content.scan`. */
+#define BB_HSVC_OP_HOOK_CALL UINT32_C(16) /* `hook.call`. */
+#define BB_HSVC_OP_RANDOM_FILL UINT32_C(17) /* `random.fill`. */
+#define BB_HSVC_OP_NEED_ADMIT UINT32_C(18) /* `need.admit`. */
+#define BB_HSVC_OP_TRUST_VERIFY UINT32_C(19) /* `trust.verify`. */
+#define BB_HSVC_OP_RECORDS_SECRET UINT32_C(20) /* `records.secret`. */
+#define BB_HSVC_OP_DISK_APPEND UINT32_C(21) /* `disk.append`. */
+#define BB_HSVC_OP_SNAPSHOT_READ UINT32_C(22) /* `snapshot.read`. */
+#define BB_HSVC_OP_TRUST_SIGHT_ITEM UINT32_C(23) /* `trust.sight_item`. */
+#define BB_HSVC_OP_TRUST_SERVES UINT32_C(24) /* `trust.serves`. */
+#define BB_HSVC_OP_TRUST_DECIDE UINT32_C(25) /* `trust.decide`. */
+#define BB_HSVC_OP_TRUST_STATE UINT32_C(26) /* `trust.state`. */
+#define BB_HSVC_OP_SESSION_EMIT UINT32_C(27) /* `session.emit`. */
+#define BB_HSVC_OP_AUTH_CALL UINT32_C(28) /* `auth.call`. */
+#define BB_HSVC_OP_UNIT_HAND_IN UINT32_C(29) /* `unit.hand_in`. */
+#define BB_HSVC_OP_UNIT_REFUSE UINT32_C(30) /* `unit.refuse`. */
+#define BB_HSVC_OP_TICKET_MINT UINT32_C(31) /* `ticket.mint`. */
+#define BB_HSVC_OP_TICKET_TAKE UINT32_C(32) /* `ticket.take`. */
+#define BB_HSVC_OP_WORK_STATUS UINT32_C(33) /* `work.status`: instance-scoped, read-only durable receipt status. */
+#define BB_HSVC_OP_OUTBOUND_AUTHORIZE UINT32_C(34) /* `outbound.authorize`: publish, bind, revoke or prepare scoped outbound custody. */
+#define BB_HSVC_OP_HOOK_CHILD UINT32_C(35) /* Invocation-scoped, configured hook child dispatch. */
+#define BB_HSVC_OP_DIRECTORY_GET UINT32_C(36) /* `directory.get` ([`super::directory`]). */
+#define BB_HSVC_OP_DIRECTORY_LOOKUP UINT32_C(37) /* `directory.lookup`. */
+#define BB_HSVC_OP_DIRECTORY_SCAN UINT32_C(38) /* `directory.scan`. */
+#define BB_HSVC_OP_DIRECTORY_COUNT UINT32_C(39) /* `directory.count`. */
+#define BB_HSVC_OP_DIRECTORY_CREATE UINT32_C(40) /* `directory.create`. */
+#define BB_HSVC_OP_DIRECTORY_APPLY UINT32_C(41) /* `directory.apply`. */
+#define BB_HSVC_OP_DIRECTORY_DELETE UINT32_C(42) /* `directory.delete`. */
+#define BB_HSVC_OP_MIGRATE_ADMIT UINT32_C(43) /* `migrate.admit`: whether the boot can seal a store's recoverable 1.5.5 credentials. */
+#define BB_HSVC_SERVICES UINT32_C(44) /* How many services [`HostSlots`] holds. */
 #define BB_HSVC_SECRET_NOT_LIVE UINT64_C(0) /* `value` of [`op::RECORDS_SECRET`]: not live, or no such credential. */
 #define BB_HSVC_SECRET_LIVE UINT64_C(1) /* `value` of [`op::RECORDS_SECRET`]: the credential is live. */
 #define BB_HSVC_ABSENT UINT64_C(0) /* `value` of [`op::RECORDS_GET`]: no such record. */
@@ -777,9 +776,6 @@ extern "C" {
 #define BB_HSVC_VERIFY_HIT UINT64_C(1) /* `verify.lookup`: a cached entry. */
 #define BB_HSVC_VERIFY_LEAD UINT64_C(2) /* `verify.lookup`: the caller leads. */
 #define BB_HSVC_VERIFY_FOLLOW UINT64_C(3) /* `verify.lookup`: the caller followed a leader, whose entry is in span `0`. */
-#define BB_HSVC_NOT_ENTITLED UINT64_C(0) /* `entitlement.check`: not entitled. */
-#define BB_HSVC_ENTITLED UINT64_C(1) /* `entitlement.check`: entitled. */
-#define BB_HSVC_ENTITLEMENT_STANDING "standing:" /* [`op::ENTITLEMENT_CHECK`]'s target that asks whether the unit's PRINCIPAL STILL STANDS: the host */
 #define BB_HSVC_MAX_RANDOM_FILL UINT64_C(1024) /* The most bytes one `random.fill` answers. */
 #define BB_HSVC_CONTENT_PASS UINT64_C(0) /* `content.scan`: the content passes. */
 #define BB_HSVC_CONTENT_BLOCK UINT64_C(1) /* `content.scan`: the gate blocked it. */
@@ -1198,7 +1194,6 @@ typedef struct bb_hsvc_TrustStateIn bb_hsvc_TrustStateIn;
 typedef struct bb_hsvc_TrustVerifyIn bb_hsvc_TrustVerifyIn;
 typedef struct bb_hsvc_VerifyLookupIn bb_hsvc_VerifyLookupIn;
 typedef struct bb_hsvc_VerifyStoreIn bb_hsvc_VerifyStoreIn;
-typedef struct bb_hsvc_EntitlementCheckIn bb_hsvc_EntitlementCheckIn;
 typedef struct bb_hsvc_RandomFillIn bb_hsvc_RandomFillIn;
 typedef struct bb_hsvc_ContentScanIn bb_hsvc_ContentScanIn;
 typedef struct bb_hsvc_HookCallIn bb_hsvc_HookCallIn;
@@ -3853,12 +3848,6 @@ struct bb_hsvc_VerifyStoreIn {
     uint64_t ttl_ms;
 };
 
-/* [`op::ENTITLEMENT_CHECK`]'s `in`: whether the caller is entitled to the target (the catalogue */
-struct bb_hsvc_EntitlementCheckIn {
-    bb_hsvc_ServiceHead head;
-    bb_mech_AbiStr target;
-};
-
 /* [`op::RANDOM_FILL`]'s `in`: `len` bytes from the kernel's CSPRNG, written into `into`'s bytes */
 struct bb_hsvc_RandomFillIn {
     bb_hsvc_ServiceHead head;
@@ -4045,7 +4034,6 @@ struct bb_hsvc_HostSlots {
     bb_hsvc_ServiceFn trust_due;
     bb_hsvc_ServiceFn verify_lookup;
     bb_hsvc_ServiceFn verify_store;
-    bb_hsvc_ServiceFn entitlement_check;
     bb_hsvc_ServiceFn content_scan;
     bb_hsvc_ServiceFn hook_call;
     bb_hsvc_ServiceFn random_fill;
@@ -6252,10 +6240,6 @@ BB_ASSERT(offsetof(bb_hsvc_VerifyStoreIn, head) == 0, "bb_hsvc_VerifyStoreIn.hea
 BB_ASSERT(offsetof(bb_hsvc_VerifyStoreIn, key) == 24, "bb_hsvc_VerifyStoreIn.key: offset");
 BB_ASSERT(offsetof(bb_hsvc_VerifyStoreIn, entry) == 40, "bb_hsvc_VerifyStoreIn.entry: offset");
 BB_ASSERT(offsetof(bb_hsvc_VerifyStoreIn, ttl_ms) == 64, "bb_hsvc_VerifyStoreIn.ttl_ms: offset");
-BB_ASSERT(sizeof(bb_hsvc_EntitlementCheckIn) == 40, "bb_hsvc_EntitlementCheckIn: size");
-BB_ASSERT(BB_ALIGNOF(bb_hsvc_EntitlementCheckIn) == 8, "bb_hsvc_EntitlementCheckIn: alignment");
-BB_ASSERT(offsetof(bb_hsvc_EntitlementCheckIn, head) == 0, "bb_hsvc_EntitlementCheckIn.head: offset");
-BB_ASSERT(offsetof(bb_hsvc_EntitlementCheckIn, target) == 24, "bb_hsvc_EntitlementCheckIn.target: offset");
 BB_ASSERT(sizeof(bb_hsvc_RandomFillIn) == 64, "bb_hsvc_RandomFillIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_hsvc_RandomFillIn) == 8, "bb_hsvc_RandomFillIn: alignment");
 BB_ASSERT(offsetof(bb_hsvc_RandomFillIn, head) == 0, "bb_hsvc_RandomFillIn.head: offset");
@@ -6395,7 +6379,7 @@ BB_ASSERT(offsetof(bb_hsvc_OutboundAuthorizeIn, expected_revision) == 80, "bb_hs
 BB_ASSERT(offsetof(bb_hsvc_OutboundAuthorizeIn, expires_at_unix) == 88, "bb_hsvc_OutboundAuthorizeIn.expires_at_unix: offset");
 BB_ASSERT(offsetof(bb_hsvc_OutboundAuthorizeIn, field_name) == 96, "bb_hsvc_OutboundAuthorizeIn.field_name: offset");
 BB_ASSERT(offsetof(bb_hsvc_OutboundAuthorizeIn, credential) == 112, "bb_hsvc_OutboundAuthorizeIn.credential: offset");
-BB_ASSERT(sizeof(bb_hsvc_HostSlots) == 368, "bb_hsvc_HostSlots: size");
+BB_ASSERT(sizeof(bb_hsvc_HostSlots) == 360, "bb_hsvc_HostSlots: size");
 BB_ASSERT(BB_ALIGNOF(bb_hsvc_HostSlots) == 8, "bb_hsvc_HostSlots: alignment");
 BB_ASSERT(offsetof(bb_hsvc_HostSlots, size) == 0, "bb_hsvc_HostSlots.size: offset");
 BB_ASSERT(offsetof(bb_hsvc_HostSlots, slots) == 4, "bb_hsvc_HostSlots.slots: offset");
@@ -6414,36 +6398,35 @@ BB_ASSERT(offsetof(bb_hsvc_HostSlots, trust_sight) == 96, "bb_hsvc_HostSlots.tru
 BB_ASSERT(offsetof(bb_hsvc_HostSlots, trust_due) == 104, "bb_hsvc_HostSlots.trust_due: offset");
 BB_ASSERT(offsetof(bb_hsvc_HostSlots, verify_lookup) == 112, "bb_hsvc_HostSlots.verify_lookup: offset");
 BB_ASSERT(offsetof(bb_hsvc_HostSlots, verify_store) == 120, "bb_hsvc_HostSlots.verify_store: offset");
-BB_ASSERT(offsetof(bb_hsvc_HostSlots, entitlement_check) == 128, "bb_hsvc_HostSlots.entitlement_check: offset");
-BB_ASSERT(offsetof(bb_hsvc_HostSlots, content_scan) == 136, "bb_hsvc_HostSlots.content_scan: offset");
-BB_ASSERT(offsetof(bb_hsvc_HostSlots, hook_call) == 144, "bb_hsvc_HostSlots.hook_call: offset");
-BB_ASSERT(offsetof(bb_hsvc_HostSlots, random_fill) == 152, "bb_hsvc_HostSlots.random_fill: offset");
-BB_ASSERT(offsetof(bb_hsvc_HostSlots, need_admit) == 160, "bb_hsvc_HostSlots.need_admit: offset");
-BB_ASSERT(offsetof(bb_hsvc_HostSlots, trust_verify) == 168, "bb_hsvc_HostSlots.trust_verify: offset");
-BB_ASSERT(offsetof(bb_hsvc_HostSlots, records_secret) == 176, "bb_hsvc_HostSlots.records_secret: offset");
-BB_ASSERT(offsetof(bb_hsvc_HostSlots, disk_append) == 184, "bb_hsvc_HostSlots.disk_append: offset");
-BB_ASSERT(offsetof(bb_hsvc_HostSlots, snapshot_read) == 192, "bb_hsvc_HostSlots.snapshot_read: offset");
-BB_ASSERT(offsetof(bb_hsvc_HostSlots, trust_sight_item) == 200, "bb_hsvc_HostSlots.trust_sight_item: offset");
-BB_ASSERT(offsetof(bb_hsvc_HostSlots, trust_serves) == 208, "bb_hsvc_HostSlots.trust_serves: offset");
-BB_ASSERT(offsetof(bb_hsvc_HostSlots, trust_decide) == 216, "bb_hsvc_HostSlots.trust_decide: offset");
-BB_ASSERT(offsetof(bb_hsvc_HostSlots, trust_state) == 224, "bb_hsvc_HostSlots.trust_state: offset");
-BB_ASSERT(offsetof(bb_hsvc_HostSlots, session_emit) == 232, "bb_hsvc_HostSlots.session_emit: offset");
-BB_ASSERT(offsetof(bb_hsvc_HostSlots, auth_call) == 240, "bb_hsvc_HostSlots.auth_call: offset");
-BB_ASSERT(offsetof(bb_hsvc_HostSlots, unit_hand_in) == 248, "bb_hsvc_HostSlots.unit_hand_in: offset");
-BB_ASSERT(offsetof(bb_hsvc_HostSlots, unit_refuse) == 256, "bb_hsvc_HostSlots.unit_refuse: offset");
-BB_ASSERT(offsetof(bb_hsvc_HostSlots, ticket_mint) == 264, "bb_hsvc_HostSlots.ticket_mint: offset");
-BB_ASSERT(offsetof(bb_hsvc_HostSlots, ticket_take) == 272, "bb_hsvc_HostSlots.ticket_take: offset");
-BB_ASSERT(offsetof(bb_hsvc_HostSlots, work_status) == 280, "bb_hsvc_HostSlots.work_status: offset");
-BB_ASSERT(offsetof(bb_hsvc_HostSlots, outbound_authorize) == 288, "bb_hsvc_HostSlots.outbound_authorize: offset");
-BB_ASSERT(offsetof(bb_hsvc_HostSlots, hook_child) == 296, "bb_hsvc_HostSlots.hook_child: offset");
-BB_ASSERT(offsetof(bb_hsvc_HostSlots, directory_get) == 304, "bb_hsvc_HostSlots.directory_get: offset");
-BB_ASSERT(offsetof(bb_hsvc_HostSlots, directory_lookup) == 312, "bb_hsvc_HostSlots.directory_lookup: offset");
-BB_ASSERT(offsetof(bb_hsvc_HostSlots, directory_scan) == 320, "bb_hsvc_HostSlots.directory_scan: offset");
-BB_ASSERT(offsetof(bb_hsvc_HostSlots, directory_count) == 328, "bb_hsvc_HostSlots.directory_count: offset");
-BB_ASSERT(offsetof(bb_hsvc_HostSlots, directory_create) == 336, "bb_hsvc_HostSlots.directory_create: offset");
-BB_ASSERT(offsetof(bb_hsvc_HostSlots, directory_apply) == 344, "bb_hsvc_HostSlots.directory_apply: offset");
-BB_ASSERT(offsetof(bb_hsvc_HostSlots, directory_delete) == 352, "bb_hsvc_HostSlots.directory_delete: offset");
-BB_ASSERT(offsetof(bb_hsvc_HostSlots, migrate_admit) == 360, "bb_hsvc_HostSlots.migrate_admit: offset");
+BB_ASSERT(offsetof(bb_hsvc_HostSlots, content_scan) == 128, "bb_hsvc_HostSlots.content_scan: offset");
+BB_ASSERT(offsetof(bb_hsvc_HostSlots, hook_call) == 136, "bb_hsvc_HostSlots.hook_call: offset");
+BB_ASSERT(offsetof(bb_hsvc_HostSlots, random_fill) == 144, "bb_hsvc_HostSlots.random_fill: offset");
+BB_ASSERT(offsetof(bb_hsvc_HostSlots, need_admit) == 152, "bb_hsvc_HostSlots.need_admit: offset");
+BB_ASSERT(offsetof(bb_hsvc_HostSlots, trust_verify) == 160, "bb_hsvc_HostSlots.trust_verify: offset");
+BB_ASSERT(offsetof(bb_hsvc_HostSlots, records_secret) == 168, "bb_hsvc_HostSlots.records_secret: offset");
+BB_ASSERT(offsetof(bb_hsvc_HostSlots, disk_append) == 176, "bb_hsvc_HostSlots.disk_append: offset");
+BB_ASSERT(offsetof(bb_hsvc_HostSlots, snapshot_read) == 184, "bb_hsvc_HostSlots.snapshot_read: offset");
+BB_ASSERT(offsetof(bb_hsvc_HostSlots, trust_sight_item) == 192, "bb_hsvc_HostSlots.trust_sight_item: offset");
+BB_ASSERT(offsetof(bb_hsvc_HostSlots, trust_serves) == 200, "bb_hsvc_HostSlots.trust_serves: offset");
+BB_ASSERT(offsetof(bb_hsvc_HostSlots, trust_decide) == 208, "bb_hsvc_HostSlots.trust_decide: offset");
+BB_ASSERT(offsetof(bb_hsvc_HostSlots, trust_state) == 216, "bb_hsvc_HostSlots.trust_state: offset");
+BB_ASSERT(offsetof(bb_hsvc_HostSlots, session_emit) == 224, "bb_hsvc_HostSlots.session_emit: offset");
+BB_ASSERT(offsetof(bb_hsvc_HostSlots, auth_call) == 232, "bb_hsvc_HostSlots.auth_call: offset");
+BB_ASSERT(offsetof(bb_hsvc_HostSlots, unit_hand_in) == 240, "bb_hsvc_HostSlots.unit_hand_in: offset");
+BB_ASSERT(offsetof(bb_hsvc_HostSlots, unit_refuse) == 248, "bb_hsvc_HostSlots.unit_refuse: offset");
+BB_ASSERT(offsetof(bb_hsvc_HostSlots, ticket_mint) == 256, "bb_hsvc_HostSlots.ticket_mint: offset");
+BB_ASSERT(offsetof(bb_hsvc_HostSlots, ticket_take) == 264, "bb_hsvc_HostSlots.ticket_take: offset");
+BB_ASSERT(offsetof(bb_hsvc_HostSlots, work_status) == 272, "bb_hsvc_HostSlots.work_status: offset");
+BB_ASSERT(offsetof(bb_hsvc_HostSlots, outbound_authorize) == 280, "bb_hsvc_HostSlots.outbound_authorize: offset");
+BB_ASSERT(offsetof(bb_hsvc_HostSlots, hook_child) == 288, "bb_hsvc_HostSlots.hook_child: offset");
+BB_ASSERT(offsetof(bb_hsvc_HostSlots, directory_get) == 296, "bb_hsvc_HostSlots.directory_get: offset");
+BB_ASSERT(offsetof(bb_hsvc_HostSlots, directory_lookup) == 304, "bb_hsvc_HostSlots.directory_lookup: offset");
+BB_ASSERT(offsetof(bb_hsvc_HostSlots, directory_scan) == 312, "bb_hsvc_HostSlots.directory_scan: offset");
+BB_ASSERT(offsetof(bb_hsvc_HostSlots, directory_count) == 320, "bb_hsvc_HostSlots.directory_count: offset");
+BB_ASSERT(offsetof(bb_hsvc_HostSlots, directory_create) == 328, "bb_hsvc_HostSlots.directory_create: offset");
+BB_ASSERT(offsetof(bb_hsvc_HostSlots, directory_apply) == 336, "bb_hsvc_HostSlots.directory_apply: offset");
+BB_ASSERT(offsetof(bb_hsvc_HostSlots, directory_delete) == 344, "bb_hsvc_HostSlots.directory_delete: offset");
+BB_ASSERT(offsetof(bb_hsvc_HostSlots, migrate_admit) == 352, "bb_hsvc_HostSlots.migrate_admit: offset");
 BB_ASSERT(sizeof(bb_hio_IoSlots) == 88, "bb_hio_IoSlots: size");
 BB_ASSERT(BB_ALIGNOF(bb_hio_IoSlots) == 8, "bb_hio_IoSlots: alignment");
 BB_ASSERT(offsetof(bb_hio_IoSlots, size) == 0, "bb_hio_IoSlots.size: offset");

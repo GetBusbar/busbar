@@ -25,7 +25,7 @@ use busbar_kernel::config::RootCfg;
 use busbar_plugin_abi::types::KindCode;
 use busbar_plugin_loader::admit::Admitted;
 use busbar_plugin_loader::instance::{BootPhase, InstanceSpec, OpenedPort};
-use busbar_plugin_loader::ports::transport::TransportPort;
+use busbar_ports::transport::TransportPort;
 
 use super::{Configured, MinRegistry};
 
@@ -112,33 +112,35 @@ pub(super) fn configured(
 /// value at each [`DEALT`] path the schema's top-level `properties` names. No schema, or one naming none of
 /// them, is `{}`. A schema that is not a JSON object refuses (admission validated it, so this is a fault).
 fn settings(limits: &LimitsResolved, schema: Option<&str>) -> Result<Vec<u8>, String> {
-    use serde_json::{Map, Value};
-    let declared: Map<String, Value> = match schema {
-        None => Map::new(),
-        Some(text) => match serde_json::from_str::<Value>(text) {
-            Ok(Value::Object(mut schema)) => match schema.remove("properties") {
-                None => Map::new(),
-                Some(Value::Object(properties)) => properties,
-                Some(_) => return Err("its D_SCHEMA `properties` is not an object".to_owned()),
-            },
+    use busbar_contract::json::{self, JsonValueMutTrait, JsonValueTrait, Map, Value};
+    let declared: Value = match schema {
+        None => Value::new(),
+        Some(text) => match json::parse_value(text.as_bytes()) {
+            Ok(mut schema) if schema.is_object() => {
+                match schema.as_object_mut().and_then(|s| s.remove(&"properties")) {
+                    None => Value::new(),
+                    Some(properties) if properties.is_object() => properties,
+                    Some(_) => return Err("its D_SCHEMA `properties` is not an object".to_owned()),
+                }
+            }
             _ => return Err("its D_SCHEMA is not a JSON object".to_owned()),
         },
     };
     let mut bag = Map::new();
-    for path in DEALT.iter().filter(|path| declared.contains_key(**path)) {
+    for path in DEALT.iter().filter(|path| declared.get(**path).is_some()) {
         let value = match *path {
             "advanced.upstream_h2_prior_knowledge" => {
-                Value::Bool(limits.upstream_h2_prior_knowledge)
+                Value::from(limits.upstream_h2_prior_knowledge)
             }
-            "advanced.upstream_http1_only" => Value::Bool(limits.upstream_http1_only),
+            "advanced.upstream_http1_only" => Value::from(limits.upstream_http1_only),
             "limits.request_body_max_bytes" => {
                 Value::from(u64::try_from(limits.request_body_max_bytes).unwrap_or(u64::MAX))
             }
             _ => Value::from(limits.upstream_request_timeout_secs),
         };
-        bag.insert((*path).to_owned(), value);
+        bag.insert(*path, value);
     }
-    serde_json::to_vec(&Value::Object(bag)).map_err(|error| error.to_string())
+    json::to_vec(&bag).map_err(|error| error.to_string())
 }
 
 /// The transport ports the walk opened, each with its instance name: every `OpenedPort::Transport` among

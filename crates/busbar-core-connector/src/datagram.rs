@@ -1528,6 +1528,8 @@ pub(crate) struct Out {
 /// Why an association was not added to a port.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NotAdded {
+    /// The host's bounded association capacity is exhausted or the claim has closed.
+    Capacity,
     /// Its rendezvous has not settled terms: nothing would find it.
     NoTerms,
     /// Another association on the port already answers to its user name.

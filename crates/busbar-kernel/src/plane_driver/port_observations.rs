@@ -268,7 +268,7 @@ impl UsageObservations for ObsCustody {
                 .submit_observation(active.unit, &observation, observed_at)
                 .await
             {
-                Ok(receipt) => match serde_json::to_vec(&receipt) {
+                Ok(receipt) => match busbar_contract::json::to_vec(&receipt) {
                     Ok(bytes) => (OBS_ACCEPTED, bytes.into()),
                     // An accepted observation whose receipt cannot be written is still durable: the plane
                     // retries and is told so by the idempotent duplicate receipt.

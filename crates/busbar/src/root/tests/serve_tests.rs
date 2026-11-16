@@ -176,7 +176,7 @@ async fn an_empty_plane_set_still_stages_the_core_listener_lines() {
         .expect("stage the actual store archive");
     let settings = crate::root::test_plugins::application_store_settings(&directory);
     let deploy = busbar_kernel::config::deploy_from_deserializer(
-        serde_json::json!({
+        &busbar_contract::json::json!({
             "providers": {},
             "models": {},
             "auth": { "chain": [], "admin_auth": [] },

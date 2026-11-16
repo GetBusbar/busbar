@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use crate::root::test_plugins as plugins;
 
+use busbar_contract::json;
 use busbar_contract::persistence::*;
 use std::sync::atomic::{AtomicBool, Ordering};
 struct OverlayWriteOutage {
@@ -91,7 +92,7 @@ async fn test_admin_v1_config_settings_persist_failure_does_not_install_limits()
         .expect("the actual linked OpenAI provider dialect");
     let definitions = std::collections::HashMap::from([(
         "test-provider".to_string(),
-        serde_json::from_value::<busbar_kernel::config::ProviderDef>(serde_json::json!({
+        json::from_value::<busbar_kernel::config::ProviderDef>(&json::json!({
             "protocol": protocol, "base_url": "http://127.0.0.1:1/",
         }))
         .expect("actual provider definition"),
@@ -101,11 +102,7 @@ async fn test_admin_v1_config_settings_persist_failure_does_not_install_limits()
     document["pools"] = serde_json::json!({"p":{"members":[{"model":"m0"}]}});
     let config_path = dir.join("config.json");
     let providers_path = dir.join("providers.json");
-    std::fs::write(
-        &providers_path,
-        serde_json::to_vec_pretty(&definitions).unwrap(),
-    )
-    .unwrap();
+    std::fs::write(&providers_path, json::to_vec_pretty(&definitions).unwrap()).unwrap();
     std::fs::write(&config_path, serde_json::to_vec_pretty(&document).unwrap()).unwrap();
     let deploy = busbar_kernel::config::deploy_from_deserializer(
         document,
@@ -175,9 +172,7 @@ async fn test_admin_v1_config_settings_persist_failure_does_not_install_limits()
         .put(format!("http://{addr}/api/v1/admin/config/settings"))
         .header("x-admin-token", "admintok")
         .header("content-type", "application/json")
-        .body(
-            serde_json::json!({ "limits": { "request_body_max_bytes": rejected_cap } }).to_string(),
-        )
+        .body(json::json!({ "limits": { "request_body_max_bytes": rejected_cap } }).to_string())
         .send()
         .await
         .unwrap();
@@ -252,7 +247,7 @@ async fn test_admin_v1_config_settings_persist_failure_does_not_rotate_gov_crede
         .expect("the actual linked OpenAI provider dialect");
     let definitions = std::collections::HashMap::from([(
         "test-provider".to_string(),
-        serde_json::from_value::<busbar_kernel::config::ProviderDef>(serde_json::json!({
+        json::from_value::<busbar_kernel::config::ProviderDef>(&json::json!({
             "protocol": protocol, "base_url": "http://127.0.0.1:1/",
         }))
         .expect("actual provider definition"),
@@ -262,11 +257,7 @@ async fn test_admin_v1_config_settings_persist_failure_does_not_rotate_gov_crede
     document["pools"] = serde_json::json!({"p":{"members":[{"model":"m0"}]}});
     let config_path = dir.join("config.json");
     let providers_path = dir.join("providers.json");
-    std::fs::write(
-        &providers_path,
-        serde_json::to_vec_pretty(&definitions).unwrap(),
-    )
-    .unwrap();
+    std::fs::write(&providers_path, json::to_vec_pretty(&definitions).unwrap()).unwrap();
     std::fs::write(&config_path, serde_json::to_vec_pretty(&document).unwrap()).unwrap();
     let deploy = busbar_kernel::config::deploy_from_deserializer(
         document,
@@ -342,7 +333,7 @@ async fn test_admin_v1_config_settings_persist_failure_does_not_rotate_gov_crede
         .put(format!("http://{addr}/api/v1/admin/config/settings"))
         .header("x-admin-token", "admintok-v1")
         .header("content-type", "application/json")
-        .body(serde_json::json!({ "per_request_fee": 42 }).to_string())
+        .body(json::json!({ "per_request_fee": 42 }).to_string())
         .send()
         .await
         .unwrap();

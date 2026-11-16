@@ -79,7 +79,7 @@ impl ActualStore {
             },
         )
         .unwrap();
-        let settings=serde_json::to_vec(&serde_json::json!({"db_path":self.path.join("application.sqlite"),"input_budget_bytes":16*1024*1024})).unwrap();
+        let settings=json::to_vec(&json::json!({"db_path":self.path.join("application.sqlite"),"input_budget_bytes":16*1024*1024})).unwrap();
         let backend = Arc::new(
             LoadedPersistence::open(
                 plugin,
@@ -162,7 +162,7 @@ async fn opened(core: Arc<CoreStore>, host: &str) -> TestBook {
     book.record = std::mem::take(&mut book.record)
         .signing_with(busbar_kernel_audit::AuditSigningKey::from_seed(&[0x53; 32]));
     let book = Arc::new(Mutex::new(book));
-    let sink = super::unit_checkpoint_sink(&book, journal.clone()).unwrap();
+    let sink = super::unit_checkpoint_sink(&book, journal.clone(), None).unwrap();
     let evidence = Arc::new(UnitCheckpointEvidence::new(
         journal.clone(),
         busbar_kernel::teller::Kernel::new().durability_token(),
@@ -227,7 +227,7 @@ fn unit() -> UnitCheckpoint {
         metered: true,
         ended: false,
         terminal: None,
-        audit: Some(serde_json::to_vec(&audit).unwrap()),
+        audit: Some(json::to_vec(&audit).unwrap()),
         measurement: None,
         unread: None,
     }
@@ -589,9 +589,9 @@ async fn actual_store_rejects_checkpoint_head_whose_evidence_was_changed() {
         panic!("native head read");
     };
     let raw = values.pop().flatten().unwrap();
-    let mut head: serde_json::Value =
-        serde_json::from_slice(raw.expose(&busbar_kernel::seal::lend())).unwrap();
-    head["revision"] = serde_json::json!(head["revision"].as_u64().unwrap() + 1);
+    let mut head: json::Value =
+        json::parse_value(raw.expose(&busbar_kernel::seal::lend())).unwrap();
+    head["revision"] = json::json!(head["revision"].as_u64().unwrap() + 1);
     let authority = store.authority().unwrap();
     let candidate = PreparedCandidate::new(Candidate {
         id: AttemptId {
@@ -608,7 +608,7 @@ async fn actual_store_rejects_checkpoint_head_whose_evidence_was_changed() {
         }],
         mutations: vec![Mutation::Put {
             address,
-            value: Secret::new(serde_json::to_vec(&head).unwrap()),
+            value: Secret::new(json::to_vec(&head).unwrap()),
         }],
         time: None,
         result: Secret::default(),

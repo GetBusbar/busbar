@@ -5,7 +5,6 @@ busbar-default::bin/busbar distribution::config_parser_deploy::test_identity_pro
 busbar-default::bin/busbar distribution::config_parser_deploy::test_token_on_a_non_operator_provider_is_an_error	CDT-KNOWN-RED	stable
 busbar-default::bin/busbar distribution::config_validation_application::test_validate_runs_on_resolved_root_cfg_clean_config	CDT-KNOWN-RED	stable
 busbar-default::bin/busbar distribution::config_validation_application::test_validate_runs_on_resolved_root_cfg_collects_new_surface_faults	CDT-KNOWN-RED	stable
-busbar-default::bin/busbar distribution::config_validation_store::migrate_inserts_the_memory_store_into_a_config_without_one	CDT-KNOWN-RED	stable
 busbar-default::bin/busbar distribution::decisions_hooks::a_decisions_hooks_rewrite_alters_the_request_the_provider_receives	CDT-KNOWN-RED	stable
 busbar-default::bin/busbar distribution::decisions_hooks::a_gate_named_in_decisions_hooks_refuses_the_unit	CDT-KNOWN-RED	stable
 busbar-default::bin/busbar distribution::decisions_hooks::a_global_gate_refuses_a_decisions_request_before_its_dial	CDT-KNOWN-RED	stable
@@ -20,7 +19,6 @@ busbar-default::bin/busbar distribution::oauth2_application::code_flow_tests::th
 busbar-default::bin/busbar distribution::oauth2_application::consent_tests::a_multi_scope_or_default_scope_request_is_approved_on_its_first_consent	CDT-KNOWN-RED	stable
 busbar-default::bin/busbar root::boot::tests::explicit_same_address_needs_share_compatible_physical_policy	CDT-KNOWN-RED	stable
 busbar-default::bin/busbar root::cli::tests::the_default_distributions_help_is_byte_identical	CDT-KNOWN-RED	stable
-busbar-default::bin/busbar root::config_migrate::tests::current_export_declared_references_are_validated_without_inventing_migration_debt	CDT-KNOWN-RED	stable
 busbar-default::bin/busbar root::connector::tests::a_provider_carve_out_does_not_admit_metadata_for_a_default_or_open_web_dial	CDT-KNOWN-RED	stable
 busbar-default::bin/busbar root::connector::tests::a_provider_carve_out_does_not_admit_metadata_for_another_provider_host	CDT-KNOWN-RED	stable
 busbar-default::bin/busbar root::connector::tests::a_provider_without_an_allowlist_entry_is_refused_a_private_address	CDT-KNOWN-RED	stable
@@ -61,8 +59,6 @@ busbar-default::cli_validate validate_refuses_a_decisions_hook_naming_an_undefin
 busbar-default::cli_validate validate_refuses_a_decisions_model_naming_an_undefined_provider	CDT-KNOWN-RED	stable
 busbar-default::cli_validate validate_refuses_a_decisions_model_whose_provider_speaks_a_foreign_dialect	CDT-KNOWN-RED	stable
 busbar-default::cli_validate validate_refuses_the_planes_protocol_when_its_section_is_not_configured	CDT-KNOWN-RED	stable
-busbar-default::config_migrate_1_5_5 a_1_5_5_provider_with_no_bindings_keeps_its_users_after_migration	CDT-KNOWN-RED	stable
-busbar-default::config_migrate_cross_plane end_to_end_a_full_legacy_config_migrates_validates_and_drops_every_deprecated_spelling	CDT-KNOWN-RED	stable
 busbar-default::config_validate_cross_plane the_agents_section_enumerates_every_secret_reference_its_plane_declares	CDT-KNOWN-RED	stable
 busbar-default::config_validate_cross_plane the_tools_section_enumerates_every_secret_reference_its_plane_declares	CDT-KNOWN-RED	stable
 busbar-default::decisions_served a_booted_busbar_serves_post_v1_systemone	CDT-KNOWN-RED	stable
@@ -76,5 +72,4 @@ busbar-default::mcp_stdio_serve a_stdin_read_error_is_not_a_successful_eof	CDT-K
 busbar-default::mcp_stdio_serve an_ungranted_tool_is_refused_per_call_on_the_line	CDT-KNOWN-RED	stable
 busbar-default::otlp_span_records real_producer_span_records_survive_both_otlp_doors	CDT-KNOWN-RED	stable
 busbar-default::plane_blackbox every_linked_doors_black_box_cases_run_against_the_real_binary	CDT-KNOWN-RED	stable
-busbar-default::startup_upgrade_sqlite ordinary_startup_upgrades_released_sqlite_and_restart_does_not_reapply	CDT-KNOWN-RED	stable
 busbar-default::upgrade_1_5_5_env_secret_fields a_1_5_5_config_reading_export_secrets_from_the_environment_boots_and_serves	CDT-KNOWN-RED	stable

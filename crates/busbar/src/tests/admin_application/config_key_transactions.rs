@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 use crate::root::test_plugins as plugins;
 use axum::http::StatusCode;
+use busbar_contract::json;
 use busbar_contract::persistence::*;
 use busbar_core_admin::v1::contract::AdminError;
 use busbar_kernel::config::transaction::{config_transaction, Outcome};
@@ -663,7 +664,7 @@ async fn concurrent_rebinds_never_bind_a_deleted_group() {
         rebinding.push(tokio::spawn(async move {
             reqwest::Client::new()
                 .put(format!("http://{addr}/api/v1/admin/keys/{id}"))
-                .json(&serde_json::json!({"group": "team"}))
+                .json(&json::json!({"group": "team"}))
                 .send()
                 .await
                 .unwrap()
@@ -691,8 +692,8 @@ async fn concurrent_rebinds_never_bind_a_deleted_group() {
 }
 async fn mint(addr: std::net::SocketAddr, name: &str, group: Option<&str>) -> StatusCode {
     let body = match group {
-        Some(g) => serde_json::json!({"name": name, "group": g}),
-        None => serde_json::json!({"name": name}),
+        Some(g) => json::json!({"name": name, "group": g}),
+        None => json::json!({"name": name}),
     };
     reqwest::Client::new()
         .post(format!("http://{addr}/api/v1/admin/keys"))

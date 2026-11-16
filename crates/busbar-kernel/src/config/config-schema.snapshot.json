@@ -6,15 +6,6 @@
     "surface": "serde-Deserialize structs/enums (derived AND hand-impl'd, including each hand-impl'd type's declared shape, accepted wire keys, and the input forms it REFUSES outright -- the last frozen in BOTH directions, because a refusal that is dropped widens the grammar and may admit an inline literal the type exists to reject) + the named-definition-map type aliases, over the tracked source set (SOURCES in scripts/config-schema.py): the busbar config module, SecretRef, UpstreamCreds, the A2A `agents:` grammar, the MCP `tools:` grammar, the streaming `streams:` grammar and the decision plane's `decisions:` grammar"
   },
   "types": {
-    "AdmissionMode": {
-      "deny_unknown_fields": false,
-      "kind": "enum",
-      "transparent": false,
-      "variants": [
-        "estimate",
-        "exact"
-      ]
-    },
     "AdvancedCfg": {
       "deny_unknown_fields": true,
       "fields": {
@@ -553,15 +544,6 @@
       "kind": "struct",
       "transparent": false
     },
-    "ExhaustionMode": {
-      "deny_unknown_fields": false,
-      "kind": "enum",
-      "transparent": false,
-      "variants": [
-        "cut-stream",
-        "finish-unit"
-      ]
-    },
     "ExportAuthHeader": {
       "deny_unknown_fields": true,
       "fields": {
@@ -930,10 +912,6 @@
         "hard_down_cooldown_secs": {
           "optional": true,
           "type": "u64"
-        },
-        "hook_content_max_bytes": {
-          "optional": true,
-          "type": "usize"
         },
         "max_auto_provisioned_groups": {
           "optional": true,
@@ -1435,13 +1413,32 @@
     "PluginPublisher": {
       "deny_unknown_fields": true,
       "fields": {
+        "keys": {
+          "optional": false,
+          "type": "Vec<PluginPublisherKey>"
+        },
         "name": {
           "optional": false,
           "type": "String"
         },
+        "plugins": {
+          "optional": false,
+          "type": "Vec<String>"
+        }
+      },
+      "kind": "struct",
+      "transparent": false
+    },
+    "PluginPublisherKey": {
+      "deny_unknown_fields": true,
+      "fields": {
         "public_key": {
           "optional": false,
           "type": "String"
+        },
+        "revoked": {
+          "optional": true,
+          "type": "bool"
         }
       },
       "kind": "struct",
@@ -1481,11 +1478,7 @@
     "PluginsTrustCfg": {
       "deny_unknown_fields": true,
       "fields": {
-        "allow_third_party": {
-          "optional": true,
-          "type": "bool"
-        },
-        "allow_unsigned": {
+        "allow_untrusted": {
           "optional": true,
           "type": "bool"
         },
@@ -2576,10 +2569,6 @@
     },
     "manual-de LimitCfg": {
       "fields": {
-        "admission": {
-          "optional": true,
-          "type": "AdmissionMode"
-        },
         "downgrade_to": {
           "optional": true,
           "type": "ScopeRef"
@@ -2587,10 +2576,6 @@
         "on_exhaust": {
           "optional": true,
           "type": "OnExhaust"
-        },
-        "on_exhaustion": {
-          "optional": true,
-          "type": "ExhaustionMode"
         },
         "per": {
           "optional": true,
@@ -2600,20 +2585,14 @@
       "kind": "manual",
       "refused": [],
       "wire_keys": [
-        "admission",
         "budget",
         "concurrent",
         "downgrade_to",
         "on_exhaust",
-        "on_exhaustion",
         "per",
         "pool",
         "requests",
-        "tokens",
-        "tokens_cache_read",
-        "tokens_cache_write",
-        "tokens_input",
-        "tokens_output"
+        "tokens"
       ]
     },
     "manual-de OnErrorCfg": {

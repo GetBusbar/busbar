@@ -1830,142 +1830,6 @@
           },
           {
             "additionalProperties": false,
-            "properties": {
-              "per": {
-                "enum": [
-                  "minute",
-                  "hour",
-                  "day",
-                  "month",
-                  "total"
-                ]
-              },
-              "pool": {
-                "type": "string"
-              },
-              "tokens_input": {
-                "format": "uint64",
-                "maximum": 18446744073709551615,
-                "minimum": 0,
-                "type": "integer",
-                "x-busbar-exact-number": {
-                  "bits": 64,
-                  "representation": "json-integer-token",
-                  "signed": false
-                },
-                "x-busbar-integer-token": "unsigned"
-              }
-            },
-            "required": [
-              "tokens_input",
-              "per"
-            ],
-            "type": "object"
-          },
-          {
-            "additionalProperties": false,
-            "properties": {
-              "per": {
-                "enum": [
-                  "minute",
-                  "hour",
-                  "day",
-                  "month",
-                  "total"
-                ]
-              },
-              "pool": {
-                "type": "string"
-              },
-              "tokens_output": {
-                "format": "uint64",
-                "maximum": 18446744073709551615,
-                "minimum": 0,
-                "type": "integer",
-                "x-busbar-exact-number": {
-                  "bits": 64,
-                  "representation": "json-integer-token",
-                  "signed": false
-                },
-                "x-busbar-integer-token": "unsigned"
-              }
-            },
-            "required": [
-              "tokens_output",
-              "per"
-            ],
-            "type": "object"
-          },
-          {
-            "additionalProperties": false,
-            "properties": {
-              "per": {
-                "enum": [
-                  "minute",
-                  "hour",
-                  "day",
-                  "month",
-                  "total"
-                ]
-              },
-              "pool": {
-                "type": "string"
-              },
-              "tokens_cache_read": {
-                "format": "uint64",
-                "maximum": 18446744073709551615,
-                "minimum": 0,
-                "type": "integer",
-                "x-busbar-exact-number": {
-                  "bits": 64,
-                  "representation": "json-integer-token",
-                  "signed": false
-                },
-                "x-busbar-integer-token": "unsigned"
-              }
-            },
-            "required": [
-              "tokens_cache_read",
-              "per"
-            ],
-            "type": "object"
-          },
-          {
-            "additionalProperties": false,
-            "properties": {
-              "per": {
-                "enum": [
-                  "minute",
-                  "hour",
-                  "day",
-                  "month",
-                  "total"
-                ]
-              },
-              "pool": {
-                "type": "string"
-              },
-              "tokens_cache_write": {
-                "format": "uint64",
-                "maximum": 18446744073709551615,
-                "minimum": 0,
-                "type": "integer",
-                "x-busbar-exact-number": {
-                  "bits": 64,
-                  "representation": "json-integer-token",
-                  "signed": false
-                },
-                "x-busbar-integer-token": "unsigned"
-              }
-            },
-            "required": [
-              "tokens_cache_write",
-              "per"
-            ],
-            "type": "object"
-          },
-          {
-            "additionalProperties": false,
             "allOf": [
               {
                 "if": {
@@ -2004,13 +1868,6 @@
               }
             ],
             "properties": {
-              "admission": {
-                "description": "Omitted means exact; authored presence is retained in readback.",
-                "enum": [
-                  "exact",
-                  "estimate"
-                ]
-              },
               "budget": {
                 "format": "uint64",
                 "maximum": 18446744073709551615,
@@ -2030,13 +1887,6 @@
                 "enum": [
                   "block",
                   "downgrade"
-                ]
-              },
-              "on_exhaustion": {
-                "description": "In-flight behavior; omitted means finish-unit. Distinct from admission-time on_exhaust.",
-                "enum": [
-                  "finish-unit",
-                  "cut-stream"
                 ]
               },
               "per": {
@@ -3175,72 +3025,6 @@
               "scale": 6,
               "signed": true,
               "unit": "field-defined usage units"
-            }
-          },
-          "tokens_cache_read_cap": {
-            "format": "uint64",
-            "minimum": 0,
-            "type": [
-              "integer",
-              "null"
-            ],
-            "x-busbar-exact-number": {
-              "client": "lossless-number-token-v1; preserve raw token before binary64 conversion",
-              "integer_format": "uint64",
-              "representation": "json-integer-token"
-            }
-          },
-          "tokens_cache_write_cap": {
-            "format": "uint64",
-            "minimum": 0,
-            "type": [
-              "integer",
-              "null"
-            ],
-            "x-busbar-exact-number": {
-              "client": "lossless-number-token-v1; preserve raw token before binary64 conversion",
-              "integer_format": "uint64",
-              "representation": "json-integer-token"
-            }
-          },
-          "tokens_cap": {
-            "format": "uint64",
-            "minimum": 0,
-            "type": [
-              "integer",
-              "null"
-            ],
-            "x-busbar-exact-number": {
-              "client": "lossless-number-token-v1; preserve raw token before binary64 conversion",
-              "integer_format": "uint64",
-              "representation": "json-integer-token"
-            }
-          },
-          "tokens_input_cap": {
-            "description": "Per-tier token caps mirroring the cost tiers, when configured (absent = uncapped on that\ntier): `tokens_input` = uncached input, `tokens_output` = output, `tokens_cache_read`,\n`tokens_cache_write` = cache creation.",
-            "format": "uint64",
-            "minimum": 0,
-            "type": [
-              "integer",
-              "null"
-            ],
-            "x-busbar-exact-number": {
-              "client": "lossless-number-token-v1; preserve raw token before binary64 conversion",
-              "integer_format": "uint64",
-              "representation": "json-integer-token"
-            }
-          },
-          "tokens_output_cap": {
-            "format": "uint64",
-            "minimum": 0,
-            "type": [
-              "integer",
-              "null"
-            ],
-            "x-busbar-exact-number": {
-              "client": "lossless-number-token-v1; preserve raw token before binary64 conversion",
-              "integer_format": "uint64",
-              "representation": "json-integer-token"
             }
           },
           "window": {
@@ -5247,17 +5031,6 @@
       "LimitView": {
         "description": "One limit inside a `GroupView`: an explicit `{ metric, amount, per, pool }` projection of a\nconfig `LimitCfg`. The config file's compact `{ budget: 3000, per: month }` form is\ndeserialize-only sugar; the read API projects it explicitly so a consumer never has to know\nthe metric is the map key. `per` is `None` only for `concurrent` (an instantaneous gauge, no\nwindow); `pool` is present only on a pool-scoped limit.",
         "properties": {
-          "admission": {
-            "description": "Authored budget admission policy: exact (default when absent) or estimate.",
-            "enum": [
-              "exact",
-              "estimate"
-            ],
-            "type": [
-              "string",
-              "null"
-            ]
-          },
           "amount": {
             "description": "The cap amount (requests/tokens/cents, or the in-flight gauge for `concurrent`).",
             "format": "uint64",
@@ -5282,17 +5055,6 @@
           },
           "on_exhaust": {
             "description": "The budget-exhaustion behavior: `block` or `downgrade`. Absent = block (the default).",
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "on_exhaustion": {
-            "description": "Authored in-flight exhaustion policy: finish-unit (default when absent) or cut-stream.",
-            "enum": [
-              "finish-unit",
-              "cut-stream"
-            ],
             "type": [
               "string",
               "null"
@@ -6066,8 +5828,7 @@
             ]
           },
           "trust": {
-            "description": "The server-side trust verdict from the RE-VERIFY: `\"trusted\"` | `\"unverified\"`. (A `\"rejected\"`\nverdict is an error, never a success body.)",
-            "type": "string"
+            "$ref": "#/components/schemas/PluginTrustView"
           },
           "version": {
             "description": "The manifest version, when the upload carried a signed manifest.",
@@ -6238,8 +5999,7 @@
             "type": "string"
           },
           "trust": {
-            "description": "`\"trusted\" | \"unverified\" | \"rejected\"`: the same vocabulary the plugin catalog already\nuses (never `\"verified\"`).",
-            "type": "string"
+            "$ref": "#/components/schemas/PluginTrustView"
           },
           "version": {
             "description": "The plugin's semantic version from its manifest. Present on `POST /plugins/inspect` (which\npreviews an on-disk candidate's manifest) and installed_archive schema reads; absent on\nlegacy loaded-registry schema reads. Declared here so a codegen'd client keeps the field the inspect\nhandler always sends, rather than silently dropping it.",
@@ -6350,10 +6110,13 @@
             ]
           },
           "trust": {
-            "description": "The server-side trust verdict for a dynamic-library plugin, re-evaluated against the running\n`plugins.trust` posture: `\"trusted\"` (signed by an allowlisted publisher), `\"unverified\"`\n(loaded but not verified, the posture permits it), or `\"rejected\"` (the `halt` posture would\nrefuse it). `None` for compiled-in/external.",
-            "type": [
-              "string",
-              "null"
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PluginTrustView"
+              },
+              {
+                "type": "null"
+              }
             ]
           },
           "type": {
@@ -7986,6 +7749,36 @@
           "rate"
         ],
         "type": "object"
+      },
+      "PluginTrustView": {
+        "description": "Signed admin image trust evidence (ADMIN-API-1.6.r5 §16.3). Signature presence is informational; only a satisfying verifier result supplies a fingerprint.",
+        "type": "object",
+        "properties": {
+          "signature_present": {
+            "type": "boolean"
+          },
+          "key_fingerprint": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "verdict": {
+            "type": "string"
+          },
+          "keys_doc_version": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint64",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "signature_present",
+          "verdict"
+        ]
       }
     },
     "securitySchemes": {
@@ -10209,7 +10002,7 @@
               "ETag": {
                 "description": "Quoted configuration generation for If-Match on configuration mutations. Preserve the header verbatim; re-read after a version conflict.",
                 "schema": {
-                  "pattern": "^\"[0-9]+\"$",
+                  "pattern": "^\"dep_[0-9a-f]{32}\\.[0-9]+\"$",
                   "type": "string"
                 }
               }
@@ -10393,7 +10186,7 @@
               "ETag": {
                 "description": "Quoted configuration generation for If-Match on configuration mutations. Preserve the header verbatim; re-read after a version conflict.",
                 "schema": {
-                  "pattern": "^\"[0-9]+\"$",
+                  "pattern": "^\"dep_[0-9a-f]{32}\\.[0-9]+\"$",
                   "type": "string"
                 }
               }
@@ -12132,7 +11925,7 @@
               "ETag": {
                 "description": "Quoted configuration generation for If-Match on configuration mutations. Preserve the header verbatim; re-read after a version conflict.",
                 "schema": {
-                  "pattern": "^\"[0-9]+\"$",
+                  "pattern": "^\"dep_[0-9a-f]{32}\\.[0-9]+\"$",
                   "type": "string"
                 }
               }
@@ -12335,7 +12128,7 @@
               "ETag": {
                 "description": "Quoted configuration generation for If-Match on configuration mutations. Preserve the header verbatim; re-read after a version conflict.",
                 "schema": {
-                  "pattern": "^\"[0-9]+\"$",
+                  "pattern": "^\"dep_[0-9a-f]{32}\\.[0-9]+\"$",
                   "type": "string"
                 }
               }
@@ -12778,7 +12571,7 @@
               "ETag": {
                 "description": "Quoted configuration generation for If-Match on configuration mutations. Preserve the header verbatim; re-read after a version conflict.",
                 "schema": {
-                  "pattern": "^\"[0-9]+\"$",
+                  "pattern": "^\"dep_[0-9a-f]{32}\\.[0-9]+\"$",
                   "type": "string"
                 }
               }
@@ -13009,7 +12802,7 @@
               "ETag": {
                 "description": "Quoted configuration generation for If-Match on configuration mutations. Preserve the header verbatim; re-read after a version conflict.",
                 "schema": {
-                  "pattern": "^\"[0-9]+\"$",
+                  "pattern": "^\"dep_[0-9a-f]{32}\\.[0-9]+\"$",
                   "type": "string"
                 }
               }
@@ -13257,7 +13050,7 @@
               "ETag": {
                 "description": "Quoted configuration generation for If-Match on configuration mutations. Preserve the header verbatim; re-read after a version conflict.",
                 "schema": {
-                  "pattern": "^\"[0-9]+\"$",
+                  "pattern": "^\"dep_[0-9a-f]{32}\\.[0-9]+\"$",
                   "type": "string"
                 }
               }
@@ -13690,7 +13483,7 @@
               "ETag": {
                 "description": "Quoted configuration generation for If-Match on configuration mutations. Preserve the header verbatim; re-read after a version conflict.",
                 "schema": {
-                  "pattern": "^\"[0-9]+\"$",
+                  "pattern": "^\"dep_[0-9a-f]{32}\\.[0-9]+\"$",
                   "type": "string"
                 }
               }
@@ -14793,7 +14586,7 @@
               "ETag": {
                 "description": "Quoted configuration generation for If-Match on configuration mutations. Preserve the header verbatim; re-read after a version conflict.",
                 "schema": {
-                  "pattern": "^\"[0-9]+\"$",
+                  "pattern": "^\"dep_[0-9a-f]{32}\\.[0-9]+\"$",
                   "type": "string"
                 }
               }
@@ -15010,7 +14803,7 @@
               "ETag": {
                 "description": "Quoted configuration generation for If-Match on configuration mutations. Preserve the header verbatim; re-read after a version conflict.",
                 "schema": {
-                  "pattern": "^\"[0-9]+\"$",
+                  "pattern": "^\"dep_[0-9a-f]{32}\\.[0-9]+\"$",
                   "type": "string"
                 }
               }
@@ -15036,7 +14829,7 @@
               "ETag": {
                 "description": "Quoted configuration generation for If-Match on configuration mutations. Preserve the header verbatim; re-read after a version conflict.",
                 "schema": {
-                  "pattern": "^\"[0-9]+\"$",
+                  "pattern": "^\"dep_[0-9a-f]{32}\\.[0-9]+\"$",
                   "type": "string"
                 }
               }
@@ -15277,7 +15070,7 @@
               "ETag": {
                 "description": "Quoted configuration generation for If-Match on configuration mutations. Preserve the header verbatim; re-read after a version conflict.",
                 "schema": {
-                  "pattern": "^\"[0-9]+\"$",
+                  "pattern": "^\"dep_[0-9a-f]{32}\\.[0-9]+\"$",
                   "type": "string"
                 }
               }
@@ -15533,7 +15326,7 @@
               "ETag": {
                 "description": "Quoted configuration generation for If-Match on configuration mutations. Preserve the header verbatim; re-read after a version conflict.",
                 "schema": {
-                  "pattern": "^\"[0-9]+\"$",
+                  "pattern": "^\"dep_[0-9a-f]{32}\\.[0-9]+\"$",
                   "type": "string"
                 }
               }
@@ -15816,7 +15609,7 @@
               "ETag": {
                 "description": "Quoted configuration generation for If-Match on configuration mutations. Preserve the header verbatim; re-read after a version conflict.",
                 "schema": {
-                  "pattern": "^\"[0-9]+\"$",
+                  "pattern": "^\"dep_[0-9a-f]{32}\\.[0-9]+\"$",
                   "type": "string"
                 }
               }
@@ -16100,7 +15893,7 @@
               "ETag": {
                 "description": "Quoted configuration generation for If-Match on configuration mutations. Preserve the header verbatim; re-read after a version conflict.",
                 "schema": {
-                  "pattern": "^\"[0-9]+\"$",
+                  "pattern": "^\"dep_[0-9a-f]{32}\\.[0-9]+\"$",
                   "type": "string"
                 }
               }
@@ -16593,7 +16386,7 @@
               "ETag": {
                 "description": "Quoted configuration generation for If-Match on configuration mutations. Preserve the header verbatim; re-read after a version conflict.",
                 "schema": {
-                  "pattern": "^\"[0-9]+\"$",
+                  "pattern": "^\"dep_[0-9a-f]{32}\\.[0-9]+\"$",
                   "type": "string"
                 }
               }
@@ -16810,7 +16603,7 @@
               "ETag": {
                 "description": "Quoted configuration generation for If-Match on configuration mutations. Preserve the header verbatim; re-read after a version conflict.",
                 "schema": {
-                  "pattern": "^\"[0-9]+\"$",
+                  "pattern": "^\"dep_[0-9a-f]{32}\\.[0-9]+\"$",
                   "type": "string"
                 }
               }
@@ -16836,7 +16629,7 @@
               "ETag": {
                 "description": "Quoted configuration generation for If-Match on configuration mutations. Preserve the header verbatim; re-read after a version conflict.",
                 "schema": {
-                  "pattern": "^\"[0-9]+\"$",
+                  "pattern": "^\"dep_[0-9a-f]{32}\\.[0-9]+\"$",
                   "type": "string"
                 }
               }
@@ -17077,7 +16870,7 @@
               "ETag": {
                 "description": "Quoted configuration generation for If-Match on configuration mutations. Preserve the header verbatim; re-read after a version conflict.",
                 "schema": {
-                  "pattern": "^\"[0-9]+\"$",
+                  "pattern": "^\"dep_[0-9a-f]{32}\\.[0-9]+\"$",
                   "type": "string"
                 }
               }
@@ -17333,7 +17126,7 @@
               "ETag": {
                 "description": "Quoted configuration generation for If-Match on configuration mutations. Preserve the header verbatim; re-read after a version conflict.",
                 "schema": {
-                  "pattern": "^\"[0-9]+\"$",
+                  "pattern": "^\"dep_[0-9a-f]{32}\\.[0-9]+\"$",
                   "type": "string"
                 }
               }
@@ -17572,7 +17365,7 @@
               "ETag": {
                 "description": "Quoted configuration generation for If-Match on configuration mutations. Preserve the header verbatim; re-read after a version conflict.",
                 "schema": {
-                  "pattern": "^\"[0-9]+\"$",
+                  "pattern": "^\"dep_[0-9a-f]{32}\\.[0-9]+\"$",
                   "type": "string"
                 }
               }
@@ -18817,7 +18610,7 @@
               "ETag": {
                 "description": "Quoted configuration generation for If-Match on configuration mutations. Preserve the header verbatim; re-read after a version conflict.",
                 "schema": {
-                  "pattern": "^\"[0-9]+\"$",
+                  "pattern": "^\"dep_[0-9a-f]{32}\\.[0-9]+\"$",
                   "type": "string"
                 }
               }
@@ -23722,7 +23515,7 @@
               "ETag": {
                 "description": "Quoted configuration generation for If-Match on configuration mutations. Preserve the header verbatim; re-read after a version conflict.",
                 "schema": {
-                  "pattern": "^\"[0-9]+\"$",
+                  "pattern": "^\"dep_[0-9a-f]{32}\\.[0-9]+\"$",
                   "type": "string"
                 }
               }
@@ -25069,7 +24862,7 @@
               "ETag": {
                 "description": "Quoted configuration generation for If-Match on configuration mutations. Preserve the header verbatim; re-read after a version conflict.",
                 "schema": {
-                  "pattern": "^\"[0-9]+\"$",
+                  "pattern": "^\"dep_[0-9a-f]{32}\\.[0-9]+\"$",
                   "type": "string"
                 }
               }
@@ -29866,142 +29659,6 @@
             },
             {
               "additionalProperties": false,
-              "properties": {
-                "per": {
-                  "enum": [
-                    "minute",
-                    "hour",
-                    "day",
-                    "month",
-                    "total"
-                  ]
-                },
-                "pool": {
-                  "type": "string"
-                },
-                "tokens_input": {
-                  "format": "uint64",
-                  "maximum": 18446744073709551615,
-                  "minimum": 0,
-                  "type": "integer",
-                  "x-busbar-exact-number": {
-                    "bits": 64,
-                    "representation": "json-integer-token",
-                    "signed": false
-                  },
-                  "x-busbar-integer-token": "unsigned"
-                }
-              },
-              "required": [
-                "tokens_input",
-                "per"
-              ],
-              "type": "object"
-            },
-            {
-              "additionalProperties": false,
-              "properties": {
-                "per": {
-                  "enum": [
-                    "minute",
-                    "hour",
-                    "day",
-                    "month",
-                    "total"
-                  ]
-                },
-                "pool": {
-                  "type": "string"
-                },
-                "tokens_output": {
-                  "format": "uint64",
-                  "maximum": 18446744073709551615,
-                  "minimum": 0,
-                  "type": "integer",
-                  "x-busbar-exact-number": {
-                    "bits": 64,
-                    "representation": "json-integer-token",
-                    "signed": false
-                  },
-                  "x-busbar-integer-token": "unsigned"
-                }
-              },
-              "required": [
-                "tokens_output",
-                "per"
-              ],
-              "type": "object"
-            },
-            {
-              "additionalProperties": false,
-              "properties": {
-                "per": {
-                  "enum": [
-                    "minute",
-                    "hour",
-                    "day",
-                    "month",
-                    "total"
-                  ]
-                },
-                "pool": {
-                  "type": "string"
-                },
-                "tokens_cache_read": {
-                  "format": "uint64",
-                  "maximum": 18446744073709551615,
-                  "minimum": 0,
-                  "type": "integer",
-                  "x-busbar-exact-number": {
-                    "bits": 64,
-                    "representation": "json-integer-token",
-                    "signed": false
-                  },
-                  "x-busbar-integer-token": "unsigned"
-                }
-              },
-              "required": [
-                "tokens_cache_read",
-                "per"
-              ],
-              "type": "object"
-            },
-            {
-              "additionalProperties": false,
-              "properties": {
-                "per": {
-                  "enum": [
-                    "minute",
-                    "hour",
-                    "day",
-                    "month",
-                    "total"
-                  ]
-                },
-                "pool": {
-                  "type": "string"
-                },
-                "tokens_cache_write": {
-                  "format": "uint64",
-                  "maximum": 18446744073709551615,
-                  "minimum": 0,
-                  "type": "integer",
-                  "x-busbar-exact-number": {
-                    "bits": 64,
-                    "representation": "json-integer-token",
-                    "signed": false
-                  },
-                  "x-busbar-integer-token": "unsigned"
-                }
-              },
-              "required": [
-                "tokens_cache_write",
-                "per"
-              ],
-              "type": "object"
-            },
-            {
-              "additionalProperties": false,
               "allOf": [
                 {
                   "if": {
@@ -30040,13 +29697,6 @@
                 }
               ],
               "properties": {
-                "admission": {
-                  "description": "Omitted means exact; authored presence is retained in readback.",
-                  "enum": [
-                    "exact",
-                    "estimate"
-                  ]
-                },
                 "budget": {
                   "format": "uint64",
                   "maximum": 18446744073709551615,
@@ -30066,13 +29716,6 @@
                   "enum": [
                     "block",
                     "downgrade"
-                  ]
-                },
-                "on_exhaustion": {
-                  "description": "In-flight behavior; omitted means finish-unit. Distinct from admission-time on_exhaust.",
-                  "enum": [
-                    "finish-unit",
-                    "cut-stream"
                   ]
                 },
                 "per": {
@@ -30351,18 +29994,28 @@
         },
         "PluginPublisher": {
           "additionalProperties": false,
-          "description": "One allowlisted plugin publisher: a name and its hex ed25519 public key.",
+          "description": "One scoped publisher authority with exact plugin names and overlapping Ed25519 keys.",
           "properties": {
             "name": {
               "type": "string"
             },
-            "public_key": {
-              "type": "string"
+            "plugins": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "keys": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/PluginPublisherKey"
+              }
             }
           },
           "required": [
             "name",
-            "public_key"
+            "plugins",
+            "keys"
           ],
           "type": "object"
         },
@@ -30410,8 +30063,7 @@
             "trust": {
               "$ref": "#/$defs/PluginsTrustCfg",
               "default": {
-                "allow_third_party": false,
-                "allow_unsigned": false,
+                "allow_untrusted": false,
                 "publishers": []
               },
               "description": "Trust policy for plugin signatures. busbar's OWN release key is EMBEDDED in the binary —\nfirst-party plugins verify with zero configuration; this block is for THIRD-PARTY keys and\nthe explicit untrusted opt-ins."
@@ -30436,25 +30088,20 @@
         },
         "PluginsTrustCfg": {
           "additionalProperties": false,
-          "description": "`plugins.trust` — how the engine treats plugin signatures. A first-party (busbar-signed) plugin\nverifies against the EMBEDDED release key; a third-party plugin verifies against `publishers`;\nanything else (unsigned, tampered, unknown publisher) is UNTRUSTED and, by DEFAULT, logged and\nSKIPPED (never `dlopen`ed) unless the matching opt-in flag is set.",
+          "description": "Verified embedded Busbar and explicitly scoped configured publishers admit automatically. The single allow_untrusted opt-in permits unsigned or unknown-publisher artifacts; known invalid signatures and hard trust gates always refuse.",
           "properties": {
-            "allow_third_party": {
-              "default": false,
-              "description": "EXPLICIT opt-in: load plugins that ARE validly signed but by a publisher NOT in\n`publishers`. Default `false` — a third-party-signed plugin is LOGGED and SKIPPED.",
-              "type": "boolean"
-            },
-            "allow_unsigned": {
-              "default": false,
-              "description": "EXPLICIT opt-in: load plugins that carry NO valid signature (unsigned / tampered). Default\n`false` — an unsigned plugin found in `plugins.dir` is LOGGED and SKIPPED (never `dlopen`ed\n/ executed), at boot and in the admin catalog.",
-              "type": "boolean"
-            },
             "publishers": {
               "default": [],
-              "description": "THIRD-PARTY allowlist: publishers whose signatures mark a plugin TRUSTED. Each maps a\npublisher name to a hex ed25519 public key. The first-party `busbar` key is embedded in the\nbinary and never configured here.",
+              "description": "Explicit scoped publisher authorities. Duplicate identities, duplicate key bytes, malformed keys and empty scopes refuse configuration.",
               "items": {
                 "$ref": "#/$defs/PluginPublisher"
               },
               "type": "array"
+            },
+            "allow_untrusted": {
+              "description": "Admit unsigned or unknown-publisher artifacts without claiming verified origin. Known invalid signatures, revoked keys, and hard trust gates always refuse.",
+              "default": false,
+              "type": "boolean"
             }
           },
           "type": "object"
@@ -31846,6 +31493,23 @@
             "url"
           ],
           "type": "object"
+        },
+        "PluginPublisherKey": {
+          "description": "A configured Ed25519 publisher key. Revoked keys remain visible but never admit code.",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "public_key": {
+              "type": "string"
+            },
+            "revoked": {
+              "default": false,
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "public_key"
+          ]
         }
       },
       "$schema": "https://json-schema.org/draft/2020-12/schema",

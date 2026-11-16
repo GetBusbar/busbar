@@ -623,8 +623,28 @@ pub(crate) async fn finish(post: PostServe<'_>, drain: &ShutdownDrain) -> i32 {
     // [4] The seal phase, until C3: the predecessor task's join (it was told to stop at the
     // first broadcast and stops at its next step boundary), then the fence settle, which
     // re-drives what it left retained and submits nothing new. Both detach on overrun.
-    // SEALING-FIX adds the notary's final page here, bounded by Cut::Seal.
+    // SEALING-FIX: the notary stops here (it finishes the step it is in; a staged stamp still
+    // commits with the journal's final flush), bounded by Cut::Seal; the final page follows it.
     drain.enter(Phase::Seal);
+    if let Some(task) = book
+        .as_ref()
+        .and_then(|book| book.audit.as_ref())
+        .and_then(|audit| audit.take_notary())
+    {
+        match drain
+            .bounded(Phase::Seal, DrainHandle::adopt(task.stop()), Cut::Seal)
+            .await
+        {
+            Joined::Done(Ok(end)) => {
+                if let Some(why) = end.halted {
+                    eprintln!("busbar: shutdown audit_notary=halted:{why}");
+                }
+            }
+            // Lines are durable and linked; the next process on the host seals the tail.
+            Joined::Done(Err(_)) => eprintln!("busbar: shutdown audit_notary=panicked"),
+            Joined::Detached(_) => eprintln!("busbar: shutdown audit_notary=detached"),
+        }
+    }
     if let Some((task, fence)) = predecessor {
         if let Joined::Detached(_) = drain
             .bounded(Phase::Seal, DrainHandle::adopt(task), Cut::Seal)

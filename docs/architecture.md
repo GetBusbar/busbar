@@ -34,7 +34,7 @@ Busbar runs between applications and their configured upstream services. It auth
 4. **Choose and dispatch.** The plane supplies its eligible destinations. Routing and failure handling respect that plane's execution boundaries; accepted tool or agent work is not blindly replayed as though it were a model read.
 5. **Return and record.** The client receives its protocol's response. Reported usage enters the ledger, and configured exporters receive their allowed telemetry.
 
-See the [protocol map](protocols-overview.md), [hooks](hooks.md), [routing](routing.md), and [failover boundaries](failover.md) for each stage's detailed behavior.
+See the [protocol reference](protocols.md), [hooks](hooks.md) (which also owns routing strategies), and [failover boundaries](failover.md) for each stage's detailed behavior.
 
 ## Planes and transports
 
@@ -56,7 +56,7 @@ The configured store holds the records its implementation supports. The memory s
 
 Caller credentials and upstream credentials have separate roles. Use destination-owned credentials where configured, and grant hooks and exporters only the fields they need. Native plugins run as trusted code inside the process; signature verification is not a sandbox.
 
-See [security](security.md), [plugin trust](plugins.md), and [configuration](configuration.md).
+See the [security posture](security/1.6.0-security-posture.md), [plugin trust](plugins.md), and [configuration](configuration.md).
 
 ## Management and operations
 

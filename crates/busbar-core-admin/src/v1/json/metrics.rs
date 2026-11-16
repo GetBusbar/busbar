@@ -123,7 +123,7 @@ pub(crate) fn render(families: &[Family], representation: Representation) -> Res
 
 fn json_body(families: &[Family]) -> Option<Vec<u8>> {
     let mut out = Vec::with_capacity(BODY_HINT.load(Ordering::Relaxed));
-    serde_json::to_writer(&mut out, &Document { families }).ok()?;
+    busbar_contract::json::to_writer(&mut out, &Document { families }).ok()?;
     BODY_HINT.fetch_max(out.len() + out.len() / 16, Ordering::Relaxed);
     Some(out)
 }

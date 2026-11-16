@@ -10,8 +10,8 @@ use busbar_kernel::governance::unit_checkpoint::UnitCheckpoint;
 use busbar_kernel::governance::unit_checkpoint_store::UnitCheckpointEvidence;
 use busbar_kernel::persistence::journal::runtime::Carried;
 use busbar_kernel_audit::{
-    Audit as _, AuditInputs, Controls, FinishClass, HookApplied, HookHead, OpClassId, OutcomeFacts,
-    Subject, Usage, UsageLine, What,
+    AuditInputs, Controls, FinishClass, HookApplied, HookHead, OpClassId, OutcomeFacts, Subject,
+    Usage, UsageLine, What,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
@@ -48,7 +48,7 @@ pub(super) async fn confirm(
     snapshot: &UnitCheckpoint,
     hint: Option<Carried>,
 ) -> RecordStoreResult<()> {
-    let facts: RunningAudit = serde_json::from_slice(
+    let facts: RunningAudit = busbar_contract::json::parse(
         snapshot
             .audit
             .as_deref()
@@ -101,7 +101,7 @@ pub(super) async fn recover(
             "running money checkpoint lacks captured admission audit facts",
         ));
     };
-    let facts: RunningAudit = serde_json::from_slice(encoded).map_err(error)?;
+    let facts: RunningAudit = busbar_contract::json::parse(encoded).map_err(error)?;
     if facts.principal != snapshot.principal || facts.op_class.is_empty() {
         return Err(error(
             "running money audit identity differs from its admitted principal",
@@ -134,8 +134,8 @@ pub(super) async fn recover(
         {
             return Err(error("pending recovered audit identity differs"));
         }
-        evidence.append_audit(pending.clone()).await?;
-        publish(book, pending);
+        let node_seq = evidence.append_audit(pending.clone()).await?;
+        publish(book, pending, node_seq);
         return Ok(());
     }
     let parent = facts.parent.map(UnitKey::new);
@@ -230,18 +230,39 @@ pub(super) async fn recover(
             ..busbar_kernel_audit::UnitFacts::at(facts.wall.saturating_mul(1_000))
         },
     };
+    // Today's order is kept (SEALING-FIX §3.5): link under the lock, append outside it, then
+    // publish. The line is hashed before the lock and dated under it, just before `link`.
+    let node = book.lock().unwrap_or_else(|p| p.into_inner()).record.node();
+    let prepared = busbar_kernel_audit::AuditChain::prepare(inputs, node);
     let record = {
         let mut book = book.lock().unwrap_or_else(|p| p.into_inner());
-        book.record
-            .seal(inputs, &busbar_kernel::teller::verb_audit_pass(&kernel))
+        let linked_ms = busbar_kernel::store::now_ms();
+        let linked = book.record.link(
+            prepared,
+            linked_ms,
+            &busbar_kernel::teller::verb_audit_pass(&kernel),
+        );
+        book.record.advance(&linked);
+        linked.into_record()
     };
-    evidence.append_audit(record.clone()).await?;
-    publish(book, record);
+    let node_seq = evidence.append_audit(record.clone()).await?;
+    publish(book, record, node_seq);
     Ok(())
 }
 
-fn publish(book: &Arc<Mutex<Durability>>, record: busbar_kernel_audit::AuditRecord) {
+/// Push the recovered line to the ring once, and publish it to the notary's head cell only now
+/// that `append_audit` succeeded, never moving the head back (SEALING-FIX §3.5).
+fn publish(book: &Arc<Mutex<Durability>>, record: busbar_kernel_audit::AuditRecord, node_seq: u64) {
     let mut book = book.lock().unwrap_or_else(|p| p.into_inner());
+    if let Some(fp) = busbar_kernel_audit::Fingerprint::from_hex(&record.hash) {
+        book.head
+            .publish_max(&busbar_kernel::persistence::journal::head_cell::Head {
+                seq: record.seq,
+                node_seq,
+                fp: fp.0,
+                wall_ms: record.linked_ms,
+            });
+    }
     if record.key_id.is_some() && book.audit_signed_from.is_none() {
         book.audit_signed_from = Some(record.seq);
     }

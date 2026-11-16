@@ -341,9 +341,6 @@ pub trait HostServices: Send + Sync {
         signatures: &[u8],
     ) -> Stored;
 
-    /// `entitlement.check`: whether the principal of `unit` (the unit the calling crossing
-    fn entitlement_check(&self, caller: &Caller, unit: Option<u64>, target: &str) -> Stored;
-
     /// `session.emit`: write `bytes`, unsolicited, on the open carrier session `session`, outside
     fn session_emit(&self, caller: &Caller, session: u64, bytes: &[u8]) -> Stored;
 

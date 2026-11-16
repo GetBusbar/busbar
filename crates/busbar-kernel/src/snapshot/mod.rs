@@ -190,8 +190,6 @@ pub const ROUTE_POLICY_SELECTIONS_TOTAL: &str = "busbar_route_policy_selections_
 
 pub const ROUTE_POLICY_REJECTIONS_TOTAL: &str = "busbar_route_policy_rejections_total";
 
-pub const HOOK_CONTENT_TRUNCATED_TOTAL: &str = "busbar_hook_content_truncated_total";
-
 pub const HOOK_PROJECT_OVER_CAP_TOTAL: &str = "busbar_hook_project_over_cap_total";
 
 pub const BILLING_TRUNCATED_TOTAL: &str = "busbar_billing_truncated_total";
@@ -201,6 +199,9 @@ pub const PLUGIN_OBSERVATIONS_DROPPED_TOTAL: &str = "busbar_plugin_observations_
 pub const PLUGIN_TEXT_CUT_TOTAL: &str = "busbar_plugin_text_cut_total";
 
 pub const JOURNAL_QUARANTINED_TOTAL: &str = "busbar_journal_quarantined_total";
+
+/// Terminal audit originals refused before native confirmation (no labels).
+pub const AUDIT_STAGE_FAILURES_TOTAL: &str = "busbar_audit_stage_failures_total";
 
 /// Finished governed units whose spend still awaits settlement in the store (the admission gate's
 /// terminal backlog, SHUTDOWN-HANG F4a); `advanced.governance.max_pending_checkpoints` caps it.
@@ -525,6 +526,10 @@ fn describe() {
     describe_counter!(
         UNIT_REFUSALS_TOTAL,
         "Units that did not complete, by closed reason and plane instance"
+    );
+    describe_counter!(
+        AUDIT_STAGE_FAILURES_TOTAL,
+        "Terminal audit originals refused before native confirmation"
     );
 
     describe_gauge!(

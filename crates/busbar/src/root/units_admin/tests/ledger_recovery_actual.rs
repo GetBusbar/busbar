@@ -8,10 +8,10 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use busbar_contract::count::Count;
+use busbar_contract::json::{self, json, JsonValueTrait, Value};
 use busbar_contract::persistence::*;
 use busbar_contract::records::VirtualKey;
 use busbar_kernel::governance::recovery::RecoveryState;
-use serde_json::{json, Value};
 
 const MODEL: &str = "oracle-recovery-observed-model";
 const INPUT: u64 = 7;
@@ -93,14 +93,14 @@ async fn post_with_credential(
         request = request.header("authorization", format!("Bearer {token}"));
     }
     let request = request
-        .body(axum::body::Body::from(serde_json::to_vec(body).unwrap()))
+        .body(axum::body::Body::from(json::to_vec(body).unwrap()))
         .unwrap();
     let response = router.clone().oneshot(request).await.unwrap();
     let status = response.status().as_u16();
     let body = axum::body::to_bytes(response.into_body(), 1 << 20)
         .await
         .unwrap();
-    (status, serde_json::from_slice(&body).unwrap())
+    (status, json::parse_value(&body).unwrap())
 }
 
 async fn post(router: &axum::Router, path: &str, body: &Value) -> (u16, Value) {
@@ -136,7 +136,7 @@ async fn actual_retained_usage_resolution(compatibility_history: bool) {
         committed: Mutex::new(Vec::new()),
     });
     let inner = crate::root::real_store::core_over(boundary.clone()).await;
-    let config = busbar_kernel::config::deploy_from_deserializer(json!({
+    let config = busbar_kernel::config::deploy_from_deserializer(&json!({
         "providers": {}, "models": {}, "auth": {"chain": [], "admin_auth": [busbar_kernel::config::operator_provider()]},
         "store": {"module": module, "settings": {}}
     }), &crate::root::boot::axis_test_grammar())
@@ -432,7 +432,7 @@ async fn actual_retained_usage_resolution(compatibility_history: bool) {
     };
     assert_eq!(durable.operation_id, operation_id);
     assert_eq!(durable.body_fingerprint, initial.body_fingerprint);
-    let custody: Value = serde_json::from_slice(&durable.payload).unwrap();
+    let custody: Value = json::parse_value(&durable.payload).unwrap();
     assert_eq!(
         custody["verdict"]["actor"],
         busbar_kernel::config::operator_principal_id(),
@@ -461,6 +461,6 @@ async fn actual_retained_usage_resolution(compatibility_history: bool) {
             "actual_backend_input": inner.ledger().get_usage(&key.id, 0).await.unwrap().tokens_for(MODEL),
             "verdict_actor": custody["verdict"]["actor"],
         });
-        std::fs::write(path, serde_json::to_vec_pretty(&proof).unwrap()).unwrap();
+        std::fs::write(path, json::to_vec_pretty(&proof).unwrap()).unwrap();
     }
 }

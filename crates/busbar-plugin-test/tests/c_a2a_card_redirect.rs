@@ -127,7 +127,7 @@ fn only_a_get_in_a_sight_session_follows() {
 }
 
 #[test]
-#[ignore = "owner: W1-K8B (arms (d), (f): the followed hop judged on the exchange path, needs W1-C1A)"]
+#[ignore = "owner: W1-K8B; re-checked 2026-11-16: arms (d) and (f) judge the followed hop (guard and pin_spki) on the connector's exchange path, and auth::sight_redirect::next_hop has no production caller (busbar-kernel auth/mod.rs:2755 only declares the module); the connector side is open MR !2644 (W1-C1C)"]
 fn card_redirect_core_arms() {
     todo!("owner: W1-K8B (C-A2A-CARD-REDIRECT (d), (f); W1-C1A's exchange path)")
 }

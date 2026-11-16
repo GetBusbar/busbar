@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
 static ISSUED_SHAPE: std::sync::LazyLock<busbar_contract::auth_calls::IssuedShape> =
     std::sync::LazyLock::new(|| busbar_contract::auth_calls::IssuedShape {
         id_prefix: "AKIA".to_string(),
@@ -130,6 +133,9 @@ use super::*;
 #[path = "ordinary_flush_unknown_cases.rs"]
 mod ordinary_flush_unknown_cases;
 
+#[path = "group_limit_removed_keys_cases.rs"]
+mod group_limit_removed_keys_cases;
+
 fn sample_key(id: &str, hash: &str) -> VirtualKey {
     VirtualKey {
         id: id.to_string(),
@@ -186,8 +192,6 @@ fn budget_group_cfg(cap: i64, period: &str, parent: Option<&str>) -> crate::conf
             scope: None,
             on_exhaust: None,
             downgrade_to: None,
-            admission: None,
-            on_exhaustion: None,
         }],
         ..Default::default()
     }
@@ -1560,8 +1564,6 @@ async fn test_rate_headroom_reports_fraction_remaining() {
                     scope: None,
                     on_exhaust: None,
                     downgrade_to: None,
-                    admission: None,
-                    on_exhaustion: None,
                 }],
                 ..Default::default()
             },
@@ -1589,8 +1591,6 @@ async fn test_rate_headroom_reports_fraction_remaining() {
                         scope: None,
                         on_exhaust: None,
                         downgrade_to: None,
-                        admission: None,
-                        on_exhaustion: None,
                     },
                     LimitCfg {
                         metric: LimitMetric::Tokens,
@@ -1599,8 +1599,6 @@ async fn test_rate_headroom_reports_fraction_remaining() {
                         scope: None,
                         on_exhaust: None,
                         downgrade_to: None,
-                        admission: None,
-                        on_exhaustion: None,
                     },
                 ],
                 ..Default::default()
@@ -4584,8 +4582,6 @@ async fn test_reclaim_group_cells_drops_the_per_group_concurrent_gauge() {
             scope: None,
             on_exhaust: None,
             downgrade_to: None,
-            admission: None,
-            on_exhaustion: None,
         }],
         ..Default::default()
     };

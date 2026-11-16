@@ -321,10 +321,7 @@ extern "C" fn project(
             seq: 0,
             ..CompletionHandle::ZERO
         };
-        if !matches!(
-            state.services.entitled(handle, "door:project-scope"),
-            Ok(true)
-        ) {
+        if !matches!(state.services.ticket_take(handle, &mut []), Ok(None)) {
             return RawOutcome::of(Outcome::Fault);
         }
         output.head.outcome = RawOutcome::of(Outcome::Ready);
@@ -554,14 +551,6 @@ impl busbar_contract::services::HostServices for Provider {
     ) -> Stored {
         Stored::refused("not served by this completion-ACK boundary control")
     }
-    fn entitlement_check(&self, caller: &Caller, unit: Option<u64>, target: &str) -> Stored {
-        self.attributed.lock().unwrap().push((
-            caller.namespace().to_string(),
-            unit,
-            target.to_string(),
-        ));
-        Stored::ready(busbar_contract::abi::host::service::ENTITLED)
-    }
     fn session_emit(&self, _caller: &Caller, _session: u64, _bytes: &[u8]) -> Stored {
         Stored::refused("not served by this completion-ACK boundary control")
     }
@@ -577,8 +566,13 @@ impl busbar_contract::services::HostServices for Provider {
             "not served by this completion-ACK boundary control",
         ))
     }
-    fn ticket_take(&self, _caller: &Caller, _unit: Option<u64>) -> Stored {
-        Stored::refused("not served by this completion-ACK boundary control")
+    fn ticket_take(&self, caller: &Caller, unit: Option<u64>) -> Stored {
+        self.attributed.lock().unwrap().push((
+            caller.namespace().to_string(),
+            unit,
+            "ticket.take".into(),
+        ));
+        Stored::ready(busbar_contract::abi::host::service::TICKET_NONE)
     }
     fn random_fill(&self, _len: u64) -> Stored {
         Stored::refused("not served by this completion-ACK boundary control")
@@ -1123,8 +1117,8 @@ fn project_attributes_the_actual_host_service_call_to_its_unit() {
     assert_eq!(
         *provider.attributed.lock().unwrap(),
         vec![
-            ("the-instance".into(), Some(73), "door:project-scope".into()),
-            ("the-instance".into(), None, "door:project-scope".into())
+            ("the-instance".into(), Some(73), "ticket.take".into()),
+            ("the-instance".into(), None, "ticket.take".into())
         ]
     );
     close_actual(&plugin, host);

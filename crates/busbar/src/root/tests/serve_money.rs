@@ -316,8 +316,6 @@ async fn governed_full(
                 scope: None,
                 on_exhaust: None,
                 downgrade_to: None,
-                admission: None,
-                on_exhaustion: None,
             };
             let cfg = busbar_kernel::config::GroupCfg {
                 parent: None,
@@ -1691,8 +1689,6 @@ async fn reserved_source(g: &Governed, group: &str) -> ReservedSource {
         scope: None,
         on_exhaust: None,
         downgrade_to: None,
-        admission: None,
-        on_exhaustion: None,
     };
     let groups = BTreeMap::from([(
         group.to_owned(),
@@ -1851,8 +1847,6 @@ async fn assert_concurrent_custody(g: &Governed, group: &str, held: bool, now: u
                 scope: None,
                 on_exhaust: None,
                 downgrade_to: None,
-                admission: None,
-                on_exhaustion: None,
             }],
             ..Default::default()
         },

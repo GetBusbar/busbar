@@ -11,7 +11,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use busbar_plugin_loader::ports::plane::PlanePort;
+use busbar_ports::plane::PlanePort;
 
 use super::port_charge::charge;
 use super::port_session::{Calls, Effects};

@@ -178,6 +178,17 @@ fn write_unit_facts(w: &mut Writer, unit: &crate::record::UnitFacts) {
         w.num(attempt.us);
     }
     w.num(u64::from(unit.attempts_total));
+    // The records tail (§3.5), in the recipe's order and only when the record keeps one: a body
+    // without it ends here, as every `v7` body written before the tail existed does.
+    let records = &unit.records;
+    if !records.is_empty() {
+        w.opt_text(records.user.as_deref());
+        w.num(records.labels.len() as u64);
+        for (name, value) in &records.labels {
+            w.text(name);
+            w.text(value);
+        }
+    }
 }
 
 fn write_source(w: &mut Writer, source: &QuantitySource) {

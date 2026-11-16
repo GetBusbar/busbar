@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use crate::sign::{sign, Manifest, SigningKey, TrustPolicy};
+use crate::sign::{Manifest, SigningKey, TrustPolicy};
 use crate::PluginRegistry;
 use std::path::PathBuf;
 
@@ -71,7 +71,17 @@ fn dropped_signed(
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("create the plugins dir");
     let release = SigningKey::from_bytes(&[11u8; 32]);
-    let publisher = (manifest.publisher.clone(), signer.verifying_key());
+    let publisher = (
+        manifest.publisher.clone(),
+        crate::sign::PublisherTrust {
+            plugins: [manifest.name.clone()].into_iter().collect(),
+            keys: vec![crate::sign::PublisherKey {
+                key: signer.verifying_key(),
+                revoked: false,
+            }],
+        },
+    );
+    let first_party = manifest.publisher == crate::sign::FIRST_PARTY_PUBLISHER;
     let signed = sign(signer, manifest, lib);
     let tarball = crate::tarball::package(&signed, "libplugin.so", lib).expect("package");
     std::fs::write(dir.join(format!("{tag}.tar.gz")), tarball).expect("write the tarball");
@@ -81,10 +91,9 @@ fn dropped_signed(
         first_party_floors: Default::default(),
         first_party_high_water: Default::default(),
         publishers: std::iter::once(publisher)
-            .filter(|(_, key)| *key != release.verifying_key())
+            .filter(|_| !first_party)
             .collect(),
-        allow_unsigned: false,
-        allow_third_party: false,
+        allow_untrusted: false,
         min_versions: Default::default(),
         ..TrustPolicy::default()
     };
@@ -106,5 +115,5 @@ pub(crate) fn row(registry: &PluginRegistry, name: &str) -> String {
         signature: String::new(),
         ..p.manifest.clone()
     };
-    serde_json::json!({ "manifest": stated, "alias_resolves_to": by_alias }).to_string()
+    busbar_contract::json::json!({ "manifest": stated, "alias_resolves_to": by_alias }).to_string()
 }

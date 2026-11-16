@@ -166,10 +166,6 @@ pub(super) fn complete(paths: &mut Map<String, Value>, schemas: &mut Map<String,
             "Omitted preserves binding; null explicitly unbinds; a string rebinds to an existing group."
         );
     }
-    if let Some(schema) = schemas.get_mut("LimitView") {
-        schema["properties"]["admission"]["enum"] = json!(["exact", "estimate"]);
-        schema["properties"]["on_exhaustion"]["enum"] = json!(["finish-unit", "cut-stream"]);
-    }
     for methods in paths.values_mut() {
         if let Some(operation) = methods.get_mut("patch") {
             if let Some(schema) =
@@ -231,7 +227,7 @@ fn etag_responses(paths: &mut Map<String, Value>) {
     let prefix = crate::v1::contract::ADMIN_PREFIX;
     let config = json!({
         "description": "Quoted configuration generation for If-Match on configuration mutations. Preserve the header verbatim; re-read after a version conflict.",
-        "schema": {"type": "string", "pattern": "^\"[0-9]+\"$"}
+        "schema": {"type": "string", "pattern": "^\"dep_[0-9a-f]{32}\\.[0-9]+\"$"}
     });
     fn add(paths: &mut Map<String, Value>, path: &str, methods: &[&str], header: &Value) {
         for method in methods {
@@ -398,7 +394,10 @@ mod tests {
             let header = &doc["paths"][format!("/api/v1/admin{path}")][method][RESPONSES_KEY]
                 [status]["headers"]["ETag"];
             assert_eq!(header["schema"]["type"], "string", "{method} {path}");
-            assert_eq!(header["schema"]["pattern"], "^\"[0-9]+\"$");
+            assert_eq!(
+                header["schema"]["pattern"],
+                "^\"dep_[0-9a-f]{32}\\.[0-9]+\"$"
+            );
         }
         let key = &doc["paths"]["/api/v1/admin/keys/{id}"];
         assert_eq!(

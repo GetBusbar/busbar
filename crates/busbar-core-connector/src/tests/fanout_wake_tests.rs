@@ -6,14 +6,11 @@
 use super::*;
 use crate::carrier::{Carry, Side};
 use crate::framer::{Call, Crossed, DoorFacts};
-use std::mem::ManuallyDrop;
 use std::sync::atomic::AtomicUsize;
-use std::task::{RawWaker, RawWakerVTable};
 use tokio::io::AsyncWriteExt;
 
 struct Callbacks {
     timely: AtomicBool,
-    clones: AtomicUsize,
     wakes: AtomicUsize,
     calls: Mutex<Vec<std::thread::JoinHandle<Result<usize, ConnError>>>>,
 }
@@ -22,7 +19,6 @@ impl Default for Callbacks {
     fn default() -> Self {
         Self {
             timely: AtomicBool::new(true),
-            clones: AtomicUsize::new(0),
             wakes: AtomicUsize::new(0),
             calls: Mutex::new(Vec::new()),
         }
@@ -38,12 +34,8 @@ struct Callback {
 }
 
 impl Callback {
-    fn observe(&self, cloning: bool) {
-        if cloning {
-            self.observed.clones.fetch_add(1, Ordering::SeqCst);
-        } else {
-            self.observed.wakes.fetch_add(1, Ordering::SeqCst);
-        }
+    fn observe(&self) {
+        self.observed.wakes.fetch_add(1, Ordering::SeqCst);
         let connector = self.connector.upgrade().unwrap();
         let conn = self.conn;
         let runtime = self.runtime.clone();
@@ -60,15 +52,9 @@ impl Callback {
         self.observed.calls.lock().unwrap().push(call);
     }
 
-    fn cloned(&self) {
-        if self.armed.load(Ordering::SeqCst) {
-            self.observe(true);
-        }
-    }
-
     fn notified(&self) {
         if self.armed.swap(false, Ordering::SeqCst) {
-            self.observe(false);
+            self.observe();
         }
     }
 }
@@ -81,44 +67,6 @@ impl Wake for Callback {
     fn wake_by_ref(self: &Arc<Self>) {
         self.notified();
     }
-}
-
-unsafe fn clone_callback(data: *const ()) -> RawWaker {
-    // SAFETY: all vtable data pointers originate from Arc::into_raw in raw_waker or this clone.
-    let callback = ManuallyDrop::new(unsafe { Arc::<Callback>::from_raw(data.cast()) });
-    let retained = Arc::clone(&callback);
-    callback.cloned();
-    RawWaker::new(Arc::into_raw(retained).cast(), &CALLBACK_VTABLE)
-}
-
-unsafe fn wake_callback(data: *const ()) {
-    // SAFETY: wake consumes the single Arc reference belonging to this raw handle.
-    let callback = unsafe { Arc::<Callback>::from_raw(data.cast()) };
-    callback.notified();
-}
-
-unsafe fn wake_callback_by_ref(data: *const ()) {
-    // SAFETY: this raw handle retains its Arc reference for the duration of the borrow.
-    let callback = ManuallyDrop::new(unsafe { Arc::<Callback>::from_raw(data.cast()) });
-    callback.notified();
-}
-
-unsafe fn drop_callback(data: *const ()) {
-    // SAFETY: drop consumes the single Arc reference belonging to this raw handle.
-    drop(unsafe { Arc::<Callback>::from_raw(data.cast()) });
-}
-
-static CALLBACK_VTABLE: RawWakerVTable = RawWakerVTable::new(
-    clone_callback,
-    wake_callback,
-    wake_callback_by_ref,
-    drop_callback,
-);
-
-fn raw_waker(callback: Arc<Callback>) -> Waker {
-    let raw = RawWaker::new(Arc::into_raw(callback).cast(), &CALLBACK_VTABLE);
-    // SAFETY: the vtable above maintains the owned Arc references and Callback is Send + Sync.
-    unsafe { Waker::from_raw(raw) }
 }
 
 struct CapturedSide {
@@ -204,7 +152,7 @@ fn a_carrier_wake_runs_public_waker_callbacks_outside_the_fan_lock() {
             armed: AtomicBool::new(false),
             observed: Arc::clone(&observed),
         });
-        let waker = raw_waker(Arc::clone(&callback));
+        let waker = Waker::from(Arc::clone(&callback));
         let initial = c.poll_read(OWNER, conn, &mut Context::from_waker(&waker), &mut [0; 1]);
         callback.armed.store(true, Ordering::SeqCst);
         let carrier_wake = captured
@@ -225,7 +173,7 @@ fn a_carrier_wake_runs_public_waker_callbacks_outside_the_fan_lock() {
             wakes > 0,
             "the actual carrier wake reached the registered caller"
         );
-        assert!(timely, "a clone or wake callback reentered a locked fan");
+        assert!(timely, "a wake callback reentered a locked fan");
         assert!(answers
             .iter()
             .all(|answer| *answer == Err(ConnError::Pending)));

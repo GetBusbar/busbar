@@ -8,7 +8,7 @@
 //! the arm's body and un-ignores it in its own MR (red first, then green).
 
 #[test]
-#[ignore = "owner: W1-K8A"]
+#[ignore = "owner: W1-K8A; blocked (re-checked on dev 2026-11-16): needs MIN-3 plane serving with render(RENDER_REFUSAL) to emit(E_TRAILERS) (K8A tail, OUTSTANDING row 5), a plane-a2a gRPC double and 1.5.5 golden trailer bytes (plane-a2a repo, whose gRPC binding is not ported: row 23)"]
 fn trailers_and_render_refusal_with_a_plane_double() {
     todo!("owner: W1-K8A (C-PLANE-TRAILERS)")
 }

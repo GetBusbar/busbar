@@ -75,8 +75,8 @@ impl ChildDescriptor {
         }
     }
     fn decode(bytes: &Secret<Vec<u8>>, disposition: [u8; 32]) -> Result<Self, RecoveryError> {
-        let descriptor: Self = serde_json::from_slice(bytes.expose(&crate::seal::lend()))
-            .map_err(|e| invalid_from(&e))?;
+        let descriptor: Self =
+            json::parse(bytes.expose(&crate::seal::lend())).map_err(|e| invalid_from(&e))?;
         if descriptor != Self::new(disposition, descriptor.context.created_at_ms) {
             return Err(invalid(
                 "migrated child descriptor differs from disposition",
@@ -169,9 +169,7 @@ impl StoreRecovery {
                 predicates,
                 mutations: vec![Mutation::Put {
                     address: context_address.clone(),
-                    value: Secret::new(
-                        serde_json::to_vec(&descriptor).map_err(|e| invalid_from(&e))?,
-                    ),
+                    value: Secret::new(json::to_vec(&descriptor).map_err(|e| invalid_from(&e))?),
                 }],
                 time: None,
                 result: Secret::default(),
@@ -248,7 +246,7 @@ impl StoreRecovery {
     async fn retire_native_owner(&self, node: u64) -> Result<Vec<Predicate>, RecoveryError> {
         use crate::persistence::boot_identity::WriterRetirement;
         loop {
-            let mut history = History::new(&self.store);
+            let mut history = History::observing(&self.store, &self.journal);
             let proof = history.proof(node).await?;
             let (epoch, writer) = proof.owner_identity().ok_or_else(|| {
                 unavailable("current recovery journal has no native owner identity")
@@ -279,15 +277,16 @@ impl StoreRecovery {
                     }
                     // Re-read after closure: a live writer may have appended or
                     // transferred custody while its lease was still running.
-                    let mut closed = History::new(&self.store);
+                    let mut closed = History::observing(&self.store, &self.journal);
                     let current = closed.proof(node).await?;
                     if current.owner_identity() != Some((epoch, writer)) {
                         continue;
                     }
                     guards.extend(
-                        StoreJournal::new(&self.store, node)
+                        self.journal
+                            .foreign(node)
                             .map_err(unavailable)?
-                            .selected_predicates(&current)
+                            .predicates(&current)
                             .map_err(unavailable)?,
                     );
                     closed.finish().await?;

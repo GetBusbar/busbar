@@ -173,7 +173,7 @@ pub(in crate::config) async fn seed_bytes(
     bytes: &[u8],
 ) {
     let generation = crate::door::op_id().0;
-    let head = serde_json::to_vec(&serde_json::json!({"version":1,"generation":generation,"length":bytes.len(),"digest":Sha256::digest(bytes)})).unwrap();
+    let head = busbar_contract::json::to_vec(&busbar_contract::json::json!({"version":1,"generation":generation,"length":bytes.len(),"digest":Sha256::digest(bytes)})).unwrap();
     let mut mutations = Vec::new();
     for (index, bytes) in bytes.chunks(busbar_contract::MAX_RECORD_BYTES).enumerate() {
         let mut key = b"chunk:".to_vec();
@@ -368,8 +368,8 @@ async fn reader_retries_only_when_its_immutable_snapshot_was_retired() {
     assert_eq!(fee(&overlay).await, Some(2));
     let store = scope(core);
     let raw = store.get(SCHEMA, HEAD).await.unwrap().unwrap();
-    let head: serde_json::Value = serde_json::from_slice(raw.expose(&crate::seal::lend())).unwrap();
-    let generation: [u8; 16] = serde_json::from_value(head["generation"].clone()).unwrap();
+    let head = busbar_contract::json::parse_value(raw.expose(&crate::seal::lend())).unwrap();
+    let generation: [u8; 16] = busbar_contract::json::from_value(&head["generation"]).unwrap();
     let mut chunk = b"chunk:".to_vec();
     chunk.extend_from_slice(&generation);
     chunk.extend_from_slice(&0u64.to_be_bytes());

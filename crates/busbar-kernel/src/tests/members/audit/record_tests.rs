@@ -5,6 +5,7 @@ use busbar_contract::caps::Pass;
 use busbar_contract::caps::{
     Audit as AuditStep, KernelSeal, Origin, OriginKind, Outcome, ReasonCode, StepName, UnitKey,
 };
+use busbar_contract::json;
 
 use busbar_kernel_audit::record::{
     Audit, AuditBreakKind, AuditChain, AuditInputs, Controls, FinishClass, HookApplied, HookHead,
@@ -200,8 +201,8 @@ fn a_record_names_the_node_that_sealed_it_in_its_digest_and_its_range_read() {
         raw.contains("\"mono\":\"1000\",\"node\":\"11\","),
         "the range read does not publish the node, as its decimal text, straight after mono: {raw}"
     );
-    let body: serde_json::Value = serde_json::from_str(&raw).expect("a published body is JSON");
-    assert_eq!(body["records"][0]["node"], serde_json::json!("11"));
+    let body: json::Value = json::parse_value(raw.as_bytes()).expect("a published body is JSON");
+    assert_eq!(body["records"][0]["node"], json::json!("11"));
 }
 
 #[test]
@@ -650,8 +651,8 @@ fn v5_key_presence_and_every_key_byte_survive_seal_journal_and_publication() {
             .unwrap()
             .unwrap();
         assert_eq!(back, record);
-        let exposed: serde_json::Value = serde_json::from_str(
-            &busbar_kernel_audit::expose::range_body(&chain, &[record], 1, 1),
+        let exposed: json::Value = json::parse_value(
+            busbar_kernel_audit::expose::range_body(&chain, &[record], 1, 1).as_bytes(),
         )
         .unwrap();
         assert_eq!(

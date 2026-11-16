@@ -4,6 +4,7 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
+use busbar_contract::json::{self, JsonValueTrait as _};
 use busbar_kernel::governance::NewKeySpec;
 
 #[tokio::test]
@@ -156,7 +157,7 @@ async fn test_delete_missing_key_returns_404() {
         404,
         "deleting a non-existent key must 404, not a spurious 200"
     );
-    let body: serde_json::Value = resp.json().await.unwrap();
+    let body = json::parse_value(&resp.bytes().await.unwrap()).unwrap();
     assert_eq!(body["error"]["message"], "key not found");
     assert_eq!(body["error"]["code"], "not_found");
     handle.abort();
@@ -516,7 +517,7 @@ async fn test_patch_after_delete_404s_and_does_not_recreate_key() {
     let patched = client
         .patch(&key_url)
         .header("x-admin-token", "admintok")
-        .json(&serde_json::json!({"enabled": true}))
+        .json(&json::json!({"enabled": true}))
         .send()
         .await
         .unwrap();
@@ -537,15 +538,16 @@ async fn test_patch_after_delete_404s_and_does_not_recreate_key() {
         404,
         "the revoked key must remain absent after the PATCH"
     );
-    let listed: serde_json::Value = client
+    let listed = client
         .get(format!("http://{addr}/api/v1/admin/keys"))
         .header("x-admin-token", "admintok")
         .send()
         .await
         .unwrap()
-        .json()
+        .bytes()
         .await
         .unwrap();
+    let listed = json::parse_value(&listed).unwrap();
     assert_eq!(
         listed["items"].as_array().unwrap().len(),
         0,

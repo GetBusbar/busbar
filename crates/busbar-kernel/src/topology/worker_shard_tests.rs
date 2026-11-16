@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
 #[test]
 fn worker_ids_index_distinct_stripes_and_unset_falls_back() {
     let stripe_for = |id: Option<usize>, stripes: usize| {

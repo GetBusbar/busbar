@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
 //! ADMIN-API r5 section 2 (MR2): the mint of an admin key, `GET /whoami`, and `x-busbar-verb`.
 
 use crate::admin_codec::verbs::name_at;

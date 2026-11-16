@@ -1024,7 +1024,7 @@ fn a_slow_admin_door_does_not_stall_healthz() {
             .unwrap();
     let point = &signing_key.public_key();
     let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD;
-    let jwks = serde_json::json!({"keys": [{
+    let jwks = busbar_contract::json::json!({"keys": [{
         "kty": "EC", "crv": "P-256", "kid": "held-verifier", "alg": "ES256", "use": "sig",
         "x": b64.encode(&point[1..33]), "y": b64.encode(&point[33..65]),
     }]})

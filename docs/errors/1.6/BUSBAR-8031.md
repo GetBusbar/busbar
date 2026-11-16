@@ -8,7 +8,7 @@ slug: docs/1.6/errors/BUSBAR-8031
 
 ## What it means
 
-The settlement flusher writes finished and running governed units to the store in batches, one write per batch. The store refused a whole batch with no effect (for example a candidate above its size limit) while this writer still held its authority, so the flusher halved the batch size for the rest of that batch of up to 128 items and retried each half. Nothing is lost or written twice. The b field is the batch size it ended with. Logged at most once per batch.
+The settlement flusher writes finished and running governed units, and the recovery records that settle them, to the store in batches, one write per batch. The store refused a whole batch with no effect (for example a candidate above its size limit) while this writer still held its authority, so the flusher halved the batch size for the rest of that batch of up to 128 items and retried each half. Nothing is lost or written twice. The b field is the batch size it ended with. Logged at most once per batch.
 
 ## How to fix it
 

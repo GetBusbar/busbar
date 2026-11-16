@@ -29,8 +29,8 @@ use busbar_plugin_abi::host_side::caller::{BoxFut, CallStack, Caller};
 use busbar_plugin_abi::plugin::Plugin;
 use busbar_plugin_abi::types::KindCode;
 use busbar_plugin_loader::adapters::auth::AuthCore;
-use busbar_plugin_loader::ports::auth::{ServeIn, Verdict, Verify};
-use busbar_plugin_loader::ports::{CallCx, PortError};
+use busbar_ports::auth::{ServeIn, Verdict, Verify};
+use busbar_ports::{CallCx, PortError};
 
 use super::harness::Harness;
 use super::{AuthCase, Expect};
@@ -213,4 +213,5 @@ pub(super) fn run(
         expected_refusals,
         "auth suite: refusals beyond the bad-config probe: {refusals:?}"
     );
+    harness.assert_needs_declared("auth");
 }

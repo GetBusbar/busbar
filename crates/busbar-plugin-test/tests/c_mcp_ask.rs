@@ -8,7 +8,7 @@
 //! the arm's body and un-ignores it in its own MR (red first, then green).
 
 #[test]
-#[ignore = "owner: W1-K10"]
+#[ignore = "owner: W1-K10; blocked (re-checked on dev 2026-11-16): STORE/LOOKUP/COMMIT request state (IF §12.11) needs MIN-3 plane serving (K10 remainder and K8A tail, OUTSTANDING rows 3, 5) and a plane-mcp fixture"]
 fn mcp_ask_core_arms() {
     todo!("owner: W1-K10 (C-MCP-ASK)")
 }

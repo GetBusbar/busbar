@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use crate::root::test_plugins as plugins;
+use busbar_contract::json::{self, JsonValueTrait as _};
 use busbar_contract::records::{MeteringDelta, VirtualKey};
 use busbar_kernel::config::groups::{GroupCfg, LimitCfg, LimitMetric, LimitWindow};
 use busbar_kernel::cost::CostModel;
@@ -193,8 +194,6 @@ fn limit(metric: LimitMetric, amount: u64, per: Option<LimitWindow>) -> LimitCfg
         scope: None,
         on_exhaust: None,
         downgrade_to: None,
-        admission: None,
-        on_exhaustion: None,
     }
 }
 fn virtual_key(id: &str, group: Option<&str>) -> VirtualKey {
@@ -551,27 +550,25 @@ async fn actual_root_flusher_resumes_not_landed_using_the_current_cost_without_b
         checkpoint_waits.push((checkpoint.operation_id, revision, started.elapsed()));
     }
     let authorized_parent = checkpoint.clone();
-    let custody: serde_json::Value = serde_json::from_slice(&authorized_parent.payload).unwrap();
-    let child_id: [u8; 16] = serde_json::from_value(custody["repost_operation_id"].clone())
+    let custody: json::Value = json::parse_value(&authorized_parent.payload).unwrap();
+    let child_id: [u8; 16] = json::from_value(&custody["repost_operation_id"])
         .expect("the durable parent authorizes exactly one conditional successor");
     assert_ne!(child_id, original.operation_id);
     let descriptors: Vec<_> = custody["handoffs"]
         .as_array()
         .unwrap()
         .iter()
-        .filter(|child| child["operation_id"] == serde_json::json!(child_id))
+        .filter(|child| child["operation_id"] == json::json!(child_id))
         .collect();
     assert_eq!(descriptors.len(), 1, "one exact successor descriptor");
     let descriptor = descriptors[0];
-    let fingerprint: [u8; 32] =
-        serde_json::from_value(descriptor["body_fingerprint"].clone()).unwrap();
-    let kind: RecoveryKind = serde_json::from_value(descriptor["kind"].clone()).unwrap();
+    let fingerprint: [u8; 32] = json::from_value(&descriptor["body_fingerprint"]).unwrap();
+    let kind: RecoveryKind = json::from_value(&descriptor["kind"]).unwrap();
     assert_eq!(kind, RecoveryKind::Correction);
-    let sent_at: Option<u64> =
-        serde_json::from_value(descriptor["first_sent_at_ms"].clone()).unwrap();
-    let payload: Vec<u8> = serde_json::from_value(descriptor["payload"].clone()).unwrap();
-    let mut expected_payload: serde_json::Value = serde_json::from_slice(&payload).unwrap();
-    expected_payload["origin"] = serde_json::json!({
+    let sent_at: Option<u64> = json::from_value(&descriptor["first_sent_at_ms"]).unwrap();
+    let payload: Vec<u8> = json::from_value(&descriptor["payload"]).unwrap();
+    let mut expected_payload: json::Value = json::parse_value(&payload).unwrap();
+    expected_payload["origin"] = json::json!({
         "operation_id": authorized_parent.operation_id,
         "event_fingerprint": authorized_parent.fingerprint().unwrap(),
     });
@@ -591,7 +588,7 @@ async fn actual_root_flusher_resumes_not_landed_using_the_current_cost_without_b
             wait_native_checkpoint(&journal, child_id, revision as u64, state, &diagnostics).await;
         assert_eq!(child.body_fingerprint, fingerprint);
         assert_eq!(child.first_sent_at_ms, sent_at);
-        let body: serde_json::Value = serde_json::from_slice(&child.payload).unwrap();
+        let body: json::Value = json::parse_value(&child.payload).unwrap();
         assert_eq!(body["origin"], expected_payload["origin"]);
         if revision == 0 {
             assert_eq!(

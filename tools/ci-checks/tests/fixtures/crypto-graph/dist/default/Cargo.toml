@@ -1,0 +1,11 @@
+[workspace]
+resolver = "2"
+[package]
+name = "fixture-shipped"
+version = "0.1.0"
+edition = "2021"
+[lib]
+path = "lib.rs"
+[dependencies]
+busbar-crypto = { path = "../../facade" }
+ring = { path = "ring" }
