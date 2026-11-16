@@ -29,6 +29,7 @@
 //! - `family-selected <data> <filter> <family>`: 0 when the filter selects a cell of the family.
 //! - `report-owed <report.json>`: 0 when the replay's report compared at least one owed cell.
 //! - `regex-search <regex> <text>...`: 0 when the regex finds a match in every text.
+//! - `run <sub> ...`: `bin/oracle` itself, its whole argv (`oracle_run.rs`).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::{Display, Write as _};
@@ -36,8 +37,134 @@ use std::io::Read as _;
 use std::path::Path;
 use std::process::ExitCode;
 
+use busbar_contract::json::{self, JsonContainerTrait, JsonValueTrait};
 use regex::{Regex, RegexBuilder};
-use serde_json::Value;
+
+/// A parsed JSON document, read through the `busbar_contract::json` facade (DEP-3) and held as a
+/// plain tree: the oracle's Python-faithful readers (`falsy`, `py_repr_value`) match on its shape.
+/// A number keeps its lexeme; an object keeps its members in document order, the last of duplicate
+/// keys (as the facade's `parse_value` keeps it).
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum Node {
+    Null,
+    Bool(bool),
+    Number(String),
+    String(String),
+    Array(Vec<Node>),
+    Object(Vec<(String, Node)>),
+}
+
+impl Node {
+    /// The member `key` of an object.
+    pub(crate) fn get(&self, key: &str) -> Option<&Node> {
+        match self {
+            Node::Object(members) => members
+                .iter()
+                .find(|(name, _)| name == key)
+                .map(|(_, member)| member),
+            _ => None,
+        }
+    }
+
+    /// The text of a string.
+    pub(crate) fn as_str(&self) -> Option<&str> {
+        match self {
+            Node::String(text) => Some(text),
+            _ => None,
+        }
+    }
+
+    /// The items of an array.
+    pub(crate) fn as_array(&self) -> Option<&Vec<Node>> {
+        match self {
+            Node::Array(items) => Some(items),
+            _ => None,
+        }
+    }
+
+    /// The tree of a facade value.
+    fn of(value: &json::Value) -> Node {
+        if value.is_null() {
+            Node::Null
+        } else if let Some(flag) = value.as_bool() {
+            Node::Bool(flag)
+        } else if let Some(number) = value.as_raw_number() {
+            Node::Number(String::from(number.as_str()))
+        } else if let Some(text) = value.as_str() {
+            Node::String(String::from(text))
+        } else if let Some(items) = value.as_array() {
+            Node::Array(items.iter().map(Node::of).collect())
+        } else if let Some(members) = value.as_object() {
+            Node::Object(
+                members
+                    .iter()
+                    .map(|(key, member)| (String::from(key), Node::of(member)))
+                    .collect(),
+            )
+        } else {
+            Node::Null
+        }
+    }
+
+    /// One JSON document, parsed.
+    pub(crate) fn parse(text: &str) -> Result<Node, String> {
+        json::parse_value(text.as_bytes())
+            .map(|value| Node::of(&value))
+            .map_err(|error| error.to_string())
+    }
+}
+
+impl Display for Node {
+    /// Compact JSON, as a value is printed in a message.
+    fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Node::Null => out.write_str("null"),
+            Node::Bool(flag) => write!(out, "{flag}"),
+            Node::Number(lexeme) => out.write_str(lexeme),
+            Node::String(text) => write_json_text(out, text),
+            Node::Array(items) => {
+                out.write_str("[")?;
+                for (index, item) in items.iter().enumerate() {
+                    if index > 0 {
+                        out.write_str(",")?;
+                    }
+                    write!(out, "{item}")?;
+                }
+                out.write_str("]")
+            }
+            Node::Object(members) => {
+                out.write_str("{")?;
+                for (index, (key, member)) in members.iter().enumerate() {
+                    if index > 0 {
+                        out.write_str(",")?;
+                    }
+                    write_json_text(out, key)?;
+                    write!(out, ":{member}")?;
+                }
+                out.write_str("}")
+            }
+        }
+    }
+}
+
+/// A JSON string literal.
+fn write_json_text(out: &mut std::fmt::Formatter<'_>, text: &str) -> std::fmt::Result {
+    out.write_str("\"")?;
+    for c in text.chars() {
+        match c {
+            '"' => out.write_str("\\\"")?,
+            '\\' => out.write_str("\\\\")?,
+            '\n' => out.write_str("\\n")?,
+            '\r' => out.write_str("\\r")?,
+            '\t' => out.write_str("\\t")?,
+            '\u{8}' => out.write_str("\\b")?,
+            '\u{c}' => out.write_str("\\f")?,
+            c if u32::from(c) < 0x20 => write!(out, "\\u{:04x}", u32::from(c))?,
+            c => write!(out, "{c}")?,
+        }
+    }
+    out.write_str("\"")
+}
 
 /// The store backends a cell may need (`needs_fixture` names its URL variable).
 const STORE_URLS: [&str; 3] = [
@@ -46,7 +173,8 @@ const STORE_URLS: [&str; 3] = [
     "VALKEY_URL",
 ];
 /// The subcommands, for the usage line.
-const SUBCOMMANDS: [&str; 15] = [
+const SUBCOMMANDS: [&str; 16] = [
+    "run",
     "widen-filter",
     "withheld",
     "shard-ids",
@@ -104,6 +232,10 @@ impl Answer {
 
 /// `busbar-ci-checks oracle <sub> ...`: run the subcommand and print its answer.
 pub(crate) fn run(args: &[String]) -> ExitCode {
+    // `run <sub> ...`: the launcher's contract (`oracle_run.rs`), `bin/oracle`'s whole argv.
+    if args.first().map(String::as_str) == Some("run") {
+        return crate::oracle_run::run(args.get(1..).unwrap_or_default());
+    }
     let answer = answer(args);
     print!("{}", answer.stdout);
     eprint!("{}", answer.stderr);
@@ -164,39 +296,49 @@ fn compile(pattern: &str) -> Result<Regex, regex::Error> {
     RegexBuilder::new(pattern).size_limit(1 << 28).build()
 }
 
+/// A filter that compiles, else nothing (a `grep -E` that errors selects nothing).
+pub(crate) fn compile_pattern(pattern: &str) -> Option<Regex> {
+    compile(pattern).ok()
+}
+
 /// A JSON file, parsed.
-fn read_json(path: &Path) -> Result<Value, String> {
+fn read_json(path: &Path) -> Result<Node, String> {
     let text = std::fs::read_to_string(path)
         .map_err(|error| format!("oracle: cannot read {}: {error}", path.display()))?;
-    serde_json::from_str(&text)
-        .map_err(|error| format!("oracle: {} is not JSON: {error}", path.display()))
+    Node::parse(&text).map_err(|error| format!("oracle: {} is not JSON: {error}", path.display()))
 }
 
 /// The list under `key` in `<data>/<file>`.
-fn json_list(data: &Path, file: &str, key: &str) -> Result<Vec<Value>, String> {
+fn json_list(data: &Path, file: &str, key: &str) -> Result<Vec<Node>, String> {
     let path = data.join(file);
-    let mut doc = read_json(&path)?;
-    match doc.get_mut(key).map(Value::take) {
-        Some(Value::Array(items)) => Ok(items),
+    let list = match read_json(&path)? {
+        Node::Object(members) => members
+            .into_iter()
+            .find(|(name, _)| name == key)
+            .map(|(_, member)| member),
+        _ => None,
+    };
+    match list {
+        Some(Node::Array(items)) => Ok(items),
         _ => Err(format!("oracle: {} has no \"{key}\" list", path.display())),
     }
 }
 
 /// The corpus: `<data>/cells.json`'s cells.
-fn cell_list(data: &Path) -> Result<Vec<Value>, String> {
+fn cell_list(data: &Path) -> Result<Vec<Node>, String> {
     json_list(data, "cells.json", "cells")
 }
 
 /// A cell's id (`""` when it has none).
-fn id_of(cell: &Value) -> &str {
-    cell.get("id").and_then(Value::as_str).unwrap_or_default()
+fn id_of(cell: &Node) -> &str {
+    cell.get("id").and_then(Node::as_str).unwrap_or_default()
 }
 
 /// Every cell's id, in corpus order; a cell without one is a refusal.
 fn cell_ids(data: &Path) -> Result<Vec<String>, String> {
     let mut ids = Vec::new();
     for cell in cell_list(data)? {
-        match cell.get("id").and_then(Value::as_str) {
+        match cell.get("id").and_then(Node::as_str) {
             Some(id) => ids.push(String::from(id)),
             None => {
                 return Err(format!(
@@ -210,14 +352,14 @@ fn cell_ids(data: &Path) -> Result<Vec<String>, String> {
 }
 
 /// A JSON value Python would read as false.
-fn falsy(value: &Value) -> bool {
+fn falsy(value: &Node) -> bool {
     match value {
-        Value::Null => true,
-        Value::Bool(flag) => !flag,
-        Value::Number(number) => number.as_f64() == Some(0.0),
-        Value::String(text) => text.is_empty(),
-        Value::Array(items) => items.is_empty(),
-        Value::Object(map) => map.is_empty(),
+        Node::Null => true,
+        Node::Bool(flag) => !flag,
+        Node::Number(lexeme) => lexeme.parse::<f64>().ok() == Some(0.0),
+        Node::String(text) => text.is_empty(),
+        Node::Array(items) => items.is_empty(),
+        Node::Object(map) => map.is_empty(),
     }
 }
 
@@ -251,12 +393,12 @@ pub(crate) fn py_repr(text: &str) -> String {
 }
 
 /// Python's `repr` of a JSON value that names an entry (`None` when absent).
-fn py_repr_value(value: Option<&Value>) -> String {
+fn py_repr_value(value: Option<&Node>) -> String {
     match value {
-        None | Some(Value::Null) => String::from("None"),
-        Some(Value::String(text)) => py_repr(text),
-        Some(Value::Bool(true)) => String::from("True"),
-        Some(Value::Bool(false)) => String::from("False"),
+        None | Some(Node::Null) => String::from("None"),
+        Some(Node::String(text)) => py_repr(text),
+        Some(Node::Bool(true)) => String::from("True"),
+        Some(Node::Bool(false)) => String::from("False"),
         Some(other) => other.to_string(),
     }
 }
@@ -302,17 +444,17 @@ pub(crate) fn py_oserror(path: &str, error: &std::io::Error) -> String {
 // ---- premises: widen-filter, withheld -----------------------------------------------------------
 
 /// Every `cell` string anywhere under a premise.
-fn cells_of(node: &Value, out: &mut BTreeSet<String>) {
+fn cells_of(node: &Node, out: &mut BTreeSet<String>) {
     match node {
-        Value::Object(map) => {
-            if let Some(Value::String(cell)) = map.get("cell") {
+        Node::Object(members) => {
+            if let Some(Node::String(cell)) = node.get("cell") {
                 out.insert(cell.clone());
             }
-            for value in map.values() {
+            for (_, value) in members {
                 cells_of(value, out);
             }
         }
-        Value::Array(items) => {
+        Node::Array(items) => {
             for value in items {
                 cells_of(value, out);
             }
@@ -749,7 +891,7 @@ fn needs_store(data: &Path, filter: &str) -> Answer {
     };
     let needed = cells.iter().any(|cell| {
         cell.get("needs_fixture")
-            .and_then(Value::as_str)
+            .and_then(Node::as_str)
             .is_some_and(|url| STORE_URLS.contains(&url))
             && selector
                 .as_ref()
@@ -760,33 +902,33 @@ fn needs_store(data: &Path, filter: &str) -> Answer {
 
 /// `busbar-version`: the version of the one package with a `busbar` bin target.
 pub(crate) fn busbar_version(metadata: &str) -> Answer {
-    let metadata: Value = match serde_json::from_str(metadata) {
+    let metadata: Node = match Node::parse(metadata) {
         Ok(metadata) => metadata,
         Err(error) => {
             return Answer::fail(1, &format!("oracle: cargo metadata is not JSON: {error}"))
         }
     };
-    let builds_busbar = |package: &&Value| {
+    let builds_busbar = |package: &&Node| {
         package
             .get("targets")
-            .and_then(Value::as_array)
+            .and_then(Node::as_array)
             .into_iter()
             .flatten()
             .any(|target| {
-                target.get("name").and_then(Value::as_str) == Some("busbar")
+                target.get("name").and_then(Node::as_str) == Some("busbar")
                     && target
                         .get("kind")
-                        .and_then(Value::as_array)
+                        .and_then(Node::as_array)
                         .is_some_and(|kinds| kinds.iter().any(|kind| kind.as_str() == Some("bin")))
             })
     };
     let versions: Vec<&str> = metadata
         .get("packages")
-        .and_then(Value::as_array)
+        .and_then(Node::as_array)
         .into_iter()
         .flatten()
         .filter(builds_busbar)
-        .filter_map(|package| package.get("version").and_then(Value::as_str))
+        .filter_map(|package| package.get("version").and_then(Node::as_str))
         .collect();
     match versions.as_slice() {
         [version] => Answer::out(format!("{version}\n")),
@@ -894,7 +1036,7 @@ fn only_rebaselined(data: &Path, filter: &str, families: &str) -> Answer {
         Ok(cells) => cells,
         Err(message) => return Answer::fail(1, &message),
     };
-    let chosen: Vec<&Value> = cells
+    let chosen: Vec<&Node> = cells
         .iter()
         .filter(|cell| selector.is_match(id_of(cell)))
         .collect();
@@ -902,7 +1044,7 @@ fn only_rebaselined(data: &Path, filter: &str, families: &str) -> Answer {
         && chosen.iter().all(|cell| {
             cell.get("family")
                 .or_else(|| cell.get("plane"))
-                .and_then(Value::as_str)
+                .and_then(Node::as_str)
                 .is_some_and(|family| families.contains(family))
         });
     Answer::status(if only { 0 } else { 1 })
@@ -919,7 +1061,7 @@ fn family_selected(data: &Path, filter: &str, family: &str) -> Answer {
         Err(message) => return Answer::fail(1, &message),
     };
     let any = cells.iter().any(|cell| {
-        selector.is_match(id_of(cell)) && cell.get("family").and_then(Value::as_str) == Some(family)
+        selector.is_match(id_of(cell)) && cell.get("family").and_then(Node::as_str) == Some(family)
     });
     Answer::status(if any { 0 } else { 1 })
 }
@@ -940,7 +1082,7 @@ fn report_owed(report: &str) -> Answer {
         Ok(text) => text,
         Err(error) => return refuse(py_oserror(report, &error)),
     };
-    let doc: Value = match serde_json::from_str(&text) {
+    let doc: Node = match Node::parse(&text) {
         Ok(doc) => doc,
         Err(error) => return refuse(error.to_string()),
     };

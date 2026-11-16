@@ -29,6 +29,9 @@
 //! - `rule-13`: a dlopened library leaves the loader only by IF §11.1's two exits (IF §15 rule 13, I13).
 //! - `oracle <sub> ...`: the data logic `bin/oracle` launches (`oracle.rs`): premise widening, the
 //!   shard split and its proofs, and the readers its ci-run and replay sections need (BLD-6).
+//!   `oracle run <sub> ...` is `bin/oracle` itself (`oracle_run.rs`, `oracle_judge.rs`,
+//!   `oracle_selftest.rs`): the judge fetched and held to its digest, `ci-run`, `record`, `replay`,
+//!   `diff`, the shard commands and the selftests; the shell file only builds this and calls it.
 //! - With arguments, the first one naming the check: `template-drift`, `patch-drift`, `no-host-link`,
 //!   `plugin-rules` and `c-alias`, run from a plugin repo's CI against the repo or its files.
 //!
@@ -52,6 +55,9 @@ mod migrate;
 mod migrate_overlay;
 mod migrate_size;
 mod oracle;
+mod oracle_judge;
+mod oracle_run;
+mod oracle_selftest;
 
 /// Checks over core's own tree: with no argument every one runs.
 const CHECKS: [&str; 15] = [
