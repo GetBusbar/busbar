@@ -51,10 +51,13 @@ pub enum BindError {
 /// never reaches a secret instance itself.
 pub trait RefSource: Send + Sync + 'static {
     /// The value of `reference` for `instance`; None = the resolve failed (no text: the binder writes core's).
+    /// `slot` is its actual leased runtime slot; `binding` is the stable zero-based D_REF_PATH ordinal.
+    /// These values come from the loader/binder, never from plugin-provided records.
     fn resolve<'a>(
         &'a self,
         instance: u64,
         slot: u32,
+        binding: u32,
         reference: &'a SecretRef,
     ) -> BoxFut<'a, Option<SecureVec>>;
 }
