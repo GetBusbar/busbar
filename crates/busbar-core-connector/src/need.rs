@@ -559,7 +559,7 @@ where
             _ => Tls::Direct,
         };
         let key = NeedKey {
-            instance: cx.instance,
+            instance: busbar_contract::conn::InstanceId(cx.instance),
             dest: dest.clone(),
             sni: sni.clone(),
             alpn: p.alpn.into(),

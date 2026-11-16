@@ -246,6 +246,9 @@ pub struct Egress {
 /// What one unit's walk is told at its start.
 #[derive(Debug, Clone)]
 pub struct UnitRoute {
+    /// Core-owned member grants, keyed by the actual pool being walked.
+    /// A present map denies pools absent from it, including on fallback and retry.
+    pub member_grants: Option<std::collections::BTreeMap<String, Vec<String>>>,
     /// Host-issued confinement of a nested dispatch to one configured member.
     /// Hook rankings and pool spill cannot widen this binding.
     pub allowed_member: Option<String>,
@@ -306,6 +309,7 @@ pub(super) fn dial_admitted(
 impl Default for UnitRoute {
     fn default() -> Self {
         UnitRoute {
+            member_grants: None,
             allowed_member: None,
             connection_required: false,
             authorization: None,
@@ -787,10 +791,21 @@ impl EgressFarEnd<'_> {
 impl Shape for EgressFarEnd<'_> {
     fn shape(
         &self,
+        pool: &str,
         members: Vec<Member>,
         primary: bool,
     ) -> Option<(Vec<Member>, Vec<DestinationId>)> {
         let (mut members, mut order) = self.constrained(members, primary).ok()?;
+        if let Some(grants) = &self.route.member_grants {
+            members.retain(|m| {
+                grants.get(pool).is_some_and(|allowed| {
+                    allowed.iter().any(|name| {
+                        super::route::operator_name(m.name.as_bytes()) == name.as_bytes()
+                    })
+                })
+            });
+            order.retain(|id| members.iter().any(|m| m.destination == *id));
+        }
         if let Some(allowed) = &self.route.allowed_member {
             members
                 .retain(|m| super::route::operator_name(m.name.as_bytes()) == allowed.as_bytes());
@@ -2559,6 +2574,15 @@ impl FarEnd for EgressFarEnd<'_> {
                 .iter()
                 .enumerate()
                 .filter(|(_, m)| {
+                    self.route.member_grants.as_ref().is_none_or(|grants| {
+                        grants.get(&pool.name).is_some_and(|allowed| {
+                            allowed.iter().any(|name| {
+                                super::route::operator_name(m.name.as_bytes()) == name.as_bytes()
+                            })
+                        })
+                    })
+                })
+                .filter(|(_, m)| {
                     self.route.allowed_member.as_ref().is_none_or(|allowed| {
                         super::route::operator_name(m.name.as_bytes()) == allowed.as_bytes()
                     })
@@ -2606,7 +2630,7 @@ impl FarEnd for EgressFarEnd<'_> {
         };
         let pool = self.egress.pools.get(name)?;
         let members = self
-            .shape(pool.admissible_members().into_owned(), primary)
+            .shape(&pool.name, pool.admissible_members().into_owned(), primary)
             .map(|(members, _)| members)
             .unwrap_or_default();
         Some(

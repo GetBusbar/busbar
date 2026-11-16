@@ -6,6 +6,11 @@
 //! settings, hands back the kind's port to drive, and collects what the plugin did: the records it wrote
 //! (RECORD), the OPEN/FETCH needs it made, the log lines it emitted and every refusal an open answered.
 //!
+//! The registry arms (C-ALIAS, C-BLIND, C-ERRORS, C-ADMIT-UNLOAD) admit more than one image into one registry
+//! ([`Harness::admit_all`], [`Harness::add`]) and open any of them by its `module:` word
+//! ([`Harness::spec_for`]); an image the caller admitted itself (a dropped-in one, through the loader's `admit`)
+//! comes in through [`Harness::admit_admitted`].
+//!
 //! The plugin runs in-process on the SDK safe test host; nothing here is `unsafe`.
 //!
 //! One caveat the registry owns: the entry fault sink and the log sink are process-wide and attach to the
@@ -349,21 +354,29 @@ pub struct LogLine {
 #[derive(Default)]
 struct LogBook {
     lines: Mutex<Vec<LogLine>>,
+    /// The numbers of the registry's "plugin error number not declared" WARNs (`ErrorBook::resolve`), in order.
+    undeclared: Mutex<Vec<u64>>,
     next_span: AtomicU64,
 }
+
+/// The message of the registry's one WARN for an error number an image did not declare (PLUGIN-ERROR-CODES §2.5).
+const UNDECLARED: &str = "plugin error number not declared";
 
 #[derive(Default)]
 struct Fields {
     kind: Option<u64>,
     instance: Option<String>,
+    number: Option<u64>,
     code: String,
     message: String,
 }
 
 impl Visit for Fields {
     fn record_u64(&mut self, field: &Field, value: u64) {
-        if field.name() == "kind" {
-            self.kind = Some(value);
+        match field.name() {
+            "kind" => self.kind = Some(value),
+            "number" => self.number = Some(value),
+            _ => {}
         }
     }
 
@@ -383,7 +396,8 @@ impl Visit for Fields {
     }
 }
 
-/// The subscriber: it keeps only the events the registry's log sink emits (they carry `kind` and `instance`).
+/// The subscriber: it keeps the events the registry's log sink emits (they carry `kind` and `instance`) and the
+/// number of each "not declared" WARN the registry writes for an undeclared error number.
 struct Tap(Arc<LogBook>);
 
 impl Subscriber for Tap {
@@ -403,6 +417,13 @@ impl Subscriber for Tap {
         let mut fields = Fields::default();
         event.record(&mut fields);
         let (Some(kind), Some(instance)) = (fields.kind, fields.instance) else {
+            if let (Some(number), true) = (fields.number, fields.message == UNDECLARED) {
+                self.0
+                    .undeclared
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .push(number);
+            }
             return;
         };
         let level = match *event.metadata().level() {
@@ -479,6 +500,39 @@ impl Harness {
         Self::start(|| admit_linked(linked), needs)
     }
 
+    /// Every image of `plugins` admitted into one registry, in order, as [`Harness::admit`] then
+    /// [`Harness::add`] for each further one: the first refusal comes back as it is. [`Harness::identity`] and
+    /// [`Harness::kind`] stay the first image's; open another by its word with [`Harness::spec_for`].
+    pub fn admit_all(plugins: &[&'static Plugin], needs: FakeNeeds) -> Result<Harness, Refusal> {
+        let Some((first, rest)) = plugins.split_first() else {
+            return Err(Refusal::new(
+                RefusalCode::Integrity,
+                "images",
+                "no image",
+                "at least one image",
+            ));
+        };
+        let mut harness = Self::admit(*first, needs)?;
+        for plugin in rest {
+            harness.add(*plugin)?;
+        }
+        Ok(harness)
+    }
+
+    /// One more image into this harness's registry: `admit_header` and `Registry::add` (describe, NameConflict
+    /// over every admitted identity and `former_names` word, the error book). A refusal leaves the registry as it
+    /// was.
+    pub fn add(&mut self, plugin: &'static Plugin) -> Result<(), Refusal> {
+        self.registry.add(admit_header(plugin)?)
+    }
+
+    /// A harness over an image the caller admitted itself (a dropped-in image through the loader's `admit`, or
+    /// `busbar_plugin_loader::test_host::admit_bytes`): `Registry::add` and everything [`Harness::admit`] does
+    /// after admission.
+    pub fn admit_admitted(admitted: Admitted, needs: FakeNeeds) -> Result<Harness, Refusal> {
+        Self::start(move || Ok(admitted), needs)
+    }
+
     fn start(
         admit: impl FnOnce() -> Result<Admitted, Refusal>,
         needs: FakeNeeds,
@@ -551,8 +605,19 @@ impl Harness {
     /// The spec for instance `name` of the admitted image, opened with `config` (operator form, secret
     /// references included) and no limits, no `public_url`, no caller upstreams.
     pub fn spec<'a>(&'a self, name: &'a str, config: &'a [u8]) -> InstanceSpec<'a> {
+        self.spec_for(&self.identity, name, config)
+    }
+
+    /// [`Harness::spec`] for the image the operator's `module` word names: an admitted identity or one of its
+    /// `former_names` words (the registry resolves it), or a word nothing answers to (the open refuses it).
+    pub fn spec_for<'a>(
+        &'a self,
+        module: &'a str,
+        name: &'a str,
+        config: &'a [u8],
+    ) -> InstanceSpec<'a> {
         InstanceSpec {
-            identity: &self.identity,
+            identity: module,
             name,
             config_json: config,
             limits: InstanceLimits::default(),
@@ -654,6 +719,17 @@ impl Harness {
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner),
         )
+    }
+
+    /// Every error number the registry found undeclared since the harness was built (an ERROR record or a `log`
+    /// number the image's D_ERRORS does not hold, or one over 9999), once per instance, in order: the number of
+    /// each "plugin error number not declared" WARN.
+    pub fn undeclared(&self) -> Vec<u64> {
+        self.logs
+            .undeclared
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 
     /// Every record the plugin holds through RECORD, in key order.

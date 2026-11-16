@@ -245,6 +245,27 @@ impl Instance {
     }
 }
 
+impl Drop for Instance {
+    /// I10 (d), C-CLOSE-LOG: `close` (busbar-ffi's `Drop for Instance<K>`, run when the last `Arc` of the live
+    /// instance goes, normally this one) runs inline under the entry guard as this instance's slot and
+    /// `ENTRY_CLOSE`, so a line the plugin logs from `close` is attributed to the closing instance and scrubbed
+    /// with its own set, and the close is watched. Close has no answer; the lent buffer only satisfies the guard.
+    /// The slot lease (`_tether`, the last field) drops after this body, so after the close has returned. With
+    /// busbar-ffi's ACTIVE stack full the guard runs nothing and the instance closes unguarded right after.
+    fn drop(&mut self) {
+        let closed: Arc<dyn Any + Send + Sync> = Arc::new(());
+        let mut live = Some(core::mem::replace(&mut self.live, closed));
+        let mut out = Pool::global().acquire(self.max_out);
+        let _ = crate::host_side::entry::guard(
+            self.slot,
+            crate::host_side::watch::ENTRY_CLOSE,
+            &mut out,
+            |_| drop(live.take()),
+        );
+        drop(live);
+    }
+}
+
 /// Round 14: built by the adapter per async call (plain stores: `Caller<'a>` is Copy and borrows, §10.3) and
 /// borrowed by the proxy future for its whole life (round 15: `drv: &'a mut Driver<'a, N>`, §10.4, exclusive, so
 /// no second chain can borrow it); the `ChainGuard` reborrows `&drv.caller` shared, so no field is moved or

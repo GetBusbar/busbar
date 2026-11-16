@@ -96,7 +96,7 @@ fn routes_auth_narrows_the_set_and_refuses_a_class_the_route_does_not_offer() {
 }
 
 #[test]
-#[ignore = "owner: W1-K8B (arms (a)-(c), (f): admission through W1-K10's Tickets and a shared store)"]
+#[ignore = "owner: W1-K8B; re-checked 2026-11-16, W2-SW-AUTH: the Tickets store is on dev (busbar-kernel plane_grants/tickets.rs SealedTickets, unit-tested in plane_grants/tests.rs a_once_ticket_admits_exactly_one_request and a_ticket_record_is_read_not_taken_unless_once) but route_chain::applied_class has no production caller, so a PRINCIPAL|TICKET route is not admitted through it until the auth switch-over (draft MR !2481); the boot still builds ClosedTickets without a signing key (min3_boot.rs:158); K10 remainder is open MR !2651"]
 fn ticket_either_arms() {
     todo!("owner: W1-K8B (C-TICKET-EITHER admission arms; W1-K10's Tickets)")
 }

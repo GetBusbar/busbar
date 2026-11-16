@@ -4,11 +4,10 @@
 //! C-MSG-FLAGS (ABI-MIN3-INTERFACE §14): Transport STREAM_BODY / `emit(E_BODY)` carry MSG_TEXT/MSG_BINARY/MSG_FIN
 //! through a fragmented message.
 //!
-//! WBS rule 10: each arm is ignored for the task that lands the last piece it needs; that task writes
-//! the arm's body and un-ignores it in its own MR (red first, then green).
-
-#[test]
-#[ignore = "covered by unit test plugin-loader adapters::transport::tests::message_flags_cross_a_fragmented_message (adapter internals are not pub to this crate); owner W1-L9"]
-fn message_flags_cross_a_fragmented_message() {
-    todo!("owner: W1-L9 (C-MSG-FLAGS)")
-}
+//! The arm runs in plugin-loader, beside the transport adapter's private answer decode (not pub to this crate,
+//! and not widened for a test, SDK-SAFE-TEST-HOST), so it moved to the owner's crate (WBS rule 10):
+//!
+//! - TEST-VALUE `message_flags_cross_a_fragmented_message`:
+//!   `busbar_plugin_loader::adapters::transport::tests::message_flags_cross_a_fragmented_message` (three
+//!   MSG_TEXT pieces ending MSG_FIN, then a MSG_BINARY|MSG_FIN one, cross `emit(E_BODY)` with their flags
+//!   whole; MSG_FIN alone, TEXT|BINARY and an unknown bit are GRAMMAR).

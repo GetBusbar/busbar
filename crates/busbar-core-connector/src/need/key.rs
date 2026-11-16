@@ -30,7 +30,7 @@ pub enum Tls {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct NeedKey {
     /// The owning runtime instance. Authenticated sessions never cross instance boundaries.
-    pub instance: u64,
+    pub instance: busbar_contract::conn::InstanceId,
     /// The normalised destination, `host:port` or `unix:/path`.
     pub dest: Box<str>,
     /// The effective SNI (empty when none).
