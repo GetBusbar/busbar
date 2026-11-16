@@ -9,6 +9,8 @@
 //!   `crates/busbar-crypto*` names the `getrandom` crate, except test code: an item or module under a
 //!   test-only `#[cfg(test)]` (read from the syn AST, as bad-patterns does), a `#[test]` fn, or a
 //!   `tests/` tree. A file syn cannot parse is scanned line by line instead, so it is never skipped.
+//! - `spdx-headers`: every tracked `.rs` file and migration-corpus YAML carries `SPDX-License-Identifier:
+//!   Apache-2.0` near the top and none names another licence (#277, `spdx.rs`).
 //! - `no-serde-json`: JSON is sonic-rs through `busbar_contract::json` (DEP-3, #162): no first-party
 //!   Rust file or manifest under `crates/`, `dist/`, `tools/` or `testing/` names serde_json, tests
 //!   included, outside the wave-3 paths `ci/serde-json-w3.allow` lists (`no_serde_json.rs`).
@@ -62,10 +64,12 @@ mod oracle;
 mod oracle_judge;
 mod oracle_run;
 mod oracle_selftest;
+mod spdx;
 
 /// Checks over core's own tree: with no argument every one runs.
-const CHECKS: [&str; 16] = [
+const CHECKS: [&str; 17] = [
     "no-getrandom",
+    "spdx-headers",
     "no-serde-json",
     "crypto-graph",
     "fleet-manifest",
@@ -134,6 +138,7 @@ fn main() -> ExitCode {
     for name in names {
         let outcome = match name {
             "no-getrandom" => no_getrandom(&root),
+            "spdx-headers" => spdx::spdx_headers(&root),
             "no-serde-json" => no_serde_json::no_serde_json(&root),
             "crypto-graph" => crypto_graph(&root),
             "migrate-flag-text" => migrate::flag_text(&root),
@@ -653,3 +658,6 @@ mod migrate_size_tests;
 
 #[cfg(test)]
 mod checks_tests;
+
+#[cfg(test)]
+mod spdx_tests;

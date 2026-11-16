@@ -1,0 +1,28 @@
+# cargo-about configuration: generates THIRD-PARTY-LICENSES (template: about.hbs), shipped beside LICENSE and
+# NOTICE in every release archive and image. Run by the release build:
+#   cargo about generate --locked --fail --target <triple> --config about.toml --output-file THIRD-PARTY-LICENSES about.hbs
+# The accepted list is deny.toml's [licenses] allow list: cargo-deny gates what may enter the graph, cargo-about
+# reproduces the notices for what did.
+accepted = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "MIT",
+    "MIT-0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "Zlib",
+    "MPL-2.0",
+    "CC0-1.0",
+    "OpenSSL",
+    "BSL-1.0",
+    "CDLA-Permissive-2.0",
+    "Unlicense",
+]
+# Dependencies that never reach the shipped binary are not attributed.
+ignore-dev-dependencies = true
+ignore-build-dependencies = true
+# The workspace's own crates (publish = false) are Busbar's: LICENSE covers them.
+private = { ignore = true }
