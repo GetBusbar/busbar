@@ -251,7 +251,7 @@ The thousands digit is the area.
 | [BUSBAR-6012](/docs/1.6/errors/BUSBAR-6012/) | First-party anti-downgrade floor could not be persisted (it will not survive a restart) | 1.6.0 |
 | [BUSBAR-6013](/docs/1.6/errors/BUSBAR-6013/) | Plugin-supplied text exceeded its cap and was cut | 1.6.0 |
 | [BUSBAR-6014](/docs/1.6/errors/BUSBAR-6014/) | A plugin call was refused by an ABI rule | 1.6.0 |
-| [BUSBAR-6015](/docs/1.6/errors/BUSBAR-6015/) | A plugin used a deprecated ABI value (refused from 1.7.0) | 1.6.0 |
+| [BUSBAR-6015](/docs/1.6/errors/BUSBAR-6015/) | A plugin requested the retired UPGRADE_VERIFY_OFF flag (refused) | 1.6.0 |
 | [BUSBAR-6017](/docs/1.6/errors/BUSBAR-6017/) | A plugin declares a retired ABI value | 1.6.0 |
 | [BUSBAR-6018](/docs/1.6/errors/BUSBAR-6018/) | A plugin's error-number declaration was refused; it runs without error codes | 1.6.0 |
 | [BUSBAR-6019](/docs/1.6/errors/BUSBAR-6019/) | A plugin reported an error number it did not declare | 1.6.0 |
