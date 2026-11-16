@@ -42,7 +42,7 @@ fn every_abi_version_is_its_v155_value_plus_one() {
     assert_eq!(store::v4::ABI_VERSION, store::ABI_VERSION);
     // The public Store kind exposes the current primitive table directly.
     assert_eq!(store::v4::LAYOUT_FINGERPRINT, store::LAYOUT_FINGERPRINT);
-    assert_eq!(store::LAYOUT_FINGERPRINT, 0x5f47532174fb052b);
+    assert_eq!(store::LAYOUT_FINGERPRINT, 0xb74ff4246792db2d);
 }
 
 /// One home per number: every public version constant is the one `versions.rs` states.

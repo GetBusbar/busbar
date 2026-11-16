@@ -656,6 +656,13 @@ compiled-in backend would. Signing answers "is this the artifact its publisher s
 and current"; it does not sandbox the publisher. Allowlist publishers you would be willing to link
 into the binary.
 
+## Plugin secrets
+
+A plugin declares the opaque credential fields it needs in its settings schema. Core resolves
+declared secret references before settings cross the ABI. Only references are persisted in the
+overlay, and an unresolved reference refuses the load. Use the host credential contract for
+secret custody; resolving a setting does not grant access to another plugin or core persistence.
+
 ## Inspecting and validating
 
 ```sh

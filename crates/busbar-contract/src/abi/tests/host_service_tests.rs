@@ -358,15 +358,6 @@ fn a_ready_value_outside_the_service_range_is_fault() {
         rule(check_trust_sight(&sight, ready(&o), &o)),
         Rule::UnknownCode
     );
-    let ent = EntitlementCheckIn {
-        head: head(op::ENTITLEMENT_CHECK, TICKET, 0),
-        target: none(),
-    };
-    o.value = ENTITLED + 1;
-    assert_eq!(
-        rule(check_entitlement_check(&ent, ready(&o), &o)),
-        Rule::UnknownCode
-    );
     let (mut b, mut sp) = (
         [0u8; 0],
         [ItemSpan {
@@ -481,7 +472,7 @@ fn the_host_refuses_a_capacity_with_a_null_buffer() {
 }
 
 #[test]
-fn the_services_that_never_pend_are_exactly_the_stated_fifteen() {
+fn the_services_that_never_pend_are_exactly_the_stated_fourteen() {
     let never: Vec<u32> = (0..SERVICES).filter(|s| !may_pend(*s)).collect();
     assert_eq!(
         never,
@@ -490,7 +481,6 @@ fn the_services_that_never_pend_are_exactly_the_stated_fifteen() {
             op::SIGN,
             op::TRUST_DUE,
             op::VERIFY_STORE,
-            op::ENTITLEMENT_CHECK,
             op::RANDOM_FILL,
             op::NEED_ADMIT,
             op::TRUST_VERIFY,
@@ -583,10 +573,6 @@ fn every_service_field_sits_at_its_op_index() {
         (offset_of!(HostSlots, trust_due), op::TRUST_DUE),
         (offset_of!(HostSlots, verify_lookup), op::VERIFY_LOOKUP),
         (offset_of!(HostSlots, verify_store), op::VERIFY_STORE),
-        (
-            offset_of!(HostSlots, entitlement_check),
-            op::ENTITLEMENT_CHECK,
-        ),
         (offset_of!(HostSlots, content_scan), op::CONTENT_SCAN),
         (offset_of!(HostSlots, hook_call), op::HOOK_CALL),
         (offset_of!(HostSlots, random_fill), op::RANDOM_FILL),
@@ -1901,8 +1887,8 @@ fn the_directory_services_follow_hook_child_are_auth_only_and_may_pend() {
         op::DIRECTORY_APPLY,
         op::DIRECTORY_DELETE,
     ];
-    assert_eq!(ops, [37, 38, 39, 40, 41, 42, 43]);
-    assert_eq!(SERVICES, 45, "migrate.admit follows the directory services");
+    assert_eq!(ops, [36, 37, 38, 39, 40, 41, 42]);
+    assert_eq!(SERVICES, 44, "migrate.admit follows the directory services");
     for o in ops {
         let policy = service(o).expect("a policy row");
         assert!(may_pend(o), "{} may pend", policy.name);
@@ -1924,8 +1910,8 @@ fn the_directory_services_follow_hook_child_are_auth_only_and_may_pend() {
 fn migrate_admit_is_the_appended_last_slot_store_only_and_never_pends() {
     use crate::abi::host::access::{service, Phase};
     use crate::abi::mechanism::KindCode;
-    assert_eq!(op::MIGRATE_ADMIT, 44);
-    assert_eq!(SERVICES, 45);
+    assert_eq!(op::MIGRATE_ADMIT, 43);
+    assert_eq!(SERVICES, 44);
     assert!(!may_pend(op::MIGRATE_ADMIT));
     let policy = service(op::MIGRATE_ADMIT).expect("a policy row");
     assert_eq!(policy.name, "MIGRATE_ADMIT");
