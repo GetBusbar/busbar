@@ -426,7 +426,7 @@ fn check<T: Open>(h: &Host, config: &[u8], out: &mut busbar_ffi::Out<'_>) -> Sta
             count: 0,
             bad: None,
         };
-        let checked = T::check(h, config, &mut ends);
+        let checked = crate::fail::in_check(|| T::check(h, config, &mut ends));
         (checked, ends.bad)
     };
     let answer = match (checked, bad) {
