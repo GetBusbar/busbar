@@ -3,6 +3,86 @@
 
 //! Root-owned export adapters over opened MIN3 ports and their exact instance bindings.
 
+use busbar_contract::services::{DiskDest, DiskReport, DiskRotate};
+use busbar_kernel::host_disk::DiskLane;
+use busbar_plugin_loader::export_door::port::{AppendBytes, AppendDenied, DestAppend};
+use busbar_ports::binder::ConfigBinder;
+use std::sync::Arc;
+
+pub(crate) struct BoundDisk {
+    instance: u64,
+    binder: Arc<dyn ConfigBinder>,
+    lane: Arc<DiskLane>,
+}
+
+impl BoundDisk {
+    pub(crate) fn new(instance: u64, binder: Arc<dyn ConfigBinder>, lane: Arc<DiskLane>) -> Self {
+        Self {
+            instance,
+            binder,
+            lane,
+        }
+    }
+}
+
+impl DestAppend for BoundDisk {
+    fn append(&self, handle: u32, bytes: AppendBytes<'_>) -> Result<(), AppendDenied> {
+        let bound = self
+            .binder
+            .dest(self.instance, handle)
+            .ok_or(AppendDenied::Foreign)?;
+        let dest = DiskDest {
+            key: handle.to_string(),
+            path: bound.path.to_string(),
+            rotate_at: Some(bound.rotate_mb.saturating_mul(1024 * 1024)),
+            rotate: DiskRotate::declared(Some(bound.keep)),
+        };
+        let bytes = match bytes {
+            AppendBytes::Owned(bytes) => bytes,
+            AppendBytes::Batch(lines) => {
+                let mut bytes = busbar_contract::secure::SecureVec::new();
+                for line in lines {
+                    bytes
+                        .extend(line)
+                        .and_then(|()| bytes.push(b'\n'))
+                        .map_err(|_| {
+                            AppendDenied::Failed(busbar_plugin_abi::fail::failed::F_LIMIT)
+                        })?;
+                }
+                bytes.into_vec()
+            }
+        };
+        let (send, received) = std::sync::mpsc::sync_channel(1);
+        self.lane
+            .submit(
+                dest,
+                bytes,
+                Box::new(move |stored| {
+                    let _ = send.send(DiskReport::of(&stored));
+                }),
+            )
+            .map_err(|report| {
+                if report.error == busbar_kernel::host_disk::LANE_FULL {
+                    AppendDenied::LaneFull
+                } else {
+                    AppendDenied::LaneGone
+                }
+            })?;
+        // The export pump is a blocking worker. An accepted append must get its real receipt;
+        // abandoning it and retrying could duplicate a write still owned by the disk lane.
+        // PortDoor's bounded stop reports a nonquiescent worker without closing its owners.
+        let report = received.recv().map_err(|_| AppendDenied::LaneGone)?;
+        if report.step == 0 {
+            Ok(())
+        } else {
+            Err(AppendDenied::Failed(
+                u32::try_from(report.step)
+                    .unwrap_or(busbar_plugin_abi::fail::failed::F_UNAVAILABLE),
+            ))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use busbar_plugin_loader::export_door::port::{AppendBytes, AppendDenied, DestAppend};
