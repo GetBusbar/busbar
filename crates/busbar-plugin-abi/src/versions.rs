@@ -38,11 +38,24 @@ pub struct AbiVersion {
     pub kind: KindCode,
     pub version: u32,
 }
+/// The one ABI number this engine accepts for a kind (§7.3). busbar-ffi owns `KindCode` and knows no engine
+/// versions, so this is a function here, not a method.
+pub const fn abi_of(kind: KindCode) -> u32 {
+    match kind {
+        KindCode::Store => STORE,
+        KindCode::Secret => SECRET,
+        KindCode::Auth => AUTH,
+        KindCode::Hook => HOOK,
+        KindCode::Export => EXPORT,
+        KindCode::Plane => PLANE,
+        KindCode::Transport => TRANSPORT,
+    }
+}
 impl AbiVersion {
     pub const fn current(kind: KindCode) -> Self {
         AbiVersion {
             kind,
-            version: kind.abi(),
+            version: abi_of(kind),
         }
     }
     pub const fn accepts(self, have: u32) -> bool /* == */ {
