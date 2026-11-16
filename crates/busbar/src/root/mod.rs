@@ -170,6 +170,7 @@ pub mod inbound;
 #[cfg(all(test, linked_every_plane_door))]
 #[path = "tests/inbound.rs"]
 mod inbound_tests;
+pub(crate) mod ingress_context;
 pub mod kernel;
 pub mod keyset;
 pub mod linked;

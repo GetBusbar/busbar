@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use busbar_contract::crypto::tls as crypto_tls;
 use busbar_contract::transport::trust::EgressTrust;
-use busbar_contract::transport::wire::{ConnectionSecurity, RawIo, SecuredIoFut};
+use busbar_contract::transport::wire::{ConnectionSecurity, RawIo, SecuredIo, SecuredIoFut};
 use tokio_util::compat::{FuturesAsyncReadCompatExt, TokioAsyncReadCompatExt};
 
 /// A client identity (the key and chain a mutual handshake presents) the TLS stack cannot use.
@@ -471,7 +471,7 @@ impl ConnectionSecurity for TlsDial {
                 .connect(self.server_name.clone(), tokio_io)
                 .await?;
             let raw: Box<dyn RawIo> = Box::new(TokioAsyncReadCompatExt::compat(tls_stream));
-            Ok(raw)
+            Ok(SecuredIo::anonymous(raw))
         })
     }
 }

@@ -209,7 +209,8 @@ impl RefSource for BootRefs {
 /// refuses the boot.
 pub(crate) async fn open_secret_steps<N: busbar_plugin_abi::host_side::needs::Needs>(
     secrets: &BootSecrets,
-    registry: &busbar_plugin_loader::instance::Registry<N>,
+    registry: &busbar_plugin_loader::instance::Registry,
+    needs: &Arc<N>,
     steps: &[u32],
     instances: &[(
         busbar_plugin_abi::types::KindCode,
@@ -224,7 +225,7 @@ pub(crate) async fn open_secret_steps<N: busbar_plugin_abi::host_side::needs::Ne
         if *kind != busbar_plugin_abi::types::KindCode::Secret {
             continue;
         }
-        let port = registry.open_secret(spec).await?;
+        let port = registry.open_secret(spec, needs).await?;
         let instance = next_instance_id();
         if let Some(old) = secrets
             .table()
