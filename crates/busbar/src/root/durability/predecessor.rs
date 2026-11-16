@@ -274,15 +274,24 @@ impl Sealer {
         };
 
         let fence = Arc::clone(&self.fence);
-        let tail = self
-            .read(id, "tail_view", || fence.journal_tail(id))
-            .await?;
+        let mut fenced_owner = (node.epoch, node.writer);
+        let tail = loop {
+            let tail = self
+                .read(id, "tail_view", || fence.journal_tail(id))
+                .await?;
+            match &tail {
+                Some(view) if view.owner != fenced_owner => {
+                    self.fence_writer(id, view.owner.0, view.owner.1).await?;
+                    fenced_owner = view.owner;
+                    // An owner may have appended before its fence committed. Only a fresh
+                    // coherent owner/head observation after the fence grants the walk's tail.
+                }
+                _ => break tail,
+            }
+        };
         let outcome = match tail {
             None => SealOutcome::Clean { through: 0 },
             Some(view) => {
-                if view.owner != (node.epoch, node.writer) {
-                    self.fence_writer(id, view.owner.0, view.owner.1).await?;
-                }
                 let walked = self.walk(id, &view).await?;
                 self.outcome(id, walked, unsealed_fenced).await?
             }
