@@ -309,7 +309,7 @@ impl Host {
     }
 
     fn bind<K: Kind>(&self, img: &Image<K>, name: &str) -> Result<Plugin<K>, Refused> {
-        self.bind_with(img, name, Arc::new(NoSink))
+        self.bind_with(img, name, Arc::clone(&self.sink))
     }
 
     fn bind_with<K: Kind>(
