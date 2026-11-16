@@ -1674,7 +1674,6 @@ mod l2_tests {
         assert_eq!(walk(&four, 0).unwrap(), vec![3, 2, 1, 0]);
     }
 
-
     fn body(numbers: &[u16]) -> Vec<u8> {
         numbers.iter().flat_map(|n| n.to_le_bytes()).collect()
     }
