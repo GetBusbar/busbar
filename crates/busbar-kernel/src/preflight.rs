@@ -64,6 +64,55 @@ impl StoreRow<LinkedStoreDoor> {
 
 pub type StoreAxisOf =
     fn() -> std::sync::Arc<dyn busbar_contract::persistence::axis::PersistenceAxis>;
+
+/// The store's MIN-3 open (W2-SW-STORE; IF §11.2 `Registry::open_store`, §11.3): the one way the kernel's store
+/// boot opens its configured store. The answer's backend is the store adapter, the kernel's own
+/// `PersistenceBackend` over the proxy (on the store lane for a blocking-file store); there is no other store
+/// port. The store converts its own bag in that `open` (WBS rule 12): no migrate call is made here.
+pub trait StoreOpener: Send + Sync {
+    /// `Registry::open_store` for `spec`.
+    fn open_store<'a>(
+        &'a self,
+        spec: &'a busbar_plugin_loader::instance::InstanceSpec<'a>,
+    ) -> busbar_plugin_abi::host_side::caller::BoxFut<
+        'a,
+        Result<
+            busbar_plugin_loader::ports::store::StoreHandle,
+            busbar_plugin_loader::instance::OpenError,
+        >,
+    >;
+}
+
+impl<N: busbar_plugin_abi::host_side::needs::Needs> StoreOpener
+    for busbar_plugin_loader::instance::Registry<N>
+{
+    fn open_store<'a>(
+        &'a self,
+        spec: &'a busbar_plugin_loader::instance::InstanceSpec<'a>,
+    ) -> busbar_plugin_abi::host_side::caller::BoxFut<
+        'a,
+        Result<
+            busbar_plugin_loader::ports::store::StoreHandle,
+            busbar_plugin_loader::instance::OpenError,
+        >,
+    > {
+        busbar_plugin_loader::instance::Registry::open_store(self, spec)
+    }
+}
+
+static STORE_OPENER: std::sync::OnceLock<Arc<dyn StoreOpener>> = std::sync::OnceLock::new();
+
+/// Installs the boot's MIN-3 registry as the store opener, once per process. `false` when one is already
+/// installed (the first stays).
+pub fn install_store_opener(opener: Arc<dyn StoreOpener>) -> bool {
+    STORE_OPENER.set(opener).is_ok()
+}
+
+/// The installed store opener, if the boot installed one.
+#[must_use]
+pub fn store_opener() -> Option<&'static Arc<dyn StoreOpener>> {
+    STORE_OPENER.get()
+}
 use busbar_contract::plugin_rows::PluginRows;
 pub use busbar_kernel_identity::operator::LinkedAuth;
 
