@@ -252,3 +252,76 @@ fn standalone_sessions_refuse_profiles_that_require_a_binder() {
         report.finish().unwrap();
     });
 }
+
+#[test]
+fn a_failed_upgrade_closes_the_session_without_plaintext_continuation() {
+    run(async {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let dest = addr.to_string();
+        let mut session = SocketSession::open(targets(addr), caller(), deadline(), request(&dest))
+            .await
+            .unwrap();
+        let report = session.report();
+        let (mut peer, _) = listener.accept().await.unwrap();
+        assert_eq!(
+            session
+                .starttls(TlsMode::Required {
+                    sni: "localhost",
+                    alpn: "",
+                    trust: 0,
+                })
+                .await,
+            Err(NeedErr::Invalid)
+        );
+        assert_eq!(
+            session.write_all(b"must not reach peer").await,
+            Err(NeedErr::Closed)
+        );
+        let mut byte = [0];
+        assert_eq!(peer.read(&mut byte).await.unwrap(), 0);
+        report.finish().unwrap();
+    });
+}
+
+#[test]
+fn a_failed_network_open_leaves_no_physical_session() {
+    run(async {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+        let report = Arc::new(targets(addr));
+        let dest = addr.to_string();
+        assert!(matches!(
+            SocketSession::open_shared(Arc::clone(&report), caller(), deadline(), request(&dest))
+                .await,
+            Err(NeedErr::Unavailable)
+        ));
+        report.finish().unwrap();
+    });
+}
+
+#[test]
+fn distinct_sessions_allocate_distinct_private_identities() {
+    run(async {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let dest = addr.to_string();
+        let first = SocketSession::open(targets(addr), caller(), deadline(), request(&dest))
+            .await
+            .unwrap();
+        let second = SocketSession::open(targets(addr), caller(), deadline(), request(&dest))
+            .await
+            .unwrap();
+        let first_report = first.report();
+        let second_report = second.report();
+        let a = &first_report.events()[0];
+        let b = &second_report.events()[0];
+        assert_ne!(a.instance, b.instance);
+        assert_ne!(a.chain, b.chain);
+        drop(first);
+        drop(second);
+        first_report.finish().unwrap();
+        second_report.finish().unwrap();
+    });
+}
