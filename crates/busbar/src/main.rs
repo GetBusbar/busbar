@@ -698,6 +698,11 @@ async fn run(
             format!("base Store settings: {error}"),
         ))
     });
+    let file_grammar = base_cfg
+        .grammar()
+        .unwrap_or_else(|error| die(error.0))
+        .clone();
+    let mut effective_images = file_images.clone();
     let boot_instances = Arc::new(root::boot::inputs::BootInstances::capture(&base_cfg));
     let config_rules = root::boot_app::ProtectedRules {
         reader: config_rules,
@@ -811,11 +816,9 @@ async fn run(
                 || doc.providers_patch.is_some()
                 || !doc.plugin_versions.is_empty()
         }) {
-            let patched = busbar_kernel::appbuild::load_config_under_store(
+            let (patched, images) = config_rules.read_under_store(
                 &config_path,
                 providers_override.as_deref(),
-                config::EnvSubst::Strict,
-                &config_rules,
                 doc,
             )
             .unwrap_or_else(|error| {
@@ -824,11 +827,10 @@ async fn run(
                     format!("Store document overlay refused: {error}"),
                 ))
             });
-            let start = root::boot::start_grammar()
-                .unwrap_or_else(|refusal| die(boot_error("plugins directory refused", refusal)));
+            effective_images = images;
             let pinned = match (patched.deploy.grammar.get(), patched.deploy.grammar.used()) {
                 (Ok(generation), Ok(used)) => {
-                    config::grammar::pin(start, generation, used, config::grammar::Pin::Store)
+                    config::grammar::pin(&file_grammar, generation, used, config::grammar::Pin::Store)
                 }
                 (Err(refusal), _) | (_, Err(refusal)) => Err(refusal.0),
             };
@@ -942,6 +944,7 @@ async fn run(
             fresh_record_bootstrap,
             judged_effective,
             operator_reference,
+            effective_images,
         ))
     }))
     .await;
@@ -958,6 +961,7 @@ async fn run(
         fresh_record_bootstrap,
         judged_effective,
         operator_reference,
+        _effective_images,
     )) = bootstrap
     else {
         return;

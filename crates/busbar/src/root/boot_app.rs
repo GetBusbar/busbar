@@ -64,6 +64,51 @@ pub(crate) struct ProtectedRules {
     pub(crate) instances: Arc<crate::root::boot::inputs::BootInstances>,
 }
 
+impl ProtectedRules {
+    /// Root owns the exact effective admission through typed parsing and later instance opens.
+    pub(crate) fn read_under_store(
+        &self,
+        config_path: &Path,
+        providers: Option<&Path>,
+        doc: &config::overlay::OverlayDoc,
+    ) -> Result<
+        (
+            appbuild::LoadedConfig,
+            crate::root::boot::images::FileImages,
+        ),
+        String,
+    > {
+        let mut patch = doc.document_patch.clone();
+        let mut providers_patch = doc.providers_patch.clone();
+        let raw = appbuild::read_config_documents(
+            config_path,
+            providers,
+            false,
+            config::EnvSubst::Strict,
+            self,
+            appbuild::DocumentPatchLoad {
+                patch: patch.as_mut(),
+                providers_patch: providers_patch.as_mut(),
+                admission: None,
+            },
+        )?;
+        let plugins = raw.plugins_block()?;
+        let images = crate::root::boot::images::prepare(
+            &self.reader.process,
+            &config::grammar::PhaseOneIn {
+                plugins: &plugins,
+                dir: Path::new(&plugins.dir),
+                pins: &doc.plugin_versions,
+                fetch: config::grammar::Fetch::None,
+            },
+        )
+        .map_err(|error| error.0)?;
+        self.images.check(&images).map_err(|error| error.0)?;
+        let loaded = raw.typed(&images.grammar)?;
+        Ok((loaded, images))
+    }
+}
+
 impl RootRules for ProtectedRules {
     fn grammar(
         &self,

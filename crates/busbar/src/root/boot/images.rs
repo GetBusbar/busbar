@@ -12,6 +12,7 @@ use busbar_plugin_abi::host_side::host_vt::HOST;
 use busbar_plugin_loader::instance::{Ceilings, Images, ImagesBuilder};
 use busbar_plugin_loader::process::ProcessResources;
 
+#[derive(Clone)]
 pub(crate) struct FileImages {
     pub(crate) images: Images,
     pub(crate) aliases: Vec<(String, String)>,
