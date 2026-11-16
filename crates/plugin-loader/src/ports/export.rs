@@ -79,6 +79,10 @@ pub trait ExportPort: Send + Sync + 'static {
     /// Round 33: the custody ceiling the instance stated in its `open` answer (§8.5), None if it stated none.
     /// Read by K8C's admin instance view in 1.6.0 and by the 1.6.x config-load check.
     fn custody_ceiling(&self) -> Option<u32>;
+    /// Pending custody capacity declared in D_DELIVERY; None means no confirm method.
+    fn pending_capacity(&self) -> Option<u64>;
+    /// Re-check custody without resending bytes. NONE asks core to reoffer the held prefix.
+    fn confirm(&self, cx: CallCx, delivery: u64) -> BoxFut<'_, Result<Custody, PortError>>;
     /// Writes CONTENT_TYPE and BODY through `sink` while the answer buffer is live (no copy into a Vec).
     fn render(
         &self,
