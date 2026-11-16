@@ -1401,15 +1401,15 @@ RETIRED. The breaker failure-recording path read an unexpected cell state (not C
 **What to do:** Nothing emits this code. The one breaker keeps its cell state behind a lock and answers an unreachable encoding silently, with the same fail-safe result.
 
 <a id="metadata-protection-disabled"></a>
-### BUSBAR-5045 — Cloud-metadata SSRF protection DISABLED (allow_all_metadata is set)
+### BUSBAR-5045 — Cloud-metadata SSRF protection DISABLED (allow_all_metadata is set) — RETIRED *(retired)*
 
 - **Severity:** actionable
 - **Since:** 1.6.0
 - **Slug:** `metadata-protection-disabled`
 
-The deployment set the nuclear `allow_all_metadata` escape hatch, so busbar's cloud-metadata SSRF guard is OFF and EVERY cloud-metadata endpoint (e.g. 169.254.169.254, the GCP/Azure metadata hosts) is reachable through the proxy. That is a security-relevant degradation: a crafted upstream URL or a compromised plugin can reach the instance's credential endpoint. Emitted once at boot.
+RETIRED. Nothing emits this code: 1.6.0 refuses `security.allow_all_metadata` at startup (BUSBAR-3136), and cloud metadata is refused for every outbound connection, so the guard can no longer be disabled.
 
-**What to do:** Remove `allow_all_metadata` unless a specific, understood need requires it. If metadata access is genuinely needed, scope it with `security.blocked_metadata_hosts` instead of disabling the guard wholesale (`--print-metadata-blocklist` shows the effective list).
+**What to do:** Nothing emits this code. See BUSBAR-3136.
 
 <a id="plane-usage-unread"></a>
 ### BUSBAR-5046 — Provider usage not read (a unit settled without billing its final stated usage)
