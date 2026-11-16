@@ -57,6 +57,7 @@ pub struct UnitRecord {
 /// the unit runs and dropped (zeroised) at its end.
 #[derive(Default)]
 struct UnitEntry {
+    invocation_owner: Option<busbar_contract::services::Incarnation>,
     child_ancestry: Vec<Arc<str>>,
     children: HashMap<String, Arc<crate::hook_child::Memo>>,
     prepared: Option<crate::host_outbound::Prepared>,
@@ -96,7 +97,35 @@ impl UnitRecords {
     }
 
     pub fn admitted(&self, unit: u64, record: UnitRecord) {
-        self.lock(unit).entry(unit).or_default().record = Some(Arc::new(record));
+        let mut units = self.lock(unit);
+        let entry = units.entry(unit).or_default();
+        entry.invocation_owner = None;
+        entry.record = Some(Arc::new(record));
+    }
+
+    /// Bind execution authority to the exact opened instance at checked admission.
+    pub fn admitted_for(
+        &self,
+        unit: u64,
+        caller: &busbar_contract::services::Caller,
+        record: UnitRecord,
+    ) {
+        let mut units = self.lock(unit);
+        let entry = units.entry(unit).or_default();
+        entry.invocation_owner = Some(caller.incarnation().clone());
+        entry.record = Some(Arc::new(record));
+    }
+
+    pub(crate) fn invocation_record(
+        &self,
+        unit: u64,
+        caller: &busbar_contract::services::Caller,
+    ) -> Option<Arc<UnitRecord>> {
+        let units = self.lock(unit);
+        let entry = units.get(&unit)?;
+        (entry.invocation_owner.as_ref()? == caller.incarnation())
+            .then(|| entry.record.clone())
+            .flatten()
     }
 
     pub fn set_child_ancestry(&self, unit: u64, ancestry: Vec<Arc<str>>) {

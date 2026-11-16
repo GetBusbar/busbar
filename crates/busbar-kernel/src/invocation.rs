@@ -41,7 +41,11 @@ impl InvocationContext {
         if generation.core.facts(&caller).is_none() {
             return Err(super::NOT_ADMITTED);
         }
-        let record = generation.core.units().get(unit).ok_or(NEST_NO_UNIT)?;
+        let record = generation
+            .core
+            .units()
+            .invocation_record(unit, &caller)
+            .ok_or(NEST_NO_UNIT)?;
         Ok(Self {
             generation,
             caller,
@@ -61,7 +65,7 @@ impl InvocationContext {
                 .generation
                 .core
                 .units()
-                .get(self.unit)
+                .invocation_record(self.unit, caller)
                 .is_some_and(|record| Arc::ptr_eq(&record, &self.record))
     }
 
