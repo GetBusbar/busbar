@@ -241,7 +241,11 @@ impl RuntimeJournal {
             return Err(RuntimeError::Truncated);
         }
         let mut seq_map: Vec<(u64, u64)> = Vec::new();
-        let mut cut = cut::CutState::default();
+        let mut cut = if ephemeral {
+            cut::CutState::ephemeral()
+        } else {
+            cut::CutState::default()
+        };
         let mut ordinal = 0u64;
         let mut previous: Option<u64> = None;
         while let Some(record) = replay.next().await.map_err(RuntimeError::from)? {

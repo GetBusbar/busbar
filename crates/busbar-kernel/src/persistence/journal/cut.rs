@@ -59,6 +59,15 @@ pub(super) struct CutState {
 }
 
 impl CutState {
+    pub(super) fn ephemeral() -> Self {
+        Self {
+            boundaries: VecDeque::with_capacity(BOUNDARIES),
+            ..Self::default()
+        }
+    }
+}
+
+impl CutState {
     pub(super) fn base_count(&self) -> u64 {
         self.base.as_ref().map_or(0, |(base, _)| base.count())
     }
@@ -506,14 +515,28 @@ mod boundary_tests {
 
     #[test]
     fn applied_boundaries_use_the_boot_allocated_ring() {
-        let mut state = CutState::default();
+        let mut state = CutState::ephemeral();
         let allocated = state.boundaries.capacity();
-        assert!(allocated >= BOUNDARIES, "the full boundary ring is reserved at boot");
+        assert!(
+            allocated >= BOUNDARIES,
+            "the full boundary ring is reserved at boot"
+        );
         for index in 1..=(BOUNDARIES as u64 * 3) {
             let count = index * BOUNDARY_STRIDE;
-            state.applied(Head { count, sequence: count, hash: [1; 32] }, [2; 32], None);
-            assert_eq!(state.boundaries.capacity(), allocated,
-                "publishing a group performs no boundary-ring allocation");
+            state.applied(
+                Head {
+                    count,
+                    sequence: count,
+                    hash: [1; 32],
+                },
+                [2; 32],
+                None,
+            );
+            assert_eq!(
+                state.boundaries.capacity(),
+                allocated,
+                "publishing a group performs no boundary-ring allocation"
+            );
         }
         assert_eq!(state.boundaries.len(), BOUNDARIES);
     }
