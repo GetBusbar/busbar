@@ -4844,3 +4844,7 @@ mod pool_prepared_target_tests;
 #[cfg(test)]
 #[path = "tests/waiter_order_tests.rs"]
 mod waiter_order_tests;
+
+#[cfg(test)]
+#[path = "tests/pool_single_flight_tests.rs"]
+mod pool_single_flight_tests;
