@@ -83,7 +83,7 @@ pub(crate) struct CoreSecrets {
 /// The serving instances' shared owners, constructed after the Store deployment checks.
 struct Shared {
     records: Records,
-    push: Arc<StorePushQueue>,
+    push: Arc<dyn PushQueue>,
     signals: Arc<SignalRegistry>,
     /// The observation custody every seat's OBS_SCOPE and OBSERVE run on (units register as requests bill).
     observations: ObsCustody,
@@ -182,7 +182,7 @@ fn recovery_matcher(patterns: Vec<Box<str>>) -> Box<dyn Fn(&str) -> bool + Send 
 }
 
 impl Shared {
-    fn new(records: Records, push: Arc<StorePushQueue>) -> Self {
+    fn new(records: Records, push: Arc<dyn PushQueue>) -> Self {
         let work_store = LateStore::default();
         let work_binder = LateBinder::default();
         Self {

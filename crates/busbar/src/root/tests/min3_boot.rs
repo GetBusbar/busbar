@@ -57,8 +57,21 @@ impl Tickets for Open {
     }
 }
 
+struct UnavailablePush;
+
+impl PushQueue for UnavailablePush {
+    fn enqueue<'a>(
+        &'a self,
+        _who: &'a LoaderCaller<'_>,
+        _ttl_s: u64,
+        _recs: &'a [u8],
+    ) -> BoxFut<'a, Result<(), RecordsDenied>> {
+        Box::pin(async { Err(RecordsDenied::Unavailable) })
+    }
+}
+
 fn shared() -> Shared {
-    Shared::new(Records::default(), LatePush::default())
+    Shared::new(Records::default(), Arc::new(UnavailablePush))
 }
 
 #[test]
