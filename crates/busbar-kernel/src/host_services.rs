@@ -1001,7 +1001,7 @@ pub struct CoreServicesInputs {
     pub pool: Arc<dyn Offload>,
     pub signer: Option<Arc<dyn SignKey>>,
     pub demotions: Arc<DemotionRecord>,
-    pub demotion_owner: Arc<str>,
+    pub demotion_owner: Option<Arc<str>>,
     pub tickets: Option<Arc<dyn TicketPress>>,
     pub standing: Standing,
     pub judge: Arc<dyn DestJudge>,
@@ -1054,7 +1054,7 @@ fn trust_decision_answer(result: Result<KeyRow, TrustRefused>) -> Stored {
 
 struct Demotions {
     record: Arc<DemotionRecord>,
-    default_instance: Arc<str>,
+    default_instance: Option<Arc<str>>,
 }
 
 struct TrustResync(Arc<(std::sync::atomic::AtomicU64, std::sync::atomic::AtomicBool)>);
@@ -1571,7 +1571,7 @@ impl KernelServices {
     ) -> Self {
         self.demotions = Some(Demotions {
             record: demotions,
-            default_instance: crate::off_path::host_services::intern(default_instance),
+            default_instance: Some(crate::off_path::host_services::intern(default_instance)),
         });
         self
     }
@@ -1650,7 +1650,7 @@ impl KernelServices {
         let (snapshot, default) = match self.demotions.as_ref() {
             Some(d) => (
                 Some(d.record.snapshot().await.map_err(trust_unread)?),
-                *d.default_instance == *instance,
+                d.default_instance.as_deref() == Some(instance),
             ),
             None => (None, false),
         };
@@ -1809,7 +1809,7 @@ impl KernelServices {
             let default = self
                 .demotions
                 .as_ref()
-                .is_some_and(|d| *d.default_instance == *fact.instance);
+                .is_some_and(|d| d.default_instance.as_deref() == Some(fact.instance.as_ref()));
             crate::off_path::host_services::decision_clears(
                 &fact.instance,
                 &fact.counterparty,
@@ -3116,7 +3116,7 @@ impl HostServices for KernelServices {
         let record = Arc::clone(&d.record);
         let key = demotion_key(caller.namespace(), counterparty);
 
-        let unprefixed = (*caller.namespace() == d.default_instance)
+        let unprefixed = (d.default_instance.as_ref() == Some(caller.namespace()))
             .then(|| crate::cold::host::services_counterparty_row(counterparty));
         let owed = TrustSightOwed {
             permit: Some(permit),

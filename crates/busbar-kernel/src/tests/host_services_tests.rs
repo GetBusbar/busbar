@@ -471,16 +471,30 @@ fn absent_default_demotion_owner_preserves_scoped_durability_without_claiming_le
     let record = Arc::clone(&r.s.demotions.as_ref().unwrap().record);
     ready(record.record("cp", "unowned legacy row", 1)).unwrap();
     let me = caller("inst");
-    assert_eq!(run(|l| r.s.trust_sight(&me, "cp", "fp", l)).value, svc::TRUST_NEW);
+    assert_eq!(
+        run(|l| r.s.trust_sight(&me, "cp", "fp", l)).value,
+        svc::TRUST_NEW
+    );
     ready(r.s.trust_rule("inst/cp", crate::trust::book::Ruling::Approve)).unwrap();
-    assert_eq!(run(|l| r.s.trust_sight(&me, "cp", "moved", l)).value, svc::TRUST_DRIFTED);
+    assert_eq!(
+        run(|l| r.s.trust_sight(&me, "cp", "moved", l)).value,
+        svc::TRUST_DRIFTED
+    );
     let rows = ready(record.list());
-    assert!(rows.iter().any(|row| row.upstream == demotion_key("inst", "cp")));
+    assert!(rows
+        .iter()
+        .any(|row| row.upstream == demotion_key("inst", "cp")));
     assert!(rows.iter().any(|row| row.upstream == "cp"));
-    assert_eq!(run(|l| r.s.trust_sight(&me, "cp", "fp", l)).value, svc::TRUST_SAME);
+    assert_eq!(
+        run(|l| r.s.trust_sight(&me, "cp", "fp", l)).value,
+        svc::TRUST_SAME
+    );
     let rows = ready(record.list());
     assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].upstream, "cp", "no instance owns the unprefixed row");
+    assert_eq!(
+        rows[0].upstream, "cp",
+        "no instance owns the unprefixed row"
+    );
 }
 
 #[test]
@@ -847,7 +861,13 @@ fn an_items_drift_demotion_outlives_a_restart() {
 fn restarted(r: &Rig) -> KernelServices {
     let demotions = r.s.demotions.as_ref().unwrap();
     let mut host = KernelServices::new()
-        .with_demotions(Arc::clone(&demotions.record), &demotions.default_instance)
+        .with_demotions(
+            Arc::clone(&demotions.record),
+            demotions
+                .default_instance
+                .as_deref()
+                .expect("fixture default owner"),
+        )
         .with_pool(Arc::new(Inline));
     host = host.with_persistence(Arc::clone(&r.store));
     host
