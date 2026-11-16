@@ -397,8 +397,10 @@ pub mod need {
         let _ = req;
         todo!()
     }
-    // W0-ABI: `pub fn secret(handle: SecretHandle) -> NeedFut<'static, zeroize::Zeroizing<Vec<u8>>>;` is in the IF;
-    // zeroize is not a W0-ABI dependency (CONVENTIONS rule 10), so it lands with W1-A3.
+    pub fn secret(handle: SecretHandle) -> NeedFut<'static, zeroize::Zeroizing<Vec<u8>>> {
+        let _ = handle;
+        todo!()
+    }
     pub fn record(op: Record<'_>) -> NeedFut<'_, RecordOut> {
         let _ = op;
         todo!()
