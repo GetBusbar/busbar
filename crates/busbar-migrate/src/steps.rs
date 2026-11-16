@@ -59,6 +59,7 @@ fn v0(text: &str, work: &mut Work<'_>) -> Result<String, Refusal> {
         return Ok(text.to_owned());
     };
     migrate_1_6::run(root, template.resolved(), work.facts, work.report)?;
+    crate::secret_instances::name_modules(root, work.report)?;
     match &work.facts.ephemeral_stores {
         Some(stores) => {
             absent_store::name_the_ephemeral_store(root, template.resolved(), stores, work.report)?;

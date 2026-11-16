@@ -39,6 +39,7 @@ mod overlay;
 mod overlay_hooks;
 pub mod patch;
 pub mod records;
+mod secret_instances;
 mod settle;
 mod steps;
 mod styles;
