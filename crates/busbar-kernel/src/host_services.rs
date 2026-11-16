@@ -28,6 +28,10 @@ pub use recovery_runtime::RecoveryWork;
 
 pub const QUEUE_FULL: &str = "the record write queue is full";
 
+#[path = "invocation.rs"]
+mod invocation;
+pub use invocation::{InvocationContext, ServingGeneration};
+
 #[cfg(test)]
 #[path = "tests/invocation_context_tests.rs"]
 mod invocation_context_tests;
@@ -1021,6 +1025,21 @@ pub struct KernelServices {
     tickets: OnceLock<Arc<dyn TicketPress>>,
 }
 
+/// All policy and I/O dependencies supplied by the S7 composition root.
+/// Optional signing and ticket services represent configured absence, never deferred wiring.
+pub struct CoreServicesInputs {
+    pub persistence: Arc<crate::persistence::facade::CoreStore>,
+    pub pool: Arc<dyn Offload>,
+    pub signer: Option<Arc<dyn SignKey>>,
+    pub demotions: Arc<DemotionRecord>,
+    pub demotion_owner: Arc<str>,
+    pub tickets: Option<Arc<dyn TicketPress>>,
+    pub standing: Standing,
+    pub judge: Arc<dyn DestJudge>,
+    pub credentials: Arc<dyn CredentialRead>,
+    pub disk: Arc<crate::host_disk::DiskLane>,
+}
+
 pub use crate::channels::line_carriers::CarrierSink;
 
 pub(crate) const SESSION_EMIT_ACTION: &str = "session.emit";
@@ -1093,6 +1112,23 @@ impl std::fmt::Debug for KernelServices {
 }
 
 impl KernelServices {
+    pub fn from_inputs(inputs: CoreServicesInputs) -> Self {
+        let mut services = Self::new();
+        services.persistence = OnceLock::from(inputs.persistence);
+        services.pool = OnceLock::from(inputs.pool);
+        services.signer = inputs.signer.map(OnceLock::from).unwrap_or_default();
+        services.demotions = OnceLock::from(Demotions {
+            record: inputs.demotions,
+            default_instance: inputs.demotion_owner,
+        });
+        services.tickets = inputs.tickets.map(OnceLock::from).unwrap_or_default();
+        services.standing = OnceLock::from(inputs.standing);
+        services.judge = Some(inputs.judge);
+        services.credentials = Some(inputs.credentials);
+        services.disk = inputs.disk;
+        services
+    }
+
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -1275,6 +1311,10 @@ impl KernelServices {
             done(NestReply::Unserved(NO_NEST_ROUTE));
             return;
         };
+        self.dispatch_child(route, nest, done);
+    }
+
+    fn dispatch_child(&self, route: &Arc<dyn NestRoute>, nest: Nest, done: NestDone) {
         let permit = match self.nested.enter(nest.depth as usize) {
             Ok(permit) => permit,
             Err(_) => {
