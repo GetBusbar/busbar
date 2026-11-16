@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+use busbar_contract::json::{self, JsonValueTrait as _};
 use std::collections::HashSet;
 use std::sync::Arc;
 
@@ -131,7 +132,7 @@ async fn proof_role_binding_mode_ceiling_bounds_a_delegated_admin() {
     let resp = client
         .post(format!("http://{addr}/api/v1/admin/keys"))
         .header("x-admin-token", &delegated_token)
-        .json(&serde_json::json!({ "name": "svc" }))
+        .json(&json::json!({ "name": "svc" }))
         .send()
         .await
         .unwrap();
@@ -275,7 +276,7 @@ async fn proof_role_binding_mode_ceiling_bounds_a_delegated_admin_allowed() {
     let resp = client
         .post(format!("http://{addr}/api/v1/admin/keys"))
         .header("x-admin-token", &delegated_token)
-        .json(&serde_json::json!({ "name": "svc" }))
+        .json(&json::json!({ "name": "svc" }))
         .send()
         .await
         .unwrap();
@@ -314,7 +315,7 @@ async fn proof_max_ttl_ceiling_refuses_overask_and_clamps_default() {
             .count()
     }
 
-    let body = serde_json::json!({"name":"svc","expires_in":"48h"});
+    let body = json::json!({"name":"svc","expires_in":"48h"});
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let (module, directory, settings) = crate::distribution::rig::actual_store(&format!(
         "block-ttl-ceiling-{}",
@@ -398,7 +399,7 @@ async fn proof_max_ttl_ceiling_refuses_overask_and_clamps_default() {
         .await
         .unwrap();
     let status = resp.status().as_u16();
-    let json: serde_json::Value = resp.json().await.unwrap_or(serde_json::Value::Null);
+    let json = json::parse_value(&resp.bytes().await.unwrap_or_default()).unwrap_or_default();
     let exp = json.get("expires_at").and_then(|v| v.as_u64());
     handle.abort();
     let (refused, gov_refused, _) = (status, gov, exp);
@@ -425,7 +426,7 @@ async fn proof_max_ttl_ceiling_refuses_overask_and_clamps_default_default_clampe
     const CEIL: u64 = 24 * 3600;
 
     let t0 = busbar_kernel::store::now();
-    let body = serde_json::json!({"name":"svc"});
+    let body = json::json!({"name":"svc"});
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let (module, directory, settings) = crate::distribution::rig::actual_store(&format!(
         "block-ttl-ceiling-{}",
@@ -509,7 +510,7 @@ async fn proof_max_ttl_ceiling_refuses_overask_and_clamps_default_default_clampe
         .await
         .unwrap();
     let status = resp.status().as_u16();
-    let json: serde_json::Value = resp.json().await.unwrap_or(serde_json::Value::Null);
+    let json = json::parse_value(&resp.bytes().await.unwrap_or_default()).unwrap_or_default();
     let exp = json.get("expires_at").and_then(|v| v.as_u64());
     handle.abort();
     let (ok, _gov_ok, exp) = (status, gov, exp);
@@ -543,8 +544,7 @@ async fn proof_role_mint_ceiling_bounds_a_delegated_admin() {
         ttl_secs: None,
     };
 
-    let body =
-        serde_json::json!({"name":"svc","allowed_pools":["pool-forbidden"],"expires_in":"10m"});
+    let body = json::json!({"name":"svc","allowed_pools":["pool-forbidden"],"expires_in":"10m"});
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let (module, directory, settings) = crate::distribution::rig::actual_store(&format!(
         "role-mint-ceiling-{}",
@@ -691,7 +691,7 @@ async fn proof_role_mint_ceiling_bounds_a_delegated_admin_over_ttl() {
         ttl_secs: None,
     };
 
-    let body = serde_json::json!({"name":"svc","allowed_pools":["pool-ok"],"expires_in":"24h"});
+    let body = json::json!({"name":"svc","allowed_pools":["pool-ok"],"expires_in":"24h"});
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let (module, directory, settings) = crate::distribution::rig::actual_store(&format!(
         "role-mint-ceiling-{}",
@@ -838,7 +838,7 @@ async fn proof_role_mint_ceiling_bounds_a_delegated_admin_allowed() {
         ttl_secs: None,
     };
 
-    let body = serde_json::json!({"name":"svc","allowed_pools":["pool-ok"],"expires_in":"10m"});
+    let body = json::json!({"name":"svc","allowed_pools":["pool-ok"],"expires_in":"10m"});
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let (module, directory, settings) = crate::distribution::rig::actual_store(&format!(
         "role-mint-ceiling-{}",

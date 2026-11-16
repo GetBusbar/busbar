@@ -7,6 +7,7 @@ use crate::root::durability::{build_on_store, DurabilityConfig};
 use busbar_contract::abi::auth::{AuthPoints, POINT_HEAD};
 use busbar_contract::abi::host::service::{FLOW_CONTINUE, FLOW_STOP, REFUSE_STOPPED};
 use busbar_contract::caps::{Outcome, ReasonCode, StepName};
+use busbar_contract::json;
 use busbar_kernel::inbound::{Call, Refuse};
 use busbar_kernel::persistence::journal::RuntimeJournal;
 use std::sync::atomic::Ordering;
@@ -915,7 +916,7 @@ async fn unmetered_completion_states_its_length() {
             .await;
     let (status, body) = whole_answer(&wire);
     assert_eq!(status, 200);
-    let document: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let document: json::Value = json::parse_value(&body).unwrap();
     assert_eq!(document["resource"], "https://resource.test");
     assert_eq!(g.money.open_units(), 0);
 }

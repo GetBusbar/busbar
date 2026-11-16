@@ -87,7 +87,6 @@
       "crates/busbar-migrations/src/verification.rs": ["NativeReadback", "TargetRecoveryProbe"],
       "crates/busbar-plugin-abi/src/host.rs": ["HostExt"],
       "crates/busbar/src/root/serve_neutral.rs": ["Output"],
-      "crates/busbar/src/root/startup_upgrade/document_commit.rs": ["Checkpoints"],
       "crates/busbar/src/root/units_admin/mod.rs": ["AuditView"],
       "crates/plugin-loader/src/cold/dispatch/services.rs": ["Sweep"],
       "crates/plugin-loader/src/dispatch/auth_handle.rs": ["AuthHandleHost"],

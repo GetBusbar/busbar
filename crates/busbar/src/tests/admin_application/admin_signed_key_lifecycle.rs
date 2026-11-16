@@ -4,6 +4,7 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
+use busbar_contract::json::{self, JsonValueTrait as _};
 use busbar_kernel::audit_ring;
 
 #[tokio::test]
@@ -47,26 +48,29 @@ async fn test_admin_v1_key_idempotent_mint_and_if_match() {
     let mint = |k: &'static str| {
         admin(client.post(format!("http://{addr}/api/v1/admin/keys")))
             .header("idempotency-key", k)
-            .body(serde_json::json!({"name": "idem"}).to_string())
+            .body(json::json!({"name": "idem"}).to_string())
             .send()
     };
-    let a: serde_json::Value = mint("abc").await.unwrap().json().await.unwrap();
-    let b: serde_json::Value = mint("abc").await.unwrap().json().await.unwrap();
+    let a = mint("abc").await.unwrap().bytes().await.unwrap();
+    let a = json::parse_value(&a).unwrap();
+    let b = mint("abc").await.unwrap().bytes().await.unwrap();
+    let b = json::parse_value(&b).unwrap();
     assert_eq!(a["id"], b["id"], "replay returns the same key");
     assert_eq!(
         a["token"], b["token"],
         "replay returns the FIRST response verbatim"
     );
-    let listed: serde_json::Value = admin(client.get(format!(
+    let listed = admin(client.get(format!(
         "http://{addr}/api/v1/admin/keys?prefix={}",
         a["id"].as_str().unwrap()
     )))
     .send()
     .await
     .unwrap()
-    .json()
+    .bytes()
     .await
     .unwrap();
+    let listed = json::parse_value(&listed).unwrap();
     assert_eq!(
         listed["items"].as_array().unwrap().len(),
         1,
@@ -88,14 +92,14 @@ async fn test_admin_v1_key_idempotent_mint_and_if_match() {
         .to_string();
     let stale = admin(client.patch(format!("http://{addr}/api/v1/admin/keys/{id}")))
         .header("if-match", "\"deadbeefdeadbeef\"")
-        .body(serde_json::json!({"enabled": false}).to_string())
+        .body(json::json!({"enabled": false}).to_string())
         .send()
         .await
         .unwrap();
     assert_eq!(stale.status().as_u16(), 409, "stale If-Match conflicts");
     let fresh = admin(client.patch(format!("http://{addr}/api/v1/admin/keys/{id}")))
         .header("if-match", format!("\"{etag}\""))
-        .body(serde_json::json!({"enabled": false}).to_string())
+        .body(json::json!({"enabled": false}).to_string())
         .send()
         .await
         .unwrap();
@@ -244,16 +248,17 @@ async fn test_admin_v1_rotate_idempotent_replay_survives_the_ttl_sweep() {
     let client = reqwest::Client::new();
     let keys_url = format!("http://{addr}/api/v1/admin/keys");
 
-    let created: serde_json::Value = client
+    let created = client
         .post(&keys_url)
         .header("x-admin-token", "admintok")
-        .json(&serde_json::json!({"name": "r"}))
+        .json(&json::json!({"name": "r"}))
         .send()
         .await
         .unwrap()
-        .json()
+        .bytes()
         .await
         .unwrap();
+    let created = json::parse_value(&created).unwrap();
     let id = created["id"].as_str().unwrap().to_string();
 
     let rotate = |k: &'static str| {
@@ -268,8 +273,10 @@ async fn test_admin_v1_rotate_idempotent_replay_survives_the_ttl_sweep() {
         }
     };
 
-    let first: serde_json::Value = rotate("rot-replay").await.json().await.unwrap();
-    let second: serde_json::Value = rotate("rot-replay").await.json().await.unwrap();
+    let first = rotate("rot-replay").await.bytes().await.unwrap();
+    let first = json::parse_value(&first).unwrap();
+    let second = rotate("rot-replay").await.bytes().await.unwrap();
+    let second = json::parse_value(&second).unwrap();
 
     assert!(
         first["token"].as_str().is_some_and(|t| !t.is_empty()),
@@ -362,16 +369,17 @@ async fn test_admin_v1_rotate_idempotency_cache_key_does_not_collide_across_colo
     let client = reqwest::Client::new();
     let keys_url = format!("http://{addr}/api/v1/admin/keys");
 
-    let created: serde_json::Value = client
+    let created = client
         .post(&keys_url)
         .header("x-admin-token", "admintok")
-        .json(&serde_json::json!({"name": "victim"}))
+        .json(&json::json!({"name": "victim"}))
         .send()
         .await
         .unwrap()
-        .json()
+        .bytes()
         .await
         .unwrap();
+    let created = json::parse_value(&created).unwrap();
     let victim_id = created["id"].as_str().unwrap().to_string();
     assert!(
         !victim_id.contains(':'),
@@ -380,16 +388,17 @@ async fn test_admin_v1_rotate_idempotency_cache_key_does_not_collide_across_colo
     );
 
     let victim_header = "b:c";
-    let victim_resp: serde_json::Value = client
+    let victim_resp = client
         .post(format!("{keys_url}/{victim_id}/rotate"))
         .header("x-admin-token", "admintok")
         .header("idempotency-key", victim_header)
         .send()
         .await
         .unwrap()
-        .json()
+        .bytes()
         .await
         .unwrap();
+    let victim_resp = json::parse_value(&victim_resp).unwrap();
     let victim_token = victim_resp["token"]
         .as_str()
         .filter(|t| !t.is_empty())
@@ -406,7 +415,8 @@ async fn test_admin_v1_rotate_idempotency_cache_key_does_not_collide_across_colo
         .await
         .unwrap();
     let status = colliding.status().as_u16();
-    let body: serde_json::Value = colliding.json().await.unwrap_or(serde_json::Value::Null);
+    let body = json::parse_value(&colliding.bytes().await.unwrap_or_default())
+        .unwrap_or_else(|_| json::Value::new());
 
     let colliding_returned_victim_token =
         body.get("token").and_then(|t| t.as_str()) == Some(victim_token.as_str());
@@ -423,16 +433,17 @@ async fn test_admin_v1_rotate_idempotency_cache_key_does_not_collide_across_colo
          answered from the victim's cache entry"
     );
 
-    let replay: serde_json::Value = client
+    let replay = client
         .post(format!("{keys_url}/{victim_id}/rotate"))
         .header("x-admin-token", "admintok")
         .header("idempotency-key", victim_header)
         .send()
         .await
         .unwrap()
-        .json()
+        .bytes()
         .await
         .unwrap();
+    let replay = json::parse_value(&replay).unwrap();
     let replay_matches_victim_token =
         replay.get("token").and_then(|t| t.as_str()) == Some(victim_token.as_str());
     assert!(
@@ -479,16 +490,17 @@ async fn test_signed_mint_returns_token_and_expiry_never_stored() {
     let client = reqwest::Client::new();
     let url = format!("http://{addr}/api/v1/admin/keys");
 
-    let created: serde_json::Value = client
+    let created = client
         .post(&url)
         .header("x-admin-token", "admintok")
-        .json(&serde_json::json!({"name": "svc"}))
+        .json(&json::json!({"name": "svc"}))
         .send()
         .await
         .unwrap()
-        .json()
+        .bytes()
         .await
         .unwrap();
+    let created = json::parse_value(&created).unwrap();
     let id = created["id"].as_str().unwrap().to_string();
     let token = created["token"]
         .as_str()
@@ -511,7 +523,7 @@ async fn test_signed_mint_returns_token_and_expiry_never_stored() {
         .unwrap();
     assert_eq!(read.status().as_u16(), 200);
     let text = read.text().await.unwrap();
-    let body: serde_json::Value = serde_json::from_str(&text).unwrap();
+    let body = json::parse_value(text.as_bytes()).unwrap();
     assert_eq!(body["id"], id);
     assert!(
         body.get("token").is_none(),
@@ -559,7 +571,7 @@ async fn test_signed_mint_expiry_parsing_matrix() {
         crate::distribution::rig::actual_root(document, &directory, &module).await;
     let client = reqwest::Client::new();
     let url = format!("http://{addr}/api/v1/admin/keys");
-    let post = |body: serde_json::Value| {
+    let post = |body: json::Value| {
         client
             .post(&url)
             .header("x-admin-token", "admintok")
@@ -568,12 +580,13 @@ async fn test_signed_mint_expiry_parsing_matrix() {
     };
 
     let now = busbar_kernel::store::now();
-    let seven_d: serde_json::Value = post(serde_json::json!({"name": "k", "expires_in": "7d"}))
+    let seven_d = post(json::json!({"name": "k", "expires_in": "7d"}))
         .await
         .unwrap()
-        .json()
+        .bytes()
         .await
         .unwrap();
+    let seven_d = json::parse_value(&seven_d).unwrap();
     let exp = seven_d["expires_at"].as_u64().expect("expires_at present");
     let want = now + 7 * 86_400;
     assert!(
@@ -582,19 +595,20 @@ async fn test_signed_mint_expiry_parsing_matrix() {
     );
 
     let abs_at = now + 999_999;
-    let absolute: serde_json::Value = post(serde_json::json!({"name": "k", "expires_at": abs_at}))
+    let absolute = post(json::json!({"name": "k", "expires_at": abs_at}))
         .await
         .unwrap()
-        .json()
+        .bytes()
         .await
         .unwrap();
+    let absolute = json::parse_value(&absolute).unwrap();
     assert_eq!(
         absolute["expires_at"].as_u64(),
         Some(abs_at),
         "an absolute expires_at is used verbatim"
     );
 
-    let both = post(serde_json::json!({
+    let both = post(json::json!({
         "name": "k", "expires_in": "1h", "expires_at": abs_at
     }))
     .await
@@ -605,12 +619,12 @@ async fn test_signed_mint_expiry_parsing_matrix() {
         "expires_in + expires_at is a 400"
     );
 
-    let past = post(serde_json::json!({"name": "k", "expires_at": now - 1}))
+    let past = post(json::json!({"name": "k", "expires_at": now - 1}))
         .await
         .unwrap();
     assert_eq!(past.status().as_u16(), 400, "a past expires_at is a 400");
 
-    let bad = post(serde_json::json!({"name": "k", "expires_in": "7 fortnights"}))
+    let bad = post(json::json!({"name": "k", "expires_in": "7 fortnights"}))
         .await
         .unwrap();
     assert_eq!(bad.status().as_u16(), 400, "a malformed duration is a 400");
@@ -716,7 +730,8 @@ async fn test_signing_key_rotate_reports_kid_and_revoke_all() {
         .await
         .unwrap();
     assert_eq!(r.status().as_u16(), 200);
-    let body: serde_json::Value = r.json().await.unwrap();
+    let body = r.bytes().await.unwrap();
+    let body = json::parse_value(&body).unwrap();
     assert_eq!(
         body["current_kid"],
         busbar_kernel::governance::signing::DEFAULT_KID,
@@ -825,28 +840,30 @@ async fn test_admin_v1_audit_records_key_mutations() {
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
     let client = reqwest::Client::new();
 
-    let minted: serde_json::Value = client
+    let minted = client
         .post(format!("http://{addr}/api/v1/admin/keys"))
         .header("x-admin-token", "admintok")
         .header("content-type", "application/json")
-        .body(serde_json::json!({"name": "audit_key_probe_z3"}).to_string())
+        .body(json::json!({"name": "audit_key_probe_z3"}).to_string())
         .send()
         .await
         .unwrap()
-        .json()
+        .bytes()
         .await
         .unwrap();
+    let minted = json::parse_value(&minted).unwrap();
     let id = minted["id"].as_str().unwrap().to_string();
 
-    let audit: serde_json::Value = client
+    let audit = client
         .get(format!("http://{addr}/api/v1/admin/audit"))
         .header("x-admin-token", "admintok")
         .send()
         .await
         .unwrap()
-        .json()
+        .bytes()
         .await
         .unwrap();
+    let audit = json::parse_value(&audit).unwrap();
     let mine = audit["items"]
         .as_array()
         .unwrap()

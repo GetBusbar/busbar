@@ -1,4 +1,5 @@
 use super::*;
+use busbar_contract::json;
 
 #[test]
 fn measurement_card_history_keeps_exact_open_classes_and_legacy_absence() {
@@ -611,7 +612,7 @@ async fn actual_card_store_and_root_rate_apply_gate_the_real_app_generation_comm
     crate::register_planes();
     crate::register_diagnostics();
     let deploy = busbar_kernel::config::deploy_from_deserializer(
-        serde_json::json!({
+        &json::json!({
             "providers": {},
             "models": {},
             "auth": { "chain": [], "admin_auth": [] },

@@ -4,6 +4,8 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
+use busbar_contract::json;
+
 #[tokio::test(flavor = "current_thread")]
 async fn inspect_plugin_still_refuses_a_bad_candidate_in_the_envelope() {
     const CHILD: &str = "BUSBAR_ADMIN_BOOT_A92E3B6FE44D";
@@ -92,7 +94,7 @@ async fn inspect_plugin_still_refuses_a_bad_candidate_in_the_envelope() {
     let resp = client
         .post(format!("http://{addr}/api/v1/admin/plugins/inspect"))
         .header("x-admin-token", "admintok")
-        .json(&serde_json::json!({
+        .json(&json::json!({
             "file": "candidate.tar.gz",
             "tarball_b64": base64::engine::general_purpose::STANDARD.encode(b"not a tarball at all"),
         }))
@@ -102,7 +104,7 @@ async fn inspect_plugin_still_refuses_a_bad_candidate_in_the_envelope() {
         .to_str()
         .unwrap()
         .to_string();
-    let body: serde_json::Value = resp.json().await.unwrap();
+    let body = json::parse_value(&resp.bytes().await.unwrap()).unwrap();
     assert!(ct.starts_with("application/json"), "{ct}");
     assert_eq!(body["error"]["code"], "invalid_request");
     assert_eq!(body["error"]["message"], expected_refusal, "{body}");
@@ -110,12 +112,12 @@ async fn inspect_plugin_still_refuses_a_bad_candidate_in_the_envelope() {
     let resp = client
         .post(format!("http://{addr}/api/v1/admin/plugins/inspect"))
         .header("x-admin-token", "admintok")
-        .json(&serde_json::json!({"file":"x.tar.gz", "tarball_b64":"%%%"}))
+        .json(&json::json!({"file":"x.tar.gz", "tarball_b64":"%%%"}))
         .send()
         .await
         .unwrap();
     assert_eq!(resp.status(), reqwest::StatusCode::BAD_REQUEST);
-    let body: serde_json::Value = resp.json().await.unwrap();
+    let body = json::parse_value(&resp.bytes().await.unwrap()).unwrap();
     assert_eq!(body["error"]["code"], "invalid_request");
     handle.abort();
     println!("{WITNESS}");

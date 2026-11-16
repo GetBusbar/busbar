@@ -3,6 +3,7 @@
 
 use super::*;
 use crate::persistence::facade::{Limits, WriterAuthority};
+use busbar_contract::json;
 use busbar_contract::persistence::{
     control, BackendInfo, Call, ClockObservation, DatasetId, Durability, PersistenceBackend,
 };
@@ -33,7 +34,7 @@ impl PersistenceBackend for Backend {
             dataset: DatasetId([1; 16]),
             atomic_domain: [2; 16],
             clock_authority: [3; 16],
-            physical_version: busbar_contract::abi::sdk::store::v4::slot::PHYSICAL_VERSION,
+            physical_version: busbar_contract::persistence::PHYSICAL_VERSION,
             durability: Durability::Local,
         }
     }
@@ -390,12 +391,12 @@ async fn unknown_retains_candidate_without_replanning_and_binary_metadata_is_str
     let at = history.address("root", "r", b'M', 0).unwrap();
     {
         let mut state = backend.state.lock().unwrap();
-        let mut value: serde_json::Value =
-            serde_json::from_slice(state.rows[&at].expose(&crate::seal::lend())).unwrap();
+        let mut value: json::Value =
+            json::parse_value(state.rows[&at].expose(&crate::seal::lend())).unwrap();
         value["record"]["unexpected"] = true.into();
         state
             .rows
-            .insert(at, Secret::new(serde_json::to_vec(&value).unwrap()));
+            .insert(at, Secret::new(json::to_vec(&value).unwrap()));
     }
     assert_eq!(history.get("root", "r").await, Err(Error::Corrupt));
 }

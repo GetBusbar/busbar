@@ -125,7 +125,8 @@ impl Birth {
         if bytes.len() > 1 << 20 {
             return Err(startup::Error::Corrupt);
         }
-        let value: Self = serde_json::from_slice(bytes).map_err(|_| startup::Error::Corrupt)?;
+        let value: Self =
+            busbar_contract::json::parse(bytes).map_err(|_| startup::Error::Corrupt)?;
         if value.version != 1
             || value.dataset != dataset.0
             || value.owner == Some([0; 16])
@@ -164,7 +165,7 @@ impl Birth {
     }
 
     pub(super) fn encode(&self) -> Result<Vec<u8>, startup::Error> {
-        let bytes = serde_json::to_vec(self).map_err(|_| startup::Error::Corrupt)?;
+        let bytes = busbar_contract::json::to_vec(self).map_err(|_| startup::Error::Corrupt)?;
         if bytes.len() > 1 << 20 {
             return Err(startup::Error::Corrupt);
         }

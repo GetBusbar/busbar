@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+use busbar_contract::json::{self, JsonValueTrait as _};
 use std::collections::HashSet;
 use std::sync::Arc;
 
@@ -119,7 +120,7 @@ async fn test_admin_v1_overlay_reset_groups_reverts_to_base() {
     let created = admin(client.post(format!("http://{addr}/api/v1/admin/groups")))
         .header("content-type", "application/json")
         .body(
-            serde_json::json!({
+            json::json!({
                 "name": "user:alice",
                 "config": {"parent": "team", "limits": [{"budget": 5000, "per": "month"}]}
             })
@@ -130,13 +131,16 @@ async fn test_admin_v1_overlay_reset_groups_reverts_to_base() {
         .unwrap();
     assert_eq!(created.status().as_u16(), 201, "{:?}", created.text().await);
 
-    let listed: serde_json::Value = admin(client.get(format!("http://{addr}/api/v1/admin/groups")))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
+    let listed = json::parse_value(
+        &admin(client.get(format!("http://{addr}/api/v1/admin/groups")))
+            .send()
+            .await
+            .unwrap()
+            .bytes()
+            .await
+            .unwrap(),
+    )
+    .unwrap();
     assert!(
         listed["items"]
             .as_array()
@@ -153,14 +157,16 @@ async fn test_admin_v1_overlay_reset_groups_reverts_to_base() {
             .contains_key("user:alice"),
         "the runtime group is in the overlay before the reset"
     );
-    let ver_before: serde_json::Value =
-        admin(client.get(format!("http://{addr}/api/v1/admin/info")))
+    let ver_before = json::parse_value(
+        &admin(client.get(format!("http://{addr}/api/v1/admin/info")))
             .send()
             .await
             .unwrap()
-            .json()
+            .bytes()
             .await
-            .unwrap();
+            .unwrap(),
+    )
+    .unwrap();
     let v_before = ver_before["config_version"].as_u64().unwrap();
 
     let reset = client
@@ -170,19 +176,22 @@ async fn test_admin_v1_overlay_reset_groups_reverts_to_base() {
         .await
         .unwrap();
     assert_eq!(reset.status().as_u16(), 200, "{:?}", reset.text().await);
-    let body: serde_json::Value = reset.json().await.unwrap();
+    let body = json::parse_value(&reset.bytes().await.unwrap()).unwrap();
     assert_eq!(body["reset"], "groups");
     assert_eq!(body["changed"], true, "the reset discarded a mutation");
     let v_after = body["config_version"].as_u64().unwrap();
     assert!(v_after > v_before, "the reset bumped the config version");
 
-    let after: serde_json::Value = admin(client.get(format!("http://{addr}/api/v1/admin/groups")))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
+    let after = json::parse_value(
+        &admin(client.get(format!("http://{addr}/api/v1/admin/groups")))
+            .send()
+            .await
+            .unwrap()
+            .bytes()
+            .await
+            .unwrap(),
+    )
+    .unwrap();
     let names: Vec<&str> = after["items"]
         .as_array()
         .unwrap()
@@ -203,14 +212,17 @@ async fn test_admin_v1_overlay_reset_groups_reverts_to_base() {
         "the overlay groups section is cleared"
     );
 
-    let audit: serde_json::Value = admin(client.get(format!(
-        "http://{addr}/api/v1/admin/audit?action=overlay.reset"
-    )))
-    .send()
-    .await
-    .unwrap()
-    .json()
-    .await
+    let audit = json::parse_value(
+        &admin(client.get(format!(
+            "http://{addr}/api/v1/admin/audit?action=overlay.reset"
+        )))
+        .send()
+        .await
+        .unwrap()
+        .bytes()
+        .await
+        .unwrap(),
+    )
     .unwrap();
 
     assert!(
@@ -223,14 +235,16 @@ async fn test_admin_v1_overlay_reset_groups_reverts_to_base() {
                 && e["principal"] == common::credentials::principal_id("audit-overlay-groups")),
         "the applied reset is audited"
     );
-    let versions: serde_json::Value =
-        admin(client.get(format!("http://{addr}/api/v1/admin/config/versions")))
+    let versions = json::parse_value(
+        &admin(client.get(format!("http://{addr}/api/v1/admin/config/versions")))
             .send()
             .await
             .unwrap()
-            .json()
+            .bytes()
             .await
-            .unwrap();
+            .unwrap(),
+    )
+    .unwrap();
     assert!(
         versions["items"]
             .as_array()
@@ -337,7 +351,7 @@ async fn test_admin_v1_overlay_reset_stale_if_match_conflicts() {
 
     admin(client.post(format!("http://{addr}/api/v1/admin/groups")))
         .header("content-type", "application/json")
-        .body(serde_json::json!({"name": "user:bob", "config": {"parent": "team"}}).to_string())
+        .body(json::json!({"name": "user:bob", "config": {"parent": "team"}}).to_string())
         .send()
         .await
         .unwrap();
@@ -349,17 +363,20 @@ async fn test_admin_v1_overlay_reset_stale_if_match_conflicts() {
         .unwrap();
     assert_eq!(stale.status().as_u16(), 409);
     assert_eq!(
-        stale.json::<serde_json::Value>().await.unwrap()["error"]["code"],
+        json::parse_value(&stale.bytes().await.unwrap()).unwrap()["error"]["code"],
         "version_conflict"
     );
 
-    let listed: serde_json::Value = admin(client.get(format!("http://{addr}/api/v1/admin/groups")))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
+    let listed = json::parse_value(
+        &admin(client.get(format!("http://{addr}/api/v1/admin/groups")))
+            .send()
+            .await
+            .unwrap()
+            .bytes()
+            .await
+            .unwrap(),
+    )
+    .unwrap();
     assert!(
         listed["items"]
             .as_array()
@@ -461,13 +478,16 @@ async fn test_admin_v1_overlay_reset_empty_section_is_idempotent_noop() {
     let client = reqwest::Client::new();
     let admin = |r: reqwest::RequestBuilder| r.header("x-admin-token", "admintok");
 
-    let v_before: serde_json::Value = admin(client.get(format!("http://{addr}/api/v1/admin/info")))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
+    let v_before = json::parse_value(
+        &admin(client.get(format!("http://{addr}/api/v1/admin/info")))
+            .send()
+            .await
+            .unwrap()
+            .bytes()
+            .await
+            .unwrap(),
+    )
+    .unwrap();
 
     for section in ["groups", "hooks"] {
         let r = admin(client.delete(format!("http://{addr}/api/v1/admin/overlay/{section}")))
@@ -479,19 +499,22 @@ async fn test_admin_v1_overlay_reset_empty_section_is_idempotent_noop() {
             200,
             "empty {section} reset is a success"
         );
-        let body: serde_json::Value = r.json().await.unwrap();
+        let body = json::parse_value(&r.bytes().await.unwrap()).unwrap();
         assert_eq!(
             body["changed"], false,
             "an empty-section reset changes nothing"
         );
     }
-    let v_after: serde_json::Value = admin(client.get(format!("http://{addr}/api/v1/admin/info")))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
+    let v_after = json::parse_value(
+        &admin(client.get(format!("http://{addr}/api/v1/admin/info")))
+            .send()
+            .await
+            .unwrap()
+            .bytes()
+            .await
+            .unwrap(),
+    )
+    .unwrap();
     assert_eq!(
         v_before["config_version"], v_after["config_version"],
         "an idempotent no-op reset does not bump the version"
@@ -699,7 +722,7 @@ async fn test_admin_v1_config_settings_survives_a_real_store_reload() {
 
     let put = admin(client.put(format!("http://{addr}/api/v1/admin/config/settings")))
         .header("content-type", "application/json")
-        .body(serde_json::json!({ "per_request_fee": 9 }).to_string())
+        .body(json::json!({ "per_request_fee": 9 }).to_string())
         .send()
         .await
         .unwrap();
@@ -859,7 +882,7 @@ async fn test_admin_v1_config_settings_unresolvable_store_secret_warns_not_rejec
         .header("x-admin-token", "admintok")
         .header("content-type", "application/json")
         .body(
-            serde_json::json!({
+            json::json!({
                 "store": { "module": candidate_module, "settings": { "db_path": { "env": var } } }
             })
             .to_string(),
@@ -985,7 +1008,7 @@ async fn test_admin_v1_config_settings_reset_reverts_to_base() {
 
     admin(client.put(format!("http://{addr}/api/v1/admin/config/settings")))
         .header("content-type", "application/json")
-        .body(serde_json::json!({ "per_request_fee": 42 }).to_string())
+        .body(json::json!({ "per_request_fee": 42 }).to_string())
         .send()
         .await
         .unwrap();
@@ -1002,7 +1025,7 @@ async fn test_admin_v1_config_settings_reset_reverts_to_base() {
         .await
         .unwrap();
     assert_eq!(reset.status().as_u16(), 200, "{:?}", reset.text().await);
-    let body: serde_json::Value = reset.json().await.unwrap();
+    let body = json::parse_value(&reset.bytes().await.unwrap()).unwrap();
     assert_eq!(body["reset"], "root");
     assert_eq!(
         body["changed"], true,
@@ -1016,27 +1039,31 @@ async fn test_admin_v1_config_settings_reset_reverts_to_base() {
             .is_none(),
         "the overlay root section is cleared"
     );
-    let after: serde_json::Value =
-        admin(client.get(format!("http://{addr}/api/v1/admin/config/settings")))
+    let after = json::parse_value(
+        &admin(client.get(format!("http://{addr}/api/v1/admin/config/settings")))
             .send()
             .await
             .unwrap()
-            .json()
+            .bytes()
             .await
-            .unwrap();
+            .unwrap(),
+    )
+    .unwrap();
     assert!(
         after["settings"]["per_request_fee"].is_null(),
         "no root override after reset (base config.yaml stands)"
     );
 
-    let again: serde_json::Value =
-        admin(client.delete(format!("http://{addr}/api/v1/admin/overlay/root")))
+    let again = json::parse_value(
+        &admin(client.delete(format!("http://{addr}/api/v1/admin/overlay/root")))
             .send()
             .await
             .unwrap()
-            .json()
+            .bytes()
             .await
-            .unwrap();
+            .unwrap(),
+    )
+    .unwrap();
     assert_eq!(
         again["changed"], false,
         "an already-empty root reset is a no-op"

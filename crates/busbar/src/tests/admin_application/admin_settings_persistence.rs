@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+use busbar_contract::json::{self, JsonValueTrait as _};
 use std::collections::HashSet;
 use std::sync::Arc;
 
@@ -8,7 +9,7 @@ use crate::test_common as common;
 
 const AUDIENCE: &str = "api://admin-settings-audit";
 
-fn free_open_units() -> serde_json::Value {
+fn free_open_units() -> json::Value {
     crate::dist_root_install::install();
     let plane = busbar_kernel::plane_driver::registry::plane_decls()
         .iter()
@@ -20,9 +21,8 @@ fn free_open_units() -> serde_json::Value {
         .filter(|c| !plane.fee_units.contains(&c.class))
         .map(|c| c.class)
         .filter(|c| !busbar_contract::records::RESERVED_UNITS.contains(c))
-        .map(|c| (c.to_string(), serde_json::json!(0)))
-        .collect::<serde_json::Map<_, _>>()
-        .into()
+        .map(|c| (c, &0_u64))
+        .collect()
 }
 
 #[tokio::test]
@@ -87,7 +87,7 @@ async fn test_admin_v1_config_settings_round_trip_survives_reload() {
         .expect("the actual linked OpenAI dialect is required");
     let definitions = std::collections::HashMap::from([(
         "test-provider".to_string(),
-        serde_json::from_value::<busbar_kernel::config::ProviderDef>(serde_json::json!({
+        json::from_value::<busbar_kernel::config::ProviderDef>(&json::json!({
             "protocol": protocol, "base_url": "http://127.0.0.1:1/",
         }))
         .expect("actual provider definition"),
@@ -108,7 +108,7 @@ async fn test_admin_v1_config_settings_round_trip_survives_reload() {
     .expect("write the actual base configuration");
     std::fs::write(
         &providers_path,
-        serde_json::to_vec_pretty(&definitions).expect("serialize actual provider definitions"),
+        json::to_vec_pretty(&definitions).expect("serialize actual provider definitions"),
     )
     .expect("write the actual provider definitions");
     let deploy = busbar_kernel::config::deploy_from_deserializer(
@@ -164,13 +164,16 @@ async fn test_admin_v1_config_settings_round_trip_survives_reload() {
 
     let admin = |r: reqwest::RequestBuilder| r.header("x-admin-token", "admintok");
 
-    let before: serde_json::Value = admin(client.get(format!("http://{addr}/api/v1/admin/info")))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
+    let before = json::parse_value(
+        &admin(client.get(format!("http://{addr}/api/v1/admin/info")))
+            .send()
+            .await
+            .unwrap()
+            .bytes()
+            .await
+            .unwrap(),
+    )
+    .unwrap();
     let v_before = before["config_version"].as_u64().unwrap();
 
     let put = client
@@ -178,7 +181,7 @@ async fn test_admin_v1_config_settings_round_trip_survives_reload() {
         .header("x-admin-token", &audit_token)
         .header("content-type", "application/json")
         .body(
-            serde_json::json!({
+            json::json!({
                 "per_request_fee": 7,
                 "rate_card": { "m0": {
                     "input_utok": 1.5, "output_utok": 2.0, "units": free_open_units()
@@ -191,14 +194,16 @@ async fn test_admin_v1_config_settings_round_trip_survives_reload() {
         .await
         .unwrap();
     assert_eq!(put.status().as_u16(), 200, "{:?}", put.text().await);
-    let body: serde_json::Value =
-        admin(client.get(format!("http://{addr}/api/v1/admin/config/settings")))
+    let body = json::parse_value(
+        &admin(client.get(format!("http://{addr}/api/v1/admin/config/settings")))
             .send()
             .await
             .unwrap()
-            .json()
+            .bytes()
             .await
-            .unwrap();
+            .unwrap(),
+    )
+    .unwrap();
     assert_eq!(body["settings"]["per_request_fee"], 7);
     assert_eq!(body["settings"]["limits"]["tls_handshake_timeout_secs"], 30);
     assert!(
@@ -212,13 +217,16 @@ async fn test_admin_v1_config_settings_round_trip_survives_reload() {
     let root = doc.root.expect("root section present");
     assert_eq!(root.per_request_fee, Some(7));
 
-    let after: serde_json::Value = admin(client.get(format!("http://{addr}/api/v1/admin/info")))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
+    let after = json::parse_value(
+        &admin(client.get(format!("http://{addr}/api/v1/admin/info")))
+            .send()
+            .await
+            .unwrap()
+            .bytes()
+            .await
+            .unwrap(),
+    )
+    .unwrap();
     assert!(
         after["config_version"].as_u64().unwrap() > v_before,
         "the PUT bumped the config version"
@@ -251,14 +259,17 @@ async fn test_admin_v1_config_settings_round_trip_survives_reload() {
         );
     }
 
-    let audit: serde_json::Value = admin(client.get(format!(
-        "http://{addr}/api/v1/admin/audit?action=config.settings"
-    )))
-    .send()
-    .await
-    .unwrap()
-    .json()
-    .await
+    let audit = json::parse_value(
+        &admin(client.get(format!(
+            "http://{addr}/api/v1/admin/audit?action=config.settings"
+        )))
+        .send()
+        .await
+        .unwrap()
+        .bytes()
+        .await
+        .unwrap(),
+    )
     .unwrap();
     assert!(
         audit["items"]
@@ -317,7 +328,7 @@ async fn test_admin_v1_config_settings_process_level_flagged_reload_to_apply() {
         .expect("the actual linked OpenAI dialect is required");
     let definitions = std::collections::HashMap::from([(
         "test-provider".to_string(),
-        serde_json::from_value::<busbar_kernel::config::ProviderDef>(serde_json::json!({
+        json::from_value::<busbar_kernel::config::ProviderDef>(&json::json!({
             "protocol": protocol, "base_url": "http://127.0.0.1:1/",
         }))
         .expect("actual provider definition"),
@@ -338,7 +349,7 @@ async fn test_admin_v1_config_settings_process_level_flagged_reload_to_apply() {
     .expect("write the actual base configuration");
     std::fs::write(
         &providers_path,
-        serde_json::to_vec_pretty(&definitions).expect("serialize actual provider definitions"),
+        json::to_vec_pretty(&definitions).expect("serialize actual provider definitions"),
     )
     .expect("write the actual provider definitions");
     let deploy = busbar_kernel::config::deploy_from_deserializer(
@@ -414,7 +425,7 @@ async fn test_admin_v1_config_settings_process_level_flagged_reload_to_apply() {
         .await
         .unwrap();
     assert_eq!(put.status().as_u16(), 200, "{:?}", put.text().await);
-    let body: serde_json::Value = put.json().await.unwrap();
+    let body = json::parse_value(&put.bytes().await.unwrap()).unwrap();
     let flagged: Vec<&str> = body["reload_to_apply"]
         .as_array()
         .unwrap()
@@ -505,7 +516,7 @@ async fn test_admin_v1_config_settings_partial_update_preserves_prior() {
         .expect("the actual linked OpenAI dialect is required");
     let definitions = std::collections::HashMap::from([(
         "test-provider".to_string(),
-        serde_json::from_value::<busbar_kernel::config::ProviderDef>(serde_json::json!({
+        json::from_value::<busbar_kernel::config::ProviderDef>(&json::json!({
             "protocol": protocol, "base_url": "http://127.0.0.1:1/",
         }))
         .expect("actual provider definition"),
@@ -526,7 +537,7 @@ async fn test_admin_v1_config_settings_partial_update_preserves_prior() {
     .expect("write the actual base configuration");
     std::fs::write(
         &providers_path,
-        serde_json::to_vec_pretty(&definitions).expect("serialize actual provider definitions"),
+        json::to_vec_pretty(&definitions).expect("serialize actual provider definitions"),
     )
     .expect("write the actual provider definitions");
     let deploy = busbar_kernel::config::deploy_from_deserializer(
@@ -583,7 +594,7 @@ async fn test_admin_v1_config_settings_partial_update_preserves_prior() {
     let first = admin(client.put(format!("http://{addr}/api/v1/admin/config/settings")))
         .header("content-type", "application/json")
         .body(
-            serde_json::json!({ "rate_card": { "m0": {
+            json::json!({ "rate_card": { "m0": {
                 "input_utok": 9.0, "units": free_open_units()
             } } })
             .to_string(),
@@ -594,19 +605,21 @@ async fn test_admin_v1_config_settings_partial_update_preserves_prior() {
     assert_eq!(first.status().as_u16(), 200, "{:?}", first.text().await);
     let second = admin(client.put(format!("http://{addr}/api/v1/admin/config/settings")))
         .header("content-type", "application/json")
-        .body(serde_json::json!({ "per_request_fee": 5 }).to_string())
+        .body(json::json!({ "per_request_fee": 5 }).to_string())
         .send()
         .await
         .unwrap();
     assert_eq!(second.status().as_u16(), 200, "{:?}", second.text().await);
-    let body: serde_json::Value =
-        admin(client.get(format!("http://{addr}/api/v1/admin/config/settings")))
+    let body = json::parse_value(
+        &admin(client.get(format!("http://{addr}/api/v1/admin/config/settings")))
             .send()
             .await
             .unwrap()
-            .json()
+            .bytes()
             .await
-            .unwrap();
+            .unwrap(),
+    )
+    .unwrap();
     assert_eq!(body["settings"]["per_request_fee"], 5, "new field set");
     assert!(
         body["settings"]["rate_card"]["m0"].is_object(),
@@ -657,7 +670,7 @@ async fn test_admin_v1_config_settings_put_refuses_retired_persist_without_store
         .expect("the actual linked OpenAI dialect is required");
     let definitions = std::collections::HashMap::from([(
         "test-provider".to_string(),
-        serde_json::from_value::<busbar_kernel::config::ProviderDef>(serde_json::json!({
+        json::from_value::<busbar_kernel::config::ProviderDef>(&json::json!({
             "protocol": protocol, "base_url": "http://127.0.0.1:1/",
         }))
         .expect("actual provider definition"),
@@ -678,7 +691,7 @@ async fn test_admin_v1_config_settings_put_refuses_retired_persist_without_store
     .expect("write the actual base configuration");
     std::fs::write(
         &providers_path,
-        serde_json::to_vec_pretty(&definitions).expect("serialize actual provider definitions"),
+        json::to_vec_pretty(&definitions).expect("serialize actual provider definitions"),
     )
     .expect("write the actual provider definitions");
     let deploy = busbar_kernel::config::deploy_from_deserializer(
@@ -742,14 +755,14 @@ async fn test_admin_v1_config_settings_put_refuses_retired_persist_without_store
     )
     .unwrap();
     for value in [
-        serde_json::json!(true),
-        serde_json::json!(false),
-        serde_json::json!(null),
-        serde_json::json!("yes"),
+        json::json!(true),
+        json::json!(false),
+        json::json!(null),
+        json::json!("yes"),
     ] {
         for body in [
-            serde_json::json!({"per_request_fee": 7, "persist": value}),
-            serde_json::json!({"document_patch": {"set": {"/per_request_fee": 7}}, "persist": value}),
+            json::json!({"per_request_fee": 7, "persist": value}),
+            json::json!({"document_patch": {"set": {"/per_request_fee": 7}}, "persist": value}),
         ] {
             let put = admin(client.put(format!("http://{addr}/api/v1/admin/config/settings")))
                 .json(&body)
@@ -819,7 +832,7 @@ async fn test_admin_v1_config_settings_read_redacts_every_settings_bag() {
         .expect("the actual linked OpenAI dialect is required");
     let definitions = std::collections::HashMap::from([(
         "test-provider".to_string(),
-        serde_json::from_value::<busbar_kernel::config::ProviderDef>(serde_json::json!({
+        json::from_value::<busbar_kernel::config::ProviderDef>(&json::json!({
             "protocol": protocol, "base_url": "http://127.0.0.1:1/",
         }))
         .expect("actual provider definition"),
@@ -840,7 +853,7 @@ async fn test_admin_v1_config_settings_read_redacts_every_settings_bag() {
     .expect("write the actual base configuration");
     std::fs::write(
         &providers_path,
-        serde_json::to_vec_pretty(&definitions).expect("serialize actual provider definitions"),
+        json::to_vec_pretty(&definitions).expect("serialize actual provider definitions"),
     )
     .expect("write the actual provider definitions");
     let deploy = busbar_kernel::config::deploy_from_deserializer(
@@ -897,7 +910,7 @@ async fn test_admin_v1_config_settings_read_redacts_every_settings_bag() {
     let put = admin(client.put(format!("http://{addr}/api/v1/admin/config/settings")))
         .header("content-type", "application/json")
         .body(
-            serde_json::json!({
+            json::json!({
                 "store": {
                     "module": module,
                     "settings": { "url": "rediss://:hunter2-store\x40ledger.internal:6379" }
@@ -921,7 +934,7 @@ async fn test_admin_v1_config_settings_read_redacts_every_settings_bag() {
         !body.contains("hunter2-store"),
         "the store credential reached a READ-ONLY-scope read: {body}"
     );
-    let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let json = json::parse_value(body.as_bytes()).unwrap();
     let store = &json["settings"]["store"];
     assert_eq!(
         store["module"], module,
@@ -934,7 +947,7 @@ async fn test_admin_v1_config_settings_read_redacts_every_settings_bag() {
     // still shows what is configured and, being stricter, never a value or a hash.
     assert_eq!(
         store["settings"],
-        serde_json::json!({ "url": { "set": true, "secret_ref": null } }),
+        json::json!({ "url": { "set": true, "secret_ref": null } }),
         "the bag is projected as {{set, secret_ref}} positions, so `what is configured` survives: {json}"
     );
     assert!(
@@ -965,19 +978,19 @@ async fn test_admin_v1_config_settings_restart_only_refused_on_ephemeral_store()
     .await;
     let client = reqwest::Client::new();
     let endpoint = format!("http://{}/api/v1/admin/config/settings", fixture.addr);
-    let set = serde_json::Map::from_iter([(
-        "/advanced/response_headers/server_timing".to_owned(),
-        serde_json::json!(true),
+    let set = json::Map::from_iter([(
+        "/advanced/response_headers/server_timing",
+        &json::json!(true),
     )]);
     for (form, body, named) in [
         (
             "typed",
-            serde_json::json!({"advanced": {"response_headers": {"server_timing": true}}}),
+            json::json!({"advanced": {"response_headers": {"server_timing": true}}}),
             "advanced.response_headers",
         ),
         (
             "document",
-            serde_json::json!({"document_patch": {"set": set, "remove": []}}),
+            json::json!({"document_patch": {"set": set, "remove": []}}),
             "/advanced/response_headers",
         ),
     ] {
@@ -990,7 +1003,7 @@ async fn test_admin_v1_config_settings_restart_only_refused_on_ephemeral_store()
             .await
             .unwrap();
         let status = response.status().as_u16();
-        let refusal: serde_json::Value = response.json().await.unwrap();
+        let refusal = json::parse_value(&response.bytes().await.unwrap()).unwrap();
         assert_eq!(
             status, 409,
             "{form}: a restart-only change on an in-memory Store is refused: {refusal}"
@@ -1018,12 +1031,12 @@ async fn test_admin_v1_config_settings_restart_only_refused_on_ephemeral_store()
     let response = client
         .put(&endpoint)
         .header("If-Match", format!("\"{}\"", before.config_version))
-        .json(&serde_json::json!({"per_request_fee": 3}))
+        .json(&json::json!({"per_request_fee": 3}))
         .send()
         .await
         .unwrap();
     let status = response.status().as_u16();
-    let body: serde_json::Value = response.json().await.unwrap();
+    let body = json::parse_value(&response.bytes().await.unwrap()).unwrap();
     assert_eq!(status, 200, "control: a live setting applies: {body}");
     assert!(
         !Arc::ptr_eq(&before, &fixture.handle.load()),

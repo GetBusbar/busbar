@@ -25,7 +25,7 @@ fn a_program_upstream_does_not_print_or_serialise_its_environment_values() {
     assert!(printed.contains("15"), "{printed}");
     assert!(printed.contains("/usr/bin/grid-server"), "{printed}");
 
-    let json = serde_json::to_string(&a).expect("an upstream address serialises");
+    let json = busbar_contract::json::to_string(&a).expect("an upstream address serialises");
     assert!(
         !json.contains("ghp_live-SECRET") && !json.contains("ghp_live"),
         "a program upstream serialised a credential out of its environment: {json}"

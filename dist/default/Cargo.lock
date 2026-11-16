@@ -426,6 +426,7 @@ name = "busbar-contract"
 version = "1.6.0"
 dependencies = [
  "async-trait",
+ "axum-core",
  "base64 0.22.1",
  "busbar-crypto",
  "bytes",
@@ -828,7 +829,6 @@ dependencies = [
  "foldhash 0.2.0",
  "hex",
  "lexopt",
- "serde_json",
  "zeroize",
 ]
 
