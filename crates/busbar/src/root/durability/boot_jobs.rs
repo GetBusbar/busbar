@@ -22,11 +22,27 @@ const ALERT_AFTER: u32 = 3;
 
 /// Work retained by the own-node phase. An uncertain staged run stays exactly that run;
 /// retrying its signature would append a duplicate terminal record.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub(crate) enum PendingBootJob {
     Restart(Stamp),
     Break(BreakNotice),
     Staged(Arc<StagedRun>),
+}
+
+impl std::fmt::Debug for PendingBootJob {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Restart(stamp) => f.debug_tuple("Restart").field(stamp).finish(),
+            Self::Break(notice) => f.debug_tuple("Break").field(notice).finish(),
+            Self::Staged(run) => f
+                .debug_struct("Staged")
+                .field(
+                    "first_node_seq",
+                    &run.records().first().map(|row| row.node_seq),
+                )
+                .finish_non_exhaustive(),
+        }
+    }
 }
 
 /// Owned by the notary task during its boot gate; never stored in the request-path book.
