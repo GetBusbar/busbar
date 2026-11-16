@@ -145,6 +145,10 @@ pub struct InstanceParts {
     pub methods: u64,
     pub facts: u64,
     pub scrub: Arc<Scrub>,
+    /// What the registry keeps alive exactly as long as the instance (its slot lease and its config binding):
+    /// dropped after the instance has closed and released its image, so the slot is released only after the last
+    /// entry that can log under it has returned (IF §10.4, §11.2).
+    pub tether: Box<dyn Any + Send + Sync>,
 }
 
 /// One live plugin instance as the host holds it (IF §10.4): kind-erased, shared by an `Arc` with every proxy and
@@ -172,6 +176,8 @@ pub struct Instance {
     pub facts: u64,
     /// This instance's scrub set (§12.16), filled by custody as it resolves secrets for it.
     pub scrub: Arc<Scrub>,
+    /// See `InstanceParts::tether`; the last field, so the last to drop.
+    _tether: Box<dyn Any + Send + Sync>,
 }
 impl Instance {
     /// Built by the registry in the same poll that read the INSTANCE record of an `open` answer (§10.4), from
@@ -190,6 +196,7 @@ impl Instance {
             methods,
             facts,
             scrub,
+            tether,
         } = parts;
         Arc::new(Instance {
             live: Arc::new(live),
@@ -206,6 +213,7 @@ impl Instance {
             methods,
             facts,
             scrub,
+            _tether: tether,
         })
     }
     /// The live instance of kind `K`, shared; None when this instance is another kind. The proxies of kind `K`
@@ -551,6 +559,7 @@ pub(crate) fn step<R>(
     out: &mut PooledOut,
     call: impl FnOnce(&mut OutLease) -> R,
 ) -> Option<R> {
+    let _owner = crate::host_side::entry::Owning::set(slot);
     let _watched = Watched::enter(slot, entry);
     out.lend(call)
 }
