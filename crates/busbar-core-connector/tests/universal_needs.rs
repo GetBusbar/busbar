@@ -990,7 +990,7 @@ fn a_pended_guard_refusal_names_busbars_policy_and_dials_nothing() {
     assert!(
         err.ends_with(
             ": busbar refused it before connecting: the destination guard refuses an internal or \
-             loopback address (list it in advanced.allow_destinations to allow it)"
+             loopback address (enable allow_private on its upstream registration to allow it)"
         ),
         "{err}"
     );

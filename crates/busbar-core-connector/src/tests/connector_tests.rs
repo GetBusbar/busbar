@@ -3922,8 +3922,7 @@ mod transport_pin {
             let port = far.rsplit_once(':').expect("host:port").1;
             let target = format!("judged.test:{port}");
             let destinations = busbar_kernel::config::Destinations {
-                block_private_addresses: true,
-                allow: vec!["127.0.0.0/8".to_owned()],
+                block_private_addresses: false,
                 ..busbar_kernel::config::Destinations::default()
             };
             let guard = crate::guard::Guard::from_config(&destinations).unwrap();
@@ -4043,6 +4042,13 @@ fn a_registrations_private_reach_admits_its_own_opens_and_nothing_else() {
                 },
             )
         };
+        c.declare_need_to(OWNER, NeedId(2), "bytes", crate::DEFAULT_CLASS, &far)
+            .expect("configured need declares");
+        assert_eq!(
+            open_as(2, &far, "inside"),
+            Err(ConnError::Refused),
+            "a registration never gains infrastructure policy from a configured target"
+        );
         assert_eq!(
             open_as(0, &far, "inside"),
             Err(ConnError::Refused),
@@ -4072,6 +4078,11 @@ fn a_registrations_private_reach_admits_its_own_opens_and_nothing_else() {
         .expect("nothing to seal");
         let id = open_as(0, &far, "inside").expect("the registration's own open reaches");
         c.close(OWNER, id).unwrap();
+        assert_eq!(
+            open_as(0, "127.0.0.1:1", "inside"),
+            Err(ConnError::Refused),
+            "a member's grant never follows another origin on the same host"
+        );
         assert_eq!(
             open_as(0, &far, "outside"),
             Err(ConnError::Refused),
