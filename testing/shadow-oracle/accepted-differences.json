@@ -955,7 +955,7 @@
         "widened_2026_10_24": {
           "who": "owner (Matthew Jackson)",
           "when": "2026-10-24",
-          "ruling": "owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, ~/Developer/tmp/cleanup/OWNER-ASKS-step4.md)"
+          "ruling": "owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, the owner sign-off record)"
         }
       },
       "expires": {
@@ -1370,7 +1370,7 @@
       "signoff": {
         "who": "owner (Matthew Jackson)",
         "when": "2026-10-27",
-        "ruling": "owner 2026-10-27, RELAYS-RESIGN.md verdicts (~/Developer/tmp/cleanup/core/RELAYS-RESIGN.md): re-signed by the owner himself, before/after as this entry states it.",
+        "ruling": "owner 2026-10-27, RELAYS-RESIGN.md verdicts (the owner sign-off record): re-signed by the owner himself, before/after as this entry states it.",
         "previous": {
           "who": "owner (Matthew Jackson)",
           "when": "2026-10-21",
@@ -1606,7 +1606,7 @@
         "widened_2026_10_24": {
           "who": "owner (Matthew Jackson)",
           "when": "2026-10-24",
-          "ruling": "owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, ~/Developer/tmp/cleanup/OWNER-ASKS-step4.md)"
+          "ruling": "owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, the owner sign-off record)"
         }
       },
       "expires": {
@@ -1740,7 +1740,7 @@
         "widened_2026_10_24": {
           "who": "owner (Matthew Jackson)",
           "when": "2026-10-24",
-          "ruling": "owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, ~/Developer/tmp/cleanup/OWNER-ASKS-step4.md)"
+          "ruling": "owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, the owner sign-off record)"
         }
       },
       "expires": {
@@ -1888,7 +1888,7 @@
       "signoff": {
         "who": "owner (Matthew Jackson)",
         "when": "2026-10-27",
-        "ruling": "OWNER SIGNED 2026-10-27 (relayed by the coordinator; recorded ~/Developer/tmp/cleanup/NEXT.md): audit digest v4, i.e. v3 (currency dropped, #34) plus `incarnation`, is the recipe new audit records sign under",
+        "ruling": "OWNER SIGNED 2026-10-27 (relayed by the coordinator; recorded the owner sign-off record): audit digest v4, i.e. v3 (currency dropped, #34) plus `incarnation`, is the recipe new audit records sign under",
         "previous": {
           "who": "owner (Matthew Jackson)",
           "signed": "\u00a7OWNER: all 45 accepted differences re-signed for DEV-GREEN",
@@ -2128,7 +2128,7 @@
         "widened_2026_10_24": {
           "who": "owner (Matthew Jackson)",
           "when": "2026-10-24",
-          "ruling": "owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, ~/Developer/tmp/cleanup/OWNER-ASKS-step4.md)"
+          "ruling": "owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, the owner sign-off record)"
         }
       },
       "expires": {
@@ -2267,7 +2267,7 @@
       "signoff": {
         "who": "owner (Matthew Jackson)",
         "when": "2026-10-27",
-        "ruling": "OWNER BILLING STANDING RULE 2026-10-27 (recorded ~/Developer/tmp/cleanup/NEXT.md, \"never ask again\"): \"dialects control what was done and ledger what was done. we bill by that. if a dialect did something its ledgered. this isn't ever a decision.\" Billing completeness is never a per-entry owner question; this entry is covered by that rule.",
+        "ruling": "OWNER BILLING STANDING RULE 2026-10-27 (recorded the owner sign-off record, \"never ask again\"): \"dialects control what was done and ledger what was done. we bill by that. if a dialect did something its ledgered. this isn't ever a decision.\" Billing completeness is never a per-entry owner question; this entry is covered by that rule.",
         "previous": {
           "who": "ruling:\u00a7MONEY IS LEDGER \u00d7 RATE CARD",
           "when": "2026-10-14",
@@ -2275,7 +2275,7 @@
           "widened_2026_10_24": {
             "who": "owner (Matthew Jackson)",
             "when": "2026-10-24",
-            "ruling": "owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, ~/Developer/tmp/cleanup/OWNER-ASKS-step4.md)"
+            "ruling": "owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, the owner sign-off record)"
           }
         }
       },
@@ -2517,7 +2517,7 @@
       "signoff": {
         "who": "owner (Matthew Jackson)",
         "when": "2026-10-27",
-        "ruling": "OWNER BILLING STANDING RULE 2026-10-27 (recorded ~/Developer/tmp/cleanup/NEXT.md, \"never ask again\"): \"dialects control what was done and ledger what was done. we bill by that. if a dialect did something its ledgered. this isn't ever a decision.\" Billing completeness is never a per-entry owner question; this entry is covered by that rule.",
+        "ruling": "OWNER BILLING STANDING RULE 2026-10-27 (recorded the owner sign-off record, \"never ask again\"): \"dialects control what was done and ledger what was done. we bill by that. if a dialect did something its ledgered. this isn't ever a decision.\" Billing completeness is never a per-entry owner question; this entry is covered by that rule.",
         "previous": {
           "who": "ruling:\u00a7MONEY IS LEDGER \u00d7 RATE CARD",
           "when": "2026-10-14",
@@ -2577,7 +2577,7 @@
         "widened_2026_10_24": {
           "who": "owner (Matthew Jackson)",
           "when": "2026-10-24",
-          "ruling": "owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, ~/Developer/tmp/cleanup/OWNER-ASKS-step4.md)"
+          "ruling": "owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, the owner sign-off record)"
         }
       },
       "expires": {
@@ -2649,7 +2649,7 @@
         "widened_2026_10_24": {
           "who": "owner (Matthew Jackson)",
           "when": "2026-10-24",
-          "ruling": "owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, ~/Developer/tmp/cleanup/OWNER-ASKS-step4.md)"
+          "ruling": "owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, the owner sign-off record)"
         }
       },
       "expires": {
@@ -2733,7 +2733,7 @@
       "classes": [
         "body"
       ],
-      "rationale": "DIALECT-FIDELITY-DESIGN F2/F6 (lane DF-WIRE). Within one dialect the request body is relayed as the caller's bytes; the members busbar governs are edited in place by byte-level member splices (codec/json_splice.rs): the mapped `model` (replaced where it stands, or inserted after the opening brace), the metering `stream_options.include_usage` (set where it stands, or the object inserted after the brace, as 1.5.5's splice already did for a body without `stream_options`), busbar's own router keys, the Gemini/Bedrock `model`/`stream` the arrival carries for routing (removed again, both ride the URL), a `path_base` reshape, and a committed `prompt: rw` rewrite (only the members and elements it changed). 1.5.5 re-serialized every such body with its object keys sorted, numbers and escapes normalized, and so did 1.6.0 before this change; an unchanged body already went out verbatim. Bytes move only for a body that is not already compact and key-sorted. The oracle's client sends compact key-sorted JSON (build-request.py, sort_keys=True), so no recorded cell moves: the cells are OWED, `cells` names them and expected_cells is 0, the way AUTH-ROW's owed cells are written. Pinned by lazy_body_tests::a_same_dialect_hop_is_the_callers_bytes_with_governed_splices (six dialects, RED arm: a re-serialize sorts `z` after `a` and prints 1.50 as 1.5), exchange_attempt::a_path_model_same_dialect_request_reaches_the_far_end_as_the_caller_wrote_it, json_splice_tests, inject_include_usage_tests::an_existing_stream_options_is_edited_in_place. A move toward the caller's real protocol bytes: pre-approved by the LLM DIALECT FIDELITY standing rule and R4, no per-item sign-off. The premise probes the same-dialect gemini and openai stream cells, whose upstream body is the caller's. NAMED 2026-10-05 (owner instruction 2026-10-05 relayed by the ARCHITECT (P6 ORACLE-STRICT): \"these are already covered by signed rulings; apply them, no new signature needed\"): route.529|failover|primary sends its chat body in the caller's own member order (`{\"model\":\"cap-fo\",\"messages\":[...]}`), not key-sorted, so the same-dialect primary's upstream body is the caller's bytes with the mapped model spliced in place, where 1.5.5 re-serialized it key-sorted; the translated fallback's body is identical to 1.5.5. Premise: that cell's upstream body IS the caller's bytes (the pointer probe). route.cheapest|card-swap NAMED 2026-10-05 by the ARCHITECT, who extends the owner's scoped entries under their existing premise (ruling on P6 ORACLE-STRICT 9e95f01ae1): both of its upstream request bodies are the caller's bytes (`{\"model\":\"cap-cheapest\",\"messages\":[...]}` in the caller's member order, model mapped in place to m-cheap / m-dear), where 1.5.5 re-serialized them key-sorted; its header order is S-16b's. Premise: each upstream body IS the caller's bytes. WIDENED 2026-10-24 (OWNER, in session): the seven webrequest capture cells whose chat is served on the same openai door, a same-dialect route: the upstream request body is the caller's bytes, as on route.cheapest|card-swap. NARROWED 2026-10-27 (ORACLE-116 review, ~/Developer/tmp/cleanup/core/ORACLE-116-REVIEW.md): on these capture cells `body` is the whole recording (the client's answer, the hook sidecar's exchange, every upstream request), so the class blanket forgave far more than the member order it was registered for. It is now a transform: only an upstream LLM body that is exactly the caller's `{\"model\":...,\"messages\":[...]}` bytes is rewritten to 1.5.5's key-sorted bytes (`/upstream/N/body` and the same bytes at the end of `/upstream/N/raw`). Everything else, the hook gate's decision, what the sidecar is sent, the client's answer, stays judged. The user-agent/accept pass-through on these cells is its own exact header spec (the sibling entry `DF-WIRE-UA`), taken out of this blanket. The never-recorded llm.fidelity request-bytes ids leave the regex: a transform cannot speak for an egress record nobody has seen.",
+      "rationale": "DIALECT-FIDELITY-DESIGN F2/F6 (lane DF-WIRE). Within one dialect the request body is relayed as the caller's bytes; the members busbar governs are edited in place by byte-level member splices (codec/json_splice.rs): the mapped `model` (replaced where it stands, or inserted after the opening brace), the metering `stream_options.include_usage` (set where it stands, or the object inserted after the brace, as 1.5.5's splice already did for a body without `stream_options`), busbar's own router keys, the Gemini/Bedrock `model`/`stream` the arrival carries for routing (removed again, both ride the URL), a `path_base` reshape, and a committed `prompt: rw` rewrite (only the members and elements it changed). 1.5.5 re-serialized every such body with its object keys sorted, numbers and escapes normalized, and so did 1.6.0 before this change; an unchanged body already went out verbatim. Bytes move only for a body that is not already compact and key-sorted. The oracle's client sends compact key-sorted JSON (build-request.py, sort_keys=True), so no recorded cell moves: the cells are OWED, `cells` names them and expected_cells is 0, the way AUTH-ROW's owed cells are written. Pinned by lazy_body_tests::a_same_dialect_hop_is_the_callers_bytes_with_governed_splices (six dialects, RED arm: a re-serialize sorts `z` after `a` and prints 1.50 as 1.5), exchange_attempt::a_path_model_same_dialect_request_reaches_the_far_end_as_the_caller_wrote_it, json_splice_tests, inject_include_usage_tests::an_existing_stream_options_is_edited_in_place. A move toward the caller's real protocol bytes: pre-approved by the LLM DIALECT FIDELITY standing rule and R4, no per-item sign-off. The premise probes the same-dialect gemini and openai stream cells, whose upstream body is the caller's. NAMED 2026-10-05 (owner instruction 2026-10-05 relayed by the ARCHITECT (P6 ORACLE-STRICT): \"these are already covered by signed rulings; apply them, no new signature needed\"): route.529|failover|primary sends its chat body in the caller's own member order (`{\"model\":\"cap-fo\",\"messages\":[...]}`), not key-sorted, so the same-dialect primary's upstream body is the caller's bytes with the mapped model spliced in place, where 1.5.5 re-serialized it key-sorted; the translated fallback's body is identical to 1.5.5. Premise: that cell's upstream body IS the caller's bytes (the pointer probe). route.cheapest|card-swap NAMED 2026-10-05 by the ARCHITECT, who extends the owner's scoped entries under their existing premise (ruling on P6 ORACLE-STRICT 9e95f01ae1): both of its upstream request bodies are the caller's bytes (`{\"model\":\"cap-cheapest\",\"messages\":[...]}` in the caller's member order, model mapped in place to m-cheap / m-dear), where 1.5.5 re-serialized them key-sorted; its header order is S-16b's. Premise: each upstream body IS the caller's bytes. WIDENED 2026-10-24 (OWNER, in session): the seven webrequest capture cells whose chat is served on the same openai door, a same-dialect route: the upstream request body is the caller's bytes, as on route.cheapest|card-swap. NARROWED 2026-10-27 (ORACLE-116 review, the owner sign-off record): on these capture cells `body` is the whole recording (the client's answer, the hook sidecar's exchange, every upstream request), so the class blanket forgave far more than the member order it was registered for. It is now a transform: only an upstream LLM body that is exactly the caller's `{\"model\":...,\"messages\":[...]}` bytes is rewritten to 1.5.5's key-sorted bytes (`/upstream/N/body` and the same bytes at the end of `/upstream/N/raw`). Everything else, the hook gate's decision, what the sidecar is sent, the client's answer, stays judged. The user-agent/accept pass-through on these cells is its own exact header spec (the sibling entry `DF-WIRE-UA`), taken out of this blanket. The never-recorded llm.fidelity request-bytes ids leave the regex: a transform cannot speak for an egress record nobody has seen.",
       "premise": {
         "all": [
           {
@@ -2772,7 +2772,7 @@
         "widened_2026_10_24": {
           "who": "owner (Matthew Jackson)",
           "when": "2026-10-24",
-          "ruling": "owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, ~/Developer/tmp/cleanup/OWNER-ASKS-step4.md)"
+          "ruling": "owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, the owner sign-off record)"
         }
       },
       "expires": {
@@ -2852,7 +2852,7 @@
         "widened_2026_10_24": {
           "who": "owner (Matthew Jackson)",
           "when": "2026-10-24",
-          "ruling": "owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, ~/Developer/tmp/cleanup/OWNER-ASKS-step4.md)"
+          "ruling": "owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, the owner sign-off record)"
         }
       },
       "expires": {
@@ -2879,7 +2879,7 @@
       "signoff": {
         "who": "owner (Matthew Jackson)",
         "when": "2026-10-27",
-        "ruling": "OWNER SIGNED 2026-10-27 (in session, recorded ~/Developer/tmp/cleanup/NEXT.md \"2026-10-27 owner answers\"): \"Sign all 5\" (DF-DROP, DF-SITES, FID-CHAT, FID-RESPONSES, FID-GEMINI), the behaviour as this entry states it",
+        "ruling": "OWNER SIGNED 2026-10-27 (in session, recorded the owner sign-off record \"2026-10-27 owner answers\"): \"Sign all 5\" (DF-DROP, DF-SITES, FID-CHAT, FID-RESPONSES, FID-GEMINI), the behaviour as this entry states it",
         "previous": {
           "who": "ruling:\u00a7OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE",
           "when": "2026-10-01",
@@ -2910,7 +2910,7 @@
       "signoff": {
         "who": "owner (Matthew Jackson)",
         "when": "2026-10-27",
-        "ruling": "OWNER SIGNED 2026-10-27 (in session, recorded ~/Developer/tmp/cleanup/NEXT.md \"2026-10-27 owner answers\"): \"Sign all 5\" (DF-DROP, DF-SITES, FID-CHAT, FID-RESPONSES, FID-GEMINI), the behaviour as this entry states it",
+        "ruling": "OWNER SIGNED 2026-10-27 (in session, recorded the owner sign-off record \"2026-10-27 owner answers\"): \"Sign all 5\" (DF-DROP, DF-SITES, FID-CHAT, FID-RESPONSES, FID-GEMINI), the behaviour as this entry states it",
         "previous": {
           "who": "ruling:\u00a7OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE",
           "when": "2026-10-01",
@@ -2967,7 +2967,7 @@
         "baseline": "1.5.5",
         "by": "2026-12-31"
       },
-      "rationale": "#85 (OWNER 2026-09-28 PLUGIN LOGGING: one log file per plugin instance, not the host log) moves the llm plane's log lines, as every plugin's, to its own plugin log file. MEASURED 2026-10-03 (lane-dg-llm, door build): the three cells read busbar.log after a request whose image_url.detail the target dialect cannot carry. 1.5.5 wrote the plane's warning `dropping image_url.detail: ... detail=\"high\"` into busbar.log; with the llm plane served through its door the host writes it to the plane's own plugin log file (recorded: work/capture/logs/plugins/llm.log holds `WARN llm plane busbar_plane_llm::codec::chat_handle: dropping image_url.detail: no cross-protocol carrier exists for this cost/latency hint (not even on a same-protocol OpenAI round-trip) detail=\"high\"`), so busbar.log lacks that one line. The upstream request, the status and every money class are unchanged; only the read_file step's body differs. NARROWED 2026-10-27 (ORACLE-116 review, ~/Developer/tmp/cleanup/core/ORACLE-116-REVIEW.md): the body blanket forgave the whole capture, the upstream request the image-detail cells exist to test included. It is now a transform on the busbar.log read only: a busbar.log that ends at the store warning reads as ending with 1.5.5's `dropping image_url.detail` line. The upstream request, the status and every other line stay judged.",
+      "rationale": "#85 (OWNER 2026-09-28 PLUGIN LOGGING: one log file per plugin instance, not the host log) moves the llm plane's log lines, as every plugin's, to its own plugin log file. MEASURED 2026-10-03 (lane-dg-llm, door build): the three cells read busbar.log after a request whose image_url.detail the target dialect cannot carry. 1.5.5 wrote the plane's warning `dropping image_url.detail: ... detail=\"high\"` into busbar.log; with the llm plane served through its door the host writes it to the plane's own plugin log file (recorded: work/capture/logs/plugins/llm.log holds `WARN llm plane busbar_plane_llm::codec::chat_handle: dropping image_url.detail: no cross-protocol carrier exists for this cost/latency hint (not even on a same-protocol OpenAI round-trip) detail=\"high\"`), so busbar.log lacks that one line. The upstream request, the status and every money class are unchanged; only the read_file step's body differs. NARROWED 2026-10-27 (ORACLE-116 review, the owner sign-off record): the body blanket forgave the whole capture, the upstream request the image-detail cells exist to test included. It is now a transform on the busbar.log read only: a busbar.log that ends at the store warning reads as ending with 1.5.5's `dropping image_url.detail` line. The upstream request, the status and every other line stay judged.",
       "transform": {
         "candidate": [
           [
@@ -3839,7 +3839,7 @@
       "signoff": {
         "who": "owner (Matthew Jackson)",
         "when": "2026-10-27",
-        "ruling": "OWNER SIGNED 2026-10-27 (in session, recorded ~/Developer/tmp/cleanup/NEXT.md \"2026-10-27 owner answers\"): \"Sign all 5\" (DF-DROP, DF-SITES, FID-CHAT, FID-RESPONSES, FID-GEMINI), the behaviour as this entry states it",
+        "ruling": "OWNER SIGNED 2026-10-27 (in session, recorded the owner sign-off record \"2026-10-27 owner answers\"): \"Sign all 5\" (DF-DROP, DF-SITES, FID-CHAT, FID-RESPONSES, FID-GEMINI), the behaviour as this entry states it",
         "previous": {
           "who": "ruling:\u00a7OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE",
           "when": "2026-10-02",
@@ -3869,7 +3869,7 @@
       "signoff": {
         "who": "owner (Matthew Jackson)",
         "when": "2026-10-27",
-        "ruling": "OWNER SIGNED 2026-10-27 (in session, recorded ~/Developer/tmp/cleanup/NEXT.md \"2026-10-27 owner answers\"): \"Sign all 5\" (DF-DROP, DF-SITES, FID-CHAT, FID-RESPONSES, FID-GEMINI), the behaviour as this entry states it",
+        "ruling": "OWNER SIGNED 2026-10-27 (in session, recorded the owner sign-off record \"2026-10-27 owner answers\"): \"Sign all 5\" (DF-DROP, DF-SITES, FID-CHAT, FID-RESPONSES, FID-GEMINI), the behaviour as this entry states it",
         "previous": {
           "who": "ruling:\u00a7OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE",
           "when": "2026-10-02",
@@ -3899,7 +3899,7 @@
       "signoff": {
         "who": "owner (Matthew Jackson)",
         "when": "2026-10-27",
-        "ruling": "OWNER SIGNED 2026-10-27 (in session, recorded ~/Developer/tmp/cleanup/NEXT.md \"2026-10-27 owner answers\"): \"Sign all 5\" (DF-DROP, DF-SITES, FID-CHAT, FID-RESPONSES, FID-GEMINI), the behaviour as this entry states it",
+        "ruling": "OWNER SIGNED 2026-10-27 (in session, recorded the owner sign-off record \"2026-10-27 owner answers\"): \"Sign all 5\" (DF-DROP, DF-SITES, FID-CHAT, FID-RESPONSES, FID-GEMINI), the behaviour as this entry states it",
         "previous": {
           "who": "ruling:\u00a7OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE",
           "when": "2026-10-02",
@@ -3954,7 +3954,7 @@
       "signoff": {
         "who": "owner (Matthew Jackson)",
         "when": "2026-10-27",
-        "ruling": "OWNER SIGNED 2026-10-27 (relayed by the coordinator; recorded ~/Developer/tmp/cleanup/NEXT.md): an apply's limits are in force only once its generation is live",
+        "ruling": "OWNER SIGNED 2026-10-27 (relayed by the coordinator; recorded the owner sign-off record): an apply's limits are in force only once its generation is live",
         "previous": {
           "who": "owner (Matthew Jackson)",
           "when": "2026-10-19",
@@ -4019,12 +4019,12 @@
         "widened_2026_10_24": {
           "who": "owner (Matthew Jackson)",
           "when": "2026-10-24",
-          "ruling": "owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, ~/Developer/tmp/cleanup/OWNER-ASKS-step4.md)"
+          "ruling": "owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, the owner sign-off record)"
         },
         "explained_2026_10_27": {
           "who": "owner (Matthew Jackson)",
           "when": "2026-10-27",
-          "ruling": "OWNER 2026-10-27 (relayed by the coordinator; recorded ~/Developer/tmp/cleanup/NEXT.md \"#92 -> OWNER: refusal message must explain itself\"): the refusal names what the body must carry; the owner signed these bytes by choosing them"
+          "ruling": "OWNER 2026-10-27 (relayed by the coordinator; recorded the owner sign-off record \"#92 -> OWNER: refusal message must explain itself\"): the refusal names what the body must carry; the owner signed these bytes by choosing them"
         }
       },
       "expires": {
@@ -4067,7 +4067,7 @@
         "widened_2026_10_24": {
           "who": "owner (Matthew Jackson)",
           "when": "2026-10-24",
-          "ruling": "owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, ~/Developer/tmp/cleanup/OWNER-ASKS-step4.md)"
+          "ruling": "owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, the owner sign-off record)"
         }
       },
       "expires": {
@@ -4151,7 +4151,7 @@
         "widened_2026_10_24": {
           "who": "owner (Matthew Jackson)",
           "when": "2026-10-24",
-          "ruling": "owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, ~/Developer/tmp/cleanup/OWNER-ASKS-step4.md)"
+          "ruling": "owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, the owner sign-off record)"
         }
       },
       "expires": {
@@ -4201,7 +4201,7 @@
       "signoff": {
         "who": "owner (Matthew Jackson)",
         "when": "2026-10-27",
-        "ruling": "owner 2026-10-27, RELAYS-RESIGN.md verdicts (~/Developer/tmp/cleanup/core/RELAYS-RESIGN.md): re-signed by the owner himself, before/after as this entry states it.",
+        "ruling": "owner 2026-10-27, RELAYS-RESIGN.md verdicts (the owner sign-off record): re-signed by the owner himself, before/after as this entry states it.",
         "previous": {
           "who": "owner (Matthew Jackson)",
           "when": "2026-10-21",
@@ -4251,7 +4251,7 @@
       "signoff": {
         "who": "owner (Matthew Jackson)",
         "when": "2026-10-27",
-        "ruling": "owner 2026-10-27, RELAYS-RESIGN.md verdicts (~/Developer/tmp/cleanup/core/RELAYS-RESIGN.md): re-signed by the owner himself, before/after as this entry states it.",
+        "ruling": "owner 2026-10-27, RELAYS-RESIGN.md verdicts (the owner sign-off record): re-signed by the owner himself, before/after as this entry states it.",
         "previous": {
           "who": "owner (Matthew Jackson)",
           "when": "2026-10-21",
@@ -4296,11 +4296,11 @@
       "id": "581-alt-sse a same-dialect gemini stream forwards the client's alt=sse query",
       "kind": "breaking",
       "changelog": "On a same-dialect Gemini route the upstream request keeps the client's `?alt=sse` query; 1.5.5 dropped it.",
-      "by": "owner (Matthew Jackson), owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, ~/Developer/tmp/cleanup/OWNER-ASKS-step4.md)",
+      "by": "owner (Matthew Jackson), owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, the owner sign-off record)",
       "signoff": {
         "who": "owner (Matthew Jackson)",
         "when": "2026-10-24",
-        "ruling": "owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, ~/Developer/tmp/cleanup/OWNER-ASKS-step4.md)"
+        "ruling": "owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, the owner sign-off record)"
       },
       "expires": {
         "baseline": "1.5.5",
@@ -4328,11 +4328,11 @@
       "id": "LOG-OWN export plugin log lines go to the plugin's own log file",
       "kind": "breaking",
       "changelog": "1.6.0 Changed: an export plugin's log lines (its configuration refusals included) go to the plugin's own log file, not busbar.log.",
-      "by": "owner (Matthew Jackson), owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, ~/Developer/tmp/cleanup/OWNER-ASKS-step4.md)",
+      "by": "owner (Matthew Jackson), owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, the owner sign-off record)",
       "signoff": {
         "who": "owner (Matthew Jackson)",
         "when": "2026-10-24",
-        "ruling": "owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, ~/Developer/tmp/cleanup/OWNER-ASKS-step4.md)"
+        "ruling": "owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, the owner sign-off record)"
       },
       "expires": {
         "baseline": "1.5.5",
@@ -4347,7 +4347,7 @@
         "cell": "export|request-log-webhook|loopback-refused",
         "body_contains": "busbar: 1 models"
       },
-      "rationale": "OWNER 2026-10-24 (in session): plugins log to their own files, busbar to its own (BUSBAR-1.6.0.md \u00a711.2). The refused sink still delivers nothing; only where its line is written moved. NARROWED 2026-10-27 (ORACLE-116 review, ~/Developer/tmp/cleanup/core/ORACLE-116-REVIEW.md): the body blanket forgave the whole capture, including the upstream list that proves nothing was delivered to the loopback sink. It is now a transform on the busbar.log read only: a busbar.log that ends at the store warning reads as ending with 1.5.5's refusal line. The upstream list (no delivery to the sink), the status and every other line stay judged.",
+      "rationale": "OWNER 2026-10-24 (in session): plugins log to their own files, busbar to its own (BUSBAR-1.6.0.md \u00a711.2). The refused sink still delivers nothing; only where its line is written moved. NARROWED 2026-10-27 (ORACLE-116 review, the owner sign-off record): the body blanket forgave the whole capture, including the upstream list that proves nothing was delivered to the loopback sink. It is now a transform on the busbar.log read only: a busbar.log that ends at the store warning reads as ending with 1.5.5's refusal line. The upstream list (no delivery to the sink), the status and every other line stay judged.",
       "transform": {
         "candidate": [
           [
@@ -4361,11 +4361,11 @@
       "id": "PG-TEXT the postgres store names the server's error",
       "kind": "breaking",
       "changelog": "1.6.0 Changed: a postgres store that cannot open names the server's SQLSTATE and message (or the TLS failure) where 1.5.5 printed `db error` / `error performing TLS handshake`.",
-      "by": "owner (Matthew Jackson), owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, ~/Developer/tmp/cleanup/OWNER-ASKS-step4.md)",
+      "by": "owner (Matthew Jackson), owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, the owner sign-off record)",
       "signoff": {
         "who": "owner (Matthew Jackson)",
         "when": "2026-10-24",
-        "ruling": "owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, ~/Developer/tmp/cleanup/OWNER-ASKS-step4.md)"
+        "ruling": "owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, the owner sign-off record)"
       },
       "expires": {
         "baseline": "1.5.5",
@@ -4380,7 +4380,7 @@
         "cell": "store.boot|postgres|key-value",
         "body_contains": "plugin load failed"
       },
-      "rationale": "OWNER 2026-10-24 (in session): signed as an improvement (busbar-store-postgres render_pg_error). SCOPE 5 -> 7 (OWNER 2026-10-25, ORACLE-SIGNOFF G10): localhost (dialled since a074d076c5) and multi-host (dialled again since #1676) now reach the capture mock and print the same `28000: ...` server text as their five siblings; recorded on Linux at 351d7ee81f. NARROWED 2026-10-27 (ORACLE-116 review, ~/Developer/tmp/cleanup/core/ORACLE-116-REVIEW.md): the body blanket forgave the exit code and the recorded pg StartupMessage/SSLRequest exchange the sslmode cells exist to test, and shadowed N34-STORE-BOOT-POSTGRES's rename. It is now a transform on the error clause only: the server's `28000: oracle capture: no database here` (the capture mock's ErrorResponse) reads as 1.5.5's `db error`, and the TLS reason after `error performing TLS handshake` is dropped. The plugin name is N34-STORE-BOOT-POSTGRES's again; the exit code and the pg exchange stay judged.",
+      "rationale": "OWNER 2026-10-24 (in session): signed as an improvement (busbar-store-postgres render_pg_error). SCOPE 5 -> 7 (OWNER 2026-10-25, ORACLE-SIGNOFF G10): localhost (dialled since a074d076c5) and multi-host (dialled again since #1676) now reach the capture mock and print the same `28000: ...` server text as their five siblings; recorded on Linux at 351d7ee81f. NARROWED 2026-10-27 (ORACLE-116 review, the owner sign-off record): the body blanket forgave the exit code and the recorded pg StartupMessage/SSLRequest exchange the sslmode cells exist to test, and shadowed N34-STORE-BOOT-POSTGRES's rename. It is now a transform on the error clause only: the server's `28000: oracle capture: no database here` (the capture mock's ErrorResponse) reads as 1.5.5's `db error`, and the TLS reason after `error performing TLS handshake` is dropped. The plugin name is N34-STORE-BOOT-POSTGRES's again; the exit code and the pg exchange stay judged.",
       "transform": {
         "candidate": [
           [
@@ -4398,15 +4398,15 @@
       "id": "DRIFT the webrequest hook status reports no false drift",
       "kind": "breaking",
       "changelog": "1.6.0 Fixed: a webrequest hook's status no longer reports drift where its settings match.",
-      "by": "owner (Matthew Jackson), owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, ~/Developer/tmp/cleanup/OWNER-ASKS-step4.md)",
+      "by": "owner (Matthew Jackson), owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, the owner sign-off record)",
       "signoff": {
         "who": "owner (Matthew Jackson)",
         "when": "2026-10-27",
-        "ruling": "owner 2026-10-27, RELAYS-RESIGN.md verdicts (~/Developer/tmp/cleanup/core/RELAYS-RESIGN.md): re-signed by the owner himself, before/after as this entry states it.",
+        "ruling": "owner 2026-10-27, RELAYS-RESIGN.md verdicts (the owner sign-off record): re-signed by the owner himself, before/after as this entry states it.",
         "previous": {
           "who": "owner (Matthew Jackson)",
           "when": "2026-10-24",
-          "ruling": "owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, ~/Developer/tmp/cleanup/OWNER-ASKS-step4.md)"
+          "ruling": "owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, the owner sign-off record)"
         }
       },
       "expires": {
@@ -4428,15 +4428,15 @@
       "id": "ABI-VER interface_version reports the kind's memory-ABI contract version",
       "kind": "breaking",
       "changelog": "1.6.0 Changed: a plugin's `interface_version` is its kind's memory-ABI contract version (hook 2, store 3).",
-      "by": "owner (Matthew Jackson), owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, ~/Developer/tmp/cleanup/OWNER-ASKS-step4.md)",
+      "by": "owner (Matthew Jackson), owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, the owner sign-off record)",
       "signoff": {
         "who": "owner (Matthew Jackson)",
         "when": "2026-10-27",
-        "ruling": "owner 2026-10-27, RELAYS-RESIGN.md verdicts (~/Developer/tmp/cleanup/core/RELAYS-RESIGN.md): re-signed by the owner himself, before/after as this entry states it.",
+        "ruling": "owner 2026-10-27, RELAYS-RESIGN.md verdicts (the owner sign-off record): re-signed by the owner himself, before/after as this entry states it.",
         "previous": {
           "who": "owner (Matthew Jackson)",
           "when": "2026-10-24",
-          "ruling": "owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, ~/Developer/tmp/cleanup/OWNER-ASKS-step4.md)"
+          "ruling": "owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, the owner sign-off record)"
         }
       },
       "expires": {
@@ -4458,15 +4458,15 @@
       "id": "N34-WEBREQUEST plugin name busbar-webrequest -> busbar-hook-webrequest",
       "kind": "breaking",
       "changelog": "Breaking, signed off by the owner (plugin fleet naming, 2026-09-27): every first-party plugin is named `busbar-<kind>-<name>`, and the repo, the crate, the signed manifest name and the release asset prefix are that one name.",
-      "by": "owner (Matthew Jackson), owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, ~/Developer/tmp/cleanup/OWNER-ASKS-step4.md)",
+      "by": "owner (Matthew Jackson), owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, the owner sign-off record)",
       "signoff": {
         "who": "owner (Matthew Jackson)",
         "when": "2026-10-27",
-        "ruling": "owner 2026-10-27, RELAYS-RESIGN.md verdicts (~/Developer/tmp/cleanup/core/RELAYS-RESIGN.md): re-signed by the owner himself, before/after as this entry states it.",
+        "ruling": "owner 2026-10-27, RELAYS-RESIGN.md verdicts (the owner sign-off record): re-signed by the owner himself, before/after as this entry states it.",
         "previous": {
           "who": "owner (Matthew Jackson)",
           "when": "2026-10-24",
-          "ruling": "owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, ~/Developer/tmp/cleanup/OWNER-ASKS-step4.md)"
+          "ruling": "owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, the owner sign-off record)"
         }
       },
       "expires": {
@@ -4501,15 +4501,15 @@
       "id": "VER-MASK busbar-store-sqlite ships at 1.6.x; its version token reads as its 1.5.5-era release",
       "kind": "breaking",
       "changelog": "1.6.0 Changed: first-party plugins ship at version 1.6.x, above every 1.5.5-era release.",
-      "by": "owner (Matthew Jackson), owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, ~/Developer/tmp/cleanup/OWNER-ASKS-step4.md)",
+      "by": "owner (Matthew Jackson), owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, the owner sign-off record)",
       "signoff": {
         "who": "owner (Matthew Jackson)",
         "when": "2026-10-27",
-        "ruling": "owner 2026-10-27, RELAYS-RESIGN.md verdicts (~/Developer/tmp/cleanup/core/RELAYS-RESIGN.md): re-signed by the owner himself, before/after as this entry states it. Signed on condition G2: every plugin is tagged 1.6.x before release.",
+        "ruling": "owner 2026-10-27, RELAYS-RESIGN.md verdicts (the owner sign-off record): re-signed by the owner himself, before/after as this entry states it. Signed on condition G2: every plugin is tagged 1.6.x before release.",
         "previous": {
           "who": "owner (Matthew Jackson)",
           "when": "2026-10-24",
-          "ruling": "owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, ~/Developer/tmp/cleanup/OWNER-ASKS-step4.md)"
+          "ruling": "owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, the owner sign-off record)"
         }
       },
       "expires": {
@@ -4544,15 +4544,15 @@
       "id": "VER-MASK busbar-store-postgres ships at 1.6.x; its version token reads as its 1.5.5-era release",
       "kind": "breaking",
       "changelog": "1.6.0 Changed: first-party plugins ship at version 1.6.x, above every 1.5.5-era release.",
-      "by": "owner (Matthew Jackson), owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, ~/Developer/tmp/cleanup/OWNER-ASKS-step4.md)",
+      "by": "owner (Matthew Jackson), owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, the owner sign-off record)",
       "signoff": {
         "who": "owner (Matthew Jackson)",
         "when": "2026-10-27",
-        "ruling": "owner 2026-10-27, RELAYS-RESIGN.md verdicts (~/Developer/tmp/cleanup/core/RELAYS-RESIGN.md): re-signed by the owner himself, before/after as this entry states it. Signed on condition G2: every plugin is tagged 1.6.x before release.",
+        "ruling": "owner 2026-10-27, RELAYS-RESIGN.md verdicts (the owner sign-off record): re-signed by the owner himself, before/after as this entry states it. Signed on condition G2: every plugin is tagged 1.6.x before release.",
         "previous": {
           "who": "owner (Matthew Jackson)",
           "when": "2026-10-24",
-          "ruling": "owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, ~/Developer/tmp/cleanup/OWNER-ASKS-step4.md)"
+          "ruling": "owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, the owner sign-off record)"
         }
       },
       "expires": {
@@ -4587,15 +4587,15 @@
       "id": "VER-MASK busbar-store-valkey ships at 1.6.x; its version token reads as its 1.5.5-era release",
       "kind": "breaking",
       "changelog": "1.6.0 Changed: first-party plugins ship at version 1.6.x, above every 1.5.5-era release.",
-      "by": "owner (Matthew Jackson), owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, ~/Developer/tmp/cleanup/OWNER-ASKS-step4.md)",
+      "by": "owner (Matthew Jackson), owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, the owner sign-off record)",
       "signoff": {
         "who": "owner (Matthew Jackson)",
         "when": "2026-10-27",
-        "ruling": "owner 2026-10-27, RELAYS-RESIGN.md verdicts (~/Developer/tmp/cleanup/core/RELAYS-RESIGN.md): re-signed by the owner himself, before/after as this entry states it. Signed on condition G2: every plugin is tagged 1.6.x before release.",
+        "ruling": "owner 2026-10-27, RELAYS-RESIGN.md verdicts (the owner sign-off record): re-signed by the owner himself, before/after as this entry states it. Signed on condition G2: every plugin is tagged 1.6.x before release.",
         "previous": {
           "who": "owner (Matthew Jackson)",
           "when": "2026-10-24",
-          "ruling": "owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, ~/Developer/tmp/cleanup/OWNER-ASKS-step4.md)"
+          "ruling": "owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, the owner sign-off record)"
         }
       },
       "expires": {
@@ -4630,15 +4630,15 @@
       "id": "VER-MASK busbar-store-mysql ships at 1.6.x; its version token reads as its 1.5.5-era release",
       "kind": "breaking",
       "changelog": "1.6.0 Changed: first-party plugins ship at version 1.6.x, above every 1.5.5-era release.",
-      "by": "owner (Matthew Jackson), owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, ~/Developer/tmp/cleanup/OWNER-ASKS-step4.md)",
+      "by": "owner (Matthew Jackson), owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, the owner sign-off record)",
       "signoff": {
         "who": "owner (Matthew Jackson)",
         "when": "2026-10-27",
-        "ruling": "owner 2026-10-27, RELAYS-RESIGN.md verdicts (~/Developer/tmp/cleanup/core/RELAYS-RESIGN.md): re-signed by the owner himself, before/after as this entry states it. Signed on condition G2: every plugin is tagged 1.6.x before release.",
+        "ruling": "owner 2026-10-27, RELAYS-RESIGN.md verdicts (the owner sign-off record): re-signed by the owner himself, before/after as this entry states it. Signed on condition G2: every plugin is tagged 1.6.x before release.",
         "previous": {
           "who": "owner (Matthew Jackson)",
           "when": "2026-10-24",
-          "ruling": "owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, ~/Developer/tmp/cleanup/OWNER-ASKS-step4.md)"
+          "ruling": "owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, the owner sign-off record)"
         }
       },
       "expires": {
@@ -4673,15 +4673,15 @@
       "id": "VER-MASK busbar-hashicorp-vault ships at 1.6.x; its version token reads as its 1.5.5-era release",
       "kind": "breaking",
       "changelog": "1.6.0 Changed: first-party plugins ship at version 1.6.x, above every 1.5.5-era release.",
-      "by": "owner (Matthew Jackson), owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, ~/Developer/tmp/cleanup/OWNER-ASKS-step4.md)",
+      "by": "owner (Matthew Jackson), owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, the owner sign-off record)",
       "signoff": {
         "who": "owner (Matthew Jackson)",
         "when": "2026-10-27",
-        "ruling": "owner 2026-10-27, RELAYS-RESIGN.md verdicts (~/Developer/tmp/cleanup/core/RELAYS-RESIGN.md): re-signed by the owner himself, before/after as this entry states it. Signed on condition G2: every plugin is tagged 1.6.x before release.",
+        "ruling": "owner 2026-10-27, RELAYS-RESIGN.md verdicts (the owner sign-off record): re-signed by the owner himself, before/after as this entry states it. Signed on condition G2: every plugin is tagged 1.6.x before release.",
         "previous": {
           "who": "owner (Matthew Jackson)",
           "when": "2026-10-24",
-          "ruling": "owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, ~/Developer/tmp/cleanup/OWNER-ASKS-step4.md)"
+          "ruling": "owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, the owner sign-off record)"
         }
       },
       "expires": {
@@ -4716,15 +4716,15 @@
       "id": "VER-MASK busbar-auth-oidc ships at 1.6.x; its version token reads as its 1.5.5-era release",
       "kind": "breaking",
       "changelog": "1.6.0 Changed: first-party plugins ship at version 1.6.x, above every 1.5.5-era release.",
-      "by": "owner (Matthew Jackson), owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, ~/Developer/tmp/cleanup/OWNER-ASKS-step4.md)",
+      "by": "owner (Matthew Jackson), owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, the owner sign-off record)",
       "signoff": {
         "who": "owner (Matthew Jackson)",
         "when": "2026-10-27",
-        "ruling": "owner 2026-10-27, RELAYS-RESIGN.md verdicts (~/Developer/tmp/cleanup/core/RELAYS-RESIGN.md): re-signed by the owner himself, before/after as this entry states it. Signed on condition G2: every plugin is tagged 1.6.x before release.",
+        "ruling": "owner 2026-10-27, RELAYS-RESIGN.md verdicts (the owner sign-off record): re-signed by the owner himself, before/after as this entry states it. Signed on condition G2: every plugin is tagged 1.6.x before release.",
         "previous": {
           "who": "owner (Matthew Jackson)",
           "when": "2026-10-24",
-          "ruling": "owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, ~/Developer/tmp/cleanup/OWNER-ASKS-step4.md)"
+          "ruling": "owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, the owner sign-off record)"
         }
       },
       "expires": {
@@ -4759,15 +4759,15 @@
       "id": "VER-MASK busbar-auth-github ships at 1.6.x; its version token reads as its 1.5.5-era release",
       "kind": "breaking",
       "changelog": "1.6.0 Changed: first-party plugins ship at version 1.6.x, above every 1.5.5-era release.",
-      "by": "owner (Matthew Jackson), owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, ~/Developer/tmp/cleanup/OWNER-ASKS-step4.md)",
+      "by": "owner (Matthew Jackson), owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, the owner sign-off record)",
       "signoff": {
         "who": "owner (Matthew Jackson)",
         "when": "2026-10-27",
-        "ruling": "owner 2026-10-27, RELAYS-RESIGN.md verdicts (~/Developer/tmp/cleanup/core/RELAYS-RESIGN.md): re-signed by the owner himself, before/after as this entry states it. Signed on condition G2: every plugin is tagged 1.6.x before release.",
+        "ruling": "owner 2026-10-27, RELAYS-RESIGN.md verdicts (the owner sign-off record): re-signed by the owner himself, before/after as this entry states it. Signed on condition G2: every plugin is tagged 1.6.x before release.",
         "previous": {
           "who": "owner (Matthew Jackson)",
           "when": "2026-10-24",
-          "ruling": "owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, ~/Developer/tmp/cleanup/OWNER-ASKS-step4.md)"
+          "ruling": "owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, the owner sign-off record)"
         }
       },
       "expires": {
@@ -4802,15 +4802,15 @@
       "id": "VER-MASK busbar-auth-ldap ships at 1.6.x; its version token reads as its 1.5.5-era release",
       "kind": "breaking",
       "changelog": "1.6.0 Changed: first-party plugins ship at version 1.6.x, above every 1.5.5-era release.",
-      "by": "owner (Matthew Jackson), owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, ~/Developer/tmp/cleanup/OWNER-ASKS-step4.md)",
+      "by": "owner (Matthew Jackson), owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, the owner sign-off record)",
       "signoff": {
         "who": "owner (Matthew Jackson)",
         "when": "2026-10-27",
-        "ruling": "owner 2026-10-27, RELAYS-RESIGN.md verdicts (~/Developer/tmp/cleanup/core/RELAYS-RESIGN.md): re-signed by the owner himself, before/after as this entry states it. Signed on condition G2: every plugin is tagged 1.6.x before release.",
+        "ruling": "owner 2026-10-27, RELAYS-RESIGN.md verdicts (the owner sign-off record): re-signed by the owner himself, before/after as this entry states it. Signed on condition G2: every plugin is tagged 1.6.x before release.",
         "previous": {
           "who": "owner (Matthew Jackson)",
           "when": "2026-10-24",
-          "ruling": "owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, ~/Developer/tmp/cleanup/OWNER-ASKS-step4.md)"
+          "ruling": "owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, the owner sign-off record)"
         }
       },
       "expires": {
@@ -4845,15 +4845,15 @@
       "id": "VER-MASK busbar-webrequest ships at 1.6.x; its version token reads as its 1.5.5-era release",
       "kind": "breaking",
       "changelog": "1.6.0 Changed: first-party plugins ship at version 1.6.x, above every 1.5.5-era release.",
-      "by": "owner (Matthew Jackson), owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, ~/Developer/tmp/cleanup/OWNER-ASKS-step4.md)",
+      "by": "owner (Matthew Jackson), owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, the owner sign-off record)",
       "signoff": {
         "who": "owner (Matthew Jackson)",
         "when": "2026-10-27",
-        "ruling": "owner 2026-10-27, RELAYS-RESIGN.md verdicts (~/Developer/tmp/cleanup/core/RELAYS-RESIGN.md): re-signed by the owner himself, before/after as this entry states it. Signed on condition G2: every plugin is tagged 1.6.x before release.",
+        "ruling": "owner 2026-10-27, RELAYS-RESIGN.md verdicts (the owner sign-off record): re-signed by the owner himself, before/after as this entry states it. Signed on condition G2: every plugin is tagged 1.6.x before release.",
         "previous": {
           "who": "owner (Matthew Jackson)",
           "when": "2026-10-24",
-          "ruling": "owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, ~/Developer/tmp/cleanup/OWNER-ASKS-step4.md)"
+          "ruling": "owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, the owner sign-off record)"
         }
       },
       "expires": {
@@ -5108,7 +5108,7 @@
       "id": "S-1-SYNTH a stream:true request is answered as a stream even when the far end answered one whole body",
       "kind": "improvement",
       "changelog": "1.6.0 Changed: a request that asks for a stream is answered as a stream in the caller's own dialect even when the upstream answers with one whole body; the conversion is audited (`egress.stream_synthesized`) and billed from the upstream's body.",
-      "by": "owner (Matthew Jackson), 2026-10-27 (signature recorded ~/Developer/tmp/cleanup/NEXT.md:328)",
+      "by": "owner (Matthew Jackson), 2026-10-27 (signature recorded the owner sign-off record)",
       "cells": "^(llm\\|anthropic\\|bedrock\\|request\\|ok_stream_whole_answer|llm\\|anthropic\\|cohere\\|request\\|ok_stream_whole_answer|llm\\|anthropic\\|gemini\\|request\\|ok_stream_whole_answer|llm\\|anthropic\\|openai\\|request\\|ok_stream_whole_answer|llm\\|anthropic\\|responses\\|request\\|ok_stream_whole_answer|llm\\|cohere\\|anthropic\\|request\\|ok_stream_whole_answer|llm\\|cohere\\|bedrock\\|request\\|ok_stream_whole_answer|llm\\|cohere\\|gemini\\|request\\|ok_stream_whole_answer|llm\\|cohere\\|openai\\|request\\|ok_stream_whole_answer|llm\\|cohere\\|responses\\|request\\|ok_stream_whole_answer|llm\\|gemini\\|anthropic\\|request\\|ok_stream_whole_answer|llm\\|gemini\\|bedrock\\|request\\|ok_stream_whole_answer|llm\\|gemini\\|cohere\\|request\\|ok_stream_whole_answer|llm\\|gemini\\|openai\\|request\\|ok_stream_whole_answer|llm\\|gemini\\|responses\\|request\\|ok_stream_whole_answer|llm\\|openai\\|anthropic\\|request\\|ok_stream_whole_answer|llm\\|openai\\|bedrock\\|request\\|ok_stream_whole_answer|llm\\|openai\\|cohere\\|request\\|ok_stream_whole_answer|llm\\|openai\\|gemini\\|request\\|ok_stream_whole_answer|llm\\|openai\\|responses\\|request\\|ok_stream_whole_answer|llm\\|responses\\|anthropic\\|request\\|ok_stream_whole_answer|llm\\|responses\\|bedrock\\|request\\|ok_stream_whole_answer|llm\\|responses\\|cohere\\|request\\|ok_stream_whole_answer|llm\\|responses\\|gemini\\|request\\|ok_stream_whole_answer|llm\\|responses\\|openai\\|request\\|ok_stream_whole_answer|llm\\|anthropic\\|responses\\|request\\|ok_stream|llm\\|bedrock\\|responses\\|request\\|ok_stream|llm\\|cohere\\|responses\\|request\\|ok_stream|llm\\|gemini\\|responses\\|request\\|ok_stream|llm\\|openai\\|responses\\|request\\|ok_stream|llm\\|responses\\|responses\\|request\\|ok_stream|llm\\|anthropic\\|anthropic\\|request\\|ok_stream_whole_answer|llm\\|bedrock\\|bedrock\\|request\\|ok_stream_whole_answer|llm\\|cohere\\|cohere\\|request\\|ok_stream_whole_answer|llm\\|gemini\\|gemini\\|request\\|ok_stream_whole_answer|llm\\|openai\\|openai\\|request\\|ok_stream_whole_answer|llm\\|responses\\|responses\\|request\\|ok_stream_whole_answer)$",
       "expected_cells": 37,
       "classes": [
@@ -5143,7 +5143,7 @@
       "signoff": {
         "who": "owner (Matthew Jackson)",
         "when": "2026-10-27",
-        "ruling": "OWNER SIGNED 2026-10-27, as recorded ~/Developer/tmp/cleanup/NEXT.md:328: \"S-1 -> OWNER SIGNED 2026-10-27: rule 'busbar answers in the caller's dialect and mode; convert when possible, refuse explained otherwise'; synthesized streams audited, billed from real body; own entry + CHANGELOG.\"",
+        "ruling": "OWNER SIGNED 2026-10-27, as recorded the owner sign-off record: \"S-1 -> OWNER SIGNED 2026-10-27: rule 'busbar answers in the caller's dialect and mode; convert when possible, refuse explained otherwise'; synthesized streams audited, billed from real body; own entry + CHANGELOG.\"",
         "widened_2026_10_28": {
           "who": "owner (Matthew Jackson)",
           "when": "2026-10-28",
@@ -5152,7 +5152,7 @@
         "widened_2026_10_31": {
           "who": "lead, under owner delegation (busbar 1.6.0)",
           "when": "2026-10-31",
-          "ruling": "LEAD-SIGNED 2026-10-31 under owner delegation (~/Developer/tmp/cleanup/SIGN-plane-llm-stream.md, Row A): extend S-1-SYNTH by the 7 same-dialect cells llm|responses|responses|request|ok_stream and llm|{anthropic,bedrock,cohere,gemini,openai,responses} same-dialect |request|ok_stream_whole_answer (30 -> 37). Before (1.5.5): 200, application/json, the whole JSON body, no audit row. After: 200, text/event-stream synthesized in the caller's dialect from the whole body, one egress.stream_synthesized audit row naming the far dialect; usage billed from the body (same counts). llm|gemini|gemini|request|ok_stream_array_whole_answer is unchanged and not covered."
+          "ruling": "LEAD-SIGNED 2026-10-31 under owner delegation (the owner sign-off record, Row A): extend S-1-SYNTH by the 7 same-dialect cells llm|responses|responses|request|ok_stream and llm|{anthropic,bedrock,cohere,gemini,openai,responses} same-dialect |request|ok_stream_whole_answer (30 -> 37). Before (1.5.5): 200, application/json, the whole JSON body, no audit row. After: 200, text/event-stream synthesized in the caller's dialect from the whole body, one egress.stream_synthesized audit row naming the far dialect; usage billed from the body (same counts). llm|gemini|gemini|request|ok_stream_array_whole_answer is unchanged and not covered."
         }
       },
       "expires": {
@@ -5211,7 +5211,7 @@
       "signoff": {
         "who": "owner (Matthew Jackson)",
         "when": "2026-10-26",
-        "ruling": "OWNER SIGNED 2026-10-26 ~17:10 PDT in session (~/Developer/tmp/cleanup/audits/ORACLE-SIGNOFF.md \"Owner-signed 2026-10-26 ~17:10 PDT: LLM vendor-spec fixes (Anthropic, Bedrock)\"): \"Fix and sign (Recommended)\"; fixes in busbar-plane-llm #44 (343bddc05b7d)"
+        "ruling": "OWNER SIGNED 2026-10-26 ~17:10 PDT in session (the owner sign-off record \"Owner-signed 2026-10-26 ~17:10 PDT: LLM vendor-spec fixes (Anthropic, Bedrock)\"): \"Fix and sign (Recommended)\"; fixes in busbar-plane-llm #44 (343bddc05b7d)"
       },
       "expires": {
         "baseline": "1.5.5",
@@ -5244,7 +5244,7 @@
       "signoff": {
         "who": "owner (Matthew Jackson)",
         "when": "2026-10-26",
-        "ruling": "OWNER SIGNED 2026-10-26 ~17:10 PDT in session (~/Developer/tmp/cleanup/audits/ORACLE-SIGNOFF.md \"Owner-signed 2026-10-26 ~17:10 PDT: LLM vendor-spec fixes (Anthropic, Bedrock)\"): \"Fix and sign (Recommended)\"; fixes in busbar-plane-llm #44 (343bddc05b7d)"
+        "ruling": "OWNER SIGNED 2026-10-26 ~17:10 PDT in session (the owner sign-off record \"Owner-signed 2026-10-26 ~17:10 PDT: LLM vendor-spec fixes (Anthropic, Bedrock)\"): \"Fix and sign (Recommended)\"; fixes in busbar-plane-llm #44 (343bddc05b7d)"
       },
       "expires": {
         "baseline": "1.5.5",
@@ -5256,7 +5256,7 @@
       "id": "W5-1925 --print-metadata-blocklist also prints the two IPv6 metadata entries the guard already refuses",
       "kind": "improvement",
       "changelog": "1.6.0: `--print-metadata-blocklist` now also lists `fd00:ec2::23` (EC2 task metadata) and `fe80::/10` (IPv6 link-local), which the guard already refused; the eleven 1.5.5 lines are unchanged and in the same order.",
-      "by": "owner (Matthew Jackson), owner-signed 2026-10-30 (~/Developer/tmp/cleanup/SIGN-1925.md)",
+      "by": "owner (Matthew Jackson), owner-signed 2026-10-30 (the owner sign-off record)",
       "signoff": {
         "who": "owner (Matthew Jackson)",
         "when": "2026-10-30",
@@ -5373,9 +5373,9 @@
       "by": "owner (Matthew Jackson), 2026-10-30 (SIGN-accept.md)",
       "signoff": {
         "who": "owner (Matthew Jackson)",
-        "signed": "owner direct 2026-10-30T19:08:05Z, verbatim 'all prooved go' in reply to the pending list item 'yes, sign the 3 accept rows on #1960' (~/Developer/tmp/cleanup/OWNER-QUEUE.md 'OWNER APPROVED 2026-10-30T19:08:05Z'; NEXT.md)",
+        "signed": "owner direct 2026-10-30T19:08:05Z, verbatim 'all prooved go' in reply to the pending list item 'yes, sign the 3 accept rows on #1960' (the owner sign-off record 'OWNER APPROVED 2026-10-30T19:08:05Z'; NEXT.md)",
         "when": "2026-10-30",
-        "ruling": "owner-signed 2026-10-30, SIGN-accept.md (~/Developer/tmp/cleanup/SIGN-accept.md): keep the http door's default `accept: */*`"
+        "ruling": "owner-signed 2026-10-30, SIGN-accept.md (the owner sign-off record): keep the http door's default `accept: */*`"
       },
       "classes": [
         "body"
@@ -5519,9 +5519,9 @@
       "by": "owner (Matthew Jackson), 2026-10-30 (SIGN-accept.md)",
       "signoff": {
         "who": "owner (Matthew Jackson)",
-        "signed": "owner direct 2026-10-30T19:08:05Z, verbatim 'all prooved go' in reply to the pending list item 'yes, sign the 3 accept rows on #1960' (~/Developer/tmp/cleanup/OWNER-QUEUE.md 'OWNER APPROVED 2026-10-30T19:08:05Z'; NEXT.md)",
+        "signed": "owner direct 2026-10-30T19:08:05Z, verbatim 'all prooved go' in reply to the pending list item 'yes, sign the 3 accept rows on #1960' (the owner sign-off record 'OWNER APPROVED 2026-10-30T19:08:05Z'; NEXT.md)",
         "when": "2026-10-30",
-        "ruling": "owner-signed 2026-10-30, SIGN-accept.md (~/Developer/tmp/cleanup/SIGN-accept.md): keep the http door's default `accept: */*`"
+        "ruling": "owner-signed 2026-10-30, SIGN-accept.md (the owner sign-off record): keep the http door's default `accept: */*`"
       },
       "classes": [
         "body"
@@ -5635,9 +5635,9 @@
       "by": "owner (Matthew Jackson), 2026-10-30 (SIGN-accept.md)",
       "signoff": {
         "who": "owner (Matthew Jackson)",
-        "signed": "owner direct 2026-10-30T19:08:05Z, verbatim 'all prooved go' in reply to the pending list item 'yes, sign the 3 accept rows on #1960' (~/Developer/tmp/cleanup/OWNER-QUEUE.md 'OWNER APPROVED 2026-10-30T19:08:05Z'; NEXT.md)",
+        "signed": "owner direct 2026-10-30T19:08:05Z, verbatim 'all prooved go' in reply to the pending list item 'yes, sign the 3 accept rows on #1960' (the owner sign-off record 'OWNER APPROVED 2026-10-30T19:08:05Z'; NEXT.md)",
         "when": "2026-10-30",
-        "ruling": "owner-signed 2026-10-30, SIGN-accept.md (~/Developer/tmp/cleanup/SIGN-accept.md): keep the http door's default `accept: */*`"
+        "ruling": "owner-signed 2026-10-30, SIGN-accept.md (the owner sign-off record): keep the http door's default `accept: */*`"
       },
       "classes": [
         "body"
@@ -6347,7 +6347,7 @@
       "kind": "improvement",
       "changelog": null,
       "changelog_reason": "A 1.6.0-pre dated-baseline row of the streams family, which no published 1.5.5 served; only the provider sees it, the caller's bytes are unchanged.",
-      "by": "owner (Matthew Jackson), owner-signed 2026-10-30 (~/Developer/tmp/cleanup/SIGN-ga-session.md, row 1)",
+      "by": "owner (Matthew Jackson), owner-signed 2026-10-30 (the owner sign-off record, row 1)",
       "signoff": {
         "who": "owner (Matthew Jackson)",
         "when": "2026-10-30",
@@ -6516,7 +6516,7 @@
       "kind": "improvement",
       "changelog": null,
       "changelog_reason": "A 1.6.0-pre dated-baseline row of the streams family, which no published 1.5.5 served.",
-      "by": "owner (Matthew Jackson), owner-signed 2026-10-30 (~/Developer/tmp/cleanup/SIGN-ga-session.md, row 2)",
+      "by": "owner (Matthew Jackson), owner-signed 2026-10-30 (the owner sign-off record, row 2)",
       "signoff": {
         "who": "owner (Matthew Jackson)",
         "when": "2026-10-30",
