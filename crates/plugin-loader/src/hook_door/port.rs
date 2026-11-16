@@ -644,15 +644,36 @@ fn indices(order: &[u32]) -> Vec<usize> {
 
 /// A POINT_ROUTE answer as the kernel's verdict (core clamps and range-checks it afterwards).
 fn verdict(name: &str, a: &HookAnswer) -> Verdict {
-    let _ = (name, a);
-    todo!()
+    match a.verb {
+        abi::VERB_ABSTAIN => Verdict::Abstain,
+        abi::VERB_PREFER => Verdict::Prefer(indices(&a.order)),
+        abi::VERB_PRIORITIZE => Verdict::Prioritize(indices(&a.order)),
+        abi::VERB_RESTRICT => Verdict::Restrict(a.restrict.iter().map(|t| t.to_string()).collect()),
+        abi::VERB_REJECT => Verdict::Reject {
+            status: a.reject_status,
+            message: a.message.as_deref().unwrap_or_default().to_owned(),
+        },
+        verb => Verdict::Failed(format!("hook '{name}' answered verb {verb} at POINT_ROUTE")),
+    }
 }
 
 /// A POINT_REWRITE answer as the kernel's rewrite verdict. REWRITE carries the generic
 /// CONVERSATION JSON shape (IF §8.4), handed on unchanged.
 fn rewrite_verdict(name: &str, a: &HookAnswer) -> RewriteVerdict {
-    let _ = (name, a);
-    todo!()
+    match a.verb {
+        abi::VERB_ABSTAIN => RewriteVerdict::Abstain,
+        abi::VERB_REWRITE => match a.rewrite.as_ref() {
+            Some(body) => RewriteVerdict::Rewrite(body.clone()),
+            None => RewriteVerdict::Failed(format!("hook '{name}' answered REWRITE with no body")),
+        },
+        abi::VERB_REJECT => RewriteVerdict::Reject {
+            status: a.reject_status,
+            message: a.message.as_deref().unwrap_or_default().to_owned(),
+        },
+        verb => RewriteVerdict::Failed(format!(
+            "hook '{name}' answered verb {verb} at POINT_REWRITE"
+        )),
+    }
 }
 
 fn decide_short(out: &DecideOut) -> bool {
