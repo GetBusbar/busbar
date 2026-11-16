@@ -9,7 +9,7 @@
 use std::collections::VecDeque;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use busbar_contract::export_calls::{Delivered as Queued, ExportCalls, Family, Sample};
 use busbar_plugin_abi::host_side::caller::{BoxFut, InstanceLimits};

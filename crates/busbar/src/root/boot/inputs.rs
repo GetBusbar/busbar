@@ -27,7 +27,6 @@ fn same_yaml(
 fn same_secret(a: &SecretModuleCfg, b: &SecretModuleCfg) -> bool {
     a.module == b.module
         && a.settings == b.settings
-        && same_yaml(&a.limits, &b.limits)
         && same_yaml(&a.insecure_transport, &b.insecure_transport)
 }
 
@@ -36,7 +35,6 @@ fn same_store(a: &Option<StoreCfg>, b: &Option<StoreCfg>) -> bool {
         (Some(a), Some(b)) => {
             a.module == b.module
                 && a.settings == b.settings
-                && same_yaml(&a.limits, &b.limits)
                 && same_yaml(&a.insecure_transport, &b.insecure_transport)
         }
         (None, None) => true,

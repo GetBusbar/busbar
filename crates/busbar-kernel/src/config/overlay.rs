@@ -644,7 +644,6 @@ pub fn apply_pre_resolve_sections(deploy: &mut DeployCfg, doc: &OverlayDoc) -> R
                 signals: hook.signals.clone(),
                 user: Some(hook.user),
                 priority: Some(hook.priority),
-                limits: None,
                 insecure_transport: None,
             },
         );

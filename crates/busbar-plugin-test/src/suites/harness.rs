@@ -35,8 +35,8 @@ use busbar_plugin_abi::plugin::Plugin;
 use busbar_plugin_abi::types::KindCode;
 use busbar_plugin_loader::admit::{admit_header, admit_linked, Admitted};
 use busbar_plugin_loader::instance::{
-    Ceilings, DeclaredEndpoint, ImagesBuilder, InstanceSpec, OpenError, OpenedPort, PluginCode,
-    Registry, Settled, SlotTable,
+    Ceilings, DeclaredEndpoint, ImagesBuilder, InstanceSpec, OpenError, OpenedPort, Registry,
+    Settled,
 };
 use busbar_plugin_loader::refusal::{Refusal, RefusalCode};
 use busbar_ports::auth::AuthPort;
@@ -47,6 +47,7 @@ use busbar_ports::plane::PlanePort;
 use busbar_ports::secret::SecretPort;
 use busbar_ports::store::StoreHandle;
 use busbar_ports::transport::TransportPort;
+use busbar_ports::PluginCode;
 use tracing::field::{Field, Visit};
 use tracing::{span, Event, Metadata, Subscriber};
 
@@ -782,16 +783,28 @@ impl Harness {
             )
         })?;
         let (identity, kind) = (first.identity().to_owned(), first.kind());
-        let slots = Arc::new(SlotTable::new());
-        busbar_plugin_loader::instance::install_sinks(&slots);
-        let mut images = ImagesBuilder::new(&HOST, slots, Ceilings::DEFAULT);
+        static PROCESS: std::sync::OnceLock<
+            Result<busbar_plugin_loader::process::ProcessResources, String>,
+        > = std::sync::OnceLock::new();
+        let process = PROCESS
+            .get_or_init(busbar_plugin_loader::process::ProcessResources::new)
+            .as_ref()
+            .map_err(|error| {
+                Refusal::new(
+                    RefusalCode::Integrity,
+                    "process",
+                    error.clone(),
+                    "process resources",
+                )
+            })?;
+        let mut images = ImagesBuilder::new(&HOST, Arc::clone(process.slots()), Ceilings::DEFAULT);
         for image in admitted {
             images.admit(image)?;
         }
         let registry = Registry::new(
             images.finish(),
             Arc::clone(&binder) as Arc<dyn ConfigBinder>,
-            Arc::new(busbar_plugin_loader::process::InstanceIds::default()),
+            Arc::clone(process.ids()),
         );
 
         Ok(Harness {
@@ -1041,7 +1054,7 @@ impl Harness {
 
     /// The settled answer of instance `name`'s last `open`, once (`Registry::take_settled`).
     pub fn settled(&self, name: &str) -> Option<Settled> {
-        self.registry.take_settled_for(self.kind, name)
+        self.registry.take_settled(name)
     }
 
     /// Every line the plugin logged since the harness was built, in order.

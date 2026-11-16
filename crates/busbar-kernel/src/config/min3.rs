@@ -218,7 +218,7 @@ pub fn parse_upstream_entry(at: &str, entry: &JsonValue) -> Result<UpstreamCfg, 
     };
     let upstream_credentials = match map.get(&"upstream_credentials").filter(|v| !v.is_null()) {
         None => None,
-        Some(value) => match json::from_value::<UpstreamCreds>(value.clone()) {
+        Some(value) => match json::from_value::<UpstreamCreds>(value) {
             Ok(creds) => Some(creds),
             Err(e) => {
                 refused.push(format!(
@@ -403,7 +403,11 @@ fn form_map<'a>(
     let Some(map) = form.as_object() else {
         return Err(format!("`{at}.auth.{word}` must be a map of {listed}"));
     };
-    if let Some(key) = map.keys().find(|key| !keys.contains(key)) {
+    if let Some(key) = map
+        .iter()
+        .map(|(key, _)| key)
+        .find(|key| !keys.contains(key))
+    {
         return Err(format!(
             "`{at}.auth.{word}.{key}` is not a key of `{word}`; the keys are {listed}"
         ));
@@ -425,7 +429,7 @@ fn auth_secret(at: &str, key: &str, value: Option<&JsonValue>) -> Result<SecretR
     let Some(value) = value.filter(|value| !value.is_null()) else {
         return Err(format!("`{at}.auth.{key}` must be a secret reference"));
     };
-    match json::from_value::<SecretRef>(value.clone()) {
+    match json::from_value::<SecretRef>(value) {
         Ok(SecretRef::None) => Err(format!(
             "`{at}.auth.{key}` is `none`, which names no credential; drop `{at}.auth` for an upstream that takes none"
         )),

@@ -33,7 +33,6 @@ fn same_store(a: &Option<StoreCfg>, b: &Option<StoreCfg>) -> bool {
         (Some(a), Some(b)) => {
             a.module == b.module
                 && a.settings == b.settings
-                && same_yaml(&a.limits, &b.limits)
                 && same_yaml(&a.insecure_transport, &b.insecure_transport)
         }
         (None, None) => true,
@@ -50,7 +49,6 @@ fn same_secrets(
             b.get(name).is_some_and(|b| {
                 a.module == b.module
                     && a.settings == b.settings
-                    && same_yaml(&a.limits, &b.limits)
                     && same_yaml(&a.insecure_transport, &b.insecure_transport)
             })
         })

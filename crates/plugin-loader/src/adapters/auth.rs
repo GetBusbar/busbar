@@ -680,7 +680,7 @@ mod tests {
     fn keys_stale_is_a_raw_answer_without_a_refresh() {
         assert!(matches!(
             verify_refusal(abi::KEYS_STALE, "kid k9", &Scrub::new()),
-            Ok(crate::ports::auth::VerifyAnswer::KeysStale)
+            Ok(busbar_ports::auth::VerifyAnswer::KeysStale)
         ));
     }
 

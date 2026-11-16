@@ -15,7 +15,7 @@ const MAX_PLUGIN_HEADERS: usize = 64;
 
 const PLUGIN_REQUEST_HEADERS_TRUNCATED_MARKER: &str = "x-busbar-headers-truncated";
 
-fn reserved_exact_paths() -> [&'static str; 5] {
+fn reserved_exact_paths() -> [&'static str; 7] {
     [
         "/healthz",
         "/livez",

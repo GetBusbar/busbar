@@ -222,7 +222,7 @@ fn given(map: &Map, key: &str) -> bool {
 }
 
 fn unknown_keys(at: &str, prefix: &str, map: &Map, known: &[&str], refused: &mut Vec<String>) {
-    for key in map.keys() {
+    for (key, _) in map {
         if !known.contains(&key) {
             refused.push(format!(
                 "{at}: `{prefix}{key}` is not an upstream key; the keys are {}",

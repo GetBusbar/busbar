@@ -3,7 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use busbar_contract::json::JsonValueTrait as _;
+use busbar_contract::json::{JsonContainerTrait as _, JsonValueTrait as _};
 use busbar_contract::secret_ref::SecretRef;
 
 /// One entry in the top-level `identity-providers:` NAMED-DEFINITION map (1.5.3). The map

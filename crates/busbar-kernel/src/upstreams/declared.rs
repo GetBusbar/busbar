@@ -386,7 +386,7 @@ pub fn core_secret_paths(
         let Some(auth) = value.get("auth").filter(|v| !v.is_null()) else {
             continue;
         };
-        if auth.is_string() {
+        if auth.is_str() {
             continue;
         }
         let Some(auth) = auth.as_object() else {
