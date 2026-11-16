@@ -236,6 +236,31 @@ fn next(rx: &Receiver<Call>) -> Call {
 }
 
 #[test]
+fn prepared_export_does_not_start_delivery_until_publication() {
+    let (port, rx) = Double::new(&[x::STREAM_LOGS]);
+    let door = PortDoor::prepare(
+        "prepared",
+        port,
+        Arc::new(Disk::default()),
+        &InstanceLimits::default(),
+    );
+    assert!(door.pump.lock().unwrap().is_none());
+    send(&door, x::STREAM_LOGS, "held");
+    assert!(matches!(
+        rx.try_recv(),
+        Err(std::sync::mpsc::TryRecvError::Empty)
+    ));
+    door.start().expect("publication starts the prepared pump");
+    assert!(door.start().is_err(), "one candidate can start only once");
+    assert_eq!(next(&rx).lines, vec![b"held".to_vec()]);
+    assert!(door.stop_until(Instant::now() + WAIT).clean());
+    assert!(
+        door.start().is_err(),
+        "a stopped generation cannot be restarted"
+    );
+}
+
+#[test]
 fn streams_0_1_2_reach_the_port_with_minted_deliveries() {
     let (port, rx) = Double::new(&[x::STREAM_METRICS, x::STREAM_LOGS, x::STREAM_TRACES]);
     let door = open(port, Arc::new(Disk::default()));
