@@ -192,3 +192,193 @@ async fn a_present_seal_row_binds_its_outcome_kind_and_sealer() {
         );
     }
 }
+
+/// The assignment can name an older writer than the journal owner. Both must be fenced,
+/// and the journal owner/head must be reread after the second fence before signing (§3.6.2).
+#[tokio::test]
+async fn a_successor_rereads_the_journal_after_fencing_a_different_owner() {
+    use super::{PredecessorInputs, Sealer};
+    use crate::root::durability::tests::BUDGET;
+    use crate::root::durability::{signer, Durability};
+    use busbar_contract::persistence::{Candidate, Decision, Mutation, PreparedCandidate};
+    use busbar_kernel::persistence::{
+        boot_identity::{BootIdentity, PredecessorFence, SealOutcome, SealRow},
+        journal::RuntimeJournal,
+    };
+    use busbar_kernel_audit::{
+        stamp_body, stamp_from_journal_body, AuditSigningKey, AuditVerifyingKey, BootstrapSigner,
+        Fingerprint, LiveSigner, Notary, Stamp, StampKind,
+    };
+    use busbar_kernel_wal::{Entry, RecordClass};
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Mutex, OnceLock,
+    };
+    use std::time::Instant;
+    let (backend, advance_clock) = crate::root::real_store::clocked_native_backend();
+    let faults = crate::root::store_double::NativeFaults::over(backend);
+    let core_a = crate::root::real_store::core_over(faults.clone()).await;
+    let identity_a = Arc::new(BootIdentity::new(core_a.clone()).unwrap());
+    let node_a = identity_a.take_node("owner-reread").await.unwrap();
+    let authority_a = core_a.authority().unwrap();
+    let journal = RuntimeJournal::open(core_a.clone(), node_a.id, BUDGET)
+        .await
+        .unwrap();
+    let fixture = NativeFixture {
+        faults: faults.clone(),
+        core: core_a,
+        journal: journal.clone(),
+    };
+    let book = Arc::new(Mutex::new(fixture.book().await));
+    let seed = [0x64; 32];
+    let key_hex = AuditSigningKey::from_seed(&seed).public_key_hex();
+    let key = AuditVerifyingKey::from_hex(&key_hex).unwrap();
+    let (live, boot) = AuditSigningKey::from_seed(&seed)
+        .into_grants(LiveSigner::SameAsBootstrap)
+        .unwrap();
+    let live = Notary::new(live);
+    let boot = BootstrapSigner::new(boot);
+    let line = Durability::seal_unit(&book, audit_inputs(1), audit_pass(), &token())
+        .await
+        .unwrap();
+    let page = live
+        .sign_stamp(Stamp {
+            node: node_a.id,
+            from: 1,
+            to: 1,
+            fingerprint: Fingerprint::from_hex(&line.hash).unwrap(),
+            kind: StampKind::Live,
+            sealer: node_a.id,
+            host: "owner-reread".into(),
+            every: 1,
+            stamped_ms: line.linked_ms,
+            down_from_ms: 0,
+            down_to_ms: 0,
+            crypto: String::new(),
+            sig_alg: String::new(),
+            key_id: String::new(),
+            key_cert: 0,
+            signature: vec![],
+        })
+        .unwrap();
+    let run = journal
+        .stage_run(&[Entry::new(
+            RecordClass::Transaction,
+            stamp_body(&page).unwrap(),
+        )])
+        .unwrap();
+    journal.confirm(&run).await.unwrap();
+    Durability::seal_unit(&book, audit_inputs(2), audit_pass(), &token())
+        .await
+        .unwrap();
+    journal.flush().await.unwrap();
+
+    // A second admitted writer owns the journal; the original host assignment is unchanged.
+    let core_c = crate::root::real_store::core_over(faults.clone()).await;
+    Arc::new(BootIdentity::new(core_c.clone()).unwrap())
+        .take_node("owner-other")
+        .await
+        .unwrap();
+    let authority_c = core_c.authority().unwrap();
+    let (mut id, address) = faults
+        .requests
+        .lock()
+        .unwrap()
+        .iter()
+        .find_map(|request| {
+            request.candidate().mutations.iter().find_map(|mutation| {
+                let Mutation::Put { address, .. } = mutation else {
+                    return None;
+                };
+                (address.key.get(24) == Some(&b'O')
+                    && address.key.get(16..24) == Some(node_a.id.to_be_bytes().as_slice()))
+                .then(|| (request.candidate().id, address.clone()))
+            })
+        })
+        .unwrap();
+    id.operation = busbar_kernel::door::op_id().0;
+    let owner = [
+        b"BBJOWN01".as_slice(),
+        &authority_c.writer_epoch.to_le_bytes(),
+        &authority_c.writer,
+    ]
+    .concat();
+    let changed = PreparedCandidate::new(Candidate {
+        id,
+        codec: 1,
+        predicates: vec![],
+        mutations: vec![Mutation::Put {
+            address,
+            value: busbar_contract::Secret::new(owner),
+        }],
+        time: None,
+        result: busbar_contract::Secret::default(),
+    })
+    .unwrap();
+    let commit_key = busbar_contract::persistence::CommitKey::slotted(
+        0,
+        1,
+        &busbar_contract::caps::SlotSeal::acquire_for_tests(),
+    )
+    .unwrap();
+    assert!(matches!(
+        faults.actual.commit(changed, commit_key).await.unwrap(),
+        Decision::Applied(_)
+    ));
+    advance_clock(30);
+
+    let core_b = crate::root::real_store::core_over(faults.clone()).await;
+    let node_b = Arc::new(BootIdentity::new(core_b.clone()).unwrap())
+        .take_node("owner-reread")
+        .await
+        .unwrap();
+    assert_ne!(node_a.id, node_b.id);
+    let fence = PredecessorFence::new(core_b, "owner-reread").unwrap();
+    let reads = Arc::new(AtomicUsize::new(0));
+    let observed = reads.clone();
+    let old_node = node_a.id;
+    *faults.on_read.lock().unwrap() = Some(Arc::new(move |request| {
+        if request.addresses.iter().any(|address| {
+            address.key.get(24) == Some(&b'O')
+                && address.key.get(16..24) == Some(old_node.to_be_bytes().as_slice())
+        }) {
+            observed.fetch_add(1, Ordering::SeqCst);
+        }
+        Box::pin(async { Ok(()) })
+    }));
+    let handles = signer::spawn(live, boot, Arc::new(OnceLock::new())).unwrap();
+    let (_stop_tx, stop) = tokio::sync::watch::channel(false);
+    let mut sealer = Sealer {
+        fence: fence.clone(),
+        inputs: PredecessorInputs {
+            own: node_b.id,
+            taken_at_ms: node_b.taken_at_ms,
+            key_hex,
+        },
+        key,
+        host: "owner-reread".into(),
+        handle: handles.boot,
+        book: None,
+        stop,
+        alerted: Default::default(),
+        done: Default::default(),
+        listed_ms: 0,
+        listed_at: Instant::now(),
+    };
+    sealer.seal_all().await;
+    assert!(
+        reads.load(Ordering::SeqCst) >= 2,
+        "a changed owner must be reread after its fence"
+    );
+    let state = fence
+        .seal_state(node_a.id, authority_a.writer_epoch, authority_a.writer)
+        .await
+        .unwrap();
+    let row = SealRow::parse(state.row.as_deref().expect("the predecessor was sealed")).unwrap();
+    let SealOutcome::Stamp(body) = row.outcome else {
+        panic!("clean crash tail must receive a restart stamp")
+    };
+    let stamp = stamp_from_journal_body(&body).unwrap().unwrap();
+    assert_eq!((stamp.from, stamp.to, stamp.sealer), (2, 2, node_b.id));
+    stamp.verify(&sealer.key).unwrap();
+}
