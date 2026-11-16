@@ -135,10 +135,11 @@ mod two_replicas {
             },
             link_auth_ids: vec![INBOUND],
         };
-        let (_dir, holds) =
-            KernelDirectory::build(Arc::clone(store), Arc::new(LogEvents), vec![spec])
+        let (_dir, holds, refresh) =
+            KernelDirectory::prepare(Arc::clone(store), Arc::new(LogEvents), vec![spec])
                 .await
                 .expect("the replica loads its (empty) hold set");
+        refresh.start();
         holds
     }
 
@@ -157,7 +158,10 @@ mod two_replicas {
                 .expect("prepare candidate");
         commit_held(&store, "ann").await;
         tokio::time::sleep(Duration::from_secs(3)).await;
-        assert!(!holds(&holds_index, "ann"), "unpublished candidate must not run refresh workers");
+        assert!(
+            !holds(&holds_index, "ann"),
+            "unpublished candidate must not run refresh workers"
+        );
         workers.start();
         for _ in 0..10 {
             tokio::time::sleep(Duration::from_secs(1)).await;

@@ -49,7 +49,11 @@ impl ProvisionInstance for Fake {
         &self.creds
     }
     async fn verify(&self, request: &Request<Bytes>) -> Verified {
-        *self.request_seen.lock().unwrap() = Some((request.method().to_string(), request.uri().to_string(), request.body().to_vec()));
+        *self.request_seen.lock().unwrap() = Some((
+            request.method().to_string(),
+            request.uri().to_string(),
+            request.body().to_vec(),
+        ));
         self.verified.fetch_add(1, Ordering::SeqCst);
         self.verdict.clone()
     }
@@ -185,6 +189,10 @@ async fn own_instance_verify_receives_the_complete_original_request() {
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
     assert_eq!(
         *instance.request_seen.lock().unwrap(),
-        Some(("PATCH".into(), "/provision/scim/Groups/g?version=2".into(), b"patch body".to_vec()))
+        Some((
+            "PATCH".into(),
+            "/provision/scim/Groups/g?version=2".into(),
+            b"patch body".to_vec()
+        ))
     );
 }

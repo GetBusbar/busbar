@@ -44,6 +44,17 @@ pub trait PluginDirectory: Send + Sync + 'static {
         res: &mut NeedOut<'_>,
     ) -> impl Future<Output = Result<(), NeedErr>> + Send;
 }
+
+impl<D: PluginDirectory> PluginDirectory for Arc<D> {
+    fn apply(
+        &self,
+        who: &Caller<'_>,
+        n: DirNeed<'_>,
+        res: &mut NeedOut<'_>,
+    ) -> impl Future<Output = Result<(), NeedErr>> + Send {
+        self.as_ref().apply(who, n, res)
+    }
+}
 /// K6p. One write's optimistic attempts before Unavailable (audited `directory_contended`). Not RetryPolicy: a
 /// ConditionConflict is not a failure.
 pub const MAX_ATTEMPTS: u32 = 4;
@@ -139,6 +150,35 @@ pub struct KernelDirectory {
     instances: HashMap<Box<str>, Instance>,
 }
 
+/// Refresh work prepared with a candidate generation. Dropping it starts no tasks.
+/// The serving assembly consumes this only after publishing the complete generation.
+pub struct DirectoryRefresh {
+    workers: Vec<PreparedRefresh>,
+}
+
+struct PreparedRefresh {
+    set: Arc<HoldSet>,
+    scope: ScopedStore,
+    every_ms: u32,
+    instance: Box<str>,
+    events: Arc<dyn DirectoryEvents>,
+}
+
+impl DirectoryRefresh {
+    /// Start each prepared refresh exactly once, after successful generation publication.
+    pub fn start(self) {
+        for worker in self.workers {
+            holds::spawn_refresh(
+                &worker.set,
+                worker.scope,
+                worker.every_ms,
+                worker.instance,
+                worker.events,
+            );
+        }
+    }
+}
+
 impl KernelDirectory {
     /// Binds every instance's scope and, for each with a `link`, loads its HoldSet by a full scan before this
     /// generation serves, then starts its refresh task (must run inside a tokio runtime). Err = the instance
@@ -148,8 +188,21 @@ impl KernelDirectory {
         events: Arc<dyn DirectoryEvents>,
         specs: Vec<ProvisioningInstance>,
     ) -> Result<(Self, Holds), String> {
+        let (directory, holds, refresh) = Self::prepare(store, events, specs).await?;
+        refresh.start();
+        Ok((directory, holds))
+    }
+
+    /// Load the candidate's complete hold snapshots without starting background work.
+    /// Reserved inbound IDs must be the same IDs consumed when opening the candidate's ports.
+    pub async fn prepare(
+        store: Arc<CoreStore>,
+        events: Arc<dyn DirectoryEvents>,
+        specs: Vec<ProvisioningInstance>,
+    ) -> Result<(Self, Holds, DirectoryRefresh), String> {
         let mut instances = HashMap::new();
         let mut by_inbound: HashMap<u64, Vec<Arc<HoldSet>>> = HashMap::new();
+        let mut workers = Vec::new();
         for spec in specs {
             let scope = store::scope(&store, &spec.plugin, &spec.name).map_err(|_| {
                 format!(
@@ -167,13 +220,13 @@ impl KernelDirectory {
                         )
                     })?;
                     let set = Arc::new(HoldSet::new(held, generation));
-                    holds::spawn_refresh(
-                        &set,
-                        scope.clone(),
-                        link.refresh_ms,
-                        spec.name.clone(),
-                        Arc::clone(&events),
-                    );
+                    workers.push(PreparedRefresh {
+                        set: Arc::clone(&set),
+                        scope: scope.clone(),
+                        every_ms: link.refresh_ms,
+                        instance: spec.name.clone(),
+                        events: Arc::clone(&events),
+                    });
                     for id in &spec.link_auth_ids {
                         by_inbound.entry(*id).or_default().push(Arc::clone(&set));
                     }
@@ -202,6 +255,7 @@ impl KernelDirectory {
                 instances,
             },
             Holds { by_inbound },
+            DirectoryRefresh { workers },
         ))
     }
 
