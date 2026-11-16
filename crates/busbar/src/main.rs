@@ -1115,7 +1115,10 @@ async fn run(
 
     let door_pools = root::serve::door_pools(&cfg.plane_pools);
 
-    let root_rules = Arc::new(root::door_steps::Rules::hearing(commit_guard));
+    let root_rules = Arc::new(root::door_steps::Rules::with_reader(
+        Some(commit_guard),
+        Arc::new(config_rules),
+    ));
 
     root_rules.hold_unloaded(root::door_steps::unloaded_doors());
     let listener_plan = Arc::new(root::serve::ListenerPlan::new(
