@@ -14,7 +14,7 @@ use busbar_contract::abi::host::service::{
     REFUSE_OVER_GATE, REFUSE_STOPPED,
 };
 use busbar_contract::auth_calls::{
-    AuthCalls, Strip, StripPlace, Verified, VerifiedIdentity, VerifyAnswer, VerifyRequest,
+    AuthCalls, Decision, Strip, StripPlace, Verified, VerifiedIdentity, VerifyAnswer, VerifyRequest,
 };
 use busbar_contract::redacted::Secret;
 
@@ -1212,7 +1212,12 @@ enum SignedReaderStep {
 
 fn signed_reader_step(answer: Option<VerifyAnswer>, faulted: bool) -> SignedReaderStep {
     match answer {
-        Some(answer) if !faulted && matches!(&answer.verified, Verified::Pass) => {
+        // A pass that stops is final: it never moves on to the keys arm (Aikido 1074606963).
+        Some(answer)
+            if !faulted
+                && matches!(&answer.verified, Verified::Pass)
+                && answer.decision == Decision::Continue =>
+        {
             SignedReaderStep::Pass(answer.strips)
         }
         answer => SignedReaderStep::Final(answer.map(Box::new)),
@@ -1503,9 +1508,20 @@ fn build_header_map(head: &Head) -> axum::http::HeaderMap {
     headers
 }
 
+/// A verdict as the kernel acts on it. `DECISION_STOP` stops the request whatever the verdict beside
+/// it (abi/auth: "the transport stops the request"), so an identity or a pass with it is a
+/// rejection and keeps no identity (Aikido 1074606963); an overload keeps its own answer.
+fn honour_stop(verified: Verified, decision: Decision) -> Verified {
+    match (verified, decision) {
+        (Verified::Overloaded, _) => Verified::Overloaded,
+        (verified, Decision::Continue) => verified,
+        (_, Decision::Stop) => Verified::Reject,
+    }
+}
+
 /// A plugin's `verify` answer as one position's judgement, its identity and its strips.
 fn judged_answer(a: VerifyAnswer) -> (Judged, Option<VerifiedIdentity>, Vec<Strip>) {
-    let (judged, identity) = match a.verified {
+    let (judged, identity) = match honour_stop(a.verified, a.decision) {
         Verified::Identity(id) => (Judged::Identity, Some(id)),
         Verified::Pass => (Judged::Pass, None),
         Verified::Reject | Verified::Failed => (Judged::Denied, None),
@@ -1534,7 +1550,7 @@ fn signed_then_keys(
             let verified = if s.faulted {
                 Verified::Failed
             } else {
-                s.answer.verified
+                honour_stop(s.answer.verified, s.answer.decision)
             };
             match verified {
                 Verified::Identity(id) => {
