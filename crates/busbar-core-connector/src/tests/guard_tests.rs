@@ -1091,3 +1091,21 @@ fn tunnel_dns_answers_keep_metadata_and_private_refusals_distinct() {
         }
     }
 }
+
+/// Admission provenance cannot relax the runtime provider destination guard.
+#[test]
+fn provider_and_default_keep_identical_private_and_metadata_refusals() {
+    let g = Guard::default();
+    for class in [EGRESS_DEFAULT, EGRESS_PROVIDER] {
+        for address in ["10.0.0.7", "127.0.0.1", "fd12::1"] {
+            assert_eq!(
+                verdict(g.judge_answer("backend.test", &[ip(address)], class)),
+                Some(DEST_INTERNAL)
+            );
+        }
+        assert_eq!(
+            verdict(g.judge_answer("backend.test", &[ip("169.254.169.254")], class)),
+            Some(DEST_METADATA)
+        );
+    }
+}
