@@ -274,3 +274,9 @@ step, and a stamped boot never reads an overlay file.
 `UPGRADE_VERIFY_OFF` is refused in 1.6.0 for every egress class, including operator
 infrastructure. Plugins must use the Need API and its core-held
 `insecure_transport` policy; a plugin flag cannot disable certificate verification.
+
+### Declared upstream registrations
+
+The core `upstreams:` and `advanced.allow_destinations` keys are removed. Keep each upstream's `url` or `command`, `tls`, `auth`, `upstream_credentials`, and optional boolean `allow_private` within the registration declared by its plane. Private reach applies to that registration only; it does not bypass metadata, own-listener, or TLS checks. A pre-release flat `upstreams:` document is refused with guidance rather than assigned to a plane by guesswork.
+
+A legacy A2A `client_identity: {cert: ..., key: ...}` is refused without modifying the source config. Combine the certificate chain and private key into one PEM secret and use `tls: {client_identity: {module: file, settings: {path: /run/secrets/client.pem}}}` in the canonical registration. The plane cannot combine opaque references, and neither part is silently discarded.
