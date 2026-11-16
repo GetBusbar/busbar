@@ -549,15 +549,14 @@ fn a_forged_or_tampered_login_cookie_is_refused() {
     assert!(LoginCookie::decode(&honest, &seal()).is_some());
 
     // 1.6 dev's attack: a hand-written, unsigned cookie naming the attacker's own state.
-    let unsigned = B64.encode(serde_json::to_vec(&door_cookie()).unwrap());
+    let unsigned = B64.encode(json::to_vec(&door_cookie()).unwrap());
     assert!(LoginCookie::decode(&unsigned, &seal()).is_none());
 
     // A signed cookie whose payload was edited (here: `refresh` flipped on).
     let (payload, tag) = honest.split_once('.').unwrap();
-    let mut edited: serde_json::Value =
-        serde_json::from_slice(&B64.decode(payload).unwrap()).unwrap();
-    edited["refresh"] = serde_json::Value::Bool(true);
-    let edited = format!("{}.{tag}", B64.encode(serde_json::to_vec(&edited).unwrap()));
+    let mut edited: json::Value = json::parse_value(&B64.decode(payload).unwrap()).unwrap();
+    edited["refresh"] = json::Value::from(true);
+    let edited = format!("{}.{tag}", B64.encode(json::to_vec(&edited).unwrap()));
     assert!(LoginCookie::decode(&edited, &seal()).is_none());
 
     // Another deployment's key.
