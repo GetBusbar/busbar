@@ -646,6 +646,43 @@ impl Answer {
                     resource: resource.into(),
                 });
             }
+            PlaneOut::Mint {
+                check,
+                flags,
+                ttl_s,
+                scope,
+                audience,
+                prefix,
+                record,
+            } => self.intents.push(Intent::Mint {
+                check,
+                flags,
+                ttl_s,
+                scope: scope.map(str::to_owned),
+                audience: audience.map(str::to_owned),
+                prefix: prefix.map(str::to_owned),
+                record: record.map(<[u8]>::to_vec),
+            }),
+            PlaneOut::Sign {
+                check,
+                flags,
+                payload,
+            } => self.intents.push(Intent::Sign {
+                check,
+                flags,
+                payload: payload.to_vec(),
+            }),
+            PlaneOut::Connect {
+                check,
+                op,
+                upstream,
+                return_to,
+            } => self.intents.push(Intent::Connect {
+                check,
+                op,
+                upstream: upstream.to_owned(),
+                return_to: return_to.map(str::to_owned),
+            }),
             PlaneOut::Entitle { check, grant } => self.intents.push(Intent::Entitle {
                 check,
                 grant: grant.to_owned(),

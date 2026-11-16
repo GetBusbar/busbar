@@ -26,14 +26,17 @@ use busbar_plugin_abi::fail::failed::F_UNAVAILABLE;
 use busbar_plugin_abi::fail::refused::{R_DENIED, R_INVALID, R_RATE_LIMITED, R_UNSUPPORTED};
 use busbar_plugin_abi::host_side::caller::{CallStack, Caller, InstanceLimits};
 use busbar_plugin_abi::plane::{
-    DEST_INTERNAL, FROM_CORE, LK_CALLER, LK_CHAIN, LK_PREFIX, P_CHANNEL, P_COMMITTED, P_ENTITLE,
-    P_ERROR, P_JUDGED, P_LOOKUP, P_SIGNAL, P_STORE_FAILED, P_WORK,
+    CONNECT_BEGIN, CONNECT_REVOKE, CONNECT_STATUS, CONN_NONE, CONN_PENDING, CONN_REFUSED,
+    DEST_INTERNAL, FROM_CORE, LK_CALLER, LK_CHAIN, LK_PREFIX, MINT_ONCE, P_CHANNEL, P_COMMITTED,
+    P_CONNECT, P_ENTITLE, P_ERROR, P_JUDGED, P_LOOKUP, P_MINTED, P_SIGNAL, P_SIGNED,
+    P_STORE_FAILED, P_WORK, SIGN_JWS_DETACHED,
 };
 use busbar_plugin_abi::records::{commit, tag, RecDelRec, RecPredRec, RecPutRec, Records, Reply};
 use busbar_plugin_abi::types::KindCode;
 use busbar_plugin_loader::encode::plane::{
-    encode_chain_state, encode_chan_attach, encode_committed, encode_entitle_answers,
-    encode_judged, encode_lookup_hits, encode_refusal, encode_work_answers,
+    encode_chain_state, encode_chan_attach, encode_committed, encode_connect_answers,
+    encode_entitle_answers, encode_judged, encode_lookup_hits, encode_minted, encode_refusal,
+    encode_signed, encode_work_answers, SignedAnswer,
 };
 use busbar_plugin_loader::ports::plane::WorkAnswer;
 use tokio::runtime::Handle;
@@ -44,6 +47,7 @@ use super::port_services::Services;
 use super::port_session::{Answer, Calls, Effects, SessionError, Task, Violation};
 use crate::channels::SessionSignals;
 use crate::hashing::Sha256;
+use crate::plane_grants::{SignedJws, TicketMint};
 use crate::plugin_records::{
     CommitOp, CommitOutcome, PluginRecords, RecordsDenied, Scope, MAX_KEY, MAX_VALUE,
 };
@@ -102,6 +106,29 @@ pub enum Intent {
         class: u32,
         flags: u32,
         dest: String,
+    },
+    /// MINT: seal a ticket for the verified subject (§12.11); `flags` = MINT_ONCE?.
+    Mint {
+        check: u32,
+        flags: u32,
+        ttl_s: u64,
+        scope: Option<String>,
+        audience: Option<String>,
+        prefix: Option<String>,
+        record: Option<Vec<u8>>,
+    },
+    /// SIGN: sign `payload` with the host's key (§12.11); `flags` = SIGN_JWS_COMPACT or SIGN_JWS_DETACHED.
+    Sign {
+        check: u32,
+        flags: u32,
+        payload: Vec<u8>,
+    },
+    /// CONNECT: a caller connection to a configured upstream (§12.12); `op` = CONNECT_BEGIN, _STATUS or _REVOKE.
+    Connect {
+        check: u32,
+        op: u32,
+        upstream: String,
+        return_to: Option<String>,
     },
     /// CHANNEL: attach `exchange` to a shared upstream channel (§12.19); `head` = the nested HTTP head records.
     Channel {
@@ -214,6 +241,26 @@ pub trait IntentHost: Send + Sync {
     fn judge(&self, _dest: &str, _class: u32, _flags: u32) -> u32 {
         DEST_INTERNAL
     }
+    /// MINT for the verified `m.subject`: the client-facing ticket text and its expiry (epoch seconds), or the
+    /// generic REFUSED code. The default is `R_UNSUPPORTED`.
+    fn mint(&self, _m: TicketMint<'_>) -> Result<(Box<str>, u64), u32> {
+        Err(R_UNSUPPORTED)
+    }
+    /// SIGN `payload` with the host key as a JWS, or the generic REFUSED code. The default is `R_UNSUPPORTED`.
+    fn sign(&self, _payload: &[u8], _detached: bool) -> Result<SignedJws, u32> {
+        Err(R_UNSUPPORTED)
+    }
+    /// CONNECT as the verified `subject`: the `CONN_*` state and, for a BEGIN, the URL to send the caller to.
+    /// The default is `CONN_REFUSED`.
+    fn connect(
+        &self,
+        _op: u32,
+        _subject: &str,
+        _upstream: &str,
+        _return_to: Option<&str>,
+    ) -> (u32, Option<Box<str>>) {
+        (CONN_REFUSED, None)
+    }
 }
 
 /// The request's subject scope: SHA-256 of its ID_SUBJECT text (IF §12.5).
@@ -242,6 +289,7 @@ pub struct Resolver<'h> {
 /// The verified principal an intent runs as: its ID_SUBJECT text and the ID_* identity records it was admitted with.
 #[derive(Clone, Copy)]
 struct Principal<'h> {
+    subject: &'h str,
     identity: &'h [u8],
 }
 
@@ -262,7 +310,7 @@ impl<'h> Resolver<'h> {
     #[must_use]
     pub fn with_principal(mut self, subject: &'h str, identity: &'h [u8]) -> Self {
         self.subject = Some(subject_scope(subject));
-        self.principal = Some(Principal { identity });
+        self.principal = Some(Principal { subject, identity });
         self
     }
 
@@ -354,7 +402,10 @@ impl<'h> Resolver<'h> {
                 Intent::Lookup { .. }
                 | Intent::Work { .. }
                 | Intent::Entitle { .. }
-                | Intent::Judge { .. } => {}
+                | Intent::Judge { .. }
+                | Intent::Mint { .. }
+                | Intent::Sign { .. }
+                | Intent::Connect { .. } => {}
             }
         }
         let mut pieces = Vec::new();
@@ -401,6 +452,27 @@ impl<'h> Resolver<'h> {
             pieces.push(Piece {
                 exchange: 0,
                 flags: P_JUDGED,
+                bytes,
+            });
+        }
+        if let Some(bytes) = self.mints(intents) {
+            pieces.push(Piece {
+                exchange: 0,
+                flags: P_MINTED,
+                bytes,
+            });
+        }
+        if let Some(bytes) = self.signs(intents) {
+            pieces.push(Piece {
+                exchange: 0,
+                flags: P_SIGNED,
+                bytes,
+            });
+        }
+        if let Some(bytes) = self.connects(intents) {
+            pieces.push(Piece {
+                exchange: 0,
+                flags: P_CONNECT,
                 bytes,
             });
         }
@@ -602,7 +674,141 @@ impl<'h> Resolver<'h> {
         Some(reply.as_bytes().to_vec())
     }
 
+    /// The MINTED of every MINT of the answer, in intent order; `None` when it has none. A ticket binds the
+    /// verified subject: without one the answer is `R_DENIED` and the host is not asked.
+    fn mints(&self, intents: &[Intent]) -> Option<Vec<u8>> {
+        let mut answers: Vec<(u32, u32, u64, Box<str>)> = Vec::new();
+        for intent in intents {
+            let Intent::Mint {
+                check,
+                flags,
+                ttl_s,
+                scope,
+                audience,
+                prefix,
+                record,
+            } = intent
+            else {
+                continue;
+            };
+            let minted = match self.principal {
+                None => Err(R_DENIED),
+                Some(p) => self.host.mint(TicketMint {
+                    subject: p.subject,
+                    scope: scope.as_deref().unwrap_or(""),
+                    audience: audience.as_deref().unwrap_or("ticket"),
+                    ttl_s: *ttl_s,
+                    once: flags & MINT_ONCE != 0,
+                    prefix: prefix.as_deref().unwrap_or(""),
+                    record: record.as_deref().unwrap_or(&[]),
+                }),
+            };
+            answers.push(match minted {
+                Ok((ticket, expires_at_s)) => (*check, 0, expires_at_s, ticket),
+                Err(status) => (*check, status, 0, Box::from("")),
+            });
+        }
+        if answers.is_empty() {
+            return None;
+        }
+        let refs: Vec<(u32, u32, u64, &str)> = answers
+            .iter()
+            .map(|(check, status, exp, ticket)| (*check, *status, *exp, &**ticket))
+            .collect();
+        let mut reply = Reply::new();
+        let put = encode_minted(&mut reply, &refs);
+        debug_assert!(put.is_ok(), "MINTED records fit a Reply");
+        Some(reply.as_bytes().to_vec())
+    }
+
+    /// The SIGNED of every SIGN of the answer, in intent order; `None` when it has none.
+    fn signs(&self, intents: &[Intent]) -> Option<Vec<u8>> {
+        let mut signed: Vec<(u32, Result<SignedJws, u32>, bool)> = Vec::new();
+        for intent in intents {
+            let Intent::Sign {
+                check,
+                flags,
+                payload,
+            } = intent
+            else {
+                continue;
+            };
+            let detached = *flags == SIGN_JWS_DETACHED;
+            signed.push((*check, self.host.sign(payload, detached), detached));
+        }
+        if signed.is_empty() {
+            return None;
+        }
+        let answers: Vec<SignedAnswer<'_>> = signed
+            .iter()
+            .map(|(check, jws, detached)| match jws {
+                Ok(SignedJws::Compact(jws)) if !detached => {
+                    SignedAnswer::Compact { check: *check, jws }
+                }
+                Ok(SignedJws::Detached {
+                    protected,
+                    signature,
+                }) if *detached => SignedAnswer::Detached {
+                    check: *check,
+                    protected,
+                    signature,
+                },
+                // A signer that answers the other form than the one asked is a core bug, never a signature.
+                Ok(_) => SignedAnswer::Refused {
+                    check: *check,
+                    status: R_DENIED,
+                },
+                Err(status) => SignedAnswer::Refused {
+                    check: *check,
+                    status: *status,
+                },
+            })
+            .collect();
+        let mut reply = Reply::new();
+        let put = encode_signed(&mut reply, &answers);
+        debug_assert!(put.is_ok(), "SIGNED records fit a Reply");
+        Some(reply.as_bytes().to_vec())
+    }
+
+    /// The CONNECT_ANS of every CONNECT of the answer, in intent order; `None` when it has none. A connection
+    /// is the verified subject's: without one the state is `CONN_REFUSED` and the host is not asked.
+    fn connects(&self, intents: &[Intent]) -> Option<Vec<u8>> {
+        let mut answers: Vec<(u32, u32, Option<Box<str>>)> = Vec::new();
+        for intent in intents {
+            let Intent::Connect {
+                check,
+                op,
+                upstream,
+                return_to,
+            } = intent
+            else {
+                continue;
+            };
+            let (state, url) = match self.principal {
+                None => (CONN_REFUSED, None),
+                Some(p) => self
+                    .host
+                    .connect(*op, p.subject, upstream, return_to.as_deref()),
+            };
+            // Only a BEGIN carries a URL.
+            let url = url.filter(|_| *op == CONNECT_BEGIN);
+            answers.push((*check, state, url));
+        }
+        if answers.is_empty() {
+            return None;
+        }
+        let refs: Vec<(u32, u32, Option<&str>)> = answers
+            .iter()
+            .map(|(check, state, url)| (*check, *state, url.as_deref()))
+            .collect();
+        let mut reply = Reply::new();
+        let put = encode_connect_answers(&mut reply, &refs);
+        debug_assert!(put.is_ok(), "CONNECT_ANS records fit a Reply");
+        Some(reply.as_bytes().to_vec())
+    }
+
     /// The WORK_ANS of every WORK of the answer, in intent order; `None` when it has none.
+
     fn works(&self, intents: &[Intent]) -> Option<Vec<u8>> {
         let mut outcomes: Vec<(u32, WorkOutcome)> = Vec::new();
         for intent in intents {
@@ -917,6 +1123,58 @@ impl<R: PluginRecords> IntentHost for KernelIntents<R> {
             .unwrap_or_else(PlaneJudge::unavailable);
         self.rt
             .block_on(judge.judge(dest, class, flags, who.deadline))
+    }
+
+    fn mint(&self, m: TicketMint<'_>) -> Result<(Box<str>, u64), u32> {
+        let tickets = self.services.tickets.as_ref().ok_or(R_UNSUPPORTED)?;
+        let who = self.who.caller();
+        self.rt
+            .block_on(tickets.mint(&who, m))
+            .map_err(|denied| denied_status(&denied))
+    }
+
+    fn sign(&self, payload: &[u8], detached: bool) -> Result<SignedJws, u32> {
+        let signer = self.services.signer.as_ref().ok_or(R_UNSUPPORTED)?;
+        let who = self.who.caller();
+        self.rt
+            .block_on(signer.sign_jws(&who, payload, detached))
+            .map_err(|denied| denied_status(&denied))
+    }
+
+    fn connect(
+        &self,
+        op: u32,
+        subject: &str,
+        upstream: &str,
+        return_to: Option<&str>,
+    ) -> (u32, Option<Box<str>>) {
+        let Some(connections) = self.services.connections.as_ref() else {
+            return (CONN_REFUSED, None);
+        };
+        let who = self.who.caller();
+        match op {
+            // The caller is sent to the URL to consent: pending until the callback stores the grant.
+            CONNECT_BEGIN => match self
+                .rt
+                .block_on(connections.begin(&who, subject, upstream, return_to))
+            {
+                Ok(url) => (CONN_PENDING, Some(url)),
+                Err(_) => (CONN_REFUSED, None),
+            },
+            CONNECT_STATUS => (
+                self.rt
+                    .block_on(connections.status(&who, subject, upstream)),
+                None,
+            ),
+            CONNECT_REVOKE => match self
+                .rt
+                .block_on(connections.revoke(&who, subject, upstream))
+            {
+                Ok(()) => (CONN_NONE, None),
+                Err(_) => (CONN_REFUSED, None),
+            },
+            _ => (CONN_REFUSED, None),
+        }
     }
 }
 

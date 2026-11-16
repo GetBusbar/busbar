@@ -1433,4 +1433,75 @@ mod tests {
         assert_eq!(head.greet, 0);
         assert!(tail.is_empty());
     }
+
+    #[test]
+    fn minted_signed_and_connect_answers_read_back() {
+        let mut w = Reply::new();
+        encode_minted(&mut w, &[(1, 0, 99, "ek_bbt1.x"), (2, 4, 99, "ignored")]).expect("fits");
+        encode_signed(
+            &mut w,
+            &[
+                SignedAnswer::Compact {
+                    check: 3,
+                    jws: "h.p.s",
+                },
+                SignedAnswer::Detached {
+                    check: 4,
+                    protected: "P",
+                    signature: "S",
+                },
+                SignedAnswer::Refused {
+                    check: 5,
+                    status: refused::R_UNSUPPORTED,
+                },
+            ],
+        )
+        .expect("fits");
+        encode_connect_answers(&mut w, &[(6, plane::CONN_PENDING, Some("https://x/y"))])
+            .expect("fits");
+        let records = recs(w.as_bytes());
+        assert_eq!(records.len(), 6);
+        let (ok, text) = records[0]
+            .pod_tail::<plane::MintedRec>()
+            .expect("MintedRec");
+        assert_eq!(
+            (ok.check, ok.status, ok.expires_at_s, text),
+            (1, 0, 99, &b"ek_bbt1.x"[..])
+        );
+        let (no, text) = records[1]
+            .pod_tail::<plane::MintedRec>()
+            .expect("MintedRec");
+        assert_eq!((no.status, no.expires_at_s, text.len()), (4, 0, 0));
+        let (compact, tail) = records[2]
+            .pod_tail::<plane::SignedRec>()
+            .expect("SignedRec");
+        assert_eq!((compact.status, tail), (0, &b"h.p.s"[..]));
+        let (detached, tail) = records[3]
+            .pod_tail::<plane::SignedRec>()
+            .expect("SignedRec");
+        assert_eq!(detached.status, 0);
+        let nested = recs(tail);
+        assert_eq!(
+            (nested[0].tag, nested[0].text().expect("text")),
+            (tag::SG_PROTECTED, "P")
+        );
+        assert_eq!(
+            (nested[1].tag, nested[1].text().expect("text")),
+            (tag::SG_SIGNATURE, "S")
+        );
+        let (refused_ans, tail) = records[4]
+            .pod_tail::<plane::SignedRec>()
+            .expect("SignedRec");
+        assert_eq!(
+            (refused_ans.status, tail.len()),
+            (refused::R_UNSUPPORTED, 0)
+        );
+        let (conn, url) = records[5]
+            .pod_tail::<plane::ConnectAns>()
+            .expect("ConnectAns");
+        assert_eq!(
+            (conn.check, conn.state, url),
+            (6, plane::CONN_PENDING, &b"https://x/y"[..])
+        );
+    }
 }

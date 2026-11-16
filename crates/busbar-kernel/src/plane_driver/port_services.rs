@@ -10,7 +10,8 @@
 use std::sync::Arc;
 
 use super::plane_judge::PlaneJudge;
-use crate::plane_grants::Entitlements;
+use crate::connections::CallerConnections;
+use crate::plane_grants::{Entitlements, HostSigner, Tickets};
 
 /// The services behind the intents. `Default` installs none.
 #[derive(Clone, Default)]
@@ -19,4 +20,10 @@ pub struct Services {
     pub entitlements: Option<Arc<dyn Entitlements>>,
     /// JUDGE (§12.1).
     pub judge: Option<PlaneJudge>,
+    /// MINT (§12.11).
+    pub tickets: Option<Arc<dyn Tickets>>,
+    /// SIGN (§12.11).
+    pub signer: Option<Arc<dyn HostSigner>>,
+    /// CONNECT (§12.12).
+    pub connections: Option<Arc<dyn CallerConnections>>,
 }
