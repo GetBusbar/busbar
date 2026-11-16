@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Plugin records: RECORD Needs and plane LOOKUP/STORE/DELETE/COMMIT over core's store (IF §12.5). W0-ABI stub: frozen signatures, `todo!()` bodies; W1-K5 fills it.
+//! Plugin records: RECORD Needs and plane LOOKUP/STORE/DELETE/COMMIT over core's store (IF §12.5). The frozen
+//! contract is below; [`StoreRecords`] (store.rs, chain.rs) keeps it over the configured store through CoreStore.
 
 use core::future::Future;
 
@@ -142,3 +143,103 @@ pub struct ChainRead {
     pub len: u64,
     pub broken_at: u64,
 }
+
+/// Round 12: the largest TTL a record keeps. A non-zero `ttl_s` is clamped to `1..=MAX_TTL_S`; 0 = no expiry.
+/// 30 days (W1-K5 ruling, MIN3-RULINGS-COORD.md: origin/dev states no plugin-records maximum, only a non-zero
+/// claim TTL, so this is the bound core keeps for every record from here on).
+pub const MAX_TTL_S: u64 = 30 * 24 * 60 * 60;
+/// The largest key, chain name or list prefix a namespace takes (`RecordsDenied::TooLarge` above it).
+pub const MAX_KEY: usize = 1024;
+/// The largest record value (IF §13 `NeedLimits::max_record_value`).
+pub const MAX_VALUE: usize = 64 * 1024;
+/// The largest chain entry (IF §8.6 StoreRec: LK_CHAIN `value` ≤ 64 KiB).
+pub const MAX_CHAIN_ENTRY: usize = 64 * 1024;
+
+mod chain;
+pub(crate) mod store;
+
+pub use store::StoreRecords;
+
+/// One records owner shared by every consumer of the instance's namespace: the connector's RECORD Need
+/// handler (`HostNeeds<_, R, _>` owns its `R`) and the kernel's plane driver serve the same namespace, so both
+/// hold an `Arc` of the one `StoreRecords` and the in-doubt writes it parks are collected in one place.
+impl<R: PluginRecords> PluginRecords for std::sync::Arc<R> {
+    fn get(
+        &self,
+        who: &Caller<'_>,
+        scope: Scope,
+        key: &[u8],
+        sink: &mut (dyn FnMut(&[u8]) + Send),
+    ) -> impl Future<Output = Result<bool, RecordsDenied>> + Send {
+        (**self).get(who, scope, key, sink)
+    }
+    fn put(
+        &self,
+        who: &Caller<'_>,
+        scope: Scope,
+        key: &[u8],
+        value: &[u8],
+        ttl_s: u64,
+    ) -> impl Future<Output = Result<(), RecordsDenied>> + Send {
+        (**self).put(who, scope, key, value, ttl_s)
+    }
+    fn claim(
+        &self,
+        who: &Caller<'_>,
+        scope: Scope,
+        key: &[u8],
+        value: &[u8],
+        ttl_s: u64,
+    ) -> impl Future<Output = Result<bool, RecordsDenied>> + Send {
+        (**self).claim(who, scope, key, value, ttl_s)
+    }
+    fn del(
+        &self,
+        who: &Caller<'_>,
+        scope: Scope,
+        key: &[u8],
+    ) -> impl Future<Output = Result<(), RecordsDenied>> + Send {
+        (**self).del(who, scope, key)
+    }
+    fn list(
+        &self,
+        who: &Caller<'_>,
+        scope: Scope,
+        prefix: &[u8],
+        limit: u32,
+        sink: &mut (dyn FnMut(&[u8], &[u8]) + Send),
+    ) -> impl Future<Output = Result<u32, RecordsDenied>> + Send {
+        (**self).list(who, scope, prefix, limit, sink)
+    }
+    fn commit(
+        &self,
+        who: &Caller<'_>,
+        scope: Scope,
+        ops: &[CommitOp<'_>],
+    ) -> impl Future<Output = Result<CommitOutcome, RecordsDenied>> + Send {
+        (**self).commit(who, scope, ops)
+    }
+    fn append(
+        &self,
+        who: &Caller<'_>,
+        scope: Scope,
+        chain: &[u8],
+        entry: &[u8],
+    ) -> impl Future<Output = Result<u64, RecordsDenied>> + Send {
+        (**self).append(who, scope, chain, entry)
+    }
+    fn chain(
+        &self,
+        who: &Caller<'_>,
+        scope: Scope,
+        chain: &[u8],
+        after: u64,
+        limit: u32,
+        sink: &mut (dyn FnMut(u64, &[u8]) + Send),
+    ) -> impl Future<Output = Result<ChainRead, RecordsDenied>> + Send {
+        (**self).chain(who, scope, chain, after, limit, sink)
+    }
+}
+
+#[cfg(test)]
+mod tests;

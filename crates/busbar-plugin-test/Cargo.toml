@@ -91,6 +91,8 @@ tokio = { workspace = true, optional = true, features = ["rt", "net", "time", "s
 busbar-contract = { path = "../busbar-contract", features = ["test-seal"] }
 # The facade's own tests drive its targets; CI's test and red-proof jobs pass none of its features.
 busbar-plugin-test = { path = ".", features = ["target-http"] }
+# C-COMMIT (W1-K5) runs on the kernel's own plugin records over core's in-tree store.
+busbar-kernel = { path = "../busbar-kernel" }
 tokio = { workspace = true, features = ["rt"] }
 
 [lints]
