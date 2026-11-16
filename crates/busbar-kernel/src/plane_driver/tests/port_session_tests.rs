@@ -13,8 +13,9 @@ use busbar_plugin_loader::ports::plane::{PlaneIn, PlaneOut, TargetIn};
 use busbar_plugin_loader::ports::{FactRef, FactVal, PortError};
 
 use super::{
-    deliver, run_local, Calls, Effects, Origin, SessionError, Task, ToClient, Violation,
+    deliver, render, run_local, Calls, Effects, Origin, SessionError, Task, ToClient, Violation,
 };
+use crate::plane_driver::port_auth::refuse;
 use crate::plane_driver::{CallerEnd, HeadFields};
 
 /// One scripted sink item.
@@ -76,6 +77,8 @@ struct Script {
     request: Vec<It>,
     pieces: Mutex<VecDeque<Vec<It>>>,
     end: Vec<It>,
+    render: Vec<It>,
+    fail_render: bool,
     refuse_request: bool,
     dropped: Arc<AtomicBool>,
 }
@@ -131,6 +134,20 @@ impl Calls for Script {
         play(&self.end, sink);
         // `end` consumes the session: it is not a cancel.
         std::mem::forget(s);
+        Ok(())
+    }
+
+    fn render(
+        &self,
+        _: &PlaneIn<'_>,
+        _: u32,
+        _: &[u8],
+        sink: &mut dyn FnMut(PlaneOut<'_>),
+    ) -> Result<(), PortError> {
+        if self.fail_render {
+            return Err(refused());
+        }
+        play(&self.render, sink);
         Ok(())
     }
 
@@ -340,7 +357,10 @@ fn a_trailers_only_answer_has_a_head_then_trailers_and_no_body() {
     };
     let fx = Emitted::default();
     let (_, first) = Task::begin(&script, &req(), b"", &fx).unwrap();
-    assert!(matches!(first.client[0], ToClient::Head { status: 200, .. }));
+    assert!(matches!(
+        first.client[0],
+        ToClient::Head { status: 200, .. }
+    ));
     assert!(matches!(first.client[1], ToClient::Trailers(_)));
     assert_eq!(first.client[2], ToClient::End);
     assert_eq!(first.client.len(), 3);
@@ -395,7 +415,10 @@ fn a_local_answer_joins_the_request_and_end_answers_in_order() {
             ToClient::End,
         ]
     );
-    assert!(!script.dropped.load(Ordering::SeqCst), "ended, not cancelled");
+    assert!(
+        !script.dropped.load(Ordering::SeqCst),
+        "ended, not cancelled"
+    );
 }
 
 #[test]
@@ -474,5 +497,64 @@ async fn delivery_hands_the_client_head_body_message_and_trailers_in_order() {
     assert_eq!(
         *client.seen.lock().unwrap(),
         vec!["head 200 1", "write 3", "text 2", "trailers 1"]
+    );
+}
+
+fn denial() -> crate::refusal::ClientRefusal {
+    crate::refusal::ClientRefusal {
+        status: 401,
+        code: 7,
+        text: "authentication required".into(),
+    }
+}
+
+#[test]
+fn a_render_is_the_plane_s_own_head_body_and_end() {
+    let script = Script {
+        render: vec![
+            It::Respond(401),
+            It::Header("content-type", b"application/json"),
+            It::Body(b"{\"error\":1}"),
+            It::End,
+        ],
+        ..Script::default()
+    };
+    let fx = Emitted::default();
+    let items = render(&script, &req(), 1, b"", &fx).unwrap();
+    assert!(matches!(items[0], ToClient::Head { status: 401, .. }));
+    assert_eq!(items[1], ToClient::Body(b"{\"error\":1}".to_vec()));
+    assert_eq!(items[2], ToClient::End);
+}
+
+#[test]
+fn a_render_that_forwards_or_carries_an_intent_is_refused() {
+    for items in [vec![It::Forward], vec![It::Usage]] {
+        let script = Script {
+            render: items,
+            ..Script::default()
+        };
+        let fx = Emitted::default();
+        assert!(render(&script, &req(), 1, b"", &fx).is_err());
+    }
+}
+
+#[test]
+fn a_refusal_is_rendered_by_the_plane_and_falls_back_to_core_s_text_when_it_cannot() {
+    let fx = Emitted::default();
+    let rendering = Script {
+        render: vec![It::Respond(401), It::Body(b"plane words"), It::End],
+        ..Script::default()
+    };
+    let items = refuse(&rendering, &req(), &denial(), &fx);
+    assert_eq!(items[1], ToClient::Body(b"plane words".to_vec()));
+    let failing = Script {
+        fail_render: true,
+        ..Script::default()
+    };
+    let items = refuse(&failing, &req(), &denial(), &fx);
+    assert!(matches!(items[0], ToClient::Head { status: 401, .. }));
+    assert_eq!(
+        items[1],
+        ToClient::Body(b"authentication required".to_vec())
     );
 }
