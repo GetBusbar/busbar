@@ -38,6 +38,7 @@ mod transfer;
 pub(crate) use transfer::Handover;
 mod recovery_hooks;
 pub(crate) use recovery_hooks::{RowChange, Selection};
+pub mod head_cell;
 pub mod runtime;
 pub use runtime::{BufferBudget, RuntimeError, RuntimeJournal, StagedRun};
 
@@ -636,3 +637,11 @@ impl Replay<'_, '_> {
 #[cfg(test)]
 #[path = "journal_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/head_cell_tests.rs"]
+mod head_cell_tests;
+
+#[cfg(all(test, feature = "loom-model"))]
+#[path = "tests/head_cell_loom.rs"]
+mod head_cell_loom;

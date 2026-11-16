@@ -535,13 +535,19 @@ pub struct AuditChain {
     pub(crate) tail_hash: String,
     pub(crate) next_seq: u64,
     pub(crate) sealed: u64,
-    /// The key this chain signs with, when the node was given one.
-    signer: Option<crate::sign::AuditSigningKey>,
+    /// THE LEGACY-SIGNING KEY, test builds only (SEALING-FIX §3.2 "The legacy builder"): a chain
+    /// built with [`AuditChain::signing_with`] also signs each line it links, so the fixtures that
+    /// build signed chains keep their bytes. A production chain holds no key and signs nothing.
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) signer: Option<crate::sign::AuditSigningKey>,
+    /// The public half of the deployment key the keyset bound: what stamps and checkpoints are
+    /// verified under. A public key: it signs nothing.
+    bound: Option<crate::sign::AuditVerifyingKey>,
     /// The node every record this chain seals names ([`AuditRecord::node`]). See
     /// [`AuditChain::sealing_as`].
     node: u64,
     /// The anchors. See [`crate::heads`].
-    heads: crate::heads::HeadHistory,
+    pub(crate) heads: crate::heads::HeadHistory,
 }
 
 /// HAND-WRITTEN for the reason the retired admin chain writes its own: a DERIVED default gives
@@ -558,7 +564,9 @@ impl AuditChain {
             tail_hash: String::new(),
             next_seq: 1,
             sealed: 0,
+            #[cfg(any(test, feature = "test-support"))]
             signer: None,
+            bound: None,
             node: 0,
             heads: crate::heads::HeadHistory::new(),
         }
@@ -577,14 +585,38 @@ impl AuditChain {
         chain
     }
 
-    /// SIGN FROM HERE ON, with this key.
+    /// SIGN FROM HERE ON, with this key: the legacy builder, test builds only (SEALING-FIX §3.2).
+    /// Production binds only the public half ([`AuditChain::bound_to`]) and signs through the
+    /// notary's grants ([`crate::grant`]).
+    #[cfg(any(test, feature = "test-support"))]
     #[must_use]
     pub fn signing_with(mut self, key: crate::sign::AuditSigningKey) -> Self {
+        self.bound = crate::sign::AuditVerifyingKey::from_hex(&key.public_key_hex()).ok();
         self.signer = Some(key);
         self
     }
 
-    /// A secret derived from the key this chain signs with, under `label`
+    /// BIND THE DEPLOYMENT KEY'S PUBLIC HALF: the key stamps, break notices and checkpoints are
+    /// verified under ([`AuditChain::public_key_hex`], [`AuditChain::signing_key_id`]). It signs
+    /// nothing; the signing power left the key through [`crate::AuditSigningKey::into_grants`].
+    #[must_use]
+    pub fn bound_to(mut self, key: crate::sign::AuditVerifyingKey) -> Self {
+        self.bound = Some(key);
+        self
+    }
+
+    /// The identifier of the bound deployment key, `None` on a keyless book. Read-only: it holds
+    /// no key and signs nothing.
+    #[must_use]
+    pub fn signing_key_id(&self) -> Option<&str> {
+        self.bound
+            .as_ref()
+            .map(crate::sign::AuditVerifyingKey::key_id)
+    }
+
+    /// A secret derived from the key this chain signs with, under `label` (test builds only: the
+    /// root derives its caller-ref material from the key before the key is split into grants).
+    #[cfg(any(test, feature = "test-support"))]
     #[must_use]
     pub fn derived_secret(&self, label: &[u8]) -> Option<[u8; 32]> {
         self.signer.as_ref().map(|k| k.derived_secret(label))
@@ -610,12 +642,16 @@ impl AuditChain {
         self.node
     }
 
-    /// The public half of the key this chain signs with, for the key-set read.
+    /// The public half of the bound deployment key, for the key-set read.
     pub fn public_key_hex(&self) -> Option<String> {
-        self.signer.as_ref().map(|k| k.public_key_hex())
+        self.bound
+            .as_ref()
+            .map(crate::sign::AuditVerifyingKey::public_key_hex)
     }
 
-    /// Sign one ledger checkpoint's body with THIS chain's key — the one keyset.
+    /// Sign one ledger checkpoint's body with THIS chain's legacy key (test builds only; production
+    /// checkpoints are signed on the Bootstrap signer thread, [`crate::BootstrapSigner`]).
+    #[cfg(any(test, feature = "test-support"))]
     pub fn sign_checkpoint_body(&self, body: &[u8]) -> Option<Vec<u8>> {
         self.signer.as_ref().map(|k| k.sign_checkpoint_body(body))
     }
@@ -730,9 +766,12 @@ enum Anchor {
 
 impl sealed::Sealed for AuditChain {}
 
+#[cfg(any(test, feature = "test-support"))]
 impl AuditChain {
-    /// Prepare the unchanged signed preimage, retain its original journal
-    /// custody, then advance the audit chain. A refused stage leaves no hole.
+    /// THE PRE-NOTARY SEAL, test builds only (SEALING-FIX §3.2 "The legacy builder"): a v7 record
+    /// signed per line when the chain holds a legacy key, so the existing fixtures keep their
+    /// bytes. Production links lines with [`AuditChain::prepare`], [`AuditChain::link`] and
+    /// [`AuditChain::advance`] and signs nothing on the request path. A refused stage leaves no hole.
     pub fn seal_for_journal<T, E>(
         &mut self,
         inputs: AuditInputs,
@@ -788,15 +827,19 @@ impl AuditChain {
     }
 }
 impl Audit for AuditChain {
+    /// One link line, linked and advanced at once: prepare, link, advance (SEALING-FIX §3.2). It
+    /// signs nothing. This crate reads no clock, so the line is dated by its arrival second
+    /// (`wall` × 1000); the root's request path dates each line under its lock instead.
     fn seal(
         &mut self,
         inputs: AuditInputs,
         token: &busbar_contract::caps::Pass<busbar_contract::caps::Audit>,
     ) -> AuditRecord {
-        match self.seal_for_journal(inputs, token, |_| Ok::<_, std::convert::Infallible>(())) {
-            Ok((record, ())) => record,
-            Err(never) => match never {},
-        }
+        let linked_ms = inputs.wall.saturating_mul(1000);
+        let prepared = AuditChain::prepare(inputs, self.node);
+        let linked = self.link(prepared, linked_ms, token);
+        self.advance(&linked);
+        linked.into_record()
     }
 }
 

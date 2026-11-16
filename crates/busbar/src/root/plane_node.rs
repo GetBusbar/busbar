@@ -137,7 +137,7 @@ pub(crate) struct Node {
     lane: std::sync::OnceLock<Arc<busbar_kernel::persistence::journal::runtime::RuntimeJournal>>,
 
     /// The node the bound book seals as: the node half of every unit id this node stamps.
-    sealing: std::sync::OnceLock<u64>,
+    sealing: std::sync::OnceLock<crate::root::durability::LineIdentity>,
 
     durability_token: busbar_contract::caps::Grant<busbar_contract::caps::DurableWrite>,
 
@@ -254,7 +254,7 @@ impl Node {
     pub(crate) fn bind_book(&self, book: Arc<Mutex<crate::root::durability::Durability>>) {
         let (journal, sealing) = {
             let held = book.lock().unwrap_or_else(|poison| poison.into_inner());
-            (held.journal.clone(), held.record.node())
+            (held.journal.clone(), held.line_identity())
         };
         let _ = self.lane.set(journal);
         let _ = self.sealing.set(sealing);
@@ -266,7 +266,7 @@ impl Node {
     /// when the process has no boot nonce.
     #[must_use]
     pub(crate) fn unit_id(&self, unit: UnitKey) -> Option<busbar_kernel_audit::UnitId> {
-        let node = *self.sealing.get()?;
+        let node = self.sealing.get()?.node;
         busbar_kernel_audit::UnitId::of(node, busbar_kernel::snapshot::boot_nonce(), unit.get())
     }
     pub(crate) async fn retry_held_journal(&self) -> Result<(), String> {
@@ -365,6 +365,7 @@ impl Node {
         end.into_posted().ok()?;
         seal.seal(
             book,
+            self.sealing.get().copied(),
             &self.durability_token,
             principal,
             arrived,
@@ -523,6 +524,7 @@ impl Node {
         });
         let _ = seal.seal(
             book,
+            self.sealing.get().copied(),
             &self.durability_token,
             principal,
             self.arrived(),
@@ -854,6 +856,7 @@ impl Node {
             .unwrap_or_default();
         let acknowledged = seal.seal(
             book,
+            self.sealing.get().copied(),
             &self.durability_token,
             &principal,
             arrived,
@@ -1045,6 +1048,7 @@ impl Node {
         let late = late?;
         Some(LateAccrual {
             book: Arc::clone(book),
+            line: self.sealing.get().copied(),
             custody: Arc::clone(&self.ticket_custody),
             history,
 
@@ -1096,6 +1100,8 @@ impl Report {
 struct LateAccrual {
     custody: Arc<crate::root::serve::TicketCustody>,
     book: Arc<Mutex<crate::root::durability::Durability>>,
+    /// The book's boot constants, so the late line is prepared before its lock.
+    line: Option<crate::root::durability::LineIdentity>,
 
     history: crate::root::kernel::PinnedHistory,
     durability_token: busbar_contract::caps::Grant<busbar_contract::caps::DurableWrite>,
@@ -1124,6 +1130,7 @@ impl LateAccrual {
         let LateAccrual {
             custody,
             book,
+            line,
             history,
             durability_token,
             principal,
@@ -1162,6 +1169,7 @@ impl LateAccrual {
                 } = report;
                 seal.seal(
                     &book,
+                    line,
                     &durability_token,
                     &principal,
                     arrived,
@@ -1176,6 +1184,7 @@ impl LateAccrual {
 
             None if posted => seal.seal(
                 &book,
+                line,
                 &durability_token,
                 &principal,
                 arrived,
@@ -2338,6 +2347,7 @@ impl Sealing {
     fn seal(
         self,
         book: &Arc<Mutex<crate::root::durability::Durability>>,
+        line: Option<crate::root::durability::LineIdentity>,
         token: &Grant<busbar_contract::caps::DurableWrite>,
         principal: &PrincipalId,
         arrived: Arrived,
@@ -2406,11 +2416,26 @@ impl Sealing {
             },
         };
         let unit = seal.key.get();
-        let mut book = book.lock().unwrap_or_else(|poison| poison.into_inner());
-        let journal = book.journal.clone();
-        let (_, run) = book.stage_unit(inputs, seal.pass, token)?;
-        let hints = book.audit_hints.clone();
-        drop(book);
+        // The line is built and its content hashed BEFORE the book's lock (SEALING-FIX §3.2): the
+        // lock covers only the clock read, the link trailer, the stage and the head publish. The
+        // request path never signs; the notary stamps pages off this path.
+        let (journal, run, hints) = match line {
+            Some(id) => {
+                let mut inputs = inputs;
+                inputs.what.incarnation = id.incarnation;
+                let prepared = busbar_kernel_audit::AuditChain::prepare(inputs, id.node);
+                let mut book = book.lock().unwrap_or_else(|poison| poison.into_inner());
+                let journal = book.journal.clone();
+                let (_, run) = book.stage_prepared(prepared, &seal.pass, token)?;
+                (journal, run, book.audit_hints.clone())
+            }
+            None => {
+                let mut book = book.lock().unwrap_or_else(|poison| poison.into_inner());
+                let journal = book.journal.clone();
+                let (_, run) = book.stage_line(inputs, seal.pass, token)?;
+                (journal, run, book.audit_hints.clone())
+            }
+        };
         // The unit's checkpoint removal reads this one line by the evidence sealed here, not by a
         // journal scan (SHUTDOWN-HANG F1a). A unit with no checkpoint entry is a counted miss.
         if let Some(gov) = hints.as_ref().and_then(std::sync::Weak::upgrade) {

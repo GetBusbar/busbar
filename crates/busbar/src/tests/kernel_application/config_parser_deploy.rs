@@ -52,6 +52,7 @@ pub(crate) fn base_deploy() -> DeployCfg {
         routing: RoutingCfg::default(),
         telemetry: Default::default(),
         records: Default::default(),
+        audit: Default::default(),
     }
 }
 

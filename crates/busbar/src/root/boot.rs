@@ -1966,7 +1966,25 @@ pub(crate) async fn compose_book(
     )
     .await
     .map_err(|e| format!("the native boot journal could not be opened: {e}"))?;
-    bind_boot_keyset(&mut durability, identity, token, now).await?;
+    // A composed test book is a legacy-signing book (SEALING-FIX §3.2): its fixtures read
+    // per-line signatures. Production binds through `bind_boot_keyset`.
+    loop {
+        match super::keyset::bind(
+            &mut durability,
+            identity,
+            token,
+            busbar_contract::caps::StepName::Meter,
+            now,
+        )
+        .await
+        {
+            Ok(_) => break,
+            Err(super::keyset::KeysetError::PendingOriginal { .. }) => {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await
+            }
+            Err(error) => return Err(error.to_string()),
+        }
+    }
     Ok(durability)
 }
 
@@ -2190,35 +2208,36 @@ impl BookPreparation {
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_secs());
         self.phase = BookPhase::BindKeyset;
-        bind_boot_keyset(
+        let bound = bind_boot_keyset(
             self.durability.as_mut().unwrap(),
             &self.identity,
             self.token.as_ref().unwrap(),
             now,
         )
         .await?;
+        // SEALING-FIX §3.3, §5.3: the key's signing power goes to the two signer threads; the book
+        // keeps only the public half. The notary starts from the resumed head, read before any
+        // recovery line is appended, once serving begins (`main`).
+        let (audit, checkpoint) = {
+            let durability = self.durability.as_ref().unwrap();
+            let (services, checkpoint) = super::durability::audit_services::AuditServices::spawn(
+                busbar_kernel_audit::Notary::new(bound.notary),
+                busbar_kernel_audit::BootstrapSigner::new(bound.bootstrap),
+                durability.record.node(),
+                durability.journal.clone(),
+                Arc::clone(&durability.head),
+                durability.notary_start(),
+            )
+            .map_err(|error| format!("the audit signer threads did not start: {error}"))?;
+            (Arc::new(services), checkpoint)
+        };
         self.phase = BookPhase::RestoreAmendments;
         let durability = self.durability.as_mut().unwrap();
         durability
             .restore_amendments(&app.amendments, self.token.as_ref().unwrap())
             .await?;
         super::durability::report_operator_breaks(durability).await;
-        if let Some(material) = durability
-            .record
-            .derived_secret(super::keyset::CALLER_REF_MATERIAL)
-        {
-            self.governance.bind_deployment_caller_ref(material);
-        }
-        // ADMIN-API-1.6 §3.5: `K_user` = HKDF-SHA256(keyset seed, deployment id,
-        // "busbar.records.user.v1"), held as a secret and never served.
-        if let Some(live) = busbar_kernel::persistence::boot_identity::live() {
-            if let Some(key) = durability.record.derived_key(
-                live.deployment_id().as_bytes(),
-                super::records_capture::USER_KEY_INFO,
-            ) {
-                super::records_capture::bind_user_key(key);
-            }
-        }
+        self.governance.bind_deployment_caller_ref(bound.caller_ref);
         super::records_capture::warn_unkeyed();
         self.shared = Some(Arc::new(std::sync::Mutex::new(
             self.durability.take().unwrap(),
@@ -2239,7 +2258,7 @@ impl BookPreparation {
             .map_err(|error| format!("usage recovery: {error}"))?;
         self.governance
             .attach_unit_checkpoint_sink(
-                super::durability::unit_checkpoint_sink(shared, journal.clone())
+                super::durability::unit_checkpoint_sink(shared, journal.clone(), Some(checkpoint))
                     .map_err(|error| error.to_string())?,
             )
             .await
@@ -2262,6 +2281,7 @@ impl BookPreparation {
             runtime_journal: self.journal.take().unwrap(),
             node_lease: self.node_lease.take(),
             verb_store,
+            audit: Some(audit),
         })
     }
 }
@@ -2270,9 +2290,9 @@ async fn bind_boot_keyset(
     identity: &busbar_kernel::persistence::boot_identity::BootIdentity,
     token: &busbar_contract::caps::Grant<busbar_contract::caps::DurableWrite>,
     now: u64,
-) -> Result<(), String> {
+) -> Result<super::keyset::BoundKey, String> {
     loop {
-        match super::keyset::bind(
+        match super::keyset::bind_split(
             durability,
             identity,
             token,
@@ -2281,7 +2301,7 @@ async fn bind_boot_keyset(
         )
         .await
         {
-            Ok(_) => return Ok(()),
+            Ok((_, bound)) => return Ok(bound),
             Err(super::keyset::KeysetError::PendingOriginal { .. }) => {
                 tokio::time::sleep(std::time::Duration::from_millis(50)).await
             }

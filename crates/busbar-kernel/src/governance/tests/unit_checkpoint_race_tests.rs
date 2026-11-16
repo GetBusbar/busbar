@@ -453,8 +453,11 @@ impl UnitCheckpointAudit for Signer {
         keys.insert(AuditVerifyingKey::from_hex(&self.0.public_key_hex()).unwrap());
         keys
     }
-    fn sign_checkpoint(&self, body: &[u8]) -> RecordStoreResult<Vec<u8>> {
-        Ok(self.0.sign_checkpoint_body(body))
+    async fn sign_checkpoints(&self, bodies: &[&[u8]]) -> RecordStoreResult<Vec<Vec<u8>>> {
+        Ok(bodies
+            .iter()
+            .map(|body| self.0.sign_checkpoint_body(body))
+            .collect())
     }
     async fn confirm(
         &self,

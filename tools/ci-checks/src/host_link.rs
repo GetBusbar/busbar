@@ -8,7 +8,7 @@
 use std::path::Path;
 use std::process::Command;
 
-use busbar_contract::json::{self, JsonValueTrait};
+use busbar_contract::json::{self, JsonContainerTrait, JsonValueTrait};
 use object::{Object, ObjectSection, ObjectSymbol};
 
 use super::Outcome;
