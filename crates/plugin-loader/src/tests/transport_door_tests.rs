@@ -177,6 +177,53 @@ fn a_transport_library_with_no_door_is_refused() {
     );
 }
 
+#[test]
+fn a_row_with_no_statement_the_min3_registry_takes_is_passed_over_and_any_other_is_still_refused() {
+    let lib = std::fs::read(crate::both_ways::example_cdylib("json_contract_auth"))
+        .expect("read the cdylib");
+    let manifest = statement(
+        busbar_contract::abi::mechanism::kind::TRANSPORT,
+        "min3-framer",
+        "min3-framer",
+        busbar_contract::abi::transport::ABI_VERSION,
+    );
+    let registry = dropped("min3-framer", manifest, &lib);
+    let asked = std::cell::RefCell::new(Vec::new());
+    let entries = registry
+        .open_transport_entries_beside(
+            &bind(),
+            &uses(&["min3-framer"]),
+            &log_config(),
+            &|row: &crate::LoadablePlugin| {
+                asked.borrow_mut().push(row.manifest.name.clone());
+                true
+            },
+        )
+        .expect("a MIN-3 transport row is the MIN-3 registry's, not a refusal of this path");
+    assert!(
+        entries.doors.is_empty(),
+        "this path bound a row the MIN-3 registry serves"
+    );
+    assert_eq!(
+        asked.into_inner(),
+        ["min3-framer"],
+        "the predicate judged the row once"
+    );
+    let why = registry
+        .open_transport_entries_beside(
+            &bind(),
+            &uses(&["min3-framer"]),
+            &log_config(),
+            &|_: &crate::LoadablePlugin| false,
+        )
+        .err()
+        .expect("a row stating no Statement that MIN-3 admission does not take is refused");
+    assert!(
+        why.contains("exports no memory-ABI door"),
+        "the refusal is the one this path always gave: {why}"
+    );
+}
+
 fn uses(schemes: &[&str]) -> crate::boot::Uses {
     crate::boot::Uses {
         schemes: schemes.iter().map(|s| (*s).to_string()).collect(),

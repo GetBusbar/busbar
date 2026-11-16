@@ -950,3 +950,8 @@ pub(crate) async fn run(
 #[cfg(test)]
 #[path = "tests/min3_boot.rs"]
 mod tests;
+
+/// The transport arm (W2-SW-TRANSPORT): every admitted MIN-3 transport image opened through
+/// `Registry::open_transport` and published for the connector.
+#[path = "min3_transports.rs"]
+pub(crate) mod transports;
