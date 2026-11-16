@@ -48,6 +48,10 @@ pub(crate) const IMAGE_TABLE: &str = "crates/plugin-loader/src/instance.rs";
 pub(crate) const ADMIT: &str = "crates/plugin-loader/src/admit.rs";
 /// The unload of exit (b).
 const EXIT_B: &str = "dlclose_on_worker";
+/// Exit (b) over a `busbar_ffi::image::Opened` (admit steps 8-9): stage.rs's other unload function.
+const EXIT_B_OPENED: &str = "close_on_worker";
+/// Both spellings of exit (b).
+const EXITS: [&str; 2] = [EXIT_B, EXIT_B_OPENED];
 /// Calls whose value is a freshly opened `Library` (alone or first in a tuple).
 const OPENERS: [&str; 4] = [
     "dlopen_on_worker",
@@ -67,7 +71,7 @@ pub(crate) fn rule_13(root: &Path) -> Outcome {
 /// Rule 13 over `(repo-relative path, source)` pairs of core's production files.
 pub(crate) fn unload_findings(files: &[(String, String)]) -> Vec<String> {
     let mut findings = Vec::new();
-    let mut definitions = 0;
+    let mut definitions = [0usize; 2];
     for (path, source) in files {
         let file = match syn::parse_file(source) {
             Ok(file) => file,
@@ -91,18 +95,27 @@ pub(crate) fn unload_findings(files: &[(String, String)]) -> Vec<String> {
             test_depth: 0,
             fns: Vec::new(),
             bound: Vec::new(),
-            definitions: 0,
+            definitions: [0; 2],
             notes: Vec::new(),
         };
         probe.visit_file(&file);
-        definitions += probe.definitions;
+        for (total, seen) in definitions.iter_mut().zip(probe.definitions) {
+            *total += seen;
+        }
         for (line, note) in probe.notes {
             findings.push(format!("{path}:{line}: {note} (IF §15 rule 13)"));
         }
     }
-    if definitions != 1 {
+    for (name, count) in EXITS.iter().zip(definitions) {
+        if count > 1 {
+            findings.push(format!(
+                "`{name}` is defined {count} times in {STAGE}; exit (b) is one function per form (IF §15 rule 13, §11.1)"
+            ));
+        }
+    }
+    if definitions.iter().sum::<usize>() == 0 {
         findings.push(format!(
-            "`{EXIT_B}` is defined {definitions} times in {STAGE}; exit (b) is exactly one function (IF §15 rule 13, §11.1)"
+            "no exit (b) function (`{EXIT_B}` or `{EXIT_B_OPENED}`) is defined in {STAGE} (IF §15 rule 13, §11.1)"
         ));
     }
     findings
@@ -147,8 +160,8 @@ struct Probe<'a> {
     fns: Vec<String>,
     /// The `Library` bindings of each enclosing function.
     bound: Vec<HashSet<String>>,
-    /// `dlclose_on_worker` definitions in stage.rs.
-    definitions: usize,
+    /// Exit (b) definitions in stage.rs, per `EXITS` form.
+    definitions: [usize; 2],
     notes: Vec<(usize, String)>,
 }
 
@@ -177,9 +190,12 @@ impl Probe<'_> {
         self.path == STAGE || self.path == IMAGE_TABLE
     }
 
-    /// Exit (b)'s two callers: stage.rs `load_via_staged_file` and admit.rs.
+    /// Exit (b)'s callers: admit.rs (step 9), stage.rs `open_image` (the pinned-file recheck) and the older
+    /// `load_via_staged_file` and `keep_door` (the door half, which goes with busbar#269).
     fn exit_b(&self) -> bool {
-        self.path == ADMIT || (self.path == STAGE && self.in_fn(&["load_via_staged_file"]))
+        self.path == ADMIT
+            || (self.path == STAGE
+                && self.in_fn(&["load_via_staged_file", "open_image", "keep_door"]))
     }
 
     /// The index of the segment naming libloading's `Library`, if `path` names it.
@@ -277,15 +293,16 @@ impl Probe<'_> {
 
     fn function(&mut self, sig: &Signature, walk: impl FnOnce(&mut Self)) {
         let name = sig.ident.to_string();
-        if name == EXIT_B && self.test_depth == 0 {
+        if let (Some(form), true) = (
+            EXITS.iter().position(|exit| *exit == name),
+            self.test_depth == 0,
+        ) {
             if self.path == STAGE {
-                self.definitions += 1;
+                self.definitions[form] += 1;
             } else {
                 self.note(
                     sig.ident.span().start().line,
-                    format!(
-                        "`{EXIT_B}` defined outside {STAGE}: exit (b) is stage.rs's one function"
-                    ),
+                    format!("`{name}` defined outside {STAGE}: exit (b) is stage.rs's function"),
                 );
             }
         }
@@ -303,6 +320,12 @@ impl Probe<'_> {
         self.bound.pop();
         self.fns.pop();
     }
+}
+
+/// `busbar_ffi::image::Opened`, the handle that owns an opened library in the new admit path.
+fn opened_handle(path: &syn::Path) -> bool {
+    path.segments.last().is_some_and(|s| s.ident == "Opened")
+        && path.segments.iter().any(|s| s.ident == "image")
 }
 
 fn tail(block: &Block) -> Option<&Expr> {
@@ -337,7 +360,7 @@ struct TypeNames<'p, 'a> {
 
 impl<'ast> Visit<'ast> for TypeNames<'_, '_> {
     fn visit_path(&mut self, path: &'ast syn::Path) {
-        self.hit |= self.probe.library_at(path).is_some();
+        self.hit |= self.probe.library_at(path).is_some() || opened_handle(path);
         visit::visit_path(self, path);
     }
 }
@@ -414,12 +437,11 @@ impl<'ast> Visit<'ast> for Probe<'_> {
                     line,
                     format!("`{name}` unloads a library outside the two exits"),
                 );
-            } else if name == EXIT_B && !self.exit_b() {
+            } else if EXITS.contains(&name.as_str()) && !self.exit_b() {
                 self.note(
                     line,
                     format!(
-                        "calls `{EXIT_B}` outside the two exits (stage.rs `load_via_staged_file`, \
-                         admit.rs step 9)"
+                        "calls `{name}` outside the two exits (stage.rs `open_image`, admit.rs step 9)"
                     ),
                 );
             }
@@ -472,7 +494,7 @@ impl<'ast> Visit<'ast> for Probe<'_> {
             } else if last == "drop"
                 && matches!(parent, None | Some("mem"))
                 && library
-                && !(self.path == STAGE && self.in_fn(&[EXIT_B]))
+                && !(self.path == STAGE && self.in_fn(&EXITS))
             {
                 self.note(
                     line,
@@ -484,7 +506,10 @@ impl<'ast> Visit<'ast> for Probe<'_> {
     }
 
     fn visit_expr_method_call(&mut self, call: &'ast syn::ExprMethodCall) {
-        if call.method == "close" && self.is_bound(&call.receiver) {
+        if call.method == "close"
+            && self.is_bound(&call.receiver)
+            && !(self.path == STAGE && self.in_fn(&[EXIT_B_OPENED]))
+        {
             self.note(
                 call.method.span().start().line,
                 "`.close()` unloads a library outside the two exits".to_string(),
@@ -755,6 +780,25 @@ impl Registry {
         assert_eq!(
             unload_findings(&tree(&[("crates/plugin-loader/src/registry.rs", planted)])),
             Vec::<String>::new()
+        );
+    }
+
+    /// The `Opened` form of exit (b) (admit steps 8-9): `close_on_worker` alone may close one.
+    #[test]
+    fn an_opened_handle_closes_only_in_close_on_worker() {
+        let exit = "pub(crate) fn close_on_worker(o: busbar_ffi::image::Opened) {\n    let _ = on_plugin_thread(move || o.close());\n}\n";
+        assert_eq!(
+            unload_findings(&tree(&[(STAGE, exit)])),
+            Vec::<String>::new()
+        );
+        let planted = "fn quiet(o: busbar_ffi::image::Opened) { o.close(); }\n";
+        found(&[(STAGE, planted)], STAGE, "close");
+        let planted =
+            "fn refuse(o: busbar_ffi::image::Opened) { crate::stage::close_on_worker(o); }\n";
+        found(
+            &[("crates/plugin-loader/src/registry.rs", planted)],
+            "crates/plugin-loader/src/registry.rs",
+            "close_on_worker",
         );
     }
 }
