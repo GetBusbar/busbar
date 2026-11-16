@@ -518,7 +518,7 @@ async fn judge_inner(cx: Context<'_>, attempt: CredentialAttempt) -> CredentialV
             Ok(account::Reserved::Full) => {
                 guard.store_answered();
                 refund_source(guard);
-                let first = guard.audit("auth.login_throttled", method, &principal, window, now);
+                let first = guard.audit("auth.login_throttled", method, principal, window, now);
                 if first {
                     diag_warn!(LOGIN_THROTTLED_ACCOUNT, method = %method, key = %principal,
                         retry_after = retry_after_secs,
@@ -571,12 +571,12 @@ async fn judge_inner(cx: Context<'_>, attempt: CredentialAttempt) -> CredentialV
                     guard.store_failed("clear");
                 }
             }
-            guard.audit("auth.login_succeeded", method, &principal, window, now);
+            guard.audit("auth.login_succeeded", method, principal, window, now);
             CredentialVerdict::Identified(principal_id)
         }
         LoginJudged::Plugin(LoginOutcome::Reject) | LoginJudged::Faulted => {
             guard.global_failure(&policy, method, now);
-            guard.audit("auth.login_failed", method, &principal, window, now);
+            guard.audit("auth.login_failed", method, principal, window, now);
             if let (Some(h), Some(fp)) = (hint, &fingerprint) {
                 let widest = policy
                     .per_method
@@ -600,7 +600,7 @@ async fn judge_inner(cx: Context<'_>, attempt: CredentialAttempt) -> CredentialV
                     action,
                     method,
                     crate::audit_ring::OUTCOME_REJECTED,
-                    &principal,
+                    principal,
                 );
             }
             CredentialVerdict::Declined

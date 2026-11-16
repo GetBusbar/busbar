@@ -515,7 +515,7 @@ impl DocumentPatch {
 
     /// Check the effective top-level keys before constructing typed config.
     /// Key references borrow the guarded tree and must not be retained.
-    pub fn parse_deploy_yaml_checked(
+    fn parse_deploy_yaml_checked(
         &self,
         yaml: &str,
         check_keys: impl FnOnce(&[&str]) -> Result<(), String>,
