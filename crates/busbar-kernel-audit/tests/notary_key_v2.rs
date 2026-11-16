@@ -114,7 +114,10 @@ fn shared_linked_reader_and_head_preserve_certificate_positions() {
     let parsed = linked_record_from_journal_body(&body, &|_| None)
         .unwrap()
         .unwrap();
-    assert_eq!(parsed, AuditLinkedRecord::NotaryKey(record.clone()));
+    assert_eq!(
+        parsed,
+        AuditLinkedRecord::NotaryKey(Box::new(record.clone()))
+    );
     assert_eq!(parsed.node(), record.node);
     assert_eq!(parsed.chain_seq(), record.seq);
     assert_eq!(parsed.fingerprint().unwrap(), record.fingerprint);
@@ -124,7 +127,7 @@ fn shared_linked_reader_and_head_preserve_certificate_positions() {
     later.prev_link = record.fingerprint;
     later.fingerprint = later.recompute_fingerprint();
     // Chain integrity is intentionally separate from Bootstrap certificate authentication.
-    let later = AuditLinkedRecord::NotaryKey(later);
+    let later = AuditLinkedRecord::NotaryKey(Box::new(later));
     verify_linked_chain(&[parsed.clone(), later.clone()]).unwrap();
     assert!(verify_linked_chain(std::slice::from_ref(&later)).is_err());
     verify_linked_window(std::slice::from_ref(&later)).unwrap();
