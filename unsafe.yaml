@@ -372,7 +372,6 @@ interim:
   dist/default/tests/linked_export_sinks_boot_as_their_own_kind.rs: { tokens: 1, by: "W3-D-BINARY" }
   dist/default/tests/linked/mod.rs: { tokens: 2, by: "W3-D-BINARY" }
   dist/default/tests/otlp_span_records.rs: { tokens: 1, by: "W3-D-BINARY" }
-  dist/default/tests/plane_blackbox.rs: { tokens: 1, by: "W3-D-BINARY" }
   dist/default/tests/product/money_one_function_equivalence.rs: { tokens: 1, by: "W3-D-BINARY" }
   dist/default/tests/traces_stream_both_doors.rs: { tokens: 1, by: "W3-D-BINARY" }
   dist/default/tests/transport_composed_over_consistency.rs: { tokens: 2, by: "W3-D-BINARY" }

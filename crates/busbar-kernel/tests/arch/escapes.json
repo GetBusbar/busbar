@@ -80,6 +80,8 @@
     "crates/busbar-plugin-abi/src/lib.rs",
     "crates/busbar-plugin-bench/src/lib.rs",
     "crates/busbar-plugin-test/src/lib.rs",
+    "crates/busbar-plugin-test/tests/fixtures/carrier_target.rs",
+    "crates/busbar-plugin-test/tests/fixtures/framer_target.rs",
     "crates/busbar/src/main.rs",
     "tools/ci-checks/src/main.rs"
   ],
