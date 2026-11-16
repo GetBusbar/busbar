@@ -510,6 +510,15 @@ async fn checkpoint_audit_lookup_restarts_when_its_prefix_is_cut() {
             .unwrap();
         owner.confirm(&run).await.unwrap();
     }
+    let audit = retained_audit_line();
+    let run = owner
+        .stage_run(&[Entry::new(
+            RecordClass::Transaction,
+            busbar_kernel_audit::journal_body(&audit).unwrap(),
+        )])
+        .unwrap();
+    owner.confirm(&run).await.unwrap();
+    let original_seq = run.records()[0].node_seq;
     let before = backend.state.lock().unwrap().rows.clone();
     let mut cut = owner.cutter().unwrap();
     assert!(matches!(
@@ -523,8 +532,8 @@ async fn checkpoint_audit_lookup_restarts_when_its_prefix_is_cut() {
             .unwrap()
             .is_none()
     );
-    backend.state.lock().unwrap().rows = before;
-    cut_during_next_walk(&backend, after);
+    backend.state.lock().unwrap().rows.clone_from(&before);
+    cut_during_next_walk(&backend, after.clone());
     let restarts = journal_walk_restarts();
     assert!(
         crate::off_path::governance::runtime::unit_checkpoint_store_find_audit(&owner, 17, 1)
@@ -536,6 +545,17 @@ async fn checkpoint_audit_lookup_restarts_when_its_prefix_is_cut() {
         journal_walk_restarts() > restarts,
         "checkpoint lookup restarted its complete proof"
     );
+    backend.state.lock().unwrap().rows = before;
+    cut_during_next_walk(&backend, after);
+    let restarts = journal_walk_restarts();
+    let (found_seq, found) =
+        crate::off_path::governance::runtime::unit_checkpoint_store_find_audit(&owner, 17, 7)
+            .await
+            .unwrap()
+            .expect("the retained terminal original remains discoverable");
+    assert_eq!(found_seq, original_seq);
+    assert_eq!(found.fingerprint, audit.fingerprint);
+    assert!(journal_walk_restarts() > restarts);
 }
 
 /// Test 30(f): paired confirm samples with the cut disabled and with a Store crossing delayed
@@ -595,4 +615,51 @@ async fn delayed_cut_keeps_confirm_p99_within_ten_percent() {
     let delayed_p99 = with_cut[percentile].as_nanos();
     assert!(delayed_p99 * 100 <= baseline_p99 * 110,
         "50 ms cut delay raised confirm p99 by more than 10%: baseline={baseline_p99} ns delayed={delayed_p99} ns");
+}
+
+fn retained_audit_line() -> busbar_kernel_audit::AuditRecord {
+    use busbar_contract::caps::{Audit as AuditStep, KernelSeal, Origin, OriginKind, Outcome};
+    use busbar_kernel_audit::record::{
+        AuditChain, AuditInputs, Controls, FinishClass, OpClassId, OutcomeFacts, Subject, Usage,
+        What,
+    };
+    let mut chain = AuditChain::new().sealing_as(7);
+    let inputs = AuditInputs {
+        subject: Subject::PrincipalId("race-principal".into()),
+        what: What {
+            unit_key: busbar_contract::caps::UnitKey::new(17),
+            incarnation: 7,
+            op_class: OpClassId::new("chat.completion"),
+            destination: None,
+            parent: None,
+            pre_hook_head: None,
+            post_hook_head: None,
+        },
+        wall: 1_700_000_000,
+        mono: 5,
+        origin: Origin::seal(&KernelSeal::acquire_for_kernel(), OriginKind::Client),
+        outcome: OutcomeFacts {
+            unit_end: Outcome::Completed,
+            step: None,
+            finish: FinishClass::Complete,
+            hook_failed: false,
+            emission_delta: 0,
+            stale_policy: false,
+        },
+        usage: Usage {
+            lines: Vec::new(),
+            tier_bp: 10_000,
+            fee_count: 0,
+            rate_card_version: None,
+            bucket_chain_ref: String::new(),
+        },
+        controls: Controls::default(),
+        correlation_label: None,
+        unit: busbar_kernel_audit::UnitFacts::default(),
+    };
+    busbar_kernel_audit::record::Audit::seal(
+        &mut chain,
+        inputs,
+        &busbar_contract::caps::Pass::<AuditStep>::mint(&crate::seal::acquire()),
+    )
 }
