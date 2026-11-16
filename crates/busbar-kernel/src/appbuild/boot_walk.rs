@@ -93,7 +93,7 @@ fn phase_word(phase: BootPhase) -> &'static str {
 }
 
 /// `OpenError` has no `Display` of its own: core's words, the code, then the plugin's scrubbed text.
-struct OpenText<'a>(&'a OpenError);
+pub(super) struct OpenText<'a>(pub(super) &'a OpenError);
 
 impl core::fmt::Display for OpenText<'_> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {

@@ -751,10 +751,50 @@ impl<N: Needs> Registry<N> {
         instances: &[(KindCode, InstanceSpec<'_>)],
         sugars: &busbar_contract::secret_ref::Sugars,
     ) -> Result<BootPlan, OpenError> {
+        self.boot_plan_with_core(instances, sugars, &[])
+    }
+
+    /// `boot_plan` fed, as §11.2 says, with core's own sections the store boot needs (admin token, signing key,
+    /// at-rest keys): `core_modules` is the `module` each of those references names (a configured secret
+    /// instance's name, its identity or a sugar word). Each that resolves to a configured secret instance opens
+    /// in 2a after the store's own, dependencies first; one that names no configured instance is skipped here
+    /// (core's own resolution refuses it when it reads the reference). Core is not an instance, so the frozen
+    /// `boot_plan` signature has no place for them: this is its fed form and `boot_plan` is the `&[]` case.
+    pub fn boot_plan_with_core(
+        &self,
+        instances: &[(KindCode, InstanceSpec<'_>)],
+        sugars: &busbar_contract::secret_ref::Sugars,
+        core_modules: &[&str],
+    ) -> Result<BootPlan, OpenError> {
         let kinds: Vec<KindCode> = instances.iter().map(|(kind, _)| *kind).collect();
+        let roots: Vec<usize> = core_modules
+            .iter()
+            .filter_map(|module| self.secret_index(module, instances, sugars))
+            .collect();
         let mut deps = |at: usize| self.secret_deps(at, instances, sugars);
-        let steps = chains::plan_order(&kinds, &mut deps)?;
+        let steps = chains::plan_order(&kinds, &roots, &mut deps)?;
         Ok(BootPlan { steps })
+    }
+
+    /// The configured secret instance a `module` word names: by configured name, else by identity (a
+    /// `former_names` word resolves to its identity), after a sugar word is replaced by its module.
+    fn secret_index(
+        &self,
+        module: &str,
+        instances: &[(KindCode, InstanceSpec<'_>)],
+        sugars: &busbar_contract::secret_ref::Sugars,
+    ) -> Option<usize> {
+        let module = sugars.get(module).map_or(module, |sugar| sugar.module());
+        let same = |a: &str, b: &str| {
+            let canon = |m: &str| {
+                self.resolve_module(m)
+                    .map_or_else(|| m.to_owned(), |(i, _, _)| i.to_owned())
+            };
+            canon(a) == canon(b)
+        };
+        instances.iter().position(|(kind, spec)| {
+            *kind == KindCode::Secret && (spec.name == module || same(spec.identity, module))
+        })
     }
 
     /// A pushed desired state (today's hook/plane `configure`): merge `patch` (a JSON object) into the stored
@@ -906,13 +946,6 @@ impl<N: Needs> Registry<N> {
         let config: serde_json::Value = serde_json::from_slice(&bound).unwrap_or_default();
         let mut handles = Vec::new();
         secret_handles(&config, &mut handles);
-        let same = |a: &str, b: &str| {
-            let canon = |m: &str| {
-                self.resolve_module(m)
-                    .map_or_else(|| m.to_owned(), |(i, _, _)| i.to_owned())
-            };
-            canon(a) == canon(b)
-        };
         let mut out = Vec::new();
         for handle in handles {
             let Some(module) = self
@@ -922,13 +955,7 @@ impl<N: Needs> Registry<N> {
             else {
                 continue;
             };
-            let module = sugars
-                .get(&module)
-                .map_or(module.clone(), |sugar| sugar.module().to_owned());
-            let hit = instances.iter().position(|(kind, spec)| {
-                *kind == KindCode::Secret && (spec.name == module || same(spec.identity, &module))
-            });
-            if let Some(index) = hit {
+            if let Some(index) = self.secret_index(&module, instances, sugars) {
                 if !out.contains(&index) {
                     out.push(index);
                 }

@@ -16,6 +16,8 @@ use busbar_kernel::plane_driver::route_input::{
     LaneInput, OnExhaustedInput, PoolInput, PoolMemberInput,
 };
 
+/// The registry's kernel sides, core's own secret references, and the one plan-and-walk entry.
+pub mod boot_registry;
 /// The MIN-3 boot: one generic walk over `Registry::boot_plan` (IF §11.2, §12.10 item 4).
 pub mod boot_walk;
 
@@ -1272,6 +1274,35 @@ pub fn bootstrap_dependency_names(
     })
 }
 
+/// The `module` each of core's own secret references names (IF §11.2 `boot_plan`: the admin token, the signing
+/// key, the at-rest keys), in that order, each once. This is what `Registry::boot_plan_with_core` is fed so the
+/// secret instances core itself resolves from open in 2a, before the store.
+pub fn core_secret_modules(cfg: &config::RootCfg) -> Vec<String> {
+    let mut modules: Vec<String> = Vec::new();
+    let mut add = |reference: &busbar_contract::secret_ref::SecretRef| {
+        if let Some(module) = reference.source_module() {
+            if !modules.iter().any(|seen| seen == module) {
+                modules.push(module.to_owned());
+            }
+        }
+    };
+    if let Some(auth) = &cfg.auth {
+        if let Some(reference) = auth.operator_token_ref() {
+            add(reference);
+        }
+        if let Some(reference) = &auth.signing_key {
+            add(reference);
+        }
+    }
+    if let Some(keys) = &cfg.credentials.at_rest {
+        add(&keys.key);
+        if let Some(previous) = &keys.previous {
+            add(previous);
+        }
+    }
+    modules
+}
+
 pub fn bootstrap_dependency_names_from_metadata(
     cfg: &config::RootCfg,
     fields: &[String],
@@ -1295,27 +1326,8 @@ pub fn bootstrap_dependency_names_from_metadata(
             }
         }
     }
-    if let Some(auth) = &cfg.auth {
-        if let Some(reference) = auth.operator_token_ref() {
-            if let Some(module) = reference.source_module() {
-                add(module);
-            }
-        }
-        if let Some(reference) = &auth.signing_key {
-            if let Some(module) = reference.source_module() {
-                add(module);
-            }
-        }
-    }
-    if let Some(keys) = &cfg.credentials.at_rest {
-        if let Some(module) = keys.key.source_module() {
-            add(module);
-        }
-        if let Some(previous) = &keys.previous {
-            if let Some(module) = previous.source_module() {
-                add(module);
-            }
-        }
+    for module in core_secret_modules(cfg) {
+        add(&module);
     }
     modules
 }
