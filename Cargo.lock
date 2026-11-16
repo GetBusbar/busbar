@@ -442,6 +442,8 @@ dependencies = [
  "futures",
  "hex",
  "http",
+ "http-body-util",
+ "hyper",
  "hyper-util",
  "libc",
  "mime",
