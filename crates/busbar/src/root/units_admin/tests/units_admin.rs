@@ -1202,6 +1202,114 @@ async fn each_recovery_verb_reaches_the_store_and_a_refusing_store_is_the_answer
     }
 }
 
+/// Aikido 1074606954 (#108): chain-break and store-restore are durable writes like the other
+/// mutating verbs, so they pass the current-authority effect admission first (docs/admin-api.md).
+/// An admin whose authority was revoked after the request was admitted reaches no store method.
+#[tokio::test]
+async fn a_recovery_verb_is_refused_when_current_authority_no_longer_admits_the_effect() {
+    #[derive(Debug, Default)]
+    struct RecordingStore(Mutex<Vec<String>>);
+
+    impl busbar_kernel::persistence::recovery_api::Store for RecordingStore {
+        fn chain_break<'a>(
+            &'a self,
+            _admin: &'a busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
+        ) -> busbar_kernel::persistence::recovery_api::StoreCall<'a> {
+            Box::pin(async move {
+                self.0.lock().unwrap().push("chain_break".to_string());
+                Ok(())
+            })
+        }
+        fn store_restore<'a>(
+            &'a self,
+            _admin: &'a busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
+            backup_ref: &'a str,
+        ) -> busbar_kernel::persistence::recovery_api::StoreCall<'a> {
+            Box::pin(async move {
+                self.0
+                    .lock()
+                    .unwrap()
+                    .push(format!("store_restore:{backup_ref}"));
+                Ok(())
+            })
+        }
+    }
+
+    struct NeverDispatched;
+    #[async_trait::async_trait]
+    impl AdminDispatch for NeverDispatched {
+        async fn execute(&self, verb: KernelVerb, _request: &AdminRequest) -> AdminAnswer {
+            panic!("a recovery verb reached the governance seam: {verb:?}");
+        }
+    }
+
+    fn revoked(
+        _context: &busbar_kernel::auth::effect::Context,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = Result<
+                        busbar_kernel::config::transaction::EffectGuard,
+                        busbar_kernel::config::transaction::TxnError,
+                    >,
+                > + Send
+                + '_,
+        >,
+    > {
+        Box::pin(async { Err(busbar_kernel::config::transaction::TxnError::Forbidden) })
+    }
+
+    let admin = crate::root::kernel::new_kernel().admin_token();
+
+    for (path, body) in [
+        ("/api/v1/admin/chain-break", "{}"),
+        (
+            "/api/v1/admin/store-restore",
+            "{\"backup_ref\":\"nightly-2026-09-05\"}",
+        ),
+    ] {
+        let store = Arc::new(RecordingStore::default());
+        let mut binding = AdminBinding::new(Arc::new(NeverDispatched), open_door());
+        let admission: EffectAdmission = Arc::new(revoked);
+        binding.effect_admission = Some(admission);
+        let mut request = a_request();
+        request.method = "POST".to_string();
+        request.path = path.to_string();
+        request.body = body.as_bytes().to_vec();
+        let mut walk = AdminWalk::new(request);
+        decode(&mut walk).unwrap_or_else(|_| panic!("{path} is a row the plane's table declares"));
+        walk.granted = Some(VerbScope::Full);
+        walk.effect_context = Some(busbar_kernel::auth::effect::Context::new(
+            "POST",
+            path,
+            Default::default(),
+            &busbar_kernel::auth::AdminDoor::Open,
+        ));
+
+        let outcome = route(
+            &binding,
+            Some(Arc::clone(&store)
+                as Arc<
+                    dyn busbar_kernel::persistence::recovery_api::Store + Send + Sync,
+                >),
+            &admin,
+            &mut walk,
+        )
+        .await;
+
+        assert!(
+            store.0.lock().unwrap().is_empty(),
+            "{path} reached the store without current authority"
+        );
+        assert_eq!(outcome, Ok(()), "{path}: the refusal is the answer");
+        assert_eq!(
+            walk.answer.as_ref().map(|answer| answer.status),
+            Some(403),
+            "{path} is refused as forbidden"
+        );
+    }
+}
+
 #[test]
 fn a_restore_that_names_no_backup_is_refused_rather_than_defaulted() {
     assert_eq!(
