@@ -271,8 +271,8 @@ impl PlaneDefinition<'_> {
         validate: impl FnOnce() -> Result<(), String>,
     ) -> Result<(), String> {
         let section = self.section;
-        // `json::to_yaml` reads the facade tree (#162).
-        let entry = busbar_contract::json::to_value(def)
+        // Keep arbitrary-precision number lexemes across the transitional tree boundary.
+        let entry = busbar_contract::json::parse_value(def.to_string().as_bytes())
             .map_err(|e| e.to_string())
             .and_then(|def| busbar_contract::json::to_yaml(&def))
             .map_err(|e| format!("`{section}.{name}`: {e}"))?;
