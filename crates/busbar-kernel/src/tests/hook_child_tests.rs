@@ -2,9 +2,12 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::*;
-use crate::host_services::{NestDone, NestRoute};
+use crate::host_services::{
+    InvocationContext, KernelServices, NestDone, NestRoute, ServingGeneration,
+};
 use crate::host_units::UnitRecord;
 use busbar_contract::abi::mechanism::call::Outcome;
+use std::ops::Deref;
 
 #[derive(Default)]
 struct Route {
@@ -13,7 +16,7 @@ struct Route {
     hold: bool,
 }
 impl NestRoute for Route {
-    fn nest(&self, nest: Nest, done: NestDone) {
+    fn nest(&self, _context: InvocationContext, nest: Nest, done: NestDone) {
         self.calls.lock().unwrap().push(nest);
         if self.hold {
             self.pending.lock().unwrap().push(done);
@@ -40,11 +43,27 @@ fn grant() -> Arc<Grant> {
         max_budget_micros: 100,
     })
 }
-fn setup(route: Arc<Route>) -> (Arc<KernelServices>, Caller) {
+#[derive(Clone)]
+struct TestHost {
+    services: Arc<KernelServices>,
+    context: InvocationContext,
+}
+impl Deref for TestHost {
+    type Target = KernelServices;
+    fn deref(&self) -> &Self::Target {
+        &self.services
+    }
+}
+
+fn setup(route: Arc<Route>) -> (TestHost, Caller) {
     let services = Arc::new(KernelServices::new());
-    services.attach_nest(route);
-    services.units().admitted(
+    let parent = Caller::for_test(Arc::from("parent"), KindCode::Plane);
+    futures::FutureExt::now_or_never(services.admit("parent", Default::default()))
+        .expect("fixture admission completes")
+        .unwrap();
+    services.units().admitted_for(
         7,
+        &parent,
         UnitRecord {
             principal: Some(Arc::new(busbar_contract::records::VirtualKey {
                 id: "principal".into(),
@@ -53,8 +72,14 @@ fn setup(route: Arc<Route>) -> (Arc<KernelServices>, Caller) {
             depth: 0,
         },
     );
+    let context = InvocationContext::new(
+        Arc::new(ServingGeneration::new(services.clone(), route)),
+        parent,
+        7,
+    )
+    .unwrap();
     (
-        services,
+        TestHost { services, context },
         Caller::for_test(Arc::from("gate"), KindCode::Hook),
     )
 }
@@ -76,7 +101,7 @@ async fn child_inherits_principal_and_memoizes_across_invocation_retries() {
     let route = Arc::new(Route::default());
     let (services, caller) = setup(route.clone());
     SCOPE
-        .scope(Scope::new(services, 7), async {
+        .scope(Scope::new(services.context.clone()), async {
             let g = grant();
             let child = invocation("gate", Some(&g), Duration::from_secs(1)).unwrap();
             let answer = request(&*child, &caller, b"payload").unwrap();
@@ -121,7 +146,7 @@ async fn a_stage_reads_its_units_child_ancestry_once() {
     let (services, caller) = setup(route.clone());
     let probe = busbar_contract::stage_probe::Scope::open();
     SCOPE
-        .scope(Scope::new(services, 7), async {
+        .scope(Scope::new(services.context.clone()), async {
             assert!(!recursive("gate"));
             let child = invocation("gate", Some(&grant()), Duration::from_secs(1)).unwrap();
             assert_eq!(
@@ -144,7 +169,7 @@ async fn grant_refuses_wrong_caller_kind_payload_scope_and_changed_parent() {
     let route = Arc::new(Route::default());
     let (services, caller) = setup(route.clone());
     SCOPE
-        .scope(Scope::new(services.clone(), 7), async {
+        .scope(Scope::new(services.context.clone()), async {
             let g = grant();
             let child = invocation("gate", Some(&g), Duration::from_secs(1)).unwrap();
             for stranger in [
@@ -185,7 +210,7 @@ async fn recursive_hook_is_not_invoked_and_no_capability_survives_parent() {
         .units()
         .set_child_ancestry(7, vec![Arc::from("gate")]);
     SCOPE
-        .scope(Scope::new(services.clone(), 7), async {
+        .scope(Scope::new(services.context.clone()), async {
             assert!(recursive("gate"));
             assert!(invocation("gate", Some(&grant()), Duration::from_secs(1)).is_none());
         })
@@ -193,7 +218,7 @@ async fn recursive_hook_is_not_invoked_and_no_capability_survives_parent() {
     // A unit's ancestry is fixed when it is nested; a stage entry reads it once.
     services.units().set_child_ancestry(7, Vec::new());
     SCOPE
-        .scope(Scope::new(services.clone(), 7), async {
+        .scope(Scope::new(services.context.clone()), async {
             let child = invocation("gate", Some(&grant()), Duration::from_secs(1)).unwrap();
             services.units().ended(7);
             assert_eq!(
@@ -212,7 +237,7 @@ async fn dropping_invocation_cancels_one_pending_child_without_reissuing_it() {
     });
     let (services, caller) = setup(route.clone());
     SCOPE
-        .scope(Scope::new(services, 7), async {
+        .scope(Scope::new(services.context.clone()), async {
             let g = grant();
             let child = invocation("gate", Some(&g), Duration::from_secs(1)).unwrap();
             assert!(request(&*child, &caller, b"p").is_none());
@@ -255,7 +280,7 @@ async fn depth_deadline_and_output_bounds_fail_closed() {
             );
         }
         SCOPE
-            .scope(Scope::new(services, 7), async {
+            .scope(Scope::new(services.context.clone()), async {
                 let mut g = (*grant()).clone();
                 if case == 2 {
                     g.max_output_bytes = 2;
