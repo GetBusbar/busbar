@@ -7,6 +7,44 @@ use busbar_kernel::persistence::journal::head_cell::Head;
 use busbar_kernel_audit::{Fingerprint, LineAt, Linked, Prepared};
 
 impl Durability {
+    /// Stage a Bootstrap-certified key into the ordinary audit chain. The caller confirms
+    /// this exact run before publishing its WAL position as the live signer's key_cert.
+    pub(crate) fn stage_notary_key(
+        &mut self,
+        prepared: busbar_kernel_audit::notary_key::PreparedNotaryKey,
+        pass: &busbar_contract::caps::Pass<busbar_contract::caps::Audit>,
+        token: &Grant<DurableWrite>,
+    ) -> Result<
+        (
+            busbar_kernel_audit::notary_key::NotaryKeyRecord,
+            Arc<StagedRun>,
+        ),
+        DurabilityLost,
+    > {
+        let linked_ms = busbar_kernel::store::now_ms();
+        let linked = self
+            .record
+            .link_notary_key(prepared, linked_ms, pass)
+            .map_err(|_| DurabilityLost::observed(token, StepName::Audit))?;
+        let body = busbar_kernel_audit::notary_key::notary_key_body(linked.record())
+            .map_err(|_| DurabilityLost::observed(token, StepName::Audit))?;
+        let entry = Entry::new(RecordClass::Transaction, body).at(linked_ms / 1_000, 0);
+        let run = self
+            .journal
+            .stage_run(&[entry])
+            .map_err(|_| DurabilityLost::observed(token, StepName::Audit))?;
+        self.record
+            .advance_notary_key(&linked)
+            .map_err(|_| DurabilityLost::observed(token, StepName::Audit))?;
+        self.head.publish(&Head {
+            seq: linked.record().seq,
+            node_seq: run.records().first().map_or(0, |row| row.node_seq),
+            fp: linked.record().fingerprint.0,
+            wall_ms: linked_ms,
+        });
+        Ok((linked.into_record(), run))
+    }
+
     pub(super) fn resume_audit(&mut self, records: &[JournalRecord]) {
         let mut sealed = Vec::new();
         let mut keyed = false;

@@ -41,7 +41,7 @@ async fn bootstrap_thread_certifies_and_stages_the_exact_chain_position() {
     };
     let certificate = rig
         .signers
-        .seal
+        .boot
         .submit_certificate(node, seq, prev, live.public_key().clone())
         .await
         .unwrap();
