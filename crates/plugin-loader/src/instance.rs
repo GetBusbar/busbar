@@ -39,7 +39,7 @@ use crate::refusal::{Refusal, RefusalCode};
 use crate::reopen::{BoundNeeds, Reopener};
 use busbar_ffi::kind as k;
 use busbar_ports::auth::{AuthPort, IssuedShape};
-use busbar_ports::binder::ConfigBinder;
+use busbar_ports::binder::{ConfigBinder, RefSource};
 use busbar_ports::codec::plane;
 use busbar_ports::export::ExportPort;
 use busbar_ports::hook::HookPort;
@@ -471,6 +471,7 @@ pub type StoreSeal =
 /// What `reconfigure` merges a push into: the config an instance was opened with and the last applied version.
 #[derive(Clone)]
 struct Applied {
+    refs: Arc<dyn RefSource>,
     opener: Arc<dyn Reopener>,
     identity: Box<str>,
     config: Vec<u8>,
@@ -784,10 +785,11 @@ impl Registry {
         &self,
         s: &InstanceSpec<'_>,
         needs: &Arc<N>,
+        refs: &Arc<dyn RefSource>,
         seal: StoreSeal,
     ) -> BoxFut<'_, Result<StoreHandle, OpenError>> {
         match self.reserve(s) {
-            Ok(prepared) => self.open_store_reserved(prepared, needs, seal),
+            Ok(prepared) => self.open_store_reserved(prepared, needs, refs, seal),
             Err(error) => Box::pin(async move { Err(error) }),
         }
     }
@@ -796,14 +798,16 @@ impl Registry {
         &self,
         prepared: PreparedInstance,
         needs: &Arc<N>,
+        refs: &Arc<dyn RefSource>,
         seal: StoreSeal,
     ) -> BoxFut<'_, Result<StoreHandle, OpenError>> {
         let owned = OwnedSpec::new(&prepared.spec());
         let needs = Arc::clone(needs);
+        let refs = Arc::clone(refs);
         Box::pin(async move {
             let spec = owned.spec();
             let opened = self
-                .open_reserved_instance::<k::Store, N>(prepared, &needs)
+                .open_reserved_instance::<k::Store, N>(prepared, &needs, &*refs)
                 .await?;
             let proxy =
                 busbar_plugin_abi::store::Proxy::bind(opened.instance).ok_or_else(not_this_kind)?;
@@ -813,7 +817,13 @@ impl Registry {
                 &tokio::runtime::Handle::current(),
                 seal(),
             )?;
-            self.remember(&spec, KindCode::Store, &needs, Some(Arc::clone(&seal)));
+            self.remember(
+                &spec,
+                KindCode::Store,
+                &needs,
+                &refs,
+                Some(Arc::clone(&seal)),
+            );
             Ok(StoreHandle {
                 backend: Arc::new(adapter),
             })
@@ -824,9 +834,10 @@ impl Registry {
         &self,
         s: &InstanceSpec<'_>,
         needs: &Arc<N>,
+        refs: &Arc<dyn RefSource>,
     ) -> BoxFut<'_, Result<Arc<dyn SecretPort>, OpenError>> {
         match self.reserve(s) {
-            Ok(prepared) => self.open_secret_reserved(prepared, needs),
+            Ok(prepared) => self.open_secret_reserved(prepared, needs, refs),
             Err(error) => Box::pin(async move { Err(error) }),
         }
     }
@@ -835,17 +846,19 @@ impl Registry {
         &self,
         prepared: PreparedInstance,
         needs: &Arc<N>,
+        refs: &Arc<dyn RefSource>,
     ) -> BoxFut<'_, Result<Arc<dyn SecretPort>, OpenError>> {
         let owned = OwnedSpec::new(&prepared.spec());
         let needs = Arc::clone(needs);
+        let refs = Arc::clone(refs);
         Box::pin(async move {
             let spec = owned.spec();
             let opened = self
-                .open_reserved_instance::<k::Secret, N>(prepared, &needs)
+                .open_reserved_instance::<k::Secret, N>(prepared, &needs, &*refs)
                 .await?;
             let proxy = busbar_plugin_abi::secret::Proxy::bind(opened.instance)
                 .ok_or_else(not_this_kind)?;
-            self.remember(&spec, KindCode::Secret, &needs, None);
+            self.remember(&spec, KindCode::Secret, &needs, &refs, None);
             let port: Arc<dyn SecretPort> = Arc::new(crate::adapters::secret::SecretAdapter::new(
                 proxy,
                 Arc::clone(&needs),
@@ -858,9 +871,10 @@ impl Registry {
         &self,
         s: &InstanceSpec<'_>,
         needs: &Arc<N>,
+        refs: &Arc<dyn RefSource>,
     ) -> BoxFut<'_, Result<Arc<dyn AuthPort>, OpenError>> {
         match self.reserve(s) {
-            Ok(prepared) => self.open_auth_reserved(prepared, needs),
+            Ok(prepared) => self.open_auth_reserved(prepared, needs, refs),
             Err(error) => Box::pin(async move { Err(error) }),
         }
     }
@@ -869,13 +883,15 @@ impl Registry {
         &self,
         prepared: PreparedInstance,
         needs: &Arc<N>,
+        refs: &Arc<dyn RefSource>,
     ) -> BoxFut<'_, Result<Arc<dyn AuthPort>, OpenError>> {
         let owned = OwnedSpec::new(&prepared.spec());
         let needs = Arc::clone(needs);
+        let refs = Arc::clone(refs);
         Box::pin(async move {
             let spec = owned.spec();
             let opened = self
-                .open_reserved_instance::<k::Auth, N>(prepared, &needs)
+                .open_reserved_instance::<k::Auth, N>(prepared, &needs, &*refs)
                 .await?;
             let proxy =
                 busbar_plugin_abi::auth::Proxy::bind(opened.instance).ok_or_else(not_this_kind)?;
@@ -891,7 +907,7 @@ impl Registry {
                     busbar_plugin_abi::fail::FaultReason::BadRecords(e),
                 ))
             })?;
-            self.remember(&spec, KindCode::Auth, &needs, None);
+            self.remember(&spec, KindCode::Auth, &needs, &refs, None);
             let port: Arc<dyn AuthPort> = Arc::new(adapter);
             Ok(port)
         })
@@ -901,9 +917,10 @@ impl Registry {
         &self,
         s: &InstanceSpec<'_>,
         needs: &Arc<N>,
+        refs: &Arc<dyn RefSource>,
     ) -> BoxFut<'_, Result<Arc<dyn HookPort>, OpenError>> {
         match self.reserve(s) {
-            Ok(prepared) => self.open_hook_reserved(prepared, needs),
+            Ok(prepared) => self.open_hook_reserved(prepared, needs, refs),
             Err(error) => Box::pin(async move { Err(error) }),
         }
     }
@@ -912,13 +929,15 @@ impl Registry {
         &self,
         prepared: PreparedInstance,
         needs: &Arc<N>,
+        refs: &Arc<dyn RefSource>,
     ) -> BoxFut<'_, Result<Arc<dyn HookPort>, OpenError>> {
         let owned = OwnedSpec::new(&prepared.spec());
         let needs = Arc::clone(needs);
+        let refs = Arc::clone(refs);
         Box::pin(async move {
             let spec = owned.spec();
             let opened = self
-                .open_reserved_instance::<k::Hook, N>(prepared, &needs)
+                .open_reserved_instance::<k::Hook, N>(prepared, &needs, &*refs)
                 .await?;
             let proxy =
                 busbar_plugin_abi::hook::Proxy::bind(opened.instance).ok_or_else(not_this_kind)?;
@@ -933,7 +952,7 @@ impl Registry {
                         .ok()
                 })
                 .map_or(0, |p| p.mask);
-            self.remember(&spec, KindCode::Hook, &needs, None);
+            self.remember(&spec, KindCode::Hook, &needs, &refs, None);
             let port: Arc<dyn HookPort> = Arc::new(crate::adapters::hook::HookAdapter::new(
                 proxy,
                 Arc::clone(&needs),
@@ -948,9 +967,10 @@ impl Registry {
         &self,
         s: &InstanceSpec<'_>,
         needs: &Arc<N>,
+        refs: &Arc<dyn RefSource>,
     ) -> BoxFut<'_, Result<Arc<dyn ExportPort>, OpenError>> {
         match self.reserve(s) {
-            Ok(prepared) => self.open_export_reserved(prepared, needs),
+            Ok(prepared) => self.open_export_reserved(prepared, needs, refs),
             Err(error) => Box::pin(async move { Err(error) }),
         }
     }
@@ -959,13 +979,15 @@ impl Registry {
         &self,
         prepared: PreparedInstance,
         needs: &Arc<N>,
+        refs: &Arc<dyn RefSource>,
     ) -> BoxFut<'_, Result<Arc<dyn ExportPort>, OpenError>> {
         let owned = OwnedSpec::new(&prepared.spec());
         let needs = Arc::clone(needs);
+        let refs = Arc::clone(refs);
         Box::pin(async move {
             let spec = owned.spec();
             let opened = self
-                .open_reserved_instance::<k::Export, N>(prepared, &needs)
+                .open_reserved_instance::<k::Export, N>(prepared, &needs, &*refs)
                 .await?;
             let proxy = busbar_plugin_abi::export::Proxy::bind(Arc::clone(&opened.instance))
                 .ok_or_else(not_this_kind)?;
@@ -987,7 +1009,7 @@ impl Registry {
                 &opened.answer.answer(),
             )
             .map_err(OpenError::Call)?;
-            self.remember(&spec, KindCode::Export, &needs, None);
+            self.remember(&spec, KindCode::Export, &needs, &refs, None);
             let port: Arc<dyn ExportPort> = Arc::new(adapter);
             Ok(port)
         })
@@ -997,9 +1019,10 @@ impl Registry {
         &self,
         s: &InstanceSpec<'_>,
         needs: &Arc<N>,
+        refs: &Arc<dyn RefSource>,
     ) -> BoxFut<'_, Result<Arc<dyn PlanePort>, OpenError>> {
         match self.reserve(s) {
-            Ok(prepared) => self.open_plane_reserved(prepared, needs),
+            Ok(prepared) => self.open_plane_reserved(prepared, needs, refs),
             Err(error) => Box::pin(async move { Err(error) }),
         }
     }
@@ -1008,13 +1031,15 @@ impl Registry {
         &self,
         prepared: PreparedInstance,
         needs: &Arc<N>,
+        refs: &Arc<dyn RefSource>,
     ) -> BoxFut<'_, Result<Arc<dyn PlanePort>, OpenError>> {
         let owned = OwnedSpec::new(&prepared.spec());
         let needs = Arc::clone(needs);
+        let refs = Arc::clone(refs);
         Box::pin(async move {
             let spec = owned.spec();
             let opened = self
-                .open_reserved_instance::<k::Plane, N>(prepared, &needs)
+                .open_reserved_instance::<k::Plane, N>(prepared, &needs, &*refs)
                 .await?;
             let proxy =
                 busbar_plugin_abi::plane::Proxy::bind(opened.instance).ok_or_else(not_this_kind)?;
@@ -1027,7 +1052,7 @@ impl Registry {
             .map_err(|e| {
                 OpenError::Unknown(format!("{}: the plane's describe: {}", spec.name, e.0))
             })?;
-            self.remember(&spec, KindCode::Plane, &needs, None);
+            self.remember(&spec, KindCode::Plane, &needs, &refs, None);
             let port: Arc<dyn PlanePort> = Arc::new(crate::adapters::plane::PlaneAdapter::new(
                 proxy,
                 Arc::clone(&needs),
@@ -1042,9 +1067,10 @@ impl Registry {
         &self,
         s: &InstanceSpec<'_>,
         needs: &Arc<N>,
+        refs: &Arc<dyn RefSource>,
     ) -> BoxFut<'_, Result<Arc<dyn TransportPort>, OpenError>> {
         match self.reserve(s) {
-            Ok(prepared) => self.open_transport_reserved(prepared, needs),
+            Ok(prepared) => self.open_transport_reserved(prepared, needs, refs),
             Err(error) => Box::pin(async move { Err(error) }),
         }
     }
@@ -1053,13 +1079,15 @@ impl Registry {
         &self,
         prepared: PreparedInstance,
         needs: &Arc<N>,
+        refs: &Arc<dyn RefSource>,
     ) -> BoxFut<'_, Result<Arc<dyn TransportPort>, OpenError>> {
         let owned = OwnedSpec::new(&prepared.spec());
         let needs = Arc::clone(needs);
+        let refs = Arc::clone(refs);
         Box::pin(async move {
             let spec = owned.spec();
             let opened = self
-                .open_reserved_instance::<k::Transport, N>(prepared, &needs)
+                .open_reserved_instance::<k::Transport, N>(prepared, &needs, &*refs)
                 .await?;
             let proxy = busbar_plugin_abi::transport::Proxy::bind(opened.instance)
                 .ok_or_else(not_this_kind)?;
@@ -1074,7 +1102,7 @@ impl Registry {
             let adapter =
                 crate::adapters::transport::TransportAdapter::open(proxy, opened.errors, protocols)
                     .map_err(crate::answer::open_error)?;
-            self.remember(&spec, KindCode::Transport, &needs, None);
+            self.remember(&spec, KindCode::Transport, &needs, &refs, None);
             let port: Arc<dyn TransportPort> = Arc::new(adapter);
             Ok(port)
         })
@@ -1093,17 +1121,26 @@ impl Registry {
         &self,
         s: &InstanceSpec<'_>,
     ) -> BoxFut<'_, Result<Vec<DeclaredEndpoint>, OpenError>> {
+        self.check_endpoints_with_refs(s, &(Arc::new(chains::DeniedRefs) as Arc<dyn RefSource>))
+    }
+
+    pub fn check_endpoints_with_refs(
+        &self,
+        s: &InstanceSpec<'_>,
+        refs: &Arc<dyn RefSource>,
+    ) -> BoxFut<'_, Result<Vec<DeclaredEndpoint>, OpenError>> {
+        let refs = Arc::clone(refs);
         let owned = OwnedSpec::new(s);
         Box::pin(async move {
             let spec = owned.spec();
             match self.entry_of(spec.identity).map(|e| e.described.kind) {
-                Some(KindCode::Store) => self.dry_run::<k::Store>(&spec).await,
-                Some(KindCode::Secret) => self.dry_run::<k::Secret>(&spec).await,
-                Some(KindCode::Auth) => self.dry_run::<k::Auth>(&spec).await,
-                Some(KindCode::Hook) => self.dry_run::<k::Hook>(&spec).await,
-                Some(KindCode::Export) => self.dry_run::<k::Export>(&spec).await,
-                Some(KindCode::Plane) => self.dry_run::<k::Plane>(&spec).await,
-                Some(KindCode::Transport) => self.dry_run::<k::Transport>(&spec).await,
+                Some(KindCode::Store) => self.dry_run::<k::Store>(&spec, &*refs).await,
+                Some(KindCode::Secret) => self.dry_run::<k::Secret>(&spec, &*refs).await,
+                Some(KindCode::Auth) => self.dry_run::<k::Auth>(&spec, &*refs).await,
+                Some(KindCode::Hook) => self.dry_run::<k::Hook>(&spec, &*refs).await,
+                Some(KindCode::Export) => self.dry_run::<k::Export>(&spec, &*refs).await,
+                Some(KindCode::Plane) => self.dry_run::<k::Plane>(&spec, &*refs).await,
+                Some(KindCode::Transport) => self.dry_run::<k::Transport>(&spec, &*refs).await,
                 None => Err(OpenError::Unknown(format!(
                     "{}: no admitted plugin answers to module {}",
                     spec.name, spec.identity
@@ -1231,7 +1268,7 @@ impl Registry {
                 public_url: stored.public_url.as_deref(),
                 caller_upstreams: &stored.caller_upstreams,
             };
-            self.check(&spec).await?;
+            self.check_endpoints_with_refs(&spec, &stored.refs).await?;
             let port = stored
                 .opener
                 .open(self, OwnedSpec::new(&spec), kind)
@@ -1308,6 +1345,7 @@ impl Registry {
         s: &InstanceSpec<'_>,
         kind: KindCode,
         needs: &Arc<N>,
+        refs: &Arc<dyn RefSource>,
         seal: Option<StoreSeal>,
     ) {
         let mut applied = self.applied.lock().unwrap_or_else(PoisonError::into_inner);
@@ -1316,8 +1354,10 @@ impl Registry {
         applied.insert(
             key,
             Applied {
+                refs: Arc::clone(refs),
                 opener: Arc::new(BoundNeeds {
                     needs: Arc::clone(needs),
+                    refs: Arc::clone(refs),
                     seal,
                 }),
                 identity: Box::from(s.identity),
