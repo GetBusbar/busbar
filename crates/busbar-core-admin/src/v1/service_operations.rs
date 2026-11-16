@@ -2144,6 +2144,7 @@ fn validate_config_blocking(
         &plugins,
         busbar_kernel::config::grammar::Fetch::None,
         "config.validate",
+        rules.as_ref(),
     )?;
     let deploy = crate::v1::json::typed_body(config, &grammar, parse)?;
     // A dry run never says yes to what apply refuses: the same pre-check, status and text.

@@ -518,25 +518,12 @@ impl<'a> PhaseOneIn<'a> {
     }
 }
 
-/// The composition root's phase 1 ([`crate::preflight::RootInstall::grammar`]).
-pub type GrammarFn = fn(&PhaseOneIn<'_>) -> Result<Grammar, GrammarRefusal>;
-
-/// Phase 1 for one read: the grammar the modules `input` admits declare, through the root's
-/// registry scan and judgement. A read that loads no plugin (`plugins.enabled: false`) in a binary
-/// with no composition root admits nothing, so its grammar is empty; a read that would scan
-/// `plugins.dir` with no root to scan it is refused.
-pub fn grammar_for(input: &PhaseOneIn<'_>) -> Result<Grammar, GrammarRefusal> {
-    let mut grammar = match crate::preflight::root_rows().grammar {
-        Some(phase_one) => phase_one(input)?,
-        None if !input.plugins.enabled => Grammar::empty(),
-        None => {
-            return Err(GrammarRefusal(
-                "no composition root installed the config grammar: plugins.enabled needs the \
-                 root's scan of plugins.dir to read this configuration"
-                    .to_owned(),
-            ))
-        }
-    };
+/// Compute one read's grammar through its explicitly owned root context.
+pub fn grammar_for(
+    input: &PhaseOneIn<'_>,
+    rules: &dyn crate::appbuild::RootRules,
+) -> Result<Grammar, GrammarRefusal> {
+    let mut grammar = rules.grammar(input)?;
     // A read that does not fetch cannot see a module only the fetch delivers (§3.14): a refusal
     // names each pending file.
     if input.fetch == Fetch::None {

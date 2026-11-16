@@ -34,12 +34,16 @@ fn a_refusal_carries_the_report() {
 #[test]
 fn without_a_root_only_a_read_that_loads_no_plugin_has_a_grammar() {
     let off = PluginsCfg::default();
-    assert_eq!(grammar_for(&PhaseOneIn::of(&off)), Ok(Grammar::empty()));
+    assert_eq!(
+        grammar_for(&PhaseOneIn::of(&off), &crate::appbuild::AcceptAll),
+        Ok(Grammar::empty())
+    );
     let on = PluginsCfg {
         enabled: true,
         ..PluginsCfg::default()
     };
-    let refused = grammar_for(&PhaseOneIn::of(&on)).expect_err("nothing can scan the directory");
+    let refused = grammar_for(&PhaseOneIn::of(&on), &crate::appbuild::AcceptAll)
+        .expect_err("nothing can scan the directory");
     assert!(refused.0.contains("no composition root"), "{refused}");
 }
 

@@ -358,8 +358,11 @@ impl RawDocuments<'_> {
     /// Phase 1 over this read's own block alone: its own directory, no pins, no fetch.
     pub fn own_grammar(&self) -> Result<config::Grammar, String> {
         let plugins = self.plugins_block()?;
-        config::grammar::grammar_for(&config::grammar::PhaseOneIn::of(&plugins))
-            .map_err(|refusal| format!("config.yaml: {refusal}"))
+        config::grammar::grammar_for(
+            &config::grammar::PhaseOneIn::of(&plugins),
+            self.inputs.rules,
+        )
+        .map_err(|refusal| format!("config.yaml: {refusal}"))
     }
 
     /// Phase 1 over this read's own block with the Store's plugin version pins: the boot
@@ -369,12 +372,15 @@ impl RawDocuments<'_> {
         pins: &std::collections::BTreeMap<String, String>,
     ) -> Result<config::Grammar, String> {
         let plugins = self.plugins_block()?;
-        config::grammar::grammar_for(&config::grammar::PhaseOneIn {
-            plugins: &plugins,
-            dir: std::path::Path::new(&plugins.dir),
-            pins,
-            fetch: config::grammar::Fetch::None,
-        })
+        config::grammar::grammar_for(
+            &config::grammar::PhaseOneIn {
+                plugins: &plugins,
+                dir: std::path::Path::new(&plugins.dir),
+                pins,
+                fetch: config::grammar::Fetch::None,
+            },
+            self.inputs.rules,
+        )
         .map_err(|refusal| format!("config.yaml: {refusal}"))
     }
 
@@ -987,6 +993,19 @@ pub(crate) fn plane_is_open_for_build(
 }
 
 pub trait RootRules: Send + Sync {
+    /// Phase one uses this reader's owned process and image admission context.
+    fn grammar(
+        &self,
+        input: &config::grammar::PhaseOneIn<'_>,
+    ) -> Result<config::Grammar, config::grammar::GrammarRefusal> {
+        if input.plugins.enabled {
+            Err(config::grammar::GrammarRefusal(
+                "no composition root supplied the config grammar".to_owned(),
+            ))
+        } else {
+            Ok(config::Grammar::empty())
+        }
+    }
     fn check(&self, cfg: &config::RootCfg) -> Result<(), String>;
 
     /// The document this read runs in place of the file at `path`, held in memory by the
@@ -1253,14 +1272,14 @@ pub fn pin_write_refusal(
     config_path: &std::path::Path,
     pins: &std::collections::BTreeMap<String, String>,
     used: &config::grammar::Used,
+    rules: &dyn RootRules,
 ) -> Result<(), String> {
-    let rules = AcceptAll;
     let raw = read_config_documents(
         config_path,
         None,
         false,
         config::EnvSubst::Strict,
-        &rules,
+        rules,
         DocumentPatchLoad {
             patch: None,
             providers_patch: None,
@@ -1269,12 +1288,15 @@ pub fn pin_write_refusal(
     )?;
     let plugins = raw.plugins_block()?;
     let next_start = raw.own_grammar()?;
-    let pinned = config::grammar::grammar_for(&config::grammar::PhaseOneIn {
-        plugins: &plugins,
-        dir: std::path::Path::new(&plugins.dir),
-        pins,
-        fetch: config::grammar::Fetch::None,
-    })
+    let pinned = config::grammar::grammar_for(
+        &config::grammar::PhaseOneIn {
+            plugins: &plugins,
+            dir: std::path::Path::new(&plugins.dir),
+            pins,
+            fetch: config::grammar::Fetch::None,
+        },
+        rules,
+    )
     .map_err(|refusal| format!("config.yaml: {refusal}"))?;
     config::grammar::pin(&next_start, &pinned, used, config::grammar::Pin::NextBoot)
 }
