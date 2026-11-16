@@ -465,6 +465,25 @@ fn sign_is_refused_without_a_declared_domain_or_a_key() {
 }
 
 #[test]
+fn absent_default_demotion_owner_preserves_scoped_durability_without_claiming_legacy_rows() {
+    let mut r = rig();
+    r.s.demotions.as_mut().unwrap().default_instance = None;
+    let record = Arc::clone(&r.s.demotions.as_ref().unwrap().record);
+    ready(record.record("cp", "unowned legacy row", 1)).unwrap();
+    let me = caller("inst");
+    assert_eq!(run(|l| r.s.trust_sight(&me, "cp", "fp", l)).value, svc::TRUST_NEW);
+    ready(r.s.trust_rule("inst/cp", crate::trust::book::Ruling::Approve)).unwrap();
+    assert_eq!(run(|l| r.s.trust_sight(&me, "cp", "moved", l)).value, svc::TRUST_DRIFTED);
+    let rows = ready(record.list());
+    assert!(rows.iter().any(|row| row.upstream == demotion_key("inst", "cp")));
+    assert!(rows.iter().any(|row| row.upstream == "cp"));
+    assert_eq!(run(|l| r.s.trust_sight(&me, "cp", "fp", l)).value, svc::TRUST_SAME);
+    let rows = ready(record.list());
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].upstream, "cp", "no instance owns the unprefixed row");
+}
+
+#[test]
 fn trust_sight_judges_from_the_admitted_entries_and_writes_the_demotion() {
     let r = rig();
     let me = caller("inst");
