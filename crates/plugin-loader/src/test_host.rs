@@ -224,9 +224,7 @@ fn locate(lib_name: &str) -> PathBuf {
 /// would carry, rendered by the loader's own linked-row path, which checks the Statement first.
 /// It forges the mutant, so it takes one of the mutant bank's doors.
 pub fn rendering(m: Mutant) -> Result<Vec<u8>, LoadError> {
-    // RED (STH-ROWS D-3): nothing is rendered yet.
-    let _ = m;
-    Ok(Vec::new())
+    LinkedRow::of_raw(m.door_fn()).map(|row| row.statement)
 }
 
 /// Runs `case` on the linked door, then on the cdylib; the first argument names the image.
