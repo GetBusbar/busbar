@@ -62,6 +62,10 @@ pub struct BackendInfo {
     pub durability: Durability,
 }
 
+/// The [`BackendInfo::physical_version`] of a store built for the slot-row commit rule: what core's
+/// in-process backends and test doubles answer. A plugin store answers its own in its INFO record.
+pub const PHYSICAL_VERSION: u32 = 2;
+
 /// A record address; key bytes are ordered lexicographically, without text collation.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Address {
