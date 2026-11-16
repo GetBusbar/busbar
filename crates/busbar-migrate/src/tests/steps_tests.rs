@@ -318,3 +318,15 @@ fn ambiguous_legacy_secret_blocks_are_refused_without_writing() {
     assert_eq!(std::fs::read_to_string(&path).unwrap(), source);
     assert!(!crate::backup_path(&path).exists());
 }
+
+#[test]
+fn migration_does_not_synthesize_host_global_private_authority() {
+    let (written, _) = upgrade(
+        "store: {module: m}\nproviders: {local: {base_url: 'http://127.0.0.1:11434'}}\n",
+        &facts(),
+    );
+    assert!(
+        !written.contains("allow_destinations"),
+        "private authority belongs to the declared registration"
+    );
+}
