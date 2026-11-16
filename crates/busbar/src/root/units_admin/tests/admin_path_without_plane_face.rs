@@ -452,7 +452,7 @@ async fn the_mounted_live_admin_door_keeps_no_verdict_apart_from_bad_credentials
         )
         .await
         .unwrap();
-        let late = crate::root::serve::LateServices::new();
+        let late = crate::root::serve::Services::bootstrap();
         let router = mount_node(
             a_recording_surface(surface.clone()),
             64 * 1024,

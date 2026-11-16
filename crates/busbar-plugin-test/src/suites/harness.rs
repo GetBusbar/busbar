@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The shared suite harness (IF §14, MIN3 SDK suites). It admits a plugin image into a
-//! `Registry<FakeNeeds>` over the real `HOST` static and a [`MemBinder`], opens instances with given
+//! `Registry` over the real `HOST` static and a [`MemBinder`], opens instances with given
 //! settings, hands back the kind's port to drive, and collects what the plugin did: the records it wrote
 //! (RECORD), the OPEN/FETCH needs it made, the log lines it emitted and every refusal an open answered.
 //!
@@ -503,7 +503,9 @@ impl ConfigBinder for MemBinder {
     fn resolve_refs<'a>(
         &'a self,
         instance: u64,
+        _slot: u32,
         bound: Vec<u8>,
+        _source: &'a dyn busbar_ports::binder::RefSource,
     ) -> BoxFut<'a, Result<SecureVec, BindError>> {
         Box::pin(std::future::ready(self.resolve_now(instance, bound)))
     }
@@ -705,8 +707,9 @@ pub struct StoredRecord {
 /// Drop order matters and is the field order: the registry and its instances go first, then the runtime, then
 /// the log tap.
 pub struct Harness {
-    registry: Registry<FakeNeeds>,
+    registry: Registry,
     needs: Arc<FakeNeeds>,
+    refs: Arc<dyn busbar_ports::binder::RefSource>,
     binder: Arc<MemBinder>,
     identity: String,
     kind: KindCode,
@@ -787,13 +790,14 @@ impl Harness {
         }
         let registry = Registry::new(
             images.finish(),
-            Arc::clone(&needs),
             Arc::clone(&binder) as Arc<dyn ConfigBinder>,
+            Arc::new(busbar_plugin_loader::process::InstanceIds::default()),
         );
 
         Ok(Harness {
             registry,
             needs,
+            refs: no_refs(),
             binder,
             identity,
             kind,
@@ -815,15 +819,24 @@ impl Harness {
         self.kind
     }
 
-    /// The registry, for what the harness does not wrap (`set_store_seal`, `set_auth_core`, `described`,
-    /// `take_settled`, `boot_plan`, `reconfigure`).
-    pub fn registry(&self) -> &Registry<FakeNeeds> {
+    /// The immutable image registry and its runtime observations.
+    pub fn registry(&self) -> &Registry {
         &self.registry
     }
 
     /// The `FakeNeeds` the registry runs the plugin under (what it was handed, scripted answers included).
     pub fn needs(&self) -> &FakeNeeds {
         &self.needs
+    }
+
+    /// Shared Needs owner used by every open and by explicit test adapters.
+    pub fn needs_arc(&self) -> Arc<FakeNeeds> {
+        Arc::clone(&self.needs)
+    }
+
+    /// Explicit denying source: MemBinder resolves only its pointer-scripted test values.
+    pub fn refs_arc(&self) -> Arc<dyn busbar_ports::binder::RefSource> {
+        Arc::clone(&self.refs)
     }
 
     /// The binder the registry binds every config through.
@@ -872,7 +885,7 @@ impl Harness {
     }
 
     /// DRY_RUN open (`--validate`): bind, `check`, no instance kept. The ENDPOINTs the answer declared are kept
-    /// for the generic match ([`Harness::undeclared`]).
+    /// for the generic match ([`Harness::undeclared_needs`]).
     pub fn check(&self, name: &str, config: &[u8]) -> Result<(), OpenError> {
         let spec = self.spec(name, config);
         self.check_spec(&spec)
@@ -898,15 +911,15 @@ impl Harness {
 
     /// The generic ENDPOINT match (TRANSPORT-SECURITY-POLICY §2): every OPEN or FETCH the plugin made whose
     /// (host, TLS) is not among the ENDPOINTs its successful checks declared.
-    pub fn undeclared(&self) -> Vec<Seen> {
+    pub fn undeclared_needs(&self) -> Vec<Seen> {
         let declared = self.declared.lock().unwrap_or_else(PoisonError::into_inner);
         self.needs.undeclared(&endpoint_pairs(&declared))
     }
 
-    /// Panics, naming `suite`, when [`Harness::undeclared`] is not empty: every Need a suite drove must match an
+    /// Panics, naming `suite`, when [`Harness::undeclared_needs`] is not empty: every Need a suite drove must match an
     /// ENDPOINT the plugin's `check` declared for the same config.
     pub fn assert_needs_declared(&self, suite: &str) {
-        let undeclared = self.undeclared();
+        let undeclared = self.undeclared_needs();
         assert!(
             undeclared.is_empty(),
             "{suite} suite: needs the plugin's check did not declare as an ENDPOINT (TRANSPORT-SECURITY-POLICY §2): {undeclared:?}; declared: {:?}",
@@ -933,30 +946,46 @@ impl Harness {
         spec.purpose = busbar_plugin_loader::instance::OpenPurpose::ConvertUnstamped;
         self.noted(self.block_on(async {
             match self.kind {
-                KindCode::Store => self.registry.open_store(&spec).await.map(OpenedPort::Store),
+                KindCode::Store => self
+                    .registry
+                    .open_store(&spec, &self.needs, &self.refs, test_store_seal()?)
+                    .await
+                    .map(OpenedPort::Store),
                 KindCode::Secret => self
                     .registry
-                    .open_secret(&spec)
+                    .open_secret(&spec, &self.needs, &self.refs)
                     .await
                     .map(OpenedPort::Secret),
-                KindCode::Auth => self.registry.open_auth(&spec).await.map(OpenedPort::Auth),
-                KindCode::Hook => self.registry.open_hook(&spec).await.map(OpenedPort::Hook),
+                KindCode::Auth => self
+                    .registry
+                    .open_auth(&spec, &self.needs, &self.refs)
+                    .await
+                    .map(OpenedPort::Auth),
+                KindCode::Hook => self
+                    .registry
+                    .open_hook(&spec, &self.needs, &self.refs)
+                    .await
+                    .map(OpenedPort::Hook),
                 KindCode::Export => self
                     .registry
-                    .open_export(&spec)
+                    .open_export(&spec, &self.needs, &self.refs)
                     .await
                     .map(OpenedPort::Export),
-                KindCode::Plane => self.registry.open_plane(&spec).await.map(OpenedPort::Plane),
+                KindCode::Plane => self
+                    .registry
+                    .open_plane(&spec, &self.needs, &self.refs)
+                    .await
+                    .map(OpenedPort::Plane),
                 KindCode::Transport => self
                     .registry
-                    .open_transport(&spec)
+                    .open_transport(&spec, &self.needs, &self.refs)
                     .await
                     .map(OpenedPort::Transport),
             }
         }))
     }
 
-    /// A store needs `registry().set_store_seal(..)` first (the kernel's seal factory).
+    /// Open a store with the private dev-only test seal factory.
     pub fn open_store(&self, name: &str, config: &[u8]) -> Result<StoreHandle, OpenError> {
         let spec = self.spec(name, config);
         self.open_store_spec(&spec)
@@ -967,33 +996,38 @@ impl Harness {
         &self,
         spec: &InstanceSpec<'_>,
     ) -> Result<StoreHandle, OpenError> {
-        self.noted(self.block_on(self.registry.open_store(spec)))
+        self.noted(self.block_on(self.registry.open_store(
+            spec,
+            &self.needs,
+            &self.refs,
+            test_store_seal()?,
+        )))
     }
 
     pub fn open_secret(&self, name: &str, config: &[u8]) -> Result<Arc<dyn SecretPort>, OpenError> {
         let spec = self.spec(name, config);
-        self.noted(self.block_on(self.registry.open_secret(&spec)))
+        self.noted(self.block_on(self.registry.open_secret(&spec, &self.needs, &self.refs)))
     }
 
-    /// An auth instance needs `registry().set_auth_core(..)` first.
+    /// Open the raw one-call auth port with this harness's Needs.
     pub fn open_auth(&self, name: &str, config: &[u8]) -> Result<Arc<dyn AuthPort>, OpenError> {
         let spec = self.spec(name, config);
-        self.noted(self.block_on(self.registry.open_auth(&spec)))
+        self.noted(self.block_on(self.registry.open_auth(&spec, &self.needs, &self.refs)))
     }
 
     pub fn open_hook(&self, name: &str, config: &[u8]) -> Result<Arc<dyn HookPort>, OpenError> {
         let spec = self.spec(name, config);
-        self.noted(self.block_on(self.registry.open_hook(&spec)))
+        self.noted(self.block_on(self.registry.open_hook(&spec, &self.needs, &self.refs)))
     }
 
     pub fn open_export(&self, name: &str, config: &[u8]) -> Result<Arc<dyn ExportPort>, OpenError> {
         let spec = self.spec(name, config);
-        self.noted(self.block_on(self.registry.open_export(&spec)))
+        self.noted(self.block_on(self.registry.open_export(&spec, &self.needs, &self.refs)))
     }
 
     pub fn open_plane(&self, name: &str, config: &[u8]) -> Result<Arc<dyn PlanePort>, OpenError> {
         let spec = self.spec(name, config);
-        self.noted(self.block_on(self.registry.open_plane(&spec)))
+        self.noted(self.block_on(self.registry.open_plane(&spec, &self.needs, &self.refs)))
     }
 
     pub fn open_transport(
@@ -1002,12 +1036,12 @@ impl Harness {
         config: &[u8],
     ) -> Result<Arc<dyn TransportPort>, OpenError> {
         let spec = self.spec(name, config);
-        self.noted(self.block_on(self.registry.open_transport(&spec)))
+        self.noted(self.block_on(self.registry.open_transport(&spec, &self.needs, &self.refs)))
     }
 
     /// The settled answer of instance `name`'s last `open`, once (`Registry::take_settled`).
     pub fn settled(&self, name: &str) -> Option<Settled> {
-        self.registry.take_settled(name)
+        self.registry.take_settled_for(self.kind, name)
     }
 
     /// Every line the plugin logged since the harness was built, in order.
@@ -1203,7 +1237,7 @@ mod tests {
     /// `resolve_refs` on the harness runtime, as the registry drives it before `check` and `open`.
     fn resolved(binder: &MemBinder, instance: u64, bound: Vec<u8>) -> Result<Vec<u8>, BindError> {
         let rt = crate::test_rt::TestRuntime::new().unwrap();
-        rt.block_on(binder.resolve_refs(instance, bound))
+        rt.block_on(binder.resolve_refs(instance, 0, bound, &*no_refs()))
             .map(SecureVec::into_vec)
     }
 
@@ -1395,4 +1429,38 @@ fn collect_socket_bindings(
         }
     }
     Ok(())
+}
+
+/// Keep test authority internal; production callers cannot obtain a seal through the SDK facade.
+fn test_store_seal() -> Result<busbar_plugin_loader::instance::StoreSeal, OpenError> {
+    #[cfg(feature = "test-seal")]
+    {
+        Ok(Arc::new(|| {
+            Box::new(busbar_contract::plugin::TestKernelSeal)
+        }))
+    }
+    #[cfg(not(feature = "test-seal"))]
+    {
+        Err(OpenError::Unknown(
+            "store tests require the test-seal feature".into(),
+        ))
+    }
+}
+
+/// A test source that grants no custody authority. MemBinder owns its explicit pointer scripts;
+/// this source refuses any resolution attempted outside that test binder.
+pub fn no_refs() -> Arc<dyn busbar_ports::binder::RefSource> {
+    struct Deny;
+    impl busbar_ports::binder::RefSource for Deny {
+        fn resolve<'a>(
+            &'a self,
+            _instance: u64,
+            _slot: u32,
+            _binding: u32,
+            _reference: &'a busbar_contract::secret_ref::SecretRef,
+        ) -> BoxFut<'a, Option<SecureVec>> {
+            Box::pin(std::future::ready(None))
+        }
+    }
+    Arc::new(Deny)
 }

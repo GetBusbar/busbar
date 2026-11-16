@@ -1484,7 +1484,7 @@ async fn registered_http_listener_accepts_only_its_planes_registered_upgrade() {
     use busbar_kernel::guest::{Line, Route};
 
     crate::dist_root_install::install();
-    let late = super::LateServices::new();
+    let late = super::Services::bootstrap();
     let dispatcher = Arc::new(crate::root::dispatch::build(2, &late));
     let entries = crate::root::connector::entries_on(
         &dispatcher,

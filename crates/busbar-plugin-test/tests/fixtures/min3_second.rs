@@ -722,11 +722,7 @@ impl core::future::Future for Park {
 
 /// A registry over `needs`, the real `HOST` and a [`MemBinder`], with `max_steps` as its step cap and every image
 /// of `plugins` admitted, in order.
-pub fn registry<N: Needs>(
-    needs: Arc<N>,
-    max_steps: u32,
-    plugins: &[&'static Plugin],
-) -> Registry<N> {
+pub fn registry<N: Needs>(_needs: Arc<N>, max_steps: u32, plugins: &[&'static Plugin]) -> Registry {
     let binder: Arc<dyn ConfigBinder> = Arc::new(MemBinder::new());
     let slots = Arc::new(busbar_plugin_loader::instance::SlotTable::new());
     busbar_plugin_loader::instance::install_sinks(&slots);
@@ -744,7 +740,11 @@ pub fn registry<N: Needs>(
             .admit(admitted)
             .unwrap_or_else(|r| panic!("add: {r:?}"));
     }
-    Registry::new(images.finish(), needs, binder)
+    Registry::new(
+        images.finish(),
+        binder,
+        Arc::new(busbar_plugin_loader::process::InstanceIds::default()),
+    )
 }
 
 /// The spec of instance `name` of the image `module` names, with `config` and no limits.

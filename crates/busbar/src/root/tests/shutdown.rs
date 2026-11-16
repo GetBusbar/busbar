@@ -375,7 +375,7 @@ impl Fixture {
             node_lease: None,
             flusher,
             governance: governed.then(|| seen.gov.clone()),
-            late: LateServices::new(),
+            late: Services::bootstrap(),
             book: Some(book),
             startup,
             shutdown_tx: shutdown_tx.clone(),

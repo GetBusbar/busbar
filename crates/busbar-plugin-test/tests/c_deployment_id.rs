@@ -152,9 +152,6 @@ fn the_2a_and_2b_recheck_sees_the_id_before_any_2c_open() {
         FakeNeeds::new(),
     )
     .unwrap_or_else(|r| panic!("{r:?}"));
-    h.registry().set_store_seal(Box::new(|| {
-        Box::new(busbar_contract::plugin::TestKernelSeal)
-    }));
     let inline = "fixture-store-inline";
     assert_eq!(vt::deployment().0, [0; 16], "no id before the walk");
 
@@ -183,6 +180,9 @@ fn the_2a_and_2b_recheck_sees_the_id_before_any_2c_open() {
     let steps = Watched {
         inner: RegistryBoot {
             registry: h.registry(),
+            needs: &h.needs_arc(),
+            refs: &h.refs_arc(),
+            store_seal: Arc::new(|| Box::new(busbar_contract::plugin::TestKernelSeal)),
             instances: &instances,
             deployment: read,
         },
@@ -239,6 +239,9 @@ fn the_2a_and_2b_recheck_sees_the_id_before_any_2c_open() {
     let steps = Watched {
         inner: RegistryBoot {
             registry: h.registry(),
+            needs: &h.needs_arc(),
+            refs: &h.refs_arc(),
+            store_seal: Arc::new(|| Box::new(busbar_contract::plugin::TestKernelSeal)),
             instances: &instances,
             deployment: read,
         },

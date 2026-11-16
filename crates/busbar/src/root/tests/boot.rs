@@ -1004,7 +1004,7 @@ async fn a_committing_builds_admission_replaces_the_dropped_secret_rows() {
 }
 
 pub(super) fn constructor_child(validate: bool) -> ! {
-    let late = crate::root::serve::LateServices::new();
+    let late = crate::root::serve::Services::bootstrap();
     crate::root::boot::install_native_load_guard().unwrap();
     crate::root::loader::dispatch::handle::arm().unwrap();
     let dispatcher = crate::root::dispatch::boot(1, &late);

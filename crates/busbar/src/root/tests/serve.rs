@@ -167,7 +167,7 @@ impl HostServices for Judges {
     }
 }
 
-fn judged(s: &LateServices) -> Stored {
+fn judged(s: &Services) -> Stored {
     match s.served().dest_judge("https://example.test/", 0, 0, None) {
         Ran::Now(stored) => stored,
         Ran::Later => panic!("the late services never pend"),
@@ -175,8 +175,8 @@ fn judged(s: &LateServices) -> Stored {
 }
 
 #[test]
-fn a_service_called_before_the_install_answers_refused_and_never_panics() {
-    let late = LateServices::new();
+fn bootstrap_services_answer_refused_and_never_panic() {
+    let late = Services::bootstrap();
     assert_eq!(judged(&late), Stored::refused(NOT_INSTALLED));
     let a = late.served().now();
     let b = late.served().now();
@@ -185,24 +185,22 @@ fn a_service_called_before_the_install_answers_refused_and_never_panics() {
 }
 
 #[test]
-fn the_installed_services_answer_and_a_second_install_is_refused() {
-    let late = LateServices::new();
-    late.install(Arc::new(Judges)).expect("the first install");
+fn constructed_services_keep_their_provider_when_another_source_is_built() {
+    let late = Services::fixture(Arc::new(Judges));
     assert_eq!(
         judged(&late),
         Stored::ready(1),
         "the installed services answer"
     );
     assert_eq!(late.served().now().wall_ns, 7);
-    assert_eq!(
-        late.install(Arc::new(Judges)),
-        Err(AlreadyInstalled),
-        "a second install is refused"
-    );
-    assert!(late.is_installed());
+    let original = late.served();
+    let other = Services::bootstrap();
+    assert_eq!(judged(&other), Stored::refused(NOT_INSTALLED));
+    assert!(Arc::ptr_eq(&original, &late.served()));
+    assert_eq!(judged(&late), Stored::ready(1));
 }
 
-fn every_service(late: &LateServices) -> Vec<Stored> {
+fn every_service(late: &Services) -> Vec<Stored> {
     let s = late.served();
     let caller = Caller::for_test(
         Arc::from("the-instance"),
@@ -233,11 +231,12 @@ fn every_service(late: &LateServices) -> Vec<Stored> {
 
 #[test]
 fn every_service_is_the_installed_services_answer() {
-    let late = LateServices::new();
+    let late = Services::bootstrap();
     let before = every_service(&late);
     assert!(before.iter().all(|s| *s == Stored::refused(NOT_INSTALLED)));
-    late.install(Arc::new(Judges)).expect("the install");
-    let after = every_service(&late);
+    let serving = Services::fixture(Arc::new(Judges));
+    let after = every_service(&serving);
+    assert_eq!(every_service(&late), before, "bootstrap stays restricted");
     assert!(after.iter().all(|s| s.outcome == Outcome::Ready));
     let values: Vec<u64> = after.iter().map(|s| s.value).collect();
     assert_eq!(values, (2..=11).collect::<Vec<u64>>());
@@ -260,9 +259,7 @@ fn verdict(s: &dyn HostServices, dest: &str, class: u32) -> Stored {
 
 #[test]
 fn dest_judge_asks_the_deployments_one_guard() {
-    let late = LateServices::new();
-    late.install(Arc::new(kernel(&["metadata.corp.example"])))
-        .expect("the install");
+    let late = Services::serving(Arc::new(kernel(&["metadata.corp.example"])));
     let served = late.served();
     let judged = |dest| verdict(&*served, dest, DEFAULT_EGRESS_CLASS).value;
     assert_eq!(
@@ -483,16 +480,23 @@ async fn an_ingress_head_the_wire_cannot_carry_is_a_plane_fault() {
 
 #[test]
 fn the_composed_kernel_services_are_kept_for_the_driver() {
-    let late = LateServices::new();
-    assert!(late.kernel().is_none(), "nothing before the compose");
+    let bootstrap = Services::bootstrap();
+    assert!(
+        bootstrap.kernel().is_none(),
+        "bootstrap has no serving kernel"
+    );
     let composed = Arc::new(kernel(&[]));
-    late.install_kernel(Arc::clone(&composed), composed.clone())
-        .expect("the install");
-    assert!(Arc::ptr_eq(&late.kernel().expect("kept"), &composed));
-    assert!(late.is_installed());
-    assert_eq!(
-        late.install_kernel(Arc::new(kernel(&[])), Arc::new(kernel(&[]))),
-        Err(AlreadyInstalled)
+    let serving = Services::serving(Arc::clone(&composed));
+    assert!(Arc::ptr_eq(&serving.kernel().expect("kept"), &composed));
+    let other = Services::serving(Arc::new(kernel(&[])));
+    assert!(!Arc::ptr_eq(&other.kernel().expect("other"), &composed));
+    assert!(Arc::ptr_eq(
+        &serving.kernel().expect("still kept"),
+        &composed
+    ));
+    assert!(
+        bootstrap.kernel().is_none(),
+        "construction grants bootstrap no authority"
     );
 }
 
@@ -539,13 +543,11 @@ fn the_demotion_owner_is_the_one_plane_declaring_the_demotion_kind() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn the_late_attach_serves_sign_and_writes_trust_changes_down() {
+async fn constructed_services_sign_and_write_trust_changes_down() {
     use busbar_kernel::host_services::{InstanceFacts, Signing};
     use busbar_kernel::trust::reverify::Policy;
     use busbar_kernel::trust::section::TrustEntry;
-    let late = LateServices::new();
-    let k = Arc::new(kernel(&[]));
-    late.install_kernel(Arc::clone(&k), k).expect("the install");
+    let late = Services::serving(Arc::new(kernel(&[])));
     let k = late.kernel().expect("kept");
 
     let entry = TrustEntry {
@@ -570,7 +572,7 @@ async fn the_late_attach_serves_sign_and_writes_trust_changes_down() {
         trust: vec![("peer".to_string(), entry)],
         ..InstanceFacts::default()
     };
-    k.admit("owner", facts).await.expect("admitted");
+    k.admit("owner", facts.clone()).await.expect("admitted");
     let caller = Caller::for_test(
         Arc::from("owner"),
         busbar_contract::abi::mechanism::KindCode::Plane,
@@ -607,31 +609,73 @@ async fn the_late_attach_serves_sign_and_writes_trust_changes_down() {
     demotions
         .set_store(crate::root::real_store::core().await)
         .expect("the native Store owns trust changes");
-    attach(
-        &late,
-        None,
-        Some(Arc::new(Signs)),
-        &demotions,
-        &[&plane("owner", &[KIND_DEMOTION])],
+    let complete = Services::serving(Arc::new(
+        kernel(&[])
+            .with_signer(Arc::new(Signs))
+            .with_demotions(Arc::clone(&demotions), "owner")
+            .with_pool(Arc::new(BlockingPool::new(
+                tokio::runtime::Handle::current(),
+                QUEUE_CAP,
+            ))),
+    ));
+    let complete_kernel = complete.kernel().expect("complete kernel");
+    complete_kernel
+        .admit("owner", facts)
+        .await
+        .expect("complete admission");
+    let complete_sight = |hash| {
+        let (tx, rx) = std::sync::mpsc::channel();
+        match complete.served().trust_sight(
+            &caller,
+            "peer",
+            hash,
+            Box::new(move |s| tx.send(s).unwrap()),
+        ) {
+            Ran::Now(s) => (s.value, false),
+            Ran::Later => (
+                rx.recv_timeout(std::time::Duration::from_secs(10))
+                    .unwrap()
+                    .value,
+                true,
+            ),
+        }
+    };
+    assert_eq!(complete_sight("h1"), (svc::TRUST_NEW, false));
+    complete_kernel
+        .trust_rule("owner/peer", busbar_kernel::trust::book::Ruling::Approve)
+        .await
+        .expect("complete approved");
+    assert_eq!(complete_sight("h1"), (svc::TRUST_SAME, false));
+    assert_eq!(
+        complete_sight("h2"),
+        (svc::TRUST_DRIFTED, true),
+        "drift is written down"
     );
-    let signed = late.served().sign(&caller, b"data");
+    let signed = complete.served().sign(&caller, b"data");
     assert_eq!(
         (signed.outcome, signed.bytes.as_slice()),
         (Outcome::Ready, b"k:kiddata".as_slice())
     );
     assert_eq!(
-        sight("h1"),
+        complete_sight("h1"),
         (svc::TRUST_SAME, true),
         "the clearing is written first"
     );
-    assert!(
-        !k.attach_signer(Arc::new(Signs)),
-        "a second attach is refused"
+    assert!(Arc::ptr_eq(&late.kernel().expect("original"), &k));
+    assert_eq!(
+        late.served().sign(&caller, b"data").outcome,
+        Outcome::Refused,
+        "another source cannot grant signing authority to the original"
+    );
+    assert_eq!(
+        sight("h1"),
+        (svc::TRUST_SAME, false),
+        "original source remains non-durable"
     );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn the_late_attach_binds_the_governance_store_as_the_record_store() {
+async fn constructed_services_keep_their_governance_record_store() {
     use busbar_kernel::persistence::scoped::ClaimOutcome;
     use busbar_kernel::persistence::scoped::{Outcome, ScopedStore};
     let core = crate::root::real_store::core().await;
@@ -672,30 +716,51 @@ async fn the_late_attach_binds_the_governance_store_as_the_record_store() {
     let gov = busbar_kernel::governance::GovState::new_with_core(core.clone(), None, None)
         .await
         .expect("governance");
-    let late = LateServices::new();
-    let k = Arc::new(KernelServices::new());
-    late.install_kernel(Arc::clone(&k), Arc::clone(&k) as Arc<dyn HostServices>)
-        .expect("installed once");
-    attach(
-        &late,
-        Some(&gov),
-        None,
-        &Arc::new(DemotionRecord::default()),
-        &[],
+    let k = Arc::new(
+        KernelServices::new()
+            .with_persistence(gov.core_store_handle().expect("governance owns the core"))
+            .with_pool(Arc::new(BlockingPool::new(
+                tokio::runtime::Handle::current(),
+                QUEUE_CAP,
+            ))),
     );
-    assert!(
-        !k.attach_persistence(core.clone()),
-        "the governance Store is already the native persistence owner"
+    let late = Services::serving(Arc::clone(&k));
+    let caller = Caller::for_test(
+        Arc::from("record-owner"),
+        busbar_contract::abi::mechanism::KindCode::Plane,
     );
-    let late = LateServices::new();
-    let k = Arc::new(KernelServices::new());
-    late.install_kernel(Arc::clone(&k), Arc::clone(&k) as Arc<dyn HostServices>)
-        .expect("installed once");
-    attach(&late, None, None, &Arc::new(DemotionRecord::default()), &[]);
-    assert!(
-        k.attach_persistence(core),
-        "an absent governance owner bound no persistence"
-    );
+    k.admit(
+        "record-owner",
+        busbar_kernel::host_services::InstanceFacts {
+            record_kinds: vec![busbar_contract::ids::RecordSchemaId::new("attach-probe")],
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("the real store accepts declared records");
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let read = match late.served().records_get(
+        &caller,
+        "attach-probe",
+        b"missing",
+        Box::new(move |answer| {
+            let _ = tx.send(answer);
+        }),
+    ) {
+        Ran::Now(answer) => answer,
+        Ran::Later => rx.await.expect("native record read finishes"),
+    };
+    assert_eq!(read, Stored::ready(svc::ABSENT));
+    let other = Services::serving(Arc::new(KernelServices::new()));
+    assert!(!Arc::ptr_eq(&other.kernel().expect("other"), &k));
+    assert!(Arc::ptr_eq(&late.kernel().expect("original retained"), &k));
+    let another_store_owner =
+        Services::serving(Arc::new(KernelServices::new().with_persistence(core)));
+    assert!(Arc::ptr_eq(&late.kernel().expect("still original"), &k));
+    assert!(!Arc::ptr_eq(
+        &other.kernel().expect("separate"),
+        &another_store_owner.kernel().expect("new source")
+    ));
 }
 
 #[tokio::test]

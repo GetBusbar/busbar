@@ -41,14 +41,11 @@ fn cancelled_once(id: &str) {
 fn dropping_the_boot_future_mid_open_cancels_once() {
     let me = std::thread::current().id();
     let needs = Arc::new(ParkNeeds::default());
-    let registry: &'static Registry<ParkNeeds> = Box::leak(Box::new(fx::registry(
+    let registry: &'static Registry = Box::leak(Box::new(fx::registry(
         Arc::clone(&needs),
         MAX_STEPS,
         &[store::inline::PLUGIN.plugin()],
     )));
-    registry.set_store_seal(Box::new(|| {
-        Box::new(busbar_contract::plugin::TestKernelSeal)
-    }));
     let module = "fixture-store-inline";
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -63,7 +60,12 @@ fn dropping_the_boot_future_mid_open_cancels_once() {
     );
     let timed_out = rt.block_on(tokio::time::timeout(
         Duration::from_millis(200),
-        registry.open_store(&spec),
+        registry.open_store(
+            &spec,
+            &needs,
+            &busbar_plugin_test::suites::harness::no_refs(),
+            Arc::new(|| Box::new(busbar_contract::plugin::TestKernelSeal)),
+        ),
     ));
     assert!(timed_out.is_err(), "the parked open never finished");
     assert_eq!(needs.parked(), 1, "the open parked on its SECRET");
@@ -80,7 +82,12 @@ fn dropping_the_boot_future_mid_open_cancels_once() {
         "migrate-steps",
         br#"{"id":"migrate-steps","hold":true,"loop":2}"#,
     );
-    match rt.block_on(registry.open_store(&spec)) {
+    match rt.block_on(registry.open_store(
+        &spec,
+        &needs,
+        &busbar_plugin_test::suites::harness::no_refs(),
+        Arc::new(|| Box::new(busbar_contract::plugin::TestKernelSeal)),
+    )) {
         Err(OpenError::Call(CallError::Steps)) => {}
         Err(other) => panic!("the step cap ends the open: {other:?}"),
         Ok(_) => panic!("an open that NEEDs for ever opened"),
@@ -99,13 +106,23 @@ fn dropping_the_boot_future_mid_open_cancels_once() {
         .build()
         .expect("a multi-thread runtime");
     let before = needs.parked();
+    let worker_needs = Arc::clone(&needs);
     let task = workers.spawn(async move {
+        let needs = worker_needs;
         let spec = fx::spec(
             module,
             "migrate-dropped",
             br#"{"id":"migrate-dropped","secret":"the operator's reference","hold":true}"#,
         );
-        registry.open_store(&spec).await.map(drop)
+        registry
+            .open_store(
+                &spec,
+                &needs,
+                &busbar_plugin_test::suites::harness::no_refs(),
+                Arc::new(|| Box::new(busbar_contract::plugin::TestKernelSeal)),
+            )
+            .await
+            .map(drop)
     });
     crate::c_cancel_open::parked_past(&needs, before);
     task.abort();
@@ -119,7 +136,12 @@ fn dropping_the_boot_future_mid_open_cancels_once() {
     // The registry still serves: a plain store opens and builds.
     let spec = fx::spec(module, "migrate-after", br#"{"id":"migrate-after"}"#);
     let opened = rt
-        .block_on(registry.open_store(&spec))
+        .block_on(registry.open_store(
+            &spec,
+            &needs,
+            &busbar_plugin_test::suites::harness::no_refs(),
+            Arc::new(|| Box::new(busbar_contract::plugin::TestKernelSeal)),
+        ))
         .unwrap_or_else(|e| panic!("{e:?}"));
     assert_eq!(store::counts("migrate-after").built, 1);
     drop(opened);

@@ -52,7 +52,6 @@ pub(super) fn run(
         Ok(harness) => harness,
         Err(refusal) => panic!("migrate: the plugin image was refused at admission: {refusal:?}"),
     };
-    install_kernel_sides(&harness);
 
     match expect {
         MigrateExpect::Refused(code) => refused_case(&harness, bag, code),
@@ -62,15 +61,6 @@ pub(super) fn run(
             newer_case(&harness, &canonical);
         }
     }
-}
-
-/// The kernel's sides some kinds' adapters need before their first open: the store seal (a test seal, behind the
-/// `test-seal` feature) and the auth core (no issued credentials, every replay claim a first sighting).
-fn install_kernel_sides(harness: &Harness) {
-    #[cfg(feature = "test-seal")]
-    harness.registry().set_store_seal(Box::new(|| {
-        Box::new(busbar_contract::plugin::TestKernelSeal)
-    }));
 }
 
 /// `bytes` as JSON in a canonical text (object members sorted by key), so two documents compare as the tree
