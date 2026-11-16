@@ -5126,11 +5126,12 @@ pub(crate) fn openapi_for_configured_planes(
     committed: &str,
     configured: impl Fn(&str) -> bool,
 ) -> Option<String> {
-    let mut doc: serde_json::Value = serde_json::from_str(committed).ok()?;
+    use busbar_contract::json::{self, JsonValueMutTrait as _, JsonValueTrait as _};
+    let mut doc = json::parse_value(committed.as_bytes()).ok()?;
     let reachable_before = openapi_reachable_schemas(&doc);
     let mut dropped = false;
     let paths = doc.get_mut("paths")?.as_object_mut()?;
-    for item in paths.values_mut() {
+    for (_, item) in paths.iter_mut() {
         let Some(item) = item.as_object_mut() else {
             continue;
         };
@@ -5152,37 +5153,37 @@ pub(crate) fn openapi_for_configured_planes(
     }
     paths.retain(|_, item| {
         item.as_object()
-            .is_some_and(|o| o.keys().any(|k| !k.starts_with("x-")))
+            .is_some_and(|o| o.iter().any(|(k, _)| !k.starts_with("x-")))
     });
     let reachable_after = openapi_reachable_schemas(&doc);
-    if let Some(schemas) = doc
-        .pointer_mut("/components/schemas")
-        .and_then(|s| s.as_object_mut())
+    if let Some(schemas) =
+        json::pointer_mut(&mut doc, "/components/schemas").and_then(|s| s.as_object_mut())
     {
         schemas
             .retain(|name, _| !reachable_before.contains(name) || reachable_after.contains(name));
     }
-    serde_json::to_string_pretty(&doc)
+    json::to_string_pretty(&doc)
         .ok()
         .map(|text| format!("{text}\n"))
 }
 
-fn openapi_reachable_schemas(doc: &serde_json::Value) -> std::collections::BTreeSet<String> {
-    fn refs(v: &serde_json::Value, out: &mut Vec<String>) {
-        match v {
-            serde_json::Value::Object(map) => {
-                if let Some(r) = map.get("$ref").and_then(|r| r.as_str()) {
-                    if let Some(name) = r.strip_prefix("#/components/schemas/") {
-                        out.push(name.to_string());
-                    }
+fn openapi_reachable_schemas(
+    doc: &busbar_contract::json::Value,
+) -> std::collections::BTreeSet<String> {
+    use busbar_contract::json::{self, JsonValueTrait as _};
+    fn refs(v: &json::Value, out: &mut Vec<String>) {
+        if let Some(map) = v.as_object() {
+            if let Some(r) = map.get(&"$ref").and_then(|r| r.as_str()) {
+                if let Some(name) = r.strip_prefix("#/components/schemas/") {
+                    out.push(name.to_string());
                 }
-                map.values().for_each(|v| refs(v, out));
             }
-            serde_json::Value::Array(items) => items.iter().for_each(|v| refs(v, out)),
-            _ => {}
+            map.iter().for_each(|(_, v)| refs(v, out));
+        } else if let Some(items) = v.as_array() {
+            items.iter().for_each(|v| refs(v, out));
         }
     }
-    let schemas = doc.pointer("/components/schemas");
+    let schemas = json::pointer(doc, "/components/schemas");
     let mut pending = Vec::new();
     if let Some(paths) = doc.get("paths") {
         refs(paths, &mut pending);
@@ -5190,7 +5191,7 @@ fn openapi_reachable_schemas(doc: &serde_json::Value) -> std::collections::BTree
     let mut seen = std::collections::BTreeSet::new();
     while let Some(name) = pending.pop() {
         if seen.insert(name.clone()) {
-            if let Some(schema) = schemas.and_then(|s| s.get(&name)) {
+            if let Some(schema) = schemas.and_then(|s| s.get(name.as_str())) {
                 refs(schema, &mut pending);
             }
         }
