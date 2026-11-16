@@ -294,6 +294,25 @@ async fn delayed_confirm_keeps_checkpoint_and_reconciliation_originals() {
     ));
 }
 
+/// Test 30(f): a cut waiting at the Store never owns the append driver.
+#[tokio::test]
+async fn a_blocked_cut_does_not_block_request_confirmations() {
+    let backend = ephemeral();
+    let (_store, owner) = owner_on(&backend).await;
+    append(&owner, RETAIN_TAIL + 2 * CUT_BATCH).await;
+    let mut cut = owner.cutter().unwrap();
+    backend.hold_cut.store(true, Ordering::SeqCst);
+    let cutting = tokio::spawn(async move { cut.truncate_through(u64::MAX).await });
+    backend.cut_entered.notified().await;
+    tokio::time::timeout(std::time::Duration::from_secs(1), append(&owner, 1000))
+        .await
+        .expect("confirms complete while the cut remains blocked at the store");
+    assert!(!cutting.is_finished());
+    backend.hold_cut.store(false, Ordering::SeqCst);
+    backend.release_cut.notify_one();
+    assert!(matches!(cutting.await.unwrap(), CutProgress::Cut { .. }));
+}
+
 /// (d) Cut versus readers: a walker whose base read preceded a cut is `Rebased`, never `Corrupt`;
 /// `read_node_records` and `read_verified_record` restart and return what a walk started after
 /// the cut returns; `snapshot` and reads below the base are `Truncated`; a same-holder re-take of

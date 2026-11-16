@@ -84,6 +84,9 @@ struct Backend {
     release_first: tokio::sync::Notify,
     /// Report `Durability::Ephemeral` (SEALING-FIX §3.9: only such a journal is ever cut).
     ephemeral: AtomicBool,
+    hold_cut: AtomicBool,
+    cut_entered: tokio::sync::Notify,
+    release_cut: tokio::sync::Notify,
 }
 impl PersistenceBackend for Backend {
     fn info(&self) -> BackendInfo {
@@ -136,6 +139,12 @@ impl PersistenceBackend for Backend {
             state.sent.len()
         };
         Box::pin(async move {
+            if self.hold_cut.load(Ordering::SeqCst) && prepared.candidate().mutations.iter().any(|m| {
+                matches!(m, Mutation::Put { address, .. } if address.key.get(24) == Some(&b'B'))
+            }) {
+                self.cut_entered.notify_one();
+                self.release_cut.notified().await;
+            }
             let hang_from = self.hang_from.load(Ordering::SeqCst);
             if self.hang.load(Ordering::SeqCst) || (hang_from != 0 && sent >= hang_from) {
                 std::future::pending::<()>().await;
