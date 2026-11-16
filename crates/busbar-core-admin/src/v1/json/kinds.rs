@@ -80,7 +80,7 @@ const CORE_SECTIONS: [(&str, &[&str]); 9] = [
             "plane_sections",
         ],
     ),
-    ("units", &["global_hooks"]),
+    ("units", &["global_hooks", "records"]),
     ("limits", &["groups", "limits", "export_limits"]),
     (
         "ledger",

@@ -562,6 +562,7 @@ pub(super) fn restart_unreachable(endpoint: &str, restart: &[String], msg: Strin
 
 fn restart_paths(paths: &[String]) -> Vec<String> {
     const BOOT: &[&str] = &[
+        "/records",
         "/listen",
         "/tls",
         "/admin_listen",
