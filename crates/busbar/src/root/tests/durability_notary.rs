@@ -719,3 +719,64 @@ async fn final_page_is_not_staged_after_the_seal_cut() {
         "a detached notary cannot stage a page after C3"
     );
 }
+
+#[tokio::test]
+async fn certificate_only_prefix_is_the_retained_audit_tail() {
+    use busbar_contract::crypto::{LocalSigner, Signer};
+    use busbar_kernel::persistence::journal::{
+        CutProgress, RuntimeJournal, CUT_BATCH, RETAIN_TAIL,
+    };
+    use busbar_kernel_wal::{Entry, RecordClass};
+    let budget = crate::root::durability::tests::BUDGET;
+    let backend =
+        crate::root::real_store::EphemeralInfo(crate::root::real_store::native_backend().await);
+    let core = crate::root::real_store::core_over(Arc::new(backend)).await;
+    let journal = RuntimeJournal::open(core, 49, budget).await.unwrap();
+    let mut book = crate::root::durability::build_on_store(
+        &crate::root::durability::DurabilityConfig::default(),
+        49,
+        journal.clone(),
+        None,
+        budget,
+    )
+    .await
+    .unwrap();
+    let (notary, bootstrap) = AuditSigningKey::from_seed(&SEED)
+        .into_grants(LiveSigner::SameAsBootstrap)
+        .unwrap();
+    let signers = signer::spawn(
+        NotaryCap::new(notary),
+        BootstrapSigner::new(bootstrap),
+        Arc::new(OnceLock::new()),
+    )
+    .unwrap();
+    let key = LocalSigner::from_seed(&[0x73; 32]).unwrap();
+    let certificate = signers
+        .boot
+        .submit_certificate(49, 1, Fingerprint::ZERO, key.public_key().clone())
+        .await
+        .unwrap();
+    let prepared =
+        busbar_kernel_audit::AuditChain::prepare_notary_key(49, 1, Fingerprint::ZERO, certificate);
+    let (record, run) = book
+        .stage_notary_key(prepared, &audit_pass(), &token())
+        .unwrap();
+    journal.confirm(&run).await.unwrap();
+    let certificate_seq = run.records()[0].node_seq;
+    drop(run);
+    for _ in 0..(RETAIN_TAIL + 2 * CUT_BATCH) {
+        let run = journal
+            .stage_run(&[Entry::new(RecordClass::Load, vec![1])])
+            .unwrap();
+        journal.confirm(&run).await.unwrap();
+    }
+    let mut cut = journal.cutter().unwrap();
+    assert!(matches!(
+        cut.truncate_through(u64::MAX).await,
+        CutProgress::Cut { .. }
+    ));
+    let tail = journal.base_tail().unwrap();
+    assert_eq!(tail.chain_seq, record.seq);
+    assert_eq!(tail.node_seq, certificate_seq);
+    assert_eq!(tail.fp, record.fingerprint.0);
+}
