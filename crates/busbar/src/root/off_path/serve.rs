@@ -4082,6 +4082,7 @@ impl DataRoutes {
                         work.reference().into_bytes(),
                     )],
                     body: bytes::Bytes::new(),
+                    carrier: 0,
                 };
                 let principal = PrincipalId::new(key.id.as_str());
                 let (caller, reply) = IngressCaller::new();

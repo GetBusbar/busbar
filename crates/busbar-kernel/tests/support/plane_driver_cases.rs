@@ -483,6 +483,7 @@ fn arrival_by(method: &str, target: &str, body: &[u8]) -> Arrival {
         target: target.as_bytes().to_vec(),
         fields: vec![(b"content-type".to_vec(), b"text/plain".to_vec())],
         body: bytes::Bytes::copy_from_slice(body),
+        carrier: 0,
     }
 }
 
