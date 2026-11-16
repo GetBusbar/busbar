@@ -74,13 +74,13 @@ fn the_provenance_label_cannot_be_shadowed() {
         serde_json::from_value(serde_json::json!({
             "name": "x_total",
             "type": "counter",
-            "labels": {"plugin": "somebody-else", "sink": "audit"}
+            "labels": {"kind": "somebody-else", "sink": "audit"}
         }))
         .expect("decode");
     let labels = labels_for(Some("the-real-name"), &m);
     let plugin_labels: Vec<_> = labels
         .iter()
-        .filter(|l| l.key() == PLUGIN_LABEL)
+        .filter(|l| l.key() == KIND_LABEL)
         .map(|l| l.value())
         .collect();
     assert_eq!(plugin_labels, vec!["the-real-name"]);
@@ -124,7 +124,7 @@ fn observer_histograms_reserve_generated_quantiles_before_cardinality_and_snapsh
         let entry = |dimension: &str, claim: usize| {
             serde_json::json!({
                 "name": name, "type": "histogram", "value": 2,
-                "labels": {"plugin": format!("forged-{claim}"),
+                "labels": {"kind": format!("forged-{claim}"),
                     "quantile": claim.to_string(), "sink": dimension}
             })
         };
@@ -162,7 +162,7 @@ fn observer_histograms_reserve_generated_quantiles_before_cardinality_and_snapsh
             let provenance: Vec<_> = sample
                 .labels
                 .iter()
-                .filter(|(key, _)| key == PLUGIN_LABEL)
+                .filter(|(key, _)| key == KIND_LABEL)
                 .map(|(_, value)| value.as_str())
                 .collect();
             assert_eq!(provenance, if granted { vec![] } else { vec![plugin] });
@@ -238,7 +238,7 @@ fn observer_counters_and_gauges_keep_their_quantile_dimension() {
         assert_eq!(
             family.samples[0].labels,
             [
-                (PLUGIN_LABEL.to_string(), plugin.to_string()),
+                (KIND_LABEL.to_string(), plugin.to_string()),
                 ("quantile".to_string(), "reported".to_string()),
             ]
         );
@@ -855,11 +855,11 @@ fn labels_for(
     plugin: Option<&str>,
     m: &busbar_contract::hook_wire::reply::HookMetric,
 ) -> Vec<metrics::Label> {
-    let provenance = plugin.map(|p| metrics::Label::new(PLUGIN_LABEL, p.to_string()));
+    let provenance = plugin.map(|p| metrics::Label::new(KIND_LABEL, p.to_string()));
     let mut labels: Vec<metrics::Label> = provenance.into_iter().collect();
     if let Some(own) = &m.labels {
         for (k, v) in own {
-            if k == PLUGIN_LABEL {
+            if k == KIND_LABEL {
                 continue;
             }
             labels.push(metrics::Label::new(k.clone(), v.clone()));
