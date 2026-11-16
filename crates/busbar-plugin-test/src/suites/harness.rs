@@ -872,4 +872,33 @@ mod tests {
             .unwrap_err();
         assert!(matches!(err, BindError::NotAReference { .. }));
     }
+
+    #[test]
+    fn a_literal_at_a_secret_path_is_refused_by_bind_and_left_in_place_by_bind_any() {
+        let binder = MemBinder::new();
+        for config in [&br#"{"token":"1x-literal"}"#[..], br#"{"token":""}"#] {
+            let err = binder
+                .bind(9, config, &["/token"], &[], &[], &[])
+                .unwrap_err();
+            assert!(
+                matches!(&err, BindError::NotAReference { pointer } if &**pointer == "/token"),
+                "{err:?}"
+            );
+        }
+        let config = br#"{"token":"","old":"1x-literal","new":{"env":"K"}}"#;
+        let bound = binder
+            .bind_any(10, config, &["/token", "/old", "/new"], &[], &[], &[])
+            .unwrap();
+        let doc: Value = facade::parse_value(&bound).unwrap();
+        assert_eq!(text_at(&doc, "/token").as_deref(), Some(""));
+        assert_eq!(text_at(&doc, "/old").as_deref(), Some("1x-literal"));
+        assert_eq!(
+            doc.get("new").and_then(|v| v.get(SECRET)).and_then(count),
+            Some(1)
+        );
+        let err = binder
+            .bind(11, br#"{"token":7}"#, &["/token"], &[], &[], &[])
+            .unwrap_err();
+        assert!(matches!(err, BindError::NotAReference { .. }));
+    }
 }
