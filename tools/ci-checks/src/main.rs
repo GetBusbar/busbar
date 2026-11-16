@@ -27,6 +27,8 @@
 //!   test 11, C-EXPORT-STREAMS, C-NO-LICENCE (a), the §15.8 core scan). `loc-report` prints per-file
 //!   production and test lines (a report, no gate).
 //! - `rule-13`: a dlopened library leaves the loader only by IF §11.1's two exits (IF §15 rule 13, I13).
+//! - `oracle <sub> ...`: the data logic `bin/oracle` launches (`oracle.rs`): premise widening, the
+//!   shard split and its proofs, and the readers its ci-run and replay sections need (BLD-6).
 //! - With arguments, the first one naming the check: `template-drift`, `patch-drift`, `no-host-link`,
 //!   `plugin-rules` and `c-alias`, run from a plugin repo's CI against the repo or its files.
 //!
@@ -49,6 +51,7 @@ use syn::{
 mod migrate;
 mod migrate_overlay;
 mod migrate_size;
+mod oracle;
 
 /// Checks over core's own tree: with no argument every one runs.
 const CHECKS: [&str; 15] = [
@@ -102,6 +105,14 @@ const BACKEND_ONLY: [&str; 1] = ["curve25519-dalek"];
 fn main() -> ExitCode {
     let root = repo_root();
     let args: Vec<String> = std::env::args().skip(1).collect();
+    // `oracle <sub> ...`: bin/oracle's data logic (oracle.rs), answering with its own stdout, stderr
+    // and exit status rather than as a check.
+    if let Some(("oracle", rest)) = args
+        .split_first()
+        .map(|(first, rest)| (first.as_str(), rest))
+    {
+        return oracle::run(rest);
+    }
     // A check that takes arguments is named first and owns the rest of the command line.
     let (names, rest): (Vec<&str>, &[String]) = match args.split_first() {
         None => (CHECKS.to_vec(), &[]),
