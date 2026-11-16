@@ -4008,7 +4008,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
     );
     if let Some(auth_path) = paths.get_mut(&ap(PATH_ADMIN_AUTH)) {
         auth_path["put"] = json!({
-            "summary": "Replace the admin_auth chain at runtime, dry-run guarded (the calling credentials must hold full scope under the NEW chain, else 409). Live until the next reload/restart",
+            "summary": "Replace the admin_auth chain at runtime, dry-run guarded (the calling credentials must still pass under the NEW chain, else 409). Live until the next reload/restart",
             "security": [{"adminToken": []}],
             RESPONSES_KEY: {
                 "200": {"description": "The resource + apply metadata: `{configured, modules, applied, config_version, note}`"},

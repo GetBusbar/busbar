@@ -10593,7 +10593,7 @@
             "bearerAuth": []
           }
         ],
-        "summary": "Replace the admin_auth chain at runtime, dry-run guarded (the calling credentials must hold full scope under the NEW chain, else 409). Live until the next reload/restart",
+        "summary": "Replace the admin_auth chain at runtime, dry-run guarded (the calling credentials must still pass under the NEW chain, else 409). Live until the next reload/restart",
         "x-busbar-required-scope": "full",
         "x-busbar-verb": "put_admin_auth"
       }

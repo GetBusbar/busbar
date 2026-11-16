@@ -424,6 +424,14 @@ pub(crate) const SECRET_BEARING_TYPES: &[(&str, SecretBearing)] = &[
         ),
     ),
     (
+        "Steps",
+        SecretBearing::NotInResolvedConfig(
+            "the boot walk's step table (busbar::root::min3_boot): it holds a clone of `auth.signing_key`, \
+             copied from `AuthCfg`, which IS walked, so the reference is already enumerated and validated; \
+             `Steps` is built from a loaded `RootCfg` and is never part of it.",
+        ),
+    ),
+    (
         "StdioCommand",
         SecretBearing::NotInResolvedConfig(
             "MIN-3 (IF §12.1, W0-ABI stub): an `upstreams.<name>` stdio command. It is not part of \
