@@ -29,64 +29,44 @@ pub(crate) fn settings_keys(settings: &busbar_contract::plugin_settings::Setting
     keys
 }
 
-/// A root-section projection that has been through [`redact_settings_bags`]: every nested
-/// `settings:` bag is reduced to `settings_keys` (and any declared `settings_public` values).
-/// Only that redaction step constructs it, so an admin view cannot carry an unredacted overlay.
+/// A root-section projection that has been through [`redact_settings_bags`]: every secret
+/// position (a secret-named field, an undeclared plugin settings key) is `{set, secret_ref}` by
+/// the secret rule. Only that step constructs it, so an admin view cannot carry an unredacted
+/// overlay.
 #[derive(Debug, serde::Serialize)]
 #[serde(transparent)]
 pub struct RedactedRootSettings(serde_json::Value);
 
-/// Redact every opaque `settings:` bag inside a root-section projection for an admin response.
-pub(crate) fn redact_settings_bags(mut v: serde_json::Value) -> RedactedRootSettings {
-    redact_settings_bags_with(&mut v, &busbar_kernel::config::settings_public::public);
+/// Project a root-section overlay for an admin response through the secret rule, against the
+/// shorthand the running generation admits.
+pub(crate) fn redact_settings_bags(
+    mut v: serde_json::Value,
+    sugars: &busbar_contract::secret_ref::Sugars,
+) -> RedactedRootSettings {
+    redact_settings_bags_with(
+        &mut v,
+        sugars,
+        &busbar_kernel::config::settings_public::public,
+    );
     RedactedRootSettings(v)
 }
 
+/// The secret rule over a `serde_json` tree. Fails closed: a tree that cannot cross the bridge
+/// is served empty, never as written.
 pub(crate) fn redact_settings_bags_with(
     v: &mut serde_json::Value,
-    public: &dyn Fn(&str) -> std::collections::BTreeSet<String>,
+    sugars: &busbar_contract::secret_ref::Sugars,
+    public: &(dyn Fn(&str) -> std::collections::BTreeSet<String> + Sync),
 ) {
-    match v {
-        serde_json::Value::Object(map) => {
-            if let Some(bag) = map.remove("settings") {
-                let module = map
-                    .get("module")
-                    .and_then(serde_json::Value::as_str)
-                    .map(public)
-                    .unwrap_or_default();
-                let (keys, shown) = match bag {
-                    serde_json::Value::Object(o) => (
-                        o.keys().cloned().collect(),
-                        busbar_contract::settings_public::public_view(&o, &module),
-                    ),
-                    _ => (Vec::new(), serde_json::Map::new()),
-                };
-                map.insert(
-                    "settings_keys".to_string(),
-                    serde_json::Value::Array(
-                        keys.into_iter().map(serde_json::Value::String).collect(),
-                    ),
-                );
-                if !shown.is_empty() {
-                    map.insert(
-                        "settings_public".to_string(),
-                        serde_json::Value::Object(shown),
-                    );
-                }
-            }
-            for (key, child) in map.iter_mut() {
-                if key != "settings_public" {
-                    redact_settings_bags_with(child, public);
-                }
-            }
-        }
-        serde_json::Value::Array(items) => {
-            for item in items {
-                redact_settings_bags_with(item, public);
-            }
-        }
-        _ => {}
-    }
+    let projected = serde_json::to_vec(v)
+        .ok()
+        .and_then(|bytes| busbar_contract::json::parse_value(&bytes).ok())
+        .and_then(|mut doc| {
+            crate::v1::secret_rule::Rule { sugars, public }.project(&mut doc);
+            busbar_contract::json::to_vec(&doc).ok()
+        })
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok());
+    *v = projected.unwrap_or_else(|| serde_json::json!({}));
 }
 
 use super::named_def_views::{export_def_view, identity_provider_view, unparseable_def_view};

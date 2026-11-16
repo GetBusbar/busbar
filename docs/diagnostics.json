@@ -1516,12 +1516,12 @@
     "number": 5045,
     "class": "proxy",
     "slug": "metadata-protection-disabled",
-    "title": "Cloud-metadata SSRF protection DISABLED (allow_all_metadata is set)",
+    "title": "Cloud-metadata SSRF protection DISABLED (allow_all_metadata is set) — RETIRED",
     "severity": "actionable",
-    "summary": "The deployment set the nuclear `allow_all_metadata` escape hatch, so busbar's cloud-metadata SSRF guard is OFF and EVERY cloud-metadata endpoint (e.g. 169.254.169.254, the GCP/Azure metadata hosts) is reachable through the proxy. That is a security-relevant degradation: a crafted upstream URL or a compromised plugin can reach the instance's credential endpoint. Emitted once at boot.",
-    "action": "Remove `allow_all_metadata` unless a specific, understood need requires it. If metadata access is genuinely needed, scope it with `security.blocked_metadata_hosts` instead of disabling the guard wholesale (`--print-metadata-blocklist` shows the effective list).",
+    "summary": "RETIRED. Nothing emits this code: 1.6.0 refuses `security.allow_all_metadata` at startup (BUSBAR-3136), and cloud metadata is refused for every outbound connection, so the guard can no longer be disabled.",
+    "action": "Nothing emits this code. See BUSBAR-3136.",
     "since": "1.6.0",
-    "retired": false
+    "retired": true
   },
   {
     "code": "BUSBAR-5046",

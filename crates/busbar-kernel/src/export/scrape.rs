@@ -78,18 +78,58 @@ pub(crate) fn read(scope: u32) -> impl std::future::Future<Output = Snapshot> + 
     }
 }
 
-async fn whole(app: Option<&App>) -> Snapshot {
+/// Why the admin `/metrics` read produced no families.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScrapeRefusal {
+    /// The operator set `telemetry.enabled: false`: 503, reason `telemetry_disabled`.
+    TelemetryDisabled,
+    /// The recorder is not installed yet.
+    NotReady,
+    /// A scrape-time refresh failed, for this reason.
+    Failed(&'static str),
+}
+
+async fn collect(
+    app: Option<&App>,
+) -> Result<Vec<busbar_contract::export_calls::Family>, ScrapeRefusal> {
     if crate::snapshot::explicitly_off() {
-        return Snapshot::Refused(TELEMETRY_DISABLED);
+        return Err(ScrapeRefusal::TelemetryDisabled);
     }
     let installed = crate::snapshot::recorder_installed();
     if let Some(app) = app.filter(|_| installed) {
         if let Err(error) = crate::snapshot::refresh_scrape_gauges(app).await {
-            return Snapshot::Refused(error);
+            return Err(ScrapeRefusal::Failed(error));
         }
         super::plugin::status_if_stale();
     }
-    crate::snapshot::snapshot().map_or(Snapshot::NotReady, Snapshot::Families)
+    if installed {
+        metrics::gauge!(crate::snapshot::BUILD_INFO, "version" => env!("CARGO_PKG_VERSION"))
+            .set(1.0);
+    }
+    crate::snapshot::snapshot().ok_or(ScrapeRefusal::NotReady)
+}
+
+/// The whole-registry families for the admin `/metrics` (the same read the snapshot service gives
+/// an exporter), or why there are none.
+pub async fn app_families(
+    app: &App,
+) -> Result<Vec<busbar_contract::export_calls::Family>, ScrapeRefusal> {
+    collect(Some(app)).await
+}
+
+/// The hook-reported families for the admin `/metrics/hooks`.
+#[must_use]
+pub fn hook_families(app: &App) -> Vec<busbar_contract::export_calls::Family> {
+    crate::snapshot::hooks::families(app)
+}
+
+async fn whole(app: Option<&App>) -> Snapshot {
+    match collect(app).await {
+        Ok(families) => Snapshot::Families(families),
+        Err(ScrapeRefusal::TelemetryDisabled) => Snapshot::Refused(TELEMETRY_DISABLED),
+        Err(ScrapeRefusal::NotReady) => Snapshot::NotReady,
+        Err(ScrapeRefusal::Failed(error)) => Snapshot::Refused(error),
+    }
 }
 
 #[cfg(test)]

@@ -1454,8 +1454,8 @@ pub use busbar_kernel::config::sections::{store_required, SecretModuleCfg, Store
 
 pub use busbar_kernel::config::sections::{
     default_response_headers_route_policy, default_response_headers_server_timing, AdvancedCfg,
-    ResponseHeadersCfg, DEFAULT_RESPONSE_HEADERS_ROUTE_POLICY,
-    DEFAULT_RESPONSE_HEADERS_SERVER_TIMING,
+    AdvancedGovernanceCfg, AdvancedShutdownCfg, ResponseHeadersCfg,
+    DEFAULT_RESPONSE_HEADERS_ROUTE_POLICY, DEFAULT_RESPONSE_HEADERS_SERVER_TIMING,
 };
 
 pub use busbar_kernel::config::sections::{

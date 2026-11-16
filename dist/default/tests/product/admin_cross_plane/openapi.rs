@@ -30,13 +30,10 @@ fn openapi_operations_carry_stable_operation_ids() {
     }
 
     assert_eq!(
-        checked, 103,
-        "expected the 102 existing operations plus the process telemetry read"
+        checked, 102,
+        "expected the 102 operations; the telemetry read is deleted"
     );
-    assert_eq!(
-        doc["paths"]["/api/v1/admin/telemetry"]["get"]["operationId"],
-        "GetTelemetry"
-    );
+    assert!(doc["paths"].get("/api/v1/admin/telemetry").is_none());
     assert_eq!(
         doc["paths"]["/api/v1/admin/ledger/recovery/list"]["post"]["operationId"],
         "PostLedgerRecoveryList"

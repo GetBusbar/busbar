@@ -3,6 +3,8 @@
 
 pub mod amend;
 pub mod auditlog;
+pub(crate) mod canonical;
+pub mod events;
 pub mod journal;
 pub mod stream_registry;
 pub mod vocab {

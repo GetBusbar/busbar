@@ -2292,6 +2292,16 @@ impl KernelServices {
             .await
     }
 
+    /// Every unit still open in the planes registered for cleanup (every composed plane), read
+    /// once at exit for the drain's `open_at_exit` lines (SHUTDOWN-HANG F4).
+    pub fn open_unit_evidence(&self) -> Vec<crate::plane_driver::OpenUnitEvidence> {
+        let drivers = {
+            let mut registered = self.plane_cleanup.lock().unwrap_or_else(|e| e.into_inner());
+            crate::off_path::host_services::live_planes(&mut registered)
+        };
+        crate::off_path::host_services::open_unit_evidence(drivers)
+    }
+
     pub async fn flushes(&self) {
         use futures::StreamExt as _;
         let every = crate::host_records::FLUSH_INTERVAL;

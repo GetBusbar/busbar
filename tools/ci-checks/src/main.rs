@@ -26,6 +26,7 @@
 //! - `c-transport`, `export-streams`, `no-licence`, `core-scan`: source checks over core (C-TRANSPORT
 //!   test 11, C-EXPORT-STREAMS, C-NO-LICENCE (a), the §15.8 core scan). `loc-report` prints per-file
 //!   production and test lines (a report, no gate).
+//! - `rule-13`: a dlopened library leaves the loader only by IF §11.1's two exits (IF §15 rule 13, I13).
 //! - With arguments, the first one naming the check: `template-drift`, `patch-drift`, `no-host-link`,
 //!   `plugin-rules` and `c-alias`, run from a plugin repo's CI against the repo or its files.
 //!
@@ -50,7 +51,7 @@ mod migrate_overlay;
 mod migrate_size;
 
 /// Checks over core's own tree: with no argument every one runs.
-const CHECKS: [&str; 14] = [
+const CHECKS: [&str; 15] = [
     "no-getrandom",
     "crypto-graph",
     "fleet-manifest",
@@ -58,6 +59,7 @@ const CHECKS: [&str; 14] = [
     "export-streams",
     "no-licence",
     "core-scan",
+    "rule-13",
     "migrate-flag-text",
     "migrate-retired-words",
     "migrate-anchors",
@@ -85,6 +87,7 @@ mod core_src;
 mod fleet;
 mod host_link;
 mod plugin_rules;
+mod rule13;
 mod supply;
 /// The crypto seam: `busbar-crypto` and `busbar-crypto-backend` (crate directories and packages).
 const SEAM: &str = "busbar-crypto";
@@ -123,6 +126,7 @@ fn main() -> ExitCode {
             "export-streams" => core_src::export_streams(&root),
             "no-licence" => core_src::no_licence(&root),
             "core-scan" => core_scan::core_scan(&root, rest),
+            "rule-13" => rule13::rule_13(&root),
             "loc-report" => core_src::loc_report(&root),
             "template-drift" => supply::template_drift_cli(rest),
             "patch-drift" => supply::patch_drift_cli(&root, rest),

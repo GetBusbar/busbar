@@ -104,11 +104,15 @@ busbar-contract = { path = "../busbar-contract", features = ["test-seal"] }
 # W1-K2: the custody arms of C-SCRUB and C-SCRUB-HIT drive the kernel's custody, with its `conformance` miss-path
 # probe (IF §14 round 19). A dev edge only: a plugin repository resolving this facade never sees it.
 busbar-kernel = { path = "../busbar-kernel", features = ["conformance"] }
+# W2-K8P: C-PROVISION drives the provisioning mount and the guard admin (busbar-core-admin `provision`) over
+# axum requests. Dev edges only.
+busbar-core-admin = { path = "../busbar-core-admin" }
+axum = { workspace = true }
 # The facade's own tests drive its targets; CI's test and red-proof jobs pass none of its features.
-busbar-plugin-test = { path = ".", features = ["target-http", "test-seal"] }
-tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time", "sync"] }
 # W1-A12: the case files drive MemIo (IF §9, feature `memio`).
 busbar-plugin-abi = { path = "../busbar-plugin-abi", features = ["memio"] }
+busbar-plugin-test = { path = ".", features = ["target-http", "test-seal"] }
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time", "sync"] }
 
 [lints]
 workspace = true

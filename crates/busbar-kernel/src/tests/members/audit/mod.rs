@@ -4,9 +4,11 @@
 mod amend_tests;
 mod digest_framing_tests;
 mod journal_tests;
+mod link_tests;
 mod published_recipe_tests;
 mod record_tests;
 mod sign_tests;
+mod stamp_tests;
 mod subject_decoder_tests;
 
 /// Every field of one record's digest, in order, as owned values a test can index and compare.

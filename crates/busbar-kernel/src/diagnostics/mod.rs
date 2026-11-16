@@ -1872,6 +1872,12 @@ diagnostics! {
         "New governed requests are refused with a 503: either the gateway is shutting down (cause=drain, reason drain, retry on another instance) or the number of finished governed requests whose spend still awaits settlement in the store reached its cap (cause=custody_full, reason durability_unavailable, Retry-After 1). Running requests and streams are never refused, and every refusal is audited on its unit. Logged once per episode; an Info line follows when the backlog falls below 90% of the cap.",
         "For custody_full, check the store's latency and throughput: settlement is slower than governed arrival. For drain, route traffic to another instance until this one restarts.";
 
+    /// The store refused a whole unit checkpoint batch; the rest of that flush uses smaller batches.
+    UNIT_FLUSH_BATCH_REDUCED = 8031, Governance, Actionable, "unit-flush-batch-reduced", "1.6.0", false,
+        "A unit checkpoint flush batch was refused whole; smaller batches were used",
+        "The settlement flusher writes finished and running governed units to the store in batches, one write per batch. The store refused a whole batch with no effect (for example a candidate above its size limit) while this writer still held its authority, so the flusher halved the batch size for the rest of that batch of up to 128 items and retried each half. Nothing is lost or written twice. The b field is the batch size it ended with. Logged at most once per batch.",
+        "None if it is rare. If it repeats on every flush, the store's per-write limit is below the flusher's batch of 128 items: raise the store's candidate size limit, or expect settlement to take more round trips.";
+
     /// A writer that never retired was closed, but its shutdown.drain_incomplete record could not be queued.
     SHUTDOWN_DRAIN_INCOMPLETE_UNRECORDED = 9021, Boot, Actionable, "shutdown-drain-incomplete-unrecorded", "1.6.0", false,
         "A closed writer's shutdown.drain_incomplete record could not be queued (retried)",

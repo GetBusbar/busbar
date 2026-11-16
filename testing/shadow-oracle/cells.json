@@ -7920,38 +7920,6 @@
       "why": "no credential -> 401 envelope"
     },
     {
-      "id": "admin.ops|GetTelemetry|ok",
-      "plane": "core",
-      "family": "admin.ops",
-      "driver": "http",
-      "outcome": "ok",
-      "request": {
-        "method": "GET",
-        "path": "/api/v1/admin/telemetry",
-        "headers": {},
-        "body": null,
-        "auth": "admin",
-        "listener": "admin"
-      },
-      "why": "200 bounded request-phase telemetry snapshot when collection is enabled; Cache-Control: no-store. Disabled or unavailable collection is an explicit 503, never a fabricated zero snapshot. Requires read-only admin scope."
-    },
-    {
-      "id": "admin.ops|GetTelemetry|unauth",
-      "plane": "core",
-      "family": "admin.ops",
-      "driver": "http",
-      "outcome": "ok",
-      "request": {
-        "method": "GET",
-        "path": "/api/v1/admin/telemetry",
-        "headers": {},
-        "body": null,
-        "auth": "none",
-        "listener": "admin"
-      },
-      "why": "no credential -> 401 envelope"
-    },
-    {
       "id": "admin.ops|GetToolsNameChanges|ok",
       "plane": "core",
       "family": "admin.ops",

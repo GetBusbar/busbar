@@ -2351,6 +2351,7 @@ impl DataRoutes {
             served.live.current()
         };
         let started = std::time::Instant::now();
+        caller.began(started);
         let claim = arrival.claim;
         let app_for_metrics = Arc::clone(&app);
         let node = self.post.node();
@@ -2449,6 +2450,7 @@ impl DataRoutes {
                 nesting.as_ref().map(|n| &n.parent),
                 live.facts.audit_kind,
                 admission,
+                Some(super::plane_node::Timing { started, caller }),
             ),
         )
         .await;
@@ -3067,6 +3069,10 @@ pub(crate) struct IngressCaller {
     pub(crate) arrived: Mutex<Option<Bytes>>,
     /// The unit's node-qualified id, once the drive minted the unit: the reply's `X-Request-Id`.
     pub(crate) unit_id: Arc<Mutex<Option<HeaderValue>>>,
+    /// When the drive began the unit, once it has.
+    pub(crate) began: std::sync::OnceLock<std::time::Instant>,
+    /// Nanoseconds from `began` to the first successful body write; `0` until one.
+    pub(crate) first_write_ns: std::sync::atomic::AtomicU64,
 }
 
 pub(crate) type Head = (u32, HeadFields);
@@ -3120,6 +3126,8 @@ impl IngressCaller {
             stated: std::sync::atomic::AtomicU32::new(0),
             arrived: Mutex::new(Some(body)),
             unit_id: Arc::clone(&unit_id),
+            began: std::sync::OnceLock::new(),
+            first_write_ns: std::sync::atomic::AtomicU64::new(0),
         };
         (
             caller,
@@ -3145,11 +3153,29 @@ pub(crate) trait Stated {
 
     /// The drive minted the unit this caller is answered for: `id` is its node-qualified id.
     fn minted(&self, _id: busbar_kernel_audit::UnitId) {}
+
+    /// The drive began the unit at `at`: the clock its first write is read against.
+    fn began(&self, _at: std::time::Instant) {}
+
+    /// Nanoseconds from the unit's start to its first successful body write, `0` before one (or
+    /// for a caller that does not measure it).
+    fn first_write_ns(&self) -> u64 {
+        0
+    }
 }
 
 impl Stated for IngressCaller {
     fn stated(&self) -> Option<u32> {
         IngressCaller::stated(self)
+    }
+
+    fn began(&self, at: std::time::Instant) {
+        let _first = self.began.set(at);
+    }
+
+    fn first_write_ns(&self) -> u64 {
+        self.first_write_ns
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     fn minted(&self, id: busbar_kernel_audit::UnitId) {
@@ -3181,7 +3207,22 @@ impl CallerEnd for IngressCaller {
     }
 
     async fn write(&self, bytes: &[u8]) -> bool {
-        self.body.send(Bytes::copy_from_slice(bytes)).await.is_ok()
+        let sent = self.body.send(Bytes::copy_from_slice(bytes)).await.is_ok();
+        // The first successful write is the unit's time to first byte (§9): one monotonic read,
+        // then a relaxed load per later write.
+        if sent
+            && self
+                .first_write_ns
+                .load(std::sync::atomic::Ordering::Relaxed)
+                == 0
+        {
+            if let Some(began) = self.began.get() {
+                let ns = u64::try_from(began.elapsed().as_nanos()).unwrap_or(u64::MAX);
+                self.first_write_ns
+                    .store(ns.max(1), std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+        sent
     }
 }
 

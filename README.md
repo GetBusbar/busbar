@@ -31,7 +31,7 @@ For traffic routed through Busbar, operators can verify, govern, route,
 and record model calls, tool use, and agent delegation before they reach
 approved destinations.
 
-Busbar is a self-hosted, customer-operated static Rust binary. It keeps
+Busbar is a self-hosted, customer-operated, self-contained Rust binary. It keeps
 provider credentials at the boundary, preserves supported native SDK
 workflows, and puts policy, budgets, routing, resilience, and execution
 evidence in one enforcement point.

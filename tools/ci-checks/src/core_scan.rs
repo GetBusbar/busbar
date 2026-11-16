@@ -377,7 +377,12 @@ pub(crate) fn core_scan(root: &Path, args: &[String]) -> Outcome {
     while let Some(arg) = iter.next() {
         if arg == "--words" {
             let path = iter.next().ok_or("--words needs a file")?;
-            extra = std::fs::read_to_string(path).map_err(|error| format!("{path}: {error}"))?;
+            // The job passes `"$ENTERPRISE_STAMP_WORDS"`, empty where no release manifests exist: an empty
+            // path is the optional list absent, not a file named "".
+            if !path.is_empty() {
+                extra =
+                    std::fs::read_to_string(path).map_err(|error| format!("{path}: {error}"))?;
+            }
         }
     }
     let words = super::fleet::plugin_words(&yaml, &extra);

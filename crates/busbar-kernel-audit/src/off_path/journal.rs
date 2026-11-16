@@ -6,7 +6,8 @@
 
 use busbar_contract::caps::{Abort, MeterClassId, Outcome, ReasonCode, StepName, UnitKey};
 
-use crate::journal::{JOURNAL_TAG, JOURNAL_TAG_V4, JOURNAL_TAG_V6, JOURNAL_TAG_V7};
+use crate::journal::{JOURNAL_TAG, JOURNAL_TAG_V4, JOURNAL_TAG_V6, JOURNAL_TAG_V7, JOURNAL_TAG_V8};
+use crate::link::Fingerprint;
 use crate::record::{
     direction_tag, displays_as, finish_tag, step_tag, AbortTag, Attempt, AttemptOutcome,
     AuditRecord, Controls, FinishClass, HookApplied, HookHead, OpClassId, OutcomeFacts, OutcomeTag,
@@ -46,20 +47,30 @@ pub fn head_from_journal_body(bytes: &[u8]) -> Result<Option<JournalHead>, Strin
         crate::recipe::DIGEST_RECIPE if keyed == 5 => {}
         crate::recipe::DIGEST_RECIPE_V6 if keyed == 6 => {}
         crate::recipe::DIGEST_RECIPE_V7 if keyed == 7 => {}
+        crate::recipe::LINK_RECIPE if keyed == 8 => {}
         crate::recipe::DIGEST_RECIPE_V4 if keyed == 4 => {}
         crate::recipe::DIGEST_RECIPE_V2 if keyed == 4 => {
             r.skip_text().ok_or_else(bad)?;
         }
+        other if keyed == 8 => return Err(link_recipe_unsupported(other)),
         _ => return Err("an audit head names an unknown recipe".into()),
     }
     let seq = r.num().ok_or_else(bad)?;
-    let prev_hash = r.text().ok_or_else(bad)?;
-    let hash = r.text().ok_or_else(bad)?;
-    let signature = r.opt_text().ok_or_else(bad)?;
-    let key_id = r
-        .opt_text()
-        .ok_or_else(bad)?
-        .map(std::sync::Arc::<str>::from);
+    let (prev_hash, hash, signature, key_id) = if keyed == 8 {
+        let prev = r.fingerprint().ok_or_else(bad)?;
+        let hash = r.fingerprint().ok_or_else(bad)?;
+        r.num().ok_or_else(bad)?;
+        (prev_text(prev), hex::encode(hash.0), None, None)
+    } else {
+        let prev_hash = r.text().ok_or_else(bad)?;
+        let hash = r.text().ok_or_else(bad)?;
+        let signature = r.opt_text().ok_or_else(bad)?;
+        let key_id = r
+            .opt_text()
+            .ok_or_else(bad)?
+            .map(std::sync::Arc::<str>::from);
+        (prev_hash, hash, signature, key_id)
+    };
     r.skip_text().ok_or_else(bad)?;
     r.skip_text().ok_or_else(bad)?;
     r.num().ok_or_else(bad)?;
@@ -90,8 +101,30 @@ fn journal_kind(r: &mut Reader<'_>) -> Option<u8> {
         JOURNAL_TAG => Some(5),
         JOURNAL_TAG_V6 => Some(6),
         JOURNAL_TAG_V7 => Some(7),
+        JOURNAL_TAG_V8 => Some(8),
         JOURNAL_TAG_V4 => Some(4),
         _ => None,
+    }
+}
+
+/// `AUDIT_RECIPE_UNSUPPORTED` (SEALING-FIX §3.1): a link line written under a recipe this build
+/// cannot recompute is refused with the crypto layer's reason, never read as verified.
+fn link_recipe_unsupported(recipe: &str) -> String {
+    let why = match crate::link::line_hasher(recipe) {
+        Err(unsupported) => unsupported.to_string(),
+        Ok(_) => "this build reads link lines under one recipe only".to_string(),
+    };
+    format!(
+        "AUDIT_RECIPE_UNSUPPORTED: an audit line written under the link recipe {recipe:?} is refused: {why}"
+    )
+}
+
+/// A link line's predecessor as the record holds it: the genesis predecessor (zeros) is empty.
+fn prev_text(prev: Fingerprint) -> String {
+    if prev == Fingerprint::ZERO {
+        String::new()
+    } else {
+        hex::encode(prev.0)
     }
 }
 
@@ -105,6 +138,8 @@ fn decode(
         crate::recipe::DIGEST_RECIPE if keyed == 5 => crate::recipe::Recipe::V5,
         crate::recipe::DIGEST_RECIPE_V6 if keyed == 6 => crate::recipe::Recipe::V6,
         crate::recipe::DIGEST_RECIPE_V7 if keyed == 7 => crate::recipe::Recipe::V7,
+        crate::recipe::LINK_RECIPE if keyed == 8 => crate::recipe::Recipe::V8,
+        other if keyed == 8 => return Err(link_recipe_unsupported(other)),
         crate::recipe::DIGEST_RECIPE_V4 if keyed == 4 => crate::recipe::Recipe::V4 {
             legacy_rate_card_version: 0,
         },
@@ -118,13 +153,21 @@ fn decode(
         }
     };
     let seq = r.num().ok_or_else(|| bad("seq"))?;
-    let prev_hash = r.text().ok_or_else(|| bad("prev_hash"))?;
-    let hash = r.text().ok_or_else(|| bad("hash"))?;
-    let signature = r.opt_text().ok_or_else(|| bad("signature"))?;
-    let key_id = r
-        .opt_text()
-        .ok_or_else(|| bad("key_id"))?
-        .map(std::sync::Arc::<str>::from);
+    let (prev_hash, hash, linked_ms, signature, key_id) = if recipe.is_link() {
+        let prev = r.fingerprint().ok_or_else(|| bad("prev_hash"))?;
+        let hash = r.fingerprint().ok_or_else(|| bad("hash"))?;
+        let linked_ms = r.num().ok_or_else(|| bad("linked_ms"))?;
+        (prev_text(prev), hex::encode(hash.0), linked_ms, None, None)
+    } else {
+        let prev_hash = r.text().ok_or_else(|| bad("prev_hash"))?;
+        let hash = r.text().ok_or_else(|| bad("hash"))?;
+        let signature = r.opt_text().ok_or_else(|| bad("signature"))?;
+        let key_id = r
+            .opt_text()
+            .ok_or_else(|| bad("key_id"))?
+            .map(std::sync::Arc::<str>::from);
+        (prev_hash, hash, 0, signature, key_id)
+    };
     let subject = subject_of(
         &r.text().ok_or_else(|| bad("subject"))?,
         &r.text().ok_or_else(|| bad("subject"))?,
@@ -191,7 +234,10 @@ fn decode(
     let fee_count =
         u32::try_from(r.num().ok_or_else(|| bad("fee_count"))?).map_err(|_| bad("fee_count"))?;
     let rate_card_version = match &mut recipe {
-        crate::recipe::Recipe::V5 | crate::recipe::Recipe::V6 | crate::recipe::Recipe::V7 => {
+        crate::recipe::Recipe::V5
+        | crate::recipe::Recipe::V6
+        | crate::recipe::Recipe::V7
+        | crate::recipe::Recipe::V8 => {
             if r.flag().ok_or_else(|| bad("rate_card_key_present"))? {
                 Some(
                     r.bytes()
@@ -247,7 +293,7 @@ fn decode(
             .push(UnitKey::new(r.num().ok_or_else(|| bad("child"))?));
     }
     let correlation_hash = r.opt_text().ok_or_else(|| bad("correlation_hash"))?;
-    let unit = if matches!(recipe, crate::recipe::Recipe::V7) {
+    let unit = if recipe.carries_unit_facts() {
         read_unit_facts(r).ok_or_else(|| bad("unit facts"))?
     } else {
         UnitFacts::default()
@@ -267,6 +313,7 @@ fn decode(
         controls,
         correlation_hash,
         unit,
+        linked_ms,
         seq,
         prev_hash,
         recipe,
@@ -427,9 +474,22 @@ fn abort_of(tag: &str) -> Option<Abort> {
     displays_as(AbortTag(abort), tag).then_some(abort)
 }
 
-struct Reader<'b> {
+/// The body reader: the inverse of [`crate::journal::Writer`].
+pub(crate) struct Reader<'b> {
     bytes: &'b [u8],
     at: usize,
+}
+
+impl<'b> Reader<'b> {
+    /// A reader at the start of `bytes`.
+    pub(crate) fn new(bytes: &'b [u8]) -> Self {
+        Reader { bytes, at: 0 }
+    }
+
+    /// Whether every byte has been read.
+    pub(crate) fn done(&self) -> bool {
+        self.at == self.bytes.len()
+    }
 }
 
 impl Reader<'_> {
@@ -440,8 +500,13 @@ impl Reader<'_> {
         Some(out)
     }
 
-    fn num(&mut self) -> Option<u64> {
+    pub(crate) fn num(&mut self) -> Option<u64> {
         Some(u64::from_be_bytes(self.take(8)?.try_into().ok()?))
+    }
+
+    /// A length-prefixed run of exactly 32 bytes.
+    pub(crate) fn fingerprint(&mut self) -> Option<Fingerprint> {
+        Some(Fingerprint(self.bytes()?.try_into().ok()?))
     }
 
     fn flag(&mut self) -> Option<bool> {
@@ -452,12 +517,12 @@ impl Reader<'_> {
         }
     }
 
-    fn bytes(&mut self) -> Option<&[u8]> {
+    pub(crate) fn bytes(&mut self) -> Option<&[u8]> {
         let len = u32::from_be_bytes(self.take(4)?.try_into().ok()?) as usize;
         self.take(len)
     }
 
-    fn text(&mut self) -> Option<String> {
+    pub(crate) fn text(&mut self) -> Option<String> {
         let text = String::from_utf8(self.bytes()?.to_vec()).ok();
         text
     }

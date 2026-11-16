@@ -268,3 +268,17 @@ fn series_order_uses_raw_labels_without_wire_encoding() {
         assert_eq!(values, ["19", "17", "31", "23"]);
     }
 }
+
+#[test]
+fn snapshot_keeps_series_ordered_at_insert_and_never_sorts() {
+    let source = include_str!("../snapshot/source.rs");
+    let start = source.find("pub fn snapshot(&self)").expect("snapshot fn");
+    let end = source[start..]
+        .find("/// Select at most 32")
+        .expect("end of snapshot fn");
+    let body = &source[start..start + end];
+    assert!(
+        !body.contains(".sort"),
+        "snapshot() runs on the scrape path and must not sort; order series at insert"
+    );
+}

@@ -362,9 +362,9 @@ pub struct ConfigSettingsView {
 
     /// The current effective root-section overlay (only the fields the operator has set; base
     /// `config.yaml` stands for the rest). An arbitrary JSON object (the `RootSettings` projection),
-    /// REDACTED by `service::redact_settings_bags`: every opaque `settings:` bag inside it (today
-    /// `store.settings`, whose `url` is a credential in busbar's own docs) appears as
-    /// `settings_keys`: sorted key names, no values. Same on the GET and on the PUT echo.
+    /// PROJECTED by `service::redact_settings_bags` through the secret rule (`v1/secret_rule.rs`): every
+    /// secret position (a secret-named field, an undeclared key of a `settings:` bag) is
+    /// `{set, secret_ref}`, never a value or a hash. Same on the GET and on the PUT echo.
     ///
     /// This field NAME is frozen wire and is the response ENVELOPE member, not a plugin settings
     /// bag; the redaction applies to the bags nested INSIDE it.

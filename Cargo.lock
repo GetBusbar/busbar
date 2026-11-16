@@ -410,6 +410,7 @@ dependencies = [
  "busbar-contract",
  "busbar-kernel",
  "busbar-kernel-egress",
+ "busbar-plugin-abi",
  "flate2",
  "hex",
  "http-body-util",
@@ -470,7 +471,6 @@ dependencies = [
  "base64 0.22.1",
  "busbar-contract",
  "busbar-kernel",
- "busbar-plugin-loader",
  "bytes",
  "form_urlencoded",
  "futures",
@@ -734,7 +734,9 @@ dependencies = [
 name = "busbar-plugin-test"
 version = "1.6.0"
 dependencies = [
+ "axum",
  "busbar-contract",
+ "busbar-core-admin",
  "busbar-ffi",
  "busbar-kernel",
  "busbar-plugin-abi",

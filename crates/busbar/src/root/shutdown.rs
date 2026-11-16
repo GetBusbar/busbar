@@ -21,8 +21,8 @@
 
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, LazyLock};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
+use std::sync::{Arc, LazyLock, OnceLock, Weak};
 use std::task::{Context, Poll};
 use std::time::Duration;
 
@@ -55,6 +55,35 @@ pub(crate) enum Phase {
     Journal,
     Audit,
     Retire,
+}
+
+/// Every phase, in discriminant order: the progress line stores the current one as its index.
+const PHASES: [Phase; 9] = [
+    Phase::Requests,
+    Phase::Settle,
+    Phase::Records,
+    Phase::Money,
+    Phase::MoneyFallback,
+    Phase::Seal,
+    Phase::Journal,
+    Phase::Audit,
+    Phase::Retire,
+];
+
+impl Phase {
+    fn name(self) -> &'static str {
+        match self {
+            Phase::Requests => "requests",
+            Phase::Settle => "settle",
+            Phase::Records => "records",
+            Phase::Money => "money",
+            Phase::MoneyFallback => "money_fallback",
+            Phase::Seal => "seal",
+            Phase::Journal => "journal",
+            Phase::Audit => "audit",
+            Phase::Retire => "retire",
+        }
+    }
 }
 
 /// A bounded wait's result.
@@ -109,19 +138,107 @@ impl<T> Future for DrainHandle<T> {
     }
 }
 
+/// The progress line's period (SHUTDOWN-HANG F4 "Progress": once per second and on every phase
+/// change).
+const PROGRESS_EVERY: Duration = Duration::from_secs(1);
+
+/// The owners the progress line reads, registered once as `finish` takes them.
+struct ProgressSources {
+    gov: Option<Arc<GovState>>,
+    late: Arc<LateServices>,
+    journal: Option<Arc<RuntimeJournal>>,
+    fence: Option<Arc<PredecessorFence>>,
+}
+
+/// The drain's shared counts: the bounded waits write them, the progress line reads them.
+struct Progress {
+    clock: Arc<DrainClock>,
+    phase: AtomicU8,
+    detached: AtomicU64,
+    /// Request joins detached at C1 that have not finished yet.
+    open_joins: AtomicU64,
+    ticking: AtomicBool,
+    sources: OnceLock<ProgressSources>,
+}
+
+impl Progress {
+    /// `shutdown drain: phase=<p> remaining={..} live_admissions=<n> open_units=<n>
+    /// open_joins=<n> held_units=<n> predecessor_fence=<settled|retained:n> elapsed=<s>`. A count
+    /// whose owner this build does not have yet (the sealing design's unstamped audit pages and
+    /// held units) reads `n/a`, never a made-up 0.
+    fn line(&self) -> String {
+        let phase = PHASES
+            .get(usize::from(self.phase.load(Ordering::Relaxed)))
+            .copied()
+            .unwrap_or(Phase::Requests);
+        let sources = self.sources.get();
+        let gov = sources.and_then(|s| s.gov.as_ref());
+        let remaining = gov.map(|g| g.drain_remaining()).unwrap_or_default();
+        let kernel = sources.and_then(|s| s.late.kernel());
+        let records = kernel.as_ref().map_or(0, |k| k.pending().queued());
+        let open_units = kernel.as_ref().map_or(0, |k| k.open_unit_evidence().len());
+        let journal = sources
+            .and_then(|s| s.journal.as_ref())
+            .map_or(0, |j| j.pending_records());
+        let fence = match sources
+            .and_then(|s| s.fence.as_ref())
+            .map_or(0, |f| f.retained())
+        {
+            0 => "settled".to_string(),
+            n => format!("retained:{n}"),
+        };
+        let elapsed = self
+            .clock
+            .armed_at()
+            .and_then(|deadline| deadline.checked_sub(self.clock.budget()))
+            .map(|armed| Instant::now().saturating_duration_since(armed))
+            .unwrap_or_default();
+        format!(
+            "shutdown drain: phase={} remaining={{checkpoints={}, terminal_checkpoints={}, \
+             corrections={}, budget_flights={}, metering={}, records={records}, \
+             audit_unstamped=n/a, audit_queue={}, journal_records={journal}}} \
+             live_admissions={} open_units={open_units} open_joins={} held_units=n/a \
+             predecessor_fence={fence} elapsed={:.1}s",
+            phase.name(),
+            remaining.checkpoints,
+            remaining.terminal_checkpoints,
+            remaining.corrections,
+            remaining.budget_flights,
+            remaining.metering,
+            if busbar_kernel::audit::auditlog::has_unsettled_audit() {
+                "pending"
+            } else {
+                "empty"
+            },
+            gov.map_or(0, |g| g.admissions().live()),
+            self.open_joins.load(Ordering::Relaxed),
+            elapsed.as_secs_f64(),
+        )
+    }
+
+    fn emit(&self) {
+        tracing::info!("{}", self.line());
+    }
+}
+
 /// The drain owner: the clock and the counts the exit reports.
 pub(crate) struct ShutdownDrain {
     clock: Arc<DrainClock>,
-    detached: AtomicU64,
-    started: std::time::Instant,
+    progress: Arc<Progress>,
 }
 
 impl ShutdownDrain {
     pub(crate) fn new(clock: Arc<DrainClock>) -> Self {
         Self {
+            progress: Arc::new(Progress {
+                clock: Arc::clone(&clock),
+                phase: AtomicU8::new(0),
+                detached: AtomicU64::new(0),
+                open_joins: AtomicU64::new(0),
+                ticking: AtomicBool::new(false),
+                sources: OnceLock::new(),
+            }),
             clock,
-            detached: AtomicU64::new(0),
-            started: std::time::Instant::now(),
         }
     }
 
@@ -130,7 +247,7 @@ impl ShutdownDrain {
     }
 
     pub(crate) fn detached(&self) -> u64 {
-        self.detached.load(Ordering::Relaxed)
+        self.progress.detached.load(Ordering::Relaxed)
     }
 
     /// The armed deadline's limit for `cut`, if armed.
@@ -182,7 +299,7 @@ impl ShutdownDrain {
         match self.limited(cut, &mut h).await {
             Outcome::Done(r) => Joined::Done(r),
             Outcome::Cut | Outcome::Expired => {
-                self.detached.fetch_add(1, Ordering::Relaxed);
+                self.progress.detached.fetch_add(1, Ordering::Relaxed);
                 tracing::info!(?phase, ?cut, "shutdown drain: task detached at its cut");
                 Joined::Detached(h)
             }
@@ -197,15 +314,48 @@ impl ShutdownDrain {
         self.bounded(Phase::Requests, h, Cut::Requests).await
     }
 
-    fn progress(&self, phase: Phase, gov: Option<&Arc<GovState>>) {
-        tracing::info!(
-            phase = ?phase,
-            live_admissions = gov.map_or(0, |g| g.admissions().live()),
-            terminal_checkpoints = gov.map_or(0, |g| g.admissions().terminal()),
-            detached = self.detached(),
-            elapsed_ms = u64::try_from(self.started.elapsed().as_millis()).unwrap_or(u64::MAX),
-            "shutdown drain"
-        );
+    /// A phase change: recorded for the periodic line, and one line now.
+    fn enter(&self, phase: Phase) {
+        let index = PHASES.iter().position(|p| *p == phase).unwrap_or(0);
+        self.progress
+            .phase
+            .store(u8::try_from(index).unwrap_or(0), Ordering::Relaxed);
+        self.progress.emit();
+    }
+
+    /// The owners the progress line reads; the first registration stands.
+    fn report_to(&self, sources: ProgressSources) {
+        let _ = self.progress.sources.set(sources);
+    }
+
+    fn note_open_joins(&self, open: usize) {
+        self.progress
+            .open_joins
+            .store(u64::try_from(open).unwrap_or(u64::MAX), Ordering::Relaxed);
+    }
+
+    /// Once the clock is armed: one progress line per second until the drain owner is dropped
+    /// (the process exits first). The task holds no owner of its own, only a weak reference.
+    fn start_progress(&self) {
+        if self.progress.ticking.swap(true, Ordering::Relaxed) {
+            return;
+        }
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let progress = Arc::downgrade(&self.progress);
+        runtime.spawn(async move {
+            let mut every =
+                tokio::time::interval_at(Instant::now() + PROGRESS_EVERY, PROGRESS_EVERY);
+            every.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                every.tick().await;
+                let Some(progress) = Weak::upgrade(&progress) else {
+                    return;
+                };
+                progress.emit();
+            }
+        });
     }
 }
 
@@ -277,6 +427,12 @@ pub(crate) async fn finish(post: PostServe<'_>, drain: &ShutdownDrain) -> i32 {
         shutdown_tx,
         predecessor,
     } = post;
+    drain.report_to(ProgressSources {
+        gov: governance.clone(),
+        late: Arc::clone(&late),
+        journal: book.as_ref().map(|book| book.runtime_journal.clone()),
+        fence: predecessor.as_ref().map(|(_, fence)| Arc::clone(fence)),
+    });
     let mut failures: Vec<String> = Vec::new();
 
     // Serving: before the first broadcast these are ordinary awaits of the serve futures.
@@ -293,12 +449,14 @@ pub(crate) async fn finish(post: PostServe<'_>, drain: &ShutdownDrain) -> i32 {
             failures.push("admin listener did not drain by the request cut".into());
         }
     }
+    busbar_kernel::audit::events::engine_event(busbar_kernel::audit::events::node_drain());
     let _ = shutdown_tx.send(());
     drain.clock().arm(Instant::now() + drain.clock().budget());
+    drain.start_progress();
     let gov = governance.as_ref();
 
     // [1] Requests, all under C1: every request-serving join, then plane cleanup.
-    drain.progress(Phase::Requests, gov);
+    drain.enter(Phase::Requests);
     let mut detached_joins: Vec<DrainHandle<Result<(), JoinError>>> = Vec::new();
     let threads = DrainHandle::spawn(tokio::task::spawn_blocking(move || {
         for handle in threads {
@@ -350,6 +508,7 @@ pub(crate) async fn finish(post: PostServe<'_>, drain: &ShutdownDrain) -> i32 {
         Outcome::Done(failed) => failures.extend(failed),
         _ => failures.push("plane cleanup did not finish by the request cut".into()),
     }
+    drain.note_open_joins(detached_joins.len());
     drain.clock().set_requests_done();
     if let Some(gov) = gov {
         gov.admissions().close();
@@ -357,7 +516,7 @@ pub(crate) async fn finish(post: PostServe<'_>, drain: &ShutdownDrain) -> i32 {
 
     // [S] Settle, until C2: planes idle, no governed admission alive, every detached request
     // join ended, and every ended unit settled by [M].
-    drain.progress(Phase::Settle, gov);
+    drain.enter(Phase::Settle);
     let settle = drain
         .wait(
             Phase::Settle,
@@ -368,6 +527,9 @@ pub(crate) async fn finish(post: PostServe<'_>, drain: &ShutdownDrain) -> i32 {
                         Some(kernel) => kernel.drain_plane_cleanup(DRAIN_PASS_IDLE).await,
                         None => true,
                     };
+                    drain.note_open_joins(
+                        detached_joins.iter().filter(|h| !h.is_finished()).count(),
+                    );
                     if idle
                         && gov.is_none_or(|g| g.admissions().live() == 0)
                         && detached_joins.iter().all(DrainHandle::is_finished)
@@ -390,7 +552,7 @@ pub(crate) async fn finish(post: PostServe<'_>, drain: &ShutdownDrain) -> i32 {
     }
 
     // [3] Plane records and the admin audit queue, until C3.
-    drain.progress(Phase::Records, gov);
+    drain.enter(Phase::Records);
     let c3 = drain.until(Cut::Seal);
     let records = drain
         .wait(
@@ -422,7 +584,7 @@ pub(crate) async fn finish(post: PostServe<'_>, drain: &ShutdownDrain) -> i32 {
     // [2] money_stop, then the money driver's join, until C3. A panicked driver is replaced by
     // the fallback; nothing is aborted.
     drain.clock().stop_money();
-    drain.progress(Phase::Money, gov);
+    drain.enter(Phase::Money);
     if let Some(flusher) = flusher {
         match drain
             .bounded(Phase::Money, DrainHandle::adopt(flusher), Cut::Seal)
@@ -462,7 +624,7 @@ pub(crate) async fn finish(post: PostServe<'_>, drain: &ShutdownDrain) -> i32 {
     // first broadcast and stops at its next step boundary), then the fence settle, which
     // re-drives what it left retained and submits nothing new. Both detach on overrun.
     // SEALING-FIX adds the notary's final page here, bounded by Cut::Seal.
-    drain.progress(Phase::Seal, gov);
+    drain.enter(Phase::Seal);
     if let Some((task, fence)) = predecessor {
         if let Joined::Detached(_) = drain
             .bounded(Phase::Seal, DrainHandle::adopt(task), Cut::Seal)
@@ -487,7 +649,7 @@ pub(crate) async fn finish(post: PostServe<'_>, drain: &ShutdownDrain) -> i32 {
     }
 
     // [5] Close staging, flush the journal, drain the admin audit queue, then the checks.
-    drain.progress(Phase::Journal, gov);
+    drain.enter(Phase::Journal);
     let runtime = book.as_ref().map(|book| book.runtime_journal.clone());
     if let Some(runtime) = &runtime {
         if let Err(error) = runtime.stop_staging() {
@@ -565,14 +727,14 @@ pub(crate) async fn finish(post: PostServe<'_>, drain: &ShutdownDrain) -> i32 {
         failures.push("governance still owns unsettled persistence".into());
     }
     if drain.clock().expired() {
-        return incomplete(drain, gov, "deadline", &failures);
+        return incomplete(drain, gov, &late, "deadline", &failures);
     }
     if !settled || !failures.is_empty() {
-        return incomplete(drain, gov, "undrained", &failures);
+        return incomplete(drain, gov, &late, "undrained", &failures);
     }
 
     // [6] Retire: the lease is released inside, after the refresh is stopped.
-    drain.progress(Phase::Retire, gov);
+    drain.enter(Phase::Retire);
     let drained = Drained {
         governance: governance.clone(),
         runtime,
@@ -587,15 +749,16 @@ pub(crate) async fn finish(post: PostServe<'_>, drain: &ShutdownDrain) -> i32 {
     {
         Joined::Done(Ok(Ok(()))) => {}
         Joined::Done(Ok(Err(error))) => {
-            return incomplete(drain, gov, "retire_refused", &[error]);
+            return incomplete(drain, gov, &late, "retire_refused", &[error]);
         }
         Joined::Done(Err(error)) => {
-            return incomplete(drain, gov, "retire_refused", &[error.to_string()]);
+            return incomplete(drain, gov, &late, "retire_refused", &[error.to_string()]);
         }
         Joined::Detached(_) => {
             return incomplete(
                 drain,
                 gov,
+                &late,
                 "deadline",
                 &["retirement unconfirmed".to_string()],
             );
@@ -624,6 +787,7 @@ pub(crate) async fn finish(post: PostServe<'_>, drain: &ShutdownDrain) -> i32 {
 fn incomplete(
     drain: &ShutdownDrain,
     gov: Option<&Arc<GovState>>,
+    late: &LateServices,
     cause: &'static str,
     failures: &[String],
 ) -> i32 {
@@ -665,8 +829,73 @@ fn incomplete(
             "completed spend is not in durable custody; listed on stderr as evidence"
         );
     }
+    for line in open_at_exit_lines(gov, late) {
+        eprintln!("busbar: shutdown {line}");
+    }
     print_exit_snapshot();
     code
+}
+
+/// Every unit still running at exit, one `open_at_exit { .. }` line each, joined with the unit
+/// checkpoint book by checkpoint id (a unit with no checkpoint reads `none`), then the
+/// admissions alive without an open unit (SHUTDOWN-HANG F4 "Running requests at exit"). One
+/// walk, at exit; a running unit never changes the exit code.
+fn open_at_exit_lines(gov: Option<&Arc<GovState>>, late: &LateServices) -> Vec<String> {
+    use std::fmt::Write as _;
+    let Some(gov) = gov else {
+        return Vec::new();
+    };
+    let evidence = late
+        .kernel()
+        .map(|kernel| kernel.open_unit_evidence())
+        .unwrap_or_default();
+    let exit = gov.open_at_exit(evidence);
+    let revision = |n: Option<u64>| n.map_or_else(|| "none".to_string(), |n| n.to_string());
+    let mut lines = Vec::with_capacity(exit.units.len() + 1);
+    for unit in &exit.units {
+        let open = &unit.evidence;
+        let mut reported = String::new();
+        for (at, count) in open.reported.iter().enumerate() {
+            let class = open
+                .money
+                .classes
+                .get(count.class as usize)
+                .map_or("?", String::as_str);
+            let _ = write!(
+                reported,
+                "{}{class}={}",
+                if at == 0 { "" } else { " " },
+                count.amount
+            );
+        }
+        lines.push(format!(
+            "open_at_exit {{ unit: {}, checkpoint: {}, principal: {}, group: {}, lane: {}, \
+             arrived: {}, reported: [{reported}], ledgered: {}, finished: {}, governed: {}, \
+             persisted_revision: {}, staged_revision: {} }}",
+            open.unit.get(),
+            hex::encode(open.checkpoint),
+            open.money.key.id,
+            open.money.key.group.as_deref().unwrap_or("none"),
+            open.money.lane,
+            open.money.arrived,
+            open.ledgered,
+            open.finished,
+            open.grant.is_some(),
+            revision(unit.persisted_revision),
+            revision(unit.staged_revision),
+        ));
+    }
+    lines.push(match exit.admitted_not_open() {
+        Some(n) => format!(
+            "admitted_not_open={n} live={} distinct_grants={}",
+            exit.live, exit.distinct_grants
+        ),
+        None => format!(
+            "admission_count_mismatch live={} distinct_grants={}",
+            exit.live, exit.distinct_grants
+        ),
+    });
+    lines
 }
 
 fn audit_failure(joined: Joined<Result<(), String>>) -> Option<String> {
@@ -827,3 +1056,7 @@ async fn retire_storage(
 #[cfg(test)]
 #[path = "tests/shutdown.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/shutdown_drain.rs"]
+mod drain_tests;
