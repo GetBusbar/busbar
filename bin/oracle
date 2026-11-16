@@ -18,8 +18,8 @@
 # `$BUSBAR_ORACLE_TOOL_DIR/record.sh` — records 100% natively without a code change; replay is already
 # the in-process Rust differ.
 #
-# THE PRODUCT DATA-DRIVERS NO LONGER SHELL OUT TO PYTHON. `testing/shadow-oracle/scripts/*.sh` used
-# to call `python3 $BUSBAR_ORACLE_TOOL_DIR/{mock-upstream,capture-exec,capture}.py` and
+# THE PRODUCT DATA-DRIVERS NO LONGER SHELL OUT TO AN INTERPRETER. `testing/shadow-oracle/scripts/*.sh`
+# used to call interpreter scripts in $BUSBAR_ORACLE_TOOL_DIR (mock-upstream, capture-exec, capture) and
 # `bash $BUSBAR_ORACLE_TOOL_DIR/fetch-plugin.sh` — files the Rust tool dir does not contain, so all 33
 # script-driven cells recorded NOTHING and each one logged itself as a `named gap` rather than a
 # failure. They now call this binary's own subcommands through BUSBAR_ORACLE_BIN (exported below),
@@ -30,6 +30,21 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # Never $HOME/.cache: every concurrent job on a backend shares it (ModernCI #1827).
 cache_home="${MODERNCI_CACHE_DIR:-$here/target}"
 
+# ── THE DATA LOGIC IS RUST (BLD-6) ──────────────────────────────────────────────────────────────
+# Every reading of the corpus this shim needs (premise widening, the shard split and its proofs, the
+# store, line and report readers) is `busbar-ci-checks oracle <sub>` (tools/ci-checks/src/oracle.rs).
+# It is built in the checkout (its toolchain pin and cargo config apply) and run from the caller's
+# directory, so relative paths mean what they meant. BUSBAR_CI_CHECKS_ROOT names that checkout: the
+# selftests drive scratch copies of this shim that have no tools/ of their own.
+oracle_rs() {  # oracle_rs <sub> <args...> — busbar-ci-checks oracle <sub> <args...>; 3 when it does not build
+  local exe
+  exe="$(cd "${BUSBAR_CI_CHECKS_ROOT:-$here}" && cargo build --locked --quiet -p busbar-ci-checks --bin busbar-ci-checks \
+    --message-format=json-render-diagnostics </dev/null | sed -n 's/.*"executable":"\([^"]*\)".*/\1/p' | tail -1)" || exe=""
+  [ -n "$exe" ] && [ -x "$exe" ] || { echo "oracle: busbar-ci-checks (tools/ci-checks) did not build in ${BUSBAR_CI_CHECKS_ROOT:-$here}" >&2; return 3; }
+  "$exe" oracle "$@"
+}
+oracle_data() { printf '%s' "${BUSBAR_ORACLE_DATA:-$here/testing/shadow-oracle}"; }
+
 # ── A FILTERED RUN CARRIES ITS FORGIVENESSES' PREMISES ──────────────────────────────────────────
 # An accepted difference forgives its cells only once its PREMISE holds, and the premise probes other
 # cells. A record or replay narrowed by a filter that leaves a premise cell out cannot evaluate it, so
@@ -39,78 +54,13 @@ cache_home="${MODERNCI_CACHE_DIR:-$here/target}"
 # difference whose cells it selects, and a premise that names a cell the corpus does not have is a
 # refusal naming it. After a filtered replay, a forgiveness still withheld for an unevaluable
 # premise the filter selected is a refusal too, never a FAIL row.
-premise_closure() {  # premise_closure <filter> -> the premise cells the filter's forgivenesses need
-  python3 - "$1" "${BUSBAR_ORACLE_DATA:-$here/testing/shadow-oracle}" <<'PY'
-import json, re, sys
-flt, data = sys.argv[1], sys.argv[2]
-ids = [c["id"] for c in json.load(open(f"{data}/cells.json"))["cells"]]
-universe = set(ids)
-try:
-    sel = re.compile(flt)
-except re.error as e:
-    sys.exit(f"oracle: the filter {flt!r} is not a regex this shim can widen ({e})")
-selected = [i for i in ids if sel.search(i)]
-def cells_of(node, out):
-    if isinstance(node, dict):
-        if isinstance(node.get("cell"), str):
-            out.add(node["cell"])
-        for v in node.values():
-            cells_of(v, out)
-    elif isinstance(node, list):
-        for v in node:
-            cells_of(v, out)
-need, bad = set(), []
-for e in json.load(open(f"{data}/accepted-differences.json"))["accepted"]:
-    if not e.get("premise") or not e.get("cells"):
-        continue
-    try:
-        pat = re.compile(e["cells"])
-    except re.error:
-        continue
-    if not any(pat.search(i) for i in selected):
-        continue
-    probes = set()
-    cells_of(e["premise"], probes)
-    for c in sorted(probes):
-        if c not in universe:
-            bad.append(f"{e.get('id')!r} probes premise cell {c!r}, which cells.json does not have")
-        elif not sel.search(c):
-            need.add(c)
-if bad:
-    sys.exit("oracle: a filtered run cannot evaluate a forgiveness it selects:\n  " + "\n  ".join(bad))
-print("\n".join(sorted(need)))
-PY
-}
 widen_filter() {  # widen_filter <filter> -> the filter plus the premise cells it needs
-  local extra
-  extra="$(premise_closure "$1")" || exit 3
-  if [ -z "$extra" ]; then printf '%s\n' "$1"; return; fi
-  local alt
-  alt="$(printf '%s\n' "$extra" | python3 -c 'import re,sys; print("|".join(re.escape(l.strip()) for l in sys.stdin if l.strip()))')"
-  echo "oracle: the filter is widened to the premise cells its accepted differences probe: $(printf '%s' "$extra" | tr '\n' ' ')" >&2
-  printf '(?:%s)|^(?:%s)$\n' "$1" "$alt"
+  oracle_rs widen-filter "$(oracle_data)" "$1" || exit 3
 }
 # withheld_selected <engine-output-file> <filter> -> nonzero, naming each, when a forgiveness the
 # filter selected was withheld because its premise could not be evaluated.
 withheld_selected() {
-  local closure
-  closure="$(premise_closure "$2")" || return 3
-  python3 - "$1" "$2" "$closure" <<'PY'
-import re, sys
-out, flt, closure = sys.argv[1], sys.argv[2], set(filter(None, sys.argv[3].split("\n")))
-sel = re.compile(flt)
-hits = []
-for line in open(out, errors="replace"):
-    m = re.search(r"entry (.+?) is WITHHELD .*premise UNEVALUABLE: premise probes cell \"([^\"]+)\"", line)
-    if m and (m.group(2) in closure or sel.search(m.group(2))):
-        hits.append(f"{m.group(1)} (premise cell {m.group(2)!r})")
-if hits:
-    print("oracle: a filtered replay could not evaluate the premise of a forgiveness it selected, so "
-          "its cells would report FAIL for a difference the owner signed. Refusing instead:\n  "
-          + "\n  ".join(hits) + "\nRecord the premise cells (bin/oracle record widens its --filter "
-          "to them) and replay again.", file=sys.stderr)
-    sys.exit(3)
-PY
+  oracle_rs withheld "$(oracle_data)" "$1" "$2" || return 3
 }
 if [ "${1:-}" = "premise-filter" ]; then widen_filter "${2:?premise-filter <filter>}"; exit 0; fi
 
@@ -124,71 +74,21 @@ if [ "${1:-}" = "premise-filter" ]; then widen_filter "${2:?premise-filter <filt
 # cells.json exactly once, so the union of the shards is the whole corpus. A shard's filter is
 # widened to the premise cells its forgivenesses probe (as any filtered run is), so a premise cell
 # may be judged again, as context, in another shard: never fewer judgements, never a weaker one.
-shard_ids() {  # shard_ids <k> <n> -> the ids shard k of n owns, one per line
-  python3 - "$1" "$2" "${BUSBAR_ORACLE_DATA:-$here/testing/shadow-oracle}" <<'PY'
-import json, sys
-k, n, data = int(sys.argv[1]), int(sys.argv[2]), sys.argv[3]
-if not (n >= 1 and 1 <= k <= n):
-    sys.exit(f"oracle: shard {k} of {n} is not a shard (1 <= k <= n)")
-ids = sorted(c["id"] for c in json.load(open(f"{data}/cells.json"))["cells"])
-print("\n".join(i for x, i in enumerate(ids) if x % n == k - 1))
-PY
-}
-shard_filter() {  # shard_filter <k> <n> -> the anchored regex selecting exactly shard k's ids
-  shard_ids "$1" "$2" | python3 -c 'import re,sys; ids=[l.rstrip("\n") for l in sys.stdin if l.strip()]; print("^(?:" + "|".join(re.escape(i) for i in ids) + ")$")'
-}
-if [ "${1:-}" = "shard-ids" ]; then shard_ids "${2:?shard-ids <k> <n>}" "${3:?shard-ids <k> <n>}"; exit 0; fi
-if [ "${1:-}" = "shard-filter" ]; then shard_filter "${2:?shard-filter <k> <n>}" "${3:?shard-filter <k> <n>}"; exit 0; fi
-if [ "${1:-}" = "shard-cover" ]; then
-  n="${2:?shard-cover <n>}"
-  # The N filters together name every id, more than one argv string may hold (Linux caps one at
-  # 128 KiB), so they reach python through a file.
-  filters="$(mktemp)" || exit 3
-  for k in $(seq 1 "$n"); do shard_filter "$k" "$n" >>"$filters" || { rm -f "$filters"; exit 3; }; done
-  python3 - "$n" "${BUSBAR_ORACLE_DATA:-$here/testing/shadow-oracle}" "$filters" <<'PY' || { rm -f "$filters"; exit 3; }
-import json, re, sys
-n, data = int(sys.argv[1]), sys.argv[2]
-filters = open(sys.argv[3]).read().rstrip("\n").split("\n")
-ids = [c["id"] for c in json.load(open(f"{data}/cells.json"))["cells"]]
-if len(filters) != n:
-    sys.exit(f"oracle shard-cover: {len(filters)} filters for {n} shards")
-rx = [re.compile(f) for f in filters]
-bad = []
-for i in ids:
-    hits = [k + 1 for k, r in enumerate(rx) if r.search(i)]
-    if len(hits) != 1:
-        bad.append(f"{i!r} is selected by shard(s) {hits or 'none'}")
-if len(set(ids)) != len(ids):
-    bad.append("cells.json repeats an id")
-if bad:
-    sys.exit("oracle shard-cover: the shards do not cover the corpus exactly once:\n  " + "\n  ".join(bad[:20]))
-print(f"oracle shard-cover: {n} shards select all {len(ids)} cells of cells.json, each exactly once")
-PY
-  rm -f "$filters"
-  exit 0
-fi
-if [ "${1:-}" = "shard-verify" ]; then
-  k="${2:?shard-verify <k> <n> <report-dir>}" n="${3:?shard-verify <k> <n> <report-dir>}" rep="${4:?shard-verify <k> <n> <report-dir>}"
-  owned="$(mktemp)" || exit 3
-  shard_ids "$k" "$n" >"$owned" || { rm -f "$owned"; exit 3; }
-  python3 - "$k" "$n" "$rep" "$owned" <<'PY' || { rm -f "$owned"; exit 3; }
-import sys
-k, n, rep = sys.argv[1], sys.argv[2], sys.argv[3]
-owned = set(filter(None, open(sys.argv[4]).read().split("\n")))
-try:
-    selected = set(filter(None, open(f"{rep}/selected-ids.txt").read().split("\n")))
-except OSError as e:
-    sys.exit(f"oracle shard-verify: shard {k}/{n} wrote no selected-ids.txt ({e}); nothing proves what it judged. Refusing.")
-missing = sorted(owned - selected)
-if not owned:
-    sys.exit(f"oracle shard-verify: shard {k}/{n} owns no cell. Refusing.")
-if missing:
-    sys.exit(f"oracle shard-verify: shard {k}/{n} did not select {len(missing)} of its {len(owned)} cells: {missing[:10]}. Refusing.")
-print(f"oracle shard-verify: shard {k}/{n} selected all {len(owned)} cells it owns")
-PY
-  rm -f "$owned"
-  exit 0
-fi
+# `shard-merge <report dir>...` is ONE VERDICT FROM N SHARD REPORTS: each sharded `ci-run` writes
+# `shard.tsv` (k, n, exit) into its report dir beside the engine's selected-ids.txt; green only when
+# the N reports are shards 1..N of the same N, each exactly once, every one exited 0, and the ids
+# they selected together are every cell of cells.json (shard-cover proves the split itself).
+shard_ids() { oracle_rs shard-ids "$(oracle_data)" "$1" "$2"; }       # the ids shard k of n owns
+shard_filter() { oracle_rs shard-filter "$(oracle_data)" "$1" "$2"; } # the anchored regex selecting them
+case "${1:-}" in
+  shard-ids) shard_ids "${2:?shard-ids <k> <n>}" "${3:?shard-ids <k> <n>}"; exit 0 ;;
+  shard-filter) shard_filter "${2:?shard-filter <k> <n>}" "${3:?shard-filter <k> <n>}"; exit 0 ;;
+  shard-cover) oracle_rs shard-cover "$(oracle_data)" "${2:?shard-cover <n>}"; exit 0 ;;
+  shard-verify)
+    oracle_rs shard-verify "$(oracle_data)" "${2:?shard-verify <k> <n> <report-dir>}" \
+      "${3:?shard-verify <k> <n> <report-dir>}" "${4:?shard-verify <k> <n> <report-dir>}"; exit 0 ;;
+  shard-merge) shift; oracle_rs shard-merge "$(oracle_data)" "$@"; exit 0 ;;
+esac
 # shard-selftest: each guard refuses what it exists to refuse, before its green is trusted.
 if [ "${1:-}" = "shard-selftest" ]; then
   st="$(mktemp -d)"; trap 'rm -rf "$st"' EXIT; fail=0
@@ -279,40 +179,6 @@ shard_spec() {
 }
 if [ "${1:-}" = "shard-spec" ]; then shard_spec; exit $?; fi
 
-# shard-merge <report dir>... — ONE VERDICT FROM N SHARD REPORTS. Each sharded `ci-run` writes
-# `shard.tsv` (k, n, exit) into its report dir beside the engine's selected-ids.txt. Green only when
-# the N reports are shards 1..N of the same N, each exactly once, every one exited 0, and the ids
-# they selected together are every cell of cells.json (shard-cover proves the split itself).
-if [ "${1:-}" = "shard-merge" ]; then
-  shift; [ $# -ge 1 ] || { echo "oracle shard-merge: name the shard report dirs" >&2; exit 2; }
-  python3 - "${BUSBAR_ORACLE_DATA:-$here/testing/shadow-oracle}" "$@" <<'PY'
-import json, sys
-data, dirs = sys.argv[1], sys.argv[2:]
-ids = {c["id"] for c in json.load(open(f"{data}/cells.json"))["cells"]}
-seen, ns, bad, selected = {}, set(), [], set()
-for d in dirs:
-    try:
-        k, n, rc = open(f"{d}/shard.tsv").read().split()[:3]
-        selected |= set(filter(None, open(f"{d}/selected-ids.txt").read().split("\n")))
-    except (OSError, ValueError) as e:
-        bad.append(f"{d}: no shard verdict ({e})"); continue
-    ns.add(int(n))
-    if k in seen: bad.append(f"shard {k} reported twice ({seen[k]}, {d})")
-    seen[k] = d
-    if rc != "0": bad.append(f"shard {k}/{n} was red (exit {rc}): {d}")
-if len(ns) > 1: bad.append(f"the reports disagree on N: {sorted(ns)}")
-n = max(ns) if ns else 0
-missing_shards = [str(k) for k in range(1, n + 1) if str(k) not in seen]
-if missing_shards: bad.append(f"no report for shard(s) {', '.join(missing_shards)} of {n}")
-unjudged = sorted(ids - selected)
-if unjudged: bad.append(f"{len(unjudged)} cell(s) no shard judged: {unjudged[:10]}")
-if bad:
-    sys.exit("oracle shard-merge: RED\n  " + "\n  ".join(bad))
-print(f"oracle shard-merge: GREEN: {n} shards, each green, together judged all {len(ids)} cells")
-PY
-  exit $?
-fi
-
 # ── THE ORACLE CHECK, ONE COMMAND: `bin/oracle ci-run` ──────────────────────────────────────────
 # What the ModernCI oracle check runs after its toolchain setup, whole or as one shard (shard_spec).
 # It judges exactly what the check's old inline body judged: the judge from the config's pin, the
@@ -385,14 +251,7 @@ if [ "${1:-}" = "ci-run" ]; then
   mkdir -p target/oracle
   # THE STORE BACKENDS, only for a run that selects a cell gated on one (needs_fixture names its URL).
   WIDE="$F"; [ -z "$F" ] || WIDE="$(widen_filter "$F" 2>/dev/null)" || exit 3
-  stores="$(python3 - "$data/cells.json" "$WIDE" <<'PY'
-import json, re, sys
-sel = re.compile(sys.argv[2]) if sys.argv[2] else None
-urls = {"BUSBAR_TEST_POSTGRES_URL", "BUSBAR_TEST_MYSQL_URL", "VALKEY_URL"}
-print(any(c.get("needs_fixture") in urls and (sel is None or sel.search(c["id"]))
-          for c in json.load(open(sys.argv[1]))["cells"]) and "yes" or "no")
-PY
-)" || exit 3
+  stores="$(oracle_rs needs-store "$data" "$WIDE")" || exit 3
   store_pid=""
   svc=testing/shadow-oracle/scripts/oracle-box-store-services.sh
   [ -z "$PREPARE_OUT" ] || stores=no
@@ -414,33 +273,10 @@ PY
   export CARGO_PROFILE_RELEASE_LTO="${ORACLE_CI_LTO:-thin}"
   export CARGO_PROFILE_RELEASE_CODEGEN_UNITS="${ORACLE_CI_CODEGEN_UNITS:-16}"
   if [ -f dist/default/Cargo.toml ]; then manifest=dist/default/Cargo.toml; else manifest=Cargo.toml; fi
-  ver="$(cargo metadata --locked --no-deps --format-version 1 --manifest-path "$manifest" | python3 -c '
-import json, sys
-m = json.load(sys.stdin)
-v = [p["version"] for p in m["packages"] if any(t["name"] == "busbar" and "bin" in t["kind"] for t in p["targets"])]
-sys.exit("no package builds the busbar binary") if len(v) != 1 else print(v[0])')" || exit 3
+  meta="$(cargo metadata --locked --no-deps --format-version 1 --manifest-path "$manifest")" || exit 3
+  ver="$(printf '%s' "$meta" | oracle_rs busbar-version)" || exit 3
   line="$(printf '%s' "$ver" | sed -E 's/^([0-9]+)\.([0-9]+)\..*/\1.\2/')"
-  builds="$(python3 - "$data/plugin-digests.tsv" "$line" <<'PY'
-import re, sys
-line = sys.argv[2]
-def src(tag, asset):
-    return re.fullmatch(r"src:[0-9a-fA-F]{40}", tag) is not None and re.fullmatch(r"build:[A-Za-z0-9._-]+", asset) is not None
-rows = []
-try:
-    text = open(sys.argv[1]).read()
-except OSError:
-    text = ""
-for r in text.split("\n"):
-    if not r or r.startswith("#"):
-        continue
-    c = r.split("\t")
-    if len(c) < 4:
-        continue
-    rows.append((c[1], c[2], c[4] if len(c) > 4 and c[4] else "1.5"))
-released = any(l == line and not src(t, a) for t, a, l in rows)
-print("yes" if not released and any(l == line and src(t, a) for t, a, l in rows) else "no")
-PY
-)" || exit 3
+  builds="$(oracle_rs line-builds "$data" "$line")" || exit 3
   probe=""
   if [ "$builds" = yes ]; then
     probe="$here/target/oracle/line-probe/busbar"
@@ -573,6 +409,7 @@ if [ "${1:-}" = "replay-refusal-selftest" ]; then
   st="$(mktemp -d)"; trap 'rm -rf "$st"' EXIT
   mkdir -p "$st/repo/bin" "$st/repo/testing/shadow-oracle" "$st/out"
   cp "$under" "$st/repo/bin/oracle"
+  export BUSBAR_CI_CHECKS_ROOT="${BUSBAR_CI_CHECKS_ROOT:-$here}"  # the copy has no tools/ci-checks
   printf '{"cells": [{"id": "fam|a"}]}\n' >"$st/repo/testing/shadow-oracle/cells.json"
   printf '{"accepted": []}\n' >"$st/repo/testing/shadow-oracle/accepted-differences.json"
   cat >"$st/engine" <<'E'
@@ -621,7 +458,7 @@ J
 J
   fail=0
   got="$(BUSBAR_ORACLE_DATA="$tmp" widen_filter '^fam\|forgiven$' 2>/dev/null)"
-  if python3 -c 'import re,sys; r=re.compile(sys.argv[1]); sys.exit(0 if r.search("probe|premise") and r.search("fam|forgiven") and not r.search("fam|other") else 1)' "$got"; then
+  if oracle_rs regex-search "$got" 'probe|premise' 'fam|forgiven' && ! oracle_rs regex-search "$got" 'fam|other'; then
     echo "  [ok]     a filter selecting a forgiven cell but not its premise is widened to the premise"
   else echo "  [FAILED] the premise cell was not added to the filter: $got"; fail=1; fi
   got="$(BUSBAR_ORACLE_DATA="$tmp" widen_filter '^fam\|other$' 2>/dev/null)"
@@ -1372,8 +1209,8 @@ export BUSBAR_ORACLE_BIN="$JUDGE_ENTRY"
 
 # ── argv contract (unchanged for callers) → the Rust CLI ────────────────────────────────────────
 # The callers (the `.ci/` branch files, the scripts, HarnessOracle's record.sh shim) speak the
-# historical Python argv. The Rust CLI takes explicit paths; this dispatcher fills the same
-# BUSBAR_ORACLE_DATA-derived defaults the Python tool derived, so `./bin/oracle <sub> …` is unchanged.
+# historical argv. The Rust CLI takes explicit paths; this dispatcher fills the same
+# BUSBAR_ORACLE_DATA-derived defaults the retired tool derived, so `./bin/oracle <sub> …` is unchanged.
 DATA="$BUSBAR_ORACLE_DATA"
 ROOT="$BUSBAR_ORACLE_PRODUCT_ROOT"
 CACHE="${BUSBAR_ORACLE_CACHE:-$cache_home/busbar-oracle}"
@@ -1384,13 +1221,13 @@ case "$sub" in
     echo "$BUSBAR_ORACLE_TOOL_DIR"; exit 0 ;;
 
   cells)
-    # `cells --check` / `--selftest` — default --cells from the data dir (Python read $DATA).
+    # `cells --check` / `--selftest` — default --cells from the data dir (the retired tool read $DATA).
     has_cells=0; for a in "$@"; do [ "$a" = "--cells" ] && has_cells=1; done
     if [ "$has_cells" -eq 0 ]; then set -- "$@" --cells "$DATA/cells.json"; fi
     verify_judge_now; exec "$RUST_BIN" cells "$@" ;;
 
   replay-selftest)
-    # the owed-baseline ratchet over the committed golden (Python read $DATA).
+    # the owed-baseline ratchet over the committed golden (the retired tool read $DATA).
     # Under ModernCI the golden is the config's tree from the object database, never the worktree.
     args=(--golden "$DATA/golden/1.5.5" --baseline "$DATA/owed-baseline.txt" "$@")
     if under_modernci; then modernci_golden || exit 3; fi
@@ -1450,7 +1287,7 @@ case "$sub" in
     # broken one, and is the reported shape of "--filter records nothing". The engine has taken
     # --out-dir for exactly this since the native cutover; this just stops discarding it.
     mkdir -p "$OUT"; OUT="$(cd "$OUT" && pwd)"; WORK="$(cd "$(dirname "$OUT")" && pwd)"
-    # A filtered recording carries the premise cells its forgivenesses probe (see premise_closure).
+    # A filtered recording carries the premise cells its forgivenesses probe (see widen_filter).
     [ -z "$FILTER" ] || FILTER="$(widen_filter "$FILTER")"
     rc=0; verify_judge_now; private_tmp "$RUST_BIN" record --native --busbar-repo "$ROOT" --candidate-bin "$BIN" \
       --oracle-data "$DATA" --work-dir "$WORK" --out-dir "$OUT" --family "$PLANE" ${FILTER:+--filter "$FILTER"} \
@@ -1475,7 +1312,7 @@ case "$sub" in
       local f frc worst="$rc" ids
       for f in "$DATA"/fence/*/; do
         f="${f%/}"; [ -f "$f/ledger.tsv" ] || continue
-        ids="$(awk -F'\t' 'NF{print $1}' "$f/ledger.tsv" | python3 -c 'import re,sys; print("^("+"|".join(re.escape(l.strip()) for l in sys.stdin if l.strip())+")$")')"
+        ids="$(oracle_rs fence-filter "$f/ledger.tsv")"
         if [ -n "$idf" ] && ! awk -F'\t' 'NF{print $1}' "$f/ledger.tsv" | grep -Eq -- "$idf"; then continue; fi
         echo
         echo "== predev fence: $(basename "$f") (recorded from a predev build; NOT 1.5.5 evidence) =="
@@ -1502,12 +1339,7 @@ case "$sub" in
     # only_rebaselined <filter> -> 0 when the filter selects at least one cell and every selected
     # cell's family has a dated baseline of its own (so the 1.5.5 section owes nothing to compare).
     only_rebaselined() {
-      python3 - "$1" "$DATA/cells.json" "$(family_baseline_rows | cut -f1 | tr '\n' ' ')" <<'PY'
-import json, re, sys
-sel, fams = re.compile(sys.argv[1]), set(sys.argv[3].split())
-cells = [c for c in json.load(open(sys.argv[2]))["cells"] if sel.search(c["id"])]
-sys.exit(0 if cells and all(c.get("family", c.get("plane")) in fams for c in cells) else 1)
-PY
+      oracle_rs only-rebaselined "$DATA" "$1" "$(family_baseline_rows | cut -f1 | tr '\n' ' ')"
     }
     replay_family_baselines() {  # replay_family_baselines <rc so far> <id filter or ""> <diff args...>
       local rc="$1" idf="$2"; shift 2
@@ -1518,13 +1350,7 @@ PY
       local fam ver frc worst="$rc"
       while IFS=$'\t' read -r fam ver; do
         [ -n "$fam" ] && [ -n "$ver" ] || continue
-        if [ -n "$idf" ] && ! python3 - "$idf" "$DATA/cells.json" "$fam" <<'PY'
-import json, re, sys
-sel = re.compile(sys.argv[1])
-sys.exit(0 if any(sel.search(c["id"]) and c.get("family") == sys.argv[3]
-                  for c in json.load(open(sys.argv[2]))["cells"]) else 1)
-PY
-        then continue; fi
+        if [ -n "$idf" ] && ! oracle_rs family-selected "$DATA" "$idf" "$fam" </dev/null; then continue; fi
         echo
         echo "== dated baseline: family $fam against golden/$ver (NOT 1.5.5 evidence) =="
         frc=0
@@ -1549,15 +1375,7 @@ PY
       fi
       for a in "$@"; do [ "$prev" = --out ] && out="$a"; prev="$a"; done
       [ -n "$out" ] || return 0
-      python3 -c '
-import json, sys
-try:
-    owed = json.load(open(sys.argv[1]))["totals"]["owed"]
-except Exception as e:
-    sys.exit("oracle: the 1.5.5 replay wrote no readable report (%s: %s); nothing was judged. Refusing." % (sys.argv[1], e))
-if not owed:
-    sys.exit("oracle: the 1.5.5 replay compared ZERO owed cells (%s); a replay that judged nothing is not a verdict. Refusing." % sys.argv[1])
-' "$out/report.json" || exit 3
+      oracle_rs report-owed "$out/report.json" || exit 3
     }
     # OLD: replay --golden G --candidate C --out R  →  the in-process Rust differ (the judge).
     #
