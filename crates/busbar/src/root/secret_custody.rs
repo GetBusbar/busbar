@@ -6,7 +6,7 @@
 //! configured secret instance; custody reaches it through its `SecretPort` and hands the plugin the
 //! reference's `settings` only, never its `module` (I2).
 
-use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Instant;
 
 use arc_swap::ArcSwap;
@@ -60,23 +60,12 @@ impl SecretTable {
     }
 }
 
-/// The scrub set of the instance that owns a watchdog slot (the registry's slot table, §10.6).
-pub(crate) type ScrubOf = Arc<dyn Fn(u32) -> Option<Arc<Scrub>> + Send + Sync>;
-
-/// What the registry supplies once it exists (the registry is built over the Needs that own
-/// custody, so custody cannot hold it from the start). Until it is attached a SECRET Need is refused
-/// (ForeignHandle, then Unavailable), never served unmasked.
-#[derive(Default)]
-struct Wiring {
-    scrub: OnceLock<ScrubOf>,
-}
-
 /// What custody reads from the process: the open secret instances, plugin-facing bindings (`ConfigBinder::secret`,
 /// §12.7) and instance scrub sets (§10.6).
 pub(crate) struct Host {
     table: Arc<SecretTable>,
     binder: Arc<dyn ConfigBinder>,
-    wiring: Arc<Wiring>,
+    slots: Arc<busbar_plugin_loader::instance::SlotTable>,
 }
 
 impl CustodyHost for Host {
@@ -85,7 +74,7 @@ impl CustodyHost for Host {
     }
 
     fn scrub(&self, who: &busbar_plugin_abi::host_side::caller::Caller<'_>) -> Option<Arc<Scrub>> {
-        (self.wiring.scrub.get()?)(who.slot)
+        self.slots.scrub_of(who.slot)
     }
 
     fn source(&self, module: &str) -> Option<SecretSource> {
@@ -120,32 +109,23 @@ impl CustodyHost for Host {
 /// The process's secret kind: its open instances and the custody that resolves every reference through them.
 pub(crate) struct BootSecrets {
     table: Arc<SecretTable>,
-    wiring: Arc<Wiring>,
     custody: Custody<Host>,
 }
 
 impl BootSecrets {
     /// The secret kind over `binder`, which custody reads plugin-facing bindings through (the binder does not
     /// depend on custody, so it exists first and is handed over here).
-    pub(crate) fn new(binder: Arc<dyn ConfigBinder>) -> Self {
+    pub(crate) fn new(
+        binder: Arc<dyn ConfigBinder>,
+        slots: Arc<busbar_plugin_loader::instance::SlotTable>,
+    ) -> Self {
         let table = Arc::new(SecretTable::default());
-        let wiring = Arc::new(Wiring::default());
         let custody = Custody::new(Host {
             table: Arc::clone(&table),
             binder,
-            wiring: Arc::clone(&wiring),
+            slots,
         });
-        BootSecrets {
-            table,
-            wiring,
-            custody,
-        }
-    }
-
-    /// The registry's scrub sets, once it exists (boot, after the registry is built). The first attachment
-    /// stays; a second is ignored.
-    pub(crate) fn attach(&self, scrub: ScrubOf) {
-        let _ = self.wiring.scrub.set(scrub);
+        BootSecrets { table, custody }
     }
 
     /// The port of the secret instance configured as `name`, if it is open.

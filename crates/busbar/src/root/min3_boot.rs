@@ -17,14 +17,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
+use super::boot::registry::{boot, install_kernel_sides, KernelAuthCore};
+use super::boot::walk::{deployment_bytes, BootSteps, DeploymentRead, RegistryBoot};
 use busbar_contract::secret_ref::{SecretRef, Sugars};
 use busbar_contract::secure::SecureVec;
 use busbar_core_connector::guard::Guard;
 use busbar_core_connector::need::{HostNeeds, NeedLimits};
-use busbar_kernel::appbuild::boot_registry::{boot, install_kernel_sides, KernelAuthCore};
-use busbar_kernel::appbuild::boot_walk::{
-    deployment_bytes, BootSteps, DeploymentRead, RegistryBoot,
-};
 use busbar_kernel::channels::signals::SignalRegistry;
 use busbar_kernel::channels::SessionSignals;
 use busbar_kernel::config::{AtRestCfg, PluginsCfg, RootCfg};
@@ -686,10 +684,18 @@ struct Built {
     directory: Directory,
 }
 
-fn build(guard: Guard, cfg: &RootCfg, images: Vec<Admitted>) -> Result<Built, String> {
+fn build(
+    process: &busbar_plugin_loader::process::ProcessResources,
+    guard: Guard,
+    cfg: &RootCfg,
+    images: Vec<Admitted>,
+) -> Result<Built, String> {
     let binder: Arc<dyn ConfigBinder> = Arc::new(Binder::new(Arc::new(BootRefs)));
     // The process's one secret kind, built over the binder and kept for the life of the process.
-    let secrets: &'static BootSecrets = Box::leak(Box::new(BootSecrets::new(Arc::clone(&binder))));
+    let secrets: &'static BootSecrets = Box::leak(Box::new(BootSecrets::new(
+        Arc::clone(&binder),
+        Arc::clone(process.slots()),
+    )));
     let records = Records::default();
     let directory = Directory::default();
     let needs = HostNeeds::production(
@@ -700,8 +706,7 @@ fn build(guard: Guard, cfg: &RootCfg, images: Vec<Admitted>) -> Result<Built, St
         Arc::clone(&binder),
         NeedLimits::default(),
     );
-    let slots = Arc::new(busbar_plugin_loader::instance::SlotTable::new());
-    busbar_plugin_loader::instance::install_sinks(&slots);
+    let slots = Arc::clone(process.slots());
     let mut described =
         busbar_plugin_loader::instance::ImagesBuilder::new(&HOST, slots, Ceilings::DEFAULT);
     for image in images {
@@ -715,9 +720,6 @@ fn build(guard: Guard, cfg: &RootCfg, images: Vec<Admitted>) -> Result<Built, St
     binder.set_sugars(Arc::new(sugars.clone()));
     binder.set_ref_schemas(ref_schemas(&registry, cfg));
     let registry = Arc::new(registry);
-    registry.start_watchdog();
-    let weak = Arc::downgrade(&registry);
-    secrets.attach(Arc::new(move |slot| weak.upgrade()?.scrub_of(slot)));
     let seal: StoreSeal = Box::new(|| Box::new(busbar_kernel::seal::lend()));
     let auth_core = Arc::new(KernelAuthCore::new(
         Unissued,
@@ -1045,6 +1047,7 @@ where
 /// image, so the old path boots (nothing here ran past admission). `Ok(true)`: every instance opened in plan
 /// order, core's own secrets are resolved and the process holds the registry ([`registry`], [`seats`]).
 pub(crate) async fn run(
+    process: &busbar_plugin_loader::process::ProcessResources,
     cfg: &RootCfg,
     plugins: &PluginsCfg,
     guard: Guard,
@@ -1064,6 +1067,7 @@ pub(crate) async fn run(
         })
         .collect();
     let built = build(
+        process,
         guard,
         cfg,
         images.into_iter().map(|(image, _)| image).collect(),

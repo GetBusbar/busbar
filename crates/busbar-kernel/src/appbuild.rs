@@ -19,11 +19,6 @@ use busbar_kernel::plane_driver::route_input::{
     LaneInput, OnExhaustedInput, PoolInput, PoolMemberInput,
 };
 
-/// The registry's kernel sides, core's own secret references, and the one plan-and-walk entry.
-pub mod boot_registry;
-/// The MIN-3 boot: one generic walk over `Registry::boot_plan` (IF §11.2, §12.10 item 4).
-pub mod boot_walk;
-
 pub const ENV_CONFIG: &str = "BUSBAR_CONFIG";
 
 pub const DEFAULT_CONFIG_PATH: &str = "/etc/busbar/config.yaml";
@@ -2766,7 +2761,3 @@ fn accepted_operator(auth: &config::AuthCfg, operator: &crate::auth::Operator) {
         );
     }
 }
-
-#[cfg(test)]
-#[path = "tests/boot_walk_tests.rs"]
-mod boot_walk_tests;

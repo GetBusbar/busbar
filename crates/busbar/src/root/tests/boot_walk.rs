@@ -8,7 +8,7 @@ use std::sync::Mutex;
 use busbar_plugin_abi::host_side::caller::BoxFut;
 use busbar_plugin_loader::instance::{BootPhase, BootPlan, OpenError};
 
-use super::boot_walk::{deployment_bytes, walk, BootRefused, BootSteps};
+use crate::root::boot::walk::{deployment_bytes, walk, BootRefused, BootSteps};
 
 const ID: [u8; 16] = *b"deployment-id-16";
 
