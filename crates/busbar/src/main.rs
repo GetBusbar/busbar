@@ -1814,7 +1814,14 @@ async fn run(
     let predecessor = spawn_predecessor_task(governance.as_ref(), control_work.shutdown_rx.clone());
     // SEALING-FIX §3.3: the audit notary, after `Ready`, on this control runtime.
     if let Some(audit) = book.as_ref().and_then(|book| book.audit.as_ref()) {
-        audit.start_notary(audit_seal_every, Arc::clone(&drain_clock));
+        // SEALING-FIX §3.9 floor (b): an Ephemeral journal's cut never passes the oldest audit
+        // line a checkpoint in custody names. Weak: governance owns the book's sinks.
+        let floor = governance.as_ref().map(|gov| {
+            let gov = Arc::downgrade(gov);
+            Arc::new(move || gov.upgrade().and_then(|gov| gov.oldest_unit_audit_seq()))
+                as root::durability::notary::FloorHints
+        });
+        audit.start_notary(audit_seal_every, Arc::clone(&drain_clock), floor);
     }
 
     let mut threads: Vec<std::thread::JoinHandle<()>> = Vec::new();

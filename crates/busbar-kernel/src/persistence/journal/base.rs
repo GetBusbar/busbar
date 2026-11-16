@@ -146,7 +146,7 @@ impl Base {
                 return Err(Error::Corrupt);
             }
             previous = decoded.node_seq;
-            keep.push(Record::new(node, decoded.node_seq, body.to_vec()));
+            keep.push(Record::new(node, decoded.node_seq, body));
         }
         if at != bytes.len() {
             return Err(Error::Corrupt);

@@ -17,7 +17,7 @@ use busbar_kernel::governance::drain::DrainClock;
 use busbar_kernel::persistence::journal::runtime::RuntimeJournal;
 use busbar_kernel_audit::{BootstrapSigner, Notary};
 
-use super::notary::{self, HeadFeed, NotaryConfig, NotaryStart, NotaryTask};
+use super::notary::{self, FloorHints, HeadFeed, NotaryConfig, NotaryStart, NotaryTask};
 use super::signer::{self, Checkpoint, Live, Seal, SignerHandle, SignerThreads};
 
 /// The handles and threads before their owners take them.
@@ -84,8 +84,14 @@ impl AuditServices {
 
     /// START THE NOTARY (once; later calls do nothing) on the current runtime, with
     /// `audit.seal_every` and SHUTDOWN-HANG's drain clock, and its 1 s watch. Returns whether this
-    /// call started it.
-    pub(crate) fn start_notary(&self, every_ms: u64, clock: Arc<DrainClock>) -> bool {
+    /// call started it. `floor` is the Ephemeral journal cut's floor (b) source (SEALING-FIX §3.9):
+    /// the oldest audit line a checkpoint in custody names.
+    pub(crate) fn start_notary(
+        &self,
+        every_ms: u64,
+        clock: Arc<DrainClock>,
+        floor: Option<FloorHints>,
+    ) -> bool {
         let _ = self.clock.set(clock);
         let Some(Unstarted { live, threads }) = self
             .unstarted
@@ -95,7 +101,7 @@ impl AuditServices {
         else {
             return false;
         };
-        let task = notary::spawn(
+        let task = notary::spawn_with_floor(
             NotaryConfig {
                 node: self.node,
                 host: super::host_identity(),
@@ -106,6 +112,7 @@ impl AuditServices {
             Arc::clone(&self.journal),
             Arc::clone(&self.feed),
             live,
+            floor,
         );
         let progress = Arc::clone(task.progress());
         let stall_after_ms = task.stall_after_ms();

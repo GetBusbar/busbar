@@ -14,7 +14,7 @@ use crate::{
         facade::CoreStore,
         journal::{
             runtime::{LiveChange, RuntimeJournal, StagedRun},
-            Selection, StoreJournal, VerifiedHead, WriteResult,
+            Error as JournalError, Pin, Selection, StoreJournal, VerifiedHead, WriteResult,
         },
         partition,
     },
@@ -538,21 +538,48 @@ impl<'a> History<'a> {
         }
         let journal = StoreJournal::new(self.store, node).map_err(unavailable)?;
         let local = self.live.is_some_and(|live| live.node() == node);
-        let mut cursor = match self.base.as_deref().filter(|_| local) {
-            Some(base) => journal.historical_replay_after(base).await,
-            None => journal.historical_replay().await,
-        }
-        .map_err(unavailable)?;
         // Keep staging private until the entire prefix and its seal are valid.
         // Taking the old cache also bounds the total retained allocation while
         // proving another node; a failed proof simply discards cached frames.
         let mut staged = std::mem::take(&mut self.records);
+        let mut base = self.base.clone().filter(|_| local);
+        let mut restarts = 0u32;
+        let proof = loop {
+            match self
+                .walk_from(&journal, base.as_deref(), local, &mut staged)
+                .await
+            {
+                // A cut moved the replay base past this walk (SEALING-FIX §3.9): drop the partial
+                // cache and walk again from the new base, as `StoreJournal::walk` does.
+                Err(JournalError::Rebased) if restarts < 3 => {
+                    restarts += 1;
+                    staged = HistoryRecords::default();
+                    base = None;
+                }
+                walked => break walked.map_err(unavailable)?,
+            }
+        };
+        let proof = Arc::new(proof);
+        self.records = staged;
+        self.proofs.insert(node, proof.clone());
+        Ok(proof)
+    }
+    /// One pass of [`Self::proof`]'s walk, continuing from `base` when given.
+    async fn walk_from(
+        &self,
+        journal: &StoreJournal<'_>,
+        base: Option<&VerifiedHead>,
+        local: bool,
+        staged: &mut HistoryRecords,
+    ) -> Result<VerifiedHead, JournalError> {
+        let mut cursor = match base {
+            Some(base) => journal.historical_replay_after(base).await,
+            None => journal.historical_replay().await,
+        }?;
         let limits = self.store.limits();
         let mut ordinal = cursor.position();
-        while let Some(record) = cursor.next().await.map_err(unavailable)? {
-            ordinal = ordinal
-                .checked_add(1)
-                .ok_or_else(|| invalid("journal ordinal overflow"))?;
+        while let Some(record) = cursor.next().await? {
+            ordinal = ordinal.checked_add(1).ok_or(JournalError::Overflow)?;
             // The live journal also carries audit, usage and checkpoint frames;
             // only its recovery frames are ever looked up, so only they are
             // kept, and the bounded cache holds the newest of them.
@@ -560,10 +587,7 @@ impl<'a> History<'a> {
                 staged.insert(ordinal, record, limits.scan_items, limits.scan_bytes);
             }
         }
-        let proof = Arc::new(cursor.finish().map_err(unavailable)?);
-        self.records = staged;
-        self.proofs.insert(node, proof.clone());
-        Ok(proof)
+        cursor.finish()
     }
     async fn candidate(&mut self, at: &Head) -> Result<Candidate, RecoveryError> {
         let proof = self.proof(at.node).await?;
@@ -737,6 +761,11 @@ pub struct StoreRecovery {
     /// the next persist beside the live owner continues from.
     verified: Mutex<Option<VerifiedJournal>>,
     retirements: crate::persistence::boot_identity::WriterRetirements,
+    /// On an Ephemeral journal, a hold on this node's first staged Reconciliation original for
+    /// the process's life (SEALING-FIX §3.9 floor (d)): ancestry walks read an operation's rows
+    /// down to revision 0, and releasing them per settled operation needs SHUTDOWN-HANG F1's
+    /// `DriverState.carried`. The floor is a minimum, so no cut passes any later one either.
+    held: std::sync::OnceLock<Pin>,
 }
 struct Driving<'a> {
     sink: &'a StoreRecovery,
@@ -770,7 +799,14 @@ impl StoreRecovery {
             state: Mutex::new(DriverState::default()),
             verified: Mutex::new(None),
             retirements: Default::default(),
+            held: std::sync::OnceLock::new(),
         })
+    }
+    /// Keep the first staged Reconciliation original pinned for the process (see `held`).
+    fn hold_first(&self, run: &StagedRun) {
+        if let Some(pin) = run.pin() {
+            let _ = self.held.set(pin);
+        }
     }
     fn drive(&self, operation: [u8; 16]) -> Result<Driving<'_>, RecoveryError> {
         if !self
@@ -1161,6 +1197,7 @@ impl StoreRecovery {
                 .stage_run(&[Entry::new(RecordClass::Reconciliation, body)
                     .at(crate::store::now_ms() / 1000, 0)])
                 .map_err(unavailable)?;
+            self.hold_first(&run);
             let record = run.records()[0].clone();
             let pending = Pending {
                 event: event.clone(),
@@ -1456,6 +1493,7 @@ impl StoreRecovery {
                     .journal
                     .stage_run(&[Entry::new(RecordClass::Reconciliation, encoded).at(staged_at, 0)])
                     .map_err(unavailable)?;
+                self.hold_first(&run);
                 let record = run.records()[0].clone();
                 previous_head = Head {
                     version: 1,

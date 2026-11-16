@@ -20,7 +20,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use busbar_kernel::persistence::journal::head_cell::{Head, HeadCell};
-use busbar_kernel::persistence::journal::runtime::{RuntimeError, RuntimeJournal, StagedRun};
+use busbar_kernel::persistence::journal::runtime::{
+    CutProgress, JournalCut, RuntimeError, RuntimeJournal, StagedRun,
+};
 use busbar_kernel_audit::{stamp_body, Fingerprint, Stamp, StampKind};
 use busbar_kernel_wal::{Entry, RecordClass};
 use tokio::sync::{oneshot, watch, Notify};
@@ -34,6 +36,45 @@ const MAX_BACKOFF: Duration = Duration::from_secs(1);
 
 /// Consecutive sign failures before `AUDIT_STAMP_FAILED{reason: signer}`.
 const SIGN_FAILURES_ALERT: u32 = 3;
+
+/// The wait after an unresolved journal cut while it is re-driven at stop (§3.9 "At shutdown").
+const CUT_SETTLE_RETRY: Duration = Duration::from_millis(50);
+
+/// THE CUT'S FLOOR (b) (SEALING-FIX §3.9): the WAL `node_seq` of the oldest audit line a pending,
+/// recovered or held checkpoint still names, read once per cut trigger off the request path.
+pub(crate) type FloorHints = Arc<dyn Fn() -> Option<u64> + Send + Sync>;
+
+/// How the Ephemeral journal cut ended at stop (`journal_cut=` on the shutdown progress line).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CutEnd {
+    /// The journal is never cut (Local or Quorum), or cuts were never started.
+    None,
+    /// No cut attempt is left undecided.
+    Settled,
+    /// A cut attempt is still undecided; its store attempt stays retained (exit 75 through the
+    /// retirement's `PendingWork`).
+    Retained,
+}
+
+impl CutEnd {
+    /// The progress line's value, `None` for a journal that is never cut.
+    #[must_use]
+    pub(crate) fn label(self) -> Option<&'static str> {
+        match self {
+            Self::None => None,
+            Self::Settled => Some("settled"),
+            Self::Retained => Some("retained"),
+        }
+    }
+}
+
+/// Where the notary's one journal cut is: idle in its hands, or running on its own task (a cut
+/// awaits the store, and the notary never blocks on one).
+enum CutSeat {
+    None,
+    Idle(JournalCut),
+    Running(JoinHandle<(JournalCut, CutProgress)>),
+}
 
 /// THE HEAD FEED: the cell the request path publishes to, and the wake for a parked notary.
 #[derive(Debug, Default)]
@@ -101,6 +142,8 @@ pub(crate) struct NotaryProgress {
     pub(crate) oldest_unstamped_ms: AtomicU64,
     /// Consecutive sign failures.
     pub(crate) sign_failures: AtomicU64,
+    /// Whether a journal cut attempt is undecided right now.
+    pub(crate) journal_cut_retained: AtomicBool,
 }
 
 /// What the task hands back when it ends: what the shutdown's final page needs.
@@ -114,6 +157,8 @@ pub(crate) struct NotaryEnd {
     pub(crate) live: SignerHandle<Live>,
     /// Why stamping stopped before `stop()`, if it did.
     pub(crate) halted: Option<String>,
+    /// How the Ephemeral journal cut ended.
+    pub(crate) journal_cut: CutEnd,
 }
 
 /// THE RUNNING NOTARY. The root keeps it to stop it at shutdown and to check it from the
@@ -206,9 +251,16 @@ struct Notary {
     parked: bool,
     halted: Option<String>,
     stopping: bool,
+    /// The journal's one cut, on an Ephemeral journal (§3.9).
+    cut: CutSeat,
+    /// A stamp was confirmed since the last cut started: the cut's trigger.
+    cut_due: bool,
+    floor_hints: Option<FloorHints>,
 }
 
-/// START THE NOTARY on the current runtime (the control runtime, from boot).
+/// START THE NOTARY on the current runtime with no floor (b) source (the tests; boot uses
+/// [`spawn_with_floor`]).
+#[cfg(test)]
 pub(crate) fn spawn(
     cfg: NotaryConfig,
     start: NotaryStart,
@@ -216,6 +268,21 @@ pub(crate) fn spawn(
     feed: Arc<HeadFeed>,
     live: SignerHandle<Live>,
 ) -> NotaryTask {
+    spawn_with_floor(cfg, start, journal, feed, live, None)
+}
+
+/// START THE NOTARY on the current runtime (the control runtime, from boot), with the cut's floor
+/// (b) source. On an Ephemeral journal the notary takes the
+/// journal's one cut and calls it after each confirmed stamp (SEALING-FIX §3.9).
+pub(crate) fn spawn_with_floor(
+    cfg: NotaryConfig,
+    start: NotaryStart,
+    journal: Arc<RuntimeJournal>,
+    feed: Arc<HeadFeed>,
+    live: SignerHandle<Live>,
+    floor_hints: Option<FloorHints>,
+) -> NotaryTask {
+    let cut = journal.cutter().map_or(CutSeat::None, CutSeat::Idle);
     let every_ms = cfg.every_ms.clamp(1, 1_000);
     let cfg = NotaryConfig { every_ms, ..cfg };
     let progress = Arc::new(NotaryProgress::default());
@@ -251,6 +318,9 @@ pub(crate) fn spawn(
         parked: false,
         halted: None,
         stopping: false,
+        cut,
+        cut_due: false,
+        floor_hints,
     };
     let exited = Arc::new(AtomicBool::new(false));
     let flag = ExitFlag(Arc::clone(&exited));
@@ -323,11 +393,121 @@ impl Notary {
         if self.parked {
             self.feed.cell.unpark();
         }
+        let journal_cut = self.settle_cut().await;
         NotaryEnd {
             stamped_through: self.stamped_through,
             committed_through: self.committed_through,
             live: self.live,
             halted: self.halted,
+            journal_cut,
+        }
+    }
+
+    /// AT STOP (§3.6.3 step 3, §3.9 "At shutdown"): start no new cut; await a running one, then
+    /// re-drive a retained attempt until it is decided, waiting 50 ms after each unresolved try.
+    /// The drain bounds this (`Cut::Seal`); detached at C3, the store attempt stays retained.
+    async fn settle_cut(&mut self) -> CutEnd {
+        let mut cut = match std::mem::replace(&mut self.cut, CutSeat::None) {
+            CutSeat::None => return CutEnd::None,
+            CutSeat::Idle(cut) => cut,
+            CutSeat::Running(running) => match running.await {
+                Ok((cut, progress)) => {
+                    self.on_cut(&cut, progress);
+                    cut
+                }
+                // A panicked cut task left its store attempt as it was.
+                Err(_) => return CutEnd::Retained,
+            },
+        };
+        while cut.retained() {
+            self.progress
+                .journal_cut_retained
+                .store(true, Ordering::Relaxed);
+            match cut.settle().await {
+                CutProgress::Retained => tokio::time::sleep(CUT_SETTLE_RETRY).await,
+                progress => self.on_cut(&cut, progress),
+            }
+        }
+        self.progress
+            .journal_cut_retained
+            .store(false, Ordering::Relaxed);
+        CutEnd::Settled
+    }
+
+    /// The cut step of a tick: collect a finished cut, then start the next one after a confirmed
+    /// stamp (§3.9: "after step 4, one cut at a time"). Never awaits the store: the cut runs on its
+    /// own task and is collected at a later tick.
+    async fn step_cut(&mut self) {
+        let cut = match std::mem::replace(&mut self.cut, CutSeat::None) {
+            CutSeat::None => {
+                self.cut_due = false;
+                return;
+            }
+            CutSeat::Running(running) if !running.is_finished() => {
+                self.cut = CutSeat::Running(running);
+                return;
+            }
+            CutSeat::Running(running) => match running.await {
+                Ok((cut, progress)) => {
+                    self.on_cut(&cut, progress);
+                    cut
+                }
+                Err(join) => {
+                    self.cut_due = false;
+                    busbar_kernel::diag_error!(
+                        busbar_kernel::diagnostics::AUDIT_STAMP_FAILED,
+                        node = self.cfg.node,
+                        reason = "truncate",
+                        cause = %join,
+                        "the journal cut task ended unexpectedly; cuts stop for this process"
+                    );
+                    return;
+                }
+            },
+            CutSeat::Idle(cut) => cut,
+        };
+        if !self.cut_due || self.stopping || self.halted.is_some() {
+            self.cut = CutSeat::Idle(cut);
+            return;
+        }
+        let mut cut = cut;
+        self.cut_due = false;
+        let floor = self.cut_floor();
+        self.cut = CutSeat::Running(tokio::spawn(async move {
+            let progress = cut.truncate_through(floor).await;
+            (cut, progress)
+        }));
+    }
+
+    /// The notary's part of the floor, in journal ordinals (§3.9): (a) the WAL position of the
+    /// newest durable stamp's `to` line (never the chain seq, never the stamp row's own seq), and
+    /// (b) the row before the oldest audit line a checkpoint in custody names. The journal adds
+    /// (c) the retained tail and (d) its pins.
+    fn cut_floor(&self) -> u64 {
+        if self.stamped_node_seq == 0 {
+            return 0;
+        }
+        let stamped = self.journal.ordinal_of(self.stamped_node_seq);
+        let held = self
+            .floor_hints
+            .as_ref()
+            .and_then(|hints| hints())
+            .map_or(u64::MAX, |seq| {
+                self.journal.ordinal_of(seq).saturating_sub(1)
+            });
+        stamped.min(held)
+    }
+
+    fn on_cut(&self, cut: &JournalCut, progress: CutProgress) {
+        self.progress
+            .journal_cut_retained
+            .store(cut.retained(), Ordering::Relaxed);
+        if let CutProgress::Cut { base } = progress {
+            tracing::debug!(
+                node = self.cfg.node,
+                base,
+                "the journal was cut below its base"
+            );
         }
     }
 
@@ -349,6 +529,7 @@ impl Notary {
         if self.halted.is_none() && self.step_inflight(now).await {
             self.maybe_sign(now, &head);
         }
+        self.step_cut().await;
         self.publish_progress();
     }
 
@@ -361,6 +542,7 @@ impl Notary {
             Ok(true) => {
                 self.stamped_through = inflight.page.to;
                 self.stamped_node_seq = inflight.page.to_node_seq;
+                self.cut_due = !matches!(self.cut, CutSeat::None);
                 if self.store_alerted {
                     self.store_alerted = false;
                     tracing::info!(
@@ -436,7 +618,9 @@ impl Notary {
             return;
         }
         if head.seq <= self.committed_through {
-            if self.committed_through == self.stamped_through {
+            // A due or running cut keeps the ticks coming until it is collected (§3.9).
+            let cutting = self.cut_due || matches!(self.cut, CutSeat::Running(_));
+            if self.committed_through == self.stamped_through && !cutting {
                 self.parked = self.feed.cell.park(self.seen_version);
             }
             return;

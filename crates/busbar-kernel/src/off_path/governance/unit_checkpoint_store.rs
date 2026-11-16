@@ -10,7 +10,7 @@ use crate::persistence::{
     facade::CoreStore,
     journal::{
         runtime::{Carried, RuntimeError, RuntimeJournal, StagedRun},
-        RowChange, StoreJournal, VerifiedHead, WriteResult,
+        Pin, RowChange, StoreJournal, VerifiedHead, WriteResult,
     },
     partition,
 };
@@ -290,8 +290,10 @@ pub struct StoreUnitCheckpoints {
     driving: tokio::sync::Mutex<()>,
     /// The selected original of each checkpoint in custody: inserted when P's append is
     /// confirmed (or by the boot replay), replaced by a later revision, popped when R's delete
-    /// applies (SHUTDOWN-HANG F1). About 56 B per checkpoint; RAM only.
-    carried: Mutex<HashMap<[u8; 16], Carried>>,
+    /// applies (SHUTDOWN-HANG F1). About 56 B per checkpoint; RAM only. On an Ephemeral journal
+    /// each entry also pins its original, so no cut deletes it before R's
+    /// `record(seq, carried)` reads it (SEALING-FIX §3.9 floor (d)).
+    carried: Mutex<HashMap<[u8; 16], (Carried, Option<Pin>)>>,
 }
 impl StoreUnitCheckpoints {
     pub fn new(evidence: Arc<UnitCheckpointEvidence>, audit: Arc<dyn UnitCheckpointAudit>) -> Self {
@@ -431,13 +433,16 @@ impl StoreUnitCheckpoints {
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .get(id)
-            .copied()
+            .map(|(carried, _)| *carried)
     }
+    /// Carry (or drop) checkpoint `id`'s original. Called while the original's staged run, or
+    /// the boot replay before any cut, still covers it, so its pin is taken in time.
     fn carry(&self, id: [u8; 16], carried: Option<Carried>) {
         let mut map = self.carried.lock().unwrap_or_else(|p| p.into_inner());
         match carried {
             Some(carried) => {
-                map.insert(id, carried);
+                let pin = self.evidence.journal.pin(carried.seq);
+                map.insert(id, (carried, pin));
             }
             None => {
                 map.remove(&id);
