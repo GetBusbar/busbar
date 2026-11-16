@@ -4,6 +4,7 @@
 //! Tests for `crates/busbar-contract/src/records.rs` — the money-path durable record shapes.
 
 use super::*;
+use crate::json::JsonValueTrait as _;
 
 /// A name-keyed reserved-four unit map (test helper) — the M1b replacement for the old
 fn units<T: Copy + Default + PartialEq>(
@@ -127,7 +128,7 @@ fn scope_allowed_is_kind_specific() {
 fn allowed_pools_wire_shape_is_byte_identical_to_pre_generalization() {
     let mut k = sample_key();
     k.allowed_scopes = Some(vec![ScopeRef::pool("fast"), ScopeRef::pool("slow")]);
-    let json = serde_json::to_string(&k).unwrap();
+    let json = crate::json::to_string(&k).unwrap();
     assert!(
         json.contains(r#""allowed_pools":["fast","slow"]"#),
         "wire field must be the bare-string array under the `allowed_pools` name, no `kind` \
@@ -139,18 +140,18 @@ fn allowed_pools_wire_shape_is_byte_identical_to_pre_generalization() {
     );
 
     let legacy_wire = r#"{"id":"vk_1","generation_hash":"h","name":"n","allowed_pools":["fast","slow"],"enabled":true,"created_at":1}"#;
-    let back: VirtualKey = serde_json::from_str(legacy_wire).unwrap();
+    let back: VirtualKey = crate::json::parse_str(legacy_wire).unwrap();
     assert_eq!(
         back.allowed_scopes,
         Some(vec![ScopeRef::pool("fast"), ScopeRef::pool("slow")])
     );
 
-    let round: VirtualKey = serde_json::from_str(&json).unwrap();
+    let round: VirtualKey = crate::json::parse_str(&json).unwrap();
     assert_eq!(round.allowed_scopes, k.allowed_scopes);
 
     let mut none_grant = sample_key();
     none_grant.allowed_scopes = None;
-    let json_none = serde_json::to_string(&none_grant).unwrap();
+    let json_none = crate::json::to_string(&none_grant).unwrap();
     assert!(
         json_none.contains(r#""allowed_pools":null"#),
         "omitted grant serializes as bare `null`, same as before: {json_none}"
@@ -158,7 +159,7 @@ fn allowed_pools_wire_shape_is_byte_identical_to_pre_generalization() {
 
     let mut empty_grant = sample_key();
     empty_grant.allowed_scopes = Some(Vec::new());
-    let json_empty = serde_json::to_string(&empty_grant).unwrap();
+    let json_empty = crate::json::to_string(&empty_grant).unwrap();
     assert!(
         json_empty.contains(r#""allowed_pools":[]"#),
         "explicit-empty grant serializes as a bare `[]`, same as before: {json_empty}"
@@ -169,7 +170,7 @@ fn allowed_pools_wire_shape_is_byte_identical_to_pre_generalization() {
 #[test]
 fn attribution_fields_round_trip_and_are_backward_compatible() {
     let bare = sample_key();
-    let json_bare = serde_json::to_string(&bare).unwrap();
+    let json_bare = crate::json::to_string(&bare).unwrap();
     assert!(
         !json_bare.contains("idp_subject")
             && !json_bare.contains("binding_mode")
@@ -180,7 +181,8 @@ fn attribution_fields_round_trip_and_are_backward_compatible() {
     let mut personal = sample_key();
     personal.idp_subject = Some("okta|matthew".to_string());
     personal.binding_mode = Some("user-bound".to_string());
-    let rt: VirtualKey = serde_json::from_str(&serde_json::to_string(&personal).unwrap()).unwrap();
+    let rt: VirtualKey =
+        crate::json::parse_str(&crate::json::to_string(&personal).unwrap()).unwrap();
     assert_eq!(rt.idp_subject.as_deref(), Some("okta|matthew"));
     assert_eq!(rt.binding_mode.as_deref(), Some("user-bound"));
     assert_eq!(rt.minted_by, None);
@@ -188,13 +190,13 @@ fn attribution_fields_round_trip_and_are_backward_compatible() {
     let mut app = sample_key();
     app.binding_mode = Some("time-bound".to_string());
     app.minted_by = Some("vk_admin".to_string());
-    let rt: VirtualKey = serde_json::from_str(&serde_json::to_string(&app).unwrap()).unwrap();
+    let rt: VirtualKey = crate::json::parse_str(&crate::json::to_string(&app).unwrap()).unwrap();
     assert_eq!(rt.minted_by.as_deref(), Some("vk_admin"));
     assert_eq!(rt.binding_mode.as_deref(), Some("time-bound"));
     assert_eq!(rt.idp_subject, None);
 
     let legacy = r#"{"id":"vk_1","generation_hash":"h","name":"n","allowed_pools":null,"enabled":true,"created_at":1}"#;
-    let back: VirtualKey = serde_json::from_str(legacy).unwrap();
+    let back: VirtualKey = crate::json::parse_str(legacy).unwrap();
     assert_eq!(back.idp_subject, None);
     assert_eq!(back.binding_mode, None);
     assert_eq!(back.minted_by, None);
@@ -215,8 +217,8 @@ fn scope_kinds_survive_store_round_trip() {
             value: "filesystem_read_file".into(),
         },
     ]);
-    let json = serde_json::to_string(&k).expect("serialize");
-    let rt: VirtualKey = serde_json::from_str(&json).expect("deserialize");
+    let json = crate::json::to_string(&k).expect("serialize");
+    let rt: VirtualKey = crate::json::parse_str(&json).expect("deserialize");
     assert_eq!(
         rt.allowed_scopes, k.allowed_scopes,
         "scope kinds must survive a store round-trip intact: {json}"
@@ -238,35 +240,35 @@ fn unregistered_scope_kind_round_trips_verbatim_under_its_own_field() {
         kind: kind.to_string(),
         value: "planner".to_string(),
     }]);
-    let v = serde_json::to_value(&k).expect("an unregistered kind must serialize");
+    let v = crate::json::to_value(&k).expect("an unregistered kind must serialize");
     assert_eq!(
         v["allowed_sdk_scopekinds_never_registereds"],
-        serde_json::json!(["planner"]),
+        crate::json::json!(["planner"]),
         "{v}"
     );
     assert_eq!(
         v["allowed_pools"],
-        serde_json::json!([]),
+        crate::json::json!([]),
         "never remapped into allowed_pools: {v}"
     );
-    let rt: VirtualKey = serde_json::from_value(v.clone()).unwrap();
+    let rt: VirtualKey = crate::json::from_value(&v).unwrap();
     assert_eq!(rt.allowed_scopes, k.allowed_scopes, "{v}");
     assert!(!rt.scope_allowed("pool", "planner"));
     assert!(rt.scope_allowed(kind, "planner"));
 
-    assert_eq!(serde_json::to_value(&rt).unwrap(), v);
+    assert_eq!(crate::json::to_value(&rt).unwrap(), v);
 }
 
 /// The GRID wire fields are ADDITIVE: absent from a pool-only key's wire shape (so the
 #[test]
 fn grid_scope_wire_fields_are_additive() {
     let pool_only = sample_key();
-    let v = serde_json::to_value(&pool_only).unwrap();
+    let v = crate::json::to_value(&pool_only).unwrap();
     assert!(v.get("allowed_grid_servers").is_none(), "{v}");
     assert!(v.get("allowed_grid_tools").is_none(), "{v}");
 
     let wire = r#"{"id":"vk_9","generation_hash":"h","name":"n","allowed_pools":[],"allowed_grid_servers":["filesystem"],"allowed_grid_tools":["filesystem_read_file"],"enabled":true,"created_at":1}"#;
-    let k: VirtualKey = serde_json::from_str(wire).unwrap();
+    let k: VirtualKey = crate::json::parse_str(wire).unwrap();
     assert_eq!(
         k.allowed_scopes,
         Some(vec![
@@ -285,8 +287,8 @@ fn grid_scope_wire_fields_are_additive() {
         "empty pool set stays empty"
     );
 
-    let json = serde_json::to_string(&k).unwrap();
-    let rt: VirtualKey = serde_json::from_str(&json).unwrap();
+    let json = crate::json::to_string(&k).unwrap();
+    let rt: VirtualKey = crate::json::parse_str(&json).unwrap();
     assert_eq!(rt.allowed_scopes, k.allowed_scopes);
     assert!(!rt.scope_allowed("pool", "anything"));
 }
@@ -316,21 +318,21 @@ fn debug_redacts_secret_equivalents() {
 #[test]
 fn serialize_roundtrip_is_faithful_for_persistence() {
     let key = sample_key();
-    let json = serde_json::to_string(&key).unwrap();
+    let json = crate::json::to_string(&key).unwrap();
     assert!(
         json.contains("deadbeefdeadbeef"),
         "persistence must keep generation_hash"
     );
-    let back: VirtualKey = serde_json::from_str(&json).unwrap();
+    let back: VirtualKey = crate::json::parse_str(&json).unwrap();
     assert_eq!(key, back);
 
     let cred = sample_credential();
-    let json = serde_json::to_string(&cred).unwrap();
+    let json = crate::json::to_string(&cred).unwrap();
     assert!(
         json.contains("s3cr3t-signing-key"),
         "persistence must keep the secret material"
     );
-    let back: CredentialSecret = serde_json::from_str(&json).unwrap();
+    let back: CredentialSecret = crate::json::parse_str(&json).unwrap();
     assert_eq!(cred, back);
 }
 
@@ -338,7 +340,7 @@ fn serialize_roundtrip_is_faithful_for_persistence() {
 #[test]
 fn virtual_key_minimal_json_defaults_optionals() {
     let minimal = r#"{"id":"vk_1","generation_hash":"h","name":"n","enabled":true,"created_at":1}"#;
-    let k: VirtualKey = serde_json::from_str(minimal).unwrap();
+    let k: VirtualKey = crate::json::parse_str(minimal).unwrap();
     assert_eq!(k.allowed_scopes, None, "absent grant = all pools");
     assert_eq!(k.group, None);
     assert!(k.labels.is_empty());
@@ -521,8 +523,11 @@ fn plane_record_envelope_round_trips_through_the_store_seam_encoding() {
 
         body: br#"{"anything":"the plane put here","seq":7}"#.to_vec(),
     };
-    let json = serde_json::to_string(&record).unwrap();
-    assert_eq!(serde_json::from_str::<PlaneRecord>(&json).unwrap(), record);
+    let json = crate::json::to_string(&record).unwrap();
+    assert_eq!(
+        crate::json::parse_str::<PlaneRecord>(&json).unwrap(),
+        record
+    );
 
     for field in ["kind", "id", "parent", "seq", "ts", "disposition", "body"] {
         assert!(
@@ -540,10 +545,10 @@ fn model_tokens_usage_units_is_the_sole_representation() {
         model: "gpt-x".into(),
         usage_units: units(10, 20, 0, 0),
     };
-    let json = serde_json::to_string(&reserved).unwrap();
+    let json = crate::json::to_string(&reserved).unwrap();
     assert!(json.contains("usage_units") && json.contains("\"input\":10"));
 
-    let rt: ModelTokens = serde_json::from_str(&json).unwrap();
+    let rt: ModelTokens = crate::json::parse_str(&json).unwrap();
     assert_eq!(rt, reserved);
 
     let empty = ModelTokens {
@@ -551,12 +556,13 @@ fn model_tokens_usage_units_is_the_sole_representation() {
         model: "z".into(),
         usage_units: std::collections::BTreeMap::new(),
     };
-    let ej = serde_json::to_string(&empty).unwrap();
+    let ej = crate::json::to_string(&empty).unwrap();
     assert!(!ej.contains("usage_units"), "empty map is skipped: {ej}");
 
     let mut mixed = reserved.clone();
     mixed.usage_units.insert("classifications".into(), 3);
-    let rt2: ModelTokens = serde_json::from_str(&serde_json::to_string(&mixed).unwrap()).unwrap();
+    let rt2: ModelTokens =
+        crate::json::parse_str(&crate::json::to_string(&mixed).unwrap()).unwrap();
     assert_eq!(rt2, mixed);
 }
 
@@ -609,7 +615,7 @@ fn retention_codes_round_trip_and_age_is_the_default() {
 #[test]
 fn key_row_new_metadata_is_omitted_while_default_and_round_trips() {
     let plain = sample_key();
-    let wire = serde_json::to_value(&plain).unwrap();
+    let wire = crate::json::to_value(&plain).unwrap();
     for field in ["rotated_at", "rotation_count", "migrated_from"] {
         assert!(
             wire.get(field).is_none(),
@@ -620,6 +626,7 @@ fn key_row_new_metadata_is_omitted_while_default_and_round_trips() {
     rotated.rotated_at = Some(1_700_000_000);
     rotated.rotation_count = 3;
     rotated.migrated_from = Some("1.5.5".into());
-    let back: VirtualKey = serde_json::from_value(serde_json::to_value(&rotated).unwrap()).unwrap();
+    let back: VirtualKey =
+        crate::json::from_value(&crate::json::to_value(&rotated).unwrap()).unwrap();
     assert_eq!(back, rotated);
 }
