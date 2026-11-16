@@ -277,7 +277,7 @@ fn unrelated_tickets_cannot_evict_owned_texts_and_one_reply_keeps_all_of_its_tex
     let _ = Out::kept(&mut first, &kept, &reporting, holders())
         .fail(Refusal::failed("first".to_owned()));
     kept.keep(first_key, reporting.take().expect("first reply"));
-    for i in 0..=KEPT_RING {
+    for i in 0..=4096 {
         let reporting = std::cell::Cell::new(kept.begin(other_key));
         let mut o: CancelOut = zeroed();
         let _ =

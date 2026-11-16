@@ -60,7 +60,7 @@ Both files support `${VAR}` environment interpolation before YAML is parsed. A m
 
 ## Environment variables
 
-The environment variables Busbar reads by design (excluding test-only `BUSBAR_T_*` / `BUSBAR_SENTINEL_*` names, and the deprecated operational names listed below the table):
+The environment variables Busbar reads by design (excluding test-only `BUSBAR_T_*` / `BUSBAR_SENTINEL_*` names):
 
 | Variable | Where read | Purpose / default |
 |---|---|---|
@@ -2011,8 +2011,7 @@ ingress's budget. IPv4-mapped IPv6 peers are their IPv4 address. Both are boot-t
 `worker_threads`, `upstream_http1_only`, and `upstream_h2_prior_knowledge` are **boot-time** knobs (read
 once at process/client construction), so unlike `rate_sweep_interval` / `usage_flush_interval_ms` they are
 not live-mutable via `PUT /config/settings`. A change takes effect on the next restart. The
-`BUSBAR_*` env vars that used to back these knobs are deprecated but still honoured (each warns with
-BUSBAR-3021 at boot); `TOKIO_WORKER_THREADS` remains, undeprecated, as a fallback for `worker_threads`.
+`BUSBAR_*` env vars that used to back these knobs are retired in 1.6.0 and never read at serve time (the first 1.6.0 boot on a 1.5.5 config copies them into config); `TOKIO_WORKER_THREADS` remains a fallback for `worker_threads`.
 
 `response_headers` is likewise **restart-to-apply**: `server_timing` is baked into router middleware
 composition at boot and `route_policy` seeds a process-wide flag, so a live `PUT` stores the new value
