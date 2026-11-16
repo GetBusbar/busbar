@@ -980,7 +980,7 @@ impl<N: Needs> Registry<N> {
                 error: None,
             })?;
         let _unbound = chains::Unbind::new(Arc::clone(&self.binder), id);
-        let config: serde_json::Value = serde_json::from_slice(&bound).unwrap_or_default();
+        let config: json::Value = json::parse_value(&bound).unwrap_or_default();
         let mut handles = Vec::new();
         secret_handles(&config, &mut handles);
         let mut out = Vec::new();
@@ -1946,16 +1946,21 @@ fn not_this_kind() -> OpenError {
 }
 
 /// Every `{"$secret": n}` handle in a bound config.
-fn secret_handles(v: &serde_json::Value, out: &mut Vec<u32>) {
-    match v {
-        serde_json::Value::Object(map) => {
-            if let Some(n) = map.get("$secret").and_then(serde_json::Value::as_u64) {
+fn secret_handles(v: &json::Value, out: &mut Vec<u32>) {
+    match v.get_type() {
+        json::JsonType::Object => {
+            let Some(map) = v.as_object() else { return };
+            if let Some(n) = map.get(&"$secret").and_then(json::Value::as_u64) {
                 out.extend(u32::try_from(n));
             } else {
-                map.values().for_each(|v| secret_handles(v, out));
+                map.iter().for_each(|(_, v)| secret_handles(v, out));
             }
         }
-        serde_json::Value::Array(items) => items.iter().for_each(|v| secret_handles(v, out)),
+        json::JsonType::Array => {
+            if let Some(items) = v.as_array() {
+                items.iter().for_each(|v| secret_handles(v, out));
+            }
+        }
         _ => {}
     }
 }

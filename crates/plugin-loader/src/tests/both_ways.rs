@@ -106,5 +106,5 @@ pub(crate) fn row(registry: &PluginRegistry, name: &str) -> String {
         signature: String::new(),
         ..p.manifest.clone()
     };
-    serde_json::json!({ "manifest": stated, "alias_resolves_to": by_alias }).to_string()
+    busbar_contract::json::json!({ "manifest": stated, "alias_resolves_to": by_alias }).to_string()
 }
