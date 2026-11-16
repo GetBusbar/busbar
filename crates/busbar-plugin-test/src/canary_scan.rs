@@ -20,11 +20,19 @@
 //! * a **positive control**, a block shaped like the canary payload, dropped WITHOUT wiping, must be
 //!   found (the scan sees freed memory).
 //!
+//! The scan allocates nothing. jemalloc hands the most recently freed block of a size class to the
+//! next allocation of that class, so any allocation between a drop and the read (the scan's own
+//! buffers growing, a set node) can land on a freed block and overwrite the very bytes the scan is
+//! about to look for. So [`WipeProof::new`] opens both files and makes every buffer the scan uses,
+//! and plants the control in a block it holds, unwiped; the scan frees that block just before it
+//! reads, so nothing the code under test allocates in between can reuse it, and nothing reuses it
+//! (or a freed canary block) before the read.
+//!
 //! The canary is 32 random bytes placed at offset 32 of a payload far below jemalloc's small-size
 //! limit; a match is any 16-byte window of it, so a partly overwritten secret still counts. The
-//! patterns are held XOR-masked and compared byte by byte, so the scan never builds the plaintext,
-//! and hits inside the scan's own read buffer are not counted. Staging buffers are [`Zeroizing`]
-//! and are dropped before [`WipeProof::assert_absent`].
+//! patterns are held XOR-masked and compared masked, so the scan never builds the plaintext, and
+//! hits inside the scan's own read buffer are not counted. Staging buffers are [`Zeroizing`] and
+//! are dropped before [`WipeProof::assert_absent`].
 //!
 //! Linux only (A23): elsewhere [`WipeProof::assert_absent`] checks nothing and the wipe counters and
 //! mutants carry the proof.
@@ -75,17 +83,38 @@ impl Pattern {
         Self { masked, mask }
     }
 
+    /// One plaintext byte, unmasked on the way out so no whole copy is made.
     #[inline]
     fn byte(&self, at: usize) -> u8 {
-        self.masked[at] ^ self.mask[at]
+        std::hint::black_box(self.masked[at]) ^ std::hint::black_box(self.mask[at])
     }
 
-    /// A payload: filler, the canary at [`OFFSET`], filler.
-    fn payload(&self) -> Zeroizing<Vec<u8>> {
-        let mut out = Zeroizing::new(vec![FILLER; PAYLOAD_LEN]);
+    /// Whether `seen` is plaintext byte `at`, compared masked.
+    #[inline]
+    #[cfg(target_os = "linux")]
+    fn is(&self, at: usize, seen: u8) -> bool {
+        seen ^ self.mask[at] == self.masked[at]
+    }
+
+    /// Filler, the canary at [`OFFSET`], filler: written into `out` (a [`PAYLOAD_LEN`] block).
+    fn fill(&self, out: &mut [u8]) {
+        out.fill(FILLER);
         for (at, slot) in out[OFFSET..OFFSET + CANARY_LEN].iter_mut().enumerate() {
             *slot = self.byte(at);
         }
+    }
+
+    /// A payload in a [`Zeroizing`] staging buffer.
+    fn payload(&self) -> Zeroizing<Vec<u8>> {
+        let mut out = Zeroizing::new(vec![0_u8; PAYLOAD_LEN]);
+        self.fill(&mut out);
+        out
+    }
+
+    /// A payload in a plain block, made in place (no staging copy that could take a freed block).
+    fn block(&self) -> Vec<u8> {
+        let mut out = vec![0_u8; PAYLOAD_LEN];
+        self.fill(&mut out);
         out
     }
 }
@@ -108,13 +137,18 @@ fn fill_random(out: &mut [u8]) {
     }
 }
 
-/// One wipe proof: a canary, a live sentinel and a positive control (already planted and dropped).
+/// One wipe proof: a canary, a live sentinel, a positive control and the scanner that looks for them.
 pub struct WipeProof {
     canary: Pattern,
     sentinel: Pattern,
     control: Pattern,
-    /// The live sentinel block; it stays alive until the scan.
-    _live: Vec<u8>,
+    /// The live sentinel block; it stays alive until the scan has read memory.
+    live: Vec<u8>,
+    /// The positive control's block, unwiped; the scan frees it just before it reads.
+    unwiped: Vec<u8>,
+    /// The files and buffers the scan uses, made before anything is planted.
+    #[cfg(target_os = "linux")]
+    scanner: std::io::Result<linux::Scanner>,
 }
 
 impl std::fmt::Debug for WipeProof {
@@ -130,21 +164,26 @@ impl Default for WipeProof {
 }
 
 impl WipeProof {
-    /// Draw a canary, plant the live sentinel and plant then drop (without wiping) the control.
+    /// Draw a canary, make the scan's files and buffers, plant the live sentinel and plant the
+    /// (unwiped) control.
     #[must_use]
     pub fn new() -> Self {
         let canary = Pattern::random();
         let sentinel = Pattern::random();
         let control = Pattern::random();
-        let live = sentinel.payload().to_vec();
-        // The control is a plain `Vec`, dropped as is: its bytes stay in the freed block.
-        let unwiped = control.payload().to_vec();
-        drop(unwiped);
+        // First, so the scan never allocates after a block it must read is freed.
+        #[cfg(target_os = "linux")]
+        let scanner = linux::Scanner::open();
+        let live = sentinel.block();
+        let unwiped = control.block();
         Self {
             canary,
             sentinel,
             control,
-            _live: live,
+            live,
+            unwiped,
+            #[cfg(target_os = "linux")]
+            scanner,
         }
     }
 
@@ -176,10 +215,7 @@ impl WipeProof {
     pub fn assert_absent(self, what: &str) {
         #[cfg(target_os = "linux")]
         {
-            let found = match linux::scan(&[&self.sentinel, &self.control, &self.canary]) {
-                Ok(found) => found,
-                Err(error) => panic!("{what}: the memory scan could not run: {error}"),
-            };
+            let found = self.scan(what);
             assert!(
                 found[0] > 0,
                 "{what}: the live sentinel was not found, so /proc/self/mem is not readable here \
@@ -199,7 +235,14 @@ impl WipeProof {
         }
         #[cfg(not(target_os = "linux"))]
         {
-            let _ = (&self.sentinel, &self.control, &self.canary, what);
+            let _ = (
+                &self.sentinel,
+                &self.control,
+                &self.canary,
+                &self.live,
+                &self.unwiped,
+                what,
+            );
         }
     }
 
@@ -211,91 +254,180 @@ impl WipeProof {
     #[cfg(target_os = "linux")]
     #[must_use]
     pub fn canary_copies(self, what: &str) -> usize {
-        let found = linux::scan(&[&self.sentinel, &self.control, &self.canary])
-            .unwrap_or_else(|error| panic!("{what}: the memory scan could not run: {error}"));
+        let found = self.scan(what);
         assert!(found[0] > 0, "{what}: the live sentinel was not found");
         assert!(found[1] > 0, "{what}: the positive control was not found");
         found[2]
+    }
+
+    /// Free the control unwiped, then scan for the sentinel, the control and the canary, with no
+    /// allocation between the free and the end of the read.
+    #[cfg(target_os = "linux")]
+    fn scan(self, what: &str) -> [usize; 3] {
+        let Self {
+            canary,
+            sentinel,
+            control,
+            live,
+            unwiped,
+            scanner,
+        } = self;
+        let mut scanner = scanner
+            .unwrap_or_else(|error| panic!("{what}: the memory scan could not run: {error}"));
+        // `black_box`: the block's stores and its free are real, not optimised away.
+        drop(std::hint::black_box(unwiped));
+        let found = scanner.scan([&sentinel, &control, &canary]);
+        drop(std::hint::black_box(live));
+        found.unwrap_or_else(|error| panic!("{what}: the memory scan could not run: {error}"))
     }
 }
 
 #[cfg(target_os = "linux")]
 mod linux {
     use super::{Pattern, CANARY_LEN, WINDOW};
-    use std::collections::BTreeSet;
     use std::fs::File;
+    use std::io::{self, Read, Seek};
     use std::os::unix::fs::FileExt;
 
     /// Bytes matched per read (a match may start in the first `STEP` bytes of a read).
     const STEP: usize = 1 << 16;
+    /// The most `/proc/self/maps` text one scan reads.
+    const MAPS: usize = 4 << 20;
+    /// Distinct places recorded per pattern; more are counted, not deduplicated.
+    const PLACES: usize = 256;
 
-    /// How many distinct places hold each pattern in this process's writable memory: a place is
-    /// where a 16-byte window of the pattern matches, normalised to where the pattern would start.
-    pub(super) fn scan(patterns: &[&Pattern]) -> std::io::Result<Vec<usize>> {
-        let maps = std::fs::read_to_string("/proc/self/maps")?;
-        let mem = File::open("/proc/self/mem")?;
-        let mut buf = vec![0_u8; STEP + WINDOW - 1];
-        let buf_low = buf.as_ptr() as u64;
-        let buf_high = buf_low + buf.len() as u64;
-        let tables: Vec<[bool; 256]> = patterns
-            .iter()
-            .map(|pattern| {
-                let mut starts = [false; 256];
+    /// The scan's files and buffers, made once, before anything is planted: a scan allocates
+    /// nothing, so it cannot take (and overwrite) a freed block it is about to read.
+    pub(super) struct Scanner {
+        maps: File,
+        mem: File,
+        text: Vec<u8>,
+        buf: Vec<u8>,
+        places: [Vec<u64>; 3],
+    }
+
+    impl Scanner {
+        pub(super) fn open() -> io::Result<Self> {
+            Ok(Self {
+                maps: File::open("/proc/self/maps")?,
+                mem: File::open("/proc/self/mem")?,
+                text: vec![0; MAPS],
+                buf: vec![0; STEP + WINDOW - 1],
+                places: [
+                    Vec::with_capacity(PLACES),
+                    Vec::with_capacity(PLACES),
+                    Vec::with_capacity(PLACES),
+                ],
+            })
+        }
+
+        /// How many distinct places hold each pattern in this process's writable memory: a place is
+        /// where a 16-byte window of the pattern matches, normalised to where the pattern would
+        /// start.
+        pub(super) fn scan(&mut self, patterns: [&Pattern; 3]) -> io::Result<[usize; 3]> {
+            self.maps.rewind()?;
+            let mut n = 0;
+            loop {
+                let Some(rest) = self.text.get_mut(n..).filter(|rest| !rest.is_empty()) else {
+                    return Err(io::Error::other(
+                        "/proc/self/maps outgrew the scan's buffer",
+                    ));
+                };
+                match self.maps.read(rest) {
+                    Ok(0) => break,
+                    Ok(k) => n += k,
+                    Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                    Err(e) => return Err(e),
+                }
+            }
+
+            let buf_low = self.buf.as_ptr() as u64;
+            let own = buf_low.saturating_sub(WINDOW as u64 - 1)..buf_low + self.buf.len() as u64;
+            let mut tables = [[false; 256]; 3];
+            for (pattern, starts) in patterns.iter().zip(&mut tables) {
                 for at in 0..=CANARY_LEN - WINDOW {
                     starts[usize::from(pattern.byte(at))] = true;
                 }
-                starts
-            })
-            .collect();
-        let mut anchors: Vec<BTreeSet<u64>> = patterns.iter().map(|_| BTreeSet::new()).collect();
-
-        for line in maps.lines() {
-            let Some((range, rest)) = line.split_once(' ') else {
-                continue;
-            };
-            let perms = rest.split(' ').next().unwrap_or("");
-            if !perms.starts_with("rw") || line.ends_with("[vvar]") || line.ends_with("[vsyscall]")
-            {
-                continue;
             }
-            let Some((low, high)) = range.split_once('-') else {
-                continue;
-            };
-            let (Ok(low), Ok(high)) = (u64::from_str_radix(low, 16), u64::from_str_radix(high, 16))
-            else {
-                continue;
-            };
-            let mut at = low;
-            while at < high {
-                let want = usize::try_from(high - at)
-                    .unwrap_or(usize::MAX)
-                    .min(buf.len());
-                let Ok(read) = mem.read_at(&mut buf[..want], at) else {
-                    break; // a guard page or a region that vanished: the rest is not memory
+            let mut extra = [0_usize; 3];
+            for places in &mut self.places {
+                places.clear();
+            }
+
+            let text = &self.text[..n];
+            for line in text.split(|b| *b == b'\n') {
+                let Some((low, high)) = writable(line) else {
+                    continue;
                 };
-                if read == 0 {
-                    break;
-                }
-                let limit = read.saturating_sub(WINDOW - 1).min(STEP);
-                for ((pattern, starts), found) in patterns.iter().zip(&tables).zip(&mut anchors) {
-                    for place in 0..limit {
-                        if !starts[usize::from(buf[place])] {
-                            continue;
-                        }
-                        let address = at + place as u64;
-                        if (buf_low..buf_high).contains(&address) {
-                            continue; // the scan's own read buffer
-                        }
-                        for offset in 0..=CANARY_LEN - WINDOW {
-                            if (0..WINDOW).all(|k| buf[place + k] == pattern.byte(offset + k)) {
-                                found.insert(address - offset as u64);
+                let mut at = low;
+                while at < high {
+                    let want = usize::try_from(high - at)
+                        .unwrap_or(usize::MAX)
+                        .min(self.buf.len());
+                    let Ok(read) = self.mem.read_at(&mut self.buf[..want], at) else {
+                        break; // a guard page or a region that vanished: the rest is not memory
+                    };
+                    if read == 0 {
+                        break;
+                    }
+                    let buf = &self.buf[..read];
+                    let limit = read.saturating_sub(WINDOW - 1).min(STEP);
+                    for (((pattern, starts), places), extra) in patterns
+                        .iter()
+                        .zip(&tables)
+                        .zip(&mut self.places)
+                        .zip(&mut extra)
+                    {
+                        for place in 0..limit {
+                            if !starts[usize::from(buf[place])] {
+                                continue;
+                            }
+                            let address = at + place as u64;
+                            if own.contains(&address) {
+                                continue; // the scan's own read buffer
+                            }
+                            for offset in 0..=CANARY_LEN - WINDOW {
+                                if !(0..WINDOW).all(|k| pattern.is(offset + k, buf[place + k])) {
+                                    continue;
+                                }
+                                let anchor = address - offset as u64;
+                                if places.contains(&anchor) {
+                                    continue;
+                                }
+                                if places.len() < places.capacity() {
+                                    places.push(anchor);
+                                } else {
+                                    *extra += 1;
+                                }
                             }
                         }
                     }
+                    at += limit.max(1) as u64;
                 }
-                at += limit.max(1) as u64;
             }
+            let mut found = [0_usize; 3];
+            for ((count, places), extra) in found.iter_mut().zip(&self.places).zip(extra) {
+                *count = places.len() + extra;
+            }
+            Ok(found)
         }
-        Ok(anchors.iter().map(BTreeSet::len).collect())
+    }
+
+    /// The start and end of a `/proc/self/maps` line's mapping, when it is readable and writable
+    /// (and not the kernel's `[vvar]` or `[vsyscall]` page).
+    fn writable(line: &[u8]) -> Option<(u64, u64)> {
+        if line.ends_with(b"[vvar]") || line.ends_with(b"[vsyscall]") {
+            return None;
+        }
+        let mut fields = line.split(|b| *b == b' ');
+        let range = fields.next()?;
+        let perms = fields.next()?;
+        if perms.get(..2) != Some(b"rw".as_slice()) {
+            return None;
+        }
+        let dash = range.iter().position(|b| *b == b'-')?;
+        let hex = |s: &[u8]| u64::from_str_radix(std::str::from_utf8(s).ok()?, 16).ok();
+        let (low, high) = (hex(range.get(..dash)?)?, hex(range.get(dash + 1..)?)?);
+        (low < high).then_some((low, high))
     }
 }
