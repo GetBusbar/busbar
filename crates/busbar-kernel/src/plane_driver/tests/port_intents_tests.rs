@@ -10,17 +10,20 @@ use std::sync::Mutex;
 
 use busbar_plugin_abi::fail::refused::{R_DENIED, R_UNSUPPORTED};
 use busbar_plugin_abi::plane::{
-    CommittedRec, ConnectAns, LookupHit, MintedRec, SignedRec, WorkAns, CONNECT_BEGIN,
-    CONNECT_STATUS, CONN_READY, CONN_REFUSED, DEST_INTERNAL, FROM_CORE, JUDGE_REFUSE_PRIVATE,
-    JUDGE_RESOLVE, LK_CALLER, LK_PREFIX, MINT_ONCE, P_COMMITTED, P_CONNECT, P_ENTITLE, P_JUDGED,
-    P_LOOKUP, P_MINTED, P_SIGNED, P_STORE_FAILED, P_WORK, SIGN_JWS_COMPACT, SIGN_JWS_DETACHED,
-    WORK_OPEN,
+    CommittedRec, ConnectAns, LookupHit, MintedRec, SignedRec, TrustAns, TrustItemState, WorkAns,
+    CONNECT_BEGIN, CONNECT_STATUS, CONN_READY, CONN_REFUSED, DEST_ALLOWED, DEST_INTERNAL,
+    DISTRUST_CHANGED, DISTRUST_NONE, DISTRUST_NOT_APPROVED, DISTRUST_UNSIGHTED, FROM_CORE,
+    JUDGE_REFUSE_PRIVATE, JUDGE_RESOLVE, LK_CALLER, LK_PREFIX, MINT_ONCE, P_COMMITTED, P_CONNECT,
+    P_ENTITLE, P_JUDGED, P_LOOKUP, P_MINTED, P_SIGNED, P_STORE_FAILED, P_TRUST, P_WORK,
+    SIGNED_ALGORITHM, SIGNED_VERIFIED, SIGN_JWS_COMPACT, SIGN_JWS_DETACHED, TRUST_SERVES,
+    TRUST_STATE, TS_APPROVED, TS_SIGHTED, WORK_OPEN,
 };
 use busbar_plugin_abi::records::{commit, tag as g, RecPredRec, RecPutRec, Records, Reply, Writer};
 use busbar_plugin_loader::ports::plane::{PlaneIn, PlaneOut, TargetIn};
 use busbar_plugin_loader::ports::PortError;
 
 use super::{Hit, IntentHost, Looked, Resolver, WorkIntent, WorkOutcome};
+use crate::plane_driver::port_services::TrustItemOwned;
 use crate::plane_driver::port_session::{Calls, Effects, SessionError, Task, ToClient, Violation};
 use crate::plane_grants::{SignedJws, TicketMint};
 use crate::plugin_records::{CommitOp, CommitOutcome, RecordsDenied, Scope};
@@ -65,6 +68,15 @@ enum It {
         key: Vec<u8>,
     },
     Entitle(&'static str),
+    Sight {
+        catalog: Option<[u8; 32]>,
+        items: Vec<(&'static str, [u8; 32])>,
+    },
+    TrustServes {
+        item: Option<(&'static str, Option<[u8; 32]>)>,
+    },
+    TrustState,
+    TrustVerify,
     Mint {
         flags: u32,
         record: Option<&'static [u8]>,
@@ -126,6 +138,37 @@ fn play(items: &[It], sink: &mut dyn FnMut(PlaneOut<'_>)) {
             }),
             It::Signal { flags, key } => sink(PlaneOut::Signal { flags: *flags, key }),
             It::Entitle(grant) => sink(PlaneOut::Entitle { check: 3, grant }),
+            It::Sight { catalog, items } => {
+                let mut nested = Reply::new();
+                for (name, digest) in items {
+                    nested
+                        .put_pair(busbar_plugin_abi::plane::tag::TR_ITEM, name, digest)
+                        .unwrap();
+                }
+                sink(PlaneOut::Sight {
+                    party: "github",
+                    catalog: *catalog,
+                    items: Records::new(nested.as_bytes()),
+                });
+            }
+            It::TrustServes { item } => sink(PlaneOut::Trust {
+                check: 8,
+                op: TRUST_SERVES,
+                party: "github",
+                item: *item,
+            }),
+            It::TrustState => sink(PlaneOut::Trust {
+                check: 9,
+                op: TRUST_STATE,
+                party: "github",
+                item: None,
+            }),
+            It::TrustVerify => sink(PlaneOut::TrustVerify {
+                check: 10,
+                party: "github",
+                payload: b"doc",
+                signatures: b"[]",
+            }),
             It::Mint { flags, record } => sink(PlaneOut::Mint {
                 check: 5,
                 flags: *flags,
@@ -273,6 +316,10 @@ struct Host {
     verdict: u32,
     refuse: Option<u32>,
     conn_state: u32,
+    distrust: u32,
+    signed: (u32, &'static str),
+    state_items: Vec<TrustItemOwned>,
+    sight_denied: bool,
 }
 
 impl Host {
@@ -413,6 +460,45 @@ impl IntentHost for Host {
             }),
             None => Ok(SignedJws::Compact("h.p.s".into())),
         }
+    }
+
+    fn sight(
+        &self,
+        party: &str,
+        catalog: Option<[u8; 32]>,
+        items: &[(&str, [u8; 32])],
+    ) -> Result<(), RecordsDenied> {
+        self.note(format!(
+            "sight {party} catalog={} items={}",
+            catalog.is_some(),
+            items.len()
+        ));
+        if self.sight_denied {
+            return Err(RecordsDenied::Unavailable);
+        }
+        Ok(())
+    }
+
+    fn trust_serves(&self, party: &str, item: Option<(&str, Option<[u8; 32]>)>) -> u32 {
+        self.note(format!(
+            "trust_serves {party} item={:?}",
+            item.map(|(name, digest)| (name, digest.is_some()))
+        ));
+        self.distrust
+    }
+
+    fn trust_state(&self, party: &str) -> (u32, Vec<TrustItemOwned>) {
+        self.note(format!("trust_state {party}"));
+        (self.distrust, self.state_items.clone())
+    }
+
+    fn trust_verify(&self, party: &str, payload: &[u8], signatures: &[u8]) -> (u32, String) {
+        self.note(format!(
+            "trust_verify {party} {} {}",
+            String::from_utf8_lossy(payload),
+            String::from_utf8_lossy(signatures)
+        ));
+        (self.signed.0, self.signed.1.to_owned())
     }
 
     fn connect(
@@ -1209,4 +1295,188 @@ fn minted_signed_and_connect_pieces_come_after_entitle_and_judged_in_the_if_orde
     run_as(&script, &Host::default(), b"ID").unwrap();
     let kinds: Vec<u32> = script.got().iter().map(|p| p.1).collect();
     assert_eq!(kinds, [P_ENTITLE, P_JUDGED, P_MINTED, P_SIGNED, P_CONNECT]);
+}
+
+fn trust_answers(bytes: &[u8]) -> Vec<(u32, u32, Vec<u8>)> {
+    Records::new(bytes)
+        .map(|rec| {
+            let rec = rec.unwrap();
+            assert_eq!(rec.tag, busbar_plugin_abi::plane::tag::TRUST_ANS);
+            let (ans, tail) = rec.pod_tail::<TrustAns>().unwrap();
+            (ans.check, ans.verdict, tail.to_vec())
+        })
+        .collect()
+}
+
+#[test]
+fn a_sighting_is_recorded_before_the_trust_of_the_same_answer_is_judged() {
+    let script = Script {
+        request: vec![
+            It::TrustServes {
+                item: Some(("tool", None)),
+            },
+            It::Sight {
+                catalog: Some([1; 32]),
+                items: vec![("tool", [2; 32]), ("other", [3; 32])],
+            },
+        ],
+        ..Script::default()
+    };
+    let host = Host {
+        distrust: DISTRUST_CHANGED,
+        ..Host::default()
+    };
+    run(&script, &host, None).unwrap();
+    assert_eq!(
+        host.seen(),
+        [
+            "sight github catalog=true items=2",
+            "trust_serves github item=Some((\"tool\", false))"
+        ]
+    );
+    let bytes = only_piece(&script, P_TRUST);
+    assert_eq!(trust_answers(&bytes), [(8, DISTRUST_CHANGED, vec![])]);
+}
+
+#[test]
+fn a_sighting_the_book_cannot_record_is_not_answered_and_does_not_end_the_session() {
+    let script = Script {
+        request: vec![It::Sight {
+            catalog: None,
+            items: vec![("tool", [2; 32])],
+        }],
+        ..Script::default()
+    };
+    let host = Host {
+        sight_denied: true,
+        ..Host::default()
+    };
+    run(&script, &host, None).unwrap();
+    assert!(script.got().is_empty(), "SIGHT has no answer");
+}
+
+#[test]
+fn trust_serves_state_and_verify_answer_one_trust_ans_each_in_intent_order() {
+    let script = Script {
+        request: vec![
+            It::TrustVerify,
+            It::TrustState,
+            It::TrustServes {
+                item: Some(("tool", Some([4; 32]))),
+            },
+        ],
+        ..Script::default()
+    };
+    let host = Host {
+        distrust: DISTRUST_NOT_APPROVED,
+        signed: (SIGNED_ALGORITHM, "ES512"),
+        state_items: vec![
+            TrustItemOwned {
+                name: "tool".into(),
+                verdict: DISTRUST_NONE,
+                approved: Some([5; 32]),
+                sighted: Some([5; 32]),
+            },
+            TrustItemOwned {
+                name: "new".into(),
+                verdict: DISTRUST_UNSIGHTED,
+                approved: None,
+                sighted: None,
+            },
+        ],
+        ..Host::default()
+    };
+    run(&script, &host, None).unwrap();
+    assert_eq!(
+        host.seen(),
+        [
+            "trust_verify github doc []",
+            "trust_state github",
+            "trust_serves github item=Some((\"tool\", true))"
+        ]
+    );
+    let bytes = only_piece(&script, P_TRUST);
+    let answers = trust_answers(&bytes);
+    assert_eq!(answers.len(), 3);
+    // VERIFY: the verdict and the named algorithm as the tail.
+    assert_eq!(
+        (answers[0].0, answers[0].1, &answers[0].2[..]),
+        (10, SIGNED_ALGORITHM, &b"ES512"[..])
+    );
+    // STATE: the verdict and nested TR_ITEM_STATE*.
+    assert_eq!((answers[1].0, answers[1].1), (9, DISTRUST_NOT_APPROVED));
+    let states: Vec<(u32, u32, Vec<u8>)> = Records::new(&answers[1].2)
+        .map(|rec| {
+            let rec = rec.unwrap();
+            assert_eq!(rec.tag, busbar_plugin_abi::plane::tag::TR_ITEM_STATE);
+            let (st, tail) = rec.pod_tail::<TrustItemState>().unwrap();
+            (st.verdict, st.flags, tail.to_vec())
+        })
+        .collect();
+    let mut first = b"tool".to_vec();
+    first.extend_from_slice(&[5; 32]);
+    first.extend_from_slice(&[5; 32]);
+    assert_eq!(
+        states,
+        [
+            (DISTRUST_NONE, TS_APPROVED | TS_SIGHTED, first),
+            (DISTRUST_UNSIGHTED, 0, b"new".to_vec())
+        ]
+    );
+    // SERVES: the verdict, no tail.
+    assert_eq!(
+        (answers[2].0, answers[2].1, answers[2].2.len()),
+        (8, DISTRUST_NOT_APPROVED, 0)
+    );
+}
+
+/// A host that implements only what the trait requires: every service intent keeps its default.
+struct Bare;
+
+impl IntentHost for Bare {
+    fn lookup(&self, _: Scope, _: u32, _: u32, _: &[u8]) -> Result<Looked, RecordsDenied> {
+        Ok(Looked::default())
+    }
+    fn store(&self, _: Scope, _: u32, _: u64, _: &[u8], _: &[u8]) -> Result<(), RecordsDenied> {
+        Ok(())
+    }
+    fn delete(&self, _: Scope, _: &[u8]) -> Result<(), RecordsDenied> {
+        Ok(())
+    }
+    fn commit(&self, _: Scope, _: &[CommitOp<'_>]) -> Result<CommitOutcome, RecordsDenied> {
+        Ok(CommitOutcome::Applied)
+    }
+    fn push(&self, _: u64, _: &[u8]) -> Result<(), RecordsDenied> {
+        Ok(())
+    }
+    fn signal(&self, _: &[u8], _: Option<[u8; 32]>) {}
+}
+
+#[test]
+fn a_host_with_no_service_installed_answers_fail_closed() {
+    let host = Bare;
+    assert!(!host.entitle(b"ID", "g"));
+    assert_ne!(host.judge("example.com", 0, 0), DEST_ALLOWED);
+    assert!(host
+        .mint(TicketMint {
+            subject: "alice",
+            scope: "",
+            audience: "ticket",
+            ttl_s: 60,
+            once: false,
+            prefix: "",
+            record: &[],
+        })
+        .is_err());
+    assert!(host.sign(b"x", false).is_err());
+    assert_eq!(
+        host.connect(CONNECT_STATUS, "alice", "github", None).0,
+        CONN_REFUSED
+    );
+    assert_ne!(host.trust_serves("github", None), DISTRUST_NONE);
+    let (verdict, items) = host.trust_state("github");
+    assert_ne!(verdict, DISTRUST_NONE);
+    assert!(items.is_empty());
+    assert_ne!(host.trust_verify("github", b"d", b"[]").0, SIGNED_VERIFIED);
+    assert!(host.sight("github", None, &[]).is_err());
 }
