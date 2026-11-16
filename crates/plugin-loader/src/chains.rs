@@ -8,7 +8,7 @@
 //! Every plugin entry here runs inline under `entry::guard` (describe) or through the driver (every open step,
 //! which takes the same guard per step), on the thread that polls the future (I10, §10.7).
 
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -24,6 +24,84 @@ use busbar_plugin_abi::host_side::driver::{
     Driver, Finished, Image, Instance, InstanceParts, NeedRow,
 };
 use busbar_plugin_abi::host_side::needs::Needs;
+use busbar_plugin_abi::host_side::needs::{
+    ConnId, DirNeed, FetchNeed, NeedErr, NeedOut, OpenNeed, RecordNeed, TlsMode,
+};
+
+/// DRY_RUN never receives a serving capability or performs I/O.
+struct DeniedNeeds;
+impl Needs for DeniedNeeds {
+    async fn open(
+        &self,
+        _cx: &Caller<'_>,
+        _n: OpenNeed<'_>,
+        _res: &mut NeedOut<'_>,
+    ) -> Result<(), NeedErr> {
+        Err(NeedErr::Denied)
+    }
+    async fn starttls(
+        &self,
+        _cx: &Caller<'_>,
+        _c: ConnId,
+        _tls: TlsMode<'_>,
+        _res: &mut NeedOut<'_>,
+    ) -> Result<(), NeedErr> {
+        Err(NeedErr::Denied)
+    }
+    async fn write(
+        &self,
+        _cx: &Caller<'_>,
+        _c: ConnId,
+        _bytes: &[u8],
+        _res: &mut NeedOut<'_>,
+    ) -> Result<(), NeedErr> {
+        Err(NeedErr::Denied)
+    }
+    async fn read(
+        &self,
+        _cx: &Caller<'_>,
+        _c: ConnId,
+        _max: u32,
+        _res: &mut NeedOut<'_>,
+    ) -> Result<(), NeedErr> {
+        Err(NeedErr::Denied)
+    }
+    async fn close(&self, _cx: &Caller<'_>, _c: ConnId, _reusable: bool) {}
+    async fn fetch(
+        &self,
+        _cx: &Caller<'_>,
+        _n: FetchNeed<'_>,
+        _res: &mut NeedOut<'_>,
+    ) -> Result<(), NeedErr> {
+        Err(NeedErr::Denied)
+    }
+    async fn secret(
+        &self,
+        _cx: &Caller<'_>,
+        _handle: u32,
+        _res: &mut NeedOut<'_>,
+    ) -> Result<(), NeedErr> {
+        Err(NeedErr::Denied)
+    }
+    async fn record(
+        &self,
+        _cx: &Caller<'_>,
+        _n: RecordNeed<'_>,
+        _res: &mut NeedOut<'_>,
+    ) -> Result<(), NeedErr> {
+        Err(NeedErr::Denied)
+    }
+    async fn directory(
+        &self,
+        _cx: &Caller<'_>,
+        _n: DirNeed<'_>,
+        _res: &mut NeedOut<'_>,
+    ) -> Result<(), NeedErr> {
+        Err(NeedErr::Denied)
+    }
+    fn release(&self, _cx: &Caller<'_>) {}
+}
+
 use busbar_plugin_abi::host_side::pool::Pool;
 use busbar_plugin_abi::host_side::scrub::Scrub;
 use busbar_plugin_abi::host_side::watch::ENTRY_OPEN;
@@ -473,7 +551,7 @@ pub(crate) struct Opened {
     pub dests: u32,
 }
 
-impl<N: Needs> Registry<N> {
+impl Registry {
     /// Cold: the admitted image `s.identity` names, the config bound and its references resolved (§11.2 `open`:
     /// `bind`, `resolve_refs`, the core values at D_PUBLIC_URL_PATH and D_CALLER_UPSTREAMS_PATH). The D_SCHEMA
     /// check is the plugin's own `open`/`check` (the engine graph carries no JSON Schema validator).
@@ -509,7 +587,7 @@ impl<N: Needs> Registry<N> {
                 .filter_map(|(_, b)| core::str::from_utf8(b).ok())
                 .collect()
         };
-        let id = self.next_id.fetch_add(1, Ordering::Relaxed) + 1;
+        let id = self.ids.next()?;
         let bound = self
             .binder
             .bind(
@@ -593,12 +671,13 @@ impl<N: Needs> Registry<N> {
     }
 
     /// One `open` entry chain of kind `K` (flags: 0, or DRY_RUN) through the driver, Image-owned.
-    async fn run_open<K: Kind>(
+    async fn run_open<K: Kind, N: Needs>(
         &self,
         s: &InstanceSpec<'_>,
         p: &Prepared,
         lease: &SlotLease,
         flags: u32,
+        needs: &N,
     ) -> Result<busbar_plugin_abi::host_side::driver::Finished<K>, OpenError> {
         let max_out = self.max_out_of(&p.described);
         let host = self.host;
@@ -615,7 +694,7 @@ impl<N: Needs> Registry<N> {
             out_of_process: false,
             limits: s.limits,
         };
-        let mut drv = Driver::new(&*self.needs, caller)
+        let mut drv = Driver::new(needs, caller)
             .for_open()
             .with_max_steps(self.ceilings.max_steps);
         if K::CODE == KindCode::Store
@@ -656,14 +735,15 @@ impl<N: Needs> Registry<N> {
     /// The generic open (§11.2): prepare, run the `open` chain under a leased slot, and on OK + INSTANCE build the
     /// `Instance` in the same poll (§10.4), keep the settled answer for the write-back (round 31) and tether the
     /// binding and the lease to the instance. A REFUSED or FAILED answer is the open's error.
-    pub(crate) async fn open_instance<K: Kind>(
+    pub(crate) async fn open_instance<K: Kind, N: Needs>(
         &self,
         s: &InstanceSpec<'_>,
+        needs: &Arc<N>,
     ) -> Result<Opened, OpenError> {
         let kind = K::CODE;
         let p = self.prepare(s, kind).await?;
         let lease = self.lease_for(s, &p, kind);
-        let finished = self.run_open::<K>(s, &p, &lease, 0).await?;
+        let finished = self.run_open::<K, N>(s, &p, &lease, 0, &**needs).await?;
         let Finished { answer, instance } = finished;
         let (status, scrub, errors) = (
             answer.answer().status,
@@ -786,7 +866,13 @@ impl<N: Needs> Registry<N> {
         let p = self.prepare(s, kind).await?;
         let lease = self.lease_for(s, &p, kind);
         let finished = self
-            .run_open::<K>(s, &p, &lease, busbar_plugin_abi::plugin::OPEN_DRY_RUN)
+            .run_open::<K, DeniedNeeds>(
+                s,
+                &p,
+                &lease,
+                busbar_plugin_abi::plugin::OPEN_DRY_RUN,
+                &DeniedNeeds,
+            )
             .await?;
         if !lease.is_live() {
             return Err(OpenError::Call(CallError::Quarantined));

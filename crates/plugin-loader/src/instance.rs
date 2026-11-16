@@ -12,7 +12,7 @@
 //! themselves run through `entry::guard` (describe) and the driver (every open step takes the same guard); the
 //! chains are in `chains.rs`, the kind ports built over them are the `open_<kind>` methods here.
 
-use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
@@ -33,10 +33,10 @@ use busbar_plugin_abi::need::{egress, need_flag, op};
 use busbar_plugin_abi::records::{tag, CeilingRec, EndpointRec, Records};
 use busbar_plugin_abi::types::KindCode;
 
-use crate::adapters::auth::AuthCore;
 use crate::admit::Admitted;
 use crate::chains::{self, OwnedSpec};
 use crate::refusal::{Refusal, RefusalCode};
+use crate::reopen::{BoundNeeds, Reopener};
 use busbar_ffi::kind as k;
 use busbar_ports::auth::{AuthPort, IssuedShape};
 use busbar_ports::binder::ConfigBinder;
@@ -417,25 +417,19 @@ impl Images {
     }
 }
 
-pub struct Registry<N: Needs> {
+pub struct Registry {
     pub(crate) host: &'static Host,
-    pub(crate) needs: Arc<N>,
     pub(crate) binder: Arc<dyn ConfigBinder>,
     pub(crate) ceilings: Ceilings,
     pub(crate) slots: Arc<SlotTable>,
     /// Admitted images in admission order (identity unique, `former_names` words unique across all of them).
     pub(crate) images: Images,
     /// Runtime instance ids (never 0, never reused).
-    pub(crate) next_id: AtomicU64,
+    pub(crate) ids: Arc<crate::process::InstanceIds>,
     /// The config each open instance was last opened with, by (kind, configured name), for `reconfigure`.
     applied: Mutex<HashMap<(KindCode, Box<str>), Applied>>,
-    /// What the store and auth adapters need from core and the kernel installs once (`set_store_seal`,
-    /// `set_auth_core`).
-    store_seal: OnceLock<StoreSeal>,
-    auth_core: OnceLock<(Arc<dyn AuthCore>, std::time::Duration)>,
     /// Round 31: each instance's settled answer from its last `open`, by configured name, until taken once.
     settled: Mutex<HashMap<Box<str>, Settled>>,
-    watchdog: OnceLock<std::thread::JoinHandle<()>>,
 }
 
 /// One admitted image as `add` left it: the verified identity, its `former_names` words, whether it is
@@ -457,11 +451,12 @@ pub(crate) struct ImageEntry {
 
 /// The factory of the kernel seal the store adapter installs (one seal per `StoreAdapter::new`).
 pub type StoreSeal =
-    Box<dyn Fn() -> Box<dyn busbar_contract::plugin::KernelSeal + Send + Sync> + Send + Sync>;
+    Arc<dyn Fn() -> Box<dyn busbar_contract::plugin::KernelSeal + Send + Sync> + Send + Sync>;
 
 /// What `reconfigure` merges a push into: the config an instance was opened with and the last applied version.
 #[derive(Clone)]
 struct Applied {
+    opener: Arc<dyn Reopener>,
     identity: Box<str>,
     config: Vec<u8>,
     limits: InstanceLimits,
@@ -513,30 +508,24 @@ impl Ceilings {
     };
 }
 
-impl<N: Needs> Registry<N> {
+impl Registry {
     /// Round 35 (R7b): `ConfigBinder` is the loader's own trait (`crate::binder`), so `new` names it here.
     /// Images are already described; construction cannot admit or mutate an image.
-    pub fn new(images: Images, needs: Arc<N>, binder: Arc<dyn ConfigBinder>) -> Self {
+    pub fn new(
+        images: Images,
+        binder: Arc<dyn ConfigBinder>,
+        ids: Arc<crate::process::InstanceIds>,
+    ) -> Self {
         Registry {
             host: images.host,
-            needs,
             binder,
             ceilings: images.ceilings.clone(),
             slots: Arc::clone(&images.slots),
             images,
-            next_id: AtomicU64::new(0),
+            ids,
             applied: Mutex::new(HashMap::new()),
-            store_seal: OnceLock::new(),
-            auth_core: OnceLock::new(),
             settled: Mutex::new(HashMap::new()),
-            watchdog: OnceLock::new(),
         }
-    }
-
-    /// The host table, the Needs implementation, the binder and the core ceilings every adapter (L3-L9) and
-    /// every open chain read. Crate-internal: no kernel caller.
-    pub(crate) fn parts(&self) -> (&'static Host, &Arc<N>, &dyn ConfigBinder, &Ceilings) {
-        (self.host, &self.needs, &*self.binder, &self.ceilings)
     }
 
     /// The registry's slot table (the watchdog thread and the adapters' leases).
@@ -547,9 +536,7 @@ impl<N: Needs> Registry<N> {
     /// The scrub set of the instance that owns watchdog slot `slot` (its slot record, §10.6): what custody
     /// registers every value it hands that instance in (§12.2 step 5). None: the slot is not live.
     pub fn scrub_of(&self, slot: u32) -> Option<Arc<Scrub>> {
-        self.slots
-            .record(slot)
-            .map(|record| Arc::clone(&record.scrub))
+        self.slots.scrub_of(slot)
     }
 
     /// The image entry the generic `module:` match resolves: identity first, then `former_names` words.
@@ -710,89 +697,93 @@ impl<N: Needs> Registry<N> {
     /// by routing, for every entry alike. `ffi_thread` keeps only `dlopen` and `name_still_loaded` (§11.1).
     /// The store adapter is the kernel's existing `PersistenceBackend` (busbar-contract persistence.rs:534),
     /// implemented directly over the proxy. There is no other store port.
-    pub fn open_store(&self, s: &InstanceSpec<'_>) -> BoxFut<'_, Result<StoreHandle, OpenError>> {
+    pub fn open_store<N: Needs>(
+        &self,
+        s: &InstanceSpec<'_>,
+        needs: &Arc<N>,
+        seal: StoreSeal,
+    ) -> BoxFut<'_, Result<StoreHandle, OpenError>> {
         let owned = OwnedSpec::new(s);
+        let needs = Arc::clone(needs);
         Box::pin(async move {
             let spec = owned.spec();
-            let opened = self.open_instance::<k::Store>(&spec).await?;
+            let opened = self.open_instance::<k::Store, N>(&spec, &needs).await?;
             let proxy =
                 busbar_plugin_abi::store::Proxy::bind(opened.instance).ok_or_else(not_this_kind)?;
-            let seal = self.store_seal.get().ok_or_else(|| {
-                OpenError::Unknown("no store seal installed (Registry::set_store_seal)".to_owned())
-            })?;
             let adapter = crate::adapters::store::StoreAdapter::new(
                 proxy,
-                Arc::clone(&self.needs),
+                Arc::clone(&needs),
                 &tokio::runtime::Handle::current(),
                 seal(),
             )?;
-            self.remember(&spec, KindCode::Store);
+            self.remember(&spec, KindCode::Store, &needs, Some(Arc::clone(&seal)));
             Ok(StoreHandle {
                 backend: Arc::new(adapter),
             })
         })
     }
 
-    pub fn open_secret(
+    pub fn open_secret<N: Needs>(
         &self,
         s: &InstanceSpec<'_>,
+        needs: &Arc<N>,
     ) -> BoxFut<'_, Result<Arc<dyn SecretPort>, OpenError>> {
         let owned = OwnedSpec::new(s);
+        let needs = Arc::clone(needs);
         Box::pin(async move {
             let spec = owned.spec();
-            let opened = self.open_instance::<k::Secret>(&spec).await?;
+            let opened = self.open_instance::<k::Secret, N>(&spec, &needs).await?;
             let proxy = busbar_plugin_abi::secret::Proxy::bind(opened.instance)
                 .ok_or_else(not_this_kind)?;
-            self.remember(&spec, KindCode::Secret);
+            self.remember(&spec, KindCode::Secret, &needs, None);
             let port: Arc<dyn SecretPort> = Arc::new(crate::adapters::secret::SecretAdapter::new(
                 proxy,
-                Arc::clone(&self.needs),
+                Arc::clone(&needs),
             ));
             Ok(port)
         })
     }
 
-    pub fn open_auth(
+    pub fn open_auth<N: Needs>(
         &self,
         s: &InstanceSpec<'_>,
+        needs: &Arc<N>,
     ) -> BoxFut<'_, Result<Arc<dyn AuthPort>, OpenError>> {
         let owned = OwnedSpec::new(s);
+        let needs = Arc::clone(needs);
         Box::pin(async move {
             let spec = owned.spec();
-            let opened = self.open_instance::<k::Auth>(&spec).await?;
+            let opened = self.open_instance::<k::Auth, N>(&spec, &needs).await?;
             let proxy =
                 busbar_plugin_abi::auth::Proxy::bind(opened.instance).ok_or_else(not_this_kind)?;
-            let (core, refresh) = self.auth_core.get().ok_or_else(|| {
-                OpenError::Unknown("no auth core installed (Registry::set_auth_core)".to_owned())
-            })?;
             let frame = chains::frame(&opened.described.items);
             let adapter = crate::adapters::auth::AuthAdapter::new(
                 proxy,
-                Arc::clone(&self.needs),
-                Arc::clone(core),
+                Arc::clone(&needs),
                 Records::new(&frame),
                 opened.errors,
-                *refresh,
             )
             .map_err(|e| {
                 OpenError::Call(CallError::Fault(
                     busbar_plugin_abi::fail::FaultReason::BadRecords(e),
                 ))
             })?;
-            self.remember(&spec, KindCode::Auth);
+            self.remember(&spec, KindCode::Auth, &needs, None);
             let port: Arc<dyn AuthPort> = Arc::new(adapter);
             Ok(port)
         })
     }
 
-    pub fn open_hook(
+    pub fn open_hook<N: Needs>(
         &self,
         s: &InstanceSpec<'_>,
+        needs: &Arc<N>,
     ) -> BoxFut<'_, Result<Arc<dyn HookPort>, OpenError>> {
         let owned = OwnedSpec::new(s);
+        let needs = Arc::clone(needs);
         Box::pin(async move {
             let spec = owned.spec();
-            let opened = self.open_instance::<k::Hook>(&spec).await?;
+            let opened = self.open_instance::<k::Hook, N>(&spec, &needs).await?;
             let proxy =
                 busbar_plugin_abi::hook::Proxy::bind(opened.instance).ok_or_else(not_this_kind)?;
             let points = opened
@@ -806,10 +797,10 @@ impl<N: Needs> Registry<N> {
                         .ok()
                 })
                 .map_or(0, |p| p.mask);
-            self.remember(&spec, KindCode::Hook);
+            self.remember(&spec, KindCode::Hook, &needs, None);
             let port: Arc<dyn HookPort> = Arc::new(crate::adapters::hook::HookAdapter::new(
                 proxy,
-                Arc::clone(&self.needs),
+                Arc::clone(&needs),
                 points,
                 opened.errors,
             ));
@@ -817,14 +808,16 @@ impl<N: Needs> Registry<N> {
         })
     }
 
-    pub fn open_export(
+    pub fn open_export<N: Needs>(
         &self,
         s: &InstanceSpec<'_>,
+        needs: &Arc<N>,
     ) -> BoxFut<'_, Result<Arc<dyn ExportPort>, OpenError>> {
         let owned = OwnedSpec::new(s);
+        let needs = Arc::clone(needs);
         Box::pin(async move {
             let spec = owned.spec();
-            let opened = self.open_instance::<k::Export>(&spec).await?;
+            let opened = self.open_instance::<k::Export, N>(&spec, &needs).await?;
             let proxy = busbar_plugin_abi::export::Proxy::bind(Arc::clone(&opened.instance))
                 .ok_or_else(not_this_kind)?;
             let frame = chains::frame(&opened.described.items);
@@ -838,27 +831,29 @@ impl<N: Needs> Registry<N> {
             })?;
             let adapter = crate::adapters::export::ExportAdapter::open(
                 proxy,
-                Arc::clone(&self.needs),
+                Arc::clone(&needs),
                 opened.errors,
                 describe,
                 opened.dests,
                 &opened.answer.answer(),
             )
             .map_err(OpenError::Call)?;
-            self.remember(&spec, KindCode::Export);
+            self.remember(&spec, KindCode::Export, &needs, None);
             let port: Arc<dyn ExportPort> = Arc::new(adapter);
             Ok(port)
         })
     }
 
-    pub fn open_plane(
+    pub fn open_plane<N: Needs>(
         &self,
         s: &InstanceSpec<'_>,
+        needs: &Arc<N>,
     ) -> BoxFut<'_, Result<Arc<dyn PlanePort>, OpenError>> {
         let owned = OwnedSpec::new(s);
+        let needs = Arc::clone(needs);
         Box::pin(async move {
             let spec = owned.spec();
-            let opened = self.open_instance::<k::Plane>(&spec).await?;
+            let opened = self.open_instance::<k::Plane, N>(&spec, &needs).await?;
             let proxy =
                 busbar_plugin_abi::plane::Proxy::bind(opened.instance).ok_or_else(not_this_kind)?;
             let frame = chains::frame(&opened.described.items);
@@ -870,10 +865,10 @@ impl<N: Needs> Registry<N> {
             .map_err(|e| {
                 OpenError::Unknown(format!("{}: the plane's describe: {}", spec.name, e.0))
             })?;
-            self.remember(&spec, KindCode::Plane);
+            self.remember(&spec, KindCode::Plane, &needs, None);
             let port: Arc<dyn PlanePort> = Arc::new(crate::adapters::plane::PlaneAdapter::new(
                 proxy,
-                Arc::clone(&self.needs),
+                Arc::clone(&needs),
                 describe,
                 opened.errors,
             ));
@@ -881,14 +876,16 @@ impl<N: Needs> Registry<N> {
         })
     }
 
-    pub fn open_transport(
+    pub fn open_transport<N: Needs>(
         &self,
         s: &InstanceSpec<'_>,
+        needs: &Arc<N>,
     ) -> BoxFut<'_, Result<Arc<dyn TransportPort>, OpenError>> {
         let owned = OwnedSpec::new(s);
+        let needs = Arc::clone(needs);
         Box::pin(async move {
             let spec = owned.spec();
-            let opened = self.open_instance::<k::Transport>(&spec).await?;
+            let opened = self.open_instance::<k::Transport, N>(&spec, &needs).await?;
             let proxy = busbar_plugin_abi::transport::Proxy::bind(opened.instance)
                 .ok_or_else(not_this_kind)?;
             let protocols: Box<[Box<str>]> = opened
@@ -902,7 +899,7 @@ impl<N: Needs> Registry<N> {
             let adapter =
                 crate::adapters::transport::TransportAdapter::open(proxy, opened.errors, protocols)
                     .map_err(crate::answer::open_error)?;
-            self.remember(&spec, KindCode::Transport);
+            self.remember(&spec, KindCode::Transport, &needs, None);
             let port: Arc<dyn TransportPort> = Arc::new(adapter);
             Ok(port)
         })
@@ -1062,15 +1059,10 @@ impl<N: Needs> Registry<N> {
                 caller_upstreams: &stored.caller_upstreams,
             };
             self.check(&spec).await?;
-            let port = match kind {
-                KindCode::Store => OpenedPort::Store(self.open_store(&spec).await?),
-                KindCode::Secret => OpenedPort::Secret(self.open_secret(&spec).await?),
-                KindCode::Auth => OpenedPort::Auth(self.open_auth(&spec).await?),
-                KindCode::Hook => OpenedPort::Hook(self.open_hook(&spec).await?),
-                KindCode::Export => OpenedPort::Export(self.open_export(&spec).await?),
-                KindCode::Plane => OpenedPort::Plane(self.open_plane(&spec).await?),
-                KindCode::Transport => OpenedPort::Transport(self.open_transport(&spec).await?),
-            };
+            let port = stored
+                .opener
+                .open(self, OwnedSpec::new(&spec), kind)
+                .await?;
             if let Some(held) = self
                 .applied
                 .lock()
@@ -1104,26 +1096,24 @@ impl<N: Needs> Registry<N> {
             .map(|(identity, _, _)| identity.to_owned())
     }
 
-    /// The kernel's seal factory the store adapter installs from (`StoreAdapter::new`, once per store open).
-    /// Set once, before the first `open_store`; a second call is ignored.
-    pub fn set_store_seal(&self, seal: StoreSeal) {
-        let _ = self.store_seal.set(seal);
-    }
-
-    /// The kernel's side of the auth adapter (issued-credential lookup, replay guard) and `auth.unknown_key_refresh_s`.
-    /// Set once, before the first `open_auth`; a second call is ignored.
-    pub fn set_auth_core(&self, core: Arc<dyn AuthCore>, unknown_key_refresh: std::time::Duration) {
-        let _ = self.auth_core.set((core, unknown_key_refresh));
-    }
-
     /// Records the config an instance opened with, for `reconfigure` (the last applied version is kept).
-    pub(crate) fn remember(&self, s: &InstanceSpec<'_>, kind: KindCode) {
+    pub(crate) fn remember<N: Needs>(
+        &self,
+        s: &InstanceSpec<'_>,
+        kind: KindCode,
+        needs: &Arc<N>,
+        seal: Option<StoreSeal>,
+    ) {
         let mut applied = self.applied.lock().unwrap_or_else(PoisonError::into_inner);
         let key = (kind, Box::from(s.name));
         let version = applied.get(&key).map_or(0, |a| a.version);
         applied.insert(
             key,
             Applied {
+                opener: Arc::new(BoundNeeds {
+                    needs: Arc::clone(needs),
+                    seal,
+                }),
                 identity: Box::from(s.identity),
                 config: s.config_json.to_vec(),
                 limits: s.limits,
@@ -1157,7 +1147,7 @@ impl<N: Needs> Registry<N> {
                 .filter_map(|(_, b)| core::str::from_utf8(b).ok())
                 .collect()
         };
-        let id = self.next_id.fetch_add(1, Ordering::Relaxed) + 1;
+        let id = self.ids.next()?;
         let bound = self
             .binder
             .bind_any(
@@ -1202,14 +1192,6 @@ impl<N: Needs> Registry<N> {
             .iter()
             .find(|e| &*e.identity == identity)
             .map(|e| e.described.clone())
-    }
-
-    /// Start the watchdog thread (100 ms scan, §10.6; over-ceiling => quarantine + audit plugin_hung + alert).
-    /// Round 14: the thread runs `watch::scan(|s, e| table.watch_view(s, e), |s, ep, e, ms| table.hung(s, ep, e, ms))`
-    /// over the registry's `SlotTable`; it holds no Instance and no Image reference.
-    pub fn start_watchdog(&self) {
-        self.watchdog
-            .get_or_init(|| crate::watchdog::spawn(Arc::clone(&self.slots)));
     }
 
     /// Every admitted image of `kind` with the UTF-8 bodies of its `tag` describe items, in admission order. A
@@ -1641,6 +1623,11 @@ impl Default for SlotTable {
 }
 
 impl SlotTable {
+    /// The scrub set of the instance leasing this process slot.
+    pub fn scrub_of(&self, slot: u32) -> Option<Arc<Scrub>> {
+        self.record(slot).map(|record| Arc::clone(&record.scrub))
+    }
+
     pub fn new() -> Self {
         SlotTable {
             dir: Box::new(core::array::from_fn(|_| OnceLock::new())),
@@ -2075,9 +2062,16 @@ static ACTIVE: OnceLock<Arc<SlotTable>> = OnceLock::new();
 /// Once per process: the watch table, the entry fault sink (`driver::set_fault_sink`: quarantine the slot's
 /// instance when the entry was an instance's, audit either way) and the log sink (`host_vt::set_log_sink`: every
 /// plugin line attributed by the entry's slot and scrubbed with that slot's set, I14).
-pub fn install_sinks(slots: &Arc<SlotTable>) {
-    if ACTIVE.set(Arc::clone(slots)).is_err() {
-        return;
+pub(crate) fn install_sinks(slots: &Arc<SlotTable>) -> Result<(), String> {
+    if let Err(candidate) = ACTIVE.set(Arc::clone(slots)) {
+        return if ACTIVE
+            .get()
+            .is_some_and(|active| Arc::ptr_eq(active, &candidate))
+        {
+            Ok(())
+        } else {
+            Err("process plugin sinks already belong to another slot table".into())
+        };
     }
     busbar_plugin_abi::host_side::watch::init();
     busbar_plugin_abi::host_side::driver::set_fault_sink(|slot, image_owned, reason| {
@@ -2096,6 +2090,7 @@ pub fn install_sinks(slots: &Arc<SlotTable>) {
             _ => 5,
         },
     );
+    Ok(())
 }
 
 fn log_sink(slot: Option<u32>, level: u32, error: u32, msg: &str) {

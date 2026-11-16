@@ -597,3 +597,5 @@ mod neutral_auth;
 
 /// Process-owned MIN-3 resources.
 pub mod process;
+
+mod reopen;
