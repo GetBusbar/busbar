@@ -157,22 +157,18 @@ fn a_need_from_a_lane_store_is_fault_need_not_allowed() {
 fn a_ceiling_above_the_lane_range_is_clamped_and_logged() {
     use busbar_plugin_abi::host_side::HOST;
     use busbar_plugin_loader::admit::admit_header;
-    use busbar_plugin_loader::binder::ConfigBinder;
-    use busbar_plugin_loader::instance::{Ceilings, Registry};
-    use busbar_plugin_test::suites::harness::MemBinder;
+
+    use busbar_plugin_loader::instance::{Ceilings, ImagesBuilder, SlotTable};
 
     use crate::min3_store::{Capture, LANE_SCAN_CLAMPED_US, LANE_SCAN_US};
 
     let capture = Capture::default();
     let _tap = capture.install();
-    let mut registry = Registry::new(
-        &HOST,
-        Arc::new(FakeNeeds::new()),
-        Arc::new(MemBinder::new()) as Arc<dyn ConfigBinder>,
-        Ceilings::DEFAULT,
-    );
+    let slots = Arc::new(SlotTable::new());
+    busbar_plugin_loader::instance::install_sinks(&slots);
+    let mut images = ImagesBuilder::new(&HOST, slots, Ceilings::DEFAULT);
     let admitted = admit_header(lane::PLUGIN.plugin()).expect("the lane image admits");
-    registry.add(admitted).expect("the lane image is added");
+    images.admit(admitted).expect("the lane image is described");
     let clamps = capture.with_message("plugin ceiling clamped into its range");
     assert_eq!(clamps.len(), 1, "one clamp, logged once");
     let scan_bit = busbar_plugin_abi::store::M_SCAN

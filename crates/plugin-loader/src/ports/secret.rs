@@ -27,6 +27,7 @@ pub trait SecretPort: Send + Sync + 'static {
 
 /// One D_SUGAR item (§8.2), tagged with the declaring plugin's verified identity (core-internal; never shown to
 /// any plugin).
+#[derive(Clone)]
 pub struct SugarDecl {
     pub identity: Arc<str>,
     pub role: u32,

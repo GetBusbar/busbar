@@ -31,7 +31,7 @@ fn cx(id: u64) -> CallCx {
 /// identity is already admitted; a refused newcomer answers to nothing, whatever the admission order.
 #[test]
 fn former_names_match_and_name_conflict_at_add() {
-    let mut h = Harness::admit(fx::alias::PLUGIN.plugin(), FakeNeeds::new())
+    let h = Harness::admit(fx::alias::PLUGIN.plugin(), FakeNeeds::new())
         .unwrap_or_else(|r| panic!("the alias image is admitted: {r:?}"));
     assert_eq!(h.identity(), ALIAS);
 
@@ -81,8 +81,7 @@ fn former_names_match_and_name_conflict_at_add() {
         (fx::alias::PLUGIN.plugin(), "identity", ALIAS),
     ];
     for (plugin, field, word) in conflicts {
-        let refused = h
-            .add(plugin)
+        let refused = Harness::admit_all(&[fx::alias::PLUGIN.plugin(), plugin], FakeNeeds::new())
             .err()
             .unwrap_or_else(|| panic!("a newcomer answering to {word} is refused"));
         assert_eq!(
@@ -104,12 +103,17 @@ fn former_names_match_and_name_conflict_at_add() {
     );
 
     // The other order: the word's owner admitted first, the alias image is the newcomer refused.
-    let mut first = Harness::admit(fx::alias_shared_word::PLUGIN.plugin(), FakeNeeds::new())
+    let first = Harness::admit(fx::alias_shared_word::PLUGIN.plugin(), FakeNeeds::new())
         .unwrap_or_else(|r| panic!("{r:?}"));
-    let refused = first
-        .add(fx::alias::PLUGIN.plugin())
-        .err()
-        .unwrap_or_else(|| panic!("the alias image shares alias-old"));
+    let refused = Harness::admit_all(
+        &[
+            fx::alias_shared_word::PLUGIN.plugin(),
+            fx::alias::PLUGIN.plugin(),
+        ],
+        FakeNeeds::new(),
+    )
+    .err()
+    .unwrap_or_else(|| panic!("the alias image shares alias-old"));
     assert_eq!(
         (refused.code, refused.field, refused.have.as_str()),
         (RefusalCode::NameConflict, "former_names", ALIAS_WORDS[0])
@@ -133,7 +137,7 @@ fn every_word_resolves_module_in_old_and_current_configs() {
 /// cannot mutate an already-frozen generation, and duplicate admission still refuses by name.
 #[test]
 fn described_images_are_available_before_registry_construction() {
-    use busbar_plugin_abi::host_side::vt::HOST;
+    use busbar_plugin_abi::host_side::HOST;
     use busbar_plugin_loader::admit::admit_linked;
     use busbar_plugin_loader::instance::{Ceilings, ImagesBuilder, SlotTable};
     use std::sync::Arc;

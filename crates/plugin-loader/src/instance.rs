@@ -48,153 +48,48 @@ use crate::ports::transport::TransportPort;
 use crate::refusal::{Refusal, RefusalCode};
 use busbar_ffi::kind as k;
 
-pub struct Registry<N: Needs> {
-    pub(crate) host: &'static Host,
-    pub(crate) needs: Arc<N>,
-    pub(crate) binder: Arc<dyn ConfigBinder>,
-    pub(crate) ceilings: Ceilings,
-    pub(crate) slots: Arc<SlotTable>,
-    /// Admitted images in admission order (identity unique, `former_names` words unique across all of them).
-    pub(crate) images: Vec<ImageEntry>,
-    /// Runtime instance ids (never 0, never reused).
-    pub(crate) next_id: AtomicU64,
-    /// Every admitted secret image's D_SUGAR rows, in admission order, tagged with the verified identity.
+/// Admission and description, before any binder, Needs or instance exists (HOST M3a).
+pub struct ImagesBuilder {
+    host: &'static Host,
+    slots: Arc<SlotTable>,
+    ceilings: Ceilings,
+    entries: Vec<ImageEntry>,
     sugars: Vec<SugarDecl>,
-    /// Every issued-credential kind an admitted auth image declared, with its shape.
     issued: Vec<(Box<str>, IssuedShape)>,
-    /// The config each open instance was last opened with, by (kind, configured name), for `reconfigure`.
-    applied: Mutex<HashMap<(KindCode, Box<str>), Applied>>,
-    /// What the store and auth adapters need from core and the kernel installs once (`set_store_seal`,
-    /// `set_auth_core`).
-    store_seal: OnceLock<StoreSeal>,
-    auth_core: OnceLock<(Arc<dyn AuthCore>, std::time::Duration)>,
-    /// Round 31: each instance's settled answer from its last `open`, by configured name, until taken once.
-    settled: Mutex<HashMap<Box<str>, Settled>>,
-    watchdog: OnceLock<std::thread::JoinHandle<()>>,
 }
 
-/// One admitted image as `add` left it: the verified identity, its `former_names` words, whether it is
-/// compiled in, the describe facts, its leaked error book and the §10.6 ceiling row every slot of it gets.
-pub(crate) struct ImageEntry {
-    pub(crate) identity: Arc<str>,
-    former_names: Vec<Box<str>>,
-    linked: bool,
-    pub(crate) described: Described,
-    pub(crate) errors: &'static ErrorBook,
-    pub(crate) ceilings: [u32; 64],
-    /// The header and image `add` admitted (None only for an entry a unit test built by hand).
-    pub(crate) header: Option<busbar_ffi::image::Admitted>,
-    pub(crate) image: Option<Arc<Image>>,
-    /// D_DIALECT_AUTH rows of a plane image, decoded and copied at `add`.
-    dialect_auth: Vec<plane::DialectAuthOwned>,
-}
-
-/// The factory of the kernel seal the store adapter installs (one seal per `StoreAdapter::new`).
-pub type StoreSeal =
-    Box<dyn Fn() -> Box<dyn busbar_contract::plugin::KernelSeal + Send + Sync> + Send + Sync>;
-
-/// What `reconfigure` merges a push into: the config an instance was opened with and the last applied version.
+/// Immutable admitted image leases and describe facts for one configuration read.
 #[derive(Clone)]
-struct Applied {
-    identity: Box<str>,
-    config: Vec<u8>,
-    limits: InstanceLimits,
-    public_url: Option<String>,
-    caller_upstreams: Vec<Box<str>>,
-    version: u64,
+pub struct Images {
+    host: &'static Host,
+    slots: Arc<SlotTable>,
+    ceilings: Ceilings,
+    entries: Vec<ImageEntry>,
+    sugars: Vec<SugarDecl>,
+    issued: Vec<(Box<str>, IssuedShape)>,
 }
 
-/// `config_json` is the operator's config for this instance as core holds it (secret references with their
-/// `module`, PEM CAs inline). The registry never passes it to the plugin: the binder rewrites it first.
-/// identity = which admitted plugin (verified stamp name); name = the operator's instance name (the config
-/// key, e.g. `planes.mcp-main`, `auth.openai-outbound`), stable across restart, reconfigure and replicas, unique
-/// per kind; every durable core state for the instance is keyed by (identity, name) (§10.3).
-pub struct InstanceSpec<'a> {
-    pub identity: &'a str,
-    pub name: &'a str,
-    pub config_json: &'a [u8],
-    /// Round 8: parsed by the kernel from `limits` beside `module` (§12.22); `config_json` never contains it.
-    pub limits: InstanceLimits,
-    /// Round 14: core's top-level `public_url` (None = unset), the same value for every instance. The registry
-    /// writes it only at a D_PUBLIC_URL_PATH a plane image declared (§12.7 core values); every other kind ignores it.
-    pub public_url: Option<&'a str>,
-    /// Round 22: the configured upstream names whose resolved binding is caller-mode (`UpstreamAuth.caller`,
-    /// §12.1), sorted; the same slice for every instance. Written only at a D_CALLER_UPSTREAMS_PATH a plane image
-    /// declared; every other kind ignores it.
-    pub caller_upstreams: &'a [Box<str>],
-}
-
-pub struct Ceilings {
-    pub max_out: usize,
-    pub max_out_store: usize,
-    pub sync_ceiling_us: u32,
-    pub poll_ceiling_us: u32,
-    pub cold_ceiling_us: u32,
-    pub max_steps: u32,
-}
-
-impl Ceilings {
-    /// The IF's defaults (§10.5, §10.6, §11.2): `max_out` 1 MiB (a store's 16 MiB), a sync method 50 ms, one poll
-    /// 2 s, the cold entries 5 s, 10,000 driver steps.
-    pub const DEFAULT: Ceilings = Ceilings {
-        max_out: 1 << 20,
-        max_out_store: 16 << 20,
-        sync_ceiling_us: 50_000,
-        poll_ceiling_us: 2_000_000,
-        cold_ceiling_us: 5_000_000,
-        max_steps: 10_000,
-    };
-}
-
-impl<N: Needs> Registry<N> {
-    /// Round 35 (R7b): `ConfigBinder` is the loader's own trait (`crate::binder`), so `new` names it here.
-    /// The first registry in the process also starts the §10.6 watch table and installs the entry fault sink and the
-    /// log sink (`install_sinks`); a later one shares them.
-    pub fn new(
-        host: &'static Host,
-        needs: Arc<N>,
-        binder: Arc<dyn ConfigBinder>,
-        ceilings: Ceilings,
-    ) -> Self {
-        let slots = Arc::new(SlotTable::new());
-        install_sinks(&slots);
-        Registry {
+impl ImagesBuilder {
+    pub fn new(host: &'static Host, slots: Arc<SlotTable>, ceilings: Ceilings) -> Self {
+        Self {
             host,
-            needs,
-            binder,
-            ceilings,
             slots,
-            images: Vec::new(),
-            next_id: AtomicU64::new(0),
+            ceilings,
+            entries: Vec::new(),
             sugars: Vec::new(),
             issued: Vec::new(),
-            applied: Mutex::new(HashMap::new()),
-            store_seal: OnceLock::new(),
-            auth_core: OnceLock::new(),
-            settled: Mutex::new(HashMap::new()),
-            watchdog: OnceLock::new(),
         }
     }
-
-    /// The host table, the Needs implementation, the binder and the core ceilings every adapter (L3-L9) and
-    /// every open chain read. Crate-internal: no kernel caller.
-    pub(crate) fn parts(&self) -> (&'static Host, &Arc<N>, &dyn ConfigBinder, &Ceilings) {
-        (self.host, &self.needs, &*self.binder, &self.ceilings)
+    pub fn finish(self) -> Images {
+        Images {
+            host: self.host,
+            slots: self.slots,
+            ceilings: self.ceilings,
+            entries: self.entries,
+            sugars: self.sugars,
+            issued: self.issued,
+        }
     }
-
-    /// The registry's slot table (the watchdog thread and the adapters' leases).
-    pub(crate) fn slots(&self) -> &Arc<SlotTable> {
-        &self.slots
-    }
-
-    /// The scrub set of the instance that owns watchdog slot `slot` (its slot record, §10.6): what custody
-    /// registers every value it hands that instance in (§12.2 step 5). None: the slot is not live.
-    pub fn scrub_of(&self, slot: u32) -> Option<Arc<Scrub>> {
-        self.slots
-            .record(slot)
-            .map(|record| Arc::clone(&record.scrub))
-    }
-
     /// `add` after its describe ran: every check that reads only the decoded describe. NameConflict first (the
     /// identity and each `former_names` word against every admitted identity and word), then D_ERRORS into the
     /// image's `ErrorBook` (a bad list admits the image with `ErrorBook::Refused`, never a refusal), then the
@@ -208,7 +103,7 @@ impl<N: Needs> Registry<N> {
         mut described: Described,
     ) -> Result<(), Refusal> {
         if let Some(refusal) = name_conflict(
-            self.images
+            self.entries
                 .iter()
                 .map(|e| (&*e.identity, e.former_names.iter().map(|w| &**w))),
             identity,
@@ -258,7 +153,7 @@ impl<N: Needs> Registry<N> {
                 "plugin ceiling clamped into its range"
             );
         }
-        self.images.push(ImageEntry {
+        self.entries.push(ImageEntry {
             identity: Arc::from(identity),
             former_names: former_names.iter().map(|w| Box::from(*w)).collect(),
             linked,
@@ -270,46 +165,6 @@ impl<N: Needs> Registry<N> {
             dialect_auth: Vec::new(),
         });
         Ok(())
-    }
-
-    /// The image entry the generic `module:` match resolves: identity first, then `former_names` words.
-    pub(crate) fn resolve_module(
-        &self,
-        module: &str,
-    ) -> Option<(&str, &'static ErrorBook, &[u32; 64])> {
-        let hit = self
-            .images
-            .iter()
-            .find(|e| &*e.identity == module)
-            .or_else(|| {
-                self.images
-                    .iter()
-                    .find(|e| e.former_names.iter().any(|w| &**w == module))
-            })?;
-        Some((&hit.identity, hit.errors, &hit.ceilings))
-    }
-
-    /// Round 31: an `open_<kind>` keeps its decoded settled answer for the caller's write-back.
-    pub(crate) fn keep_settled(&self, name: &str, settled: Settled) {
-        self.settled
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(Box::from(name), settled);
-    }
-
-    /// The check-time half of `check_endpoints`, after the DRY_RUN chain answered: decode the ENDPOINT records
-    /// and judge them against the instance's `accept` (BUSBAR-3160/3163; §48, TRANSPORT-SECURITY-POLICY §3-§4).
-    pub(crate) fn judge_check_answer(
-        &self,
-        s: &InstanceSpec<'_>,
-        answer: &[u8],
-    ) -> Result<Vec<DeclaredEndpoint>, OpenError> {
-        let declared = decode_endpoints(answer, s.name)?;
-        let module = self
-            .resolve_module(s.identity)
-            .map_or(s.identity, |(identity, _, _)| identity);
-        judge_endpoints(s.name, module, s.limits.accept, &declared)?;
-        Ok(declared)
     }
 
     /// Round 6: also runs the plugin's describe once (cold, `EntryOwner::Image`, round 14: its own leased watchdog
@@ -335,7 +190,7 @@ impl<N: Needs> Registry<N> {
     /// `want` is the constant "1..=256 numbers, each 1..=9999, strictly ascending; name ^[a-z][a-z0-9-]{0,63}$ not
     /// ending '-'". A malformed describe frame stays DescribeInvalid. An image without D_ERRORS gets
     /// `ErrorBook::None` and no identity check.
-    pub fn add(&mut self, admitted: Admitted) -> Result<(), Refusal> {
+    pub fn admit(&mut self, admitted: Admitted) -> Result<(), Refusal> {
         let identity = admitted.identity().to_owned();
         let (header, kind) = (admitted.plugin(), admitted.kind());
         let named = |r: Refusal| r.named(&identity);
@@ -396,7 +251,7 @@ impl<N: Needs> Registry<N> {
             .collect();
         let linked = matches!(*admitted.image, Image::Linked);
         self.admit_described(&identity, &admitted.stamp.name, &former, linked, described)?;
-        if let Some(entry) = self.images.last_mut() {
+        if let Some(entry) = self.entries.last_mut() {
             entry.header = Some(header);
             entry.image = Some(Arc::clone(&admitted.image));
             entry.dialect_auth = kind_items.dialect_auth;
@@ -405,7 +260,19 @@ impl<N: Needs> Registry<N> {
         self.issued.extend(kind_items.issued);
         Ok(())
     }
-
+}
+impl Images {
+    /// Create an independent candidate sharing the admitted image leases, never mutating this snapshot.
+    pub fn extend(&self) -> ImagesBuilder {
+        ImagesBuilder {
+            host: self.host,
+            slots: Arc::clone(&self.slots),
+            ceilings: self.ceilings.clone(),
+            entries: self.entries.clone(),
+            sugars: self.sugars.clone(),
+            issued: self.issued.clone(),
+        }
+    }
     /// Round 6: every admitted secret plugin's declared shorthands, in admission order. The kernel feeds them to
     /// `busbar_contract::secret_ref::Sugars::declare` (which refuses core words, duplicate words and duplicate
     /// roles) and hands the resulting `Sugars` to the binder (§12.7) and to its own config-section parsing.
@@ -451,7 +318,7 @@ impl<N: Needs> Registry<N> {
     /// carry `store::FB_EPHEMERAL`, in admission order. Read only by K9's absent-store rule (§12.10 item 1;
     /// MIGRATE-ON-BOOT r15 §3 1d); drop-ins are never listed.
     pub fn ephemeral_stores(&self) -> Vec<&str> {
-        self.images
+        self.entries
             .iter()
             .filter(|e| {
                 e.linked
@@ -492,7 +359,331 @@ impl<N: Needs> Registry<N> {
     /// Round 14 (round 15: typed): per admitted plane image, its identity and its D_DIALECT_AUTH rows, decoded at
     /// `add` (`plane::decode_dialect_auth`, owned copies). Read only by K6's binding materialisation (§12.18).
     pub fn dialect_auth(&self) -> Vec<(&str, Vec<plane::DialectAuthOwned>)> {
+        self.entries
+            .iter()
+            .filter(|e| e.described.kind == KindCode::Plane)
+            .map(|e| (&*e.identity, e.dialect_auth.clone()))
+            .collect()
+    }
+
+    /// The image entry the generic `module:` match resolves: identity first, then `former_names` words.
+    pub(crate) fn resolve_module(
+        &self,
+        module: &str,
+    ) -> Option<(&str, &'static ErrorBook, &[u32; 64])> {
+        let hit = self
+            .images
+            .iter()
+            .find(|e| &*e.identity == module)
+            .or_else(|| {
+                self.entries
+                    .iter()
+                    .find(|e| e.former_names.iter().any(|w| &**w == module))
+            })?;
+        Some((&hit.identity, hit.errors, &hit.ceilings))
+    }
+
+    /// The canonical identity of the admitted image the operator's `module` word names (identity, then a
+    /// `former_names` word), or None when no admitted image answers to it.
+    pub fn identity_of(&self, module: &str) -> Option<String> {
+        self.resolve_module(module)
+            .map(|(identity, _, _)| identity.to_owned())
+    }
+
+    /// Plugin describe facts for admin/health (never shown to another plugin).
+    pub fn described(&self, identity: &str) -> Option<Described> {
+        self.entries
+            .iter()
+            .find(|e| &*e.identity == identity)
+            .map(|e| e.described.clone())
+    }
+
+    fn texts(&self, kind: KindCode, tag: u16) -> Vec<(&str, Vec<&str>)> {
+        self.entries
+            .iter()
+            .filter(|e| e.described.kind == kind)
+            .map(|e| {
+                let words = e
+                    .described
+                    .items
+                    .iter()
+                    .filter(|(t, _)| *t == tag)
+                    .filter_map(|(_, b)| core::str::from_utf8(b).ok())
+                    .collect();
+                (&*e.identity, words)
+            })
+            .collect()
+    }
+}
+
+pub struct Registry<N: Needs> {
+    pub(crate) host: &'static Host,
+    pub(crate) needs: Arc<N>,
+    pub(crate) binder: Arc<dyn ConfigBinder>,
+    pub(crate) ceilings: Ceilings,
+    pub(crate) slots: Arc<SlotTable>,
+    /// Admitted images in admission order (identity unique, `former_names` words unique across all of them).
+    pub(crate) images: Images,
+    /// Runtime instance ids (never 0, never reused).
+    pub(crate) next_id: AtomicU64,
+    /// The config each open instance was last opened with, by (kind, configured name), for `reconfigure`.
+    applied: Mutex<HashMap<(KindCode, Box<str>), Applied>>,
+    /// What the store and auth adapters need from core and the kernel installs once (`set_store_seal`,
+    /// `set_auth_core`).
+    store_seal: OnceLock<StoreSeal>,
+    auth_core: OnceLock<(Arc<dyn AuthCore>, std::time::Duration)>,
+    /// Round 31: each instance's settled answer from its last `open`, by configured name, until taken once.
+    settled: Mutex<HashMap<Box<str>, Settled>>,
+    watchdog: OnceLock<std::thread::JoinHandle<()>>,
+}
+
+/// One admitted image as `add` left it: the verified identity, its `former_names` words, whether it is
+/// compiled in, the describe facts, its leaked error book and the §10.6 ceiling row every slot of it gets.
+#[derive(Clone)]
+pub(crate) struct ImageEntry {
+    pub(crate) identity: Arc<str>,
+    former_names: Vec<Box<str>>,
+    linked: bool,
+    pub(crate) described: Described,
+    pub(crate) errors: &'static ErrorBook,
+    pub(crate) ceilings: [u32; 64],
+    /// The header and image `add` admitted (None only for an entry a unit test built by hand).
+    pub(crate) header: Option<busbar_ffi::image::Admitted>,
+    pub(crate) image: Option<Arc<Image>>,
+    /// D_DIALECT_AUTH rows of a plane image, decoded and copied at `add`.
+    dialect_auth: Vec<plane::DialectAuthOwned>,
+}
+
+/// The factory of the kernel seal the store adapter installs (one seal per `StoreAdapter::new`).
+pub type StoreSeal =
+    Box<dyn Fn() -> Box<dyn busbar_contract::plugin::KernelSeal + Send + Sync> + Send + Sync>;
+
+/// What `reconfigure` merges a push into: the config an instance was opened with and the last applied version.
+#[derive(Clone)]
+struct Applied {
+    identity: Box<str>,
+    config: Vec<u8>,
+    limits: InstanceLimits,
+    public_url: Option<String>,
+    caller_upstreams: Vec<Box<str>>,
+    version: u64,
+}
+
+/// `config_json` is the operator's config for this instance as core holds it (secret references with their
+/// `module`, PEM CAs inline). The registry never passes it to the plugin: the binder rewrites it first.
+/// identity = which admitted plugin (verified stamp name); name = the operator's instance name (the config
+/// key, e.g. `planes.mcp-main`, `auth.openai-outbound`), stable across restart, reconfigure and replicas, unique
+/// per kind; every durable core state for the instance is keyed by (identity, name) (§10.3).
+pub struct InstanceSpec<'a> {
+    pub identity: &'a str,
+    pub name: &'a str,
+    pub config_json: &'a [u8],
+    /// Round 8: parsed by the kernel from `limits` beside `module` (§12.22); `config_json` never contains it.
+    pub limits: InstanceLimits,
+    /// Round 14: core's top-level `public_url` (None = unset), the same value for every instance. The registry
+    /// writes it only at a D_PUBLIC_URL_PATH a plane image declared (§12.7 core values); every other kind ignores it.
+    pub public_url: Option<&'a str>,
+    /// Round 22: the configured upstream names whose resolved binding is caller-mode (`UpstreamAuth.caller`,
+    /// §12.1), sorted; the same slice for every instance. Written only at a D_CALLER_UPSTREAMS_PATH a plane image
+    /// declared; every other kind ignores it.
+    pub caller_upstreams: &'a [Box<str>],
+}
+
+#[derive(Clone)]
+pub struct Ceilings {
+    pub max_out: usize,
+    pub max_out_store: usize,
+    pub sync_ceiling_us: u32,
+    pub poll_ceiling_us: u32,
+    pub cold_ceiling_us: u32,
+    pub max_steps: u32,
+}
+
+impl Ceilings {
+    /// The IF's defaults (§10.5, §10.6, §11.2): `max_out` 1 MiB (a store's 16 MiB), a sync method 50 ms, one poll
+    /// 2 s, the cold entries 5 s, 10,000 driver steps.
+    pub const DEFAULT: Ceilings = Ceilings {
+        max_out: 1 << 20,
+        max_out_store: 16 << 20,
+        sync_ceiling_us: 50_000,
+        poll_ceiling_us: 2_000_000,
+        cold_ceiling_us: 5_000_000,
+        max_steps: 10_000,
+    };
+}
+
+impl<N: Needs> Registry<N> {
+    /// Round 35 (R7b): `ConfigBinder` is the loader's own trait (`crate::binder`), so `new` names it here.
+    /// Images are already described; construction cannot admit or mutate an image.
+    pub fn new(images: Images, needs: Arc<N>, binder: Arc<dyn ConfigBinder>) -> Self {
+        Registry {
+            host: images.host,
+            needs,
+            binder,
+            ceilings: images.ceilings.clone(),
+            slots: Arc::clone(&images.slots),
+            images,
+            next_id: AtomicU64::new(0),
+            applied: Mutex::new(HashMap::new()),
+            store_seal: OnceLock::new(),
+            auth_core: OnceLock::new(),
+            settled: Mutex::new(HashMap::new()),
+            watchdog: OnceLock::new(),
+        }
+    }
+
+    /// The host table, the Needs implementation, the binder and the core ceilings every adapter (L3-L9) and
+    /// every open chain read. Crate-internal: no kernel caller.
+    pub(crate) fn parts(&self) -> (&'static Host, &Arc<N>, &dyn ConfigBinder, &Ceilings) {
+        (self.host, &self.needs, &*self.binder, &self.ceilings)
+    }
+
+    /// The registry's slot table (the watchdog thread and the adapters' leases).
+    pub(crate) fn slots(&self) -> &Arc<SlotTable> {
+        &self.slots
+    }
+
+    /// The scrub set of the instance that owns watchdog slot `slot` (its slot record, §10.6): what custody
+    /// registers every value it hands that instance in (§12.2 step 5). None: the slot is not live.
+    pub fn scrub_of(&self, slot: u32) -> Option<Arc<Scrub>> {
+        self.slots
+            .record(slot)
+            .map(|record| Arc::clone(&record.scrub))
+    }
+
+    /// The image entry the generic `module:` match resolves: identity first, then `former_names` words.
+    pub(crate) fn resolve_module(
+        &self,
+        module: &str,
+    ) -> Option<(&str, &'static ErrorBook, &[u32; 64])> {
+        let hit = self
+            .images
+            .entries
+            .iter()
+            .find(|e| &*e.identity == module)
+            .or_else(|| {
+                self.images
+                    .entries
+                    .iter()
+                    .find(|e| e.former_names.iter().any(|w| &**w == module))
+            })?;
+        Some((&hit.identity, hit.errors, &hit.ceilings))
+    }
+
+    /// Round 31: an `open_<kind>` keeps its decoded settled answer for the caller's write-back.
+    pub(crate) fn keep_settled(&self, name: &str, settled: Settled) {
+        self.settled
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(Box::from(name), settled);
+    }
+
+    /// The check-time half of `check_endpoints`, after the DRY_RUN chain answered: decode the ENDPOINT records
+    /// and judge them against the instance's `accept` (BUSBAR-3160/3163; §48, TRANSPORT-SECURITY-POLICY §3-§4).
+    pub(crate) fn judge_check_answer(
+        &self,
+        s: &InstanceSpec<'_>,
+        answer: &[u8],
+    ) -> Result<Vec<DeclaredEndpoint>, OpenError> {
+        let declared = decode_endpoints(answer, s.name)?;
+        let module = self
+            .resolve_module(s.identity)
+            .map_or(s.identity, |(identity, _, _)| identity);
+        judge_endpoints(s.name, module, s.limits.accept, &declared)?;
+        Ok(declared)
+    }
+
+    /// Round 6: every admitted secret plugin's declared shorthands, in admission order. The kernel feeds them to
+    /// `busbar_contract::secret_ref::Sugars::declare` (which refuses core words, duplicate words and duplicate
+    /// roles) and hands the resulting `Sugars` to the binder (§12.7) and to its own config-section parsing.
+    pub fn sugars(&self) -> &[SugarDecl] {
+        &self.images.sugars
+    }
+
+    /// Round 11: per admitted auth image, its identity and its D_OUTBOUND_STYLE words (decoded at `add`), in
+    /// admission order. Read only to build the STYLES frame the helper's `config::resolve_styles` consumes
+    /// (round 13, §12.10 item 3, §12.18).
+    pub fn outbound_styles(&self) -> Vec<(&str, Vec<&str>)> {
+        self.texts(
+            KindCode::Auth,
+            busbar_plugin_abi::auth::tag::D_OUTBOUND_STYLE,
+        )
+    }
+
+    /// Round 22: the D_STYLE_FLAGS mask (`auth::STYLE_*`) an admitted auth image declared for one of its styles
+    /// (decoded at `add`; 0 when it declared none or the pair is unknown). Read only by K6 when it resolves a
+    /// binding's credential mode and O_SCOPE (§12.18 "credential mode").
+    pub fn style_flags(&self, identity: &str, style: &str) -> u64 {
+        let Some(entry) = self
+            .images
+            .entries
+            .iter()
+            .find(|e| e.described.kind == KindCode::Auth && &*e.identity == identity)
+        else {
+            return 0;
+        };
+        entry
+            .described
+            .items
+            .iter()
+            .filter(|(t, _)| *t == busbar_plugin_abi::auth::tag::D_STYLE_FLAGS)
+            .find_map(|(t, b)| {
+                let rec = busbar_plugin_abi::records::Rec { tag: *t, body: b };
+                let (mask, word) = rec.pod_tail::<busbar_plugin_abi::records::MaskRec>().ok()?;
+                (word == style.as_bytes()).then_some(mask.mask)
+            })
+            .unwrap_or(0)
+    }
+
+    /// Round 12: the identities of admitted **compiled-in** (`Image::Linked`) store images whose describe facts
+    /// carry `store::FB_EPHEMERAL`, in admission order. Read only by K9's absent-store rule (§12.10 item 1;
+    /// MIGRATE-ON-BOOT r15 §3 1d); drop-ins are never listed.
+    pub fn ephemeral_stores(&self) -> Vec<&str> {
         self.images
+            .entries
+            .iter()
+            .filter(|e| {
+                e.linked
+                    && e.described.kind == KindCode::Store
+                    && e.described.facts & busbar_plugin_abi::store::FB_EPHEMERAL != 0
+            })
+            .map(|e| &*e.identity)
+            .collect()
+    }
+
+    /// Round 12: per admitted hook image, its identity and its D_WORD words (§8.4), in admission order. Read
+    /// only by the kernel's pool strategy resolution (§12.25).
+    pub fn hook_words(&self) -> Vec<(&str, Vec<&str>)> {
+        self.texts(KindCode::Hook, busbar_plugin_abi::hook::tag::D_WORD)
+    }
+
+    /// Round 12: per issued-credential kind any admitted auth image declares (D_ISSUED_KIND), the shape its
+    /// D_ISSUED_SHAPE item states (§8.3), decoded at `add`. Read only by issued credentials (§12.8).
+    pub fn issued_shapes(&self) -> Vec<(&str /* issued kind */, IssuedShape)> {
+        self.images
+            .issued
+            .iter()
+            .map(|(kind, shape)| (&**kind, shape.clone()))
+            .collect()
+    }
+
+    /// Round 13: per admitted plane image, its identity and its D_PROVIDER_SCHEMA text (§8.6 provider keys),
+    /// decoded at `add`. Read only by the kernel's provider-entry validation at config load.
+    pub fn provider_schemas(&self) -> Vec<(&str, &str)> {
+        self.texts(
+            KindCode::Plane,
+            busbar_plugin_abi::plane::tag::D_PROVIDER_SCHEMA,
+        )
+        .into_iter()
+        .filter_map(|(identity, texts)| texts.first().map(|schema| (identity, *schema)))
+        .collect()
+    }
+
+    /// Round 14 (round 15: typed): per admitted plane image, its identity and its D_DIALECT_AUTH rows, decoded at
+    /// `add` (`plane::decode_dialect_auth`, owned copies). Read only by K6's binding materialisation (§12.18).
+    pub fn dialect_auth(&self) -> Vec<(&str, Vec<plane::DialectAuthOwned>)> {
+        self.images
+            .entries
             .iter()
             .filter(|e| e.described.kind == KindCode::Plane)
             .map(|e| (&*e.identity, e.dialect_auth.clone()))
@@ -894,10 +1085,12 @@ impl<N: Needs> Registry<N> {
     /// The image entry the generic `module:` match resolves (identity first, then `former_names` words).
     pub(crate) fn entry_of(&self, module: &str) -> Option<&ImageEntry> {
         self.images
+            .entries
             .iter()
             .find(|e| &*e.identity == module)
             .or_else(|| {
                 self.images
+                    .entries
                     .iter()
                     .find(|e| e.former_names.iter().any(|w| &**w == module))
             })
@@ -1004,6 +1197,7 @@ impl<N: Needs> Registry<N> {
     /// Plugin describe facts for admin/health (never shown to another plugin).
     pub fn described(&self, identity: &str) -> Option<Described> {
         self.images
+            .entries
             .iter()
             .find(|e| &*e.identity == identity)
             .map(|e| e.described.clone())
@@ -1021,6 +1215,7 @@ impl<N: Needs> Registry<N> {
     /// body that is not UTF-8 is skipped.
     fn texts(&self, kind: KindCode, tag: u16) -> Vec<(&str, Vec<&str>)> {
         self.images
+            .entries
             .iter()
             .filter(|e| e.described.kind == kind)
             .map(|e| {
@@ -1893,7 +2088,7 @@ static ACTIVE: OnceLock<Arc<SlotTable>> = OnceLock::new();
 /// Once per process: the watch table, the entry fault sink (`driver::set_fault_sink`: quarantine the slot's
 /// instance when the entry was an instance's, audit either way) and the log sink (`host_vt::set_log_sink`: every
 /// plugin line attributed by the entry's slot and scrubbed with that slot's set, I14).
-fn install_sinks(slots: &Arc<SlotTable>) {
+pub fn install_sinks(slots: &Arc<SlotTable>) {
     if ACTIVE.set(Arc::clone(slots)).is_err() {
         return;
     }
