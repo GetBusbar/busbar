@@ -186,7 +186,7 @@ impl PortDriver {
         services: Arc<KernelServices>,
         caller: Caller,
         refusals: Arc<dyn RefusalMap>,
-        classes: &dyn Fn(u32) -> Option<u32>,
+        classes: &(dyn Fn(u32) -> Option<u32> + Sync),
     ) -> Result<Self, OpenError> {
         let port = registry.open_plane(spec).await?;
         let routes =
