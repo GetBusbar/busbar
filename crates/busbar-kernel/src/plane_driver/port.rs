@@ -16,11 +16,13 @@ use busbar_plugin_abi::host_side::needs::Needs;
 use busbar_plugin_abi::plane::{ADMIN_CARRIER_END, ROUTE_LINE};
 use busbar_plugin_abi::records::{tag as g, Reply, U64Rec, Writer};
 use busbar_plugin_loader::instance::{InstanceSpec, OpenError, Registry};
-use busbar_plugin_loader::ports::plane::{PlaneIn, PlaneOut, PlanePort};
-use busbar_plugin_loader::ports::{CallCx, PortError};
+use busbar_plugin_loader::ports::plane::{PlaneIn, PlanePort};
+use busbar_plugin_loader::ports::CallCx;
 
 use crate::channels::line_carriers::{CarrierSink, LineCarriers};
 use crate::host_services::KernelServices;
+
+use super::port_session::{run_local, Effects, SessionError, ToClient};
 
 /// How long the plane has to drop its per-carrier state at a carrier's end.
 const CARRIER_END_GRACE: Duration = Duration::from_secs(5);
@@ -32,47 +34,37 @@ pub enum LineRefused {
     NoLineRoute,
     /// The route's auth mask names more than one class; per-request classification is a later slice.
     AuthMaskNotOneClass,
-    /// The plane refused, failed or faulted.
-    Port(PortError),
-    /// The plane answered with an item this slice does not drive yet.
-    Unsupported,
+    /// The plane refused, failed or faulted, or broke a once rule, or answered with an item a later slice drives.
+    Session(SessionError),
     /// The line's task was cancelled.
     Cancelled,
 }
 
-/// One line's answer as the plane's sink sees it: the to-client BODY bytes are the response line; an `Emit` is
-/// written to its carrier at once, which is before this line's own response line (§12.23 rule 3).
-#[derive(Default)]
-pub(crate) struct LineAnswer {
-    body: Vec<u8>,
-    unsupported: bool,
+/// A line's effects outside its response line: an `Emit` is written to its carrier at once, which is before this
+/// line's own response line (§12.23 rule 3).
+struct LineEffects<'a> {
+    carriers: &'a LineCarriers,
+    owner: &'a Incarnation,
 }
 
-impl LineAnswer {
-    pub(crate) fn take(&mut self, out: PlaneOut<'_>, carriers: &LineCarriers, owner: &Incarnation) {
-        match out {
-            // RESPOND's status is not written on a line; the head and the end carry nothing either.
-            PlaneOut::Respond { .. }
-            | PlaneOut::Header(..)
-            | PlaneOut::Trailers
-            | PlaneOut::End
-            | PlaneOut::Finish => {}
-            PlaneOut::Body(bytes) => self.body.extend_from_slice(bytes),
-            PlaneOut::Emit { carrier, bytes } => {
-                carriers.emit_from_plane(owner, carrier, bytes);
-            }
-            _ => self.unsupported = true,
-        }
+impl Effects for LineEffects<'_> {
+    fn emit(&self, carrier: u64, bytes: &[u8]) {
+        self.carriers.emit_from_plane(self.owner, carrier, bytes);
     }
+}
 
-    /// The response line without its terminator; empty writes nothing.
-    pub(crate) fn into_line(self) -> Result<Vec<u8>, LineRefused> {
-        if self.unsupported {
-            Err(LineRefused::Unsupported)
-        } else {
-            Ok(self.body)
+/// The response line without its terminator: the to-client BODY bytes. RESPOND's status, the head and the end
+/// carry nothing on a line; empty writes nothing. A message item has no line form.
+fn line_of(items: Vec<ToClient>) -> Result<Vec<u8>, LineRefused> {
+    let mut line = Vec::new();
+    for item in items {
+        match item {
+            ToClient::Body(bytes) => line.extend_from_slice(&bytes),
+            ToClient::Msg { .. } => return Err(LineRefused::Session(SessionError::NotDriven)),
+            ToClient::Head { .. } | ToClient::Trailers(_) | ToClient::End => {}
         }
     }
+    Ok(line)
 }
 
 /// The argument of `admin(ADMIN_CARRIER_END)`: one `U64Rec(carrier)` (§12.23 rule 5).
@@ -231,18 +223,10 @@ fn run_line(
         work: "",
         ticket_record: &[],
     };
-    let mut answer = LineAnswer::default();
-    let session = port
-        .request(&req, line, &mut |out: PlaneOut<'_>| {
-            answer.take(out, carriers, owner);
-        })
-        .map_err(LineRefused::Port)?;
-    // A session dropped without `end` is a cancel (§10.4); the plane answered locally here, so it ends.
-    port.end(session, &mut |out: PlaneOut<'_>| {
-        answer.take(out, carriers, owner);
-    })
-    .map_err(LineRefused::Port)?;
-    answer.into_line()
+    let effects = LineEffects { carriers, owner };
+    // A session dropped without `end` is a cancel (§10.4); the plane answers locally on a line, so it ends.
+    let local = run_local(port, &req, line, &effects).map_err(LineRefused::Session)?;
+    line_of(local.client)
 }
 
 #[cfg(test)]

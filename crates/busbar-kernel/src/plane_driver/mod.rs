@@ -8,6 +8,7 @@ mod close;
 pub mod dispatch;
 pub mod door;
 pub mod port;
+pub mod port_session;
 mod far_end;
 mod govern;
 pub(crate) mod hooks;
