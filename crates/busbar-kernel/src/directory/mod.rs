@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The kernel directory behind DIRECTORY Needs, and the CA-5 hold index (IF §12.29). One [`KernelDirectory`] serves
-//! every `auth.<name>.provisioning` instance of a config generation; [`Holds`] is the per-generation CA-5 index
+//! every `identity-providers.<name>.provisioning` instance of a config generation; [`Holds`] is the per-generation CA-5 index
 //! built beside it.
 
 mod config;
@@ -26,7 +26,7 @@ use crate::config::min3::ProvisioningCfg;
 use crate::persistence::facade::CoreStore;
 use crate::persistence::scoped::ScopedStore;
 
-pub use config::{check_provisioning, ProvisioningFacts};
+pub use config::{check_provisioning, check_provisioning_shape, ProvisioningFacts};
 pub use events::{DirEvent, DirectoryEvents, LogEvents};
 pub use late::LateDirectory;
 pub use ops::GuardView;
@@ -153,7 +153,7 @@ impl KernelDirectory {
         for spec in specs {
             let scope = store::scope(&store, &spec.plugin, &spec.name).map_err(|_| {
                 format!(
-                    "auth.{}.provisioning: the directory store is unavailable",
+                    "identity-providers.{}.provisioning: the directory store is unavailable",
                     spec.name
                 )
             })?;
@@ -162,7 +162,7 @@ impl KernelDirectory {
                 Some(link) => {
                     let (held, generation) = holds::load(&scope).await.map_err(|()| {
                         format!(
-                            "auth.{}.provisioning: the held set could not be loaded from the store",
+                            "identity-providers.{}.provisioning: the held set could not be loaded from the store",
                             spec.name
                         )
                     })?;

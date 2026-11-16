@@ -55,12 +55,12 @@ fn every_refusal_names_the_instance_and_the_key() {
     };
     let refused = check_provisioning("scim", &bad, facts, &|_| false).unwrap_err();
     for key in [
-        "auth.scim.provisioning:",
-        "auth.scim.provisioning.clients",
-        "auth.scim.provisioning.link.refresh_ms",
-        "auth.scim.provisioning.link.auth[0]",
-        "auth.scim.provisioning.guard.max",
-        "auth.scim.provisioning.guard.window_s",
+        "identity-providers.scim.provisioning:",
+        "identity-providers.scim.provisioning.clients",
+        "identity-providers.scim.provisioning.link.refresh_ms",
+        "identity-providers.scim.provisioning.link.auth[0]",
+        "identity-providers.scim.provisioning.guard.max",
+        "identity-providers.scim.provisioning.guard.window_s",
     ] {
         assert!(
             refused.iter().any(|r| r.starts_with(key)),

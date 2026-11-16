@@ -76,7 +76,18 @@ pub struct IdentityProviderCfg {
     /// [`super::min3::parse_min3`].
     #[serde(default, deserialize_with = "busbar_contract::yaml::untyped_option")]
     pub insecure_transport: Option<busbar_contract::yaml::Value>,
+    /// Core-owned provisioning policy (IF §12.29), never passed as plugin settings.
+    #[serde(default, deserialize_with = "provisioning_policy")]
+    pub provisioning: Option<busbar_contract::yaml::Value>,
 }
+
+// Preserve explicit null so policy parsing refuses it instead of silently disabling the mount.
+fn provisioning_policy<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<busbar_contract::yaml::Value>, D::Error> {
+    busbar_contract::yaml::untyped(deserializer).map(Some)
+}
+
 impl IdentityProviderCfg {
     /// Borrow the exact authoring representation under concrete kernel authority.
     pub fn authoring<'a>(
@@ -94,6 +105,8 @@ impl IdentityProviderCfg {
             limits: Option<&'a busbar_contract::yaml::Value>,
             #[serde(skip_serializing_if = "Option::is_none")]
             insecure_transport: Option<&'a busbar_contract::yaml::Value>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            provisioning: Option<&'a busbar_contract::yaml::Value>,
         }
         View {
             module: &self.module,
@@ -106,6 +119,7 @@ impl IdentityProviderCfg {
             settings: self.settings.authoring(seal),
             limits: self.limits.as_ref(),
             insecure_transport: self.insecure_transport.as_ref(),
+            provisioning: self.provisioning.as_ref(),
         }
     }
 }
