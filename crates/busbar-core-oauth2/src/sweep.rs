@@ -14,10 +14,10 @@ use oauth_as::store::StorageError;
 use serde::de::DeserializeOwned;
 
 use crate::shared::{
-    atomic_schema, authority_body, bucket_holds, decode, digest, failed, kind, now_secs, secs_of,
-    tombstone, Bucket, Cell, FamilyBar, IndexRow, Indexed, ReplayRow, SessionRow, Shared, StakeRow,
-    SubjectIndex, Swap, INDEX_GRACE_SECS, LOST_REPLAY, LOST_ROW, RETIRE_AFTER_SECS, SUBJECT_INDEX,
-    SWAP_ATTEMPTS,
+    atomic_schema, authority_body, bucket_holds, decode, digest, encode, failed, kind, now_secs,
+    secs_of, tombstone, Bucket, Cell, FamilyBar, IndexRow, Indexed, ReplayRow, SessionRow, Shared,
+    StakeRow, SubjectIndex, Swap, INDEX_GRACE_SECS, LOST_REPLAY, LOST_ROW, RETIRE_AFTER_SECS,
+    SUBJECT_INDEX, SWAP_ATTEMPTS,
 };
 
 impl Shared {

@@ -99,7 +99,7 @@ fn decode_failed(what: &str, e: &serde_json::Error) -> StorageError {
     super::cold::store_decode_failed(what, e)
 }
 
-fn encode<T: Serialize>(what: &str, value: &T) -> Result<Vec<u8>, StorageError> {
+pub(crate) fn encode<T: Serialize>(what: &str, value: &T) -> Result<Vec<u8>, StorageError> {
     serde_json::to_vec(value).map_err(|e| decode_failed(what, &e))
 }
 
@@ -1403,9 +1403,9 @@ pub(crate) struct Indexed {
 /// id) and when the row was written.
 #[derive(Serialize, Deserialize)]
 pub(crate) struct IndexRow<S = String> {
-    client: S,
-    key: S,
-    at: u64,
+    pub(crate) client: S,
+    pub(crate) key: S,
+    pub(crate) at: u64,
 }
 
 pub(crate) fn bucket_holds(b: &Bucket, ix: &str, key: &str) -> bool {
