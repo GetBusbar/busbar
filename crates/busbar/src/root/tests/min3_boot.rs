@@ -293,3 +293,38 @@ async fn the_recoverable_gate_sees_the_walks_at_rest_key_while_the_store_opens()
     );
     assert_eq!(admit_for_host(0), Ok(()), "no recoverable row asks nothing");
 }
+
+#[test]
+fn configured_secret_instances_use_bound_image_and_implicit_empty_settings() {
+    use busbar_contract::abi::mechanism::door::REWRITE_SUGAR;
+    use busbar_kernel::config::grammar::SecretSource;
+    use std::collections::BTreeMap;
+    let mut sugars = busbar_contract::secret_ref::Sugars::default();
+    sugars
+        .declare(
+            "fixture-secret",
+            &[(REWRITE_SUGAR, "probe".into(), "key".into())],
+        )
+        .unwrap();
+    let source = SecretSource {
+        identity: "fixture-secret".into(),
+        ref_schema: r#"{"type":"object"}"#.into(),
+    };
+    let grammar = busbar_kernel::config::Grammar::new(sugars, BTreeMap::new(), Vec::new())
+        .with_secret_sources(BTreeMap::from([("fixture-secret".into(), source)]));
+    let mut cfg = busbar_kernel::config::RootCfg::default();
+    cfg.store =
+        Some(busbar_contract::yaml::from_str("module: fixture-store\nsettings: {}\n").unwrap());
+    cfg.grammar = busbar_kernel::config::grammar::GrammarField::bound(
+        grammar.bind_secret_instances(&cfg.secrets).unwrap(),
+    );
+    let implicit = configured(&cfg, &[]).unwrap();
+    let secret = implicit
+        .iter()
+        .find(|item| item.kind == KindCode::Secret)
+        .unwrap();
+    assert_eq!(secret.name, "probe");
+    assert_eq!(secret.identity, "fixture-secret");
+    assert_eq!(secret.config, b"{}");
+    assert_eq!(ref_schemas(&cfg).unwrap()[0].0.as_ref(), "probe");
+}
