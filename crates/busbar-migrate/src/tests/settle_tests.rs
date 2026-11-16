@@ -341,3 +341,28 @@ fn a_converted_store_bag_is_written_as_answered() {
     assert!(!applied.text().contains("junk"));
     assert!(applied.text().ends_with("listen: y\n"));
 }
+
+#[test]
+fn an_upstream_core_fragment_is_retired_even_during_conversion() {
+    let answer = store(
+        4,
+        None,
+        vec![cfg(1, "endpoint", r#"{"url":"https://example.test"}"#)],
+    );
+    let refused = apply(STAMPED, &[answer], false).expect_err("r3 retires section 1");
+    assert_eq!(refused.word(), "CONFIG");
+    assert!(refused.to_string().contains("instance 4"));
+}
+
+#[test]
+fn a_literal_string_does_not_authorize_its_own_lift() {
+    let answer = store(
+        4,
+        Some(r#"{"display_name":"not a secret"}"#),
+        vec![cfg(section::LIFT, "", r#""/display_name""#)],
+    );
+    let refused = apply(STAMPED, &[answer], false)
+        .expect_err("no described secret path authorizes this slot");
+    assert_eq!(refused.word(), "CONFIG");
+    assert!(!refused.to_string().contains("not a secret"));
+}
