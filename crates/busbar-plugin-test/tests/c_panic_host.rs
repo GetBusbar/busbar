@@ -31,13 +31,13 @@ fn a_panicking_log_sink_is_contained_and_counted_once() {
 }
 
 #[test]
-#[ignore = "owner: W1-H1"]
+#[ignore = "owner: W1-H1 (blocked: entry::guard, GetBusbar/busbar#272)"]
 fn every_host_fn_panicking_inside_a_real_entry_answers_its_fallback() {
     todo!("owner: W1-H1 (C-PANIC-HOST)")
 }
 
 #[test]
-#[ignore = "owner: W1-H1"]
+#[ignore = "owner: W1-H1 (blocked: entry::guard, GetBusbar/busbar#272)"]
 fn the_uncontained_control_dies_with_sigabrt() {
     todo!("owner: W1-H1 (C-PANIC-HOST)")
 }

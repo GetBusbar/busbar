@@ -3,7 +3,7 @@
 
 //! C-AUTO-TRAITS (ABI-MIN3-INTERFACE §14 round 26; the IF names it `tests/auto_traits.rs`): compile-time asserts
 //! that the host-side handles keep their auto traits, so a missing `unsafe impl` fails here and not in A4's, L1's
-//! or L2's code. W1-T1's arms hold over today's types. `ChainGuard` is crate-private until W1-H1 lands it, and
+//! or L2's code. W1-T1's arms hold over today's types. `ChainGuard` is crate-private (W1-H1 asserts it through the driver future), and
 //! `Admitted` holds a `&'static Plugin` (raw pointers) until W1-L1's impls (UNSAFE-MIN), so those two arms wait.
 //! The macro side (A4) keeps these green when the real fields land.
 //!
@@ -68,10 +68,41 @@ fn a_spawned_task_can_own_a_plane_session() {
     let _ = spawn;
 }
 
+/// `ChainGuard` is crate-private; it lives inside the driver's step-loop future for the whole chain, so that
+/// future being `Send` over a `FakeNeeds` is the guard being `Send` (with its parked busbar-ffi chain, its
+/// borrowed Needs and Caller and its pooled buffers). Built, never polled.
 #[test]
-#[ignore = "owner: W1-H1"]
 fn chain_guard_is_send_for_a_needs_fake() {
-    todo!("owner: W1-H1 (C-AUTO-TRAITS)")
+    use std::time::{Duration, Instant};
+
+    use busbar_plugin_abi::host::{CallStack, Caller, Driver, First, InstanceLimits, Pool};
+    use busbar_plugin_abi::types::KindCode;
+
+    use crate::bridge_fixture as fx;
+
+    fn first<'i>(started: fx::Started<'i, fx::Secret>) -> First<'i, fx::Secret> {
+        started.into()
+    }
+    let instance = fx::instance();
+    let needs = FakeNeeds::new();
+    let caller = Caller {
+        plugin: "bridge-fixture",
+        kind: KindCode::Secret,
+        name: "fixture",
+        instance: 1,
+        slot: 1,
+        chain: 0,
+        deadline: Instant::now() + Duration::from_secs(60),
+        stack: CallStack::default(),
+        out_of_process: false,
+        limits: InstanceLimits::default(),
+    };
+    let mut drv = Driver::new(&needs, caller);
+    let req = Pool::global().acquire(1 << 20);
+    let fut = drv.run(0, 1 << 20, req, |_, lease| {
+        first(fx::start(&instance, b"secret", lease))
+    });
+    sent(&fut);
 }
 
 /// W1-L1: `Admitted` holds busbar-ffi's checked header address (UNSAFE-MIN r3.1), its verified stamp and the

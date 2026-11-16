@@ -37,10 +37,79 @@ fn the_shim_writes_fail_then_its_facts() {
     assert_eq!(&fail[head..], b"the backend said 503");
 }
 
+/// The answer parse's arm: a hand-written FAILED answer whose facts break the round-21 rule (a key outside
+/// `FAIL_FACT_KEYS`, a key twice, a third FACT, any record but ERROR/FACT after FAIL, a FACT on REFUSED) is FAULT
+/// BadRecords; the stated facts read back through `fail_fact`, and only on FAILED.
 #[test]
-#[ignore = "owner: W1-H1"]
 fn hand_written_bad_fact_answers_fault() {
-    todo!("owner: W1-H1 (C-FAIL-FACTS)")
+    use busbar_plugin_abi::fail::{fact, failed, FaultReason};
+    use busbar_plugin_abi::host::Answer;
+    use busbar_plugin_abi::records::{tag, FailRec, RecErr, Reply, Writer};
+    use busbar_plugin_abi::types::Status;
+
+    let answer = |status: Status, facts: &[(u32, u64)], extra: Option<u16>| {
+        let mut r = Reply::new();
+        let head = FailRec {
+            status: status.0,
+            code: failed::F_UPSTREAM,
+        };
+        r.put_pod_tail(tag::FAIL, &head, b"503").expect("fail");
+        for &(key, value) in facts {
+            r.put_fact(key, value).expect("fact");
+        }
+        if let Some(t) = extra {
+            r.put(t, b"x").expect("extra");
+        }
+        r.as_bytes().to_vec()
+    };
+    let (retry, backend) = (fact::FACT_RETRY_AFTER_S, fact::FACT_BACKEND_STATUS);
+    let good = answer(Status::FAILED, &[(retry, 30), (backend, 503)], None);
+    let a = Answer::parse(Status::FAILED, &good).expect("FAIL then the two facts");
+    assert_eq!(
+        (a.fail_fact(retry), a.fail_fact(backend)),
+        (Some(30), Some(503))
+    );
+    let out_of_place = |t: u16| Some(FaultReason::BadRecords(RecErr::Unknown(t)));
+    for (facts, extra, status, why) in [
+        (
+            &[(fact::FACT_TLS_PIN, 1)][..],
+            None,
+            Status::FAILED,
+            "a key outside FAIL_FACT_KEYS",
+        ),
+        (
+            &[(retry, 1), (retry, 2)][..],
+            None,
+            Status::FAILED,
+            "a key twice",
+        ),
+        (
+            &[(retry, 1), (backend, 2), (retry, 3)][..],
+            None,
+            Status::FAILED,
+            "a third FACT",
+        ),
+        (
+            &[(retry, 1)][..],
+            Some(tag::TEXT),
+            Status::FAILED,
+            "a TEXT after the facts",
+        ),
+        (
+            &[(retry, 1)][..],
+            None,
+            Status::REFUSED,
+            "a FACT on REFUSED",
+        ),
+    ] {
+        let bytes = answer(status, facts, extra);
+        let got = Answer::parse(status, &bytes).err();
+        let want = match extra {
+            Some(t) => out_of_place(t),
+            None => out_of_place(tag::FACT),
+        };
+        assert_eq!(got, want, "{why}");
+    }
 }
 
 #[test]
