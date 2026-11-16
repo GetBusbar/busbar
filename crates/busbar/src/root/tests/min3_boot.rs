@@ -312,9 +312,12 @@ fn configured_secret_instances_use_bound_image_and_implicit_empty_settings() {
     };
     let grammar = busbar_kernel::config::Grammar::new(sugars, BTreeMap::new(), Vec::new())
         .with_secret_sources(BTreeMap::from([("fixture-secret".into(), source)]));
-    let mut cfg = busbar_kernel::config::RootCfg::default();
-    cfg.store =
-        Some(busbar_contract::yaml::from_str("module: fixture-store\nsettings: {}\n").unwrap());
+    let deploy = busbar_kernel::config::deploy_from_yaml_str(
+        "store: {module: fixture-store, settings: {}}\nproviders: {}\nmodels: {}\n",
+        &grammar,
+    )
+    .unwrap();
+    let mut cfg = busbar_kernel::config::resolve(&deploy, &Default::default()).unwrap();
     cfg.grammar = busbar_kernel::config::grammar::GrammarField::bound(
         grammar.bind_secret_instances(&cfg.secrets).unwrap(),
     );
