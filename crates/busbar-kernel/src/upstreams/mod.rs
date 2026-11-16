@@ -8,6 +8,8 @@
 //! [`ConfiguredUpstreams`] is the table every consumer reads through [`Upstreams`]. There is no egress judge here:
 //! the connector's destination guard is it (§12.1).
 
+#[cfg(test)]
+mod declared_tests;
 mod entry;
 mod table;
 #[cfg(test)]
