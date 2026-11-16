@@ -296,8 +296,6 @@ impl<N: Needs> AuthPort for AuthAdapter<N> {
     }
 }
 
-/// What a verify answer asks for next.
-#[derive(Debug)]
 /// The caller of one call on this instance, borrowed from it (§10.3 round 14: plain stores, no refcount RMW).
 /// `chain` is overwritten by `Driver::new`; a sync call carries 0.
 fn caller(inst: &Instance, cx: CallCx) -> Caller<'_> {

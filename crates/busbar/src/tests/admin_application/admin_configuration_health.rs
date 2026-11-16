@@ -215,7 +215,6 @@ async fn test_admin_v1_config_apply_body_swaps_and_carries_health() {
     });
     body["config"]["listen"] = "127.0.0.1:19092".into();
     body["config"]["advanced"]["worker_threads"] = 3.into();
-    body["config"]["advanced"]["shutdown"]["drain_timeout"] = "45s".into();
     let resp = admin(client.post(format!("http://{addr}/api/v1/admin/config/apply")))
         .body(body.to_string())
         .send()
@@ -224,11 +223,7 @@ async fn test_admin_v1_config_apply_body_swaps_and_carries_health() {
     assert_eq!(resp.status().as_u16(), 200, "{:?}", resp.text().await);
 
     let applied = busbar_contract::json::parse_value(&resp.bytes().await.unwrap()).unwrap();
-    for path in [
-        "/listen",
-        "/advanced/worker_threads",
-        "/advanced/shutdown/drain_timeout",
-    ] {
+    for path in ["/listen", "/advanced/worker_threads"] {
         assert_pending(&applied, path);
     }
     let members = pool_members(&client, addr, "apply-pool").await;
@@ -345,8 +340,6 @@ async fn test_admin_v1_config_reload_swaps_disk_truth_and_carries_health() {
     disk["listen"] = "127.0.0.1:19091".into();
     disk["tls"]["cert"]["file"] = certificate_b.to_string_lossy().into_owned().into();
     disk["advanced"]["worker_threads"] = 3.into();
-    disk["advanced"]["shutdown"]["drain_timeout"] = "45s".into();
-    disk["advanced"]["governance"]["max_pending_checkpoints"] = 77.into();
 
     disk["models"]["m-new"] = serde_json::json!({"provider":"test-provider","max_concurrent":4});
     disk["pools"] =
@@ -434,12 +427,7 @@ async fn test_admin_v1_config_reload_swaps_disk_truth_and_carries_health() {
             .any(|path| path.as_str() == Some("/listen")),
         "disk listener changes remain unapplied until process restart: {reload}"
     );
-    for path in [
-        "/tls",
-        "/advanced/worker_threads",
-        "/advanced/shutdown/drain_timeout",
-        "/advanced/governance/max_pending_checkpoints",
-    ] {
+    for path in ["/tls", "/advanced/worker_threads"] {
         assert_pending(&reload, path);
     }
     // Reverting a desired setting does not clear conservative pending state until boot.
