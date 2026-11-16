@@ -7777,9 +7777,7 @@
         },
         "required": [
           "signature_present",
-          "key_fingerprint",
-          "verdict",
-          "keys_doc_version"
+          "verdict"
         ]
       }
     },
