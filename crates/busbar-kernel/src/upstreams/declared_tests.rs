@@ -2,7 +2,30 @@ use std::sync::Arc;
 
 use busbar_contract::json::{json, JsonValueTrait, Value};
 
-use super::{core_secret_paths, declared, Upstreams};
+use super::{core_field_paths, core_secret_paths, declared, Upstreams};
+
+#[test]
+fn consumed_core_prefixes_exclude_plugin_lift_authority() {
+    let config = json!({"a/b": {"s": {"auth": {"bearer": "literal"}, "custom": "literal"}}});
+    let paths = core_field_paths(&config, &["/a~1b/*"]).unwrap();
+    assert_eq!(paths.len(), 6);
+    for key in [
+        "url",
+        "command",
+        "tls",
+        "auth",
+        "upstream_credentials",
+        "allow_private",
+    ] {
+        assert!(paths.contains(&format!("/a~1b/s/{key}")));
+    }
+    assert!(!paths.contains("/a~1b/s/custom"));
+    assert!(core_field_paths(&config, &["/a~2b/*"]).is_err());
+    assert!(core_field_paths(&json!({"servers": {"s": false}}), &["/servers/*"]).is_err());
+    assert!(core_field_paths(&config, &["/missing/*"])
+        .unwrap()
+        .is_empty());
+}
 use crate::plugin_config::TrustAnchor;
 
 #[test]
