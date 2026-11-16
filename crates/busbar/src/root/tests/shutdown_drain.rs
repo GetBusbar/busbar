@@ -7,9 +7,9 @@
 //! its write still lands: nothing is cancelled), and returns 75 or 70 by the custody rule, never
 //! 1. `finish` returns the code instead of exiting; that is the test seam.
 //!
-//! (a) and (b) run here over the store-backed unit checkpoint and recovery sinks. Not here (they
+//! (a), (b) and (c) run here over the store-backed unit checkpoint and recovery sinks. Not here (they
 //! need a running gateway, a live plane or a successor process): every successor/adoption
-//! assertion, (c) (its removal first confirms a sealed audit line), (g), (h) and its variants
+//! assertion, (g), (h) and its variants
 //! v2-v7, (i), the notary, the predecessor fence cases and the slow-store backlog.
 
 use super::tests::{money_driver, Fixture, FlushGate};
@@ -336,4 +336,75 @@ async fn a_held_unit_select_detaches_the_money_driver_and_exits_70() {
         )
         .await;
     }
+}
+
+/// (c) The terminal checkpoint already has its real signed audit line and settled usage.
+/// Holding only its delete keeps the money driver alive past C3. Releasing the detached
+/// owner removes custody without applying the terminal usage a second time.
+#[tokio::test(flavor = "current_thread")]
+async fn a_held_unit_delete_preserves_signed_audit_and_detaches_the_money_driver() {
+    let fixture = Fixture::new(128).await;
+    fixture.attach_sinks().await;
+    let unit = fixture.unit();
+    let sink = fixture.checkpoint_sink();
+    assert!(fixture.seen.gov.finish_unit_checkpoint(unit.clone()));
+    assert!(
+        fixture.seen.gov.flush_unit_checkpoints().await.is_err(),
+        "terminal custody waits for its sealed audit line"
+    );
+    let terminal = sink.replay().await.unwrap().pop().unwrap();
+    assert!(terminal.ended);
+    sink.recover_audit(&terminal).await.unwrap();
+    // The real root audit adapter verifies this line's identity and signature before delete.
+    let evidence = busbar_kernel::governance::unit_checkpoint_store::UnitCheckpointEvidence::new(
+        fixture.seen.journal.clone(),
+        busbar_kernel::teller::Kernel::new().durability_token(),
+    );
+    let audit = evidence.find_audit(unit.unit, 7).await.unwrap().unwrap();
+    assert!(audit.key_id.is_some(), "the durable audit line is signed");
+    let originals = fixture
+        .seen
+        .journal
+        .read_records(fixture.seen.budget)
+        .await
+        .unwrap()
+        .len();
+    let gate = Arc::new(FlushGate::default());
+    *fixture.seen.backend.unitcp.lock().unwrap() = Some(gate.clone());
+    let (shutdown_tx, _) = tokio::sync::broadcast::channel(1);
+    let clock = DrainClock::new(SHORT);
+    let flusher = money_driver(&fixture.seen.gov, &clock, &shutdown_tx);
+    let (post, seen) = fixture.post(true, Some(flusher), &shutdown_tx, None);
+    let drain = ShutdownDrain::new(clock);
+    let mut finishing = std::pin::pin!(finish(post, &drain));
+    super::tests::until_entered(finishing.as_mut(), &gate).await;
+    let code = tokio::time::timeout(SHORT + SLACK, finishing)
+        .await
+        .unwrap();
+    assert_eq!(code, 70, "the unit delete is in doubt at exit");
+    assert!(drain.detached() >= 1);
+    assert!(
+        seen.gov
+            .spend_custody()
+            .in_doubt
+            .iter()
+            .any(|item| item.kind == "unit_flush"),
+        "the held delete remains in the money driver's custody"
+    );
+    seen.still_admitted().await;
+    gate.release();
+    eventually("the detached delete releases terminal custody", || async {
+        sink.replay().await.unwrap().is_empty()
+    })
+    .await;
+    assert_eq!(
+        seen.journal.read_records(seen.budget).await.unwrap().len(),
+        originals,
+        "releasing the delete appends no duplicate usage or audit originals"
+    );
+    let after = evidence.find_audit(unit.unit, 7).await.unwrap().unwrap();
+    assert_eq!(
+        after.hash, audit.hash,
+        "the same signed audit line remains durable"
+    );
 }

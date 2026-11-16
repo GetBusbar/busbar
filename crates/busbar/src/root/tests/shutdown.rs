@@ -298,6 +298,16 @@ impl Fixture {
             .unwrap();
         assert!(self.seen.gov.unit_checkpoints_enabled());
     }
+    pub(super) fn checkpoint_sink(
+        &self,
+    ) -> Arc<dyn busbar_kernel::governance::unit_checkpoint::UnitCheckpointSink> {
+        crate::root::durability::unit_checkpoint_sink(
+            &self.book.durability,
+            self.book.runtime_journal.clone(),
+            None,
+        )
+        .unwrap()
+    }
     /// One governed unit's checkpoint with its captured admission audit facts.
     pub(super) fn unit(&self) -> busbar_kernel::governance::unit_checkpoint::UnitCheckpoint {
         busbar_kernel::Registration::new()
