@@ -119,8 +119,9 @@ impl Conns for Members {
 #[test]
 fn a_member_whose_secret_source_refuses_reaches_the_plugin_as_a_fixed_class_refusal() {
     let var = format!("BUSBAR_LOADER_MEMBER_SECRET_SOURCE_{}", std::process::id());
-    let authored = serde_json::json!({"module":"fixture-source","settings":{"slot":var}});
-    let secret: SecretRef = serde_json::from_value(authored.clone()).unwrap();
+    let authored =
+        busbar_contract::json::json!({"module":"fixture-source","settings":{"slot":var}});
+    let secret: SecretRef = busbar_contract::json::from_value(&authored).unwrap();
     let operator = fixture_reference(&secret).expect_err("the fixture source refuses resolution");
     assert!(
         !source_in(&operator, &secret).is_empty(),
@@ -135,7 +136,7 @@ fn a_member_whose_secret_source_refuses_reaches_the_plugin_as_a_fixed_class_refu
     )
     .expect("the instance binds");
     let settings: &'static [u8] = Box::leak(
-        serde_json::to_vec(&serde_json::json!({
+        busbar_contract::json::to_vec(&busbar_contract::json::json!({
             "ghost":{"command":"/usr/bin/ghost","env":{"TOKEN":authored}},
             "live":{"command":"/usr/bin/live"}
         }))

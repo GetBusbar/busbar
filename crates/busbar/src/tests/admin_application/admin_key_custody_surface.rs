@@ -4,6 +4,7 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
+use busbar_contract::json::{self, JsonValueTrait as _};
 use busbar_kernel::audit_ring;
 
 #[tokio::test]
@@ -186,16 +187,17 @@ async fn test_admin_v1_get_single_key() {
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
     let client = reqwest::Client::new();
-    let created: serde_json::Value = client
+    let created = client
         .post(format!("http://{addr}/api/v1/admin/keys"))
         .header("x-admin-token", "admintok")
-        .json(&serde_json::json!({"name":"svc"}))
+        .json(&json::json!({"name":"svc"}))
         .send()
         .await
         .unwrap()
-        .json()
+        .bytes()
         .await
         .unwrap();
+    let created = json::parse_value(&created).unwrap();
     let minted = store
         .identity()
         .get_key(created["id"].as_str().expect("the real mint returns an id"))
@@ -214,7 +216,7 @@ async fn test_admin_v1_get_single_key() {
         .unwrap();
     assert_eq!(resp.status().as_u16(), 200);
     let text = resp.text().await.unwrap();
-    let body: serde_json::Value = serde_json::from_str(&text).unwrap();
+    let body = json::parse_value(text.as_bytes()).unwrap();
     assert_eq!(body["id"], minted.id);
     assert_eq!(body["name"], "svc");
     assert!(
@@ -331,12 +333,12 @@ async fn minting_a_recoverable_credential_without_an_at_rest_key_is_refused_and_
     let refused = client
         .post(format!("http://{addr}/api/v1/admin/keys"))
         .header("x-admin-token", "admintok")
-        .json(&serde_json::json!({"name": "no-at-rest", "issue_aws_credential": true}))
+        .json(&json::json!({"name": "no-at-rest", "issue_aws_credential": true}))
         .send()
         .await
         .unwrap();
     assert_eq!(refused.status().as_u16(), 409);
-    let body: serde_json::Value = refused.json().await.unwrap();
+    let body = json::parse_value(&refused.bytes().await.unwrap()).unwrap();
     let message = body["error"]["message"].as_str().unwrap_or_default();
     assert_eq!(
         message,
@@ -367,7 +369,7 @@ async fn minting_a_recoverable_credential_without_an_at_rest_key_is_refused_and_
     let plain = client
         .post(format!("http://{addr}/api/v1/admin/keys"))
         .header("x-admin-token", "admintok")
-        .json(&serde_json::json!({"name": "bearer-only"}))
+        .json(&json::json!({"name": "bearer-only"}))
         .send()
         .await
         .unwrap();

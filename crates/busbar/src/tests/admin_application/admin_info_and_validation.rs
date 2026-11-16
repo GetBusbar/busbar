@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+use busbar_contract::json::{self, JsonValueTrait as _};
+
 #[tokio::test]
 async fn test_admin_v1_info_reports_version_features_and_topology() {
     const CHILD: &str = "BUSBAR_ADMIN_BOOT_ECF98D34EBFD";
@@ -52,14 +54,14 @@ async fn test_admin_v1_info_reports_version_features_and_topology() {
         .await
         .unwrap();
     assert_eq!(resp.status().as_u16(), 200);
-    let body: serde_json::Value = resp.json().await.unwrap();
+    let body = json::parse_value(&resp.bytes().await.unwrap()).unwrap();
     assert_eq!(
         body["version"].as_str(),
         Some(env!("CARGO_PKG_VERSION")),
         "info must report the build version"
     );
 
-    assert_eq!(body["build"]["weighted_floor"], serde_json::json!(true));
+    assert_eq!(body["build"]["weighted_floor"], json::json!(true));
     let auth_modules = body["build"]["auth_modules"].as_array().unwrap();
     assert!(
         auth_modules.iter().any(|m| m == "keys"),
@@ -76,7 +78,7 @@ async fn test_admin_v1_info_reports_version_features_and_topology() {
 
     assert_eq!(
         body["build"]["hook_plugins"],
-        serde_json::json!(busbar_kernel::preflight::root_rows().hook_names),
+        json::json!(busbar_kernel::preflight::root_rows().hook_names),
         "hook_plugins must be exactly the linked hook rows the root's install record carries"
     );
 
@@ -147,16 +149,17 @@ async fn test_admin_v1_auth_read() {
     let (addr, handle, _book) =
         crate::distribution::rig::actual_root(document, &directory, &module).await;
     let client = reqwest::Client::new();
-    let body: serde_json::Value = client
+    let body = client
         .get(format!("http://{addr}/api/v1/admin/auth"))
         .header("x-admin-token", "admintok")
         .send()
         .await
         .unwrap()
-        .json()
+        .bytes()
         .await
         .unwrap();
-    assert_eq!(body["chain"], serde_json::json!([]));
+    let body = json::parse_value(&body).unwrap();
+    assert_eq!(body["chain"], json::json!([]));
     assert_eq!(body["open"], true, "no explicit chain → open front door");
     assert_eq!(body["upstream_credentials"], "own");
 
@@ -232,7 +235,7 @@ async fn test_admin_malformed_body_returns_generic_400_no_input_fragment() {
                 && !text.contains("line"),
             "the 400 body on {path} must NOT contain serde error text; got {text}"
         );
-        let body: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let body = json::parse_value(text.as_bytes()).unwrap();
         assert_eq!(
             body["error"]["message"], "invalid JSON",
             "the 400 body on {path} must be the generic envelope; got {text}"

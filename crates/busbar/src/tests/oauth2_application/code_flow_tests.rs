@@ -6,6 +6,7 @@ use super::{
     browser::{encode_component, location, path_of, percent_decode, query_param, send, Jar},
 };
 use base64::Engine as _;
+use busbar_contract::json::{self, JsonValueTrait as _};
 use busbar_core_oauth2::config::OauthAsCfg;
 use std::sync::Arc;
 
@@ -42,23 +43,20 @@ async fn register_client(origin: &str) -> String {
 }
 
 async fn register_client_with_scope(origin: &str, scope: &str) -> String {
-    let response = super::client().post(format!("{origin}/register")).json(&serde_json::json!({
+    let response = super::client().post(format!("{origin}/register")).json(&json::json!({
         "redirect_uris":[REDIRECT_URI],"token_endpoint_auth_method":"none",
         "response_types":["code"],"grant_types":["authorization_code","refresh_token"],"scope":scope,"client_name":"Flow Test",
     })).send().await.expect("register actual public client");
     let status = response.status();
     let body = response.text().await.unwrap();
     assert_eq!(status, 201, "the public client registers: {body}");
-    serde_json::from_str::<serde_json::Value>(&body).unwrap()["client_id"]
+    json::parse_value(body.as_bytes()).unwrap()["client_id"]
         .as_str()
         .unwrap()
         .to_owned()
 }
 
-pub(super) async fn verified_claims(
-    app: &busbar_kernel::state::App,
-    access: &str,
-) -> serde_json::Value {
+pub(super) async fn verified_claims(app: &busbar_kernel::state::App, access: &str) -> json::Value {
     let calls = app
         .auth
         .position_calls("oauth-resource")
@@ -83,7 +81,7 @@ pub(super) async fn verified_claims(
     let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .decode(encoded)
         .unwrap();
-    serde_json::from_slice(&bytes).expect("verified claims JSON")
+    json::parse_value(&bytes).expect("verified claims JSON")
 }
 
 #[tokio::test]
@@ -187,7 +185,7 @@ async fn the_authorization_code_flow_mints_and_exchanges_a_code() {
     )
     .await;
     assert_eq!(status, 200, "the code must be exchangeable: {body}");
-    let token: serde_json::Value = serde_json::from_str(&body).expect("a token response is JSON");
+    let token: json::Value = json::parse_value(body.as_bytes()).expect("a token response is JSON");
     let access = token["access_token"]
         .as_str()
         .unwrap_or_else(|| panic!("no access_token: {body}"))
@@ -280,7 +278,7 @@ async fn mint_access_token(origin: &str, client_id: &str) -> String {
     )
     .await;
     assert_eq!(status, 200, "the code must be exchangeable: {body}");
-    let token: serde_json::Value = serde_json::from_str(&body).expect("a token response is JSON");
+    let token: json::Value = json::parse_value(body.as_bytes()).expect("a token response is JSON");
     token["access_token"]
         .as_str()
         .unwrap_or_else(|| panic!("no access_token: {body}"))
@@ -293,7 +291,7 @@ async fn dynamic_client_registration_admits_a_client_end_to_end() {
 
     let resp = super::client()
         .post(format!("{origin}/register"))
-        .json(&serde_json::json!({
+        .json(&json::json!({
             "redirect_uris": [REDIRECT_URI],
             "token_endpoint_auth_method": "none",
             "response_types": ["code"],
@@ -310,7 +308,7 @@ async fn dynamic_client_registration_admits_a_client_end_to_end() {
         "RFC 7591 §3.2.1: a registration is 201 Created; the endpoint mounts with the plane, \
          unconditionally"
     );
-    let registration: serde_json::Value = resp.json().await.expect("a registration response");
+    let registration: json::Value = super::read_json(resp).await;
     let client_id = registration["client_id"]
         .as_str()
         .unwrap_or_else(|| panic!("no client_id in {registration}"))
@@ -388,7 +386,7 @@ async fn shown_and_granted(
     )
     .await;
     assert_eq!(status, 200, "the code must be exchangeable: {body}");
-    let token: serde_json::Value = serde_json::from_str(&body).expect("a token response is JSON");
+    let token: json::Value = json::parse_value(body.as_bytes()).expect("a token response is JSON");
     let access = token["access_token"]
         .as_str()
         .unwrap_or_else(|| panic!("no access_token: {body}"));

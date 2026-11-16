@@ -1,4 +1,5 @@
 use super::*;
+use busbar_contract::json::{self, JsonValueTrait};
 use std::collections::HashMap;
 
 fn wire_provider(dialect: &str) -> HashMap<String, busbar_kernel::config::ProviderDef> {
@@ -16,8 +17,8 @@ async fn queue_depth_counts_waiters_from_overlapping_egress_generations() {
     let app = {
         crate::dist_root_install::install();
         crate::root::test_plane_registry::register();
-        let dialects: serde_json::Value =
-            serde_json::from_str(include_str!("fixtures/plane_node_dialects.json"))
+        let dialects: json::Value =
+            json::parse_value(include_str!("fixtures/plane_node_dialects.json").as_bytes())
                 .expect("the actual linked dialects are recorded");
         let dialect = dialects["body_model"]
             .as_object()
@@ -147,8 +148,8 @@ async fn retained_destinations_follow_the_model_name_across_reorder_and_removal(
     let first = {
         crate::dist_root_install::install();
         crate::root::test_plane_registry::register();
-        let dialects: serde_json::Value =
-            serde_json::from_str(include_str!("fixtures/plane_node_dialects.json"))
+        let dialects: json::Value =
+            json::parse_value(include_str!("fixtures/plane_node_dialects.json").as_bytes())
                 .expect("the actual linked dialects are recorded");
         let dialect = dialects["body_model"]
             .as_object()
@@ -212,8 +213,8 @@ async fn retained_destinations_follow_the_model_name_across_reorder_and_removal(
     let second = {
         crate::dist_root_install::install();
         crate::root::test_plane_registry::register();
-        let dialects: serde_json::Value =
-            serde_json::from_str(include_str!("fixtures/plane_node_dialects.json"))
+        let dialects: json::Value =
+            json::parse_value(include_str!("fixtures/plane_node_dialects.json").as_bytes())
                 .expect("the actual linked dialects are recorded");
         let dialect = dialects["body_model"]
             .as_object()
@@ -277,8 +278,8 @@ async fn retained_destinations_follow_the_model_name_across_reorder_and_removal(
     let removed = {
         crate::dist_root_install::install();
         crate::root::test_plane_registry::register();
-        let dialects: serde_json::Value =
-            serde_json::from_str(include_str!("fixtures/plane_node_dialects.json"))
+        let dialects: json::Value =
+            json::parse_value(include_str!("fixtures/plane_node_dialects.json").as_bytes())
                 .expect("the actual linked dialects are recorded");
         let dialect = dialects["body_model"]
             .as_object()
@@ -404,8 +405,8 @@ async fn budget_refunds_and_probe_releases_keep_their_originating_unit() {
     let first = {
         crate::dist_root_install::install();
         crate::root::test_plane_registry::register();
-        let dialects: serde_json::Value =
-            serde_json::from_str(include_str!("fixtures/plane_node_dialects.json"))
+        let dialects: json::Value =
+            json::parse_value(include_str!("fixtures/plane_node_dialects.json").as_bytes())
                 .expect("the actual linked dialects are recorded");
         let dialect = dialects["body_model"]
             .as_object()
@@ -469,8 +470,8 @@ async fn budget_refunds_and_probe_releases_keep_their_originating_unit() {
     let second = {
         crate::dist_root_install::install();
         crate::root::test_plane_registry::register();
-        let dialects: serde_json::Value =
-            serde_json::from_str(include_str!("fixtures/plane_node_dialects.json"))
+        let dialects: json::Value =
+            json::parse_value(include_str!("fixtures/plane_node_dialects.json").as_bytes())
                 .expect("the actual linked dialects are recorded");
         let dialect = dialects["body_model"]
             .as_object()
@@ -574,8 +575,8 @@ async fn a_successful_probe_counts_once_on_the_lanes_ok_whatever_its_pools() {
     let app = {
         crate::dist_root_install::install();
         crate::root::test_plane_registry::register();
-        let dialects: serde_json::Value =
-            serde_json::from_str(include_str!("fixtures/plane_node_dialects.json"))
+        let dialects: json::Value =
+            json::parse_value(include_str!("fixtures/plane_node_dialects.json").as_bytes())
                 .expect("the actual linked dialects are recorded");
         let dialect = dialects["body_model"]
             .as_object()
@@ -661,8 +662,8 @@ async fn a_success_is_recorded_on_the_walks_clock() {
     let app = {
         crate::dist_root_install::install();
         crate::root::test_plane_registry::register();
-        let dialects: serde_json::Value =
-            serde_json::from_str(include_str!("fixtures/plane_node_dialects.json"))
+        let dialects: json::Value =
+            json::parse_value(include_str!("fixtures/plane_node_dialects.json").as_bytes())
                 .expect("the actual linked dialects are recorded");
         let dialect = dialects["body_model"]
             .as_object()
@@ -759,8 +760,8 @@ async fn a_probe_success_joins_the_walks_window() {
     let app = {
         crate::dist_root_install::install();
         crate::root::test_plane_registry::register();
-        let dialects: serde_json::Value =
-            serde_json::from_str(include_str!("fixtures/plane_node_dialects.json"))
+        let dialects: json::Value =
+            json::parse_value(include_str!("fixtures/plane_node_dialects.json").as_bytes())
                 .expect("the actual linked dialects are recorded");
         let dialect = dialects["body_model"]
             .as_object()
@@ -862,8 +863,8 @@ async fn probe_failures_and_hard_downs_cool_on_the_walks_clock() {
         let app = {
             crate::dist_root_install::install();
             crate::root::test_plane_registry::register();
-            let dialects: serde_json::Value =
-                serde_json::from_str(include_str!("fixtures/plane_node_dialects.json"))
+            let dialects: json::Value =
+                json::parse_value(include_str!("fixtures/plane_node_dialects.json").as_bytes())
                     .expect("the actual linked dialects are recorded");
             let dialect = dialects["body_model"]
                 .as_object()
@@ -1003,8 +1004,8 @@ async fn a_direct_routes_fault_is_recorded_on_the_lanes_default_cell() {
     let app = {
         crate::dist_root_install::install();
         crate::root::test_plane_registry::register();
-        let dialects: serde_json::Value =
-            serde_json::from_str(include_str!("fixtures/plane_node_dialects.json"))
+        let dialects: json::Value =
+            json::parse_value(include_str!("fixtures/plane_node_dialects.json").as_bytes())
                 .expect("the actual linked dialects are recorded");
         let dialect = dialects["body_model"]
             .as_object()
@@ -1098,8 +1099,8 @@ async fn a_walk_spanning_a_config_apply_records_into_the_new_store() {
     let generation = || async {
         crate::dist_root_install::install();
         crate::root::test_plane_registry::register();
-        let dialects: serde_json::Value =
-            serde_json::from_str(include_str!("fixtures/plane_node_dialects.json"))
+        let dialects: json::Value =
+            json::parse_value(include_str!("fixtures/plane_node_dialects.json").as_bytes())
                 .expect("the actual linked dialects are recorded");
         let dialect = dialects["body_model"]
             .as_object()
@@ -1192,8 +1193,8 @@ async fn live_egress_borrows_its_owner_and_never_reverts_after_that_owner_retire
     let boot = {
         crate::dist_root_install::install();
         crate::root::test_plane_registry::register();
-        let dialects: serde_json::Value =
-            serde_json::from_str(include_str!("fixtures/plane_node_dialects.json"))
+        let dialects: json::Value =
+            json::parse_value(include_str!("fixtures/plane_node_dialects.json").as_bytes())
                 .expect("the actual linked dialects are recorded");
         let dialect = dialects["body_model"]
             .as_object()
@@ -1264,8 +1265,8 @@ async fn live_egress_borrows_its_owner_and_never_reverts_after_that_owner_retire
     let current = {
         crate::dist_root_install::install();
         crate::root::test_plane_registry::register();
-        let dialects: serde_json::Value =
-            serde_json::from_str(include_str!("fixtures/plane_node_dialects.json"))
+        let dialects: json::Value =
+            json::parse_value(include_str!("fixtures/plane_node_dialects.json").as_bytes())
                 .expect("the actual linked dialects are recorded");
         let dialect = dialects["body_model"]
             .as_object()
@@ -1369,8 +1370,8 @@ async fn a_keyless_lane_is_not_probed() {
         app: LiveApp::fixed({
             crate::dist_root_install::install();
             crate::root::test_plane_registry::register();
-            let dialects: serde_json::Value =
-                serde_json::from_str(include_str!("fixtures/plane_node_dialects.json"))
+            let dialects: json::Value =
+                json::parse_value(include_str!("fixtures/plane_node_dialects.json").as_bytes())
                     .expect("the actual linked dialects are recorded");
             let dialect = dialects["body_model"]
                 .as_object()
@@ -1446,8 +1447,8 @@ async fn semantic_rate_limit_preserves_the_store_ladder_without_reading_protocol
     let app = {
         crate::dist_root_install::install();
         crate::root::test_plane_registry::register();
-        let dialects: serde_json::Value =
-            serde_json::from_str(include_str!("fixtures/plane_node_dialects.json"))
+        let dialects: json::Value =
+            json::parse_value(include_str!("fixtures/plane_node_dialects.json").as_bytes())
                 .expect("the actual linked dialects are recorded");
         let dialect = dialects["body_model"]
             .as_object()

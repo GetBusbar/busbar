@@ -8,6 +8,8 @@
 //! (platform.claude.com/docs/en/build-with-claude/structured-outputs), resolved here by the LLM
 //! plane's rule: the first `model_capabilities` rule whose `*` glob matches the wire model wins.
 
+use busbar_contract::json::JsonValueTrait as _;
+
 /// A `*` glob, the only wildcard `model_capabilities` takes (the LLM plane's `glob_match`).
 fn glob(pattern: &str, text: &str) -> bool {
     let parts: Vec<&str> = pattern.split('*').collect();
@@ -31,7 +33,7 @@ fn glob(pattern: &str, text: &str) -> bool {
 fn native_structured_output(model: &str) -> bool {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../providers.yaml");
     let text = std::fs::read_to_string(&path).expect("the shipped catalog is readable");
-    let catalog: serde_json::Value =
+    let catalog: busbar_contract::json::Value =
         busbar_contract::yaml::from_str(&text).expect("the catalog is YAML");
     let entry = &catalog["anthropic"];
     let rule = entry["model_capabilities"]

@@ -1080,8 +1080,9 @@ pub fn synthesize_bound_key(
         module,
         roles: &principal.roles,
     };
-    serde_json::to_writer(&mut marker, &fields).expect("a borrowed marker always serializes");
-    key.generation_hash = String::from_utf8(marker).expect("serde_json writes UTF-8");
+    busbar_contract::json::to_writer(&mut marker, &fields)
+        .expect("a borrowed marker always serializes");
+    key.generation_hash = String::from_utf8(marker).expect("the JSON writer writes UTF-8");
     Some(Arc::new(key))
 }
 
@@ -1093,7 +1094,7 @@ pub fn bound_admission(key: &VirtualKey) -> Option<(String, crate::auth::Princip
         roles: Vec<String>,
     }
     let json = key.generation_hash.strip_prefix(PRINCIPAL_MARKER_PREFIX)?;
-    let m: Marker = serde_json::from_str(json).ok()?;
+    let m: Marker = busbar_contract::json::parse_str(json).ok()?;
     if m.id != key.id {
         return None;
     }

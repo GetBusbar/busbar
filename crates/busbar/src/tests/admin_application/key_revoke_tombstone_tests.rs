@@ -4,6 +4,7 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
+use busbar_contract::json::{self, JsonValueTrait};
 use busbar_kernel::audit_ring;
 
 const X_ADMIN_TOKEN: &str = "x-admin-token";
@@ -92,12 +93,12 @@ async fn revoke_on_an_already_tombstoned_key_answers_200_and_audits_applied() {
     let create_resp = client
         .post(&url)
         .header(X_ADMIN_TOKEN, "admintok")
-        .json(&serde_json::json!({"name": "tombstone-then-revoke"}))
+        .json(&json::json!({"name": "tombstone-then-revoke"}))
         .send()
         .await
         .unwrap();
     let create_status = create_resp.status();
-    let created: serde_json::Value = create_resp.json().await.unwrap();
+    let created = json::parse_value(&create_resp.bytes().await.unwrap()).unwrap();
     let id = created["id"]
         .as_str()
         .unwrap_or_else(|| {
@@ -131,15 +132,18 @@ async fn revoke_on_an_already_tombstoned_key_answers_200_and_audits_applied() {
         "revoke on a tombstoned key must be 200, not 404: {:?}",
         revoked.text().await
     );
-    let body: serde_json::Value = client
-        .post(format!("{url}/{id}/revoke"))
-        .header(X_ADMIN_TOKEN, "admintok")
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
+    let body = json::parse_value(
+        &client
+            .post(format!("{url}/{id}/revoke"))
+            .header(X_ADMIN_TOKEN, "admintok")
+            .send()
+            .await
+            .unwrap()
+            .bytes()
+            .await
+            .unwrap(),
+    )
+    .unwrap();
     assert_eq!(body["revoked"], id.as_str());
 
     let after = busbar_kernel::audit::auditlog::AUDIT_LOG

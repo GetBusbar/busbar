@@ -4,6 +4,7 @@
 //! The crate's one cold module: refusal and failure text the request path (`routes`, `shared`,
 //! `plane::serve`) needs only when something went wrong. Out of line and rare.
 
+use busbar_contract::json::{self, JsonValueTrait as _};
 use oauth_as::store::StorageError;
 
 /// A store operation that failed, named with what it was doing.
@@ -16,7 +17,7 @@ pub(crate) fn store_failed(what: &str, f: impl std::fmt::Debug) -> StorageError 
 /// A store record that did not decode, named with what it was.
 #[cold]
 #[inline(never)]
-pub(crate) fn store_decode_failed(what: &str, e: &serde_json::Error) -> StorageError {
+pub(crate) fn store_decode_failed(what: &str, e: &dyn std::fmt::Display) -> StorageError {
     StorageError::new(format!("oauth_as store: {what} did not decode: {e}"))
 }
 
@@ -32,7 +33,7 @@ pub(crate) fn lossy_form_component(bytes: &[u8]) -> String {
 #[cold]
 #[inline(never)]
 pub(crate) fn authorization_error_page(status: http::StatusCode, body: &[u8]) -> String {
-    let error: serde_json::Value = serde_json::from_slice(body).unwrap_or_default();
+    let error = json::parse_value(body).unwrap_or_default();
     let code = error["error"]
         .as_str()
         .map_or_else(|| format!("HTTP {}", status.as_u16()), str::to_string);

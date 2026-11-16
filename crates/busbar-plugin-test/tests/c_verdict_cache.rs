@@ -19,16 +19,16 @@ use std::task::{Context, Poll, Waker};
 use std::time::{Duration, Instant};
 
 use busbar_kernel::auth::chain_run::{
-    credential_hash, run_chain, verify_cached, ChainEnd, ChainInstance,
+    credential_hash, refreshed, run_chain, verify_cached, ChainEnd, ChainInstance,
 };
 use busbar_kernel::auth::verdicts::{VerdictPolicy, Verdicts};
-use busbar_plugin_abi::auth::{BAD_CREDENTIAL, FB_NEEDS_BODY};
+use busbar_plugin_abi::auth::{BAD_CREDENTIAL, FB_NEEDS_BODY, KEYS_STALE};
 use busbar_plugin_abi::fail::refused::R_UNSUPPORTED;
 use busbar_plugin_abi::host_side::caller::{BoxFut, CallStack};
 use busbar_plugin_abi::types::{Bytes, Pair, Str};
 use busbar_plugin_loader::ports::auth::{
-    AuthIn, AuthPort, LoginAnswer, LoginIn, OutboundAnswer, ServeIn, ServeOut, UpstreamIn, Verdict,
-    Verify,
+    AuthIn, AuthPort, Identity, LoginAnswer, LoginIn, OutboundAnswer, ServeIn, ServeOut,
+    UpstreamIn, Verdict, Verify,
 };
 use busbar_plugin_loader::ports::{CallCx, PortError};
 
@@ -37,6 +37,10 @@ use busbar_plugin_loader::ports::{CallCx, PortError};
 enum Answer {
     NotMine,
     Rejected,
+    /// An identity for this subject (`Identity::from_ticket`: core-built, no F_CACHE_S, no F_EXPIRES_AT_S).
+    Admit(String),
+    /// The KEYS_STALE refusal.
+    KeysStale,
 }
 
 struct Fake {
@@ -99,6 +103,13 @@ impl AuthPort for Fake {
                     code: BAD_CREDENTIAL,
                     text: "wrong password".into(),
                 },
+                Answer::Admit(subject) => {
+                    Verdict::Identity(Identity::from_ticket(&subject, "chat"))
+                }
+                Answer::KeysStale => Verdict::Rejected {
+                    code: KEYS_STALE,
+                    text: "unknown key id".into(),
+                },
             })
         }))
     }
@@ -148,6 +159,10 @@ fn pair<'a>(name: &'a str, value: &'a str) -> Pair<'a> {
 }
 
 fn request<'a>(headers: &'a [Pair<'a>]) -> AuthIn<'a> {
+    request_at(headers, 1_000)
+}
+
+fn request_at<'a>(headers: &'a [Pair<'a>], now_s: u64) -> AuthIn<'a> {
     AuthIn {
         method: "GET",
         path: "/v1/models",
@@ -157,7 +172,7 @@ fn request<'a>(headers: &'a [Pair<'a>]) -> AuthIn<'a> {
         peer: "203.0.113.7",
         tls_peer_cert: &[],
         body: &[],
-        now_s: 1_000,
+        now_s,
     }
 }
 
@@ -373,13 +388,220 @@ fn the_key_reads_only_the_declared_credential_headers() {
 }
 
 #[test]
-#[ignore = "owner: W1-K8B (needs W1-L5's Identity: arms (a), (b), (d), (e) fill and serve an entry)"]
+#[ignore = "owner: W1-K8B; re-checked 2026-11-16: Identity is real now (plugin-loader ports/auth.rs:39), so arm (a) second request served from the cache, (b) the default 300 s TTL, (d) capacity, eviction order and the 8 KiB identity cap, and (e) flush on refresh, on KEYS_STALE and against an in-flight lead run as the sibling tests below; still missing here: the 0-allocation hit (counting allocator), F_CACHE_S 60/99,999/0 and F_EXPIRES_AT_S (an Identity carries them only from the adapter decode, ports/auth.rs decode_verify_ok is crate-private and no auth fixture image exists), and the flush on reconfigure and close (the instance lifecycle is W2-SW-AUTH: the cache is not on the live request path, which is AuthMiddleware::run_chain_on_request_path, busbar-kernel auth/mod.rs:784; draft MR !2481)"]
 fn identity_arms() {
     todo!("owner: W1-K8B (C-VERDICT-CACHE (a), (b), (d), (e); W1-L5's Identity accessors)")
 }
 
 #[test]
-#[ignore = "owner: W1-K8B (arm (i): host_verify.rs stays until the service ABI is deleted, busbar#268)"]
+#[ignore = "owner: W1-K8B; re-checked 2026-11-16: arm (i) needs crates/busbar-kernel/src/host_verify.rs gone, and it still exists (lib.rs:336, VerifyBook, used by crates/busbar/src/root/serve.rs); it goes with the service ABI deletion (busbar#268) and the auth switch-over (draft MR !2481, W2-SW-AUTH)"]
 fn one_verdict_cache_in_the_kernel() {
     todo!("owner: W1-K8B (C-VERDICT-CACHE (i), busbar#268)")
+}
+
+// Sibling arms: the parts of (a), (b), (d) and (e) that run over a core-built `Identity`
+// (`Identity::from_ticket`), through the same chain walk and cache production uses.
+
+fn subject_of(outcome: &Result<Verdict, PortError>) -> Option<String> {
+    match outcome {
+        Ok(Verdict::Identity(identity)) => Some(identity.subject().to_owned()),
+        _ => None,
+    }
+}
+
+fn admit(subject: &str) -> Fake {
+    Fake::new(0, Answer::Admit(subject.to_owned()))
+}
+
+fn sized(max_entries: u32) -> Verdicts {
+    Verdicts::new(VerdictPolicy {
+        max_entries,
+        ..VerdictPolicy::default()
+    })
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn the_same_bearer_twice_verifies_once_and_the_entry_lives_300_s_by_default() {
+    let cache = cache();
+    let port = admit("alice");
+    let headers = [pair("authorization", "Bearer cold")];
+    let instance = ChainInstance { id: 7, port: &port };
+    let first = verify_cached(&cache, instance, cx(), &request_at(&headers, 1_000)).await;
+    let second = verify_cached(&cache, instance, cx(), &request_at(&headers, 1_100)).await;
+    assert_eq!(
+        port.verifies(),
+        1,
+        "(a) one plugin verify for the same bearer"
+    );
+    assert_eq!(subject_of(&first).as_deref(), Some("alice"));
+    assert_eq!(
+        subject_of(&second).as_deref(),
+        Some("alice"),
+        "(a) the second request is admitted with the same identity"
+    );
+    // (b) no F_CACHE_S: the entry lives the 300 s default.
+    let last = verify_cached(&cache, instance, cx(), &request_at(&headers, 1_299)).await;
+    assert_eq!(subject_of(&last).as_deref(), Some("alice"));
+    assert_eq!(port.verifies(), 1, "still fresh at 299 s");
+    let after = verify_cached(&cache, instance, cx(), &request_at(&headers, 1_300)).await;
+    assert_eq!(subject_of(&after).as_deref(), Some("alice"));
+    assert_eq!(port.verifies(), 2, "re-verified once the 300 s are up");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn at_capacity_the_idle_entry_with_the_soonest_expiry_goes_first() {
+    let cache = sized(2);
+    let port = admit("alice");
+    let (a, b, c) = (
+        [pair("authorization", "Bearer a")],
+        [pair("authorization", "Bearer b")],
+        [pair("authorization", "Bearer c")],
+    );
+    let instance = ChainInstance { id: 7, port: &port };
+    for (headers, at) in [(&a, 1_000), (&b, 1_010), (&c, 1_020)] {
+        let outcome = verify_cached(&cache, instance, cx(), &request_at(headers, at)).await;
+        assert_eq!(subject_of(&outcome).as_deref(), Some("alice"));
+    }
+    assert_eq!(port.verifies(), 3);
+    assert_eq!(cache.keys(7), 2, "(d) never above max_entries");
+    verify_cached(&cache, instance, cx(), &request_at(&b, 1_030))
+        .await
+        .ok();
+    assert_eq!(port.verifies(), 3, "b outlived a: the soonest expiry went");
+    verify_cached(&cache, instance, cx(), &request_at(&a, 1_030))
+        .await
+        .ok();
+    assert_eq!(port.verifies(), 4, "a was the entry evicted for c");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn with_every_entry_leading_the_next_request_bypasses_and_is_never_refused() {
+    let cache = sized(2);
+    let port = admit("alice");
+    let (a, b, c) = (
+        [pair("authorization", "Bearer a")],
+        [pair("authorization", "Bearer b")],
+        [pair("authorization", "Bearer c")],
+    );
+    let instance = ChainInstance { id: 7, port: &port };
+    let (req_a, req_b, req_c) = (
+        request_at(&a, 1_000),
+        request_at(&b, 1_000),
+        request_at(&c, 1_000),
+    );
+    let mut lead_a = Box::pin(verify_cached(&cache, instance, cx(), &req_a));
+    let mut lead_b = Box::pin(verify_cached(&cache, instance, cx(), &req_b));
+    let mut noop = Context::from_waker(Waker::noop());
+    assert!(lead_a.as_mut().poll(&mut noop).is_pending());
+    assert!(lead_b.as_mut().poll(&mut noop).is_pending());
+    let bypassed = verify_cached(&cache, instance, cx(), &req_c).await;
+    assert_eq!(
+        subject_of(&bypassed).as_deref(),
+        Some("alice"),
+        "(d) verified and admitted, never refused"
+    );
+    assert_eq!(port.verifies(), 3);
+    assert_eq!(cache.keys(7), 2, "and not filled");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn an_identity_over_8_kib_is_verified_afresh_every_time() {
+    let cache = cache();
+    let port = admit(&"x".repeat(9_000));
+    let headers = [pair("authorization", "Bearer big")];
+    let instance = ChainInstance { id: 7, port: &port };
+    for _ in 0..2 {
+        let outcome = verify_cached(&cache, instance, cx(), &request_at(&headers, 1_000)).await;
+        assert!(matches!(outcome, Ok(Verdict::Identity(_))));
+    }
+    assert_eq!(
+        port.verifies(),
+        2,
+        "(d) over max_identity_bytes is never filled"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_completed_refresh_flushes_the_instance_and_a_failed_one_does_not() {
+    let cache = cache();
+    let port = admit("alice");
+    let headers = [pair("authorization", "Bearer cold")];
+    let instance = ChainInstance { id: 7, port: &port };
+    let req = request_at(&headers, 1_000);
+    verify_cached(&cache, instance, cx(), &req).await.ok();
+    let failed: Result<Option<u32>, PortError> = Err(PortError::Refused {
+        code: R_UNSUPPORTED,
+        text: "not offered".into(),
+        error: None,
+    });
+    refreshed(&cache, 7, &failed);
+    verify_cached(&cache, instance, cx(), &req).await.ok();
+    assert_eq!(port.verifies(), 1, "(e) a failed refresh keeps the entries");
+    refreshed(&cache, 7, &Ok(None));
+    verify_cached(&cache, instance, cx(), &req).await.ok();
+    assert_eq!(
+        port.verifies(),
+        2,
+        "(e) the next request re-verifies after a refresh"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_keys_stale_answer_flushes_the_instance() {
+    let cache = cache();
+    let good = admit("alice");
+    let stale = Fake::new(0, Answer::KeysStale);
+    let known = [pair("authorization", "Bearer known")];
+    let unknown_key = [pair("authorization", "Bearer unknown-kid")];
+    let id = 7;
+    verify_cached(
+        &cache,
+        ChainInstance { id, port: &good },
+        cx(),
+        &request_at(&known, 1_000),
+    )
+    .await
+    .ok();
+    let refused = verify_cached(
+        &cache,
+        ChainInstance { id, port: &stale },
+        cx(),
+        &request_at(&unknown_key, 1_001),
+    )
+    .await;
+    assert!(matches!(refused, Ok(Verdict::Rejected { code, .. }) if code == KEYS_STALE));
+    verify_cached(
+        &cache,
+        ChainInstance { id, port: &good },
+        cx(),
+        &request_at(&known, 1_002),
+    )
+    .await
+    .ok();
+    assert_eq!(
+        good.verifies(),
+        2,
+        "(e) KEYS_STALE dropped the instance's entries"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_verify_that_began_before_a_flush_does_not_fill() {
+    let cache = cache();
+    let port = admit("alice");
+    let headers = [pair("authorization", "Bearer racing")];
+    let instance = ChainInstance { id: 7, port: &port };
+    let req = request_at(&headers, 1_000);
+    let mut leader = Box::pin(verify_cached(&cache, instance, cx(), &req));
+    let mut noop = Context::from_waker(Waker::noop());
+    assert!(leader.as_mut().poll(&mut noop).is_pending(), "mid-verify");
+    refreshed(&cache, 7, &Ok(None));
+    let outcome = leader.await;
+    assert_eq!(
+        subject_of(&outcome).as_deref(),
+        Some("alice"),
+        "the leader still gets its own answer"
+    );
+    verify_cached(&cache, instance, cx(), &req).await.ok();
+    assert_eq!(port.verifies(), 2, "(e) the stale-epoch fill was discarded");
 }

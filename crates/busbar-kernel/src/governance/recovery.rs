@@ -44,6 +44,20 @@ pub trait RecoverySink: Send + Sync {
     async fn persist(&self, event: &RecoveryEvent) -> Result<(), RecoveryError>;
     async fn replay(&self) -> Result<Vec<RecoveryEvent>, RecoveryError>;
 
+    /// One keep phase of a flush pass (SHUTDOWN-HANG F3.1): a result per event, in order, so one
+    /// failure never fails its siblings. The default persists each event alone.
+    async fn persist_batch(&self, events: &[RecoveryEvent]) -> Vec<Result<(), RecoveryError>> {
+        let mut out = Vec::with_capacity(events.len());
+        for event in events {
+            out.push(self.persist(event).await);
+        }
+        out
+    }
+
+    /// The operation is settled in this process: drop the evidence carried for its own originals
+    /// (SHUTDOWN-HANG F1). Nothing is written.
+    fn release(&self, _operation_id: [u8; 16]) {}
+
     /// Return one bounded summary per operation only AFTER verifying its complete
     async fn replay_selections(&self) -> Result<Vec<RecoverySelection>, RecoveryError> {
         summarize_recovery_chains(self.replay().await?)
@@ -229,12 +243,14 @@ impl RecoveryEvent {
     pub fn fingerprint(&self) -> Result<[u8; 32], RecoveryError> {
         let mut digest = crate::hashing::Sha256::new();
         digest.update(b"busbar.usage-recovery.event.v1\0");
-        serde_json::to_writer(super::DigestWriter(&mut digest), self).map_err(|error| {
-            super::rendered_error(
-                RecoveryError::Invalid,
-                format_args!("invalid recovery event: {error}"),
-            )
-        })?;
+        busbar_contract::json::to_writer(super::DigestWriter(&mut digest), self).map_err(
+            |error| {
+                super::rendered_error(
+                    RecoveryError::Invalid,
+                    format_args!("invalid recovery event: {error}"),
+                )
+            },
+        )?;
         Ok(digest.finalize())
     }
 
@@ -507,6 +523,94 @@ impl RecoveryBook {
             .sink
             .get()
             .ok_or_else(|| RecoveryError::Unavailable("recovery Store is not attached".into()))?;
+        let Some(runner) = self.admit(event)? else {
+            return Ok(());
+        };
+        let _running = runner
+            .enter(false)
+            .await
+            .map_err(|reason| RecoveryError::Conflict(reason.into()))?;
+        sink.persist(event).await?;
+        self.kept(&**sink, event)
+    }
+
+    /// Several operations' keeps in one sink call (SHUTDOWN-HANG F3.1 `keep_batch`): per event the
+    /// same bookkeeping as `keep`, and a busy runner fails only its own event. A batch of one is
+    /// `keep`.
+    async fn keep_batch(&self, events: &[RecoveryEvent]) -> Vec<Result<(), RecoveryError>> {
+        if let [event] = events {
+            return vec![self.keep(event).await];
+        }
+        let missing = || RecoveryError::Unavailable("recovery keep batch result missing".into());
+        let Some(sink) = self.sink.get() else {
+            return events
+                .iter()
+                .map(|_| {
+                    Err(RecoveryError::Unavailable(
+                        "recovery Store is not attached".into(),
+                    ))
+                })
+                .collect();
+        };
+        let mut out: Vec<Option<Result<(), RecoveryError>>> = Vec::with_capacity(events.len());
+        out.resize_with(events.len(), || None);
+        let mut runners = Vec::with_capacity(events.len());
+        let mut admitted_at = Vec::with_capacity(events.len());
+        for (at, event) in events.iter().enumerate() {
+            if events[..at]
+                .iter()
+                .any(|earlier| earlier.operation_id == event.operation_id)
+            {
+                out[at] = Some(Err(RecoveryError::Conflict(
+                    "a recovery operation repeats in one keep batch".into(),
+                )));
+                continue;
+            }
+            match self.admit(event) {
+                Ok(Some(runner)) => {
+                    runners.push(runner);
+                    admitted_at.push(at);
+                }
+                Ok(None) => out[at] = Some(Ok(())),
+                Err(why) => out[at] = Some(Err(why)),
+            }
+        }
+        // The guards borrow `runners`, declared before them, so they drop first.
+        let mut running = Vec::with_capacity(runners.len());
+        let mut admitted = Vec::with_capacity(runners.len());
+        let mut members = Vec::with_capacity(runners.len());
+        for (runner, at) in runners.iter().zip(admitted_at) {
+            match runner.try_enter() {
+                Ok(guard) => {
+                    running.push(guard);
+                    admitted.push(events[at].clone());
+                    members.push(at);
+                }
+                Err(reason) => out[at] = Some(Err(RecoveryError::Conflict(reason.into()))),
+            }
+        }
+        if !admitted.is_empty() {
+            let mut results = sink.persist_batch(&admitted).await.into_iter();
+            for at in members {
+                out[at] = Some(match results.next() {
+                    Some(Ok(())) => self.kept(&**sink, &events[at]),
+                    Some(Err(why)) => Err(why),
+                    None => Err(missing()),
+                });
+            }
+        }
+        drop(running);
+        out.into_iter()
+            .map(|answer| answer.unwrap_or_else(|| Err(missing())))
+            .collect()
+    }
+
+    /// `keep`'s bookkeeping before the sink call: `None` when the event is already selected with
+    /// nothing pending, else the runner that serialises this operation's keeps.
+    fn admit(
+        &self,
+        event: &RecoveryEvent,
+    ) -> Result<Option<std::sync::Arc<super::BudgetFlushRunner>>, RecoveryError> {
         let runner = {
             let mut entries = self.entries.lock().unwrap_or_else(|p| p.into_inner());
             let entry = entries.entry(event.operation_id).or_default();
@@ -516,7 +620,7 @@ impl RecoveryBook {
             // successor) still runs its own guarded `persist`, so a takeover
             // fails closed there.
             if entry.selected.as_ref() == Some(event) && entry.pending.is_none() {
-                return Ok(());
+                return Ok(None);
             }
             if entry.selected.as_ref() != Some(event) {
                 event.follows(entry.selected.as_ref())?;
@@ -532,16 +636,17 @@ impl RecoveryBook {
             }
             entry.runner.clone()
         };
-        let _running = runner
-            .enter(false)
-            .await
-            .map_err(|reason| RecoveryError::Conflict(reason.into()))?;
+        Ok(Some(runner))
+    }
 
-        sink.persist(event).await?;
+    /// `keep`'s bookkeeping after the sink selected `event`. A Settled selection releases the
+    /// evidence the sink carried for the operation's own originals (SHUTDOWN-HANG F1): no later
+    /// write of this operation needs it, and a cold verification still proves its chain.
+    fn kept(&self, sink: &dyn RecoverySink, event: &RecoveryEvent) -> Result<(), RecoveryError> {
         let mut entries = self.entries.lock().unwrap_or_else(|p| p.into_inner());
-        let entry = entries
-            .get_mut(&event.operation_id)
-            .expect("candidate retained");
+        let entry = entries.get_mut(&event.operation_id).ok_or_else(|| {
+            RecoveryError::Conflict("recovery candidate changed during persistence".into())
+        })?;
         if entry.selected.as_ref() == Some(event) {
             return Ok(());
         }
@@ -561,8 +666,13 @@ impl RecoveryBook {
                 | RecoveryState::VerdictNotLanded
         );
         entry.selected = entry.pending.take();
+        let settled = event.state == RecoveryState::Settled;
+        drop(entries);
         self.selection_epoch
             .fetch_add(1, std::sync::atomic::Ordering::Release);
+        if settled {
+            sink.release(event.operation_id);
+        }
         Ok(())
     }
 }
@@ -1044,17 +1154,20 @@ impl super::GovState {
         &self,
         operation_id: [u8; 16],
     ) -> super::RecordStoreResult<()> {
-        let pending = self
-            .recovery_book
+        if let Some(event) = self.pending_recovery_event(operation_id) {
+            self.keep_recovery_event(&event).await?;
+        }
+        Ok(())
+    }
+
+    /// The immutable candidate this operation still awaits selection for, if any.
+    pub(super) fn pending_recovery_event(&self, operation_id: [u8; 16]) -> Option<RecoveryEvent> {
+        self.recovery_book
             .entries
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .get(&operation_id)
-            .and_then(|entry| entry.pending.clone());
-        if let Some(event) = pending {
-            self.keep_recovery_event(&event).await?;
-        }
-        Ok(())
+            .and_then(|entry| entry.pending.clone())
     }
 
     /// Local successful roots need no live administrative custody after their
@@ -1079,7 +1192,7 @@ impl super::GovState {
         {
             return;
         }
-        let Ok(payload) = serde_json::from_slice::<RootCustody>(&event.payload) else {
+        let Ok(payload) = busbar_contract::json::parse::<RootCustody>(&event.payload) else {
             return;
         };
         if payload.origin.is_some() || !payload.handoffs.is_empty_list() {
@@ -1372,6 +1485,20 @@ impl super::GovState {
             .keep(event)
             .await
             .map_err(crate::governance::store_error)
+    }
+
+    /// One keep phase of a flush pass (SHUTDOWN-HANG F3.1, F3.3): every event in one sink call, a
+    /// result per event in order. A batch of one is `keep_recovery_event`.
+    pub(super) async fn keep_recovery_events(
+        &self,
+        events: &[RecoveryEvent],
+    ) -> Vec<super::RecordStoreResult<()>> {
+        self.recovery_book
+            .keep_batch(events)
+            .await
+            .into_iter()
+            .map(|result| result.map_err(crate::governance::store_error))
+            .collect()
     }
 }
 

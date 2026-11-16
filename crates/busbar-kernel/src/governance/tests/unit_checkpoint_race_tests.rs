@@ -14,6 +14,7 @@ use super::unit_checkpoint_store::{
 use super::RecordStoreResult;
 use crate::persistence::facade::{CoreStore, Limits, WriterAuthority};
 use crate::persistence::journal::runtime::{BufferBudget, RuntimeJournal};
+use busbar_contract::json::{self, JsonValueTrait as _};
 use busbar_contract::persistence::{
     control, Address, BackendInfo, Call, ClockObservation, DatasetId, Decision, Durability,
     ExpectedValue, Mutation, Page, PersistenceBackend, PreparedCandidate, Read, ReadResult, Scan,
@@ -577,7 +578,7 @@ fn selected_revision(backend: &Mem) -> Option<u64> {
         .rows
         .iter()
         .find(|(at, _)| at.key.starts_with(UNITCP))?;
-    let head: serde_json::Value = serde_json::from_slice(raw.expose(&crate::seal::lend())).unwrap();
+    let head: json::Value = json::parse_value(raw.expose(&crate::seal::lend())).unwrap();
     head["revision"].as_u64()
 }
 fn selected_raw(backend: &Mem) -> Option<Secret<Vec<u8>>> {
@@ -713,10 +714,15 @@ async fn cancel_parked_persist(fixture: &Fixture, snapshot: &UnitCheckpoint) {
 /// WHO: the usage flusher re-driving a checkpoint selection whose crossing was
 /// cancelled (timeout, abort) while another service appended.
 /// DOES: the proof is retained before any native claim, so the re-drive
-/// presents the exact same attempt (same operation id, same head predicate);
-/// with the head moved the attempt stays retained for reconciliation.
-/// WHY: re-proving against the moved head would change the claim digest for
-/// the same operation id and wedge it as corruption.
+/// presents the exact same attempt (same operation id, same head predicate).
+/// (SHUTDOWN-HANG F2.2, 8.4(c), owner ruling 2026-11-16 "Re-select, after
+/// authority check") With the head moved, that re-drive's condition conflict is
+/// a definitive no-effect: our authority is intact, so the same staged original
+/// is re-selected once under a new operation id against the current head, and
+/// nothing is staged twice.
+/// WHY: re-proving against the moved head on the re-drive would change the claim
+/// digest for the same operation id and wedge it as corruption; never
+/// re-selecting held the single slot, and every later checkpoint, for ever.
 #[tokio::test]
 async fn cancelled_selection_resumes_exact_attempt() {
     bounded(async {
@@ -731,29 +737,27 @@ async fn cancelled_selection_resumes_exact_attempt() {
         })
         .await
         .expect("a cancelled selection releases the journal's publication driver");
-        let refused = fixture.sink.persist(&unit(1)).await.unwrap_err().0;
+        let staged = fixture.journal.next_seq();
+        let resolved = fixture.sink.persist(&unit(1)).await;
+        assert!(resolved.is_ok(), "{:?}", resolved.err().map(|e| e.0));
         let seen = fixture.backend.seen.lock().unwrap().clone();
-        assert_eq!(seen.len(), 2);
+        assert_eq!(seen.len(), 3, "the re-drive, then one re-select");
         assert_eq!(seen[1], seen[0], "the re-drive presents the exact attempt");
-        assert!(
-            refused.contains("running money native custody remains unresolved"),
-            "{refused}"
-        );
-        assert!(
-            !refused.contains("Corrupt") && !refused.contains("OperationConflict"),
-            "{refused}"
-        );
-        let again = fixture.sink.persist(&unit(1)).await.unwrap_err().0;
-        assert!(
-            again.contains("running money native custody remains unresolved"),
-            "{again}"
+        assert_ne!(seen[2].operation, seen[0].operation, "a new operation id");
+        assert_ne!(
+            seen[2].head, seen[0].head,
+            "the re-select pins the current head"
         );
         assert_eq!(
-            fixture.backend.seen.lock().unwrap().len(),
-            2,
-            "a reconciling attempt is not resubmitted"
+            fixture.backend.decisions.lock().unwrap().clone(),
+            vec!["ConditionConflict", "Applied"]
         );
-        assert_eq!(selected_revision(&fixture.backend), None);
+        assert_eq!(
+            fixture.journal.next_seq(),
+            staged,
+            "the same staged original is re-selected"
+        );
+        assert_eq!(selected_revision(&fixture.backend), Some(1));
     })
     .await;
 }

@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 
 use crate::root::test_plugins as plugins;
 use crate::test_common as common;
+use busbar_contract::json::{self, JsonValueTrait as _};
 
 fn in_isolated_root() -> bool {
     const CHILD: &str = "BUSBAR_AUTH_GOVERNANCE_ROOT_CHILD";
@@ -61,7 +62,7 @@ fn in_isolated_root() -> bool {
 async fn stats(
     router: axum::Router,
     credential: Option<(&str, &str)>,
-) -> (u16, String, serde_json::Value) {
+) -> (u16, String, json::Value) {
     let mut request = axum::http::Request::builder().uri("/stats");
     if let Some((name, value)) = credential {
         request = request.header(name, value);
@@ -90,18 +91,15 @@ async fn stats(
     (
         status,
         ct,
-        serde_json::from_slice(&body).expect("the native root response is JSON"),
+        json::parse_value(&body).expect("the native root response is JSON"),
     )
 }
 
-fn native_refusal(response: (u16, String, serde_json::Value)) {
+fn native_refusal(response: (u16, String, json::Value)) {
     assert_eq!(response.0, 401, "{}", response.2);
     assert_eq!(response.1, "application/json");
     assert!(
-        response
-            .2
-            .get("error")
-            .is_some_and(serde_json::Value::is_object),
+        response.2.get("error").is_some_and(|v| v.is_object()),
         "{}",
         response.2
     );

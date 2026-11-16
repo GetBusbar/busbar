@@ -52,7 +52,7 @@
 //! code that built the outbound request, and is gone when that code returns: nothing is remembered
 //! between two calls, so there is nothing to invalidate.
 
-use serde_json::Value;
+use crate::json::{JsonValueTrait as _, Value};
 
 /// The JSON-RPC 2.0 standard error codes this module can produce.
 pub const PARSE_ERROR: i64 = -32700;
@@ -104,23 +104,23 @@ pub fn read(value: &Value) -> Result<Envelope, Invalid> {
             code: INVALID_REQUEST,
             message: "The request body must be a single JSON-RPC message object; batches are not \
                       supported.",
-            id: Value::Null,
+            id: Value::new(),
         });
     };
 
-    let echo = match obj.get("id") {
+    let echo = match obj.get(&"id") {
         Some(id) if is_legible_id(id) => id.clone(),
-        _ => Value::Null,
+        _ => Value::new(),
     };
 
-    if obj.get("jsonrpc").and_then(Value::as_str) != Some("2.0") {
+    if obj.get(&"jsonrpc").and_then(Value::as_str) != Some("2.0") {
         return Err(Invalid {
             code: INVALID_REQUEST,
             message: "`jsonrpc` is required and must be exactly \"2.0\".",
             id: echo,
         });
     }
-    let Some(method) = obj.get("method").and_then(Value::as_str) else {
+    let Some(method) = obj.get(&"method").and_then(Value::as_str) else {
         return Err(Invalid {
             code: INVALID_REQUEST,
             message: "`method` is required and must be a string.",
@@ -129,20 +129,20 @@ pub fn read(value: &Value) -> Result<Envelope, Invalid> {
     };
     let method = method.to_string();
 
-    match obj.get("id") {
+    match obj.get(&"id") {
 
 
 
 
         None => Ok(Envelope::Notification { method }),
 
-        Some(Value::Null) => Err(Invalid {
+        Some(id) if id.is_null() => Err(Invalid {
             code: INVALID_REQUEST,
             message: "`id` must not be null. A response echoing a null id is indistinguishable \
                       from the envelope JSON-RPC 2.0 section 5 reserves for a request whose id could not \
                       be established, so no caller could correlate it. Omit `id` entirely to send \
                       a notification.",
-            id: Value::Null,
+            id: Value::new(),
         }),
         Some(id) if is_legible_id(id) => Ok(Envelope::Request {
             id: id.clone(),
@@ -153,14 +153,14 @@ pub fn read(value: &Value) -> Result<Envelope, Invalid> {
         Some(_) => Err(Invalid {
             code: INVALID_REQUEST,
             message: "`id` must be a string or a number.",
-            id: Value::Null,
+            id: Value::new(),
         }),
     }
 }
 
 /// Whether a value is an id a response can be correlated by: a String or a Number, per section 4, minus
 fn is_legible_id(id: &Value) -> bool {
-    id.is_string() || id.is_number()
+    id.is_str() || id.is_number()
 }
 
 /// What a RESPONSE envelope carries, once it has been read AND correlated to the request that was
@@ -239,20 +239,20 @@ pub fn read_response(value: &Value, sent_id: &Value) -> Result<Reply, NotAnAnswe
     let Some(obj) = value.as_object() else {
         return refuse("the response is not a single JSON-RPC message object".to_string());
     };
-    if obj.get("jsonrpc").and_then(Value::as_str) != Some("2.0") {
+    if obj.get(&"jsonrpc").and_then(Value::as_str) != Some("2.0") {
         return refuse(
             "the response has no `jsonrpc` member equal to \"2.0\", so it is not a JSON-RPC 2.0 \
              response"
                 .to_string(),
         );
     }
-    match obj.get("id") {
+    match obj.get(&"id") {
         None => return uncorrelated(
             "the response carries no `id` member; JSON-RPC 2.0 section 5 makes it REQUIRED, and \
                  a response that names no request cannot be attributed to one"
                 .to_string(),
         ),
-        Some(Value::Null) => {
+        Some(id) if id.is_null() => {
             return uncorrelated(
                 "the response carries `\"id\": null`, which JSON-RPC 2.0 section 5 reserves for a \
                  request whose id the sender could not establish; it is not an answer to any \
@@ -269,8 +269,8 @@ pub fn read_response(value: &Value, sent_id: &Value) -> Result<Reply, NotAnAnswe
         Some(_) => {}
     }
 
-    let error = obj.get("error").filter(|e| !e.is_null());
-    let result = obj.get("result");
+    let error = obj.get(&"error").filter(|e| !e.is_null());
+    let result = obj.get(&"result");
     match (result, error) {
         (Some(_), Some(_)) => refuse(
             "the response carries BOTH `result` and `error`; JSON-RPC 2.0 section 5 says both MUST \
@@ -297,16 +297,15 @@ pub fn read_response(value: &Value, sent_id: &Value) -> Result<Reply, NotAnAnswe
 
 /// Whether a response's `id` names the request that was sent.
 fn same_id(got: &Value, sent: &Value) -> bool {
-    match (got, sent) {
-        (Value::String(a), Value::String(b)) => a == b,
-        (Value::Number(a), Value::Number(b)) => a == b || numeric_id(a) == numeric_id(b),
-        _ => false,
+    if let (Some(a), Some(b)) = (got.as_str(), sent.as_str()) {
+        return a == b;
     }
+    got.is_number() && sent.is_number() && (got == sent || numeric_id(got) == numeric_id(sent))
 }
 
 /// Compare decimal values exactly, without rounding or expanding an exponent into zeros.
-fn numeric_id(number: &serde_json::Number) -> (bool, String, String) {
-    let text = number.to_string();
+fn numeric_id(number: &Value) -> (bool, String, String) {
+    let text = crate::json::number_text(number).unwrap_or_default();
     let negative = text.starts_with('-');
     let unsigned = text.strip_prefix('-').unwrap_or(&text);
     let (mantissa, exponent) = unsigned.split_once(['e', 'E']).unwrap_or((unsigned, "0"));
@@ -377,17 +376,17 @@ fn shifted_exponent(exponent: &str, subtract: bool, offset: usize) -> String {
 
 /// The JSON-RPC error envelope, as a value.
 pub fn error_body(id: Value, code: i64, message: &str, data: Option<Value>) -> Value {
-    let mut error = serde_json::Map::new();
-    error.insert("code".into(), Value::from(code));
-    error.insert("message".into(), Value::from(message));
+    let mut error = crate::json::Map::new();
+    error.insert("code", Value::from(code));
+    error.insert("message", Value::from(message));
     if let Some(d) = data {
-        error.insert("data".into(), d);
+        error.insert("data", d);
     }
-    let mut envelope = serde_json::Map::new();
-    envelope.insert("jsonrpc".into(), Value::from("2.0"));
-    envelope.insert("id".into(), id);
-    envelope.insert("error".into(), Value::Object(error));
-    Value::Object(envelope)
+    let mut envelope = crate::json::Map::new();
+    envelope.insert("jsonrpc", Value::from("2.0"));
+    envelope.insert("id", id);
+    envelope.insert("error", Value::from(error));
+    Value::from(envelope)
 }
 
 /// WHETHER `origin` MAY DRIVE THIS DEPLOYMENT.
@@ -479,6 +478,9 @@ fn envelope_bytes(write: impl Fn(&mut dyn std::io::Write) -> std::io::Result<()>
     out.into_vec()
 }
 
+/// `value` as a JSON string, escaped straight into `out`. It stays on the old library until the
+/// facade has a writer that holds no heap buffer of its own: `json::to_writer` stages each piece
+/// in a buffer it neither sizes nor wipes, and these envelopes allocate only their final output.
 fn push_str(out: &mut dyn std::io::Write, value: &str) -> std::io::Result<()> {
     serde_json::to_writer(out, value).map_err(std::io::Error::other)
 }
@@ -500,7 +502,7 @@ pub fn result_bytes(id: &[u8], result: &[u8]) -> Vec<u8> {
 pub fn error_bytes(id: &[u8], code: i64, message: &str, data: Option<&[u8]>) -> Vec<u8> {
     envelope_bytes(|out| {
         out.write_all(ERROR_PREFIX)?;
-        serde_json::to_writer(&mut *out, &code).map_err(std::io::Error::other)?;
+        write!(out, "{code}")?;
         if let Some(data) = data {
             out.write_all(ERROR_DATA_MEMBER)?;
             out.write_all(data)?;

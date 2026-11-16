@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+use busbar_contract::json;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -610,7 +611,7 @@ async fn a_self_signed_leaf_as_its_member_root_is_reached_under_its_pin_and_refu
 fn structured_member_tls_validates_certificates_and_does_not_accept_nested_identity() {
     let pki = Pki::new();
     let leaf = pki.leaf("member.example");
-    let registration = busbar_contract::yaml::to_value(&serde_json::json!({
+    let registration = json::to_yaml(&json::json!({
         "tls": { "ca_cert_pem": leaf.pem }
     }))
     .expect("registration");
@@ -619,23 +620,22 @@ fn structured_member_tls_validates_certificates_and_does_not_accept_nested_ident
         vec![leaf.der]
     );
     for tls in [
-        serde_json::json!({"ca_cert_pem": ""}),
-        serde_json::json!({"ca_cert_pem": "not certificate material"}),
-        serde_json::json!({"ca_cert_pem": leaf.key_pem}),
-        serde_json::json!({"ca_cert_pem": 123}),
-        serde_json::json!({"client_identity": {"cert": "hidden", "key": "hidden"}}),
-        serde_json::json!("not a bundle"),
+        json::json!({"ca_cert_pem": ""}),
+        json::json!({"ca_cert_pem": "not certificate material"}),
+        json::json!({"ca_cert_pem": leaf.key_pem}),
+        json::json!({"ca_cert_pem": 123}),
+        json::json!({"client_identity": {"cert": "hidden", "key": "hidden"}}),
+        json::json!("not a bundle"),
     ] {
-        let registration =
-            busbar_contract::yaml::to_value(&serde_json::json!({"tls": tls})).unwrap();
+        let registration = json::to_yaml(&json::json!({"tls": tls})).unwrap();
         let error = super::registration_ca_anchors("member", &registration)
             .expect_err("invalid TLS rejected");
         assert!(error.contains("member"));
         assert!(!error.contains("PRIVATE KEY"));
         assert!(!error.contains("hidden"));
     }
-    for registration in [serde_json::json!({}), serde_json::json!({"tls": {}})] {
-        let registration = busbar_contract::yaml::to_value(&registration).unwrap();
+    for registration in [json::json!({}), json::json!({"tls": {}})] {
+        let registration = json::to_yaml(&registration).unwrap();
         assert!(super::registration_ca_anchors("member", &registration)
             .unwrap()
             .is_empty());

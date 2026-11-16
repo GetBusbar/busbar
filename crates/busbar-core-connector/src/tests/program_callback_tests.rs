@@ -19,7 +19,7 @@ fn observed(member: &Arc<super::super::Member>) -> Arc<Probe> {
 }
 
 #[test]
-fn public_program_reads_replace_and_remove_raw_waiters_after_both_locks() {
+fn public_program_reads_replace_and_remove_waiters_after_both_locks() {
     worker().block_on(async {
         let c = connector();
         declare(&c, &[("mute", sh("cat >/dev/null", &[]))]).unwrap();
@@ -32,19 +32,28 @@ fn public_program_reads_replace_and_remove_raw_waiters_after_both_locks() {
         let a = first.waker();
         let b = second.waker();
         assert_eq!(member.ready(*lease, &a), Ok(false));
+        drop(a);
+        assert_eq!(first.live.load(Ordering::SeqCst), 1);
         assert_eq!(member.ready(*lease, &b), Ok(false));
+        assert_eq!(first.live.load(Ordering::SeqCst), 0);
+        let a = first.waker();
         assert!(c
             .poll_read(OWNER, id, &mut Context::from_waker(&a), &mut [0; 1])
             .is_pending());
+        drop(a);
+        assert_eq!(first.live.load(Ordering::SeqCst), 1);
         assert!(c
             .poll_read(OWNER, id, &mut Context::from_waker(&b), &mut [0; 1])
             .is_pending());
-        assert!(first.clones.load(Ordering::SeqCst) > 0);
+        drop(b);
+        assert_eq!(first.live.load(Ordering::SeqCst), 0);
+        assert_eq!(second.live.load(Ordering::SeqCst), 1);
         assert!(
             first.drops.load(Ordering::SeqCst) > 0,
             "replacement retires the old registration"
         );
         c.close(OWNER, id).unwrap();
+        assert_eq!(second.live.load(Ordering::SeqCst), 0);
         assert!(
             second.drops.load(Ordering::SeqCst) > 0,
             "close retires the stored registration"

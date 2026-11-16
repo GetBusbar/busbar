@@ -719,12 +719,7 @@ extern "C" fn upgrade_secure(
             }
             let ticket = conn_ticket(head.handle.ticket);
             match table.upgrade_secure(id, ConnId(i.stream), name, trust, verify_off, ticket) {
-                Ok(()) => {
-                    if verify_off {
-                        warn_unverified(ctx);
-                    }
-                    Answered::ready(0, 0)
-                }
+                Ok(()) => Answered::ready(0, 0),
                 Err(ConnError::Pending) if head.handle.ticket.is_none() => Answered::bare(
                     Outcome::Refused,
                     "an upgrade that would pend is callable only inside a ticketed op",
@@ -733,29 +728,6 @@ extern "C" fn upgrade_secure(
             }
         },
     )
-}
-
-fn warn_unverified(ctx: HostCtx) {
-    static WARNED: OnceLock<Mutex<HashSet<u64>>> = OnceLock::new();
-    let Some(wake) = super::handle::resolve(ctx) else {
-        return;
-    };
-    let first = WARNED
-        .get_or_init(Mutex::default)
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .insert(ctx.handle);
-    if !first {
-        return;
-    }
-    let caller = wake.caller.get();
-    let instance: &str = caller.map_or("<unbound>", |c| c.namespace());
-    tracing::warn!(
-        diag = "BUSBAR-6016",
-        instance = %instance,
-        value = "UPGRADE_VERIFY_OFF",
-        "plugin instance '{instance}' secures a connection WITHOUT verifying the far end's certificate (UPGRADE_VERIFY_OFF, e.g. valkey `#insecure` or postgres `sslmode=prefer`); its traffic can be intercepted. The value is retired: core refuses it before 1.6.0 GA. Upgrade the plugin and list the server's CA under advanced.tls.destinations"
-    );
 }
 
 type HeldFacts = foldhash::HashMap<u64, Vec<Box<str>>>;

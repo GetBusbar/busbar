@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use crate::root::test_plugins as plugins;
+use busbar_contract::json;
 use busbar_kernel::config::groups::{LimitMetric, LimitWindow};
 use busbar_kernel::config::{GroupCfg, LimitCfg};
 use std::collections::BTreeMap;
@@ -392,7 +393,7 @@ async fn usage_read_store_failure_logs_the_real_error() {
         .await
         .unwrap();
     assert_eq!(response.status().as_u16(), 500);
-    let error: serde_json::Value = response.json().await.unwrap();
+    let error = json::parse_value(&response.bytes().await.unwrap()).unwrap();
     assert_eq!(error["error"]["code"], "internal");
     let messages = String::from_utf8(captured.lock().unwrap().clone()).unwrap();
     assert!(

@@ -23,7 +23,7 @@ pub(crate) const DIAG_MEMBER: &str = "plugin_diag";
 
 /// Plugin text as core holds it: the plugin's scrubbed text and the code core resolved for it, if any. Its JSON
 /// serializer writes the raw text member and `plugin_diag` (string or `null`), always together, into the object
-/// that holds it (`#[serde(flatten)]`, or [`PluginText::write_members`] for a `serde_json` map); its `Display` is
+/// that holds it (`#[serde(flatten)]`, or [`PluginText::write_members`] for a JSON map); its `Display` is
 /// the joined `"{code}: {text}"` (or `"{text}"`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PluginText {
@@ -73,16 +73,14 @@ impl PluginText {
 
     /// Writes both members into a JSON object: `text` raw and `plugin_diag` (string or `null`). An existing
     /// member of either name is replaced, so the pair can never disagree.
-    pub fn write_members(&self, object: &mut serde_json::Map<String, serde_json::Value>) {
-        object.insert(
-            TEXT_MEMBER.into(),
-            serde_json::Value::String(String::from(&*self.text)),
-        );
+    pub fn write_members(&self, object: &mut busbar_contract::json::Map) {
+        use busbar_contract::json::Value;
+        object.insert(TEXT_MEMBER, Value::from(&*self.text));
         let diag = match self.code {
-            Some(code) => serde_json::Value::String(code.to_string()),
-            None => serde_json::Value::Null,
+            Some(code) => Value::from(code.to_string().as_str()),
+            None => Value::new(),
         };
-        object.insert(DIAG_MEMBER.into(), diag);
+        object.insert(DIAG_MEMBER, diag);
     }
 }
 
@@ -117,6 +115,7 @@ impl serde::Serialize for PluginText {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use busbar_contract::json::{self, JsonValueTrait as _};
 
     const SENT: &str = "  BUSBAR-6013 bad\tthing\nx\x1b[2K";
 
@@ -139,7 +138,7 @@ mod tests {
     #[test]
     fn plugin_text_structured_byte_exact() {
         let t = PluginText::new(Some(acme(3)), SENT);
-        let row = serde_json::to_value(Row {
+        let row = json::to_value(&Row {
             message: "open refused",
             plugin: &t,
         })
@@ -147,8 +146,8 @@ mod tests {
         assert_eq!(row["text"], SENT);
         assert_eq!(row["plugin_diag"], "BUSBAR-acme-store-0003");
         assert_eq!(row["message"], "open refused");
-        let mut map = serde_json::Map::new();
-        map.insert("text".into(), serde_json::Value::Bool(true));
+        let mut map = json::Map::new();
+        map.insert("text", json::Value::from(true));
         t.write_members(&mut map);
         assert_eq!(map["text"], SENT);
         assert_eq!(map["plugin_diag"], "BUSBAR-acme-store-0003");
@@ -158,12 +157,12 @@ mod tests {
     #[test]
     fn plugin_never_renders_a_core_code() {
         let t = PluginText::new(None, "BUSBAR-4013: egress key invalid");
-        let v = serde_json::to_value(&t).expect("serialize");
-        assert_eq!(v["plugin_diag"], serde_json::Value::Null);
+        let v = json::to_value(&t).expect("serialize");
+        assert_eq!(v["plugin_diag"], json::Value::new());
         assert_eq!(v["text"], "BUSBAR-4013: egress key invalid");
         assert_eq!(t.to_string(), "BUSBAR-4013: egress key invalid");
         let declared = PluginText::new(Some(acme(6013)), "x");
-        let diag = serde_json::to_value(&declared).expect("serialize")["plugin_diag"].clone();
+        let diag = json::to_value(&declared).expect("serialize")["plugin_diag"].clone();
         let diag = diag.as_str().expect("a string");
         assert_eq!(diag, "BUSBAR-acme-store-6013");
         assert!(!diag.as_bytes()[7].is_ascii_digit(), "{diag}");
