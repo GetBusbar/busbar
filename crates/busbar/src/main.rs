@@ -745,33 +745,26 @@ async fn run(
         root::connector::install_trust_store(&base_cfg, false);
         // The MIN-3 registry boots here, before the Store opens and before any listener serves: images, the
         // kernel's sides, then 2a, 2b, the deployment point, 2c. Without a MIN-3 store image the old path boots.
-        let walked = root::min3_boot::run(
-            &plugin_process,
-            process_io.handle(),
-            file_images,
-            &base_cfg,
-            boot_guard,
-            late_services.kernel(),
-        )
-        .await
-        .unwrap_or_else(|error| die(boot_error("MIN-3 plugin boot refused", error)));
-        // The store's admission: the MIN-3 walk's own when it opened the configured store through the
-        // registry (its open converted a 1.5.5 store; core's records step runs below), so the old ABI's
-        // preparation is never entered for a store built only for the new ABI (COORD-STORE-C2). With no
-        // MIN-3 store image the old ABI path below stays until #274 deletes it.
-        let walk_admission = root::boot::walk_admission(walked, || {
-            root::min3_boot::booted().and_then(|booted| booted.startup.lock().ok()?.take())
-        })
-        .unwrap_or_else(|error| die(store_boot_refusal(principal_transition.is_some(), error)));
-        let store_admission = walk_admission.unwrap_or_else(|| die("the configured store has no admitted MIN-3 instance"));
+        let conversion_images = file_images.clone();
+        let (bootstrap_ready, store_admission) = root::min3_boot::prepare_bootstrap(
+            &plugin_process, file_images, &base_cfg, boot_guard.clone(),
+        ).await.unwrap_or_else(|error| die(store_boot_refusal(principal_transition.is_some(), error)))
+            .unwrap_or_else(|| die("the configured Store has no admitted MIN-3 instance"));
+        if bootstrap_ready.converting() {
+            let conversion = root::min3_boot::prepare_serving(
+                bootstrap_ready, &plugin_process, conversion_images, &base_cfg, boot_guard,
+            ).unwrap_or_else(|error| die(error));
+            let _ = root::min3_boot::finish(conversion, process_io.handle(), store_admission, None)
+                .await.unwrap_or_else(|error| die(error));
+            die("unstamped conversion returned without its required restart");
+        }
+        let secret_resolver = bootstrap_ready.resolver(process_io.handle());
         let anchor_store = store_admission.store().expect("confirmed Store admission");
         root::exit::arm(&anchor_store);
         // Migrate-on-boot step 4 (MIGRATE-ON-BOOT r42 §3 4a, 4b): the 1.5.5 rows a store's data step
         // left under IMPORT become native records under this admission, sealed and verified, before
         // anything reads them. An empty IMPORT costs one one-row scan.
-        let booted = root::min3_boot::booted()
-            .unwrap_or_else(|| die("the admitted MIN-3 boot owner is unavailable"));
-        let keys = root::migrate_records::Keys::from_core(&booted.core)
+        let keys = root::migrate_records::Keys::from_core(&bootstrap_ready.core)
             .unwrap_or_else(|error| die(error));
         root::migrate::records_with_keys(anchor_store.clone(), keys)
             .await
@@ -951,6 +944,8 @@ async fn run(
             judged_effective,
             operator_reference,
             effective_images,
+            bootstrap_ready,
+            secret_resolver,
         ))
     }))
     .await;
@@ -967,7 +962,9 @@ async fn run(
         fresh_record_bootstrap,
         judged_effective,
         operator_reference,
-        _effective_images,
+        effective_images,
+        bootstrap_ready,
+        secret_resolver,
     )) = bootstrap
     else {
         return;
@@ -1175,10 +1172,16 @@ async fn run(
     };
 
     let _boot_store_binding = boot_store;
+    let serving_ready = root::min3_boot::prepare_serving(
+        bootstrap_ready,
+        &plugin_process,
+        effective_images,
+        &cfg,
+        root::connector::dest_judge(&cfg).guard().clone(),
+    )
+    .unwrap_or_else(|error| die(error));
     let preparation = root::boot_app::Preparation {
-        secret_resolver: root::min3_boot::booted()
-            .map(|booted| std::sync::Arc::clone(&booted.resolver))
-            .unwrap_or_else(|| die("no complete MIN-3 secret generation was prepared")),
+        secret_resolver,
         startup: store_admission,
         config: cfg,
         judged,
@@ -1270,6 +1273,19 @@ async fn run(
         &planes,
     );
 
+    if let Some(kernel) = late_services.kernel() {
+        if let Some(governance) = &app.governance {
+            kernel.attach_tickets(Arc::new(root::serve::GenerationTickets {
+                governance: Arc::clone(governance),
+                block_max_ttl_secs: app.mint_policy.block_max_ttl_secs,
+            }));
+        }
+        let _attached = kernel.attach_standing(busbar_kernel::plane_driver::policy_standing(
+            app.governance.clone(),
+            app.role_bindings.clone(),
+        ));
+    }
+
     // Explicit same-open ephemeral initialization uses its newly committed principal baseline
     // as a real Store witness. It follows exactly the ordinary receipt consumer before admission.
     if let Some(receipt) = fresh_record_bootstrap {
@@ -1324,6 +1340,15 @@ async fn run(
             .await
             .unwrap_or_else(|error| die(format!("cold record bootstrap refused: {error}")));
     }
+
+    let store_admission = root::min3_boot::finish(
+        serving_ready,
+        process_io.handle(),
+        store_admission,
+        late_services.kernel(),
+    )
+    .await
+    .unwrap_or_else(|error| die(error));
 
     let door_live_handle = Arc::default();
     let door_models = model_serving(door_model_pools, &app, &door_live_handle);
@@ -1462,16 +1487,6 @@ async fn run(
     credential_handle.set(std::sync::Arc::clone(&app_handle));
     let _ = door_live_handle.set(std::sync::Arc::downgrade(&app_handle));
 
-    if let Some(kernel) = late_services.kernel() {
-        let app = app_handle.load();
-        if let Some(governance) = &app.governance {
-            kernel.attach_tickets(Arc::new(root::serve::GenerationTickets {
-                governance: Arc::clone(governance),
-                block_max_ttl_secs: app.mint_policy.block_max_ttl_secs,
-            }));
-        }
-    }
-
     let _ = root::inbound::install(root::doors::dispatcher());
     if listener_plan.has_root_listener() {
         let app = app_handle.load();
@@ -1557,11 +1572,6 @@ async fn run(
         }
     }));
 
-    if let Some(kernel) = late_services.kernel() {
-        let _attached = kernel.attach_standing(busbar_kernel::plane_driver::live_standing(
-            app_handle.clone(),
-        ));
-    }
     // Durable plane WORK binds a principal's recovery standing through governance from here on.
     root::min3_boot::attach_governance(app_handle.clone());
 

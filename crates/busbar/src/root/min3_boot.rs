@@ -203,13 +203,11 @@ pub(crate) struct Booted {
     pub(crate) registry: Arc<MinRegistry>,
     _bootstrap_registry: Arc<MinRegistry>,
     pub(crate) seats: Vec<PortSeat>,
-    pub(crate) core: CoreSecrets,
+    pub(crate) core: Arc<CoreSecrets>,
     /// The secret kind the boot opened its secret instances into (webhook secrets resolve through it).
     pub(crate) secrets: Arc<BootSecrets>,
     pub(crate) resolver: Arc<busbar_kernel::config::secret::SecretResolver>,
     pub(crate) deployment: [u8; 16],
-    /// The format admission the walk attached the store through.
-    pub(crate) startup: Mutex<Option<Startup>>,
     /// Durable WORK: the governance binder, filled when governance attaches ([`attach_governance`]).
     work_binder: LateBinder,
     /// The records the signed-ingress replay claims are written through.
@@ -232,14 +230,9 @@ impl Booted {
                 "not configured"
             }
         };
-        let attached = self
-            .startup
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .is_some();
         format!(
             "MIN-3 boot: {} planes served through ports, {} shorthands declared, deployment dep_{}, \
-             store attached: {attached}; core secrets: admin token {}, signing key {}",
+             store attached: true; core secrets: admin token {}, signing key {}",
             self.seats.len(),
             self.registry.sugars().len(),
             hex::encode(self.deployment),
@@ -743,7 +736,7 @@ struct Steps<'r> {
     shared: Arc<Shared>,
     directory: Directory,
     /// `auth.signing_key`: the reference the ticket host key is derived from (IF §12.11).
-    signing_key: Option<SecretRef>,
+    core: Arc<CoreSecrets>,
     /// The process's secret kind: the open secret instances and the custody that resolves through them.
     secrets: Arc<BootSecrets>,
     built: &'r Built,
@@ -835,20 +828,7 @@ impl Steps<'_> {
         .map_err(|error| OpenError::Unknown(format!("plane route declaration refused: {error}")))?;
         // Tickets: the host key is resolved here (the secret instances are open, step 2a), so the gate and the
         // MINT store are built whole, with the key, before the seat exists.
-        let signing = match &self.signing_key {
-            Some(reference) => Some(
-                prefix
-                    .resolve_ref(Instant::now() + CORE_SECRET_DEADLINE, reference)
-                    .await
-                    .map_err(|denied| {
-                        OpenError::Unknown(format!(
-                            "the signing key could not be resolved ({denied:?})"
-                        ))
-                    })?,
-            ),
-            None => None,
-        };
-        let tickets = ticket_store(&self.shared.records, signing.as_ref());
+        let tickets = ticket_store(&self.shared.records, self.core.signing_key.as_ref());
         let driver =
             driver.with_tickets(Arc::new(TicketGate::new(Arc::clone(&tickets), who.clone())));
         let rt = tokio::runtime::Handle::current();
@@ -1048,7 +1028,7 @@ pub(crate) struct BootstrapReady {
     built: Built,
     instances: Vec<Configured>,
     bootstrap: super::boot::walk::Bootstrap<Option<OpenedPort>>,
-    pub(crate) startup: Startup,
+    pub(crate) core: Arc<CoreSecrets>,
     prefix: Arc<BootSecrets>,
     converting: bool,
     normalization_source: Option<(std::path::PathBuf, busbar_contract::secure::SecureString)>,
@@ -1061,28 +1041,24 @@ pub(crate) struct ServingReady {
     declared: std::collections::BTreeMap<String, busbar_kernel::upstreams::Declared>,
     leases: super::boot::walk::BootstrapLeases<Option<OpenedPort>>,
     rest: Vec<u32>,
-    startup: Startup,
+    core: Arc<CoreSecrets>,
+    public_url: Option<String>,
     prefix: Arc<BootSecrets>,
     converting: bool,
     normalization_source: Option<(std::path::PathBuf, busbar_contract::secure::SecureString)>,
     _bootstrap_registry: Arc<MinRegistry>,
 }
 
-pub(crate) async fn run(
-    process: &busbar_plugin_loader::process::ProcessResources,
-    reactor: tokio::runtime::Handle,
-    file_images: super::boot::images::FileImages,
-    cfg: &RootCfg,
-    guard: Guard,
-    services: Option<Arc<KernelServices>>,
-) -> Result<bool, String> {
-    let effective_images = file_images.clone();
-    let serving_guard = guard.clone();
-    let Some(ready) = prepare_bootstrap(process, file_images, cfg, guard).await? else {
-        return Ok(false);
-    };
-    let ready = prepare_serving(ready, process, effective_images, cfg, serving_guard)?;
-    finish(ready, reactor, cfg, services).await
+impl BootstrapReady {
+    pub(crate) fn converting(&self) -> bool {
+        self.converting
+    }
+    pub(crate) fn resolver(
+        &self,
+        reactor: tokio::runtime::Handle,
+    ) -> Arc<busbar_kernel::config::secret::SecretResolver> {
+        self.prefix.resolver(reactor, self.built.sugars.clone())
+    }
 }
 
 pub(crate) async fn prepare_bootstrap(
@@ -1090,7 +1066,7 @@ pub(crate) async fn prepare_bootstrap(
     file_images: super::boot::images::FileImages,
     cfg: &RootCfg,
     guard: Guard,
-) -> Result<Option<BootstrapReady>, String> {
+) -> Result<Option<(BootstrapReady, Startup)>, String> {
     let images = file_images.images;
     let transport_images: Vec<String> = images
         .identities()
@@ -1131,7 +1107,7 @@ pub(crate) async fn prepare_bootstrap(
             &transport_images,
         )?);
     }
-    let specs = specifications(&instances, cfg, converting);
+    let specs = specifications(&instances, cfg.public_url.as_deref(), converting);
     let mut core_modules = busbar_kernel::appbuild::core_secret_modules(cfg);
     core_modules.extend(
         instances
@@ -1168,20 +1144,24 @@ pub(crate) async fn prepare_bootstrap(
         .take()
         .ok_or("S6 did not retain the admitted Store")?;
     drop(specs);
-    Ok(Some(BootstrapReady {
-        built,
-        instances,
-        bootstrap,
+    let core = Arc::new(core_secrets_of(cfg, &prefix).await?);
+    Ok(Some((
+        BootstrapReady {
+            built,
+            instances,
+            bootstrap,
+            core,
+            prefix,
+            converting,
+            normalization_source,
+        },
         startup,
-        prefix,
-        converting,
-        normalization_source,
-    }))
+    )))
 }
 
 fn specifications<'a>(
     instances: &'a [Configured],
-    cfg: &'a RootCfg,
+    public_url: Option<&'a str>,
     converting: bool,
 ) -> Vec<(KindCode, InstanceSpec<'a>)> {
     instances
@@ -1199,7 +1179,7 @@ fn specifications<'a>(
                     name: &one.name,
                     config_json: &one.config,
                     limits: one.limits,
-                    public_url: cfg.public_url.as_deref(),
+                    public_url,
                     caller_upstreams: &[],
                 },
             )
@@ -1218,7 +1198,7 @@ pub(crate) fn prepare_serving(
         built: bootstrap_built,
         instances: before,
         bootstrap,
-        startup,
+        core,
         prefix,
         converting,
         normalization_source,
@@ -1284,7 +1264,7 @@ pub(crate) fn prepare_serving(
         .filter(|one| one.kind == KindCode::Secret)
         .map(|one| one.name.as_str())
         .collect();
-    let specs = specifications(&instances, cfg, converting);
+    let specs = specifications(&instances, cfg.public_url.as_deref(), converting);
     let plan = registry
         .boot_plan_with_core(&specs, &sugars, &core_names)
         .map_err(|error| format!("{error:?}"))?;
@@ -1314,8 +1294,9 @@ pub(crate) fn prepare_serving(
         declared,
         leases,
         rest,
-        startup,
+        core,
         prefix,
+        public_url: cfg.public_url.clone(),
         converting,
         normalization_source,
         _bootstrap_registry: bootstrap_built.registry,
@@ -1325,9 +1306,9 @@ pub(crate) fn prepare_serving(
 pub(crate) async fn finish(
     ready: ServingReady,
     reactor: tokio::runtime::Handle,
-    cfg: &RootCfg,
+    startup: Startup,
     services: Option<Arc<KernelServices>>,
-) -> Result<bool, String> {
+) -> Result<Startup, String> {
     let ServingReady {
         built,
         instances,
@@ -1335,7 +1316,8 @@ pub(crate) async fn finish(
         leases,
         rest,
         _bootstrap_registry,
-        startup,
+        core: core_secrets,
+        public_url,
         prefix,
         converting,
         normalization_source,
@@ -1343,8 +1325,7 @@ pub(crate) async fn finish(
     let core = startup
         .store()
         .ok_or("S6 did not retain the admitted Store")?;
-    let startup = Arc::new(Mutex::new(Some(startup)));
-    let specs = specifications(&instances, cfg, converting);
+    let specs = specifications(&instances, public_url.as_deref(), converting);
     let records = Arc::new(StoreRecords::new(Arc::clone(&core)));
     let (directory, _holds) =
         KernelDirectory::build(Arc::clone(&core), Arc::new(LogEvents), Vec::new()).await?;
@@ -1372,7 +1353,7 @@ pub(crate) async fn finish(
         seats: Mutex::default(),
         shared: Arc::clone(&shared),
         directory,
-        signing_key: cfg.auth.as_ref().and_then(|auth| auth.signing_key.clone()),
+        core: Arc::clone(&core_secrets),
         secrets: prefix,
         built: &built,
         seat,
@@ -1433,15 +1414,10 @@ pub(crate) async fn finish(
         // while the record/config writers run, then close them before replacing this process.
         let mut opened = walked.opened;
         opened.retain(|(index, _, _)| instances[*index as usize].kind != KindCode::Plane);
-        let admission = startup
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .take()
-            .ok_or("CONFIG: conversion did not retain store admission")?;
+        let admission = startup;
         let core = admission
             .store()
             .ok_or("CONFIG: conversion has no admitted core store")?;
-        let core_secrets = core_secrets_of(cfg, &steps.prefix()).await?;
         let keys = super::migrate_records::Keys::from_core(&core_secrets)?;
         super::migrate::records_with_keys(Arc::clone(&core), keys).await?;
         let written = super::migrate::finish_settled_checked(
@@ -1524,7 +1500,7 @@ pub(crate) async fn finish(
     .await?;
     transports::publish(transports::opened(&walked.opened, &specs))?;
     let secrets = steps.prefix();
-    let core = core_secrets_of(cfg, &secrets).await?;
+    let core = core_secrets;
     let seats = steps
         .seats
         .into_inner()
@@ -1548,12 +1524,6 @@ pub(crate) async fn finish(
         work: Arc::clone(&shared.work),
         records,
         _probes: probes,
-        startup: Mutex::new(
-            startup
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .take(),
-        ),
     });
     if installed.is_err() {
         return Err("the MIN-3 boot ran twice in one process".to_owned());
@@ -1567,7 +1537,7 @@ pub(crate) async fn finish(
     if let Some(held) = booted() {
         tracing::info!("{}", held.describe());
     }
-    Ok(true)
+    Ok(startup)
 }
 
 #[cfg(test)]
