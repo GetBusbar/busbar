@@ -118,7 +118,7 @@ impl PortGate {
 /// keeps its gate (and so its in-flight count); new limits get a new gate, and calls already holding a permit of
 /// the old one finish under it.
 #[derive(Debug, Default)]
-pub struct PortGates {
+pub(crate) struct PortGates {
     gates: Mutex<HashMap<(KindCode, Box<str>), (InstanceLimits, Arc<PortGate>)>>,
 }
 

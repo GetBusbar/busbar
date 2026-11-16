@@ -543,7 +543,7 @@ pub fn catalog<'de, D: serde::Deserializer<'de>>(
 
 /// [`catalog`], also returning what the catalog used of `grammar` (§3.8): its shorthand words and
 /// every provider's outbound auth style.
-pub fn catalog_used<'de, D: serde::Deserializer<'de>>(
+pub(crate) fn catalog_used<'de, D: serde::Deserializer<'de>>(
     de: D,
     grammar: &super::Grammar,
 ) -> Result<(HashMap<String, ProviderDef>, super::grammar::Used), D::Error> {
@@ -570,7 +570,7 @@ pub fn catalog_used<'de, D: serde::Deserializer<'de>>(
     Ok((entries, used))
 }
 
-/// [`catalog_from_str`] with what the catalog used ([`catalog_used`]).
+/// [`catalog_from_str`] with what the catalog used (`catalog_used`).
 pub fn catalog_from_str_used(
     text: &str,
     grammar: &super::Grammar,

@@ -304,7 +304,7 @@ impl Default for HealthDefaultsCfg {
 }
 
 /// Default `telemetry.retention_seconds`.
-pub const DEFAULT_TELEMETRY_RETENTION_SECONDS: u64 = 300;
+pub(crate) const DEFAULT_TELEMETRY_RETENTION_SECONDS: u64 = 300;
 
 /// Default `telemetry.max_lane_series`: lanes that get their own `busbar_lane_request_duration_seconds`
 /// series before the rest fold into `target="other"`.

@@ -23,11 +23,11 @@ use crate::snapshot::observe::{INSTANCE_LABEL, KIND_LABEL};
 /// The most label sets one metric holds per instance (IF §12.17).
 pub const MAX_LABEL_SETS: usize = 256;
 /// The most label keys one declaration names.
-pub const MAX_LABEL_KEYS: usize = 8;
+pub(crate) const MAX_LABEL_KEYS: usize = 8;
 /// The most bytes of one label value core keeps (cut at a char boundary).
-pub const LABEL_VALUE_MAX: usize = 64;
+pub(crate) const LABEL_VALUE_MAX: usize = 64;
 /// The audit reason written the first time an instance's metric passes [`MAX_LABEL_SETS`].
-pub const CARDINALITY_REASON: &str = "plugin_metric_cardinality";
+pub(crate) const CARDINALITY_REASON: &str = "plugin_metric_cardinality";
 
 /// Where a kind's metrics are served.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -65,7 +65,7 @@ pub enum DeclareError {
     Name,
     /// `kind` is not MX_COUNTER, MX_GAUGE or MX_SUMMARY.
     Kind,
-    /// More than [`MAX_LABEL_KEYS`] label keys.
+    /// More than `MAX_LABEL_KEYS` label keys.
     LabelCount,
     /// A label key is not `[a-z_][a-z0-9_]{0,63}`, or repeats.
     LabelKey,

@@ -17,9 +17,9 @@ use busbar_plugin_loader::ports::PortError;
 pub use busbar_plugin_loader::instance::PluginCode;
 
 /// The JSON member that holds the plugin's raw text.
-pub const TEXT_MEMBER: &str = "text";
-/// The JSON member that holds the core-written code (string or `null`), always beside [`TEXT_MEMBER`].
-pub const DIAG_MEMBER: &str = "plugin_diag";
+pub(crate) const TEXT_MEMBER: &str = "text";
+/// The JSON member that holds the core-written code (string or `null`), always beside `TEXT_MEMBER`.
+pub(crate) const DIAG_MEMBER: &str = "plugin_diag";
 
 /// Plugin text as core holds it: the plugin's scrubbed text and the code core resolved for it, if any. Its JSON
 /// serializer writes the raw text member and `plugin_diag` (string or `null`), always together, into the object

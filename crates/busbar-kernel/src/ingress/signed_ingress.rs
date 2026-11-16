@@ -16,7 +16,7 @@ use busbar_plugin_abi::types::Pair;
 use crate::plane_grants::{IngressVerifier, ReplayGuard};
 
 /// Clock tolerance either side of now, seconds.
-pub const TOLERANCE_S: u64 = 300;
+pub(crate) const TOLERANCE_S: u64 = 300;
 /// Replay-claim lifetime, seconds.
 pub const REPLAY_TTL_S: u64 = 300;
 const SECRET_PREFIX: &str = "whsec_";

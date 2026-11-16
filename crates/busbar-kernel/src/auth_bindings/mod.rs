@@ -133,7 +133,7 @@ pub struct ProviderBindings {
 }
 
 /// The dialect of a member: the model's override first, else the provider's protocol (round 15).
-pub fn member_dialect<'a>(member: &MemberView<'a>, provider: &ProviderView<'a>) -> &'a str {
+pub(crate) fn member_dialect<'a>(member: &MemberView<'a>, provider: &ProviderView<'a>) -> &'a str {
     member.model_protocol.unwrap_or(provider.protocol)
 }
 

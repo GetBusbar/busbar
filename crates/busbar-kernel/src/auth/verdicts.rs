@@ -387,7 +387,7 @@ impl<V: Clone + Send + Sync + 'static, O: Clone + Send + Sync + 'static> Verdict
     }
 
     /// Rule 6: the instance's flush epoch (one Relaxed load).
-    pub fn epoch_of(&self, auth_instance: u64) -> u64 {
+    pub(crate) fn epoch_of(&self, auth_instance: u64) -> u64 {
         self.read(auth_instance)
             .get(&auth_instance)
             .map_or(0, |keys| keys.epoch.load(Ordering::Relaxed))
