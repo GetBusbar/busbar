@@ -304,3 +304,41 @@ fn a_registrations_own_passthrough_is_refused_in_the_planes_own_words() {
     judge_section("  dock:\n    upstream_credentials: passthrough\n")
         .expect("a plane that states no refusal accepts a registration's own passthrough");
 }
+
+/// Aikido 1074606979 (#106): an `upstream_credentials` word that names no mode (a typo such as
+/// `conection`) must refuse, at the section default, on a registration and on the admin write
+/// path. Accepted, it silently drops `connection`'s per-caller requirement and signs with the
+/// deployment's own credential.
+#[test]
+fn an_unknown_upstream_credentials_mode_is_refused() {
+    let section = |text: &str| {
+        let value = busbar_contract::yaml::from_str(text).map_err(|e| e.to_string())?;
+        validate_plane_section("moorings", &value, &[], None, MOORINGS.sections)
+    };
+    let refused = section("upstream_credentials: conection\nberth: {}\n")
+        .expect_err("an unknown section default is refused");
+    assert!(
+        refused.contains("`moorings.upstream_credentials`"),
+        "{refused}"
+    );
+    let refused = section("berth:\n  upstream_credentials: conection\n")
+        .expect_err("an unknown registration mode is refused");
+    assert!(
+        refused.contains("`moorings.berth.upstream_credentials`"),
+        "{refused}"
+    );
+    let entry: busbar_contract::yaml::Value =
+        busbar_contract::yaml::from_str("upstream_credentials: conection").expect("yaml");
+    let refused = validate_plane_entry("moorings", "berth", &entry, &[], MOORINGS.sections)
+        .expect_err("the admin write path refuses it too");
+    assert!(
+        refused.contains("`moorings.berth.upstream_credentials`"),
+        "{refused}"
+    );
+    for mode in ["own", "passthrough", "connection"] {
+        section(&format!("upstream_credentials: {mode}\nberth: {{}}\n"))
+            .expect("a known section default is accepted");
+        section(&format!("berth:\n  upstream_credentials: {mode}\n"))
+            .expect("a known registration mode is accepted");
+    }
+}
