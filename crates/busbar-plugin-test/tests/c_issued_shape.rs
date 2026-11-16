@@ -8,7 +8,7 @@
 //! the arm's body and un-ignores it in its own MR (red first, then green).
 
 #[test]
-#[ignore = "owner: W1-K6"]
+#[ignore = "blocked: arm needs the auth-sigv4 image and core-admin issue_aws_credential minting over a Registry (no sigv4 fixture here); kernel issued/tests.rs covers IssuedShapes::get and for_issuing"]
 fn issued_shapes_and_minting() {
-    todo!("owner: W1-K6 (C-ISSUED-SHAPE)")
+    todo!("blocked: arm needs the auth-sigv4 image and core-admin issue_aws_credential minting over a Registry (no sigv4 fixture here); kernel issued/tests.rs covers IssuedShapes::get and for_issuing (C-ISSUED-SHAPE)")
 }

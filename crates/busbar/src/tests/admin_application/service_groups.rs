@@ -36,8 +36,6 @@ fn budget(cents: u64, per: LimitWindow) -> LimitCfg {
         scope: None,
         on_exhaust: None,
         downgrade_to: None,
-        admission: None,
-        on_exhaustion: None,
     }
 }
 

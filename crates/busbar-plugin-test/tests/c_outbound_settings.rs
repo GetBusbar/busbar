@@ -8,7 +8,7 @@
 //! the arm's body and un-ignores it in its own MR (red first, then green).
 
 #[test]
-#[ignore = "owner: W1-K9"]
+#[ignore = "blocked: boot-time binding settings forwarding lives in the busbar bin crate (busbar/src/root/migrate.rs, tests/kernel_application/central2_provider_boot.rs), unreachable from busbar-plugin-test; owner W1-K9"]
 fn forwarded_keys_reach_the_bindings() {
     todo!("owner: W1-K9 (C-OUTBOUND-SETTINGS)")
 }

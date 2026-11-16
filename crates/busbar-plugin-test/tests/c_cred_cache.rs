@@ -8,7 +8,7 @@
 //! the arm's body and un-ignores it in its own MR (red first, then green).
 
 #[test]
-#[ignore = "owner: W1-K6"]
+#[ignore = "owner: W1-K6; blocked (re-checked on dev 2026-11-16): the K6 credential cache / dialect-auth core arms need kernel wiring that is not on dev"]
 fn credential_cache_core_arms() {
     todo!("owner: W1-K6 (C-CRED-CACHE)")
 }

@@ -9,7 +9,7 @@
 //! the arm's body and un-ignores it in its own MR (red first, then green).
 
 #[test]
-#[ignore = "owner: W1-K8B"]
+#[ignore = "owner: W1-K8B (blocked: the core arms need K6/K8B's upstream binding resolution through the kernel config path with a plane-mcp/a2a image; the images are W2-SW-PLANE, #217)"]
 fn core_config_and_refusal_arms() {
     todo!("owner: W1-K8B (C-UPSTREAM-AUTH)")
 }

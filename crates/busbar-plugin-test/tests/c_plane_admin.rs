@@ -8,7 +8,7 @@
 //! the arm's body and un-ignores it in its own MR (red first, then green).
 
 #[test]
-#[ignore = "owner: W1-K8C"]
+#[ignore = "blocked: admin verbs on admin_listen are served by busbar-core-admin plane mounts with scopes; no plane double or listener harness reachable here (W1-K8C)"]
 fn admin_verbs_on_admin_listen() {
     todo!("owner: W1-K8C (C-PLANE-ADMIN)")
 }

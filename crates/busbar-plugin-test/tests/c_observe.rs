@@ -7,7 +7,7 @@
 //! the arm's body and un-ignores it in its own MR (red first, then green).
 
 #[test]
-#[ignore = "owner: W1-K8A"]
+#[ignore = "blocked: OBS_SCOPE/ATTACH/OBSERVE rules run in busbar-kernel plane_driver (port_observations_tests.rs covers CREATE/FINAL/CLOSE); not a busbar-plugin-test dev dep; owner W1-K8A"]
 fn observation_scope_attach_and_pending_rules() {
     todo!("owner: W1-K8A (C-OBSERVE)")
 }
