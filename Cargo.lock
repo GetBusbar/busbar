@@ -467,7 +467,6 @@ dependencies = [
  "base64 0.22.1",
  "busbar-contract",
  "busbar-kernel",
- "busbar-plugin-loader",
  "bytes",
  "form_urlencoded",
  "futures",
