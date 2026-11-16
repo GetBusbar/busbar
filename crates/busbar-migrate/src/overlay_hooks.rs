@@ -83,7 +83,7 @@ fn read<'a>(name: &str, value: &'a json::Value, o: &str) -> Result<Hook<'a>, Ref
     let fields = value
         .as_object()
         .ok_or_else(|| bad("the hook is not an object"))?;
-    for (key, _) in fields.iter() {
+    for (key, _) in crate::overlay::ordered(fields) {
         if !FIELDS.contains(&key) {
             return Err(bad(&format!("unknown field `{key}`")));
         }
@@ -371,7 +371,7 @@ pub(crate) fn fold(
         let entries = value
             .as_object()
             .ok_or_else(|| unparseable(o, "`hooks` is not an object"))?;
-        for (name, entry) in entries.iter() {
+        for (name, entry) in crate::overlay::ordered(entries) {
             hooks.push(read(name, entry, o)?);
         }
     }

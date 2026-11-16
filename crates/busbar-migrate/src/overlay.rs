@@ -258,7 +258,7 @@ impl Read {
             .and_then(|doc| doc.get(&"plugin_versions"))
             .and_then(|pins| pins.as_object());
         if let Some(pins) = pins {
-            for (name, version) in pins.iter() {
+            for (name, version) in ordered(pins) {
                 if let Some(version) = version.as_str() {
                     out.push(pin_line(&self.selected.path, name, version));
                 }
@@ -622,6 +622,15 @@ fn parse(bytes: &[u8], selected: &Selected) -> Result<json::Value, Refusal> {
     Ok(doc)
 }
 
+/// A JSON object's members by name. The parsed object does not keep the document's member order
+/// (two reads of the same bytes list them differently), and every fold writes in this order, so the
+/// planned document and the re-planned one are the same text.
+pub(crate) fn ordered(map: &json::Map) -> Vec<(&str, &json::Value)> {
+    let mut members: Vec<(&str, &json::Value)> = map.iter().collect();
+    members.sort_by(|a, b| a.0.cmp(b.0));
+    members
+}
+
 /// 1c: fold the overlay 1b read into config.yaml's text, in 1.5.5's order: `root` (each section
 /// replaces or patches the base), `plugin_versions` (dropped, reported), `named_maps` (added by
 /// name), then `merge_into`: hooks and their global attachment (`overlay_hooks`), groups, and the
@@ -643,7 +652,7 @@ pub(crate) fn fold(text: &str, read: &Read, report: &mut Vec<String>) -> Result<
             "config.yaml's top level is not a mapping".to_owned(),
         ));
     };
-    for (key, _) in doc.iter() {
+    for (key, _) in ordered(doc) {
         if !FIELDS.contains(&key) && !overlay_hooks::KEYS.contains(&key) {
             report.push(format!(
                 "overlay `{o}`: the top-level key `{key}` is dropped (1.5.5 ignored it)"
@@ -657,7 +666,7 @@ pub(crate) fn fold(text: &str, read: &Read, report: &mut Vec<String>) -> Result<
         let pins = pins
             .as_object()
             .ok_or_else(|| unparseable(&o, "`plugin_versions` is not an object"))?;
-        for (name, version) in pins.iter() {
+        for (name, version) in ordered(pins) {
             let version = version.as_str().ok_or_else(|| {
                 unparseable(&o, &format!("`plugin_versions.{name}` is not a string"))
             })?;
@@ -686,7 +695,7 @@ fn fold_root(
     let root = root
         .as_object()
         .ok_or_else(|| unparseable(o, "`root` is not an object"))?;
-    for (key, value) in root.iter() {
+    for (key, value) in ordered(root) {
         if value.is_null() {
             continue;
         }
@@ -715,7 +724,7 @@ fn fold_root(
         let Value::Map(section) = section else {
             continue;
         };
-        for (field, value) in patch.iter() {
+        for (field, value) in ordered(patch) {
             if !fields.contains(&field) {
                 return Err(unparseable(
                     o,
@@ -746,7 +755,7 @@ fn fold_named(
     let maps = maps
         .as_object()
         .ok_or_else(|| unparseable(o, "`named_maps` is not an object"))?;
-    for (section, entries) in maps.iter() {
+    for (section, entries) in ordered(maps) {
         let entries = entries
             .as_object()
             .ok_or_else(|| unparseable(o, &format!("`named_maps.{section}` is not an object")))?;
@@ -765,7 +774,7 @@ fn fold_named(
                 "config.yaml `{section}` is not a mapping; 1.5.5 did not boot it either"
             )));
         };
-        for (name, def) in entries.iter() {
+        for (name, def) in ordered(entries) {
             if base.contains_key(name) {
                 return Err(Refusal::Config(format!(
                     "the 1.5.5 overlay {o} and config.yaml both define `{section}.{name}`; 1.5.5's \
@@ -809,7 +818,7 @@ fn fold_groups(
         let groups = groups
             .as_object()
             .ok_or_else(|| unparseable(o, "`groups` is not an object"))?;
-        for (name, group) in groups.iter() {
+        for (name, group) in ordered(groups) {
             let group = to_yaml(group, &format!("groups.{name}"), o)?;
             merged.insert_key(name, group);
             report.push(format!(
