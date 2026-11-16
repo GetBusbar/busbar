@@ -75,6 +75,69 @@ async fn bootstrap_thread_certifies_and_stages_the_exact_chain_position() {
     );
 }
 
+#[tokio::test]
+async fn boot_jobs_confirm_restart_before_certifying_live_key() {
+    use crate::root::durability::boot_jobs::{BootPreparation, PendingBootJob};
+    use crate::root::durability::tests::{audit_inputs, audit_pass, token, NativeFixture};
+    use crate::root::durability::Durability;
+    let fixture = NativeFixture::new(41).await;
+    let book = Arc::new(Mutex::new(fixture.book().await));
+    Durability::seal_unit(&book, audit_inputs(1), audit_pass(), &token())
+        .await
+        .unwrap();
+    let live = LocalSigner::from_seed(&DELEGATED).unwrap();
+    let rig = rig(true);
+    let mut restart = live_page(1);
+    {
+        let held = book.lock().unwrap();
+        restart.node = held.record.node();
+        restart.sealer = restart.node;
+        restart.fingerprint = Fingerprint::from_hex(held.record.head()).unwrap();
+    }
+    restart.kind = StampKind::AfterRestart;
+    restart.key_cert = 0;
+    let jobs = vec![PendingBootJob::Restart(restart)];
+    let mut preparation = BootPreparation::new(
+        rig.signers.boot,
+        book.clone(),
+        jobs,
+        Some(live.public_key().clone()),
+    );
+    let key_cert = preparation.run().await.unwrap();
+    let journal = book.lock().unwrap().journal.clone();
+    let rows = journal
+        .read_records(busbar_kernel::persistence::journal::BufferBudget {
+            records: 100,
+            bytes: 64 * 1024,
+        })
+        .await
+        .unwrap();
+    let restart_at = rows
+        .iter()
+        .find(|row| {
+            busbar_kernel_audit::stamp_from_journal_body(&row.body)
+                .unwrap()
+                .is_some()
+        })
+        .unwrap()
+        .node_seq;
+    let certificate = rows
+        .iter()
+        .find(|row| {
+            busbar_kernel_audit::notary_key::notary_key_from_journal_body(&row.body)
+                .unwrap()
+                .is_some()
+        })
+        .unwrap();
+    assert_eq!(certificate.node_seq, key_cert);
+    assert!(restart_at < key_cert);
+    assert_eq!(
+        preparation.run().await.unwrap(),
+        key_cert,
+        "completed queue cannot append again"
+    );
+}
+
 /// A delegated live signer that records the thread each sign runs on, and can hold a sign until
 /// released.
 struct Recording {
