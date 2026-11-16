@@ -2739,8 +2739,8 @@ fn core_sections_parse_directly_and_are_named_in_unknown_field_errors() {
          `admin_listen`, `config`, `providers_file`, `oauth_as`, `credentials`, `admin_tls`, \
          `admin_require_mtls`, `auth`, `identity-providers`, `providers`, `models`, `pools`, \
          `hooks`, `groups`, `rate_card`, `plugin_rate_cards`, `per_request_fee`, `store`, \
-         `secrets`, `advanced`, `export`, `plugins`, `security`, `limits`, `health`, `routing` at \
-         line 3 column 1"
+         `secrets`, `advanced`, `export`, `plugins`, `security`, `limits`, `health`, `routing`, \
+         `telemetry` at line 3 column 1"
     );
     for field in ["oauth_as", "credentials"] {
         let duplicate =
