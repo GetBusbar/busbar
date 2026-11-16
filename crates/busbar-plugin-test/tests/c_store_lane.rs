@@ -157,9 +157,9 @@ fn a_need_from_a_lane_store_is_fault_need_not_allowed() {
 fn a_ceiling_above_the_lane_range_is_clamped_and_logged() {
     use busbar_plugin_abi::host_side::HOST;
     use busbar_plugin_loader::admit::admit_header;
-    use busbar_plugin_loader::binder::ConfigBinder;
     use busbar_plugin_loader::instance::{Ceilings, Registry};
     use busbar_plugin_test::suites::harness::MemBinder;
+    use busbar_ports::binder::ConfigBinder;
 
     use crate::min3_store::{Capture, LANE_SCAN_CLAMPED_US, LANE_SCAN_US};
 

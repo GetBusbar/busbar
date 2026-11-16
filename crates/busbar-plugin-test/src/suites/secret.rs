@@ -29,7 +29,7 @@ use busbar_plugin_abi::fail::refused::{R_CONFIG, R_INVALID, R_NOT_FOUND};
 use busbar_plugin_abi::host_side::caller::CallStack;
 use busbar_plugin_abi::plugin::Plugin;
 use busbar_plugin_abi::types::KindCode;
-use busbar_plugin_loader::ports::{CallCx, PortError};
+use busbar_ports::{CallCx, PortError};
 
 use super::harness::{core_refusal, plugin_code, status_code, Harness};
 use crate::fake_needs::FakeNeeds;

@@ -8,7 +8,7 @@ use busbar_plugin_abi::host_side::caller::BoxFut;
 use busbar_plugin_abi::records::Records;
 use busbar_plugin_abi::types::Pair;
 
-use crate::ports::{CallCx, FactRef, PortError};
+use crate::{CallCx, FactRef, PortError};
 
 pub type PlaneSession = busbar_plugin_abi::kinds::plane::plane::SessionHandle;
 
