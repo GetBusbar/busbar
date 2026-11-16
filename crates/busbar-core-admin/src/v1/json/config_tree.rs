@@ -517,9 +517,12 @@ fn process(app: &App) -> Value {
             )),
         ),
     ];
-    for name in ["BUSBAR_CONFIG_OVERLAY", "BUSBAR_DATA_DIR"] {
-        inputs.push(input(name, "env", env_set(name), None));
-    }
+    inputs.push(input(
+        "BUSBAR_DATA_DIR",
+        "env",
+        env_set("BUSBAR_DATA_DIR"),
+        None,
+    ));
     for name in [
         "BUSBAR_UPSTREAM_HTTP1_ONLY",
         "BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE",
