@@ -855,6 +855,10 @@ fn join(base: &str, target: &[u8]) -> String {
     )
 }
 
+/// The audit action of an upstream dial the instance's `insecure_transport` does not cover (the connector's own
+/// action for a refused Need, TRANSPORT-SECURITY-POLICY §4).
+pub(crate) const INSECURE_TRANSPORT_REFUSED: &str = "egress.insecure_transport_refused";
+
 fn split(url: &str) -> (&str, &str) {
     let rest = url.split_once("://").map_or(url, |(_, r)| r);
     match rest.find('/') {
@@ -1501,9 +1505,18 @@ impl EgressFarEnd<'_> {
         };
         let url = join(&base_url, &request.target);
         if !dial_admitted(self.route.accept, &url) {
+            let destination = split(&url).0.rsplit('@').next().unwrap_or_default();
+            // TRANSPORT-SECURITY-POLICY §4 "Visibility": every refusal is an audit row, as the connector writes
+            // for a Need (`dest:<host>:<instance>`; the walk's pool is the plane instance's).
+            crate::audit_ring::AUDIT.record_by(
+                INSECURE_TRANSPORT_REFUSED,
+                &format!("dest:{destination}:{}", self.route.pool),
+                crate::audit_ring::OUTCOME_REJECTED,
+                "system",
+            );
             tracing::warn!(
-                action = "egress.insecure_transport_refused",
-                destination = split(&url).0.rsplit('@').next().unwrap_or_default(),
+                action = INSECURE_TRANSPORT_REFUSED,
+                destination,
                 "an upstream dial was refused: no insecure_transport acceptance covers it"
             );
             self.lock().unsent = Some(RefusalCode::UnsentOpenRefused);
@@ -2377,6 +2390,18 @@ impl FarEnd for EgressFarEnd<'_> {
     }
 
     fn judged(&self, token: &Pass<Route>, fault: u8) {
+        self.judged_stating(token, fault, None);
+    }
+
+    /// The plane's wait joins the answer's own (the longer one holds) before the verdict is recorded, so the
+    /// breaker's classification and the walk's exhaustion wait read it (IF §12.3).
+    fn judged_waiting(&self, token: &Pass<Route>, fault: u8, retry_after_s: Option<u64>) {
+        if let Some(wait) = retry_after_s {
+            let mut w = self.lock();
+            if let Some(held) = w.live.as_mut().and_then(|live| live.unjudged.as_mut()) {
+                held.retry_after = Some(held.retry_after.map_or(wait, |stated| stated.max(wait)));
+            }
+        }
         self.judged_stating(token, fault, None);
     }
 

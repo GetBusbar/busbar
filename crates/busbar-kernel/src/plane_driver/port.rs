@@ -260,6 +260,12 @@ impl PortDriver {
         &self.routes
     }
 
+    /// The instance's port: what its carrier's `demux`, its probes and its charges are asked through.
+    #[must_use]
+    pub fn port(&self) -> Arc<dyn PlanePort> {
+        Arc::clone(&self.port)
+    }
+
     /// `admin(ADMIN_CATALOG)`: the plane refreshes its catalog data.
     ///
     /// # Errors

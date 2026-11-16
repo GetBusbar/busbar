@@ -136,6 +136,11 @@ pub trait Members {
     fn declined(&mut self, member: &Candidate);
     fn failed(&mut self, member: &Candidate, failure: &Failure);
     fn served(&mut self, member: &Candidate);
+    /// Once `next` answered `None`: how long the walk says the client should wait before asking again (the
+    /// exhaustion's Retry-After, IF §12.3), in whole seconds. `None` = it states none (the default).
+    fn retry_after(&self) -> Option<u32> {
+        None
+    }
 }
 
 /// The far end's reply to an exchange, whole.

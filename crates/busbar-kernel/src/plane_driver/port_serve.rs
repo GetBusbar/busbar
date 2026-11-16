@@ -248,6 +248,7 @@ fn drive_task<K: Calls + ?Sized>(
             send,
             drive.effects,
         )?;
+        let wait = members.retry_after();
         match walked {
             Attempted::Served {
                 client,
@@ -263,7 +264,7 @@ fn drive_task<K: Calls + ?Sized>(
             Attempted::Exhausted { attempts } => {
                 ran.attempts = attempts;
                 ran.exhausted = true;
-                exhausted(task, req, drive, &mut ran)?;
+                exhausted(task, req, drive, &mut ran, wait)?;
             }
         }
     }
@@ -283,27 +284,55 @@ fn drive_task<K: Calls + ?Sized>(
     Ok(ran)
 }
 
-/// No member is left: the plane is told (one REFUSAL, `P_EXHAUSTED`) and answers the client now.
+/// No member is left: the plane is told (one REFUSAL, `P_EXHAUSTED`) and answers the client now. `wait` is the
+/// walk's Retry-After (IF §12.3): the refusal's head carries it unless the plane already stated one (the REFUSAL
+/// record has no field for it, so core stamps the head the client gets).
 fn exhausted<K: Calls + ?Sized>(
     task: &mut Task<'_, K>,
     req: &PlaneIn<'_>,
     drive: &Drive<'_>,
     ran: &mut Ran,
+    wait: Option<u32>,
 ) -> Result<(), SessionError> {
     let refusal = drive.refusals.for_core(req.route, R_NO_ROUTE);
+    let before = ran.client.len();
     let mut arg = Reply::new();
     if encode_refusal(&mut arg, refusal.status, refusal.code, &refusal.text).is_err() {
         ran.client.extend(plain_refusal(&refusal));
+        stamp_retry_after(&mut ran.client[before..], wait);
         return Ok(());
     }
     let answer = task.piece(FROM_CORE, 0, P_EXHAUSTED, arg.as_bytes(), drive.effects)?;
     let answers = task.resolve(answer, drive.resolver, drive.effects)?;
-    let before = ran.client.len();
     absorb(ran, &mut None, answers, drive.books);
     if ran.client.len() == before {
         ran.client.extend(plain_refusal(&refusal));
     }
+    stamp_retry_after(&mut ran.client[before..], wait);
     Ok(())
+}
+
+/// The `retry-after` field core adds to an exhausted session's response head.
+const RETRY_AFTER: &[u8] = b"retry-after";
+
+/// Adds `retry-after: <wait>` to the first head of `items` when it states none (any case).
+fn stamp_retry_after(items: &mut [ToClient], wait: Option<u32>) {
+    let Some(wait) = wait else {
+        return;
+    };
+    let Some(ToClient::Head { fields, .. }) = items
+        .iter_mut()
+        .find(|item| matches!(item, ToClient::Head { .. }))
+    else {
+        return;
+    };
+    if fields
+        .iter()
+        .any(|(name, _)| name.eq_ignore_ascii_case(RETRY_AFTER))
+    {
+        return;
+    }
+    fields.push((RETRY_AFTER.to_vec(), wait.to_string().into_bytes()));
 }
 
 #[cfg(test)]

@@ -233,6 +233,14 @@ pub trait FarEnd: Sync {
         self.judged(token, fault);
     }
 
+    /// [`FarEnd::judged_stating`] for a plane verdict that states how long the member asked to be left alone
+    /// (an ATTEMPT's `retry_after_s`, IF §12.3: FC_RATE_LIMIT/FC_OVERLOADED feed the walk's exhaustion wait). A far
+    /// end that keeps no wait (the default) judges as `judged_stating` does.
+    fn judged_waiting(&self, token: &Pass<Route>, fault: u8, retry_after_s: Option<u64>) {
+        let _ = retry_after_s;
+        self.judged_stating(token, fault, None);
+    }
+
     fn member_wait(&self, token: &Pass<Route>, member: &str) -> Option<u32> {
         let _ = (token, member);
         None

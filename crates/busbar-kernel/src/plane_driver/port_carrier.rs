@@ -144,6 +144,10 @@ impl Members for Mapped<'_> {
     fn served(&mut self, member: &Candidate) {
         self.inner.served(member);
     }
+
+    fn retry_after(&self) -> Option<u32> {
+        self.inner.retry_after()
+    }
 }
 
 /// What a plane instance's sessions need of the carrier: its channels, the configured upstreams, the signal registry

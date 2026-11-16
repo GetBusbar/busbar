@@ -14,6 +14,18 @@ pub use binder::{Binder, RefSource, MAX_BINDINGS, MAX_UNIX_PATHS};
 
 use busbar_plugin_abi::host_side::caller::BoxFut;
 
+/// An operator PEM CA as the trust anchor of an upstream's `tls.trust` (IF §12.1 `UpstreamTls::trust`): the reader
+/// the binder uses for a D_TRUST_PATH node. Err = core text for the refusal (not PEM, a malformed section, or no
+/// certificate).
+///
+/// # Errors
+/// `text` holds no usable PEM certificate.
+pub fn upstream_anchor(text: &str) -> Result<std::sync::Arc<TrustAnchor>, String> {
+    pem::trust_anchor(text)
+        .map(std::sync::Arc::new)
+        .ok_or_else(|| "is not a PEM certificate bundle".to_owned())
+}
+
 /// One instance's bindings. Index 0 is unused (handle 0 = none); handles are 1-based, ≤ 65,535.
 /// Round 13: `refs` = (JSON Pointer of the concrete node, reference) for every D_REF_PATH node written as a reference.
 pub struct Bindings {

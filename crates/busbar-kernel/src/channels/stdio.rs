@@ -18,17 +18,17 @@ use busbar_plugin_abi::host_side::caller::BoxFut;
 use busbar_plugin_abi::plane::{CARRIER_HTTP, CARRIER_STDIO};
 use busbar_plugin_abi::records::tag;
 use tokio::io::AsyncRead;
-use tokio::process::{Child, Command};
+use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 
 use super::carrier::{Wire, Wires};
 use super::ChannelReq;
 use crate::plugin_records::RecordsDenied;
 use crate::upstreams::{ProgramPin, StdioCommand, UpstreamDef};
 
-/// How a child's `env` references turn into values (custody, at spawn). `None` = a reference that does not resolve:
-/// the child is not spawned.
+/// How a child's `env` references turn into values (custody, at spawn: every respawn resolves again, so a rotated
+/// secret reaches the next child). `None` = a reference that does not resolve: the child is not spawned.
 pub trait SpawnSecrets: Send + Sync + 'static {
-    fn resolve(&self, secret: &SecretRef) -> Option<String>;
+    fn resolve<'a>(&'a self, secret: &'a SecretRef) -> BoxFut<'a, Option<String>>;
 }
 
 /// One held request: the head a CARRIER_HTTP CHANNEL stated, and what the far end streams back.
@@ -50,17 +50,66 @@ pub trait HeldHttp: Send + Sync + 'static {
     ) -> BoxFut<'a, Result<Box<dyn AsyncRead + Send + Unpin>, RecordsDenied>>;
 }
 
+/// One spawned child: its piped stdin and stdout, and what stops it when dropped (the wire's `hold`).
+pub struct Spawned {
+    pub stdin: ChildStdin,
+    pub stdout: ChildStdout,
+    /// Dropping it stops the child (and, under [`ChildSpawn`] implementations that contain it, every process the
+    /// child started).
+    pub hold: Box<dyn Send>,
+}
+
+/// How a configured `command` is started once its argv, env and working directory are set. The kernel has no
+/// `unsafe` and links no OS process-group code, so containment of the child's whole process tree (a group kill, a
+/// Windows Job) is the composition root's ([`PlainSpawn`] kills the child alone, the old behaviour).
+pub trait ChildSpawn: Send + Sync + 'static {
+    /// Starts `command` (stdin and stdout piped, stderr inherited, `kill_on_drop` set by the caller). `None` = it
+    /// could not be started or contained: the generation does not open.
+    fn spawn<'a>(&'a self, command: &'a mut Command) -> BoxFut<'a, Option<Spawned>>;
+}
+
+/// [`ChildSpawn`] with tokio alone: dropping the hold kills the child; a process it forked survives it.
+pub struct PlainSpawn;
+
+impl ChildSpawn for PlainSpawn {
+    fn spawn<'a>(&'a self, command: &'a mut Command) -> BoxFut<'a, Option<Spawned>> {
+        Box::pin(async move {
+            let mut child: Child = command.spawn().ok()?;
+            let stdin = child.stdin.take()?;
+            let stdout = child.stdout.take()?;
+            Some(Spawned {
+                stdin,
+                stdout,
+                hold: Box::new(child),
+            })
+        })
+    }
+}
+
 /// [`Wires`] over child processes and [`HeldHttp`].
 pub struct ProcessWires {
     secrets: Arc<dyn SpawnSecrets>,
     http: Option<Arc<dyn HeldHttp>>,
+    spawn: Arc<dyn ChildSpawn>,
 }
 
 impl ProcessWires {
-    /// `http` = `None`: no CARRIER_HTTP channel can open.
+    /// `http` = `None`: no CARRIER_HTTP channel can open. Children are started by [`PlainSpawn`] until
+    /// [`ProcessWires::spawning`] names another.
     #[must_use]
     pub fn new(secrets: Arc<dyn SpawnSecrets>, http: Option<Arc<dyn HeldHttp>>) -> Self {
-        Self { secrets, http }
+        Self {
+            secrets,
+            http,
+            spawn: Arc::new(PlainSpawn),
+        }
+    }
+
+    /// Children are started (and contained) by `spawn`.
+    #[must_use]
+    pub fn spawning(mut self, spawn: Arc<dyn ChildSpawn>) -> Self {
+        self.spawn = spawn;
+        self
     }
 
     async fn child(&self, upstream: &UpstreamDef) -> Result<Wire, RecordsDenied> {
@@ -73,6 +122,7 @@ impl ProcessWires {
             let value = self
                 .secrets
                 .resolve(secret)
+                .await
                 .ok_or(RecordsDenied::Unavailable)?;
             spawn.env(&**name, value);
         }
@@ -84,13 +134,15 @@ impl ProcessWires {
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
             .kill_on_drop(true);
-        let mut child: Child = spawn.spawn().map_err(|_| RecordsDenied::Unavailable)?;
-        let stdin = child.stdin.take().ok_or(RecordsDenied::Unavailable)?;
-        let stdout = child.stdout.take().ok_or(RecordsDenied::Unavailable)?;
+        let spawned = self
+            .spawn
+            .spawn(&mut spawn)
+            .await
+            .ok_or(RecordsDenied::Unavailable)?;
         Ok(Wire {
-            read: Box::new(stdout),
-            write: Some(Box::new(stdin)),
-            hold: Box::new(child),
+            read: Box::new(spawned.stdout),
+            write: Some(Box::new(spawned.stdin)),
+            hold: spawned.hold,
         })
     }
 

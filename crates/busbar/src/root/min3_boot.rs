@@ -60,6 +60,10 @@ use busbar_plugin_loader::instance::{
 };
 use busbar_plugin_loader::ports::store::StoreHandle;
 
+use busbar_kernel::teller::Kernel;
+use busbar_kernel::upstreams::ConfiguredUpstreams;
+
+use super::plane_seats::{compose as compose_seat, ConnTable, SeatShared, SpawnCustody};
 use super::port_mount::Ingress;
 use super::secret_custody::{self, BootCustody, BootRefs, BootSecrets};
 
@@ -268,6 +272,8 @@ pub(crate) struct Booted {
     work_binder: LateBinder,
     /// The records the signed-ingress replay claims are written through.
     records: Records,
+    /// The seats' probe targets: their probers hold them weakly, so the process holds them here.
+    _probes: Vec<Arc<dyn Send + Sync>>,
 }
 
 static BOOTED: OnceLock<Booted> = OnceLock::new();
@@ -429,6 +435,30 @@ fn configured(cfg: &RootCfg) -> Result<Vec<Configured>, String> {
     Ok(out)
 }
 
+/// The boot's configured upstreams (IF §12.1): one table, shared by every plane seat's egress walk and carrier.
+/// `upstreams:` is not a key of the config grammar yet (K7 carries only each upstream's `auth` and
+/// `upstream_credentials` in `cfg.min3.upstreams`, and its parse is still the W0 stub), so the table is typed over
+/// an empty section: every seat composes its walk and carrier over no upstream (a FORWARD is exhausted, a CHANNEL is
+/// `P_ERROR`) until the grammar carries the section, which then lands in [`upstreams_of`] and nowhere else. A
+/// binding naming an upstream with no entry still refuses the boot.
+fn configured_upstreams(cfg: &RootCfg) -> Result<Arc<ConfiguredUpstreams>, String> {
+    upstreams_of(&serde_json::Map::new(), cfg)
+}
+
+/// The table typed over `section` (upstream name to entry) and the config's bindings; Err = every refusal, joined.
+fn upstreams_of(
+    section: &serde_json::Map<String, serde_json::Value>,
+    cfg: &RootCfg,
+) -> Result<Arc<ConfiguredUpstreams>, String> {
+    ConfiguredUpstreams::from_config(
+        section,
+        &cfg.min3.upstreams,
+        &busbar_kernel::plugin_config::upstream_anchor,
+    )
+    .map(Arc::new)
+    .map_err(|refused| refused.join("; "))
+}
+
 /// The shorthands the admitted secret images declare, as the one `Sugars` the binder and the config parser read.
 fn sugars_of(registry: &MinRegistry) -> Result<Sugars, String> {
     use busbar_contract::abi::mechanism::door::{
@@ -554,6 +584,10 @@ struct Steps<'r> {
     signing_key: Option<SecretRef>,
     /// The process's secret kind: the open secret instances and the custody that resolves through them.
     secrets: &'static BootSecrets,
+    /// K9: what every seat's egress walk and carrier are composed over (the boot's one upstream table).
+    seat: SeatShared,
+    /// The seats' probe targets, held for their probers.
+    probes: Mutex<Vec<Arc<dyn Send + Sync>>>,
 }
 
 impl Steps<'_> {
@@ -602,6 +636,23 @@ impl Steps<'_> {
         let driver =
             driver.with_tickets(Arc::new(TicketGate::new(Arc::clone(&tickets), who.clone())));
         let rt = tokio::runtime::Handle::current();
+        // K9: the seat's egress walk and carrier over the boot's upstream table, under the instance's core-held
+        // `insecure_transport.accept`.
+        let wiring = compose_seat(
+            &self.seat,
+            spec.name,
+            spec.limits.accept,
+            &who,
+            driver.port(),
+            rt.clone(),
+        )
+        .map_err(|why| OpenError::Unknown(format!("plane `{}`: {why}", spec.name)))?;
+        if let Some(probes) = wiring.probes {
+            self.probes
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(probes);
+        }
         // WORK is opened only for a target on this instance's ROUTE_RECOVERY routes.
         let recovers = recovery_matcher(
             driver
@@ -634,12 +685,8 @@ impl Steps<'_> {
                 audience: audience_of(spec.config_json),
                 intents: Arc::new(intents),
                 who,
-                // The MIN-3 pools (K9 `upstreams`) do not compose an `Egress` at boot yet: no walk, so a FORWARD
-                // fails `NotDriven`. `PortEgress` is what lands here.
-                upstream: None,
-                // No `UpstreamChannels` is composed at boot yet (K9: the configured upstreams, the spawn secrets and the
-                // held-HTTP connector): a CHANNEL is `P_ERROR`. `PortCarrier::new` lands here.
-                carrier: None,
+                upstream: wiring.upstream,
+                carrier: Some(wiring.carrier),
             });
         Ok(())
     }
@@ -831,6 +878,13 @@ pub(crate) async fn run(
         push,
         shared.work_store.clone(),
     );
+    let seat = SeatShared {
+        upstreams: configured_upstreams(cfg)?,
+        signals: Arc::clone(&shared.signals),
+        secrets: Arc::new(SpawnCustody(built.secrets)),
+        kernel: Arc::new(Kernel::new()),
+        table: ConnTable::installed(),
+    };
     let steps = Steps {
         inner: RegistryBoot {
             registry: &*built.registry,
@@ -842,6 +896,8 @@ pub(crate) async fn run(
         shared: Arc::clone(&shared),
         signing_key: cfg.auth.as_ref().and_then(|auth| auth.signing_key.clone()),
         secrets: built.secrets,
+        seat,
+        probes: Mutex::default(),
     };
     let core_modules = busbar_kernel::appbuild::core_secret_modules(cfg);
     let core_refs: Vec<&str> = core_modules.iter().map(String::as_str).collect();
@@ -851,6 +907,10 @@ pub(crate) async fn run(
     let core = core_secrets_of(cfg, built.secrets).await?;
     let seats = steps
         .seats
+        .into_inner()
+        .unwrap_or_else(PoisonError::into_inner);
+    let probes = steps
+        .probes
         .into_inner()
         .unwrap_or_else(PoisonError::into_inner);
     let ticking = seats.clone();
@@ -864,6 +924,7 @@ pub(crate) async fn run(
         deployment: walked.deployment,
         work_binder: shared.work_binder.clone(),
         records: built.records.clone(),
+        _probes: probes,
         startup: Mutex::new(
             startup
                 .lock()

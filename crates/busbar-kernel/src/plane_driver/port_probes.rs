@@ -11,6 +11,9 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use busbar_plugin_loader::ports::plane::PlanePort;
+
+use super::port_charge::charge;
 use super::port_session::{Calls, Effects};
 use super::port_upstream::{probe_member, Candidate, ProbeOutcome, UpSend};
 use crate::probe::ProbeTarget;
@@ -34,6 +37,9 @@ pub struct PortProbes<K: Calls + ?Sized + Send + Sync + 'static, F: ProbeFar> {
     dialect: String,
     model: String,
     effects: Arc<dyn Effects + Send + Sync>,
+    /// The port a once rule the plane broke in a probe is charged to (PLANE-BILLING: a probe is a session like
+    /// any other); `None` = nothing is charged.
+    charge: Option<Arc<dyn PlanePort>>,
 }
 
 impl<K: Calls + ?Sized + Send + Sync + 'static, F: ProbeFar> PortProbes<K, F> {
@@ -52,7 +58,16 @@ impl<K: Calls + ?Sized + Send + Sync + 'static, F: ProbeFar> PortProbes<K, F> {
             dialect,
             model,
             effects,
+            charge: None,
         }
+    }
+
+    /// A probe whose plane broke a once rule charges `port`'s image (`port_charge::charge`), as a served session
+    /// does.
+    #[must_use]
+    pub fn charging(mut self, port: Arc<dyn PlanePort>) -> Self {
+        self.charge = Some(port);
+        self
     }
 }
 
@@ -81,6 +96,9 @@ impl<K: Calls + ?Sized + Send + Sync + 'static, F: ProbeFar> ProbeTarget for Por
             Ok(Ok(outcome)) => self.far.reported(member, outcome),
             Ok(Err(error)) => {
                 tracing::warn!(?error, member, "a plane probe could not run");
+                if let Some(port) = &self.charge {
+                    charge(&**port, &error);
+                }
                 self.far.reported(member, ProbeOutcome::Unhealthy);
             }
             Err(_) => tracing::warn!(member, "a plane probe was cancelled"),
