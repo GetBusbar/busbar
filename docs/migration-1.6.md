@@ -162,13 +162,22 @@ Cloud-metadata exceptions `security.allow_metadata_hosts`, `security.allow_all_m
 cloud-metadata destinations. `security.blocked_metadata_hosts` still extends the denylist;
 entries that name no usable host are removed and reported.
 
-### Literal secrets
+### Recoverable credentials and literal secrets
 
-An implementation can identify a literal secret in its old settings for externalization. Core
-writes that secret to a `0600` file beside the config and replaces the setting with a secret
-reference. Back up these generated `.secret` files with the migrated configuration, preserve
-their permissions and mount them wherever the deployment runs. The migration report names the
-location without printing the secret.
+A Store containing recoverable 1.5.5 credentials, such as SigV4 secret keys, requires a resolved
+`auth.signing_key` before conversion. 1.6.0 seals those credentials under a key derived from
+that signing key. Preserve the existing key and use the same key on every node sharing the
+Store. If none is configured, follow the startup refusal to create a protected key file and
+reference it with `auth.signing_key: { file: /absolute/signing.key }`, then retry 1.6.0. Keep
+the key with the deployment's protected backups; replacing it prevents recovery of credentials
+sealed under the previous key.
+
+Automatic externalization of literal secrets from plugin settings is **not yet integrated into
+the production boot path**. The migration writer supports creating `0600` `.secret` files and
+replacing literals with references, but the current boot does not pass plugins' canonical
+settings to that writer. Do not assume the upgrade has removed literal secrets from the
+configuration or persisted a plugin's converted settings. This must be completed and verified
+before the final upgrade procedure is qualified.
 
 ### Transport security
 
@@ -262,6 +271,9 @@ to add pre-release keys**. Replace this section with verified final behavior bef
   refusal of live old writers and newer data, and restoration of the pre-upgrade backup.
   Keep backend qualification open until those checks pass; fixture setup failures and partial
   migration tests do not qualify a backend.
+- Verify that plugin initialization results reach configuration write-back on the first boot,
+  stamped boots and reloads, including literal-secret externalization and restart readback.
+  The current production boot does not yet connect those results to the writer.
 - Check kind operations, authentication-token migration, exports, plane behavior, telemetry
   attribute changes and Store rollback requirements against the final core and artifact cohort.
 - Run the final docs-versus-code check at the release-candidate SHA, including every link,
