@@ -72,8 +72,6 @@ fn contain<R>(fallback: R, body: impl FnOnce() -> R) -> R {
 /// caller (the HOST entries, UNSAFE-MIN).
 #[cfg(test)]
 mod injection {
-    use crate::host_side::entry;
-    use busbar_ffi::{Bytes, CryptoRet, Host, HostFns};
     use core::cell::Cell;
 
     std::thread_local! {
@@ -653,6 +651,7 @@ mod tests {
     //! arm (IF §5, §5.2, §10.7, §14), over the bodies `HOST` points at.
 
     use super::*;
+    use busbar_ffi::Bytes;
     use core::cell::Cell;
     use std::sync::Arc;
     use std::sync::atomic::AtomicBool;

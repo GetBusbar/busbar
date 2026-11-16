@@ -38,9 +38,13 @@ pub const CORE_DIALECT_STYLES: [(RowClass, &str); 3] = [
 /// The class of an `upstreams.<name>.auth` core-vocabulary form, the key of [`CORE_UPSTREAM_STYLES`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum UpstreamForm {
+    /// `bearer`: no settings.
     Bearer,
+    /// `api_key`: `{header, ..}`.
     ApiKey,
+    /// `token_exchange`: RFC 8693 exchange.
     TokenExchange,
+    /// `connection`: the verified caller's own grant.
     Connection,
 }
 
@@ -74,17 +78,26 @@ pub fn upstream_style(form: UpstreamForm) -> &'static str {
 }
 
 /// One D_DIALECT_AUTH row as core reads it (borrowed from the registry's owned copy; same fields).
+#[derive(Debug)]
 pub enum Row<'a> {
+    /// A `Header` row.
     Header {
+        /// Header carrying the key; none means a bearer row.
         key_header: Option<&'a str>,
+        /// Header the plugin's own credential rides in.
         own_header: Option<&'a str>,
+        /// Header whose caller-supplied value is passed through.
         passthrough_header: Option<&'a str>,
         /// (prefix, header ("" = bearer), trim_start).
         families: &'a [(Box<str>, Box<str>, bool)],
     },
+    /// A `Sign` row.
     Sign {
+        /// The signing service name.
         service: &'a str,
+        /// Host labels after which the region appears.
         region_after: &'a [Box<str>],
+        /// The region used when none is read from the host.
         region_default: &'a str,
     },
 }
@@ -107,56 +120,101 @@ impl Row<'_> {
 /// when true).
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Family {
+    /// Credential prefix this family matches.
     pub prefix: Box<str>,
+    /// Header to write, or none for bearer.
     pub header: Option<Box<str>>,
+    /// Whether leading whitespace is trimmed.
     pub trim_start: bool,
 }
 
 /// The settings core writes for a binding, in core vocabulary. Key order is the document order of
-/// [`Settings::entries`]. No `Debug`: some forms carry URLs (credential typecheck `printable-url`).
+/// [`Settings::entries`]. `Debug` names only the variant: some forms carry URLs (credential typecheck
+/// `printable-url`), so no field value is ever formatted.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Settings {
     /// `bearer` / `api-key` from a `Header` row: `header` (api-key only), `own`, `passthrough`, `families`,
     /// `protocol`.
     Header {
+        /// The header name (api-key only).
         header: Option<Box<str>>,
+        /// The plugin's own header.
         own: Option<Box<str>>,
+        /// The passthrough header.
         passthrough: Option<Box<str>>,
+        /// The credential families.
         families: Vec<Family>,
+        /// The protocol word.
         protocol: Box<str>,
     },
     /// `sigv4` from a `Sign` row: `service`, `region`, and core's `region_unread` text when the default was used.
     Sign {
+        /// The signing service.
         service: Box<str>,
+        /// The signing region.
         region: Box<str>,
+        /// Core's text when the default region was used.
         region_unread: Option<Box<str>>,
     },
     /// A catalog style word's binding: the forwarded keys of the resolved provider entry (§8.6 item 2).
     Forwarded {
+        /// The provider's token endpoint.
         token_url: Option<Box<str>>,
+        /// The provider's scope.
         scope: Option<Box<str>>,
+        /// The provider's subject token type.
         subject: Option<Box<str>>,
     },
     /// `upstreams.<n>.auth: {bearer: ..}`: no settings.
     Empty,
     /// `upstreams.<n>.auth: {api_key: {header, ..}}`.
-    ApiKey { header: Box<str> },
+    ApiKey {
+        /// The header the key is written to.
+        header: Box<str>,
+    },
     /// `upstreams.<n>.auth: {token_exchange: ..}` (the subject token is the credential).
     TokenExchange {
+        /// The exchange endpoint.
         token_url: Box<str>,
+        /// The target resource.
         resource: Box<str>,
+        /// The subject token type, when declared.
         subject_token_type: Option<Box<str>>,
     },
     /// `upstreams.<n>.auth: {connection: ..}`: the seven keys verbatim.
     Connection {
+        /// The issuer.
         issuer: Box<str>,
+        /// The protected resource.
         resource: Box<str>,
+        /// The OAuth client id.
         client_id: Box<str>,
+        /// The redirect URI.
         redirect_uri: Box<str>,
+        /// The authorization endpoint.
         authorization_endpoint: Box<str>,
+        /// The token endpoint.
         token_endpoint: Box<str>,
+        /// The requested scopes, when declared.
         scopes: Option<Vec<Box<str>>>,
     },
+}
+
+impl core::fmt::Debug for Settings {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let variant = match self {
+            Settings::Header { .. } => "Header",
+            Settings::Sign { .. } => "Sign",
+            Settings::Forwarded { .. } => "Forwarded",
+            Settings::Empty => "Empty",
+            Settings::ApiKey { .. } => "ApiKey",
+            Settings::TokenExchange { .. } => "TokenExchange",
+            Settings::Connection { .. } => "Connection",
+        };
+        f.debug_struct("Settings")
+            .field("variant", &variant)
+            .finish_non_exhaustive()
+    }
 }
 
 /// A JSON string literal (RFC 8259 escaping).
