@@ -1101,6 +1101,9 @@ pub struct DeployCfg {
     /// The `telemetry:` block (the metric registry; default on).
     #[serde(default)]
     pub telemetry: TelemetryCfg,
+    /// The `audit:` block (SEALING-FIX §3.4): `seal_every`, the notary's stamp cadence in ms.
+    #[serde(default)]
+    pub audit: AuditCfg,
 }
 
 impl DeployCfg {
@@ -1461,8 +1464,9 @@ pub use busbar_kernel::config::sections::{store_required, SecretModuleCfg, Store
 
 pub use busbar_kernel::config::sections::{
     default_response_headers_route_policy, default_response_headers_server_timing, AdvancedCfg,
-    AdvancedGovernanceCfg, AdvancedShutdownCfg, ResponseHeadersCfg,
-    DEFAULT_RESPONSE_HEADERS_ROUTE_POLICY, DEFAULT_RESPONSE_HEADERS_SERVER_TIMING,
+    AdvancedGovernanceCfg, AdvancedShutdownCfg, AuditCfg, ResponseHeadersCfg,
+    DEFAULT_AUDIT_SEAL_EVERY_MS, DEFAULT_RESPONSE_HEADERS_ROUTE_POLICY,
+    DEFAULT_RESPONSE_HEADERS_SERVER_TIMING,
 };
 
 pub use busbar_kernel::config::sections::{
