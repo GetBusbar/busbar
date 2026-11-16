@@ -641,7 +641,10 @@ impl ConfigBinder for Binder {
                         text: text.into(),
                     }
                 };
-                let binding = u32::try_from(binding).map_err(|_| BindError::TooMany)?;
+                let Ok(binding) = u32::try_from(binding) else {
+                    result = Err(BindError::TooMany);
+                    break;
+                };
                 let Some(value) = source.resolve(instance, slot, binding, &r.reference).await
                 else {
                     result = Err(refused("could not be resolved"));
