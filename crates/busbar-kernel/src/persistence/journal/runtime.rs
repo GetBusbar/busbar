@@ -210,6 +210,8 @@ pub struct RuntimeJournal {
     pins: Option<Arc<Pins>>,
     /// Whether the one [`JournalCut`] has been handed out.
     cut_taken: AtomicBool,
+    /// Lookups of a live original that fell below the replay base; a pin invariant violation.
+    locate_truncated: std::sync::atomic::AtomicU64,
 }
 impl RuntimeJournal {
     /// Root constructs exactly one shared owner and passes this same Arc to
@@ -282,6 +284,7 @@ impl RuntimeJournal {
             lane_fallbacks: std::sync::atomic::AtomicU64::new(0),
             pins: ephemeral.then(|| Arc::new(Pins::default())),
             cut_taken: AtomicBool::new(false),
+            locate_truncated: std::sync::atomic::AtomicU64::new(0),
         }))
     }
 
@@ -686,9 +689,18 @@ impl RuntimeJournal {
         }
         // A row at or below an Ephemeral journal's base was cut (SEALING-FIX §3.9): unavailable.
         if ordinal <= state.cut.base_count() {
+            self.locate_truncated
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             return Err(RuntimeError::Truncated);
         }
         Ok(ordinal)
+    }
+
+    /// Number of original lookups refused below the base (`locate_truncated`, test 30(c)).
+    #[must_use]
+    pub fn locate_truncated(&self) -> u64 {
+        self.locate_truncated
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     pub async fn flush(&self) -> std::result::Result<(), RuntimeError> {
