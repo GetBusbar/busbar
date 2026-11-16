@@ -121,6 +121,7 @@ pub(super) async fn put(
     };
     let actor = principal.actor_id().to_owned();
     let origin = format!("config/settings document patch by {actor}");
+    let ceiling_actor = actor.clone();
     let changed: Vec<String> = request
         .document_patch
         .paths()
@@ -223,6 +224,11 @@ pub(super) async fn put(
             let base_hook_names = cfg.hooks.keys().cloned().collect();
             let base_group_names = cfg.groups.keys().cloned().collect();
             busbar_kernel::config::overlay::merge_into(&mut cfg, doc.clone());
+            if let Some(rejection) =
+                trust_ceiling_rejection(&snapshot.identity_providers, &cfg.identity_providers, &ceiling_actor)
+            {
+                return Ok(Outcome::Value(Err(rejection)));
+            }
             let overlay = (!loaded.config_locked).then(|| store.clone());
             let (mut next, rotate, limits) = Box::pin(busbar_kernel::build_app_from_config(
                 cfg,
@@ -325,6 +331,43 @@ pub(super) async fn put(
             err_json(&error)
         }
     }
+}
+
+/// THE TRUST-CEILING RULE at the document door (S2-ADM-05): a provider's `max_admin_scope` is
+/// immutable upward through every admin write. `live` is the installed generation's providers,
+/// `candidate` the patched document's. A raise (a new provider counts from the default `read-only`)
+/// is refused 409 `trust_ceiling_raise` before anything is written, with a `rejected` audit row
+/// naming the provider.
+pub(super) fn trust_ceiling_rejection(
+    live: &busbar_kernel::config::IdentityProviders,
+    candidate: &busbar_kernel::config::IdentityProviders,
+    actor: &str,
+) -> Option<(AdminError, crate::v1::contract::taxonomy::Cond)> {
+    use crate::v1::contract::Scope;
+    let ceiling = |token: Option<&str>| token.and_then(Scope::parse).unwrap_or(Scope::ReadOnly);
+    for (name, provider) in candidate {
+        let old = ceiling(live.get(name).and_then(|p| p.max_admin_scope.as_deref()));
+        let requested_token = provider.max_admin_scope.as_deref();
+        let requested = ceiling(requested_token);
+        if old.allows(requested) {
+            continue;
+        }
+        super::audit::AUDIT.record_by(
+            "config.document",
+            &format!("identity-providers:{name}"),
+            super::audit::OUTCOME_REJECTED,
+            actor,
+        );
+        return Some((
+            AdminError::Conflict(format!(
+                "refusing to RAISE `identity-providers.{name}.max_admin_scope` to `{}` through the admin API: the trust ceiling caps the admin authority obtainable through this identity provider, so raising it is a privilege escalation this API does not perform. Lower it here, or raise it in config.yaml (current ceiling: `{}`)",
+                requested_token.unwrap_or(busbar_kernel::config::DEFAULT_MAX_ADMIN_SCOPE),
+                old.as_str()
+            )),
+            crate::v1::contract::taxonomy::Cond::TrustCeilingRaise,
+        ));
+    }
+    None
 }
 
 /// THE `document_patch` DOOR (OPERATOR-FROM-ADMITTED-AUTH §000.1): the composed patch may not touch

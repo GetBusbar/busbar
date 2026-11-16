@@ -480,6 +480,7 @@ pub fn declared_errors(method: MethodTag, rel: &str) -> &'static [DocErr] {
             VersionConflict / StaleIfMatch,
             Conflict / RestartUnreachable,
             Conflict / OperatorFilePolicy,
+            Conflict / TrustCeilingRaise,
         ],
         (Post, "/config/validate") => {
             de![Validation / MalformedBody, Conflict / OperatorFilePolicy]
