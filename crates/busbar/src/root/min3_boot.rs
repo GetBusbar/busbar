@@ -201,6 +201,7 @@ impl Shared {
 /// What a boot through the MIN-3 registry leaves running.
 pub(crate) struct Booted {
     pub(crate) registry: Arc<MinRegistry>,
+    _bootstrap_registry: Arc<MinRegistry>,
     pub(crate) seats: Vec<PortSeat>,
     pub(crate) core: CoreSecrets,
     /// The secret kind the boot opened its secret instances into (webhook secrets resolve through it).
@@ -1046,12 +1047,25 @@ where
 pub(crate) struct BootstrapReady {
     built: Built,
     instances: Vec<Configured>,
-    declared: std::collections::BTreeMap<String, busbar_kernel::upstreams::Declared>,
     bootstrap: super::boot::walk::Bootstrap<Option<OpenedPort>>,
     pub(crate) startup: Startup,
     prefix: Arc<BootSecrets>,
     converting: bool,
     normalization_source: Option<(std::path::PathBuf, busbar_contract::secure::SecureString)>,
+}
+
+/// S4b's effective registry and its retained bootstrap leases, before serving opens.
+pub(crate) struct ServingReady {
+    built: Built,
+    instances: Vec<Configured>,
+    declared: std::collections::BTreeMap<String, busbar_kernel::upstreams::Declared>,
+    leases: super::boot::walk::BootstrapLeases<Option<OpenedPort>>,
+    rest: Vec<u32>,
+    startup: Startup,
+    prefix: Arc<BootSecrets>,
+    converting: bool,
+    normalization_source: Option<(std::path::PathBuf, busbar_contract::secure::SecureString)>,
+    _bootstrap_registry: Arc<MinRegistry>,
 }
 
 pub(crate) async fn run(
@@ -1062,9 +1076,12 @@ pub(crate) async fn run(
     guard: Guard,
     services: Option<Arc<KernelServices>>,
 ) -> Result<bool, String> {
+    let effective_images = file_images.clone();
+    let serving_guard = guard.clone();
     let Some(ready) = prepare_bootstrap(process, file_images, cfg, guard).await? else {
         return Ok(false);
     };
+    let ready = prepare_serving(ready, process, effective_images, cfg, serving_guard)?;
     finish(ready, reactor, cfg, services).await
 }
 
@@ -1114,11 +1131,6 @@ pub(crate) async fn prepare_bootstrap(
             &transport_images,
         )?);
     }
-    let declared = if converting {
-        Default::default()
-    } else {
-        declared_planes(&built.registry, &mut instances)?
-    };
     let specs = specifications(&instances, cfg, converting);
     let mut core_modules = busbar_kernel::appbuild::core_secret_modules(cfg);
     core_modules.extend(
@@ -1159,7 +1171,6 @@ pub(crate) async fn prepare_bootstrap(
     Ok(Some(BootstrapReady {
         built,
         instances,
-        declared,
         bootstrap,
         startup,
         prefix,
@@ -1196,17 +1207,134 @@ fn specifications<'a>(
         .collect()
 }
 
-pub(crate) async fn finish(
+pub(crate) fn prepare_serving(
     ready: BootstrapReady,
+    process: &busbar_plugin_loader::process::ProcessResources,
+    effective_images: super::boot::images::FileImages,
+    cfg: &RootCfg,
+    guard: Guard,
+) -> Result<ServingReady, String> {
+    let BootstrapReady {
+        built: bootstrap_built,
+        instances: before,
+        bootstrap,
+        startup,
+        prefix,
+        converting,
+        normalization_source,
+    } = ready;
+    let images = effective_images.images;
+    let transports: Vec<String> = images
+        .identities()
+        .filter(|id| {
+            images
+                .described(id)
+                .is_some_and(|facts| facts.kind == KindCode::Transport)
+        })
+        .map(str::to_owned)
+        .collect();
+    let planes: Vec<PlaneImage> = effective_images
+        .aliases
+        .into_iter()
+        .filter(|(id, _)| {
+            images
+                .described(id)
+                .is_some_and(|facts| facts.kind == KindCode::Plane)
+        })
+        .map(|(identity, alias)| PlaneImage { identity, alias })
+        .collect();
+    let sugars = cfg.grammar().map_err(|error| error.0)?.sugars.clone();
+    let binder: Arc<dyn ConfigBinder> =
+        Arc::new(Binder::new(Arc::new(sugars.clone()), ref_schemas(cfg)?));
+    let prefix = prefix.with_binder(Arc::clone(&binder));
+    let registry = Arc::new(Registry::new(
+        images,
+        Arc::clone(&binder),
+        Arc::clone(process.ids()),
+    ));
+    let mut instances = configured(cfg, &planes)?;
+    if !converting {
+        instances.extend(transports::configured(cfg, &registry, &transports)?);
+    }
+    let declared = if converting {
+        Default::default()
+    } else {
+        declared_planes(&registry, &mut instances)?
+    };
+    let mut leases = bootstrap.into_leases();
+    for (index, _, _) in &mut leases.opened {
+        let old = before
+            .get(*index as usize)
+            .ok_or("bootstrap lease has no configured owner")?;
+        let (next, candidate) = instances
+            .iter()
+            .enumerate()
+            .find(|(_, one)| one.kind == old.kind && one.name == old.name)
+            .ok_or("effective configuration removed a bootstrap instance")?;
+        if old.identity != candidate.identity
+            || old.config != candidate.config
+            || old.limits != candidate.limits
+        {
+            return Err("effective configuration changes an opened bootstrap instance".into());
+        }
+        *index = u32::try_from(next).map_err(|_| "too many effective instances")?;
+    }
+    let core_names: Vec<&str> = instances
+        .iter()
+        .filter(|one| one.kind == KindCode::Secret)
+        .map(|one| one.name.as_str())
+        .collect();
+    let specs = specifications(&instances, cfg, converting);
+    let plan = registry
+        .boot_plan_with_core(&specs, &sugars, &core_names)
+        .map_err(|error| format!("{error:?}"))?;
+    let mut rest = Vec::new();
+    for (index, phase) in plan.steps {
+        if phase == busbar_plugin_loader::instance::BootPhase::Rest {
+            rest.push(index);
+        } else if !leases
+            .opened
+            .iter()
+            .any(|(held, held_phase, _)| *held == index && *held_phase == phase)
+        {
+            return Err("effective configuration introduces a new bootstrap dependency".into());
+        }
+    }
+    drop(specs);
+    let built = Built {
+        registry,
+        sugars,
+        secrets: Arc::clone(&prefix),
+        binder,
+        guard,
+    };
+    Ok(ServingReady {
+        built,
+        instances,
+        declared,
+        leases,
+        rest,
+        startup,
+        prefix,
+        converting,
+        normalization_source,
+        _bootstrap_registry: bootstrap_built.registry,
+    })
+}
+
+pub(crate) async fn finish(
+    ready: ServingReady,
     reactor: tokio::runtime::Handle,
     cfg: &RootCfg,
     services: Option<Arc<KernelServices>>,
 ) -> Result<bool, String> {
-    let BootstrapReady {
+    let ServingReady {
         built,
         instances,
         declared,
-        bootstrap,
+        leases,
+        rest,
+        _bootstrap_registry,
         startup,
         prefix,
         converting,
@@ -1250,10 +1378,18 @@ pub(crate) async fn finish(
         seat,
         probes: Mutex::default(),
     };
-    let walked = bootstrap
-        .finish(&steps)
-        .await
-        .map_err(|refused| refused.to_string())?;
+    let mut opened = leases.opened;
+    for index in rest {
+        let port = steps
+            .open(index)
+            .await
+            .map_err(|error| format!("serving open {index}: {error:?}"))?;
+        opened.push((index, busbar_plugin_loader::instance::BootPhase::Rest, port));
+    }
+    let walked = super::boot::walk::Booted {
+        opened,
+        deployment: leases.deployment,
+    };
     if converting {
         let mut settled = Vec::new();
         let mut plane_checks = Vec::new();
@@ -1275,9 +1411,17 @@ pub(crate) async fn finish(
                         .collect(),
                 ));
             }
-            let answer = built.registry.take_settled(&instance.name).ok_or_else(|| {
-                format!("CONFIG: instance {index} did not settle its converting CONFIG")
-            })?;
+            let settlement_registry = if matches!(instance.kind, KindCode::Secret | KindCode::Store)
+            {
+                &_bootstrap_registry
+            } else {
+                &built.registry
+            };
+            let answer = settlement_registry
+                .take_settled(&instance.name)
+                .ok_or_else(|| {
+                    format!("CONFIG: instance {index} did not settle its converting CONFIG")
+                })?;
             settled.push(settlement::answer(
                 u32::try_from(index).map_err(|_| "CONFIG: too many configured instances")?,
                 instance,
@@ -1311,7 +1455,7 @@ pub(crate) async fn finish(
         drop(specs);
         return Err(super::migrate::restart(
             written,
-            (opened, admission, core, built, shared),
+            (opened, admission, core, built, shared, _bootstrap_registry),
             drop,
             super::migrate::reexec,
         ));
@@ -1336,7 +1480,12 @@ pub(crate) async fn finish(
                     .collect(),
             ));
         }
-        let Some(mut answer) = built.registry.take_settled(&instance.name) else {
+        let settlement_registry = if matches!(instance.kind, KindCode::Secret | KindCode::Store) {
+            &_bootstrap_registry
+        } else {
+            &built.registry
+        };
+        let Some(mut answer) = settlement_registry.take_settled(&instance.name) else {
             continue;
         };
         if instance.kind == KindCode::Transport {
@@ -1390,6 +1539,7 @@ pub(crate) async fn finish(
     let installed = BOOTED.set(Booted {
         resolver: secrets.resolver(reactor, built.sugars.clone()),
         registry: built.registry,
+        _bootstrap_registry,
         seats,
         core,
         secrets,

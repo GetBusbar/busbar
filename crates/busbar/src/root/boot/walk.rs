@@ -148,7 +148,22 @@ pub struct Bootstrap<O> {
     rest: Vec<u32>,
 }
 
+/// Open S5/S6 leases after the bootstrap plan's remainder has been discarded.
+/// A new effective serving plan retains these owners without reopening them.
+pub struct BootstrapLeases<O> {
+    pub opened: Vec<(u32, BootPhase, O)>,
+    pub deployment: [u8; 16],
+}
+
 impl<O: Send> Bootstrap<O> {
+    /// Discard the file plan's unopened remainder while retaining completed owners and identity.
+    pub fn into_leases(self) -> BootstrapLeases<O> {
+        BootstrapLeases {
+            opened: self.opened,
+            deployment: self.deployment,
+        }
+    }
+
     /// Consume the stage exactly once after the caller has prepared serving dependencies.
     pub async fn finish<S: BootSteps<Opened = O>>(
         self,
