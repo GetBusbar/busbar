@@ -32,3 +32,7 @@ pub fn check_path_claims(claims: &[PathClaim<'_>]) -> Result<(), ConfigRefused> 
     let _ = claims;
     todo!()
 }
+
+#[cfg(test)]
+#[path = "tests/path_claims_tests.rs"]
+mod tests;

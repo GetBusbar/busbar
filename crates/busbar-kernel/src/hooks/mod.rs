@@ -4,6 +4,7 @@
 use std::sync::Arc;
 
 pub mod gate;
+pub mod strategy;
 pub mod taps;
 pub mod text_cut;
 
