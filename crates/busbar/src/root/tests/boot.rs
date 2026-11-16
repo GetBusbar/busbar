@@ -761,7 +761,7 @@ async fn the_admin_catalog_row_for_a_harness_signed_plugin(
         serde_json::json!({
             "providers": {}, "models": {}, "auth": {"chain": [], "admin_auth": []},
             "store": {"module": module, "settings": settings},
-            "advanced": {"allow_destinations": ["127.0.0.1"]}
+            "advanced": {}
         }),
         &crate::root::boot::axis_test_grammar(),
     )
@@ -1295,4 +1295,21 @@ fn the_min3_walks_store_admission_is_the_boots() {
     assert_eq!(old_path, Ok(None));
     let refused = walk_admission(true, || None::<u8>).unwrap_err();
     assert!(refused.contains("no admission"), "{refused}");
+}
+
+/// MIGRATE-ON-BOOT r42 §7 D14 (C3): a record-bootstrap store witness resolves only through a
+/// compiled core schema. busbar-migrations' `legacy::archive` route (1.5.5 raw-record framing of a
+/// plugin instance's rows) is deleted with the crate, so an instance-scoped row is refused, never
+/// adopted into a migration-scope address.
+#[test]
+fn a_record_bootstrap_witness_resolves_only_compiled_core_schemas() {
+    use busbar_kernel::persistence::import_target::records::builtin_record_address;
+    let core = "busbar.principal-transition.v1";
+    let expected = builtin_record_address(core, b"head", b"baseline")
+        .expect("a core schema routes")
+        .expect("a compiled core schema");
+    assert_eq!(bootstrap_witness(core, b"head", b"baseline"), Ok(expected));
+    let scoped = busbar_kernel::host_records::record_key("plane", b"row");
+    assert!(bootstrap_witness("plane-schema", &scoped, b"body").is_err());
+    assert!(bootstrap_witness("unknown", b"row", b"body").is_err());
 }

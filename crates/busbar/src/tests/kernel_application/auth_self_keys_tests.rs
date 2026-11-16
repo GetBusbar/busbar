@@ -136,7 +136,7 @@ async fn exchange_provisions_user_leaf_from_child_default_and_key_is_usable() {
         },
         "groups": { "team": { "child_default": { "limits": [{ "budget": 500, "per": "month" }] } } },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
     }), &crate::root::boot::axis_test_grammar())
     .expect("the product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
@@ -344,7 +344,7 @@ async fn existing_self_leaf_refuses_a_changed_team_before_issue_or_refresh() {
                 "user:sam": { "parent": "team-a", "limits": [{ "budget": 37, "per": "month" }] }
             },
             "store": { "module": module, "settings": settings },
-            "advanced": { "allow_destinations": ["127.0.0.1"] },
+            "advanced": {  },
         }), &crate::root::boot::axis_test_grammar())
         .expect("the product deployment parses");
         let config = busbar_kernel::config::resolve(&deploy, &Default::default())
@@ -512,7 +512,7 @@ async fn existing_self_leaf_with_matching_team_reuses_the_snapshot_without_persi
             "user:sam": { "parent": "team-a", "limits": [{ "budget": 37, "per": "month" }] }
         },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
     }), &crate::root::boot::axis_test_grammar())
     .expect("the product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
@@ -664,7 +664,7 @@ async fn proof_self_mint_disabled_refuses_self_serve() {
             },
             "groups": { "team": { "child_default": { "limits": [{ "budget": 500, "per": "month" }] } } },
             "store": { "module": module, "settings": settings },
-            "advanced": { "allow_destinations": ["127.0.0.1"] },
+            "advanced": {  },
         }), &crate::root::boot::axis_test_grammar())
         .expect("the product deployment parses");
         let config = busbar_kernel::config::resolve(&deploy, &Default::default())
@@ -905,7 +905,7 @@ async fn self_mint_mode_policy_gates_exchange_login_and_refresh_before_mutation(
                 },
                 "groups": { "team": { "child_default": { "limits": [{ "budget": 500, "per": "month" }] } } },
                 "store": { "module": module, "settings": settings },
-                "advanced": { "allow_destinations": ["127.0.0.1"] },
+                "advanced": {  },
             }), &crate::root::boot::axis_test_grammar())
             .expect("the product deployment parses");
             let config = busbar_kernel::config::resolve(&deploy, &Default::default())

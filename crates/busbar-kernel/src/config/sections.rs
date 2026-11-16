@@ -100,37 +100,13 @@ pub fn store_required() -> String {
         .into()
 }
 
-/// A top-level `secrets:` entry — MODULE-LEVEL initialization config for a `kind: secret` plugin,
-/// keyed by the module NAME (alias or canonical). This is the delivery path for the config a secret
-/// plugin needs in its `open()` (a Vault plugin's address / namespace / auth token / TLS CA), exactly
-/// as `store.settings` carries a store plugin's `open()` config. WITHOUT this block a `kind: secret`
-/// plugin's `open()` receives `{}`, forcing operators to repeat every piece of module config in EVERY
-/// individual `SecretRef.settings` (multiplying exposure of the Vault address/token). The built-in
-/// `env` / `file` modules take no module config and MUST NOT appear here (validated).
-///
-/// The `settings` are resolved against the BUILT-IN `env` / `file` secret resolvers ONLY (so
-/// `{ token: { env: VAULT_TOKEN } }` works) — NEVER against another secret plugin, which would be a
-/// bootstrap cycle (a secret module cannot resolve its OWN config through itself).
-///
-/// # FREEZE BLOCKER: `secrets:` IS A DELIBERATE EXEMPTION FROM THE NAMED-INSTANCE PATTERN
-///
-/// Every OTHER plugin-instance kind in 1.5.3 is a top-level NAMED-DEFINITION map — `hooks:`,
-/// `identity-providers:`, `export:`, `store:` are all `name → {module, settings, …}` and are
-/// referenced by bare name. **`secrets:` is deliberately NOT, and must stay that way.**
-///
-/// The reason is that `secrets:` does not configure an INSTANCE. It configures a MODULE's `open()` —
-/// the one-time initialization of the secret backend itself. There is nothing to reference by name:
-/// a `SecretRef` already names its module (`{ module: vault, settings: {…} }`), and the entry here
-/// supplies the module-wide half of that module's configuration. Wrapping it in a named map would
-/// invent an instance identity that no reference site can use, and would then require every
-/// `SecretRef` in the config to be rewritten to point at an instance name instead of a module — a
-/// large break that buys nothing.
-///
-/// This is recorded HERE, on the struct, precisely so nobody later "fixes" the inconsistency: the
-/// module-keyed shape is the correct shape for module-level `open()` config, and it is frozen.
+/// One named secret instance (IF §8.2): its image identity and opaque opening settings.
+/// References select the configured map key; shorthands select its unique instance.
 #[derive(Debug, Deserialize, Clone, Default)]
 #[serde(deny_unknown_fields)]
 pub struct SecretModuleCfg {
+    /// Admitted image identity or declared former name. Required in canonical 1.6 configuration.
+    pub module: String,
     /// The module's own opaque module-level settings, delivered to the plugin's `open()` as its config
     /// JSON. Any `SecretRef`-typed value (e.g. `token: { env: VAULT_TOKEN }`) is resolved via the
     /// built-in env/file modules before it crosses the ABI.
@@ -152,6 +128,7 @@ impl SecretModuleCfg {
     ) -> impl Serialize + 'a {
         #[derive(Serialize)]
         struct View<'a, F0: Serialize> {
+            module: &'a str,
             settings: F0,
             #[serde(skip_serializing_if = "Option::is_none")]
             limits: Option<&'a busbar_contract::yaml::Value>,
@@ -159,6 +136,7 @@ impl SecretModuleCfg {
             insecure_transport: Option<&'a busbar_contract::yaml::Value>,
         }
         View {
+            module: &self.module,
             settings: self.settings.authoring(seal),
             limits: self.limits.as_ref(),
             insecure_transport: self.insecure_transport.as_ref(),
@@ -209,21 +187,12 @@ pub struct AdvancedCfg {
     /// `proxy::wire::maybe_attach_route_policy` — neither is rebuilt by a config apply.
     #[serde(default)]
     pub response_headers: ResponseHeadersCfg,
-    /// The destination guard refuses a provider dial, or
-    /// an outbound connection whose target came from
-    /// request data or the network, when it is, or resolves to, a private, loopback, link-local,
-    /// CGNAT or unique-local address, unless `allow_destinations` names it; judged after resolution
-    /// and dialled at the judged address. Operator infrastructure (a database, secret service or
-    /// directory a plugin's config names) is allowed private and loopback (§5 egress-class table).
-    /// Default `true`. Cloud metadata is refused for every target, in every class, and stays
-    /// refused when `false`; no entry of `allow_destinations` admits it (an entry naming it is
-    /// refused at boot, BUSBAR-3134). BOOT-TIME (the connector is built once).
+    /// The destination guard refuses ordinary private-address dials by default. A core-selected
+    /// registration may carry its own `allow_private`; configured providers retain reach only to
+    /// their own base/token origins. Operator-infrastructure Needs retain their declared-target
+    /// policy. Metadata, own-listener protection and TLS policy remain enforced. BOOT-TIME.
     #[serde(default = "default_block_private_addresses")]
     pub block_private_addresses: bool,
-    /// Destinations always allowed, checked before any refusal: an exact host, a `*.domain`
-    /// wildcard (names under it, never the apex), an IP, or a CIDR. Default empty. BOOT-TIME.
-    #[serde(default)]
-    pub allow_destinations: Vec<String>,
     /// The ingresses and load balancers that may state a client's address for it (an IP or a
     /// CIDR each, read by the destination guard's CIDR reader). Their `forwarded_header` is
     /// honoured; nobody else's is. Default empty: the socket peer is the client. BOOT-TIME.
@@ -307,8 +276,6 @@ pub(crate) fn default_block_private_addresses() -> bool {
 pub struct Destinations {
     /// `advanced.block_private_addresses`.
     pub block_private_addresses: bool,
-    /// `advanced.allow_destinations`, as written (each entry validated by the guard at boot).
-    pub allow: Vec<String>,
     /// `security.blocked_metadata_hosts`: extra refusals inside the one guard.
     pub blocked: Vec<String>,
 }
@@ -337,7 +304,6 @@ impl Default for AdvancedCfg {
             upstream_h2_prior_knowledge: false,
             response_headers: ResponseHeadersCfg::default(),
             block_private_addresses: DEFAULT_BLOCK_PRIVATE_ADDRESSES,
-            allow_destinations: Vec::new(),
             tls: super::tls::OutboundTlsCfg::default(),
             proxy_resolution: super::tls::ProxyResolution::Local,
             trusted_proxies: Vec::new(),
@@ -410,6 +376,108 @@ pub struct ConfigMgmtCfg {
     /// `true` selects immutable/GitOps management: edit config.yaml and reload instead.
     #[serde(default)]
     pub locked: bool,
+}
+
+/// How many request headers `records.labels` may name (ADMIN-API-1.6 §3.5).
+pub const RECORDS_LABELS_MAX: usize = 8;
+
+/// Request headers that carry a credential: never a label, since a label is sealed into the audit
+/// chain and published with it.
+const RECORDS_LABELS_REFUSED: &[&str] = &[
+    "authorization",
+    "proxy-authorization",
+    "cookie",
+    "x-api-key",
+    "x-admin-token",
+];
+
+/// `records.user` (ADMIN-API-1.6 §3.5): what a unit's record keeps of the end user the plane
+/// projected. `off` (the default) keeps nothing.
+#[derive(Debug, Deserialize, Clone, Copy, Default, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum RecordsUser {
+    /// Nothing is kept.
+    #[default]
+    Off,
+    /// `"u_" + hex(HMAC-SHA256(K_user, value)[..16])`, `K_user` derived from the deployment keyset.
+    Pseudonymous,
+    /// The value itself, cut to 128 bytes on a character boundary.
+    Plain,
+}
+
+impl RecordsUser {
+    /// The configured spelling.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            RecordsUser::Off => "off",
+            RecordsUser::Pseudonymous => "pseudonymous",
+            RecordsUser::Plain => "plain",
+        }
+    }
+}
+
+/// The top-level `records:` block (ADMIN-API-1.6 §3.5): what `/records` keeps of each unit beyond
+/// the engine's own facts. Never an aggregation dimension. Both parts are off by default, and off
+/// costs a unit nothing. Read at boot.
+#[derive(Debug, Deserialize, Clone, Default, PartialEq, Eq)]
+#[serde(try_from = "RecordsDoc")]
+pub struct RecordsCfg {
+    /// `records.user`.
+    pub user: RecordsUser,
+    /// `records.labels`: request header names whose values each record keeps verbatim (at most
+    /// [`RECORDS_LABELS_MAX`], each a header name at most once, none carrying a credential).
+    pub labels: Vec<String>,
+}
+
+/// `records:` as written, before [`RecordsCfg`]'s checks.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RecordsDoc {
+    #[serde(default)]
+    user: RecordsUser,
+    #[serde(default)]
+    labels: Vec<String>,
+}
+
+impl TryFrom<RecordsDoc> for RecordsCfg {
+    type Error = String;
+
+    fn try_from(doc: RecordsDoc) -> Result<Self, String> {
+        if doc.labels.len() > RECORDS_LABELS_MAX {
+            return Err(format!(
+                "records.labels names {} headers; at most {RECORDS_LABELS_MAX} are kept",
+                doc.labels.len()
+            ));
+        }
+        for (at, name) in doc.labels.iter().enumerate() {
+            let token = !name.is_empty()
+                && name
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&b));
+            if !token {
+                return Err(format!("records.labels: `{name}` is not a header name"));
+            }
+            if doc.labels[..at]
+                .iter()
+                .any(|n| n.eq_ignore_ascii_case(name))
+            {
+                return Err(format!("records.labels names `{name}` twice"));
+            }
+            if RECORDS_LABELS_REFUSED
+                .iter()
+                .any(|refused| refused.eq_ignore_ascii_case(name))
+            {
+                return Err(format!(
+                    "records.labels: `{name}` carries a credential and is never sealed into a record"
+                ));
+            }
+        }
+        Ok(RecordsCfg {
+            user: doc.user,
+            labels: doc.labels,
+        })
+    }
 }
 
 /// One top-level `rate_card:` entry: the four per-token rates in MICRO-units (1e-6 abstract cost
@@ -651,4 +719,20 @@ fn seal_every_ms<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<u6
         }
     }
     deserializer.deserialize_any(Ms)
+}
+
+#[cfg(test)]
+mod secret_instance_shape_tests {
+    use super::SecretModuleCfg;
+    #[test]
+    fn a_secret_instance_requires_its_image_separately_from_its_name() {
+        let configured: SecretModuleCfg =
+            busbar_contract::yaml::from_str("module: source-image\nsettings: {}\n").unwrap();
+        assert_eq!(configured.module, "source-image");
+        assert!(busbar_contract::yaml::from_str::<SecretModuleCfg>("settings: {}\n").is_err());
+        assert!(busbar_contract::yaml::from_str::<SecretModuleCfg>(
+            "module: source-image\nunknown: true\n"
+        )
+        .is_err());
+    }
 }

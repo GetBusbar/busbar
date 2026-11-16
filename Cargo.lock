@@ -310,7 +310,6 @@ dependencies = [
  "busbar-kernel-ledger",
  "busbar-kernel-wal",
  "busbar-migrate",
- "busbar-migrations",
  "busbar-plugin-abi",
  "busbar-plugin-loader",
  "busbar-ports",
@@ -653,25 +652,6 @@ dependencies = [
  "busbar-kernel",
  "busbar-kernel-ledger",
  "serde",
- "zeroize",
-]
-
-[[package]]
-name = "busbar-migrations"
-version = "1.6.0"
-dependencies = [
- "async-trait",
- "base64 0.22.1",
- "busbar-contract",
- "busbar-kernel",
- "busbar-kernel-identity",
- "busbar-kernel-ledger",
- "busbar-kernel-wal",
- "hex",
- "serde",
- "serde_json",
- "tokio",
- "x509-cert",
  "zeroize",
 ]
 

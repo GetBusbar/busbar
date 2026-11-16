@@ -107,7 +107,7 @@ async fn apply_refuses_unrecoverable_store_overlay_before_replacing_security_sta
             "groups": {"security_team": {}},
             "auth": { "chain": [], "admin_auth": [] },
             "store": { "module": module, "settings": settings },
-            "advanced": { "allow_destinations": ["127.0.0.1"] },
+            "advanced": {  },
         });
         document["plugins"] = plugins::config_document(&plugins::trusted_config(&directory));
         let deploy = busbar_kernel::config::deploy_from_deserializer(
@@ -280,7 +280,7 @@ async fn reload_refuses_a_store_read_failure_and_preserves_the_running_generatio
         "groups": {"persisted_team": {}},
         "auth": { "chain": [], "admin_auth": [] },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
     });
     document["plugins"] = plugins::config_document(&plugins::trusted_config(&directory));
     let deploy = busbar_kernel::config::deploy_from_deserializer(
@@ -459,7 +459,7 @@ async fn group_creation_refuses_store_failure_and_unknown_commit() {
             "models": {},
             "auth": { "chain": [], "admin_auth": [] },
             "store": { "module": module, "settings": settings },
-            "advanced": { "allow_destinations": ["127.0.0.1"] },
+            "advanced": {  },
         });
         document["plugins"] = plugins::config_document(&plugins::trusted_config(&directory));
         let deploy = busbar_kernel::config::deploy_from_deserializer(
@@ -586,7 +586,7 @@ async fn settings_preserves_a_large_store_overlay_across_reload() {
         "models": {},
         "auth": { "chain": [], "admin_auth": [] },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
     });
     document["plugins"] = plugins::config_document(&plugins::trusted_config(&directory));
     let deploy = busbar_kernel::config::deploy_from_deserializer(
@@ -747,7 +747,7 @@ async fn unknown_settings_receipt_requires_successful_reload_before_new_mutation
         "models": {},
         "auth": { "chain": [], "admin_auth": [] },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
     });
     document["plugins"] = plugins::config_document(&plugins::trusted_config(&directory));
     let deploy = busbar_kernel::config::deploy_from_deserializer(
@@ -988,7 +988,7 @@ async fn an_unknown_store_overlay_commit_never_swaps_or_claims_success() {
         "models": {},
         "auth": { "chain": [], "admin_auth": [] },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
     });
     document["plugins"] = plugins::config_document(&plugins::trusted_config(&directory));
     let deploy = busbar_kernel::config::deploy_from_deserializer(
@@ -1134,7 +1134,7 @@ async fn a_cancelled_store_overlay_persist_finishes_before_releasing_the_domain(
         "models": {},
         "auth": { "chain": [], "admin_auth": [] },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
     });
     document["plugins"] = plugins::config_document(&plugins::trusted_config(&directory));
     let deploy = busbar_kernel::config::deploy_from_deserializer(

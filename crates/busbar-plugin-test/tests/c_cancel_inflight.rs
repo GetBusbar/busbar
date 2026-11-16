@@ -205,23 +205,27 @@ pub(crate) fn poll_once<T>(
 /// A `Registry<YieldNeeds>` over the real `HOST` and a `MemBinder`, with `plugin` admitted; and its identity.
 pub(crate) fn rig(plugin: &'static Plugin, on_release: fn()) -> (Registry<YieldNeeds>, String) {
     let binder: Arc<dyn ConfigBinder> = Arc::new(MemBinder::new());
-    let mut registry = Registry::new(
-        &HOST,
-        Arc::new(YieldNeeds::new(on_release)),
-        binder,
-        Ceilings::DEFAULT,
-    );
+    let slots = Arc::new(busbar_plugin_loader::instance::SlotTable::new());
+    busbar_plugin_loader::instance::install_sinks(&slots);
+    let mut images =
+        busbar_plugin_loader::instance::ImagesBuilder::new(&HOST, slots, Ceilings::DEFAULT);
     let admitted = admit_header(plugin).expect("the fixture image is admitted");
     let identity = admitted.identity().to_owned();
-    registry
-        .add(admitted)
-        .expect("the fixture image is added to the registry");
+    images
+        .admit(admitted)
+        .expect("the fixture image is described");
+    let registry = Registry::new(
+        images.finish(),
+        Arc::new(YieldNeeds::new(on_release)),
+        binder,
+    );
     (registry, identity)
 }
 
 /// The spec of instance `name` of `identity` with `config`, no limits, no public URL, no caller upstreams.
 pub(crate) fn spec<'a>(identity: &'a str, name: &'a str, config: &'a [u8]) -> InstanceSpec<'a> {
     InstanceSpec {
+        purpose: busbar_plugin_loader::instance::OpenPurpose::Canonical,
         identity,
         name,
         config_json: config,

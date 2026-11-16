@@ -130,7 +130,7 @@ async fn the_usage_read_prices_through_the_kernels_rate_dater() {
             LANE,
             busbar_kernel::config::RateEntryCfg { input_utok: 10.0, ..Default::default() },
         )]),
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
     });
     let provider_defs = complete_usage_fixture(&mut document, &directory, &[(LANE, PROVIDER)]);
     let mut current_document = document.clone();

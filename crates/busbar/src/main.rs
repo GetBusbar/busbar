@@ -575,6 +575,9 @@ async fn run(
     catalogue: busbar_kernel::diagnostics::Catalogue,
     control_work: ControlWork,
 ) {
+    let plugin_process = std::sync::Arc::new(
+        busbar_plugin_loader::process::ProcessResources::new().unwrap_or_else(|error| die(error)),
+    );
     root::observe::install(catalogue);
     // Until the listener's own handler owns signals, SIGTERM/SIGINT exit through `root::exit`, so
     // an armed first-start owner hands over (FIRST-START-TAKEOVER §2.7).
@@ -615,7 +618,9 @@ async fn run(
     // Every configuration read of this boot runs under the boot's reader rules: an unstamped boot
     // reads the document the migrate seam planned at step 1 (held in memory until step 5 writes it),
     // every other boot reads the file. The gateway reads only current bytes.
-    let config_rules = root::boot_app::ConfigRules;
+    let config_rules = root::boot_app::ConfigRules {
+        process: std::sync::Arc::clone(&plugin_process),
+    };
     if let Some(refusal) = root::boot::start_refusal() {
         die(boot_error(
             "plugins directory refused at process start",
@@ -630,12 +635,17 @@ async fn run(
             error,
         ))
     });
-    let loaded = busbar_kernel::appbuild::load_config_from_disk_judged(
+    let raw = busbar_kernel::appbuild::read_config_documents(
         &config_path,
         providers_override.as_deref(),
         ignore_overlay,
         config::EnvSubst::Strict,
         &config_rules,
+        busbar_kernel::appbuild::DocumentPatchLoad {
+            patch: None,
+            providers_patch: None,
+            admission: None,
+        },
     )
     // The read's own grammar already appended its report (one line per file not admitted).
     .unwrap_or_else(|e| {
@@ -644,6 +654,15 @@ async fn run(
             e,
         ))
     });
+    let file_plugins = raw.plugins_block().unwrap_or_else(|error| die(error));
+    let file_images = root::boot::images::prepare(
+        &plugin_process,
+        &config::grammar::PhaseOneIn::of(&file_plugins),
+    )
+    .unwrap_or_else(|error| die(error.0));
+    let loaded = raw
+        .typed(&file_images.grammar)
+        .unwrap_or_else(|error| die(error));
     let LoadedConfig {
         deploy,
         defs,
@@ -712,8 +731,9 @@ async fn run(
         // The MIN-3 registry boots here, before the Store opens and before any listener serves: images, the
         // kernel's sides, then 2a, 2b, the deployment point, 2c. Without a MIN-3 store image the old path boots.
         let walked = root::min3_boot::run(
+            &plugin_process,
+            file_images,
             &base_cfg,
-            &deploy.plugins,
             boot_guard,
             late_services.kernel(),
         )
@@ -991,6 +1011,9 @@ async fn run(
             .as_ref()
             .map(|p| Duration::from_secs(p.retention_seconds)),
     );
+    // ADMIN-API-1.6 §3.5: what unit records keep of the end user and request headers, for the
+    // life of the process.
+    root::records_capture::configure(&deploy.records);
 
     let plugins_cfg = deploy.plugins.clone();
     root::measurements::maintenance(root::boot::admit_recovered_plugins(&plugins_cfg))
@@ -1262,10 +1285,9 @@ async fn run(
         let kernel = late_services
             .kernel()
             .unwrap_or_else(|| die("record bootstrap has no installed kernel"));
-        let instance = receipt.instance.clone();
         kernel
             .arm_record_bootstrap(receipt, &fingerprint, |schema, key, value| {
-                root::boot::bootstrap_witness(&instance, schema, key, value)
+                root::boot::bootstrap_witness(schema, key, value)
             })
             .await
             .unwrap_or_else(|error| die(format!("fresh record bootstrap refused: {error}")));
@@ -1299,10 +1321,9 @@ async fn run(
         .unwrap_or_else(|error| die(format!("cold record bootstrap failed: {error}")));
         let receipt =
             receipt.unwrap_or_else(|error| die(format!("cold record bootstrap refused: {error}")));
-        let instance = receipt.instance.clone();
         kernel
             .arm_record_bootstrap(receipt, &fingerprint, |schema, key, value| {
-                root::boot::bootstrap_witness(&instance, schema, key, value)
+                root::boot::bootstrap_witness(schema, key, value)
             })
             .await
             .unwrap_or_else(|error| die(format!("cold record bootstrap refused: {error}")));

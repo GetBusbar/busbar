@@ -8,31 +8,11 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use super::*;
 use crate::abi::host::service::{
     ABSENT, CLAIM_TAKEN, DEST_ALLOWED, DEST_INTERNAL, DEST_METADATA, HOOK_GATE, HOOK_REWRITE,
-    MAX_RANDOM_FILL, NOT_ENTITLED, SCHEME_PLAIN, SCHEME_SECURE, SCHEME_UNDECLARED, SERVICES,
-    TRUST_NEW, TRUST_SAME,
+    MAX_RANDOM_FILL, SCHEME_PLAIN, SCHEME_SECURE, SCHEME_UNDECLARED, SERVICES, TRUST_NEW,
+    TRUST_SAME,
 };
 use crate::abi::mechanism::call::Span;
 use crate::abi::mechanism::ticket::Ticket;
-
-/// A host that entitles exactly `item:one`.
-extern "C" fn entitles_one(
-    _ctx: HostCtx,
-    input: *const c_void,
-    out: *mut ServiceOut,
-) -> RawOutcome {
-    // SAFETY: the wrapper hands an `EntitlementCheckIn` and a live `out`.
-    unsafe {
-        let i = input.cast::<EntitlementCheckIn>().read_unaligned();
-        let target = std::slice::from_raw_parts(i.target.ptr, i.target.len);
-        (*out).value = if target == b"item:one" {
-            ENTITLED
-        } else {
-            NOT_ENTITLED
-        };
-        (*out).outcome = RawOutcome::of(Outcome::Ready);
-    }
-    RawOutcome::of(Outcome::Ready)
-}
 
 /// A host that answers FAILED.
 extern "C" fn fails(_ctx: HostCtx, _input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
@@ -51,7 +31,7 @@ extern "C" fn breaks(_ctx: HostCtx, _input: *const c_void, out: *mut ServiceOut)
     RawOutcome::of(Outcome::Ready)
 }
 
-fn table(slot: Option<ServiceFn>) -> HostSlots {
+fn table() -> HostSlots {
     HostSlots {
         size: size_of::<HostSlots>() as u32,
         slots: SERVICES,
@@ -70,7 +50,7 @@ fn table(slot: Option<ServiceFn>) -> HostSlots {
         trust_due: None,
         verify_lookup: None,
         verify_store: None,
-        entitlement_check: slot,
+
         content_scan: None,
         hook_call: None,
         random_fill: None,
@@ -135,7 +115,7 @@ extern "C" fn fills_short(_ctx: HostCtx, input: *const c_void, out: *mut Service
 fn fill_table(slot: Option<ServiceFn>) -> HostSlots {
     HostSlots {
         random_fill: slot,
-        ..table(None)
+        ..table()
     }
 }
 
@@ -159,27 +139,6 @@ fn handle() -> CompletionHandle {
         seq: 0,
         _reserved: 0,
     }
-}
-
-#[test]
-fn entitled_answers_the_hosts_verdict_and_every_failure_is_an_error() {
-    let t = table(Some(entitles_one));
-    let s = services(&t);
-    assert_eq!(s.entitled(handle(), "item:one"), Ok(true));
-    assert_eq!(s.entitled(handle(), "item:two"), Ok(false));
-    let none = table(None);
-    assert_eq!(
-        services(&none).entitled(handle(), "item:one"),
-        Err(ServiceError::Unserved)
-    );
-    let failing = table(Some(fails));
-    let refused = services(&failing).entitled(handle(), "item:one");
-    assert_eq!(refused, Err(ServiceError::Declined(Outcome::Failed)));
-    let broken = table(Some(breaks));
-    assert_eq!(
-        services(&broken).entitled(handle(), "item:one"),
-        Err(ServiceError::Broken)
-    );
 }
 
 #[test]
@@ -269,7 +228,7 @@ fn snapshot_receipt_tracks_successful_wire_bytes_and_can_shrink() {
     use crate::abi::host::service::{SNAPSHOT_SCOPE_HOOKS, SNAPSHOT_SCOPE_WHOLE};
     let t = HostSlots {
         snapshot_read: Some(snapshots),
-        ..table(None)
+        ..table()
     };
     let s = export_services(&t);
     let mut buf = [0u64; 128];
@@ -299,7 +258,7 @@ fn snapshot_receipt_does_not_turn_not_ready_or_invalid_layout_into_success() {
     let mut buf = [0u64; 128];
     let not_ready = HostSlots {
         snapshot_read: Some(snapshot_not_ready),
-        ..table(None)
+        ..table()
     };
     assert_eq!(
         service_ready(export_services(&not_ready).snapshot_read_with_used(
@@ -311,7 +270,7 @@ fn snapshot_receipt_does_not_turn_not_ready_or_invalid_layout_into_success() {
     );
     let broken = HostSlots {
         snapshot_read: Some(snapshot_bad_pointer),
-        ..table(None)
+        ..table()
     };
     assert_eq!(
         service_ready(export_services(&broken).snapshot_read_with_used(
@@ -323,7 +282,7 @@ fn snapshot_receipt_does_not_turn_not_ready_or_invalid_layout_into_success() {
     );
     let short = HostSlots {
         snapshot_read: Some(snapshots),
-        ..table(None)
+        ..table()
     };
     let answer = service_ready(export_services(&short).snapshot_read_with_used(
         handle(),
@@ -543,7 +502,7 @@ const NO_SPAN: ItemSpan = ItemSpan {
 fn dest_judge_answers_the_hosts_verdict_and_pends_only_on_a_ticket() {
     let t = HostSlots {
         dest_judge: Some(judges),
-        ..table(None)
+        ..table()
     };
     let s = services(&t);
     let meta = "http://169.254.169.254/latest";
@@ -566,7 +525,7 @@ fn dest_judge_answers_the_hosts_verdict_and_pends_only_on_a_ticket() {
 
     let p = HostSlots {
         dest_judge: Some(pends),
-        ..table(None)
+        ..table()
     };
     assert_eq!(
         verdict_of(services(&p).dest_judge(handle(), "x", 0, no_room())),
@@ -574,7 +533,7 @@ fn dest_judge_answers_the_hosts_verdict_and_pends_only_on_a_ticket() {
     );
     let b = HostSlots {
         dest_judge: Some(breaks),
-        ..table(None)
+        ..table()
     };
     assert_eq!(
         verdict_of(services(&b).dest_judge(handle(), "x", 0, None)),
@@ -582,14 +541,14 @@ fn dest_judge_answers_the_hosts_verdict_and_pends_only_on_a_ticket() {
     );
     let f = HostSlots {
         dest_judge: Some(fails),
-        ..table(None)
+        ..table()
     };
     assert_eq!(
         verdict_of(services(&f).dest_judge(handle(), "x", 0, None)),
         Poll::Ready(Err(ServiceError::Declined(Outcome::Failed)))
     );
     assert_eq!(
-        verdict_of(services(&table(None)).dest_judge(handle(), "x", 0, None)),
+        verdict_of(services(&table()).dest_judge(handle(), "x", 0, None)),
         Poll::Ready(Err(ServiceError::Unserved))
     );
 }
@@ -598,7 +557,7 @@ fn dest_judge_answers_the_hosts_verdict_and_pends_only_on_a_ticket() {
 fn dest_judge_answers_the_judged_addresses_as_the_set_a_dial_lands_within() {
     let t = HostSlots {
         dest_judge: Some(resolves),
-        ..table(None)
+        ..table()
     };
     let s = services(&t);
     let dest = "https://push.example/hook";
@@ -629,7 +588,7 @@ fn dest_judge_answers_the_judged_addresses_as_the_set_a_dial_lands_within() {
 fn trust_sight_answers_the_kernels_judgement_and_pends_on_a_ticket() {
     let t = HostSlots {
         trust_sight: Some(sights),
-        ..table(None)
+        ..table()
     };
     let s = services(&t);
     assert_eq!(
@@ -648,14 +607,14 @@ fn trust_sight_answers_the_kernels_judgement_and_pends_on_a_ticket() {
 
     let b = HostSlots {
         trust_sight: Some(breaks),
-        ..table(None)
+        ..table()
     };
     assert_eq!(
         services(&b).trust_sight(ticketed(0), "srv", "h1"),
         Poll::Ready(Err(ServiceError::Broken))
     );
     assert_eq!(
-        services(&table(None)).trust_sight(ticketed(0), "srv", "h1"),
+        services(&table()).trust_sight(ticketed(0), "srv", "h1"),
         Poll::Ready(Err(ServiceError::Unserved))
     );
 }
@@ -664,7 +623,7 @@ fn trust_sight_answers_the_kernels_judgement_and_pends_on_a_ticket() {
 fn trust_due_views_the_names_in_the_callers_buffers_and_reports_a_short_one() {
     let t = HostSlots {
         trust_due: Some(dues),
-        ..table(None)
+        ..table()
     };
     let s = services(&t);
     let (mut buf, mut spans) = ([0u8; 4], [NO_SPAN; 1]);
@@ -680,7 +639,7 @@ fn trust_due_views_the_names_in_the_callers_buffers_and_reports_a_short_one() {
     assert!(due.names().eq(DUE));
     let n = HostSlots {
         trust_due: Some(dues_nameless),
-        ..table(None)
+        ..table()
     };
     let (mut buf, mut spans) = ([0u8; 9], [NO_SPAN; 2]);
     assert_eq!(
@@ -692,7 +651,7 @@ fn trust_due_views_the_names_in_the_callers_buffers_and_reports_a_short_one() {
 
     let p = HostSlots {
         trust_due: Some(pends),
-        ..table(None)
+        ..table()
     };
     assert_eq!(
         services(&p)
@@ -701,7 +660,7 @@ fn trust_due_views_the_names_in_the_callers_buffers_and_reports_a_short_one() {
         Err(ServiceError::Broken)
     );
     assert_eq!(
-        services(&table(None))
+        services(&table())
             .trust_due(handle(), &mut buf, &mut spans)
             .map(|d| d.len()),
         Err(ServiceError::Unserved)
@@ -728,7 +687,7 @@ extern "C" fn reads_the_clock(
 fn clock_now_answers_the_hosts_reading_and_every_failure_is_an_error() {
     let t = HostSlots {
         clock_now: Some(reads_the_clock),
-        ..table(None)
+        ..table()
     };
     let reading = services(&t)
         .clock_now(handle())
@@ -738,14 +697,14 @@ fn clock_now_answers_the_hosts_reading_and_every_failure_is_an_error() {
         (7_000_000_000, 9_000_000)
     );
     assert_eq!(reading.size as usize, size_of::<ClockReading>());
-    let none = table(None);
+    let none = table();
     assert!(matches!(
         services(&none).clock_now(handle()),
         Err(ServiceError::Unserved)
     ));
     let failing = HostSlots {
         clock_now: Some(fails),
-        ..table(None)
+        ..table()
     };
     assert!(matches!(
         services(&failing).clock_now(handle()),
@@ -800,7 +759,7 @@ extern "C" fn past_the_last_verdict(
 fn verify_table(slot: Option<ServiceFn>) -> HostSlots {
     HostSlots {
         trust_verify: slot,
-        ..table(None)
+        ..table()
     }
 }
 
@@ -1004,7 +963,7 @@ extern "C" fn claims(_ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) 
 fn records_get_views_the_record_and_answers_absent_as_none() {
     let t = HostSlots {
         records_get: Some(keeps),
-        ..table(None)
+        ..table()
     };
     let s = services(&t);
     let mut short = [0u8; 3];
@@ -1035,7 +994,7 @@ fn records_get_views_the_record_and_answers_absent_as_none() {
     );
     let empty = HostSlots {
         records_get: Some(finds_nothing),
-        ..table(None)
+        ..table()
     };
     assert_eq!(
         services(&empty).records_get(ticketed(0), "approval", b"k1", &mut buf),
@@ -1043,14 +1002,14 @@ fn records_get_views_the_record_and_answers_absent_as_none() {
     );
     let f = HostSlots {
         records_get: Some(fails),
-        ..table(None)
+        ..table()
     };
     assert_eq!(
         services(&f).records_get(ticketed(0), "approval", b"k1", &mut buf),
         Poll::Ready(Err(ServiceError::Declined(Outcome::Failed)))
     );
     assert_eq!(
-        services(&table(None)).records_get(ticketed(0), "approval", b"k1", &mut buf),
+        services(&table()).records_get(ticketed(0), "approval", b"k1", &mut buf),
         Poll::Ready(Err(ServiceError::Unserved))
     );
 }
@@ -1060,7 +1019,7 @@ fn records_get_views_the_record_and_answers_absent_as_none() {
 fn records_list_pages_by_the_last_key_and_reports_a_short_one() {
     let t = HostSlots {
         records_list: Some(lists),
-        ..table(None)
+        ..table()
     };
     let s = services(&t);
     let (mut buf, mut spans) = ([0u8; 4], [NO_SPAN; 1]);
@@ -1131,7 +1090,7 @@ fn records_list_pages_by_the_last_key_and_reports_a_short_one() {
     );
     let p = HostSlots {
         records_list: Some(pends),
-        ..table(None)
+        ..table()
     };
     assert_eq!(
         services(&p)
@@ -1147,7 +1106,7 @@ fn records_list_pages_by_the_last_key_and_reports_a_short_one() {
         Poll::Pending
     );
     assert_eq!(
-        services(&table(None))
+        services(&table())
             .records_list(
                 ticketed(0),
                 "task",
@@ -1166,7 +1125,7 @@ fn records_list_pages_by_the_last_key_and_reports_a_short_one() {
 fn records_claim_is_won_once_and_a_claim_without_a_ttl_never_reaches_the_host() {
     let t = HostSlots {
         records_claim: Some(claims),
-        ..table(None)
+        ..table()
     };
     let s = services(&t);
     let ran = CLAIMS_RUN.load(Ordering::SeqCst);
@@ -1198,14 +1157,14 @@ fn records_claim_is_won_once_and_a_claim_without_a_ttl_never_reaches_the_host() 
 
     let b = HostSlots {
         records_claim: Some(breaks),
-        ..table(None)
+        ..table()
     };
     assert_eq!(
         services(&b).records_claim(ticketed(0), "approval", b"k1", 1),
         Poll::Ready(Err(ServiceError::Broken))
     );
     assert_eq!(
-        services(&table(None)).records_claim(ticketed(0), "approval", b"k1", 1),
+        services(&table()).records_claim(ticketed(0), "approval", b"k1", 1),
         Poll::Ready(Err(ServiceError::Unserved))
     );
 }
@@ -1255,7 +1214,7 @@ fn the_work_wrappers_read_the_reference_and_the_found_record() {
     let t = HostSlots {
         work_open: Some(works),
         work_find: Some(works),
-        ..table(None)
+        ..table()
     };
     let s = services(&t);
     let handle = CompletionHandle {
@@ -1295,7 +1254,7 @@ fn the_work_wrappers_read_the_reference_and_the_found_record() {
         Poll::Ready(Ok(None))
     );
 
-    let none = table(None);
+    let none = table();
     let (mut buf, mut spans) = ([0u8; 8], [empty; 1]);
     assert_eq!(
         services(&none).work_open(handle, "job", b"r", &mut buf, &mut spans),
@@ -1334,7 +1293,7 @@ extern "C" fn nests(_ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -
 fn the_nest_wrapper_reads_the_childs_status_body_and_fields() {
     let t = HostSlots {
         unit_nest: Some(nests),
-        ..table(None)
+        ..table()
     };
     let handle = CompletionHandle {
         ticket: Ticket {
@@ -1404,7 +1363,7 @@ fn verify_lookup_reads_a_hit_a_follow_or_the_lead_and_store_is_answered() {
     let t = HostSlots {
         verify_lookup: Some(caches),
         verify_store: Some(stores),
-        ..table(None)
+        ..table()
     };
     let s = services(&t);
     let mut buf = [0u8; 8];
@@ -1424,7 +1383,7 @@ fn verify_lookup_reads_a_hit_a_follow_or_the_lead_and_store_is_answered() {
     );
     assert_eq!(s.verify_store(handle(), b"other", b"v", 0), Ok(()));
 
-    let none = table(None);
+    let none = table();
     let mut buf = [0u8; 8];
     assert_eq!(
         services(&none).verify_lookup(ticketed(3), b"hit", &mut buf),
@@ -1451,7 +1410,7 @@ extern "C" fn scans(_ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -
 fn content_scan_answers_pass_or_block_and_pends_on_a_ticket() {
     let t = HostSlots {
         content_scan: Some(scans),
-        ..table(None)
+        ..table()
     };
     let s = services(&t);
     let mut buf = [0u8; 4];
@@ -1472,7 +1431,7 @@ fn content_scan_answers_pass_or_block_and_pends_on_a_ticket() {
     );
     let p = HostSlots {
         content_scan: Some(pends),
-        ..table(None)
+        ..table()
     };
     let mut buf = [0u8; 4];
     assert_eq!(
@@ -1504,7 +1463,7 @@ fn hook_call_reads_pass_rewrite_or_stop_and_refuses_a_bad_in_before_the_host() {
     use crate::abi::host::service::HOOK_FROM_MAX;
     let t = HostSlots {
         hook_call: Some(hooks),
-        ..table(None)
+        ..table()
     };
     let s = services(&t);
     let msg = |text: &'static str| [HookMessage { role: "user", text }];
@@ -1547,7 +1506,7 @@ fn hook_call_reads_pass_rewrite_or_stop_and_refuses_a_bad_in_before_the_host() {
         Poll::Ready(Ok(Hooked::Pass))
     );
 
-    let none = table(None);
+    let none = table();
     for stage_from in [(HOOK_GATE, 1), (HOOK_REWRITE, HOOK_FROM_MAX + 1), (9, 0)] {
         let mut buf = [0u8; 8];
         assert_eq!(
@@ -1603,7 +1562,7 @@ extern "C" fn signs_nothing(
 fn sign_table(slot: Option<ServiceFn>) -> HostSlots {
     HostSlots {
         sign: slot,
-        ..table(None)
+        ..table()
     }
 }
 
@@ -1776,7 +1735,7 @@ extern "C" fn names_nowhere(
 fn auth_table(slot: Option<ServiceFn>) -> HostSlots {
     HostSlots {
         auth_call: slot,
-        ..table(None)
+        ..table()
     }
 }
 
@@ -1988,7 +1947,7 @@ extern "C" fn stops(_ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -
 fn unit_hand_in_answers_the_flow_and_the_unit() {
     let t = HostSlots {
         unit_hand_in: Some(stops),
-        ..table(None)
+        ..table()
     };
     assert_eq!(
         transport_services(&t).unit_hand_in(handle(), LINE_REF, UnitRef::NONE, 4, 1, 1, &request()),
@@ -1996,7 +1955,7 @@ fn unit_hand_in_answers_the_flow_and_the_unit() {
     );
     let failing = HostSlots {
         unit_hand_in: Some(fails),
-        ..table(None)
+        ..table()
     };
     assert_eq!(
         transport_services(&failing).unit_hand_in(
@@ -2037,7 +1996,7 @@ extern "C" fn refuses(_ctx: HostCtx, input: *const c_void, out: *mut ServiceOut)
 fn unit_refuse_copies_the_kernels_answer_out() {
     let t = HostSlots {
         unit_refuse: Some(refuses),
-        ..table(None)
+        ..table()
     };
     assert_eq!(
         transport_services(&t).unit_refuse(
@@ -2057,7 +2016,7 @@ fn unit_refuse_copies_the_kernels_answer_out() {
     );
     let broken = HostSlots {
         unit_refuse: Some(breaks),
-        ..table(None)
+        ..table()
     };
     assert_eq!(
         transport_services(&broken).unit_refuse(
@@ -2139,7 +2098,7 @@ extern "C" fn holds_no_secret(
 fn secret_table(slot: Option<ServiceFn>) -> HostSlots {
     HostSlots {
         records_secret: slot,
-        ..table(None)
+        ..table()
     }
 }
 
@@ -2305,7 +2264,7 @@ fn sealed_wire(w: &mut crate::abi::sdk::cred::SealedWrite) -> Vec<u8> {
 fn a_minted_ticket_reaches_the_plane_sealed() {
     let t = HostSlots {
         ticket_mint: Some(mints),
-        ..table(None)
+        ..table()
     };
     let before = MINTS.load(Ordering::SeqCst);
     let minted = service_ready(services(&t).ticket_mint(handle(), 600, br#"{"locked":true}"#))
@@ -2352,7 +2311,7 @@ extern "C" fn mints_bytes(_ctx: HostCtx, input: *const c_void, out: *mut Service
 fn a_minted_ticket_that_is_not_text_is_broken() {
     let t = HostSlots {
         ticket_mint: Some(mints_bytes),
-        ..table(None)
+        ..table()
     };
     assert_eq!(
         service_ready(services(&t).ticket_mint(handle(), 600, b"{}")).map(|m| m.expires_at_unix),
@@ -2411,7 +2370,7 @@ fn a_refused_mint_hands_the_plane_the_hosts_code_retry_and_reason() {
     );
     let t = HostSlots {
         ticket_mint: Some(mints_refused),
-        ..table(None)
+        ..table()
     };
     assert_eq!(
         service_ready(services(&t).ticket_mint(handle(), 600, b"{}")).map(|m| m.expires_at_unix),
@@ -2423,7 +2382,7 @@ fn a_refused_mint_hands_the_plane_the_hosts_code_retry_and_reason() {
     );
     let t = HostSlots {
         ticket_mint: Some(mints_refused_silently),
-        ..table(None)
+        ..table()
     };
     assert_eq!(
         service_ready(services(&t).ticket_mint(handle(), 600, b"{}")).map(|m| m.expires_at_unix),
@@ -2469,7 +2428,7 @@ extern "C" fn work_status_answer(
 
 #[test]
 fn work_status_distinguishes_terminal_proof_from_all_other_answers() {
-    let mut t = table(None);
+    let mut t = table();
     t.work_status = Some(work_status_answer);
     let s = services(&t);
     let h = CompletionHandle {
@@ -2504,7 +2463,7 @@ fn work_status_distinguishes_terminal_proof_from_all_other_answers() {
 
 #[test]
 fn work_status_tail_is_unserved_when_old_host_size_or_slot_count_excludes_it() {
-    let mut t = table(None);
+    let mut t = table();
     t.work_status = Some(work_status_answer);
     t.size = std::mem::offset_of!(HostSlots, work_status) as u32;
     assert_eq!(
@@ -2552,7 +2511,7 @@ fn async_snapshot_failure_is_not_recorder_not_ready() {
     let mut buf = [0u64; 16];
     let failed = HostSlots {
         snapshot_read: Some(snapshot_failed),
-        ..table(None)
+        ..table()
     };
     assert_eq!(
         export_services(&failed).snapshot_read(handle(), SNAPSHOT_SCOPE_WHOLE, &mut buf),
@@ -2560,7 +2519,7 @@ fn async_snapshot_failure_is_not_recorder_not_ready() {
     );
     let pending = HostSlots {
         snapshot_read: Some(snapshot_pending),
-        ..table(None)
+        ..table()
     };
     assert_eq!(
         export_services(&pending).snapshot_read(ticketed(0), SNAPSHOT_SCOPE_WHOLE, &mut buf),
@@ -2596,7 +2555,7 @@ fn dest_judge_as_passes_the_callers_flags_and_derives_only_resolve() {
     use crate::abi::host::service::DEST_REFUSE_PRIVATE;
     let t = HostSlots {
         dest_judge: Some(judges),
-        ..table(None)
+        ..table()
     };
     let s = services(&t);
     assert_eq!(
@@ -2622,7 +2581,7 @@ fn trust_unreachable_and_trust_sight_report_their_own_outcome() {
     use crate::abi::host::service::{TRUST_REACHED, TRUST_UNREACHABLE};
     let t = HostSlots {
         trust_sight: Some(sights),
-        ..table(None)
+        ..table()
     };
     let s = services(&t);
     assert_eq!(
@@ -2684,7 +2643,7 @@ extern "C" fn outbound_answer(
 
 #[test]
 fn outbound_wrappers_keep_seals_opaque_and_validate_scalar_revisions() {
-    let mut t = table(None);
+    let mut t = table();
     t.outbound_authorize = Some(outbound_answer);
     let s = services(&t);
     let h = CompletionHandle {
@@ -2747,7 +2706,7 @@ fn outbound_tail_is_unserved_on_older_host_prefixes() {
         resource: "https://api.example.test/rpc",
         connection: "public-id",
     };
-    let mut t = table(None);
+    let mut t = table();
     t.outbound_authorize = Some(outbound_answer);
     t.size = std::mem::offset_of!(HostSlots, outbound_authorize) as u32;
     assert_eq!(
@@ -2812,7 +2771,7 @@ fn outbound_prepare_passes_sealed_form_body_and_checks_acknowledgement_without_a
         .sealed("code_verifier", &verifier)
         .encoded()
         .unwrap();
-    let mut t = table(None);
+    let mut t = table();
     t.outbound_authorize = Some(outbound_prepare_answer);
     let s = services(&t);
     let scope = OutboundScope {
@@ -2889,7 +2848,7 @@ fn outbound_publish_body_keeps_form_opaque_and_supports_initial_and_cas_revision
         .sealed("refresh_token", &refresh)
         .encoded()
         .unwrap();
-    let mut t = table(None);
+    let mut t = table();
     t.outbound_authorize = Some(outbound_publish_body_answer);
     let s = services(&t);
     let scope = OutboundScope {

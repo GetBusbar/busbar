@@ -35,7 +35,7 @@ async fn admin_apply_parse_refusal_is_audited() {
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
         "store": { "module": module, "settings": settings },
         "plugins": plugin_document,
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
         "identity-providers": {},
     });
     document["identity-providers"][operator] = serde_json::json!({
@@ -169,7 +169,7 @@ async fn refused_commit_after_build_restores_the_secret_axis() {
             "models": {},
             "auth": { "chain": [], "admin_auth": [] },
             "store": { "module": module, "settings": settings },
-            "advanced": { "allow_destinations": ["127.0.0.1"] },
+            "advanced": {  },
         }),
         &crate::root::boot::axis_test_grammar(),
     )

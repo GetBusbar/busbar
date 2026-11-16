@@ -70,7 +70,7 @@ async fn an_absent_card_and_unchanged_prices_allow_a_successful_settings_handler
         "models": {},
         "auth": { "chain": [], "admin_auth": [] },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
     });
     document["plugins"] = plugins::config_document(&plugins::trusted_config(&directory));
     let deploy = busbar_kernel::config::deploy_from_deserializer(
@@ -270,7 +270,7 @@ async fn settings_refuses_unconfirmed_prices_then_reload_confirms_the_exact_cand
             "models": {},
             "auth": { "chain": [], "admin_auth": [] },
             "store": { "module": module, "settings": settings },
-            "advanced": { "allow_destinations": ["127.0.0.1"] },
+            "advanced": {  },
         });
         document["plugins"] = plugins::config_document(&plugins::trusted_config(&directory));
         let deploy = busbar_kernel::config::deploy_from_deserializer(
@@ -642,7 +642,7 @@ async fn config_refusal_or_unknown_reply_never_attempts_price_activation() {
             "models": {},
             "auth": { "chain": [], "admin_auth": [] },
             "store": { "module": module, "settings": settings },
-            "advanced": { "allow_destinations": ["127.0.0.1"] },
+            "advanced": {  },
         });
         document["plugins"] = plugins::config_document(&plugins::trusted_config(&directory));
         let deploy = busbar_kernel::config::deploy_from_deserializer(
@@ -831,7 +831,7 @@ async fn pending_activation_and_canceled_handler_keep_the_old_generation_until_c
         "models": {},
         "auth": { "chain": [], "admin_auth": [] },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
     });
     document["plugins"] = plugins::config_document(&plugins::trusted_config(&directory));
     let deploy = busbar_kernel::config::deploy_from_deserializer(
@@ -1142,7 +1142,7 @@ async fn callback_panics_preserve_one_coherent_published_price_generation() {
         "models": {},
         "auth": { "chain": [], "admin_auth": [] },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
     });
     document["plugins"] = plugins::config_document(&plugins::trusted_config(&directory));
     let deploy = busbar_kernel::config::deploy_from_deserializer(

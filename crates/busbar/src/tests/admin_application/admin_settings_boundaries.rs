@@ -30,7 +30,7 @@ async fn test_admin_v1_config_settings_boot_scoped_limits_flagged_reload_to_appl
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
         "identity-providers": {},
     });
     document["plugins"] = crate::root::test_plugins::config_document(
@@ -152,7 +152,7 @@ async fn test_admin_v1_config_settings_max_inbound_concurrent_flagged_reload_to_
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
         "identity-providers": {},
     });
     document["plugins"] = crate::root::test_plugins::config_document(
@@ -272,7 +272,7 @@ async fn test_admin_v1_config_settings_boot_scoped_observability_flagged_reload_
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
         "identity-providers": {},
     });
     document["plugins"] = crate::root::test_plugins::config_document(
@@ -408,7 +408,7 @@ async fn test_admin_v1_config_settings_stale_if_match_conflicts() {
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
         "identity-providers": {},
     });
     document["plugins"] = crate::root::test_plugins::config_document(
@@ -525,7 +525,7 @@ async fn test_admin_v1_config_settings_unknown_field_400() {
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
         "identity-providers": {},
     });
     document["plugins"] = crate::root::test_plugins::config_document(

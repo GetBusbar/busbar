@@ -5,6 +5,7 @@
 //! the registry's scan thread (IF §10.6, §11.2). The thread runs `watch::scan` over the registry's `SlotTable`;
 //! it holds no Instance and no Image reference. The 1.5 crossing watchdog stays in `dispatch::watchdog`.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -17,6 +18,46 @@ use crate::instance::SlotTable;
 
 const MS: u64 = 1_000;
 const S: u64 = 1_000_000;
+
+/// S0 owns the scan thread; dropping that owner stops and joins it.
+pub(crate) struct Watchdog {
+    stop: Arc<AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Watchdog {
+    pub(crate) fn start(table: Arc<SlotTable>) -> Result<Self, String> {
+        let stop = Arc::new(AtomicBool::new(false));
+        let stopping = Arc::clone(&stop);
+        let thread = std::thread::Builder::new()
+            .name("busbar-plugin-watchdog".into())
+            .spawn(move || {
+                while !stopping.load(Ordering::Acquire) {
+                    busbar_plugin_abi::host_side::watch::scan(
+                        |slot, entry| table.watch_view(slot, entry),
+                        |slot, epoch, entry, busy_ms| table.hung(slot, epoch, entry, busy_ms),
+                    );
+                    std::thread::park_timeout(Duration::from_millis(100));
+                }
+            })
+            .map_err(|error| format!("plugin watchdog thread: {error}"))?;
+        Ok(Self {
+            stop,
+            thread: Some(thread),
+        })
+    }
+}
+
+impl Drop for Watchdog {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        // Runtime teardown takes the already-constructed thread exactly once.
+        if let Some(thread) = self.thread.take() {
+            thread.thread().unpark();
+            let _ = thread.join();
+        }
+    }
+}
 
 /// One declared value that fell outside its range and was clamped (logged once at `add`).
 pub(crate) struct Clamp {

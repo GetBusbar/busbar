@@ -21,6 +21,8 @@
 <a href="https://discord.com/invite/nnK5evXERp"><img src="https://img.shields.io/badge/Discord-join%20chat-5865F2?logo=discord&logoColor=white" alt="Discord"></a>
 </p>
 
+For automated checks and the current coverage-report limits, see [what CI checks](docs/ci.md).
+
 Busbar sits between AI applications and the destinations they can reach:
 
 ```text

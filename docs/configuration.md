@@ -1427,11 +1427,12 @@ plugins:
     # zero configuration. This block is for THIRD-PARTY publishers and explicit opt-ins.
     publishers:                 # third-party ed25519 signing keys (allowlist)
       - name: acme
-        public_key: "<64-hex ed25519 public key>"
-    allow_unsigned: false       # default false: unsigned/tampered plugins are logged + skipped
-    allow_third_party: false    # default false: signed-but-unknown-publisher plugins are skipped
+        plugins: [acme-store-dynamo]
+        keys:
+          - { public_key: "<64-hex ed25519 public key>", revoked: false }
+    allow_untrusted: false      # default false: unsigned/unknown publisher code is refused
   min_versions:                 # anti-downgrade floors, keyed by manifest name (third-party;
-    acme-store-dynamo: "2.0.0"  # first-party is automatically floored at the binary's version)
+    acme-store-dynamo: "2.0.0"  # first-party tracks its own accepted version high-water mark)
   fetch:                        # tarballs Busbar downloads into `dir` before preflight
     - { github: "org/repo@v1.2.3", sha256: "<64-hex>" }
 ```
@@ -1440,13 +1441,10 @@ plugins:
 |---|---|---|---|---|
 | `enabled` | bool | no | `false` | Master switch. `false`/absent = NO plugin loads (drop-is-inert). A non-`memory` `store.module` with plugins disabled is a boot error naming this flag. |
 | `dir` | string | no | `plugins` | Directory holding the signed plugin tarballs (`*.tar.gz`), relative to the working directory. Filenames are irrelevant: identity comes from each tarball's signed manifest. |
-| `trust.publishers` | list | no | empty | Third-party publishers: `{ name, public_key }` pairs (hex ed25519). The name `busbar` is reserved for the embedded release key and cannot be configured. A RETIRED busbar release key (the 1.5 key `b18395a3…`) listed here under any other name is the explicit opt-in that loads a first-party plugin it signed; without the entry that plugin is refused (`retired_key`), and with it the boot warns that the plugin is unverified. |
-| `trust.allow_unsigned` | bool | no | `false` | EXPLICIT opt-in to load plugins with no valid signature (unsigned/tampered). Without it they are logged and skipped, never `dlopen`ed. It never admits a plugin signed by a RETIRED busbar release key: that is a revocation, refused (`retired_key`) unless the key is named under `trust.publishers`. |
-| `trust.allow_third_party` | bool | no | `false` | EXPLICIT opt-in to load validly-signed plugins from a publisher NOT in `publishers`. |
+| `trust.publishers` | list | no | empty | Entries contain `name`, a nonempty `plugins` list of exact canonical names, and nonempty `keys` records (`public_key`: hex Ed25519, `revoked`: default false). Valid active keys admit only those names automatically. Multiple keys allow rotation overlap; revoked keys refuse. Duplicate identities/keys, weak keys, empty scopes and the reserved `busbar` identity refuse. |
+| `trust.allow_untrusted` | bool | no | `false` | Explicit opt-in for unsigned or unknown-publisher code, always labelled unverified. Invalid known-publisher signatures, altered bytes, scope failures, revocations, incompatible ABI and trusted floors remain hard refusals. |
 | `fetch` | list | no | empty | Tarballs Busbar downloads into `dir` before the plugin preflight: at boot (a miss is fatal) and on `POST /plugins/reload` (a miss warns, BUSBAR-6001, and keeps the current artifact). Each entry is exactly one of `{ github: "org/repo@tag", sha256? }`, `{ url: "https://…/plugin.tar.gz", sha256? }` or `{ env: VAR }` (the variable holds a URL, optionally `url@sha256`); a complete-archive pin is required before dropped native bootstrap/check/migration code executes (see [Plugins](plugins.md#how-plugins-are-secured)); a URL must end in a tarball filename, and an unknown key fails the parse. `sha256` is an integrity pin and the download-skip cache key (a file in `dir` already hashing to it means no network); signature verification remains the trust gate. `--validate` does no network, so it does not fetch. |
-| `min_versions` | map | no | empty | Anti-downgrade floors: manifest `name` -> minimum `version`. A floored plugin must prove (trusted signature at/above the floor) that it meets it; no opt-in flag can bypass a floor. First-party plugins are automatically floored at the running binary's version. |
-
-<!-- docs-truth: `plugins.logs.*` is deleted by !2688 (unmerged); the `logs:` block and its rows are removed. Dev still accepts the key until that MR lands. -->
+| `min_versions` | map | no | empty | Anti-downgrade floors: manifest `name` -> minimum `version`. A floored plugin must prove (trusted signature at/above the floor) that it meets it; no opt-in flag can bypass a floor. First-party plugins are automatically floored at the highest accepted version of each plugin on this host. |
 
 **Fail-closed guarantees:** with plugins enabled, ANY invalid tarball or manifest in `dir` (unparseable, missing/malformed fields, sha256 mismatch, unsupported `abi_version`) aborts boot naming the file and reason; any name/alias conflict between loadable plugins aborts boot naming both. `busbar --validate` checks operator inputs and local artifacts without network access, Store opening or overlay recovery. Authorized native grammar/check callbacks may execute; they require the bootstrap archive authorization described in [Plugins](plugins.md#how-plugins-are-secured). Validation does not prove plugin opening, readiness or backend reachability. `busbar --list-plugins` remains manifest-only.
 
@@ -1896,11 +1894,12 @@ restart. Full catalogue, rationale for defaulting off, and exactly when each hea
 
 **The destination guard.** One check applies to every outbound connection busbar makes (provider
 upstreams, token endpoints, health probes, export sinks, plugin fetches, plane and plugin dials). It
-is always on and has no switch. A destination that comes from request data or the network (a
+applies the default private-address refusal to a destination that comes from request data or the network (a
 target a caller or a plane names) is refused when it is, or resolves to, a private (RFC 1918),
 loopback, link-local, CGNAT, IPv6 unique-local (`fc00::/7`) or IPv6 site-local (`fec0::/10`)
-address. Operator infrastructure that configuration names (a provider upstream such as a local
-vLLM host, a database, a secret service, a directory) may be private or loopback without an entry.
+address. A core-selected provider route may reach its own configured base/token origins.
+Declared operator-infrastructure Needs, such as a database, secret service or directory, retain
+their declared-target policy. Neither grants arbitrary requests permission to the same hostname.
 A cloud-metadata address is refused for every destination, configured ones included (a configured
 name that later resolves to one is refused). The check runs after name resolution, and the
 connection is made to the address that was checked; an IP address written in a URL is checked as
@@ -1914,15 +1913,18 @@ every egress class and nothing admits it. Of the 1.5.5 keys, `security.blocked_m
 still loads and extends the same check; `security.allow_metadata_hosts`,
 `security.allow_all_metadata` and `providers.<p>.allow_metadata_hosts` are retired and refused
 (BUSBAR-3136).
-<!-- docs-truth: depends on !2676 (unmerged; deletes `advanced.block_private_addresses`, fixed true) and on !2665 (unmerged; deletes `advanced.proxy_resolution`, fixed `local`). Owner ruling 23:15Z deletes `advanced.allow_destinations` and returns per-registration `allow_private`; !2676 left `allow_destinations` in place and no MR yet reinstates `allow_private` or exempts configured provider hosts in guard.rs. Re-check at the release-candidate pass. -->
 
-**One setting governs every outbound connection, plugins included.** No plugin and no transport
+**One guard governs every outbound connection, plugins included.** No plugin and no transport
 dials on its own: a plugin declares what it needs (a transport and an egress class), and busbar's
 connector resolves the name, applies this check to every answered address, and lets the transport
 open only the address it checked. So the guard governs an export sink, a hook's outbound call, an
 identity provider fetch, a plane's upstream (an MCP server, an A2A agent) and every other plugin
-dial alike. There is no global private-address switch: a plane registration that must reach a
-private target carries its own `allow_private` (see the plane's own documentation). The scheme a
+dial alike. There is no global hostname allowlist: a plane registration that must reach a
+private target carries its own core-owned `allow_private` on its declared registration. The
+connector restricts this grant to that selected route's origin. Configured providers retain
+private reach only on their own base/token origins; other requests, strict JUDGE/OPEN_WEB checks,
+redirects to other origins and callbacks cannot borrow it. `advanced.allow_destinations` is
+removed and refused as an unknown field. The scheme a
 destination may use is part of the same check: an export sink or hook on the `loopback-allowed`
 class takes `https://`, or plaintext `http://` only to loopback; an `open-web` destination (a
 webhook sink, an identity provider's documents) takes `https://` only.

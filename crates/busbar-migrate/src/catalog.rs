@@ -65,19 +65,6 @@ fn source(dir: &Path, resolved: &Value, facts: &Facts) -> (PathBuf, Selected) {
     }
 }
 
-/// The catalog 1.5.5 read, as its resolved tree: the catalog half of `allow_dest`'s candidate walk.
-/// [`plan`] has read the same file already, so a refusal here is the same refusal.
-pub(crate) fn effective(config: &Path, resolved: &Value, facts: &Facts) -> Result<Value, Refusal> {
-    let dir = match config.parent() {
-        Some(parent) if !parent.as_os_str().is_empty() => parent.to_path_buf(),
-        _ => PathBuf::from("."),
-    };
-    let (source, _) = source(&dir, resolved, facts);
-    let shown = source.display().to_string();
-    let raw = read(&source)?;
-    Ok(Template::read(&raw, facts.env, &shown)?.resolved().clone())
-}
-
 /// 1k over the document `root` (R) with its resolved twin.
 pub(crate) fn plan(
     config: &Path,

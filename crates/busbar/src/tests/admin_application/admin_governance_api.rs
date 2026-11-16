@@ -32,7 +32,7 @@ async fn test_1_5_2_admin_path_bypasses_governance_and_mints() {
         "models": {},
         "auth": { "chain": ["keys"], "admin_auth": [operator], "signing_key": { "file": signing_key } },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
         "identity-providers": {},
     });
     document["identity-providers"][operator] = serde_json::json!({
@@ -155,7 +155,7 @@ async fn test_governance_admin_api() {
         "models": {},
         "auth": { "chain": ["keys"], "admin_auth": [operator], "signing_key": { "file": signing_key } },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
         "identity-providers": {},
     });
     document["identity-providers"][operator] = serde_json::json!({

@@ -107,7 +107,7 @@ fn caller_over<R: AsyncRead + Unpin + Send>(reader: R) -> LineCaller<R> {
     LineCaller {
         lines: AsyncMutex::new(tokio::io::BufReader::new(reader)),
         max_line: 1024,
-        out: mpsc::unbounded_channel().0,
+        out: mpsc::channel(LINE_OUTPUT_QUEUE_CAPACITY).0,
         spare: Arc::default(),
         failure: Arc::new(IoFailure::default()),
     }
@@ -291,7 +291,7 @@ async fn eof_and_stop_retire_a_writer_stuck_in_write_or_flush() {
             let started = tokio::time::Instant::now();
             let code = shutdown_result(run_io(TEST_CARRIER, reader, writer, stop, move |caller| {
                 *observed_failure = Some(Arc::clone(&caller.failure));
-                caller.out.send(terminated(QUEUED_LINE)).unwrap();
+                caller.out.try_send(terminated(QUEUED_LINE)).unwrap();
                 (
                     |_| std::future::ready(()),
                     move || {
@@ -330,8 +330,8 @@ async fn queued_lines_and_a_units_answer_drain_whole_and_in_order() {
         writer,
         std::future::pending::<()>(),
         |caller| {
-            caller.out.send(terminated(b"first")).unwrap();
-            caller.out.send(terminated(b"second\n")).unwrap();
+            caller.out.try_send(terminated(b"first")).unwrap();
+            caller.out.try_send(terminated(b"second\n")).unwrap();
             (
                 move |line: Vec<u8>| {
                     let caller = Arc::clone(&caller);
@@ -429,7 +429,7 @@ async fn writer_errors_and_panics_end_the_serve_without_repolling_a_finished_joi
                 std::future::pending::<()>(),
                 |caller| {
                     failure = Some(Arc::clone(&caller.failure));
-                    caller.out.send(terminated(QUEUED_LINE)).unwrap();
+                    caller.out.try_send(terminated(QUEUED_LINE)).unwrap();
                     (|_| std::future::ready(()), || {})
                 },
             ))
@@ -470,7 +470,7 @@ async fn an_existing_input_error_survives_the_output_drain_timeout() {
         std::future::pending::<()>(),
         |caller| {
             failure = Some(Arc::clone(&caller.failure));
-            caller.out.send(terminated(QUEUED_LINE)).unwrap();
+            caller.out.try_send(terminated(QUEUED_LINE)).unwrap();
             (|_| std::future::ready(()), || {})
         },
     ))
@@ -499,4 +499,244 @@ fn the_one_line_plane_is_bound_and_two_are_refused_naming_both() {
     assert!(refusal.contains("`mcp`"), "{refusal}");
     assert!(refusal.contains("`mcp-2`"), "{refusal}");
     assert!(refusal.contains("first line"), "{refusal}");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_blocked_output_backpressures_answer_futures() {
+    let probe = Arc::new(OutputProbe::default());
+    let writer = ProbeWriter::new(&probe, IoOutcome::Pending, IoOutcome::Ready);
+    let (stop, stopped) = tokio::sync::oneshot::channel();
+    let (completed, mut completions) = mpsc::channel(32);
+    let input = b"x\n".repeat(32);
+    let service = tokio::spawn(async move {
+        run_io(
+            TEST_CARRIER,
+            std::io::Cursor::new(input),
+            writer,
+            async {
+                let _ = stopped.await;
+            },
+            |caller| {
+                (
+                    move |line: Vec<u8>| {
+                        let caller = Arc::clone(&caller);
+                        let completed = completed.clone();
+                        async move {
+                            if caller.write(&line).await {
+                                let _ = completed.send(()).await;
+                            }
+                        }
+                    },
+                    || {},
+                )
+            },
+        )
+        .await
+    });
+    // One line can sit in the writer and sixteen in the bounded queue. The next
+    // answer must remain pending while stdout cannot make progress.
+    let overflow = tokio::time::timeout(std::time::Duration::from_millis(1), async {
+        for _ in 0..18 {
+            completions.recv().await.expect("answer completion");
+        }
+    })
+    .await;
+    let _ = stop.send(());
+    let code = service.await.unwrap();
+    assert_ne!(code, 0, "the blocked writer cannot report a clean drain");
+    assert!(
+        overflow.is_err(),
+        "an unbounded output queue lets every answer complete"
+    );
+}
+
+#[tokio::test]
+async fn synchronous_output_overflow_is_observable_and_wakes_the_reader() {
+    let mut caller = caller_over(&b""[..]);
+    let (out, _held_receiver) = mpsc::channel(1);
+    caller.out = out;
+    assert!(caller.emit(b"first"));
+    assert!(!caller.emit(b"second"));
+    // Failure is recorded before waiting, so this proves the notification persists.
+    tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        caller.failure.1.notified(),
+    )
+    .await
+    .unwrap();
+    let failure = caller.failure.0.lock().unwrap();
+    assert_eq!(
+        failure.as_ref().unwrap().1.kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn inbound_capacity_blocks_the_next_line_until_a_unit_finishes() {
+    let (stop, stopped) = tokio::sync::oneshot::channel();
+    let (started, mut starts) = mpsc::channel(3);
+    let permits = Arc::new(tokio::sync::Semaphore::new(0));
+    let release = Arc::clone(&permits);
+    let probe = Arc::new(OutputProbe::default());
+    let writer = ProbeWriter::new(&probe, IoOutcome::Ready, IoOutcome::Ready);
+    let service = tokio::spawn(async move {
+        run_io_with_limits(
+            TEST_CARRIER,
+            &b"one\ntwo\nthree\n"[..],
+            writer,
+            async {
+                let _ = stopped.await;
+            },
+            move |_| {
+                (
+                    move |line: Vec<u8>| {
+                        let started = started.clone();
+                        let permits = Arc::clone(&permits);
+                        async move {
+                            started.send(line).await.unwrap();
+                            permits.acquire().await.unwrap().forget();
+                        }
+                    },
+                    || {},
+                )
+            },
+            1024,
+            2,
+        )
+        .await
+    });
+    assert_eq!(starts.recv().await.unwrap(), b"one");
+    assert_eq!(starts.recv().await.unwrap(), b"two");
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(1), starts.recv())
+            .await
+            .is_err()
+    );
+    release.add_permits(1);
+    assert_eq!(starts.recv().await.unwrap(), b"three");
+    release.add_permits(2);
+    let _ = stop.send(());
+    assert_eq!(service.await.unwrap(), 0);
+}
+
+#[tokio::test(start_paused = true)]
+async fn stop_wakes_an_input_loop_waiting_for_capacity() {
+    let (stop, stopped) = tokio::sync::oneshot::channel();
+    let (started, mut starts) = mpsc::channel(1);
+    let closed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let close_flag = Arc::clone(&closed);
+    let service = tokio::spawn(async move {
+        run_io_with_limits(
+            TEST_CARRIER,
+            &b"one\ntwo\n"[..],
+            tokio::io::sink(),
+            async {
+                let _ = stopped.await;
+            },
+            move |_| {
+                (
+                    move |_| {
+                        let started = started.clone();
+                        async move {
+                            started.send(()).await.unwrap();
+                            std::future::pending::<()>().await;
+                        }
+                    },
+                    move || {
+                        close_flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                    },
+                )
+            },
+            1024,
+            1,
+        )
+        .await
+    });
+    starts.recv().await.unwrap();
+    stop.send(()).unwrap();
+    tokio::time::timeout(busbar_kernel::detached::DETACHED_DRAIN_GRACE * 2, service)
+        .await
+        .expect("stop must not wait for an inbound permit")
+        .unwrap();
+    assert!(closed.load(std::sync::atomic::Ordering::SeqCst));
+}
+
+#[tokio::test]
+async fn callback_overflow_ends_the_line_session_with_failure() {
+    let code = run_io_with_limits(
+        TEST_CARRIER,
+        &b""[..],
+        tokio::io::sink(),
+        std::future::pending::<()>(),
+        |caller| {
+            for _ in 0..LINE_OUTPUT_QUEUE_CAPACITY {
+                assert!(caller.emit(b"notification"));
+            }
+            assert!(!caller.emit(b"overflow"));
+            (|_| std::future::ready(()), || {})
+        },
+        1024,
+        1,
+    )
+    .await;
+    assert_ne!(code, 0);
+}
+
+#[tokio::test]
+async fn closing_output_wakes_an_async_sender_blocked_on_capacity() {
+    let mut caller = caller_over(&b""[..]);
+    let (out, receiver) = mpsc::channel(1);
+    caller.out = out;
+    assert!(caller.write(b"first").await);
+    let pending = caller.write(b"second");
+    tokio::pin!(pending);
+    assert!(
+        std::future::poll_fn(|cx| std::task::Poll::Ready(std::future::Future::poll(
+            pending.as_mut(),
+            cx
+        )))
+        .await
+        .is_pending()
+    );
+    drop(receiver);
+    assert!(!pending.await);
+}
+
+#[tokio::test]
+async fn an_explicit_zero_inbound_limit_keeps_concurrency_unlimited() {
+    let (started, mut starts) = mpsc::channel(2);
+    let release = Arc::new(tokio::sync::Semaphore::new(0));
+    let permits = Arc::clone(&release);
+    let service = tokio::spawn(async move {
+        run_io_with_limits(
+            TEST_CARRIER,
+            &b"one\ntwo\n"[..],
+            tokio::io::sink(),
+            std::future::pending::<()>(),
+            move |_| {
+                (
+                    move |_| {
+                        let started = started.clone();
+                        let permits = Arc::clone(&permits);
+                        async move {
+                            started.send(()).await.unwrap();
+                            permits.acquire().await.unwrap().forget();
+                        }
+                    },
+                    || {},
+                )
+            },
+            1024,
+            0,
+        )
+        .await
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        starts.recv().await.unwrap();
+        starts.recv().await.unwrap();
+    })
+    .await
+    .expect("both units start before either finishes");
+    release.add_permits(2);
+    assert_eq!(service.await.unwrap(), 0);
 }

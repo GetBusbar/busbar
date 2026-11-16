@@ -19,11 +19,6 @@ use busbar_kernel::plane_driver::route_input::{
     LaneInput, OnExhaustedInput, PoolInput, PoolMemberInput,
 };
 
-/// The registry's kernel sides, core's own secret references, and the one plan-and-walk entry.
-pub mod boot_registry;
-/// The MIN-3 boot: one generic walk over `Registry::boot_plan` (IF §11.2, §12.10 item 4).
-pub mod boot_walk;
-
 pub const ENV_CONFIG: &str = "BUSBAR_CONFIG";
 
 pub const DEFAULT_CONFIG_PATH: &str = "/etc/busbar/config.yaml";
@@ -358,8 +353,11 @@ impl RawDocuments<'_> {
     /// Phase 1 over this read's own block alone: its own directory, no pins, no fetch.
     pub fn own_grammar(&self) -> Result<config::Grammar, String> {
         let plugins = self.plugins_block()?;
-        config::grammar::grammar_for(&config::grammar::PhaseOneIn::of(&plugins))
-            .map_err(|refusal| format!("config.yaml: {refusal}"))
+        config::grammar::grammar_for(
+            &config::grammar::PhaseOneIn::of(&plugins),
+            self.inputs.rules,
+        )
+        .map_err(|refusal| format!("config.yaml: {refusal}"))
     }
 
     /// Phase 1 over this read's own block with the Store's plugin version pins: the boot
@@ -369,12 +367,15 @@ impl RawDocuments<'_> {
         pins: &std::collections::BTreeMap<String, String>,
     ) -> Result<config::Grammar, String> {
         let plugins = self.plugins_block()?;
-        config::grammar::grammar_for(&config::grammar::PhaseOneIn {
-            plugins: &plugins,
-            dir: std::path::Path::new(&plugins.dir),
-            pins,
-            fetch: config::grammar::Fetch::None,
-        })
+        config::grammar::grammar_for(
+            &config::grammar::PhaseOneIn {
+                plugins: &plugins,
+                dir: std::path::Path::new(&plugins.dir),
+                pins,
+                fetch: config::grammar::Fetch::None,
+            },
+            self.inputs.rules,
+        )
         .map_err(|refusal| format!("config.yaml: {refusal}"))
     }
 
@@ -418,12 +419,13 @@ impl RawDocuments<'_> {
         } else {
             config::OperatorFileDefs::of(&deploy.identity_providers)
         };
+        let bound_grammar = deploy.grammar.get().map_err(String::from)?.clone();
         let (defs, providers_path) = typed_rest(
             inputs,
             &source_text,
             &mut deploy,
             &mut unset_env_vars,
-            grammar,
+            &bound_grammar,
         )?;
         let resolution = config::overlay::resolve_backend(&deploy.config);
         Ok(LoadedConfig {
@@ -987,6 +989,19 @@ pub(crate) fn plane_is_open_for_build(
 }
 
 pub trait RootRules: Send + Sync {
+    /// Phase one uses this reader's owned process and image admission context.
+    fn grammar(
+        &self,
+        input: &config::grammar::PhaseOneIn<'_>,
+    ) -> Result<config::Grammar, config::grammar::GrammarRefusal> {
+        if input.plugins.enabled {
+            Err(config::grammar::GrammarRefusal(
+                "no composition root supplied the config grammar".to_owned(),
+            ))
+        } else {
+            Ok(config::Grammar::empty())
+        }
+    }
     fn check(&self, cfg: &config::RootCfg) -> Result<(), String>;
 
     /// The document this read runs in place of the file at `path`, held in memory by the
@@ -1253,14 +1268,14 @@ pub fn pin_write_refusal(
     config_path: &std::path::Path,
     pins: &std::collections::BTreeMap<String, String>,
     used: &config::grammar::Used,
+    rules: &dyn RootRules,
 ) -> Result<(), String> {
-    let rules = AcceptAll;
     let raw = read_config_documents(
         config_path,
         None,
         false,
         config::EnvSubst::Strict,
-        &rules,
+        rules,
         DocumentPatchLoad {
             patch: None,
             providers_patch: None,
@@ -1269,12 +1284,15 @@ pub fn pin_write_refusal(
     )?;
     let plugins = raw.plugins_block()?;
     let next_start = raw.own_grammar()?;
-    let pinned = config::grammar::grammar_for(&config::grammar::PhaseOneIn {
-        plugins: &plugins,
-        dir: std::path::Path::new(&plugins.dir),
-        pins,
-        fetch: config::grammar::Fetch::None,
-    })
+    let pinned = config::grammar::grammar_for(
+        &config::grammar::PhaseOneIn {
+            plugins: &plugins,
+            dir: std::path::Path::new(&plugins.dir),
+            pins,
+            fetch: config::grammar::Fetch::None,
+        },
+        rules,
+    )
     .map_err(|refusal| format!("config.yaml: {refusal}"))?;
     config::grammar::pin(&next_start, &pinned, used, config::grammar::Pin::NextBoot)
 }
@@ -1422,6 +1440,7 @@ async fn open_config_store(
         .map_err(|error| failed(error.to_string()))?
         .into_exposed(&crate::seal::lend());
     let spec = busbar_plugin_loader::instance::InstanceSpec {
+        purpose: busbar_plugin_loader::instance::OpenPurpose::Canonical,
         identity: &store.module,
         name: STORE_INSTANCE,
         config_json: &config_json,
@@ -1643,6 +1662,7 @@ pub async fn build_app_from_config_with_store(
             boot_store,
             recover_usage_before_hydration,
             None,
+            None,
         )),
     )
     .await
@@ -1662,6 +1682,8 @@ pub struct BootBuild<'a> {
     pub config_paths: (Option<std::path::PathBuf>, Option<std::path::PathBuf>),
     pub rules: &'a Arc<dyn RootRules>,
     pub boot_store: Arc<crate::persistence::facade::CoreStore>,
+    /// The fully opened S5 secret view; application construction never reopens it.
+    pub secret_resolver: Arc<config::secret::SecretResolver>,
 }
 
 pub async fn build_boot_app(
@@ -1682,6 +1704,7 @@ pub async fn build_boot_app(
             Some(boot.boot_store),
             true,
             boot.judged,
+            Some(boot.secret_resolver),
         )),
     )
     .await
@@ -1712,6 +1735,7 @@ async fn build_app_native(
     boot_store: Option<Arc<crate::persistence::facade::CoreStore>>,
     recover_usage_before_hydration: bool,
     judged: Option<config_validate::Judged>,
+    opened_secrets: Option<Arc<config::secret::SecretResolver>>,
 ) -> Result<(state::App, Option<GovCredentialRotation>, InstalledLimits), String> {
     config::security_policy::check_candidate(prior, &cfg, &plugins_cfg)?;
     // The operator file-policy reference (§3.6.1): a disk read sets it on the candidate; every
@@ -1811,11 +1835,14 @@ async fn build_app_native(
     let transition_requirements =
         governance::principal_transition::requirements(&cfg, plugin_registry.as_ref())?;
 
-    let secret_resolver = Arc::new(build_secret_resolver(
-        plugin_registry.clone(),
-        &cfg.secrets,
-        &generation_sugars(&cfg),
-    )?);
+    let secret_resolver = match opened_secrets {
+        Some(resolver) => resolver,
+        None => Arc::new(build_secret_resolver(
+            plugin_registry.clone(),
+            &cfg.secrets,
+            &generation_sugars(&cfg),
+        )?),
+    };
 
     let mut lanes_data = Vec::new();
 
@@ -2765,7 +2792,3 @@ fn accepted_operator(auth: &config::AuthCfg, operator: &crate::auth::Operator) {
         );
     }
 }
-
-#[cfg(test)]
-#[path = "tests/boot_walk_tests.rs"]
-mod boot_walk_tests;

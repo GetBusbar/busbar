@@ -11,10 +11,12 @@
 use std::collections::BTreeMap;
 
 use busbar_contract::config::UpstreamCreds;
+use busbar_contract::json::{
+    self, JsonContainerTrait as _, JsonValueTrait as _, Map as JsonMap, Value as JsonValue,
+};
 use busbar_contract::secret_ref::SecretRef;
 use busbar_contract::yaml::{Value as YamlValue, ValueExt};
 use serde::Deserialize;
-use serde_json::{Map as JsonMap, Value as JsonValue};
 
 use super::DeployCfg;
 
@@ -22,8 +24,6 @@ use super::DeployCfg;
 /// for a config that writes none of them.
 #[derive(Clone, Default, PartialEq, Eq)]
 pub struct Min3Config {
-    /// `upstreams.<name>`, by configured upstream name (IF §12.1, §12.18).
-    pub upstreams: BTreeMap<Box<str>, UpstreamCfg>,
     /// `routes.<id>`, by route id (IF §12.11 "Route credential header").
     pub routes: BTreeMap<Box<str>, RouteCfg>,
     /// `<kind>.<name>.limits`, by (kind section, configured instance name) (IF §12.22).
@@ -33,9 +33,6 @@ pub struct Min3Config {
     /// `<kind>.<name>.insecure_transport`, by (kind section, configured instance name) (TRANSPORT-SECURITY-POLICY
     /// §4); absent = verified TLS only. Read into `InstanceLimits.accept` by `appbuild::instance_limits`.
     pub insecure_transport: InsecureTransportMap,
-    /// The top-level `upstreams:` section as written (upstream name → entry), which
-    /// [`crate::upstreams::ConfiguredUpstreams::from_config`] types over [`Self::upstreams`] (IF §12.1).
-    pub upstream_section: JsonMap<String, JsonValue>,
 }
 
 /// Per-instance `limits`, by (kind section, configured instance name).
@@ -148,7 +145,6 @@ pub struct ProvisioningGuard {
 /// section word, the configured instance name); the store is (`store`, `store`).
 pub fn parse_min3(deploy: &DeployCfg) -> Result<Min3Config, Vec<String>> {
     let mut refused = Vec::new();
-    let upstreams = kept(parse_upstreams(deploy), &mut refused);
     let routes = kept(parse_routes(deploy), &mut refused);
     let limits = kept(parse_limits(deploy), &mut refused);
     let insecure_transport = kept(parse_insecure_transport(deploy), &mut refused);
@@ -157,12 +153,10 @@ pub fn parse_min3(deploy: &DeployCfg) -> Result<Min3Config, Vec<String>> {
         return Err(refused);
     }
     Ok(Min3Config {
-        upstreams,
         routes,
         limits,
         provisioning,
         insecure_transport,
-        upstream_section: deploy.upstreams.clone().unwrap_or_default(),
     })
 }
 
@@ -242,48 +236,38 @@ fn blocks(deploy: &DeployCfg) -> Vec<Block<'_>> {
 /// Parses `upstreams.<name>.auth` and `upstreams.<name>.upstream_credentials` (consumers W1-K1, W1-K6): an
 /// upstream with neither key has no entry. An entry that is not a map is left to
 /// [`crate::upstreams::ConfiguredUpstreams::from_config`], which refuses it with the rest of the entry grammar.
-pub fn parse_upstreams(deploy: &DeployCfg) -> Result<BTreeMap<Box<str>, UpstreamCfg>, Vec<String>> {
-    let mut out = BTreeMap::new();
+pub fn parse_upstream_entry(at: &str, entry: &JsonValue) -> Result<UpstreamCfg, Vec<String>> {
     let mut refused = Vec::new();
-    for (name, entry) in deploy.upstreams.iter().flatten() {
-        let Some(map) = entry.as_object() else {
-            continue;
-        };
-        let at = format!("upstreams.{name}");
-        let auth = match map.get("auth") {
-            None | Some(JsonValue::Null) => None,
-            Some(value) => match upstream_auth(&at, value) {
-                Ok(auth) => Some(auth),
-                Err(why) => {
-                    refused.push(why);
-                    None
-                }
-            },
-        };
-        let upstream_credentials = match map.get("upstream_credentials") {
-            None | Some(JsonValue::Null) => None,
-            Some(value) => match UpstreamCreds::deserialize(value) {
-                Ok(creds) => Some(creds),
-                Err(e) => {
-                    refused.push(format!(
+    let Some(map) = entry.as_object() else {
+        return Err(vec![format!("{at}: a registration must be an object")]);
+    };
+    let auth = match map.get(&"auth").filter(|v| !v.is_null()) {
+        None => None,
+        Some(value) => match upstream_auth(at, value) {
+            Ok(auth) => Some(auth),
+            Err(why) => {
+                refused.push(why);
+                None
+            }
+        },
+    };
+    let upstream_credentials = match map.get(&"upstream_credentials").filter(|v| !v.is_null()) {
+        None => None,
+        Some(value) => match json::from_value::<UpstreamCreds>(value.clone()) {
+            Ok(creds) => Some(creds),
+            Err(e) => {
+                refused.push(format!(
                         "`{at}.upstream_credentials` is not one of `own`, `passthrough` or `connection`: {e}"
                     ));
-                    None
-                }
-            },
-        };
-        if auth.is_some() || upstream_credentials.is_some() {
-            out.insert(
-                Box::<str>::from(name.as_str()),
-                UpstreamCfg {
-                    auth,
-                    upstream_credentials,
-                },
-            );
-        }
-    }
+                None
+            }
+        },
+    };
     if refused.is_empty() {
-        Ok(out)
+        Ok(UpstreamCfg {
+            auth,
+            upstream_credentials,
+        })
     } else {
         Err(refused)
     }
@@ -316,7 +300,7 @@ fn upstream_auth(at: &str, value: &JsonValue) -> Result<UpstreamAuthCfg, String>
     let mut cache_max_s = None;
     let mut forms: Vec<(&str, &JsonValue)> = Vec::new();
     for (key, form) in map {
-        match key.as_str() {
+        match key {
             "cache_max_s" => match form.as_u64().and_then(|s| u32::try_from(s).ok()) {
                 Some(seconds) if seconds > 0 => cache_max_s = Some(seconds),
                 _ => {
@@ -327,7 +311,7 @@ fn upstream_auth(at: &str, value: &JsonValue) -> Result<UpstreamAuthCfg, String>
                 }
             },
             "bearer" | "api_key" | "token_exchange" | "connection" => {
-                forms.push((key.as_str(), form));
+                forms.push((key, form));
             }
             other => {
                 return Err(format!(
@@ -347,8 +331,8 @@ fn upstream_auth(at: &str, value: &JsonValue) -> Result<UpstreamAuthCfg, String>
         "api_key" => {
             let m = form_map(at, word, form, &["header", "secret"])?;
             UpstreamAuthForm::ApiKey {
-                header: auth_text(at, "api_key.header", m.get("header"))?,
-                secret: auth_secret(at, "api_key.secret", m.get("secret"))?,
+                header: auth_text(at, "api_key.header", m.get(&"header"))?,
+                secret: auth_secret(at, "api_key.secret", m.get(&"secret"))?,
             }
         }
         "token_exchange" => {
@@ -364,15 +348,16 @@ fn upstream_auth(at: &str, value: &JsonValue) -> Result<UpstreamAuthCfg, String>
                 ],
             )?;
             UpstreamAuthForm::TokenExchange {
-                token_url: auth_text(at, "token_exchange.token_url", m.get("token_url"))?,
-                resource: auth_text(at, "token_exchange.resource", m.get("resource"))?,
+                token_url: auth_text(at, "token_exchange.token_url", m.get(&"token_url"))?,
+                resource: auth_text(at, "token_exchange.resource", m.get(&"resource"))?,
                 subject_token: auth_secret(
                     at,
                     "token_exchange.subject_token",
-                    m.get("subject_token"),
+                    m.get(&"subject_token"),
                 )?,
-                subject_token_type: match m.get("subject_token_type") {
-                    None | Some(JsonValue::Null) => None,
+                subject_token_type: match m.get(&"subject_token_type") {
+                    None => None,
+                    Some(value) if value.is_null() => None,
                     some => Some(auth_text(at, "token_exchange.subject_token_type", some)?),
                 },
             }
@@ -392,11 +377,14 @@ fn upstream_auth(at: &str, value: &JsonValue) -> Result<UpstreamAuthCfg, String>
                     "scopes",
                 ],
             )?;
-            let scopes = match m.get("scopes") {
-                None | Some(JsonValue::Null) => None,
-                Some(JsonValue::Array(items)) => Some(
-                    items
-                        .iter()
+            let scopes = match m.get(&"scopes") {
+                None => None,
+                Some(value) if value.is_null() => None,
+                Some(value) if value.is_array() => Some(
+                    value
+                        .as_array()
+                        .into_iter()
+                        .flatten()
                         .map(|item| {
                             item.as_str()
                                 .filter(|scope| !scope.is_empty())
@@ -414,19 +402,19 @@ fn upstream_auth(at: &str, value: &JsonValue) -> Result<UpstreamAuthCfg, String>
                 }
             };
             UpstreamAuthForm::Connection {
-                issuer: auth_text(at, "connection.issuer", m.get("issuer"))?,
-                resource: auth_text(at, "connection.resource", m.get("resource"))?,
-                client_id: auth_text(at, "connection.client_id", m.get("client_id"))?,
-                redirect_uri: auth_text(at, "connection.redirect_uri", m.get("redirect_uri"))?,
+                issuer: auth_text(at, "connection.issuer", m.get(&"issuer"))?,
+                resource: auth_text(at, "connection.resource", m.get(&"resource"))?,
+                client_id: auth_text(at, "connection.client_id", m.get(&"client_id"))?,
+                redirect_uri: auth_text(at, "connection.redirect_uri", m.get(&"redirect_uri"))?,
                 authorization_endpoint: auth_text(
                     at,
                     "connection.authorization_endpoint",
-                    m.get("authorization_endpoint"),
+                    m.get(&"authorization_endpoint"),
                 )?,
                 token_endpoint: auth_text(
                     at,
                     "connection.token_endpoint",
-                    m.get("token_endpoint"),
+                    m.get(&"token_endpoint"),
                 )?,
                 scopes,
             }
@@ -441,7 +429,7 @@ fn form_map<'a>(
     word: &str,
     form: &'a JsonValue,
     keys: &[&str],
-) -> Result<&'a JsonMap<String, JsonValue>, String> {
+) -> Result<&'a JsonMap, String> {
     let listed = keys
         .iter()
         .map(|key| format!("`{key}`"))
@@ -450,7 +438,7 @@ fn form_map<'a>(
     let Some(map) = form.as_object() else {
         return Err(format!("`{at}.auth.{word}` must be a map of {listed}"));
     };
-    if let Some(key) = map.keys().find(|key| !keys.contains(&key.as_str())) {
+    if let Some(key) = map.keys().find(|key| !keys.contains(key)) {
         return Err(format!(
             "`{at}.auth.{word}.{key}` is not a key of `{word}`; the keys are {listed}"
         ));
@@ -472,7 +460,7 @@ fn auth_secret(at: &str, key: &str, value: Option<&JsonValue>) -> Result<SecretR
     let Some(value) = value.filter(|value| !value.is_null()) else {
         return Err(format!("`{at}.auth.{key}` must be a secret reference"));
     };
-    match SecretRef::deserialize(value) {
+    match json::from_value::<SecretRef>(value.clone()) {
         Ok(SecretRef::None) => Err(format!(
             "`{at}.auth.{key}` is `none`, which names no credential; drop `{at}.auth` for an upstream that takes none"
         )),

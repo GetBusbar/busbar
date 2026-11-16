@@ -534,9 +534,9 @@ RETIRED. Nothing emits this code: a metadata host-list entry that names no host 
 - **Since:** 1.6.0
 - **Slug:** `config-provider-destination-refused`
 
-A provider's `base_url` or `token_url` names a private or loopback address (an RFC 1918, loopback, link-local, CGNAT or unique-local literal, or the `localhost` name), and `advanced.block_private_addresses` is on (the default) and `advanced.allow_destinations` does not name it. The destination guard refuses every request to it, so the provider would fail on its first request rather than at startup. 1.5.5 had no such guard. Emitted once per URL at config load, naming the provider, the key and the host.
+RETIRED. Configured providers retain private reach on their core-selected base/token routes. The grant is restricted to those origins and never becomes a global hostname permission. Metadata remains refused.
 
-**What to do:** Add exactly that host to `advanced.allow_destinations` (the first-boot migration adds the hosts a provider's plane reports), or point the provider at a public address. Turning `block_private_addresses` off also admits it, and every other private address with it.
+**What to do:** Nothing emits this code. Review the configured provider route; arbitrary requests and strict OPEN_WEB checks do not inherit its private reach.
 
 <a id="config-rate-card-missing"></a>
 ### BUSBAR-3026 — Declared billable classes have no configured rate
@@ -2315,7 +2315,7 @@ A provider's `api_key` secret reference could not be resolved — an unset envir
 - **Since:** 1.6.0
 - **Slug:** `entitlement-undeclared-scope-kind`
 
-A plane asked whether the unit's principal is entitled to a target whose scope kind is not among the scope kinds the plane's tail declares. The kernel answers NOT_ENTITLED without consulting the principal's grants.
+A plane asked whether the unit's principal is entitled to a target whose scope kind is not among the scope kinds the plane's tail declares. The kernel denies access without consulting the principal's grants.
 
 **What to do:** Declare the scope kind in the plane's tail, or correct the target the plane asks about.
 

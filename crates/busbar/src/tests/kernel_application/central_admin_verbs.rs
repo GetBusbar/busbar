@@ -73,7 +73,7 @@ async fn a_view_that_will_not_serialize_is_not_answered_as_applied() {
             "models": {},
             "auth": { "chain": [], "admin_auth": [] },
             "store": { "module": module, "settings": settings },
-            "advanced": { "allow_destinations": ["127.0.0.1"] },
+            "advanced": {  },
         }),
         &crate::root::boot::axis_test_grammar(),
     )

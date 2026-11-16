@@ -8,7 +8,7 @@
 //! Every plugin entry here runs inline under `entry::guard` (describe) or through the driver (every open step,
 //! which takes the same guard per step), on the thread that polls the future (I10, §10.7).
 
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -24,6 +24,84 @@ use busbar_plugin_abi::host_side::driver::{
     Driver, Finished, Image, Instance, InstanceParts, NeedRow,
 };
 use busbar_plugin_abi::host_side::needs::Needs;
+use busbar_plugin_abi::host_side::needs::{
+    ConnId, DirNeed, FetchNeed, NeedErr, NeedOut, OpenNeed, RecordNeed, TlsMode,
+};
+
+/// DRY_RUN never receives a serving capability or performs I/O.
+pub(crate) struct DeniedNeeds;
+impl Needs for DeniedNeeds {
+    async fn open(
+        &self,
+        _cx: &Caller<'_>,
+        _n: OpenNeed<'_>,
+        _res: &mut NeedOut<'_>,
+    ) -> Result<(), NeedErr> {
+        Err(NeedErr::Denied)
+    }
+    async fn starttls(
+        &self,
+        _cx: &Caller<'_>,
+        _c: ConnId,
+        _tls: TlsMode<'_>,
+        _res: &mut NeedOut<'_>,
+    ) -> Result<(), NeedErr> {
+        Err(NeedErr::Denied)
+    }
+    async fn write(
+        &self,
+        _cx: &Caller<'_>,
+        _c: ConnId,
+        _bytes: &[u8],
+        _res: &mut NeedOut<'_>,
+    ) -> Result<(), NeedErr> {
+        Err(NeedErr::Denied)
+    }
+    async fn read(
+        &self,
+        _cx: &Caller<'_>,
+        _c: ConnId,
+        _max: u32,
+        _res: &mut NeedOut<'_>,
+    ) -> Result<(), NeedErr> {
+        Err(NeedErr::Denied)
+    }
+    async fn close(&self, _cx: &Caller<'_>, _c: ConnId, _reusable: bool) {}
+    async fn fetch(
+        &self,
+        _cx: &Caller<'_>,
+        _n: FetchNeed<'_>,
+        _res: &mut NeedOut<'_>,
+    ) -> Result<(), NeedErr> {
+        Err(NeedErr::Denied)
+    }
+    async fn secret(
+        &self,
+        _cx: &Caller<'_>,
+        _handle: u32,
+        _res: &mut NeedOut<'_>,
+    ) -> Result<(), NeedErr> {
+        Err(NeedErr::Denied)
+    }
+    async fn record(
+        &self,
+        _cx: &Caller<'_>,
+        _n: RecordNeed<'_>,
+        _res: &mut NeedOut<'_>,
+    ) -> Result<(), NeedErr> {
+        Err(NeedErr::Denied)
+    }
+    async fn directory(
+        &self,
+        _cx: &Caller<'_>,
+        _n: DirNeed<'_>,
+        _res: &mut NeedOut<'_>,
+    ) -> Result<(), NeedErr> {
+        Err(NeedErr::Denied)
+    }
+    fn release(&self, _cx: &Caller<'_>) {}
+}
+
 use busbar_plugin_abi::host_side::pool::Pool;
 use busbar_plugin_abi::host_side::scrub::Scrub;
 use busbar_plugin_abi::host_side::watch::ENTRY_OPEN;
@@ -34,12 +112,12 @@ use busbar_plugin_abi::types::{KindCode, Status};
 
 use crate::answer::{open_error, port_error};
 use crate::instance::{
-    BootPhase, CoreCfg, Described, ErrorBook, InstanceSpec, MetricInfo, OpenError, Registry,
-    Settled, SlotLease, SlotRecord,
+    BootPhase, CoreCfg, Described, ErrorBook, InstanceSpec, MetricInfo, OpenError, OpenPurpose,
+    Registry, Settled, SlotLease, SlotRecord,
 };
 use crate::refusal::{Refusal, RefusalCode};
 use busbar_ports::binder::{BindError, ConfigBinder};
-use busbar_ports::codec::settled::decode_settled;
+use busbar_ports::codec::settled::for_purpose;
 
 /// An `open` chain may run this long end to end (its NEEDs included): the first poll is bounded by the §10.6
 /// ceiling, the rest by the Need handlers' own timeouts and the step cap.
@@ -339,20 +417,28 @@ pub(crate) fn plan_order(
 /// An `InstanceSpec` the future owns: the open methods return `BoxFut<'_>` tied to the registry only, so the
 /// borrowed spec is copied once, synchronously, before the future is built.
 pub(crate) struct OwnedSpec {
+    purpose: OpenPurpose,
     identity: String,
     name: String,
-    config_json: Vec<u8>,
+    config_json: SecureVec,
     limits: busbar_plugin_abi::host_side::caller::InstanceLimits,
     public_url: Option<String>,
     caller_upstreams: Vec<Box<str>>,
 }
 
 impl OwnedSpec {
+    pub(crate) fn name(&self) -> &str {
+        &self.name
+    }
+    pub(crate) fn identity(&self) -> &str {
+        &self.identity
+    }
     pub(crate) fn new(s: &InstanceSpec<'_>) -> Self {
         OwnedSpec {
+            purpose: s.purpose,
             identity: s.identity.to_owned(),
             name: s.name.to_owned(),
-            config_json: s.config_json.to_vec(),
+            config_json: SecureVec::from(s.config_json),
             limits: s.limits,
             public_url: s.public_url.map(str::to_owned),
             caller_upstreams: s.caller_upstreams.to_vec(),
@@ -361,6 +447,7 @@ impl OwnedSpec {
 
     pub(crate) fn spec(&self) -> InstanceSpec<'_> {
         InstanceSpec {
+            purpose: self.purpose,
             identity: &self.identity,
             name: &self.name,
             config_json: &self.config_json,
@@ -474,7 +561,7 @@ pub(crate) struct Opened {
     pub dests: u32,
 }
 
-impl<N: Needs> Registry<N> {
+impl Registry {
     /// Cold: the admitted image `s.identity` names, the config bound and its references resolved (§11.2 `open`:
     /// `bind`, `resolve_refs`, the core values at D_PUBLIC_URL_PATH and D_CALLER_UPSTREAMS_PATH). The D_SCHEMA
     /// check is the plugin's own `open`/`check` (the engine graph carries no JSON Schema validator).
@@ -482,6 +569,15 @@ impl<N: Needs> Registry<N> {
         &self,
         s: &InstanceSpec<'_>,
         kind: KindCode,
+    ) -> Result<Prepared, OpenError> {
+        self.prepare_with_id(s, kind, self.ids.next()?).await
+    }
+
+    async fn prepare_with_id(
+        &self,
+        s: &InstanceSpec<'_>,
+        kind: KindCode,
+        id: u64,
     ) -> Result<Prepared, OpenError> {
         let entry = self.entry_of(s.identity).ok_or_else(|| {
             OpenError::Unknown(format!(
@@ -510,18 +606,20 @@ impl<N: Needs> Registry<N> {
                 .filter_map(|(_, b)| core::str::from_utf8(b).ok())
                 .collect()
         };
-        let id = self.next_id.fetch_add(1, Ordering::Relaxed) + 1;
-        let bound = self
-            .binder
-            .bind(
-                id,
-                s.config_json,
-                &paths(tag::D_SECRET_PATH),
-                &paths(tag::D_TRUST_PATH),
-                &paths(tag::D_DEST_PATH),
-                &paths(tag::D_REF_PATH),
-            )
-            .map_err(|e| bind_error(s.name, e))?;
+        let bind = match s.purpose {
+            OpenPurpose::Canonical => ConfigBinder::bind,
+            OpenPurpose::ConvertUnstamped => ConfigBinder::bind_any,
+        };
+        let bound = bind(
+            &*self.binder,
+            id,
+            s.config_json,
+            &paths(tag::D_SECRET_PATH),
+            &paths(tag::D_TRUST_PATH),
+            &paths(tag::D_DEST_PATH),
+            &paths(tag::D_REF_PATH),
+        )
+        .map_err(|e| bind_error(s.name, e))?;
         let unbind = Unbind {
             binder: Arc::clone(&self.binder),
             id,
@@ -594,12 +692,13 @@ impl<N: Needs> Registry<N> {
     }
 
     /// One `open` entry chain of kind `K` (flags: 0, or DRY_RUN) through the driver, Image-owned.
-    async fn run_open<K: Kind>(
+    async fn run_open<K: Kind, N: Needs>(
         &self,
         s: &InstanceSpec<'_>,
         p: &Prepared,
         lease: &SlotLease,
         flags: u32,
+        needs: &N,
     ) -> Result<busbar_plugin_abi::host_side::driver::Finished<K>, OpenError> {
         let max_out = self.max_out_of(&p.described);
         let host = self.host;
@@ -616,7 +715,7 @@ impl<N: Needs> Registry<N> {
             out_of_process: false,
             limits: s.limits,
         };
-        let mut drv = Driver::new(&*self.needs, caller)
+        let mut drv = Driver::new(needs, caller)
             .for_open()
             .with_max_steps(self.ceilings.max_steps);
         if K::CODE == KindCode::Store
@@ -657,14 +756,30 @@ impl<N: Needs> Registry<N> {
     /// The generic open (§11.2): prepare, run the `open` chain under a leased slot, and on OK + INSTANCE build the
     /// `Instance` in the same poll (§10.4), keep the settled answer for the write-back (round 31) and tether the
     /// binding and the lease to the instance. A REFUSED or FAILED answer is the open's error.
-    pub(crate) async fn open_instance<K: Kind>(
+    pub(crate) async fn open_reserved_instance<K: Kind, N: Needs>(
         &self,
-        s: &InstanceSpec<'_>,
+        reserved: crate::instance::PreparedInstance,
+        needs: &Arc<N>,
     ) -> Result<Opened, OpenError> {
-        let kind = K::CODE;
-        let p = self.prepare(s, kind).await?;
-        let lease = self.lease_for(s, &p, kind);
-        let finished = self.run_open::<K>(s, &p, &lease, 0).await?;
+        let crate::instance::PreparedInstance {
+            owner,
+            spec: owned,
+            id,
+            kind,
+            lease,
+        } = reserved;
+        let s = &owned.spec();
+        if kind != K::CODE {
+            return Err(plan_error("reserved instance has another kind".into()));
+        }
+        if !Arc::ptr_eq(&owner, &self.reservation_owner) || !Arc::ptr_eq(lease.table(), &self.slots)
+        {
+            return Err(plan_error(
+                "reserved instance belongs to another process".into(),
+            ));
+        }
+        let p = self.prepare_with_id(s, kind, id).await?;
+        let finished = self.run_open::<K, N>(s, &p, &lease, 0, &**needs).await?;
         let Finished { answer, instance } = finished;
         let (status, scrub, errors) = (
             answer.answer().status,
@@ -726,27 +841,26 @@ impl<N: Needs> Registry<N> {
     }
 
     /// Round 31: CONFIG and CORE_CFG* of an OK open answer mapped back through the binder's reference map and
-    /// kept for `take_settled`. A value the map refuses skips the whole write-back (logged); the instance serves.
+    /// kept for `take_settled`. A refused inverse mapping is CONFIG and the instance never serves.
     fn settle(&self, s: &InstanceSpec<'_>, id: u64, answer: &Answer<'_>) -> Result<(), OpenError> {
         let fault = |e: RecErr| OpenError::Call(CallError::Fault(FaultReason::BadRecords(e)));
-        let Some(out) = decode_settled(answer).map_err(fault)? else {
+        let Some(out) = for_purpose(answer.records(), s.purpose == OpenPurpose::ConvertUnstamped)
+            .map_err(|_| {
+            plan_error(format!(
+                "{}: open CONFIG or CORE_CFG violates its purpose",
+                s.name
+            ))
+        })?
+        else {
             return Ok(());
         };
-        let skip = |what: &str, e: BindError| {
-            tracing::warn!(
-                instance = s.name,
-                what,
-                error = ?e,
-                "a settled value does not map back through the reference map; the write-back is skipped"
-            );
-        };
-        let config_json = match self.binder.unbind_refs(id, out.config) {
-            Ok(c) => c,
-            Err(e) => {
-                skip("config", e);
-                return Ok(());
-            }
-        };
+        let config_json = SecureVec::from(
+            self.binder
+                .unbind_refs(id, out.config)
+                .map_err(|e| bind_error(s.name, e))?,
+        );
+        json::parse_value(config_json.as_slice())
+            .map_err(|_| plan_error(format!("{}: open CONFIG is not valid JSON", s.name)))?;
         let mut core_cfg = Vec::new();
         for rec in out.core_cfg {
             let rec = rec.map_err(fault)?;
@@ -759,11 +873,10 @@ impl<N: Needs> Registry<N> {
                 Ok(value_json) => core_cfg.push(CoreCfg {
                     section: head.section,
                     name: String::from_utf8_lossy(name).into(),
-                    value_json,
+                    value_json: SecureVec::from(value_json),
                 }),
                 Err(e) => {
-                    skip("core_cfg", e);
-                    return Ok(());
+                    return Err(bind_error(s.name, e));
                 }
             }
         }
@@ -787,7 +900,13 @@ impl<N: Needs> Registry<N> {
         let p = self.prepare(s, kind).await?;
         let lease = self.lease_for(s, &p, kind);
         let finished = self
-            .run_open::<K>(s, &p, &lease, busbar_plugin_abi::plugin::OPEN_DRY_RUN)
+            .run_open::<K, DeniedNeeds>(
+                s,
+                &p,
+                &lease,
+                busbar_plugin_abi::plugin::OPEN_DRY_RUN,
+                &DeniedNeeds,
+            )
             .await?;
         if !lease.is_live() {
             return Err(OpenError::Call(CallError::Quarantined));

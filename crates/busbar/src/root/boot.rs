@@ -442,8 +442,7 @@ pub fn trust_policy(
     let mut policy =
         super::loader::sign::TrustPolicy::from_config(super::loader::sign::TrustInput {
             publishers: &cfg.publisher_keys(),
-            allow_unsigned: cfg.trust.allow_unsigned,
-            allow_third_party: cfg.trust.allow_third_party,
+            allow_untrusted: cfg.trust.allow_untrusted,
             min_versions: &cfg.min_versions,
             first_party_floors: &cfg.first_party_floors,
             binary_version,
@@ -1309,29 +1308,10 @@ pub(crate) fn start_secret_view() -> crate::root::loader::secret_calls::SecretVi
 /// under the read's policy (its `plugins:` block with the read's pins), with the same linked rows
 /// the build links. Pure: no dlopen, no high-water write, no axis mutation, no fetch.
 pub(crate) fn phase_one(
+    process: &busbar_plugin_loader::process::ProcessResources,
     input: &busbar_kernel::config::grammar::PhaseOneIn<'_>,
 ) -> Result<busbar_kernel::config::Grammar, busbar_kernel::config::GrammarRefusal> {
-    let refused = busbar_kernel::config::GrammarRefusal;
-    let mut pinned = input.plugins.clone();
-    pinned.dir = input.dir.to_string_lossy().into_owned();
-    for (name, version) in input.pins {
-        pinned.min_versions.insert(name.clone(), version.clone());
-        pinned
-            .first_party_floors
-            .insert(name.clone(), version.clone());
-    }
-    let mut linked: Vec<_> = busbar_kernel::preflight::linked_rows()
-        .iter()
-        .map(linked_row)
-        .collect();
-    linked.extend(linked_exports(crate::LINKED.export_doors).map_err(refused)?);
-    let judged = judge(linked, &pinned).map_err(refused)?;
-    let report = skip_lines(judged.registry.skipped());
-    let items = classify(&judged.registry, Some(&pinned));
-    Ok(
-        busbar_kernel::config::Grammar::new(judged.sugars, owners_of(&judged.registry), report)
-            .with_items(items),
-    )
+    images::prepare(process, input).map(|prepared| prepared.grammar)
 }
 
 /// The scan of `plugins`' directory under its trust policy, with `linked`, and the secret modules
@@ -2279,6 +2259,7 @@ impl BookPreparation {
             .await?;
         super::durability::report_operator_breaks(durability).await;
         self.governance.bind_deployment_caller_ref(bound.caller_ref);
+        super::records_capture::warn_unkeyed();
         self.shared = Some(Arc::new(std::sync::Mutex::new(
             self.durability.take().unwrap(),
         )));
@@ -2494,30 +2475,16 @@ fn locate_provider_destination_with(
     })
 }
 
-/// Resolve only compiled core schemas or the attested instance's exact historical
-/// raw-record framing. An unscoped unknown schema is never guessed into a namespace.
+/// Resolve a record-bootstrap store witness through a compiled core schema only (MIGRATE-ON-BOOT
+/// r42 §7 D14). A plugin instance's row, and any unknown schema, is never guessed into a namespace.
 pub(crate) fn bootstrap_witness(
-    instance: &str,
     schema: &str,
     key: &[u8],
     value: &[u8],
 ) -> Result<busbar_contract::persistence::Address, &'static str> {
-    use busbar_migrations::legacy::archive::{route_record, Binding, Route, Scope};
-    let bindings = [Binding {
-        schema,
-        instance,
-        private: false,
-        source_scope: Scope::Instance,
-    }];
-    match route_record(schema, key, value, &bindings)
-        .map_err(|_| "unsupported or ambiguous bootstrap witness binding")?
-    {
-        Route::Record {
-            address,
-            value: mapped,
-        } if mapped == value => Ok(address),
-        _ => Err("bootstrap witness requires an explicit supported exact-record binding"),
-    }
+    busbar_kernel::persistence::import_target::records::builtin_record_address(schema, key, value)
+        .map_err(|_| "unsupported bootstrap witness record")?
+        .ok_or("bootstrap witness requires a compiled core schema record")
 }
 
 /// Step 3's refusal of a manifest that is not current (MIGRATE-ON-BOOT r42 §3 3, §6a): admission
@@ -2579,3 +2546,14 @@ pub(crate) fn walk_admission<T>(
             .to_owned()
     })
 }
+
+#[cfg(test)]
+#[path = "tests/boot_walk.rs"]
+mod boot_walk_tests;
+
+/// Root-owned registry opening and boot planning.
+pub(crate) mod registry;
+/// Root-owned deployment ordering and instance opening.
+pub(crate) mod walk;
+
+pub(crate) mod images;

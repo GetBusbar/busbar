@@ -78,7 +78,7 @@ async fn the_credential_read_follows_the_app_swap() {
             &json::json!({
                 "providers": {}, "models": {}, "auth": {"chain": [], "admin_auth": []},
                 "store": {"module": module, "settings": settings},
-                "advanced": {"allow_destinations": ["127.0.0.1"]}
+                "advanced": {}
             }),
             &crate::root::boot::axis_test_grammar(),
         )
@@ -142,7 +142,7 @@ async fn the_credential_read_follows_the_app_swap() {
                 &json::json!({
                     "providers": {}, "models": {}, "auth": {"chain": [], "admin_auth": []},
                     "store": {"module": module, "settings": settings},
-                    "advanced": {"allow_destinations": ["127.0.0.1"]}
+                    "advanced": {}
                 }),
                 &crate::root::boot::axis_test_grammar(),
             )
@@ -257,7 +257,7 @@ async fn a_late_source_refuses_until_its_handle_is_set() {
             &json::json!({
                 "providers": {}, "models": {}, "auth": {"chain": [], "admin_auth": []},
                 "store": {"module": module, "settings": settings},
-                "advanced": {"allow_destinations": ["127.0.0.1"]}
+                "advanced": {}
             }),
             &crate::root::boot::axis_test_grammar(),
         )

@@ -411,6 +411,7 @@ async fn the_tls_wrap_serves_a_client_whose_certificate_chains_to_the_client_ca(
     let security = prepare("mtls-binding", Some(&tls), &fixture_resolver(&tls), true)
         .expect("valid mutual TLS config with a capable transport");
 
+    let expected_peer = leaf_der(&client_leaf_pem);
     let (server_io, client_io) = tokio::io::duplex(8192);
     let server_task = tokio::spawn(async move {
         let raw: Box<dyn busbar_contract::transport::wire::RawIo> =
@@ -419,6 +420,7 @@ async fn the_tls_wrap_serves_a_client_whose_certificate_chains_to_the_client_ca(
             .wrap(raw)
             .await
             .expect("a client whose certificate chains to the client CA is served");
+        assert_eq!(wrapped.peer_certificate.as_ref(), expected_peer.as_slice());
         let mut buf = [0u8; 4];
         futures::io::AsyncReadExt::read_exact(&mut wrapped, &mut buf)
             .await

@@ -427,6 +427,7 @@ pub(crate) fn running_grammar(app: &App) -> busbar_kernel::config::Grammar {
 /// on a blocking worker. The caller ran the authority pre-check before calling this. The grammar
 /// is trimmed for an admin response: a refusal names the item and its cause, never a file.
 pub(crate) async fn read_grammar(
+    rules: std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>,
     plugins: busbar_kernel::config::PluginsCfg,
     blocked_metadata_hosts: Vec<String>,
     fetch: busbar_kernel::config::grammar::Fetch,
@@ -453,7 +454,7 @@ pub(crate) async fn read_grammar(
     let gate = scan_gate(operation).await?;
     tokio::task::spawn_blocking(move || {
         let _gate = gate;
-        phase_one(&plugins, fetch, operation)
+        phase_one(&plugins, fetch, operation, rules.as_ref())
     })
     .await
     .map_err(joined)?
@@ -465,6 +466,7 @@ pub(crate) fn phase_one(
     plugins: &busbar_kernel::config::PluginsCfg,
     fetch: busbar_kernel::config::grammar::Fetch,
     operation: &'static str,
+    rules: &dyn busbar_kernel::appbuild::RootRules,
 ) -> Result<busbar_kernel::config::Grammar, AdminError> {
     let pins = std::collections::BTreeMap::new();
     busbar_kernel::config::grammar::grammar_for(&busbar_kernel::config::grammar::PhaseOneIn {
@@ -472,7 +474,7 @@ pub(crate) fn phase_one(
         dir: Path::new(&plugins.dir),
         pins: &pins,
         fetch,
-    })
+    }, rules)
     .map(busbar_kernel::config::Grammar::trimmed)
     .map_err(|refusal| {
         tracing::warn!(operation, refusal = %refusal, "the plugins: block's modules cannot be judged");
@@ -517,6 +519,7 @@ pub(crate) async fn read_disk_generation(
     .map_err(AdminError::Validation)?;
     busbar_kernel::config::security_policy::precheck(current, &read.candidate)?;
     let grammar = read_grammar(
+        current.root_rules.clone(),
         read.candidate.plugins.clone(),
         read.candidate.blocked_metadata_hosts.clone(),
         busbar_kernel::config::grammar::Fetch::Reload,
@@ -1094,7 +1097,7 @@ pub(crate) fn inspect_plugin_view(
         "kind": manifest.kind,
         "schema": schema,
         "schema_error": schema_error,
-        "trust": trust,
+        "trust": crate::v1::contract::PluginTrustView::from_verification(manifest.signature_present, trust, &Default::default()),
         "source": "manifest",
         "restart_required_default": restart_default(&manifest.kind),
     })
@@ -1145,7 +1148,13 @@ fn plugin_inventory_view(row: busbar_kernel::admission::Inventoried) -> PluginVi
         version: row.stated.as_ref().map(|m| m.version.clone()),
         publisher: row.stated.as_ref().map(|m| m.publisher.clone()),
         interface_version: row.stated.as_ref().map(|m| m.abi_version),
-        trust,
+        trust: trust.map(|verdict| {
+            crate::v1::contract::PluginTrustView::from_verification(
+                row.stated.as_ref().is_some_and(|m| m.signature_present),
+                verdict,
+                &Default::default(),
+            )
+        }),
         valid: Some(row.status == "ready"),
         error: (row.status != "ready").then(|| row.status.clone()),
         schema_url,

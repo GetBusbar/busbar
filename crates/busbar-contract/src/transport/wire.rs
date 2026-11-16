@@ -460,8 +460,54 @@ pub trait ConnectionSecurity: Send + Sync {
 }
 
 /// The one boxed future [`ConnectionSecurity::wrap`] returns — named for the same reason
-pub type SecuredIoFut<'a> =
-    Pin<Box<dyn Future<Output = std::io::Result<Box<dyn RawIo>>> + Send + 'a>>;
+pub type SecuredIoFut<'a> = Pin<Box<dyn Future<Output = std::io::Result<SecuredIo>> + Send + 'a>>;
+
+/// A secured stream and the peer leaf certificate verified by its handshake.
+pub struct SecuredIo {
+    pub io: Box<dyn RawIo>,
+    pub peer_certificate: Box<[u8]>,
+}
+
+impl SecuredIo {
+    pub fn anonymous(io: Box<dyn RawIo>) -> Self {
+        Self {
+            io,
+            peer_certificate: Box::default(),
+        }
+    }
+}
+
+impl futures::io::AsyncRead for SecuredIo {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut [u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        Pin::new(&mut self.io).poll_read(cx, buf)
+    }
+}
+
+impl futures::io::AsyncWrite for SecuredIo {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        Pin::new(&mut self.io).poll_write(cx, buf)
+    }
+    fn poll_flush(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        Pin::new(&mut self.io).poll_flush(cx)
+    }
+    fn poll_close(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        Pin::new(&mut self.io).poll_close(cx)
+    }
+}
 
 /// The byte stream under a connection, detached from the layer that owned it.
 pub struct RawStream {

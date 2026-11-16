@@ -5,11 +5,16 @@ so its own data conversions finish.
 
 1.6.0 uses a new plugin ABI and Store-backed administrative configuration. Configuration
 migration runs on the first boot; there is no `--migrate-config` or `--migrate-overlay`
-command. Keep the original files and a complete Store backup until you have verified the upgrade.
+command. Core migrates its own configuration and records. Each Store implementation owns its
+database schema and data migration during initialization; core does not convert a backend's
+physical schema. Keep the original files and a complete Store backup until you have verified
+the upgrade.
 
 > This guide is being checked against development builds. The release-candidate check must
 > finish before it is used as the final 1.6.0 upgrade procedure. Approved changes still awaiting
-> integration are listed under [release-candidate checks](#release-candidate-checks).
+> integration are listed under [release-candidate checks](#release-candidate-checks). No Store
+> backend is yet qualified for this upgrade by complete, direct CI migration evidence. A
+> successful build or ordinary Store test run does not establish upgrade or rollback safety.
 
 ## Before you start
 
@@ -47,9 +52,10 @@ command. Keep the original files and a complete Store backup until you have veri
    Do not add `--ignore-overlay` to bypass an old overlay that still needs folding.
    For an unstamped config, do not use `--providers`: set `providers_file:` in the document.
 5. Read the migration reports and refusals. The first boot plans configuration changes,
-   opens the configured instances (which may migrate their data), writes the accepted
-   configuration and re-executes the executable onto the stamped files. It does not serve
-   application traffic before that handoff completes.
+   initializes the configured instances (each brings its own supported settings and data to
+   its current format), migrates core-owned records through the opened Store, writes the
+   accepted configuration and re-executes the executable onto the stamped files. It does not
+   serve application traffic before that handoff completes.
 6. Check readiness, sign-in and administrative access, normal requests and failover,
    Store recovery, export delivery and usage figures. Review every migration warning,
    particularly the wildcard role bindings described below. Remove retired launch variables
@@ -57,7 +63,8 @@ command. Keep the original files and a complete Store backup until you have veri
 
 The original config is retained as `<config>.1.5.5`; the accepted config is stamped
 `config_version: 1`. A matching stamp skips the one-shot file migration. A format newer than
-the executable supports is refused. Do not add a stamp yourself to bypass migration.
+the executable supports is refused. The config stamp does not skip a Store's own initialization
+or data-version checks. Do not add a stamp yourself to bypass migration.
 
 **A startup refusal does not mean the Store is unchanged.** Planning refusals happen before
 instances open, but a later failure can follow a Store data conversion or an overlay guard
@@ -250,6 +257,11 @@ to add pre-release keys**. Replace this section with verified final behavior bef
 - Recheck the final administrative resource model; a proposed replacement for `/config/settings`,
   `/config/apply`, RPC roots and instance `ops` must not be documented as implemented before it lands.
 
+- Require direct CI migration evidence for each selected Store artifact: a real 1.5.5 dataset,
+  initialization into the current format, preserved core records, interruption and retry,
+  refusal of live old writers and newer data, and restoration of the pre-upgrade backup.
+  Keep backend qualification open until those checks pass; fixture setup failures and partial
+  migration tests do not qualify a backend.
 - Check kind operations, authentication-token migration, exports, plane behavior, telemetry
   attribute changes and Store rollback requirements against the final core and artifact cohort.
 - Run the final docs-versus-code check at the release-candidate SHA, including every link,
@@ -267,10 +279,19 @@ for uniqueness), where `<hex>` encodes the original field name's UTF-8 bytes.
 
 The old top-level `metrics:` configuration was already retired in 1.5.3; use an `export:`
 instance. If it remains in your files, complete the older-version upgrade before this procedure.
-step, and a stamped boot never reads an overlay file.
 
 ## Retired TLS upgrade flag
 
 `UPGRADE_VERIFY_OFF` is refused in 1.6.0 for every egress class, including operator
 infrastructure. Plugins must use the Need API and its core-held
 `insecure_transport` policy; a plugin flag cannot disable certificate verification.
+
+### Declared upstream registrations
+
+The core `upstreams:` and `advanced.allow_destinations` keys are removed. Keep each upstream's `url` or `command`, `tls`, `auth`, `upstream_credentials`, and optional boolean `allow_private` within the registration declared by its plane. Private reach applies to that registration only; it does not bypass metadata, own-listener, or TLS checks. A pre-release flat `upstreams:` document is refused with guidance rather than assigned to a plane by guesswork.
+
+A legacy A2A `client_identity: {cert: ..., key: ...}` is refused without modifying the source config. Combine the certificate chain and private key into one PEM secret and use `tls: {client_identity: {module: file, settings: {path: /run/secrets/client.pem}}}` in the canonical registration. The plane cannot combine opaque references, and neither part is silently discarded.
+
+Direct contract plugins must rebuild against the current 1.6 SDK. The retired host policy
+callback has been removed; principal scope decisions use the plane `ENTITLE` intent. Admission
+rejects artifacts carrying an earlier common host-table layout fingerprint.
