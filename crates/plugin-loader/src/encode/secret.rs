@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use busbar_plugin_abi::records::{Full, RecErr, Records, Writer, tag};
+use busbar_plugin_abi::records::{tag, Full, RecErr, Records, Writer};
 use busbar_plugin_abi::secret;
 
 use crate::ports::secret::SugarDecl;
@@ -92,8 +92,8 @@ fn word_ok(word: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use busbar_plugin_abi::records::{Reply, tag as generic};
-    use busbar_plugin_abi::secret::{SUGAR_ALIAS, SUGAR_ROLE_FILL, SUGAR_ROLE_PATH, tag};
+    use busbar_plugin_abi::records::{tag as generic, Reply};
+    use busbar_plugin_abi::secret::{tag, SUGAR_ALIAS, SUGAR_ROLE_FILL, SUGAR_ROLE_PATH};
 
     /// A D_SUGAR record as `abi::secret::sugar` writes it: SugarRec, then the texts as TEXT records.
     fn item(role: u32, flags: u32, texts: &[&str]) -> Reply {
@@ -133,11 +133,9 @@ mod tests {
     fn a_describe_answer_without_sugar_declares_none() {
         let mut r = Reply::new();
         r.put(tag::D_REF_SCHEMA, b"{}").unwrap();
-        assert!(
-            decode_sugars(Records::new(r.as_bytes()))
-                .unwrap()
-                .is_empty()
-        );
+        assert!(decode_sugars(Records::new(r.as_bytes()))
+            .unwrap()
+            .is_empty());
     }
 
     #[test]
