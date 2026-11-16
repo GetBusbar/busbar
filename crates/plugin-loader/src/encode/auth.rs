@@ -515,7 +515,10 @@ mod tests {
         let bad = |f: &dyn Fn(&mut Reply)| {
             let mut w = Reply::new();
             f(&mut w);
-            decode_serve_records(Records::new(w.as_bytes())).unwrap_err()
+            match decode_serve_records(Records::new(w.as_bytes())) {
+                Err(e) => e,
+                Ok(_) => panic!("decode_serve_records accepted a forbidden answer"),
+            }
         };
         assert!(matches!(bad(&|_| {}), RecErr::Truncated));
         assert!(matches!(bad(&|w| status(w, 199)), RecErr::Size));
@@ -654,10 +657,11 @@ mod tests {
             bad(Some("k"), Some((20, 40, &["A KI", AKIA_IDS, B64])), false),
             "space in prefix"
         );
+        let long_prefix = "A".repeat(17);
         assert!(
             bad(
                 Some("k"),
-                Some((40, 40, &["A".repeat(17).as_str(), AKIA_IDS, B64])),
+                Some((40, 40, &[long_prefix.as_str(), AKIA_IDS, B64])),
                 false
             ),
             "prefix over 16"
