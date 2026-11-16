@@ -62,6 +62,8 @@ const SECRET_AXIS: &str = "secret-doors";
 
 const AUTH_AXIS: &str = "auths";
 
+const MIN3_AXIS: &str = "min3-images";
+
 pub fn metadata_value(manifest: &str, table: &str, key: &str) -> Option<String> {
     let header = format!("[{table}]");
     let mut in_table = false;
@@ -264,6 +266,7 @@ pub fn linked_source(
                     || axis == SECRET_AXIS
                     || axis == EXPORT_DOOR_AXIS
                     || axis == CLAIMS_AXIS
+                    || axis == MIN3_AXIS
                     || AXES.iter().any(|(a, _, _)| a == axis)
                     || SEAMS.iter().any(|(a, _)| a == axis),
                 "Cargo.toml: `{krate}` names an unknown linked axis `{axis}`"
@@ -499,6 +502,25 @@ pub fn linked_source(
     out.push_str("    export_doors: &LINKED_EXPORT_DOORS,\n");
     out.push_str("    former: &LINKED_FORMER,\n");
     out.push_str("    stores: &LINKED_STORES,\n");
+    out.push_str("    images: &[\n");
+    for ((_, axes), (feature, krate)) in linked.iter().zip(&on) {
+        if !axes.iter().any(|axis| axis == MIN3_AXIS) {
+            continue;
+        }
+        let entry = entries
+            .iter()
+            .find(|(key, _)| key == feature)
+            .or_else(|| entries.iter().find(|(key, _)| key == krate))
+            .map(|(_, path)| path.clone())
+            .unwrap_or_else(|| ident(krate));
+        let alias = metadata_value(manifest, "package.metadata.busbar.linked-name", feature)
+            .unwrap_or_default();
+        out.push_str(&format!(
+            "        crate::root::linked::LinkedImage {{ alias: {alias:?}, admit: || \
+             ::busbar_plugin_loader::admit::admit_linked(&{entry}::PLUGIN) }},\n"
+        ));
+    }
+    out.push_str("    ],\n");
     out.push_str("    claims: &[");
     for e in on_axis(CLAIMS_AXIS) {
         out.push_str(&format!(
