@@ -59,6 +59,10 @@ pub struct Slots<T> {
     pages: [OnceLock<Box<[Slot<T>]>>; PAGES],
     fresh: AtomicU32,
     free: FreeHead,
+    /// Loom only: `OnceLock` is invisible to loom, so this lock gives the model the happens-before edge
+    /// `OnceLock` gives real threads between a page's construction and every later `slot_or_alloc`.
+    #[cfg(loom)]
+    page_edge: loom::sync::Mutex<()>,
 }
 
 // SAFETY: every access to a slot's value is either by the thread that popped the slot off the free list
@@ -99,6 +103,7 @@ impl<T: Send> Slots<T> {
             pages: [const { OnceLock::new() }; PAGES],
             fresh: AtomicU32::new(0),
             free: FreeHead(AtomicU64::new(0)),
+            page_edge: loom::sync::Mutex::new(()),
         }
     }
 
@@ -109,6 +114,8 @@ impl<T: Send> Slots<T> {
 
     fn slot_or_alloc(&self, index: u32) -> Option<&Slot<T>> {
         let (page, offset) = page_of(index);
+        #[cfg(loom)]
+        let _page_edge = self.page_edge.lock().ok();
         let slots = self
             .pages
             .get(page)?
@@ -184,6 +191,7 @@ impl<T: Send> Slots<T> {
     /// # Safety
     /// No other reference to this slot's value may be live while the result is: the caller is the one
     /// entry for this token (I6, which the host enforces with `&mut` handles).
+    #[allow(clippy::mut_from_ref)] // `&mut` to a slot's value under the I6 contract above
     pub unsafe fn get_mut(&self, index: u32, generation: u32) -> Option<&mut T> {
         let slot = self.slot(index)?;
         if slot.state.load(Ordering::Acquire) != (generation << 1) | 1 {

@@ -141,10 +141,10 @@ impl OutLease {
         let identity = self.raw.identity();
         let serial = self.serial;
         ACTIVE.with_borrow_mut(|stack| {
-            if let Some(top) = stack.last_mut() {
-                if top.serial == serial {
-                    top.identity = identity;
-                }
+            if let Some(top) = stack.last_mut()
+                && top.serial == serial
+            {
+                top.identity = identity;
             }
         });
         &mut self.raw
@@ -283,7 +283,7 @@ pub struct Instance<K: Kind> {
 }
 
 fn invoke0<K: Kind>(inst: &Instance<K>, f: EntryFn0, out: &mut RawOut) -> Status {
-    // SAFETY (all six `invoke`s): callers pass only an entry selected from `inst`'s own table, so `f` is a
+    // SAFETY: (for all six `invoke`s) callers pass only an entry selected from `inst`'s own table, so `f` is a
     // shim of the image whose INSTANCE `inst` holds; that instance is alive (borrowed here, and `close`
     // runs only in `Instance::drop`); the arguments and `out` are borrowed for the call.
     unsafe { f(inst.ptr(), inst.host, out) }
@@ -746,7 +746,7 @@ impl<K: Kind> Chain<'_, K> {
         self.tok = 0;
         let instance = match &self.owner {
             Owner::Image { image, host } if status == Status::OK => {
-                lease.with_answer(|answer| Instance::from_answer(*image, *host, answer))
+                lease.with_answer(|answer| Instance::from_answer(*image, host, answer))
             }
             _ => None,
         };

@@ -20,6 +20,16 @@ pub const STAMP_SIZE: usize = 272;
 /// The byte offset of `Stamp::kind` (IF §7.4), little-endian.
 pub const STAMP_KIND_AT: usize = 24;
 
+/// The five optional entries of a plugin's table, in table order.
+#[cfg(feature = "host")]
+pub(crate) type Entries = (
+    Option<DescribeFn>,
+    Option<OpenFn>,
+    Option<ResumeFn>,
+    Option<CancelFn>,
+    Option<CloseFn>,
+);
+
 mechanism! {
 /// The stamp's bytes (IF §7.4: 272 bytes, align 8); busbar-plugin-abi's `Stamp` is the typed view.
 #[repr(C, align(8))]
@@ -129,15 +139,7 @@ impl Plugin {
         self.kind_vt.get()
     }
     #[cfg(feature = "host")]
-    pub(crate) fn entries(
-        &self,
-    ) -> (
-        Option<DescribeFn>,
-        Option<OpenFn>,
-        Option<ResumeFn>,
-        Option<CancelFn>,
-        Option<CloseFn>,
-    ) {
+    pub(crate) fn entries(&self) -> Entries {
         (
             self.describe,
             self.open,
