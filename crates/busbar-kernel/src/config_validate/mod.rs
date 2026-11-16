@@ -73,8 +73,8 @@ fn metadata_carve_out_retired(key: &str) -> String {
     let code = crate::diagnostics::CONFIG_METADATA_CARVE_OUT_RETIRED.banner();
     format!(
         "{key} is retired ({code}): cloud metadata is refused for every outbound connection and no \
-         configuration admits it; remove the key (`busbar --migrate-config` does). \
-         security.blocked_metadata_hosts still extends the denylist"
+         configuration admits it; remove the key. security.blocked_metadata_hosts still \
+         extends the denylist"
     )
 }
 
@@ -1199,6 +1199,9 @@ fn validate_limits_with(
     use crate::config::{REQUEST_BODY_MAX_BYTES_CEIL, REQUEST_BODY_MAX_BYTES_FLOOR};
 
     validate_limit_ceilings(limits, errors);
+    if let Err(refusals) = limits.drain_settings() {
+        errors.extend(refusals);
+    }
 
     if limits.upstream_request_timeout_secs < 1 {
         errors.push(coded::config_setting_out_of_range("limits.upstream_request_timeout_secs must be >= 1 (0 would time out every upstream call \
@@ -1336,6 +1339,9 @@ fn validate_limit_ceilings(limits: &crate::config::LimitsResolved, errors: &mut 
 
         upstream_http1_only: _,
         upstream_h2_prior_knowledge: _,
+
+        drain_timeout: _,
+        max_pending_checkpoints: _,
     } = limits;
     let secs = [
         (
@@ -2097,9 +2103,8 @@ fn refused_provider_destinations(cfg: &RootCfg, advisories: &mut Advisories) {
                     crate::diagnostics::CONFIG_PROVIDER_DESTINATION_REFUSED,
                     "provider '{name}' {key} names the private or loopback host '{host}': with \
                      advanced.block_private_addresses on (the default) the destination guard \
-                     refuses every request to it. Add '{host}' to advanced.allow_destinations \
-                     (busbar --migrate-config adds the hosts a provider's plane reports), or set \
-                     advanced.block_private_addresses: false to admit every private address"
+                     refuses every request to it. Add '{host}' to advanced.allow_destinations, or \
+                     set advanced.block_private_addresses: false to admit every private address"
                 )
             });
         }

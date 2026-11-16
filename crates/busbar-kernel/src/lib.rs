@@ -542,6 +542,8 @@ pub mod channels;
 pub mod connections;
 pub mod custody;
 pub mod directory;
+// W2-K8P: the CA-5 hold (Holds, HoldSet) and the mass-deprovision guard cell (IF §12.29).
+pub mod holds;
 pub mod issued;
 pub mod media;
 pub mod path_claims;

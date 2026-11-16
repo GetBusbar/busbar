@@ -8,7 +8,7 @@
 //! the arm's body and un-ignores it in its own MR (red first, then green).
 
 #[test]
-#[ignore = "owner: W1-C1B"]
+#[ignore = "owner: W1-C1B; the core arm needs a constructible TransportSession (L9 fills SessionHandle): it runs as busbar-core-connector dtls::session::tests / dtls::carrier::tests over a scripted Live"]
 fn a_fingerprint_mismatch_is_path_rejected() {
     todo!("owner: W1-C1B (C-DTLS-FP)")
 }

@@ -2,8 +2,8 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::{
-    BUCKET_BUDGET_REMAINING_CENTS, BUCKET_SPEND_CENTS, BUCKET_TOKENS, KEY_SPEND_CENTS,
-    KEY_TOKENS_TOTAL,
+    BUCKET_BUDGET_REMAINING_CENTS, BUCKET_SPEND_CENTS, BUCKET_TOKENS, GOVERNED_ADMISSIONS_LIVE,
+    KEY_SPEND_CENTS, KEY_TOKENS_TOTAL, UNIT_CHECKPOINTS_TERMINAL,
 };
 use crate::diagnostics::{
     diag_debug, diag_warn, METRICS_KEY_GAUGE_LIMIT_EXCEEDED,
@@ -40,6 +40,10 @@ pub(super) async fn refresh_governance_gauges(
     cost: &crate::cost::CostModel,
     now: u64,
 ) -> Result<(), &'static str> {
+    // The admission gate first: in memory, so a store outage below never hides it.
+    let gate = gov.admissions();
+    set_gauge(metrics::gauge!(UNIT_CHECKPOINTS_TERMINAL), gate.terminal());
+    set_gauge(metrics::gauge!(GOVERNED_ADMISSIONS_LIVE), gate.live());
     let keys = match gov.all_keys_async().await {
         Ok(ks) => ks,
         Err(e) => {

@@ -51,6 +51,55 @@ pub trait MoneySeam: Send + Sync {
     fn session_ended(&self, ctx: &UnitCtx) {
         let _ = ctx;
     }
+
+    /// SHUTDOWN-HANG F4 "Running requests at exit": every unit still open in this seam's
+    /// tables, pushed into `out`. Read once, at exit, off the request path; a seam with no
+    /// open-unit table has nothing to list.
+    fn open_units(&self, out: &mut Vec<OpenUnitEvidence>) {
+        let _ = out;
+    }
+}
+
+/// One unit still open at exit (SHUTDOWN-HANG F4 `open_at_exit`): its identity, its last reported
+/// counts and, for a governed unit, a clone of the grant that holds its gate count. The clone
+/// keeps the grant alive while the exit walk counts distinct grants, so no address is reused.
+#[derive(Clone)]
+pub struct OpenUnitEvidence {
+    pub unit: busbar_contract::UnitKey,
+    pub checkpoint: [u8; 16],
+    /// The unit's principal, group, lane and arrival, shared with the open unit.
+    pub money: std::sync::Arc<super::UnitMoney>,
+    /// The last cumulative counts the plane reported.
+    pub reported: Vec<UnitCount>,
+    pub ledgered: bool,
+    pub finished: bool,
+    pub grant: Option<std::sync::Arc<crate::governance::AdmitGrant>>,
+}
+
+impl std::fmt::Debug for OpenUnitEvidence {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OpenUnitEvidence")
+            .field("unit", &self.unit)
+            .field("principal", &self.money.key.id)
+            .field("lane", &self.money.lane)
+            .field("arrived", &self.money.arrived)
+            .field("ledgered", &self.ledgered)
+            .field("finished", &self.finished)
+            .field("governed", &self.grant.is_some())
+            .finish_non_exhaustive()
+    }
+}
+
+impl PlaneDriver {
+    /// This driver's open units, through its money seam (SHUTDOWN-HANG F4, at exit).
+    pub(crate) fn open_unit_evidence(&self, out: &mut Vec<OpenUnitEvidence>) {
+        self.money.open_units(out);
+    }
+
+    /// Whether two drivers share one money seam, so the exit walk lists its units once.
+    pub(crate) fn shares_money_with(&self, other: &PlaneDriver) -> bool {
+        std::sync::Arc::ptr_eq(&self.money, &other.money)
+    }
 }
 
 /// The driver's own facts about a unit (never the plane's word alone).

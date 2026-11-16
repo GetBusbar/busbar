@@ -182,7 +182,7 @@ pub(crate) fn parse_query(target: &str) -> Result<Query, &'static str> {
 
 /// The arrival of a record in milliseconds: sealed (`v7`), or the sealed second times 1000.
 pub(crate) fn arrived_at_ms(record: &AuditRecord) -> u64 {
-    if matches!(record.recipe, Recipe::V7) {
+    if record.recipe.carries_unit_facts() {
         record.unit.wall_ms
     } else {
         record.wall.saturating_mul(1_000)
@@ -243,7 +243,7 @@ pub(crate) struct Priceable {
 /// sealed bytes; only `kind` and `category` are looked up, and they are null for an instance this
 /// node no longer has.
 pub(crate) fn project(record: &AuditRecord, planes: Planes<'_>) -> (UnitRecord, Option<Priceable>) {
-    let v7 = matches!(record.recipe, Recipe::V7);
+    let v7 = record.recipe.carries_unit_facts();
     let target = record.what.destination.as_deref();
     let (instance, model) = match target {
         Some(lane) => match busbar_kernel_ledger::cost::split_plane_lane(lane) {
@@ -276,12 +276,14 @@ pub(crate) fn project(record: &AuditRecord, planes: Planes<'_>) -> (UnitRecord, 
         _ => record.usage.rate_card_version.map(hex::encode),
     };
     let priceable = match (&record.recipe, record.usage.rate_card_version, target) {
-        (Recipe::V5 | Recipe::V6 | Recipe::V7, Some(key), Some(lane)) => Some(Priceable {
-            key,
-            lane: lane.to_string(),
-            fee_count: record.usage.fee_count,
-            classes: classes.clone(),
-        }),
+        (Recipe::V5 | Recipe::V6 | Recipe::V7 | Recipe::V8, Some(key), Some(lane)) => {
+            Some(Priceable {
+                key,
+                lane: lane.to_string(),
+                fee_count: record.usage.fee_count,
+                classes: classes.clone(),
+            })
+        }
         _ => None,
     };
     let unit = UnitRecord {

@@ -23,6 +23,11 @@ pub(crate) const JOURNAL_TAG_V6: &str = "audit.v6";
 /// Journal encoding for recipe `v7`: the `v6` body plus the unit facts after it.
 pub(crate) const JOURNAL_TAG_V7: &str = "audit.v7";
 
+/// Journal encoding for the link-only line ([`crate::recipe::Recipe::V8`], SEALING-FIX §3.1; the
+/// design's "v7 line", renamed because `audit.v7` is the record recipe's): the `v7` content behind a
+/// fixed header of raw fingerprints and `linked_ms`, with no signature.
+pub(crate) const JOURNAL_TAG_V8: &str = "audit.v8";
+
 /// The original journal format retained for legacy digest recipes.
 pub(crate) const JOURNAL_TAG_V4: &str = "audit.v4";
 
@@ -46,6 +51,7 @@ impl std::error::Error for FieldTooLong {}
 pub fn journal_body(record: &AuditRecord) -> Result<Vec<u8>, FieldTooLong> {
     let mut w = Writer::new();
     w.text(match record.recipe {
+        crate::recipe::Recipe::V8 => JOURNAL_TAG_V8,
         crate::recipe::Recipe::V7 => JOURNAL_TAG_V7,
         crate::recipe::Recipe::V6 => JOURNAL_TAG_V6,
         crate::recipe::Recipe::V5 => JOURNAL_TAG,
@@ -56,10 +62,18 @@ pub fn journal_body(record: &AuditRecord) -> Result<Vec<u8>, FieldTooLong> {
         w.text(currency);
     }
     w.num(record.seq);
-    w.text(&record.prev_hash);
-    w.text(&record.hash);
-    w.opt_text(record.signature.as_deref());
-    w.opt_text(record.key_id.as_deref());
+    if record.recipe.is_link() {
+        // The link line's fixed header: both fingerprints as 32 raw bytes (the genesis
+        // predecessor as zeros), then the date it was linked. No signature: a stamp vouches.
+        w.bytes(&link_bytes(&record.prev_hash).0);
+        w.bytes(&link_bytes(&record.hash).0);
+        w.num(record.linked_ms);
+    } else {
+        w.text(&record.prev_hash);
+        w.text(&record.hash);
+        w.opt_text(record.signature.as_deref());
+        w.opt_text(record.key_id.as_deref());
+    }
     w.text(crate::record::subject_tag(&record.subject));
     w.text_fmt(format_args!("{}", SubjectValue(&record.subject)));
     w.num(record.what.unit_key.get());
@@ -104,7 +118,10 @@ pub fn journal_body(record: &AuditRecord) -> Result<Vec<u8>, FieldTooLong> {
         | crate::recipe::Recipe::V4 {
             legacy_rate_card_version,
         } => w.num(legacy_rate_card_version),
-        crate::recipe::Recipe::V5 | crate::recipe::Recipe::V6 | crate::recipe::Recipe::V7 => {
+        crate::recipe::Recipe::V5
+        | crate::recipe::Recipe::V6
+        | crate::recipe::Recipe::V7
+        | crate::recipe::Recipe::V8 => {
             w.num(u64::from(record.usage.rate_card_version.is_some()));
             if let Some(key) = &record.usage.rate_card_version {
                 w.bytes(key);
@@ -131,10 +148,18 @@ pub fn journal_body(record: &AuditRecord) -> Result<Vec<u8>, FieldTooLong> {
         w.num(child.get());
     }
     w.opt_text(record.correlation_hash.as_deref());
-    if matches!(record.recipe, crate::recipe::Recipe::V7) {
+    if record.recipe.carries_unit_facts() {
         write_unit_facts(&mut w, &record.unit);
     }
     w.finish()
+}
+
+/// A link line's fingerprint text as its 32 body bytes. Every link line [`crate::link`] builds holds
+/// 64 lowercase hex characters here, and the genesis predecessor the empty text (zeros).
+fn link_bytes(text: &str) -> crate::link::Fingerprint {
+    let parsed = crate::link::Fingerprint::from_hex(text);
+    debug_assert!(parsed.is_some(), "a link line holds a fingerprint");
+    parsed.unwrap_or(crate::link::Fingerprint::ZERO)
 }
 
 /// The `v7` tail, in the recipe's order.
@@ -228,7 +253,7 @@ impl Writer {
         }
     }
 
-    fn bytes(&mut self, bytes: &[u8]) {
+    pub(crate) fn bytes(&mut self, bytes: &[u8]) {
         match u32::try_from(bytes.len())
             .ok()
             .filter(|_| bytes.len() <= self.limit)

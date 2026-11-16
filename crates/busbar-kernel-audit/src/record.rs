@@ -376,6 +376,10 @@ pub struct AuditRecord {
     pub correlation_hash: Option<String>,
     /// What recipe `v7` adds; the default on a record sealed before it.
     pub unit: UnitFacts,
+    /// WHEN THIS LINE WAS LINKED INTO THE CHAIN, in milliseconds since the epoch, read under the
+    /// caller's lock just before [`AuditChain::link`] (SEALING-FIX §3.1). The date every sealing rule
+    /// uses; never the arrival `wall`. Digested by the link recipe only; 0 on every older recipe.
+    pub linked_ms: u64,
     /// WHERE this record sits in the chain, counting from one.
     ///
     /// The link alone says a record's neighbour is the one it names; it cannot say that the record
@@ -442,7 +446,7 @@ impl AuditRecord {
     /// and when the sealing process had none.
     #[must_use]
     pub fn unit_id(&self) -> Option<UnitId> {
-        if !matches!(self.recipe, crate::recipe::Recipe::V7) {
+        if !self.recipe.carries_unit_facts() {
             return None;
         }
         UnitId::of(self.node, self.unit.boot_nonce, self.what.unit_key.get())
@@ -501,9 +505,9 @@ pub trait Audit: sealed::Sealed {
 /// this type, not just the key, for exactly that reason.
 #[derive(Debug)]
 pub struct AuditChain {
-    tail_hash: String,
-    next_seq: u64,
-    sealed: u64,
+    pub(crate) tail_hash: String,
+    pub(crate) next_seq: u64,
+    pub(crate) sealed: u64,
     /// The key this chain signs with, when the node was given one.
     signer: Option<crate::sign::AuditSigningKey>,
     /// The node every record this chain seals names ([`AuditRecord::node`]). See
@@ -720,6 +724,7 @@ impl AuditChain {
                 .as_deref()
                 .map(|label| crate::digest::sha256_hex(label.as_bytes())),
             unit: inputs.unit,
+            linked_ms: 0,
             seq: self.next_seq,
             prev_hash: std::mem::take(&mut self.tail_hash),
             recipe,

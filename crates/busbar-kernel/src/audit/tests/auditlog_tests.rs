@@ -21,6 +21,7 @@ fn assert_roundtrip(seq: u64, prev_hash: &str, ts: u64, act: &str, res: &str, ou
         hash: String::new(),
         scheme: crate::audit_ring::AUDIT_SCHEME_PIPE,
         recorded_here: true,
+        ..Default::default()
     };
     let legacy = digest(&entry);
     assert_eq!(
@@ -87,11 +88,11 @@ async fn native_emit(
     (entry.seq, entry.prev_hash, entry.hash)
 }
 
-struct NativeHarness {
+pub(super) struct NativeHarness {
     native: Arc<NativeAudit>,
-    log: PlaneAuditLog,
+    pub(super) log: PlaneAuditLog,
 }
-async fn native_over(store: Arc<CoreStore>) -> NativeHarness {
+pub(super) async fn native_over(store: Arc<CoreStore>) -> NativeHarness {
     let kind = fresh_test_kind_id();
     stream_registry::register(
         kind,
@@ -108,12 +109,12 @@ async fn native_over(store: Arc<CoreStore>) -> NativeHarness {
     }
 }
 impl NativeHarness {
-    async fn restore(&self) -> RecordStoreResult<AuditRestored> {
+    pub(super) async fn restore(&self) -> RecordStoreResult<AuditRestored> {
         let result = restore_native(&self.log, &self.native).await;
         self.native.ready.store(result.is_ok(), Ordering::Release);
         result
     }
-    async fn emit(&self, scope: &str, suffix: Vec<u8>) -> (u64, String, String) {
+    pub(super) async fn emit(&self, scope: &str, suffix: Vec<u8>) -> (u64, String, String) {
         if !self.native.ready.load(Ordering::Acquire) {
             self.restore().await.expect("native restore before append");
         }
@@ -217,6 +218,7 @@ async fn a_converted_sites_seam_record_matches_the_legacy_ring_hash() {
         hash: String::new(),
         scheme: crate::audit_ring::AUDIT_SCHEME_PIPE,
         recorded_here: true,
+        ..Default::default()
     };
     assert_eq!((seq1, prev1.as_str()), (1, ""), "genesis position");
     assert_eq!(hash1, digest(&mk(1, ts, act, String::new())));
@@ -276,6 +278,7 @@ async fn seam_write_then_reboot_restore_roundtrips_byte_identically() {
         hash: String::new(),
         scheme: crate::audit_ring::AUDIT_SCHEME_PIPE,
         recorded_here: false,
+        ..Default::default()
     };
     let legacy_head = mk(1, ts, "hook.register", String::new());
     let legacy_tail = mk(2, ts + 60, "hook.delete", hash1.clone());
@@ -1577,6 +1580,7 @@ fn accepted_event_projection_preserves_pinned_identity_and_bounds_disclosure() {
         hash: "digest".into(),
         scheme: crate::audit_ring::AUDIT_SCHEME_PIPE,
         recorded_here: true,
+        ..Default::default()
     };
     let parsed = |rendered: crate::export::projection::Rendered| -> serde_json::Value {
         serde_json::from_slice(&rendered.line).unwrap()
@@ -1731,6 +1735,7 @@ fn live_audit_page_metadata_tracks_append_and_eviction_without_claiming_complete
                 hash: seq.to_string(),
                 scheme: crate::audit_ring::AUDIT_SCHEME_PIPE,
                 recorded_here: false,
+                ..Default::default()
             },
             "admin",
             Vec::new(),

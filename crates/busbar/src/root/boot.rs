@@ -2140,6 +2140,8 @@ impl BookPreparation {
             node,
             deployment_id,
         );
+        // ADMIN-API-1.6 17: the node announces itself in the audit feed.
+        busbar_kernel::audit::events::engine_event(busbar_kernel::audit::events::node_boot(&[]));
         // ADMIN-API-1.6 6.1: boot publishes through the same compare-and-set as every later
         // publication, so a restart never repeats a generation the previous process served.
         if let Some(live) = busbar_kernel::persistence::boot_identity::live() {
@@ -2212,6 +2214,10 @@ impl BookPreparation {
         )));
         let journal = self.journal.as_ref().unwrap().clone();
         let shared = self.shared.as_ref().unwrap();
+        shared
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .audit_hints = Some(Arc::downgrade(&self.governance));
         self.phase = BookPhase::AttachRecovery;
         self.governance
             .attach_recovery_sink(

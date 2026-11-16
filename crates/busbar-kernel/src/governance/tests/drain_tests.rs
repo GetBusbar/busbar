@@ -194,3 +194,82 @@ fn exit_codes_follow_the_custody_lists() {
         .push(item("metering", format_args!("z")));
     assert_eq!(unpersisted.exit_code(), 70);
 }
+
+/// 8.13: every refusal after the gate's hold (a full concurrency gauge, a spent requests limit)
+/// drops the grant and its hold with it, so no refused admission leaks a live count.
+#[tokio::test]
+async fn a_refusal_after_the_hold_leaks_no_live_count() {
+    use crate::config::groups::{GroupCfg, LimitCfg, LimitMetric, LimitWindow};
+    let gov = GovState::new_with_core(crate::real_store::core().await, None, None)
+        .await
+        .expect("native Store constructs");
+    let limit = |metric: LimitMetric, amount: u64, per: Option<LimitWindow>| LimitCfg {
+        metric,
+        amount,
+        per,
+        scope: None,
+        on_exhaust: None,
+        downgrade_to: None,
+        admission: None,
+        on_exhaustion: None,
+    };
+    let group = |limits: Vec<LimitCfg>| GroupCfg {
+        enabled: true,
+        limits,
+        ..Default::default()
+    };
+    let groups = std::collections::BTreeMap::from([
+        (
+            "concurrent".to_string(),
+            group(vec![limit(LimitMetric::Concurrent, 1, None)]),
+        ),
+        (
+            "requests".to_string(),
+            group(vec![limit(
+                LimitMetric::Requests,
+                1,
+                Some(LimitWindow::Minute),
+            )]),
+        ),
+    ]);
+    let cost = crate::cost::CostModel::resolve_parts(None, 0, &groups);
+    let key = |id: &str, group: &str| crate::governance::VirtualKey {
+        id: id.into(),
+        generation_hash: format!("h:{id}"),
+        name: id.into(),
+        enabled: true,
+        group: Some(group.into()),
+        revision: 1,
+        ..Default::default()
+    };
+    let now = 1_700_000_000;
+
+    let concurrent = key("vk_gate_concurrent", "concurrent");
+    let held = gov
+        .try_admit(&cost, &concurrent, "", now)
+        .expect("the first admission fits the gauge");
+    assert_eq!(gov.admissions().live(), 1);
+    assert!(
+        gov.try_admit(&cost, &concurrent, "", now).is_err(),
+        "the concurrency gauge is full"
+    );
+    assert_eq!(
+        gov.admissions().live(),
+        1,
+        "the refused admission's hold dropped with its grant"
+    );
+    drop(held);
+    assert_eq!(gov.admissions().live(), 0);
+
+    let requests = key("vk_gate_requests", "requests");
+    drop(
+        gov.try_admit(&cost, &requests, "", now)
+            .expect("the minute's one request"),
+    );
+    assert_eq!(gov.admissions().live(), 0);
+    assert!(
+        gov.try_admit(&cost, &requests, "", now).is_err(),
+        "the requests limit is spent"
+    );
+    assert_eq!(gov.admissions().live(), 0, "a limit refusal leaks no count");
+}

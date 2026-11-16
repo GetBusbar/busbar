@@ -8,6 +8,7 @@ use busbar_contract::caps::{Abort, OriginKind, Outcome, ReasonCode, UnitKey};
 use busbar_contract::records::{RecordStoreError, RecordStoreResult};
 use busbar_kernel::governance::unit_checkpoint::UnitCheckpoint;
 use busbar_kernel::governance::unit_checkpoint_store::UnitCheckpointEvidence;
+use busbar_kernel::persistence::journal::runtime::Carried;
 use busbar_kernel_audit::{
     Audit as _, AuditInputs, Controls, FinishClass, HookApplied, HookHead, OpClassId, OutcomeFacts,
     Subject, Usage, UsageLine, What,
@@ -45,6 +46,7 @@ pub(super) async fn confirm(
     book: &Arc<Mutex<Durability>>,
     evidence: &UnitCheckpointEvidence,
     snapshot: &UnitCheckpoint,
+    hint: Option<Carried>,
 ) -> RecordStoreResult<()> {
     let facts: RunningAudit = serde_json::from_slice(
         snapshot
@@ -53,10 +55,25 @@ pub(super) async fn confirm(
             .ok_or_else(|| error("terminal unit lacks captured admission audit facts"))?,
     )
     .map_err(error)?;
-    if let Some(audit) = evidence
-        .find_audit(snapshot.unit, facts.incarnation)
-        .await?
-    {
+    // A line this process sealed is read once, by the evidence carried from its seal
+    // (SHUTDOWN-HANG F1a); only a unit with no hint takes the journal scan.
+    let found = match hint {
+        Some(line) => {
+            let audit = evidence.find_audit_at(line).await?;
+            if audit.what.unit_key.get() != snapshot.unit
+                || audit.what.incarnation != facts.incarnation
+            {
+                return Err(error("terminal unit's audit hint names another unit"));
+            }
+            Some(audit)
+        }
+        None => {
+            evidence
+                .find_audit(snapshot.unit, facts.incarnation)
+                .await?
+        }
+    };
+    if let Some(audit) = found {
         if audit.subject != Subject::PrincipalId(snapshot.principal.clone())
             || audit.what.op_class.as_str() != facts.op_class
         {

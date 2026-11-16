@@ -35,6 +35,8 @@ async-trait = { workspace = true }
 # `main.rs` have to know this plane exists.
 busbar-core-oauth2 = { path = "../../crates/busbar-core-oauth2" }
 busbar-migrations = { path = "../../crates/busbar-migrations" }
+# The boot's one-time config upgrade (MIGRATE-ON-BOOT), cold library code.
+busbar-migrate = { path = "../../crates/busbar-migrate" }
 # The admin API service (`/api/v1/admin/*`), a MANDATORY sibling crate (not a plugin). Always linked;
 # `main` registers its mount seam unconditionally. Feature-neutral defaults off — the binary's own
 # feature forwards below turn on `busbar-admin`'s features in lock-step with busbar-core's.
@@ -211,6 +213,10 @@ socket2 = { workspace = true }
 # else moved to busbar-core. Full rationale in main.rs at the `#[global_allocator]` site.
 [target.'cfg(not(target_env = "msvc"))'.dependencies]
 tikv-jemallocator = { workspace = true }
+
+# Close-on-exec before the migrate re-exec (root/migrate.rs).
+[target.'cfg(unix)'.dependencies]
+close_fds = { workspace = true }
 
 [target.'cfg(target_env = "musl")'.dependencies]
 tikv-jemallocator = { workspace = true, features = ["disable_initial_exec_tls"] }
@@ -673,11 +679,6 @@ path = "tests/boot_lines_neutrality.rs"
 name = "no_data_dir_neutrality"
 path = "tests/no_data_dir_neutrality.rs"
 
-# Boots the real binary on durable-Store configs that name an admin token (UPG-A30b).
-[[test]]
-name = "legacy_file_overlay_is_never_dropped"
-path = "tests/legacy_file_overlay_is_never_dropped.rs"
-
 [[test]]
 name = "law7_direct_model_route"
 path = "tests/law7_direct_model_route.rs"
@@ -732,57 +733,6 @@ path = "tests/default_config_no_outbound.rs"
 [[test]]
 name = "startup_upgrade_sqlite"
 path = "tests/startup_upgrade_sqlite.rs"
-
-[package.metadata.busbar.migration]
-# THE ROOT MIGRATION TABLE (BUSBAR-1.6.0.md §2), @generated from plugins.yaml (`migration:` and each
-# entry's `retired:` and `former_names:`); src/root/tests/migration_table.rs is red on an edit and prints the
-# render to paste.
-# build.rs emits it as `MIGRATION_ROWS`, which the root hands to the kernel before any config is read.
-"export_module_streams" = "prometheus:metrics | request-log-webhook:logs | request-log-file:logs | otlp:traces"
-"export_modules" = "prometheus | request-log-webhook | request-log-file | otlp"
-"export_trace_instance" = "traces"
-"export_trace_module" = "otlp"
-"export_type_keys" = "prometheus:metrics:prometheus | request-log-webhook:req-log:request-log-webhook | request-log-file:req-log-file:request-log-file | generic-webhook:req-log-audit:request-log-webhook"
-"gov14_busy_timeout_key" = "sqlite_busy_timeout_ms"
-"gov14_change" = "governance.db_path -> store: { module: sqlite, settings: { db_path } } (1.4.x's only durable backend was SQLite)"
-"gov14_db_path" = "busbar-governance.db"
-"gov14_module" = "sqlite"
-"hook_1x_url_transport" = "webhook"
-"metrics_type_key" = "prometheus"
-"module_examples" = "sqlite | postgres | valkey"
-"name_1_5_5.busbar-auth-github" = "busbar-auth-github-plugin"
-"name_1_5_5.busbar-auth-ldap" = "busbar-auth-ldap-plugin"
-"name_1_5_5.busbar-auth-oidc" = "busbar-auth-oidc-plugin"
-"name_1_5_5.busbar-hook-webrequest" = "busbar-webrequest"
-"name_1_5_5.busbar-secret-vault" = "busbar-hashicorp-vault"
-"name_1_5_5.busbar-store-mysql" = "busbar-store-mysql-plugin"
-"name_1_5_5.busbar-store-postgres" = "busbar-store-postgres-plugin"
-"name_1_5_5.busbar-store-sqlite" = "busbar-store-sqlite-plugin"
-"name_1_5_5.busbar-store-valkey" = "busbar-store-valkey-plugin"
-"observability_home" = "the `export:` NAMED map — a `module: prometheus` / `module: request-log-webhook` / `module: otlp` instance (all telemetry egress is now the single `export:` surface)"
-"observability_log_change" = "observability.request_log_webhook_url (+ webhook limits) -> export.request-log-webhook.settings (built-in exporter)"
-"observability_log_keys" = "request_log_webhook_url:url | max_inflight_webhook_deliveries:max_inflight_deliveries | webhook_delivery_timeout_secs:delivery_timeout_secs"
-"observability_log_type_key" = "request-log-webhook"
-"observability_trace_key" = "otlp_url"
-"observability_trace_key_1_4" = "otlp_endpoint"
-"renamed_display" = "Valkey"
-"retired_url_scheme" = "redis"
-"snapshot_recorder_failed" = "prometheus recorder install failed; /metrics will be empty"
-"store_1_5_default" = "memory"
-"former.mysql" = "busbar-store-mysql-plugin"
-"former.postgres" = "busbar-store-postgres-plugin"
-"former.sqlite" = "busbar-store-sqlite-plugin"
-"former.valkey" = "busbar-store-valkey-plugin"
-"retired.store.redis" = "valkey"
-"retired.store.busbar-store-redis" = "valkey"
-"retired.store.busbar-store-redis-plugin" = "valkey"
-"manifest.valkey" = "busbar-store-valkey"
-"asset.valkey" = "busbar-store-valkey"
-"former.vault" = "busbar-hashicorp-vault"
-"former.oidc" = "busbar-auth-oidc-plugin"
-"former.github" = "busbar-auth-github-plugin"
-"former.ldap" = "busbar-auth-ldap-plugin"
-"former.webrequest" = "busbar-webrequest"
 
 [workspace]
 # THE DISTRIBUTION WORKSPACE. The shipped binary is core (path crates beside this one) plus the
@@ -931,6 +881,9 @@ axum = "0.8"
 # STANDARD / URL_SAFE_NO_PAD encode and decode identically on 0.22 and 0.23 (same PAD/NO_PAD configs).
 base64 = "0.22"
 bytes = "1"
+# Step 5's re-exec marks every descriptor >= 3 close-on-exec (root/migrate.rs). Builder path only
+# (allow_filesystem(false)): 0.3.2's /dev/fd walk is unsound; see its cargo-vet exemption.
+close_fds = "=0.3.2"
 # CPU-core enumeration + per-thread pinning for the thread-per-core data plane (the one unix
 # topology). Used ONLY by the `busbar` binary's boot seam; nothing on the request path names it.
 core_affinity = "0.8"

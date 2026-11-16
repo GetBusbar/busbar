@@ -1301,21 +1301,34 @@ fn an_admin_view_shows_only_declared_public_setting_values() {
         } },
         "other": { "module": "plain", "settings": { "url": "https://plain.internal" } }
     });
-    super::redact_settings_bags_with(&mut v, &public);
+    // ACCEPTED DIFFERENCE (coordinator ruling ADM-14 Q2, AGREED.md coordinator entry, the owner's
+    // standing guidance): the settings_keys/settings_public projection moved to the
+    // {set, secret_ref} position shape of v1/secret_rule.rs; a declared public value is still
+    // shown as written, every other key is a position, and no value is ever shown.
+    super::redact_settings_bags_with(
+        &mut v,
+        &busbar_contract::secret_ref::Sugars::default(),
+        &public,
+    );
     let text = v.to_string();
     for hidden in ["hunter2", "u-value", "https://plain.internal"] {
         assert!(!text.contains(hidden), "`{hidden}` shown: {text}");
     }
+    let position = serde_json::json!({ "set": true, "secret_ref": null });
     assert_eq!(
-        v["store"]["settings_public"],
-        serde_json::json!({ "url": "https://ledger.internal" })
+        v["store"]["settings"],
+        serde_json::json!({
+            "url": "https://ledger.internal",
+            "password": position,
+            "undeclared": position
+        })
     );
     assert_eq!(
-        v["store"]["settings_keys"],
-        serde_json::json!(["password", "undeclared", "url"])
+        v["other"]["settings"],
+        serde_json::json!({ "url": position })
     );
-    assert!(v["other"].get("settings_public").is_none(), "{text}");
-    assert_eq!(v["other"]["settings_keys"], serde_json::json!(["url"]));
+    assert!(v["store"].get("settings_keys").is_none(), "{text}");
+    assert!(v["store"].get("settings_public").is_none(), "{text}");
 }
 
 #[test]

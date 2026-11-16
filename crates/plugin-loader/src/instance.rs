@@ -25,12 +25,12 @@ use busbar_plugin_abi::host_side::caller::{
 use busbar_plugin_abi::host_side::needs::Needs;
 use busbar_plugin_abi::host_side::scrub::Scrub;
 use busbar_plugin_abi::need::{egress, need_flag, op};
-use busbar_plugin_abi::records::{tag, CeilingRec, EndpointRec, Records};
+use busbar_plugin_abi::records::{tag, CeilingRec, EndpointRec, Records, Reply, Writer};
 use busbar_plugin_abi::types::KindCode;
 
 use crate::admit::Admitted;
 use crate::binder::ConfigBinder;
-use crate::encode::plane;
+use crate::encode::{auth as encode_auth, plane, secret as encode_secret};
 use crate::ports::auth::{AuthPort, IssuedShape};
 use crate::ports::export::ExportPort;
 use crate::ports::hook::HookPort;
@@ -50,6 +50,8 @@ pub struct Registry<N: Needs> {
     images: Vec<ImageEntry>,
     /// Round 31: each instance's settled answer from its last `open`, by configured name, until taken once.
     settled: Mutex<HashMap<Box<str>, Settled>>,
+    /// Every admitted secret image's declared shorthands, in admission order (decoded at `add`).
+    sugars: Vec<SugarDecl>,
     watchdog: OnceLock<std::thread::JoinHandle<()>>,
 }
 
@@ -62,6 +64,10 @@ struct ImageEntry {
     described: Described,
     errors: &'static ErrorBook,
     ceilings: [u32; 64],
+    /// D_ISSUED_KIND with its D_ISSUED_SHAPE (auth images), decoded at `add`.
+    issued: Option<(Box<str>, IssuedShape)>,
+    /// D_DIALECT_AUTH rows (plane images), decoded at `add`.
+    dialect_auth: Vec<plane::DialectAuthOwned>,
 }
 
 /// `config_json` is the operator's config for this instance as core holds it (secret references with their
@@ -111,6 +117,7 @@ impl<N: Needs> Registry<N> {
             images: Vec::new(),
             settled: Mutex::new(HashMap::new()),
             watchdog: OnceLock::new(),
+            sugars: Vec::new(),
         }
     }
 
@@ -188,6 +195,46 @@ impl<N: Needs> Registry<N> {
                 "plugin ceiling clamped into its range"
             );
         }
+        let invalid = |what: &str, e: busbar_plugin_abi::records::RecErr| Refusal {
+            code: RefusalCode::DescribeInvalid,
+            field: "describe.items",
+            plugin: Some(identity.to_owned()),
+            have: format!("{what}: {e:?}"),
+            want: "describe items that decode under the image's kind".to_owned(),
+            link: None,
+        };
+        let mut frame = Reply::new();
+        for (t, b) in &described.items {
+            frame
+                .put(*t, b)
+                .map_err(|_| invalid("describe items", busbar_plugin_abi::records::RecErr::Size))?;
+        }
+        let items = Records::new(frame.as_bytes());
+        let (sugars, issued, dialect_auth) = match described.kind {
+            KindCode::Secret => {
+                let mut sugars =
+                    encode_secret::decode_sugars(items).map_err(|e| invalid("D_SUGAR", e))?;
+                for decl in &mut sugars {
+                    decl.identity = Arc::from(identity);
+                }
+                (sugars, None, Vec::new())
+            }
+            KindCode::Auth => {
+                let issued = encode_auth::decode_issued_shape(items)
+                    .map_err(|e| invalid("D_ISSUED_SHAPE", e))?;
+                (Vec::new(), issued, Vec::new())
+            }
+            KindCode::Plane => {
+                let rows = plane::decode_dialect_auth(items)
+                    .map_err(|e| invalid("D_DIALECT_AUTH", e))?
+                    .iter()
+                    .map(|row| row.to_owned())
+                    .collect();
+                (Vec::new(), None, rows)
+            }
+            _ => (Vec::new(), None, Vec::new()),
+        };
+        self.sugars.extend(sugars);
         self.images.push(ImageEntry {
             identity: Arc::from(identity),
             former_names: former_names.iter().map(|w| Box::from(*w)).collect(),
@@ -195,6 +242,8 @@ impl<N: Needs> Registry<N> {
             described,
             errors,
             ceilings: row.row,
+            issued,
+            dialect_auth,
         });
         Ok(())
     }
@@ -274,7 +323,7 @@ impl<N: Needs> Registry<N> {
     /// `busbar_contract::secret_ref::Sugars::declare` (which refuses core words, duplicate words and duplicate
     /// roles) and hands the resulting `Sugars` to the binder (§12.7) and to its own config-section parsing.
     pub fn sugars(&self) -> &[SugarDecl] {
-        todo!("W1-A6: D_SUGAR items are decoded by encode::secret::decode_sugars at add")
+        &self.sugars
     }
 
     /// Round 11: per admitted auth image, its identity and its D_OUTBOUND_STYLE words (decoded at `add`), in
@@ -335,7 +384,11 @@ impl<N: Needs> Registry<N> {
     /// Round 12: per issued-credential kind any admitted auth image declares (D_ISSUED_KIND), the shape its
     /// D_ISSUED_SHAPE item states (§8.3), decoded at `add`. Read only by issued credentials (§12.8).
     pub fn issued_shapes(&self) -> Vec<(&str /* issued kind */, IssuedShape)> {
-        todo!("W1-A7: D_ISSUED_SHAPE is decoded by encode::auth at add")
+        self.images
+            .iter()
+            .filter_map(|e| e.issued.as_ref())
+            .map(|(kind, shape)| (&**kind, shape.clone()))
+            .collect()
     }
 
     /// Round 13: per admitted plane image, its identity and its D_PROVIDER_SCHEMA text (§8.6 provider keys),
@@ -353,7 +406,11 @@ impl<N: Needs> Registry<N> {
     /// Round 14 (round 15: typed): per admitted plane image, its identity and its D_DIALECT_AUTH rows, decoded at
     /// `add` (`plane::decode_dialect_auth`, owned copies). Read only by K6's binding materialisation (§12.18).
     pub fn dialect_auth(&self) -> Vec<(&str, Vec<plane::DialectAuthOwned>)> {
-        todo!("W1-A10: D_DIALECT_AUTH is decoded by plane::decode_dialect_auth at add")
+        self.images
+            .iter()
+            .filter(|e| e.described.kind == KindCode::Plane)
+            .map(|e| (&*e.identity, e.dialect_auth.clone()))
+            .collect()
     }
 
     /// Allocate the instance id and watchdog slot (the slot record carries (kind, configured name, a fresh
@@ -481,8 +538,80 @@ impl<N: Needs> Registry<N> {
         instances: &[(KindCode, InstanceSpec<'_>)],
         sugars: &busbar_contract::secret_ref::Sugars,
     ) -> Result<BootPlan, OpenError> {
-        let _ = (instances, sugars);
-        todo!()
+        let secret_deps: Vec<Vec<usize>> = instances
+            .iter()
+            .enumerate()
+            .map(|(at, (_, spec))| self.secret_deps(at, instances, sugars, spec))
+            .collect();
+        let mut plan = BootPlan { steps: Vec::new() };
+        let mut done = vec![false; instances.len()];
+        // 2a: the secret instances the stores' bags reference, transitively, dependencies first.
+        for (at, (kind, _)) in instances.iter().enumerate() {
+            if *kind == KindCode::Store {
+                for &dep in &secret_deps[at] {
+                    visit_secret(dep, 1, &mut Vec::new(), &secret_deps, &mut done, &mut plan)?;
+                }
+            }
+        }
+        // 2b: the store.
+        for (at, (kind, _)) in instances.iter().enumerate() {
+            if *kind == KindCode::Store {
+                plan.steps
+                    .push((u32::try_from(at).unwrap_or(u32::MAX), BootPhase::Store));
+                done[at] = true;
+            }
+        }
+        // 2c: everything else, kind by kind, config order within a kind.
+        for want in [
+            KindCode::Secret,
+            KindCode::Auth,
+            KindCode::Hook,
+            KindCode::Export,
+            KindCode::Plane,
+            KindCode::Transport,
+        ] {
+            for (at, (kind, _)) in instances.iter().enumerate() {
+                if *kind == want && !done[at] {
+                    plan.steps
+                        .push((u32::try_from(at).unwrap_or(u32::MAX), BootPhase::Rest));
+                    done[at] = true;
+                }
+            }
+        }
+        Ok(plan)
+    }
+
+    /// The configured secret instances (indices into `instances`, never `at` itself) whose module the bag of
+    /// `spec` references at any position: a canonical `module:` or a declared sugar word, resolved through the
+    /// registry's identities and `former_names` and through `sugars`. An unparsable bag has no references.
+    fn secret_deps(
+        &self,
+        at: usize,
+        instances: &[(KindCode, InstanceSpec<'_>)],
+        sugars: &busbar_contract::secret_ref::Sugars,
+        spec: &InstanceSpec<'_>,
+    ) -> Vec<usize> {
+        let Ok(bag) = serde_json::from_slice::<serde_json::Value>(spec.config_json) else {
+            return Vec::new();
+        };
+        let mut modules = Vec::new();
+        collect_modules(&bag, sugars, &mut modules);
+        let mut deps = Vec::new();
+        for module in &modules {
+            let identity = self
+                .resolve_module(module)
+                .map_or(module.as_str(), |(identity, _, _)| identity);
+            for (to, (kind, other)) in instances.iter().enumerate() {
+                if to != at
+                    && *kind == KindCode::Secret
+                    && other.identity == identity
+                    && !deps.contains(&to)
+                {
+                    deps.push(to);
+                }
+            }
+        }
+        deps
     }
 
     /// A pushed desired state (today's hook/plane `configure`): merge `patch` (a JSON object) into the stored
@@ -556,6 +685,87 @@ pub struct ErrorCodesRefused {
     pub field: &'static str,
     pub have: Box<str>,
     pub want: &'static str,
+}
+
+/// Every module name a config bag references: the `module` string of an object and the owner of each declared
+/// sugar word used as a key, at any depth.
+fn collect_modules(
+    value: &serde_json::Value,
+    sugars: &busbar_contract::secret_ref::Sugars,
+    out: &mut Vec<String>,
+) {
+    match value {
+        serde_json::Value::Object(map) => {
+            if let Some(serde_json::Value::String(module)) = map.get("module") {
+                out.push(module.clone());
+            }
+            for (key, inner) in map {
+                if let Some(sugar) = sugars.get(key) {
+                    out.push(sugar.plugin.clone());
+                }
+                collect_modules(inner, sugars, out);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for inner in items {
+                collect_modules(inner, sugars, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The deepest chain of secret instances a store's boot may wait on (r6 §3 2a).
+const SECRET_DEPTH_MAX: usize = 4;
+
+/// Post-order walk of one secret instance's dependencies into the 2a steps; a cycle or a chain deeper than
+/// `SECRET_DEPTH_MAX` refuses CONFIG naming the instance indices.
+fn visit_secret(
+    at: usize,
+    depth: usize,
+    path: &mut Vec<usize>,
+    deps: &[Vec<usize>],
+    done: &mut [bool],
+    plan: &mut BootPlan,
+) -> Result<(), OpenError> {
+    if path.contains(&at) {
+        let chain: Vec<String> = path.iter().chain([&at]).map(usize::to_string).collect();
+        return Err(OpenError::Config {
+            code: refused::R_CONFIG,
+            text: format!(
+                "secret instances form a reference cycle ({})",
+                chain.join(" -> ")
+            ),
+            error: None,
+        });
+    }
+    if done[at] {
+        return Ok(());
+    }
+    if depth > SECRET_DEPTH_MAX {
+        return Err(OpenError::Config {
+            code: refused::R_CONFIG,
+            text: format!(
+                "secret instance {at} is more than {SECRET_DEPTH_MAX} references deep ({})",
+                path.iter()
+                    .map(usize::to_string)
+                    .collect::<Vec<_>>()
+                    .join(" -> ")
+            ),
+            error: None,
+        });
+    }
+    path.push(at);
+    for &dep in &deps[at] {
+        visit_secret(dep, depth + 1, path, deps, done, plan)?;
+    }
+    path.pop();
+    done[at] = true;
+    plan.steps.push((
+        u32::try_from(at).unwrap_or(u32::MAX),
+        BootPhase::StoreSecrets,
+    ));
+    Ok(())
 }
 
 /// Indices into the `instances` slice given to `boot_plan`, in execution order, with the r6 phase of each.
@@ -1133,6 +1343,34 @@ pub enum OpenError {
 #[cfg(test)]
 mod l2_tests {
     use super::*;
+
+    fn walk(deps: &[Vec<usize>], from: usize) -> Result<Vec<u32>, OpenError> {
+        let mut done = vec![false; deps.len()];
+        let mut plan = BootPlan { steps: Vec::new() };
+        visit_secret(from, 1, &mut Vec::new(), deps, &mut done, &mut plan)?;
+        Ok(plan.steps.into_iter().map(|(i, _)| i).collect())
+    }
+
+    #[test]
+    fn secret_dependencies_come_first_and_once() {
+        let deps = vec![vec![1, 2], vec![2], vec![]];
+        assert_eq!(walk(&deps, 0).unwrap(), vec![2, 1, 0]);
+    }
+
+    #[test]
+    fn a_secret_cycle_refuses_config_naming_the_indices() {
+        let deps = vec![vec![1], vec![0]];
+        let err = walk(&deps, 0).unwrap_err();
+        assert!(matches!(&err, OpenError::Config { text, .. } if text.contains("0 -> 1 -> 0")));
+    }
+
+    #[test]
+    fn a_secret_chain_deeper_than_four_is_refused() {
+        let deps = vec![vec![1], vec![2], vec![3], vec![4], vec![5], vec![]];
+        assert!(matches!(walk(&deps, 0), Err(OpenError::Config { .. })));
+        let four = vec![vec![1], vec![2], vec![3], vec![]];
+        assert_eq!(walk(&four, 0).unwrap(), vec![3, 2, 1, 0]);
+    }
 
     fn body(numbers: &[u16]) -> Vec<u8> {
         numbers.iter().flat_map(|n| n.to_le_bytes()).collect()
