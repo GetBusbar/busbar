@@ -100,7 +100,7 @@ deny = [
     { crate = "aws-lc-fips-sys", wrappers = ["aws-lc-rs"], reason = "the private FIPS build only" },
     { crate = "ed25519-dalek", wrappers = ["busbar-crypto-backend"], reason = "Ed25519 is AWS-LC's, through the facade" },
     { crate = "ed25519", wrappers = ["busbar-crypto-backend", "ed25519-dalek"], reason = "Ed25519 is AWS-LC's, through the facade" },
-    { crate = "curve25519-dalek", wrappers = ["busbar-crypto-backend", "ed25519-dalek"], reason = "Ed25519 is AWS-LC's, through the facade" },
+    { crate = "curve25519-dalek", wrappers = ["busbar-crypto-backend", "ed25519-dalek"], reason = "the backend's pinned-key point check only (QE-BOOT-KEYCHECK); Ed25519 signing and verification are AWS-LC's" },
     { crate = "rcgen", wrappers = ["busbar-crypto-backend"], reason = "certificates are minted by the crypto backend" },
     { crate = "x509-parser", wrappers = ["busbar-crypto-backend", "rcgen"], reason = "only rcgen's verifier carries it" },
     { crate = "der-parser", wrappers = ["x509-parser"], reason = "only x509-parser carries it" },

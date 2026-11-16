@@ -40,6 +40,17 @@ pub(crate) fn is_small_order(pk: &[u8; 32]) -> bool {
         .any(|c| *c == y)
 }
 
+/// Whether `pk` is the canonical encoding of a point on edwards25519 (RFC 8032 §5.1.3): `y < p`,
+/// `(y^2 - 1) / (d y^2 + 1)` is a square mod p, and the sign bit is clear when `x = 0`. curve25519-dalek
+/// decompresses (it reduces `y` mod p and takes `-0 = 0`), so the canonical round trip refuses what it
+/// would otherwise accept. Variable time is fine: public keys only. Input validation for pinned keys
+/// (QE); no signature is verified here.
+pub(crate) fn on_curve(pk: &[u8; 32]) -> bool {
+    curve25519_dalek::edwards::CompressedEdwardsY(*pk)
+        .decompress()
+        .is_some_and(|point| point.compress().0 == *pk)
+}
+
 /// Whether `pk` is acceptable as an Ed25519 public key encoding, by byte comparison alone (no
 /// arithmetic; UNSAFE-MIN Q9b): the masked little-endian `y` is below `p` (canonical), and the two
 /// points whose `x` is zero (`y` = 1 and `y` = p - 1) do not carry the sign bit, which would encode

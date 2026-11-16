@@ -11,8 +11,10 @@
 //!   `tests/` tree. A file syn cannot parse is scanned line by line instead, so it is never skipped.
 //! - `crypto-graph`: AWS-LC is the one crypto provider, reached only through the facade (229). In
 //!   the root workspace's feature-resolved graph (`cargo tree`: every feature, target and edge
-//!   kind), `ring`, `sha2` and `ed25519-dalek` are built only beneath `busbar-crypto*`. Dev edges
-//!   count: tests use the facade too.
+//!   kind), `ring`, `sha2`, `ed25519-dalek` and `curve25519-dalek` are built only beneath
+//!   `busbar-crypto*`. Dev edges count: tests use the facade too. And `curve25519-dalek` is built
+//!   only beneath `busbar-crypto-backend`, never by the facade itself: a FIPS build swaps the
+//!   backend and keeps the facade, and admits no unvalidated crypto crate (QE-BOOT-KEYCHECK).
 //!
 //! Usage: `busbar-ci-checks [check...]`; with no argument every check runs. Each finding prints as
 //! one line; any finding or error fails the run.
@@ -33,8 +35,13 @@ use syn::{
 const CHECKS: [&str; 2] = ["no-getrandom", "crypto-graph"];
 /// The crypto seam: `busbar-crypto` and `busbar-crypto-backend` (crate directories and packages).
 const SEAM: &str = "busbar-crypto";
+/// The backend inside the seam: a private build swaps it by `[patch]`.
+const BACKEND: &str = "busbar-crypto-backend";
 /// Crypto crates reachable only through the seam.
-const SEAM_ONLY: [&str; 3] = ["ring", "sha2", "ed25519-dalek"];
+const SEAM_ONLY: [&str; 4] = ["ring", "sha2", "ed25519-dalek", "curve25519-dalek"];
+/// Crates only core's software backend may build: never the facade, which a FIPS build keeps
+/// (QE-BOOT-KEYCHECK: curve25519-dalek decompresses pinned Ed25519 keys in the backend alone).
+const BACKEND_ONLY: [&str; 1] = ["curve25519-dalek"];
 
 fn main() -> ExitCode {
     let root = repo_root();
@@ -448,26 +455,41 @@ fn rel(root: &Path, file: &Path) -> String {
 /// The root workspace's feature-resolved graph (every feature, target and edge kind), outside the
 /// seam: cargo's own resolver decides what builds. `Cargo.lock` alone over-reports: it also records
 /// an optional dependency that only a weak feature names (rustls-webpki's `alloc = ["ring?/alloc"]`
-/// keeps a `ring` entry that no build compiles).
+/// keeps a `ring` entry that no build compiles). Then the facade's own graph without the backend:
+/// a private (FIPS) build swaps the backend and keeps the facade, so a backend-only crate reached
+/// from the facade would enter that build too.
 fn crypto_graph(root: &Path) -> Result<Vec<String>, String> {
-    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
-    let output = Command::new(cargo)
-        .current_dir(root)
-        .args([
-            "tree",
-            "--locked",
+    let outside = cargo_tree(
+        root,
+        &[
             "--workspace",
             "--exclude",
             SEAM,
+            "--prune",
+            SEAM,
+            "--prune",
+            BACKEND,
+        ],
+    )?;
+    let facade = cargo_tree(root, &["--package", SEAM, "--prune", BACKEND])?;
+    let mut findings = seam_only_reached(&outside);
+    findings.extend(backend_only_reached(&facade));
+    Ok(findings)
+}
+
+/// `cargo tree` over every feature, target and edge kind, as `--prefix depth` lines of `{p}`.
+fn cargo_tree(root: &Path, select: &[&str]) -> Result<String, String> {
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    let output = Command::new(cargo)
+        .current_dir(root)
+        .args(["tree", "--locked"])
+        .args(select)
+        .args([
             "--all-features",
             "--target",
             "all",
             "--edges",
             "normal,build,dev",
-            "--prune",
-            SEAM,
-            "--prune",
-            "busbar-crypto-backend",
             "--prefix",
             "depth",
             "--format",
@@ -482,11 +504,24 @@ fn crypto_graph(root: &Path) -> Result<Vec<String>, String> {
             String::from_utf8_lossy(&output.stderr).trim()
         ));
     }
-    Ok(seam_only_reached(&String::from_utf8_lossy(&output.stdout)))
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
 /// Each seam-only crate in a `cargo tree --prefix depth` listing, with the path that reaches it.
 fn seam_only_reached(tree: &str) -> Vec<String> {
+    reached(tree, &SEAM_ONLY, "outside busbar-crypto*")
+}
+
+/// Each backend-only crate in the facade's listing (backend pruned), with the path that reaches it.
+fn backend_only_reached(tree: &str) -> Vec<String> {
+    reached(
+        tree,
+        &BACKEND_ONLY,
+        "by busbar-crypto outside busbar-crypto-backend, so a swapped-in (FIPS) backend would link it",
+    )
+}
+
+fn reached(tree: &str, crates: &[&str], outside: &str) -> Vec<String> {
     let mut path: Vec<&str> = Vec::new();
     let mut findings = Vec::new();
     for line in tree.lines() {
@@ -499,9 +534,9 @@ fn seam_only_reached(tree: &str) -> Vec<String> {
         path.truncate(depth);
         path.push(name);
         // `(*)`: a repeat of a subtree already listed (and reported) above.
-        if SEAM_ONLY.contains(&name) && !package.ends_with("(*)") {
+        if crates.contains(&name) && !package.ends_with("(*)") {
             findings.push(format!(
-                "{package} is built outside busbar-crypto*: {}",
+                "{package} is built {outside}: {}",
                 path.join(" -> ")
             ));
         }

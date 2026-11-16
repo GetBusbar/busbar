@@ -294,6 +294,41 @@ pub fn signatures() {
     .unwrap();
     assert!(!off.is_weak());
     assert!(off.verify_strict(b"", &sig).is_err());
+    // QE: the pinned-key check refuses that key, and every encoding `from_bytes` refuses; it accepts
+    // every point, small-order and mixed-order ones included (weakness is `is_weak`'s question).
+    assert_eq!(
+        ed25519::validate_public_key(&off.to_bytes()),
+        Err(Error::Invalid(
+            "Ed25519 public key is not a canonical curve point"
+        ))
+    );
+    for bad in [
+        "0100000000000000000000000000000000000000000000000000000000000080",
+        "ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "eeffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+        "edffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+    ] {
+        assert!(
+            matches!(
+                ed25519::validate_public_key(&a(bad)),
+                Err(Error::Invalid(_))
+            ),
+            "{bad}"
+        );
+    }
+    for good in [
+        "0100000000000000000000000000000000000000000000000000000000000000",
+        "c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a",
+        "98519eadf35b995233b51b5cd23e9cc5a28b639b5a4af0ec903cb960d81b7819",
+    ] {
+        assert_eq!(ed25519::validate_public_key(&a(good)), Ok(()), "{good}");
+    }
+    assert_eq!(
+        ed25519::validate_public_key(&vk.to_bytes()),
+        Ok(()),
+        "the RFC 8032 key"
+    );
     // Mixed-order (non-weak, not torsion-free) keys decode and are not weak.
     let mixed = ed25519::VerifyingKey::from_bytes(&a(
         "98519eadf35b995233b51b5cd23e9cc5a28b639b5a4af0ec903cb960d81b7819",

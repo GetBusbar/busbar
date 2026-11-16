@@ -482,6 +482,14 @@ pub mod ed25519 {
     use super::{map, Error};
     use busbar_crypto_backend as b;
 
+    /// `Ok` when `raw` is the canonical encoding of a point on edwards25519 (RFC 8032 §5.1.3), else
+    /// `Err(Invalid)`. Input validation for a key pinned in configuration, run where it loads (boot
+    /// and `--validate`), so a mistyped key is refused before its first verify (QE).
+    /// [`VerifyingKey::from_bytes`] does not run it, and every verification stays the backend's.
+    pub fn validate_public_key(raw: &[u8; 32]) -> Result<(), Error> {
+        b::ed25519::validate_public_key(raw).map_err(map)
+    }
+
     /// An Ed25519 private key.
     #[derive(Debug)]
     pub struct SigningKey(b::ed25519::SigningKey);
