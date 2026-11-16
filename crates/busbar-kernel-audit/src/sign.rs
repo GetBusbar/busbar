@@ -215,10 +215,10 @@ impl AuditSigningKey {
 }
 
 impl AuditSigningKey {
-    /// Sign one ledger checkpoint's body: 64 raw ed25519 signature bytes over
-    #[must_use]
-    pub fn sign_checkpoint_body(&self, body: &[u8]) -> Vec<u8> {
-        self.inner.sign(&checkpoint_preimage(body)).to_vec()
+    /// The 64 raw ed25519 signature bytes over one ledger checkpoint body's preimage
+    /// ([`checkpoint_preimage`]), on the stack.
+    pub(crate) fn sign_checkpoint_raw(&self, body: &[u8]) -> [u8; 64] {
+        self.inner.sign(&checkpoint_preimage(body))
     }
 }
 

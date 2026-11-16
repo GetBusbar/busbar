@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Native custody for signed running-unit checkpoints. Journal framing, original
 //! record identity and selected evidence are retained across every uncertain call.
-use super::unit_checkpoint::{UnitCheckpoint, UnitCheckpointSink, UnitRemoval};
+//!
+//! Off the request path: only the usage flush tick, boot restore and the upgrade candidate drive
+//! this sink (`GovState::flush_unit_checkpoints`); a request only stages its snapshot in memory.
+use crate::governance::unit_checkpoint::{UnitCheckpoint, UnitCheckpointSink, UnitRemoval};
 use crate::persistence::{
     commit::SubmitResult,
     facade::CoreStore,
