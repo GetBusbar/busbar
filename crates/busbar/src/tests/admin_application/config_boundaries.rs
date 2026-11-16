@@ -184,13 +184,8 @@ async fn reload_refuses_env_policy_injection_without_publishing() {
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let documents = Arc::new(crate::root::startup_upgrade::documents::Documents::default());
-    documents
-        .finish_upgrade()
-        .expect("the programmatic current deployment has completed startup migration");
-    let rules = Arc::new(crate::root::door_steps::Rules::hearing_with_documents(
+    let rules = Arc::new(crate::root::door_steps::Rules::hearing(
         crate::root::connector::dest_judge(&config),
-        documents,
     )) as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (mut app, rotate, limits) = crate::root::real_store::build_app(
         config,

@@ -534,7 +534,6 @@ pub(crate) fn owned_anchors_refusal<P: AsRef<str>>(
 /// one destination guard, which hears each committed configuration's destinations through them.
 #[derive(Default)]
 pub(crate) struct Rules {
-    pub(crate) documents: Arc<crate::root::startup_upgrade::documents::Documents>,
     pub(crate) member_tls_sections: Mutex<Vec<&'static str>>,
     pub(crate) listeners: std::sync::OnceLock<Arc<crate::root::serve::ListenerPlan>>,
     /// The owned trust anchors the composed door planes name, held as each plane is composed.
@@ -565,16 +564,6 @@ impl std::fmt::Debug for Rules {
 }
 
 impl Rules {
-    pub(crate) fn hearing_with_documents(
-        guard: Arc<dyn busbar_kernel::host_services::DestJudge>,
-        documents: Arc<crate::root::startup_upgrade::documents::Documents>,
-    ) -> Self {
-        Self {
-            guard: Some(guard),
-            documents,
-            ..Self::default()
-        }
-    }
     pub(crate) fn hold_listeners(
         &self,
         listeners: Arc<crate::root::serve::ListenerPlan>,
@@ -584,7 +573,7 @@ impl Rules {
             .map_err(|_| "listener topology was already installed".into())
     }
 
-    #[cfg(test)]
+    /// Rules whose destination guard hears each committed configuration's destinations.
     #[must_use]
     pub(crate) fn hearing(guard: Arc<dyn busbar_kernel::host_services::DestJudge>) -> Self {
         Self {
@@ -684,25 +673,9 @@ impl busbar_kernel::appbuild::RootRules for Rules {
     /// r42 §3 step 2).
     fn held_document(
         &self,
-        _kind: busbar_kernel::appbuild::ConfigDocument,
         path: &std::path::Path,
     ) -> Option<busbar_contract::secure::SecureString> {
         crate::root::migrate::held(path)
-    }
-    fn normalize_document(
-        &self,
-        kind: busbar_kernel::appbuild::ConfigDocument,
-        path: &std::path::Path,
-        raw: &str,
-    ) -> Result<Option<busbar_contract::secure::SecureString>, String> {
-        self.documents.normalize(kind, path, raw)
-    }
-    fn absent_document(
-        &self,
-        kind: busbar_kernel::appbuild::ConfigDocument,
-        path: &std::path::Path,
-    ) -> Result<(), String> {
-        self.documents.absent(kind, path)
     }
     fn claim_ticket_admission(
         &self,

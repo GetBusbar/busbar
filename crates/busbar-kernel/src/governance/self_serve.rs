@@ -40,6 +40,14 @@ pub(crate) fn hold_reason(
     }
 }
 
+/// The self-serve key id of `user_sub` at `epoch` under the signing seed `seed`: the id a self mint
+/// derives (`derive_self_subject`). Core's records step (MIGRATE-ON-BOOT r42 §6 (4)) verifies a
+/// 1.5.5 self key against it, so a converted key keeps its id and its usage.
+#[must_use]
+pub fn self_subject_id(seed: &[u8; 32], user_sub: &str, epoch: u64) -> String {
+    GovState::derive_self_subject(seed, user_sub, epoch)
+}
+
 impl GovState {
     fn derive_self_subject(seed: &[u8; 32], user_sub: &str, epoch: u64) -> String {
         // The epoch's decimal digits, written on the stack: the MAC input is the same text as
