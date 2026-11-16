@@ -134,15 +134,33 @@ impl Journal {
     }
     fn walk_as(&self, host: &str, complete: bool) -> WalkOutcome {
         let key = public();
-        walk_tail(
-            &self.0,
-            &WalkContext {
-                node: NODE,
-                host,
-                key: &key,
-                complete,
-            },
-        )
+        let cx = WalkContext {
+            node: NODE,
+            host,
+            key: &key,
+            complete,
+        };
+        let expected = walk_tail(&self.0, &cx);
+        let mut backward = busbar_kernel_audit::restart::BackwardWalk::default();
+        let mut outcome = WalkOutcome::NeedMore;
+        for item in self.0.iter().rev() {
+            outcome = backward.push(item, &cx);
+            assert!(
+                backward.retained_lines() <= 2,
+                "line memory must not grow with the tail"
+            );
+            if outcome != WalkOutcome::NeedMore {
+                break;
+            }
+        }
+        if outcome == WalkOutcome::NeedMore && complete {
+            outcome = backward.finish(&cx);
+        }
+        assert_eq!(
+            outcome, expected,
+            "backward batches and own-node walk must agree"
+        );
+        expected
     }
 }
 
