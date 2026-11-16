@@ -28,23 +28,24 @@ use busbar_plugin_abi::host_side::caller::{CallStack, Caller, InstanceLimits};
 use busbar_plugin_abi::plane::{
     CONNECT_BEGIN, CONNECT_REVOKE, CONNECT_STATUS, CONN_NONE, CONN_PENDING, CONN_REFUSED,
     DEST_INTERNAL, DISTRUST_UNKNOWN, FROM_CORE, LK_CALLER, LK_CHAIN, LK_PREFIX, MINT_ONCE,
-    P_CHANNEL, P_COMMITTED, P_CONNECT, P_ENTITLE, P_ERROR, P_JUDGED, P_LOOKUP, P_MINTED, P_SIGNAL,
-    P_SIGNED, P_STORE_FAILED, P_TRUST, P_WORK, SIGNED_MALFORMED_ROOT, SIGN_JWS_DETACHED,
-    TRUST_SERVES, TRUST_STATE,
+    OBS_REFUSED, P_CHANNEL, P_COMMITTED, P_CONNECT, P_ENTITLE, P_ERROR, P_JUDGED, P_LOOKUP,
+    P_MINTED, P_OBSERVED, P_RENDEZVOUS, P_RV_FAILED, P_SIGNAL, P_SIGNED, P_STORE_FAILED, P_TRUST,
+    P_WORK, RV_ACCEPT, RV_REMOTE, SIGNED_MALFORMED_ROOT, SIGN_JWS_DETACHED, TRUST_SERVES,
+    TRUST_STATE,
 };
 use busbar_plugin_abi::records::{commit, tag, RecDelRec, RecPredRec, RecPutRec, Records, Reply};
 use busbar_plugin_abi::types::KindCode;
 use busbar_plugin_loader::encode::plane::{
     encode_chain_state, encode_chan_attach, encode_committed, encode_connect_answers,
-    encode_entitle_answers, encode_judged, encode_lookup_hits, encode_minted, encode_refusal,
-    encode_signed, encode_trust_answers, encode_work_answers, SignedAnswer,
+    encode_entitle_answers, encode_judged, encode_lookup_hits, encode_minted, encode_observed,
+    encode_refusal, encode_signed, encode_trust_answers, encode_work_answers, SignedAnswer,
 };
-use busbar_plugin_loader::ports::plane::{TrustAnswer, TrustItem, WorkAnswer};
+use busbar_plugin_loader::ports::plane::{ObservedAnswer, TrustAnswer, TrustItem, WorkAnswer};
 use tokio::runtime::Handle;
 
 use super::plane_judge::PlaneJudge;
-use super::port_channels::{ChannelAttach, ChannelHost, Channels};
-use super::port_services::{Services, TrustItemOwned};
+use super::port_channels::{ChannelAttach, ChannelHost, Channels, Held};
+use super::port_services::{MediaHeld, ObservationIn, Services, TrustItemOwned};
 use super::port_session::{Answer, Calls, Effects, SessionError, Task, Violation};
 use crate::channels::SessionSignals;
 use crate::hashing::Sha256;
@@ -130,6 +131,33 @@ pub enum Intent {
         op: u32,
         upstream: String,
         return_to: Option<String>,
+    },
+    /// RENDEZVOUS: `flags` = RV_ACCEPT (a client's offer, accepted as client exchange `exchange`) or RV_REMOTE
+    /// (the far end's answer for upstream exchange `exchange`); `description` = the session description (§12.13).
+    Rendezvous {
+        exchange: u32,
+        flags: u32,
+        description: String,
+    },
+    /// OBS_SCOPE: create, reattach or close usage-observation custody (§12.4); `require` = the OBS_REQUIRE classes.
+    ObsScope {
+        check: u32,
+        op: u32,
+        scope: Option<[u8; 32]>,
+        require: Vec<String>,
+    },
+    /// OBSERVE: one owned usage observation (§12.4); `counts` = (class, amount, scale).
+    Observe {
+        check: u32,
+        state: u32,
+        rated_subject: u32,
+        revision_order: u64,
+        scope: [u8; 32],
+        event: Vec<u8>,
+        component: Vec<u8>,
+        revision: Option<Vec<u8>>,
+        counts: Vec<(String, u64, u32)>,
+        evidence: Option<Vec<u8>>,
     },
     /// SIGHT: the plane observed `party` offering `items` (name, SHA-256 digest); no answer (§12.14).
     Sight {
@@ -295,6 +323,31 @@ pub trait IntentHost: Send + Sync {
     fn trust_verify(&self, _party: &str, _payload: &[u8], _signatures: &[u8]) -> (u32, String) {
         (SIGNED_MALFORMED_ROOT, String::new())
     }
+    /// RENDEZVOUS(RV_ACCEPT) on `route`: the local session description and the bridge the session holds under the
+    /// exchange. The default is unavailable.
+    fn rendezvous_accept(
+        &self,
+        _route: u32,
+        _offer: &str,
+    ) -> Result<(Box<str>, Box<dyn Held>), RecordsDenied> {
+        Err(RecordsDenied::Unavailable)
+    }
+    /// OBS_SCOPE as the principal whose identity records are `identity`: (OBS_READY | OBS_CLOSED | OBS_PENDING |
+    /// OBS_REFUSED, the scope id for READY and CLOSED). Durable before it returns. The default is `OBS_REFUSED`.
+    fn obs_scope(
+        &self,
+        _identity: &[u8],
+        _op: u32,
+        _scope: Option<[u8; 32]>,
+        _require: &[&str],
+    ) -> (u32, Option<[u8; 32]>) {
+        (OBS_REFUSED, None)
+    }
+    /// OBSERVE as the principal whose identity records are `identity`: (OBS_ACCEPTED | OBS_PENDING |
+    /// OBS_REFUSED, the receipt bytes). Durable before it returns. The default is `OBS_REFUSED`.
+    fn observe(&self, _identity: &[u8], _o: &ObservationIn<'_>) -> (u32, Vec<u8>) {
+        (OBS_REFUSED, Vec::new())
+    }
     /// CONNECT as the verified `subject`: the `CONN_*` state and, for a BEGIN, the URL to send the caller to.
     /// The default is `CONN_REFUSED`.
     fn connect(
@@ -329,6 +382,7 @@ pub struct Resolver<'h> {
     subject: Option<[u8; 32]>,
     channels: Option<&'h dyn ChannelHost>,
     principal: Option<Principal<'h>>,
+    route: u32,
 }
 
 /// The verified principal an intent runs as: its ID_SUBJECT text and the ID_* identity records it was admitted with.
@@ -346,7 +400,15 @@ impl<'h> Resolver<'h> {
             subject,
             channels: None,
             principal: None,
+            route: 0,
         }
+    }
+
+    /// The mounted route the request arrived on (RENDEZVOUS picks the route's media listener).
+    #[must_use]
+    pub fn with_route(mut self, route: u32) -> Self {
+        self.route = route;
+        self
     }
 
     /// The request's verified principal: its ID_SUBJECT text and the identity records it was admitted with. It sets
@@ -382,6 +444,7 @@ impl<'h> Resolver<'h> {
         let mut failed: Vec<&[u8]> = Vec::new();
         let mut committed: Vec<(u32, u32, u32, u32)> = Vec::new();
         let mut channel_pieces: Vec<Piece> = Vec::new();
+        let mut rendezvous_pieces: Vec<Piece> = Vec::new();
         for intent in intents {
             match intent {
                 Intent::Store {
@@ -444,6 +507,13 @@ impl<'h> Resolver<'h> {
                         channel.ready(tail);
                     }
                 }
+                Intent::Rendezvous {
+                    exchange,
+                    flags,
+                    description,
+                } => {
+                    rendezvous_pieces.extend(self.rendezvous(held, *exchange, *flags, description))
+                }
                 Intent::Sight {
                     party,
                     catalog,
@@ -456,6 +526,8 @@ impl<'h> Resolver<'h> {
                     }
                 }
                 Intent::Lookup { .. }
+                | Intent::ObsScope { .. }
+                | Intent::Observe { .. }
                 | Intent::Trust { .. }
                 | Intent::TrustVerify { .. }
                 | Intent::Work { .. }
@@ -490,6 +562,13 @@ impl<'h> Resolver<'h> {
                 exchange: 0,
                 flags: P_COMMITTED,
                 bytes: reply.as_bytes().to_vec(),
+            });
+        }
+        if let Some(bytes) = self.observeds(intents) {
+            pieces.push(Piece {
+                exchange: 0,
+                flags: P_OBSERVED,
+                bytes,
             });
         }
         if let Some(bytes) = self.works(intents) {
@@ -542,6 +621,7 @@ impl<'h> Resolver<'h> {
             });
         }
         pieces.extend(channel_pieces);
+        pieces.extend(rendezvous_pieces);
         pieces
     }
 
@@ -736,6 +816,127 @@ impl<'h> Resolver<'h> {
         let mut reply = Reply::new();
         let put = encode_judged(&mut reply, &answers);
         debug_assert!(put.is_ok(), "JUDGE_ANS records fit a Reply");
+        Some(reply.as_bytes().to_vec())
+    }
+
+    /// One RENDEZVOUS: RV_ACCEPT answers P_RENDEZVOUS (the local description, the bridge now held under
+    /// `exchange`) or P_RV_FAILED; RV_REMOTE goes to the bridge held there and answers only a failure.
+    fn rendezvous(
+        &self,
+        held: &mut Channels,
+        exchange: u32,
+        flags: u32,
+        description: &str,
+    ) -> Option<Piece> {
+        match flags {
+            RV_ACCEPT => match self.host.rendezvous_accept(self.route, description) {
+                Ok((local, bridge)) => {
+                    held.insert(exchange, bridge);
+                    Some(Piece {
+                        exchange,
+                        flags: P_RENDEZVOUS,
+                        bytes: local.as_bytes().to_vec(),
+                    })
+                }
+                Err(denied) => Some(rv_failed(exchange, &denied, None)),
+            },
+            RV_REMOTE => match held.get_mut(&exchange) {
+                Some(bridge) => match bridge.remote(description) {
+                    Ok(()) => None,
+                    Err(denied) => Some(rv_failed(exchange, &denied, bridge.refusal())),
+                },
+                None => Some(rv_failed(exchange, &RecordsDenied::Invalid, None)),
+            },
+            _ => Some(rv_failed(exchange, &RecordsDenied::Invalid, None)),
+        }
+    }
+
+    /// The OBS_SCOPE_ANS and OBS_RECEIPT of the answer's OBS_SCOPE and OBSERVE, in intent order; `None` when it
+    /// has none. Custody is the verified principal's: without one every answer is OBS_REFUSED and the host is
+    /// not asked. The host's calls are durable before they return, so the piece is delivered after the commit.
+    fn observeds(&self, intents: &[Intent]) -> Option<Vec<u8>> {
+        enum Seen {
+            Scope(u32, u32, Option<[u8; 32]>),
+            Receipt(u32, u32, Vec<u8>),
+        }
+        let mut seen: Vec<Seen> = Vec::new();
+        for intent in intents {
+            match intent {
+                Intent::ObsScope {
+                    check,
+                    op,
+                    scope,
+                    require,
+                } => {
+                    let (status, id) = match self.principal {
+                        None => (OBS_REFUSED, None),
+                        Some(p) => {
+                            let classes: Vec<&str> = require.iter().map(String::as_str).collect();
+                            self.host.obs_scope(p.identity, *op, *scope, &classes)
+                        }
+                    };
+                    seen.push(Seen::Scope(*check, status, id));
+                }
+                Intent::Observe {
+                    check,
+                    state,
+                    rated_subject,
+                    revision_order,
+                    scope,
+                    event,
+                    component,
+                    revision,
+                    counts,
+                    evidence,
+                } => {
+                    let (status, receipt) = match self.principal {
+                        None => (OBS_REFUSED, Vec::new()),
+                        Some(p) => {
+                            let counted: Vec<(&str, u64, u32)> = counts
+                                .iter()
+                                .map(|(class, amount, scale)| (class.as_str(), *amount, *scale))
+                                .collect();
+                            self.host.observe(
+                                p.identity,
+                                &ObservationIn {
+                                    scope: *scope,
+                                    event,
+                                    component,
+                                    revision: revision.as_deref().map(|r| (r, *revision_order)),
+                                    state: *state,
+                                    counts: &counted,
+                                    rated_subject: *rated_subject,
+                                    evidence: evidence.as_deref().unwrap_or(&[]),
+                                },
+                            )
+                        }
+                    };
+                    seen.push(Seen::Receipt(*check, status, receipt));
+                }
+                _ => {}
+            }
+        }
+        if seen.is_empty() {
+            return None;
+        }
+        let answers: Vec<ObservedAnswer<'_>> = seen
+            .iter()
+            .map(|s| match s {
+                Seen::Scope(check, status, scope) => ObservedAnswer::Scope {
+                    check: *check,
+                    status: *status,
+                    scope: *scope,
+                },
+                Seen::Receipt(check, status, receipt) => ObservedAnswer::Receipt {
+                    check: *check,
+                    status: *status,
+                    receipt,
+                },
+            })
+            .collect();
+        let mut reply = Reply::new();
+        let put = encode_observed(&mut reply, &answers);
+        debug_assert!(put.is_ok(), "OBS answers fit a Reply");
         Some(reply.as_bytes().to_vec())
     }
 
@@ -995,6 +1196,26 @@ fn split_key(tail: &[u8], key_len: u32) -> Option<(&[u8], &[u8])> {
         return None;
     }
     tail.split_at_checked(at)
+}
+
+/// P_RV_FAILED's bytes: one REFUSAL in core's own fixed text for the cause (§12.15), or `mirrored`'s text when the
+/// media bridge says why the far end's answer was refused.
+fn rv_failed(exchange: u32, denied: &RecordsDenied, text: Option<String>) -> Piece {
+    let (status, code, fixed) = match denied {
+        RecordsDenied::Invalid | RecordsDenied::TooLarge => {
+            (400, R_INVALID, "the media session description was refused")
+        }
+        RecordsDenied::Quota => (429, R_RATE_LIMITED, "the media session limit is reached"),
+        RecordsDenied::Unavailable => (502, F_UNAVAILABLE, "the media session is unavailable"),
+    };
+    let mut reply = Reply::new();
+    let put = encode_refusal(&mut reply, status, code, text.as_deref().unwrap_or(fixed));
+    debug_assert!(put.is_ok(), "a REFUSAL fits a Reply");
+    Piece {
+        exchange,
+        flags: P_RV_FAILED,
+        bytes: reply.as_bytes().to_vec(),
+    }
 }
 
 /// The REFUSED code a denied record write answers with (a COMMITTED `status`).
@@ -1322,6 +1543,44 @@ impl<R: PluginRecords> IntentHost for KernelIntents<R> {
         let mut named = String::new();
         let verdict = book.verify(&self.who.caller(), party, payload, signatures, &mut named);
         (verdict, named)
+    }
+
+    fn rendezvous_accept(
+        &self,
+        route: u32,
+        offer: &str,
+    ) -> Result<(Box<str>, Box<dyn Held>), RecordsDenied> {
+        let media = self
+            .services
+            .media
+            .as_ref()
+            .ok_or(RecordsDenied::Unavailable)?;
+        let (local, bridge) = self.rt.block_on(media.accept(route, offer))?;
+        Ok((local, Box::new(MediaHeld::new(bridge, self.rt.clone()))))
+    }
+
+    fn obs_scope(
+        &self,
+        identity: &[u8],
+        op: u32,
+        scope: Option<[u8; 32]>,
+        require: &[&str],
+    ) -> (u32, Option<[u8; 32]>) {
+        let Some(custody) = self.services.observations.as_ref() else {
+            return (OBS_REFUSED, None);
+        };
+        let who = self.who.caller();
+        self.rt
+            .block_on(custody.scope(&who, identity, op, scope, require))
+    }
+
+    fn observe(&self, identity: &[u8], o: &ObservationIn<'_>) -> (u32, Vec<u8>) {
+        let Some(custody) = self.services.observations.as_ref() else {
+            return (OBS_REFUSED, Vec::new());
+        };
+        let who = self.who.caller();
+        let (status, receipt) = self.rt.block_on(custody.observe(&who, identity, o));
+        (status, receipt.into_vec())
     }
 
     fn connect(

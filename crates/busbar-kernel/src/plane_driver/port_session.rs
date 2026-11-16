@@ -685,6 +685,67 @@ impl Answer {
                 upstream: upstream.to_owned(),
                 return_to: return_to.map(str::to_owned),
             }),
+            PlaneOut::Rendezvous {
+                exchange,
+                flags,
+                description,
+            } => self.intents.push(Intent::Rendezvous {
+                exchange,
+                flags,
+                description: description.to_owned(),
+            }),
+            PlaneOut::ObsScope {
+                check,
+                op,
+                scope,
+                require,
+            } => {
+                let mut classes = Vec::new();
+                for rec in require {
+                    let rec = rec.map_err(|_| Violation::BadRecords)?;
+                    classes.push(rec.text().map_err(|_| Violation::BadRecords)?.to_owned());
+                }
+                self.intents.push(Intent::ObsScope {
+                    check,
+                    op,
+                    scope,
+                    require: classes,
+                });
+            }
+            PlaneOut::Observe {
+                check,
+                state,
+                rated_subject,
+                revision_order,
+                scope,
+                event,
+                component,
+                revision,
+                counts,
+                evidence,
+            } => {
+                let mut seen = Vec::new();
+                for rec in counts {
+                    let rec = rec.map_err(|_| Violation::BadRecords)?;
+                    let (head, class) = rec
+                        .pod_tail::<UsageRec>()
+                        .map_err(|_| Violation::BadRecords)?;
+                    let class = std::str::from_utf8(class).map_err(|_| Violation::BadRecords)?;
+                    seen.push((class.to_owned(), head.amount, head.scale));
+                }
+                self.intents.push(Intent::Observe {
+                    check,
+                    state,
+                    rated_subject,
+                    revision_order,
+                    scope,
+                    event: event.to_vec(),
+                    component: component.to_vec(),
+                    revision: revision.map(<[u8]>::to_vec),
+                    counts: seen,
+                    evidence: evidence.map(<[u8]>::to_vec),
+                });
+            }
             PlaneOut::Sight {
                 party,
                 catalog,

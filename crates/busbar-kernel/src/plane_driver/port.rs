@@ -570,7 +570,8 @@ fn serve_blocking(
     let resolver = match principal.as_deref() {
         Some(subject) => Resolver::new(intents, None).with_principal(subject, &admitted.identity),
         None => Resolver::new(intents, None),
-    };
+    }
+    .with_route(route.route);
     let dialect = port.dialects().first().map_or("", |d| &**d);
     let (mut members, mut send) = match upstream {
         Some((members, send)) => (Some(members), Some(send)),
