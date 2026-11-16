@@ -410,6 +410,7 @@ pub(crate) fn reexec() -> String {
             )
         }
     };
+    close_on_exec_from_3();
     let error = std::process::Command::new(&executable)
         .args(std::env::args_os().skip(1))
         .env(busbar_migrate::MIGRATED_ENV, "1")
@@ -420,6 +421,9 @@ pub(crate) fn reexec() -> String {
         executable.display()
     )
 }
+
+/// Defence in depth behind closing every instance before the exec (not yet marked).
+fn close_on_exec_from_3() {}
 
 #[cfg(test)]
 #[path = "tests/migrate_seam.rs"]

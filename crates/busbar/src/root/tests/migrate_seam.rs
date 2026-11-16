@@ -338,3 +338,34 @@ fn step_one_refuses_a_listen_address_in_use() {
         "nothing written beside config.yaml and providers.yaml"
     );
 }
+
+/// Step 5's exec, behind its primary rule (every instance is closed first): a descriptor a plugin
+/// opened without close-on-exec and never closed does not reach the re-executed image. Nothing
+/// else guards it: closing the instances covers only what they still own.
+#[cfg(unix)]
+#[test]
+fn a_descriptor_a_plugin_left_inheritable_does_not_reach_the_new_image() {
+    use std::os::fd::AsRawFd;
+
+    let left = socket2::Socket::new(socket2::Domain::UNIX, socket2::Type::STREAM, None).unwrap();
+    left.set_cloexec(false).unwrap();
+    let fd = left.as_raw_fd();
+    assert!(fd >= 3, "{fd}");
+    let reaches_a_new_image = || {
+        std::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg(format!("[ -e /dev/fd/{fd} ]"))
+            .status()
+            .unwrap()
+            .success()
+    };
+    assert!(
+        reaches_a_new_image(),
+        "the probe sees an inheritable descriptor"
+    );
+    close_on_exec_from_3();
+    assert!(
+        !reaches_a_new_image(),
+        "descriptor {fd} reached the new image"
+    );
+}
