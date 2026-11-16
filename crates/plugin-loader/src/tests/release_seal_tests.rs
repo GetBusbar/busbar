@@ -216,57 +216,66 @@ fn a_plugin_listed_for_another_target_is_refused() {
 
 #[test]
 fn installing_a_plugin_whose_keys_document_has_expired_is_refused() {
-    let r = Release::new();
-    let m = r.good(unsealed(), &r.kms);
-    let install = TrustPolicy {
-        release_clock: Some(NOW + 91 * 86_400),
-        release_enforce_expiry: true,
-        ..r.policy()
-    };
-    refused(
-        evaluate(LIB, &m, &install),
-        RejectKind::Tampered,
-        "keys-expired",
-    );
+    for allow_untrusted in [false, true] {
+        let r = Release::new();
+        let m = r.good(unsealed(), &r.kms);
+        let install = TrustPolicy {
+            release_clock: Some(NOW + 91 * 86_400),
+            release_enforce_expiry: true,
+            allow_untrusted,
+            ..r.policy()
+        };
+        refused(
+            evaluate(LIB, &m, &install),
+            RejectKind::Tampered,
+            "keys-expired",
+        );
+    }
 }
 
 #[test]
 fn an_installed_plugin_whose_documents_have_since_expired_still_loads_at_boot() {
-    let r = Release::new();
-    let m = r.good(unsealed(), &r.kms);
-    let boot = TrustPolicy {
-        release_clock: Some(NOW + 2 * 365 * 86_400),
-        ..r.policy()
-    };
-    assert!(!boot.release_enforce_expiry, "boot is the default posture");
-    assert_eq!(evaluate(LIB, &m, &boot), Ok(first_party()));
+    for allow_untrusted in [false, true] {
+        let r = Release::new();
+        let m = r.good(unsealed(), &r.kms);
+        let boot = TrustPolicy {
+            release_clock: Some(NOW + 2 * 365 * 86_400),
+            allow_untrusted,
+            ..r.policy()
+        };
+        assert!(!boot.release_enforce_expiry, "boot is the default posture");
+        assert_eq!(evaluate(LIB, &m, &boot), Ok(first_party()));
+    }
 }
 
 #[test]
 fn a_revocation_is_refused_at_boot_though_the_keys_document_has_expired() {
-    let r = Release::new();
-    let boot = TrustPolicy {
-        release_clock: Some(NOW + 365 * 86_400),
-        ..r.policy()
-    };
-    let m = unsealed();
-    let e = entry(&m.name, &m.version, PLUGIN_TARGET, &listed(&m));
-    let mut keys = keys_doc(&[&r.signer]);
-    keys.revoked_digests.insert(listed(&m), "pulled".into());
-    let sealed = r.seal(m.clone(), &keys, &r.kms, vec![e.clone()], &r.signer);
-    refused(
-        evaluate(LIB, &sealed, &boot),
-        RejectKind::Revoked,
-        "digest-revoked",
-    );
-    let mut keys = keys_doc(&[&r.signer]);
-    keys.revoked_keyids.insert(r.signer.id());
-    let sealed = r.seal(m, &keys, &r.kms, vec![e], &r.signer);
-    refused(
-        evaluate(LIB, &sealed, &boot),
-        RejectKind::Revoked,
-        "signer-revoked",
-    );
+    for allow_untrusted in [false, true] {
+        let r = Release::new();
+        let boot = TrustPolicy {
+            release_clock: Some(NOW + 365 * 86_400),
+            allow_untrusted,
+            ..r.policy()
+        };
+        let m = unsealed();
+        let e = entry(&m.name, &m.version, PLUGIN_TARGET, &listed(&m));
+        let mut keys = keys_doc(&[&r.signer]);
+        keys.revoked_digests.insert(listed(&m), "pulled".into());
+        let sealed = r.seal(m.clone(), &keys, &r.kms, vec![e.clone()], &r.signer);
+        refused(
+            evaluate(LIB, &sealed, &boot),
+            RejectKind::Revoked,
+            "digest-revoked",
+        );
+        let mut keys = keys_doc(&[&r.signer]);
+        keys.revoked_keyids.insert(r.signer.id());
+        let sealed = r.seal(m, &keys, &r.kms, vec![e], &r.signer);
+        refused(
+            evaluate(LIB, &sealed, &boot),
+            RejectKind::Revoked,
+            "signer-revoked",
+        );
+    }
 }
 
 #[test]
@@ -279,8 +288,7 @@ fn a_revoked_artefact_is_refused_whatever_the_operator_opted_in_to() {
     let e = entry(&m.name, &m.version, PLUGIN_TARGET, &listed(&m));
     let m = r.seal(m, &keys, &r.kms, vec![e], &r.signer);
     let open = TrustPolicy {
-        allow_unsigned: true,
-        allow_third_party: true,
+        allow_untrusted: true,
         ..r.policy()
     };
     refused(
@@ -299,7 +307,7 @@ fn a_revoked_signer_is_refused_whatever_the_operator_opted_in_to() {
     let e = entry(&m.name, &m.version, PLUGIN_TARGET, &listed(&m));
     let m = r.seal(m, &keys, &r.kms, vec![e], &r.signer);
     let open = TrustPolicy {
-        allow_unsigned: true,
+        allow_untrusted: true,
         ..r.policy()
     };
     refused(
@@ -315,7 +323,7 @@ fn a_rolled_back_keys_document_is_refused_whatever_the_operator_opted_in_to() {
     let m = r.good(unsealed(), &r.kms);
     let floored = TrustPolicy {
         release_keys_floor: 2,
-        allow_unsigned: true,
+        allow_untrusted: true,
         ..r.policy()
     };
     refused(
@@ -353,32 +361,26 @@ fn only_an_authenticated_trusted_seal_returns_store_floor_evidence() {
     let mut malformed = sealed;
     malformed.signature.push('!');
     let allowed = TrustPolicy {
-        allow_unsigned: true,
+        allow_untrusted: true,
         ..r.policy()
     };
-    let (verdict, version) = evaluate_with_evidence(LIB, &malformed, &allowed).unwrap();
-    assert!(matches!(
-        verdict,
-        Verdict::Allowed {
-            allow: AllowReason::Unsigned,
-            ..
-        }
-    ));
-    assert_eq!(
-        version, None,
-        "an opt-in cannot create authenticated Store evidence"
+    assert!(
+        evaluate_with_evidence(LIB, &malformed, &allowed).is_err(),
+        "malformed Busbar seals never use the override"
     );
-
     let key = SigningKey::from_bytes(&[83; 32]);
     let raw = sign(&key, unsealed(), LIB);
-    let legacy = TrustPolicy {
-        first_party_key: Some(key.verifying_key()),
-        ..TrustPolicy::default()
-    };
-    assert_eq!(
-        evaluate_with_evidence(LIB, &raw, &legacy),
-        Ok((first_party(), None))
-    );
+    for allow_untrusted in [false, true] {
+        let legacy = TrustPolicy {
+            first_party_key: Some(key.verifying_key()),
+            allow_untrusted,
+            ..TrustPolicy::default()
+        };
+        assert!(
+            evaluate_with_evidence(LIB, &raw, &legacy).is_err(),
+            "bare Busbar root signatures produce no admission or floor evidence"
+        );
+    }
 }
 
 #[test]
@@ -389,8 +391,7 @@ fn expired_install_checks_cannot_mask_hard_revocation_or_rollback_vetoes() {
     let expired = TrustPolicy {
         release_clock: Some(NOW + 365 * 86_400),
         release_enforce_expiry: true,
-        allow_unsigned: true,
-        allow_third_party: true,
+        allow_untrusted: true,
         ..r.policy()
     };
 
@@ -422,17 +423,9 @@ fn expired_install_checks_cannot_mask_hard_revocation_or_rollback_vetoes() {
         RejectKind::AntiDowngrade,
         "keys-rollback",
     );
-    let (verdict, version) = evaluate_with_evidence(LIB, &sealed, &expired).unwrap();
-    assert!(matches!(
-        verdict,
-        Verdict::Allowed {
-            allow: AllowReason::Unsigned,
-            ..
-        }
-    ));
-    assert_eq!(
-        version, None,
-        "expired install opt-in cannot advance a Store floor"
+    assert!(
+        evaluate_with_evidence(LIB, &sealed, &expired).is_err(),
+        "an expired prospective Busbar seal never uses the override"
     );
 }
 
@@ -686,10 +679,10 @@ mod standard_crypto {
             };
             let result = sign::evaluate_with_evidence(LIB, &m, &policy);
             assert!(matches!(result, Err(ref e) if e.kind == RejectKind::Tampered));
-            policy.allow_unsigned = true;
+            policy.allow_untrusted = true;
             let result = sign::evaluate_with_evidence(LIB, &m, &policy);
-            assert!(matches!(result, Ok((Verdict::Allowed { .. }, None))));
-            policy.allow_unsigned = false;
+            assert!(matches!(result, Err(ref e) if e.kind == RejectKind::Tampered));
+            policy.allow_untrusted = false;
         }
     }
 
@@ -702,7 +695,7 @@ mod standard_crypto {
             .insert(manifest().sha256, "revoked".into());
         let m = c.manifest();
         let mut policy = c.policy();
-        policy.allow_unsigned = true;
+        policy.allow_untrusted = true;
         assert!(matches!(
             sign::evaluate_with_evidence(LIB, &m, &policy),
             Err(e) if e.kind == RejectKind::Revoked
@@ -840,11 +833,11 @@ mod standard_crypto {
     #[test]
     fn concrete_public_types_build_without_annotations() {
         let p = TrustPolicy {
-            allow_unsigned: true,
+            allow_untrusted: true,
             ..Default::default()
         };
-        assert!(p.allow_unsigned);
-        assert!(!TrustPolicy::default().allow_unsigned);
+        assert!(p.allow_untrusted);
+        assert!(!TrustPolicy::default().allow_untrusted);
         let d = KeysDoc {
             version: 7,
             ..Default::default()

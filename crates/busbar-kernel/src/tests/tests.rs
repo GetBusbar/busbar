@@ -626,7 +626,7 @@ pub(crate) fn dropped(name: &str, alias: &str, kind: &str) -> busbar_contract::p
         abi_version: 1,
         trust: Trust::Allowed {
             reason: "unsigned metadata".into(),
-            setting: "allow_unsigned",
+            setting: "allow_untrusted",
         },
         ephemeral: false,
         in_process: false,
@@ -653,7 +653,7 @@ pub(crate) fn skipped_in(
 }
 
 pub(crate) const UNSIGNED_SKIPPED: &str = "manifest carries no signature; refusing to load an \
-     unsigned plugin. Set plugins.trust.allow_unsigned=true to permit unsigned plugins.";
+     unsigned plugin. Set plugins.trust.allow_untrusted=true to permit unsigned plugins.";
 
 #[test]
 fn the_preflight_warns_about_a_malformed_floor() {
