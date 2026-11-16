@@ -338,6 +338,35 @@ pub(crate) enum AuditRecipeElement {
     _Members(BTreeMap<String, AuditRecipeScalar>),
 }
 
+/// `GET /operations/{key}`: one idempotent operation record.
+#[cfg(feature = "openapi-schema")]
+#[derive(Serialize, JsonSchema)]
+pub(crate) struct OperationView {
+    idempotency_key: String,
+    principal: String,
+    operation_id: String,
+    /// One of `applied`, `rejected` or `in_flight`.
+    state: OperationState,
+    status: Option<u16>,
+    request_sha256: String,
+    received_at: u64,
+    completed_at: Option<u64>,
+    config_generation: Option<u64>,
+    audit_seq: Option<u64>,
+    /// The stored response body; `null` while in flight.
+    response: Value,
+}
+
+/// Where an idempotent operation stands.
+#[cfg(feature = "openapi-schema")]
+#[derive(Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum OperationState {
+    _Applied,
+    _Rejected,
+    _InFlight,
+}
+
 /// `GET /audit/keys`: the public keys the chain is signed with.
 #[cfg(feature = "openapi-schema")]
 #[derive(Serialize, JsonSchema)]
@@ -1251,20 +1280,7 @@ fn doc_for(
                 operation and needs the `full` scope."
                 .to_string(),
             success: Success::Json(
-                json!({"type": "object", "required": ["idempotency_key", "principal",
-                    "operation_id", "state", "request_sha256", "received_at"],
-                    "properties": {
-                        "idempotency_key": {"type": "string"},
-                        "principal": {"type": "string"},
-                        "operation_id": {"type": "string"},
-                        "state": {"enum": ["applied", "rejected", "in_flight"]},
-                        "status": {"type": ["integer", "null"]},
-                        "request_sha256": {"type": "string"},
-                        "received_at": {"type": "integer"},
-                        "completed_at": {"type": ["integer", "null"]},
-                        "config_generation": {"type": ["integer", "null"]},
-                        "audit_seq": {"type": ["integer", "null"]},
-                        "response": {}}}),
+                schema_of(gen.subschema_for::<OperationView>()),
                 "The operation record",
             ),
             request: None,
