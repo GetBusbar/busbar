@@ -1,0 +1,14 @@
+# PGO + BOLT training workload read by `busbar-release build` (busbar-release MR !529).
+# Format: `#` comments, optional `env KEY=VALUE` lines, exactly ONE command line (whitespace-split, no
+# shell). Placeholders: {bin} the instrumented busbar, {src} this checkout, {run}/{runs} the pass number.
+# The command runs --runs times with cwd = {src} and must exit 0 after the gateway(s) it starts have
+# been stopped gracefully (system-hammer SIGTERMs each one, so the profile runtimes flush).
+#
+# What it drives: tools/system-hammer boots {bin} once per scenario of the `pgo` suite (config load and
+# boot, then the LLM request path, MCP/A2A/streams/decisions planes, key auth, hooks, secrets, export
+# sinks, admin API reads and writes, a production-shaped mix) against its in-process mock upstreams.
+# It builds with cargo from its own workspace (no new dependency, outside the product lock).
+#
+# v1, refined at perf Stage 4: weights follow the suite, not production telemetry; no TLS ingress, h2c,
+# store plugins or SSE-heavy mix; short (4 s) windows per case. Reports go under target/, never the tree.
+cargo run --release --locked --manifest-path {src}/tools/system-hammer/Cargo.toml -- --bin {bin} --suite pgo --scenarios {src}/tools/system-hammer/scenarios --out {src}/target/pgo-hammer-reports
