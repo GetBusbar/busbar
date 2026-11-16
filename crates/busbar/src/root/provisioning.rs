@@ -149,6 +149,39 @@ mod tests {
     }
 
     #[test]
+    fn described_auth_requires_verify_even_when_it_can_serve() {
+        use busbar_plugin_abi::auth::{FB_PROVISION, M_SERVE, M_VERIFY, M_VERIFY_IO};
+        for verify in [M_VERIFY, M_VERIFY_IO] {
+            let directory = ProvisioningAuth::described(
+                "directory",
+                "verified-directory-image",
+                41,
+                false,
+                FB_PROVISION,
+                M_SERVE | verify,
+            );
+            let mut auth = admitted();
+            auth[0] = directory;
+            let specs = specifications(&config(), &auth).expect("declared verify capability");
+            assert_eq!(&*specs[0].plugin, "verified-directory-image");
+            assert_eq!(specs[0].link_auth_ids, vec![42]);
+        }
+        let mut auth = admitted();
+        auth[0] = ProvisioningAuth::described(
+            "directory",
+            "verified-directory-image",
+            41,
+            false,
+            FB_PROVISION,
+            M_SERVE,
+        );
+        assert!(
+            specifications(&config(), &auth).is_err(),
+            "serve cannot grant verify authority"
+        );
+    }
+
+    #[test]
     fn provisioning_refuses_unadmitted_or_non_inbound_links() {
         let mut auth = admitted();
         auth[1].inbound = false;
