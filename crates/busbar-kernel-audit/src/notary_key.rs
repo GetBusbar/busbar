@@ -14,6 +14,7 @@ use crate::off_path::journal::Reader;
 
 /// The journal discriminator of a linked certificate, distinct from unit records.
 pub const NOTARY_KEY_JOURNAL_TAG: &str = "audit.notary_key.v2";
+const NOTARY_KEY_JOURNAL_PREFIX: &str = "audit.notary_key.";
 /// The signature domain approved for node-and-position-bound certificates.
 pub const NOTARY_KEY_DOMAIN: &str = "busbar.audit.notary_key.v2";
 /// The domain of the containing linked record's fingerprint.
@@ -268,8 +269,12 @@ pub fn notary_key_body(record: &NotaryKeyRecord) -> Result<Vec<u8>, FieldTooLong
 /// from the chain. Unrelated journal tags return None.
 pub fn notary_key_from_journal_body(bytes: &[u8]) -> Result<Option<NotaryKeyRecord>, String> {
     let mut r = Reader::new(bytes);
-    if r.text().as_deref() != Some(NOTARY_KEY_JOURNAL_TAG) {
-        return Ok(None);
+    match r.text() {
+        Some(tag) if tag == NOTARY_KEY_JOURNAL_TAG => {}
+        Some(tag) if tag.starts_with(NOTARY_KEY_JOURNAL_PREFIX) => {
+            return Err("an audit certificate uses an unsupported version".into());
+        }
+        _ => return Ok(None),
     }
     let bad = || "a notary_key.v2 record does not decode".to_string();
     if r.text().as_deref() != Some(crate::recipe::LINK_RECIPE) {
