@@ -82,9 +82,10 @@ async fn served(tag: &str) -> Served {
     .expect("the actual admin deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the actual admin deployment resolves");
-    let rules = Arc::new(crate::root::door_steps::Rules::default())
-        as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let anchor = crate::root::test_plugins::bootstrap_fresh_application_store(
+    let crate::root::min3_boot::fixture::Admitted {
+        core: anchor,
+        rules,
+    } = crate::root::test_plugins::bootstrap_fresh_application_store(
         &config,
         &plugin_config,
         &directory,

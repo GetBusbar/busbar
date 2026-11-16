@@ -51,11 +51,16 @@ pub fn application_store_settings(directory: &Path) -> serde_json::Value {
 /// May cross construction stages, but must be initialized before any serving starts.
 pub(crate) struct FreshApplicationStore {
     opened: std::sync::Arc<busbar_kernel::persistence::facade::CoreStore>,
+    rules: std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>,
     evidence_sha256: String,
     store_sha256: String,
 }
 
 impl FreshApplicationStore {
+    pub(crate) fn rules(&self) -> std::sync::Arc<dyn busbar_kernel::appbuild::RootRules> {
+        self.rules.clone()
+    }
+
     pub fn opened(&self) -> std::sync::Arc<busbar_kernel::persistence::facade::CoreStore> {
         self.opened.clone()
     }
@@ -97,7 +102,7 @@ impl FreshApplicationStore {
         self,
         cfg: &busbar_kernel::config::RootCfg,
         plugins: &busbar_kernel::config::PluginsCfg,
-    ) -> Result<std::sync::Arc<busbar_kernel::persistence::facade::CoreStore>, String> {
+    ) -> Result<crate::root::min3_boot::fixture::Admitted, String> {
         use busbar_kernel::governance::principal_transition as transition;
         let seal = busbar_kernel::seal::acquire();
         let store_sha256 =
@@ -142,7 +147,10 @@ impl FreshApplicationStore {
         };
         transition::initialize_fresh(&receipt, self.opened.clone(), &store_sha256, &requirements)
             .await?;
-        Ok(self.opened)
+        Ok(crate::root::min3_boot::fixture::Admitted {
+            core: self.opened,
+            rules: self.rules,
+        })
     }
 }
 
@@ -200,12 +208,13 @@ pub(crate) async fn provision_fresh_application_store_with_backend(
     )
     .expect("retain the actual fixture creation evidence");
     let evidence_sha256 = sha256_hex(&evidence);
-    let backend = crate::root::boot::store::bootstrap_config_store(
-        cfg,
-        plugins,
-        &crate::root::boot::store::Unopened,
-    )
-    .await?;
+    let crate::root::min3_boot::fixture::Fixture { backend, rules } =
+        crate::root::min3_boot::fixture::open(
+            cfg,
+            plugins,
+            std::sync::Arc::new(crate::root::door_steps::Rules::default()),
+        )
+        .await?;
     let opened = core_over(decorate(backend)).await;
     let seal = busbar_kernel::seal::acquire();
     let store_sha256 = busbar_kernel::governance::principal_transition::store_fingerprint(
@@ -213,6 +222,7 @@ pub(crate) async fn provision_fresh_application_store_with_backend(
     )?;
     Ok(FreshApplicationStore {
         opened,
+        rules,
         evidence_sha256,
         store_sha256,
     })
@@ -220,11 +230,11 @@ pub(crate) async fn provision_fresh_application_store_with_backend(
 
 /// Provision and initialize a genuinely new SQLite fixture before normal app startup.
 /// Call only for the first open in a new scratch directory; retained fixtures reopen normally.
-pub async fn bootstrap_fresh_application_store(
+pub(crate) async fn bootstrap_fresh_application_store(
     cfg: &busbar_kernel::config::RootCfg,
     plugins: &busbar_kernel::config::PluginsCfg,
     directory: &Path,
-) -> Result<std::sync::Arc<busbar_kernel::persistence::facade::CoreStore>, String> {
+) -> Result<crate::root::min3_boot::fixture::Admitted, String> {
     provision_fresh_application_store(cfg, plugins, directory)
         .await?
         .initialize_principal_format(cfg, plugins)

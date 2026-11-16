@@ -62,13 +62,12 @@ async fn slow_store_read_does_not_stall_the_executor() {
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let backend = crate::root::boot::store::bootstrap_config_store(
-        &config,
-        &plugin_config,
-        &crate::root::boot::store::Unopened,
-    )
-    .await
-    .expect("configured native backend");
+    let crate::root::min3_boot::fixture::Fixture {
+        backend: backend,
+        rules,
+    } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
+        .await
+        .expect("configured native backend");
     let delay = Duration::from_millis(400);
     let probe_store = SlowStore::new(backend, delay);
     let core = crate::root::real_store::core_over(probe_store.clone()).await;

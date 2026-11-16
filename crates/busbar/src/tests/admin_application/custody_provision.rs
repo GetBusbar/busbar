@@ -104,13 +104,12 @@ async fn mint_failure_after_the_provision_commit_still_records_the_committed_gro
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let opened = crate::root::boot::store::bootstrap_config_store(
-        &config,
-        &plugin_config,
-        &crate::root::boot::store::Unopened,
-    )
-    .await
-    .expect("the actual signed Store opens through the normal bootstrap");
+    let crate::root::min3_boot::fixture::Fixture {
+        backend: opened,
+        rules,
+    } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
+        .await
+        .expect("the actual signed Store opens through the normal bootstrap");
     let core = crate::root::real_store::core_over(Arc::new(RefusesKeyWrites(opened))).await;
     let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(core.clone())
         .expect("the actual Store provides the provision commit's durable overlay");
@@ -306,7 +305,10 @@ async fn auto_provision_stops_at_the_group_ceiling() {
         .expect("the product deployment resolves");
     config.limits.max_auto_provisioned_groups = 2;
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let anchor = crate::root::test_plugins::bootstrap_fresh_application_store(
+    let crate::root::min3_boot::fixture::Admitted {
+        core: anchor,
+        rules,
+    } = crate::root::test_plugins::bootstrap_fresh_application_store(
         &config,
         &plugin_config,
         &directory,
@@ -315,8 +317,6 @@ async fn auto_provision_stops_at_the_group_ceiling() {
     .expect("the actual Store bootstraps its config authority");
     let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
         .expect("the actual Store supports conditional config records");
-    let rules = Arc::new(crate::root::door_steps::Rules::default())
-        as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
         plugin_config,

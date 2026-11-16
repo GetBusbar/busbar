@@ -120,13 +120,12 @@ async fn apply_refuses_unrecoverable_store_overlay_before_replacing_security_sta
         let plugin_config = crate::root::test_plugins::trusted_config(&directory);
         let rules = Arc::new(crate::root::door_steps::Rules::default())
             as Arc<dyn busbar_kernel::appbuild::RootRules>;
-        let actual = crate::root::boot::store::bootstrap_config_store(
-            &config,
-            &plugin_config,
-            &crate::root::boot::store::Unopened,
-        )
-        .await
-        .expect("actual native Store opens");
+        let crate::root::min3_boot::fixture::Fixture {
+            backend: actual,
+            rules,
+        } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
+            .await
+            .expect("actual native Store opens");
         let faults = OverlayFaults::new(actual);
         let core = crate::root::real_store::core_over(faults.clone()).await;
         let calls = overlay_scope(core.clone());
@@ -293,13 +292,12 @@ async fn reload_refuses_a_store_read_failure_and_preserves_the_running_generatio
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let actual = crate::root::boot::store::bootstrap_config_store(
-        &config,
-        &plugin_config,
-        &crate::root::boot::store::Unopened,
-    )
-    .await
-    .expect("actual native Store opens");
+    let crate::root::min3_boot::fixture::Fixture {
+        backend: actual,
+        rules,
+    } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
+        .await
+        .expect("actual native Store opens");
     let faults = OverlayFaults::new(actual);
     let core = crate::root::real_store::core_over(faults.clone()).await;
     let (mut app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
@@ -472,13 +470,12 @@ async fn group_creation_refuses_store_failure_and_unknown_commit() {
         let plugin_config = crate::root::test_plugins::trusted_config(&directory);
         let rules = Arc::new(crate::root::door_steps::Rules::default())
             as Arc<dyn busbar_kernel::appbuild::RootRules>;
-        let actual = crate::root::boot::store::bootstrap_config_store(
-            &config,
-            &plugin_config,
-            &crate::root::boot::store::Unopened,
-        )
-        .await
-        .expect("actual native Store opens");
+        let crate::root::min3_boot::fixture::Fixture {
+            backend: actual,
+            rules,
+        } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
+            .await
+            .expect("actual native Store opens");
         let faults = OverlayFaults::new(actual);
         let core = crate::root::real_store::core_over(faults.clone()).await;
         let (mut app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
@@ -599,13 +596,12 @@ async fn settings_preserves_a_large_store_overlay_across_reload() {
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let actual = crate::root::boot::store::bootstrap_config_store(
-        &config,
-        &plugin_config,
-        &crate::root::boot::store::Unopened,
-    )
-    .await
-    .expect("actual native Store opens");
+    let crate::root::min3_boot::fixture::Fixture {
+        backend: actual,
+        rules,
+    } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
+        .await
+        .expect("actual native Store opens");
     let faults = OverlayFaults::new(actual);
     let core = crate::root::real_store::core_over(faults.clone()).await;
     let (mut app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
@@ -760,13 +756,12 @@ async fn unknown_settings_receipt_requires_successful_reload_before_new_mutation
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let actual = crate::root::boot::store::bootstrap_config_store(
-        &config,
-        &plugin_config,
-        &crate::root::boot::store::Unopened,
-    )
-    .await
-    .expect("actual native Store opens");
+    let crate::root::min3_boot::fixture::Fixture {
+        backend: actual,
+        rules,
+    } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
+        .await
+        .expect("actual native Store opens");
     let faults = OverlayFaults::new(actual);
     let core = crate::root::real_store::core_over(faults.clone()).await;
     let (mut app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
@@ -1001,13 +996,12 @@ async fn an_unknown_store_overlay_commit_never_swaps_or_claims_success() {
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let actual = crate::root::boot::store::bootstrap_config_store(
-        &config,
-        &plugin_config,
-        &crate::root::boot::store::Unopened,
-    )
-    .await
-    .expect("actual native Store opens");
+    let crate::root::min3_boot::fixture::Fixture {
+        backend: actual,
+        rules,
+    } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
+        .await
+        .expect("actual native Store opens");
     let faults = OverlayFaults::new(actual);
     let core = crate::root::real_store::core_over(faults.clone()).await;
     let (mut app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
@@ -1147,13 +1141,12 @@ async fn a_cancelled_store_overlay_persist_finishes_before_releasing_the_domain(
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let actual = crate::root::boot::store::bootstrap_config_store(
-        &config,
-        &plugin_config,
-        &crate::root::boot::store::Unopened,
-    )
-    .await
-    .expect("actual native Store opens");
+    let crate::root::min3_boot::fixture::Fixture {
+        backend: actual,
+        rules,
+    } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
+        .await
+        .expect("actual native Store opens");
     let faults = OverlayFaults::new(actual);
     let core = crate::root::real_store::core_over(faults.clone()).await;
     let (mut app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(

@@ -698,16 +698,13 @@ async fn the_admin_catalog_row_for_a_harness_signed_plugin(
     let config = busbar_kernel::config::resolve(&deploy, &Default::default()).unwrap();
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let core = crate::root::real_store::core_over(
-        crate::root::boot::store::bootstrap_config_store(
-            &config,
-            &Default::default(),
-            &crate::root::boot::store::Unopened,
-        )
+    let crate::root::min3_boot::fixture::Fixture {
+        backend: core,
+        rules,
+    } = crate::root::min3_boot::fixture::open(&config, &Default::default(), rules.clone())
         .await
-        .expect("the configured native target opens"),
-    )
-    .await;
+        .expect("the configured native target opens");
+    let core = crate::root::real_store::core_over(core).await;
     crate::root::boot::bind_plugin_floor(core.clone())
         .await
         .expect("the catalog uses the configured native plugin-floor owner");

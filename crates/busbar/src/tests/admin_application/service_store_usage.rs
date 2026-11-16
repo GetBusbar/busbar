@@ -175,13 +175,12 @@ async fn get_group_usage_reads_the_store_off_the_async_worker() {
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let actual = crate::root::boot::store::bootstrap_config_store(
-        &config,
-        &plugin_config,
-        &crate::root::boot::store::Unopened,
-    )
-    .await
-    .expect("the configured native backend opens");
+    let crate::root::min3_boot::fixture::Fixture {
+        backend: actual,
+        rules,
+    } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
+        .await
+        .expect("the configured native backend opens");
     let started = Arc::new(tokio::sync::Notify::new());
     let heard = Arc::new(AtomicBool::new(false));
     let store = Arc::new(RecordReads {
@@ -316,13 +315,12 @@ async fn usage_read_store_failure_logs_the_real_error() {
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let actual = crate::root::boot::store::bootstrap_config_store(
-        &config,
-        &plugin_config,
-        &crate::root::boot::store::Unopened,
-    )
-    .await
-    .expect("the configured native backend opens");
+    let crate::root::min3_boot::fixture::Fixture {
+        backend: actual,
+        rules,
+    } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
+        .await
+        .expect("the configured native backend opens");
     let started = Arc::new(tokio::sync::Notify::new());
     let heard = Arc::new(AtomicBool::new(false));
     let store = Arc::new(RecordReads {

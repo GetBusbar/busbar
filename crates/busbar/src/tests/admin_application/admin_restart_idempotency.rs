@@ -178,13 +178,12 @@ async fn application(
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let plugin_config = plugins::trusted_config(directory);
-    let backend = crate::root::boot::store::bootstrap_config_store(
-        &config,
-        &plugin_config,
-        &crate::root::boot::store::Unopened,
-    )
-    .await
-    .expect("the actual Store reopens the configuration authority");
+    let crate::root::min3_boot::fixture::Fixture {
+        backend: backend,
+        rules,
+    } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
+        .await
+        .expect("the actual Store reopens the configuration authority");
     let store = crate::root::real_store::core_over(backend).await;
     let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(store.clone())
         .expect("the actual Store supports conditional configuration records");

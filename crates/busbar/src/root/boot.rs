@@ -1344,11 +1344,11 @@ fn scanned_registry(
 /// declares (the linked rows, plus whatever a test admitted), passed explicitly.
 #[cfg(test)]
 pub(crate) fn axis_test_grammar() -> busbar_kernel::config::Grammar {
-    busbar_kernel::config::Grammar::new(
-        busbar_contract::secret::SecretAxis::sugars(super::linked::secret_rows()),
-        std::collections::BTreeMap::new(),
-        Vec::new(),
-    )
+    crate::root::min3_boot::fixture::grammar(&PluginsCfg {
+        enabled: false,
+        ..Default::default()
+    })
+    .expect("the actual linked images describe the fixture grammar")
 }
 
 /// The grammar of a read that loads no plugin: the linked secret rows' words alone.

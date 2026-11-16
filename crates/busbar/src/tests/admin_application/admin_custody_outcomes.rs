@@ -299,15 +299,16 @@ async fn app() -> (
     )
     .await
     .expect("the custody fixture exclusively provisions its wrapped native Store");
-    let anchor = fresh
+    let crate::root::min3_boot::fixture::Admitted {
+        core: anchor,
+        rules,
+    } = fresh
         .initialize_principal_format(&config, &plugin_config)
         .await
         .expect("the new custody namespace receives its principal baseline before serving");
     let store = observed.expect("the primitive custody fault wrapper was installed");
     store.core.set(anchor.clone()).ok().unwrap();
     let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone()).unwrap();
-    let rules = Arc::new(crate::root::door_steps::Rules::default())
-        as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
         plugin_config,

@@ -193,25 +193,28 @@ async fn serve_admission_with_inputs(
     let rules = Arc::new(crate::root::door_steps::Rules::hearing(
         crate::root::connector::dest_judge(&resolved),
     )) as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    static CORE: tokio::sync::OnceCell<Arc<busbar_kernel::persistence::facade::CoreStore>> =
+    static CORE: tokio::sync::OnceCell<crate::root::min3_boot::fixture::Admitted> =
         tokio::sync::OnceCell::const_new();
-    let core = CORE
+    let opened = CORE
         .get_or_try_init(|| async {
-            let backend = crate::root::boot::store::bootstrap_config_store(
+            let opened = crate::root::min3_boot::fixture::open(
                 &resolved,
                 &Default::default(),
-                &crate::root::boot::store::Unopened,
+                rules.clone(),
             )
-            .await?;
-            let core = crate::root::real_store::core_over(backend).await;
+            .await?
+            .admit()
+            .await;
+            let core = opened.core.clone();
             crate::root::boot::bind_plugin_floor(core.clone()).await?;
             crate::root::kernel::ROOT_CARD
                 .keep_in_store(core.clone(), busbar_kernel::door::op_id().counter())?;
-            Ok::<_, String>(core)
+            Ok::<_, String>(opened)
         })
         .await
-        .expect("the fixture admits and binds its actual native Store")
-        .clone();
+        .expect("the fixture admits and binds its actual native Store");
+    let core = opened.core.clone();
+    let rules = crate::root::min3_boot::fixture::carry(opened.rules.clone(), rules);
     let (mut app, rotation, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         resolved,
         Default::default(),

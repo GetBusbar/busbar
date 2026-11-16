@@ -1644,3 +1644,7 @@ pub(crate) mod transports;
 
 #[path = "min3_settled.rs"]
 mod settlement;
+
+#[cfg(test)]
+#[path = "tests/fixture_bootstrap.rs"]
+pub(crate) mod fixture;

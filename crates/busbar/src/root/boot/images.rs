@@ -183,3 +183,65 @@ mod pin_tests {
             .is_err());
     }
 }
+
+/// Admit a fixture's own archive scan, without borrowing another fixture's process-global registry.
+#[cfg(test)]
+pub(crate) fn fixture(
+    process: &ProcessResources,
+    plugins: &busbar_kernel::config::PluginsCfg,
+) -> Result<FileImages, String> {
+    let mut linked: Vec<_> = busbar_kernel::preflight::linked_rows()
+        .iter()
+        .map(super::linked_row)
+        .collect();
+    linked.extend(super::linked_exports(crate::LINKED.export_doors)?);
+    let metadata = super::scanned_registry(linked, plugins)?;
+    let policy = super::trust_policy(plugins, env!("CARGO_PKG_VERSION"))?;
+    let mut admitted = Vec::new();
+    for row in crate::LINKED.images {
+        admitted.push((
+            (row.admit)().map_err(|error| error.to_string())?,
+            row.alias.to_owned(),
+        ));
+    }
+    for row in metadata.loadable().iter().filter(|row| !row.linked()) {
+        if let Ok(image) =
+            busbar_plugin_loader::admit::admit_bytes(&row.lib_bytes, &row.manifest, &policy)
+        {
+            admitted.push((image, row.manifest.alias.clone()));
+        }
+    }
+    let proofs = admitted
+        .iter()
+        .map(|(image, _)| {
+            (
+                image.identity().to_owned(),
+                ImageProof {
+                    kind: image.kind(),
+                    digest: image.sha256().copied(),
+                },
+            )
+        })
+        .collect();
+    let aliases = admitted
+        .iter()
+        .map(|(image, alias)| (image.identity().to_owned(), alias.clone()))
+        .collect();
+    let mut builder = ImagesBuilder::new(&HOST, Arc::clone(process.slots()), Ceilings::DEFAULT);
+    for (image, _) in admitted {
+        builder.admit(image).map_err(|error| error.to_string())?;
+    }
+    let images = builder.finish();
+    let grammar = crate::root::secret_grammar::of_images(
+        &images,
+        super::owners_of(&metadata),
+        super::classify(&metadata, Some(plugins)),
+        super::skip_lines(metadata.skipped()),
+    )?;
+    Ok(FileImages {
+        images,
+        aliases,
+        grammar,
+        proofs,
+    })
+}

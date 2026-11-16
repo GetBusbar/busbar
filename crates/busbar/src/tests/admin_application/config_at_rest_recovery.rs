@@ -116,13 +116,12 @@ async fn unchanged_admin_reload_retries_at_rest_maintenance_after_store_recovery
         let plugin_config = crate::root::test_plugins::trusted_config(&directory);
         let rules = Arc::new(crate::root::door_steps::Rules::default())
             as Arc<dyn busbar_kernel::appbuild::RootRules>;
-        let native = crate::root::boot::store::bootstrap_config_store(
-            &config,
-            &plugin_config,
-            &crate::root::boot::store::Unopened,
-        )
-        .await
-        .expect("the actual native Store bootstraps");
+        let crate::root::min3_boot::fixture::Fixture {
+            backend: native,
+            rules,
+        } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
+            .await
+            .expect("the actual native Store bootstraps");
         let store = RewrapStore::new(native);
         let core = crate::root::real_store::core_over(store.clone()).await;
         let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(

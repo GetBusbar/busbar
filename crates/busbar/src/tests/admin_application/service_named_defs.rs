@@ -117,13 +117,12 @@ async fn list_named_defs_reads_the_overlay_off_the_async_worker() {
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let actual = crate::root::boot::store::bootstrap_config_store(
-        &config,
-        &plugin_config,
-        &crate::root::boot::store::Unopened,
-    )
-    .await
-    .expect("the configured native backend opens");
+    let crate::root::min3_boot::fixture::Fixture {
+        backend: actual,
+        rules,
+    } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
+        .await
+        .expect("the configured native backend opens");
     let faults = Arc::new(OverlayReads {
         actual,
         fail: AtomicBool::new(false),
@@ -253,13 +252,12 @@ async fn get_named_def_reads_the_overlay_off_the_async_worker() {
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let actual = crate::root::boot::store::bootstrap_config_store(
-        &config,
-        &plugin_config,
-        &crate::root::boot::store::Unopened,
-    )
-    .await
-    .expect("the configured native backend opens");
+    let crate::root::min3_boot::fixture::Fixture {
+        backend: actual,
+        rules,
+    } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
+        .await
+        .expect("the configured native backend opens");
     let faults = Arc::new(OverlayReads {
         actual,
         fail: AtomicBool::new(false),
@@ -389,13 +387,12 @@ async fn named_defs_still_flag_an_unparseable_overlay_entry() {
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let actual = crate::root::boot::store::bootstrap_config_store(
-        &config,
-        &plugin_config,
-        &crate::root::boot::store::Unopened,
-    )
-    .await
-    .expect("the configured native backend opens");
+    let crate::root::min3_boot::fixture::Fixture {
+        backend: actual,
+        rules,
+    } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
+        .await
+        .expect("the configured native backend opens");
     let faults = Arc::new(OverlayReads {
         actual,
         fail: AtomicBool::new(false),
@@ -529,13 +526,12 @@ async fn named_defs_propagate_store_overlay_read_failures() {
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let actual = crate::root::boot::store::bootstrap_config_store(
-        &config,
-        &plugin_config,
-        &crate::root::boot::store::Unopened,
-    )
-    .await
-    .expect("the configured native backend opens");
+    let crate::root::min3_boot::fixture::Fixture {
+        backend: actual,
+        rules,
+    } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
+        .await
+        .expect("the configured native backend opens");
     let faults = Arc::new(OverlayReads {
         actual,
         fail: AtomicBool::new(false),
