@@ -75,16 +75,14 @@ fn rendezvous_swap_relocates_and_pins() {
         let dg = Arc::new(Scripted {
             facts: DoorFacts {
                 dials: true,
-                name: "dg".to_owned(),
+                name: "dg".into(),
                 claims: vec!["dg"],
                 ..super::scripted(dialling()).facts.clone()
             },
             knobs: dialling(),
             st: Mutex::new(St {
                 local: (HOST_UFRAG, HOST_PWD),
-                begin: [(0, b"offer".to_vec(), 0), (0, b"offer".to_vec(), 0)]
-                    .into_iter()
-                    .collect::<VecDeque<_>>(),
+                begin: VecDeque::from([(0, b"offer".to_vec(), 0), (0, b"offer".to_vec(), 0)]),
                 ..St::default()
             }),
             park: Mutex::new(None),

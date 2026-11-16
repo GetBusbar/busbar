@@ -29,10 +29,48 @@ fn the_stamp_is_272_bytes_with_reserved_at_256() {
     assert_eq!(offset_of!(Stamp, _reserved), 256);
 }
 
+/// W1-L1: the loader's scan refuses each retired shape at the byte it sits in, as StampMalformed.
 #[test]
-#[ignore = "owner: W1-L1"]
 fn a_stamp_with_flag_2_or_4_format_1_or_size_320_is_stamp_malformed() {
-    todo!("owner: W1-L1 (C-NO-LICENCE)")
+    use busbar_plugin_abi::stamp::{emit, Spec};
+    use busbar_plugin_abi::types::KindCode;
+    use busbar_plugin_loader::refusal::RefusalCode;
+    use busbar_plugin_loader::scan::{self, StampScanErr};
+
+    let good = emit(&Spec {
+        kind: KindCode::Secret,
+        kind_abi: 2,
+        layout: busbar_plugin_abi::secret::FP,
+        out_of_process: false,
+        engine_min: None,
+        engine_max: None,
+        name: "busbar-no-licence",
+        version: "1.6.0",
+        build_id: None,
+        crypto: "host",
+    })
+    .0;
+    let image = |stamp: &[u8]| {
+        let mut image = vec![0u8; 40];
+        image.extend_from_slice(stamp);
+        image
+    };
+    assert!(
+        scan::stamp(&image(&good)).is_ok(),
+        "the format-2 stamp scans"
+    );
+    for (at, value) in [(36usize, 1u32 | 2), (36, 1 | 4), (16, 1), (20, 320)] {
+        let mut stamp = good;
+        stamp[at..at + 4].copy_from_slice(&value.to_le_bytes());
+        match scan::stamp(&image(&stamp)) {
+            Err(e @ StampScanErr::Malformed { byte, .. }) => {
+                assert_eq!(byte as usize, at, "field at {at} = {value}");
+                assert!(matches!(e.code(), RefusalCode::StampMalformed { .. }));
+            }
+            Err(other) => panic!("field at {at} = {value}: {other:?}"),
+            Ok(_) => panic!("field at {at} = {value} scanned"),
+        }
+    }
 }
 
 #[test]

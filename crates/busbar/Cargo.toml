@@ -83,5 +83,9 @@ proc-macro2 = { workspace = true }
 syn = { workspace = true }
 # External fixtures used by this source when the distribution runs its unit tests.
 
+[target.'cfg(not(target_env = "msvc"))'.dev-dependencies]
+tikv-jemalloc-ctl = { workspace = true }
+stats_alloc = { workspace = true }
+
 [lints]
 workspace = true

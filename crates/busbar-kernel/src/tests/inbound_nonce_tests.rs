@@ -387,7 +387,6 @@ async fn unit_nonces_distinct_across_inbounds() {
     std::thread::scope(|scope| {
         for (inbound, _) in &hosts {
             let table = inbound.table_at(OWNER, LISTENER, GEN).unwrap();
-            let providers: Arc<[String]> = [].into();
             scope.spawn(move || {
                 let binding = RequestBinding {
                     conn: 1,
@@ -396,7 +395,7 @@ async fn unit_nonces_distinct_across_inbounds() {
                 };
                 for _ in 0..MINTS {
                     inbound
-                        .mint(OWNER, GEN, 0, &providers, binding, Arc::clone(&table))
+                        .mint(OWNER, GEN, 0, &Arc::from([]), binding, Arc::clone(&table))
                         .unwrap();
                 }
             });

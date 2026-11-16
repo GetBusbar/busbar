@@ -977,6 +977,43 @@ fn weak_publisher_key_is_refused_at_parse() {
     );
 }
 
+/// `y = 2`, sign bit clear: canonical (`y < p`) and not small-order, but no point on edwards25519 has
+/// it. QE: a pinned key like this is refused when the configuration loads (boot, `--validate`), with
+/// the INVALID text it had before Q9b, not first at the first verify.
+const OFF_CURVE_PUBLIC_KEY_HEX: &str =
+    "0200000000000000000000000000000000000000000000000000000000000000";
+
+#[test]
+fn off_curve_publisher_key_is_refused_at_config_load() {
+    let err = public_key_from_hex(OFF_CURVE_PUBLIC_KEY_HEX)
+        .expect_err("a key with no point on the curve must not be pinned");
+    assert_eq!(
+        err,
+        "invalid ed25519 public key: invalid crypto input: Ed25519 public key is not a canonical \
+         curve point"
+    );
+    let none = BTreeMap::new();
+    let err = TrustPolicy::from_config(TrustInput {
+        publishers: &[("acme", OFF_CURVE_PUBLIC_KEY_HEX)],
+        allow_unsigned: false,
+        allow_third_party: false,
+        min_versions: &none,
+        first_party_floors: &none,
+        binary_version: "1.6.0",
+    })
+    .map(drop)
+    .unwrap_err();
+    assert_eq!(
+        err,
+        "plugins.trust.publishers['acme']: invalid ed25519 public key: invalid crypto input: \
+         Ed25519 public key is not a canonical curve point"
+    );
+    let err = parse_release_keys(&format!("rk1:ed25519:{OFF_CURVE_PUBLIC_KEY_HEX}"))
+        .map(drop)
+        .unwrap_err();
+    assert!(err.contains("invalid ed25519 public key"), "{err}");
+}
+
 #[test]
 fn signature_does_not_verify_under_a_weak_key() {
     let mut weak = [0u8; 32];

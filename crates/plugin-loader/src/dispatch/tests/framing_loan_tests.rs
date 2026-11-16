@@ -48,8 +48,8 @@ impl AuthHandleHost for Host {
                 generation: 3,
                 lines: Vec::new(),
             }),
-            full: b"full".as_slice().into(),
-            current: b"current".as_slice().into(),
+            full: Arc::from(b"full".as_slice()),
+            current: Arc::from(b"current".as_slice()),
         })
     }
     fn stream_ended(&self, _: u64, _: u64, stream: u64) {

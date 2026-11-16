@@ -794,7 +794,7 @@ mod linked {
         let plugin = load_linked::<StoreV4>(
             &row,
             Bind {
-                instance: crate::cold::store_v4::instance("v4-cancel-test"),
+                instance: Arc::from("v4-cancel-test"),
                 max_inflight_cap: 32,
                 sink: Arc::new(NoSink),
                 dispatcher: dispatcher.adopter(),
@@ -874,7 +874,7 @@ mod linked {
         let plugin = load_linked::<StoreV4>(
             &row,
             Bind {
-                instance: crate::cold::store_v4::instance("v4-test"),
+                instance: Arc::from("v4-test"),
                 max_inflight_cap: 32,
                 sink: Arc::new(NoSink),
                 dispatcher: dispatcher.adopter(),

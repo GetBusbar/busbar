@@ -20,6 +20,126 @@ pub mod arrival;
 
 pub mod request;
 
+/// One log event that carries plugin text (IF §12.16 round 34, PLUGIN-ERROR-CODES §2.6). `message` is core's own
+/// words. The plugin's text is a plain `&str` field `text` (never `message`, never `%` or `?`), so the stock `fmt`
+/// formatter writes it with `{:?}`: one quoted value with `"`, `\`, `\n`, `\r`, `\t` and other controls escaped,
+/// which cannot open a new field or line. On a text line `text` is the joined `"{code}: {text}"`; `plugin_diag`
+/// is a second plain field, present only with a code. `kind` and `instance` name the instance in operator
+/// vocabulary. No custom formatter is installed: this path is the whole rule.
+pub fn plugin_text(
+    level: tracing::Level,
+    kind: &str,
+    instance: &str,
+    message: &str,
+    text: &crate::plugin_text::PluginText,
+) {
+    let joined = text.to_string();
+    let joined = joined.as_str();
+    let diag = text.code.map(|code| code.to_string());
+    macro_rules! emit {
+        ($level:ident) => {
+            match diag.as_deref() {
+                Some(plugin_diag) => {
+                    tracing::$level!(kind, instance, plugin_diag, text = joined, "{message}")
+                }
+                None => tracing::$level!(kind, instance, text = joined, "{message}"),
+            }
+        };
+    }
+    match level {
+        tracing::Level::ERROR => emit!(error),
+        tracing::Level::WARN => emit!(warn),
+        tracing::Level::INFO => emit!(info),
+        tracing::Level::DEBUG => emit!(debug),
+        _ => emit!(trace),
+    }
+}
+
+#[cfg(test)]
+mod plugin_text_tests {
+    use crate::plugin_text::{PluginCode, PluginText};
+    use std::sync::{Arc, Mutex, PoisonError};
+
+    #[derive(Clone, Default)]
+    struct Lines(Arc<Mutex<Vec<u8>>>);
+
+    impl std::io::Write for Lines {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn captured(f: impl FnOnce()) -> String {
+        let lines = Lines::default();
+        let writer = lines.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(move || writer.clone())
+            .with_target(false)
+            .with_ansi(false)
+            .without_time()
+            .finish();
+        tracing::subscriber::with_default(subscriber, f);
+        let bytes = lines
+            .0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        String::from_utf8(bytes).expect("utf-8 log")
+    }
+
+    const SENT: &str = "  BUSBAR-6013 bad\tthing\nx\x1b[2K";
+
+    /// PLUGIN-ERROR-CODES T1b: one line; `plugin_diag` and the joined `text` in the stock formatter's Debug
+    /// spelling; core's own message unchanged.
+    #[test]
+    fn plugin_text_escaped_on_text_lines() {
+        let t = PluginText::new(
+            Some(PluginCode {
+                plugin: "acme-store",
+                number: 3,
+            }),
+            SENT,
+        );
+        let out = captured(|| {
+            super::plugin_text(tracing::Level::WARN, "store", "main", "open refused", &t);
+        });
+        assert_eq!(out.lines().count(), 1, "{out}");
+        assert!(out.contains("open refused"), "{out}");
+        assert!(
+            out.contains(r#"plugin_diag="BUSBAR-acme-store-0003""#),
+            "{out}"
+        );
+        assert!(
+            out.contains(r#"text="BUSBAR-acme-store-0003:   BUSBAR-6013 bad\tthing\nx\u{1b}[2K""#),
+            "{out}"
+        );
+        assert!(out.contains(r#"kind="store""#), "{out}");
+        assert!(out.contains(r#"instance="main""#), "{out}");
+    }
+
+    /// T1b/T2: a no-code text that imitates a field writes no `plugin_diag` field outside the quoted value, and a
+    /// quote or backslash it sends is escaped.
+    #[test]
+    fn a_no_code_text_cannot_forge_a_field() {
+        let t = PluginText::new(None, "x plugin_diag=\"BUSBAR-4013\" \\ end");
+        let out = captured(|| {
+            super::plugin_text(tracing::Level::ERROR, "auth", "sso", "verify failed", &t);
+        });
+        assert_eq!(out.lines().count(), 1, "{out}");
+        let quoted = r#"text="x plugin_diag=\"BUSBAR-4013\" \\ end""#;
+        assert!(out.contains(quoted), "{out}");
+        let outside = out.replacen(quoted, "", 1);
+        assert!(!outside.contains("plugin_diag"), "{out}");
+    }
+}
+
 /// The `RUST_LOG` value could not be read as a log filter. Boot refuses it rather than falling back
 /// to a default level: a filter the operator wrote and busbar silently ignored is a debugging
 /// session lost.

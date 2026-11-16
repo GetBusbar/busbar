@@ -68,6 +68,7 @@ impl Durability {
             .confirm(&run)
             .await
             .map_err(|_| DurabilityLost::observed(token, StepName::Audit))?;
+        records_pulse().notify_waiters();
         Ok(record)
     }
 

@@ -338,3 +338,61 @@ async fn nodes_lists_every_lease() {
     assert_eq!(row(second.id).state, "lost");
     assert_eq!(row(third.id).state, "lost");
 }
+
+#[tokio::test]
+async fn etag_survives_restart_without_collision() {
+    // ADMIN-API-1.6 6.1: a restarted process never repeats a generation the last one served,
+    // so `"<deployment_id>.<config_generation>"` cannot collide across a restart.
+    let backend = Arc::new(Backend::default());
+    let core = Arc::new(attach(backend).await);
+    let first = BootIdentity::new(core.clone()).unwrap();
+    assert_eq!(first.advance_generation(0).await.unwrap(), 1);
+    assert_eq!(first.advance_generation(1).await.unwrap(), 2);
+    let restarted = BootIdentity::new(core).unwrap();
+    // A fresh process starts its counter at zero; the stored row still wins.
+    assert_eq!(restarted.advance_generation(0).await.unwrap(), 3);
+}
+
+#[tokio::test]
+async fn generation_monotonic_all_sources() {
+    // `max(stored, prior) + 1`: a prior ahead of the row (a node that published while the row was
+    // behind) moves the row forward, and the row ahead of the prior moves the prior forward.
+    let backend = Arc::new(Backend::default());
+    let core = Arc::new(attach(backend).await);
+    let owner = BootIdentity::new(core.clone()).unwrap();
+    assert_eq!(owner.advance_generation(10).await.unwrap(), 11);
+    assert_eq!(owner.advance_generation(0).await.unwrap(), 12);
+    let second_node = BootIdentity::new(core).unwrap();
+    assert_eq!(second_node.advance_generation(5).await.unwrap(), 13);
+    assert_eq!(owner.advance_generation(13).await.unwrap(), 14);
+}
+
+#[tokio::test]
+async fn generation_lost_acknowledgement_is_not_double_counted() {
+    let backend = Arc::new(Backend::default());
+    let owner = BootIdentity::new(Arc::new(attach(backend.clone()).await)).unwrap();
+    assert_eq!(owner.advance_generation(0).await.unwrap(), 1);
+    backend.lose_reply.store(true, Ordering::SeqCst);
+    assert_eq!(owner.advance_generation(1).await.unwrap(), 2);
+    assert_eq!(owner.advance_generation(2).await.unwrap(), 3);
+}
+
+#[tokio::test]
+async fn generation_row_is_not_the_keyset_or_deployment_row() {
+    let backend = Arc::new(Backend::default());
+    let owner = BootIdentity::new(Arc::new(attach(backend).await)).unwrap();
+    let id = owner.keep_deployment_id().await.unwrap();
+    owner.advance_generation(0).await.unwrap();
+    assert_eq!(owner.keep_deployment_id().await.unwrap(), id);
+    let row = owner
+        .records
+        .records
+        .get(GENERATION_SCHEMA, GENERATION_KEY)
+        .await
+        .unwrap()
+        .expect("the generation row is kept");
+    assert_eq!(
+        row.expose(&crate::seal::lend()).as_slice(),
+        1u64.to_be_bytes().as_slice()
+    );
+}

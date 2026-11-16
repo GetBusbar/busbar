@@ -1925,6 +1925,9 @@ pub struct NewKeySpec {
     /// `Some("time-bound")` for an admin-minted app/service token (bounded by `exp`, no IdP tie);
     /// `None` leaves it unset.
     pub binding_mode: Option<String>,
+    /// The admin grant (ADMIN-API r5 section 2.1), recorded on [`busbar_contract::records::VirtualKey::admin`].
+    /// `None` for a data-plane key.
+    pub admin: Option<busbar_contract::records::AdminGrant>,
 }
 
 pub const METERING_BUCKET_SECS: u64 = 86_400;

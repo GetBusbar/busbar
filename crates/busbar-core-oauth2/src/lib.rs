@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 #![forbid(unsafe_code)]
+#![doc(test(attr(forbid(unsafe_code))))]
 
 pub mod cimd;
 pub mod config;

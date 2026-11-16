@@ -10,6 +10,8 @@
 //! Rule 15: no `unsafe` in any case file.
 #![forbid(unsafe_code)]
 
+#[path = "bridge_fixture.rs"]
+mod bridge_fixture;
 #[path = "c_a2a_card_redirect.rs"]
 mod c_a2a_card_redirect;
 #[path = "c_a2a_push_url.rs"]
@@ -328,6 +330,8 @@ mod c_zeroize_fresh;
 mod c_zeroize_grow;
 #[path = "c_zeroize_sync.rs"]
 mod c_zeroize_sync;
+#[path = "fu3-check-crypto-failed.rs"]
+mod fu3_check_crypto_failed;
 
 /// Every `tests/*.rs` is wired: a module of this binary or a `[[test]]` target of the manifest
 /// (`autotests = false`, so an unwired file would never run).

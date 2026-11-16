@@ -47,6 +47,8 @@ impl MutationClass {
 enum PathRule {
     Exact(&'static str),
     Prefix(&'static str),
+    /// A path that starts with the first and has the second as a segment run: `/hooks/<name>/attachments/<target>`.
+    Within(&'static str, &'static str),
 }
 
 const CONFIG_CLASS_RULES: &[PathRule] = &[
@@ -56,6 +58,7 @@ const CONFIG_CLASS_RULES: &[PathRule] = &[
     PathRule::Exact("/plugins/reload"),
     PathRule::Exact("/plugins/rollback"),
     PathRule::Exact("/restart"),
+    PathRule::Within("/hooks/", "/attachments/"),
 ];
 
 pub fn classify_mutation(rel: &str) -> MutationClass {
@@ -78,6 +81,7 @@ pub fn classify_mutation(rel: &str) -> MutationClass {
     let is_config = CONFIG_CLASS_RULES.iter().any(|rule| match rule {
         PathRule::Exact(p) => rel == *p,
         PathRule::Prefix(p) => rel.starts_with(p),
+        PathRule::Within(head, mid) => rel.starts_with(head) && rel.contains(mid),
     });
     if is_config {
         MutationClass::Config
@@ -143,6 +147,19 @@ impl MutationLimiter {
                 windows: Default::default(),
             }),
         }
+    }
+
+    /// How many admitted mutations of `class` `principal` has spent in the window `now` falls in.
+    /// A read: it charges nothing.
+    pub fn used(&self, principal: &str, class: MutationClass, now: u64) -> u32 {
+        let arrived_in = now - (now % MUTATION_RATE_WINDOW_SECS);
+        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if arrived_in != state.latest_window {
+            return 0;
+        }
+        state.windows[class.slot()]
+            .get(principal)
+            .map_or(0, |entry| entry.0)
     }
 
     pub fn check(&self, principal: &str, class: MutationClass, now: u64) -> RateCheck {

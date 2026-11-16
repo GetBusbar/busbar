@@ -383,7 +383,7 @@ fn two_instances_of_one_plugin_are_two_callers() {
     let open = |label: &str| {
         let sink = AuthSink::new("judge");
         let bind = Bind {
-            instance: crate::cold::auth_axis::instance(label),
+            instance: Arc::from(label),
             max_inflight_cap: 8,
             sink: sink.bind(),
             dispatcher: d.adopter(),
@@ -457,7 +457,7 @@ async fn a_verify_past_max_inflight_is_overloaded_and_never_queued() {
     let d = dispatcher();
     let sink = AuthSink::new("judge");
     let bind = Bind {
-        instance: crate::cold::auth_axis::instance("judge-1"),
+        instance: Arc::from("judge-1"),
         max_inflight_cap: 1,
         sink: sink.bind(),
         dispatcher: d.adopter(),
@@ -503,7 +503,7 @@ async fn a_sign_in_past_max_inflight_is_an_outage_not_a_rejected_credential() {
     let d = dispatcher();
     let sink = AuthSink::new("judge");
     let bind = Bind {
-        instance: crate::cold::auth_axis::instance("pl-src-1-login-1"),
+        instance: Arc::from("pl-src-1-login-1"),
         max_inflight_cap: 1,
         sink: sink.bind(),
         dispatcher: d.adopter(),
@@ -642,7 +642,7 @@ fn an_instance_debug_never_shows_its_settings_or_secrets() {
     let d = dispatcher();
     let sink = AuthSink::new("keyed");
     let bind = Bind {
-        instance: crate::cold::auth_axis::instance("keyed-a"),
+        instance: Arc::from("keyed-a"),
         max_inflight_cap: 8,
         sink: sink.bind(),
         dispatcher: d.adopter(),
@@ -1010,12 +1010,9 @@ fn a_wedged_refresh_holds_no_other_caller() {
         std::thread::spawn(move || {
             let now = a.verify_now(&request(Some("good"), None));
             let mut submitted = a.verify(request(Some("bad"), None));
+            let since = std::time::Instant::now();
             let mut settled = submitted.settled();
-            // About five seconds of 2 ms polls.
-            for _ in 0..2500 {
-                if settled.is_some() {
-                    break;
-                }
+            while settled.is_none() && since.elapsed() < Duration::from_secs(5) {
                 std::thread::sleep(Duration::from_millis(2));
                 settled = submitted.settled();
             }
@@ -1196,9 +1193,9 @@ fn an_auth_instance_logs_to_its_own_plugin_log_file() {
         "auth.logged",
         busbar_contract::abi::mechanism::KindCode::Auth,
     );
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
     let mut text = String::new();
-    // About ten seconds of 20 ms polls.
-    for _ in 0..500 {
+    while std::time::Instant::now() < deadline {
         text = std::fs::read_to_string(&path).unwrap_or_default();
         if text.contains("the judge logged a verify") {
             break;
@@ -1716,7 +1713,7 @@ fn an_auth_instance_holds_its_secrets_in_zeroising_buffers() {
     let d = dispatcher();
     let sink = AuthSink::new("keyed");
     let bind = Bind {
-        instance: crate::cold::auth_axis::instance("keyed-z"),
+        instance: Arc::from("keyed-z"),
         max_inflight_cap: 8,
         sink: sink.bind(),
         dispatcher: d.adopter(),
@@ -1872,16 +1869,17 @@ fn red_a_rejects_and_an_outages_reason_reach_the_instances_log() {
         state: "s".into(),
         ..Default::default()
     });
-    // About ten seconds of 10 ms polls.
-    let outcome = (0..1000)
-        .find_map(|_| {
-            let settled = call.settled();
-            if settled.is_none() {
-                std::thread::sleep(Duration::from_millis(10));
-            }
-            settled
-        })
-        .expect("complete_login never answered");
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let outcome = loop {
+        if let Some(o) = call.settled() {
+            break o;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "complete_login never answered"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    };
     assert_eq!(
         outcome,
         busbar_contract::auth::LoginOutcome::Outage {
@@ -1892,8 +1890,7 @@ fn red_a_rejects_and_an_outages_reason_reach_the_instances_log() {
 
     let path = log_config().path_for("auth.says", busbar_contract::abi::mechanism::KindCode::Auth);
     let mut text = String::new();
-    // About ten seconds of 20 ms polls.
-    for _ in 0..500 {
+    while std::time::Instant::now() < deadline {
         text = std::fs::read_to_string(&path).unwrap_or_default();
         if text.contains(reasons::REJECTED) && text.contains(reasons::OUTAGE) {
             break;
