@@ -545,6 +545,11 @@ pub fn sticky_hash(key: &[u8]) -> u64 {
 }
 
 pub trait DriverSteps {
+    /// Authority retained by this request. Health/open stages have no admitted unit context.
+    fn invocation(&self, _unit: u64) -> Option<crate::host_services::InvocationContext> {
+        None
+    }
+
     /// Read authoritative delayed-accounting liability before synchronous admission.
     fn prepare_admission<'a>(
         &'a self,
