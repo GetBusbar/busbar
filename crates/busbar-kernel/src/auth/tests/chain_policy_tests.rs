@@ -1,0 +1,106 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::time::{Duration, Instant};
+use busbar_contract::secure::SecureVec;
+use busbar_plugin_abi::host_side::caller::{BoxFut, CallStack, Caller};
+use busbar_plugin_abi::records::{tag, Records, Reply, U64Rec, Writer};
+use busbar_plugin_abi::types::KindCode;
+use busbar_plugin_loader::ports::auth::{decode_verify_ok, AuthIn, AuthPort, Identity, LoginAnswer, LoginIn, OutboundAnswer, ServeIn, ServeOut, UpstreamIn, Verify, VerifyAnswer, VerifyOk};
+use busbar_plugin_loader::ports::{CallCx, PortError};
+use crate::auth::chain_run::{verify_cached, AuthServices, ChainInstance, IdentityPolicy, Verdict};
+use crate::auth::verdicts::{Verdicts, VerdictPolicy};
+use crate::issued::IssuedCredentials;
+use crate::plane_grants::{KeyRefresh, ReplayGuard};
+use crate::plugin_records::RecordsDenied;
+
+struct Checks {
+    allow: AtomicBool,
+    claims: AtomicUsize,
+    issued: AtomicUsize,
+}
+impl IdentityPolicy for Checks {
+    fn epoch(&self) -> u64 { 1 }
+    fn authorize(&self, _: u64, _: &Identity, _: &AuthIn<'_>) -> Result<(), u32> {
+        if self.allow.load(Ordering::SeqCst) { Ok(()) } else { Err(busbar_plugin_abi::fail::refused::R_POLICY) }
+    }
+}
+impl IssuedCredentials for Checks {
+    fn lookup<'a>(&'a self, _: u64, kind: &'a str, id: &'a str) -> BoxFut<'a, SecureVec> {
+        assert_eq!((kind, id), ("sigv4", "key"));
+        self.issued.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async { let mut value = SecureVec::new(); value.extend_from_slice(b"secret"); value })
+    }
+}
+impl ReplayGuard for Checks {
+    fn claim<'a>(&'a self, _: &'a Caller<'_>, _: &'a [u8], _: u64) -> BoxFut<'a, Result<bool, RecordsDenied>> {
+        assert!(self.allow.load(Ordering::SeqCst), "policy must precede replay");
+        let first = self.claims.fetch_add(1, Ordering::SeqCst) == 0;
+        Box::pin(async move { Ok(first) })
+    }
+}
+struct Port { calls: AtomicUsize, issued: bool }
+fn unsupported<'a, T: Send + 'a>() -> BoxFut<'a, Result<T, PortError>> {
+    Box::pin(async { Err(PortError::Call(busbar_plugin_abi::fail::CallError::NotDeclared)) })
+}
+impl AuthPort for Port {
+    fn facts(&self) -> u64 { 0 }
+    fn cred_headers(&self) -> &[Box<str>] { &[] }
+    fn issued_kind(&self) -> Option<&str> { Some("sigv4") }
+    fn verify<'a>(&'a self, _: CallCx, _: &'a AuthIn<'a>, issued: Option<&'a [u8]>) -> Verify<'a> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        if self.issued {
+            if let Some(value) = issued { assert_eq!(value, b"secret"); }
+            return Verify::Done(Ok(VerifyAnswer::IssuedWanted("key".into())));
+        }
+        let mut out = Reply::new();
+        out.put_text(tag::ID_SUBJECT, "alice").unwrap();
+        out.put_pod_tail(busbar_plugin_abi::auth::tag::REPLAY, &U64Rec { value: 60 }, b"nonce").unwrap();
+        let VerifyOk::Identity(id) = decode_verify_ok(Records::new(out.as_bytes())).unwrap() else { panic!("identity") };
+        Verify::Done(Ok(VerifyAnswer::Identity(id)))
+    }
+    fn refresh<'a>(&'a self, _: CallCx) -> BoxFut<'a, Result<Option<u32>, PortError>> { unsupported() }
+    fn login<'a>(&'a self, _: CallCx, _: LoginIn<'a>) -> BoxFut<'a, Result<LoginAnswer, PortError>> { unsupported() }
+    fn outbound<'a>(&'a self, _: CallCx, _: &'a UpstreamIn<'a>) -> BoxFut<'a, Result<OutboundAnswer, PortError>> { unsupported() }
+    fn serve<'a>(&'a self, _: CallCx, _: &'a ServeIn<'a>) -> BoxFut<'a, Result<ServeOut, PortError>> { unsupported() }
+}
+fn request() -> AuthIn<'static> {
+    AuthIn { method: "POST", path: "/", query: "", authority: "example", headers: &[], peer: "peer", tls_peer_cert: &[], body: b"body", now_s: 1000 }
+}
+fn cx() -> CallCx { CallCx { deadline: Instant::now() + Duration::from_secs(10), request_id: 1, stack: CallStack::default() } }
+fn caller() -> Caller<'static> { Caller { plugin: "fixture", kind: KindCode::Auth, name: "auth", instance: 1, slot: 0, chain: 0, deadline: cx().deadline, stack: CallStack::default(), out_of_process: false, limits: Default::default() } }
+
+#[tokio::test]
+async fn denied_policy_does_not_consume_replay_and_successful_replay_is_uncached() {
+    let checks = Checks { allow: AtomicBool::new(false), claims: AtomicUsize::new(0), issued: AtomicUsize::new(0) };
+    let services = AuthServices { issued: &checks, replay: &checks, policy: &checks };
+    let port = Port { calls: AtomicUsize::new(0), issued: false };
+    let keys = KeyRefresh::new(Duration::from_secs(30));
+    let who = caller();
+    let instance = ChainInstance { id: 1, port: &port, caller: &who, keys: &keys };
+    let cache = Verdicts::new(VerdictPolicy::default());
+    let request = request();
+    assert!(matches!(verify_cached(&services, &cache, instance, cx(), &request).await, Ok(Verdict::Rejected { .. })));
+    assert_eq!(checks.claims.load(Ordering::SeqCst), 0);
+    checks.allow.store(true, Ordering::SeqCst);
+    assert!(matches!(verify_cached(&services, &cache, instance, cx(), &request).await, Ok(Verdict::Identity(_))));
+    assert!(matches!(verify_cached(&services, &cache, instance, cx(), &request).await, Ok(Verdict::Rejected { code, .. }) if code == busbar_plugin_abi::fail::refused::R_REPLAYED));
+    assert_eq!(checks.claims.load(Ordering::SeqCst), 2);
+    assert_eq!(port.calls.load(Ordering::SeqCst), 3);
+}
+
+#[tokio::test]
+async fn repeated_issued_wanted_performs_one_lookup_and_one_retry() {
+    let checks = Checks { allow: AtomicBool::new(true), claims: AtomicUsize::new(0), issued: AtomicUsize::new(0) };
+    let services = AuthServices { issued: &checks, replay: &checks, policy: &checks };
+    let port = Port { calls: AtomicUsize::new(0), issued: true };
+    let keys = KeyRefresh::new(Duration::from_secs(30));
+    let who = caller();
+    let instance = ChainInstance { id: 1, port: &port, caller: &who, keys: &keys };
+    let cache = Verdicts::new(VerdictPolicy::default());
+    assert!(matches!(verify_cached(&services, &cache, instance, cx(), &request()).await, Ok(Verdict::Rejected { .. })));
+    assert_eq!(checks.issued.load(Ordering::SeqCst), 1);
+    assert_eq!(port.calls.load(Ordering::SeqCst), 2);
+    assert_eq!(checks.claims.load(Ordering::SeqCst), 0);
+}

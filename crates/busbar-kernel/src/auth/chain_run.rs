@@ -160,3 +160,7 @@ async fn verify(port: &dyn AuthPort, cx: CallCx, req: &AuthIn<'_>) -> Result<Ver
         Verify::Io(io) => io.await,
     }
 }
+
+#[cfg(test)]
+#[path = "tests/chain_policy_tests.rs"]
+mod policy_tests;
