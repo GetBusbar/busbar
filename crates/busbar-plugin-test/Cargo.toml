@@ -92,7 +92,7 @@ path = "tests/cases.rs"
 # its test caller binding). `target-http` adds the carrier: hyper and hyper-util, no hand-written codec,
 # no direct h2, no tonic. Every crate here is already in core's lock.
 target = ["dep:sonic-rs"]
-target-sockets = ["tokio/net", "tokio/io-util", "dep:rustls", "dep:tokio-rustls"]
+target-sockets = ["tokio/net", "tokio/io-util", "tokio/macros", "busbar-contract/tls", "dep:rustls", "dep:tokio-rustls"]
 target-http = ["target", "dep:hyper", "dep:hyper-util", "dep:http-body-util", "tokio/net"]
 # STH-ROWS D-7: the contract's caller seal for a plugin repository's test host, a loud dev-only opt-in on
 # its `busbar-plugin-test` DEV edge (the guard `test_seal_is_dev_only` allows this forward, never a normal edge).

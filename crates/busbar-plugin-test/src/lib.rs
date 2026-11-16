@@ -83,3 +83,8 @@ pub fn host() -> Host {
 #[cfg(all(test, feature = "target-sockets"))]
 #[path = "host_target/socket_tests.rs"]
 mod socket_tests;
+
+/// Explicit loopback sockets for MIN-3 SDK store tests.
+#[cfg(feature = "target-sockets")]
+#[path = "host_target/sockets.rs"]
+pub mod sockets;
