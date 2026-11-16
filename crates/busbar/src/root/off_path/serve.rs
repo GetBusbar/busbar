@@ -476,7 +476,10 @@ pub(crate) async fn compose_served_checked(
         if !doors.is_empty() {
             tracing::warn!("door planes stay unopened: no governance book to settle on");
         }
-        let served = Served::default();
+        let served = Served {
+            ports: crate::root::min3_boot::seats(),
+            ..Served::default()
+        };
         check(&served)?;
         return Ok(served);
     };
@@ -868,6 +871,7 @@ pub(crate) async fn compose_planes_over(
 ) -> Result<Served, String> {
     let mut served = Served {
         tables: tables.clone(),
+        ports: crate::root::min3_boot::seats(),
         ..Served::default()
     };
     let Some(kernel) = late.kernel() else {
@@ -4082,6 +4086,7 @@ impl DataRoutes {
                         work.reference().into_bytes(),
                     )],
                     body: bytes::Bytes::new(),
+                    carrier: 0,
                 };
                 let principal = PrincipalId::new(key.id.as_str());
                 let (caller, reply) = IngressCaller::new();

@@ -45,6 +45,8 @@ libc = { workspace = true }
 url = { workspace = true }
 http = { workspace = true }
 mime = { workspace = true }
+hyper = { workspace = true }
+http-body-util = { workspace = true }
 hyper-util = { workspace = true, features = ["client-proxy"] }
 base64 = { workspace = true }
 tracing = { workspace = true }

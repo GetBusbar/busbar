@@ -1242,6 +1242,8 @@ pub(crate) struct Served {
     pub(crate) nests: Option<NestRoutes>,
     /// In the order the planes were bound.
     pub(crate) planes: Vec<ServedPlane>,
+    /// The MIN-3 plane instances served through their ports (`PortDriver`), in the order they were opened.
+    pub(crate) ports: Vec<busbar_kernel::plane_driver::port::PortSeat>,
     /// The posting site the planes' money steps post an abandoned end to, and the units' facts are
     /// opened on while they run: the process's one node's.
     pub(crate) post: Option<Arc<crate::root::plane_node::NodeEndPost>>,
@@ -2030,6 +2032,7 @@ impl DataRoutes {
             target: target.as_bytes().to_vec(),
             fields,
             body: body.clone(),
+            carrier: 0,
         };
         let principal = match gov.key() {
             Some(key) => PrincipalId::new(key.id.as_str()),
@@ -2069,6 +2072,7 @@ impl DataRoutes {
         session: std::num::NonZeroU64,
     ) -> (SessionDoor, Arrival, Bytes) {
         let (door, mut arrival, body) = self.arrived(plane, claim, req);
+        arrival.carrier = session.get();
         arrival.fields.push((
             busbar_contract::abi::host::service::CARRIER_SESSION_FIELD
                 .as_bytes()
@@ -2286,6 +2290,7 @@ impl DataRoutes {
             target: nest.ask.target.into_bytes(),
             fields: Vec::new(),
             body: bytes::Bytes::from(nest.ask.body),
+            carrier: 0,
         };
         let nesting = Nesting {
             parent,

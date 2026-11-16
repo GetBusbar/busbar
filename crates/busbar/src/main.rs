@@ -684,7 +684,9 @@ async fn run(
             format!("base Store settings: {error}"),
         ))
     });
-    let dest = BootstrapDestJudge::new(root::connector::dest_judge(&base_cfg));
+    let guard_judge = root::connector::dest_judge(&base_cfg);
+    let boot_guard = guard_judge.guard().clone();
+    let dest = BootstrapDestJudge::new(guard_judge);
     let commit_guard: Arc<dyn busbar_kernel::host_services::DestJudge> = dest.clone();
     let (credentials, credential_handle) = root::credentials::AppCredentials::late();
     root::serve::compose(dest.clone(), &late_services, credentials);
@@ -711,6 +713,16 @@ async fn run(
             &[base_cfg.listen.as_str(), base_cfg.admin_listen.as_str()],
         );
         root::connector::install_trust_store(&base_cfg, false);
+        // The MIN-3 registry boots here, before the Store opens and before any listener serves: images, the
+        // kernel's sides, then 2a, 2b, the deployment point, 2c. Without a MIN-3 store image the old path boots.
+        root::min3_boot::run(
+            &base_cfg,
+            &deploy.plugins,
+            boot_guard,
+            late_services.kernel(),
+        )
+        .await
+        .unwrap_or_else(|error| die(boot_error("MIN-3 plugin boot refused", error)));
         let prepared_store = busbar_kernel::appbuild::prepare_config_store(&base_cfg, &deploy.plugins)
             .await
             .unwrap_or_else(|error| die(store_boot_refusal(principal_transition.is_some(), error)));

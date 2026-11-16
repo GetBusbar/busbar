@@ -413,6 +413,21 @@ pub fn admit(
     admit_with(fd, manifest, trust, &CryptoFacts::FACADE)
 }
 
+/// `admit` over library bytes the caller already holds (the plugins directory's scan read them once): a sealed
+/// memfd of exactly those bytes, then every `admit` step, so the bytes verified and the bytes loaded are the same.
+#[cfg(target_os = "linux")]
+pub fn admit_bytes(
+    bytes: &[u8],
+    manifest: &SignedManifest,
+    trust: &TrustConfig,
+) -> Result<Admitted, Refusal> {
+    let fd = crate::stage::sealed_memfd(bytes).map_err(|e| {
+        Refusal::new(RefusalCode::Integrity, "file", e, "a readable image")
+            .named(manifest.name.as_str())
+    })?;
+    admit(fd, manifest, trust)
+}
+
 #[cfg(unix)]
 fn admit_with(
     fd: std::os::fd::OwnedFd,
