@@ -23,9 +23,9 @@ use axum::http::header::{AUTHORIZATION, COOKIE, WWW_AUTHENTICATE};
 use axum::http::{HeaderMap, HeaderName, HeaderValue, Request, StatusCode};
 use axum::response::{IntoResponse, Response};
 
-use busbar_kernel::config::min3::{ProvisioningCfg, ProvisioningGuard};
-use busbar_kernel::directory::MAX_ATTEMPTS;
-use busbar_kernel::holds::guard::{self, GuardCell, ReleaseRefused};
+use busbar_kernel::config::min3::ProvisioningCfg;
+use busbar_kernel::directory::{GuardView, KernelDirectory};
+use busbar_plugin_abi::host_side::needs::NeedErr;
 
 /// The mount prefix; the claimed pattern is `/provision/<instance>/{*rest}`.
 pub const MOUNT_PREFIX: &str = "/provision/";
@@ -38,7 +38,10 @@ pub fn mount_path(instance: &str) -> String {
 /// The instances that get a mount: a `provisioning:` block **and** an image that declared FB_PROVISION. An
 /// FB_PROVISION image without the block loads and mounts nothing (its DIRECTORY Needs are DENIED by the
 /// directory); the block without FB_PROVISION is refused at config load (W1-K6P), so it never reaches here.
-pub fn mounted<'a, F>(provisioning: &'a BTreeMap<Box<str>, ProvisioningCfg>, declares_provision: F) -> Vec<&'a str>
+pub fn mounted<'a, F>(
+    provisioning: &'a BTreeMap<Box<str>, ProvisioningCfg>,
+    declares_provision: F,
+) -> Vec<&'a str>
 where
     F: Fn(&str) -> bool,
 {
@@ -74,11 +77,7 @@ pub trait ProvisionInstance: Send + Sync {
     /// This instance's own verify over the request head, exactly as an inbound request.
     fn verify(&self, head: &HeaderMap, path: &str) -> impl Future<Output = Verified> + Send;
     /// `serve` with Q_CLIENT = `client` (an entry of `provisioning.clients`), the stripped head and the body.
-    fn serve(
-        &self,
-        client: &str,
-        req: Request<Bytes>,
-    ) -> impl Future<Output = Response> + Send;
+    fn serve(&self, client: &str, req: Request<Bytes>) -> impl Future<Output = Response> + Send;
     /// A refusal of the mount, audited `provision_refused{instance, status}` (no credential text).
     fn refused(&self, status: StatusCode) {
         busbar_kernel::audit::auditlog::emit_admin_hostless_now(
@@ -116,7 +115,11 @@ fn refuse<I: ProvisionInstance>(inst: &I, status: StatusCode) -> Response {
 
 /// One request on `/provision/<instance>/*`: the CA-2 client check, then `serve`. No plugin is called before the
 /// check passes.
-pub async fn mount<I: ProvisionInstance>(inst: &I, clients: &[Box<str>], req: Request<Body>) -> Response {
+pub async fn mount<I: ProvisionInstance>(
+    inst: &I,
+    clients: &[Box<str>],
+    req: Request<Body>,
+) -> Response {
     let (mut head, body) = req.into_parts();
     let body = match axum::body::to_bytes(body, inst.body_cap()).await {
         Ok(b) => b,
@@ -136,28 +139,9 @@ pub async fn mount<I: ProvisionInstance>(inst: &I, clients: &[Box<str>], req: Re
     inst.serve(client, Request::from_parts(head, body)).await
 }
 
-/// The store did not answer (or answered a fault).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct StoreFault;
-
-/// The guard cell's store access for one provisioning instance (its `dir_ns` `W` key), implemented by the kernel
-/// directory (W1-K6P) over the core store.
-pub trait GuardStore: Send + Sync {
-    /// The raw `W` bytes; None = absent.
-    fn read_w(&self, instance: &str) -> impl Future<Output = Result<Option<Vec<u8>>, StoreFault>> + Send;
-    /// One slotted commit putting `new`, predicated `Exact(expected)` or `Absent` (None). Ok(false) = the
-    /// predicate lost (another writer moved `W`).
-    fn commit_w(
-        &self,
-        instance: &str,
-        expected: Option<&[u8]>,
-        new: [u8; guard::W_LEN],
-    ) -> impl Future<Output = Result<bool, StoreFault>> + Send;
-}
-
-/// `GET /admin/provisioning/{instance}/guard`.
+/// `GET /admin/provisioning/{instance}/guard`, the body.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
-pub struct GuardView {
+pub struct GuardBody {
     pub max: u32,
     pub window_s: u64,
     pub window_start_s: u64,
@@ -165,33 +149,36 @@ pub struct GuardView {
     pub released_until_s: u64,
 }
 
-impl GuardView {
-    fn of(g: ProvisioningGuard, c: GuardCell) -> Self {
+impl From<GuardView> for GuardBody {
+    fn from(v: GuardView) -> Self {
         Self {
-            max: g.max,
-            window_s: g.window_s,
-            window_start_s: c.window_start_s,
-            moved: c.moved,
-            released_until_s: c.released_until_s,
+            max: v.max,
+            window_s: v.window_s,
+            window_start_s: v.window_start_s,
+            moved: v.moved,
+            released_until_s: v.released_until_s,
         }
     }
 }
 
-/// `POST .../guard/release` body.
+/// `POST .../guard/release` body. `for_s` defaults to 900; the directory checks 60..=86,400.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ReleaseBody {
     pub for_s: Option<u64>,
 }
 
+/// `for_s` of a release without a body.
+pub const RELEASE_DEFAULT_S: u64 = 900;
+
 /// An admin refusal on the guard routes.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum GuardAdminError {
     /// No such provisioning instance (404).
     UnknownInstance,
-    /// The body is invalid (400, the text names the field).
-    Invalid(String),
-    /// The store did not answer, the cell does not decode, or the commit lost MAX_ATTEMPTS times (503).
+    /// `for_s` is outside 60..=86,400 (400, the text names the field).
+    Invalid,
+    /// The store did not answer, or the commit lost MAX_ATTEMPTS times (503).
     Unavailable,
 }
 
@@ -199,8 +186,16 @@ impl GuardAdminError {
     pub fn status(&self) -> StatusCode {
         match self {
             Self::UnknownInstance => StatusCode::NOT_FOUND,
-            Self::Invalid(_) => StatusCode::BAD_REQUEST,
+            Self::Invalid => StatusCode::BAD_REQUEST,
             Self::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
+        }
+    }
+
+    fn of(e: NeedErr) -> Self {
+        match e {
+            NeedErr::Denied => Self::UnknownInstance,
+            NeedErr::Invalid => Self::Invalid,
+            _ => Self::Unavailable,
         }
     }
 }
@@ -208,9 +203,9 @@ impl GuardAdminError {
 impl IntoResponse for GuardAdminError {
     fn into_response(self) -> Response {
         let message = match &self {
-            Self::UnknownInstance => "no provisioning instance by that name".to_string(),
-            Self::Invalid(text) => text.clone(),
-            Self::Unavailable => "the provisioning store did not answer; retry".to_string(),
+            Self::UnknownInstance => "no provisioning instance by that name",
+            Self::Invalid => "for_s must be between 60 and 86400 seconds",
+            Self::Unavailable => "the provisioning store did not answer; retry",
         };
         (
             self.status(),
@@ -220,73 +215,28 @@ impl IntoResponse for GuardAdminError {
     }
 }
 
-fn guard_of<'a>(
-    provisioning: &'a BTreeMap<Box<str>, ProvisioningCfg>,
+/// `GET /admin/provisioning/{instance}/guard`.
+pub async fn guard_view(
+    dir: &KernelDirectory,
     instance: &str,
-) -> Result<&'a ProvisioningCfg, GuardAdminError> {
-    provisioning
-        .get(instance)
-        .ok_or(GuardAdminError::UnknownInstance)
-}
-
-fn decode(raw: Option<&[u8]>) -> Result<Option<GuardCell>, GuardAdminError> {
-    match raw {
-        None => Ok(None),
-        Some(b) => GuardCell::decode(b)
-            .map(Some)
-            .ok_or(GuardAdminError::Unavailable),
-    }
-}
-
-/// `GET /admin/provisioning/{instance}/guard` as of `now_s` (a window that ran out reads as restarted).
-pub async fn guard_view<S: GuardStore>(
-    store: &S,
-    provisioning: &BTreeMap<Box<str>, ProvisioningCfg>,
-    instance: &str,
-    now_s: u64,
-) -> Result<GuardView, GuardAdminError> {
-    let cfg = guard_of(provisioning, instance)?;
-    let raw = store
-        .read_w(instance)
+) -> Result<GuardBody, GuardAdminError> {
+    dir.guard(instance)
         .await
-        .map_err(|StoreFault| GuardAdminError::Unavailable)?;
-    let cell = GuardCell::current(decode(raw.as_deref())?, now_s, cfg.guard.window_s);
-    Ok(GuardView::of(cfg.guard, cell))
+        .map(Into::into)
+        .map_err(GuardAdminError::of)
 }
 
-/// `POST /admin/provisioning/{instance}/guard/release` by admin principal `admin` (already through admin authz):
-/// commits `W` with `moved` 0 and `released_until_s = now_s + for_s`, under `Exact(read)` / `Absent`, at most
-/// MAX_ATTEMPTS times; audited `directory_guard_released` with the admin principal.
-pub async fn release_guard<S: GuardStore>(
-    store: &S,
-    provisioning: &BTreeMap<Box<str>, ProvisioningCfg>,
+/// `POST /admin/provisioning/{instance}/guard/release` by admin principal `admin` (already through admin authz).
+/// The directory commits `moved` 0 and `released_until_s = now + for_s` and audits `directory_guard_released` with
+/// the admin principal.
+pub async fn release_guard(
+    dir: &KernelDirectory,
     instance: &str,
     body: ReleaseBody,
     admin: &str,
-    now_s: u64,
-) -> Result<GuardView, GuardAdminError> {
-    let cfg = guard_of(provisioning, instance)?;
-    for _ in 0..MAX_ATTEMPTS {
-        let raw = store
-            .read_w(instance)
-            .await
-            .map_err(|StoreFault| GuardAdminError::Unavailable)?;
-        let cell = decode(raw.as_deref())?;
-        let next = guard::release(cell, now_s, body.for_s, cfg.guard.window_s)
-            .map_err(|e: ReleaseRefused| GuardAdminError::Invalid(e.to_string()))?;
-        let won = store
-            .commit_w(instance, raw.as_deref(), next.encode())
-            .await
-            .map_err(|StoreFault| GuardAdminError::Unavailable)?;
-        if won {
-            busbar_kernel::audit::auditlog::emit_admin_hostless_now(
-                "directory_guard_released",
-                &format!("provisioning:{instance}#until={}", next.released_until_s),
-                busbar_contract::vocab::OUTCOME_APPLIED,
-                admin,
-            );
-            return Ok(GuardView::of(cfg.guard, next));
-        }
-    }
-    Err(GuardAdminError::Unavailable)
+) -> Result<GuardBody, GuardAdminError> {
+    dir.release_guard(instance, body.for_s.unwrap_or(RELEASE_DEFAULT_S), admin)
+        .await
+        .map(Into::into)
+        .map_err(GuardAdminError::of)
 }

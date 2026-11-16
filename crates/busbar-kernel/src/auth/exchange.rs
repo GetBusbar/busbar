@@ -77,7 +77,13 @@ pub(crate) async fn exchange(
         module, principal, ..
     } = &verdict
     {
-        if crate::holds::held_now(module, &principal.id).is_some() {
+        if crate::holds::held_now(module, &principal.id) {
+            crate::audit::auditlog::emit_admin_hostless_now(
+                "principal_held",
+                &format!("auth:{module}"),
+                busbar_contract::vocab::OUTCOME_REFUSED,
+                crate::audit::auditlog::PLUGIN_REFUSAL_PRINCIPAL,
+            );
             return held_refusal();
         }
     }
@@ -205,7 +211,7 @@ struct SenderConstrained {
     error_description: &'static str,
 }
 
-/// CA-5: the verified principal is held (R_DENIED). The probe already audited `principal_held{instance}`.
+/// CA-5: the verified principal is held (R_DENIED). Audited `principal_held` at the call.
 fn held_refusal() -> Response {
     (
         StatusCode::FORBIDDEN,

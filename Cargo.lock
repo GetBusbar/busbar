@@ -407,6 +407,7 @@ dependencies = [
  "busbar-contract",
  "busbar-kernel",
  "busbar-kernel-egress",
+ "busbar-plugin-abi",
  "flate2",
  "hex",
  "http-body-util",
@@ -430,6 +431,7 @@ dependencies = [
  "busbar-contract",
  "busbar-kernel",
  "busbar-kernel-egress",
+ "busbar-plugin-abi",
  "busbar-plugin-loader",
  "crc32fast",
  "dimpl",
@@ -530,6 +532,7 @@ dependencies = [
  "arc-swap",
  "async-trait",
  "axum",
+ "backon",
  "base64 0.22.1",
  "busbar-contract",
  "busbar-kernel-audit",
@@ -547,11 +550,13 @@ dependencies = [
  "http",
  "http-body-util",
  "indexmap",
+ "libc",
  "loom",
  "metrics",
  "metrics-util",
  "proc-macro2",
  "reqwest",
+ "rustls-pki-types",
  "schemars",
  "serde",
  "serde_json",
@@ -598,6 +603,7 @@ version = "1.6.0"
 dependencies = [
  "busbar-contract",
  "busbar-kernel-breaker",
+ "busbar-plugin-abi",
  "foldhash",
  "futures",
 ]
@@ -659,6 +665,7 @@ dependencies = [
  "base64 0.22.1",
  "busbar-crypto",
  "busbar-ffi",
+ "crossbeam-queue",
  "hex",
  "percent-encoding",
  "zerocopy",
@@ -670,6 +677,7 @@ name = "busbar-plugin-bench"
 version = "1.6.0"
 dependencies = [
  "busbar-plugin-abi",
+ "busbar-plugin-loader",
  "sharded-slab",
 ]
 
@@ -680,6 +688,7 @@ dependencies = [
  "arc-swap",
  "base64 0.22.1",
  "busbar-contract",
+ "busbar-ffi",
  "busbar-plugin-abi",
  "flate2",
  "foldhash",
@@ -711,7 +720,9 @@ dependencies = [
 name = "busbar-plugin-test"
 version = "1.6.0"
 dependencies = [
+ "axum",
  "busbar-contract",
+ "busbar-core-admin",
  "busbar-ffi",
  "busbar-kernel",
  "busbar-plugin-abi",
@@ -723,6 +734,7 @@ dependencies = [
  "sonic-rs",
  "tikv-jemallocator",
  "tokio",
+ "url",
  "zeroize",
 ]
 
@@ -848,6 +860,15 @@ name = "crossbeam-epoch"
 version = "0.9.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2d6914041f254d6e9176c01941b21115dcfb7089e55135a35411081bd106ef3f"
+dependencies = [
+ "crossbeam-utils",
+]
+
+[[package]]
+name = "crossbeam-queue"
+version = "0.3.14"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "03e8bd762f7479489c70ed6c768ddca99d7296857de437a68dcb2a94365b3fae"
 dependencies = [
  "crossbeam-utils",
 ]

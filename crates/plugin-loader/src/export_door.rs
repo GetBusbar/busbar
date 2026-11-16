@@ -29,6 +29,8 @@ use crate::dispatch::lifecycle::{
 };
 use crate::dispatch::{in_head, out_head, Dispatcher, Frame, Plugin, NO_BLOB};
 
+pub mod port;
+
 pub const MAX_QUEUED_LINES: usize = 4096;
 
 pub const MAX_BATCH_LINES: usize = 256;

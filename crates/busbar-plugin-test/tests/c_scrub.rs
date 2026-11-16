@@ -32,9 +32,20 @@ fn a_secret_its_encodings_userinfo_and_a_token_parameter_are_masked() {
 }
 
 #[test]
-#[ignore = "owner: W1-K8D"]
 fn none_survives_in_logs_audit_rows_or_port_error_text() {
-    todo!("owner: W1-K8D (C-SCRUB)")
+    use busbar_kernel::plugin_text::PluginText;
+
+    let scrub = Scrub::new();
+    scrub.register(1, &[SECRET]);
+    for form in needles(SECRET) {
+        let form = core::str::from_utf8(&form).expect("ASCII");
+        let raw = format!("login failed for {form} at https://bob:hunter22@db.test/x?token=abc123");
+        let shown = PluginText::scrubbed(&scrub, None, &raw);
+        let line = shown.to_string();
+        for leaked in [form, "hunter22", "abc123"] {
+            assert!(!line.contains(leaked), "{leaked} survived: {line}");
+        }
+    }
 }
 
 /// The template arm (§12.2 step 5, §12.16; K2 + H0), through custody onto the instance's scrub set: the set its
