@@ -17,7 +17,7 @@ use std::sync::Arc;
 use std::sync::{Mutex, OnceLock};
 
 use busbar_ffi::image::{Admitted as Header, ImageError};
-use busbar_ffi::LinkedPlugin;
+use busbar_ffi::{LinkedPlugin, Plugin};
 use busbar_plugin_abi::fp::CORE_FP;
 use busbar_plugin_abi::host_side::driver::Image;
 #[cfg(unix)]
@@ -651,7 +651,20 @@ fn admit_linked_with(
     plugin: &'static LinkedPlugin,
     facts: &CryptoFacts,
 ) -> Result<Admitted, Refusal> {
-    let header = Header::linked(plugin).map_err(|e| image_refusal(&e))?;
+    admit_header_with(Header::linked(plugin), facts)
+}
+
+/// [`admit_linked`] for a caller that holds the `&'static Plugin` a plugin crate's `PLUGIN.plugin()` returns
+/// (the SDK suites' frozen signatures): the same null, stamp and compatibility checks.
+pub fn admit_header(plugin: &'static Plugin) -> Result<Admitted, Refusal> {
+    admit_header_with(Header::from_header(plugin), &CryptoFacts::FACADE)
+}
+
+fn admit_header_with(
+    header: Result<Header, ImageError>,
+    facts: &CryptoFacts,
+) -> Result<Admitted, Refusal> {
+    let header = header.map_err(|e| image_refusal(&e))?;
     let stamp = scan::check(&header.stamp().0).map_err(scan::StampScanErr::refusal)?;
     compatible(&stamp, facts)?;
     Ok(Admitted {
