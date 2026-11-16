@@ -1,66 +1,50 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Observe owned verifier bytes before their allocation is released, never after free.
+//! Owned verifier bytes are wiped on every exit (Q24, UNSAFE-MIN §4.4). Each field in turn carries a
+//! fresh canary; the request leaves by return, by failure or by cancelling the pending future that
+//! owns it; then a scan of this process's memory must not find the canary. While the future is
+//! pending the canary must still be found: the verifier still owns its bytes. Linux only (A23).
+#![cfg(target_os = "linux")]
+#![forbid(unsafe_code)]
 
-use std::alloc::{GlobalAlloc, Layout, System};
-use std::cell::Cell;
 use std::future::Future;
 use std::task::{Context, Poll, Waker};
 
 use busbar_contract::abi::auth::AuthPoint;
 use busbar_contract::auth_calls::VerifyRequest;
 
-thread_local! {
-    static WATCH: Cell<Option<(*mut u8, usize)>> = const { Cell::new(None) };
-    static WIPED: Cell<Option<bool>> = const { Cell::new(None) };
-}
+#[allow(dead_code)]
+#[path = "../../busbar-plugin-test/src/canary_scan.rs"]
+mod canary_scan;
 
-struct InspectBeforeFree;
+use canary_scan::WipeProof;
 
-// SAFETY: allocations are forwarded unchanged to System. The deallocator observes only the
-// initialized prefix registered by this thread, while that allocation still belongs to it.
-unsafe impl GlobalAlloc for InspectBeforeFree {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        // SAFETY: the allocator caller supplies a valid layout.
-        unsafe { System.alloc(layout) }
-    }
-
-    unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
-        let _ = WATCH.try_with(|watch| {
-            if let Some((watched, len)) = watch.get().filter(|(watched, _)| *watched == pointer) {
-                watch.set(None);
-                let wiped = len <= layout.size()
-                    && (0..len).all(|index| {
-                        // SAFETY: this is the watched live allocation, before System.dealloc.
-                        // Only bytes initialized by the original Vec/String are read; no spare
-                        // capacity or freed memory is inspected, and reads allocate nothing.
-                        unsafe { watched.add(index).read_volatile() == 0 }
-                    });
-                let _ = WIPED.try_with(|result| result.set(Some(wiped)));
-            }
-        });
-        // SAFETY: pointer and layout are the allocator caller's matching allocation.
-        unsafe { System.dealloc(pointer, layout) }
-    }
-}
-
+/// The shipped allocator, so the scan reads what production would leave behind.
 #[global_allocator]
-static ALLOCATOR: InspectBeforeFree = InspectBeforeFree;
+static ALLOCATOR: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
-fn request() -> VerifyRequest {
+/// A request whose `field` holds `secret` (its only copy); every other field is plain text.
+fn request(field: &str, secret: &str) -> VerifyRequest {
+    let pick = |name: &str, plain: &str| {
+        if field == name {
+            secret.to_owned()
+        } else {
+            plain.to_owned()
+        }
+    };
     VerifyRequest {
         point: AuthPoint::HeadBody,
         conn: 7,
         unit: 8,
         credential: None,
-        lines: vec![("private-header".to_string(), b"v".to_vec().into())],
-        peer: Some(b"private-peer".to_vec()),
-        body: Some(b"private-body".to_vec()),
-        method: "POST".to_string(),
-        authority: "private.example".to_string(),
-        path: "/private-path".to_string(),
-        query: Some("credential=private-query".to_string()),
+        lines: vec![(pick("line", "private-header"), b"v".to_vec().into())],
+        peer: Some(pick("peer", "private-peer").into_bytes()),
+        body: Some(pick("body", "private-body").into_bytes()),
+        method: pick("method", "POST"),
+        authority: pick("authority", "private.example"),
+        path: pick("path", "/private-path"),
+        query: Some(pick("query", "credential=private-query")),
         timestamp: 0,
     }
 }
@@ -85,19 +69,11 @@ fn verifier_owned_buffers_are_wiped_on_return_failure_and_pending_cancellation()
         "line",
     ] {
         for exit in ["return", "failure", "cancel"] {
-            let request = request();
-            let bytes = match field {
-                "body" => request.body.as_deref().unwrap(),
-                "path" => request.path.as_bytes(),
-                "query" => request.query.as_deref().unwrap().as_bytes(),
-                "peer" => request.peer.as_deref().unwrap(),
-                "authority" => request.authority.as_bytes(),
-                "method" => request.method.as_bytes(),
-                "line" => request.lines[0].0.as_bytes(),
-                _ => unreachable!(),
-            };
-            WATCH.with(|watch| watch.set(Some((bytes.as_ptr().cast_mut(), bytes.len()))));
-            WIPED.with(|result| result.set(None));
+            let what = format!("{field} on {exit}");
+            let mut proof = WipeProof::text();
+            let staging = proof.text_payload();
+            let request = request(field, &staging);
+            drop(staging);
             if exit == "cancel" {
                 let mut pending = Box::pin(async move {
                     let request = request;
@@ -110,11 +86,7 @@ fn verifier_owned_buffers_are_wiped_on_return_failure_and_pending_cancellation()
                         .poll(&mut Context::from_waker(Waker::noop())),
                     Poll::Pending
                 );
-                assert_eq!(
-                    WIPED.with(Cell::get),
-                    None,
-                    "the pending verifier still owns its bytes"
-                );
+                proof.assert_held("the pending verifier still owns its bytes");
                 drop(pending);
             } else {
                 assert_eq!(
@@ -122,7 +94,7 @@ fn verifier_owned_buffers_are_wiped_on_return_failure_and_pending_cancellation()
                     exit == "failure"
                 );
             }
-            assert_eq!(WIPED.with(Cell::get), Some(true), "{field} on {exit}");
+            proof.assert_absent(&what);
         }
     }
 }
