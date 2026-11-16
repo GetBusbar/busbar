@@ -2790,7 +2790,11 @@ async fn the_live_count_falls_only_after_the_terminal_stage() {
         let grant = Arc::new(r.gov.try_admit(&r.cost, &r.key, "", NOW).expect("admitted"));
         r.money.open_admitted(unit, r.unit.clone(), grant);
         let _ = r.money.checkpoint(&ctx(100 + round), &reported(1_000));
-        let evidence = exit_evidence(&r);
+        // The rig opened unit 1 with no admission; this round judges the one admitted unit.
+        let evidence: Vec<_> = exit_evidence(&r)
+            .into_iter()
+            .filter(|open| open.unit == unit)
+            .collect();
         assert_eq!(evidence.len(), 1);
         let checkpoint = evidence[0].checkpoint;
         let exit = r.gov.open_at_exit(evidence);

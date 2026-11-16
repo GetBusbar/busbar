@@ -70,7 +70,7 @@ fn diagnostic_raised_coalesced() {
     assert_eq!(row.instance.as_deref(), Some("1002"));
     assert_eq!(
         row.data.as_str(),
-        r#"{"code":1002,"coalesced":2,"count":5,"name":"durable-second-writer-detach"}"#
+        r#"{"coalesced":2,"code":1002,"count":5,"name":"durable-second-writer-detach"}"#
     );
 }
 

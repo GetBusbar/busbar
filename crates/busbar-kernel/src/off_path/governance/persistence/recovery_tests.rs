@@ -204,6 +204,13 @@ impl PersistenceBackend for Backend {
                 });
                 if selects {
                     conflict.take();
+                    // The racing selector (another driver of the same exact candidate) lands
+                    // the selection row first, so the row has moved when this driver reads it.
+                    for mutation in &candidate.mutations {
+                        if let Mutation::Put { address, value } = mutation {
+                            state.rows.insert(address.clone(), value.clone());
+                        }
+                    }
                     return Ok(Decision::ConditionConflict);
                 }
             }
