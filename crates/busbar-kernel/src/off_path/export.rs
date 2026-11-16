@@ -749,23 +749,54 @@ pub fn open(cfg: &ExportCfg) -> Result<(), String> {
     let Some(axis) = axis() else {
         return Ok(());
     };
+    open_with(cfg, |name, def| {
+        let settings = sink_settings(axis, def.module.trim(), &def.settings)
+            .map_err(|error| format!("export.{name}.settings: {error}"))?;
+        let admitted = busbar_contract::export_calls::ExportOpening::new(def.settings.clone());
+        axis.open(
+            def.module.trim(),
+            &format!("export.{name}"),
+            &admitted.with_settings(settings),
+        )
+    })
+}
+
+/// Compose the kernel projections over instances already opened by the process root.
+/// This path never opens another instance or resolves settings through the legacy axis.
+pub fn open_prepared(
+    cfg: &ExportCfg,
+    prepared: &std::collections::BTreeMap<
+        String,
+        Arc<dyn busbar_contract::export_calls::ExportCalls>,
+    >,
+) -> Result<(), String> {
+    if prepared
+        .keys()
+        .any(|name| !cfg.plugins.iter().any(|plugin| &plugin.name == name))
+    {
+        return Err("opened export has no effective configuration projection".into());
+    }
+    open_with(cfg, |name, _| {
+        prepared
+            .get(name)
+            .cloned()
+            .ok_or_else(|| format!("export.{name}: no opened MIN3 export instance"))
+    })
+}
+
+fn open_with(
+    cfg: &ExportCfg,
+    mut open: impl FnMut(
+        &str,
+        &crate::config::ExportDefCfg,
+    ) -> Result<Arc<dyn busbar_contract::export_calls::ExportCalls>, String>,
+) -> Result<(), String> {
     let mut errors = Vec::new();
     let mut opened = Vec::new();
     for p in &cfg.plugins {
         let (name, module, def) = (&p.name, p.def.module.trim(), &p.def);
 
-        let settings = match sink_settings(axis, module, &def.settings) {
-            Ok(settings) => settings,
-            Err(e) => {
-                errors.push(
-                    coded::config_export_invalid(format!("export.{name}.settings: {e}")).into(),
-                );
-                continue;
-            }
-        };
-        let admitted = busbar_contract::export_calls::ExportOpening::new(def.settings.clone());
-        let prepared = admitted.with_settings(settings.clone());
-        let opened_sink = axis.open(module, &format!("export.{name}"), &prepared);
+        let opened_sink = open(name, def);
         let Ok(sink) = instance_opened(name, opened_sink)
             .map_err(|e| errors.push(coded::config_export_invalid(e).into()))
         else {

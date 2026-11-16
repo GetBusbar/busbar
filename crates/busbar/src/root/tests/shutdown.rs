@@ -372,6 +372,8 @@ impl Fixture {
             threads: Vec::new(),
             work_recovery: tokio::spawn(async {}),
             generation_workers: crate::root::boot::workers::PreparedWorkers::new().start(),
+            exports: crate::root::exports::ports::Exports::new(Vec::new())
+                .expect("no configured exports"),
             control_drain: Box::pin(async {}),
             node_lease: None,
             flusher,

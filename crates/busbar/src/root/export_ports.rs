@@ -7,6 +7,65 @@ use busbar_contract::services::{DiskDest, DiskReport, DiskRotate};
 use busbar_kernel::host_disk::DiskLane;
 use busbar_plugin_loader::export_door::port::{AppendBytes, AppendDenied, DestAppend};
 use busbar_ports::binder::ConfigBinder;
+
+/// The exact prepared export pumps. Routing borrows their ExportCalls handles; shutdown
+/// retains these concrete owners to observe worker quiescence before Store retirement.
+pub(crate) struct Exports {
+    doors:
+        std::collections::BTreeMap<String, Arc<busbar_plugin_loader::export_door::port::PortDoor>>,
+}
+
+impl Exports {
+    pub(crate) fn new(
+        doors: Vec<(
+            String,
+            Arc<busbar_plugin_loader::export_door::port::PortDoor>,
+        )>,
+    ) -> Result<Self, String> {
+        let mut owned = std::collections::BTreeMap::new();
+        for (name, door) in doors {
+            if owned.insert(name.clone(), door).is_some() {
+                return Err(format!("duplicate opened export instance `{name}`"));
+            }
+        }
+        Ok(Self { doors: owned })
+    }
+
+    pub(crate) fn calls(
+        &self,
+    ) -> std::collections::BTreeMap<String, Arc<dyn busbar_contract::export_calls::ExportCalls>>
+    {
+        self.doors
+            .iter()
+            .map(|(name, door)| {
+                (
+                    name.clone(),
+                    Arc::clone(door) as Arc<dyn busbar_contract::export_calls::ExportCalls>,
+                )
+            })
+            .collect()
+    }
+
+    pub(crate) fn start(&self) -> Result<(), String> {
+        for door in self.doors.values() {
+            door.start()?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn stop_until(
+        self,
+        deadline: std::time::Instant,
+    ) -> Vec<(String, busbar_plugin_loader::export_door::port::StopReport)> {
+        for door in self.doors.values() {
+            door.begin_drain(deadline);
+        }
+        self.doors
+            .into_iter()
+            .map(|(name, door)| (name, door.stop_until(deadline)))
+            .collect()
+    }
+}
 use std::sync::Arc;
 
 pub(crate) struct BoundDisk {

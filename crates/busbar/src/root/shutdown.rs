@@ -379,6 +379,7 @@ pub(crate) struct PostServe<'a> {
     pub(crate) threads: Vec<std::thread::JoinHandle<()>>,
     pub(crate) work_recovery: JoinHandle<()>,
     pub(crate) generation_workers: super::boot::workers::RunningWorkers,
+    pub(crate) exports: super::exports::ports::Exports,
     /// The control runtime's detached-task drain.
     pub(crate) control_drain: Pin<Box<dyn Future<Output = ()> + 'a>>,
     pub(crate) node_lease: Option<crate::root::boot::NodeLeaseTask>,
@@ -419,6 +420,7 @@ pub(crate) async fn finish(post: PostServe<'_>, drain: &ShutdownDrain) -> i32 {
         threads,
         work_recovery,
         generation_workers,
+        exports,
         control_drain,
         node_lease,
         flusher,
@@ -674,6 +676,35 @@ pub(crate) async fn finish(post: PostServe<'_>, drain: &ShutdownDrain) -> i32 {
                 "busbar: shutdown predecessor_fence=retained:{}",
                 fence.retained()
             );
+        }
+    }
+
+    // Stop export intake and observe its concrete workers before closing native audit staging.
+    // Reuse the original shutdown deadline; no exporter receives a fresh budget.
+    let export_deadline = drain
+        .until(Cut::Deadline)
+        .unwrap_or_else(Instant::now)
+        .into_std();
+    match drain
+        .bounded(
+            Phase::Audit,
+            DrainHandle::adopt(tokio::task::spawn_blocking(move || {
+                exports.stop_until(export_deadline)
+            })),
+            Cut::Deadline,
+        )
+        .await
+    {
+        Joined::Done(Ok(reports)) => {
+            for (name, report) in reports {
+                if !report.clean() {
+                    failures.push(format!("export.{name} did not drain cleanly: {report:?}"));
+                }
+            }
+        }
+        Joined::Done(Err(error)) => failures.push(format!("export stop driver failed: {error}")),
+        Joined::Detached(_) => {
+            failures.push("export workers did not quiesce by the shutdown deadline".into())
         }
     }
 

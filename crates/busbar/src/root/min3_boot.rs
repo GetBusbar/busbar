@@ -522,6 +522,19 @@ fn configured(cfg: &RootCfg, planes: &[PlaneImage]) -> Result<Vec<Configured>, S
         planes,
         &super::door_steps::raw_sections(cfg),
     )?);
+    for (name, def) in &cfg.export_defs {
+        out.push(Configured {
+            kind: KindCode::Export,
+            identity: def.module.clone(),
+            name: name.clone(),
+            config: def
+                .settings
+                .encode()
+                .map_err(|error| format!("export.{name}: {error}"))?
+                .into_exposed(&seal),
+            limits: instance_limits(cfg, "export", name),
+        });
+    }
     Ok(out)
 }
 
@@ -1337,7 +1350,14 @@ pub(crate) async fn finish(
     reactor: tokio::runtime::Handle,
     startup: Startup,
     services: Option<Arc<KernelServices>>,
-) -> Result<(Startup, super::boot::workers::PreparedWorkers), String> {
+) -> Result<
+    (
+        Startup,
+        super::boot::workers::PreparedWorkers,
+        super::exports::ports::Exports,
+    ),
+    String,
+> {
     let ServingReady {
         built,
         instances,
@@ -1393,7 +1413,9 @@ pub(crate) async fn finish(
     };
     let mut opened = leases.opened;
     let mut serving_instances = std::collections::BTreeMap::new();
+    let mut export_doors = Vec::new();
     for (index, prepared) in reserved {
+        let instance_id = prepared.id();
         serving_instances.insert(
             prepared.name().to_owned(),
             Namespace {
@@ -1407,6 +1429,23 @@ pub(crate) async fn finish(
             .open_reserved(index, prepared)
             .await
             .map_err(|error| format!("serving open {index}: {error:?}"))?;
+        if let Some(OpenedPort::Export(port)) = &port {
+            let instance = instances
+                .get(index as usize)
+                .ok_or("opened export has no configured owner")?;
+            let disk = Arc::new(super::exports::ports::BoundDisk::new(
+                instance_id,
+                Arc::clone(&built.binder),
+                super::linked::disk_lane(),
+            ));
+            let door = busbar_plugin_loader::export_door::port::PortDoor::prepare(
+                &instance.name,
+                Arc::clone(port),
+                disk,
+                &instance.limits,
+            );
+            export_doors.push((instance.name.clone(), door));
+        }
         opened.push((index, busbar_plugin_loader::instance::BootPhase::Rest, port));
     }
     let walked = super::boot::walk::Booted {
@@ -1587,7 +1626,11 @@ pub(crate) async fn finish(
     if let Some(held) = booted() {
         tracing::info!("{}", held.describe());
     }
-    Ok((startup, workers))
+    Ok((
+        startup,
+        workers,
+        super::exports::ports::Exports::new(export_doors)?,
+    ))
 }
 
 #[cfg(test)]

@@ -1112,7 +1112,7 @@ async fn run(catalogue: busbar_kernel::diagnostics::Catalogue, control_work: Con
             .copied(),
     );
 
-    export::plugin::open(&cfg.export).unwrap_or_else(|e| die_list("config errors", [e]));
+    let export_config = cfg.export.clone();
 
     let door_providers = root::door_steps::provider_routes(
         &cfg.providers,
@@ -1320,7 +1320,7 @@ async fn run(catalogue: busbar_kernel::diagnostics::Catalogue, control_work: Con
             .unwrap_or_else(|error| die(format!("cold record bootstrap refused: {error}")));
     }
 
-    let (store_admission, mut generation_workers) = root::min3_boot::finish(
+    let (store_admission, mut generation_workers, exports) = root::min3_boot::finish(
         serving_ready,
         process_io.handle(),
         store_admission,
@@ -1328,6 +1328,9 @@ async fn run(catalogue: busbar_kernel::diagnostics::Catalogue, control_work: Con
     )
     .await
     .unwrap_or_else(|error| die(error));
+
+    export::plugin::open_prepared(&export_config, &exports.calls())
+        .unwrap_or_else(|error| die_list("config errors", [error]));
 
     let door_live_handle = Arc::default();
     let door_models = model_serving(door_model_pools, &app, &door_live_handle);
@@ -1479,6 +1482,7 @@ async fn run(catalogue: busbar_kernel::diagnostics::Catalogue, control_work: Con
     }
     let _ = root::inbound::publish(&app_handle.load());
     let generation_workers = generation_workers.start();
+    exports.start().unwrap_or_else(|error| die(error));
     app_handle.on_apply(Box::new({
         let plan = Arc::clone(&listener_plan);
         move |app| {
@@ -1831,6 +1835,7 @@ async fn run(catalogue: busbar_kernel::diagnostics::Catalogue, control_work: Con
         threads,
         work_recovery,
         generation_workers,
+        exports,
         control_drain: Box::pin(control_work.drain()),
         node_lease: node_lease_task,
         flusher: budget_flusher,

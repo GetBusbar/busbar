@@ -24,7 +24,7 @@ use crate::off_path::export::{
     declared_streams, definition_requires_restart, instance_opened, project_routes,
     route_decls_from, sink_settings_with_resolver, start_one, word_one_instance,
 };
-pub use crate::off_path::export::{open, requires_restart, start};
+pub use crate::off_path::export::{open, open_prepared, requires_restart, start};
 #[cfg(test)]
 use busbar_contract::abi::mechanism::route::Route;
 
