@@ -492,9 +492,15 @@ pub fn write(plan: &Plan, check: Check<'_>) -> Result<Written, Refusal> {
     )?;
     if again.text != plan.planned || again.catalog != plan.catalog {
         return Err(Refusal::Config(format!(
-            "the upgrade of {} did not plan the same document twice from the same bytes; nothing \
-             was written",
-            plan.path.display()
+            "the upgrade of {} did not plan the same document twice from the same bytes ({}); \
+             nothing was written",
+            plan.path.display(),
+            where_plans_differ(
+                &plan.planned,
+                &again.text,
+                plan.catalog.is_some(),
+                again.catalog.is_some()
+            )
         )));
     }
     judge(&again, &plan.facts, check)?;
@@ -602,6 +608,30 @@ fn chain(
         text: patch::stamp(&text, CONFIG_FORMAT)?,
         catalog: work.catalog,
     })
+}
+
+/// Where two plans of the same bytes part, for the refusal: the first differing line and the lengths
+/// (never the text, which may hold a literal secret).
+fn where_plans_differ(
+    first: &str,
+    second: &str,
+    first_catalog: bool,
+    second_catalog: bool,
+) -> String {
+    if first == second {
+        return format!("the catalog differs: planned {first_catalog}, then {second_catalog}");
+    }
+    let line = first
+        .lines()
+        .zip(second.lines())
+        .position(|(a, b)| a != b)
+        .unwrap_or(first.lines().count().min(second.lines().count()))
+        + 1;
+    format!(
+        "the document differs at line {line}: {} bytes, then {} bytes",
+        first.len(),
+        second.len()
+    )
 }
 
 /// Proof three (§A7 "Authored text"): the planned document and catalog, interpolated as every later
