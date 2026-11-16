@@ -65,6 +65,12 @@ fn certificate_codec_refuses_truncation_trailing_data_and_corruption() {
     let mut trailing = body;
     trailing.push(0);
     assert!(notary_key_from_journal_body(&trailing).is_err());
+    let mut unsupported = notary_key_body(&record).unwrap();
+    unsupported[tag_end - 1] = b'1';
+    assert!(
+        notary_key_from_journal_body(&unsupported).is_err(),
+        "v1 certificate must not silently disappear"
+    );
     let mut changed = record.clone();
     changed.linked_ms += 1;
     assert!(changed.verify(bootstrap.public_key()).is_err());
