@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+use busbar_contract::json::{self, JsonValueTrait as _};
+
 #[tokio::test]
 async fn proof_max_ttl_ceiling_clamps_a_rotated_token() {
     const CHILD: &str = "BUSBAR_ADMIN_BOOT_1E9A713B2A6E";
@@ -39,14 +41,15 @@ async fn proof_max_ttl_ceiling_clamps_a_rotated_token() {
         req.header("x-admin-token", "admintok")
             .header("content-type", "application/json")
     };
-    let created: serde_json::Value = admin(client.post(format!("http://{addr}/api/v1/admin/keys")))
-        .body(serde_json::json!({"name": "rotated-under-ceiling"}).to_string())
+    let created = admin(client.post(format!("http://{addr}/api/v1/admin/keys")))
+        .body(json::json!({"name": "rotated-under-ceiling"}).to_string())
         .send()
         .await
         .unwrap()
-        .json()
+        .bytes()
         .await
         .unwrap();
+    let created = json::parse_value(&created).unwrap();
     let id = created["id"]
         .as_str()
         .expect("the mint answers an id")
@@ -57,7 +60,7 @@ async fn proof_max_ttl_ceiling_clamps_a_rotated_token() {
         .await
         .unwrap();
     assert_eq!(rotated.status().as_u16(), 200, "the rotate answers");
-    let rotated: serde_json::Value = rotated.json().await.unwrap();
+    let rotated = json::parse_value(&rotated.bytes().await.unwrap()).unwrap();
     let exp = rotated["expires_at"]
         .as_u64()
         .expect("a signed-token rotate answers expires_at");

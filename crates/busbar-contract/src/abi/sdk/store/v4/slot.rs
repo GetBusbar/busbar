@@ -7,8 +7,9 @@
 use crate::persistence::{ClockObservation, Decision, Failure};
 use crate::redacted::Secret;
 
-/// The physical format of every store built for the slot-row commit rule.
-pub const PHYSICAL_VERSION: u32 = 2;
+/// The physical format of every store built for the slot-row commit rule (rehomed to
+/// [`crate::persistence::PHYSICAL_VERSION`]; kept here only for the v4 stores until #274 deletes this wire).
+pub use crate::persistence::PHYSICAL_VERSION;
 /// The receipt-era physical format every store refuses at open.
 pub const RECEIPT_ERA_VERSION: u32 = 1;
 /// The one explanation every store gives for a receipt-era dataset.

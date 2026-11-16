@@ -124,7 +124,7 @@ pub async fn connect_reply<P: PlaneTrust>(ctx: AdminReqCtx) -> AdminReply {
         Err(e) => return AdminReply::Refused(e),
     };
     match P::look(subject, ctx.host, ctx.name).await {
-        Ok(view) => match serde_json::to_string(&view) {
+        Ok(view) => match busbar_contract::json::to_string(&view) {
             Ok(body) => AdminReply::Applied(body),
             Err(e) => AdminReply::Rejected(PlaneVerbError::Internal(format!(
                 "the {} view did not serialize: {e}",

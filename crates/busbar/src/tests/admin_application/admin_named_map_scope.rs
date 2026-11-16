@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+use busbar_contract::json;
 use std::collections::HashSet;
 use std::sync::Arc;
 
@@ -146,7 +147,7 @@ async fn test_admin_v1_named_map_rejects_an_under_scoped_caller() {
                 403,
                 "read-only cannot {label} /{section}"
             );
-            let body: serde_json::Value = r.json().await.unwrap();
+            let body = json::parse_value(&r.bytes().await.unwrap()).unwrap();
             assert_eq!(body["error"]["code"], "forbidden", "{label} /{section}");
         }
     }

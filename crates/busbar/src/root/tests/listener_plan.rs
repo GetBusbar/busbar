@@ -1,3 +1,4 @@
+use busbar_contract::json;
 use std::sync::Arc;
 
 use busbar_contract::abi::auth::AuthPoints;
@@ -863,7 +864,7 @@ async fn actual_nonempty_export_descriptor_supplies_the_candidate_listener_need(
     let candidate_mut = Arc::get_mut(&mut candidate).unwrap();
 
     candidate_mut.hook_env.registry = Arc::new(crate::root::loader::PluginRegistry::empty());
-    candidate_mut.export_defs = serde_json::from_value(serde_json::json!({
+    candidate_mut.export_defs = json::from_value(&json::json!({
         "actual-metrics": {"module": stated.name.clone(), "settings": {}}
     }))
     .expect("the actual export instance configuration");
@@ -1527,7 +1528,7 @@ async fn registered_http_listener_accepts_only_its_planes_registered_upgrade() {
                 .iter_mut()
                 .find(|bind| bind.at == "listen")
                 .unwrap()
-                .tls = Some(serde_json::from_value(serde_json::json!({"cert":{"module":"source","settings":{"id":"cert"}},"key":{"module":"source","settings":{"id":"key"}}})).unwrap());
+                .tls = Some(json::from_value(&json::json!({"cert":{"module":"source","settings":{"id":"cert"}},"key":{"module":"source","settings":{"id":"key"}}})).unwrap());
         }
         let app = projection_boundary_app(topology.clone(), vec![], 1).await;
         let mut plan = ListenerPlan::new(topology, offers.clone(), &framer);

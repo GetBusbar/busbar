@@ -548,4 +548,5 @@ pub(super) fn run(
     if let Err(error) = harness.check(NAME, config) {
         panic!("plane suite: the instance no longer checks after the cases: {error:?}");
     }
+    harness.assert_needs_declared("plane");
 }

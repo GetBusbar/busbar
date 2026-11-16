@@ -98,7 +98,7 @@ fn public_role_readback_preserves_grant_tristate_without_raw_json() {
         .unwrap()
         .get_mut("specific")
         .unwrap()
-        .verbs = Some(json!({"opaque":"VERB_SECRET_CANARY"}));
+        .verbs = Some(busbar_contract::json::json!({"opaque":"VERB_SECRET_CANARY"}));
     assert!(!role_bindings_view(&bindings)
         .to_string()
         .contains("VERB_SECRET_CANARY"));

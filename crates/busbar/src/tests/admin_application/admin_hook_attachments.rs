@@ -7,6 +7,8 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
+use busbar_contract::json;
+
 const CHILD: &str = "BUSBAR_ADMIN_HOOK_ATTACH_CHILD";
 const WITNESS: &str = "actual root hook attachment assertions completed";
 
@@ -36,7 +38,7 @@ impl Served {
         let made = self
             .send(reqwest::Method::POST, "/hooks")
             .body(
-                serde_json::json!({"name": name, "config": {"kind": "tap", "module": "test-hook"}})
+                json::json!({"name": name, "config": {"kind": "tap", "module": "test-hook"}})
                     .to_string(),
             )
             .send()
@@ -48,30 +50,26 @@ impl Served {
             made.status()
         );
     }
-    async fn attach(
-        &self,
-        name: &str,
-        target: &str,
-        position: serde_json::Value,
-    ) -> reqwest::Response {
+    async fn attach(&self, name: &str, target: &str, position: json::Value) -> reqwest::Response {
         self.send(
             reqwest::Method::PUT,
             &format!("/hooks/{name}/attachments/{target}"),
         )
-        .body(serde_json::json!({ "position": position }).to_string())
+        .body(json::json!({ "position": position }).to_string())
         .send()
         .await
         .unwrap()
     }
-    async fn attachments(&self, name: &str) -> serde_json::Value {
-        let view: serde_json::Value = self
+    async fn attachments(&self, name: &str) -> json::Value {
+        let view = self
             .get(&format!("/hooks/{name}"))
             .send()
             .await
             .unwrap()
-            .json()
+            .bytes()
             .await
             .unwrap();
+        let view = json::parse_value(&view).unwrap();
         view["attachments"].clone()
     }
     fn finish(self) {
@@ -164,18 +162,18 @@ async fn attach_is_idempotent() {
     isolated!(CHILD, WITNESS, witness = "hook attachment");
     let s = serve("hook-attach-idempotent", false).await;
     s.register("h1").await;
-    let first = s.attach("h1", "pools", serde_json::json!("last")).await;
+    let first = s.attach("h1", "pools", json::json!("last")).await;
     assert_eq!(first.status().as_u16(), 200, "{:?}", first.text().await);
     let attached = s.attachments("h1").await;
     assert_eq!(
         attached,
-        serde_json::json!([{"target": "pools", "instance": null, "position": 0}])
+        json::json!([{"target": "pools", "instance": null, "position": 0}])
     );
     let before = s.get("/hooks").send().await.unwrap().headers()["etag"]
         .to_str()
         .unwrap()
         .to_string();
-    let again = s.attach("h1", "pools", serde_json::json!("last")).await;
+    let again = s.attach("h1", "pools", json::json!("last")).await;
     assert_eq!(again.status().as_u16(), 200);
     assert_eq!(
         s.attachments("h1").await,
@@ -201,18 +199,18 @@ async fn detach_observable() {
     s.register("h1").await;
     s.register("h2").await;
     assert!(s
-        .attach("h1", "pools", serde_json::json!("last"))
+        .attach("h1", "pools", json::json!("last"))
         .await
         .status()
         .is_success());
     assert!(s
-        .attach("h2", "pools", serde_json::json!(0))
+        .attach("h2", "pools", json::json!(0))
         .await
         .status()
         .is_success());
     assert_eq!(
         s.attachments("h1").await,
-        serde_json::json!([{"target": "pools", "instance": null, "position": 1}])
+        json::json!([{"target": "pools", "instance": null, "position": 1}])
     );
     let gone = s
         .send(reqwest::Method::DELETE, "/hooks/h1/attachments/pools")
@@ -220,10 +218,10 @@ async fn detach_observable() {
         .await
         .unwrap();
     assert_eq!(gone.status().as_u16(), 200);
-    assert_eq!(s.attachments("h1").await, serde_json::json!([]));
+    assert_eq!(s.attachments("h1").await, json::json!([]));
     assert_eq!(
         s.attachments("h2").await,
-        serde_json::json!([{"target": "pools", "instance": null, "position": 0}])
+        json::json!([{"target": "pools", "instance": null, "position": 0}])
     );
     let missing = s
         .send(reqwest::Method::DELETE, "/hooks/h1/attachments/pools")
@@ -239,9 +237,9 @@ async fn detach_observable() {
 async fn attach_base_defined_409() {
     isolated!(CHILD, WITNESS, witness = "hook attachment");
     let s = serve("hook-attach-base", false).await;
-    let refused = s.attach("base", "pools", serde_json::json!("last")).await;
+    let refused = s.attach("base", "pools", json::json!("last")).await;
     assert_eq!(refused.status().as_u16(), 409);
-    let body: serde_json::Value = refused.json().await.unwrap();
+    let body = json::parse_value(&refused.bytes().await.unwrap()).unwrap();
     assert_eq!(body["error"]["reason"], "base_defined");
     s.finish();
     println!("{WITNESS}");
@@ -252,17 +250,13 @@ async fn attach_unconfigured_instance_400() {
     isolated!(CHILD, WITNESS, witness = "hook attachment");
     let s = serve("hook-attach-unconfigured", false).await;
     s.register("h1").await;
-    let refused = s
-        .attach("h1", "tools.nowhere", serde_json::json!("last"))
-        .await;
+    let refused = s.attach("h1", "tools.nowhere", json::json!("last")).await;
     assert_eq!(refused.status().as_u16(), 400);
-    let body: serde_json::Value = refused.json().await.unwrap();
+    let body = json::parse_value(&refused.bytes().await.unwrap()).unwrap();
     assert_eq!(body["error"]["reason"], "invalid_config");
-    let no_pool = s
-        .attach("h1", "pools.nowhere", serde_json::json!("last"))
-        .await;
+    let no_pool = s.attach("h1", "pools.nowhere", json::json!("last")).await;
     assert_eq!(no_pool.status().as_u16(), 404);
-    assert_eq!(s.attachments("h1").await, serde_json::json!([]));
+    assert_eq!(s.attachments("h1").await, json::json!([]));
     s.finish();
     println!("{WITNESS}");
 }
@@ -274,16 +268,16 @@ async fn attach_requires_if_match_when_required() {
     let made = s
         .send(reqwest::Method::POST, "/hooks")
         .body(
-            serde_json::json!({"name": "h1", "config": {"kind": "tap", "module": "test-hook"}})
+            json::json!({"name": "h1", "config": {"kind": "tap", "module": "test-hook"}})
                 .to_string(),
         )
         .send()
         .await
         .unwrap();
     assert!(made.status().is_success(), "{}", made.status());
-    let refused = s.attach("h1", "pools", serde_json::json!("last")).await;
+    let refused = s.attach("h1", "pools", json::json!("last")).await;
     assert_eq!(refused.status().as_u16(), 428);
-    let body: serde_json::Value = refused.json().await.unwrap();
+    let body = json::parse_value(&refused.bytes().await.unwrap()).unwrap();
     assert_eq!(body["error"]["reason"], "if_match_required");
     let etag = s.get("/hooks").send().await.unwrap().headers()["etag"]
         .to_str()
@@ -292,7 +286,7 @@ async fn attach_requires_if_match_when_required() {
     let allowed = s
         .send(reqwest::Method::PUT, "/hooks/h1/attachments/pools")
         .header("if-match", etag)
-        .body(serde_json::json!({"position": "last"}).to_string())
+        .body(json::json!({"position": "last"}).to_string())
         .send()
         .await
         .unwrap();

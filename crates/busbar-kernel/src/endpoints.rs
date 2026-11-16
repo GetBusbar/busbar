@@ -4,9 +4,9 @@
 use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
-    Extension, Json,
+    Extension,
 };
-use serde_json::{json, Value};
+use busbar_contract::json::{json, Value};
 
 use crate::governance::{pool_allowed, GovCtx};
 use busbar_kernel::store::now;
@@ -59,18 +59,25 @@ pub async fn stats(
         .map(|i| lane_body(app.store.snapshot(i, t), t))
         .collect();
 
-    Json(json!({ "pools": pools, "lanes": lanes })).into_response()
+    (
+        [(
+            axum::http::header::CONTENT_TYPE,
+            busbar_contract::protocol::APPLICATION_JSON,
+        )],
+        json!({ "pools": pools, "lanes": lanes }).to_string(),
+    )
+        .into_response()
 }
 
 /// One lane's `/stats` record.
 pub(crate) fn lane_body(snap: busbar_kernel::store::LaneSnapshot, t: u64) -> Value {
     let (availability, recovery_hint_ms) = match snap.availability {
-        Ok(()) => ("available", Value::Null),
+        Ok(()) => ("available", Value::new()),
         Err(reason) => (
             reason.variant_name(),
             match reason.recovery_hint_ms(t) {
                 Some(ms) => json!(ms),
-                None => Value::Null,
+                None => Value::new(),
             },
         ),
     };

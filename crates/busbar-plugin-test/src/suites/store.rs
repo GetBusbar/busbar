@@ -145,6 +145,7 @@ mod cases {
             "an open or check was refused: {:?}",
             h.refusals()
         );
+        h.assert_needs_declared("store");
     }
 
     /// The operator config for instance `name`: `{instance}` becomes the name.

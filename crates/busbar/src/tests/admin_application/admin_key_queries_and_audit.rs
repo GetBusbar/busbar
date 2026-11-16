@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+use busbar_contract::json::{self, JsonValueTrait as _};
 use std::collections::HashSet;
 use std::sync::Arc;
 
@@ -101,15 +102,18 @@ async fn test_admin_v1_list_keys_filters() {
         let url = format!("http://{addr}/api/v1/admin/keys{query}");
         let client = client.clone();
         async move {
-            client
-                .get(url)
-                .header("x-admin-token", "admintok")
-                .send()
-                .await
-                .unwrap()
-                .json::<serde_json::Value>()
-                .await
-                .unwrap()
+            json::parse_value(
+                &client
+                    .get(url)
+                    .header("x-admin-token", "admintok")
+                    .send()
+                    .await
+                    .unwrap()
+                    .bytes()
+                    .await
+                    .unwrap(),
+            )
+            .unwrap()
         }
     };
 
@@ -233,15 +237,18 @@ async fn test_admin_v1_list_keys_group_filter() {
         let url = format!("http://{addr}/api/v1/admin/keys{query}");
         let client = client.clone();
         async move {
-            client
-                .get(url)
-                .header("x-admin-token", "admintok")
-                .send()
-                .await
-                .unwrap()
-                .json::<serde_json::Value>()
-                .await
-                .unwrap()
+            json::parse_value(
+                &client
+                    .get(url)
+                    .header("x-admin-token", "admintok")
+                    .send()
+                    .await
+                    .unwrap()
+                    .bytes()
+                    .await
+                    .unwrap(),
+            )
+            .unwrap()
         }
     };
 
@@ -262,13 +269,13 @@ async fn test_admin_v1_list_keys_group_filter() {
         200,
         "a nonexistent group filter is a valid empty read, not an error"
     );
-    let ghost: serde_json::Value = ghost.json().await.unwrap();
+    let ghost = json::parse_value(&ghost.bytes().await.unwrap()).unwrap();
     assert_eq!(ghost["items"].as_array().unwrap().len(), 0);
 
     let patched = client
         .patch(format!("http://{addr}/api/v1/admin/keys/{}", alpha.id))
         .header("x-admin-token", "admintok")
-        .json(&serde_json::json!({"enabled": false}))
+        .json(&json::json!({"enabled": false}))
         .send()
         .await
         .unwrap();
@@ -373,15 +380,17 @@ async fn test_admin_v1_key_rotate_and_pagination() {
 
     let mut ids = Vec::new();
     for n in ["ka", "kb", "kc"] {
-        let created: serde_json::Value =
-            admin(client.post(format!("http://{addr}/api/v1/admin/keys")))
-                .body(serde_json::json!({"name": n}).to_string())
+        let created = json::parse_value(
+            &admin(client.post(format!("http://{addr}/api/v1/admin/keys")))
+                .body(json::json!({"name": n}).to_string())
                 .send()
                 .await
                 .unwrap()
-                .json()
+                .bytes()
                 .await
-                .unwrap();
+                .unwrap(),
+        )
+        .unwrap();
         assert!(
             created["token"]
                 .as_str()
@@ -391,26 +400,31 @@ async fn test_admin_v1_key_rotate_and_pagination() {
         ids.push(created["id"].as_str().unwrap().to_string());
     }
 
-    let p1: serde_json::Value =
-        admin(client.get(format!("http://{addr}/api/v1/admin/keys?limit=2")))
+    let p1 = json::parse_value(
+        &admin(client.get(format!("http://{addr}/api/v1/admin/keys?limit=2")))
             .send()
             .await
             .unwrap()
-            .json()
+            .bytes()
             .await
-            .unwrap();
+            .unwrap(),
+    )
+    .unwrap();
     assert_eq!(p1["items"].as_array().unwrap().len(), 2);
     let cursor = p1["next_cursor"]
         .as_str()
         .expect("more rows remain -> a next_cursor is present");
-    let p2: serde_json::Value = admin(client.get(format!(
-        "http://{addr}/api/v1/admin/keys?limit=2&cursor={cursor}"
-    )))
-    .send()
-    .await
-    .unwrap()
-    .json()
-    .await
+    let p2 = json::parse_value(
+        &admin(client.get(format!(
+            "http://{addr}/api/v1/admin/keys?limit=2&cursor={cursor}"
+        )))
+        .send()
+        .await
+        .unwrap()
+        .bytes()
+        .await
+        .unwrap(),
+    )
     .unwrap();
     assert_eq!(p2["items"].as_array().unwrap().len(), 1);
     assert!(
@@ -438,19 +452,21 @@ async fn test_admin_v1_key_rotate_and_pagination() {
         "malformed cursor is invalid_request"
     );
     assert_eq!(
-        bad.json::<serde_json::Value>().await.unwrap()["error"]["code"],
+        json::parse_value(&bad.bytes().await.unwrap()).unwrap()["error"]["code"],
         "invalid_request"
     );
 
     let id = ids[0].clone();
-    let rotated: serde_json::Value =
-        admin(client.post(format!("http://{addr}/api/v1/admin/keys/{id}/rotate")))
+    let rotated = json::parse_value(
+        &admin(client.post(format!("http://{addr}/api/v1/admin/keys/{id}/rotate")))
             .send()
             .await
             .unwrap()
-            .json()
+            .bytes()
             .await
-            .unwrap();
+            .unwrap(),
+    )
+    .unwrap();
     assert_eq!(rotated["id"], id.as_str(), "id is stable across rotation");
     let new_token = rotated["token"].as_str().unwrap().to_string();
     assert!(new_token.starts_with("bbk_"), "a re-minted signed token");
@@ -561,7 +577,7 @@ async fn test_admin_v1_hook_mutation_404_is_audited() {
         .put(format!("http://{addr}/api/v1/admin/hooks/{put_name}"))
         .header("x-admin-token", "admintok")
         .header("content-type", "application/json")
-        .body(serde_json::json!({"config": {"kind": "tap", "module": "test-hook"}}).to_string())
+        .body(json::json!({"config": {"kind": "tap", "module": "test-hook"}}).to_string())
         .send()
         .await
         .unwrap();
@@ -573,7 +589,7 @@ async fn test_admin_v1_hook_mutation_404_is_audited() {
         ))
         .header("x-admin-token", "admintok")
         .header("content-type", "application/json")
-        .body(serde_json::json!({"settings": {"k": "v"}}).to_string())
+        .body(json::json!({"settings": {"k": "v"}}).to_string())
         .send()
         .await
         .unwrap();
@@ -584,17 +600,20 @@ async fn test_admin_v1_hook_mutation_404_is_audited() {
     );
 
     for (name, action) in [(put_name, "hook.replace"), (patch_name, "hook.settings")] {
-        let filtered: serde_json::Value = client
-            .get(format!(
-                "http://{addr}/api/v1/admin/audit?resource=hook:{name}"
-            ))
-            .header("x-admin-token", "admintok")
-            .send()
-            .await
-            .unwrap()
-            .json()
-            .await
-            .unwrap();
+        let filtered = json::parse_value(
+            &client
+                .get(format!(
+                    "http://{addr}/api/v1/admin/audit?resource=hook:{name}"
+                ))
+                .header("x-admin-token", "admintok")
+                .send()
+                .await
+                .unwrap()
+                .bytes()
+                .await
+                .unwrap(),
+        )
+        .unwrap();
         let entry = filtered["items"]
             .as_array()
             .unwrap()

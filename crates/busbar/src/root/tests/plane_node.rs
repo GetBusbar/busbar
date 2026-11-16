@@ -80,6 +80,7 @@ async fn selected(
 }
 
 use super::*;
+use busbar_contract::json::{self, JsonValueMutTrait, JsonValueTrait};
 
 use busbar_kernel::teller::Ended;
 const LANE: &str = "m0";
@@ -137,7 +138,7 @@ impl Fixture {
             },
             _ => MockResponse::Ok {
                 status: reqwest::StatusCode::OK,
-                body: serde_json::json!({
+                body: json::json!({
                     "id": "chatcmpl-root", "object": "chat.completion", "created": 0,
                     "model": LANE,
                     "choices": [{"index": 0, "finish_reason": "stop",
@@ -153,25 +154,25 @@ impl Fixture {
         if self == Fixture::Malformed {
             return Bytes::from_static(b"{not json");
         }
-        let mut v = serde_json::json!({
+        let mut v = json::json!({
             "model": self.model(),
             "messages": [{"role": "user", "content": "hi"}],
         });
         if self.streamed() {
-            v["stream"] = serde_json::Value::Bool(true);
+            v["stream"] = json::Value::from(true);
         }
-        Bytes::from(serde_json::to_vec(&v).expect("the fixture body serializes"))
+        Bytes::from(json::to_vec(&v).expect("the fixture body serializes"))
     }
 }
 
 fn event_stream_events() -> Vec<String> {
     vec![
-        serde_json::json!({"id": "chatcmpl-root", "object": "chat.completion.chunk",
+        json::json!({"id": "chatcmpl-root", "object": "chat.completion.chunk",
                            "created": 0, "model": LANE,
                            "choices": [{"index": 0, "delta": {"role": "assistant",
                                                               "content": "hello"}}]})
         .to_string(),
-        serde_json::json!({"id": "chatcmpl-root", "object": "chat.completion.chunk",
+        json::json!({"id": "chatcmpl-root", "object": "chat.completion.chunk",
                            "created": 0, "model": LANE,
                            "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
                            "usage": {"prompt_tokens": INPUT, "completion_tokens": OUTPUT,
@@ -361,23 +362,21 @@ const VOLATILE_HEADERS: [&str; 6] = [
 struct Observed(Vec<(&'static str, String)>);
 
 fn normalize(s: &str) -> String {
-    fn blank(v: &mut serde_json::Value) {
-        match v {
-            serde_json::Value::Object(map) => {
-                for (k, val) in map.iter_mut() {
-                    let is_id = k.ends_with("id") || k.ends_with("Id") || k.ends_with("ID");
-                    let is_clock = matches!(k.as_str(), "created" | "created_at" | "createTime");
-                    if is_id && val.is_string() {
-                        *val = serde_json::Value::String("<id>".to_string());
-                    } else if (is_clock || k == "latencyMs") && val.is_number() {
-                        *val = serde_json::Value::from(0);
-                    } else {
-                        blank(val);
-                    }
+    fn blank(v: &mut json::Value) {
+        if let Some(map) = v.as_object_mut() {
+            for (k, val) in map.iter_mut() {
+                let is_id = k.ends_with("id") || k.ends_with("Id") || k.ends_with("ID");
+                let is_clock = matches!(k, "created" | "created_at" | "createTime");
+                if is_id && val.is_str() {
+                    *val = json::Value::from("<id>");
+                } else if (is_clock || k == "latencyMs") && val.is_number() {
+                    *val = json::Value::from(0);
+                } else {
+                    blank(val);
                 }
             }
-            serde_json::Value::Array(items) => items.iter_mut().for_each(blank),
-            _ => {}
+        } else if let Some(items) = v.as_array_mut() {
+            items.iter_mut().for_each(blank);
         }
     }
     if s.contains("data:") {
@@ -390,7 +389,7 @@ fn normalize(s: &str) -> String {
             .collect::<Vec<_>>()
             .join("\n");
     }
-    match serde_json::from_str::<serde_json::Value>(s) {
+    match json::parse_value(s.as_bytes()) {
         Ok(mut v) => {
             blank(&mut v);
             v.to_string()
@@ -1407,7 +1406,7 @@ async fn a_caller_that_hangs_up_mid_dispatch_keeps_its_flat_fee_charged() {
 
     rig.upstream.push(MockResponse::Gated {
         status: reqwest::StatusCode::INTERNAL_SERVER_ERROR,
-        body: serde_json::json!({"error": {"message": "still answering", "type": "server_error"}}),
+        body: json::json!({"error": {"message": "still answering", "type": "server_error"}}),
         started: Arc::clone(&started),
         release: Arc::clone(&release),
     });
@@ -1471,8 +1470,8 @@ async fn billing_off_serves_free_writes_its_metering_row_reading_zero_yet_still_
     assert_eq!(field(&guarded, "metering_rows"), "");
 }
 
-static DIALECTS: LazyLock<serde_json::Value> = LazyLock::new(|| {
-    serde_json::from_str(include_str!("fixtures/plane_node_dialects.json"))
+static DIALECTS: LazyLock<json::Value> = LazyLock::new(|| {
+    json::parse_value(include_str!("fixtures/plane_node_dialects.json").as_bytes())
         .expect("the dialect fixture is JSON")
 });
 
@@ -1492,7 +1491,7 @@ fn linked_dialect(name: &str) -> &'static str {
         .unwrap_or_else(|| panic!("the fixture names `{name}`, which no linked table declares"))
 }
 
-fn path_row(proto: &str) -> &'static serde_json::Value {
+fn path_row(proto: &str) -> &'static json::Value {
     DIALECTS["path_model"]
         .as_array()
         .expect("the fixture's `path_model` is a list")
@@ -1523,7 +1522,7 @@ const PATH_CASES: [Fixture; 4] = [
 
 fn path_body(proto: &str) -> Bytes {
     let v = &path_row(proto)["body"];
-    Bytes::from(serde_json::to_vec(v).expect("the fixture body serializes"))
+    Bytes::from(json::to_vec(v).expect("the fixture body serializes"))
 }
 
 type PathFacts = plane::PathModelFacts;
@@ -2882,7 +2881,7 @@ async fn a_served_rerank_puts_identical_search_units_on_both_books() {
     for _ in 0..4 {
         state.push(MockResponse::Ok {
             status: reqwest::StatusCode::OK,
-            body: serde_json::json!({
+            body: json::json!({
                 "id": "rr-1",
                 "results": [{"index": 0, "relevance_score": 0.9}],
                 "meta": {"billed_units": {"search_units": RERANK_UNITS}}
@@ -3641,7 +3640,7 @@ async fn an_aliased_lane_prices_at_the_rate_card_under_its_config_name() {
     )]);
     let answered = || MockResponse::Ok {
         status: reqwest::StatusCode::OK,
-        body: serde_json::json!({
+        body: json::json!({
             "id": "chatcmpl-aliased", "object": "chat.completion", "created": 0, "model": WIRE,
             "choices": [{"index": 0, "finish_reason": "stop",
                          "message": {"role": "assistant", "content": "hello"}}],
@@ -3661,7 +3660,7 @@ async fn an_aliased_lane_prices_at_the_rate_card_under_its_config_name() {
     let _ = axum::body::to_bytes(resp.into_body(), usize::MAX).await;
     tokio::task::yield_now().await;
     rig.server.shutdown().await;
-    let sent: serde_json::Value = serde_json::from_slice(
+    let sent: json::Value = json::parse_value(
         &rig.upstream
             .get_last_request_body()
             .expect("the upstream was dialled"),
@@ -3859,7 +3858,7 @@ async fn serve_rerank(
     lane_dialect: &'static str,
     arrival_dialect: &'static str,
     by_path: bool,
-    upstream: serde_json::Value,
+    upstream: json::Value,
     cost: busbar_kernel::cost::CostModel,
     history: crate::root::kernel::PinnedHistory,
 ) -> RerankBooks {
@@ -3914,7 +3913,7 @@ async fn serve_rerank(
     } else {
         (
             Bytes::from(
-                serde_json::to_vec(&serde_json::json!({
+                json::to_vec(&json::json!({
                     "model": RERANK_POOL,
                     "query": "which is fastest",
                     "documents": ["a", "b", "c"]
@@ -4076,13 +4075,13 @@ async fn serve_rerank(
     }
 }
 
-fn rerank_answer(units: Option<u64>) -> serde_json::Value {
-    let mut answer = serde_json::json!({
+fn rerank_answer(units: Option<u64>) -> json::Value {
+    let mut answer = json::json!({
         "id": "rr-1",
         "results": [{"index": 0, "relevance_score": 0.9}]
     });
     if let Some(units) = units {
-        answer["meta"] = serde_json::json!({"billed_units": {"search_units": units}});
+        answer["meta"] = json::json!({"billed_units": {"search_units": units}});
     }
     answer
 }

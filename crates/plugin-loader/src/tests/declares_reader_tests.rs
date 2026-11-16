@@ -13,8 +13,8 @@ fn the_reader_checks_and_drops_needs_and_refuses_every_other_unknown_key() {
         Declares::from_declares_json(br#"{"destinations": ["url"]}"#).expect("the same, without");
     assert_eq!(with, without, "the section carries no needs");
     assert_eq!(
-        serde_json::to_value(&with).unwrap(),
-        serde_json::json!({"destinations": ["url"]})
+        busbar_contract::json::to_value(&with).unwrap(),
+        busbar_contract::json::json!({"destinations": ["url"]})
     );
     assert!(Declares::from_declares_json(br#"{"needs": []}"#).is_ok());
     for bad in [
@@ -38,8 +38,8 @@ fn a_declared_keep_reads_for_a_declared_destination_only() {
         .expect("a keep for a declared destination reads");
     assert_eq!(read.keep.get("path"), Some(&0));
     assert_eq!(
-        serde_json::to_value(&read).unwrap(),
-        serde_json::json!({"destinations": ["path"], "keep": {"path": 0}})
+        busbar_contract::json::to_value(&read).unwrap(),
+        busbar_contract::json::json!({"destinations": ["path"], "keep": {"path": 0}})
     );
     assert!(!Declares {
         keep: read.keep.clone(),
@@ -49,8 +49,8 @@ fn a_declared_keep_reads_for_a_declared_destination_only() {
     let none = Declares::from_declares_json(br#"{"destinations": ["path"]}"#).expect("reads");
     assert!(none.keep.is_empty());
     assert_eq!(
-        serde_json::to_value(&none).unwrap(),
-        serde_json::json!({"destinations": ["path"]})
+        busbar_contract::json::to_value(&none).unwrap(),
+        busbar_contract::json::json!({"destinations": ["path"]})
     );
     assert!(
         Declares::from_declares_json(br#"{"destinations": ["path"], "keep": {"other": 0}}"#)
@@ -64,16 +64,16 @@ fn a_declared_hook_orders_reads_and_unstated_leaves_the_bytes_unchanged() {
     assert!(!off.hook_orders());
     assert!(!off.is_empty());
     assert_eq!(
-        serde_json::to_value(&off).unwrap(),
-        serde_json::json!({"hook": {"orders": false}})
+        busbar_contract::json::to_value(&off).unwrap(),
+        busbar_contract::json::json!({"hook": {"orders": false}})
     );
     let on = Declares::from_declares_json(br#"{"hook": {}}"#).expect("an empty hook reads");
     assert!(on.hook_orders(), "an unstated `orders` is true");
     let none = Declares::from_declares_json(br#"{"destinations": ["url"]}"#).expect("reads");
     assert!(none.hook.is_none() && none.hook_orders());
     assert_eq!(
-        serde_json::to_value(&none).unwrap(),
-        serde_json::json!({"destinations": ["url"]}),
+        busbar_contract::json::to_value(&none).unwrap(),
+        busbar_contract::json::json!({"destinations": ["url"]}),
         "no `hook` key rides a manifest that states none"
     );
     assert!(Declares::default().is_empty());
@@ -92,7 +92,7 @@ fn a_declared_hook_orders_reads_and_unstated_leaves_the_bytes_unchanged() {
 #[test]
 fn a_signed_manifest_section_stating_needs_is_refused() {
     assert!(
-        serde_json::from_value::<super::Manifest>(serde_json::json!({
+        busbar_contract::json::from_value::<super::Manifest>(&busbar_contract::json::json!({
             "name": "n", "alias": "n", "kind": "export", "version": "1.0.0", "publisher": "p",
             "abi_version": 1, "sha256": "", "signature": "",
             "declares": {"needs": ["scheme-a"]}

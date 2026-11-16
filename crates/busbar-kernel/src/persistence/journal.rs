@@ -36,6 +36,8 @@ pub(crate) mod historical;
 mod transfer;
 #[cfg(test)]
 pub(crate) use transfer::Handover;
+mod foreign;
+pub(crate) use foreign::{ForeignJournal, OwnHistory};
 mod recovery_hooks;
 pub(crate) use recovery_hooks::{RowChange, Selection};
 mod base;

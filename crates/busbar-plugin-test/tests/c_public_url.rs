@@ -7,7 +7,7 @@
 //! the arm's body and un-ignores it in its own MR (red first, then green).
 
 #[test]
-#[ignore = "blocked: D_PUBLIC_URL_PATH write-path enforcement is in the kernel boot (K7 with L2) with no public entry reachable from this crate"]
+#[ignore = "owner: W1-K7 + W1-L2; blocked (re-checked on dev 2026-11-16): compares plane-a2a, plane-mcp and plane-streaming outputs with their repos' goldens on MIN-3 planes (min3_boot and plane serving, OUTSTANDING rows 3, 7-10); the registry's write at D_PUBLIC_URL_PATH needs a plane fixture declaring it through the suites Harness (booted-fixture work, not a relocation)"]
 fn public_url_at_its_declared_path_only() {
     todo!("owner: W1-K7 (C-PUBLIC-URL)")
 }

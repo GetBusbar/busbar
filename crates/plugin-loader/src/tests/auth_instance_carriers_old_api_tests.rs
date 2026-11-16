@@ -131,7 +131,7 @@ fn configured_instances_read_their_own_subset_from_ready_open_extensions() {
             sink,
             dispatcher.clone(),
             variant,
-            &serde_json::to_vec(variant).unwrap(),
+            &busbar_contract::json::to_vec(variant).unwrap(),
             Vec::new(),
         )
         .unwrap()

@@ -6,6 +6,11 @@
 //! settings, hands back the kind's port to drive, and collects what the plugin did: the records it wrote
 //! (RECORD), the OPEN/FETCH needs it made, the log lines it emitted and every refusal an open answered.
 //!
+//! The registry arms (C-ALIAS, C-BLIND, C-ERRORS, C-ADMIT-UNLOAD) admit more than one image into one registry
+//! ([`Harness::admit_all`], [`Harness::add`]) and open any of them by its `module:` word
+//! ([`Harness::spec_for`]); an image the caller admitted itself (a dropped-in one, through the loader's `admit`)
+//! comes in through [`Harness::admit_admitted`].
+//!
 //! The plugin runs in-process on the SDK safe test host; nothing here is `unsafe`.
 //!
 //! One caveat the registry owns: the entry fault sink and the log sink are process-wide and attach to the
@@ -24,13 +29,14 @@ use busbar_contract::json::{
 use busbar_contract::secure::SecureVec;
 use busbar_plugin_abi::host_side::caller::{BoxFut, InstanceLimits};
 use busbar_plugin_abi::host_side::HOST;
+use busbar_plugin_abi::need::need_flag;
 use busbar_plugin_abi::plugin::__rt::LinkedPlugin;
 use busbar_plugin_abi::plugin::Plugin;
 use busbar_plugin_abi::types::KindCode;
 use busbar_plugin_loader::admit::{admit_header, admit_linked, Admitted};
 use busbar_plugin_loader::binder::{BindError, ConfigBinder, DestDef, TrustAnchor};
 use busbar_plugin_loader::instance::{
-    Ceilings, InstanceSpec, OpenError, OpenedPort, PluginCode, Registry, Settled,
+    Ceilings, DeclaredEndpoint, InstanceSpec, OpenError, OpenedPort, PluginCode, Registry, Settled,
 };
 use busbar_plugin_loader::ports::auth::AuthPort;
 use busbar_plugin_loader::ports::export::ExportPort;
@@ -349,21 +355,29 @@ pub struct LogLine {
 #[derive(Default)]
 struct LogBook {
     lines: Mutex<Vec<LogLine>>,
+    /// The numbers of the registry's "plugin error number not declared" WARNs (`ErrorBook::resolve`), in order.
+    undeclared: Mutex<Vec<u64>>,
     next_span: AtomicU64,
 }
+
+/// The message of the registry's one WARN for an error number an image did not declare (PLUGIN-ERROR-CODES §2.5).
+const UNDECLARED: &str = "plugin error number not declared";
 
 #[derive(Default)]
 struct Fields {
     kind: Option<u64>,
     instance: Option<String>,
+    number: Option<u64>,
     code: String,
     message: String,
 }
 
 impl Visit for Fields {
     fn record_u64(&mut self, field: &Field, value: u64) {
-        if field.name() == "kind" {
-            self.kind = Some(value);
+        match field.name() {
+            "kind" => self.kind = Some(value),
+            "number" => self.number = Some(value),
+            _ => {}
         }
     }
 
@@ -383,7 +397,8 @@ impl Visit for Fields {
     }
 }
 
-/// The subscriber: it keeps only the events the registry's log sink emits (they carry `kind` and `instance`).
+/// The subscriber: it keeps the events the registry's log sink emits (they carry `kind` and `instance`) and the
+/// number of each "not declared" WARN the registry writes for an undeclared error number.
 struct Tap(Arc<LogBook>);
 
 impl Subscriber for Tap {
@@ -403,6 +418,13 @@ impl Subscriber for Tap {
         let mut fields = Fields::default();
         event.record(&mut fields);
         let (Some(kind), Some(instance)) = (fields.kind, fields.instance) else {
+            if let (Some(number), true) = (fields.number, fields.message == UNDECLARED) {
+                self.0
+                    .undeclared
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .push(number);
+            }
             return;
         };
         let level = match *event.metadata().level() {
@@ -456,6 +478,8 @@ pub struct Harness {
     identity: String,
     kind: KindCode,
     refusals: Mutex<Vec<String>>,
+    /// Every ENDPOINT a successful `check` declared, in order (the generic match reads them).
+    declared: Mutex<Vec<DeclaredEndpoint>>,
     rt: crate::test_rt::TestRuntime,
     logs: Arc<LogBook>,
     _tap: tracing::subscriber::DefaultGuard,
@@ -477,6 +501,39 @@ impl Harness {
         needs: FakeNeeds,
     ) -> Result<Harness, Refusal> {
         Self::start(|| admit_linked(linked), needs)
+    }
+
+    /// Every image of `plugins` admitted into one registry, in order, as [`Harness::admit`] then
+    /// [`Harness::add`] for each further one: the first refusal comes back as it is. [`Harness::identity`] and
+    /// [`Harness::kind`] stay the first image's; open another by its word with [`Harness::spec_for`].
+    pub fn admit_all(plugins: &[&'static Plugin], needs: FakeNeeds) -> Result<Harness, Refusal> {
+        let Some((first, rest)) = plugins.split_first() else {
+            return Err(Refusal::new(
+                RefusalCode::Integrity,
+                "images",
+                "no image",
+                "at least one image",
+            ));
+        };
+        let mut harness = Self::admit(*first, needs)?;
+        for plugin in rest {
+            harness.add(*plugin)?;
+        }
+        Ok(harness)
+    }
+
+    /// One more image into this harness's registry: `admit_header` and `Registry::add` (describe, NameConflict
+    /// over every admitted identity and `former_names` word, the error book). A refusal leaves the registry as it
+    /// was.
+    pub fn add(&mut self, plugin: &'static Plugin) -> Result<(), Refusal> {
+        self.registry.add(admit_header(plugin)?)
+    }
+
+    /// A harness over an image the caller admitted itself (a dropped-in image through the loader's `admit`, or
+    /// `busbar_plugin_loader::test_host::admit_bytes`): `Registry::add` and everything [`Harness::admit`] does
+    /// after admission.
+    pub fn admit_admitted(admitted: Admitted, needs: FakeNeeds) -> Result<Harness, Refusal> {
+        Self::start(move || Ok(admitted), needs)
     }
 
     fn start(
@@ -511,6 +568,7 @@ impl Harness {
             identity,
             kind,
             refusals: Mutex::new(Vec::new()),
+            declared: Mutex::new(Vec::new()),
             rt,
             logs,
             _tap: tap,
@@ -551,8 +609,19 @@ impl Harness {
     /// The spec for instance `name` of the admitted image, opened with `config` (operator form, secret
     /// references included) and no limits, no `public_url`, no caller upstreams.
     pub fn spec<'a>(&'a self, name: &'a str, config: &'a [u8]) -> InstanceSpec<'a> {
+        self.spec_for(&self.identity, name, config)
+    }
+
+    /// [`Harness::spec`] for the image the operator's `module` word names: an admitted identity or one of its
+    /// `former_names` words (the registry resolves it), or a word nothing answers to (the open refuses it).
+    pub fn spec_for<'a>(
+        &'a self,
+        module: &'a str,
+        name: &'a str,
+        config: &'a [u8],
+    ) -> InstanceSpec<'a> {
         InstanceSpec {
-            identity: &self.identity,
+            identity: module,
             name,
             config_json: config,
             limits: InstanceLimits::default(),
@@ -571,10 +640,42 @@ impl Harness {
         answer
     }
 
-    /// DRY_RUN open (`--validate`): bind, `check`, no instance kept.
+    /// DRY_RUN open (`--validate`): bind, `check`, no instance kept. The ENDPOINTs the answer declared are kept
+    /// for the generic match ([`Harness::undeclared`]).
     pub fn check(&self, name: &str, config: &[u8]) -> Result<(), OpenError> {
         let spec = self.spec(name, config);
-        self.noted(self.block_on(self.registry.check(&spec)))
+        let declared = self.noted(self.block_on(self.registry.check_endpoints(&spec)))?;
+        self.declared
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .extend(declared);
+        Ok(())
+    }
+
+    /// Every ENDPOINT a successful [`Harness::check`] declared so far, in order.
+    pub fn declared(&self) -> Vec<DeclaredEndpoint> {
+        self.declared
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    /// The generic ENDPOINT match (TRANSPORT-SECURITY-POLICY §2): every OPEN or FETCH the plugin made whose
+    /// (host, TLS) is not among the ENDPOINTs its successful checks declared.
+    pub fn undeclared(&self) -> Vec<Seen> {
+        let declared = self.declared.lock().unwrap_or_else(PoisonError::into_inner);
+        self.needs.undeclared(&endpoint_pairs(&declared))
+    }
+
+    /// Panics, naming `suite`, when [`Harness::undeclared`] is not empty: every Need a suite drove must match an
+    /// ENDPOINT the plugin's `check` declared for the same config.
+    pub fn assert_needs_declared(&self, suite: &str) {
+        let undeclared = self.undeclared();
+        assert!(
+            undeclared.is_empty(),
+            "{suite} suite: needs the plugin's check did not declare as an ENDPOINT (TRANSPORT-SECURITY-POLICY §2): {undeclared:?}; declared: {:?}",
+            self.declared()
+        );
     }
 
     /// Open the instance as its kind and return the typed port.
@@ -656,6 +757,17 @@ impl Harness {
         )
     }
 
+    /// Every error number the registry found undeclared since the harness was built (an ERROR record or a `log`
+    /// number the image's D_ERRORS does not hold, or one over 9999), once per instance, in order: the number of
+    /// each "plugin error number not declared" WARN.
+    pub fn undeclared(&self) -> Vec<u64> {
+        self.logs
+            .undeclared
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
     /// Every record the plugin holds through RECORD, in key order.
     pub fn records(&self) -> Vec<StoredRecord> {
         self.needs
@@ -683,6 +795,19 @@ impl Harness {
             .unwrap_or_else(PoisonError::into_inner)
             .clone()
     }
+}
+
+/// Each declared ENDPOINT as the (dest, TLS) pair `FakeNeeds::undeclared` matches on: TLS when its `NeedRec.flags`
+/// TLS bits ask for any TLS mode (TLS_INBAND included: the conn is upgraded in band) or its dest is an `https:` URL.
+fn endpoint_pairs(declared: &[DeclaredEndpoint]) -> Vec<(&str, bool)> {
+    declared
+        .iter()
+        .map(|ep| {
+            let tls = (ep.flags & need_flag::TLS_MASK) != need_flag::TLS_NONE
+                || ep.dest.starts_with("https://");
+            (&*ep.dest, tls)
+        })
+        .collect()
 }
 
 /// The core refusal an open answered, when core (not the plugin) refused.
@@ -715,6 +840,48 @@ pub fn plugin_code(error: &OpenError) -> Option<PluginCode> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn needs_are_matched_against_the_endpoints_check_declared() {
+        use busbar_plugin_abi::need::{need_flag, op};
+        use busbar_plugin_loader::instance::DeclaredEndpoint;
+        let declared = [
+            DeclaredEndpoint {
+                op: op::OPEN,
+                flags: need_flag::TLS_REQUIRED,
+                dest: "db.test:5432".into(),
+            },
+            DeclaredEndpoint {
+                op: op::OPEN,
+                flags: need_flag::TLS_INBAND,
+                dest: "pg.test:5432".into(),
+            },
+            DeclaredEndpoint {
+                op: op::FETCH,
+                flags: need_flag::TLS_NONE,
+                dest: "https://api.test/v1".into(),
+            },
+            DeclaredEndpoint {
+                op: op::OPEN,
+                flags: need_flag::TLS_NONE,
+                dest: "cache.test:6379".into(),
+            },
+        ];
+        assert_eq!(
+            endpoint_pairs(&declared),
+            [
+                ("db.test:5432", true),
+                ("pg.test:5432", true),
+                ("https://api.test/v1", true),
+                ("cache.test:6379", false),
+            ]
+        );
+        let needs = FakeNeeds::default();
+        assert!(
+            needs.undeclared(&endpoint_pairs(&declared)).is_empty(),
+            "no Need was made, so none is undeclared"
+        );
+    }
 
     #[test]
     fn bind_numbers_handles_from_one_in_pointer_order_and_unbind_restores() {

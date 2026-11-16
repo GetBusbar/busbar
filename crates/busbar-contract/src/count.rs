@@ -64,20 +64,112 @@ impl PartialOrd<u64> for Count {
     }
 }
 
+/// The raw-number struct name of the facade's writer and readers (sonic-rs): a struct of this name
+/// with one field of this name, holding the lexeme, is written as that lexeme verbatim.
+const LEXEME_NUMBER: &str = "$sonic_rs::private::JsonNumber";
+
+/// The raw-number struct name of the lexeme-keeping JSON library the old ABI still serializes
+/// through until wave 3 of MIN-3 deletes it. Every other serializer is handed this one, as before.
+const OLD_LEXEME_NUMBER: &str = "$serde_json::private::Number";
+
 impl serde::Serialize for Count {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let number = self
-            .to_decimal_string()
-            .parse::<serde_json::Number>()
-            .map_err(serde::ser::Error::custom)?;
-        serde::Serialize::serialize(&number, serializer)
+        use serde::ser::SerializeStruct;
+        // The name is a `&'static str` the writer matches by spelling: the facade's writer is
+        // handed its own, every other serializer the old library's (its output is unchanged).
+        let token = if core::any::type_name::<S>().contains("sonic_rs::") {
+            LEXEME_NUMBER
+        } else {
+            OLD_LEXEME_NUMBER
+        };
+        let text = self.to_decimal_string();
+        let mut number = serializer.serialize_struct(token, 1)?;
+        number.serialize_field(token, text.as_str())?;
+        number.end()
     }
 }
 
 impl<'de> serde::Deserialize<'de> for Count {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let number = <serde_json::Number as serde::Deserialize>::deserialize(deserializer)?;
-        Self::parse(&number.to_string()).map_err(serde::de::Error::custom)
+        deserializer.deserialize_any(CountVisitor)
+    }
+}
+
+/// A JSON number, in any form a reader hands one: a lexeme-keeping reader's one-entry token map,
+/// or a binary64 reader's `u64` / `i64` / `f64` (a float read through its shortest spelling).
+struct CountVisitor;
+
+impl CountVisitor {
+    fn read<E: serde::de::Error>(text: &str) -> Result<Count, E> {
+        Count::parse(text).map_err(E::custom)
+    }
+}
+
+impl<'de> serde::de::Visitor<'de> for CountVisitor {
+    type Value = Count;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        formatter.write_str("a JSON number")
+    }
+
+    fn visit_i64<E: serde::de::Error>(self, value: i64) -> Result<Count, E> {
+        Self::read(&value.to_string())
+    }
+
+    fn visit_i128<E: serde::de::Error>(self, value: i128) -> Result<Count, E> {
+        Self::read(&value.to_string())
+    }
+
+    fn visit_u64<E: serde::de::Error>(self, value: u64) -> Result<Count, E> {
+        Self::read(&value.to_string())
+    }
+
+    fn visit_u128<E: serde::de::Error>(self, value: u128) -> Result<Count, E> {
+        Self::read(&value.to_string())
+    }
+
+    fn visit_f64<E: serde::de::Error>(self, value: f64) -> Result<Count, E> {
+        let number =
+            crate::json::Number::from_f64(value).ok_or_else(|| E::custom("not a JSON number"))?;
+        Self::read(&number.to_string())
+    }
+
+    fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<Count, A::Error> {
+        if map.next_key::<NumberKey>()?.is_none() {
+            return Err(serde::de::Error::invalid_type(
+                serde::de::Unexpected::Map,
+                &self,
+            ));
+        }
+        let lexeme = map.next_value::<String>()?;
+        Self::read(&lexeme)
+    }
+}
+
+/// The key of a raw-number token map: either library's token, refused otherwise.
+struct NumberKey;
+
+impl<'de> serde::Deserialize<'de> for NumberKey {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct KeyVisitor;
+
+        impl serde::de::Visitor<'_> for KeyVisitor {
+            type Value = NumberKey;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                formatter.write_str("a valid number field")
+            }
+
+            fn visit_str<E: serde::de::Error>(self, key: &str) -> Result<NumberKey, E> {
+                if key == LEXEME_NUMBER || key == OLD_LEXEME_NUMBER {
+                    Ok(NumberKey)
+                } else {
+                    Err(E::custom("expected field with custom name"))
+                }
+            }
+        }
+
+        deserializer.deserialize_identifier(KeyVisitor)
     }
 }
 

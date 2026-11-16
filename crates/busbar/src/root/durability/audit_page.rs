@@ -2,9 +2,9 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::*;
+use busbar_contract::json::{self, json, Value};
 use busbar_core_admin::GovernanceError;
 use busbar_kernel_audit::expose;
-use serde_json::{json, Value};
 
 /// Positions projected into one response after native whole-history verification
 /// within the configured memory budget. The ring holds at most AUDIT_RING records.
@@ -121,7 +121,7 @@ impl Durability {
             }
         };
         let mut body: Value =
-            serde_json::from_str(&expose::range_body(&self.record, &[], from, to))
+            json::parse_value(expose::range_body(&self.record, &[], from, to).as_bytes())
                 .map_err(|_| GovernanceError::Store)?;
         // The upper bound is fixed by the first page; later appends cannot move it.
         body["snapshot_to"] = json!(cursor.snapshot_to.to_string());
@@ -133,12 +133,9 @@ impl Durability {
             "durable_from_known": false,
         });
         // Keep the legacy anchor field, but bind it to the pinned observation.
-        let snapshot_body: Value = serde_json::from_str(&expose::range_body(
-            &self.record,
-            &[],
-            from,
-            cursor.snapshot_to,
-        ))
+        let snapshot_body: Value = json::parse_value(
+            expose::range_body(&self.record, &[], from, cursor.snapshot_to).as_bytes(),
+        )
         .map_err(|_| GovernanceError::Store)?;
         body["anchor"] = snapshot_body["anchor"].clone();
         let covered = self
@@ -244,11 +241,9 @@ impl AuditPagePlan {
             gaps.push(json!({"from": self.cursor.next_audit.to_string(), "to": self.cursor.to.to_string()}));
         }
         self.cursor.incomplete |= !gaps.is_empty();
-        self.body["records"] = serde_json::from_str(&expose::range_records_body(
-            &self.records,
-            self.cursor.from,
-            self.cursor.to,
-        ))
+        self.body["records"] = json::parse_value(
+            expose::range_records_body(&self.records, self.cursor.from, self.cursor.to).as_bytes(),
+        )
         .map_err(|_| GovernanceError::Store)?;
         self.body["returned_from"] = json!(self.records.first().map(|r| r.seq.to_string()));
         self.body["returned_to"] = json!(self.records.last().map(|r| r.seq.to_string()));
@@ -259,7 +254,7 @@ impl AuditPagePlan {
         self.body["gaps"] = json!(gaps);
         self.body["scanned_positions"] = json!(scanned.to_string());
         self.body["scan_limit"] = json!(SCAN_POSITIONS.to_string());
-        serde_json::to_vec(&self.body).map_err(|_| GovernanceError::Store)
+        json::to_vec(&self.body).map_err(|_| GovernanceError::Store)
     }
 }
 
@@ -268,6 +263,7 @@ mod tests {
     use super::*;
     use crate::root::durability::tests::{seal, NativeFixture};
     use crate::root::units_admin::{AuditView, NodeAudit};
+    use busbar_contract::json::JsonValueTrait;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
 
@@ -285,7 +281,7 @@ mod tests {
     }
 
     async fn page(view: &NodeAudit, from: u64, to: u64, cursor: Option<&str>) -> Value {
-        serde_json::from_slice(&view.range_page(from, to, cursor).await.unwrap()).unwrap()
+        json::parse_value(&view.range_page(from, to, cursor).await.unwrap()).unwrap()
     }
 
     #[tokio::test]

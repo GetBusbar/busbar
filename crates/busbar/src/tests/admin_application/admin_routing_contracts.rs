@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+use busbar_contract::json::{self, JsonValueTrait as _};
+
 #[tokio::test]
 async fn test_api_root_unmatched_paths_speak_the_admin_envelope() {
     const CHILD: &str = "BUSBAR_ADMIN_BOOT_A058FBB7CB1F";
@@ -42,7 +44,7 @@ async fn test_api_root_unmatched_paths_speak_the_admin_envelope() {
             .await
             .unwrap();
         assert_eq!(r.status().as_u16(), 404, "{path}");
-        let body: serde_json::Value = r.json().await.unwrap();
+        let body = json::parse_value(&r.bytes().await.unwrap()).unwrap();
         assert_eq!(body["error"]["code"], "not_found", "{path}: {body}");
         assert!(
             body["error"]["type"].is_null(),
@@ -58,7 +60,7 @@ async fn test_api_root_unmatched_paths_speak_the_admin_envelope() {
         .unwrap();
     assert_eq!(r.status().as_u16(), 405);
     assert_eq!(
-        r.json::<serde_json::Value>().await.unwrap()["error"]["code"],
+        json::parse_value(&r.bytes().await.unwrap()).unwrap()["error"]["code"],
         "method_not_allowed"
     );
     handle.abort();
@@ -144,15 +146,18 @@ async fn test_admin_v1_admin_auth_read() {
     let (addr, handle, _book) =
         crate::distribution::rig::actual_root_unhydrated(document, &directory, &module).await;
     let client = reqwest::Client::new();
-    let body: serde_json::Value = client
-        .get(format!("http://{addr}/api/v1/admin/admin-auth"))
-        .header("x-admin-token", "admintok")
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
+    let body = json::parse_value(
+        &client
+            .get(format!("http://{addr}/api/v1/admin/admin-auth"))
+            .header("x-admin-token", "admintok")
+            .send()
+            .await
+            .unwrap()
+            .bytes()
+            .await
+            .unwrap(),
+    )
+    .unwrap();
     assert_eq!(body["configured"], true);
 
     assert!(body["modules"]
