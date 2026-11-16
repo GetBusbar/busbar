@@ -435,7 +435,7 @@ fn keys_doc_cli(args: &[String]) -> Result<String, String> {
 }
 
 pub(crate) fn envelope(signed: &[u8], key: &ReleaseKey, sig: &[u8]) -> Result<Vec<u8>, String> {
-    let value: serde_json::Value = serde_json::from_slice(signed)
+    let value = busbar_contract::json::parse_value(signed)
         .map_err(|e| format!("the signed bytes are not JSON: {e}"))?;
     if wire::canonical(&value)? != signed {
         return Err(

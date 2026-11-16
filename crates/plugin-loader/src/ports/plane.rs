@@ -274,6 +274,7 @@ pub struct TrustItem<'a> {
 }
 
 /// Round 23: `cred_header` = the route's D_ROUTE_CRED_HEADER, lowercase (§8.6, §12.11 "Route credential header").
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RouteInfo {
     pub route: u32,
     pub methods: u32,
@@ -283,6 +284,7 @@ pub struct RouteInfo {
     pub cred_header: Option<Box<str>>,
 }
 
+#[derive(Clone, Debug, PartialEq)]
 pub struct UsageClass {
     pub class: Box<str>,
     pub unit: u32,

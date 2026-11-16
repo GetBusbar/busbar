@@ -1,111 +1,109 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Host services: the raw `Host` vtable, the crypto request shapes and consts, and the safe API plugins call (IF §5, §5.1, §5.2). W0-ABI stub: frozen signatures, `todo!()` bodies; A2 fills it.
+//! Host services: the raw `Host` vtable, the crypto request shapes and consts, and the safe API plugins call (IF §5, §5.1, §5.2).
+//!
+//! The `Host` table, `HostFns`, `CryptoReq`, `CryptoRet`, `DeploymentId` and the entry brand `Ctx` are busbar-ffi's
+//! (UNSAFE-MIN r3.1) and re-exported here; their `mechanism!` blocks are busbar-ffi's. This module keeps the
+//! algorithm, key-form, status and level numbers, the safe value types and `HostExt`, the §5.1 safe methods
+//! (W1-A2: the crypto ones marshal each call into one `CryptoReq` and copy every answer out before return).
 
-use crate::fail::Fail;
-use crate::types::Bytes;
+use core::fmt;
+use core::ops::Deref;
+
+use busbar_ffi::{Bytes, Status, Str};
+use zeroize::Zeroize as _;
+
+use crate::fail::{Fail, refused};
+
+pub use busbar_ffi::{CryptoReq, CryptoRet, Ctx, DeploymentId, Host, HostFns, RawLent};
+
+/// The most bytes one `random` call returns (IF §5).
+const RANDOM_MAX: usize = 65_536;
+
+/// A host `crypto_status` as the error a plugin sees (IF §5.2).
+fn crypto_err(status: u32) -> CryptoErr {
+    match status {
+        crypto_status::BAD => CryptoErr::Bad,
+        crypto_status::INVALID => CryptoErr::Invalid,
+        crypto_status::UNAVAILABLE => CryptoErr::Unavailable,
+        crypto_status::LIMIT => CryptoErr::Limit,
+        _ => CryptoErr::Rng,
+    }
+}
+
+/// AES-GCM's nonce and tag lengths (§5 `alg::AEAD_*`).
+const NONCE: usize = 12;
+const TAG: usize = 16;
+
+/// One `CryptoReq` with no param, aux or aad (callers set those with struct update).
+const fn req<'a>(alg: u32, key_form: u32, key: &'a [u8], data: &'a [u8]) -> CryptoReq<'a> {
+    CryptoReq {
+        alg,
+        key_form,
+        param: 0,
+        key: Bytes::new(key),
+        data: Bytes::new(data),
+        aux: Bytes::EMPTY,
+        aad: Bytes::EMPTY,
+    }
+}
+
+/// One `crypto` call. The lent output is read inside `Host::scoped` and `take` copies it out, so nothing lent
+/// outlives the call (r4 H3). A null entry is its panic fallback, Err(Rng); every non-OK status is its error.
+fn call<R>(
+    host: &Host,
+    req: &CryptoReq<'_>,
+    take: impl FnOnce(&[u8]) -> Result<R, CryptoErr>,
+) -> Result<R, CryptoErr> {
+    let Some(crypto) = host.fns().crypto else {
+        return Err(CryptoErr::Rng);
+    };
+    host.scoped(|ctx| {
+        let ret = crypto(ctx, req);
+        if ret.status != crypto_status::OK {
+            return Err(crypto_err(ret.status));
+        }
+        take(ret.out.get())
+    })
+}
+
+/// The output when it is exactly `len` bytes; any other length is a host bug, never a short value (Err(Rng)).
+fn sized(out: &[u8], len: usize) -> Result<&[u8], CryptoErr> {
+    if out.len() == len {
+        Ok(out)
+    } else {
+        Err(CryptoErr::Rng)
+    }
+}
+
+/// An AES key is 16 or 32 bytes (§5.1), checked before any call.
+fn aes_key(key: &[u8]) -> Result<(), CryptoErr> {
+    if matches!(key.len(), 16 | 32) {
+        Ok(())
+    } else {
+        Err(CryptoErr::Invalid)
+    }
+}
+
+/// Appends `bytes` to `out` as I11 requires (§5.1): in place when `out` has room, else into a fresh block, the old
+/// one wiped before it is freed; never `reserve` on `out`. No room for the new block is Err(Limit).
+fn append(out: &mut Vec<u8>, bytes: &[u8]) -> Result<(), CryptoErr> {
+    if out.capacity() - out.len() < bytes.len() {
+        let need = out.len().checked_add(bytes.len()).ok_or(CryptoErr::Limit)?;
+        let mut grown = Vec::new();
+        grown
+            .try_reserve_exact(need.max(out.len().saturating_mul(2)))
+            .map_err(|_| CryptoErr::Limit)?;
+        grown.extend_from_slice(out);
+        core::mem::swap(out, &mut grown);
+        grown.zeroize();
+    }
+    out.extend_from_slice(bytes);
+    Ok(())
+}
 
 mechanism! {
-/// The host vtable. One process-wide static; plugins get `&'static Host`. The raw fields are private to abi.
-/// Round 20: every fn field is panic-contained host-side (I10, §10.7 `contain`): a host bug answers crypto
-/// and random RNG (out EMPTY; round 24: FAILED, never REFUSED), grow false, now/mono/log_level 0, deployment all
-/// zero (round 28), or drops the log line; never an unwind.
-#[repr(C)]
-pub struct Host {
-    // W0-ABI: fields ctx, now, mono, random, crypto, log, log_level, grow, deployment, migrate_admit are the
-    // unsafe extern "C" fn pointers and their private context; they land with W1-A2 under an escapes.json
-    // admission. The frozen fields with their docs (IF §5), verbatim:
-    // ctx: *const c_void,
-    //   UTC nanoseconds since the Unix epoch, from the host clock.
-    // now: unsafe extern "C" fn(ctx: *const c_void) -> u64,
-    //   Monotonic nanoseconds, same clock as WAKE_AT.
-    // mono: unsafe extern "C" fn(ctx: *const c_void) -> u64,
-    //   `len` (1..=65_536) random bytes from `busbar_crypto::fill_checked` (round 21; the backend's DRBG, its error
-    //   through the facade's `map`, §5.2), in this thread's scratch
-    //   arena (r4 H3, owned by host_vt.rs §10.7: allocated once at its cap, never grown, **append-only for the
-    //   whole outermost entry**: every `random`/`crypto` output in one entry gets fresh space after the previous
-    //   ones and never clobbers them; zeroed over what was written when the outermost entry-guard exits and on
-    //   thread exit, I11). `out` stays valid and unchanged until the outermost entry on this thread returns, and
-    //   no longer. status OK, or INVALID (len 0 or > 65,536), or LIMIT (the entry's outputs would pass the arena
-    //   cap), or RNG (the crypto module failed: the DRBG failed, or, round 23, the backend's self-test failed,
-    //   §5.2, reachable here through `fill_checked`); on every
-    //   non-OK status `out` is EMPTY, never zero bytes. This is
-    //   the only randomness a plugin has (§15.4 bans getrandom/rand and every other RNG crate outright).
-    // random: unsafe extern "C" fn(ctx: *const c_void, len: usize) -> CryptoRet,
-    //   One crypto operation: exactly one `busbar-crypto` call (§5.2). Output in the thread's scratch arena
-    //   (fixed 1 MiB + 64 for the whole outermost entry, never grown; an output that does not fit after the
-    //   entry's earlier outputs is LIMIT, written nowhere, and the earlier outputs stay intact). r4 H3: append-only,
-    //   so two calls in one entry return distinct, non-overlapping buffers and the first is still intact after
-    //   the second; `out` is valid until the outermost entry on this thread returns. AEAD_OPEN plaintext, PBKDF2
-    //   and HMAC outputs land here and are zeroed by the arena rule (I11).
-    // crypto: unsafe extern "C" fn(ctx: *const c_void, req: *const CryptoReq<'static>) -> CryptoRet,
-    //   Emit a log line, attributed by the host to the owner of the entry running on this thread (round 24: the
-    //   entry guard's host-side `OWNER` cell, §10.7, set by every FFI entry whether or not the thread holds a
-    //   watchdog word), so attribution holds in polls, describe, cancel and close too, and on an unwatched thread. The host scrubs the
-    //   line against that instance's scrub set before it is written (I14, §12.16); plugins never mask.
-    //   Round 34 (PLUGIN-ERROR-CODES): `error` is one of this image's declared numbers (D_ERRORS), 0 = none. The
-    //   host checks it as the `u32` it arrives as (above 9999 = not declared, before any narrowing) and renders a
-    //   declared one as `BUSBAR-<identity>-NNNN` in its own `plugin_diag` field (§10.7, §11.2). Widened in place:
-    //   no slot is appended, and an image built against the round-33 `log` has the old CORE_FP (stamp refusal).
-    // log: unsafe extern "C" fn(ctx: *const c_void, level: u32, error: u32, msg: Str<'static>),
-    //   The most verbose level currently enabled (0 = off). Check before formatting.
-    // log_level: unsafe extern "C" fn(ctx: *const c_void) -> u32,
-    //   Grow this thread's ACTIVE OutBuf (set by the entry guard for every entry that has an `out`, I10) to hold
-    //   `need` more bytes, up to max_out. Rewrites out.ptr/out.cap from host state. False if no ACTIVE buffer,
-    //   if `out` is not the ACTIVE buffer's RawOut, if `len + need` overflows, or over max_out (round 13: the host
-    //   computes `len + need` with `checked_add` and clamps its high-water mark to its own capacity, §10.1). Growth moves to a larger pooled block and
-    //   zeroes the old one before release (I11, §10.1); the plugin must reload ptr/cap after every grow.
-    // grow: unsafe extern "C" fn(ctx: *const c_void, out: *mut RawOut, need: usize) -> bool,
-    //   Round 28 (the generic deployment-id read). The stable 16-byte install identity: the
-    //   keep-once Store row `busbar.deployment.v1`/`id` of ADMIN-API-1.6 (`dep_` + 32 hex there; these are the 16
-    //   bytes the hex spells). Not the `deployment` keyset seed (boot_identity.rs:18), which never leaves core. Opaque
-    //   to the plugin: stable across restarts, nodes and replicas of one deployment, never a secret, never a verdict.
-    //   All zero until core has read or written the row at boot (§11.2 `BootPlan`: only during the open/migrate of
-    //   the secret and store instances the store needs, steps 2a/2b); non-zero and unchanging for the rest of the
-    //   process. Round 29: lock-free, one Acquire load of a `OnceLock<DeploymentId>` published once with all 16
-    //   bytes (§10.7 `set_deployment`), so a reader sees either all zero or the whole id, never half; no allocation.
-    //   Panic fallback (I10): all zero. Plugins use it to bind their own state to this install and for object keys;
-    //   core never reads what they do with it. Round 29, the boot ordering rule: an instance opened in
-    //   steps 2a/2b reads all zero there; core re-runs that instance's `check` (OPEN_DRY_RUN, `Open::check`) once
-    //   after `set_deployment` and before step 2c starts, and a REFUSED there refuses the boot exactly as a step-2c
-    //   `open` refusal does (§11.2 `BootPlan`). A plugin that binds to the deployment does the binding in `check`.
-    // deployment: unsafe extern "C" fn(ctx: *const c_void) -> DeploymentId,
-    //   Round 31 (owner ruling; MIGRATE-ON-BOOT r42 §4): the recoverable gate. Valid only inside an entry of a
-    //   **store** instance's non-DRY_RUN `open` (its first poll or any resume of its chain), on every load path.
-    //   `recoverable` = how many older rows this store is about to hand core that hold a recoverable secret (its
-    //   own count of its own column). OK: core can seal them (n == 0, or an at-rest key resolves). REFUSED: it
-    //   cannot; core records its own text (how to add the key) against the instance and reports that text when
-    //   the open refuses. Any other entry or kind: FAULT (`NeedNotAllowed`), and the entry is faulted. Panic
-    //   fallback (I10): REFUSED.
-    // migrate_admit: unsafe extern "C" fn(ctx: *const c_void, recoverable: u64) -> Status,
-    // W0-ABI: `unsafe impl Sync for Host {}` lands with W1-A2 (this stub is Sync without it).
-    _stub: (),
-}
-
-/// Round 28. A deployment id by value (16 bytes, align 1; `bb_deployment_id` in C, §7.8).
-#[repr(C)]
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct DeploymentId(pub [u8; 16]);
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct CryptoReq<'a> {
-    pub alg: u32,
-    pub key_form: u32,
-    pub param: u64,
-    pub key: Bytes<'a>,
-    pub data: Bytes<'a>,
-    pub aux: Bytes<'a>,
-    pub aad: Bytes<'a>,
-}
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct CryptoRet {
-    pub status: u32,
-    pub _r: u32,
-    pub out: Bytes<'static>,
-}
 
 /// Algorithm numbers. Each is exactly one `busbar-crypto` function (§5.2 table). Whether the linked backend
 /// offers it is the backend's answer alone (`Error::Unsupported` => UNAVAILABLE); the ABI keeps no FIPS column.
@@ -243,88 +241,328 @@ impl Digest {
         &self.bytes[..usize::from(self.len)]
     }
     pub fn ct_eq(&self, other: &[u8]) -> bool {
-        let _ = other;
-        todo!()
+        ct_eq(self.as_slice(), other)
+    }
+    /// A host output of exactly `len` (≤ 64) bytes, copied out; any other length is Err(Rng).
+    fn copied(out: &[u8], len: usize) -> Result<Digest, CryptoErr> {
+        let src = sized(out, len)?;
+        let mut digest = Digest {
+            len: u8::try_from(len).map_err(|_| CryptoErr::Rng)?,
+            bytes: [0; 64],
+        };
+        match digest.bytes.get_mut(..len) {
+            Some(dst) => dst.copy_from_slice(src),
+            None => return Err(CryptoErr::Rng),
+        }
+        Ok(digest)
     }
 }
-// W0-ABI: `impl Drop for Digest` (zeroize) lands with W1-A2; a todo!() drop would panic.
+impl Drop for Digest {
+    fn drop(&mut self) {
+        self.bytes.zeroize();
+    }
+}
 
-impl Host {
-    pub fn now_ns(&self) -> u64 {
-        todo!()
+impl Hash {
+    /// The digest alg, its output length, and the HMAC alg (none for MD5: digest only).
+    const fn algs(self) -> (u32, usize, Option<u32>) {
+        match self {
+            Hash::Sha256 => (alg::SHA256, 32, Some(alg::HMAC_SHA256)),
+            Hash::Sha384 => (alg::SHA384, 48, Some(alg::HMAC_SHA384)),
+            Hash::Sha512 => (alg::SHA512, 64, Some(alg::HMAC_SHA512)),
+            Hash::Sha1 => (alg::SHA1, 20, Some(alg::HMAC_SHA1)),
+            Hash::Md5 => (alg::MD5, 16, None),
+        }
     }
-    pub fn now_s(&self) -> u64 {
-        todo!()
+}
+
+/// The plaintext `aead_open` returns. It stands where the IF writes `zeroize::Zeroizing<Vec<u8>>`, which core
+/// bans (LR-094, BLD-9); `busbar_contract::secure` sits above this crate (IF §16.23) and a plugin links only this
+/// crate, so the value keeps that module's rule itself, as `host_side::scrub::Needle` does: allocated once at its
+/// exact length, never grown, wiped before it is freed. `Debug` prints the length only (W1-A2 ruling).
+pub struct Plaintext(Box<[u8]>);
+
+impl Plaintext {
+    fn copied(bytes: &[u8]) -> Plaintext {
+        Plaintext(Box::from(bytes))
     }
-    pub fn mono_ns(&self) -> u64 {
-        todo!()
+}
+
+impl Deref for Plaintext {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        &self.0
     }
+}
+
+impl Drop for Plaintext {
+    fn drop(&mut self) {
+        self.0.zeroize();
+    }
+}
+
+impl fmt::Debug for Plaintext {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Plaintext({} bytes)", self.0.len())
+    }
+}
+
+/// The safe host methods of IF §5.1, as an extension trait over busbar-ffi's `Host` (coordinator ruling on
+/// W1-U0: busbar-ffi owns the `Host` table and cannot name this crate's `CryptoErr`, `Digest`, `Fail` or `Key`,
+/// and an inherent method cannot be added to a foreign type). Call syntax is unchanged with the trait in scope:
+/// `use busbar_plugin_abi::host::HostExt;`. Every answer is read from `HostFns`' safe fn pointers under
+/// `Host::scoped`, so nothing lent by the host outlives the call. A null (None) entry reads as its panic
+/// fallback (round 20, I10): crypto and random Err(Rng), grow false, now/mono/log_level 0, deployment all
+/// zero, a dropped log line, `migrate_admit` REFUSED.
+///
+/// The crypto methods (digest through rsa_oaep) are one `crypto` call each: a key form or AES key length the IF
+/// rules out, a tag-less `sealed`, and `hmac(Md5)` are Err(Invalid) before any call; an answer whose length is not
+/// the one the alg defines is Err(Rng), never a short value; every `*_into` appends as I11 requires.
+pub trait HostExt {
+    fn now_ns(&self) -> u64;
+    fn now_s(&self) -> u64;
+    fn mono_ns(&self) -> u64;
     /// N outside 1..=65_536 is a compile error (`const { assert!(N >= 1 && N <= 65_536) }` in the body).
     /// A DRBG failure is Err(Rng): there is no path that returns a zero-filled array.
-    pub fn random<const N: usize>(&self) -> Result<[u8; N], CryptoErr> {
-        todo!()
-    }
+    fn random<const N: usize>(&self) -> Result<[u8; N], CryptoErr>;
     /// len 0 or > 65,536: Err(Invalid). DRBG failure: Err(Rng). Round 23, every fallible method here: the
     /// backend's self-test failed is Err(Rng) (§5.2; round 20's Err(Unavailable) became a REFUSED verdict
     /// through `?`); the backend refuses the alg is Err(Unavailable); the entry's arena is full is Err(Limit) (r4 H3).
-    pub fn random_vec(&self, len: usize) -> Result<Vec<u8>, CryptoErr> {
-        let _ = len;
-        todo!()
-    }
+    fn random_vec(&self, len: usize) -> Result<Vec<u8>, CryptoErr>;
     /// Fills `buf` (1..=65,536 bytes) in place, no allocation. On Err, `buf` is zeroed and must not be used.
-    pub fn random_into(&self, buf: &mut [u8]) -> Result<(), CryptoErr> {
-        let _ = buf;
-        todo!()
+    fn random_into(&self, buf: &mut [u8]) -> Result<(), CryptoErr>;
+    fn digest(&self, h: Hash, data: &[u8]) -> Result<Digest, CryptoErr>;
+    fn hmac(&self, h: Hash, key: &[u8], data: &[u8]) -> Result<Digest, CryptoErr>;
+    fn pbkdf2_sha256(
+        &self,
+        password: &[u8],
+        salt: &[u8],
+        iterations: u32,
+    ) -> Result<Digest, CryptoErr>;
+    /// Ok(true) valid, Ok(false) invalid signature.
+    fn verify(
+        &self,
+        sig: Sig,
+        key: Key<'_>,
+        msg: &[u8],
+        signature: &[u8],
+    ) -> Result<bool, CryptoErr>;
+    fn sign(&self, alg: SignAlg, pkcs8: &[u8], msg: &[u8]) -> Result<Vec<u8>, CryptoErr>;
+    /// Host-generated nonce (F1). Returns nonce(12) || ciphertext || tag(16). key.len() is 16 or 32, else Invalid.
+    fn aead_seal(&self, key: &[u8], aad: &[u8], plaintext: &[u8]) -> Result<Vec<u8>, CryptoErr>;
+    /// `sealed` = ciphertext || tag; the nonce is passed separately (split it off `aead_seal`'s output). The IF's
+    /// `zeroize::Zeroizing<Vec<u8>>` is a [`Plaintext`] (core bans `Zeroizing`, LR-094).
+    fn aead_open(
+        &self,
+        key: &[u8],
+        nonce: &[u8; 12],
+        aad: &[u8],
+        sealed: &[u8],
+    ) -> Result<Plaintext, CryptoErr>;
+    /// Appends ciphertext || tag to `out` (no allocation once `out` has capacity). Unavailable on a backend that
+    /// allows only module-generated IVs.
+    fn aead_seal_explicit_into(
+        &self,
+        key: &[u8],
+        nonce: &[u8; 12],
+        aad: &[u8],
+        plaintext: &[u8],
+        out: &mut Vec<u8>,
+    ) -> Result<(), CryptoErr>;
+    /// Like aead_open, appending to `out` (the per-packet path for SRTP).
+    fn aead_open_into(
+        &self,
+        key: &[u8],
+        nonce: &[u8; 12],
+        aad: &[u8],
+        sealed: &[u8],
+        out: &mut Vec<u8>,
+    ) -> Result<(), CryptoErr>;
+    /// Appends the AES-CTR transform of `data` to `out`. key.len() is 16 or 32, else Invalid.
+    fn aes_ctr_into(
+        &self,
+        key: &[u8],
+        iv: &[u8; 16],
+        data: &[u8],
+        out: &mut Vec<u8>,
+    ) -> Result<(), CryptoErr>;
+    /// `public` must be `Key::SpkiDer`, else Invalid.
+    fn rsa_oaep_sha1_encrypt(
+        &self,
+        public: Key<'_>,
+        plaintext: &[u8],
+    ) -> Result<Vec<u8>, CryptoErr>;
+    /// Round 34: passes `error` = 0, so no existing call site changes.
+    fn log(&self, level: u32, msg: &str);
+    /// Round 34 (PLUGIN-ERROR-CODES): the same entry with one declared error number (D_ERRORS; 0 = none).
+    fn log_error(&self, level: u32, error: u16, msg: &str);
+    fn log_enabled(&self, level: u32) -> bool;
+    /// Round 28: the raw `deployment` read. `None` while it is all zero (boot steps 2a/2b only, and `busbar
+    /// --check-config`, which opens no store), else the whole id (round 29: never a partial one). A `None` seen in
+    /// `check` during 2a/2b is always followed by a second `check` that sees `Some` before the instance serves
+    /// anything outside boot (§5 `deployment`, §11.2); a binding check skips only on `None` and decides on `Some`.
+    fn deployment_id(&self) -> Option<DeploymentId>;
+    /// Round 31: the raw `migrate_admit`. Ok(()) on OK. REFUSED → Err(`Fail::refused(R_CONFIG)`), which the store
+    /// returns unchanged from `open` before its first data, DDL or marker write; core substitutes its own text.
+    fn migrate_admit(&self, recoverable: u64) -> Result<(), Fail>;
+}
+
+impl HostExt for Host {
+    fn now_ns(&self) -> u64 {
+        match self.fns().now {
+            Some(now) => self.scoped(|ctx| now(ctx)),
+            None => 0,
+        }
     }
-    pub fn digest(&self, h: Hash, data: &[u8]) -> Result<Digest, CryptoErr> {
-        let _ = (h, data);
-        todo!()
+    fn now_s(&self) -> u64 {
+        self.now_ns() / 1_000_000_000
     }
-    pub fn hmac(&self, h: Hash, key: &[u8], data: &[u8]) -> Result<Digest, CryptoErr> {
-        let _ = (h, key, data);
-        todo!()
+    fn mono_ns(&self) -> u64 {
+        match self.fns().mono {
+            Some(mono) => self.scoped(|ctx| mono(ctx)),
+            None => 0,
+        }
     }
-    pub fn pbkdf2_sha256(
+    fn random<const N: usize>(&self) -> Result<[u8; N], CryptoErr> {
+        const { assert!(N != 0 && N <= RANDOM_MAX) };
+        let mut out = [0u8; N];
+        self.random_into(&mut out)?;
+        Ok(out)
+    }
+    fn random_vec(&self, len: usize) -> Result<Vec<u8>, CryptoErr> {
+        let mut out = vec![0u8; len.min(RANDOM_MAX + 1)];
+        self.random_into(&mut out)?;
+        Ok(out)
+    }
+    fn random_into(&self, buf: &mut [u8]) -> Result<(), CryptoErr> {
+        buf.fill(0);
+        if buf.is_empty() || buf.len() > RANDOM_MAX {
+            return Err(CryptoErr::Invalid);
+        }
+        let Some(random) = self.fns().random else {
+            return Err(CryptoErr::Rng);
+        };
+        let len = buf.len();
+        self.scoped(|ctx| {
+            let ret = random(ctx, len);
+            if ret.status != crypto_status::OK {
+                return Err(crypto_err(ret.status));
+            }
+            // The host lends exactly `len` bytes on OK; any other length is a host bug, never random bytes.
+            let lent = ret.out.get();
+            if lent.len() != len {
+                return Err(CryptoErr::Rng);
+            }
+            buf.copy_from_slice(lent);
+            Ok(())
+        })
+    }
+    fn digest(&self, h: Hash, data: &[u8]) -> Result<Digest, CryptoErr> {
+        let (alg, len, _) = h.algs();
+        call(self, &req(alg, key_form::RAW, &[], data), |out| {
+            Digest::copied(out, len)
+        })
+    }
+    fn hmac(&self, h: Hash, key: &[u8], data: &[u8]) -> Result<Digest, CryptoErr> {
+        let (_, len, Some(alg)) = h.algs() else {
+            return Err(CryptoErr::Invalid);
+        };
+        call(self, &req(alg, key_form::RAW, key, data), |out| {
+            Digest::copied(out, len)
+        })
+    }
+    fn pbkdf2_sha256(
         &self,
         password: &[u8],
         salt: &[u8],
         iterations: u32,
     ) -> Result<Digest, CryptoErr> {
-        let _ = (password, salt, iterations);
-        todo!()
+        let r = CryptoReq {
+            param: u64::from(iterations),
+            ..req(alg::PBKDF2_HMAC_SHA256, key_form::RAW, password, salt)
+        };
+        call(self, &r, |out| Digest::copied(out, 32))
     }
-    /// Ok(true) valid, Ok(false) invalid signature.
-    pub fn verify(
+    fn verify(
         &self,
         sig: Sig,
         key: Key<'_>,
         msg: &[u8],
         signature: &[u8],
     ) -> Result<bool, CryptoErr> {
-        let _ = (sig, key, msg, signature);
-        todo!()
+        let alg = match sig {
+            Sig::Rs256 => alg::VERIFY_RS256,
+            Sig::Rs384 => alg::VERIFY_RS384,
+            Sig::Rs512 => alg::VERIFY_RS512,
+            Sig::Ps256 => alg::VERIFY_PS256,
+            Sig::Ps384 => alg::VERIFY_PS384,
+            Sig::Ps512 => alg::VERIFY_PS512,
+            Sig::Es256 => alg::VERIFY_ES256,
+            Sig::Es384 => alg::VERIFY_ES384,
+            Sig::Ed25519 => alg::VERIFY_ED25519,
+        };
+        // RSA_COMPONENTS: u32 LE n_len, n, e (§5 `key_form`); public bytes, no wipe.
+        let components;
+        let (form, key): (u32, &[u8]) = match key {
+            Key::Raw(k) => (key_form::RAW, k),
+            Key::SpkiDer(k) => (key_form::SPKI_DER, k),
+            Key::RsaPkcs1Der(k) => (key_form::RSA_PKCS1_DER, k),
+            Key::EcPoint(k) => (key_form::EC_POINT, k),
+            Key::Rsa { n, e } => {
+                let n_len = u32::try_from(n.len()).map_err(|_| CryptoErr::Invalid)?;
+                components = [&n_len.to_le_bytes()[..], n, e].concat();
+                (key_form::RSA_COMPONENTS, components.as_slice())
+            }
+        };
+        let r = CryptoReq {
+            aux: Bytes::new(signature),
+            ..req(alg, form, key, msg)
+        };
+        match call(self, &r, |_| Ok(())) {
+            Ok(()) => Ok(true),
+            Err(CryptoErr::Bad) => Ok(false),
+            Err(e) => Err(e),
+        }
     }
-    pub fn sign(&self, alg: SignAlg, pkcs8: &[u8], msg: &[u8]) -> Result<Vec<u8>, CryptoErr> {
-        let _ = (alg, pkcs8, msg);
-        todo!()
+    fn sign(&self, alg: SignAlg, pkcs8: &[u8], msg: &[u8]) -> Result<Vec<u8>, CryptoErr> {
+        let code = match alg {
+            SignAlg::Rs256 => alg::SIGN_RS256,
+            SignAlg::Es256 => alg::SIGN_ES256,
+            SignAlg::Ed25519 => alg::SIGN_ED25519,
+        };
+        call(self, &req(code, key_form::PKCS8, pkcs8, msg), |out| {
+            Ok(out.to_vec())
+        })
     }
-    /// Host-generated nonce (F1). Returns nonce(12) || ciphertext || tag(16). key.len() is 16 or 32, else Invalid.
-    pub fn aead_seal(
+    fn aead_seal(&self, key: &[u8], aad: &[u8], plaintext: &[u8]) -> Result<Vec<u8>, CryptoErr> {
+        aes_key(key)?;
+        let len = plaintext
+            .len()
+            .checked_add(NONCE + TAG)
+            .ok_or(CryptoErr::Invalid)?;
+        let r = CryptoReq {
+            aad: Bytes::new(aad),
+            ..req(alg::AEAD_SEAL, key_form::RAW, key, plaintext)
+        };
+        call(self, &r, |out| sized(out, len).map(<[u8]>::to_vec))
+    }
+    fn aead_open(
         &self,
         key: &[u8],
+        nonce: &[u8; 12],
         aad: &[u8],
-        plaintext: &[u8],
-    ) -> Result<Vec<u8>, CryptoErr> {
-        let _ = (key, aad, plaintext);
-        todo!()
+        sealed: &[u8],
+    ) -> Result<Plaintext, CryptoErr> {
+        aes_key(key)?;
+        let len = sealed.len().checked_sub(TAG).ok_or(CryptoErr::Invalid)?;
+        let r = CryptoReq {
+            aux: Bytes::new(nonce),
+            aad: Bytes::new(aad),
+            ..req(alg::AEAD_OPEN, key_form::RAW, key, sealed)
+        };
+        call(self, &r, |out| sized(out, len).map(Plaintext::copied))
     }
-    // W0-ABI: `aead_open` is omitted at wave 0: its frozen return type is
-    // `Result<zeroize::Zeroizing<Vec<u8>>, CryptoErr>` and the stubs may not use zeroize. W1-A2 adds it:
-    //   /// `sealed` = ciphertext || tag; the nonce is passed separately (split it off `aead_seal`'s output).
-    //   pub fn aead_open(&self, key: &[u8], nonce: &[u8; 12], aad: &[u8], sealed: &[u8]) -> Result<zeroize::Zeroizing<Vec<u8>>, CryptoErr>;
-    /// Appends ciphertext || tag to `out` (no allocation once `out` has capacity). Unavailable on a backend that
-    /// allows only module-generated IVs.
-    pub fn aead_seal_explicit_into(
+    fn aead_seal_explicit_into(
         &self,
         key: &[u8],
         nonce: &[u8; 12],
@@ -332,11 +570,16 @@ impl Host {
         plaintext: &[u8],
         out: &mut Vec<u8>,
     ) -> Result<(), CryptoErr> {
-        let _ = (key, nonce, aad, plaintext, out);
-        todo!()
+        aes_key(key)?;
+        let len = plaintext.len().checked_add(TAG).ok_or(CryptoErr::Invalid)?;
+        let r = CryptoReq {
+            aux: Bytes::new(nonce),
+            aad: Bytes::new(aad),
+            ..req(alg::AEAD_SEAL_EXPLICIT, key_form::RAW, key, plaintext)
+        };
+        call(self, &r, |lent| append(out, sized(lent, len)?))
     }
-    /// Like aead_open, appending to `out` (the per-packet path for SRTP).
-    pub fn aead_open_into(
+    fn aead_open_into(
         &self,
         key: &[u8],
         nonce: &[u8; 12],
@@ -344,62 +587,536 @@ impl Host {
         sealed: &[u8],
         out: &mut Vec<u8>,
     ) -> Result<(), CryptoErr> {
-        let _ = (key, nonce, aad, sealed, out);
-        todo!()
+        aes_key(key)?;
+        let len = sealed.len().checked_sub(TAG).ok_or(CryptoErr::Invalid)?;
+        let r = CryptoReq {
+            aux: Bytes::new(nonce),
+            aad: Bytes::new(aad),
+            ..req(alg::AEAD_OPEN, key_form::RAW, key, sealed)
+        };
+        call(self, &r, |lent| append(out, sized(lent, len)?))
     }
-    /// Appends the AES-CTR transform of `data` to `out`. key.len() is 16 or 32, else Invalid.
-    pub fn aes_ctr_into(
+    fn aes_ctr_into(
         &self,
         key: &[u8],
         iv: &[u8; 16],
         data: &[u8],
         out: &mut Vec<u8>,
     ) -> Result<(), CryptoErr> {
-        let _ = (key, iv, data, out);
-        todo!()
+        aes_key(key)?;
+        let r = CryptoReq {
+            aux: Bytes::new(iv),
+            ..req(alg::AES_CTR, key_form::RAW, key, data)
+        };
+        call(self, &r, |lent| append(out, sized(lent, data.len())?))
     }
-    /// `public` must be `Key::SpkiDer`, else Invalid.
-    pub fn rsa_oaep_sha1_encrypt(
+    fn rsa_oaep_sha1_encrypt(
         &self,
         public: Key<'_>,
         plaintext: &[u8],
     ) -> Result<Vec<u8>, CryptoErr> {
-        let _ = (public, plaintext);
-        todo!()
+        let Key::SpkiDer(spki) = public else {
+            return Err(CryptoErr::Invalid);
+        };
+        let r = req(
+            alg::RSA_OAEP_SHA1_ENCRYPT,
+            key_form::SPKI_DER,
+            spki,
+            plaintext,
+        );
+        call(self, &r, |out| Ok(out.to_vec()))
     }
-    /// Round 34: passes `error` = 0, so no existing call site changes.
-    pub fn log(&self, level: u32, msg: &str) {
-        let _ = (level, msg);
-        todo!()
+    fn log(&self, level: u32, msg: &str) {
+        self.log_error(level, 0, msg);
     }
-    /// Round 34 (PLUGIN-ERROR-CODES): the same entry with one declared error number (D_ERRORS; 0 = none).
-    pub fn log_error(&self, level: u32, error: u16, msg: &str) {
-        let _ = (level, error, msg);
-        todo!()
+    fn log_error(&self, level: u32, error: u16, msg: &str) {
+        let Some(log) = self.fns().log else {
+            return;
+        };
+        self.scoped(|ctx| log(ctx, level, u32::from(error), Str::new(msg)));
     }
-    pub fn log_enabled(&self, level: u32) -> bool {
-        let _ = level;
-        todo!()
+    fn log_enabled(&self, level: u32) -> bool {
+        let Some(log_level) = self.fns().log_level else {
+            return false;
+        };
+        level != 0 && level <= self.scoped(|ctx| log_level(ctx))
     }
-    /// Round 28: the raw `deployment` read. `None` while it is all zero (boot steps 2a/2b only, and `busbar
-    /// --check-config`, which opens no store), else the whole id (round 29: never a partial one). A `None` seen in
-    /// `check` during 2a/2b is always followed by a second `check` that sees `Some` before the instance serves
-    /// anything outside boot (§5 `deployment`, §11.2); a binding check skips only on `None` and decides on `Some`.
-    pub fn deployment_id(&self) -> Option<DeploymentId> {
-        todo!()
+    fn deployment_id(&self) -> Option<DeploymentId> {
+        let deployment = self.fns().deployment?;
+        let id = self.scoped(|ctx| deployment(ctx));
+        (id.0 != [0; 16]).then_some(id)
     }
-    /// Round 31: the raw `migrate_admit`. Ok(()) on OK. REFUSED → Err(`Fail::refused(R_CONFIG)`), which the store
-    /// returns unchanged from `open` before its first data, DDL or marker write; core substitutes its own text.
-    pub fn migrate_admit(&self, recoverable: u64) -> Result<(), Fail> {
-        let _ = recoverable;
-        todo!()
+    fn migrate_admit(&self, recoverable: u64) -> Result<(), Fail> {
+        let admitted = match self.fns().migrate_admit {
+            Some(admit) => self.scoped(|ctx| admit(ctx, recoverable)) == Status::OK,
+            None => false,
+        };
+        if admitted {
+            Ok(())
+        } else {
+            Err(Fail::refused(refused::R_CONFIG))
+        }
     }
 }
 /// Constant-time compare, pure code (not a crypto primitive), for token and signature checks.
+/// Unequal lengths answer false at once (a length is not the secret); equal lengths always read every byte, and the
+/// folded difference passes `black_box` so the comparison is not cut short.
 pub fn ct_eq(a: &[u8], b: &[u8]) -> bool {
-    let _ = (a, b);
-    todo!()
+    if a.len() != b.len() {
+        return false;
+    }
+    let diff = a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y));
+    core::hint::black_box(diff) == 0
 }
 
 #[cfg(feature = "host")]
 pub use crate::host_side::*;
+
+/// The safe crypto API over a test vtable (W1-A2): each test sets this thread's canned answer, calls one method and
+/// checks the request it marshalled and the value it returned. The entry lends its output from a busbar-ffi
+/// `Arena`, as `host_vt` does, and [`tests::seen`] overwrites the arena before the value is read, so a value that
+/// still reads right was copied out before return (r4 H3).
+#[cfg(test)]
+mod tests {
+    use core::cell::RefCell;
+
+    use busbar_ffi::host::Arena;
+
+    use super::*;
+
+    #[derive(Clone, Debug, Default, PartialEq, Eq)]
+    struct Seen {
+        alg: u32,
+        key_form: u32,
+        param: u64,
+        key: Vec<u8>,
+        data: Vec<u8>,
+        aux: Vec<u8>,
+        aad: Vec<u8>,
+    }
+
+    std::thread_local! {
+        static ARENA: RefCell<Arena> = RefCell::new(Arena::new(1 << 16));
+        static REPLY: RefCell<(u32, Vec<u8>)> = const { RefCell::new((0, Vec::new())) };
+        static SEEN: RefCell<Vec<Seen>> = const { RefCell::new(Vec::new()) };
+    }
+
+    extern "C" fn answer<'e>(ctx: Ctx<'e>, req: &CryptoReq<'_>) -> CryptoRet<'e> {
+        SEEN.with(|seen| {
+            seen.borrow_mut().push(Seen {
+                alg: req.alg,
+                key_form: req.key_form,
+                param: req.param,
+                key: req.key.get().to_vec(),
+                data: req.data.get().to_vec(),
+                aux: req.aux.get().to_vec(),
+                aad: req.aad.get().to_vec(),
+            });
+        });
+        let (status, out) = REPLY.with(|reply| reply.borrow().clone());
+        if status != crypto_status::OK {
+            return CryptoRet::empty(ctx, status);
+        }
+        match ARENA.with(|arena| arena.borrow_mut().lend(ctx, &out)) {
+            Some(out) => CryptoRet { status, _r: 0, out },
+            None => CryptoRet::empty(ctx, crypto_status::LIMIT),
+        }
+    }
+
+    const NONE: HostFns = HostFns {
+        now: None,
+        mono: None,
+        random: None,
+        crypto: None,
+        log: None,
+        log_level: None,
+        grow: None,
+        deployment: None,
+        migrate_admit: None,
+    };
+    static HOST: Host = Host::new(
+        0,
+        HostFns {
+            crypto: Some(answer),
+            ..NONE
+        },
+    );
+    static NO_CRYPTO: Host = Host::new(0, NONE);
+
+    /// The entry's next answer.
+    fn reply(status: u32, out: &[u8]) {
+        REPLY.with(|reply| *reply.borrow_mut() = (status, out.to_vec()));
+    }
+
+    /// The requests made since the last look; the arena is overwritten first (the outermost entry's exit).
+    fn seen() -> Vec<Seen> {
+        ARENA.with(|arena| arena.borrow_mut().drain().fill(0xEE));
+        SEEN.with(|seen| core::mem::take(&mut *seen.borrow_mut()))
+    }
+
+    fn one() -> Seen {
+        let mut seen = seen();
+        assert_eq!(seen.len(), 1, "exactly one host call");
+        seen.remove(0)
+    }
+
+    #[test]
+    fn digest_and_hmac_copy_the_lent_output_out() {
+        for (h, digest_alg, hmac_alg, len) in [
+            (Hash::Sha256, alg::SHA256, alg::HMAC_SHA256, 32u8),
+            (Hash::Sha384, alg::SHA384, alg::HMAC_SHA384, 48),
+            (Hash::Sha512, alg::SHA512, alg::HMAC_SHA512, 64),
+            (Hash::Sha1, alg::SHA1, alg::HMAC_SHA1, 20),
+            (Hash::Md5, alg::MD5, 0, 16),
+        ] {
+            let lent: Vec<u8> = (1..=len).collect();
+            reply(crypto_status::OK, &lent);
+            let digest = HOST.digest(h, b"message");
+            let req = one();
+            assert_eq!(
+                digest.map(|d| d.as_slice().to_vec()),
+                Ok(lent.clone()),
+                "{h:?}: intact after the arena is overwritten"
+            );
+            assert_eq!(
+                (req.alg, req.key, req.data),
+                (digest_alg, vec![], b"message".to_vec())
+            );
+            if h == Hash::Md5 {
+                assert_eq!(HOST.hmac(h, b"key", b"m").err(), Some(CryptoErr::Invalid));
+                assert!(seen().is_empty(), "hmac(Md5) never reaches the host");
+                continue;
+            }
+            reply(crypto_status::OK, &lent);
+            let mac = HOST.hmac(h, b"key", b"message");
+            let req = one();
+            assert_eq!(mac.map(|d| d.as_slice().to_vec()), Ok(lent));
+            assert_eq!(
+                (req.alg, req.key_form, req.key, req.data),
+                (
+                    hmac_alg,
+                    key_form::RAW,
+                    b"key".to_vec(),
+                    b"message".to_vec()
+                )
+            );
+        }
+    }
+
+    #[test]
+    fn an_answer_of_the_wrong_length_is_rng_never_a_short_value() {
+        reply(crypto_status::OK, &[7; 31]);
+        assert_eq!(HOST.digest(Hash::Sha256, b"m").err(), Some(CryptoErr::Rng));
+        reply(crypto_status::OK, &[7; 33]);
+        assert_eq!(
+            HOST.pbkdf2_sha256(b"pw", b"salt", 1).err(),
+            Some(CryptoErr::Rng)
+        );
+        reply(crypto_status::OK, &[7; 4]);
+        assert_eq!(HOST.aead_seal(&[1; 16], b"", b"plain"), Err(CryptoErr::Rng));
+        reply(crypto_status::OK, &[7; 4]);
+        assert_eq!(
+            HOST.aead_open(&[1; 16], &[0; 12], b"", &[2; 21]).err(),
+            Some(CryptoErr::Rng)
+        );
+        let mut out = vec![1, 2];
+        reply(crypto_status::OK, &[7; 4]);
+        assert_eq!(
+            HOST.aes_ctr_into(&[1; 16], &[0; 16], b"abc", &mut out),
+            Err(CryptoErr::Rng)
+        );
+        assert_eq!(out, [1, 2], "nothing is appended on Err");
+        assert_eq!(seen().len(), 5);
+    }
+
+    #[test]
+    fn every_status_is_one_error_and_verify_reads_bad_as_false() {
+        for (status, want) in [
+            (crypto_status::BAD, CryptoErr::Bad),
+            (crypto_status::INVALID, CryptoErr::Invalid),
+            (crypto_status::UNAVAILABLE, CryptoErr::Unavailable),
+            (crypto_status::LIMIT, CryptoErr::Limit),
+            (crypto_status::RNG, CryptoErr::Rng),
+            (99, CryptoErr::Rng),
+        ] {
+            reply(status, &[]);
+            assert_eq!(
+                HOST.digest(Hash::Sha256, b"m").err(),
+                Some(want),
+                "{status}"
+            );
+            reply(status, &[]);
+            let verdict = HOST.verify(Sig::Ed25519, Key::Raw(&[1; 32]), b"m", &[2; 64]);
+            let want = if want == CryptoErr::Bad {
+                Ok(false)
+            } else {
+                Err(want)
+            };
+            assert_eq!(verdict, want, "{status}");
+        }
+        reply(crypto_status::OK, &[]);
+        assert_eq!(
+            HOST.verify(Sig::Ed25519, Key::Raw(&[1; 32]), b"m", &[2; 64]),
+            Ok(true)
+        );
+        assert_eq!(seen().len(), 13);
+    }
+
+    #[test]
+    fn verify_marshals_the_alg_the_key_form_and_the_signature() {
+        for (sig, want) in [
+            (Sig::Rs256, alg::VERIFY_RS256),
+            (Sig::Rs384, alg::VERIFY_RS384),
+            (Sig::Rs512, alg::VERIFY_RS512),
+            (Sig::Ps256, alg::VERIFY_PS256),
+            (Sig::Ps384, alg::VERIFY_PS384),
+            (Sig::Ps512, alg::VERIFY_PS512),
+            (Sig::Es256, alg::VERIFY_ES256),
+            (Sig::Es384, alg::VERIFY_ES384),
+            (Sig::Ed25519, alg::VERIFY_ED25519),
+        ] {
+            reply(crypto_status::OK, &[]);
+            assert_eq!(
+                HOST.verify(sig, Key::SpkiDer(b"spki"), b"msg", b"sig"),
+                Ok(true)
+            );
+            let req = one();
+            assert_eq!(
+                (req.alg, req.key_form, req.key, req.data, req.aux),
+                (
+                    want,
+                    key_form::SPKI_DER,
+                    b"spki".to_vec(),
+                    b"msg".to_vec(),
+                    b"sig".to_vec()
+                )
+            );
+        }
+        for (key, form, bytes) in [
+            (Key::Raw(b"raw"), key_form::RAW, b"raw".to_vec()),
+            (
+                Key::RsaPkcs1Der(b"der"),
+                key_form::RSA_PKCS1_DER,
+                b"der".to_vec(),
+            ),
+            (
+                Key::EcPoint(b"\x04xy"),
+                key_form::EC_POINT,
+                b"\x04xy".to_vec(),
+            ),
+            (
+                Key::Rsa {
+                    n: b"nn",
+                    e: b"\x01\x00\x01",
+                },
+                key_form::RSA_COMPONENTS,
+                vec![2, 0, 0, 0, b'n', b'n', 1, 0, 1],
+            ),
+        ] {
+            reply(crypto_status::OK, &[]);
+            assert_eq!(HOST.verify(Sig::Rs256, key, b"m", b"s"), Ok(true));
+            let req = one();
+            assert_eq!((req.key_form, req.key), (form, bytes));
+        }
+    }
+
+    #[test]
+    fn sign_pbkdf2_and_rsa_oaep_marshal_their_arguments() {
+        for (sign, want) in [
+            (SignAlg::Rs256, alg::SIGN_RS256),
+            (SignAlg::Es256, alg::SIGN_ES256),
+            (SignAlg::Ed25519, alg::SIGN_ED25519),
+        ] {
+            reply(crypto_status::OK, b"signature");
+            let signed = HOST.sign(sign, b"pkcs8", b"msg");
+            let req = one();
+            assert_eq!(signed, Ok(b"signature".to_vec()));
+            assert_eq!(
+                (req.alg, req.key_form, req.key, req.data),
+                (want, key_form::PKCS8, b"pkcs8".to_vec(), b"msg".to_vec())
+            );
+        }
+        reply(crypto_status::OK, &[3; 32]);
+        let derived = HOST.pbkdf2_sha256(b"pw", b"salt", 4096);
+        let req = one();
+        assert_eq!(derived.map(|d| d.as_slice().to_vec()), Ok(vec![3; 32]));
+        assert_eq!(
+            (req.alg, req.key_form, req.param, req.key, req.data),
+            (
+                alg::PBKDF2_HMAC_SHA256,
+                key_form::RAW,
+                4096,
+                b"pw".to_vec(),
+                b"salt".to_vec()
+            )
+        );
+        reply(crypto_status::OK, b"ciphertext");
+        let sealed = HOST.rsa_oaep_sha1_encrypt(Key::SpkiDer(b"spki"), b"secret");
+        let req = one();
+        assert_eq!(sealed, Ok(b"ciphertext".to_vec()));
+        assert_eq!(
+            (req.alg, req.key_form, req.key, req.data),
+            (
+                alg::RSA_OAEP_SHA1_ENCRYPT,
+                key_form::SPKI_DER,
+                b"spki".to_vec(),
+                b"secret".to_vec()
+            )
+        );
+        let raw = HOST.rsa_oaep_sha1_encrypt(Key::Raw(b"raw"), b"secret");
+        assert_eq!(raw, Err(CryptoErr::Invalid));
+        assert!(
+            seen().is_empty(),
+            "a key that is not SPKI never reaches the host"
+        );
+    }
+
+    #[test]
+    fn aead_seal_and_open_keep_the_nonce_framing() {
+        let sealed: Vec<u8> = (0..33).collect();
+        reply(crypto_status::OK, &sealed);
+        let out = HOST.aead_seal(&[1; 16], b"aad", b"plain");
+        let req = one();
+        assert_eq!(out, Ok(sealed));
+        assert_eq!(
+            (req.alg, req.key_form, req.key, req.data, req.aux, req.aad),
+            (
+                alg::AEAD_SEAL,
+                key_form::RAW,
+                vec![1; 16],
+                b"plain".to_vec(),
+                vec![],
+                b"aad".to_vec()
+            )
+        );
+        reply(crypto_status::OK, b"plain");
+        let opened = HOST.aead_open(&[2; 32], &[9; 12], b"aad", &[5; 21]);
+        let req = one();
+        assert_eq!(
+            opened.as_ref().map(|p| format!("{p:?}")).ok().as_deref(),
+            Some("Plaintext(5 bytes)")
+        );
+        assert_eq!(opened.map(|p| p.to_vec()), Ok(b"plain".to_vec()));
+        assert_eq!(
+            (req.alg, req.key, req.data, req.aux, req.aad),
+            (
+                alg::AEAD_OPEN,
+                vec![2; 32],
+                vec![5; 21],
+                vec![9; 12],
+                b"aad".to_vec()
+            )
+        );
+        for key in [&[0u8; 24][..], &[][..]] {
+            assert_eq!(HOST.aead_seal(key, b"", b"p"), Err(CryptoErr::Invalid));
+            assert_eq!(
+                HOST.aead_open(key, &[0; 12], b"", &[0; 16]).err(),
+                Some(CryptoErr::Invalid)
+            );
+        }
+        let short = HOST.aead_open(&[0; 16], &[0; 12], b"", &[0; 15]);
+        assert_eq!(
+            short.err(),
+            Some(CryptoErr::Invalid),
+            "shorter than the tag"
+        );
+        assert!(
+            seen().is_empty(),
+            "a refused key or length never reaches the host"
+        );
+    }
+
+    #[test]
+    fn the_into_methods_append_in_place_and_move_only_when_they_outgrow() {
+        let mut roomy = Vec::with_capacity(64);
+        roomy.extend_from_slice(b"head");
+        let at = roomy.as_ptr();
+        reply(crypto_status::OK, &[7; 21]);
+        let sealed = HOST.aead_seal_explicit_into(&[1; 16], &[3; 12], b"aad", b"plain", &mut roomy);
+        let req = one();
+        assert_eq!(sealed, Ok(()));
+        assert_eq!(
+            (req.alg, req.aux, req.data, req.aad),
+            (
+                alg::AEAD_SEAL_EXPLICIT,
+                vec![3; 12],
+                b"plain".to_vec(),
+                b"aad".to_vec()
+            )
+        );
+        assert_eq!(roomy.as_ptr(), at, "room enough: the same block");
+        assert_eq!((&roomy[..4], &roomy[4..]), (&b"head"[..], &[7; 21][..]));
+        let mut tight = b"ab".to_vec();
+        tight.shrink_to_fit();
+        reply(crypto_status::OK, b"plain");
+        let opened = HOST.aead_open_into(&[1; 32], &[4; 12], b"", &[5; 21], &mut tight);
+        let req = one();
+        assert_eq!(opened, Ok(()));
+        assert_eq!(
+            (req.alg, req.aux, req.data),
+            (alg::AEAD_OPEN, vec![4; 12], vec![5; 21])
+        );
+        assert_eq!(tight, b"abplain");
+        let mut ctr = Vec::new();
+        reply(crypto_status::OK, b"xyz");
+        assert_eq!(
+            HOST.aes_ctr_into(&[1; 16], &[6; 16], b"abc", &mut ctr),
+            Ok(())
+        );
+        let req = one();
+        assert_eq!(
+            (req.alg, req.key_form, req.aux, req.data),
+            (alg::AES_CTR, key_form::RAW, vec![6; 16], b"abc".to_vec())
+        );
+        assert_eq!(ctr, b"xyz");
+        let mut kept = b"kept".to_vec();
+        let key = [0u8; 24];
+        let seal = HOST.aead_seal_explicit_into(&key, &[0; 12], b"", b"p", &mut kept);
+        let open = HOST.aead_open_into(&key, &[0; 12], b"", &[0; 17], &mut kept);
+        let ctr = HOST.aes_ctr_into(&key, &[0; 16], b"p", &mut kept);
+        assert_eq!([seal, open, ctr], [Err(CryptoErr::Invalid); 3]);
+        assert_eq!(kept, b"kept");
+        assert!(seen().is_empty());
+    }
+
+    #[test]
+    fn a_null_crypto_entry_is_rng_on_every_method() {
+        let h = &NO_CRYPTO;
+        let mut out = Vec::new();
+        assert_eq!(h.digest(Hash::Sha256, b"m").err(), Some(CryptoErr::Rng));
+        assert_eq!(h.hmac(Hash::Sha256, b"k", b"m").err(), Some(CryptoErr::Rng));
+        assert_eq!(h.pbkdf2_sha256(b"p", b"s", 1).err(), Some(CryptoErr::Rng));
+        assert_eq!(
+            h.verify(Sig::Es256, Key::EcPoint(b"p"), b"m", b"s"),
+            Err(CryptoErr::Rng)
+        );
+        assert_eq!(h.sign(SignAlg::Es256, b"k", b"m"), Err(CryptoErr::Rng));
+        assert_eq!(h.aead_seal(&[0; 16], b"", b"p"), Err(CryptoErr::Rng));
+        assert_eq!(
+            h.aead_open(&[0; 16], &[0; 12], b"", &[0; 17]).err(),
+            Some(CryptoErr::Rng)
+        );
+        let seal = h.aead_seal_explicit_into(&[0; 16], &[0; 12], b"", b"p", &mut out);
+        let open = h.aead_open_into(&[0; 16], &[0; 12], b"", &[0; 17], &mut out);
+        let ctr = h.aes_ctr_into(&[0; 16], &[0; 16], b"p", &mut out);
+        assert_eq!([seal, open, ctr], [Err(CryptoErr::Rng); 3]);
+        let oaep = h.rsa_oaep_sha1_encrypt(Key::SpkiDer(b"k"), b"p");
+        assert_eq!(oaep, Err(CryptoErr::Rng));
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn ct_eq_is_true_only_for_equal_whole_slices() {
+        assert!(ct_eq(b"", b""));
+        assert!(ct_eq(b"token", b"token"));
+        assert!(!ct_eq(b"token", b"tokeN"));
+        assert!(!ct_eq(b"Token", b"token"));
+        assert!(!ct_eq(b"token", b"toke"));
+        reply(crypto_status::OK, &[8; 32]);
+        let digest = HOST.digest(Hash::Sha256, b"m");
+        seen();
+        assert_eq!(digest.as_ref().map(|d| d.ct_eq(&[8; 32])), Ok(true));
+        assert_eq!(digest.as_ref().map(|d| d.ct_eq(&[8; 31])), Ok(false));
+        assert_eq!(digest.map(|d| d.ct_eq(&[9; 32])), Ok(false));
+    }
+}

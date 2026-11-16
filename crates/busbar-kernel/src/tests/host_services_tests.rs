@@ -106,7 +106,7 @@ const KIND: RecordSchemaId = RecordSchemaId::new("approval");
 const SECTION_KEY: &str = "tools";
 
 pub(crate) fn caller(instance: &str) -> Caller {
-    Caller::for_test(instance.into(), KindCode::Plane)
+    Caller::for_test(Arc::from(instance), KindCode::Plane)
 }
 
 struct Rig {
@@ -136,8 +136,8 @@ fn rig() -> Rig {
             record_collections: Vec::new(),
             conditional_record_kinds: Vec::new(),
             signing: Some(Signing {
-                domain: "dom".to_owned(),
-                kid_prefix: "p-".to_owned(),
+                domain: "dom".into(),
+                kid_prefix: "p-".into(),
             }),
             trust: vec![(
                 "cp".into(),
@@ -453,7 +453,7 @@ fn sign_is_refused_without_a_declared_domain_or_a_key() {
             "inst",
             InstanceFacts {
                 signing: Some(Signing {
-                    domain: "d".to_owned(),
+                    domain: "d".into(),
                     kid_prefix: String::new(),
                 }),
                 ..InstanceFacts::default()
@@ -760,8 +760,8 @@ fn two_instances_of_one_plugin_have_distinct_registries() {
             record_kinds: vec![RecordSchemaId::new("other")],
             conditional_record_kinds: Vec::new(),
             signing: Some(Signing {
-                domain: "dom2".to_owned(),
-                kid_prefix: "q-".to_owned(),
+                domain: "dom2".into(),
+                kid_prefix: "q-".into(),
             }),
             trust: Vec::new(),
             scope_kinds: Vec::new(),
@@ -1144,8 +1144,8 @@ fn an_instance_declaring_a_signing_domain_another_holds_is_refused() {
     let r = rig();
     let taker = InstanceFacts {
         signing: Some(Signing {
-            domain: "dom".to_owned(),
-            kid_prefix: "x-".to_owned(),
+            domain: "dom".into(),
+            kid_prefix: "x-".into(),
         }),
         ..InstanceFacts::default()
     };
@@ -1153,7 +1153,7 @@ fn an_instance_declaring_a_signing_domain_another_holds_is_refused() {
     assert_eq!(
         refused,
         AdmitRefused::DomainHeld {
-            domain: "dom".to_owned(),
+            domain: "dom".into(),
             held_by: "inst".into(),
             asked_by: "taker".into(),
         }
@@ -1844,7 +1844,7 @@ impl DestJudge for FakeGuard {
 
     fn judge_name(&self, dest: &str, _class: u32, _refuse_private: bool) -> Result<(), u64> {
         self.names.lock().unwrap().push(dest.to_owned());
-        if dest.contains("10.0.0.5") {
+        if dest.contains("\x310.0.0.5") {
             Err(svc::DEST_INTERNAL)
         } else {
             Ok(())
@@ -1865,7 +1865,7 @@ impl DestJudge for FakeGuard {
                 })
                 .map_err(|verdict| Refused {
                     verdict,
-                    detail: Some("10.0.0.5".into()),
+                    detail: Some("\x310.0.0.5".into()),
                 }),
         )
     }
@@ -1880,13 +1880,13 @@ fn dest_judge_answers_the_installed_guard_refusal() {
     let s = KernelServices::new().with_dest_judge(guard.clone());
     for class in [0, 4] {
         let (_, later) = recorder();
-        let got = verdict_now(s.dest_judge("http://10.0.0.5:80/x", class, 0, Some(later)));
+        let got = verdict_now(s.dest_judge("http://\x310.0.0.5:80/x", class, 0, Some(later)));
         assert_eq!(got.value, svc::DEST_INTERNAL, "class {class}");
     }
     assert_eq!(
         s.judge_destination(
             Destination {
-                authority: "10.0.0.5:443",
+                authority: "\x310.0.0.5:443",
                 secure: true,
                 egress_class: 4,
             },
@@ -1897,7 +1897,7 @@ fn dest_judge_answers_the_installed_guard_refusal() {
     assert_eq!(
         *guard.targets.lock().unwrap(),
         vec![TargetJudgement {
-            authority: "10.0.0.5:443".into(),
+            authority: "\x310.0.0.5:443".into(),
             secure: true,
             class: 4,
             refuse_private: false,

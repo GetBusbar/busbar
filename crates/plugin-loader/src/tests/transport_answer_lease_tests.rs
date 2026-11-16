@@ -104,7 +104,7 @@ extern "C" fn door() -> &'static Door {
 
 fn bind() -> Bind {
     Bind {
-        instance: crate::cold::dispatch::load::instance_name("the-lease-instance"),
+        instance: Arc::from("the-lease-instance"),
         max_inflight_cap: 64,
         sink: Arc::new(NoSink),
         dispatcher: Adopter::unwatched(),

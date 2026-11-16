@@ -77,6 +77,14 @@ fleet:
 excluded_repos:
   - hindsight-hook # design docs only — no crate, no workflows, private
   - busbar-hook-headroom # removed from busbar and the site (owner ruling 2026-09-30) — the repo is kept, not a busbar plugin
+  # (busbar-hook-headroom is also DISCONTINUED and archived, AGREED "HEADROOM DISCONTINUED": no manifest entry, no render, no re-pin.)
+
+# Archived with NO MIN-3 release (IF §8.7; WBS: 33 ports + 2 archives). Their rows below stay until W2 so
+# today's root tests keep reading them; the fleet tool renders, re-pins and releases none of them, and
+# `tools/ci-checks` (`fleet-manifest`) holds this list to exactly these two repos.
+archived_repos:
+  - busbar-transport-tcp
+  - busbar-transport-stdio
 
 # THE ROOT MIGRATION TABLE'S FROZEN TEXT (BUSBAR-1.6.0.md §2): operator-visible
 # 1.5.5 text naming plugins that are not in the build, which `busbar --migrate-config` and the boot

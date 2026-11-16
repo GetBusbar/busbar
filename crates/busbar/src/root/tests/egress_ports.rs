@@ -12,24 +12,16 @@ const A: DestinationId = DestinationId::new(0);
 const B: DestinationId = DestinationId::new(1);
 const FREE: DestinationId = DestinationId::new(2);
 
-fn wall_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("after the epoch")
-        .as_secs()
-}
-
-fn instant_now() -> std::time::Instant {
-    std::time::Instant::now()
-}
-
 #[tokio::test]
 async fn the_clock_reads_the_wall_a_monotonic_origin_and_sleeps_on_the_timer() {
     let clock = NodeClock::new();
-    let wall = wall_secs();
+    let wall = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("after the epoch")
+        .as_secs();
     assert!(clock.now_secs().abs_diff(wall) <= 1, "whole wall seconds");
     let before = clock.now_millis();
-    let started = instant_now();
+    let started = std::time::Instant::now();
     clock.sleep(20).await;
     assert!(started.elapsed() >= Duration::from_millis(20), "slept");
     assert!(

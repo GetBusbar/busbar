@@ -332,6 +332,29 @@ impl<'r> ExportRows<'r> {
     }
 }
 
+/// W2-SW-EXPORT: one export instance on the MIN-3 path. Opens `spec` through the registry (`open_export`, L2/L7)
+/// and hands the kernel's export lane a [`export_door::port::PortDoor`] over the port: the round-33 pump
+/// (core-minted `delivery`, counted `attempt`), the image's FB_SPAN_RECORDS and custody ceiling read through
+/// L7, APPEND answers handed to `disk` (core's bound destinations, §12.21).
+pub async fn open_min3<N: busbar_plugin_abi::host_side::needs::Needs>(
+    registry: &crate::instance::Registry<N>,
+    spec: &crate::instance::InstanceSpec<'_>,
+    disk: Arc<dyn export_door::port::DestAppend>,
+) -> Result<Arc<export_door::port::PortDoor>, String> {
+    use crate::instance::OpenError;
+    let port = registry.open_export(spec).await.map_err(|e| {
+        let why = match &e {
+            OpenError::Refused { .. } => "refused".to_string(),
+            OpenError::Config { code, .. } => format!("config refused, code {code}"),
+            OpenError::Failed { code, .. } => format!("failed, code {code}"),
+            OpenError::Call(c) => format!("{c:?}"),
+            OpenError::Unknown(_) => "unknown".to_string(),
+        };
+        format!("export instance `{}` did not open ({why})", spec.name)
+    })?;
+    export_door::port::PortDoor::open(spec.name, port, disk, &spec.limits)
+}
+
 #[cfg(test)]
 pub(crate) fn test_opening(settings: &serde_json::Value) -> PreparedExport {
     let admitted: busbar_contract::export_calls::ExportOpening =

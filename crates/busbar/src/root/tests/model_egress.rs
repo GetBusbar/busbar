@@ -124,15 +124,12 @@ fn cells_routing(app: LiveApp, pools: &[&str], direct: &[&str]) -> WalkCells {
         .iter()
         .map(|pool| {
             (
-                <Arc<str>>::from(*pool),
+                Arc::from(*pool),
                 busbar_kernel::store::BreakerCfg::default(),
             )
         })
         .collect();
-    records.insert(
-        <Arc<str>>::from(""),
-        busbar_kernel::store::BreakerCfg::default(),
-    );
+    records.insert(Arc::from(""), busbar_kernel::store::BreakerCfg::default());
     WalkCells::over(
         app,
         Arc::new(CellPlan {

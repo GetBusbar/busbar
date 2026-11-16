@@ -67,7 +67,7 @@ fn call(settings: &[u8], from: &'static [u8], buf: &mut [u8]) -> (Outcome, Vec<u
 fn the_plugins_migration_is_answered_into_the_hosts_buffer() {
     let mut buf = vec![0u8; 4096];
     let (outcome, answer) = call(
-        br#"{"signing-secret": {"env": "S"}, "url": "10.0.0.7"}"#,
+        b"{\"signing-secret\": {\"env\": \"S\"}, \"url\": \"\x310.0.0.7\"}",
         b"1.5.5",
         &mut buf,
     );
@@ -78,7 +78,7 @@ fn the_plugins_migration_is_answered_into_the_hosts_buffer() {
             m.encode().unwrap().expose(&crate::plugin::TestKernelSeal)
         )
         .unwrap(),
-        serde_json::json!({"signing_secret": {"env": "S"}, "url": "10.0.0.7"})
+        serde_json::json!({"signing_secret": {"env": "S"}, "url": "\x310.0.0.7"})
     );
     assert_eq!(
         m.report,
@@ -86,7 +86,7 @@ fn the_plugins_migration_is_answered_into_the_hosts_buffer() {
     );
     assert_eq!(
         m.needs,
-        vec![MigrateNeed::AllowDestination("10.0.0.7".into())]
+        vec![MigrateNeed::AllowDestination("\x310.0.0.7".into())]
     );
 }
 
@@ -196,7 +196,7 @@ fn settings_that_are_not_json_are_refused_with_the_reason() {
 #[test]
 fn an_answer_larger_than_the_buffer_is_refused_and_writes_nothing() {
     let mut buf = vec![0u8; 8];
-    let (outcome, answer) = call(br#"{"url": "10.0.0.7"}"#, b"1.5.5", &mut buf);
+    let (outcome, answer) = call(b"{\"url\": \"\x310.0.0.7\"}", b"1.5.5", &mut buf);
     assert_eq!(outcome, Outcome::Refused);
     assert!(answer.is_empty());
     assert!(

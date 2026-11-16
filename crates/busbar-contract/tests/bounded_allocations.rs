@@ -3,40 +3,29 @@
 
 //! What filling a bounded list costs.
 
-use std::alloc::{GlobalAlloc, Layout, System};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use stats_alloc::StatsAlloc;
+#[cfg(target_env = "msvc")]
+use std::alloc::System as Base;
+#[cfg(not(target_env = "msvc"))]
+use tikv_jemallocator::Jemalloc as Base;
 
 use busbar_contract::{BoundedVec, MAX_LEGS};
 
-static ALLOCATIONS: AtomicUsize = AtomicUsize::new(0);
-
-/// The system allocator, counting the allocations that go through it.
-struct Counting;
-
-unsafe impl GlobalAlloc for Counting {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
-        unsafe { System.alloc(layout) }
-    }
-
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        unsafe { System.dealloc(ptr, layout) }
-    }
-
-    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
-        unsafe { System.realloc(ptr, layout, new_size) }
-    }
-}
-
+/// The shipped allocator (jemalloc), counted process-wide by `stats_alloc`.
 #[global_allocator]
-static ALLOCATOR: Counting = Counting;
+static ALLOCATOR: StatsAlloc<Base> = StatsAlloc::new(Base);
+
+/// Allocations and reallocations so far, the two the old counter summed.
+fn allocations() -> usize {
+    let stats = ALLOCATOR.stats();
+    stats.allocations + stats.reallocations
+}
 
 /// An empty list is free.
 fn an_untouched_bounded_list_allocates_nothing() {
-    let before = ALLOCATIONS.load(Ordering::Relaxed);
+    let before = allocations();
     let list: BoundedVec<u8, MAX_LEGS> = BoundedVec::new();
-    let after = ALLOCATIONS.load(Ordering::Relaxed);
+    let after = allocations();
     assert!(list.is_empty());
     assert_eq!(after - before, 0, "an empty bounded list allocated");
 }
@@ -45,12 +34,12 @@ fn an_untouched_bounded_list_allocates_nothing() {
 fn filling_a_bounded_list_to_capacity_takes_one_allocation() {
     let mut list: BoundedVec<u8, MAX_LEGS> = BoundedVec::new();
 
-    let before = ALLOCATIONS.load(Ordering::Relaxed);
+    let before = allocations();
     for i in 0..MAX_LEGS {
         list.push(u8::try_from(i).expect("the ceiling fits in a byte"))
             .expect("every push is under the ceiling");
     }
-    let after = ALLOCATIONS.load(Ordering::Relaxed);
+    let after = allocations();
 
     assert_eq!(list.len(), MAX_LEGS);
     assert!(

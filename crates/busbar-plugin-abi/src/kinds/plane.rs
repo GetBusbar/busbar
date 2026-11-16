@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The plane kind: the `Plane` trait and the `plane` module (IF §8.6, §10.4). W0-ABI stub: frozen signatures,
-//! `todo!()` bodies; A10 (the block) and W1-A4 (the `kind!` expansion) fill it.
+//! The plane kind: the `Plane` trait and the `plane` module (IF §8.6, §10.4). W1-A10 filled the block: the
+//! optional methods answer REFUSED R_UNSUPPORTED (`Fail::unsupported`, as §8.6 writes them) and the pods are
+//! `Pod`. W1-A4 owns the `kind!` expansion (the Proxy and SessionHandle bodies below and `FP`).
 
 // The trait is what `kind!` emits for the IF §8.6 block (IF §7.6); W0-ABI writes it inside the pass-through
 // `kind_stub!` (CONVENTIONS rule 3).
@@ -107,7 +108,7 @@ crate::kind::kind_stub! {
             out: &mut crate::records::Out<'_>,
         ) -> Result<(), crate::fail::Fail> {
             let _ = (h, s, conversation, out);
-            todo!()
+            Err(crate::fail::Fail::unsupported())
         }
 
         /// Sessionless rendering of a core decision in the client's dialect (derived from route, path and
@@ -125,7 +126,7 @@ crate::kind::kind_stub! {
             out: &mut crate::records::Out<'_>,
         ) -> Result<(), crate::fail::Fail> {
             let _ = (h, req, what, arg, out);
-            todo!()
+            Err(crate::fail::Fail::unsupported())
         }
 
         /// Cold. CATALOG: refresh catalog data (FETCH) into instance state. HYDRATE: arg = stored records the
@@ -142,7 +143,7 @@ crate::kind::kind_stub! {
             // Bound before the future: the stub `ChainBytes` is not `Send` until its `unsafe impl Send` lands
             // (rule 2), so the future captures nothing and stays `Send`.
             let _ = (h, op, arg);
-            async move { todo!() }
+            async move { Err(crate::fail::Fail::unsupported()) }
         }
 
         /// Health probe of one member (FB_PROBES). Opens a session like `request`; answer (after TOKEN) as
@@ -159,7 +160,7 @@ crate::kind::kind_stub! {
             out: &mut crate::records::Out<'_>,
         ) -> Result<Self::Session, crate::fail::Fail> {
             let _ = (h, target, out);
-            todo!()
+            Err(crate::fail::Fail::unsupported())
         }
 
         /// Sessionless and pure: which attachment does this one inbound channel message (already framed by core
@@ -174,7 +175,7 @@ crate::kind::kind_stub! {
             out: &mut crate::records::Out<'_>,
         ) -> Result<(), crate::fail::Fail> {
             let _ = (h, key, message, out);
-            todo!()
+            Err(crate::fail::Fail::unsupported())
         }
     }
 }
@@ -694,7 +695,7 @@ pub mod plane {
     /// releases one session's message only after the previous one's reply was demuxed; round 18, exactly:
     /// core writes one MSG_ASK at a time, the next only after the DEMUX with DX_FINAL for the previous one;
     /// an EX_MSG without MSG_ASK, a reply or a notification, is written at once and never waits). Answered by a
-    /// piece(FROM_CORE, exchange, P_CHANNEL, ChanAttach). Messages to the channel are EX_MSG on `exchange`;
+    /// piece(FROM_CORE, exchange, P_CHANNEL, CH_ATTACH). Messages to the channel are EX_MSG on `exchange`;
     /// messages from it arrive as piece(FROM_UPSTREAM, exchange, P_TEXT|P_FIN, message).
     #[repr(C)]
     #[derive(Clone, Copy, FromBytes, IntoBytes, Immutable, KnownLayout)]
@@ -815,6 +816,59 @@ pub mod plane {
         pub verdict: u32,
     }
 
+    // W1-A10: `kind!` (W1-A4) writes `impl Pod` for each struct of its `pods {}` block (records.rs `Pod` note).
+    // Until this block is a `kind!` invocation they are written out here, one per pod, so the encoders and
+    // decoders of plugin-loader `encode/plane.rs` (IF §8.8) can read and write them; the conversion drops them.
+    impl crate::records::Pod for Respond {}
+    impl crate::records::Pod for Forward {}
+    impl crate::records::Pod for RouteRec {}
+    impl crate::records::Pod for RouteHeaderRec {}
+    impl crate::records::Pod for UpCarrier {}
+    impl crate::records::Pod for UpNew {}
+    impl crate::records::Pod for MsgRec {}
+    impl crate::records::Pod for ExMsg {}
+    impl crate::records::Pod for LookupRec {}
+    impl crate::records::Pod for ChainState {}
+    impl crate::records::Pod for LookupHit {}
+    impl crate::records::Pod for StoreRec {}
+    impl crate::records::Pod for PushRec {}
+    impl crate::records::Pod for WakeAt {}
+    impl crate::records::Pod for RefusalRec {}
+    impl crate::records::Pod for UsageRec {}
+    impl crate::records::Pod for UsageClassRec {}
+    impl crate::records::Pod for DaFamilyRec {}
+    impl crate::records::Pod for AttemptRec {}
+    impl crate::records::Pod for AuditRec {}
+    impl crate::records::Pod for ObsScopeRec {}
+    impl crate::records::Pod for ObsScopeAns {}
+    impl crate::records::Pod for ObserveRec {}
+    impl crate::records::Pod for ObsReceipt {}
+    impl crate::records::Pod for EntitleRec {}
+    impl crate::records::Pod for EntitleAns {}
+    impl crate::records::Pod for RendezvousRec {}
+    impl crate::records::Pod for MintRec {}
+    impl crate::records::Pod for MintedRec {}
+    impl crate::records::Pod for SignRec {}
+    impl crate::records::Pod for SignedRec {}
+    impl crate::records::Pod for ConnectRec {}
+    impl crate::records::Pod for ConnectAns {}
+    impl crate::records::Pod for DetachRec {}
+    impl crate::records::Pod for SignalRec {}
+    impl crate::records::Pod for CommitRec {}
+    impl crate::records::Pod for CommittedRec {}
+    impl crate::records::Pod for SightRec {}
+    impl crate::records::Pod for TrustRec {}
+    impl crate::records::Pod for TrustAns {}
+    impl crate::records::Pod for TrustItemState {}
+    impl crate::records::Pod for ChanRec {}
+    impl crate::records::Pod for ChanAttach {}
+    impl crate::records::Pod for DemuxRec {}
+    impl crate::records::Pod for EmitRec {}
+    impl crate::records::Pod for WorkRec {}
+    impl crate::records::Pod for WorkAns {}
+    impl crate::records::Pod for JudgeRec {}
+    impl crate::records::Pod for JudgeAns {}
+
     pub mod tag {
         /// to client: RESPOND (head; followed by PAIR* headers), BODY* (byte stream) or MSG* (framed), END.
         pub const RESPOND: u16 = 0x0100;
@@ -933,6 +987,8 @@ pub mod plane {
         /// Round 16: the destination-judge intent (JudgeRec + destination text) and its core-built answer.
         pub const JUDGE: u16 = 0x0151;
         pub const JUDGE_ANS: u16 = 0x0152;
+        /// R6a (#257, IF r35): core-built P_CHANNEL answer: `ChanAttach` + the CH_READY tail, one record.
+        pub const CH_ATTACH: u16 = 0x0153;
         /// describe: D_ROUTE*, D_DIALECT* (text: upstream dialects this plane can encode), D_TICK_S (U64Rec:
         /// the period core calls admin(ADMIN_TICK); absent = never), D_USAGE_CLASS* (UsageClassRec + class).
         /// Round 13: D_PROVIDER_SCHEMA (UTF-8 JSON Schema, the D_SCHEMA dialect) = the keys this plane owns in a
@@ -1009,7 +1065,7 @@ pub mod plane {
     /// §12.19), the client went away while DETACHed (empty). P_RENDEZVOUS: exchange = the
     /// rendezvous exchange, bytes = the local description text; P_RV_FAILED: bytes = one REFUSAL.
     /// P_COMMITTED: COMMITTED*. P_TRUST: TRUST_ANS*. P_CHANNEL: exchange = the attached exchange,
-    /// bytes = ChanAttach (+ tail); a channel that died mid-session arrives as P_ERROR on that exchange.
+    /// bytes = exactly one CH_ATTACH record (ChanAttach + tail); a channel that died mid-session arrives as P_ERROR on that exchange.
     pub const P_LOOKUP: u32 = 0x100;
     pub const P_STORE_FAILED: u32 = 0x200;
     pub const P_TIMER: u32 = 0x400;

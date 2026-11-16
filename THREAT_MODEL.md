@@ -57,9 +57,11 @@ that keep keys, usage and the audit chain in a backend you run.
 - **Provider and upstream credentials** (API keys, AWS SigV4 secrets, OAuth client secrets and
   service-account keys, credentials for tool servers, agents, stores and export endpoints).
 - **Recoverable credentials Busbar mints** (signed-request secrets kept so Busbar can sign on a
-  caller's behalf). **Limit:** stored in the configured store as plaintext behind a `v1:plain:` tag
-  (`crates/busbar-kernel/src/governance/state.rs`, `crates/busbar-contract/src/records.rs`); only
-  their `Debug` output is redacted. See T10.
+  caller's behalf). Newly minted recoverable credentials are sealed with AES-256-GCM before
+  storage, under the configured at-rest key. Minting refuses without that key
+  (`crates/busbar-kernel/src/governance/at_rest.rs`, `identity_runtime.rs`). Legacy `v1:plain:`
+  reads remain supported; the new-write protection does not prove existing rows or backups were
+  migrated. Protect the at-rest key separately from store access. See T10.
 - **The token-signing key** (`auth.signing_key`). Virtual keys are Ed25519-signed `bbk_` tokens
   (`crates/busbar-kernel/src/governance/signing.rs`); whoever holds this key can mint them.
 - **The deployment keyset**, the Ed25519 key that signs the audit chain and ledger checkpoints. It is
@@ -175,10 +177,13 @@ under the same held locks as the charge (`crates/busbar-kernel/src/governance/st
 **Limits:** a clamped `Retry-After` can still park a destination for up to the ceiling. Under the
 default `admission: exact`, only an already-exhausted budget is refused and the estimate is not
 reserved, so concurrent in-flight requests can each overshoot a cap by up to one request (more for
-streams unless `cut-stream` is set). A request-stage hook **rewrite** that cannot be applied to the
-body (it does not parse or cannot be spliced) is dropped and the original body goes upstream
-(`crates/busbar-plane-llm/src/exchange/project.rs`, `apply_rewrite`): rewrites fail open. Do not rely
-on a rewrite hook alone to remove content that must not leave; use a gate hook that refuses.
+streams unless `cut-stream` is set). **Rewrite failure has distinct outcomes.** An optional
+transform failure can retain the original content; `on_error: reject` converts a transform
+failure to refusal. A returned rewrite that cannot be projected onto the protocol is refused,
+not silently replaced by the original body. A not-applicable transform or content omitted from
+the hook's view is a separate case: it does not establish that redaction occurred
+(`crates/busbar-kernel/src/hooks/mod.rs`, `plane_driver/gated.rs`). Mandatory redaction must
+select rejection on failure and cover every content path it intends to protect.
 
 ### T7: Denial of service (boundaries 1, 2, availability)
 **Mitigation:** every buffering site is bounded: the inbound body limit
@@ -201,11 +206,7 @@ dropped-in plugins are signature-checked before they load (see the plugin threat
 Dependency checks use `deny.toml` through internal CI. GitHub is a public source mirror only.
 
 
-**Not built:** the 1.6.0 release publication step (`.ci/qa.yaml`) is not written yet, so this tree
-does not yet produce the signed, attested release binaries and images. Until it lands nothing is
-published from `main` (`RELEASE.md`). Release artifacts are published only from the build that was
-judged; the version tag is an output of a green release, not an input. See the
-[Security page](https://getbusbar.com/security/) for verification recipes of published releases.
+**Release availability:** the 1.6.0 provenance producer and verifier are implemented, but production signing and publication are not activated. No published 1.6.0 attestation bundle or production verification identity is claimed here. Verify each released binary, container and plugin using that artifact's published verification material; a signed plugin does not authenticate its host engine. See the [release verification guide](https://getbusbar.com/docs/deploy/binary/) for published releases and current development limitations.
 
 ### T9: Malicious or tampered plugin (boundary 6)
 A plugin is native code in Busbar's process with the process's privileges, so a hostile plugin is a
@@ -251,31 +252,16 @@ as bytes that are wiped after the call (`crates/plugin-loader/src/boot.rs`); a s
 fails to decode is reported without quoting it. A central canary harness measures where a canary
 credential crosses the ABI (`crates/busbar/tests/canary/`).
 
-**Not built (designed, in review for 1.6.0):** the credential "chip". Under it a plugin would never
-hold a credential as text: an SDK `Cred`/`Seal` type with no getter, no `Debug` and no serialization;
-SDK recipes that perform each auth step (Postgres SCRAM, MySQL, LDAP bind, RESP `AUTH`, Basic and
-Bearer, HMAC, SigV4, JWS) from a wiped buffer; refusal at boot and under `--validate` of a secret
-reference at a plugin setting the plugin did not declare secret; credentials written in an `https`,
-`rediss` or `ldaps` URL, or with `sslmode=require`, sent only on a connection the connector reports
-secured; refusal by default of an auth method weaker than the server offers (Postgres cleartext or
-MD5 where SCRAM is available, MySQL cleartext or old-password), and MySQL RSA full authentication
-only with a key pin, TLS or a unix socket; recoverable credentials sealed in the store under a
-dedicated at-rest key (`credentials.at_rest`, with a `previous` key for rotation); and a canary in
-every plugin's conformance suite that fails on a leak. **None of these is in this tree.** Until they
-land:
-- Plugins receive their configured credentials as plaintext bytes.
-- A `{ env: }` or `{ file: }` reference at a setting the plugin did **not** declare secret is
-  resolved and its plaintext passed to the plugin in its settings.
-- Recoverable credentials Busbar mints are stored as plaintext (see Assets).
-- No store plugin in this project refuses a weaker auth method than its server offers.
-- The canary harness records known leaks as expected and does not fail on them.
+**At-rest protection is implemented separately from plugin isolation.** Newly minted
+recoverable credentials are sealed before they are written to the configured store; a missing
+at-rest key refuses the mint. The implementation retains a legacy plaintext read path, so
+operators must account for pre-existing rows and backups when reviewing exposure.
 
-**Residual, accepted for 1.6.0 even once the chip lands.** Plugins run in Busbar's process. Native
-code in the same address space can read memory, the environment and files, so a plugin that is
-*malicious*, rather than careless, can recover a credential. The chip is designed to remove every
-accidental path and every ABI path; it does not stop deliberate in-process access. The controls
-against a malicious plugin are therefore T9's: plugins are off by default, every dropped-in plugin
-is signature-verified, and third-party publishers must be allowlisted.
+**Native plugins remain trusted code.** Credential handles, redacted diagnostics, controlled
+ABI projections and wiped temporary buffers reduce accidental exposure; they do not isolate
+code sharing Busbar's address space. A malicious native plugin can access process memory,
+environment variables and files. Signing establishes the publisher and artifact integrity,
+not a sandbox. Apply T9's publisher admission controls and protect the host and its key material.
 
 ### T11: Tool and agent rug-pull (boundary 2; MCP and A2A planes)
 A tool server or agent that changes the tool description, argument schema or card an operator
@@ -291,8 +277,7 @@ backwards counts as stale (`crates/busbar-kernel/src/trust/reverify.rs`). An A2A
 [Tool and agent trust](docs/tool-and-agent-trust.md).
 
 **Limits:** verification checks the advertised surface, not what the upstream does when called. The
-MCP plane does not coalesce concurrent re-fetches, so a burst against a stale server can fetch once
-per call.
+MCP plane coalesces concurrent tool-list refreshes per server and catalogue generation within the process. This does not coordinate refreshes across nodes or detect malicious behavior hidden behind an unchanged advertised definition.
 
 ### T12: Audit-chain tampering (boundary 5, store)
 **Mitigation:** the audit log is a hash chain whose records and ledger checkpoints are signed with

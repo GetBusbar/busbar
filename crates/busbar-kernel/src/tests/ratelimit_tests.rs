@@ -176,6 +176,7 @@ fn the_config_table_is_not_the_whole_decision() {
         CONFIG_CLASS_RULES.iter().any(|rule| match rule {
             PathRule::Exact(p) => rel == *p,
             PathRule::Prefix(p) => rel.starts_with(p),
+            PathRule::Within(head, mid) => rel.starts_with(head) && rel.contains(mid),
         })
     };
 
@@ -184,6 +185,14 @@ fn the_config_table_is_not_the_whole_decision() {
         classify_mutation(PATH_CONFIG_VALIDATE),
         MutationClass::Crud
     ));
+
+    let attachment = "/hooks/audit/attachments/pools.fast";
+    assert!(table_alone(attachment));
+    assert!(matches!(
+        classify_mutation(attachment),
+        MutationClass::Config
+    ));
+    assert!(!table_alone("/hooks/audit"));
 
     assert!(!table_alone(PATH_PLUGINS_INSPECT));
     assert!(matches!(

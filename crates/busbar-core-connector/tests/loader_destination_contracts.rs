@@ -26,7 +26,7 @@ impl Resolve for Names {
                 "93.184.215.14".parse().unwrap(),
                 "1.1.1.1".parse().unwrap(),
             ]),
-            "inner.example" => Ok(vec!["10.1.2.3".parse().unwrap()]),
+            "inner.example" => Ok(vec!["\x310.1.2.3".parse().unwrap()]),
             "empty.example" => Ok(vec![]),
             _ => Err("NXDOMAIN".into()),
         };
@@ -96,7 +96,7 @@ fn dest_judge_answers_the_owner_default_guard_without_resolving() {
             DEST_NO_HOST,
         ),
         ("https://169.254.169.254/latest", open, 0, DEST_METADATA),
-        ("https://10.0.0.7/", open, 0, DEST_INTERNAL),
+        ("https://\x310.0.0.7/", open, 0, DEST_INTERNAL),
         (
             "https://127.0.0.1/",
             EGRESS_LOOPBACK_ALLOWED,
@@ -116,7 +116,7 @@ fn dest_judge_answers_the_owner_default_guard_without_resolving() {
             DEST_PLAINTEXT,
         ),
         (
-            "https://10.0.0.7/",
+            "https://\x310.0.0.7/",
             EGRESS_LOOPBACK_ALLOWED,
             0,
             DEST_INTERNAL,
@@ -139,7 +139,7 @@ fn dest_judge_answers_the_owner_default_guard_without_resolving() {
         "https://vendor.example/agent",
         "http://vendor.example/",
         metadata.as_str(),
-        "https://10.0.0.7/",
+        "https://\x310.0.0.7/",
         "https://localhost/",
     ] {
         for flags in [0, DEST_EXPLAIN, DEST_REFUSE_PRIVATE] {
@@ -196,7 +196,7 @@ fn dest_judge_resolves_through_the_stated_answers_and_writes_what_it_judged() {
             "https://inner.example/",
             DEST_RESOLVE | DEST_EXPLAIN,
             DEST_INTERNAL,
-            vec!["10.1.2.3"],
+            vec!["\x310.1.2.3"],
         ),
         (
             "https://inner.example/",

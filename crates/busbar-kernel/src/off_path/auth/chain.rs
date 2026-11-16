@@ -88,6 +88,8 @@ impl AdminAuthChain {
             match entry.module.as_str() {
                 // An operator-backed entry with no settings is unset: nothing opens.
                 _ if backed && entry.settings.is_empty() => {}
+                // The built-in `keys` position opens no plugin: the admin chain judges it itself.
+                crate::config::KEYS_MODULE => {}
                 other => {
                     let name = entry.name.as_str();
                     let refused = |e: String| {

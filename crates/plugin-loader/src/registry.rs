@@ -88,6 +88,17 @@ impl LoadablePlugin {
         self.configuration_statement.as_deref()
     }
 
+    /// Whether this row is the module `name`: its manifest's name, or the name its Statement
+    /// states. Process start registers a plane under its Statement's name (`decision`), while its
+    /// signed manifest carries its repo's (`busbar-plane-decisions`).
+    #[must_use]
+    pub fn is_module(&self, name: &str) -> bool {
+        self.manifest.name == name
+            || self
+                .configuration_statement()
+                .is_some_and(|stated| stated.name == name)
+    }
+
     #[must_use]
     pub fn release_keys_version(&self) -> Option<u64> {
         self.accepted_release_keys_version
@@ -518,6 +529,7 @@ impl SkippedPlugin {
             RejectKind::AntiDowngrade => "below its version floor (anti-downgrade)",
             RejectKind::UntrustedFloored => "untrusted below floor",
             RejectKind::EgressGrant => "provider egress refused: not first-party",
+            RejectKind::ExternalCrypto => "not busbar's own release, on a FIPS crypto backend",
         };
         let escaped = self.file.escape_debug().to_string();
         let mut file: String = escaped.chars().take(SKIP_LINE_FILE_CHARS).collect();
@@ -727,6 +739,17 @@ impl PluginRegistry {
 
     pub fn skipped(&self) -> &[SkippedPlugin] {
         &self.skipped
+    }
+
+    /// The image the dropped-in row of `kind` that is the module `name`
+    /// ([`LoadablePlugin::is_module`]) is bound from: its archive's SHA-256. `None`: this registry
+    /// admits no such dropped-in row.
+    #[must_use]
+    pub fn dropped_image(&self, kind: &str, name: &str) -> Option<String> {
+        self.loadable()
+            .iter()
+            .find(|row| !row.linked() && row.manifest.kind == kind && row.is_module(name))
+            .map(|row| row.archive_sha256.clone().unwrap_or_default())
     }
 
     pub fn dropped_hooks(&self) -> impl Iterator<Item = &LoadablePlugin> {
@@ -1404,13 +1427,17 @@ pub fn inventory(dir: &Path, policy: &TrustPolicy) -> Vec<InventoryEntry> {
                     RejectKind::Tampered => "tampered",
                     RejectKind::Unsigned => "unsigned",
                     RejectKind::EgressGrant => "third-party (egress grant)",
+                    RejectKind::ExternalCrypto => "not first-party (FIPS backend)",
                     RejectKind::Superseded => "superseded",
                     RejectKind::RetiredKey => "retired-key",
                     RejectKind::Revoked => "revoked",
                 }
                 .to_string();
                 let status = match s.kind {
-                    RejectKind::AntiDowngrade | RejectKind::EgressGrant | RejectKind::Revoked => {
+                    RejectKind::AntiDowngrade
+                    | RejectKind::EgressGrant
+                    | RejectKind::Revoked
+                    | RejectKind::ExternalCrypto => {
                         format!("REJECTED: {}", s.reason)
                     }
                     _ => format!("SKIPPED: {}", s.reason),
@@ -1449,3 +1476,7 @@ pub fn inventory(dir: &Path, policy: &TrustPolicy) -> Vec<InventoryEntry> {
 #[cfg(test)]
 #[path = "tests/registry_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/fips_external_plugins_tests.rs"]
+mod fips_external_plugins_tests;
