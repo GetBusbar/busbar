@@ -458,3 +458,75 @@ fn body_bytes_and_content_type_pinned() {
     assert_eq!(content_type(&response), [b"application/json".to_vec()]);
     assert_eq!(read(response), br#"{"n":18446744073709551617}"#);
 }
+
+/// A built or edited object is written in key order whatever order it was built in (#162: the
+/// workspace's sonic `sort_keys`, the order serde_json's `Map` wrote), and twice the same.
+#[test]
+fn built_objects_write_in_key_order() {
+    let built = json::json!({
+        "kilo": 1, "echo": 2, "alpha": 3, "golf": 4, "delta": 5, "juliet": 6, "bravo": 7,
+        "hotel": 8, "charlie": 9, "india": 10, "foxtrot": 11,
+    });
+    let sorted = r#"{"alpha":3,"bravo":7,"charlie":9,"delta":5,"echo":2,"foxtrot":11,"golf":4,"hotel":8,"india":10,"juliet":6,"kilo":1}"#;
+    assert_eq!(json::to_string(&built).expect("written"), sorted);
+
+    let mut map = json::Map::new();
+    for key in [
+        "zulu", "mike", "alpha", "yankee", "bravo", "xray", "charlie",
+    ] {
+        map.insert(key, json::Value::from(key));
+    }
+    assert_eq!(
+        json::to_string(&json::Value::from(map)).expect("written"),
+        r#"{"alpha":"alpha","bravo":"bravo","charlie":"charlie","mike":"mike","xray":"xray","yankee":"yankee","zulu":"zulu"}"#
+    );
+
+    // `parse_value` edits every object (its duplicate-key pass), so its trees are in key order too.
+    let read = json::parse_value(br#"{"z":{"y":1,"b":2},"a":[{"d":1,"c":2}]}"#).expect("parsed");
+    assert_eq!(
+        json::to_string(&read).expect("written"),
+        r#"{"a":[{"c":2,"d":1}],"z":{"b":2,"y":1}}"#
+    );
+}
+
+/// `to_value`, the pretty writers and `to_writer` agree with `to_vec`; `number_text` is the lexeme.
+#[test]
+fn to_value_pretty_writer_and_number_text() {
+    #[derive(Serialize)]
+    struct Row {
+        name: &'static str,
+        count: u64,
+        exact: json::Value,
+    }
+    let exact = json::parse_value(b"18446744073709551617").expect("parsed");
+    let row = Row {
+        name: "n",
+        count: 7,
+        exact,
+    };
+    let compact = r#"{"count":7,"exact":18446744073709551617,"name":"n"}"#;
+    let tree = json::to_value(&row).expect("tree");
+    assert_eq!(json::to_string(&tree).expect("written"), compact);
+    assert_eq!(tree.get("count").and_then(|n| n.as_u64()), Some(7));
+
+    let mut streamed = Vec::new();
+    json::to_writer(&mut streamed, &tree).expect("streamed");
+    assert_eq!(streamed, compact.as_bytes());
+
+    let pretty = "{\n  \"count\": 7,\n  \"exact\": 18446744073709551617,\n  \"name\": \"n\"\n}";
+    assert_eq!(json::to_string_pretty(&tree).expect("pretty"), pretty);
+    assert_eq!(
+        json::to_vec_pretty(&tree).expect("pretty"),
+        pretty.as_bytes()
+    );
+
+    assert_eq!(
+        json::number_text(tree.get("exact").expect("member")).as_deref(),
+        Some("18446744073709551617")
+    );
+    assert_eq!(
+        json::number_text(&json::Value::from(7_u64)).as_deref(),
+        Some("7")
+    );
+    assert_eq!(json::number_text(&json::Value::from("7")), None);
+}
