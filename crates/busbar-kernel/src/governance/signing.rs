@@ -377,7 +377,7 @@ impl TokenVerifier {
             .map_err(|_| VerifyError::Malformed)?;
 
         let claims: TokenClaims =
-            serde_json::from_slice(&payload).map_err(|_| VerifyError::Malformed)?;
+            busbar_contract::json::parse(&payload).map_err(|_| VerifyError::Malformed)?;
         let key = self.keys.get(&claims.kid).ok_or(VerifyError::UnknownKid)?;
 
         key.verify_strict(&payload, &sig_arr)

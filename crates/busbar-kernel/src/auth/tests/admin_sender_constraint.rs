@@ -1,21 +1,22 @@
 use super::*;
 use base64::Engine as _;
+use busbar_contract::json;
 
-fn jwt(cnf: serde_json::Value) -> String {
+fn jwt(cnf: json::Value) -> String {
     format!(
         "e30.{}.signature",
         base64::engine::general_purpose::URL_SAFE_NO_PAD
-            .encode(serde_json::json!({"cnf": cnf}).to_string())
+            .encode(json::json!({"cnf": cnf}).to_string())
     )
 }
 
 #[test]
 fn every_admin_bearer_occurrence_requires_its_sender_proof() {
     for confirmation in [
-        serde_json::json!({"jkt": "key-thumbprint"}),
-        serde_json::json!({"jkt": ""}),
-        serde_json::json!({"jkt": null}),
-        serde_json::json!({"jkt": 12}),
+        json::json!({"jkt": "key-thumbprint"}),
+        json::json!({"jkt": ""}),
+        json::json!({"jkt": null}),
+        json::json!({"jkt": 12}),
     ] {
         let token = jwt(confirmation);
         for carrier in ["authorization", "x-admin-token", "x-provider-token"] {
@@ -39,10 +40,7 @@ fn every_admin_bearer_occurrence_requires_its_sender_proof() {
 
 #[test]
 fn opaque_service_bearers_and_unbound_jwts_are_not_sender_downgrades() {
-    for token in [
-        "opaque-service-token".to_owned(),
-        jwt(serde_json::json!({})),
-    ] {
+    for token in ["opaque-service-token".to_owned(), jwt(json::json!({}))] {
         let mut headers = HeaderMap::new();
         headers.insert(AUTHORIZATION, format!("Bearer {token}").parse().unwrap());
         headers.insert("x-admin-token", token.parse().unwrap());
@@ -52,7 +50,7 @@ fn opaque_service_bearers_and_unbound_jwts_are_not_sender_downgrades() {
 
 #[test]
 fn explicit_dpop_presentations_remain_the_verifying_providers_responsibility() {
-    let token = jwt(serde_json::json!({"jkt": "key-thumbprint"}));
+    let token = jwt(json::json!({"jkt": "key-thumbprint"}));
     let mut headers = HeaderMap::new();
     headers.insert(AUTHORIZATION, format!("DPoP {token}").parse().unwrap());
     // This guard does not identify or authorize that presentation, with or without a proof.

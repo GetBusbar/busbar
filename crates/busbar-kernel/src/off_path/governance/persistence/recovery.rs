@@ -21,6 +21,7 @@ use crate::{
 };
 use busbar_contract::{
     caps::{DurableWrite, Grant},
+    json,
     persistence::{
         Address, Decision, ExpectedValue, NamespaceId, Predicate, Read, ReadResult, Scan,
     },
@@ -217,7 +218,7 @@ fn body(candidate: &Candidate) -> Result<Vec<u8>, RecoveryError> {
     // through a separate encoding that is then copied in.
     let at = body.len();
     body.extend_from_slice(&0u64.to_le_bytes());
-    serde_json::to_writer(&mut body, candidate).map_err(|e| invalid_from(&e))?;
+    json::to_writer(&mut body, candidate).map_err(|e| invalid_from(&e))?;
     let len = (body.len() - at - 8) as u64;
     body[at..at + 8].copy_from_slice(&len.to_le_bytes());
     Ok(body)
@@ -237,9 +238,7 @@ fn candidate(record: &JournalRecord) -> Result<Option<Candidate>, RecoveryError>
     if !reader.is_done() {
         return Err(invalid("trailing recovery candidate bytes"));
     }
-    serde_json::from_slice(encoded)
-        .map(Some)
-        .map_err(|e| invalid_from(&e))
+    json::parse(encoded).map(Some).map_err(|e| invalid_from(&e))
 }
 
 /// Historical schema_records used the original full operation16 directly as
@@ -251,8 +250,7 @@ pub(crate) fn legacy_head_address(
     let operation: &[u8; 16] = operation
         .try_into()
         .map_err(|_| invalid("invalid historical recovery operation identity"))?;
-    let head: Head =
-        serde_json::from_slice(value).map_err(|_| invalid("invalid historical recovery head"))?;
+    let head: Head = json::parse(value).map_err(|_| invalid("invalid historical recovery head"))?;
     if head.version != 1 || head.node == 0 || head.sequence == 0 {
         return Err(invalid("invalid historical recovery head"));
     }
@@ -325,7 +323,7 @@ async fn head(
         return Ok(None);
     };
     let decoded: Head =
-        serde_json::from_slice(raw.expose(&crate::seal::lend())).map_err(|e| invalid_from(&e))?;
+        json::parse(raw.expose(&crate::seal::lend())).map_err(|e| invalid_from(&e))?;
     if decoded.version != 1 || decoded.node == 0 || decoded.sequence == 0 {
         return Err(invalid("invalid recovery selection head"));
     }
@@ -381,8 +379,8 @@ async fn bucket_heads(
                 return Err(invalid("invalid recovery head identity"));
             }
             let operation = at.key[16..].try_into().map_err(|e| invalid_from(&e))?;
-            let tip: Head = serde_json::from_slice(value.expose(&crate::seal::lend()))
-                .map_err(|e| invalid_from(&e))?;
+            let tip: Head =
+                json::parse(value.expose(&crate::seal::lend())).map_err(|e| invalid_from(&e))?;
             if tip.version != 1 || tip.node == 0 || tip.sequence == 0 {
                 return Err(invalid("invalid recovery head"));
             }
@@ -1515,7 +1513,7 @@ impl StoreRecovery {
                 carried_of(&pending.run, pending.record.node_seq),
             );
         }
-        let value = serde_json::to_vec(&pending.head).map_err(|e| invalid_from(&e))?;
+        let value = json::to_vec(&pending.head).map_err(|e| invalid_from(&e))?;
         // At most two crossings: a re-drive of the retained attempt, then (after a definite
         // no-effect and our authority read) one re-select of the same staged original.
         let selected = loop {
@@ -1896,7 +1894,7 @@ impl StoreRecovery {
             operation_id: resolution.operation_id,
             address: address(&resolution.operation_id),
             expected: ExpectedValue::Exact(pending.predecessor.clone()),
-            value: Secret::new(serde_json::to_vec(&pending.target).map_err(|e| invalid_from(&e))?),
+            value: Secret::new(json::to_vec(&pending.target).map_err(|e| invalid_from(&e))?),
         };
         // As for `persist_at`: under the publication driver, proof retained in
         // this adoption entry before any native claim.
@@ -2355,7 +2353,7 @@ impl StoreRecovery {
                     .clone()
                     .map_or(ExpectedValue::Absent, ExpectedValue::Exact),
                 value: Some(Secret::new(
-                    serde_json::to_vec(&row.head).map_err(|e| invalid_from(&e))?,
+                    json::to_vec(&row.head).map_err(|e| invalid_from(&e))?,
                 )),
             });
         }

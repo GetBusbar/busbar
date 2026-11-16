@@ -54,7 +54,8 @@ struct StoredMeter {
     record: MeteringRow,
 }
 fn meter(value: &busbar_contract::Secret<Vec<u8>>) -> MeteringRow {
-    let stored: StoredMeter = serde_json::from_slice(value.expose(&crate::seal::lend())).unwrap();
+    let stored: StoredMeter =
+        busbar_contract::json::parse(value.expose(&crate::seal::lend())).unwrap();
     assert_eq!(stored.version, 1);
     stored.record
 }

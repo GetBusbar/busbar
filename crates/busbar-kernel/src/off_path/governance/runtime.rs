@@ -6,6 +6,7 @@
 use crate::governance::recovery::{
     RecoveryError, RecoveryEvent, RecoveryItem, RecoverySelection, RecoveryState,
 };
+use busbar_contract::json::{self, JsonValueMutTrait as _, JsonValueTrait as _};
 
 /// `recovery`: summarize a replayed recovery Store into one verified selection per operation
 /// (boot attach and recovery checks).
@@ -86,8 +87,8 @@ pub(crate) fn recovery_selected_events<'a>(
 }
 
 /// `raw_recovery`: a recovery custody payload, encoded once per durable custody event.
-pub(crate) fn raw_recovery_encode<T: serde::Serialize>(value: &T) -> serde_json::Result<Vec<u8>> {
-    serde_json::to_vec(value)
+pub(crate) fn raw_recovery_encode<T: serde::Serialize>(value: &T) -> Result<Vec<u8>, json::Error> {
+    json::to_vec(value)
 }
 
 /// `raw_recovery`: a recovered operation's original cells, plain before dated, rebuilt once per
@@ -139,17 +140,16 @@ pub(crate) fn raw_recovery_same_child<E>(
     expected: &[u8],
     invalid: impl Fn(&dyn std::fmt::Display) -> E,
 ) -> Result<bool, E> {
-    let mut actual: serde_json::Value = serde_json::from_slice(actual).map_err(|e| invalid(&e))?;
+    let mut actual: json::Value = json::parse_value(actual).map_err(|e| invalid(&e))?;
     actual
         .as_object_mut()
         .ok_or_else(|| invalid(&"child payload is not an object"))?
-        .remove("origin");
-    let mut expected: serde_json::Value =
-        serde_json::from_slice(expected).map_err(|e| invalid(&e))?;
+        .remove(&"origin");
+    let mut expected: json::Value = json::parse_value(expected).map_err(|e| invalid(&e))?;
     expected
         .as_object_mut()
         .ok_or_else(|| invalid(&"child template is not an object"))?
-        .remove("origin");
+        .remove(&"origin");
     Ok(actual == expected)
 }
 
@@ -160,7 +160,7 @@ pub(crate) fn raw_recovery_child_matches_template(
     template: &[u8],
 ) -> Result<(), RecoveryError> {
     let invalid = |reason: &str| RecoveryError::Invalid(reason.to_owned());
-    let mut actual: serde_json::Value = serde_json::from_slice(child).map_err(|error| {
+    let mut actual: json::Value = json::parse_value(child).map_err(|error| {
         crate::governance::rendered_error(
             RecoveryError::Invalid,
             format_args!("invalid child payload: {error}"),
@@ -169,8 +169,8 @@ pub(crate) fn raw_recovery_child_matches_template(
     actual
         .as_object_mut()
         .ok_or_else(|| invalid("child payload is not an object"))?
-        .remove("origin");
-    let mut expected: serde_json::Value = serde_json::from_slice(template).map_err(|error| {
+        .remove(&"origin");
+    let mut expected: json::Value = json::parse_value(template).map_err(|error| {
         crate::governance::rendered_error(
             RecoveryError::Invalid,
             format_args!("invalid child template: {error}"),
@@ -180,12 +180,12 @@ pub(crate) fn raw_recovery_child_matches_template(
         .as_object_mut()
         .ok_or_else(|| invalid("child template is not an object"))?;
     if expected_object
-        .get("origin")
+        .get(&"origin")
         .is_some_and(|origin| !origin.is_null())
     {
         return Err(invalid("child template already contains an origin"));
     }
-    expected_object.remove("origin");
+    expected_object.remove(&"origin");
     if actual != expected {
         return Err(invalid("child raw body differs from exact parent template"));
     }
@@ -206,12 +206,12 @@ pub(crate) fn raw_recovery_identify_handoffs(
     let invalid = |error: &dyn std::fmt::Display| {
         crate::governance::rendered_error(RecoveryError::Invalid, error)
     };
-    let mut value: serde_json::Value = serde_json::from_slice(payload).map_err(|e| invalid(&e))?;
-    let mut handoffs: Vec<crate::governance::recovery::RecoveryChild> = serde_json::from_value(
-        value
+    let mut value: json::Value = json::parse_value(payload).map_err(|e| invalid(&e))?;
+    let mut handoffs: Vec<crate::governance::recovery::RecoveryChild> = json::from_value(
+        &value
             .get("handoffs")
             .cloned()
-            .unwrap_or_else(|| serde_json::json!([])),
+            .unwrap_or_else(|| json::json!([])),
     )
     .map_err(|e| invalid(&e))?;
     for (index, child) in handoffs.iter_mut().enumerate() {
@@ -234,9 +234,9 @@ pub(crate) fn raw_recovery_identify_handoffs(
     let object = value
         .as_object_mut()
         .ok_or_else(|| RecoveryError::Invalid("raw custody is not an object".into()))?;
-    let handoffs = serde_json::to_value(handoffs).map_err(|e| invalid(&e))?;
-    object.insert("handoffs".into(), handoffs);
-    serde_json::to_vec(&value).map_err(|e| invalid(&e))
+    let handoffs = json::to_value(&handoffs).map_err(|e| invalid(&e))?;
+    object.insert("handoffs", handoffs);
+    json::to_vec(&value).map_err(|e| invalid(&e))
 }
 
 /// `raw_recovery`: a child template stamped with its origin, once, when recovery selects it.
@@ -246,17 +246,19 @@ pub(crate) fn raw_recovery_stamp_origin<E>(
     origin: &crate::governance::recovery::RecoveryOrigin,
     invalid: impl Fn(&dyn std::fmt::Display) -> E,
 ) -> Result<Vec<u8>, E> {
-    let mut payload: serde_json::Value =
-        serde_json::from_slice(template).map_err(|e| invalid(&e))?;
+    let mut payload: json::Value = json::parse_value(template).map_err(|e| invalid(&e))?;
     let object = payload
         .as_object_mut()
         .ok_or_else(|| invalid(&"child template is not an object"))?;
-    if object.get("origin").is_some_and(|origin| !origin.is_null()) {
+    if object
+        .get(&"origin")
+        .is_some_and(|origin| !origin.is_null())
+    {
         return Err(invalid(&"child template already has an origin"));
     }
-    let origin = serde_json::to_value(origin).map_err(|e| invalid(&e))?;
-    object.insert("origin".into(), origin);
-    serde_json::to_vec(&payload).map_err(|e| invalid(&e))
+    let origin = json::to_value(origin).map_err(|e| invalid(&e))?;
+    object.insert("origin", origin);
+    json::to_vec(&payload).map_err(|e| invalid(&e))
 }
 
 use crate::governance::exact_debt::{BudgetFlushFlight, ExactModelDelta, ExactUsageDelta};

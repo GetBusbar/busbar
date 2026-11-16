@@ -17,6 +17,7 @@ use crate::{
     },
 };
 use busbar_contract::{
+    json,
     persistence::{
         Address, Candidate, Decision, ExpectedValue, Failure, Mutation, NamespaceId, Predicate,
         PreparedCandidate, Read, ReadResult, CANDIDATE_VERSION,
@@ -112,8 +113,7 @@ struct EntryJson<C> {
 impl StoredEntry {
     #[must_use]
     pub fn value(&self) -> Vec<u8> {
-        let card: serde_json::Value =
-            serde_json::from_slice(&self.card.to_bytes()).unwrap_or(serde_json::Value::Null);
+        let card: json::Value = json::parse_value(&self.card.to_bytes()).unwrap_or_default();
         let json = EntryJson {
             v: 1,
             from: self.effective_from,
@@ -127,7 +127,7 @@ impl StoredEntry {
             card,
             correction: self.correction.as_deref().map(hex::encode),
         };
-        serde_json::to_vec(&json).unwrap_or_default()
+        json::to_vec(&json).unwrap_or_default()
     }
 
     pub fn from_value(key: EntryKey, value: &[u8]) -> std::result::Result<Self, String> {
@@ -395,12 +395,10 @@ fn at(tag: u8, key: Option<EntryKey>) -> Address {
     }
 }
 fn encode<T: Serialize>(v: &T) -> Result<Secret<Vec<u8>>> {
-    serde_json::to_vec(v)
-        .map(Secret::new)
-        .map_err(|_| Error::Invalid)
+    json::to_vec(v).map(Secret::new).map_err(|_| Error::Invalid)
 }
 fn decode<T: serde::de::DeserializeOwned>(v: &Secret<Vec<u8>>) -> Result<T> {
-    serde_json::from_slice(v.expose(&crate::seal::lend())).map_err(|_| Error::Corrupt)
+    json::parse(v.expose(&crate::seal::lend())).map_err(|_| Error::Corrupt)
 }
 fn is_opening(entry: &StoredEntry) -> bool {
     matches!(
