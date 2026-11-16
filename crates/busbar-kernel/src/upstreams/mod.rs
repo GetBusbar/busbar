@@ -8,6 +8,7 @@
 //! [`ConfiguredUpstreams`] is the table every consumer reads through [`Upstreams`]. There is no egress judge here:
 //! the connector's destination guard is it (§12.1).
 
+mod declared;
 #[cfg(test)]
 mod declared_tests;
 mod entry;
@@ -15,6 +16,7 @@ mod table;
 #[cfg(test)]
 mod tests;
 
+pub use declared::{core_secret_paths, declared, Declared};
 pub use entry::{implicit_instance, DEFAULT_IDLE_S, MAX_NAME};
 pub use table::ConfiguredUpstreams;
 
@@ -25,6 +27,8 @@ pub use table::ConfiguredUpstreams;
 /// plane's own `migrate` (§12.10), never from a core table that knows the plane.
 pub struct UpstreamDef {
     pub name: Box<str>,
+    /// Private-address authority for this registration only; metadata and TLS policy still apply.
+    pub allow_private: bool,
     pub url: Option<Box<str>>,
     /// CARRIER_STDIO: argv and env (env values may be secret references, resolved through custody at spawn).
     pub command: Option<StdioCommand>,
