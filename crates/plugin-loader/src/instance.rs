@@ -1317,6 +1317,66 @@ fn decode_endpoints(answer: &[u8], name: &str) -> Result<Vec<DeclaredEndpoint>, 
     Ok(out)
 }
 
+/// The host a declared dest names, for the printed `verify: pin` match: a FETCH URL's authority, `host:port` without
+/// its port, `[v6]:port` as `[v6]`; a `unix:` path is returned whole.
+fn dest_host(dest: &str) -> &str {
+    let rest = ["https://", "http://"]
+        .iter()
+        .find_map(|scheme| {
+            dest.get(..scheme.len())
+                .filter(|head| head.eq_ignore_ascii_case(scheme))
+                .map(|_| &dest[scheme.len()..])
+        })
+        .unwrap_or(dest);
+    if rest
+        .get(..5)
+        .is_some_and(|head| head.eq_ignore_ascii_case("unix:"))
+    {
+        return rest;
+    }
+    let authority = rest.split('/').next().unwrap_or(rest);
+    match authority.strip_prefix('[') {
+        Some(inner) => inner
+            .find(']')
+            .map_or(authority, |end| &authority[..end + 2]),
+        None => authority
+            .rsplit_once(':')
+            .map_or(authority, |(host, _)| host),
+    }
+}
+
+/// BUSBAR-3160 (TRANSPORT-SECURITY-POLICY §6, "the exact boot refusal"): the frame core prints for a declared
+/// endpoint that would be dialled without TLS, with the one line that accepts it. `<config path>` is not known
+/// here, so the line is placed "in the `<instance>` block of your configuration".
+fn plaintext_refusal(name: &str, module: &str, dest: &str) -> String {
+    let class = if dest
+        .get(..5)
+        .is_some_and(|head| head.eq_ignore_ascii_case("unix:"))
+    {
+        "unix socket"
+    } else if dest
+        .get(..7)
+        .is_some_and(|head| head.eq_ignore_ascii_case("http://"))
+    {
+        "http"
+    } else {
+        "tcp"
+    };
+    let host = dest_host(dest);
+    format!(
+        "BUSBAR-3160: {name} (module {module}) would connect to {dest} without TLS ({class}, plaintext).\n\
+         busbar 1.6.0 connects only over verified TLS, and nothing is exempt: not loopback, not unix sockets.\n\
+         Fix it one of two ways:\n\
+         \x20 1. Turn on TLS for this connection (the plugin's docs name its TLS setting) and make the server's\n\
+         \x20    certificate verifiable: put its CA under advanced.tls.trust_anchors, or pin its key under\n\
+         \x20    advanced.tls.destinations (match: {host}, verify: pin).\n\
+         \x20 2. If verified TLS is not possible here, accept the risk explicitly. Add this line to the {name}\n\
+         \x20    block of your configuration, and replace the reason:\n\
+         \x20      insecure_transport: {{ accept: plaintext, reason: \"<why this is acceptable>\" }}\n\
+         See https://getbusbar.com/docs/1.6/errors/BUSBAR-3160 and docs/migration-1.6.md#transport-security"
+    )
+}
+
 /// BUSBAR-3160/3161/3163: judge every declared endpoint with `transport_verdict`, then refuse an acceptance none
 /// of the declared endpoints needs (only when at least one was declared; with none the acceptance is kept).
 fn judge_endpoints(
@@ -1333,12 +1393,7 @@ fn judge_endpoints(
     let (mut plain, mut waived) = (false, false);
     for ep in declared {
         match transport_verdict(accept, ep.flags & need_flag::TLS_MASK, &ep.dest) {
-            Verdict::Refuse => {
-                return Err(config(format!(
-                    "BUSBAR-3160: {name} (module {module}) would connect to {} without TLS, and no insecure_transport acceptance covers it",
-                    ep.dest
-                )));
-            }
+            Verdict::Refuse => return Err(config(plaintext_refusal(name, module, &ep.dest))),
             Verdict::Plain => plain = true,
             Verdict::WaiveVerify => waived = true,
             Verdict::Verify => {}
