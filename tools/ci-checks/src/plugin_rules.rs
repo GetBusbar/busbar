@@ -20,6 +20,7 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
+use busbar_contract::json::{self, JsonValueTrait};
 use proc_macro2::{TokenStream, TokenTree};
 use quote::ToTokens;
 use syn::Item;
@@ -57,7 +58,7 @@ fn is_core_only(name: &str) -> bool {
 }
 
 /// The declared dependencies of the workspace package `name`.
-fn deps_of<'a>(packages: &[&'a serde_json::Value], name: &str) -> Vec<&'a serde_json::Value> {
+fn deps_of<'a>(packages: &[&'a json::Value], name: &str) -> Vec<&'a json::Value> {
     packages
         .iter()
         .filter(|p| p["name"].as_str() == Some(name))
@@ -66,9 +67,8 @@ fn deps_of<'a>(packages: &[&'a serde_json::Value], name: &str) -> Vec<&'a serde_
 }
 
 /// Rules 1a, 1b and 3 over `cargo metadata --no-deps` of a plugin repo.
-pub(crate) fn dep_findings(meta: &serde_json::Value, dev_edges: bool) -> Vec<String> {
-    let packages: Vec<&serde_json::Value> =
-        meta["packages"].as_array().into_iter().flatten().collect();
+pub(crate) fn dep_findings(meta: &json::Value, dev_edges: bool) -> Vec<String> {
+    let packages: Vec<&json::Value> = meta["packages"].as_array().into_iter().flatten().collect();
     let members: BTreeSet<&str> = packages.iter().filter_map(|p| p["name"].as_str()).collect();
     let mut findings = Vec::new();
     for package in &packages {
@@ -307,8 +307,8 @@ pub(crate) fn plugin_rules(args: &[String]) -> Outcome {
         &root,
         &["metadata", "--no-deps", "--format-version", "1", "--locked"],
     )?;
-    let metadata: serde_json::Value =
-        serde_json::from_str(&metadata).map_err(|error| format!("cargo metadata: {error}"))?;
+    let metadata: json::Value = json::parse_value(metadata.as_bytes())
+        .map_err(|error| format!("cargo metadata: {error}"))?;
     let mut findings = dep_findings(&metadata, dev_edges);
     let mut paths = Vec::new();
     walk(&root, &mut paths)?;
