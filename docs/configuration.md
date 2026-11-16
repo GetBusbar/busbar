@@ -2214,4 +2214,3 @@ association is installed and released on failed installation or close. An
 association expires after **300 seconds**, even when its transport supplies no
 deadline. Exhaustion refuses association admission. Expiry closes the association;
 clients must establish a new one.
-
