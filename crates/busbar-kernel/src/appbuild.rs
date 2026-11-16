@@ -424,12 +424,13 @@ impl RawDocuments<'_> {
         } else {
             config::OperatorFileDefs::of(&deploy.identity_providers)
         };
+        let bound_grammar = deploy.grammar.get().map_err(String::from)?.clone();
         let (defs, providers_path) = typed_rest(
             inputs,
             &source_text,
             &mut deploy,
             &mut unset_env_vars,
-            grammar,
+            &bound_grammar,
         )?;
         let resolution = config::overlay::resolve_backend(&deploy.config);
         Ok(LoadedConfig {
