@@ -10,6 +10,30 @@ use busbar_kernel_audit::{BreakReason, TailItem, WalkOutcome};
 use super::{run, SealerDone};
 use crate::root::durability::tests::{audit_inputs, audit_pass, token, NativeFixture};
 
+/// A changed fence mark must not discard a predecessor for the lifetime of the process.
+/// Missing/listed marks require a fresh walk; an open mark from a sibling seal reuses the
+/// already signed normal outcome (§3.6.2, decision193).
+#[test]
+fn lost_seal_comparisons_restart_when_the_fence_mark_changed_meaning() {
+    use super::{after_lost_seal, LostSeal};
+    use busbar_kernel::persistence::boot_identity::{FenceMark, SealState};
+    let mut state = SealState::default();
+    assert_eq!(after_lost_seal(7, &state, true), LostSeal::Restart);
+    state.mark = Some(FenceMark {
+        lease_expires_ms: 1,
+        sealed: vec![7],
+    });
+    assert_eq!(after_lost_seal(7, &state, true), LostSeal::Restart);
+    state.mark = Some(FenceMark {
+        lease_expires_ms: 1,
+        sealed: vec![8],
+    });
+    assert_eq!(after_lost_seal(7, &state, true), LostSeal::RetrySigned);
+    assert_eq!(after_lost_seal(7, &state, false), LostSeal::Restart);
+    state.row = Some(vec![1]);
+    assert_eq!(after_lost_seal(7, &state, true), LostSeal::ExistingRow);
+}
+
 /// A walk that keeps more lines than its budget without an anchor stops with a `budget` break over
 /// exactly the walked range, never a restart page.
 #[tokio::test]
