@@ -286,3 +286,68 @@ async fn an_immutable_prefix_keeps_cycle_refusal_and_releases_its_ports_on_drop(
         "no leaked BootSecrets keeps the source alive"
     );
 }
+
+#[tokio::test]
+async fn reference_config_is_scrubbed_per_binding_before_it_is_returned() {
+    use busbar_plugin_abi::host_side::scrub::Scrub;
+    use busbar_plugin_loader::instance::{ErrorBook, SlotRecord, SlotTable};
+    use busbar_ports::binder::RefSource;
+    let slots = Arc::new(SlotTable::new());
+    let scrub = Arc::new(Scrub::new());
+    let lease = slots.alloc(
+        SlotRecord {
+            kind: busbar_plugin_abi::KindCode::Plane,
+            name: Arc::from("consumer"),
+            scrub: Arc::clone(&scrub),
+            errors: &ErrorBook::None,
+            undeclared_warned: std::sync::atomic::AtomicBool::new(false),
+        },
+        &[u32::MAX; 64],
+    );
+    let binder: Arc<dyn ConfigBinder> =
+        Arc::new(Binder::new(Arc::new(Default::default()), Vec::new()));
+    let mut prefix = BootSecrets::empty(binder, slots);
+    for (id, name, value) in [
+        (1, "first", "first-reference-material"),
+        (2, "second", "second-reference-material"),
+        (3, "third", "third-reference-material"),
+    ] {
+        prefix = prefix
+            .with_opened(
+                name,
+                SecretSource {
+                    instance: id,
+                    port: Port::new(value),
+                },
+            )
+            .unwrap();
+    }
+    let refs = super::BootRefs(Arc::clone(&prefix));
+    for (binding, name, value) in [
+        (0, "first", "first-reference-material"),
+        (1, "second", "second-reference-material"),
+        (2, "third", "third-reference-material"),
+    ] {
+        let reference = source(name, "{}");
+        assert_eq!(
+            refs.resolve(17, lease.slot(), binding, &reference)
+                .await
+                .unwrap()
+                .as_slice(),
+            value.as_bytes()
+        );
+        assert_eq!(scrub.text(value), "***");
+    }
+    assert_eq!(
+        scrub.text("first-reference-material second-reference-material third-reference-material"),
+        "*** *** ***"
+    );
+    let slot = lease.slot();
+    drop(lease);
+    assert!(
+        refs.resolve(18, slot, 0, &source("first", "{}"))
+            .await
+            .is_none(),
+        "a released slot cannot receive reference plaintext"
+    );
+}
