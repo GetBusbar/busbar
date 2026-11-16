@@ -10,6 +10,7 @@
 
 use crate::need::ChainBytes;
 
+pub use busbar_ffi::raw::{RAW_OUT_CAP_AT, RAW_OUT_LEN_AT, RAW_OUT_PTR_AT};
 pub use busbar_ffi::{
     Bytes, KindCode, Pair, RawOut, Slice, Status, Str, TOKEN_SESSION, Token, View,
 };

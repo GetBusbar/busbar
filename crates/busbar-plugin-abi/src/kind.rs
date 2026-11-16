@@ -175,6 +175,7 @@ macro_rules! kind {
 
             $crate::kind! { @methods [$Trait [$($session)?] [$(#[$doc])*]] [0] [] [] $($methods)* }
         }
+        #[allow(unused_imports)]
         pub use $m::$Trait;
     };
 
