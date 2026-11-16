@@ -17,6 +17,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 use arc_swap::ArcSwapOption;
+use busbar_contract::json::{self, JsonContainerTrait as _, JsonValueTrait as _};
 use busbar_plugin_abi::fail::{refused, CallError};
 use busbar_plugin_abi::host::Host;
 use busbar_plugin_abi::host_side::answer::Answer;
@@ -310,7 +311,7 @@ impl Images {
     /// binding's credential mode and O_SCOPE (§12.18 "credential mode").
     pub fn style_flags(&self, identity: &str, style: &str) -> u64 {
         let Some(entry) = self
-            .images
+            .entries
             .iter()
             .find(|e| e.described.kind == KindCode::Auth && &*e.identity == identity)
         else {
@@ -387,7 +388,7 @@ impl Images {
         module: &str,
     ) -> Option<(&str, &'static ErrorBook, &[u32; 64])> {
         let hit = self
-            .images
+            .entries
             .iter()
             .find(|e| &*e.identity == module)
             .or_else(|| {
