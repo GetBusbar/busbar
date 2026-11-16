@@ -319,6 +319,18 @@ pub struct HookStatus {
     pub metrics: Option<Vec<serde_json::Value>>,
 }
 
+/// Puts a hook's read of the request's content on record before the hook is sent that content:
+/// the audit step every content-reading hook call passes first. The rewrite pass hands one to
+/// [`RoutingPolicy::transform_recording`] so a failed rewrite's `on_error` fallback is recorded
+/// exactly as the gate path's fallback is.
+#[async_trait::async_trait]
+pub trait ReadRecorder: Send + Sync {
+    /// Record that `hook` reads the request (and, with `identity`, the caller identity). `true`
+    /// once the read is on record; `false` when it could not be recorded, and the hook must then
+    /// not be sent the content.
+    async fn record(&self, hook: &str, identity: bool) -> bool;
+}
+
 /// THE transport-agnostic contract. webhook / socket / native all implement this.
 #[async_trait::async_trait]
 pub trait RoutingPolicy: Send + Sync + 'static {
@@ -356,6 +368,19 @@ pub trait RoutingPolicy: Send + Sync + 'static {
         _budget: std::time::Duration,
     ) -> TransformOutcome {
         TransformOutcome::Abstain
+    }
+
+    /// [`Self::transform`] as the rewrite pass calls it, with the unit's [`ReadRecorder`]. A
+    /// rewrite whose failure hands the request on to another hook (the host's `on_error`
+    /// decorator naming a fallback) records that hook's read through `reads` before sending it the
+    /// request. DEFAULT: [`Self::transform`]; only that decorator overrides it.
+    async fn transform_recording(
+        &self,
+        req: &RoutingRequest<'_>,
+        budget: std::time::Duration,
+        _reads: &dyn ReadRecorder,
+    ) -> TransformOutcome {
+        self.transform(req, budget).await
     }
 
     /// Whether a REWRITE this hook answered that the plane then refuses to apply (one naming a
