@@ -61,7 +61,7 @@ fn surface(p: &'static LinkedPlugin) {
     suites::transport(p, b"{}", &tc);
     suites::migrate(p, b"{}", FakeNeeds::new(), MigrateExpect::Refused(0));
     suites::store(p, b"{}", FakeNeeds::new());
-    suites::secret(p, b"{}", FakeNeeds::new(), &[]);
+    suites::secret(p, b"{}", FakeNeeds::new(), &[], &[]);
     suites::hook(p, b"{}", FakeNeeds::new());
     suites::export(p, b"{}", FakeNeeds::new());
 }
