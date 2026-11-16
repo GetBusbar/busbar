@@ -1120,6 +1120,31 @@ async fn an_arrival_opens_its_claims_span_with_the_units_forward_span_beneath_it
     assert_ne!(forward.1, Some("test_arrival"), "{opened:?}");
 }
 
+#[tokio::test]
+async fn serving_generation_retains_its_exact_dispatch_snapshot_without_a_route_slot() {
+    let mut g = governed("generation-owned-routes", false).await;
+    let routes = session_custody_routes(&mut g, false);
+    let snapshot = Arc::downgrade(&routes.snapshot);
+    let generation = routes
+        .generation
+        .clone()
+        .expect("a served plane owns a generation");
+    assert!(Arc::ptr_eq(
+        generation.core(),
+        &routes.served.planes[0].kernel
+    ));
+    drop(routes);
+    assert!(
+        snapshot.upgrade().is_some(),
+        "retained invocation generation owns dispatch"
+    );
+    drop(generation);
+    assert!(
+        snapshot.upgrade().is_none(),
+        "no weak route registry keeps a retired snapshot alive"
+    );
+}
+
 fn session_custody_routes(g: &mut Governed, pools_plane: bool) -> Arc<super::DataRoutes> {
     g.router = axum::Router::new();
     let served = std::mem::take(&mut g.served);
