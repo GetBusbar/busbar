@@ -2609,6 +2609,12 @@ pub mod login;
 pub mod instances;
 pub mod login_limits;
 
+pub mod chain_run;
+pub mod login_facts;
+pub mod route_chain;
+pub mod sight_redirect;
+pub mod upstream_binding;
+
 #[cfg(test)]
 #[path = "tests/tests.rs"]
 mod tests;
