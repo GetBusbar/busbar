@@ -127,3 +127,25 @@ fn the_cap_returns_the_extra_conn_and_ids_ride_along() {
     assert_eq!(pool.take(&k).map(|p| p.id), Some(1));
     assert_eq!(pool.idle(), 0);
 }
+
+/// SEC-M5: authenticated sessions belong to an instance, even at identical endpoints.
+#[test]
+fn pooled_sessions_never_cross_instance_boundaries() {
+    for dest in ["db:5432", "unix:/run/database.sock"] {
+        for tls in [Tls::None, Tls::Direct, Tls::Upgraded] {
+            let pool = NeedPool::with_hasher(4, One);
+            let owner = NeedKey {
+                instance: 1,
+                tls,
+                ..key(dest)
+            };
+            let stranger = NeedKey {
+                instance: 2,
+                ..owner.clone()
+            };
+            pool.put(owner.clone(), pooled(41)).unwrap();
+            assert!(pool.take(&stranger).is_none(), "another instance at {dest}");
+            assert_eq!(pool.take(&owner).unwrap().id, 41, "owner retains reuse");
+        }
+    }
+}
