@@ -1,7 +1,11 @@
 # The Q24 wipe proofs (busbar-plugin-test `canary_scan`) read freed memory back, so their test
 # process keeps freed pages mapped: jemalloc's decay is off (UNSAFE-MIN §4.4). `.cargo/config.toml`
 # sets the same variable for `cargo test`; a nextest run from an archive does not always apply a
-# cargo `[env]` table, so the binary that needs it is given it here, by its own name.
-[[profile.default.overrides]]
+# cargo `[env]` table, so the binary that needs it is given it by a setup script, by its own name
+# (a per-test override has no environment key, so the variable never reached the process).
+[scripts.setup.canary-jemalloc]
+command = ["sh", "-c", "echo _RJEM_MALLOC_CONF=dirty_decay_ms:-1,muzzy_decay_ms:-1 >> \"$NEXTEST_ENV\""]
+
+[[profile.default.scripts]]
 filter = 'binary(=canary_scan)'
-setenv = { _RJEM_MALLOC_CONF = "dirty_decay_ms:-1,muzzy_decay_ms:-1" }
+setup = 'canary-jemalloc'

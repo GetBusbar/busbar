@@ -14,7 +14,7 @@ use busbar_plugin_abi::fail::Fail;
 use busbar_plugin_abi::host::Host;
 use busbar_plugin_abi::need::ChainBytes;
 use busbar_plugin_abi::plugin::{Describe, Endpoints, Open};
-use busbar_plugin_abi::records::{Reply, Writer};
+use busbar_plugin_abi::records::{tag, Records, Reply, Writer};
 use busbar_plugin_abi::Secret;
 
 type Entries = HashMap<String, String>;
@@ -28,6 +28,16 @@ fn entries(config: &[u8]) -> Result<Entries, Fail> {
     busbar_contract::json::parse::<Entries>(config).map_err(|_| {
         Fail::refused_because(R_CONFIG, "config must be an object of name to text value")
     })
+}
+
+/// The reference's settings object: the request is one CONFIG record whose body is the object (IF 8.2, the
+/// loader's `encode_reference`); bytes that are not a record stream are the object itself.
+fn settings(bytes: &[u8]) -> &[u8] {
+    Records::new(bytes)
+        .next()
+        .and_then(Result::ok)
+        .filter(|rec| rec.tag == tag::CONFIG)
+        .map_or(bytes, |rec| rec.body)
 }
 
 impl Open for MemSecret {
@@ -52,7 +62,7 @@ impl Open for MemSecret {
 impl Secret for MemSecret {
     async fn resolve(&self, _h: &'static Host, reference: ChainBytes) -> Result<Reply, Fail> {
         let name = reference
-            .with(|bytes| busbar_contract::json::parse::<Entries>(bytes))
+            .with(|bytes| busbar_contract::json::parse::<Entries>(settings(bytes)))
             .ok()
             .and_then(|mut object| object.remove("name"))
             .ok_or_else(|| {
