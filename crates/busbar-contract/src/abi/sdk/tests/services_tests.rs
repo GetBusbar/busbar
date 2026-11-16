@@ -1508,8 +1508,8 @@ fn hook_call_reads_pass_rewrite_or_stop_and_refuses_a_bad_in_before_the_host() {
     };
     let s = services(&t);
     let msg = |text: &'static str| [HookMessage { role: "user", text }];
-    let role = "user".to_owned();
-    let text = "stop".to_owned();
+    let role = String::from("user");
+    let text = String::from("stop");
     let borrowed = [HookMessage {
         role: &role,
         text: &text,

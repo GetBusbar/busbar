@@ -81,9 +81,7 @@ fn price_legacy<'a>(
 }
 
 fn input(n: u64) -> BTreeMap<String, u64> {
-    [("input".to_string(), n)]
-        .into_iter()
-        .collect::<BTreeMap<_, _>>()
+    BTreeMap::from([("input".to_string(), n)])
 }
 
 /// **THE WORKED EXAMPLE.** 300,000 tokens before an edit from 20 to 10 micro-units a token, 900,000
@@ -383,15 +381,11 @@ fn exact_provenance_prices_open_classes_and_every_fee_lane_through_tally() {
         )]);
     let history = edited(old_card.clone(), new_card.clone());
     let old = RawRateEra::entry(0, history.entries()[0].id());
-    let units = [
+    let units = BTreeMap::from([
         ("input".to_string(), 10_000),
         (OPEN_CLASS.to_string(), 20_000),
-    ]
-    .into_iter()
-    .collect::<BTreeMap<_, _>>();
-    let plane_fees = [(PER_REQUEST.to_string(), 3), (PER_SESSION.to_string(), 2)]
-        .into_iter()
-        .collect::<BTreeMap<_, _>>();
+    ]);
+    let plane_fees = BTreeMap::from([(PER_REQUEST.to_string(), 3), (PER_SESSION.to_string(), 2)]);
     let fee_lane = plane_fee_lane(PLANE);
     let got = price_raw(
         [("m", old, &units), (fee_lane.as_str(), old, &plane_fees)],
@@ -456,9 +450,7 @@ fn an_old_entry_row_can_straddle_a_nominal_configuration_cutover() {
 
     let before = input(100_000);
     let after = input(200_000);
-    let total = [("input".to_string(), before["input"] + after["input"])]
-        .into_iter()
-        .collect::<BTreeMap<_, _>>();
+    let total = BTreeMap::from([("input".to_string(), before["input"] + after["input"])]);
     let live = card(10.0, 0);
     let got = price_raw(
         [("m", old, &total)],
@@ -502,9 +494,7 @@ fn measurement_dated_readback_prices_only_reported_classes_at_the_serving_entry(
     let old = RawRateEra::entry(0, history.entries()[0].id());
     let new = RawRateEra::entry(EDIT_MS, history.entries()[1].id());
     // This is BudgetCell.cur's raw-class shape: no manufactured token tiers or request fee.
-    let counts = [("input".to_string(), Count::from_micros(8_000_000))]
-        .into_iter()
-        .collect::<BTreeMap<_, _>>();
+    let counts = BTreeMap::from([("input".to_string(), Count::from_micros(8_000_000))]);
     let got = crate::usage::price_dated_counts_raw(
         [(lane.as_str(), old, &counts), (lane.as_str(), new, &counts)],
         [],
@@ -514,9 +504,7 @@ fn measurement_dated_readback_prices_only_reported_classes_at_the_serving_entry(
     )
     .unwrap();
     assert_eq!(got, Money::of_nanos(5_000).unwrap());
-    let unpriced = [("output".to_string(), Count::from_micros(1_000_000))]
-        .into_iter()
-        .collect::<BTreeMap<_, _>>();
+    let unpriced = BTreeMap::from([("output".to_string(), Count::from_micros(1_000_000))]);
     assert!(matches!(
         crate::usage::price_dated_counts_raw(
             [(lane.as_str(), old, &unpriced)],

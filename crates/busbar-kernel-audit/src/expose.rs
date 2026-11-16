@@ -6,7 +6,7 @@
 use std::fmt::Write as _;
 
 use crate::heads::SignedHead;
-use crate::recipe::{visit_fields, FieldSink, DIGEST_RECIPE, DIGEST_RECIPE_V6};
+use crate::recipe::{visit_fields, FieldSink, DIGEST_RECIPE_V7};
 use crate::record::{AuditChain, AuditRecord};
 use crate::sign::{AuditKeySet, SIGNATURE_ALGORITHM, SIGNATURE_DOMAIN};
 
@@ -75,6 +75,7 @@ const GROUPS: &[(&str, &str)] = &[
     ("lines_count", "lines"),
     ("hooks_count", "hooks"),
     ("children_count", "children"),
+    ("attempts_count", "attempts"),
 ];
 
 /// The array a count field opened, as the range read is filling it.
@@ -226,7 +227,7 @@ fn push_head(out: &mut String, head: &SignedHead) {
 pub fn head_body(chain: &AuditChain) -> String {
     let mut out = String::new();
     out.push('{');
-    member_str(&mut out, "recipe", DIGEST_RECIPE);
+    member_str(&mut out, "recipe", DIGEST_RECIPE_V7);
     out.push(',');
     member_str(&mut out, "signature_domain", SIGNATURE_DOMAIN);
     out.push(',');
@@ -244,25 +245,13 @@ pub fn head_body(chain: &AuditChain) -> String {
     out
 }
 
-/// The highest recipe version present in a slice of records, defaulting to v5.
-fn envelope_recipe(records: &[AuditRecord], from: u64, to: u64) -> &'static str {
-    if records
-        .iter()
-        .filter(|r| r.seq >= from && r.seq <= to)
-        .any(|r| matches!(r.recipe, crate::recipe::Recipe::V6))
-    {
-        DIGEST_RECIPE_V6
-    } else {
-        DIGEST_RECIPE
-    }
-}
-
-/// THE RANGE READ: records by position, `from` through `to` inclusive.
+/// THE RANGE READ: records by position, `from` through `to` inclusive. The envelope names the
+/// recipe this build seals under; every record names its own.
 #[must_use]
 pub fn range_body(chain: &AuditChain, records: &[AuditRecord], from: u64, to: u64) -> String {
     let mut out = String::new();
     out.push('{');
-    member_str(&mut out, "recipe", envelope_recipe(records, from, to));
+    member_str(&mut out, "recipe", DIGEST_RECIPE_V7);
     out.push(',');
     member_str(&mut out, "signature_domain", SIGNATURE_DOMAIN);
     out.push(',');
@@ -313,7 +302,7 @@ fn push_records(out: &mut String, records: &[AuditRecord], from: u64, to: u64) {
 pub fn keys_body(keys: &AuditKeySet) -> String {
     let mut out = String::new();
     out.push('{');
-    member_str(&mut out, "recipe", DIGEST_RECIPE);
+    member_str(&mut out, "recipe", DIGEST_RECIPE_V7);
     out.push(',');
     member_str(&mut out, "signature_domain", SIGNATURE_DOMAIN);
     out.push(',');

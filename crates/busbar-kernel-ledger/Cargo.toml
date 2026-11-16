@@ -21,5 +21,11 @@ busbar-contract = { path = "../busbar-contract" }
 serde = { workspace = true }
 foldhash = { workspace = true }
 
+[dev-dependencies]
+stats_alloc = { workspace = true }
+
+[target.'cfg(not(target_env = "msvc"))'.dev-dependencies]
+tikv-jemallocator = { workspace = true }
+
 [lints]
 workspace = true

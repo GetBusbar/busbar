@@ -109,6 +109,7 @@ const _: () = {
     let _: fn(&b::ed25519::SigningKey, &[u8]) -> [u8; 64] = b::ed25519::SigningKey::sign;
     let _: fn(&b::ed25519::SigningKey) -> b::ed25519::VerifyingKey =
         b::ed25519::SigningKey::verifying_key;
+    let _: fn(&[u8; 32]) -> R<()> = b::ed25519::validate_public_key;
     let _: fn(&[u8; 32]) -> R<b::ed25519::VerifyingKey> = b::ed25519::VerifyingKey::from_bytes;
     let _: fn(&[u8]) -> R<b::ed25519::VerifyingKey> = b::ed25519::VerifyingKey::from_spki;
     let _: fn(&b::ed25519::VerifyingKey) -> [u8; 32] = b::ed25519::VerifyingKey::to_bytes;

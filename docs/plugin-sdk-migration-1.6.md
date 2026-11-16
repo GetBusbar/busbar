@@ -5,8 +5,8 @@ validated memory ABI for linked and dynamically loaded plugins. An incompatible 
 kind version is refused before the plugin opens. Product version 1.6.0 does not mean that every
 unreleased development SDK revision is binary compatible.
 
-The current mechanism is **3**. Rebuild every linked or dropped plugin against the
-current immutable SDK pin. A mechanism-2 bundle is rejected before loading its library
+The current mechanism is **2**, from `abi::versions::MECHANISM`. Rebuild every linked or dropped plugin against the
+current immutable SDK pin. A bundle with a different mechanism is rejected before loading its library
 or calling OPEN; it cannot obtain the new host authority through a compatibility alias.
 This change does not change the seven kind wire layouts or customer persistence formats.
 
@@ -37,7 +37,7 @@ Build with `panic = "unwind"`. The SDK trampolines contain panics and report fau
 ## Start from the canonical scaffold
 
 Use the shared fleet generator's `plugin new <kind> <name>`.
-Add `--enterprise` for private BusbarInc source. The command creates a local repository; its
+Add `--enterprise` for private source. The command creates a local repository; its
 package identities must enter the trusted admission policy before publication through GitLab.
 Public mirrors follow qualified canonical dev publication. Private repositories and artifacts
 never enter a public mirror.
@@ -57,7 +57,9 @@ and linked/dropped loading, wrong-kind and refusal checks. There is no second en
 | Transport | `abi::sdk::life`, typed transport slots | Frame or carry bytes using the host's granted I/O facilities. |
 
 The kind's `Ops` and its `ABI_VERSION` live under `abi::<kind>`; the current store wire is
-`abi::store::v4`. Use SDK constants and generated headers rather than copying numeric versions.
+`abi::store::v4`. That Rust module name is not the numeric wire version: the 1.6 store wire
+version is **3**, from `abi::versions::STORE`; the shared mechanism version is **2**. Use SDK
+constants and generated headers rather than copying numeric versions.
 
 ## Kind-bound access
 

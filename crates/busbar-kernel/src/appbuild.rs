@@ -2290,12 +2290,18 @@ async fn build_app_native(
         .iter()
         .map(|(model, &idx)| (model.as_str(), idx))
         .collect();
-    let tslots = Arc::new(telemetry::AppSlots::build(
+    let mut tslots = telemetry::AppSlots::build(
         &ts_pools,
         &ts_by_model,
         |idx| lane_inputs.get(idx).map(|lane| lane.model.as_str()),
         crate::plane_driver::dispatch::fallback_key(),
-    ));
+    );
+    tslots.attach_lane_durations(
+        |idx| lane_inputs.get(idx).map(|lane| lane.model.as_str()),
+        |idx| lane_inputs.get(idx).map(|lane| lane.provider.as_str()),
+        crate::telemetry::max_lane_series(),
+    );
+    let tslots = Arc::new(tslots);
 
     let config_tables = Arc::new(busbar_kernel::plane_driver::route_tables::ConfigTables::of(
         &lane_inputs,
@@ -2605,6 +2611,14 @@ async fn build_app_native(
     app.config_pending_restart = prior
         .map(|app| app.config_pending_restart.clone())
         .unwrap_or_default();
+    if let Some(prior) = prior {
+        app.config_generation = Arc::clone(&prior.config_generation);
+    }
+    app.require_if_match = cfg
+        .auth
+        .as_ref()
+        .and_then(|a| a.policy.require_if_match)
+        .unwrap_or(false);
     Ok((
         app,
         rotate_gov_credentials,

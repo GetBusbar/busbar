@@ -4,10 +4,6 @@
 use super::*;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 
-fn deadline_passed(deadline: std::time::Instant) -> bool {
-    std::time::Instant::now() >= deadline
-}
-
 struct EchoPlane;
 
 #[async_trait::async_trait]
@@ -223,7 +219,7 @@ fn a_finished_handler_leaves_the_inflight_registry_empty() {
 
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     while shared.inflight.load(std::sync::atomic::Ordering::Acquire) > 0
-        && !deadline_passed(deadline)
+        && std::time::Instant::now() < deadline
     {
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
@@ -271,7 +267,7 @@ async fn a_panicking_handler_releases_its_inflight_slot() {
 
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
     while shared.inflight.load(std::sync::atomic::Ordering::Acquire) > 0
-        && !deadline_passed(deadline)
+        && std::time::Instant::now() < deadline
     {
         tokio::time::sleep(std::time::Duration::from_millis(5)).await;
     }

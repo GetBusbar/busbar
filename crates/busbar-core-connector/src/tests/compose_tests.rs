@@ -185,7 +185,7 @@ fn a_silent_far_end_is_held_to_the_framers_deadline() {
             .await
             .expect("the deadline fires, the connection does not hang");
         assert_eq!(r, Err(Failure::Timeout));
-        let took = crate::support::since(start);
+        let took = start.elapsed();
         assert!(
             took >= Duration::from_millis(300),
             "not before the deadline: {took:?}"
@@ -740,8 +740,8 @@ fn a_holder_that_does_not_read_holds_the_far_end_back() {
             .expect("dials");
         let line = crate::line::Line::new(conn);
         let waker = std::task::Waker::noop();
-        // About 2 s of 1 ms polls, counted rather than read off the clock.
-        for _ in 0..2000 {
+        let started = Instant::now();
+        while started.elapsed() < Duration::from_secs(2) {
             let _ = line.poll_ready(EXCHANGE_STREAM, &mut std::task::Context::from_waker(waker));
             tokio::time::sleep(Duration::from_millis(1)).await;
         }
@@ -784,9 +784,9 @@ fn a_far_end_that_never_reads_is_not_read_past_the_answers_it_is_owed() {
         ));
         let mut c = Connection::dial(door, &crate::support::via(), dial(&far)).expect("dials");
         let waker = std::task::Waker::noop();
+        let started = Instant::now();
         let mut most = 0;
-        // About 3 s of 1 ms polls, counted rather than read off the clock.
-        for _ in 0..3000 {
+        while started.elapsed() < Duration::from_secs(3) {
             while let std::task::Poll::Ready(Ok(Some(_))) =
                 c.poll_piece(&mut std::task::Context::from_waker(waker))
             {}

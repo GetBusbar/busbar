@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Whole keyed records use `audit.v5`; exact fractional records use `audit.v6`.
-//! Legacy records keep their original bytes.
+//! New records use `audit.v7` (recipe `busbar.audit.digest.v7`). Records sealed under `v5` and
+//! `v6` keep `audit.v5` and `audit.v6`, and legacy records keep their original bytes.
 
 use busbar_contract::caps::UnitKey;
 
@@ -19,6 +19,9 @@ pub const JOURNAL_TAG: &str = "audit.v5";
 
 /// Journal encoding for explicitly versioned exact decimal quantities.
 pub(crate) const JOURNAL_TAG_V6: &str = "audit.v6";
+
+/// Journal encoding for recipe `v7`: the `v6` body plus the unit facts after it.
+pub(crate) const JOURNAL_TAG_V7: &str = "audit.v7";
 
 /// The original journal format retained for legacy digest recipes.
 pub(crate) const JOURNAL_TAG_V4: &str = "audit.v4";
@@ -43,6 +46,7 @@ impl std::error::Error for FieldTooLong {}
 pub fn journal_body(record: &AuditRecord) -> Result<Vec<u8>, FieldTooLong> {
     let mut w = Writer::new();
     w.text(match record.recipe {
+        crate::recipe::Recipe::V7 => JOURNAL_TAG_V7,
         crate::recipe::Recipe::V6 => JOURNAL_TAG_V6,
         crate::recipe::Recipe::V5 => JOURNAL_TAG,
         _ => JOURNAL_TAG_V4,
@@ -78,7 +82,7 @@ pub fn journal_body(record: &AuditRecord) -> Result<Vec<u8>, FieldTooLong> {
     w.num(record.usage.lines.len() as u64);
     for line in &record.usage.lines {
         w.text(line.class.as_str());
-        if matches!(record.recipe, crate::recipe::Recipe::V6) {
+        if record.recipe.exact_quantities() {
             w.text_fmt(format_args!("{}", line.quantity));
         } else {
             w.num(
@@ -100,7 +104,7 @@ pub fn journal_body(record: &AuditRecord) -> Result<Vec<u8>, FieldTooLong> {
         | crate::recipe::Recipe::V4 {
             legacy_rate_card_version,
         } => w.num(legacy_rate_card_version),
-        crate::recipe::Recipe::V5 | crate::recipe::Recipe::V6 => {
+        crate::recipe::Recipe::V5 | crate::recipe::Recipe::V6 | crate::recipe::Recipe::V7 => {
             w.num(u64::from(record.usage.rate_card_version.is_some()));
             if let Some(key) = &record.usage.rate_card_version {
                 w.bytes(key);
@@ -127,7 +131,28 @@ pub fn journal_body(record: &AuditRecord) -> Result<Vec<u8>, FieldTooLong> {
         w.num(child.get());
     }
     w.opt_text(record.correlation_hash.as_deref());
+    if matches!(record.recipe, crate::recipe::Recipe::V7) {
+        write_unit_facts(&mut w, &record.unit);
+    }
     w.finish()
+}
+
+/// The `v7` tail, in the recipe's order.
+fn write_unit_facts(w: &mut Writer, unit: &crate::record::UnitFacts) {
+    w.num(unit.wall_ms);
+    w.text(&unit.attribution);
+    w.bytes(&unit.boot_nonce);
+    w.num(u64::from(unit.status));
+    w.num(unit.ttft_us);
+    w.num(unit.total_us);
+    w.num(unit.attempts_used().count() as u64);
+    for attempt in unit.attempts_used() {
+        w.text(attempt.outcome.as_str());
+        w.text(&attempt.target);
+        w.text(&attempt.reason);
+        w.num(attempt.us);
+    }
+    w.num(u64::from(unit.attempts_total));
 }
 
 fn write_source(w: &mut Writer, source: &QuantitySource) {

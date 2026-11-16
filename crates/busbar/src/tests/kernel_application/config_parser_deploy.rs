@@ -49,6 +49,7 @@ pub(crate) fn base_deploy() -> DeployCfg {
         export: Default::default(),
         health: HealthDefaultsCfg::default(),
         routing: RoutingCfg::default(),
+        telemetry: Default::default(),
     }
 }
 

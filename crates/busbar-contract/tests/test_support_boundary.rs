@@ -257,3 +257,36 @@ fn a_lane_lends_its_paths_and_keying() {
     let sealed = b.seal();
     assert!(!sealed.lane.is_null());
 }
+
+#[test]
+fn a_verify_lends_its_named_lines() {
+    use busbar_contract::abi::auth::VerifyIn;
+    use busbar_contract::abi::mechanism::call::BLOB_OCTETS;
+    let mut v = Loans::<VerifyIn>::new();
+    v.lines(|l| {
+        l.push(|line| {
+            line.name("authorization").value(b"Bearer t0", BLOB_OCTETS);
+        });
+        l.push(|line| {
+            line.name("x-id").value(b"7", BLOB_OCTETS);
+        });
+    });
+    let sealed = v.seal();
+    assert!(!sealed.lines.is_null());
+    assert_eq!(sealed.lines_len, 2, "both named lines are lent");
+}
+
+#[test]
+fn a_check_lends_its_instances() {
+    use busbar_contract::abi::export::CheckIn;
+    use busbar_contract::abi::mechanism::call::BLOB_JSON;
+    let mut c = Loans::<CheckIn>::new();
+    c.instances(|l| {
+        l.push(|i| {
+            i.name("primary").settings(b"{}", BLOB_JSON);
+        });
+    });
+    let sealed = c.seal();
+    assert!(!sealed.instances.is_null());
+    assert_eq!(sealed.instances_len, 1, "the instance is lent");
+}

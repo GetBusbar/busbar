@@ -207,6 +207,7 @@ impl ConfiguredView {
         put!("export", exporters_view(&cfg.export_defs, sources));
         put!("hooks", hooks_view(&cfg.hooks, sources));
         put!("global_hooks", cfg.global_hooks);
+        put!("hook_attachments", plane_attachments_view(&cfg.plane_defs));
 
         // No provider URL, credential reference or plane-owned value is serialized. The names of
         // opaque provider options explain coverage without retaining any of their values.
@@ -499,6 +500,26 @@ fn plugin_view_with(
         "settings_keys": settings.key_names(),
         "settings_public": settings.snapshot_view(&crate::seal::acquire(), public, sources),
     })
+}
+
+/// Every plane section's hook attach lists, by config section: the section's own `hooks:` list and
+/// one list per configured instance. An instance with no hooks is present with an empty list, so a
+/// reader can tell "configured, nothing attached" from "not configured".
+fn plane_attachments_view(
+    defs: &BTreeMap<&'static str, Box<dyn super::plane_sections::PlaneCfg>>,
+) -> Value {
+    let sections: BTreeMap<&str, Value> = defs
+        .iter()
+        .map(|(section, def)| {
+            let gates = def.container_gates();
+            let entries: BTreeMap<String, Vec<String>> = gates.containers.into_iter().collect();
+            (
+                *section,
+                json!({"section": gates.section_hooks, "entries": entries}),
+            )
+        })
+        .collect();
+    json!(sections)
 }
 
 #[cfg(test)]

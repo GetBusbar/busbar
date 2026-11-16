@@ -2,7 +2,7 @@
 
 Busbar is the **reliability layer for your AI traffic**: the breaker-and-failover control plane that sits between your application and every provider it calls. This page is for the person deciding whether to adopt it: the specific problems it solves, what it *enables* that you would otherwise have to build yourself, and an honest comparison with the tools you are probably weighing it against.
 
-It shares an arena with multi-provider proxies and hosted routers, but the priorities are different. Where those forward requests and list models, Busbar is built reliability-first. It knows whose fault a failure is. It fails over inside the request, before your user sees a byte. And it translates across six wire protocols through a superset intermediate representation rather than an OpenAI-shaped lowest common denominator, so a provider's native features are carried, not flattened, wherever the target has a shape for them ([what that covers, and what it does not yet](https://getbusbar.com/docs/protocols/#what-lossless-means-here)).
+It shares an arena with multi-provider proxies and hosted routers, but the priorities are different. Where those forward requests and list models, Busbar is built reliability-first. It knows whose fault a failure is. It fails over inside the request, before your user sees a byte. And it translates across six wire protocols through a superset intermediate representation rather than an OpenAI-shaped lowest common denominator, so a provider's native features are carried, not flattened, wherever the target has a shape for them ([what that covers, and what it does not yet](/docs/protocols/#what-lossless-means-here)).
 
 ---
 
@@ -28,7 +28,7 @@ Busbar's governance layer issues virtual keys: signed, expiring bearer tokens sc
 
 Costs are computed from tokens, not stored as dollars. The store accumulates immutable per-model token counts; every spend figure is derived at read time as `tokens x rate_card + requests x per_request_fee`. Rate cards are a dated history: a card edit prices what follows it and leaves past windows at the price they were earned at, and a mispriced past window is repaired by an attributed back-dated correction that reprices exactly the window it names, with no booked row rewritten. The rate numbers are abstract cost units, so Busbar attaches no currency and does pure integer math; symbols and FX are your dashboard's concern.
 
-One operational caveat worth stating plainly. RPM limits are enforced precisely (the counter is incremented synchronously on admission). Budget caps are hard and atomic: at admission Busbar derives every bucket's spend fresh from its token ledger and admits only if the key and every ancestor budget group are under cap, charging the whole chain or nothing in one critical section. A 429 `insufficient_quota` names which bucket blocked. Because admission is in-memory and never touches the durable store, the cap holds even when the store is unreachable. That in-memory speed carries one honest limit: the hard cap is enforced **per node**. With N Busbar nodes splitting traffic behind a shared store, each node enforces from its own counters and reconciles durably through additive flushes, so between flushes the fleet can admit up to roughly N times a configured cap. The cap is not a synchronous cluster-wide gate. TPM limits remain best-effort under concurrency, since token usage is only known after the response.
+Limits are checked atomically at admission against the node's current counters, across the key's entire group chain. Request and concurrency limits control admission; token usage and its cost are learned after work runs, so already admitted work can exceed a usage or budget threshold. These checks are node-local, not a synchronous fleet-wide reservation. A shared store reconciles accounting but does not turn independent nodes into a globally atomic admission gate. See the governance guide for counting, reset and outage behavior.
 
 ### Your data path is also your security perimeter
 
@@ -48,7 +48,17 @@ Then the constraint moves. A team whose compliance posture locks them to one pro
 
 The detailed comparisons live on their own pages, with every claim about the other tools cited to their own documentation and re-checked against it: **[Busbar vs LiteLLM](https://getbusbar.com/vs/litellm/)** and **[Busbar vs OpenRouter](https://getbusbar.com/vs/openrouter/)**.
 
-The short version. LiteLLM is a Python-native router with a big preconfigured catalog; if you want an in-process Python library, it's the right call. Busbar is a different kind of tool: no privileged protocol (all six first-class, in both directions), a fault-attributed circuit breaker rather than a cooldown timer, and a gateway whose own cost is measured in microseconds and megabytes. OpenRouter is a hosted service, and the deciding question is whether prompts passing through a third party is acceptable for your application: if it is, OpenRouter is excellent; if it isn't, Busbar runs in your infrastructure and nothing enters the data path but the providers you configure.
+Busbar gives your platform team three concrete advantages: keep native model clients while
+changing providers, make tool-contract approval an execution requirement, and recover according
+to the failure instead of repeating recovery code in every application. The business payoff is
+fewer integration rewrites, reviewable upstream changes and consistent operation across teams.
+
+LiteLLM offers a Python SDK and gateway, with routing in Rust since v1.110.0. The meaningful
+comparison is the client-to-backend protocol path, the dispatch decision after a tool changes,
+and the recovery workflow. [Compare Busbar and LiteLLM](/vs/litellm/) for the documented
+technical differences and versioned measurements. OpenRouter is a hosted service; choose a
+self-hosted Busbar deployment when you need to operate the gateway inside your infrastructure
+and select the upstream providers yourself.
 
 ---
 
@@ -60,11 +70,11 @@ Busbar ships as a single self-contained binary: no runtime, no interpreter, no s
 2. Set the environment variables your config references (one per provider key).
 3. Run the binary.
 
-There is no Python environment to manage, no Node runtime, and no database to provision: governance runs on an in-memory store (`store: {module: memory}`, ephemeral RAM, zero setup; the block is required in 1.6.0 and the first-boot migration inserts it), and durability is an opt-in you point at a `sqlite`, `postgres`, `mysql`, or `valkey` store plugin. No sidecar is required. Health, metrics, and management traffic all pass through the same process on the same port.
+There is no Python environment to manage, no Node runtime, and no database to provision: governance runs on an in-memory store (`store: {module: memory}`, ephemeral RAM, zero setup; the block is required in 1.6.0 and `busbar --migrate-config` inserts it), and durability is an opt-in you point at a `sqlite`, `postgres`, `mysql`, or `valkey` store plugin. No sidecar is required. Administration uses a separate listener, defaulting to `127.0.0.1:8081`. Health and telemetry routes have their own listener and authentication rules; see [Operations](operations.md#listeners-and-health-checks).
 
 **Observability is built in.** Prometheus metrics are exposed at `/metrics` with bounded cardinality: metric labels use configured pool names and fixed enumerations, never raw model strings from client requests. OTLP trace export and a request-log webhook are both optional and configurable. The `/healthz` endpoint is side-effect-free (it never steals a recovery probe) and safe for high-frequency load balancer probing. Note that `/metrics` and `/stats` are not auth-exempt, they go through the same auth check as request traffic, since telemetry is itself a fingerprinting surface.
 
-**Security defaults are strict.** Provider `base_url` values are guarded against cloud-metadata/IMDS endpoints (including alternate IP encodings). Loopback, RFC-1918, CGNAT and other private addresses are refused for providers by default (`advanced.block_private_addresses: true`); a local-model upstream (e.g. Ollama/vLLM) is admitted by naming it in `advanced.allow_destinations`. Plain `http://` is only allowed for those private/loopback hosts: public hosts must use `https://`. Observability sink URLs (OTLP endpoint, request-log webhook) apply a stricter guard that additionally blocks loopback, link-local, RFC-1918, and broadcast addresses. Auth failures return native-protocol error envelopes with no Busbar vocabulary, an Anthropic SDK sees an Anthropic 401, an OpenAI SDK sees `invalid_api_key`, a Gemini SDK sees a 400 `INVALID_ARGUMENT`, and a Bedrock SDK sees a 403 `AccessDeniedException`. Admin endpoints are separately guarded by an admin token and disabled entirely if none is configured.
+**Security defaults are strict.** Provider `base_url` values are guarded against cloud-metadata/IMDS endpoints (including alternate IP encodings). Loopback, RFC-1918, CGNAT and other private addresses are refused for providers by default (`advanced.block_private_addresses: true`); a local-model upstream (e.g. Ollama/vLLM) is admitted by naming it in `advanced.allow_destinations`. Plain `http://` is only allowed for those private/loopback hosts: public hosts must use `https://`. Observability sink URLs (OTLP endpoint, request-log webhook) apply a stricter guard that additionally blocks loopback, link-local, RFC-1918, and broadcast addresses. Auth failures return native-protocol error envelopes with no Busbar vocabulary, an Anthropic SDK sees an Anthropic 401, an OpenAI SDK sees `invalid_api_key`, a Gemini SDK sees a 400 `INVALID_ARGUMENT`, and a Bedrock SDK sees a 403 `AccessDeniedException`. Admin authentication is a separate configured chain. An explicitly empty admin chain permits open access; configure authentication and any required listener or mTLS restrictions before exposing management routes.
 
 **The request body cap is 32 MiB** (`DefaultBodyLimit`), enforced before handler code runs, with protocol-native 413 responses (not bare text).
 

@@ -1128,7 +1128,6 @@ documented|changelog|no-keygen-at-boot	PASS	exit 1; [2m2026-09-16T22:15:36.2047
 documented|changelog|no-per-key-gauge	PASS	HTTP 200; usage Δ {}	
 documented|changelog|retry-after-floor	PASS	HTTP 503; usage Δ {"requests":1}	
 documented|changelog|spend-metrics-labelled	PASS	HTTP 200; usage Δ {}	
-documented|changelog|stats-reasons	PASS	HTTP 200; usage Δ {}	
 documented|changelog|validate-checks	PASS	script documented-validate-checks.sh: status 0	
 documented|changelog|validate-list-plugins	PASS	exit 0; plugins dir: plugins (plugins.enabled: false) no plugin tarb	
 documented|changelog|worker-threads-zero	PASS	exit 0; ok: config valid — 6 provider(s), 9 model(s), 7 pool(s)   	
@@ -1187,7 +1186,6 @@ http.crosscut|api-prefix|data	PASS	HTTP 401; usage Δ {}
 http.crosscut|api|data	PASS	HTTP 401; usage Δ {}	
 http.crosscut|auth-token|GET-none	PASS	HTTP 200; usage Δ {}	
 http.crosscut|auth-token|POST-empty	PASS	HTTP 401; usage Δ {}	
-http.crosscut|bearer-and-x-api-key	PASS	HTTP 200; usage Δ {}	
 http.crosscut|unknown-path|anthropic-beta	PASS	HTTP 404; usage Δ {}	
 http.crosscut|unknown-path|anthropic-header	PASS	HTTP 404; usage Δ {}	
 http.crosscut|unknown-path|bare	PASS	HTTP 404; usage Δ {}	
@@ -2260,10 +2258,8 @@ neutrality|routes|a2a-shaped-404	PASS	HTTP 404; usage Δ {}
 neutrality|routes|admin-openapi-paths	PASS	HTTP 200; usage Δ {}	
 neutrality|routes|healthz	PASS	HTTP 200; usage Δ {}	
 neutrality|routes|mcp-shaped-404	PASS	HTTP 404; usage Δ {}	
-neutrality|routes|stats	PASS	HTTP 200; usage Δ {}	
 neutrality|routes|v1-models	PASS	HTTP 200; usage Δ {}	
 neutrality|routes|voice-shaped-404	PASS	HTTP 404; usage Δ {}	
-neutrality|stats-idle-zero	PASS	HTTP 200; usage Δ {}	
 ops.raw|header-order	PASS	capture	
 ops.scrape|healthz|admin	PASS	HTTP 200; usage Δ {}	
 ops.scrape|healthz|data	PASS	HTTP 200; usage Δ {}	
@@ -2272,7 +2268,6 @@ ops.scrape|metrics|admin-listener	PASS	HTTP 401; usage Δ {}
 ops.scrape|metrics|key	PASS	HTTP 200; usage Δ {}	
 ops.scrape|metrics|no-ledger-series	PASS	HTTP 200; usage Δ {}	
 ops.scrape|metrics|none	PASS	HTTP 401; usage Δ {}	
-ops.scrape|stats|key	PASS	HTTP 200; usage Δ {}	
 ops.scrape|stats|none	PASS	HTTP 401; usage Δ {}	
 ops.scrape|v1betamodels	PASS	HTTP 200; usage Δ {}	
 ops.scrape|v1modelsid|retrieve	PASS	HTTP 405; usage Δ {}	

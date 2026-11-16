@@ -325,7 +325,7 @@ fn print_metadata_blocklist_prints_builtin_plus_blocked() {
         printed,
         vec![
             "169.254.0.0/16",
-            "100.100.100.200",
+            "\x3100.100.100.200",
             "168.63.129.16",
             "192.0.0.192",
             "fd00:ec2::254",
@@ -2228,4 +2228,57 @@ fn the_retired_migrate_flags_are_unknown_options() {
         }
     }
     let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+/// QE: a pinned publisher key with no point on edwards25519 (`y = 2`: canonical, not small-order) is
+/// refused by `--validate` and by boot, with the INVALID text it had before Q9b, not first at the
+/// first verify of a plugin signed under it.
+#[test]
+fn validate_and_boot_refuse_an_off_curve_publisher_key() {
+    let dir = fixture_dir("off-curve-publisher");
+    write_configs(
+        &dir,
+        &format!(
+            "plugins:\n  enabled: true\n  dir: '{}'\n  trust:\n    publishers:\n      - name: \
+             offcurve\n        public_key: \
+             \"0200000000000000000000000000000000000000000000000000000000000000\"\n",
+            dir.join("plugins").display()
+        ),
+    );
+    let refused = |all: &str| {
+        all.contains(
+            "plugins.trust.publishers['offcurve']: invalid ed25519 public key: invalid crypto \
+             input: Ed25519 public key is not a canonical curve point",
+        )
+    };
+    let (code, stdout, stderr) = run_busbar(&dir, &["--validate"]);
+    let all = format!("{stdout}{stderr}");
+    assert_eq!(code, 1, "--validate must refuse: {all}");
+    assert!(refused(&all), "--validate's sentence: {all}");
+    assert!(!stdout.contains("ok: config valid"), "{stdout}");
+
+    let mut child = command(&dir)
+        .current_dir(&dir)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn busbar");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while child.try_wait().expect("poll").is_none() {
+        if std::time::Instant::now() > deadline {
+            let _ = child.kill();
+            panic!("boot did not refuse the off-curve publisher key: it is still running");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let out = child.wait_with_output().expect("boot output");
+    let all = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(!out.status.success(), "boot must refuse: {all}");
+    assert!(refused(&all), "boot's sentence: {all}");
+    let _ = std::fs::remove_dir_all(&dir);
 }

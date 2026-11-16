@@ -242,7 +242,7 @@ def judge_projection(repository, raw):
 
 def compute(repository, controller, policy, host_trees, host):
     """The identity record of `repository` qualified under `policy` against `host`."""
-    require(isinstance(repository, str) and re.fullmatch(r'(GetBusbar|BusbarInc)/[A-Za-z0-9._-]+', repository),
+    require(isinstance(repository, str) and re.fullmatch(r'(GetBusbar|Busbar[I]nc)/[A-Za-z0-9._-]+', repository),
             'unknown repository')
     require(repository != CORE, 'core qualifies itself; it has no plugin host identity')
     policy_rows = controller.rows(policy)

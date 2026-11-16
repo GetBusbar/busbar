@@ -546,7 +546,7 @@ fn sealed_tarball_expiring(expires: u64) -> Vec<u8> {
         SigningKey::from_bytes(&[0x31; 32]),
         SigningKey::from_bytes(&[0x32; 32]),
     );
-    let envelope = |signed: serde_json::Value, by: &SigningKey| {
+    let envelope = |signed: busbar_contract::json::Value, by: &SigningKey| {
         use crate::root::loader::sign::Signer as _;
         let bytes = wire::canonical(&signed).unwrap();
         let id = wire::key_id(&ReleaseKey::Ed25519(by.verifying_key()));

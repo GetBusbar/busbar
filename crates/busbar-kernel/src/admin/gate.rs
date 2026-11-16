@@ -216,6 +216,28 @@ pub fn admin_envelope_body(code: &str, message: &str) -> String {
     )
 }
 
+/// [`admin_envelope_body`] with the raiser's `reason` and at most one text member of `details`,
+/// for an answer a handler returns as bytes (`/records`' `cursor_mismatch`, `cursor_expired`).
+#[must_use]
+pub fn admin_envelope_body_with(
+    code: &str,
+    reason: Option<&str>,
+    message: &str,
+    detail: Option<(&str, &str)>,
+) -> String {
+    let mut details = serde_json::Map::new();
+    if let Some((name, value)) = detail {
+        details.insert(name.to_owned(), serde_json::Value::from(value));
+    }
+    envelope_text(
+        code,
+        reason,
+        message,
+        &serde_json::Value::Object(details),
+        &current_request_id(),
+    )
+}
+
 /// The admin error envelope response, with the reason `code` defaults to and empty `details`.
 pub fn admin_error_envelope(status: u16, code: &str, message: &str) -> Response {
     admin_error_envelope_with(status, code, None, message, &serde_json::json!({}))
@@ -244,21 +266,51 @@ pub fn admin_error_envelope_with(
     response
 }
 
+/// The one path `GET /whoami` answers on; the gate takes the caller's identity for it.
+pub const WHOAMI_PATH: &str = "/api/v1/admin/whoami";
+
+/// `POST /keys`: the one mutation that takes the caller's identity, to refuse an `admin` grant to a
+/// caller that is not a full operator.
+pub const KEYS_PATH: &str = "/api/v1/admin/keys";
+
 /// The typed `details` of reason `scope_insufficient` (section 1.3): the scope the refused call
 /// needed, and the verb (`null` until per-verb authorization, MR2).
 #[must_use]
 pub fn scope_details(needed_scope: &str) -> serde_json::Value {
-    serde_json::json!({ "needed_scope": needed_scope, "needed_verb": null })
+    scope_details_for(needed_scope, None)
+}
+
+/// [`scope_details`] naming the verb the refused call needed (per-verb authorization, MR2).
+#[must_use]
+pub fn scope_details_for(needed_scope: &str, needed_verb: Option<&str>) -> serde_json::Value {
+    serde_json::json!({ "needed_scope": needed_scope, "needed_verb": needed_verb })
 }
 
 /// The admin 403 for a credential whose scope is below `needed_scope`: code `forbidden`, reason
 /// `scope_insufficient`, with [`scope_details`].
 pub fn scope_insufficient(needed_scope: &str) -> Response {
+    scope_insufficient_for(needed_scope, None)
+}
+
+/// The admin 401 for a presented admin credential refused for the closed `reason`
+/// (`credential_expired`, `credential_revoked` or `credential_invalid`).
+pub fn unauthorized_for(reason: &str) -> Response {
+    admin_error_envelope_with(
+        401,
+        "unauthorized",
+        Some(reason),
+        "missing or invalid admin credential (Bearer or x-admin-token)",
+        &serde_json::json!({}),
+    )
+}
+
+/// [`scope_insufficient`] naming the verb the refused call needed.
+pub fn scope_insufficient_for(needed_scope: &str, needed_verb: Option<&str>) -> Response {
     admin_error_envelope_with(
         403,
         "forbidden",
         Some("scope_insufficient"),
         &format!("this endpoint requires the `{needed_scope}` admin scope"),
-        &scope_details(needed_scope),
+        &scope_details_for(needed_scope, needed_verb),
     )
 }

@@ -68,7 +68,7 @@ pub fn full_operator(door: &AdminDoor) -> bool {
         AdminDoor::Open => true,
         AdminDoor::Identified(_, grants) => grants.allows(Scope::Full),
         AdminDoor::Listed(_, _, list) => list.rungs.allows(Scope::Full),
-        AdminDoor::Denied | AdminDoor::Unavailable(_) => false,
+        AdminDoor::Denied | AdminDoor::Rejected(_) | AdminDoor::Unavailable(_) => false,
     }
 }
 

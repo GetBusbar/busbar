@@ -22,7 +22,7 @@ use crate::v1::contract::AdminError;
 
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-struct DocumentRequest {
+pub(super) struct DocumentRequest {
     #[serde(deserialize_with = "DocumentPatch::deserialize_request")]
     document_patch: DocumentPatch,
     /// Independent edits of the provider catalog, committed atomically with config.yaml edits.
@@ -78,7 +78,7 @@ pub(super) fn configuration_and_restart(app: &App) -> (serde_json::Value, Vec<St
     restart.dedup();
     let Some(view) = app.configured_view.as_ref() else {
         return (
-            json!({"config_version": app.config_version, "state": "unavailable",
+            json!({"config_version": app.config_version, "config_generation": app.config_generation.load(std::sync::atomic::Ordering::Acquire), "state": "unavailable",
             "plane_refresh": observation, "reload_to_apply": restart}),
             restart,
         );
@@ -88,6 +88,7 @@ pub(super) fn configuration_and_restart(app: &App) -> (serde_json::Value, Vec<St
     (
         json!({
             "config_version": app.config_version,
+            "config_generation": app.config_generation.load(std::sync::atomic::Ordering::Acquire),
             "state": if restart.is_empty() { "configured" } else { "restart_pending" },
             "source": "installed_generation",
             "config_locked": app.overlay_path.is_none(),
@@ -98,6 +99,30 @@ pub(super) fn configuration_and_restart(app: &App) -> (serde_json::Value, Vec<St
         restart,
     )
 }
+
+impl DocumentRequest {
+    /// A request that only sets or removes document paths (no catalog edit, no resets).
+    pub(super) fn patch(document_patch: DocumentPatch) -> Self {
+        Self {
+            document_patch,
+            providers_patch: None,
+            reset_document_paths: Vec::new(),
+            reset_providers_paths: Vec::new(),
+        }
+    }
+}
+
+/// How one document edit is reported: its audit row, the version note and the rate origin.
+pub(super) struct EditAudit {
+    pub(super) action: &'static str,
+    pub(super) resource: String,
+    pub(super) origin: String,
+    pub(super) note: String,
+}
+
+/// Builds the edit from the generation the transaction holds; `None` means nothing to change.
+pub(super) type Planner =
+    Box<dyn FnOnce(&App) -> Result<Option<DocumentRequest>, AdminError> + Send>;
 
 pub(super) async fn put(
     handle: Arc<AppHandle>,
@@ -119,19 +144,72 @@ pub(super) async fn put(
         }
     };
     let actor = principal.actor_id().to_owned();
-    let origin = format!("config/settings document patch by {actor}");
-    let changed: Vec<String> = request
-        .document_patch
-        .paths()
-        .map(str::to_owned)
-        .chain(request.reset_document_paths.iter().cloned())
-        .collect();
-    let pending = restart_paths(&changed);
-    let out = config_transaction(&handle, move |txn| {
+    let audit = EditAudit {
+        action: "config.document",
+        resource: "config:document".into(),
+        origin: format!("config/settings document patch by {actor}"),
+        note: "config.document (Store document overlay)".into(),
+    };
+    let installed = match apply(
+        &handle,
+        &actor,
+        expected,
+        audit,
+        Box::new(move |_| Ok(Some(request))),
+    )
+    .await
+    {
+        Ok((installed, _)) => installed,
+        Err(response) => return response,
+    };
+    let (configuration, reload_to_apply) = configuration_and_restart(&installed);
+    with_config_etag(
+        ok_json(
+            StatusCode::OK,
+            &json!({
+                "applied": true,
+                "persisted": true,
+                "config_version": installed.config_version,
+                "configuration": configuration,
+                "reload_to_apply": reload_to_apply,
+                "note": "stored and installed as configuration; reload_to_apply paths require a process restart. plane_refresh observes only synchronous ordinary door callbacks; it does not acknowledge listener, model, credential, fallback, transport, or asynchronous plugin activation",
+            }),
+        ),
+        installed.config_version,
+    )
+}
+
+/// One durable document edit through the config transaction. `Ok((app, false))` is a plan that
+/// found nothing to change: no publication, no audit row. Every refusal is already audited and
+/// rendered as the `Err` response.
+pub(super) async fn apply(
+    handle: &Arc<AppHandle>,
+    actor: &str,
+    expected: Option<u64>,
+    audit: EditAudit,
+    plan: Planner,
+) -> Result<(Arc<App>, bool), Response> {
+    let EditAudit {
+        action,
+        resource,
+        origin,
+        note,
+    } = audit;
+    let out = config_transaction(handle, move |txn| {
         let snapshot = txn.app().clone();
         if let Some(error) = stale_if_match(expected, snapshot.config_version) {
             return Err(error);
         }
+        let Some(request) = plan(snapshot.as_ref())? else {
+            return Ok(Outcome::Value(Ok((snapshot, false))));
+        };
+        let changed: Vec<String> = request
+            .document_patch
+            .paths()
+            .map(str::to_owned)
+            .chain(request.reset_document_paths.iter().cloned())
+            .collect();
+        let pending = restart_paths(&changed);
         let store = snapshot.overlay_path.clone().ok_or_else(|| AdminError::Validation(
             busbar_kernel::config::overlay::NO_WRITABLE_OVERLAY_MSG.into(),
         ))?;
@@ -275,53 +353,31 @@ pub(super) async fn put(
                 origin,
                 async move {
                     if let Some(rotate) = rotate { rotate.await; }
-                    Ok(Outcome::Value(Ok(installed)))
+                    Ok(Outcome::Value(Ok((installed, true))))
                 },
             ))
         }))
     }).await;
     match out {
-        Ok(Ok(installed)) => {
-            super::audit::AUDIT.record_by(
-                "config.document",
-                "config:document",
-                super::audit::OUTCOME_APPLIED,
-                &actor,
-            );
-            installed.record_version(&actor, "config.document (Store document overlay)");
-            let (configuration, reload_to_apply) = configuration_and_restart(&installed);
-            with_config_etag(
-                ok_json(
-                    StatusCode::OK,
-                    &json!({
-                        "applied": true,
-                        "persisted": true,
-                        "config_version": installed.config_version,
-                        "configuration": configuration,
-                        "reload_to_apply": reload_to_apply,
-                        "note": "stored and installed as configuration; reload_to_apply paths require a process restart. plane_refresh observes only synchronous ordinary door callbacks; it does not acknowledge listener, model, credential, fallback, transport, or asynchronous plugin activation",
-                    }),
-                ),
-                installed.config_version,
-            )
+        Ok(Ok((installed, changed))) => {
+            if changed {
+                super::audit::AUDIT.record_by(
+                    action,
+                    &resource,
+                    super::audit::OUTCOME_APPLIED,
+                    actor,
+                );
+                installed.record_version(actor, &note);
+            }
+            Ok((installed, changed))
         }
         Ok(Err((error, cond))) => {
-            super::audit::AUDIT.record_by(
-                "config.document",
-                "config:document",
-                super::audit::OUTCOME_REJECTED,
-                &actor,
-            );
-            super::err_json_cond(&error, cond)
+            super::audit::AUDIT.record_by(action, &resource, super::audit::OUTCOME_REJECTED, actor);
+            Err(super::err_json_cond(&error, cond))
         }
         Err(error) => {
-            super::audit::AUDIT.record_by(
-                "config.document",
-                "config:document",
-                super::audit::OUTCOME_REJECTED,
-                &actor,
-            );
-            err_json(&error)
+            super::audit::AUDIT.record_by(action, &resource, super::audit::OUTCOME_REJECTED, actor);
+            Err(err_json(&error))
         }
     }
 }

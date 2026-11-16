@@ -628,8 +628,8 @@ diagnostics! {
     /// A plugin is present in the directory but not loaded because the trust policy skips it. Lives in `preflight.rs`, but the subject is plugin trust, so it is a 6000 code.
     PLUGIN_SKIPPED_TRUST_POLICY = 6002, Plugins, Actionable, "plugin-skipped-trust-policy", "1.6.0", false,
         "Plugin present but NOT loaded (skipped by trust policy)",
-        "A plugin artifact is present in the plugins directory but was NOT loaded because the configured trust policy skipped it (unsigned, an untrusted publisher, or a failed signature/floor check). busbar fails closed: an untrusted plugin is left inert rather than loaded. Emitted once per skipped plugin at boot.",
-        "If the plugin should load, sign it with a trusted publisher key or add that publisher to `plugins.trust` (the log names the plugin, file, and reason). If the skip is intended, remove the artifact from the directory to silence the notice.";
+        "A plugin artifact is present in the plugins directory but was NOT loaded because the configured trust policy skipped it (unsigned, an untrusted publisher, or a failed signature/floor check), or because this build's crypto backend admits no external plugin (a FIPS build loads only busbar's own verified release, whatever `plugins.trust` allows; reason code `external_crypto`). busbar fails closed: an untrusted plugin is left inert rather than loaded. Emitted once per skipped plugin at boot.",
+        "If the plugin should load, sign it with a trusted publisher key or add that publisher to `plugins.trust` (the log names the plugin, file, and reason). Under `external_crypto` no `plugins.trust` setting helps: install busbar's first-party release of the plugin. If the skip is intended, remove the artifact from the directory to silence the notice.";
 
     /// A plugin was loaded but its signature is UNVERIFIED, permitted by an explicit plugins.trust opt-in. Lives in `preflight.rs`, but the subject is plugin trust, so it is a 6000 code.
     PLUGIN_LOADED_UNVERIFIED = 6003, Plugins, Actionable, "plugin-loaded-unverified", "1.6.0", false,

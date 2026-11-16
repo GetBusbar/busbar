@@ -70,8 +70,18 @@ impl ExportAxis for RootExports {
         rows().is_some_and(|r| r.one_instance(module))
     }
 
+    /// Every export module config may name, linked or dropped in, in the migration table's 1.5.5
+    /// order (`export_modules`); a module the table does not list follows, in registration order.
     fn linked_modules(&self) -> Vec<String> {
-        rows().map(|r| r.linked_modules()).unwrap_or_default()
+        let mut modules = rows().map(|r| r.linked_modules()).unwrap_or_default();
+        let order = crate::root::migration_table::export_order();
+        modules.sort_by_key(|m| {
+            order
+                .iter()
+                .position(|o| *o == m.as_str())
+                .unwrap_or(usize::MAX)
+        });
+        modules
     }
 
     fn routes(&self, module: &str) -> Vec<busbar_contract::abi::mechanism::route::Route> {

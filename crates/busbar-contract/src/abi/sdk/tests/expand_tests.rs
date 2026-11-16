@@ -185,7 +185,7 @@ fn a_blob_is_made_and_read_as_its_fields_state() {
 
 #[test]
 fn a_string_lent_for_the_generation_names_the_same_bytes() {
-    let owned = "kept".to_owned();
+    let owned = String::from("kept");
     // SAFETY: the test's own borrow: `owned` outlives every read below.
     let gen: Gen<'_> = unsafe { Gen::assume() };
     let s = AbiStr::lent(&owned, &gen);
@@ -207,7 +207,7 @@ fn a_string_lent_for_the_generation_names_the_same_bytes() {
 
 #[test]
 fn an_out_names_a_lent_string_and_blob_where_its_field_reads_them() {
-    let owned = "named".to_owned();
+    let owned = String::from("named");
     // SAFETY: as above.
     let gen: Gen<'_> = unsafe { Gen::assume() };
     let mut o: TickOut = crate::abi::sdk::test_support::zeroed();

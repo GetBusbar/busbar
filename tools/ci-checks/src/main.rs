@@ -11,19 +11,29 @@
 //!   `tests/` tree. A file syn cannot parse is scanned line by line instead, so it is never skipped.
 //! - `crypto-graph`: AWS-LC is the one crypto provider, reached only through the facade (229). In
 //!   the root workspace's feature-resolved graph (`cargo tree`: every feature, target and edge
-//!   kind), `ring`, `sha2` and `ed25519-dalek` are built only beneath `busbar-crypto*`. Dev edges
-//!   count: tests use the facade too.
+//!   kind), `ring`, `sha2`, `ed25519-dalek` and `curve25519-dalek` are built only beneath
+//!   `busbar-crypto*`. Dev edges count: tests use the facade too. And `curve25519-dalek` is built
+//!   only beneath `busbar-crypto-backend`, never by the facade itself: a FIPS build swaps the
+//!   backend and keeps the facade, and admits no unvalidated crypto crate (QE-BOOT-KEYCHECK).
 //! - `migrate-flag-text`, `migrate-retired-words`, `migrate-anchors`: the migrate-on-boot checks
 //!   (`migrate.rs`).
 //! - `migrate-overlay-separation`, `migrate-overlay-keys`, `migrate-overlay-docs`: the 1.5.5
 //!   overlay's separation, key and upgrade-page checks (`migrate_overlay.rs`).
 //! - `migrate-size`: the migrator's separation and anchor gates, with its sizes printed
 //!   (`migrate_size.rs`).
+//! - `fleet-manifest`: `fleet/deps.toml`'s `[min3-closure]` and `plugins.yaml`'s 33 ported and 2 archived
+//!   repos (IF §15 rules 1a, 1b).
+//! - `c-transport`, `export-streams`, `no-licence`, `core-scan`: source checks over core (C-TRANSPORT
+//!   test 11, C-EXPORT-STREAMS, C-NO-LICENCE (a), the §15.8 core scan). `loc-report` prints per-file
+//!   production and test lines (a report, no gate).
+//! - With arguments, the first one naming the check: `template-drift`, `patch-drift`, `no-host-link`,
+//!   `plugin-rules` and `c-alias`, run from a plugin repo's CI against the repo or its files.
 //!
 //! Usage: `busbar-ci-checks [check...]`; with no argument every check runs. Each finding prints as
 //! one line; any finding or error fails the run.
 
 #![forbid(unsafe_code)]
+#![doc(test(attr(forbid(unsafe_code))))]
 
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, ExitCode};
@@ -39,9 +49,15 @@ mod migrate;
 mod migrate_overlay;
 mod migrate_size;
 
-const CHECKS: [&str; 9] = [
+/// Checks over core's own tree: with no argument every one runs.
+const CHECKS: [&str; 14] = [
     "no-getrandom",
     "crypto-graph",
+    "fleet-manifest",
+    "c-transport",
+    "export-streams",
+    "no-licence",
+    "core-scan",
     "migrate-flag-text",
     "migrate-retired-words",
     "migrate-anchors",
@@ -50,18 +66,44 @@ const CHECKS: [&str; 9] = [
     "migrate-overlay-docs",
     "migrate-size",
 ];
+/// Checks that take arguments (a plugin repo, files). Named first, the rest of the command line is theirs.
+const ARG_CHECKS: [&str; 7] = [
+    "template-drift",
+    "patch-drift",
+    "no-host-link",
+    "plugin-rules",
+    "c-alias",
+    "core-scan",
+    "loc-report",
+];
+
+/// A check's findings, or the error that stopped it.
+pub(crate) type Outcome = Result<Vec<String>, String>;
+
+mod core_scan;
+mod core_src;
+mod fleet;
+mod host_link;
+mod plugin_rules;
+mod supply;
 /// The crypto seam: `busbar-crypto` and `busbar-crypto-backend` (crate directories and packages).
 const SEAM: &str = "busbar-crypto";
+/// The backend inside the seam: a private build swaps it by `[patch]`.
+const BACKEND: &str = "busbar-crypto-backend";
 /// Crypto crates reachable only through the seam.
-const SEAM_ONLY: [&str; 3] = ["ring", "sha2", "ed25519-dalek"];
+const SEAM_ONLY: [&str; 4] = ["ring", "sha2", "ed25519-dalek", "curve25519-dalek"];
+/// Crates only core's software backend may build: never the facade, which a FIPS build keeps
+/// (QE-BOOT-KEYCHECK: curve25519-dalek decompresses pinned Ed25519 keys in the backend alone).
+const BACKEND_ONLY: [&str; 1] = ["curve25519-dalek"];
 
 fn main() -> ExitCode {
     let root = repo_root();
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let names: Vec<&str> = if args.is_empty() {
-        CHECKS.to_vec()
-    } else {
-        args.iter().map(String::as_str).collect()
+    // A check that takes arguments is named first and owns the rest of the command line.
+    let (names, rest): (Vec<&str>, &[String]) = match args.split_first() {
+        None => (CHECKS.to_vec(), &[]),
+        Some((first, rest)) if ARG_CHECKS.contains(&first.as_str()) => (vec![first.as_str()], rest),
+        Some(_) => (args.iter().map(String::as_str).collect(), &[]),
     };
     let mut failed = false;
     for name in names {
@@ -75,9 +117,21 @@ fn main() -> ExitCode {
             "migrate-overlay-keys" => migrate_overlay::hook_keys(&root),
             "migrate-overlay-docs" => migrate_overlay::docs(&root),
             "migrate-size" => migrate_size::run(&root),
+            "fleet-manifest" => fleet::fleet_manifest(&root),
+            "c-alias" => fleet::c_alias(&root, rest),
+            "c-transport" => core_src::c_transport(&root),
+            "export-streams" => core_src::export_streams(&root),
+            "no-licence" => core_src::no_licence(&root),
+            "core-scan" => core_scan::core_scan(&root, rest),
+            "loc-report" => core_src::loc_report(&root),
+            "template-drift" => supply::template_drift_cli(rest),
+            "patch-drift" => supply::patch_drift_cli(&root, rest),
+            "no-host-link" => host_link::no_host_link(rest),
+            "plugin-rules" => plugin_rules::plugin_rules(rest),
             other => Err(format!(
-                "unknown check `{other}` (checks: {})",
-                CHECKS.join(", ")
+                "unknown check `{other}` (checks: {}; with arguments: {})",
+                CHECKS.join(", "),
+                ARG_CHECKS.join(", ")
             )),
         };
         match outcome {
@@ -474,26 +528,41 @@ fn rel(root: &Path, file: &Path) -> String {
 /// The root workspace's feature-resolved graph (every feature, target and edge kind), outside the
 /// seam: cargo's own resolver decides what builds. `Cargo.lock` alone over-reports: it also records
 /// an optional dependency that only a weak feature names (rustls-webpki's `alloc = ["ring?/alloc"]`
-/// keeps a `ring` entry that no build compiles).
+/// keeps a `ring` entry that no build compiles). Then the facade's own graph without the backend:
+/// a private (FIPS) build swaps the backend and keeps the facade, so a backend-only crate reached
+/// from the facade would enter that build too.
 fn crypto_graph(root: &Path) -> Result<Vec<String>, String> {
-    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
-    let output = Command::new(cargo)
-        .current_dir(root)
-        .args([
-            "tree",
-            "--locked",
+    let outside = cargo_tree(
+        root,
+        &[
             "--workspace",
             "--exclude",
             SEAM,
+            "--prune",
+            SEAM,
+            "--prune",
+            BACKEND,
+        ],
+    )?;
+    let facade = cargo_tree(root, &["--package", SEAM, "--prune", BACKEND])?;
+    let mut findings = seam_only_reached(&outside);
+    findings.extend(backend_only_reached(&facade));
+    Ok(findings)
+}
+
+/// `cargo tree` over every feature, target and edge kind, as `--prefix depth` lines of `{p}`.
+fn cargo_tree(root: &Path, select: &[&str]) -> Result<String, String> {
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    let output = Command::new(cargo)
+        .current_dir(root)
+        .args(["tree", "--locked"])
+        .args(select)
+        .args([
             "--all-features",
             "--target",
             "all",
             "--edges",
             "normal,build,dev",
-            "--prune",
-            SEAM,
-            "--prune",
-            "busbar-crypto-backend",
             "--prefix",
             "depth",
             "--format",
@@ -508,11 +577,24 @@ fn crypto_graph(root: &Path) -> Result<Vec<String>, String> {
             String::from_utf8_lossy(&output.stderr).trim()
         ));
     }
-    Ok(seam_only_reached(&String::from_utf8_lossy(&output.stdout)))
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
 /// Each seam-only crate in a `cargo tree --prefix depth` listing, with the path that reaches it.
 fn seam_only_reached(tree: &str) -> Vec<String> {
+    reached(tree, &SEAM_ONLY, "outside busbar-crypto*")
+}
+
+/// Each backend-only crate in the facade's listing (backend pruned), with the path that reaches it.
+fn backend_only_reached(tree: &str) -> Vec<String> {
+    reached(
+        tree,
+        &BACKEND_ONLY,
+        "by busbar-crypto outside busbar-crypto-backend, so a swapped-in (FIPS) backend would link it",
+    )
+}
+
+fn reached(tree: &str, crates: &[&str], outside: &str) -> Vec<String> {
     let mut path: Vec<&str> = Vec::new();
     let mut findings = Vec::new();
     for line in tree.lines() {
@@ -525,9 +607,9 @@ fn seam_only_reached(tree: &str) -> Vec<String> {
         path.truncate(depth);
         path.push(name);
         // `(*)`: a repeat of a subtree already listed (and reported) above.
-        if SEAM_ONLY.contains(&name) && !package.ends_with("(*)") {
+        if crates.contains(&name) && !package.ends_with("(*)") {
             findings.push(format!(
-                "{package} is built outside busbar-crypto*: {}",
+                "{package} is built {outside}: {}",
                 path.join(" -> ")
             ));
         }
@@ -541,3 +623,6 @@ mod tests;
 #[cfg(test)]
 #[path = "migrate_size_tests.rs"]
 mod migrate_size_tests;
+
+#[cfg(test)]
+mod checks_tests;
