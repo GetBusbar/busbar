@@ -473,6 +473,14 @@ pub(crate) async fn trust_decide_effect(
     {
         Ok(row) => answer(&trust_row(&row)),
         Err(TrustRefused::NoSuchKey) => not_found(),
+        Err(TrustRefused::Ambiguous) => Ok(refused(
+            409,
+            "conflict",
+            &format!(
+                "trust key `{key}` names more than one trust row; a registration name \
+                 containing `/` makes it ambiguous, so rename the registration"
+            ),
+        )),
         Err(TrustRefused::NothingSighted) => Ok(refused(
             409,
             "conflict",
