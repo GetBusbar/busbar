@@ -671,6 +671,7 @@ name = "busbar-plugin-bench"
 version = "1.6.0"
 dependencies = [
  "busbar-plugin-abi",
+ "busbar-plugin-loader",
  "sharded-slab",
 ]
 

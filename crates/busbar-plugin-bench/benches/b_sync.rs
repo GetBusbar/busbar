@@ -1,16 +1,19 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! B-SYNC: one sync call through the entry guard, incl. its REFUSED arm (IF §10.7, §14, §0 I5); owner W1-H0.
+//! B-SYNC: one sync call through the entry guard, incl. its REFUSED arm (IF §10.7, §14, §0 I5); owners W1-H0 and,
+//! for the REFUSED arm through the auth adapter, W1-L5.
 //!
 //! The REFUSED arm's text path (round 16/17): an auth `verify` answering REFUSED with a 60-byte text costs one
 //! `scrub::fail_text` on the worker: one snapshot load and one automaton scan, no lock, no free, and a `register`
 //! rebuild on another thread never blocks it. This bench times that path on an instance with 1,024 bindings
-//! registered (about 14 needles each): `Scrub::text` alone on one thread, then `fail_text` on 16 threads while a
-//! 17th registers a changing value in a loop (a whole-automaton rebuild each time). It prints the median and p99
-//! per call and the clock's own cost per timed call, for the IF §14 gate: median ≤ the OK arm plus `text` alone
-//! plus 22 ns, p99 ≤ 2 µs with the rebuild thread running. The OK arm (a no-op `verify` through `entry::guard`)
-//! and the RMW counts join this file with the guard (W1-H1) and the auth adapter (W1-L5).
+//! registered (about 14 needles each): `Scrub::text` alone on one thread, then on 16 threads while a 17th
+//! registers a changing value in a loop (a whole-automaton rebuild each time) both `fail_text` alone and the auth
+//! adapter's REFUSED BAD_CREDENTIAL mapping to `Verdict::Rejected` (`adapters::auth::rejected`, the exact
+//! function the adapter's `verify` runs on that answer). It prints the median and p99 per call and the clock's
+//! own cost per timed call, for the IF §14 gate: median ≤ the OK arm plus `text` alone plus 22 ns, p99 ≤ 2 µs
+//! with the rebuild thread running. The OK arm (a no-op `verify` through `entry::guard`), the fixture-driven
+//! REFUSED call and the RMW counts join this file with the guard and the pool (W1-H1).
 //!
 //! `B_SYNC_CALLS` sets the calls per thread (default 1,000,000).
 
@@ -19,7 +22,9 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Barrier};
 use std::time::Instant;
 
+use busbar_plugin_abi::auth::BAD_CREDENTIAL;
 use busbar_plugin_abi::host_side::scrub::{Scrub, fail_text};
+use busbar_plugin_loader::adapters::auth::rejected;
 
 const BINDINGS: u32 = 1_024;
 const READERS: usize = 16;
@@ -45,11 +50,25 @@ fn main() {
         }),
     );
 
+    contended("fail_text", &scrub, calls, |scrub| {
+        black_box(fail_text(scrub, black_box(REFUSED)));
+    });
+    contended(
+        "auth adapter, REFUSED BAD_CREDENTIAL to Verdict::Rejected",
+        &scrub,
+        calls,
+        |scrub| {
+            black_box(rejected(BAD_CREDENTIAL, black_box(REFUSED), scrub));
+        },
+    );
+}
+
+/// `call` on 16 reader threads, `calls` times each, while a 17th thread rebuilds the automaton in a loop.
+fn contended(name: &str, scrub: &Arc<Scrub>, calls: usize, call: fn(&Scrub)) {
     let stop = Arc::new(AtomicBool::new(false));
     let rebuilds = Arc::new(AtomicU64::new(0));
     let writer = {
-        let (scrub, stop, rebuilds) =
-            (Arc::clone(&scrub), Arc::clone(&stop), Arc::clone(&rebuilds));
+        let (scrub, stop, rebuilds) = (Arc::clone(scrub), Arc::clone(&stop), Arc::clone(&rebuilds));
         std::thread::spawn(move || {
             let mut round = 0_u64;
             while !stop.load(Ordering::Relaxed) {
@@ -64,12 +83,10 @@ fn main() {
     let start = Arc::new(Barrier::new(READERS));
     let readers: Vec<_> = (0..READERS)
         .map(|_| {
-            let (scrub, start) = (Arc::clone(&scrub), Arc::clone(&start));
+            let (scrub, start) = (Arc::clone(scrub), Arc::clone(&start));
             std::thread::spawn(move || {
                 start.wait();
-                timed(calls, || {
-                    black_box(fail_text(&scrub, black_box(REFUSED)));
-                })
+                timed(calls, || call(&scrub))
             })
         })
         .collect();
@@ -81,7 +98,7 @@ fn main() {
     stop.store(true, Ordering::Relaxed);
     writer.join().expect("rebuild thread");
     println!(
-        "B-SYNC REFUSED arm, fail_text, {READERS} threads, rebuild thread running: worst thread median {} ns, \
+        "B-SYNC REFUSED arm, {name}, {READERS} threads, rebuild thread running: worst thread median {} ns, \
          p99 {} ns ({calls} calls each, {} rebuilds)",
         worst.0,
         worst.1,
