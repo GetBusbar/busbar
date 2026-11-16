@@ -1822,6 +1822,34 @@ async fn a_recovery_batch_is_one_append_and_one_selection_and_carries_its_origin
     assert!(recovery.carried(first + 1).is_some());
 }
 
+/// SHUTDOWN-HANG F1: shared ancestry remains carried until its last unsettled owner releases it.
+/// Re-observing the same chain for one operation must not create an extra ownership reference.
+#[tokio::test]
+async fn shared_carried_evidence_survives_until_the_last_operation_releases() {
+    let backend = Arc::new(Backend::default());
+    let recovery = sink(Arc::new(attach(backend, 1).await), 7).await;
+    let evidence = Carried {
+        seq: 1,
+        hash: [9; 32],
+    };
+    recovery.carry([1; 16], Some(evidence));
+    recovery.carry([1; 16], Some(evidence));
+    recovery.carry([2; 16], Some(evidence));
+    recovery.release([1; 16]);
+    assert_eq!(
+        recovery.carried(1).map(|value| value.hash),
+        Some(evidence.hash)
+    );
+    recovery.release([1; 16]);
+    assert_eq!(
+        recovery.carried(1).map(|value| value.hash),
+        Some(evidence.hash)
+    );
+    recovery.release([2; 16]);
+    assert!(recovery.carried(1).is_none());
+    assert!(recovery.state.lock().unwrap().carried_by_op.is_empty());
+}
+
 /// WHO: a metering flush driving one operation while the settlement flusher's recovery batch
 /// that holds it is in doubt (its select crossed and its reply was lost).
 /// DOES: (SHUTDOWN-HANG F3.2, 8.4(g)) the single driver gets `Unavailable` and stages nothing;
