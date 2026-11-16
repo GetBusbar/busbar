@@ -132,7 +132,7 @@ fn custody_answer_rules() {
         other => panic!("{other:?}"),
     }
     // APPEND: an empty tail is the batch itself, a tail is copied, and a dest past the bindings is a FAULT.
-    match delivered_from(1, Some((1, b"")), None, 2).unwrap() {
+    match delivered_from(1, Some((1, &b""[..])), None, 2).unwrap() {
         Delivered::Append {
             dest,
             bytes,
@@ -140,11 +140,11 @@ fn custody_answer_rules() {
         } => assert_eq!((dest, bytes, accepted), (1, None, 1)),
         other => panic!("{other:?}"),
     }
-    match delivered_from(1, Some((0, b"x\n")), None, 2).unwrap() {
+    match delivered_from(1, Some((0, &b"x\n"[..])), None, 2).unwrap() {
         Delivered::Append { bytes, .. } => assert_eq!(bytes.as_deref(), Some(&b"x\n"[..])),
         other => panic!("{other:?}"),
     }
-    assert!(delivered_from(1, Some((2, b"")), None, 2).is_err());
+    assert!(delivered_from(1, Some((2, &b""[..])), None, 2).is_err());
 }
 
 #[test]
