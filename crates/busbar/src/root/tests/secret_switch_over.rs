@@ -342,3 +342,80 @@ async fn reference_config_is_scrubbed_per_binding_before_it_is_returned() {
         "a released slot cannot receive reference plaintext"
     );
 }
+
+#[tokio::test]
+async fn effective_binding_keeps_bootstrap_bindings_and_source_leases_immutable() {
+    let make_binder = || -> Arc<dyn ConfigBinder> {
+        Arc::new(Binder::new(
+            Arc::new(Default::default()),
+            vec![(Arc::from("source"), Box::from(r#"{"type":"object"}"#))],
+        ))
+    };
+    let bootstrap = make_binder();
+    let effective = make_binder();
+    bootstrap
+        .bind(
+            41,
+            br#"{"token":{"module":"source","settings":{"key":"boot"}}}"#,
+            &["/token"],
+            &[],
+            &[],
+            &[],
+        )
+        .unwrap();
+    effective
+        .bind(
+            42,
+            br#"{"token":{"module":"source","settings":{"key":"serve"}}}"#,
+            &["/token"],
+            &[],
+            &[],
+            &[],
+        )
+        .unwrap();
+    let port = Port::new("retained-material");
+    let before = BootSecrets::empty(
+        Arc::clone(&bootstrap),
+        Arc::new(busbar_plugin_loader::instance::SlotTable::new()),
+    )
+    .with_opened(
+        "source",
+        SecretSource {
+            instance: 51,
+            port: Arc::clone(&port) as Arc<dyn SecretPort>,
+        },
+    )
+    .unwrap();
+    let after = before.with_binder(Arc::clone(&effective));
+    assert!(Arc::ptr_eq(&before.binder, &bootstrap));
+    assert!(Arc::ptr_eq(&after.binder, &effective));
+    assert_eq!(
+        before.binder.secret(41, 1),
+        Some(source("source", r#"{"key":"boot"}"#))
+    );
+    assert!(before.binder.secret(42, 1).is_none());
+    assert_eq!(
+        after.binder.secret(42, 1),
+        Some(source("source", r#"{"key":"serve"}"#))
+    );
+    assert!(after.binder.secret(41, 1).is_none());
+    assert!(Arc::ptr_eq(&before.slots, &after.slots));
+    assert!(Arc::ptr_eq(
+        &before.port("source").unwrap(),
+        &after.port("source").unwrap()
+    ));
+    let reference = source("source", "{}");
+    assert_eq!(
+        resolved(&before, &reference).await.as_deref(),
+        Ok("retained-material")
+    );
+    assert_eq!(
+        resolved(&after, &reference).await.as_deref(),
+        Ok("retained-material")
+    );
+    assert_eq!(
+        port.seen().len(),
+        2,
+        "each immutable binding generation has fresh custody"
+    );
+}
