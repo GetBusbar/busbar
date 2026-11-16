@@ -9,6 +9,7 @@
 //! 800 ms, from `backon::ExponentialBuilder`). The 5th end inside 60 s trips the channel until the
 //! upstream is declared anew. Counters are per channel key and survive generations, not restarts.
 
+use backon::BackoffBuilder;
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
@@ -28,8 +29,10 @@ const SCHEDULE: backon::ExponentialBuilder = backon::ExponentialBuilder::new()
 /// The wait after the n-th end inside the window (1-based); `None` once the channel trips.
 #[must_use]
 pub fn delay(n: usize) -> Option<Duration> {
-    let _ = (n, SCHEDULE);
-    todo!()
+    if n == 0 {
+        return Some(Duration::ZERO);
+    }
+    SCHEDULE.build().nth(n - 1)
 }
 
 /// What the next attach may do.
@@ -59,21 +62,54 @@ impl Respawn {
     /// The child of this generation exited or could not be spawned at `at`. True when this end trips
     /// the channel (the caller audits `upstream_child_tripped` once).
     pub fn ended(&mut self, at: Instant) -> bool {
-        let _ = (at, &mut self.ends, &mut self.tripped);
-        todo!()
+        if self.tripped {
+            return false;
+        }
+        while self
+            .ends
+            .front()
+            .is_some_and(|e| at.saturating_duration_since(*e) > WINDOW)
+        {
+            self.ends.pop_front();
+        }
+        self.ends.push_back(at);
+        if self.ends.len() >= TRIP_AT {
+            self.tripped = true;
+            return true;
+        }
+        false
     }
 
     /// What an attach at `now` may do.
     #[must_use]
     pub fn next(&self, now: Instant) -> Spawn {
-        let _ = now;
-        todo!()
+        if self.tripped {
+            return Spawn::Tripped;
+        }
+        let counted = self
+            .ends
+            .iter()
+            .filter(|e| now.saturating_duration_since(**e) <= WINDOW)
+            .count();
+        let Some(last) = self.ends.back().filter(|_| counted > 0) else {
+            return Spawn::Now;
+        };
+        let Some(wait) = delay(counted) else {
+            return Spawn::Tripped;
+        };
+        let due = *last + wait;
+        if now >= due {
+            Spawn::Now
+        } else {
+            Spawn::After(due - now)
+        }
     }
 
     /// The upstream was declared anew (config reload or admin reconfigure): the trip and the counted
     /// ends are cleared.
     pub fn redeclared(&mut self) {
-        todo!()
+        self.ends.clear();
+        self.tripped = false;
     }
 
     #[must_use]

@@ -63,8 +63,21 @@ impl SignalRegistry {
         subject: Option<[u8; 32]>,
         tx: mpsc::Sender<Signalled>,
     ) -> Registered {
-        let _ = (instance, key, subject, tx, &self.table);
-        todo!()
+        let key: Key = (instance, key.into());
+        let mut table = self.lock();
+        table.next += 1;
+        let session = table.next;
+        table.by_key.entry(key.clone()).or_default().push(Member {
+            session,
+            subject,
+            tx,
+        });
+        drop(table);
+        Registered {
+            registry: Arc::clone(self),
+            key,
+            session,
+        }
     }
 
     /// `plane_signal_dropped_total`: deliveries a full session channel refused.
@@ -76,8 +89,10 @@ impl SignalRegistry {
     /// Live sessions under (instance, key).
     #[must_use]
     pub fn live(&self, instance: u64, key: &[u8]) -> usize {
-        let _ = (instance, key);
-        todo!()
+        self.lock()
+            .by_key
+            .get(&(instance, Box::<[u8]>::from(key)))
+            .map_or(0, Vec::len)
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Table> {
@@ -87,12 +102,13 @@ impl SignalRegistry {
 
 impl Drop for Registered {
     fn drop(&mut self) {
-        let _ = (
-            &self.registry,
-            &self.key,
-            self.session,
-            SignalRegistry::lock,
-        );
+        let mut table = self.registry.lock();
+        if let Some(members) = table.by_key.get_mut(&self.key) {
+            members.retain(|m| m.session != self.session);
+            if members.is_empty() {
+                table.by_key.remove(&self.key);
+            }
+        }
     }
 }
 
@@ -105,13 +121,26 @@ impl SessionSignals for SignalRegistry {
         flags: u32,
         bytes: &[u8],
     ) -> u32 {
-        let _ = (instance, key, subject, flags, bytes, MAX_FANOUT);
-        todo!()
+        let table = self.lock();
+        let Some(members) = table.by_key.get(&(instance, Box::<[u8]>::from(key))) else {
+            return 0;
+        };
+        let mut accepted = 0;
+        for member in members
+            .iter()
+            .filter(|m| subject.is_none() || m.subject == subject)
+            .take(MAX_FANOUT as usize)
+        {
+            let signalled = Signalled {
+                flags,
+                bytes: bytes.into(),
+            };
+            if member.tx.try_send(signalled).is_ok() {
+                accepted += 1;
+            } else {
+                self.dropped.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        accepted
     }
-}
-
-#[doc(hidden)]
-#[allow(dead_code)]
-fn _member_fields(m: &Member) -> (u64, Option<[u8; 32]>, &mpsc::Sender<Signalled>) {
-    (m.session, m.subject, &m.tx)
 }

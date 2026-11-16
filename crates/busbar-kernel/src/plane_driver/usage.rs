@@ -33,15 +33,13 @@ pub const MAX_CLASS: usize = 64;
 /// (rule 3). The plane no longer answers a disposition, so this is `streamed`.
 #[must_use]
 pub const fn cancel_bills_reported_units(streamed: bool) -> bool {
-    let _ = streamed;
-    todo!()
+    streamed
 }
 
 /// Whether a USAGE source bills on a cancel (rule 2): SRC_REPORTED and SRC_FLOOR do, SRC_ESTIMATED never.
 #[must_use]
 pub const fn source_bills(source: u32) -> bool {
-    let _ = source;
-    todo!()
+    matches!(source, SRC_REPORTED | SRC_FLOOR)
 }
 
 /// A USAGE the session may not keep.
@@ -79,8 +77,36 @@ impl SessionUsage {
     /// Keep one USAGE from any `request`, `piece` or `end` answer: it replaces the (class, source)'s
     /// previous value, never adds to it.
     pub fn answer(&mut self, class: &str, rec: UsageRec) -> Result<(), UsageInvalid> {
-        let _ = (class, rec, &mut self.last);
-        todo!()
+        if class.is_empty()
+            || class.len() > MAX_CLASS
+            || !class
+                .bytes()
+                .all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'_' | b'.' | b':'))
+        {
+            return Err(UsageInvalid::Class);
+        }
+        if rec.scale > MAX_SCALE {
+            return Err(UsageInvalid::Scale);
+        }
+        if !matches!(rec.source, SRC_REPORTED | SRC_ESTIMATED | SRC_FLOOR) {
+            return Err(UsageInvalid::Source);
+        }
+        if let Some(kept) = self
+            .last
+            .iter_mut()
+            .find(|r| r.source == rec.source && &*r.class == class)
+        {
+            kept.amount = rec.amount;
+            kept.scale = rec.scale;
+        } else {
+            self.last.push(Reported {
+                class: class.into(),
+                source: rec.source,
+                amount: rec.amount,
+                scale: rec.scale,
+            });
+        }
+        Ok(())
     }
 
     /// The kept set, in first-answered order.
@@ -127,16 +153,51 @@ pub enum Bill<'a> {
 /// the caller's: this never folds in or returns the refund.
 #[must_use]
 pub fn bill(ending: Ending, usage: &SessionUsage) -> Bill<'_> {
-    let _ = (ending, usage);
-    todo!()
+    match ending {
+        Ending::Failed => Bill::Nothing,
+        Ending::End if usage.is_empty() => Bill::Estimate,
+        Ending::End => Bill::Usage(usage.last.iter().collect()),
+        Ending::Cancel {
+            far_end_answered,
+            streamed,
+            ..
+        } => {
+            if !far_end_answered || !cancel_bills_reported_units(streamed) {
+                return Bill::Nothing;
+            }
+            let kept: Vec<&Reported> = usage
+                .last
+                .iter()
+                .filter(|r| source_bills(r.source))
+                .collect();
+            if kept.is_empty() {
+                Bill::Nothing
+            } else {
+                Bill::Usage(kept)
+            }
+        }
+    }
 }
 
 /// The quantity a USAGE states, at the ledger's micro-unit scale. Scale > 6 rounds half-even; the second
 /// value says it rounded (the caller audits it).
 #[must_use]
 pub fn scaled(amount: u64, scale: u32) -> Option<(Count, bool)> {
-    let _ = (amount, scale);
-    todo!()
+    if scale > MAX_SCALE {
+        return None;
+    }
+    let amount = i128::from(amount);
+    if scale <= 6 {
+        return Some((Count::from_micros(amount * 10_i128.pow(6 - scale)), false));
+    }
+    let divisor = 10_i128.pow(scale - 6);
+    let (quotient, remainder) = (amount / divisor, amount % divisor);
+    let twice = remainder * 2;
+    let up = twice > divisor || (twice == divisor && quotient % 2 == 1);
+    Some((
+        Count::from_micros(quotient + i128::from(up)),
+        remainder != 0,
+    ))
 }
 
 /// One D_USAGE_CLASS the plane described.
@@ -186,8 +247,28 @@ impl DeclaredClasses {
     /// far end reported).
     #[must_use]
     pub fn map(&self, billed: &[&Reported]) -> Mapped {
-        let _ = (billed, QuantitySource::Count);
-        todo!()
+        let mut mapped = Mapped::default();
+        for r in billed {
+            let Some(declared) = self.get(&r.class) else {
+                if !mapped.dropped.contains(&r.class) {
+                    mapped.dropped.push(r.class.clone());
+                }
+                continue;
+            };
+            let Some((quantity, rounded)) = scaled(r.amount, r.scale) else {
+                continue;
+            };
+            if rounded && !mapped.rounded.contains(&r.class) {
+                mapped.rounded.push(r.class.clone());
+            }
+            mapped.lines.push(UsageLine {
+                class: declared.class,
+                quantity,
+                source: QuantitySource::Count,
+                estimated: r.source != SRC_REPORTED,
+            });
+        }
+        mapped
     }
 }
 

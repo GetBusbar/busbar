@@ -44,32 +44,64 @@ impl AskLine {
 
     /// One EX_MSG of `slot`; `ask` = it carried MSG_ASK.
     pub fn send(&mut self, slot: u64, message: &[u8], ask: bool) -> Write {
-        let _ = (slot, message, ask, self.serial, &mut self.line);
-        todo!()
+        if !ask {
+            return Write::Now(message.into());
+        }
+        let waits = self.serial && !self.line.is_empty();
+        self.line.push_back(Ask {
+            slot,
+            message: message.into(),
+        });
+        if waits {
+            Write::Queued
+        } else {
+            Write::Now(message.into())
+        }
     }
 
     /// The slot DX_OUTSTANDING delivers to (the line's head); `None` on an empty line.
     #[must_use]
     pub fn head(&self) -> Option<u64> {
-        todo!()
+        self.line.front().map(|a| a.slot)
     }
 
     /// DX_FINAL to `slot`: its oldest ask leaves the line. Returns the messages that may now be written
     /// (under CH_SERIAL the next head's, if it was waiting).
     pub fn finished(&mut self, slot: u64) -> Vec<Box<[u8]>> {
-        let _ = slot;
-        todo!()
+        let was_head = self.head() == Some(slot);
+        if let Some(at) = self.line.iter().position(|a| a.slot == slot) {
+            self.line.remove(at);
+        }
+        self.handed_on(was_head)
     }
 
     /// `slot` detached: every ask of it leaves the line. Returns what may now be written.
     pub fn detached(&mut self, slot: u64) -> Vec<Box<[u8]>> {
-        let _ = slot;
-        todo!()
+        let was_head = self.head() == Some(slot);
+        self.line.retain(|a| a.slot != slot);
+        self.handed_on(was_head)
     }
 
     /// The generation ended: the slots whose asks were open (each gets P_ERROR), in line order, once each.
     pub fn ended(&mut self) -> Vec<u64> {
-        todo!()
+        let mut slots = Vec::new();
+        for ask in self.line.drain(..) {
+            if !slots.contains(&ask.slot) {
+                slots.push(ask.slot);
+            }
+        }
+        slots
+    }
+
+    /// Under CH_SERIAL a new head that was waiting is written now; `head_left` = the old head left.
+    fn handed_on(&self, head_left: bool) -> Vec<Box<[u8]>> {
+        if !self.serial || !head_left {
+            return Vec::new();
+        }
+        self.line
+            .front()
+            .map(|a| vec![a.message.clone()])
+            .unwrap_or_default()
     }
 
     #[must_use]
