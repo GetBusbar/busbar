@@ -257,7 +257,9 @@ recommended.
 
 | Endpoint | Auth | Meaning |
 |---|---|---|
-| `GET /healthz` | open | `200 ok` if **any** lane is usable. `503` when no lane is usable, when plugin dispatch is halted, or, with no LLM plane configured, when another configured plane is not open (`plane '<key>' configured but not open`). Use for readiness probes. |
+| `GET /livez` | open | Process liveness; upstream/store readiness never triggers a restart. |
+| `GET /readyz` | open | Serving readiness, including configured planes, lanes and durability admission. |
+| `GET /healthz` | open | Existing observational response; use the separate probes above. |
 | `GET /metrics` | virtual key | Prometheus exposition. Data listener: OPT-IN, mounted only when an `export:` instance of the Prometheus-exposition kind is configured (with its required `settings.buffer_seconds`; see that export plugin's own documentation); otherwise the path 404s like any other. The admin listener serves its own `/metrics` regardless (see below). Requires a valid key with a non-empty `auth.chain`, open under `chain: []`. Restrict at the network layer if unauthenticated scraping is needed. |
 | `GET /stats` | virtual key | Per-lane health snapshot + pool membership, JSON. |
 
@@ -283,10 +285,10 @@ signal being collapsed into one string.
 
 Busbar is **stateless** (apart from governance ledgers, see below), so the robust
 production shape is **N instances behind a load balancer**, each configured
-identically, each health-checked on `GET /healthz`. Any instance serves any request;
+identically, each health-checked on `GET /readyz`. Any instance serves any request;
 lose one and the LB routes around it. On Kubernetes this is `replicaCount` + the
 Service/Ingress + a PodDisruptionBudget; on VMs it is N hosts behind an external LB
-(nginx, HAProxy, or a cloud L4/L7 balancer) probing `/healthz`.
+(nginx, HAProxy, or a cloud L4/L7 balancer) probing `/readyz`.
 
 Three things are worth understanding before you scale out:
 
@@ -802,10 +804,12 @@ remain explicitly refused.
 | Route | Listener | Access and purpose |
 | --- | --- | --- |
 | `/api/v1/admin/*` | Separate administration listener, default `127.0.0.1:8081` | Configured admin authentication; exposed binds require mTLS unless explicitly waived |
+| `/livez` | Root data and administration listeners | HTTP authentication exempt; listener TLS/mTLS still applies. Process dispatch only; independent of downstreams |
+| `/readyz` | Root data and administration listeners | HTTP authentication exempt; listener TLS/mTLS still applies. Configured planes, usable lanes, governance custody and native journal admission must be ready |
+| `/healthz` | Root data and administration listeners | Existing observational response, retained for compatibility |
 | `/metrics`, `/metrics/hooks` | Administration listener (always); `/metrics` also on the data listener when a metrics export instance is configured | Admin listener: admin credential, `503 telemetry_disabled` when `telemetry.enabled` is false. Data listener: virtual key, see above |
-| `/healthz` | Data and administration listeners | HTTP authentication exempt; listener TLS/mTLS still applies. Readiness reports dispatch health and usable upstream lanes |
 
-An upstream outage can make `/healthz` return 503 while the process is healthy. Use it for readiness, not a restart-triggering liveness check. A TCP probe of the data listener is independent of upstream health but proves only that the socket accepts a connection; it does not detect every application deadlock. `busbar --validate` checks configuration and plugin preflight, not the running process.
+An upstream outage can make `/readyz` or `/healthz` return 503 while the process is healthy. Use `/livez` for restart-triggering liveness and startup checks, and `/readyz` for readiness. Readiness is a side-effect-free snapshot of observed admission eligibility; it does not perform a remote-store probe. `/readyz` returns `200 ok` or `503 not ready`. A TCP probe of the data listener is independent of upstream health but proves only that the socket accepts a connection; it does not detect every application deadlock. `busbar --validate` checks configuration and plugin preflight, not the running process.
 
 ## Configuration recovery boundaries
 
