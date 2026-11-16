@@ -324,6 +324,47 @@ fn configured_secret_instances_use_bound_image_and_implicit_empty_settings() {
 }
 
 #[test]
+fn every_named_export_enters_the_reserved_instance_plan_with_authoring_settings() {
+    let grammar =
+        busbar_kernel::config::Grammar::new(Default::default(), Default::default(), Vec::new());
+    let deploy = busbar_kernel::config::deploy_from_yaml_str(
+        "store: {module: fixture-store, settings: {}}\nproviders: {}\nmodels: {}\n",
+        &grammar,
+    )
+    .unwrap();
+    let mut cfg = busbar_kernel::config::resolve(&deploy, &Default::default()).unwrap();
+    cfg.grammar = busbar_kernel::config::grammar::GrammarField::bound(grammar);
+    for name in ["first", "second"] {
+        cfg.export_defs.insert(
+            name.into(),
+            busbar_contract::yaml::from_str(
+                "module: fixture-export\nsettings: {path: /var/log/busbar/export.jsonl}\n",
+            )
+            .unwrap(),
+        );
+    }
+    let instances = configured(&cfg, &[]).unwrap();
+    let exports: Vec<_> = instances
+        .iter()
+        .filter(|one| one.kind == KindCode::Export)
+        .collect();
+    assert_eq!(
+        exports
+            .iter()
+            .map(|one| one.name.as_str())
+            .collect::<Vec<_>>(),
+        ["first", "second"]
+    );
+    for export in exports {
+        assert_eq!(export.identity, "fixture-export");
+        assert_eq!(
+            busbar_contract::json::parse_value(&export.config).unwrap(),
+            busbar_contract::json::json!({"path": "/var/log/busbar/export.jsonl"})
+        );
+    }
+}
+
+#[test]
 fn actual_plane_settlement_has_its_core_owned_block_and_described_lift_authority() {
     let instance = Configured {
         kind: KindCode::Plane,
