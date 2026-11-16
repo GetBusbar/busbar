@@ -52,13 +52,21 @@ fn routes_are_mounted_where_their_flags_say_and_line_and_recovery_are_never_moun
     assert_eq!(p.line.as_ref().map(|m| m.route), Some(5));
     assert_eq!(ids(&p.recovery), vec![6]);
     assert_eq!(p.admin_openapi.as_deref(), Some("{}"));
-    assert!(p.data[1].catalog, "the catalog route is answered with render(RENDER_CATALOG)");
+    assert!(
+        p.data[1].catalog,
+        "the catalog route is answered with render(RENDER_CATALOG)"
+    );
     assert!(!p.data[0].catalog);
 }
 
 #[test]
 fn a_mounted_route_carries_its_effective_classes_and_the_operators_choice_wins_inside_the_mask() {
-    let routes = [route(1, 0, AUTH_PRINCIPAL | AUTH_TICKET | AUTH_OPTIONAL, "/x")];
+    let routes = [route(
+        1,
+        0,
+        AUTH_PRINCIPAL | AUTH_TICKET | AUTH_OPTIONAL,
+        "/x",
+    )];
     let by_default = plan(&routes, None, &none).unwrap();
     assert_eq!(by_default.data[0].effective, AUTH_PRINCIPAL | AUTH_TICKET);
     let chosen = plan(&routes, None, &|r| (r == 1).then_some(AUTH_OPTIONAL)).unwrap();
@@ -137,7 +145,10 @@ fn the_recovery_request_is_a_principal_request_on_the_recovery_route_carrying_th
     assert_eq!(req.work, "ref-1");
     assert_eq!(req.auth, AUTH_PRINCIPAL);
     assert_eq!(req.identity, identity);
-    assert_eq!((req.method, req.path, req.request_id, req.carrier), ("GET", "/v1/poll", 77, 0));
+    assert_eq!(
+        (req.method, req.path, req.request_id, req.carrier),
+        ("GET", "/v1/poll", 77, 0)
+    );
 }
 
 /// A plane that answers `admin` with the op it was called with, recorded.
@@ -227,12 +238,7 @@ impl PlanePort for Admin {
     ) -> Result<PlaneSession, PortError> {
         Err(refused())
     }
-    fn demux(
-        &self,
-        _: &str,
-        _: &[u8],
-        _: &mut dyn FnMut(PlaneOut<'_>),
-    ) -> Result<(), PortError> {
+    fn demux(&self, _: &str, _: &[u8], _: &mut dyn FnMut(PlaneOut<'_>)) -> Result<(), PortError> {
         Err(refused())
     }
     fn admin<'a>(
@@ -247,7 +253,8 @@ impl PlanePort for Admin {
 }
 
 #[tokio::test]
-async fn catalog_refresh_and_hydrate_are_the_two_admin_ops_and_their_answers_go_to_core_as_they_are() {
+async fn catalog_refresh_and_hydrate_are_the_two_admin_ops_and_their_answers_go_to_core_as_they_are(
+) {
     let port = Admin {
         seen: Mutex::default(),
         answer: Ok(b"answer".to_vec()),
@@ -256,7 +263,10 @@ async fn catalog_refresh_and_hydrate_are_the_two_admin_ops_and_their_answers_go_
     assert_eq!(admin_hydrate(&port, b"stored").await.unwrap(), b"answer");
     assert_eq!(
         *port.seen.lock().unwrap(),
-        vec![(ADMIN_CATALOG, Vec::new()), (ADMIN_HYDRATE, b"stored".to_vec())]
+        vec![
+            (ADMIN_CATALOG, Vec::new()),
+            (ADMIN_HYDRATE, b"stored".to_vec())
+        ]
     );
     let failing = Admin {
         seen: Mutex::default(),

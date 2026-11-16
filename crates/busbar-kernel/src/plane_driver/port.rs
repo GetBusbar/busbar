@@ -13,8 +13,9 @@ use std::time::{Duration, Instant};
 
 use busbar_contract::services::{Caller, Incarnation};
 use busbar_plugin_abi::fail::failed::F_INTERNAL;
+use busbar_plugin_abi::fail::refused::R_CONFIG;
 use busbar_plugin_abi::host_side::needs::Needs;
-use busbar_plugin_abi::plane::{ADMIN_CARRIER_END, ADMIN_TICK, ROUTE_LINE};
+use busbar_plugin_abi::plane::{ADMIN_CARRIER_END, ADMIN_TICK};
 use busbar_plugin_abi::records::{tag as g, Reply, U64Rec, Writer};
 use busbar_plugin_loader::instance::{InstanceSpec, OpenError, Registry};
 use busbar_plugin_loader::ports::plane::{PlaneIn, PlanePort};
@@ -24,10 +25,11 @@ use crate::channels::line_carriers::{CarrierSink, LineCarriers};
 use crate::host_services::KernelServices;
 
 use super::port_auth::{
-    admit, effective_classes, refuse, subject_identity, Admitted, Credentials, NoTickets, Principal,
+    admit, refuse, subject_identity, Admitted, Credentials, NoTickets, Principal,
 };
 use super::port_channels::{decode_tick, TickOut};
 use super::port_money::write_audit;
+use super::port_routes::{admin_catalog, admin_hydrate, plan, PortRoutes};
 use super::port_session::{run_local, Effects, SessionError, ToClient};
 use super::{AuditSink, CoreAudit};
 use crate::refusal::{ClientRefusal, RefusalMap};
@@ -118,6 +120,7 @@ pub struct PortDriver {
     refusals: Arc<dyn RefusalMap>,
     audit: Arc<dyn AuditSink>,
     line: Option<LineRoute>,
+    routes: PortRoutes,
 }
 
 impl PortDriver {
@@ -129,19 +132,20 @@ impl PortDriver {
         services: Arc<KernelServices>,
         caller: Caller,
         refusals: Arc<dyn RefusalMap>,
+        classes: &dyn Fn(u32) -> Option<u32>,
     ) -> Result<Self, OpenError> {
         let port = registry.open_plane(spec).await?;
-        let line = port
-            .routes()
-            .iter()
-            .find(|r| r.flags & ROUTE_LINE != 0)
-            .and_then(|r| {
-                Some(LineRoute {
-                    id: r.route,
-                    effective: effective_classes(r.auth, None).ok()?,
-                    path: r.pattern.clone(),
-                })
-            });
+        let routes =
+            plan(port.routes(), port.admin_openapi(), classes).map_err(|e| OpenError::Config {
+                code: R_CONFIG,
+                text: e.to_string(),
+                error: None,
+            })?;
+        let line = routes.line.as_ref().map(|m| LineRoute {
+            id: m.route,
+            effective: m.effective,
+            path: m.pattern.clone(),
+        });
         Ok(Self {
             port,
             services,
@@ -149,7 +153,30 @@ impl PortDriver {
             refusals,
             audit: Arc::new(CoreAudit),
             line,
+            routes,
         })
+    }
+
+    /// The routes this instance declares, sorted by where core mounts them.
+    #[must_use]
+    pub fn routes(&self) -> &PortRoutes {
+        &self.routes
+    }
+
+    /// `admin(ADMIN_CATALOG)`: the plane refreshes its catalog data.
+    ///
+    /// # Errors
+    /// The plane refused, failed or faulted.
+    pub async fn refresh_catalog(&self) -> Result<Vec<u8>, PortError> {
+        admin_catalog(&*self.port).await
+    }
+
+    /// `admin(ADMIN_HYDRATE)`: hands the plane the records it asked core to keep.
+    ///
+    /// # Errors
+    /// The plane refused, failed or faulted.
+    pub async fn hydrate(&self, stored: &[u8]) -> Result<Vec<u8>, PortError> {
+        admin_hydrate(&*self.port, stored).await
     }
 
     /// The audit chain this driver writes a plane's AUDIT rows to (default: the kernel's own, [`CoreAudit`]).

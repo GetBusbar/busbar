@@ -322,6 +322,8 @@ pub trait PlanePort: Send + Sync + 'static {
     fn facts(&self) -> u64;
     /// D_TICK_S, if declared.
     fn tick_s(&self) -> Option<u64>;
+    /// D_ADMIN_OPENAPI: the OpenAPI fragment of the plane's ROUTE_ADMIN routes (round 8), for the admin document.
+    fn admin_openapi(&self) -> Option<&str>;
     /// Ok(session) even when the plane answered locally; core then calls `end`. A REFUSED/FAILED answer (no
     /// token, §10.4) is Err(PortError::Refused/Failed) and no session exists; core renders the refusal.
     fn request(

@@ -355,6 +355,8 @@ impl Steps<'_> {
             services,
             caller,
             Arc::new(busbar_kernel::refusal::CoreRefusals::new()),
+            // The operator's `routes.<id>.auth` choice arrives with the K7 config (slice 9 leaves it unset).
+            &|_| None,
         )
         .await?;
         self.seats

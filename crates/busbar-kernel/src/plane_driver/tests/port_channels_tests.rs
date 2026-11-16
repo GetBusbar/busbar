@@ -389,6 +389,9 @@ impl PlanePort for FakePort {
     fn tick_s(&self) -> Option<u64> {
         Some(5)
     }
+    fn admin_openapi(&self) -> Option<&str> {
+        None
+    }
     fn request(
         &self,
         _: &PlaneIn<'_>,
