@@ -1704,7 +1704,7 @@ fn provider_intent_has_no_publisher_specific_admission_gate() {
         }];
         crate::needs_restated::restate(&SLOT, crate::neutral_store::door, &NEEDS)
     }
-    let rendering = crate::dispatch::rendering_of_raw(provider_door).unwrap();
+    let rendering = crate::dispatch::load::rendering_of_raw(provider_door).unwrap();
     let facts = busbar_contract::abi::mechanism::rendering::read(&rendering).unwrap();
     assert_eq!(facts.needs[0].egress_class, EGRESS_PROVIDER);
     let signer = key(62);
