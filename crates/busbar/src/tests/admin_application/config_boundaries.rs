@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use axum::http::StatusCode;
+use busbar_contract::json;
 use std::sync::Arc;
 
 use crate::root::test_plugins as plugins;
@@ -85,8 +86,7 @@ async fn hook_register_and_replace_refuse_oversized_timeouts_without_swapping() 
     if let Some(rotate) = rotate {
         rotate.await;
     }
-    let hook =
-        serde_json::from_value(serde_json::json!({"kind": "gate", "module": "test-hook"})).unwrap();
+    let hook = json::from_value(&json::json!({"kind": "gate", "module": "test-hook"})).unwrap();
 
     app.hook_registry.insert("existing".into(), hook);
     let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(
@@ -111,17 +111,17 @@ async fn hook_register_and_replace_refuse_oversized_timeouts_without_swapping() 
     let server = tokio::spawn(async move { axum::serve(listener, admin).await });
     let client = reqwest::Client::new();
     let before = handle.load();
-    let cfg = serde_json::json!({"kind": "gate", "module": "test-hook", "timeout_ms": u64::MAX});
+    let cfg = json::json!({"kind": "gate", "module": "test-hook", "timeout_ms": u64::MAX});
     let register = client
         .post(format!("http://{addr}/api/v1/admin/hooks"))
-        .json(&serde_json::json!({"name": "new", "config": cfg}))
+        .json(&json::json!({"name": "new", "config": cfg}))
         .send()
         .await
         .unwrap();
     assert_eq!(register.status(), StatusCode::BAD_REQUEST);
     let put = client
         .put(format!("http://{addr}/api/v1/admin/hooks/existing"))
-        .json(&serde_json::json!({"config": cfg}))
+        .json(&json::json!({"config": cfg}))
         .send()
         .await
         .unwrap();
