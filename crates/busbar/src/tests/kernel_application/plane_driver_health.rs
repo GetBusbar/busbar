@@ -265,9 +265,7 @@ async fn probe_routes_are_public_and_head_has_no_body() {
     use tower::ServiceExt;
     let mut app = lane_less_app(None).await;
     Arc::get_mut(&mut app).unwrap().governance = None;
-    let handle = Arc::new(kernel::state::AppHandle::new(
-        Arc::try_unwrap(app).ok().unwrap(),
-    ));
+    let handle = Arc::new(kernel::state::AppHandle::new(app));
     let probes = Arc::new(kernel::endpoints::ProbeState::new(None));
     let router = kernel::router::build_admin_router_on_with_dispatch_layer(
         &handle,
