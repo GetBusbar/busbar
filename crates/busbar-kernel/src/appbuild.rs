@@ -1186,6 +1186,42 @@ fn publish_records_keys(keys: RecordsKeys) {
         .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(keys);
 }
 
+/// [`RecordsKeys`] from the raw secret bytes a MIN-3 boot's walk resolved (its core secrets), parsed exactly as the
+/// store bootstrap parses them.
+///
+/// # Errors
+/// A key that is not 32 bytes (raw or hex).
+pub fn records_keys_from(
+    at_rest_key: Option<&[u8]>,
+    at_rest_previous: Option<&[u8]>,
+    signing_key: Option<&[u8]>,
+) -> Result<RecordsKeys, String> {
+    let at_rest = match at_rest_key {
+        None => None,
+        Some(key) => {
+            let key = crate::governance::at_rest::parse_key("credentials.at_rest.key", key)?;
+            let previous = at_rest_previous
+                .map(|p| crate::governance::at_rest::parse_key("credentials.at_rest.previous", p))
+                .transpose()?;
+            Some(crate::governance::at_rest::AtRestKeys::new(
+                &key,
+                previous.as_deref(),
+            ))
+        }
+    };
+    let signer = signing_key
+        .map(|bytes| {
+            crate::preflight::parse_signing_secret(bytes).map(|secret| {
+                crate::governance::signing::TokenSigner::from_secret_bytes(
+                    &secret,
+                    crate::governance::signing::DEFAULT_KID,
+                )
+            })
+        })
+        .transpose()?;
+    Ok(RecordsKeys { at_rest, signer })
+}
+
 /// The latest store bootstrap's [`RecordsKeys`], moved out: `None` before any bootstrap or once taken.
 #[must_use]
 pub fn take_bootstrap_records_keys() -> Option<RecordsKeys> {

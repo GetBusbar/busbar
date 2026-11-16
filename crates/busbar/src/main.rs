@@ -715,7 +715,7 @@ async fn run(
         root::connector::install_trust_store(&base_cfg, false);
         // The MIN-3 registry boots here, before the Store opens and before any listener serves: images, the
         // kernel's sides, then 2a, 2b, the deployment point, 2c. Without a MIN-3 store image the old path boots.
-        root::min3_boot::run(
+        let walked = root::min3_boot::run(
             &base_cfg,
             &deploy.plugins,
             boot_guard,
@@ -723,6 +723,17 @@ async fn run(
         )
         .await
         .unwrap_or_else(|error| die(boot_error("MIN-3 plugin boot refused", error)));
+        // The store's admission: the MIN-3 walk's own when it opened the configured store through the
+        // registry (its open converted a 1.5.5 store; core's records step runs below), so the old ABI's
+        // preparation is never entered for a store built only for the new ABI (COORD-STORE-C2). With no
+        // MIN-3 store image the old ABI path below stays until #274 deletes it.
+        let walk_admission = root::boot::walk_admission(walked, || {
+            root::min3_boot::booted().and_then(|booted| booted.startup.lock().ok()?.take())
+        })
+        .unwrap_or_else(|error| die(boot_error("MIN-3 store admission refused", error)));
+        let (old_path, store_admission) = match walk_admission {
+            Some(store_admission) => (None, store_admission),
+            None => {
         let prepared_store = busbar_kernel::appbuild::prepare_config_store(&base_cfg, &deploy.plugins)
             .await
             .unwrap_or_else(|error| die(store_boot_refusal(principal_transition.is_some(), error)));
@@ -819,6 +830,9 @@ async fn run(
         let store_admission = root::boot::admit_prepared_store(&prepared)
             .await
             .unwrap_or_else(|error| die(error));
+        (Some((upgrade, prepared)), store_admission)
+            }
+        };
         let anchor_store = store_admission.store().expect("confirmed Store admission");
         root::exit::arm(&anchor_store);
         // Migrate-on-boot step 4 (MIGRATE-ON-BOOT r42 §3 4a, 4b): the 1.5.5 rows a store's data step
@@ -827,6 +841,11 @@ async fn run(
         root::migrate::records(anchor_store.clone())
             .await
             .unwrap_or_else(|error| die(error));
+        // The old ABI path's configuration publication; the MIN-3 path has none (its store's open and
+        // core's records step converted the data, and step 5 writes config.yaml).
+        let old_path = match old_path {
+            None => None,
+            Some((mut upgrade, prepared)) => {
         let root::startup_upgrade::publication::Preparation {
             mut publication,
             mut progress,
@@ -854,6 +873,9 @@ async fn run(
                 .await
                 .unwrap_or_else(|error| die(error));
         }
+        Some((upgrade, prepared, publication))
+            }
+        };
         // A recovered inventory may contain a mixture of original and published files.
         // Reload through its retained transformations before constructing the one App.
         let resumed = busbar_kernel::appbuild::load_config_from_disk_judged(
@@ -1040,11 +1062,9 @@ async fn run(
         }
 
         Some((
-            upgrade,
-            prepared,
+            old_path,
             store_admission,
             anchor_store,
-            publication,
             deploy,
             defs,
             providers_path,
@@ -1059,11 +1079,9 @@ async fn run(
     }))
     .await;
     let Some((
-        mut upgrade,
-        prepared,
+        old_path,
         store_admission,
         anchor_store,
-        mut publication,
         deploy,
         defs,
         providers_path,
@@ -1280,30 +1298,38 @@ async fn run(
     };
 
     let _boot_store_binding = boot_store;
-    let continuation = root::startup_upgrade::continuation::StartupContinuation::for_upgrade(
-        root::startup_upgrade::continuation::Preparation {
-            startup: store_admission,
-            config: cfg,
-            judged,
-            plugins: plugins_cfg,
-            overlay: overlay_path,
-            deploy,
-            definitions: defs,
-            base_hook_names,
-            base_group_names,
-            config_path: config_path.clone(),
-            providers_path: providers_path.clone(),
-            providers_override: providers_override.clone(),
-            rules: root_rules.clone(),
-            shutdown_rx: control_work.shutdown_rx.clone(),
-            shutdown_tx: control_work.shutdown_tx.clone(),
-            configuration_fingerprint: documents.fingerprint().unwrap_or_else(|error| die(error)),
-        },
-        root::startup_upgrade::continuation::UpgradeBinding {
-            upgrade_id: prepared.upgrade_id,
-            target: prepared.target,
-        },
-    );
+    let preparation = root::startup_upgrade::continuation::Preparation {
+        startup: store_admission,
+        config: cfg,
+        judged,
+        plugins: plugins_cfg,
+        overlay: overlay_path,
+        deploy,
+        definitions: defs,
+        base_hook_names,
+        base_group_names,
+        config_path: config_path.clone(),
+        providers_path: providers_path.clone(),
+        providers_override: providers_override.clone(),
+        rules: root_rules.clone(),
+        shutdown_rx: control_work.shutdown_rx.clone(),
+        shutdown_tx: control_work.shutdown_tx.clone(),
+        configuration_fingerprint: documents.fingerprint().unwrap_or_else(|error| die(error)),
+    };
+    // The MIN-3 path builds the App on the walk's admission with no upgrade receipt; the old ABI path
+    // binds it to its StartupUpgrade (until #274).
+    let continuation = match &old_path {
+        None => root::startup_upgrade::continuation::StartupContinuation::current(preparation),
+        Some((_, prepared, _)) => {
+            root::startup_upgrade::continuation::StartupContinuation::for_upgrade(
+                preparation,
+                root::startup_upgrade::continuation::UpgradeBinding {
+                    upgrade_id: prepared.upgrade_id,
+                    target: prepared.target.clone(),
+                },
+            )
+        }
+    };
     let readiness = loop {
         if *control_work.shutdown_rx.borrow() {
             die("shutdown requested during startup validation");
@@ -1317,42 +1343,48 @@ async fn run(
         }
         tokio::time::sleep(Duration::from_millis(250)).await;
     };
-    loop {
-        if *control_work.shutdown_rx.borrow() {
-            die("shutdown requested during configuration publication");
-        }
-        match publication
-            .publish_complete(readiness)
-            .await
-            .unwrap_or_else(|error| die(error))
-        {
-            root::startup_upgrade::publication::PublishProgress::Complete => break,
-            root::startup_upgrade::publication::PublishProgress::Pending => {
-                tokio::time::sleep(Duration::from_millis(250)).await;
+    let old_owners = match old_path {
+        None => None,
+        Some((mut upgrade, prepared, mut publication)) => {
+            loop {
+                if *control_work.shutdown_rx.borrow() {
+                    die("shutdown requested during configuration publication");
+                }
+                match publication
+                    .publish_complete(readiness)
+                    .await
+                    .unwrap_or_else(|error| die(error))
+                {
+                    root::startup_upgrade::publication::PublishProgress::Complete => break,
+                    root::startup_upgrade::publication::PublishProgress::Pending => {
+                        tokio::time::sleep(Duration::from_millis(250)).await;
+                    }
+                }
             }
-        }
-    }
-    let completion = loop {
-        if *control_work.shutdown_rx.borrow() {
-            die("shutdown requested during Store completion");
-        }
-        match upgrade.finalize(readiness).await {
-            Ok(completion) => break completion,
-            Err(busbar_migrations::Error::IntentPending) => {
-                tokio::time::sleep(Duration::from_millis(250)).await;
-            }
-            Err(error) => die(format!("automatic Store completion refused: {error:?}")),
+            let completion = loop {
+                if *control_work.shutdown_rx.borrow() {
+                    die("shutdown requested during Store completion");
+                }
+                match upgrade.finalize(readiness).await {
+                    Ok(completion) => break completion,
+                    Err(busbar_migrations::Error::IntentPending) => {
+                        tokio::time::sleep(Duration::from_millis(250)).await;
+                    }
+                    Err(error) => die(format!("automatic Store completion refused: {error:?}")),
+                }
+            };
+            Some((upgrade, prepared, publication, completion))
         }
     };
     let ready = loop {
         if *control_work.shutdown_rx.borrow() {
             die("shutdown requested before startup publication");
         }
-        if let Some(candidate) = continuation
-            .take_ready(&completion)
-            .await
-            .unwrap_or_else(|error| die(error))
-        {
+        let taken = match &old_owners {
+            Some((_, _, _, completion)) => continuation.take_ready(completion).await,
+            None => continuation.take_current().await,
+        };
+        if let Some(candidate) = taken.unwrap_or_else(|error| die(error)) {
             break candidate;
         }
         tokio::time::sleep(Duration::from_millis(250)).await;
@@ -1370,11 +1402,16 @@ async fn run(
         let owners = (
             ready,
             continuation,
-            upgrade,
-            publication,
-            completion,
-            // The prepared Store's own holders (its target identity moved into the continuation).
-            (prepared.backend, prepared.recovery),
+            // The old ABI path's holders: its upgrade, publication and completion, and the prepared
+            // Store's own (backend, recovery). The MIN-3 path has none.
+            old_owners.map(|(upgrade, prepared, publication, completion)| {
+                (
+                    upgrade,
+                    publication,
+                    completion,
+                    (prepared.backend, prepared.recovery),
+                )
+            }),
             _boot_store_binding,
         );
         die(root::migrate::restart(

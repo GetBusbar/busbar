@@ -2490,3 +2490,29 @@ pub(crate) async fn stored_format_refusal(
     };
     format!("Store format admission refused: {word}; nothing was written")
 }
+
+/// Which admission the boot's store runs under (COORD-STORE-C2; MIGRATE-ON-BOOT r42 §3 2b, 3). `walked` is the
+/// MIN-3 boot's answer: `true` when the walk opened the configured store through the registry and admitted it, and
+/// `take` hands that admission over (once). Then it is the boot's store admission, and the old ABI's preparation is
+/// never entered (a store built only for the new ABI has no v4 statement to prepare). `Ok(None)`: no MIN-3 store
+/// image, the old ABI path until #274 deletes it.
+///
+/// # Errors
+/// The walk reported a store it did not admit.
+pub(crate) fn walk_admission<T>(
+    walked: bool,
+    take: impl FnOnce() -> Option<T>,
+) -> Result<Option<T>, String> {
+    // RED: the walk's answer is ignored, as main.rs ignored it (every boot prepares the old ABI store).
+    if true {
+        let _ = (walked, take);
+        return Ok(None);
+    }
+    if !walked {
+        return Ok(None);
+    }
+    take().map(Some).ok_or_else(|| {
+        "the MIN-3 boot opened the store but handed over no admission; serving remains closed"
+            .to_owned()
+    })
+}

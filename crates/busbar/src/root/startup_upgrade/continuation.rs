@@ -319,7 +319,8 @@ pub(crate) struct StartupContinuation {
 }
 
 impl StartupContinuation {
-    #[cfg(test)]
+    /// A startup with no store upgrade under way: the MIN-3 boot, whose store opened and was admitted by the
+    /// registry walk (its own open converted its data; core's records step ran after admission).
     pub(crate) fn current(input: Preparation) -> Arc<Self> {
         Self::new(input, None)
     }
@@ -468,6 +469,10 @@ impl StartupContinuation {
             .await
             .map_err(|_| migration::Error::Verification)?
             .ok_or(migration::Error::ReconciliationRequired)
+    }
+    /// The ready candidate of a [`Self::current`] startup: no completion receipt binds it.
+    pub(crate) async fn take_current(&self) -> Result<Option<ReadyCandidate>, String> {
+        self.take(None).await
     }
     pub(crate) async fn take_ready(
         &self,
