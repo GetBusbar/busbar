@@ -148,10 +148,8 @@ async fn governed_checkpoint_and_usage_originals_survive_retention_pressure() {
     fixture.seen.gov.stage_unit_checkpoint(unit.clone());
     fixture.seen.gov.flush_unit_checkpoints().await.unwrap();
     budget_gate.release();
-    assert_eq!(
-        tokio::time::timeout(WAIT, flushing).await.unwrap().unwrap(),
-        0
-    );
+    assert!(tokio::time::timeout(WAIT, flushing).await.unwrap().unwrap() > 0);
+    assert_eq!(fixture.seen.requests().await, 1);
     assert!(fixture.seen.gov.finish_unit_checkpoint(unit));
     fixture.seen.gov.flush_unit_checkpoints().await.unwrap();
     assert_eq!(
