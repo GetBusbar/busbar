@@ -25,6 +25,7 @@ mod native_audit_group_atomic;
 #[path = "../tests/audit_group_lane.rs"]
 mod native_audit_group_lane;
 
+pub(crate) mod boot_jobs;
 mod unit_checkpoint;
 mod unit_checkpoint_audit;
 mod usage_recovery;
