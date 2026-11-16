@@ -5,6 +5,66 @@ use busbar_contract::json::{json, JsonValueTrait, Value};
 use super::{core_secret_paths, declared, Upstreams};
 use crate::plugin_config::TrustAnchor;
 
+#[test]
+fn binding_resolution_updates_only_the_instances_own_caller_list() {
+    use crate::auth_bindings::OperatorAuth;
+    let config = json!({"servers": {
+        "own": {"url":"https://a.test", "auth":"own-auth"},
+        "caller": {"url":"https://b.test", "auth":"caller-auth"}
+    }});
+    let mut split = declared("p", &config, &["/servers/*"], &anchor).unwrap();
+    assert!(split.caller_upstreams().is_empty());
+    let operator = [
+        OperatorAuth {
+            name: "own-auth",
+            module: "auth-image",
+            style: Some("bearer"),
+            settings_keys: Vec::new(),
+        },
+        OperatorAuth {
+            name: "caller-auth",
+            module: "auth-image",
+            style: Some("oauth-connection"),
+            settings_keys: Vec::new(),
+        },
+    ];
+    let implicit = split
+        .resolve_bindings(
+            &[("auth-image", vec!["bearer", "oauth-connection"])],
+            &operator,
+            &|_, style| {
+                if style == "oauth-connection" {
+                    busbar_plugin_abi::auth::STYLE_CALLER
+                } else {
+                    0
+                }
+            },
+        )
+        .unwrap();
+    assert!(implicit.is_empty());
+    assert_eq!(split.caller_upstreams(), vec![Box::<str>::from("caller")]);
+    assert!(
+        !split
+            .definitions
+            .get("own")
+            .unwrap()
+            .auth
+            .as_ref()
+            .unwrap()
+            .caller
+    );
+    assert!(
+        split
+            .definitions
+            .get("caller")
+            .unwrap()
+            .auth
+            .as_ref()
+            .unwrap()
+            .caller
+    );
+}
+
 fn anchor(_: &str) -> Result<Arc<TrustAnchor>, String> {
     Err("fixture has no trust anchor".into())
 }
