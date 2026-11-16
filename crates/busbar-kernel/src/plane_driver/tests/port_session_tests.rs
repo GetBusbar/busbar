@@ -8,7 +8,10 @@ use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use busbar_plugin_abi::plane::{FROM_CLIENT, FROM_CORE, FROM_UPSTREAM, MSG_FIN, MSG_TEXT};
+use busbar_plugin_abi::plane::{
+    ATT_DECLINE, ATT_HARD, ATT_RELAY, ATT_RETRY, AUDIT_APPLIED, AUDIT_REJECTED, FROM_CLIENT,
+    FROM_CORE, FROM_UPSTREAM, MSG_FIN, MSG_TEXT, SRC_ESTIMATED, SRC_REPORTED,
+};
 use busbar_plugin_loader::ports::plane::{PlaneIn, PlaneOut, TargetIn};
 use busbar_plugin_loader::ports::{FactRef, FactVal, PortError};
 
@@ -16,6 +19,7 @@ use super::{
     deliver, render, run_local, Calls, Effects, Origin, SessionError, Task, ToClient, Violation,
 };
 use crate::plane_driver::port_auth::refuse;
+use crate::plane_driver::usage::UsageInvalid;
 use crate::plane_driver::{CallerEnd, HeadFields};
 
 /// One scripted sink item.
@@ -31,7 +35,12 @@ enum It {
     Want(u32, u64),
     Emit(u64, &'static [u8]),
     Finish,
-    Usage,
+    /// An item a later slice drives.
+    Lookup,
+    Usage(&'static str, u64, u32, u32),
+    Expect(&'static str),
+    Attempt(u32),
+    Audit(u32, &'static str, &'static str),
 }
 
 fn play(items: &[It], sink: &mut dyn FnMut(PlaneOut<'_>)) {
@@ -53,11 +62,32 @@ fn play(items: &[It], sink: &mut dyn FnMut(PlaneOut<'_>)) {
                 bytes: b,
             },
             It::Finish => PlaneOut::Finish,
-            It::Usage => PlaneOut::Usage {
-                class: "tokens",
-                amount: 1,
+            It::Lookup => PlaneOut::Lookup {
+                flags: 0,
+                limit: 1,
+                key: b"k",
+            },
+            It::Usage(class, amount, scale, source) => PlaneOut::Usage {
+                class,
+                amount: *amount,
+                scale: *scale,
+                source: *source,
+            },
+            It::Expect(class) => PlaneOut::Expect {
+                class,
+                amount: 10,
                 scale: 0,
-                source: 0,
+            },
+            It::Attempt(verdict) => PlaneOut::Attempt {
+                verdict: *verdict,
+                class: 0,
+                retry_after_s: 0,
+                reason: "r",
+            },
+            It::Audit(verdict, action, resource) => PlaneOut::Audit {
+                verdict: *verdict,
+                action,
+                resource,
             },
         });
     }
@@ -79,6 +109,7 @@ struct Script {
     end: Vec<It>,
     render: Vec<It>,
     fail_render: bool,
+    upstream_items: Mutex<VecDeque<Vec<It>>>,
     refuse_request: bool,
     dropped: Arc<AtomicBool>,
 }
@@ -155,8 +186,15 @@ impl Calls for Script {
         &self,
         _: &mut Live,
         _: &TargetIn<'_>,
-        _: &mut dyn FnMut(PlaneOut<'_>),
+        sink: &mut dyn FnMut(PlaneOut<'_>),
     ) -> Result<(), PortError> {
+        let items = self
+            .upstream_items
+            .lock()
+            .unwrap()
+            .pop_front()
+            .unwrap_or_default();
+        play(&items, sink);
         Ok(())
     }
 }
@@ -423,7 +461,7 @@ fn a_local_answer_joins_the_request_and_end_answers_in_order() {
 
 #[test]
 fn a_forward_or_an_undriven_item_is_not_a_local_answer() {
-    for request in [vec![It::Forward], vec![It::Usage]] {
+    for request in [vec![It::Forward], vec![It::Lookup]] {
         let script = Script {
             request,
             ..Script::default()
@@ -528,7 +566,7 @@ fn a_render_is_the_plane_s_own_head_body_and_end() {
 
 #[test]
 fn a_render_that_forwards_or_carries_an_intent_is_refused() {
-    for items in [vec![It::Forward], vec![It::Usage]] {
+    for items in [vec![It::Forward], vec![It::Lookup]] {
         let script = Script {
             render: items,
             ..Script::default()
@@ -557,4 +595,198 @@ fn a_refusal_is_rendered_by_the_plane_and_falls_back_to_core_s_text_when_it_cann
         items[1],
         ToClient::Body(b"authentication required".to_vec())
     );
+}
+
+const TOKENS: &str = "tokens";
+
+fn target() -> TargetIn<'static> {
+    TargetIn {
+        attempt: 1,
+        flags: 0,
+        dialect: "chat",
+        model: "m",
+        base_path: "",
+        upstream: "u",
+        provider: "{}",
+        params: &[],
+    }
+}
+
+#[test]
+fn usage_is_cumulative_across_answers_and_the_last_value_stands() {
+    let script = Script {
+        request: vec![It::Usage(TOKENS, 5, 0, SRC_REPORTED)],
+        end: vec![
+            It::Usage(TOKENS, 9, 0, SRC_REPORTED),
+            It::Usage(TOKENS, 2, 0, SRC_ESTIMATED),
+        ],
+        ..Script::default()
+    };
+    pieces(&script, vec![vec![It::Usage(TOKENS, 7, 0, SRC_REPORTED)]]);
+    let fx = Emitted::default();
+    let (mut task, first) = Task::begin(&script, &req(), b"", &fx).unwrap();
+    assert_eq!(first.usage.len(), 1);
+    task.piece(FROM_CORE, 0, 0, b"", &fx).unwrap();
+    assert_eq!(task.usage().last()[0].amount, 7);
+    task.end(&fx).unwrap();
+    let kept: Vec<(u64, u32)> = task
+        .usage()
+        .last()
+        .iter()
+        .map(|r| (r.amount, r.source))
+        .collect();
+    assert_eq!(kept, vec![(9, SRC_REPORTED), (2, SRC_ESTIMATED)]);
+}
+
+#[test]
+fn a_usage_the_session_may_not_keep_ends_it() {
+    for (item, why) in [
+        (It::Usage("Tokens", 1, 0, SRC_REPORTED), UsageInvalid::Class),
+        (It::Usage(TOKENS, 1, 10, SRC_REPORTED), UsageInvalid::Scale),
+        (It::Usage(TOKENS, 1, 0, 9), UsageInvalid::Source),
+    ] {
+        let script = Script {
+            request: vec![item],
+            ..Script::default()
+        };
+        let fx = Emitted::default();
+        let err = Task::begin(&script, &req(), b"", &fx).err().unwrap();
+        assert!(
+            matches!(err, SessionError::Violation(Violation::Usage(w)) if w == why),
+            "{why:?}"
+        );
+        assert!(script.dropped.load(Ordering::SeqCst));
+    }
+}
+
+#[test]
+fn an_expect_rides_a_forward_and_is_out_of_place_after_upstream_has_answered() {
+    let script = Script {
+        request: vec![It::Forward, It::Expect(TOKENS)],
+        ..Script::default()
+    };
+    pieces(&script, vec![vec![It::Expect(TOKENS)]]);
+    let fx = Emitted::default();
+    let (mut task, first) = Task::begin(&script, &req(), b"", &fx).unwrap();
+    assert_eq!(first.expects.len(), 1);
+    assert_eq!(&*first.expects[0].class, TOKENS);
+    assert_eq!(first.expects[0].amount, 10);
+    let err = task.piece(FROM_UPSTREAM, 1, 0, b"", &fx).unwrap_err();
+    assert!(matches!(
+        err,
+        SessionError::Violation(Violation::ForwardOutOfPlace(Origin::Piece(FROM_UPSTREAM)))
+    ));
+}
+
+#[test]
+fn an_attempt_is_the_outcome_of_an_upstream_or_a_from_upstream_answer_only() {
+    let script = Script {
+        request: vec![It::Forward],
+        ..Script::default()
+    };
+    script
+        .upstream_items
+        .lock()
+        .unwrap()
+        .push_back(vec![It::Attempt(ATT_DECLINE)]);
+    pieces(&script, vec![vec![It::Attempt(ATT_RETRY)]]);
+    let fx = Emitted::default();
+    let (mut task, _) = Task::begin(&script, &req(), b"", &fx).unwrap();
+    let declined = task.upstream(&target(), &fx).unwrap();
+    assert_eq!(declined.attempt.unwrap().verdict, ATT_DECLINE);
+    let retried = task.piece(FROM_UPSTREAM, 0, 0, b"", &fx).unwrap();
+    assert_eq!(retried.attempt.unwrap().verdict, ATT_RETRY);
+
+    let elsewhere = Script {
+        request: vec![It::Attempt(ATT_RETRY)],
+        ..Script::default()
+    };
+    assert!(matches!(
+        Task::begin(&elsewhere, &req(), b"", &fx).err().unwrap(),
+        SessionError::Violation(Violation::AttemptOutOfPlace(Origin::Request))
+    ));
+}
+
+#[test]
+fn a_decline_comes_only_from_upstream_and_a_failed_attempt_carries_no_response() {
+    let fx = Emitted::default();
+    let decline_in_piece = Script::default();
+    pieces(&decline_in_piece, vec![vec![It::Attempt(ATT_DECLINE)]]);
+    let (mut task, _) = Task::begin(&decline_in_piece, &req(), b"", &fx).unwrap();
+    assert!(matches!(
+        task.piece(FROM_UPSTREAM, 0, 0, b"", &fx).unwrap_err(),
+        SessionError::Violation(Violation::AttemptOutOfPlace(Origin::Piece(FROM_UPSTREAM)))
+    ));
+
+    for verdict in [ATT_RETRY, ATT_HARD] {
+        for items in [
+            vec![It::Respond(502), It::Attempt(verdict)],
+            vec![It::Attempt(verdict), It::Body(b"x")],
+        ] {
+            let script = Script::default();
+            pieces(&script, vec![items]);
+            let (mut task, _) = Task::begin(&script, &req(), b"", &fx).unwrap();
+            assert!(matches!(
+                task.piece(FROM_UPSTREAM, 0, 0, b"", &fx).unwrap_err(),
+                SessionError::Violation(Violation::AttemptWithResponse)
+            ));
+        }
+    }
+
+    let relay = Script::default();
+    pieces(
+        &relay,
+        vec![vec![
+            It::Respond(401),
+            It::Body(b"x"),
+            It::Attempt(ATT_RELAY),
+        ]],
+    );
+    let (mut task, _) = Task::begin(&relay, &req(), b"", &fx).unwrap();
+    let answer = task.piece(FROM_UPSTREAM, 0, 0, b"", &fx).unwrap();
+    assert_eq!(answer.attempt.unwrap().verdict, ATT_RELAY);
+    assert!(!answer.client.is_empty());
+
+    let unknown = Script::default();
+    pieces(&unknown, vec![vec![It::Attempt(0)]]);
+    let (mut task, _) = Task::begin(&unknown, &req(), b"", &fx).unwrap();
+    assert!(matches!(
+        task.piece(FROM_UPSTREAM, 0, 0, b"", &fx).unwrap_err(),
+        SessionError::Violation(Violation::BadAttempt)
+    ));
+}
+
+#[test]
+fn audit_rows_are_kept_in_order_and_a_row_with_no_verdict_or_action_is_refused() {
+    let script = Script {
+        request: vec![
+            It::Audit(AUDIT_APPLIED, "plane.thing", "r1"),
+            It::Audit(AUDIT_REJECTED, "plane.other", ""),
+        ],
+        ..Script::default()
+    };
+    let fx = Emitted::default();
+    let (_, first) = Task::begin(&script, &req(), b"", &fx).unwrap();
+    let rows: Vec<(u32, &str, &str)> = first
+        .audits
+        .iter()
+        .map(|a| (a.verdict, &*a.action, &*a.resource))
+        .collect();
+    assert_eq!(
+        rows,
+        vec![
+            (AUDIT_APPLIED, "plane.thing", "r1"),
+            (AUDIT_REJECTED, "plane.other", "")
+        ]
+    );
+    for bad in [It::Audit(0, "a", "b"), It::Audit(AUDIT_APPLIED, "", "b")] {
+        let script = Script {
+            request: vec![bad],
+            ..Script::default()
+        };
+        assert!(matches!(
+            Task::begin(&script, &req(), b"", &fx).err().unwrap(),
+            SessionError::Violation(Violation::BadAudit)
+        ));
+    }
 }
