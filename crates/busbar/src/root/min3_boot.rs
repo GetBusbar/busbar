@@ -17,7 +17,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
-use super::boot::registry::{boot, install_kernel_sides, KernelAuthCore};
+use super::boot::registry::boot;
 use super::boot::walk::{deployment_bytes, BootSteps, DeploymentRead, RegistryBoot};
 use busbar_contract::secret_ref::{SecretRef, Sugars};
 use busbar_contract::secure::SecureVec;
@@ -30,7 +30,6 @@ use busbar_kernel::directory::{KernelDirectory, LateDirectory, LogEvents};
 use busbar_kernel::host_services::{DestJudge, KernelServices};
 use busbar_kernel::ingress::replay::StoreReplay;
 use busbar_kernel::ingress::signed_ingress::{RouteSecrets, StandardWebhooks};
-use busbar_kernel::issued::IssuedCredentials;
 use busbar_kernel::persistence::boot_identity::BootIdentity;
 use busbar_kernel::persistence::startup::Startup;
 use busbar_kernel::plane_driver::plane_judge::PlaneJudge;
@@ -50,12 +49,9 @@ use busbar_kernel::plugin_records::{LateRecords, RecordsDenied, StoreRecords};
 use busbar_kernel::push::{PushQueue, StorePushQueue};
 use busbar_kernel::retry::Policy as RetryPolicyImpl;
 use busbar_plugin_abi::host_side::caller::{BoxFut, Caller as LoaderCaller};
-use busbar_plugin_abi::host_side::host_vt::HOST;
 use busbar_plugin_abi::types::KindCode;
 use busbar_plugin_loader::admit::Admitted;
-use busbar_plugin_loader::instance::{
-    Ceilings, InstanceSpec, OpenError, OpenedPort, Registry, StoreSeal,
-};
+use busbar_plugin_loader::instance::{InstanceSpec, OpenError, OpenedPort, Registry};
 use busbar_ports::store::StoreHandle;
 
 use busbar_kernel::teller::Kernel;
@@ -71,28 +67,10 @@ pub(crate) type Directory = LateDirectory<KernelDirectory>;
 /// The Need handlers the registry runs every plugin under.
 pub(crate) type Needs = HostNeeds<BootCustody, Records, Directory>;
 /// The process's MIN-3 registry.
-pub(crate) type MinRegistry = Registry<Needs>;
+pub(crate) type MinRegistry = Registry;
 
 /// How long a core-internal secret may take to resolve at boot.
 const CORE_SECRET_DEADLINE: Duration = Duration::from_secs(30);
-/// `auth.unknown_key_refresh_s` (IF §12.11): at least 5 s, 30 s by default.
-const UNKNOWN_KEY_REFRESH: Duration = Duration::from_secs(30);
-
-/// The issued credentials core has minted. The admin surface that issues them on this path has not landed, so
-/// every id is unknown: the empty value, through the one code path every unknown id takes (IF §12.8).
-struct Unissued;
-
-impl IssuedCredentials for Unissued {
-    fn lookup<'a>(
-        &'a self,
-        _auth_instance: u64,
-        _kind: &'a str,
-        _id: &'a str,
-    ) -> BoxFut<'a, SecureVec> {
-        Box::pin(core::future::ready(SecureVec::from(&[0u8; 0][..])))
-    }
-}
-
 /// Core's own secrets, resolved at boot through the secret kind into owned values (IF §11.2: the admin token,
 /// the signing key, the at-rest keys). `None` = the config states no such reference.
 #[derive(Default)]
@@ -541,15 +519,19 @@ fn configured(cfg: &RootCfg, planes: &[PlaneImage]) -> Result<Vec<Configured>, S
     use busbar_kernel::appbuild::{instance_limits, STORE_INSTANCE};
     let seal = busbar_kernel::seal::lend();
     let mut out = Vec::new();
-    for (name, secret) in &cfg.secrets {
-        let config = secret
-            .settings
-            .encode()
-            .map_err(|error| format!("secrets.{name}: {error}"))?
-            .into_exposed(&seal);
+    let grammar = cfg.grammar().map_err(|error| error.0)?;
+    for (name, source) in &grammar.secret_instances {
+        let config = match cfg.secrets.get(name) {
+            Some(secret) => secret
+                .settings
+                .encode()
+                .map_err(|error| format!("secrets.{name}: {error}"))?
+                .into_exposed(&seal),
+            None => b"{}".to_vec(),
+        };
         out.push(Configured {
             kind: KindCode::Secret,
-            identity: name.clone(),
+            identity: source.identity.clone(),
             name: name.clone(),
             config,
             limits: instance_limits(cfg, "secrets", name),
@@ -618,65 +600,26 @@ pub(crate) fn declared_planes(
     Ok(declarations)
 }
 
-/// The shorthands the admitted secret images declare, as the one `Sugars` the binder and the config parser read.
-fn sugars_of(registry: &MinRegistry) -> Result<Sugars, String> {
-    use busbar_contract::abi::mechanism::door::{
-        REWRITE_ALIAS, REWRITE_SUGAR, REWRITE_SUGAR_NAMES, REWRITE_SUGAR_ROLE, REWRITE_SUGAR_SHOWN,
-        SUGAR_ROLE_FILL, SUGAR_ROLE_PATH,
-    };
-    let decls = registry.sugars();
-    let mut owners: Vec<Arc<str>> = Vec::new();
-    for decl in decls {
-        if !owners.iter().any(|owner| **owner == *decl.identity) {
-            owners.push(Arc::clone(&decl.identity));
-        }
-    }
-    let mut sugars = Sugars::default();
-    for owner in owners {
-        let mut rewrites: Vec<(u32, String, String)> = Vec::new();
-        for decl in decls.iter().filter(|decl| *decl.identity == *owner) {
-            let word = decl.word.to_string();
-            if decl.alias {
-                rewrites.push((REWRITE_ALIAS, word.clone(), owner.to_string()));
-            }
-            rewrites.push((REWRITE_SUGAR, word.clone(), decl.key.to_string()));
-            rewrites.push((REWRITE_SUGAR_SHOWN, word.clone(), decl.shown.to_string()));
-            rewrites.push((REWRITE_SUGAR_NAMES, word.clone(), decl.names.to_string()));
-            let role = match decl.role {
-                busbar_plugin_abi::secret::SUGAR_ROLE_FILL => Some(SUGAR_ROLE_FILL),
-                busbar_plugin_abi::secret::SUGAR_ROLE_PATH => Some(SUGAR_ROLE_PATH),
-                _ => None,
-            };
-            if let Some(role) = role {
-                rewrites.push((REWRITE_SUGAR_ROLE, word, role.to_owned()));
-            }
-        }
-        sugars.declare(&owner, &rewrites)?;
-    }
-    Ok(sugars)
-}
-
-/// Each configured secret instance's reference schema (its image's D_REF_SCHEMA), by configured name.
-fn ref_schemas(registry: &MinRegistry, cfg: &RootCfg) -> Vec<(Arc<str>, Box<str>)> {
-    cfg.secrets
-        .keys()
-        .filter_map(|name| {
-            let identity = registry.identity_of(name)?;
-            let described = registry.described(&identity)?;
-            let (_, body) = described
-                .items
-                .iter()
-                .find(|(tag, _)| *tag == busbar_plugin_abi::secret::tag::D_REF_SCHEMA)?;
-            let text = core::str::from_utf8(body).ok()?;
-            Some((Arc::from(name.as_str()), Box::from(text)))
+/// Reference schemas include implicit instances and are keyed by the exact configured reference target.
+fn ref_schemas(cfg: &RootCfg) -> Result<Vec<(Arc<str>, Box<str>)>, String> {
+    let grammar = cfg.grammar().map_err(|error| error.0)?;
+    Ok(grammar
+        .secret_instances
+        .iter()
+        .map(|(name, source)| {
+            (
+                Arc::from(name.as_str()),
+                Box::from(source.ref_schema.as_str()),
+            )
         })
-        .collect()
+        .collect())
 }
 
 /// The registry over the production Need handlers, every image added, the binder told the shorthands and the
 /// schemas, custody attached to the binder and the registry's scrub sets, and the kernel's sides installed.
 /// `store` carries what the deployment step fills.
 struct Built {
+    needs: Arc<Needs>,
     registry: Arc<MinRegistry>,
     sugars: Sugars,
     secrets: &'static BootSecrets,
@@ -688,7 +631,7 @@ fn build(
     process: &busbar_plugin_loader::process::ProcessResources,
     guard: Guard,
     cfg: &RootCfg,
-    images: Vec<Admitted>,
+    images: busbar_plugin_loader::instance::Images,
 ) -> Result<Built, String> {
     let binder: Arc<dyn ConfigBinder> = Arc::new(Binder::new(Arc::new(BootRefs)));
     // The process's one secret kind, built over the binder and kept for the life of the process.
@@ -706,27 +649,15 @@ fn build(
         Arc::clone(&binder),
         NeedLimits::default(),
     );
-    let slots = Arc::clone(process.slots());
-    let mut described =
-        busbar_plugin_loader::instance::ImagesBuilder::new(&HOST, slots, Ceilings::DEFAULT);
-    for image in images {
-        described
-            .admit(image)
-            .map_err(|refusal| format!("plugin image refused: {refusal}"))?;
-    }
-    let registry = Registry::new(described.finish(), Arc::new(needs), Arc::clone(&binder));
+    let needs = Arc::new(needs);
+    let registry = Registry::new(images, Arc::clone(&binder), Arc::clone(process.ids()));
 
-    let sugars = sugars_of(&registry)?;
+    let sugars = cfg.grammar().map_err(|error| error.0)?.sugars.clone();
     binder.set_sugars(Arc::new(sugars.clone()));
-    binder.set_ref_schemas(ref_schemas(&registry, cfg));
+    binder.set_ref_schemas(ref_schemas(cfg)?);
     let registry = Arc::new(registry);
-    let seal: StoreSeal = Box::new(|| Box::new(busbar_kernel::seal::lend()));
-    let auth_core = Arc::new(KernelAuthCore::new(
-        Unissued,
-        StoreReplay::new(records.clone()),
-    ));
-    install_kernel_sides(Arc::clone(&registry), seal, auth_core, UNKNOWN_KEY_REFRESH);
     Ok(Built {
+        needs,
         registry,
         sugars,
         secrets,
@@ -884,6 +815,7 @@ impl BootSteps for Steps<'_> {
                 secret_custody::open_secret_steps(
                     self.secrets,
                     self.inner.registry,
+                    self.inner.needs,
                     &[index],
                     self.inner.instances,
                 )
@@ -1048,30 +980,32 @@ where
 /// order, core's own secrets are resolved and the process holds the registry ([`registry`], [`seats`]).
 pub(crate) async fn run(
     process: &busbar_plugin_loader::process::ProcessResources,
+    file_images: super::boot::images::FileImages,
     cfg: &RootCfg,
-    plugins: &PluginsCfg,
     guard: Guard,
     services: Option<Arc<KernelServices>>,
 ) -> Result<bool, String> {
-    let images = admit_images(plugins)?;
-    if images.is_empty() {
-        return Ok(false);
-    }
-    let transport_images = transports::identities(images.iter().map(|(image, _)| image));
-    let planes: Vec<PlaneImage> = images
-        .iter()
-        .filter(|(image, _)| matches!(image.kind(), KindCode::Plane))
-        .map(|(image, alias)| PlaneImage {
-            identity: image.identity().to_owned(),
-            alias: alias.clone(),
+    let images = file_images.images;
+    let transport_images: Vec<String> = images
+        .identities()
+        .filter(|identity| {
+            images
+                .described(identity)
+                .is_some_and(|facts| facts.kind == KindCode::Transport)
         })
+        .map(str::to_owned)
         .collect();
-    let built = build(
-        process,
-        guard,
-        cfg,
-        images.into_iter().map(|(image, _)| image).collect(),
-    )?;
+    let planes: Vec<PlaneImage> = file_images
+        .aliases
+        .into_iter()
+        .filter(|(identity, _)| {
+            images
+                .described(identity)
+                .is_some_and(|facts| facts.kind == KindCode::Plane)
+        })
+        .map(|(identity, alias)| PlaneImage { identity, alias })
+        .collect();
+    let built = build(process, guard, cfg, images)?;
     let store_module = cfg
         .store
         .as_ref()
@@ -1140,6 +1074,8 @@ pub(crate) async fn run(
     let steps = Steps {
         inner: RegistryBoot {
             registry: &*built.registry,
+            needs: &built.needs,
+            store_seal: Arc::new(|| Box::new(busbar_kernel::seal::lend())),
             instances: &specs,
             deployment: &*reader,
         },

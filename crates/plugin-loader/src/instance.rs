@@ -1163,32 +1163,29 @@ impl Registry {
         let kinds: Vec<KindCode> = instances.iter().map(|(kind, _)| *kind).collect();
         let roots: Vec<usize> = core_modules
             .iter()
-            .filter_map(|module| self.secret_index(module, instances, sugars))
-            .collect();
+            .map(|module| {
+                self.secret_index(module, instances, sugars).ok_or_else(|| {
+                    OpenError::Unknown(format!(
+                        "core secret reference names no configured instance '{module}'"
+                    ))
+                })
+            })
+            .collect::<Result<_, _>>()?;
         let mut deps = |at: usize| self.secret_deps(at, instances, sugars);
         let steps = chains::plan_order(&kinds, &roots, &mut deps)?;
         Ok(BootPlan { steps })
     }
 
-    /// The configured secret instance a `module` word names: by configured name, else by identity (a
-    /// `former_names` word resolves to its identity), after a sugar word is replaced by its module.
+    /// References have already been bound under this read's grammar; only the exact configured name routes.
     fn secret_index(
         &self,
         module: &str,
         instances: &[(KindCode, InstanceSpec<'_>)],
-        sugars: &busbar_contract::secret_ref::Sugars,
+        _sugars: &busbar_contract::secret_ref::Sugars,
     ) -> Option<usize> {
-        let module = sugars.get(module).map_or(module, |sugar| sugar.module());
-        let same = |a: &str, b: &str| {
-            let canon = |m: &str| {
-                self.resolve_module(m)
-                    .map_or_else(|| m.to_owned(), |(i, _, _)| i.to_owned())
-            };
-            canon(a) == canon(b)
-        };
-        instances.iter().position(|(kind, spec)| {
-            *kind == KindCode::Secret && (spec.name == module || same(spec.identity, module))
-        })
+        instances
+            .iter()
+            .position(|(kind, spec)| *kind == KindCode::Secret && spec.name == module)
     }
 
     /// A pushed desired state (today's hook/plane `configure`): merge `patch` (a JSON object) into the stored
@@ -1385,10 +1382,16 @@ impl Registry {
             else {
                 continue;
             };
-            if let Some(index) = self.secret_index(&module, instances, sugars) {
-                if !out.contains(&index) {
-                    out.push(index);
-                }
+            let index = self
+                .secret_index(&module, instances, sugars)
+                .ok_or_else(|| {
+                    OpenError::Unknown(format!(
+                        "{}: secret reference names no configured instance '{module}'",
+                        s.name
+                    ))
+                })?;
+            if !out.contains(&index) {
+                out.push(index);
             }
         }
         Ok(out)

@@ -293,6 +293,44 @@ async fn the_recoverable_gate_sees_the_walks_at_rest_key_while_the_store_opens()
 }
 
 #[test]
+fn configured_secret_instances_use_bound_image_and_implicit_empty_settings() {
+    use busbar_contract::abi::mechanism::door::REWRITE_SUGAR;
+    use busbar_kernel::config::grammar::SecretSource;
+    use std::collections::BTreeMap;
+    let mut sugars = busbar_contract::secret_ref::Sugars::default();
+    sugars
+        .declare(
+            "fixture-secret",
+            &[(REWRITE_SUGAR, "probe".into(), "key".into())],
+        )
+        .unwrap();
+    let source = SecretSource {
+        identity: "fixture-secret".into(),
+        ref_schema: r#"{"type":"object"}"#.into(),
+    };
+    let grammar = busbar_kernel::config::Grammar::new(sugars, BTreeMap::new(), Vec::new())
+        .with_secret_sources(BTreeMap::from([("fixture-secret".into(), source)]));
+    let deploy = busbar_kernel::config::deploy_from_yaml_str(
+        "store: {module: fixture-store, settings: {}}\nproviders: {}\nmodels: {}\n",
+        &grammar,
+    )
+    .unwrap();
+    let mut cfg = busbar_kernel::config::resolve(&deploy, &Default::default()).unwrap();
+    cfg.grammar = busbar_kernel::config::grammar::GrammarField::bound(
+        grammar.bind_secret_instances(&cfg.secrets).unwrap(),
+    );
+    let implicit = configured(&cfg, &[]).unwrap();
+    let secret = implicit
+        .iter()
+        .find(|item| item.kind == KindCode::Secret)
+        .unwrap();
+    assert_eq!(secret.name, "probe");
+    assert_eq!(secret.identity, "fixture-secret");
+    assert_eq!(secret.config, b"{}");
+    assert_eq!(ref_schemas(&cfg).unwrap()[0].0.as_ref(), "probe");
+}
+
+#[test]
 fn actual_plane_settlement_has_its_core_owned_block_and_described_lift_authority() {
     let instance = Configured {
         kind: KindCode::Plane,

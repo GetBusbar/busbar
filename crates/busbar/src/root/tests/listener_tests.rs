@@ -24,7 +24,7 @@ impl busbar_contract::transport::wire::ConnectionSecurity for HelloWrap {
                 line.push(byte[0]);
             }
             if line == b"LET-ME-IN" {
-                Ok(io)
+                Ok(busbar_contract::transport::wire::SecuredIo::anonymous(io))
             } else {
                 Err(std::io::Error::new(
                     std::io::ErrorKind::PermissionDenied,

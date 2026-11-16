@@ -38,9 +38,17 @@ use crate::root::{durability::NodeBook, linked::Compose};
 
 /// The rules of the boot's configuration reads: the held plan in place of config.yaml (and of the planned
 /// providers catalog) on an unstamped boot, the file otherwise. The build judges the configuration itself.
-pub(crate) struct ConfigRules;
+pub(crate) struct ConfigRules {
+    pub(crate) process: Arc<busbar_plugin_loader::process::ProcessResources>,
+}
 
 impl RootRules for ConfigRules {
+    fn grammar(
+        &self,
+        input: &config::grammar::PhaseOneIn<'_>,
+    ) -> Result<config::Grammar, config::GrammarRefusal> {
+        crate::root::boot::phase_one(&self.process, input)
+    }
     fn check(&self, _: &RootCfg) -> Result<(), String> {
         Ok(())
     }

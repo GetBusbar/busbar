@@ -154,3 +154,36 @@ async fn failed_reopen_preserves_version_and_bound_needs_lifetime() {
         "no registry/Needs cycle survives drop"
     );
 }
+
+#[test]
+fn secret_dependency_names_never_fall_back_to_an_image_identity() {
+    let registry = registry(
+        Arc::new(crate::process::InstanceIds::default()),
+        Arc::new(SlotTable::new()),
+    );
+    let instances = [
+        (KindCode::Secret, spec("primary")),
+        (KindCode::Secret, spec("test-secret")),
+    ];
+    assert_eq!(
+        registry.secret_index("test-secret", &instances, &Sugars::default()),
+        Some(1)
+    );
+    let only_primary = [(KindCode::Secret, spec("primary"))];
+    assert_eq!(
+        registry.secret_index("test-secret", &only_primary, &Sugars::default()),
+        None
+    );
+}
+
+#[test]
+fn a_missing_core_secret_dependency_refuses_before_the_store_walk() {
+    let registry = registry(
+        Arc::new(crate::process::InstanceIds::default()),
+        Arc::new(SlotTable::new()),
+    );
+    let instances = [(KindCode::Secret, spec("primary"))];
+    assert!(registry
+        .boot_plan_with_core(&instances, &Sugars::default(), &["missing"])
+        .is_err());
+}
