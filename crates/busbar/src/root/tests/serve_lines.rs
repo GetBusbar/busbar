@@ -701,3 +701,42 @@ async fn closing_output_wakes_an_async_sender_blocked_on_capacity() {
     drop(receiver);
     assert!(!pending.await);
 }
+
+#[tokio::test]
+async fn an_explicit_zero_inbound_limit_keeps_concurrency_unlimited() {
+    let (started, mut starts) = mpsc::channel(2);
+    let release = Arc::new(tokio::sync::Semaphore::new(0));
+    let permits = Arc::clone(&release);
+    let service = tokio::spawn(async move {
+        run_io_with_limits(
+            TEST_CARRIER,
+            &b"one\ntwo\n"[..],
+            tokio::io::sink(),
+            std::future::pending::<()>(),
+            move |_| {
+                (
+                    move |_| {
+                        let started = started.clone();
+                        let permits = Arc::clone(&permits);
+                        async move {
+                            started.send(()).await.unwrap();
+                            permits.acquire().await.unwrap().forget();
+                        }
+                    },
+                    || {},
+                )
+            },
+            1024,
+            0,
+        )
+        .await
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        starts.recv().await.unwrap();
+        starts.recv().await.unwrap();
+    })
+    .await
+    .expect("both units start before either finishes");
+    release.add_permits(2);
+    assert_eq!(service.await.unwrap(), 0);
+}
