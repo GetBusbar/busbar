@@ -1,14 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 use super::*;
-use busbar_contract::secret_ref::{SecretRef, Sugars};
+use busbar_contract::secret_ref::SecretRef;
 use busbar_contract::secure::SecureVec;
 use busbar_ports::binder::{BindError, DestDef, TrustAnchor};
 
 struct Binder;
 impl ConfigBinder for Binder {
-    fn set_sugars(&self, _: Arc<Sugars>) {}
-    fn set_ref_schemas(&self, _: Vec<(Arc<str>, Box<str>)>) {}
     fn bind(
         &self,
         _: u64,

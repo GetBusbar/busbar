@@ -483,10 +483,6 @@ impl MemBinder {
 }
 
 impl ConfigBinder for MemBinder {
-    fn set_sugars(&self, _sugars: Arc<busbar_contract::secret_ref::Sugars>) {}
-
-    fn set_ref_schemas(&self, _schemas: Vec<(Arc<str>, Box<str>)>) {}
-
     fn bind(
         &self,
         instance: u64,

@@ -648,16 +648,18 @@ fn build(
     cfg: &RootCfg,
     images: busbar_plugin_loader::instance::Images,
 ) -> Result<Built, String> {
-    let binder: Arc<dyn ConfigBinder> = Arc::new(Binder::new(Arc::new(BootRefs)));
+    let sugars = cfg.grammar().map_err(|error| error.0)?.sugars.clone();
+    let binder: Arc<dyn ConfigBinder> = Arc::new(Binder::new(
+        Arc::new(BootRefs),
+        Arc::new(sugars.clone()),
+        ref_schemas(cfg)?,
+    ));
     // The process's one secret kind, built over the binder and kept for the life of the process.
     let secrets = BootSecrets::empty(Arc::clone(&binder), Arc::clone(process.slots()));
     let records = Records::default();
     let directory = Directory::default();
     let registry = Registry::new(images, Arc::clone(&binder), Arc::clone(process.ids()));
 
-    let sugars = cfg.grammar().map_err(|error| error.0)?.sugars.clone();
-    binder.set_sugars(Arc::new(sugars.clone()));
-    binder.set_ref_schemas(ref_schemas(cfg)?);
     let registry = Arc::new(registry);
     Ok(Built {
         registry,

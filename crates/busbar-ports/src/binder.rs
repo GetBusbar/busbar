@@ -45,16 +45,6 @@ pub enum BindError {
     TooMany,
 }
 pub trait ConfigBinder: Send + Sync + 'static {
-    /// Round 6: install the declared shorthands (from `Registry::sugars()` through `Sugars::declare`), once, after
-    /// every plugin is admitted and before the first `bind`/`bind_any`. A bind before it is a core bug (panics in
-    /// debug, refuses in release). Core itself declares no word.
-    fn set_sugars(&self, sugars: std::sync::Arc<busbar_contract::secret_ref::Sugars>);
-    /// Round 8: install, once and at the same point as `set_sugars`, each configured secret instance's reference
-    /// schema (its plugin's D_REF_SCHEMA, compiled once by the binder). Key = the secret instance's configured
-    /// name (operator vocabulary; an implicit shorthand instance is keyed by its `<word>`). From then on every
-    /// `bind`, `bind_any` and core section parser validates each SecretRef's `settings` against the schema of the
-    /// instance it routes to, before the reference is stored (`BadReference`). `--validate` runs this too.
-    fn set_ref_schemas(&self, schemas: Vec<(std::sync::Arc<str>, Box<str>)>);
     /// Walk `config` (the operator's JSON for this instance). At every node matched by a D_SECRET_PATH
     /// pointer: parse it with busbar-contract's SecretRef parser in the admitted-source context with the
     /// installed `Sugars` (secret_ref.rs `context`: SourceReference, a declared shorthand `{<word>: X}` expanded to
