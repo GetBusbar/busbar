@@ -67,7 +67,7 @@ fn call(settings: &[u8], from: &'static [u8], buf: &mut [u8]) -> (Outcome, Vec<u
 fn the_plugins_migration_is_answered_into_the_hosts_buffer() {
     let mut buf = vec![0u8; 4096];
     let (outcome, answer) = call(
-        br#"{"signing-secret": {"env": "S"}, "url": "\x310.0.0.7"}"#,
+        b"{\"signing-secret\": {\"env\": \"S\"}, \"url\": \"\x310.0.0.7\"}",
         b"1.5.5",
         &mut buf,
     );
@@ -196,7 +196,7 @@ fn settings_that_are_not_json_are_refused_with_the_reason() {
 #[test]
 fn an_answer_larger_than_the_buffer_is_refused_and_writes_nothing() {
     let mut buf = vec![0u8; 8];
-    let (outcome, answer) = call(br#"{"url": "\x310.0.0.7"}"#, b"1.5.5", &mut buf);
+    let (outcome, answer) = call(b"{\"url\": \"\x310.0.0.7\"}", b"1.5.5", &mut buf);
     assert_eq!(outcome, Outcome::Refused);
     assert!(answer.is_empty());
     assert!(
