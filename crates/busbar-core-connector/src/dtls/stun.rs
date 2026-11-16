@@ -140,6 +140,20 @@ pub(crate) fn is_verified_check(d: &[u8], keys: &Keys) -> bool {
     false
 }
 
+/// The local ufrag a Binding request's USERNAME names first (`<local>:<remote>`), the key a shared media
+/// port routes the check by. `None` for anything that is not a well-formed Binding request with a USERNAME.
+/// Nothing is verified here: the session the key finds verifies MESSAGE-INTEGRITY itself.
+pub(crate) fn local_ufrag(d: &[u8]) -> Option<&[u8]> {
+    let attrs = walk(d, BINDING_REQUEST)?;
+    for (kind, _, value) in attrs {
+        if kind == USERNAME {
+            let end = value.iter().position(|b| *b == b':')?;
+            return value.get(..end).filter(|u| !u.is_empty());
+        }
+    }
+    None
+}
+
 /// The transaction id of `d` if it is a Binding success response whose MESSAGE-INTEGRITY verifies
 pub(crate) fn verified_probe_answer(d: &[u8], keys: &Keys) -> Option<[u8; 12]> {
     let attrs = walk(d, BINDING_SUCCESS)?;
