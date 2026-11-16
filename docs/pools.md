@@ -86,7 +86,7 @@ The field-by-field reference, every pool and member field with its type, default
 
 In short: a pool takes a list of `members`, an optional `hooks` list (one ordering strategy, `weighted`/`cheapest`/`fastest`/`least_busy`/`usage`, plus any gates as inline `kind: hook` plugin refs), and optional `affinity`, `breaker`, `failover`, and `on_exhausted` blocks.
 
-A member is written as it has been since 1.5: a `model:` naming an entry in `models:`, with an optional `weight:` and any per-member capabilities (`context_max`, `attempt_timeout_ms`, `reasoning`, `tier`, `tags`) beside it. That is the canonical form, it is what the field reference documents, and it is what the first-boot migration leaves exactly as you wrote it.
+A member is written as a `model:` naming an entry in `models:`, with an optional `weight:` and any per-member capabilities (`context_max`, `attempt_timeout_ms`, `reasoning`, `tier`, `tags`) beside it. That is the canonical form, it is what the field reference documents, and it is what the first-boot migration leaves exactly as you wrote it.
 
 ```yaml
 pools:
@@ -100,7 +100,7 @@ pools:
 ```
 
 A member that carries nothing else may be written as a bare name (shorthand for `{ model: <name> }`). That is also how MCP and A2A failover pools name their `tools:` / `agents:` members, since those carry no per-member capabilities. Weights, tier and the attempt timeout are per-member fields only; there is no pool-level `weights:`, `tier:` or `attempt_timeout_ms:`.
-<!-- docs-truth: depends on !2665 (unmerged): pool-level weights/tier/attempt_timeout_ms/repeatable deleted -->
+<!-- docs-truth: depends on !2665 (unmerged): LLM pool-level weights/tier/attempt_timeout_ms/repeatable deleted; tools/agents failover pools keep `repeatable` -->
 
 Each block with its own guide: [Hooks](/docs/hooks/) for the selection strategies, the ordering-hook contract, and [what a gate receives](hooks.md#what-a-gate-receives); [Circuit breaker](/docs/circuit-breaker/#circuit-breaker-configuration) for the per-pool `breaker` block; and [In-flight failover](/docs/failover/) for `failover` and `on_exhausted`.
 

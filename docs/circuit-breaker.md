@@ -204,7 +204,6 @@ An earlier draft of this page said there was no failover on these planes, and ga
 
 So these failover pools exist, they are **opt-in**, and declaring none is exactly today's behaviour. They live in the one neutral top-level `pools:` map — the same section the LLM plane uses — and each pool's kind is **inferred from its members**:
 
-<!-- docs-truth: depends on !2665 (unmerged): it deletes pool-level `repeatable`; where MCP/A2A pools declare repeatable operations afterwards is undecided -->
 ```yaml
 tools:
   search-eu: { url: https://eu.search.example/mcp, pin: { mechanism: cert_spki, key: "…" } }

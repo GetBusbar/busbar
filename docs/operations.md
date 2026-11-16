@@ -28,21 +28,8 @@ never silent.
 | Provider key vars | n/a | Named by each provider's `api_key: { env: ... }` reference (e.g. `ANTHROPIC_KEY`). |
 | Token/secret vars | n/a | Anything referenced via `${VAR}` in either file (client tokens, admin token, …). |
 
-**Operational environment overrides are retired in 1.6.0.** The first 1.6.0 boot on a 1.5.5
-config copies the old provider, worker-count and upstream HTTP overrides into current config keys,
-so keep them set for that boot and remove them from the launcher afterwards; see
-[the upgrade guide](migration-1.6.md#retired-environment-variables).
-
-| Retired env var | Migration destination |
-|---|---|
-| `BUSBAR_CONFIG_OVERLAY` | One-time old file-overlay import into Store |
-| `BUSBAR_WORKER_THREADS` | `advanced.worker_threads` |
-| `BUSBAR_UPSTREAM_HTTP1_ONLY` | `advanced.upstream_http1_only` |
-| `BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE` | `advanced.upstream_h2_prior_knowledge` |
-| `BUSBAR_PROVIDERS` | `providers_file:` (or use the current `--providers <path>` flag) |
-
-`TOKIO_WORKER_THREADS` remains a supported fallback for `advanced.worker_threads`.
-`BUSBAR_CONFIG`, `RUST_LOG`, and explicit secret environment references are unchanged. A few further
+`TOKIO_WORKER_THREADS` is a supported fallback for `advanced.worker_threads`. Provider selection, worker count and upstream HTTP behaviour are configured in config.yaml (`providers_file:` or `--providers`, `advanced.worker_threads`, `advanced.upstream_http1_only`, `advanced.upstream_h2_prior_knowledge`), not by environment variables; see [the upgrade guide](migration-1.6.md#retired-environment-variables) for the variables an older deployment may still set.
+`BUSBAR_CONFIG`, `RUST_LOG`, and explicit secret environment references are read. A few further
 variables are read for specific purposes and are not configuration inputs: `BUSBAR_DATA_DIR` (the
 data directory the plugin registry uses when plugins are enabled), `BUSBAR_RECORD_BOOTSTRAP_RECEIPT`
 (see [cold record bootstrap](operations/cold-record-bootstrap.md)) and `BUSBAR_INCREMENTAL_SCAN`
@@ -99,7 +86,7 @@ config:
   Other plugin pins are recovered before the complete application's plugin validation.
 
 **Worker threads and scaling.** Busbar's request path is CPU-bound (parse, translate, serialize), so
-throughput scales with data-plane workers. Since 1.6.0, `advanced.worker_threads` is the **data-plane
+throughput scales with data-plane workers. `advanced.worker_threads` is the **data-plane
 worker count**, not a tokio pool size: on unix, each worker is a **pinned single-threaded runtime with
 its own `SO_REUSEPORT` listener** on the data port, and the kernel spreads accepted connections across
 them; the admin plane and background tasks run on a separate small control-runtime thread. `N: 1` on a
@@ -114,9 +101,7 @@ node) the default sizes to the node's full core count and oversubscribes the quo
 `advanced.worker_threads` to your CPU limit**; likewise to cap a shared box, set it to the cores you
 want Busbar to use. Scale up by default, tune down deliberately. The topology is directly observable:
 the workers show up as threads named `busbar-core-0` … `busbar-core-N-1`, and `ss -tlnp` / `netstat`
-shows N listen sockets on the one data port. *(Before 1.4.0 the default was capped at `min(cores, 4)`,
-which pinned throughput to ~4 cores regardless of box size, set the value explicitly on older
-binaries.)*
+shows N listen sockets on the one data port.
 
 Startup is fail-loud: an unset `${VAR}`, an unknown provider reference, an unknown
 protocol or auth mode, or an invalid `on_exhausted` action stops the process with a
@@ -132,7 +117,7 @@ The HTTP client uses a 300s request timeout and pools up to 8192 idle keep-alive
 then exits, **without** starting the server. It binds no port, writes nothing to disk, starts no
 server tasks, and makes no network call to an upstream, so it is safe to run anywhere, including in CI and against a config
 edited on a live host before you reload it. It does read the files your `file:` secret references
-name, because since 1.5.3 it resolves those references rather than only checking their shape. It also runs plugin preflight: every plugin manifest is checked (signature and trust, conflicts, ABI and version floors), and authorized native grammar and check callbacks may run.
+name, because it resolves those references rather than only checking their shape. It also runs plugin preflight: every plugin manifest is checked (signature and trust, conflicts, ABI and version floors), and authorized native grammar and check callbacks may run.
 
 ```sh
 busbar --validate -c ./config.yaml --providers ./providers.yaml
@@ -152,11 +137,11 @@ the middle bullets before you wire this into CI.
 - **`env:` and `file:` secret REFERENCES are resolved, and one that cannot resolve fails the run.**
   A secret reference is the `{ env: VAR }` / `{ file: /path }` form on `providers.*.api_key`,
   `tls.cert` / `tls.key` / `tls.client_ca` (and the `admin_tls` equivalents), `auth.signing_key`, and
-  the `admin-tokens` token. Since 1.5.3 `--validate` reads each one and exits `1` naming the first
-  that fails, where it previously checked only the shape and exited `0`. So a CI job needs the same
+  the operator-credential token. `--validate` reads each one and exits `1` naming the first
+  that fails. So a CI job needs the same
   variables and files the deployment has, or a config whose references resolve in that environment.
   A reference served by a secret PLUGIN is not resolved here, since the plugin may not be loadable.
-  Boot agrees: since 1.6.0 an unresolvable provider `api_key` reference refuses boot
+  Boot agrees: an unresolvable provider `api_key` reference refuses boot
   (`BUSBAR-8020`), including on admin apply. It checks *structure* and secret resolution, never upstream
   reachability.
 - Honors `-c`/`--config`, `--providers`, `BUSBAR_CONFIG`, and `--ignore-overlay` exactly as boot does.
@@ -175,11 +160,9 @@ busbar -c ./config.yaml --print-metadata-blocklist
 ```
 
 - The built-in set always prints, so the flag works before a deployment is wired up.
-- Your `security.blocked_metadata_hosts` entries are appended when `BUSBAR_CONFIG` points at a config
-  that reads and parses. If it does not, the flag prints the built-in set alone and says so on stderr
-  rather than handing you a silently incomplete list. Run Busbar normally to see the parse error.
+- Your `security.blocked_metadata_hosts` entries are appended when the config path (`-c`/`--config`, else `BUSBAR_CONFIG`) reads and parses. If it parses but is invalid, the flag prints the built-in set alone and says so on stderr. A file that cannot be read is skipped silently, so check the path first.
 - Every host printed here is refused for every outbound connection: there are no allow-overrides
-  (the 1.5.5 carve-outs are retired, BUSBAR-3136). See
+  (BUSBAR-3136). See
   [the configuration reference](configuration.md#security).
 
 ## Inbound TLS & mutual-TLS (mTLS)
@@ -199,15 +182,14 @@ tls:
 
 Each of `cert`, `key`, and `client_ca` is a **secret reference**, not a bare path: the
 `{ file: /path }` form above reads PEM bytes from disk, and `{ env: VAR }` reads them from an
-environment variable (or `{ module: <secret-plugin>, settings: {…} }` from a secret backend). The
-plaintext `cert_file`/`key_file`/`client_ca_file` path keys of earlier releases are gone in 1.5.0.
+environment variable (or `{ module: <secret-plugin>, settings: {…} }` from a secret backend). Bare
+path keys (`cert_file`, `key_file`, `client_ca_file`) are not accepted.
 
 **Certificate & key formats.** `cert` resolves to a PEM certificate chain with the leaf
 (server) certificate first, followed by any intermediates: exactly what most CAs
 ship as `fullchain.pem`. `key` resolves to the matching PEM private key in PKCS#8
 (`BEGIN PRIVATE KEY`), PKCS#1 (`BEGIN RSA PRIVATE KEY`), or SEC1
-(`BEGIN EC PRIVATE KEY`) encoding. Busbar offers **h2, http/1.1** over ALPN (1.6.0; 1.5.5
-offered http/1.1 only): an h2-capable client speaks HTTP/2, an http/1.1-only client is served as before.
+(`BEGIN EC PRIVATE KEY`) encoding. Busbar offers **h2, http/1.1** over ALPN: an h2-capable client speaks HTTP/2, an http/1.1-only client is served as before.
 
 **Fail-fast.** Any missing, unreadable, or unparseable cert/key/CA file stops the
 process at startup with a message naming the offending file: a misconfigured
@@ -388,14 +370,14 @@ All metrics are Prometheus counters/histograms exposed at `/metrics`, which is o
 
 | Metric | Type | Labels | Watch for |
 |---|---|---|---|
-| `busbar_requests_total` | counter | `ingress_protocol`, `pool`, `outcome` | Model (LLM) plane only, unchanged from 1.5.4 (no `plane` label). `outcome` is `ok` / `client_error` / `exhausted` (503) / `error`. A rising `exhausted` means pools are running out of healthy members. |
+| `busbar_requests_total` | counter | `ingress_protocol`, `pool`, `outcome` | Model (LLM) plane only (no `plane` label). `outcome` is `ok` / `client_error` / `exhausted` (503) / `error`. A rising `exhausted` means pools are running out of healthy members. |
 | `busbar_plane_requests_total` | counter | `plane`, `ingress_protocol`, `pool`, `outcome` | Mounted planes: `plane` is `mcp` / `a2a`, so `sum by (plane) (rate(busbar_plane_requests_total[5m]))` splits the mounted-plane traffic. Same `outcome` vocabulary as `busbar_requests_total`. |
 | `busbar_upstream_attempts_total` | counter | `pool`, `lane` | Real upstream calls (re-counted per failover hop). |
 | `busbar_upstream_failures_total` | counter | `pool`, `lane`, `disposition` | `disposition` is `transient_upstream` / `attempt_timeout` / `hard_down` / `context_length`. Concentration on one lane points at a sick backend. |
 | `busbar_breaker_trips_total` | counter | `pool`, `lane` | Each hard-down/trip. Spikes = a backend going down. |
 | `busbar_failovers_total` | counter | `pool`, `reason` | `reason` is `timeout` / `connect` / `transient_upstream` / `attempt_timeout` / `hard_down` / `context_length`. |
 | `busbar_translations_total` | counter | `from`, `to` | Cross-protocol translation hops. |
-| `busbar_request_duration_seconds` | histogram | `ingress_protocol`, `pool` | Model (LLM) plane only, unchanged from 1.5.4. End-to-end latency. |
+| `busbar_request_duration_seconds` | histogram | `ingress_protocol`, `pool` | Model (LLM) plane only. End-to-end latency. |
 | `busbar_plane_request_duration_seconds` | histogram | `plane`, `ingress_protocol`, `pool` | Mounted planes (`mcp` / `a2a`). End-to-end latency for tool calls and agent tasks. |
 | `busbar_key_spend_cents` | gauge | `key` (+ mint labels) | Per-virtual-key derived spend (all-time attribution bucket), calculated from exact ledger quantities and dated rate history. The legacy metric name does not select a currency; cost units are operator-defined. |
 | `busbar_key_tokens_total` | gauge | `key` (+ mint labels) | Tokens consumed by each virtual key (all-time attribution bucket). |
@@ -675,7 +657,7 @@ for graceful degradation.
 
 Data-plane callers authenticate with **signed, expiring virtual keys** (the built-in `keys`
 verifier in `auth.chain`). Keys are managed over the admin API on the separate `admin_listen`,
-guarded by `auth.admin_auth` (the built-in `admin-tokens` operator credential, sent as
+guarded by `auth.admin_auth` (the operator credential of the configured auth module, sent as
 `Authorization: Bearer <admin_token>` or `X-Admin-Token: <admin_token>`, or an IdP role with
 `admin_scope`).
 
@@ -703,9 +685,7 @@ next sign-in and Refresh. To contain a leaked key or offboard a user:
   by a different sign-in provider.
 
 Each refused sign-in is in the admin audit log as `self_serve.mint` / `rejected` on
-`key:<id>#<reason>`, and logs `BUSBAR-4043` at debug. After upgrading from 1.5.5, review the
-self-serve keys you had disabled: a 1.5.5 login re-enabled them silently, and that cannot be
-detected afterwards.
+`key:<id>#<reason>`, and logs `BUSBAR-4043` at debug.
 
 ### Enforcement model
 
