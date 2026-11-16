@@ -2769,6 +2769,34 @@ fn core_sections_parse_directly_and_are_named_in_unknown_field_errors() {
 }
 
 #[test]
+fn the_removed_credentials_section_is_refused_as_an_unknown_key() {
+    for tail in [
+        "credentials:\n  at_rest:\n    key: { module: fixture-source, settings: { slot: TEST_KEY } }\n",
+        "credentials: {}\n",
+    ] {
+        let error = crate::config::deploy_from_yaml_str(
+            &format!("providers: {{}}\nmodels: {{}}\n{tail}"),
+            &crate::config::Grammar::empty(),
+        )
+        .expect_err("`credentials` is no longer a config key");
+        assert!(
+            error.to_string().contains("unknown field `credentials`"),
+            "{error}"
+        );
+    }
+}
+
+#[test]
+fn a_1_5_5_shaped_config_still_parses() {
+    let deploy = crate::config::deploy_from_yaml_str(
+        "listen: \"0.0.0.0:8080\"\nauth:\n  signing_key: { module: fixture-source, settings: { slot: SIGNING } }\nproviders: {}\nmodels: {}\n",
+        &crate::config::Grammar::empty(),
+    )
+    .expect("a 1.5.5-shaped config parses");
+    assert!(deploy.auth.is_some_and(|a| a.signing_key.is_some()));
+}
+
+#[test]
 fn a_flat_rate_card_resolves_to_itself() {
     for text in [
         "providers: {}\nmodels: {}\nrate_card: {}\n",

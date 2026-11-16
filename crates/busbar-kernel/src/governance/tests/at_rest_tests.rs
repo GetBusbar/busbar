@@ -217,6 +217,19 @@ async fn a_minted_recoverable_credential_reaches_the_store_sealed_and_still_auth
 }
 
 #[tokio::test]
+async fn a_credential_is_sealed_under_the_key_derived_from_the_signing_key() {
+    let store = crate::real_store::core().await;
+    let g = signing_gov(store.clone(), 7).await;
+    let (public_id, secret) = mint(&g).await;
+    let r = row(&store).await;
+    assert_eq!(kid_of(&r.secret), AtRestKeys::new(&[7; 32], None).kid());
+    assert!(!r.secret.contains(&secret));
+    assert_eq!(read(&g, &public_id), (secret.clone(), true));
+    let restarted = signing_gov(store.clone(), 7).await;
+    assert_eq!(read(&restarted, &public_id), (secret, true));
+}
+
+#[tokio::test]
 async fn minting_a_recoverable_credential_without_an_at_rest_key_is_refused_with_the_sentence() {
     let store = crate::real_store::core().await;
     let g = signing_gov(store.clone(), 7).await;
