@@ -850,3 +850,39 @@ fn declared_client_identity_is_bound_and_verified_without_exposing_its_key() {
         server.await.unwrap();
     });
 }
+
+#[test]
+fn idle_expiry_tls_mode_mismatch_and_overlap_are_closed() {
+    run(async {
+        let (addr, server) = echo().await;
+        let dest = addr.to_string();
+        let mut targets = SocketTargets::new(Limits {
+            idle_lifetime: Duration::from_nanos(1),
+            ..limits()
+        })
+        .unwrap();
+        targets.allow("db", addr, Security::Plaintext).unwrap();
+        let mut needs = FakeNeeds::new().with_sockets(targets).unwrap();
+        let cx = caller(1);
+        let a = needs.open_answer(&cx, open(&dest)).await.unwrap();
+        needs.close(&cx, ConnId(a.id), true).await;
+        let b = needs.open_answer(&cx, open(&dest)).await.unwrap();
+        assert_ne!(a.pooled, b.pooled);
+        assert_eq!(b.flags & open_flag::REUSED, 0);
+        assert!(matches!(
+            needs
+                .open_answer(&cx, tls_open(&dest, "localhost", ""))
+                .await,
+            Err(NeedErr::Denied)
+        ));
+        needs.release(&cx);
+        needs.socket_report().unwrap().expect_failure("overlap", 1);
+        needs.conn(&dest, ConnScript::new());
+        assert!(matches!(
+            needs.open_answer(&cx, open(&dest)).await,
+            Err(NeedErr::Denied)
+        ));
+        needs.socket_report().unwrap().finish().unwrap();
+        server.abort();
+    });
+}
