@@ -319,8 +319,8 @@ pub trait IntentHost: Send + Sync {
         DISTRUST_UNKNOWN
     }
     /// TRUST_STATE: the counterparty verdict and the per-item state. The default refuses as unknown.
-    fn trust_state(&self, _party: &str) -> (u32, Vec<TrustItemOwned>) {
-        (DISTRUST_UNKNOWN, Vec::new())
+    fn trust_state(&self, _party: &str) -> (u32, Option<[u8; 32]>, Vec<TrustItemOwned>) {
+        (DISTRUST_UNKNOWN, None, Vec::new())
     }
     /// TRUST_VERIFY: the `SIGNED_*` verdict and, for `SIGNED_ALGORITHM` and `SIGNED_CRITICAL`, the named member.
     /// The default has no root: `SIGNED_MALFORMED_ROOT`.
@@ -953,14 +953,14 @@ impl<'h> Resolver<'h> {
     /// The TRUST_ANS of every TRUST and TRUST_VERIFY of the answer, in intent order; `None` when it has none.
     fn trusts(&self, intents: &[Intent]) -> Option<Vec<u8>> {
         // (check, verdict, item states of a STATE, the named member of a VERIFY)
-        let mut rows: Vec<(u32, u32, Vec<TrustItemOwned>, String)> = Vec::new();
+        let mut rows: Vec<(u32, u32, Vec<TrustItemOwned>, String, Option<[u8; 32]>)> = Vec::new();
         for intent in intents {
             match intent {
                 Intent::Trust {
                     check, op, party, ..
                 } if *op == TRUST_STATE => {
-                    let (verdict, items) = self.host.trust_state(party);
-                    rows.push((*check, verdict, items, String::new()));
+                    let (verdict, catalog, items) = self.host.trust_state(party);
+                    rows.push((*check, verdict, items, String::new(), catalog));
                 }
                 Intent::Trust {
                     check,
@@ -970,11 +970,11 @@ impl<'h> Resolver<'h> {
                 } if *op == TRUST_SERVES => {
                     let item = item.as_ref().map(|(name, digest)| (name.as_str(), *digest));
                     let verdict = self.host.trust_serves(party, item);
-                    rows.push((*check, verdict, Vec::new(), String::new()));
+                    rows.push((*check, verdict, Vec::new(), String::new(), None));
                 }
                 Intent::Trust { check, .. } => {
                     // The adapter admits only SERVES and STATE; anything else does not serve.
-                    rows.push((*check, DISTRUST_UNKNOWN, Vec::new(), String::new()));
+                    rows.push((*check, DISTRUST_UNKNOWN, Vec::new(), String::new(), None));
                 }
                 Intent::TrustVerify {
                     check,
@@ -983,7 +983,7 @@ impl<'h> Resolver<'h> {
                     signatures,
                 } => {
                     let (verdict, named) = self.host.trust_verify(party, payload, signatures);
-                    rows.push((*check, verdict, Vec::new(), named));
+                    rows.push((*check, verdict, Vec::new(), named, None));
                 }
                 _ => {}
             }
@@ -993,7 +993,7 @@ impl<'h> Resolver<'h> {
         }
         let views: Vec<Vec<TrustItem<'_>>> = rows
             .iter()
-            .map(|(_, _, items, _)| {
+            .map(|(_, _, items, _, _)| {
                 items
                     .iter()
                     .map(|i| TrustItem {
@@ -1008,9 +1008,10 @@ impl<'h> Resolver<'h> {
         let answers: Vec<TrustAnswer<'_>> = rows
             .iter()
             .zip(&views)
-            .map(|((check, verdict, _, named), items)| TrustAnswer {
+            .map(|((check, verdict, _, named, catalog), items)| TrustAnswer {
                 check: *check,
                 verdict: *verdict,
+                catalog: *catalog,
                 items,
                 named,
             })
@@ -1649,12 +1650,12 @@ impl<R: PluginRecords> IntentHost for KernelIntents<R> {
         }
     }
 
-    fn trust_state(&self, party: &str) -> (u32, Vec<TrustItemOwned>) {
+    fn trust_state(&self, party: &str) -> (u32, Option<[u8; 32]>, Vec<TrustItemOwned>) {
         let Some(book) = &self.services.trust else {
-            return (DISTRUST_UNKNOWN, Vec::new());
+            return (DISTRUST_UNKNOWN, None, Vec::new());
         };
         let mut items = Vec::new();
-        let verdict = book.state(&self.who.caller(), party, &mut |item| {
+        let (verdict, catalog) = book.state(&self.who.caller(), party, &mut |item| {
             items.push(TrustItemOwned {
                 name: item.name.to_owned(),
                 verdict: item.verdict,
@@ -1662,7 +1663,7 @@ impl<R: PluginRecords> IntentHost for KernelIntents<R> {
                 sighted: item.sighted,
             });
         });
-        (verdict, items)
+        (verdict, catalog, items)
     }
 
     fn trust_verify(&self, party: &str, payload: &[u8], signatures: &[u8]) -> (u32, String) {
