@@ -177,10 +177,6 @@ pub(super) fn complete(paths: &mut Map<String, Value>, schemas: &mut Map<String,
             "Omitted preserves binding; null explicitly unbinds; a string rebinds to an existing group."
         );
     }
-    if let Some(schema) = schemas.get_mut("LimitView") {
-        schema["properties"]["admission"]["enum"] = json!(["exact", "estimate"]);
-        schema["properties"]["on_exhaustion"]["enum"] = json!(["finish-unit", "cut-stream"]);
-    }
     for methods in paths.values_mut() {
         if let Some(operation) = methods.get_mut("patch") {
             if let Some(schema) =

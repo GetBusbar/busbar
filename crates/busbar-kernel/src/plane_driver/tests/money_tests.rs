@@ -47,8 +47,6 @@ fn cost_model(budget_cents: Option<u64>, fee: i64) -> CostModel {
                 scope: None,
                 on_exhaust: None,
                 downgrade_to: None,
-                admission: None,
-                on_exhaustion: None,
             }]
         })
         .unwrap_or_default();
@@ -1786,8 +1784,6 @@ async fn the_real_governor_concurrency_grant_lives_through_child_and_parent_auth
                 scope: None,
                 on_exhaust: None,
                 downgrade_to: None,
-                admission: None,
-                on_exhaustion: None,
             }],
             ..Default::default()
         },
@@ -2137,8 +2133,6 @@ async fn the_actual_reservation_grant_holds_concurrency_across_settled_mint_and_
                     scope: None,
                     on_exhaust: None,
                     downgrade_to: None,
-                    admission: None,
-                    on_exhaustion: None,
                 }],
                 ..Default::default()
             },

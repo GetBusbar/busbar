@@ -210,8 +210,6 @@ async fn a_refusal_after_the_hold_leaks_no_live_count() {
         scope: None,
         on_exhaust: None,
         downgrade_to: None,
-        admission: None,
-        on_exhaustion: None,
     };
     let group = |limits: Vec<LimitCfg>| GroupCfg {
         enabled: true,

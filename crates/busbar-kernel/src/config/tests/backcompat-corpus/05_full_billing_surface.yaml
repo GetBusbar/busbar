@@ -64,8 +64,4 @@ groups:
   team-research:
     parent: org
     limits:
-      - { tokens_input: 5000000, per: hour }
-      - { tokens_output: 1000000, per: hour }
-      - { tokens_cache_read: 8000000, per: day }
-      - { tokens_cache_write: 500000, per: day }
       - { budget: 250000, per: month, pool: premium, on_exhaust: downgrade, downgrade_to: economy }
