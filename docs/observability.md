@@ -14,7 +14,7 @@ No auth required. Returns `200 OK` (body: `ok`) if any lane is usable: meaning a
 
 Use as a Kubernetes readiness and liveness probe. The check is side-effect-free: it never steals a HalfOpen recovery probe slot.
 
-A `503` from `/healthz` means all lanes are either tripped/cooling, hard-down, budget-exhausted, or permanently dead. Check `/stats` for details.
+A `503` from `/healthz` means all lanes are either tripped/cooling, hard-down, budget-exhausted, or permanently dead. Check `/stats` for details. If instead `/healthz` answers `503` with body `plugin dispatch halted; restart required`, the engine has latched a plugin-dispatch halt and only a restart clears it; that check runs before the lane check.
 
 ## /stats
 
@@ -25,7 +25,9 @@ Authorization: Bearer <client-token-or-virtual-key>
 
 Requires auth (client token or virtual key). Returns a JSON topology snapshot, scoped to the calling key's `allowed_pools`: a key with a non-empty `allowed_pools` list sees only its permitted pools and the lanes reachable through them.
 
-Per-lane fields in the response:
+The response is `{ "pools": {...}, "lanes": [...] }`. `pools` maps each visible pool name to the list of its members' model names; `lanes` is the array of per-lane records below.
+
+Per-lane fields:
 
 | Field | Meaning |
 |---|---|
@@ -58,11 +60,17 @@ GET /metrics
 Authorization: Bearer <client-token-or-virtual-key>
 ```
 
-Prometheus text exposition (`text/plain; version=0.0.4`). Goes through the same auth check as other routes, it is treated as an information-disclosure surface (it reveals pool structure, lane names, and failure rates). With no auth chain (`auth.chain: []`), the check admits unconditionally, so `/metrics` is effectively open. Restrict it at the network layer if that matters for your threat model.
+This section covers the **data-listener** `/metrics`, served by a `module: prometheus` export instance (the admin-listener route is described next). Prometheus text exposition (`text/plain; version=0.0.4`). Goes through the same auth check as other routes, it is treated as an information-disclosure surface (it reveals pool structure, lane names, and failure rates). With no auth chain (`auth.chain: []`), the check admits unconditionally, so `/metrics` is effectively open. Restrict it at the network layer if that matters for your threat model.
+
+### The admin-listener `/metrics`
+
+The admin listener serves its own `GET /metrics` and `GET /metrics/hooks`, encoded by core rather than by an export instance (`/metrics/hooks` carries the hook-reported families). They authenticate with the **admin** credential (the `admin_auth:` chain; read-only scope is enough), not a client token or virtual key. The representation follows `Accept`: Prometheus text by default (also `text/plain`), `application/openmetrics-text` for OpenMetrics, or `application/json` for the same families as JSON. Responses carry `Cache-Control: no-store`.
+
+This route is governed by the in-process registry, `telemetry.enabled` (default `true`, independent of any `export:` instance), not by an export instance. With `telemetry.enabled: false` it answers `503 unavailable` with reason `telemetry_disabled`; before the recorder is installed it answers `503 unavailable`.
 
 ### Metrics are opt-in
 
-Metrics are **off unless you ask for them.** With no `module: prometheus` instance under `export:` busbar installs no recorder, records nothing on the request path, and does not mount `/metrics` or `/metrics/hooks` at all. A scrape of either gets the same 404 as any other unknown path. Opting in is one `export:` instance, and `buffer_seconds` is **required**:
+The data-listener scrape endpoint is **off unless you ask for it.** With no `module: prometheus` instance under `export:`, busbar does not mount `/metrics` or `/metrics/hooks` on the data listener at all, and a scrape of either there gets the same 404 as any other unknown path. (The in-process registry itself is governed by `telemetry.enabled`, and the admin listener serves its own `/metrics`; see above.) Opting in is one `export:` instance, and `buffer_seconds` is **required**:
 
 ```yaml
 store: { module: memory }
@@ -138,11 +146,9 @@ deliberate, and it is the signal an operator most often has nothing else to see.
 | `busbar_plane_request_duration_seconds` | histogram | `plane`, `ingress_protocol`, `pool` | Mounted planes (`plane` is `mcp` / `a2a`). End-to-end latency for tool calls and agent tasks. |
 | `busbar_key_spend_cents` | gauge | `key` + mint labels | Per-virtual-key DERIVED spend (abstract minor units, all-time attribution bucket), recomputed at scrape time from the ledger, each request priced at the card in force when it was served, plus the flat fee. |
 | `busbar_bucket_spend_cents` | gauge | `bucket`, `group`, `window` | Derived spend per (group, window) enforcement bucket (`bucket` = `group:<name>@<window>`). |
-| `busbar_bucket_budget_remaining_cents` | gauge | `bucket`, `group`, `window` | Budget cap minus derived spend, only for buckets with a `budget` limit. Use for burn-rate alerting. |
+| `busbar_bucket_budget_remaining_cents` | gauge | `bucket`, `group`, `window` | Budget cap minus derived spend, only for buckets with a `budget` limit. Use for burn-rate alerting: point Alertmanager at 80% burn, since Busbar ships the hard 100% stop only and alerts live outside the core. |
 | `busbar_key_tokens_total` | gauge | `key` + mint labels | Accumulated tokens consumed by each virtual key (all-time attribution bucket). |
 | `busbar_bucket_tokens` | gauge | `bucket`, `model`, `tier` (+ mint labels on key buckets) | Per-(bucket, model, tier) token counters for the bucket's current budget window, from the token ledger. `bucket` is a virtual-key id or `group:<name>`; `tier` ∈ `input`\|`output`\|`cache_read`\|`cache_write`. The raw material for any external per-model cost dashboard (multiply by your own catalog). |
-| `busbar_bucket_spend_cents` | gauge | `bucket` | Derived spend per BUDGET-GROUP bucket (each request priced at the card in force when it was served; the flat fee counts against key buckets) for its current window. |
-| `busbar_bucket_budget_remaining_cents` | gauge | `bucket` | Budget-group cap minus derived spend. The external-alerting hook: point Alertmanager at 80% burn - Busbar ships the hard 100% stop only, alerts live outside the core. |
 | `busbar_lane_state` | gauge | `pool`, `lane` | Circuit-breaker health of THIS pool's own breaker cell for the lane, never folded with another pool that shares the lane: `0` = Closed (healthy), or Open with its cooldown elapsed so the next request is the recovery probe; `1` = HalfOpen, a recovery probe is in flight on this pool's cell right now; `2` = tripped, this pool's cell is Open or cooling down (or the lane is hard-down). Emitted for every plane: MCP and A2A destinations report under their plane-qualified target or pool key as `pool` (for example `tool:<server>`, `agent:<pool>`) with the member position as `lane` (`0` for a single registered target), once a request has been sent to them. Side-effect-free at scrape time. |
 | `busbar_lane_available` | gauge | `pool`, `lane` | Unified availability from the shared `classify` taxonomy (the same one routing dispatches on): `1` = the lane would admit a request right now, `0` = unavailable for ANY reason (breaker Open, at-capacity, dead, budget, probe-in-flight). Pair with `busbar_lane_state` (breaker) and `busbar_lane_available_permits` (capacity) to see which axis is the cause. Replaces the former `busbar_lane_at_capacity`. Side-effect-free. |
 | `busbar_lane_recovery_hint_ms` | gauge | `pool`, `lane` | Honest lower bound (ms) on when an unavailable lane could next serve, from the same `recovery_hint_ms` that feeds `Retry-After`: breaker `until` for an Open lane, the at-capacity floor (2000ms) for a saturated one. `0` when available or the reason has no self-recovery (dead/budget). Side-effect-free. |
@@ -171,7 +177,7 @@ Deeper observability rides the single `export:` surface (as of 1.5.3 the `observ
 
 ## Response headers
 
-Every response header Busbar itself injects (as opposed to a header it relays or translates from an upstream) is an **opt-in toggle under `advanced.response_headers`, default OFF**. Each one is, in some form, an in-band tell that the request went through Busbar rather than talking to the backend directly, so none of them ship enabled out of the box, and an operator opts in per-header only when the tradeoff (a useful diagnostic vs. a fingerprintable observable) is one they've chosen to accept. Both toggles are **restart-to-apply**: each is baked into process-wide state at boot (router middleware composition for `server_timing`, a process-wide flag for `route_policy`), so a live `PUT /config/settings` stores the new value durably but it only takes effect after a restart (`POST /restart` or a supervisor restart). `reload_to_apply` flags `advanced.response_headers` when you change it live.
+Every response header Busbar injects that reveals the gateway (as opposed to a header it relays or translates from an upstream, or one the protocol requires) is an **opt-in toggle under `advanced.response_headers`, default OFF**. Each one is, in some form, an in-band tell that the request went through Busbar rather than talking to the backend directly, so none of them ship enabled out of the box, and an operator opts in per-header only when the tradeoff (a useful diagnostic vs. a fingerprintable observable) is one they've chosen to accept. Both toggles are **restart-to-apply**: each is baked into process-wide state at boot (router middleware composition for `server_timing`, a process-wide flag for `route_policy`), so a live `PUT /config/settings` stores the new value durably but it only takes effect after a restart (`POST /restart` or a supervisor restart). `reload_to_apply` flags `advanced.response_headers` when you change it live.
 
 ```yaml
 advanced:
@@ -184,6 +190,8 @@ advanced:
 |---|---|---|---|---|
 | `Server-Timing: busbar;dur=<ms>` | `advanced.response_headers.server_timing` | Busbar's OWN added latency (total request wall-clock minus the upstream round-trip), at millisecond precision per the W3C `Server-Timing` spec. | On every response, once enabled, including admin/health/early-error responses that never dispatched upstream (in which case the full request time is reported). | `false` |
 | `x-busbar-route-policy` / `x-busbar-route-target` | `advanced.response_headers.route_policy` | The name of the routing policy that chose the lane, and the chosen lane's model. Values are bounded, operator-defined strings (a fixed policy enumeration + a configured model name), never request-derived data. | Only when a non-default routing policy actually produced the order; a default `route: weighted` pool (or a policy that abstained and fell through to weighted round-robin) attaches nothing even when the toggle is on. | `false` |
+
+These two are the only fingerprinting headers. Headers that are part of an endpoint's own contract are not toggles: admin responses always carry `X-Request-Id` (it matches `error.request_id`) and `Cache-Control: no-store`, a `429` carries `Retry-After`, and a `401` carries `WWW-Authenticate: Bearer`.
 
 **Why default off.** Both headers are useful. `Server-Timing` is a standard latency probe DevTools and APM tooling already understand, and the route headers are handy when debugging which policy picked a lane. But Busbar is deliberately anti-fingerprinting: an unauthenticated client should not be able to tell it's talking to a gateway rather than the backend directly from response shape alone. `Server-Timing: busbar;dur=…` and `x-busbar-route-*` are both in-band Busbar tells observable on every response, so both stay invisible until an operator explicitly accepts that tradeoff.
 

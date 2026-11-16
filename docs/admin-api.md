@@ -38,7 +38,7 @@ A role may instead (or as well) be granted admin verbs ONE BY ONE with `verbs:` 
 
 Over-budget is `429 rate_limited` with a **`Retry-After: 60`** header, and the event is audited. Reads are unmetered.
 
-**The static admin token is one shared principal.** Per-principal budgeting is only as isolating as the principal identity, and the built-in `admin-tokens` module ([GetBusbar/busbar-auth-admin-tokens](https://github.com/GetBusbar/busbar-auth-admin-tokens), linked into the default build at a pinned rev) maps *every* successful static-token authentication, regardless of which holder presented it, to the same constant principal id, `"admin"`. So if you hand the one static token to busbar-ui, your CI, your Terraform, and an operator's `curl`, they all collapse onto that single principal and **share one bucket per class** (10/min config-mutation, 60/min CRUD, 30/min plugin-inspect): a script hammering one of them can 429 the others, and the two are indistinguishable from the response alone. Failed attempts also spend budget (deliberate, anti-enumeration), which sharpens this. If you need per-caller isolation and attribution, don't fan the static token out to multiple automations. Authenticate them through a **role-bound external admin module** instead (OIDC/SSO/AD; see `admin_auth:` above and `auth.role_bindings.<provider>`). Role-carrying principals from an external module get distinct principal ids and therefore distinct rate buckets.
+**The static admin token is one shared principal.** Per-principal budgeting is only as isolating as the principal identity, and the built-in static-token admin auth module (the default `admin_auth:` entry, linked into the default build) maps *every* successful static-token authentication, regardless of which holder presented it, to the same constant principal id, `"admin"`. So if you hand the one static token to busbar-ui, your CI, your Terraform, and an operator's `curl`, they all collapse onto that single principal and **share one bucket per class** (10/min config-mutation, 60/min CRUD, 30/min plugin-inspect): a script hammering one of them can 429 the others, and the two are indistinguishable from the response alone. Failed attempts also spend budget (deliberate, anti-enumeration), which sharpens this. If you need per-caller isolation and attribution, don't fan the static token out to multiple automations. Authenticate them through a **role-bound external `kind: auth` module** instead (for example an OIDC or SSO provider; see `admin_auth:` above and `auth.role_bindings.<provider>`). Role-carrying principals from an external module get distinct principal ids and therefore distinct rate buckets.
 
 ## Security-sensitive config and queued effects
 
@@ -83,8 +83,24 @@ instant revocation claim follows from a successful local mutation.
 Ordinary `/api/v1/admin` refusals (including 401, unmatched-path 404, and wrong-method 405) use this shape. The explicitly selected durable `/adjust` action profile can instead return its typed outcome body at non-2xx statuses. Branch on known `code` values and preserve unknown strings; never branch on human-facing `message`:
 
 ```json
-{ "error": { "code": "not_found", "message": "pool `west` not found" } }
+{
+  "code": "BUSBAR-NNNN",
+  "error": {
+    "code": "not_found",
+    "reason": "unknown_resource",
+    "message": "pool `west` not found",
+    "request_id": "r_0123456789abcdef",
+    "retryable": false,
+    "details": {}
+  }
+}
 ```
+
+The top-level `code` is the diagnostic banner for the error (one per `error.code`; see [diagnostics](diagnostics.md)). Inside `error`:
+
+- `code` is the stable string in the table below; `reason` is a finer member of a closed table (it is `null` only for `internal`) and `details` carries that reason's structured fields (an empty object when it has none). Both are additive: branch on `code`, then optionally on `reason`, and preserve values you do not know.
+- `request_id` is the same id the response carries in its `X-Request-Id` header, so a refusal can be matched to the server log and audit row.
+- `retryable` is `true` only for `rate_limited`, `unavailable`, and reason `idempotency_in_flight`. It is `false` for everything else, including `version_conflict`: a stale `If-Match` needs a re-read and a fresh decision, not an automatic retry.
 
 | `code` | HTTP | Meaning |
 |---|---|---|
@@ -93,7 +109,7 @@ Ordinary `/api/v1/admin` refusals (including 401, unmatched-path 404, and wrong-
 | `method_not_allowed` | 405 | The path exists, but not with this method |
 | `forbidden` | 403 | Authenticated but under-scoped (the message names the sufficient scope) |
 | `invalid_request` | 400 | Malformed body, bad parameter, malformed `If-Match`, or a malformed pagination cursor |
-| `version_conflict` | 409 | **Retryable**: your `If-Match` is stale, re-read for a fresh ETag and retry |
+| `version_conflict` | 409 | Your `If-Match` is stale: re-read the resource for a fresh ETag and review it before resubmitting (`retryable` is `false`) |
 | `conflict` | 409 | State/precondition refusal. Recovery is operation-specific: base ownership and immutable grants require a changed proposal; an in-flight replay or config race requires reconciliation before retry |
 | `unpriced_class` | 409 | **Terminal**: a usage read (`GET /usage`, `/groups/{name}/usage`, `/keys/{id}/usage`) hit a billable class or lane the rate card in force names no price for, so the figure cannot be priced (see [configuration.md](configuration.md#per-plane-rate-cards-toolsrate_card-agentsrate_card-streamsrate_card-decisionsrate_card)) |
 | `idempotency_mismatch` | 409 | The caller action is already bound to different exact request bytes; no second effect |
@@ -185,7 +201,8 @@ Count units follow the field's billable class; `spend_cents`, `spend_micros` and
 
 Optimistic concurrency is **one mechanism across the whole surface**: the RFC-7232 `If-Match` header; there is no body-level `expected_version` twin:
 
-- **Config plane** (hooks, groups, config, admin-auth): the ETag is the config version, quoted: `ETag: "42"`. It rides on `GET /hooks`, `GET /hooks/{name}`, `GET /groups`, `GET /groups/{name}`, `GET /config`, `GET /admin-auth`, and on **every successful config-plane mutation response** (including the `204` from a hook or group DELETE), so a scripted mutation chain never needs a re-read.
+- **Config plane** (hooks, groups, config, admin-auth): the ETag is the durable config generation, quoted and scoped to the deployment: `ETag: "<deployment_id>.<config_generation>"` (for example `"dep_0123456789abcdef0123456789abcdef.42"`). It is a strong tag, shared by every config resource, and it is built from the `config_generation` that `GET /info` reports, not from the `config_version` counter. Treat it as opaque and send it back verbatim. It rides on `GET /hooks`, `GET /hooks/{name}`, `GET /groups`, `GET /groups/{name}`, `GET /config`, `GET /admin-auth`, and on **every successful config-plane mutation response** (including the `204` from a hook or group DELETE), so a scripted mutation chain never needs a re-read.
+- **Every other `GET`** carries a weak digest `ETag` and answers `If-None-Match` with `304 Not Modified`; config reads answer it against the generation tag above.
 - **Keys**: each record's ETag is a 16-hex-char digest of its mutable metadata, returned in the `ETag` header of `GET /keys/{id}`. `PATCH` and `DELETE /keys/{id}` accept it.
 - `If-Match: *` matches unconditionally (no guard); an absent header is also unguarded.
 - A stale tag is `409 version_conflict` and nothing changes. A **malformed** `If-Match` is `400 invalid_request`. A broken guard never silently passes as "no guard".
@@ -252,17 +269,19 @@ There is one administrative OpenAPI document. It is generated from the code and 
 operation the build can serve — the 1.6.0 additions included. A node serves it at
 `GET /api/v1/admin/openapi.json` filtered to the planes that node configured, so a node running a
 1.5.5 config describes no `tools`/`agents` operation; the release asset is the full document. The
-full document describes 103 operations: the 66 carried from 1.5.5, the 22 the 1.6.0 closed verb
-table adds, and the 15 the MCP and A2A planes contribute. Two marks say what a reader cannot tell
-from the path alone (the document explains them itself, under `info.x-busbar-marks`):
+shipped document lists 82 operations (44 `read-only`, 38 `full`). Each plane that declares admin
+operations adds its own at runtime on top of that, so the total a given build serves depends on the
+planes it carries. Two marks say what a reader cannot tell from the path alone (the document
+explains them itself, under `info.x-busbar-marks`):
 
 - **`x-busbar-plane: <section>`** — the operation belongs to a plane (`tools`, `agents`) and is
   mounted only on a node whose config carries that `<section>:` block. On any other node its path
   answers `404 not_found`, exactly as a path the surface has never had, and the document that node
   serves leaves the operation out (with every schema only it references).
-- **`x-busbar-since: 1.6.0`** — one of the 21 operations 1.6.0 adds to the closed verb table, answered
-  by the node's administrative loop: the 13 kernel verbs (ten money-governance verbs, three
-  trust verbs), the five ledger views and the three audit-chain reads.
+- **`x-busbar-since: 1.6.0`** — one of the 30 operations in the shipped document that 1.6.0 adds. They
+  are answered by the node's administrative loop or by the reads added alongside it: the kernel
+  verbs and trust verbs below, the ledger views, the audit-chain reads, the `kinds` reads, `GET /whoami`,
+  `GET /records` and `plane-record-write`.
 
 `GET /api/v1/admin/ledger/openapi.json` serves the full document, unfiltered.
 
@@ -380,9 +399,13 @@ operation exists elsewhere.
 
 ### Server & topology
 
+<!-- docs-truth: GET /config/tree, PUT|DELETE /hooks/{name}/attachments/{target} and GET /operations/{key} exist on dev but are intentionally undocumented here: the in-progress ADMIN-API-1.6-ONE-MODEL design deletes or renames all three (audit finding B6) -->
+
 | Endpoint | Returns |
 |---|---|
 | `GET /info` | `version`, `build` (the **compiled-in plugin proof**: `auth_modules`, `hook_plugins`, the always-true `weighted_floor`), `uptime_seconds`, `started_at` (epoch of process start, the boot-epoch marker: `config_version` resets on restart, so a changed `started_at` reads as "new epoch", never "reverted"), `topology` (pool/model/provider counts), `config_persistence` (whether API changes survive restart), `config_version` (monotonic, +1 per apply, drift detection), `overlay_ignored` (present and `true` when the process was booted with `--ignore-overlay`; a later reload/apply re-merges the overlay) |
+| `GET /whoami` | The caller, as the admin chain identified it: `principal` (`key:<id>` for a key, `anonymous` in the open posture), `credential` (`kind` is `operator`, `key`, `identity_provider` or `open`, plus `id`, `provider` and `expires_at`, each `null` where it does not apply), `scope` (`read-only` or `full`, `null` when the credential earns neither), `verbs` (every closed-table verb the caller may call, sorted) and `verbs_all`, `require_if_match` (whether mutations must carry `If-Match`), and `rate` (the `read`, `config`, `crud` and `plugin_inspect` budgets, each `{limit, window_s, remaining}`; `read.limit` is `0` because reads are not metered). Any identified admin credential may read its own identity, whatever verbs it holds. `read-only` scope, mutates nothing |
+| `GET /records` | The node's per-unit records: the sealed audit chain, one record per unit, oldest first, as a feed. Response `{source, items, next_cursor, complete}`; `next_cursor` is always a string (round-trip it as `?cursor=`) and `complete: true` means the page reached the newest sealed record. Without a cursor the feed starts at the oldest retained record. `?limit=` (default 200), `?wait=<seconds>` (hold the request open when the page would be empty and caught up), `?from_ms=` (a seek to the first record whose `arrived_at_ms` is at least that, ignored with a cursor), `?to_ms=` (only records arriving before it), and exact-match filters `kind`, `instance`, `key`, `group`, `model`, `provider`, `target`, `outcome`, `reason` and `unit`. A request scans at most 10000 sealed records, so a filtered page can be short or empty and still carry a cursor that continues. Records are per node (`GET /info` lists the nodes): a cursor from another node is `400 cursor_mismatch` (`details.cursor_node_id`), an unretained position is `410 cursor_expired` (`details.oldest_available` resumes), and a node that binds no audit chain answers `404 not_found`. Spend is priced at read time by the rule `GET /usage` uses. `read-only` scope |
 | `GET /kinds/core/instances/routing` | Routing configuration (`config.models`, `config.providers`, `config.pools`); its view `pools` serves each pool member's **live** status: `usable` + `cooldown_remaining_seconds` (breaker), `available_concurrency`, `inflight`, `latency_ms` (EWMA), `ok`/`err` tallies, `dead`, and `trip_count` + `last_trip_at`. `/pools`, `/models` and `/providers` are removed in 1.6.0 (see the migration guide) |
 
 `GET /info` doubles as the **compliance-by-compilation proof**: `build.auth_modules`/`build.hook_plugins` reflect the actual binary. A build compiled with `--no-default-features` reports empty lists: a provable, not merely configured, smaller surface.
@@ -552,7 +575,9 @@ The virtual-key surface at `/api/v1/admin/keys` (`full` scope for mutations). Ke
 | `POST /keys/{id}/rotate` | Re-issue the key's **credential in place**: `200`, same id (budgets, rate windows, usage history, audit attribution carry over), the **previous credential stops authenticating immediately** (fleet-wide, because the new binding generation is durable), the new one is shown exactly once. Answers `{token, expires_at, state}` (every token issued before the rotation is now rejected, and 1.5.0 has exactly one bearer-credential shape, so rotation always re-issues a signed token). Rotate does not itself change `enabled`/revoked/tombstoned status, so `state` reflects whatever the key's disposition already was (`active` or `disabled`, or `revoked`, since rotating a revoked key is legal and leaves it revoked); a tombstoned key refuses to rotate at all (`404`). An attached SigV4 credential is untouched. Bearer rotation and SigV4 rotation are independent planes |
 | `GET /keys/{id}/usage` | The **attribution view**: `{id, budget_period: "total", window_start: 0, as_of, group, spend_cents, tokens, requests, rate_headroom}`, the key's all-time attribution counters (its limits, if any, live on the bound group's own windows). `spend_cents` (minor units: hundredths of the card's cost unit) is DERIVED at read time from the key bucket's ledger, each request priced at the card in force when it was served, plus fee x requests (nothing dollar-shaped is stored). `rate_headroom`: the fraction `[0,1]` of the tightest `requests`/`tokens` limit across the group chain left in each limit's own window (`null` = no such limit), back off *before* tripping a 429 |
 
-**Idempotency.** `POST /keys` and `POST /keys/{id}/rotate` accept `Idempotency-Key`. Authenticated actor, operation, target and SHA256 of the exact request bytes bind a replay for about 10 minutes; whitespace changes are changed bytes. A changed request returns `409 idempotency_mismatch` with `effect:not_applied` and no cached secret. In-flight reservations refuse another effect. Secret-bearing responses can replay only while the current process retains their secret; durable applied receipts survive restart without storing the secret and refuse secret replay. Retention is finite: never reuse a completed action key as a new action or blindly retry after its replay window.
+**`Idempotency-Key` scope.** A router layer honours `Idempotency-Key` on every non-read admin request: the claim is made in the Store before the handler runs and the answer is replayed byte for byte. On that path the key is 1 to 128 characters of `A-Z a-z 0-9 . _ : -`; anything else is `400 invalid_request`, and a node without a reachable Store answers `503 unavailable` rather than running the request unprotected. Six verbs run their own idempotency instead and skip the layer: `POST /keys`, `POST /keys/{id}/rotate`, `POST /signing-key/rotate`, `POST /adjust`, `POST /plane-record-write` and `POST /commit-upgrade`. They apply their own key validation and retention (for `POST /adjust`, 1 to 128 ASCII graphic bytes with no automatic expiry, as described above).
+
+**Key mint and rotate.** `POST /keys` and `POST /keys/{id}/rotate` accept `Idempotency-Key`. Authenticated actor, operation, target and SHA256 of the exact request bytes bind a replay; the process retains a response that carries a secret for about 10 minutes (and only while it runs); whitespace changes are changed bytes. A changed request returns `409 idempotency_mismatch` with `effect:not_applied` and no cached secret. In-flight reservations refuse another effect. Secret-bearing responses can replay only while the current process retains their secret; durable applied receipts survive restart without storing the secret and refuse secret replay. Retention is finite: never reuse a completed action key as a new action or blindly retry after its replay window.
 
 A key rotate/PATCH/delete that committed but cannot refresh its cache returns `409 mutation_applied` with `effect:applied`, `operation`, non-secret `resource:key:<id>`, `recovery` and `credential_recoverable:false`. Rotation's recovery is `rotate_with_new_action`; other writes use `reread_resource`. This response is evidence of the committed effect, not rejection. A lost secret is never disclosed by parsing a backend message.
 
@@ -630,7 +655,7 @@ must persist before its new generation is published; a failed persistence operat
 A read-only config directory does not prevent Store persistence.
 
 An unavailable, incomplete, corrupt or newer Store overlay refuses recovery. Boot with
-`--safe-mode` to quarantine it and use the base configuration without deleting overlay records.
+`--ignore-overlay` to skip it and run on the base configuration alone, leaving the overlay records in the Store untouched (`GET /info` then reports `overlay_ignored: true`; a later reload or apply re-merges the overlay).
 `config.overlay` file and boolean selectors are refused by current parsing. The first 1.6.0 boot
 on a 1.5.5 config removes the old selector, keeps `config.locked` and imports the old overlay file
 into the Store; serving never reads `BUSBAR_CONFIG_OVERLAY`. See [the upgrade guide](migration-1.6.md#your-saved-config-overlay).
@@ -653,18 +678,18 @@ into the Store; serving never reads `BUSBAR_CONFIG_OVERLAY`. See [the upgrade gu
 
 | Endpoint | Does |
 |---|---|
-| `POST /hooks` | Register a hook at runtime. Body `{ "name": "...", "config": { "kind": "gate\|tap", "module": "<kind: hook plugin name/alias>", "settings": {...}, ... } }`. `module` names a loaded `kind: hook` plugin (1.5.0 retired the built-in `socket`/`webhook` transports; for HTTPS-sidecar forwarding use the first-party `busbar-hook-webrequest` plugin, and note `plugins.enabled: true` is required). **`201` when the name is new; `200` when it replaces an existing overlay hook** (honest upsert). A `global: true` hook is live for the next request. Invalid definitions are `400` and change nothing; a base-config-defined name is a terminal `409` (the API never silently shadows file config) |
+| `POST /hooks` | Register a hook at runtime. Body `{ "name": "...", "config": { "kind": "gate\|tap", "module": "<kind: hook plugin name/alias>", "settings": {...}, ... } }`. `module` names a loaded `kind: hook` module (1.5.0 retired the built-in `socket`/`webhook` transports; a hook that forwards to a sidecar is a `kind: hook` module like any other, and `plugins.enabled: true` is required to load one). **`201` when the name is new; `200` when it replaces an existing overlay hook** (honest upsert). A `global: true` hook is live for the next request. Invalid definitions are `400` and change nothing; a base-config-defined name is a terminal `409` (the API never silently shadows file config) |
 | `PUT /hooks/{name}` | Replace an existing **overlay** hook, live. `404` for an unknown name (PUT replaces; POST creates); terminal `409` for a base-defined hook or a grant change: `kind`/`prompt`/`user` are immutable (delete and re-register to change them) |
 | `DELETE /hooks/{name}` | Remove an overlay hook, live. **`204`** (still carrying the new config ETag); `404` if unregistered; terminal `409` for a base-defined hook. The deletion is tombstoned in the overlay so it survives restart |
-| `PATCH /hooks/{name}/settings` | Choose exactly one body mode: `{"settings":{...}}` replaces the entire bag, dropping omitted keys; `{"edit":{"set":{...},"remove":[...]}}` preserves all unmentioned fields, including hidden secrets. set/remove overlap is `400`; null values are authored values, never removal. Never copy redacted readback into a replacement. Both modes push an opaque settings map to the **running** hook and **commit on ack**: Busbar sends the `configure` op (5s deadline) and only a version-echoing acknowledgment commits the change (audited, versioned, persisted). A nack/timeout commits nothing (`400` names the reason); if another mutation landed during the push, the commit is refused with `409`, retry. A forwarding hook (e.g. `busbar-hook-webrequest`) relays committed settings to its sidecar, so a restarted sidecar never runs blind |
+| `PATCH /hooks/{name}/settings` | Choose exactly one body mode: `{"settings":{...}}` replaces the entire bag, dropping omitted keys; `{"edit":{"set":{...},"remove":[...]}}` preserves all unmentioned fields, including hidden secrets. set/remove overlap is `400`; null values are authored values, never removal. Never copy redacted readback into a replacement. Both modes push an opaque settings map to the **running** hook and **commit on ack**: Busbar sends the `configure` op (5s deadline) and only a version-echoing acknowledgment commits the change (audited, versioned, persisted). A nack/timeout commits nothing (`400` names the reason); if another mutation landed during the push, the commit is refused with `409`, retry. A forwarding `kind: hook` module relays committed settings to its sidecar, so a restarted sidecar never runs blind |
 
 All hook mutations honor `If-Match` against the config-plane ETag, are audited (including rejections: probing which names exist leaves a trail), recorded in version history, and overlay-persisted.
 
 ```bash
-# Register a global compression gate, live immediately (forwarding to an HTTPS sidecar via the
-# first-party busbar-hook-webrequest plugin; requires plugins.enabled: true)
+# Register a global compression gate, live immediately (a forwarding `kind: hook` module;
+# `<hook-module>` is a placeholder for its name; requires plugins.enabled: true)
 curl -s -X POST -H "x-admin-token: $TOK" -H 'content-type: application/json' \
-  --data '{"name":"compress","config":{"kind":"gate","module":"webrequest","settings":{"url":"https://127.0.0.1:8900/"},"prompt":"rw","global":true}}' \
+  --data '{"name":"compress","config":{"kind":"gate","module":"<hook-module>","settings":{"url":"https://127.0.0.1:8900/"},"prompt":"rw","global":true}}' \
   http://localhost:8081/api/v1/admin/hooks
 
 # Is it running what we pushed? (desired vs reported, with a drift verdict)
@@ -720,31 +745,33 @@ bypass the trust model:
 | `DELETE /plugins/{file}` | Remove a tarball from `plugins.dir` (`204`; `404` if absent). A currently-loaded store keeps running on its loaded handle; removal affects the NEXT load (folder = source of truth) |
 | `POST /plugins/reload` | **Live hot swap** (no restart): re-runs the fail-closed plugin pipeline from disk+overlay, rebuilds the registry and `kind: hook` transports, and old libraries drain then unmap. Fail-closed: a bad artifact leaves old plugins serving. Full scope, audited |
 | `POST /plugins/rollback` | Explicit, audited, If-Match-guarded rollback. Body: `{"file": "<tarball-filename>"}`. Pins a prior version and lowers the anti-downgrade floor **only for this operator action**. Automatic silent downgrade stays refused. Persists the version pin to the overlay. Full scope, audited |
-| `GET /plugins/{name}/schema` | Schema for a module resolved by name or alias in the current registry, or for a configured hook name. Response: `{name, schema, schema_error, trust, source, kind, restart_required_default}`. Supports every plugin kind. The loaded Statement schema takes precedence over the legacy manifest field; absence is `schema:null, schema_error:null`, while malformed legacy schema text is reported separately. Invalid Statement UTF-8/JSON is refused during admission/loading. `source` is `statement` for a linked row, `manifest` for a dropped row (including its Statement projection), or `describe` when a configured hook returns a non-null live schema; a null live reply falls back to the loaded schema. Artifact catalog URLs use `?source=installed_archive&expected_archive_sha256=<digest>` with the encoded archive filename. This authenticated read inspects the exact current archive bytes under the mutation lock, without loading code or falling back to an older loaded schema; it works before reload. The response adds `file`, `archive_sha256`, and `schema_state` (`present`, `absent`, or `invalid` legacy schema), with `source: installed_archive`. Changed or missing guarded bytes return 409; malformed requests/archive metadata return 400. The legacy query-free name/alias lookup still reads the current registry. Follow the catalog's relative `schema_url`; use `POST /plugins/inspect` for candidates before installation. Module settings schemas describe lifecycle inputs after host secret resolution; they do not replace the separate user SecretRef checks or the surrounding deployment schema |
+| `GET /plugins/{file}/schema` | Schema for a module resolved by name or alias in the current registry, or for a configured hook name. Response: `{name, schema, schema_error, trust, source, kind, restart_required_default}`. Supports every plugin kind. The loaded Statement schema takes precedence over the legacy manifest field; absence is `schema:null, schema_error:null`, while malformed legacy schema text is reported separately. Invalid Statement UTF-8/JSON is refused during admission/loading. `source` is `statement` for a linked row, `manifest` for a dropped row (including its Statement projection), or `describe` when a configured hook returns a non-null live schema; a null live reply falls back to the loaded schema. Artifact catalog URLs use `?source=installed_archive&expected_archive_sha256=<digest>` with the encoded archive filename. This authenticated read inspects the exact current archive bytes under the mutation lock, without loading code or falling back to an older loaded schema; it works before reload. The response adds `file`, `archive_sha256`, and `schema_state` (`present`, `absent`, or `invalid` legacy schema), with `source: installed_archive`. Changed or missing guarded bytes return 409; malformed requests/archive metadata return 400. The legacy query-free name/alias lookup still reads the current registry. Follow the catalog's relative `schema_url`; use `POST /plugins/inspect` for candidates before installation. Module settings schemas describe lifecycle inputs after host secret resolution; they do not replace the separate user SecretRef checks or the surrounding deployment schema |
 
 Catalog rows with a published schema carry a server-resolved relative `schema_url` under the admin origin. Artifact URLs identify the exact complete archive digest. An unreadable/oversized backing archive omits the URL and reports `schema_error`, instead of suggesting a loaded schema describes those unknown bytes. Linked rows can publish it too. When no Statement or legacy schema exists, the URL is omitted. A malformed legacy schema keeps a URL and reports `schema_error`; clients must display that error rather than infer an empty settings object. Module schema publication does not claim activation or expose hidden settings values.
 
 ```bash
-# Install a signed store plugin tarball (takes effect on the next plugin (re)load)
+# Install a signed plugin tarball (takes effect on the next plugin (re)load).
+# <plugin>-<version>.tar.gz is a placeholder for any signed artifact of any kind.
 curl -s -X POST -H "x-admin-token: $TOK" -H 'content-type: application/json' \
-  -d "{\"file\": \"busbar-store-valkey-1.6.0.tar.gz\",
-       \"tarball_b64\": \"$(base64 < busbar-store-valkey-1.6.0-x86_64-linux.tar.gz | tr -d '\n')\"}" \
+  -d "{\"file\": \"<plugin>-<version>.tar.gz\",
+       \"tarball_b64\": \"$(base64 < <plugin>-<version>.tar.gz | tr -d '\n')\"}" \
   http://localhost:8081/api/v1/admin/plugins
-# -> 201 {"file":"busbar-store-valkey-1.6.0.tar.gz","name":"busbar-store-valkey",
-#         "interface_version":3,"trust":"trusted","version":"1.6.0","publisher":"busbar",
+# -> 201 {"file":"<plugin>-<version>.tar.gz","name":"<plugin>",
+#         "interface_version":3,"trust":"trusted","version":"<version>","publisher":"<publisher>",
 #         "note":"installed durably in the plugins directory; ..."}
 
-# An UNSIGNED tarball against the strict default posture is refused, nothing written:
+# An UNSIGNED tarball against the strict default posture is refused, nothing written
+# (the error object is shown trimmed to code and message; see the error contract above):
 # -> 409 {"error":{"code":"conflict","message":"plugin rejected by the trust policy: manifest
 #         carries no signature; refusing to load an unsigned plugin. Set
 #         plugins.trust.allow_unsigned=true to permit unsigned plugins."}}
 
-# Inspect the store-plugin catalog (manifest-only; never executes plugin code)
+# Inspect the store-kind catalog (manifest-only; never executes plugin code)
 curl -s -H "x-admin-token: $TOK" 'http://localhost:8081/api/v1/admin/plugins?type=store'
 
 # Remove it
 curl -s -X DELETE -H "x-admin-token: $TOK" \
-  http://localhost:8081/api/v1/admin/plugins/busbar-store-valkey-1.6.0.tar.gz
+  http://localhost:8081/api/v1/admin/plugins/<plugin>-<version>.tar.gz
 ```
 
 ## Example
