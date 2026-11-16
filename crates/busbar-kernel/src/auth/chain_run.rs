@@ -36,6 +36,10 @@ pub enum ChainEnd {
         code: u32,
         text: Box<str>,
     },
+    /// CA-5: the identity is held by a provisioning instance that links this inbound instance: R_DENIED, no plugin
+    /// is asked (the principal-held audit is the caller's). Checked after the verdict, so a cached identity is
+    /// held the same.
+    Held { instance: u64 },
     /// An instance failed (FAILED or a call error).
     Failed { instance: u64, error: PortError },
 }
@@ -78,10 +82,15 @@ pub async fn run_chain(
     for instance in chain {
         match verify_cached(cache, *instance, cx, req).await {
             Ok(Verdict::Identity(identity)) => {
+                if crate::holds::held_by_id(instance.id, identity.subject()) {
+                    return ChainEnd::Held {
+                        instance: instance.id,
+                    };
+                }
                 return ChainEnd::Admitted {
                     instance: instance.id,
                     identity,
-                }
+                };
             }
             Ok(Verdict::NotMine) => {}
             Ok(Verdict::Rejected { code, text }) => {

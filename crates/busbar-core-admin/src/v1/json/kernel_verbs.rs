@@ -776,27 +776,6 @@ fn doc_for(
         ],
     };
     Some(match verb {
-        KernelVerb::GetTelemetry => VerbDoc {
-            summary: "Bounded request-phase telemetry snapshot",
-            description: "An admin read of already-collected request-phase metrics. At most 32 \
-                identities and 65536 JSON bytes; omitted identities are explicitly counted. \
-                Counts, microsecond sums, bins and uptime are exact decimal strings. Bins are \
-                exclusive, not Prometheus cumulative buckets. The process boot nonce survives \
-                config reloads and scrapes; uptime_since_start_ms is monotonic time since shared process \
-                generation initialization (first info read or recorder setup), not OS process creation. \
-                LlmProducerDrive ends at producer completion; \
-                MountedResponseReady ends when the response is returned, before its body completes. \
-                Neither phase measures completed client delivery. This opens no outbound connection."
-                .to_string(),
-            success: Success::Json(
-                schema_of(gen.subschema_for::<super::telemetry::TelemetryView>()),
-                "A bounded cumulative snapshot; no-store",
-            ),
-            request: None,
-            query: Vec::new(),
-            errors: vec![unavailable_503("telemetry collection is disabled, unavailable, or could not produce a bounded snapshot")],
-        },
-
         KernelVerb::GetWhoami => VerbDoc {
             summary: "Who the admin chain says the caller is, and what the caller may do",
             description: "The caller's principal, the credential behind it (`operator`, `key`, \
@@ -1314,6 +1293,31 @@ fn doc_for(
                 ),
                 unavailable_503("the Store could not read the operation"),
             ],
+        },
+        KernelVerb::GetConfigTree => VerbDoc {
+            summary: "The whole configuration, declared or effective, under the secret rule",
+            description: "`view=effective` (the default) is the resolved generation: every section \
+                the kernel reads back (plugin and plane sections included) and `process`, the \
+                command-line and environment inputs. `view=declared` is the configuration as \
+                written, by `layer`: `base` (the operator's file as it stands), `overlay` (the \
+                Store overlay's per-section documents, tombstones, document-patch paths and \
+                version) or `merged` (both side by side, the default). `section=<dotted key>` \
+                narrows the sections served. Every secret position (a secret-named field, a \
+                plugin setting the plugin did not declare public, a private key) is \
+                `{set, secret_ref}`: never a value, never a hash of one; public key material is \
+                a `sha256` fingerprint. `digest` is over the projected sections. The ETag is the \
+                config ETag."
+                .to_string(),
+            success: Success::Json(
+                schema_of(gen.subschema_for::<super::config_tree::ConfigTreeView>()),
+                "The configuration tree",
+            ),
+            request: None,
+            query: super::config_tree::QUERY_DOC
+                .iter()
+                .filter_map(|param| busbar_contract::json::parse_foreign(param.as_bytes()).ok())
+                .collect(),
+            errors: vec![unavailable_503("the node could not take the read")],
         },
         KernelVerb::PutHooksNameAttachmentsTarget
         | KernelVerb::DeleteHooksNameAttachmentsTarget => {

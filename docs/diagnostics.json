@@ -498,7 +498,7 @@
     "slug": "deprecated-env-var-honored",
     "title": "A deprecated environment variable is set and still honored — RETIRED",
     "severity": "actionable",
-    "summary": "RETIRED. Serving no longer applies deprecated operational environment overrides. Use --migrate-config with the old deployment environment and working directory to capture provider, worker and upstream HTTP settings; old file-overlay selection is migration input only.",
+    "summary": "RETIRED. Serving no longer applies deprecated operational environment overrides. Move the provider, worker and upstream HTTP settings they set into config.yaml; old file-overlay selection is read only by the one-time upgrade boot.",
     "action": "Run the 1.6 migration before serving, review and validate its output, then remove the retired variables from launchers. See docs/migration-1.6.md. See BUSBAR-3029.",
     "since": "1.5.0",
     "retired": true
@@ -583,7 +583,7 @@
     "title": "A retired launch environment variable is set and IGNORED",
     "severity": "actionable",
     "summary": "busbar 1.6 no longer reads BUSBAR_PROVIDERS, BUSBAR_WORKER_THREADS, BUSBAR_UPSTREAM_HTTP1_ONLY or BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE. A set one has NO effect: the config key (or its default) is in force. Emitted pre-tracing, to stderr, at boot and by --validate.",
-    "action": "Run busbar --migrate-config in the old launch environment to write the value into config.yaml, validate, then remove the variable from the launcher.",
+    "action": "Write the value into config.yaml, validate, then remove the variable from the launcher.",
     "since": "1.6.0",
     "retired": false
   },
@@ -1516,12 +1516,12 @@
     "number": 5045,
     "class": "proxy",
     "slug": "metadata-protection-disabled",
-    "title": "Cloud-metadata SSRF protection DISABLED (allow_all_metadata is set)",
+    "title": "Cloud-metadata SSRF protection DISABLED (allow_all_metadata is set) — RETIRED",
     "severity": "actionable",
-    "summary": "The deployment set the nuclear `allow_all_metadata` escape hatch, so busbar's cloud-metadata SSRF guard is OFF and EVERY cloud-metadata endpoint (e.g. 169.254.169.254, the GCP/Azure metadata hosts) is reachable through the proxy. That is a security-relevant degradation: a crafted upstream URL or a compromised plugin can reach the instance's credential endpoint. Emitted once at boot.",
-    "action": "Remove `allow_all_metadata` unless a specific, understood need requires it. If metadata access is genuinely needed, scope it with `security.blocked_metadata_hosts` instead of disabling the guard wholesale (`--print-metadata-blocklist` shows the effective list).",
+    "summary": "RETIRED. Nothing emits this code: 1.6.0 refuses `security.allow_all_metadata` at startup (BUSBAR-3136), and cloud metadata is refused for every outbound connection, so the guard can no longer be disabled.",
+    "action": "Nothing emits this code. See BUSBAR-3136.",
     "since": "1.6.0",
-    "retired": false
+    "retired": true
   },
   {
     "code": "BUSBAR-5046",

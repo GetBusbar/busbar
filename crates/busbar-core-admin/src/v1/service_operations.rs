@@ -46,60 +46,6 @@ impl AdminService {
         }
     }
 
-    pub(crate) fn telemetry(
-        &self,
-    ) -> Result<crate::v1::json::telemetry::TelemetryView, AdminError> {
-        use crate::v1::json::telemetry::{
-            Dropped, ExactU64, Identity, Phase, TelemetryView, MAX_IDENTITIES, UPPER_BOUNDS_MS,
-        };
-        let snapshot =
-            busbar_kernel::snapshot::request_snapshot(MAX_IDENTITIES).ok_or_else(|| {
-                AdminError::Unavailable("telemetry collection is disabled or unavailable".into())
-            })?;
-        let mut identities = Vec::with_capacity(snapshot.identities.len());
-        for row in snapshot.identities {
-            let phase = match row.phase.as_str() {
-                "LlmProducerDrive" => Phase::LlmProducerDrive,
-                "MountedResponseReady" => Phase::MountedResponseReady,
-                _ => {
-                    return Err(AdminError::Unavailable(
-                        "telemetry phase is not supported".into(),
-                    ))
-                }
-            };
-            identities.push(Identity {
-                plane: row.plane,
-                phase,
-                pool: row.pool,
-                ingress_protocol: row.ingress_protocol,
-                count: ExactU64(row.count),
-                errors: ExactU64(row.errors),
-                client_errors: ExactU64(row.client_errors),
-                sum_us: ExactU64(row.sum_us),
-                bins: row.bins.map(ExactU64),
-            });
-        }
-        let [invalid_duration, integer_overflow, series_capacity, boot_nonce_unavailable, histogram_capacity, unregistered_labels] =
-            snapshot.dropped.map(ExactU64);
-        Ok(TelemetryView {
-            process_boot_nonce: snapshot.process_boot_nonce,
-            uptime_since_start_ms: ExactU64(snapshot.uptime_ms),
-            captured_at_unix_ms: ExactU64(snapshot.captured_at_unix_ms),
-            upper_bounds_ms: UPPER_BOUNDS_MS,
-            identities,
-            omitted_identities: ExactU64(snapshot.omitted_identities),
-            truncated: snapshot.omitted_identities != 0,
-            dropped: Dropped {
-                invalid_duration,
-                integer_overflow,
-                series_capacity,
-                boot_nonce_unavailable,
-                histogram_capacity,
-                unregistered_labels,
-            },
-        })
-    }
-
     pub(crate) async fn info(&self) -> Result<InfoView, AdminError> {
         let live = busbar_kernel::persistence::boot_identity::live();
         let nodes = match live {

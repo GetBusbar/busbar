@@ -6,6 +6,7 @@ pub mod chat_spend;
 pub mod credentials;
 pub mod fresh_namespace;
 pub mod lines;
+pub mod migration_rows;
 pub mod otlp;
 pub mod pinned_planes;
 #[path = "../../../../crates/busbar/src/root/tests/test_plugins.rs"]

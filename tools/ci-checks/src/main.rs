@@ -15,12 +15,18 @@
 //!   `busbar-crypto*`. Dev edges count: tests use the facade too. And `curve25519-dalek` is built
 //!   only beneath `busbar-crypto-backend`, never by the facade itself: a FIPS build swaps the
 //!   backend and keeps the facade, and admits no unvalidated crypto crate (QE-BOOT-KEYCHECK).
-//!
+//! - `migrate-flag-text`, `migrate-retired-words`, `migrate-anchors`: the migrate-on-boot checks
+//!   (`migrate.rs`).
+//! - `migrate-overlay-separation`, `migrate-overlay-keys`, `migrate-overlay-docs`: the 1.5.5
+//!   overlay's separation, key and upgrade-page checks (`migrate_overlay.rs`).
+//! - `migrate-size`: the migrator's separation and anchor gates, with its sizes printed
+//!   (`migrate_size.rs`).
 //! - `fleet-manifest`: `fleet/deps.toml`'s `[min3-closure]` and `plugins.yaml`'s 33 ported and 2 archived
 //!   repos (IF §15 rules 1a, 1b).
 //! - `c-transport`, `export-streams`, `no-licence`, `core-scan`: source checks over core (C-TRANSPORT
 //!   test 11, C-EXPORT-STREAMS, C-NO-LICENCE (a), the §15.8 core scan). `loc-report` prints per-file
 //!   production and test lines (a report, no gate).
+//! - `rule-13`: a dlopened library leaves the loader only by IF §11.1's two exits (IF §15 rule 13, I13).
 //! - With arguments, the first one naming the check: `template-drift`, `patch-drift`, `no-host-link`,
 //!   `plugin-rules` and `c-alias`, run from a plugin repo's CI against the repo or its files.
 //!
@@ -40,8 +46,12 @@ use syn::{
     Attribute, Expr, ExprLit, ImplItem, Item, ItemMod, Lit, Meta, Token, TraitItem, UseTree,
 };
 
+mod migrate;
+mod migrate_overlay;
+mod migrate_size;
+
 /// Checks over core's own tree: with no argument every one runs.
-const CHECKS: [&str; 7] = [
+const CHECKS: [&str; 15] = [
     "no-getrandom",
     "crypto-graph",
     "fleet-manifest",
@@ -49,6 +59,14 @@ const CHECKS: [&str; 7] = [
     "export-streams",
     "no-licence",
     "core-scan",
+    "rule-13",
+    "migrate-flag-text",
+    "migrate-retired-words",
+    "migrate-anchors",
+    "migrate-overlay-separation",
+    "migrate-overlay-keys",
+    "migrate-overlay-docs",
+    "migrate-size",
 ];
 /// Checks that take arguments (a plugin repo, files). Named first, the rest of the command line is theirs.
 const ARG_CHECKS: [&str; 7] = [
@@ -69,6 +87,7 @@ mod core_src;
 mod fleet;
 mod host_link;
 mod plugin_rules;
+mod rule13;
 mod supply;
 /// The crypto seam: `busbar-crypto` and `busbar-crypto-backend` (crate directories and packages).
 const SEAM: &str = "busbar-crypto";
@@ -94,12 +113,20 @@ fn main() -> ExitCode {
         let outcome = match name {
             "no-getrandom" => no_getrandom(&root),
             "crypto-graph" => crypto_graph(&root),
+            "migrate-flag-text" => migrate::flag_text(&root),
+            "migrate-retired-words" => migrate::retired_words(&root),
+            "migrate-anchors" => migrate::anchors(&root),
+            "migrate-overlay-separation" => migrate_overlay::separation(&root),
+            "migrate-overlay-keys" => migrate_overlay::hook_keys(&root),
+            "migrate-overlay-docs" => migrate_overlay::docs(&root),
+            "migrate-size" => migrate_size::run(&root),
             "fleet-manifest" => fleet::fleet_manifest(&root),
             "c-alias" => fleet::c_alias(&root, rest),
             "c-transport" => core_src::c_transport(&root),
             "export-streams" => core_src::export_streams(&root),
             "no-licence" => core_src::no_licence(&root),
             "core-scan" => core_scan::core_scan(&root, rest),
+            "rule-13" => rule13::rule_13(&root),
             "loc-report" => core_src::loc_report(&root),
             "template-drift" => supply::template_drift_cli(rest),
             "patch-drift" => supply::patch_drift_cli(&root, rest),
@@ -596,6 +623,10 @@ fn reached(tree: &str, crates: &[&str], outside: &str) -> Vec<String> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+#[path = "migrate_size_tests.rs"]
+mod migrate_size_tests;
 
 #[cfg(test)]
 mod checks_tests;

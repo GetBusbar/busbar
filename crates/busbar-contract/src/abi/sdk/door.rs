@@ -1206,7 +1206,7 @@ impl MacroDoor {
 ///   [`Migrator<M>`](crate::abi::sdk::migrate::Migrator) over the plugin's own
 ///   [`Migrate`](crate::abi::sdk::migrate::Migrate). It runs with no instance, so it cannot be a
 ///   [`Safe`](crate::abi::sdk::safe::Safe) slot. Without it the door states none, and
-///   `busbar --migrate-config` passes the plugin's settings section through unchanged.
+///   the boot's migration passes the plugin's settings section through unchanged.
 /// * `former_names: &["old"]` (optional, last) — the names an earlier release of this plugin
 ///   answered to (`DoorDecl::FORMER_NAMES`, default empty). A door that omits it compiles
 ///   unchanged. A compiled-in row's table reads it off `MACRO_DOOR.former_names()` and registers

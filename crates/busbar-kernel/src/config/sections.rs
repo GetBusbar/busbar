@@ -76,8 +76,15 @@ impl StoreCfg {
     }
 }
 
+/// The refusal of a config with no `store:` block (BUSBAR-3120). 1.6.0 has no absent-store default
+/// (AGREED QM2, owner 2026-11-15T20:54Z): every config names its store. A 1.5.5 config with no block
+/// ran on the store built into 1.5.5, and the one-time upgrade writes that block into it, so only a
+/// config already stamped for 1.6.0 reaches this refusal.
 pub fn store_required() -> String {
-    "store is required; add a `store:` block with the configured Store module and settings".into()
+    "store is required; add a `store:` block with the configured Store module and settings. 1.6.0 \
+     has no default store: a 1.5.5 config.yaml with no `store:` block is upgraded once with the \
+     block 1.5.5 implied, and a config.yaml stamped `config_version: 1` must name its store itself"
+        .into()
 }
 
 /// A top-level `secrets:` entry — MODULE-LEVEL initialization config for a `kind: secret` plugin,
@@ -212,6 +219,49 @@ pub struct AdvancedCfg {
     /// does not resolve here is the proxy's to check). BOOT-TIME.
     #[serde(default, skip_serializing_if = "is_local_resolution")]
     pub proxy_resolution: super::tls::ProxyResolution,
+    /// `advanced.shutdown`: the shutdown drain (SHUTDOWN-HANG F4). BOOT-TIME.
+    #[serde(default, skip_serializing_if = "AdvancedShutdownCfg::is_default")]
+    pub shutdown: AdvancedShutdownCfg,
+    /// `advanced.governance`: governed-admission custody (SHUTDOWN-HANG F4a). BOOT-TIME.
+    #[serde(default, skip_serializing_if = "AdvancedGovernanceCfg::is_default")]
+    pub governance: AdvancedGovernanceCfg,
+}
+
+/// `advanced.shutdown:`. A 1.5.5 config does not set it.
+#[derive(Debug, Deserialize, Serialize, Clone, Default, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct AdvancedShutdownCfg {
+    /// The drain budget from the first shutdown signal to exit, a duration (`<n><s|m|h|d>`):
+    /// default `20s`, at least `1s`. A value that does not parse, or is below `1s`, refuses boot
+    /// (BUSBAR-3117); it is never clamped. A quarter of it is the reserve the drain keeps for
+    /// settling, sealing, the journal flush and retirement.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub drain_timeout: Option<String>,
+}
+
+impl AdvancedShutdownCfg {
+    pub(crate) fn is_default(&self) -> bool {
+        self.drain_timeout.is_none()
+    }
+}
+
+/// `advanced.governance:`. A 1.5.5 config does not set it.
+#[derive(Debug, Deserialize, Serialize, Clone, Default, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct AdvancedGovernanceCfg {
+    /// The most finished governed requests whose spend may await settlement in the store before
+    /// new governed admission is refused with `503 durability_unavailable` (`Retry-After: 1`):
+    /// an integer, at least 1; default 1,000 per second of `advanced.shutdown.drain_timeout`
+    /// (20,000 at the default 20 s). Running requests never count. Below 1 refuses boot
+    /// (BUSBAR-3117); it is never clamped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_pending_checkpoints: Option<u64>,
+}
+
+impl AdvancedGovernanceCfg {
+    pub(crate) fn is_default(&self) -> bool {
+        self.max_pending_checkpoints.is_none()
+    }
 }
 
 fn is_local_resolution(r: &super::tls::ProxyResolution) -> bool {
@@ -266,6 +316,8 @@ impl Default for AdvancedCfg {
             proxy_resolution: super::tls::ProxyResolution::Local,
             trusted_proxies: Vec::new(),
             forwarded_header: None,
+            shutdown: AdvancedShutdownCfg::default(),
+            governance: AdvancedGovernanceCfg::default(),
         }
     }
 }
@@ -287,8 +339,8 @@ pub fn default_usage_flush_interval_ms() -> u64 {
 pub struct ResponseHeadersCfg {
     /// Emit the `Server-Timing: busbar;dur=<ms>` response header (default `false`). MIGRATED from
     /// the 1.5.x `observability.emit_server_timing`; the old key is now
-    /// an `unknown field` boot error (`deny_unknown_fields` on `ObservabilityCfg`) — run
-    /// `busbar --migrate-config` to move it. The header is a useful latency probe, but it is also an
+    /// an `unknown field` boot error (`deny_unknown_fields` on `ObservabilityCfg`); the boot's one-time
+    /// upgrade of a 1.5.x config.yaml moves it. The header is a useful latency probe, but it is also an
     /// in-band busbar fingerprint on an otherwise anti-fingerprinting gateway — and the one
     /// fingerprint observable by an UNAUTHENTICATED client on every response — so it defaults OFF to
     /// preserve backend-facing indistinguishability. Operators who want the latency probe (and accept

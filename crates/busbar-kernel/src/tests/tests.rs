@@ -627,6 +627,7 @@ pub(crate) fn dropped(name: &str, alias: &str, kind: &str) -> busbar_contract::p
         abi_version: 1,
         trust: Trust::Allowed {
             reason: "unsigned metadata".into(),
+            setting: "allow_unsigned",
         },
         ephemeral: false,
         in_process: false,

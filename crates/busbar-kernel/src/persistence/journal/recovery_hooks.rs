@@ -15,6 +15,22 @@ pub(crate) struct Selection {
     pub(crate) value: Secret<Vec<u8>>,
 }
 
+/// One row of a multi-row change (SHUTDOWN-HANG F3.1): the originals of this node it names and
+/// its own CAS. `value` puts the row; `None` deletes it.
+pub(crate) struct RowChange<'a> {
+    pub(crate) records: &'a [Record],
+    pub(crate) address: Address,
+    pub(crate) expected: ExpectedValue,
+    pub(crate) value: Option<Secret<Vec<u8>>>,
+}
+
+fn same_expected(expected: &ExpectedValue) -> ExpectedValue {
+    match expected {
+        ExpectedValue::Absent => ExpectedValue::Absent,
+        ExpectedValue::Exact(value) => ExpectedValue::Exact(value.clone()),
+    }
+}
+
 impl<'a> StoreJournal<'a> {
     /// Historical verifier with constant retained state. A gap searches original
     /// frames for its existing quarantine authority; later ChainBreak records
@@ -154,6 +170,59 @@ impl<'a> StoreJournal<'a> {
         proof: &VerifiedHead,
         extra: &[Predicate],
     ) -> Result<()> {
+        let (predicates, values) = self.owned_read(proof, extra).await?;
+        if predicates
+            .iter()
+            .zip(values)
+            .any(|(predicate, value)| !matches_value(&predicate.expected, &value))
+        {
+            return Err(Error::Authority);
+        }
+        Ok(())
+    }
+
+    /// `confirm_owned_with`'s one authoritative read, except that the selected head `H` is
+    /// returned as observed instead of compared: O, admission and every `extra` must match, and
+    /// the caller accepts `H` only if it is a head it knows (SHUTDOWN-HANG F1 `confirm_with`).
+    pub(crate) async fn observe_owned_with(
+        &self,
+        proof: &VerifiedHead,
+        extra: &[Predicate],
+    ) -> Result<Option<Secret<Vec<u8>>>> {
+        let (predicates, values) = self.owned_read(proof, extra).await?;
+        let mut values = values.into_iter();
+        // `owned_predicates` puts the selected head first.
+        let observed = values.next().ok_or(Error::Corrupt)?;
+        if predicates
+            .iter()
+            .skip(1)
+            .zip(values)
+            .any(|(predicate, value)| !matches_value(&predicate.expected, &value))
+        {
+            return Err(Error::Authority);
+        }
+        Ok(observed)
+    }
+
+    /// Whether `observed` is the selected head `proof` names.
+    pub(crate) fn names_head(
+        &self,
+        proof: &VerifiedHead,
+        observed: &Option<Secret<Vec<u8>>>,
+    ) -> Result<bool> {
+        Ok(matches_value(
+            &self.selected_head_predicate(proof)?.expected,
+            observed,
+        ))
+    }
+
+    /// One read of `proof`'s owned predicates, `extra`, the dataset root and this writer's control
+    /// row; root and admission are checked here, the predicates' values are returned in order.
+    async fn owned_read(
+        &self,
+        proof: &VerifiedHead,
+        extra: &[Predicate],
+    ) -> Result<(Vec<Predicate>, Vec<Option<Secret<Vec<u8>>>>)> {
         let mut predicates = self.owned_predicates(proof)?;
         predicates
             .try_reserve_exact(extra.len())
@@ -189,14 +258,11 @@ impl<'a> StoreJournal<'a> {
             || root.writer_epoch != authority.writer_epoch
             || !writer.admits(authority.execution_epoch)
             || self.store.authority()? != authority
-            || predicates
-                .iter()
-                .zip(values)
-                .any(|(predicate, value)| !matches_value(&predicate.expected, &value))
+            || values.len() != predicates.len()
         {
             return Err(Error::Authority);
         }
-        Ok(())
+        Ok((predicates, values))
     }
 
     async fn original_at(&self, ordinal: u64) -> Result<(JournalRecord, Secret<Vec<u8>>)> {
@@ -621,6 +687,163 @@ impl<'a> StoreJournal<'a> {
                     value: selection.value,
                 }
             }],
+            time: None,
+            result: Secret::default(),
+        })
+        .map_err(|_| Error::Invalid)?;
+        Ok(WriteResult::Submitted(permit.submit(candidate).await?))
+    }
+}
+
+impl StoreJournal<'_> {
+    /// Change several selected rows of one namespace in one CAS against this node's originals
+    /// (SHUTDOWN-HANG F3): every row's originals are pinned at their `located` ordinals (row by
+    /// row, in order) and every row's expected value is a predicate, so the rows apply together
+    /// or not at all. One row is exactly `change_selection_at` with no guards, so a single
+    /// selection and a batch of one are the same attempt.
+    pub(in crate::persistence::journal) async fn change_rows_at(
+        &self,
+        proof: &VerifiedHead,
+        operation_id: [u8; 16],
+        rows: &[RowChange<'_>],
+        located: &[u64],
+    ) -> Result<WriteResult> {
+        if let [row] = rows {
+            return self
+                .change_selection_at(
+                    proof,
+                    row.records,
+                    Some(located),
+                    Selection {
+                        operation_id,
+                        address: row.address.clone(),
+                        expected: same_expected(&row.expected),
+                        value: row.value.clone().unwrap_or_default(),
+                    },
+                    row.value.is_none(),
+                    &[],
+                )
+                .await;
+        }
+        self.selected_head_predicate(proof)?;
+        let Some(first) = rows.first() else {
+            return Err(Error::Invalid);
+        };
+        let namespace = first.address.namespace;
+        let total = rows.iter().map(|row| row.records.len()).sum::<usize>();
+        if total == 0
+            || total > self.store.limits().scan_items
+            || located.len() != total
+            || operation_id == [0; 16]
+            || namespace == self.namespace.0
+            || namespace == control::NAMESPACE.0
+            || rows
+                .iter()
+                .any(|row| row.records.is_empty() || row.address.namespace != namespace)
+        {
+            return Err(Error::Invalid);
+        }
+        for (at, row) in rows.iter().enumerate() {
+            if rows[..at]
+                .iter()
+                .any(|earlier| earlier.address.key == row.address.key)
+            {
+                return Err(Error::Invalid);
+            }
+        }
+        for (record, ordinal) in rows.iter().flat_map(|row| row.records).zip(located) {
+            if *ordinal == 0 || *ordinal > proof.head.count {
+                return Err(Error::Invalid);
+            }
+            if record.node != self.node
+                || record.node_seq > proof.head.sequence
+                || decode_record(self.node, &record.body)?.identity() != record.identity()
+            {
+                return Err(Error::Corrupt);
+            }
+        }
+        let mut digest = Sha256::new();
+        digest.update(b"busbar.journal.selection-rows/1\0");
+        digest.update(self.node.to_be_bytes());
+        digest.update(proof.head.encode().expose(&crate::seal::lend()));
+        if let Some(owner) = &proof.owner {
+            digest.update(owner.expose(&crate::seal::lend()));
+        }
+        digest.update((rows.len() as u64).to_be_bytes());
+        for row in rows {
+            digest.update((row.address.key.len() as u64).to_be_bytes());
+            digest.update(&row.address.key);
+            match &row.expected {
+                ExpectedValue::Absent => digest.update([0]),
+                ExpectedValue::Exact(value) => {
+                    digest.update([1]);
+                    digest.update((value.expose(&crate::seal::lend()).len() as u64).to_be_bytes());
+                    digest.update(value.expose(&crate::seal::lend()));
+                }
+            }
+            match &row.value {
+                None => digest.update([0]),
+                Some(value) => {
+                    digest.update([1]);
+                    digest.update((value.expose(&crate::seal::lend()).len() as u64).to_be_bytes());
+                    digest.update(value.expose(&crate::seal::lend()));
+                }
+            }
+            digest.update((row.records.len() as u64).to_be_bytes());
+            for record in row.records {
+                digest.update(record.node.to_be_bytes());
+                digest.update(record.node_seq.to_be_bytes());
+                digest.update((record.body.len() as u64).to_be_bytes());
+                digest.update(&record.body);
+            }
+        }
+        let permit = match self.store.claim_logical(
+            LogicalId {
+                namespace,
+                operation: operation_id,
+            },
+            digest.finish(),
+        )? {
+            LogicalClaim::Prepare(permit) => permit,
+            LogicalClaim::Retained(id) => {
+                return Ok(WriteResult::Submitted(self.store.retry(id).await?));
+            }
+            LogicalClaim::Busy => return Ok(WriteResult::Busy),
+        };
+        let mut predicates = self.owned_predicates(proof)?;
+        predicates
+            .try_reserve_exact(total + rows.len())
+            .map_err(|_| Error::Budget)?;
+        let mut mutations = Vec::new();
+        mutations
+            .try_reserve_exact(rows.len())
+            .map_err(|_| Error::Budget)?;
+        let mut ordinals = located.iter();
+        for row in rows {
+            for record in row.records {
+                let ordinal = *ordinals.next().ok_or(Error::Invalid)?;
+                predicates.push(Predicate {
+                    address: self.address(b'R', ordinal),
+                    expected: ExpectedValue::Exact(Secret::new(record.body.clone())),
+                });
+            }
+            predicates.push(Predicate {
+                address: row.address.clone(),
+                expected: same_expected(&row.expected),
+            });
+            mutations.push(match &row.value {
+                Some(value) => Mutation::Put {
+                    address: row.address.clone(),
+                    value: value.clone(),
+                },
+                None => Mutation::Delete(row.address.clone()),
+            });
+        }
+        let candidate = PreparedCandidate::new(Candidate {
+            id: self.store.next_id()?,
+            codec: CANDIDATE_VERSION,
+            predicates,
+            mutations,
             time: None,
             result: Secret::default(),
         })

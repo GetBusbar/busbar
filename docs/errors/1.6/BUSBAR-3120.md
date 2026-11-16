@@ -14,11 +14,11 @@ BUSBAR-3120: <detail>. See https://getbusbar.com/docs/1.6/errors/BUSBAR-3120
 
 ## What it means
 
-Busbar keeps keys, budgets, audit and configuration overlays in the store named by top-level `store:`. The block is missing or its `module:` is empty.
+Busbar keeps keys, budgets, audit and configuration overlays in the store named by top-level `store:`. The block is missing or its `module:` is empty. 1.6.0 has no default store: a 1.5.5 config.yaml with no `store:` block ran on the store built into 1.5.5, and the one-time upgrade writes that block into it, so a config.yaml stamped `config_version: 1` must name its store itself.
 
 ## How to fix it
 
-Add `store: { module: <store plugin> }` (for example `sqlite` with a `db_path` setting).
+Add `store: { module: <store plugin> }` (for example `sqlite` with a `db_path` setting). For what 1.5.5 did with no block (state kept in RAM, lost on restart), name the in-memory store.
 
 ## Example
 

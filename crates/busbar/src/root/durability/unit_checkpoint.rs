@@ -4,12 +4,12 @@ use super::Durability;
 use busbar_contract::records::{RecordStoreError, RecordStoreResult};
 use busbar_kernel::{
     governance::{
-        unit_checkpoint::{UnitCheckpoint, UnitCheckpointSink},
+        unit_checkpoint::{UnitCheckpoint, UnitCheckpointSink, UnitRemoval},
         unit_checkpoint_store::{
             StoreUnitCheckpoints, UnitCheckpointAudit, UnitCheckpointEvidence,
         },
     },
-    persistence::journal::runtime::RuntimeJournal,
+    persistence::journal::runtime::{Carried, RuntimeJournal},
 };
 use busbar_kernel_audit::AuditKeySet;
 use std::sync::{Arc, Mutex};
@@ -36,6 +36,12 @@ impl UnitCheckpointSink for CheckpointCustody {
     async fn recover_audit(&self, snapshot: &UnitCheckpoint) -> RecordStoreResult<()> {
         crate::root::measurements::maintenance(self.0.recover_audit(snapshot)).await
     }
+    async fn persist_batch(&self, snapshots: &[UnitCheckpoint]) -> Vec<RecordStoreResult<()>> {
+        crate::root::measurements::maintenance(self.0.persist_batch(snapshots)).await
+    }
+    async fn remove_batch(&self, items: &[UnitRemoval<'_>]) -> Vec<RecordStoreResult<()>> {
+        crate::root::measurements::maintenance(self.0.remove_batch(items)).await
+    }
 }
 #[async_trait::async_trait]
 impl UnitCheckpointAudit for AuditAdapter {
@@ -52,8 +58,12 @@ impl UnitCheckpointAudit for AuditAdapter {
                 RecordStoreError("unit.accrued requires the deployment signing key".into())
             })
     }
-    async fn confirm(&self, snapshot: &UnitCheckpoint) -> RecordStoreResult<()> {
-        super::unit_checkpoint_audit::confirm(&self.book, &self.evidence, snapshot).await
+    async fn confirm(
+        &self,
+        snapshot: &UnitCheckpoint,
+        hint: Option<Carried>,
+    ) -> RecordStoreResult<()> {
+        super::unit_checkpoint_audit::confirm(&self.book, &self.evidence, snapshot, hint).await
     }
     async fn recover(&self, snapshot: &UnitCheckpoint) -> RecordStoreResult<()> {
         super::unit_checkpoint_audit::recover(&self.book, &self.evidence, snapshot).await

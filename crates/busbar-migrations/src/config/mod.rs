@@ -15,7 +15,6 @@ mod migrate_credentials;
 pub mod migrate_export;
 pub mod migrate_overlay;
 pub mod migrate_plugins;
-mod migrate_tls;
 pub mod migration_table;
 pub mod overlay_legacy;
 mod retired;

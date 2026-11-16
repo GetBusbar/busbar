@@ -504,6 +504,116 @@ impl GovState {
     }
 }
 
+/// What governance still owes the store, counted for the drain's progress line (SHUTDOWN-HANG
+/// F4 "Progress").
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DrainRemaining {
+    /// Unit checkpoint entries in the book, running and terminal.
+    pub checkpoints: u64,
+    /// The terminal backlog: `ended` entries the money driver must still persist and settle.
+    pub terminal_checkpoints: u64,
+    /// Corrections held for persistence.
+    pub corrections: u64,
+    /// Budget flushes in flight.
+    pub budget_flights: u64,
+    /// Metering cells pending or in flight.
+    pub metering: u64,
+}
+
+impl GovState {
+    /// Counts only, read once per progress line; never on the request path.
+    #[must_use]
+    pub fn drain_remaining(&self) -> DrainRemaining {
+        let count = |n: usize| u64::try_from(n).unwrap_or(u64::MAX);
+        DrainRemaining {
+            checkpoints: count(self.unit_checkpoint_count()),
+            terminal_checkpoints: self.admissions.terminal(),
+            corrections: count(
+                self.corrections
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .len(),
+            ),
+            budget_flights: count(
+                self.budget_flushes
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .len(),
+            ),
+            metering: count(self.pending_metering.pending_cells()),
+        }
+    }
+}
+
+/// One unit still running at exit, joined with its checkpoint custody by checkpoint id
+/// (SHUTDOWN-HANG F4 `open_at_exit`). A unit with no checkpoint entry (waiting on upstream, or a
+/// stream before its first report) has neither revision.
+#[derive(Debug)]
+pub struct OpenAtExit {
+    pub evidence: crate::plane_driver::OpenUnitEvidence,
+    /// The revision the money driver last persisted, if any.
+    pub persisted_revision: Option<u64>,
+    /// The revision staged in the unit checkpoint book, if the unit has an entry.
+    pub staged_revision: Option<u64>,
+}
+
+/// The running units at exit and the governed admissions alive beside them.
+#[derive(Debug, Default)]
+pub struct ExitAdmissions {
+    pub units: Vec<OpenAtExit>,
+    /// The gate's live count, read while the evidence holds every listed grant.
+    pub live: u64,
+    /// The distinct grants the evidence holds. A child unit shares its parent's grant, and each
+    /// distinct grant holds exactly one gate count, so `live >= distinct_grants`.
+    pub distinct_grants: u64,
+}
+
+impl ExitAdmissions {
+    /// Admissions alive without an open unit (between admission and open, or a ticket
+    /// reservation). `None` is an invariant breach, reported as such: never a wrapped value.
+    #[must_use]
+    pub fn admitted_not_open(&self) -> Option<u64> {
+        self.live.checked_sub(self.distinct_grants)
+    }
+}
+
+impl GovState {
+    /// Joins the open-unit evidence with the unit checkpoint book, once, at exit.
+    #[must_use]
+    pub fn open_at_exit(
+        &self,
+        evidence: Vec<crate::plane_driver::OpenUnitEvidence>,
+    ) -> ExitAdmissions {
+        let mut grants: std::collections::BTreeSet<*const super::AdmitGrant> =
+            std::collections::BTreeSet::new();
+        for unit in &evidence {
+            if let Some(grant) = &unit.grant {
+                grants.insert(Arc::as_ptr(grant));
+            }
+        }
+        let live = self.admissions.live();
+        let mut custody: std::collections::BTreeMap<[u8; 16], (u64, Option<u64>)> =
+            std::collections::BTreeMap::new();
+        for state in self.unit_checkpoint_states() {
+            custody.insert(state.id, (state.revision, state.persisted));
+        }
+        let mut units = Vec::with_capacity(evidence.len());
+        for unit in evidence {
+            let entry = custody.get(&unit.checkpoint).copied();
+            units.push(OpenAtExit {
+                persisted_revision: entry.and_then(|(_, persisted)| persisted),
+                staged_revision: entry.map(|(staged, _)| staged),
+                evidence: unit,
+            });
+        }
+        ExitAdmissions {
+            units,
+            live,
+            distinct_grants: u64::try_from(grants.len()).unwrap_or(u64::MAX),
+        }
+    }
+}
+
 #[cfg(test)]
 #[path = "tests/drain_tests.rs"]
 mod tests;

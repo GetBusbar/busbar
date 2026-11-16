@@ -2682,3 +2682,145 @@ async fn a_laneless_failed_unit_checkpoint_leaves_the_key_and_group_priced() {
         .try_admit(&r.cost, &r.key, "", NOW)
         .expect("the group is not refused as exhausted");
 }
+
+/// The exit walk of SHUTDOWN-HANG F4 over this seam's open-unit table.
+fn exit_evidence(r: &Rig) -> Vec<crate::plane_driver::OpenUnitEvidence> {
+    let mut out = Vec::new();
+    MoneySeam::open_units(&r.money, &mut out);
+    out
+}
+
+/// SHUTDOWN-HANG 8.13 (r7): one admission backs a parent and its two children, so the exit
+/// evidence reports live = 1, distinct_grants = 1 and admitted_not_open = 0; one more admission
+/// between admit and open makes admitted_not_open = 1. Never a wrap, never a panic.
+#[tokio::test]
+async fn exit_evidence_counts_admissions_not_opens() {
+    let r = rig_with(None, 5, ExhaustionMode::FinishUnit, plane_fees()).await;
+    let parent = admit_parent(&r);
+    child(&r, &parent, 2).expect("first child");
+    child(&r, &parent, 3).expect("second child");
+    drop(parent);
+    let evidence = exit_evidence(&r);
+    let mut units: Vec<u64> = evidence.iter().map(|unit| unit.unit.get()).collect();
+    units.sort();
+    assert_eq!(
+        units,
+        [1, 2, 3],
+        "every open unit is listed, children included"
+    );
+    assert!(evidence.iter().all(|unit| unit.grant.is_some()
+        && unit.money.key.id == "k"
+        && unit.money.lane == "m"
+        && unit.money.arrived == NOW
+        && !unit.finished
+        && !unit.ledgered));
+    let exit = r.gov.open_at_exit(evidence);
+    assert_eq!(
+        (exit.live, exit.distinct_grants, exit.admitted_not_open()),
+        (1, 1, Some(0)),
+        "one admission, shared by the parent and both children"
+    );
+    assert!(
+        exit.units
+            .iter()
+            .all(|unit| unit.persisted_revision.is_none() && unit.staged_revision.is_none()),
+        "a unit with no checkpoint entry is listed with none"
+    );
+
+    let between = r
+        .gov
+        .try_admit(&r.cost, &r.key, "", NOW)
+        .expect("an admission that has not opened its unit yet");
+    let exit = r.gov.open_at_exit(exit_evidence(&r));
+    assert_eq!(
+        (exit.live, exit.distinct_grants, exit.admitted_not_open()),
+        (2, 1, Some(1))
+    );
+    drop(between);
+
+    let breach = crate::governance::drain::ExitAdmissions {
+        live: 0,
+        distinct_grants: 1,
+        ..Default::default()
+    };
+    assert_eq!(
+        breach.admitted_not_open(),
+        None,
+        "an invariant breach is reported as such, never wrapped"
+    );
+}
+
+/// SHUTDOWN-HANG 8.13: a child unit holds a clone of its parent's grant, so the gate counts one
+/// live admission until both have ended.
+#[tokio::test]
+async fn a_child_keeps_the_admission_live_until_both_have_ended() {
+    let r = rig_with(None, 5, ExhaustionMode::FinishUnit, plane_fees()).await;
+    let parent = admit_parent(&r);
+    child(&r, &parent, 2).expect("child");
+    drop(parent);
+    assert_eq!(r.gov.admissions().live(), 1);
+    r.money.settle_end(UnitKey::new(1), 200);
+    assert_eq!(
+        r.gov.admissions().live(),
+        1,
+        "the open child still holds the parent's admission"
+    );
+    r.money.settle_end(UnitKey::new(2), 200);
+    assert_eq!(r.gov.admissions().live(), 0);
+    assert!(exit_evidence(&r).is_empty());
+}
+
+/// SHUTDOWN-HANG 8.13: at the instant the gate's live count returns to 0 (seen from a second
+/// thread spinning on it), the unit's terminal checkpoint is already in the book as `ended`; and
+/// while the unit runs, its exit line carries the staged revision and no persisted one.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_live_count_falls_only_after_the_terminal_stage() {
+    let r = rig_with(Some(1_000), 5, ExhaustionMode::FinishUnit, plane_fees()).await;
+    r.gov
+        .attach_recovery_sink(Arc::new(HeldRecovery::default()))
+        .await
+        .unwrap();
+    r.gov
+        .attach_unit_checkpoint_sink(Arc::new(HeldCheckpoints::default()))
+        .await
+        .unwrap();
+    assert!(r.gov.unit_checkpoints_enabled());
+    for round in 0..16u64 {
+        let unit = UnitKey::new(100 + round);
+        let grant = Arc::new(r.gov.try_admit(&r.cost, &r.key, "", NOW).expect("admitted"));
+        r.money.open_admitted(unit, r.unit.clone(), grant);
+        let _ = r.money.checkpoint(&ctx(100 + round), &reported(1_000));
+        let evidence = exit_evidence(&r);
+        assert_eq!(evidence.len(), 1);
+        let checkpoint = evidence[0].checkpoint;
+        let exit = r.gov.open_at_exit(evidence);
+        assert_eq!(exit.live, 1);
+        assert!(
+            exit.units[0].staged_revision.is_some(),
+            "the running entry is staged"
+        );
+        assert_eq!(
+            exit.units[0].persisted_revision, None,
+            "nothing persisted it yet"
+        );
+        drop(exit);
+
+        let gate = Arc::clone(r.gov.admissions());
+        let gov = Arc::clone(&r.gov);
+        let spinner = std::thread::spawn(move || {
+            while gate.live() != 0 {
+                std::hint::spin_loop();
+            }
+            gov.unit_checkpoint_states()
+                .into_iter()
+                .find(|state| state.id == checkpoint)
+                .map(|state| state.ended)
+        });
+        r.money.settle_end_as(unit, ended(200, false));
+        assert_eq!(
+            spinner.join().unwrap(),
+            Some(true),
+            "the ended entry was staged before the grant's count fell"
+        );
+    }
+}

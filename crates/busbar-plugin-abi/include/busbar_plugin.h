@@ -14,7 +14,7 @@
 #define BB_MECHANISM 2u
 #define BB_SECRET_ABI 2u
 #define BB_KIND_SECRET 2u
-#define BB_CORE_FP   0xa8158e9446356905ull /* A13 fills from ci/abi.pin; C-HEADER asserts == CORE_FP */
+#define BB_CORE_FP   0x995f96e3a50d4028ull /* A13 fills from ci/abi.pin; C-HEADER asserts == CORE_FP */
 #define BB_SECRET_FP 0x0000000000000000ull /* A13 fills from ci/abi.pin; C-HEADER asserts == secret::FP */
 
 /* §2 */

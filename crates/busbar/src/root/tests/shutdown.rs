@@ -1,6 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+//! The shutdown drain over the real native Store: `finish` (SHUTDOWN-HANG F4) joins every owner
+//! of a write before it retires the writer, never retires one it could not drain, and returns
+//! the exit code instead of exiting. Ported from the deleted `tail`/`tail_after_flusher` tests:
+//! every behaviour they asserted that still exists is asserted here through `finish`.
+
 use super::*;
 use busbar_contract::persistence::{
     BackendInfo, Call, ClockObservation, DatasetId, Decision, Failure, Mutation, Page,
@@ -15,13 +20,16 @@ use busbar_kernel::persistence::{
     startup::{Progress, Startup},
 };
 use busbar_kernel_wal::{Entry, RecordClass};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
+use std::sync::Mutex;
 use tokio::sync::{Notify, Semaphore};
 
-const WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+const WAIT: Duration = Duration::from_secs(5);
 const INPUT_USED: u64 = 17;
+/// A budget no step of these tests comes near: every phase ends on its own work.
+const ROOMY: Duration = Duration::from_secs(30);
 
-struct FlushGate {
+pub(super) struct FlushGate {
     entered: Notify,
     released: Semaphore,
 }
@@ -38,10 +46,10 @@ impl FlushGate {
         self.entered.notify_one();
         self.released.acquire().await.unwrap().forget();
     }
-    fn release(&self) {
+    pub(super) fn release(&self) {
         self.released.add_permits(1);
     }
-    async fn entered(&self) {
+    pub(super) async fn entered(&self) {
         tokio::time::timeout(WAIT, self.entered.notified())
             .await
             .expect("actual native commit reached the gate");
@@ -50,13 +58,15 @@ impl FlushGate {
 
 /// Faults intercept the real product's primitive commit. Key/ledger/journal
 /// encoding, guarded mutation planning, and retained attempts stay in CoreStore.
-struct FlushBackend {
+pub(super) struct FlushBackend {
     inner: Arc<dyn PersistenceBackend>,
-    budget: Mutex<Option<Arc<FlushGate>>>,
-    metering: Mutex<Option<Arc<FlushGate>>>,
-    journal: Mutex<Option<Arc<FlushGate>>>,
-    fail_accounting: AtomicBool,
-    panic_budget: AtomicBool,
+    pub(super) budget: Mutex<Option<Arc<FlushGate>>>,
+    pub(super) metering: Mutex<Option<Arc<FlushGate>>>,
+    pub(super) journal: Mutex<Option<Arc<FlushGate>>>,
+    /// Every other commit (the lease release, retirement, identity rows).
+    pub(super) other: Mutex<Option<Arc<FlushGate>>>,
+    pub(super) fail_accounting: AtomicBool,
+    pub(super) panic_budget: AtomicBool,
 }
 impl PersistenceBackend for FlushBackend {
     fn info(&self) -> BackendInfo {
@@ -92,7 +102,7 @@ impl PersistenceBackend for FlushBackend {
             } else if journal {
                 self.journal.lock().unwrap().take()
             } else {
-                None
+                self.other.lock().unwrap().take()
             };
             if let Some(gate) = gate {
                 gate.wait().await;
@@ -108,23 +118,58 @@ impl PersistenceBackend for FlushBackend {
     }
 }
 
-struct Fixture {
-    backend: Arc<FlushBackend>,
+/// What a test reads after `finish` has taken the fixture's book and Store admission.
+pub(super) struct Observed {
+    pub(super) backend: Arc<FlushBackend>,
+    pub(super) core: Arc<CoreStore>,
+    pub(super) journal: Arc<RuntimeJournal>,
+    pub(super) gov: Arc<GovState>,
+    pub(super) key: VirtualKey,
+    pub(super) day: u64,
+    pub(super) budget: BufferBudget,
+}
+impl Observed {
+    pub(super) async fn requests(&self) -> u64 {
+        self.core
+            .ledger()
+            .get_usage(&self.key.id, 0)
+            .await
+            .unwrap()
+            .requests
+    }
+    pub(super) async fn metered(&self) -> Vec<busbar_contract::records::MeteringRow> {
+        self.core.ledger().list_metering(self.day).await.unwrap()
+    }
+    /// The writer was not retired: the native authority still admits a write.
+    pub(super) async fn still_admitted(&self) {
+        self.core
+            .identity()
+            .put_key(&VirtualKey {
+                id: format!(
+                    "writer-remains-admitted-{}",
+                    busbar_kernel::door::op_id().counter()
+                ),
+                enabled: true,
+                ..Default::default()
+            })
+            .await
+            .expect("native authority remains admitted for exact reconciliation");
+    }
+}
+
+pub(super) struct Fixture {
+    pub(super) seen: Observed,
     startup: Startup,
-    core: Arc<CoreStore>,
     book: crate::root::durability::NodeBook,
-    gov: Arc<GovState>,
-    key: VirtualKey,
-    day: u64,
-    budget: BufferBudget,
 }
 impl Fixture {
-    async fn new(capacity: usize) -> Self {
+    pub(super) async fn new(capacity: usize) -> Self {
         let backend = Arc::new(FlushBackend {
             inner: crate::root::real_store::native_backend().await,
             budget: Mutex::new(None),
             metering: Mutex::new(None),
             journal: Mutex::new(None),
+            other: Mutex::new(None),
             fail_accounting: AtomicBool::new(false),
             panic_budget: AtomicBool::new(false),
         });
@@ -179,312 +224,336 @@ impl Fixture {
         );
         let day = busbar_kernel::governance::metering_bucket(busbar_kernel::store::now());
         Self {
-            backend,
+            seen: Observed {
+                backend,
+                core,
+                journal: book.runtime_journal.clone(),
+                gov,
+                key,
+                day,
+                budget,
+            },
             startup,
-            core,
             book,
-            gov,
-            key,
-            day,
-            budget,
         }
     }
-    fn accrue(&self) {
+    pub(super) fn accrue(&self) {
+        let seen = &self.seen;
         let cost = CostModel::resolve_parts(None, 0, &std::collections::BTreeMap::new());
         let now = busbar_kernel::store::now();
         let units = [(UNIT_INPUT.to_owned(), INPUT_USED)].into_iter().collect();
-        self.gov.try_admit(&cost, &self.key, "", now).unwrap();
-        self.gov
-            .record_usage(&cost, &self.key, "", "shutdown-model", &units, now);
-        self.gov.record_lane_metering(
-            &self.key.id,
+        drop(seen.gov.try_admit(&cost, &seen.key, "", now).unwrap());
+        seen.gov
+            .record_usage(&cost, &seen.key, "", "shutdown-model", &units, now);
+        seen.gov.record_lane_metering(
+            &seen.key.id,
             "shutdown-model",
             Some("shutdown-provider"),
             &units,
             now,
         );
     }
-    fn stage(&self, count: usize) {
+    pub(super) fn stage(&self, count: usize) {
         let entries: Vec<_> = (0..count)
             .map(|_| Entry::new(RecordClass::Load, vec![7; 24]))
             .collect();
-        self.book.runtime_journal.stage_run(&entries).unwrap();
+        self.seen.journal.stage_run(&entries).unwrap();
     }
-    async fn requests(&self) -> u64 {
-        self.core
-            .ledger()
-            .get_usage(&self.key.id, 0)
+    /// The serve phase's leftovers as `finish` takes them from boot: no listener and no thread,
+    /// this fixture's book and Store admission, its governance when `governed`, and the money
+    /// driver `flusher`. `lines` stands in for a line server whose input ended.
+    pub(super) fn post(
+        self,
+        governed: bool,
+        flusher: Option<JoinHandle<()>>,
+        shutdown_tx: &tokio::sync::broadcast::Sender<()>,
+        lines: Option<i32>,
+    ) -> (PostServe<'static>, Observed) {
+        let Fixture {
+            seen,
+            startup,
+            book,
+        } = self;
+        let post = PostServe {
+            admin: None,
+            lines: lines
+                .map(|code| Box::pin(async move { code }) as Pin<Box<dyn Future<Output = i32>>>),
+            threads: Vec::new(),
+            work_recovery: tokio::spawn(async {}),
+            control_drain: Box::pin(async {}),
+            node_lease: None,
+            flusher,
+            governance: governed.then(|| seen.gov.clone()),
+            late: LateServices::new(),
+            book: Some(book),
+            startup,
+            shutdown_tx: shutdown_tx.clone(),
+            predecessor: None,
+        };
+        (post, seen)
+    }
+}
+
+/// The money driver [M] as `run` starts it: the flusher in drain mode on the drain's own clock.
+pub(super) fn money_driver(
+    gov: &Arc<GovState>,
+    clock: &Arc<DrainClock>,
+    shutdown_tx: &tokio::sync::broadcast::Sender<()>,
+) -> JoinHandle<()> {
+    tokio::spawn(crate::root::measurements::maintenance(
+        busbar_kernel::governance::run_budget_flusher(
+            gov.clone(),
+            shutdown_tx.subscribe(),
+            None,
+            Some(Arc::clone(clock)),
+        ),
+    ))
+}
+
+/// `finish` has not returned while `gate` holds its write: still pending 50 ms later.
+pub(super) async fn still_running<F: Future<Output = i32>>(finishing: Pin<&mut F>) {
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), finishing)
             .await
-            .unwrap()
-            .requests
-    }
-    async fn metered(&self) -> Vec<busbar_contract::records::MeteringRow> {
-        self.core.ledger().list_metering(self.day).await.unwrap()
-    }
-    async fn retire(&mut self, drained: Drained) {
-        retire_storage(&mut self.startup, Some(&self.book), drained)
-            .await
-            .expect("drained native writer retires");
-        assert!(self.startup.store().is_none());
+            .is_err(),
+        "the drain joins the owner of the held write"
+    );
+}
+
+/// Drives `finish` until `gate` is entered; `finish` returning first is a failure.
+pub(super) async fn until_entered<F: Future<Output = i32>>(
+    mut finishing: Pin<&mut F>,
+    gate: &FlushGate,
+) {
+    tokio::select! {
+        biased;
+        code = finishing.as_mut() => panic!("finish returned {code} before the held write"),
+        () = gate.entered() => {}
     }
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn the_shutdown_tail_drains_the_journal_lane_before_it_returns() {
-    let mut fixture = Fixture::new(16).await;
+async fn the_drain_flushes_the_journal_lane_before_it_retires() {
+    let fixture = Fixture::new(16).await;
     fixture.stage(4);
     let gate = Arc::new(FlushGate::default());
-    *fixture.backend.journal.lock().unwrap() = Some(gate.clone());
-    let book = fixture.book.durability.clone();
-    let task = tokio::spawn(async move { tail(None, &LateServices::new(), Some(&book)).await });
-    gate.entered().await;
-    assert!(!task.is_finished());
-    assert_eq!(fixture.book.runtime_journal.pending_records(), 4);
-    assert!(fixture
-        .book
-        .runtime_journal
-        .read_records(fixture.budget)
+    *fixture.seen.backend.journal.lock().unwrap() = Some(gate.clone());
+    let (shutdown_tx, _) = tokio::sync::broadcast::channel(1);
+    let (post, seen) = fixture.post(false, None, &shutdown_tx, None);
+    let drain = ShutdownDrain::new(DrainClock::new(ROOMY));
+    let mut finishing = std::pin::pin!(finish(post, &drain));
+    until_entered(finishing.as_mut(), &gate).await;
+    still_running(finishing.as_mut()).await;
+    assert_eq!(seen.journal.pending_records(), 4);
+    assert!(seen
+        .journal
+        .read_records(seen.budget)
         .await
         .unwrap()
         .is_empty());
     gate.release();
-    let drained = tokio::time::timeout(WAIT, task)
+    let code = tokio::time::timeout(WAIT, finishing)
         .await
-        .unwrap()
-        .unwrap()
-        .expect("journal queue drained");
-    assert_eq!(fixture.book.runtime_journal.pending_records(), 0);
+        .expect("the drain returns once the journal write lands");
+    assert_eq!(code, 0, "a drained writer retires");
+    assert_eq!(seen.journal.pending_records(), 0);
     assert_eq!(
-        fixture
-            .book
-            .runtime_journal
-            .read_records(fixture.budget)
-            .await
-            .unwrap()
-            .len(),
+        seen.journal.read_records(seen.budget).await.unwrap().len(),
         4
     );
-    fixture.retire(drained).await;
+    assert_eq!(drain.detached(), 0, "nothing was cut");
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn the_shutdown_tail_hands_the_store_every_accepted_original_at_capacity() {
-    let mut fixture = Fixture::new(4).await;
+async fn the_drain_hands_the_store_every_accepted_original_at_capacity() {
+    let fixture = Fixture::new(4).await;
     fixture.stage(4);
     assert!(matches!(
         fixture
-            .book
-            .runtime_journal
+            .seen
+            .journal
             .stage_run(&[Entry::new(RecordClass::Load, Vec::new())]),
         Err(RuntimeError::Budget)
     ));
     // A rejected reservation is not an acknowledged hidden buffer. All four
     // originals accepted by the native owner must reach their selected head.
-    let drained = tail(None, &LateServices::new(), Some(&fixture.book.durability))
+    let (shutdown_tx, _) = tokio::sync::broadcast::channel(1);
+    let (post, seen) = fixture.post(false, None, &shutdown_tx, None);
+    let drain = ShutdownDrain::new(DrainClock::new(ROOMY));
+    let code = tokio::time::timeout(WAIT, finish(post, &drain))
         .await
         .expect("all accepted originals drain");
+    assert_eq!(code, 0);
     assert_eq!(
-        fixture
-            .book
-            .runtime_journal
-            .read_records(fixture.budget)
-            .await
-            .unwrap()
-            .len(),
+        seen.journal.read_records(seen.budget).await.unwrap().len(),
         4
     );
-    assert_eq!(fixture.book.runtime_journal.pending_records(), 0);
-    fixture.retire(drained).await;
+    assert_eq!(seen.journal.pending_records(), 0);
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn shutdown_flushes_allow_runtime_progress_and_wait_for_each_store_write() {
-    let mut fixture = Fixture::new(16).await;
+async fn the_money_driver_lets_the_runtime_progress_and_waits_for_each_store_write() {
+    let fixture = Fixture::new(16).await;
     fixture.accrue();
     let budget = Arc::new(FlushGate::default());
     let metering = Arc::new(FlushGate::default());
-    *fixture.backend.budget.lock().unwrap() = Some(budget.clone());
-    *fixture.backend.metering.lock().unwrap() = Some(metering.clone());
-    let gov = fixture.gov.clone();
-    let book = fixture.book.durability.clone();
-    let task =
-        tokio::spawn(async move { tail(Some(gov), &LateServices::new(), Some(&book)).await });
-    budget.entered().await;
-    assert!(!task.is_finished());
-    assert_eq!(fixture.requests().await, 0);
-    assert!(fixture.metered().await.is_empty());
+    *fixture.seen.backend.budget.lock().unwrap() = Some(budget.clone());
+    *fixture.seen.backend.metering.lock().unwrap() = Some(metering.clone());
+    let (shutdown_tx, _) = tokio::sync::broadcast::channel(1);
+    let clock = DrainClock::new(ROOMY);
+    let flusher = money_driver(&fixture.seen.gov, &clock, &shutdown_tx);
+    let (post, seen) = fixture.post(true, Some(flusher), &shutdown_tx, None);
+    let drain = ShutdownDrain::new(clock);
+    let mut finishing = std::pin::pin!(finish(post, &drain));
+    until_entered(finishing.as_mut(), &budget).await;
+    still_running(finishing.as_mut()).await;
+    assert_eq!(seen.requests().await, 0);
+    assert!(seen.metered().await.is_empty());
     budget.release();
-    metering.entered().await;
-    assert!(!task.is_finished());
-    assert_eq!(fixture.requests().await, 1);
-    assert!(fixture.metered().await.is_empty());
+    until_entered(finishing.as_mut(), &metering).await;
+    still_running(finishing.as_mut()).await;
+    assert_eq!(seen.requests().await, 1);
+    assert!(seen.metered().await.is_empty());
     metering.release();
-    let drained = tokio::time::timeout(WAIT, task)
+    let code = tokio::time::timeout(WAIT, finishing)
         .await
-        .unwrap()
-        .unwrap()
         .expect("actual accounting drivers drain");
-    assert!(!fixture.gov.has_unsettled_persistence());
+    assert_eq!(code, 0, "the writer retires once every write landed");
+    assert!(!seen.gov.has_unsettled_persistence());
     assert_eq!(
-        fixture
-            .core
+        seen.core
             .ledger()
-            .get_usage(&fixture.key.id, 0)
+            .get_usage(&seen.key.id, 0)
             .await
             .unwrap()
             .total_input(),
         i128::from(INPUT_USED) * 1_000_000
     );
     assert_eq!(
-        fixture
-            .metered()
+        seen.metered()
             .await
             .iter()
             .map(|row| row.tokens_input)
             .sum::<i128>(),
         i128::from(INPUT_USED) * 1_000_000
     );
-    fixture.retire(drained).await;
 }
 
+/// Uncertain budget and metering writes are reported, never retired over: the exit says spend
+/// is unsaved (70), the writer stays admitted for exact reconciliation, and nothing is dropped.
 #[tokio::test(flavor = "current_thread")]
-async fn shutdown_tail_reports_terminal_budget_and_metering_store_failures() {
+async fn the_drain_reports_uncertain_budget_and_metering_writes_and_does_not_retire() {
     let fixture = Fixture::new(16).await;
     fixture.accrue();
     fixture
+        .seen
         .backend
         .fail_accounting
         .store(true, Ordering::Release);
-    let result = tail(
-        Some(fixture.gov.clone()),
-        &LateServices::new(),
-        Some(&fixture.book.durability),
-    )
-    .await;
-    assert!(
-        result.is_err(),
-        "no clean-drain proof exists after uncertain native writes"
-    );
-    assert!(fixture.gov.has_unsettled_persistence());
-    assert_eq!(fixture.requests().await, 0);
-    assert!(fixture.metered().await.is_empty());
-    assert!(
-        fixture.startup.store().is_some(),
-        "failure does not enter writer retirement"
-    );
-    fixture
-        .core
-        .identity()
-        .put_key(&VirtualKey {
-            id: "writer-remains-admitted".into(),
-            enabled: true,
-            ..Default::default()
-        })
+    let (shutdown_tx, _) = tokio::sync::broadcast::channel(1);
+    // A short budget: the settle wait is cut at C2 because the writes never land.
+    let clock = DrainClock::new(Duration::from_secs(2));
+    let flusher = money_driver(&fixture.seen.gov, &clock, &shutdown_tx);
+    let (post, seen) = fixture.post(true, Some(flusher), &shutdown_tx, None);
+    let drain = ShutdownDrain::new(clock);
+    let code = tokio::time::timeout(WAIT, finish(post, &drain))
         .await
-        .expect("native authority remains admitted for exact reconciliation");
+        .expect("the drain ends by its own cuts, before the deadline");
+    assert_eq!(
+        code, 70,
+        "no clean-drain proof exists after uncertain native writes: spend unsaved"
+    );
+    assert!(seen.gov.has_unsettled_persistence());
+    assert_eq!(seen.requests().await, 0);
+    assert!(seen.metered().await.is_empty());
+    seen.still_admitted().await;
 }
 
+/// A money driver that panics mid-write is replaced by the fallback; metering and the journal
+/// still drain, nothing is aborted, and the writer is not retired.
 #[tokio::test(flavor = "current_thread")]
-async fn a_panicking_budget_flush_is_reported_and_metering_and_journal_still_drain() {
+async fn a_panicking_money_driver_is_reported_and_metering_and_journal_still_drain() {
     let fixture = Fixture::new(16).await;
     fixture.accrue();
     fixture.stage(1);
-    fixture.backend.panic_budget.store(true, Ordering::Release);
-    let result = tail(
-        Some(fixture.gov.clone()),
-        &LateServices::new(),
-        Some(&fixture.book.durability),
-    )
-    .await;
-    let error = match result {
-        Ok(_) => panic!("a failed driver cannot yield retirement proof"),
-        Err(error) => error,
-    };
-    assert!(error.contains("budget final driver failed"));
+    fixture
+        .seen
+        .backend
+        .panic_budget
+        .store(true, Ordering::Release);
+    let (shutdown_tx, _) = tokio::sync::broadcast::channel(1);
+    let clock = DrainClock::new(Duration::from_secs(4));
+    let flusher = money_driver(&fixture.seen.gov, &clock, &shutdown_tx);
+    let (post, seen) = fixture.post(true, Some(flusher), &shutdown_tx, None);
+    let drain = ShutdownDrain::new(clock);
+    let code = tokio::time::timeout(Duration::from_secs(10), finish(post, &drain))
+        .await
+        .expect("the drain ends by its own cuts");
+    assert!(
+        code == 70 || code == 75,
+        "a failed driver cannot yield retirement proof; never 1: {code}"
+    );
     assert_eq!(
-        fixture
-            .metered()
+        seen.metered()
             .await
             .iter()
             .map(|row| row.tokens_input)
             .sum::<i128>(),
-        i128::from(INPUT_USED) * 1_000_000
+        i128::from(INPUT_USED) * 1_000_000,
+        "the fallback's final metering flush ran"
     );
-    assert_eq!(fixture.book.runtime_journal.pending_records(), 0);
+    assert_eq!(seen.journal.pending_records(), 0);
     assert_eq!(
-        fixture
-            .book
-            .runtime_journal
-            .read_records(fixture.budget)
-            .await
-            .unwrap()
-            .len(),
+        seen.journal.read_records(seen.budget).await.unwrap().len(),
         1
     );
-    assert!(fixture.gov.has_unsettled_persistence());
-    assert!(fixture.startup.store().is_some());
+    seen.still_admitted().await;
 }
 
-async fn background_flusher_finishes_before_journal_retirement(signal_first: bool) {
-    let mut fixture = Fixture::new(16).await;
+async fn the_money_driver_finishes_before_journal_retirement(signal_first: bool) {
+    let fixture = Fixture::new(16).await;
     fixture.accrue();
     let gate = Arc::new(FlushGate::default());
-    *fixture.backend.budget.lock().unwrap() = Some(gate.clone());
-    let (shutdown, receiver) = tokio::sync::broadcast::channel(1);
-    let flusher =
-        busbar_kernel::governance::spawn_budget_flusher(fixture.gov.clone(), receiver, None);
+    *fixture.seen.backend.budget.lock().unwrap() = Some(gate.clone());
+    let (shutdown_tx, _) = tokio::sync::broadcast::channel(1);
+    let clock = DrainClock::new(ROOMY);
+    let flusher = money_driver(&fixture.seen.gov, &clock, &shutdown_tx);
+    // A signal before the drain owner runs, or the line server's input ending (its code 0).
+    let lines = (!signal_first).then_some(0);
+    let (post, seen) = fixture.post(true, Some(flusher), &shutdown_tx, lines);
     if signal_first {
-        shutdown.send(()).unwrap();
+        shutdown_tx.send(()).unwrap();
         gate.entered().await;
     }
-    let gov = fixture.gov.clone();
-    let book = fixture.book.durability.clone();
-    let task = tokio::spawn(async move {
-        tail_after_flusher(
-            Some(gov),
-            &LateServices::new(),
-            Some(&book),
-            &shutdown,
-            Some(flusher),
-        )
-        .await
-    });
+    let drain = ShutdownDrain::new(clock);
+    let mut finishing = std::pin::pin!(finish(post, &drain));
     if !signal_first {
-        gate.entered().await;
+        until_entered(finishing.as_mut(), &gate).await;
     }
+    still_running(finishing.as_mut()).await;
+    assert_eq!(seen.requests().await, 0);
     assert!(
-        !task.is_finished(),
-        "shutdown joins the owner of the dirty cell"
-    );
-    assert_eq!(fixture.requests().await, 0);
-    assert!(
-        fixture.book.runtime_journal.refuses_money().is_none(),
+        seen.journal.refuses_money().is_none(),
         "staging stays open while accounting is active"
     );
     gate.release();
-    let drained = tokio::time::timeout(WAIT, task)
+    let code = tokio::time::timeout(WAIT, finishing)
         .await
-        .unwrap()
-        .unwrap()
         .expect("periodic owner joined and final queues drained");
-    assert_eq!(fixture.requests().await, 1);
-    assert!(!fixture.metered().await.is_empty());
+    assert_eq!(code, 0, "the drained writer retires");
+    assert_eq!(seen.requests().await, 1);
+    assert!(!seen.metered().await.is_empty());
     assert!(
-        fixture.book.runtime_journal.refuses_money().is_some(),
-        "final drain closes staging"
+        seen.journal.refuses_money().is_some(),
+        "the final drain closes staging"
     );
-    assert!(
-        fixture.startup.store().is_some(),
-        "native retirement requires the drain proof explicitly"
-    );
-    fixture.retire(drained).await;
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn shutdown_joins_inflight_background_accounting_before_retiring_journal() {
-    background_flusher_finishes_before_journal_retirement(true).await;
+    the_money_driver_finishes_before_journal_retirement(true).await;
 }
 #[tokio::test(flavor = "current_thread")]
 async fn line_eof_stops_and_joins_background_accounting_before_retiring_journal() {
-    background_flusher_finishes_before_journal_retirement(false).await;
+    the_money_driver_finishes_before_journal_retirement(false).await;
 }

@@ -3,7 +3,7 @@
 An auth plugin that declares a changed principal format, including OIDC-v2 and GitHub-v2, requires an explicit
 Store-backed continuity receipt before ordinary serving starts. A retained 1.5.5 Store needs a
 cold operator transition. A genuinely new namespace needs a creation receipt. An empty key scan,
-an ephemeral Store, or a successful `--migrate-config` is not creation evidence.
+an ephemeral Store, or a successful the first-boot migration is not creation evidence.
 
 Principal strings are identity, not display names. Establish each old-to-new mapping from the
 historical provider and its actual new output; do not derive it from a username, email address,
