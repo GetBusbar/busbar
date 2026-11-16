@@ -346,3 +346,33 @@ fn a_blocked_admission_is_answered_with_its_status_and_the_wait_it_names() {
     let frozen = blocked_response(&LimitBlocked::Disabled("g".into()));
     assert_eq!(frozen.status(), StatusCode::FORBIDDEN);
 }
+
+#[tokio::test]
+async fn the_planes_end_closes_the_response_body_while_the_session_goes_on() {
+    let (pipe, head, body) = pipe();
+    let status = Arc::new(AtomicU16::new(0));
+    let sink = Counted {
+        inner: Mutex::new(Some(pipe)),
+        status: Arc::clone(&status),
+    };
+    assert!(sink.items(vec![
+        ToClient::Head {
+            status: 201,
+            fields: Vec::new(),
+        },
+        ToClient::Body(b"answer".to_vec()),
+        ToClient::End,
+    ]));
+    assert_eq!(
+        status.load(Ordering::Relaxed),
+        201,
+        "the unit settles by what the client was told"
+    );
+    assert_eq!(head.await.unwrap().0, 201);
+    // The sink is still alive (a held channel or media bridge keeps the session going), yet the body is complete.
+    assert_eq!(frames(PipeBody(body)).await, vec![b"answer".to_vec()]);
+    assert!(
+        sink.items(vec![ToClient::Body(b"late".to_vec())]),
+        "a write after the end has no client to reach, and the client is not gone"
+    );
+}

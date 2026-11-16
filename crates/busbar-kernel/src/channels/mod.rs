@@ -13,10 +13,19 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 
 pub mod ask_line;
+pub mod carrier;
+#[cfg(test)]
+mod carrier_tests;
+pub mod frame;
+#[cfg(test)]
+mod frame_tests;
 pub mod line_carriers;
 pub mod link;
 pub mod respawn;
 pub mod signals;
+pub mod stdio;
+#[cfg(test)]
+mod stdio_tests;
 #[cfg(test)]
 mod tests;
 
@@ -88,6 +97,7 @@ impl Attachment {
         ready_tail: Box<[u8]>,
         rx: mpsc::Receiver<ChannelMsg>,
     ) -> Self {
+        link.attach();
         Self {
             generation,
             slot,

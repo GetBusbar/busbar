@@ -17,6 +17,7 @@ pub mod port;
 pub mod port_admin;
 pub mod port_auth;
 pub mod port_billing;
+pub mod port_carrier;
 pub mod port_channels;
 pub mod port_charge;
 pub mod port_egress;
