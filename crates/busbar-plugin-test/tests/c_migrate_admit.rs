@@ -8,7 +8,7 @@
 //! the arm's body and un-ignores it in its own MR (red first, then green).
 
 #[test]
-#[ignore = "owner: W1-K9"]
+#[ignore = "blocked: the real migrate_admit host slot is installed only by the busbar root (root/migrate.rs); host_vt.rs leaves it None and busbar-plugin-test cannot depend on busbar; owner W1-K9"]
 fn migrate_admit_without_an_at_rest_key_is_refused() {
     todo!("owner: W1-K9 (C-MIGRATE-ADMIT)")
 }

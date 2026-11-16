@@ -8,7 +8,7 @@
 //! the arm's body and un-ignores it in its own MR (red first, then green).
 
 #[test]
-#[ignore = "owner: W1-K8A"]
+#[ignore = "blocked: two-process gateway harness needs the plane-mcp image (GetBusbar/busbar#217); owner W1-K8A"]
 fn two_gateways_over_one_store_harness() {
     todo!("owner: W1-K8A (C-MCP-TASKS)")
 }

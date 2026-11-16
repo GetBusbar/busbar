@@ -8,7 +8,7 @@
 //! the arm's body and un-ignores it in its own MR (red first, then green).
 
 #[test]
-#[ignore = "owner: W1-K8B"]
+#[ignore = "blocked: busbar-core-oauth2 has no pkce module on dev (no minting functions; hosted_login does not mint L_CODE_CHALLENGE)"]
 fn core_mints_pkce_once() {
-    todo!("owner: W1-K8B (C-LOGIN-PKCE)")
+    todo!("blocked: busbar-core-oauth2 has no pkce module on dev (no minting functions; hosted_login does not mint L_CODE_CHALLENGE) (C-LOGIN-PKCE)")
 }

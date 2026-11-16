@@ -7,7 +7,7 @@
 //! the arm's body and un-ignores it in its own MR (red first, then green).
 
 #[test]
-#[ignore = "owner: W1-K8A"]
+#[ignore = "blocked: serve_lines_over is pub(crate) in the busbar bin crate (root/serve_lines.rs) and needs a plane-mcp fixture; unreachable from busbar-plugin-test"]
 fn the_line_carrier() {
-    todo!("owner: W1-K8A (C-LINE-CARRIER)")
+    todo!("blocked: serve_lines_over is pub(crate) in the busbar bin crate (root/serve_lines.rs) and needs a plane-mcp fixture; unreachable from busbar-plugin-test (C-LINE-CARRIER)")
 }

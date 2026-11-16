@@ -8,7 +8,7 @@
 //! the arm's body and un-ignores it in its own MR (red first, then green).
 
 #[test]
-#[ignore = "owner: W1-L3"]
+#[ignore = "owner: W1-L3 (blocked: needs a store fixture image (plugin!-built, lane/info facts) admitted through Harness over Registry open_store; no such fixture exists in busbar-plugin-test)"]
 fn a_blocking_store_runs_on_the_lane() {
     todo!("owner: W1-L3 (C-STORE-LANE)")
 }

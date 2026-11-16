@@ -8,7 +8,7 @@
 //! the arm's body and un-ignores it in its own MR (red first, then green).
 
 #[test]
-#[ignore = "owner: W1-K8A"]
+#[ignore = "blocked: needs a plane double and the HTTP/2 trailer rendering path with 1.5.5 golden bytes; no such harness in this crate (W1-K8A)"]
 fn trailers_and_render_refusal_with_a_plane_double() {
     todo!("owner: W1-K8A (C-PLANE-TRAILERS)")
 }

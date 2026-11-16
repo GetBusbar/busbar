@@ -8,13 +8,13 @@
 //! the arm's body and un-ignores it in its own MR (red first, then green).
 
 #[test]
-#[ignore = "owner: W1-L2"]
+#[ignore = "owner: W1-L2; blocked (re-checked on dev 2026-11-16): no test constructor for Registry<N> (Needs impl, ConfigBinder, Ceilings, a static Host) and no second-identity MIN-3 fixture image exist in busbar-plugin-test on dev"]
 fn no_stamp_name_reaches_a_config_view_or_need_result() {
     todo!("owner: W1-L2 (C-BLIND)")
 }
 
 #[test]
-#[ignore = "owner: W1-K8C"]
+#[ignore = "owner: W1-K8C; blocked (re-checked on dev 2026-11-16): the kernel export pump, DiskSink and stream routing are not on dev (OUTSTANDING row 4)"]
 fn no_stamp_name_reaches_a_deliver_batch_or_render_snapshot() {
     todo!("owner: W1-K8C (C-BLIND)")
 }
