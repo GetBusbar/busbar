@@ -27,9 +27,8 @@ use busbar_kernel::persistence::boot_identity::{
     SealState, TailView, UndrainedWriter,
 };
 use busbar_kernel_audit::{
-    break_body, break_from_journal_body, stamp_body, stamp_from_journal_body, walk_tail,
-    AuditVerifyingKey, BreakAt, BreakNotice, BreakReason, Stamp, StampKind, TailItem, WalkContext,
-    WalkOutcome,
+    break_body, break_from_journal_body, stamp_body, stamp_from_journal_body, AuditVerifyingKey,
+    BreakAt, BreakNotice, BreakReason, Stamp, StampKind, WalkContext, WalkOutcome,
 };
 use tokio::sync::watch;
 
@@ -52,8 +51,8 @@ const PERMANENT_AFTER: u32 = 30;
 /// Journal records read per backward batch (§3.6.2 step 2).
 const BATCH: u64 = 256;
 
-/// The most audit lines one predecessor walk keeps before it stops with a `budget` break.
-const WALK_LINES_MAX: usize = 262_144;
+/// Existing journal history budget, counted in WAL records rather than decoded audit lines.
+const WALK_RECORDS_MAX: u64 = 1_048_576;
 
 /// What the boot book hands the sealer about this process.
 #[derive(Debug, Clone)]
@@ -346,7 +345,8 @@ impl Sealer {
 
     /// Step 2: walk the tail backwards in batches until the walk reaches an anchor or the start.
     async fn walk(&mut self, id: u64, view: &TailView) -> Result<WalkOutcome, Stop> {
-        let mut items: Vec<TailItem> = Vec::new();
+        let mut walk = busbar_kernel_audit::restart::BackwardWalk::default();
+        let mut records_read = 0;
         let mut to = view.count;
         let mut expect_hash = view.hash;
         loop {
@@ -364,40 +364,42 @@ impl Sealer {
                 return Err(Stop::Skip);
             }
             expect_hash = batch.first().map_or([0; 32], |r| r.prev_hash);
-            let mut older = match tail_items(&batch) {
-                Ok(older) => older,
-                Err(RecipeUnsupported) => return Ok(WalkOutcome::Unsupported),
-            };
-            older.append(&mut items);
-            items = older;
             let complete = from == 1;
-            let lines = items
-                .iter()
-                .filter(|item| matches!(item, TailItem::Line { .. }))
-                .count();
-            if lines > WALK_LINES_MAX {
-                return Ok(budget_break(&items));
-            }
+            records_read += to - from + 1;
             let key = self.key.clone();
             let host = self.host.clone();
             let walked = tokio::task::spawn_blocking(move || {
-                let outcome = walk_tail(
-                    &items,
-                    &WalkContext {
-                        node: id,
-                        host: &host,
-                        key: &key,
-                        complete,
-                    },
-                );
-                (items, outcome)
+                let cx = WalkContext {
+                    node: id,
+                    host: &host,
+                    key: &key,
+                    complete,
+                };
+                let items = match tail_items(&batch) {
+                    Ok(items) => items,
+                    Err(RecipeUnsupported) => return (walk, WalkOutcome::Unsupported),
+                };
+                for item in items.iter().rev() {
+                    let outcome = walk.push(item, &cx);
+                    if outcome != WalkOutcome::NeedMore {
+                        return (walk, outcome);
+                    }
+                }
+                let outcome = if complete {
+                    walk.finish(&cx)
+                } else if records_read >= WALK_RECORDS_MAX {
+                    walk.budget_break()
+                } else {
+                    WalkOutcome::NeedMore
+                };
+                (walk, outcome)
             })
             .await;
             let Ok((back, outcome)) = walked else {
                 self.refuse(id, "permanent", "the walk task failed");
                 return Err(Stop::Skip);
             };
-            items = back;
+            walk = back;
             if outcome != WalkOutcome::NeedMore || complete {
                 return Ok(outcome);
             }
@@ -784,25 +786,6 @@ impl Sealer {
                 .push(text);
         }
     }
-}
-
-/// A walk that kept [`WALK_LINES_MAX`] lines without an anchor: a `budget` break over the walked
-/// range (only after a long notary stall, already alerted).
-fn budget_break(items: &[TailItem]) -> WalkOutcome {
-    let mut lines = items.iter().filter_map(|item| match item {
-        TailItem::Line { record, node_seq } => Some((record.seq, *node_seq)),
-        _ => None,
-    });
-    let first = lines.next().unwrap_or((1, 0));
-    let last = lines.last().unwrap_or(first);
-    WalkOutcome::Break(BreakAt {
-        last_good: first.0.saturating_sub(1),
-        unsealed_from: first.0,
-        unsealed_to: last.0,
-        journal_from: first.1,
-        journal_to: last.1,
-        reason: BreakReason::Budget,
-    })
 }
 
 #[cfg(test)]

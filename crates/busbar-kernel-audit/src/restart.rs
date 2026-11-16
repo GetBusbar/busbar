@@ -17,6 +17,9 @@ use crate::record::{AuditBreakKind, AuditChain, AuditRecord};
 use crate::sign::{AuditVerifyingKey, SIGNATURE_ALGORITHM};
 use crate::stamp::{BreakReason, Stamp, StampKind};
 
+mod backward;
+pub use backward::BackwardWalk;
+
 /// The shortest tail span the walk ever accepts, ms (§3.6.0 step 3).
 pub const MIN_SPAN_MS: u64 = 1_000;
 

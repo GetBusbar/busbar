@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use busbar_kernel_audit::{BreakReason, TailItem, WalkOutcome};
 
-use super::{budget_break, run, SealerDone};
+use super::{run, SealerDone};
 use crate::root::durability::tests::{audit_inputs, audit_pass, token, NativeFixture};
 
 /// A walk that keeps more lines than its budget without an anchor stops with a `budget` break over
@@ -29,7 +29,21 @@ async fn a_walk_over_budget_is_a_budget_break_over_the_walked_range() {
             node_seq: 100 + i as u64,
         })
         .collect();
-    let WalkOutcome::Break(at) = budget_break(&items[1..]) else {
+    let key = busbar_kernel_audit::AuditVerifyingKey::from_hex(
+        &busbar_kernel_audit::AuditSigningKey::from_seed(&[0x63; 32]).public_key_hex(),
+    )
+    .unwrap();
+    let cx = busbar_kernel_audit::WalkContext {
+        node: 71,
+        host: "host",
+        key: &key,
+        complete: false,
+    };
+    let mut walk = busbar_kernel_audit::restart::BackwardWalk::default();
+    for item in items[1..].iter().rev() {
+        assert_eq!(walk.push(item, &cx), WalkOutcome::NeedMore);
+    }
+    let WalkOutcome::Break(at) = walk.budget_break() else {
         panic!("a budget break");
     };
     assert_eq!(at.reason, BreakReason::Budget);
