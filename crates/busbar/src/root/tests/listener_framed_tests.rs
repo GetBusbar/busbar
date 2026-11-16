@@ -60,3 +60,17 @@ include!(concat!(env!("OUT_DIR"), "/context_test_sources.rs"));
 owner_test_sources!(listener_framed);
 owner_test_sources!(listener_session);
 owner_test_sources!(listener_carrier);
+#[test]
+fn aggregate_body_charge_survives_reader_and_releases_at_request_end() {
+    let budget = std::sync::Arc::new(tokio::sync::Semaphore::new(8));
+    let charge = std::sync::Arc::new(super::BodyCharge::default());
+    assert!(charge.take(&budget, 5));
+    let reader = std::sync::Arc::clone(&charge);
+    assert!(!reader.take(&budget, 4));
+    assert_eq!(budget.available_permits(), 3);
+    assert!(reader.take(&budget, 3));
+    drop(reader);
+    assert_eq!(budget.available_permits(), 0);
+    drop(charge);
+    assert_eq!(budget.available_permits(), 8);
+}
