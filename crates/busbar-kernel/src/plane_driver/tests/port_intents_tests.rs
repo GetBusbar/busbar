@@ -1966,6 +1966,14 @@ impl DurableWork for Ledger {
         let answer = self.refuse.map_or(Ok(()), Err);
         Box::pin(async move { answer })
     }
+
+    fn recoverable<'a>(
+        &'a self,
+        _: &'a Caller<'_>,
+    ) -> BoxFut<'a, Result<Vec<crate::host_services::RecoveryWork>, &'static str>> {
+        self.asked.lock().unwrap().push("recoverable".to_owned());
+        Box::pin(async { Ok(Vec::new()) })
+    }
 }
 
 fn namespace() -> Namespace {

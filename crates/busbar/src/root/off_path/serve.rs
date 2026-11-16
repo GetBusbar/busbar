@@ -284,6 +284,7 @@ impl Served {
                 for kernel in &self.0 {
                     kernel.set_recovery_scheduler_ready(false);
                 }
+                crate::root::min3_boot::set_recovery_ready(false);
             }
         }
         let ready = Ready(kernels);
@@ -292,9 +293,16 @@ impl Served {
                 kernel.set_recovery_scheduler_ready(true);
             }
         }
+        // The MIN-3 plane seats' durable WORK is recovered by this same scheduler (IF §12.24 step 3).
+        let ports = crate::root::min3_boot::booted().is_some_and(|booted| !booted.seats.is_empty());
+        if ports {
+            crate::root::min3_boot::set_recovery_ready(true);
+        }
         tokio::spawn(async move {
             let _ready = ready;
-            let Some(routes) = routes else { return };
+            if routes.is_none() && !ports {
+                return;
+            }
             loop {
                 tokio::select! {
                     biased;
@@ -302,14 +310,22 @@ impl Served {
                     _ = tokio::time::sleep(std::time::Duration::from_secs(30)) => {}
                 }
                 let live: Vec<_> = routes
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .iter()
-                    .filter_map(std::sync::Weak::upgrade)
-                    .collect();
+                    .as_ref()
+                    .map(|routes| {
+                        routes
+                            .lock()
+                            .unwrap_or_else(|p| p.into_inner())
+                            .iter()
+                            .filter_map(std::sync::Weak::upgrade)
+                            .collect()
+                    })
+                    .unwrap_or_default();
                 let cycle = async {
                     for routes in live {
                         routes.recover_work(app.load()).await;
+                    }
+                    if ports {
+                        crate::root::min3_boot::recover_ports(app.load()).await;
                     }
                 };
                 tokio::select! {
