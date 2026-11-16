@@ -593,13 +593,13 @@ fn v7_records_verify_against_the_published_page() {
         "u_00112233445566778899aabbccddeeff"
     );
     let mut tampered = range.clone();
-    tampered["records"][1]["labels"][0]["value"] = json!("billing");
+    tampered["records"][1]["labels"][0]["value"] = json::json!("billing");
     assert!(
         verify(&keys(), &tampered, Some(&head)).is_err(),
         "a label is digested"
     );
     let mut tampered = range.clone();
-    tampered["records"][1]["user"] = json!("u_ffeeddccbbaa99887766554433221100");
+    tampered["records"][1]["user"] = json::json!("u_ffeeddccbbaa99887766554433221100");
     assert!(
         verify(&keys(), &tampered, Some(&head)).is_err(),
         "the user is digested"

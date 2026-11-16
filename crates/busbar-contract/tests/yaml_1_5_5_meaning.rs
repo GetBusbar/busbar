@@ -92,7 +92,7 @@
 
 use std::collections::BTreeMap;
 
-use busbar_contract::json::{self, JsonValueTrait as _};
+use busbar_contract::json::{self, JsonContainerTrait as _, JsonValueTrait as _};
 use busbar_contract::yaml::{self, prelude::*};
 use serde::Deserialize;
 
