@@ -6,12 +6,12 @@
 //! The `Host` table, `HostFns`, `CryptoReq`, `CryptoRet`, `DeploymentId` and the entry brand `Ctx` are busbar-ffi's
 //! (UNSAFE-MIN r3.1) and re-exported here; their `mechanism!` blocks are busbar-ffi's. This module keeps the
 //! algorithm, key-form, status and level numbers, the safe value types and `HostExt`, the §5.1 safe methods
-//! (W1-A2 fills the crypto ones).
+//! (W1-A2: the crypto ones marshal each call into one `CryptoReq` and copy every answer out before return).
 
 use core::fmt;
 use core::ops::Deref;
 
-use busbar_ffi::{Status, Str};
+use busbar_ffi::{Bytes, Status, Str};
 use zeroize::Zeroize as _;
 
 use crate::fail::{Fail, refused};
@@ -30,6 +30,77 @@ fn crypto_err(status: u32) -> CryptoErr {
         crypto_status::LIMIT => CryptoErr::Limit,
         _ => CryptoErr::Rng,
     }
+}
+
+/// AES-GCM's nonce and tag lengths (§5 `alg::AEAD_*`).
+const NONCE: usize = 12;
+const TAG: usize = 16;
+
+/// One `CryptoReq` with no param, aux or aad (callers set those with struct update).
+const fn req<'a>(alg: u32, key_form: u32, key: &'a [u8], data: &'a [u8]) -> CryptoReq<'a> {
+    CryptoReq {
+        alg,
+        key_form,
+        param: 0,
+        key: Bytes::new(key),
+        data: Bytes::new(data),
+        aux: Bytes::EMPTY,
+        aad: Bytes::EMPTY,
+    }
+}
+
+/// One `crypto` call. The lent output is read inside `Host::scoped` and `take` copies it out, so nothing lent
+/// outlives the call (r4 H3). A null entry is its panic fallback, Err(Rng); every non-OK status is its error.
+fn call<R>(
+    host: &Host,
+    req: &CryptoReq<'_>,
+    take: impl FnOnce(&[u8]) -> Result<R, CryptoErr>,
+) -> Result<R, CryptoErr> {
+    let Some(crypto) = host.fns().crypto else {
+        return Err(CryptoErr::Rng);
+    };
+    host.scoped(|ctx| {
+        let ret = crypto(ctx, req);
+        if ret.status != crypto_status::OK {
+            return Err(crypto_err(ret.status));
+        }
+        take(ret.out.get())
+    })
+}
+
+/// The output when it is exactly `len` bytes; any other length is a host bug, never a short value (Err(Rng)).
+fn sized(out: &[u8], len: usize) -> Result<&[u8], CryptoErr> {
+    if out.len() == len {
+        Ok(out)
+    } else {
+        Err(CryptoErr::Rng)
+    }
+}
+
+/// An AES key is 16 or 32 bytes (§5.1), checked before any call.
+fn aes_key(key: &[u8]) -> Result<(), CryptoErr> {
+    if matches!(key.len(), 16 | 32) {
+        Ok(())
+    } else {
+        Err(CryptoErr::Invalid)
+    }
+}
+
+/// Appends `bytes` to `out` as I11 requires (§5.1): in place when `out` has room, else into a fresh block, the old
+/// one wiped before it is freed; never `reserve` on `out`. No room for the new block is Err(Limit).
+fn append(out: &mut Vec<u8>, bytes: &[u8]) -> Result<(), CryptoErr> {
+    if out.capacity() - out.len() < bytes.len() {
+        let need = out.len().checked_add(bytes.len()).ok_or(CryptoErr::Limit)?;
+        let mut grown = Vec::new();
+        grown
+            .try_reserve_exact(need.max(out.len().saturating_mul(2)))
+            .map_err(|_| CryptoErr::Limit)?;
+        grown.extend_from_slice(out);
+        core::mem::swap(out, &mut grown);
+        grown.zeroize();
+    }
+    out.extend_from_slice(bytes);
+    Ok(())
 }
 
 mechanism! {
@@ -170,11 +241,40 @@ impl Digest {
         &self.bytes[..usize::from(self.len)]
     }
     pub fn ct_eq(&self, other: &[u8]) -> bool {
-        let _ = other;
-        todo!()
+        ct_eq(self.as_slice(), other)
+    }
+    /// A host output of exactly `len` (≤ 64) bytes, copied out; any other length is Err(Rng).
+    fn copied(out: &[u8], len: usize) -> Result<Digest, CryptoErr> {
+        let src = sized(out, len)?;
+        let mut digest = Digest {
+            len: u8::try_from(len).map_err(|_| CryptoErr::Rng)?,
+            bytes: [0; 64],
+        };
+        match digest.bytes.get_mut(..len) {
+            Some(dst) => dst.copy_from_slice(src),
+            None => return Err(CryptoErr::Rng),
+        }
+        Ok(digest)
     }
 }
-// W0-ABI: `impl Drop for Digest` (zeroize) lands with W1-A2; a todo!() drop would panic.
+impl Drop for Digest {
+    fn drop(&mut self) {
+        self.bytes.zeroize();
+    }
+}
+
+impl Hash {
+    /// The digest alg, its output length, and the HMAC alg (none for MD5: digest only).
+    const fn algs(self) -> (u32, usize, Option<u32>) {
+        match self {
+            Hash::Sha256 => (alg::SHA256, 32, Some(alg::HMAC_SHA256)),
+            Hash::Sha384 => (alg::SHA384, 48, Some(alg::HMAC_SHA384)),
+            Hash::Sha512 => (alg::SHA512, 64, Some(alg::HMAC_SHA512)),
+            Hash::Sha1 => (alg::SHA1, 20, Some(alg::HMAC_SHA1)),
+            Hash::Md5 => (alg::MD5, 16, None),
+        }
+    }
+}
 
 /// The plaintext `aead_open` returns. It stands where the IF writes `zeroize::Zeroizing<Vec<u8>>`, which core
 /// bans (LR-094, BLD-9); `busbar_contract::secure` sits above this crate (IF §16.23) and a plugin links only this
@@ -215,7 +315,9 @@ impl fmt::Debug for Plaintext {
 /// fallback (round 20, I10): crypto and random Err(Rng), grow false, now/mono/log_level 0, deployment all
 /// zero, a dropped log line, `migrate_admit` REFUSED.
 ///
-/// The crypto methods (digest through rsa_oaep) are held for W1-A2, which marshals them onto `Host::crypto`.
+/// The crypto methods (digest through rsa_oaep) are one `crypto` call each: a key form or AES key length the IF
+/// rules out, a tag-less `sealed`, and `hmac(Md5)` are Err(Invalid) before any call; an answer whose length is not
+/// the one the alg defines is Err(Rng), never a short value; every `*_into` appends as I11 requires.
 pub trait HostExt {
     fn now_ns(&self) -> u64;
     fn now_s(&self) -> u64;
@@ -356,12 +458,18 @@ impl HostExt for Host {
         })
     }
     fn digest(&self, h: Hash, data: &[u8]) -> Result<Digest, CryptoErr> {
-        let _ = (h, data);
-        todo!()
+        let (alg, len, _) = h.algs();
+        call(self, &req(alg, key_form::RAW, &[], data), |out| {
+            Digest::copied(out, len)
+        })
     }
     fn hmac(&self, h: Hash, key: &[u8], data: &[u8]) -> Result<Digest, CryptoErr> {
-        let _ = (h, key, data);
-        todo!()
+        let (_, len, Some(alg)) = h.algs() else {
+            return Err(CryptoErr::Invalid);
+        };
+        call(self, &req(alg, key_form::RAW, key, data), |out| {
+            Digest::copied(out, len)
+        })
     }
     fn pbkdf2_sha256(
         &self,
@@ -369,8 +477,11 @@ impl HostExt for Host {
         salt: &[u8],
         iterations: u32,
     ) -> Result<Digest, CryptoErr> {
-        let _ = (password, salt, iterations);
-        todo!()
+        let r = CryptoReq {
+            param: u64::from(iterations),
+            ..req(alg::PBKDF2_HMAC_SHA256, key_form::RAW, password, salt)
+        };
+        call(self, &r, |out| Digest::copied(out, 32))
     }
     fn verify(
         &self,
@@ -379,16 +490,61 @@ impl HostExt for Host {
         msg: &[u8],
         signature: &[u8],
     ) -> Result<bool, CryptoErr> {
-        let _ = (sig, key, msg, signature);
-        todo!()
+        let alg = match sig {
+            Sig::Rs256 => alg::VERIFY_RS256,
+            Sig::Rs384 => alg::VERIFY_RS384,
+            Sig::Rs512 => alg::VERIFY_RS512,
+            Sig::Ps256 => alg::VERIFY_PS256,
+            Sig::Ps384 => alg::VERIFY_PS384,
+            Sig::Ps512 => alg::VERIFY_PS512,
+            Sig::Es256 => alg::VERIFY_ES256,
+            Sig::Es384 => alg::VERIFY_ES384,
+            Sig::Ed25519 => alg::VERIFY_ED25519,
+        };
+        // RSA_COMPONENTS: u32 LE n_len, n, e (§5 `key_form`); public bytes, no wipe.
+        let components;
+        let (form, key): (u32, &[u8]) = match key {
+            Key::Raw(k) => (key_form::RAW, k),
+            Key::SpkiDer(k) => (key_form::SPKI_DER, k),
+            Key::RsaPkcs1Der(k) => (key_form::RSA_PKCS1_DER, k),
+            Key::EcPoint(k) => (key_form::EC_POINT, k),
+            Key::Rsa { n, e } => {
+                let n_len = u32::try_from(n.len()).map_err(|_| CryptoErr::Invalid)?;
+                components = [&n_len.to_le_bytes()[..], n, e].concat();
+                (key_form::RSA_COMPONENTS, components.as_slice())
+            }
+        };
+        let r = CryptoReq {
+            aux: Bytes::new(signature),
+            ..req(alg, form, key, msg)
+        };
+        match call(self, &r, |_| Ok(())) {
+            Ok(()) => Ok(true),
+            Err(CryptoErr::Bad) => Ok(false),
+            Err(e) => Err(e),
+        }
     }
     fn sign(&self, alg: SignAlg, pkcs8: &[u8], msg: &[u8]) -> Result<Vec<u8>, CryptoErr> {
-        let _ = (alg, pkcs8, msg);
-        todo!()
+        let code = match alg {
+            SignAlg::Rs256 => alg::SIGN_RS256,
+            SignAlg::Es256 => alg::SIGN_ES256,
+            SignAlg::Ed25519 => alg::SIGN_ED25519,
+        };
+        call(self, &req(code, key_form::PKCS8, pkcs8, msg), |out| {
+            Ok(out.to_vec())
+        })
     }
     fn aead_seal(&self, key: &[u8], aad: &[u8], plaintext: &[u8]) -> Result<Vec<u8>, CryptoErr> {
-        let _ = (key, aad, plaintext);
-        todo!()
+        aes_key(key)?;
+        let len = plaintext
+            .len()
+            .checked_add(NONCE + TAG)
+            .ok_or(CryptoErr::Invalid)?;
+        let r = CryptoReq {
+            aad: Bytes::new(aad),
+            ..req(alg::AEAD_SEAL, key_form::RAW, key, plaintext)
+        };
+        call(self, &r, |out| sized(out, len).map(<[u8]>::to_vec))
     }
     fn aead_open(
         &self,
@@ -397,8 +553,14 @@ impl HostExt for Host {
         aad: &[u8],
         sealed: &[u8],
     ) -> Result<Plaintext, CryptoErr> {
-        let _ = (key, nonce, aad, sealed, Plaintext::copied);
-        todo!()
+        aes_key(key)?;
+        let len = sealed.len().checked_sub(TAG).ok_or(CryptoErr::Invalid)?;
+        let r = CryptoReq {
+            aux: Bytes::new(nonce),
+            aad: Bytes::new(aad),
+            ..req(alg::AEAD_OPEN, key_form::RAW, key, sealed)
+        };
+        call(self, &r, |out| sized(out, len).map(Plaintext::copied))
     }
     fn aead_seal_explicit_into(
         &self,
@@ -408,8 +570,14 @@ impl HostExt for Host {
         plaintext: &[u8],
         out: &mut Vec<u8>,
     ) -> Result<(), CryptoErr> {
-        let _ = (key, nonce, aad, plaintext, out);
-        todo!()
+        aes_key(key)?;
+        let len = plaintext.len().checked_add(TAG).ok_or(CryptoErr::Invalid)?;
+        let r = CryptoReq {
+            aux: Bytes::new(nonce),
+            aad: Bytes::new(aad),
+            ..req(alg::AEAD_SEAL_EXPLICIT, key_form::RAW, key, plaintext)
+        };
+        call(self, &r, |lent| append(out, sized(lent, len)?))
     }
     fn aead_open_into(
         &self,
@@ -419,8 +587,14 @@ impl HostExt for Host {
         sealed: &[u8],
         out: &mut Vec<u8>,
     ) -> Result<(), CryptoErr> {
-        let _ = (key, nonce, aad, sealed, out);
-        todo!()
+        aes_key(key)?;
+        let len = sealed.len().checked_sub(TAG).ok_or(CryptoErr::Invalid)?;
+        let r = CryptoReq {
+            aux: Bytes::new(nonce),
+            aad: Bytes::new(aad),
+            ..req(alg::AEAD_OPEN, key_form::RAW, key, sealed)
+        };
+        call(self, &r, |lent| append(out, sized(lent, len)?))
     }
     fn aes_ctr_into(
         &self,
@@ -429,16 +603,28 @@ impl HostExt for Host {
         data: &[u8],
         out: &mut Vec<u8>,
     ) -> Result<(), CryptoErr> {
-        let _ = (key, iv, data, out);
-        todo!()
+        aes_key(key)?;
+        let r = CryptoReq {
+            aux: Bytes::new(iv),
+            ..req(alg::AES_CTR, key_form::RAW, key, data)
+        };
+        call(self, &r, |lent| append(out, sized(lent, data.len())?))
     }
     fn rsa_oaep_sha1_encrypt(
         &self,
         public: Key<'_>,
         plaintext: &[u8],
     ) -> Result<Vec<u8>, CryptoErr> {
-        let _ = (public, plaintext);
-        todo!()
+        let Key::SpkiDer(spki) = public else {
+            return Err(CryptoErr::Invalid);
+        };
+        let r = req(
+            alg::RSA_OAEP_SHA1_ENCRYPT,
+            key_form::SPKI_DER,
+            spki,
+            plaintext,
+        );
+        call(self, &r, |out| Ok(out.to_vec()))
     }
     fn log(&self, level: u32, msg: &str) {
         self.log_error(level, 0, msg);
@@ -473,9 +659,14 @@ impl HostExt for Host {
     }
 }
 /// Constant-time compare, pure code (not a crypto primitive), for token and signature checks.
+/// Unequal lengths answer false at once (a length is not the secret); equal lengths always read every byte, and the
+/// folded difference passes `black_box` so the comparison is not cut short.
 pub fn ct_eq(a: &[u8], b: &[u8]) -> bool {
-    let _ = (a, b);
-    todo!()
+    if a.len() != b.len() {
+        return false;
+    }
+    let diff = a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y));
+    core::hint::black_box(diff) == 0
 }
 
 #[cfg(feature = "host")]
