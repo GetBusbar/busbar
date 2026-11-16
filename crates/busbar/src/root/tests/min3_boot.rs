@@ -293,3 +293,39 @@ async fn the_recoverable_gate_sees_the_walks_at_rest_key_while_the_store_opens()
     );
     assert_eq!(admit_for_host(0), Ok(()), "no recoverable row asks nothing");
 }
+
+#[test]
+fn actual_plane_settlement_has_its_core_owned_block_and_described_lift_authority() {
+    let instance = Configured {
+        kind: KindCode::Plane,
+        identity: "image".to_owned(),
+        name: "plane".to_owned(),
+        config: b"{}".to_vec(),
+        limits: Default::default(),
+    };
+    let described = busbar_plugin_loader::instance::Described {
+        kind: KindCode::Plane,
+        methods: 0,
+        facts: 0,
+        items: vec![(
+            busbar_plugin_abi::records::tag::D_SECRET_PATH,
+            b"/token".to_vec(),
+        )],
+        schema: None,
+        metrics: Vec::new(),
+        error_codes_refused: None,
+    };
+    let raw = busbar_plugin_loader::instance::Settled {
+        config_json: SecureVec::from(&br#"{"token":"literal","display":"public"}"#[..]),
+        core_cfg: Vec::new(),
+    };
+    let answer = settlement::answer(7, &instance, &described, raw).unwrap();
+    assert_eq!(answer.index, 7);
+    assert_eq!(answer.path, ["plane"]);
+    assert_eq!(answer.placement, busbar_migrate::BagPlacement::Block);
+    assert_eq!(
+        answer.allowed_lifts.into_iter().collect::<Vec<_>>(),
+        ["/token"]
+    );
+    assert!(answer.settings.unwrap().as_str().contains("literal"));
+}

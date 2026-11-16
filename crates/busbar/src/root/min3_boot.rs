@@ -1188,3 +1188,6 @@ mod tests;
 /// `Registry::open_transport` and published for the connector.
 #[path = "min3_transports.rs"]
 pub(crate) mod transports;
+
+#[path = "min3_settled.rs"]
+mod settlement;
