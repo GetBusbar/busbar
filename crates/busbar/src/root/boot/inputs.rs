@@ -3,6 +3,87 @@
 
 //! Canonical opening settings of the instances that already own the bootstrap Store.
 
+use busbar_kernel::config::{RootCfg, SecretModuleCfg, StoreCfg};
+use std::collections::{BTreeMap, BTreeSet};
+
+/// The instance portion of the protected boot projection. Image and bootstrap network
+/// dependencies require separate admission and connector comparisons.
+pub(crate) struct BootInstances {
+    store: Option<StoreCfg>,
+    secrets: BTreeMap<String, SecretModuleCfg>,
+}
+
+fn same_yaml(
+    a: &Option<busbar_contract::yaml::Value>,
+    b: &Option<busbar_contract::yaml::Value>,
+) -> bool {
+    match (a, b) {
+        (Some(a), Some(b)) => busbar_contract::yaml::same_tree(a, b),
+        (None, None) => true,
+        _ => false,
+    }
+}
+
+fn same_secret(a: &SecretModuleCfg, b: &SecretModuleCfg) -> bool {
+    a.module == b.module
+        && a.settings == b.settings
+        && same_yaml(&a.limits, &b.limits)
+        && same_yaml(&a.insecure_transport, &b.insecure_transport)
+}
+
+fn same_store(a: &Option<StoreCfg>, b: &Option<StoreCfg>) -> bool {
+    match (a, b) {
+        (Some(a), Some(b)) => {
+            a.module == b.module
+                && a.settings == b.settings
+                && same_yaml(&a.limits, &b.limits)
+                && same_yaml(&a.insecure_transport, &b.insecure_transport)
+        }
+        (None, None) => true,
+        _ => false,
+    }
+}
+
+impl BootInstances {
+    pub(crate) fn capture(cfg: &RootCfg) -> Self {
+        Self {
+            store: cfg.store.clone(),
+            secrets: cfg.secrets.clone(),
+        }
+    }
+
+    fn differences(&self, candidate: &Self) -> Vec<String> {
+        let mut paths = Vec::new();
+        if !same_store(&self.store, &candidate.store) {
+            paths.push("store".to_owned());
+        }
+        let names: BTreeSet<_> = self
+            .secrets
+            .keys()
+            .chain(candidate.secrets.keys())
+            .collect();
+        for name in names {
+            match (self.secrets.get(name), candidate.secrets.get(name)) {
+                (Some(a), Some(b)) if same_secret(a, b) => {}
+                _ => paths.push(format!("secrets.{name}")),
+            }
+        }
+        paths
+    }
+
+    pub(crate) fn check(&self, cfg: &RootCfg) -> Result<(), String> {
+        let paths = self.differences(&Self::capture(cfg));
+        if paths.is_empty() {
+            Ok(())
+        } else {
+            Err(format!(
+                "protected boot instance inputs changed at {}; edit the file and restart",
+                paths.join(", ")
+            ))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

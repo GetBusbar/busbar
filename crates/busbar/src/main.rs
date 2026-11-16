@@ -698,6 +698,7 @@ async fn run(
             format!("base Store settings: {error}"),
         ))
     });
+    let boot_instances = root::boot::inputs::BootInstances::capture(&base_cfg);
     let guard_judge = root::connector::dest_judge(&base_cfg);
     let boot_guard = guard_judge.guard().clone();
     let dest = BootstrapDestJudge::new(guard_judge);
@@ -880,6 +881,7 @@ async fn run(
             if let Some(doc) = overlay_doc.as_ref() {
                 config::overlay::merge_into(&mut effective, doc.clone());
             }
+            boot_instances.check(&effective).unwrap_or_else(|error| die(error));
             // The one semantic judgement of this boot's effective configuration, made exactly as
             // construction makes it. A serving transition hands it to construction below.
             let judged = config_validate::judge_effective(&effective, &deploy.plugins)
@@ -1033,6 +1035,9 @@ async fn run(
 
     let mut cfg =
         config::resolve(&deploy, &defs).unwrap_or_else(|errs| die_list("config errors", errs));
+    boot_instances
+        .check(&cfg)
+        .unwrap_or_else(|error| die(error));
     root::measurements::configure(&cfg.plugin_rate_cards)
         .unwrap_or_else(|error| die(format!("plugin measurement configuration: {error}")));
 
@@ -1068,6 +1073,9 @@ async fn run(
             (cfg, None)
         }
     };
+    boot_instances
+        .check(&cfg)
+        .unwrap_or_else(|error| die(error));
     // Boot is a disk read: the built App holds config.yaml's operator definitions as the reference.
     cfg.operator_file_defs = Some(operator_reference);
 
