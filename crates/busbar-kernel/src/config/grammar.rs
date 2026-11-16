@@ -93,9 +93,21 @@ impl Used {
     }
 }
 
+/// A secret image declaration admitted before strict configuration parsing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SecretSource {
+    pub identity: String,
+    pub ref_schema: String,
+}
+
 /// The grammar one read parses under.
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Grammar {
+    /// Image identities and former names mapped to the verified secret declaration.
+    pub secret_sources: BTreeMap<String, SecretSource>,
+    /// Configured and implicit instance names, bound for this read.
+    pub secret_instances: BTreeMap<String, SecretSource>,
     /// The secret shorthand and roles the admissible secret modules declare.
     pub sugars: Sugars,
     /// Every admissible module by name.
@@ -107,11 +119,69 @@ pub struct Grammar {
 }
 
 impl Grammar {
+    #[must_use]
+    pub fn with_secret_sources(mut self, sources: BTreeMap<String, SecretSource>) -> Self {
+        self.secret_sources = sources;
+        self
+    }
+
+    /// Bind the raw secret-instance envelope before parsing any SecretRef in the document.
+    /// The image's empty settings acceptance is judged at description, before an implicit instance exists.
+    pub fn bind_secret_instances(
+        &self,
+        configured: &BTreeMap<String, super::SecretModuleCfg>,
+    ) -> Result<Self, String> {
+        let mut bound = self.clone();
+        bound.secret_instances.clear();
+        for (name, config) in configured {
+            if name.trim().is_empty() {
+                return Err("a secret instance name must not be blank".to_owned());
+            }
+            let source = self.secret_sources.get(&config.module).ok_or_else(|| {
+                format!(
+                    "secrets.{name}.module: '{}' is not an admitted secret image",
+                    config.module
+                )
+            })?;
+            bound.secret_instances.insert(name.clone(), source.clone());
+        }
+        let instances: Vec<_> = bound
+            .secret_instances
+            .iter()
+            .map(|(name, source)| (name.as_str(), source.identity.as_str()))
+            .collect();
+        bound.sugars = self.sugars.bind_instances(&instances)?;
+        let explicit_identities: Vec<_> = instances
+            .iter()
+            .map(|(_, identity)| (*identity).to_owned())
+            .collect();
+        for sugar in bound.sugars.iter() {
+            if explicit_identities
+                .iter()
+                .any(|identity| *identity == sugar.plugin)
+            {
+                continue;
+            }
+            let source = self.secret_sources.get(&sugar.plugin).ok_or_else(|| {
+                format!(
+                    "secret shorthand '{}' has no admitted declaring image",
+                    sugar.word
+                )
+            })?;
+            bound
+                .secret_instances
+                .insert(sugar.word.clone(), source.clone());
+        }
+        Ok(bound)
+    }
+
     /// The grammar of a read that admits nothing: canonical `{ module, settings }` references only.
     /// Built by tests and by `--list-plugins`' report mode; no production reader falls back to it.
     #[must_use]
     pub fn empty() -> Self {
         Self {
+            secret_sources: BTreeMap::new(),
+            secret_instances: BTreeMap::new(),
             sugars: Sugars::default(),
             owners: BTreeMap::new(),
             items: Vec::new(),
@@ -122,6 +192,8 @@ impl Grammar {
     #[must_use]
     pub fn new(sugars: Sugars, owners: BTreeMap<String, Owner>, report: Vec<String>) -> Self {
         Self {
+            secret_sources: BTreeMap::new(),
+            secret_instances: BTreeMap::new(),
             sugars,
             owners,
             items: Vec::new(),

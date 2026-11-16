@@ -154,8 +154,11 @@ fn shorthand_selects_one_configured_instance_or_its_implicit_word() {
         .unwrap()
         .checked_reference("v")
         .unwrap_err();
-    let canonical = crate::json::json!({"module":"backup","settings":{"key":"v"}});
-    let parsed: SecretRef = context::deserialize(canonical, &multiple).unwrap();
+    let parsed: SecretRef =
+        crate::yaml::with_deserializer("module: backup\nsettings: {key: v}\n", |de| {
+            context::deserialize(de, &multiple)
+        })
+        .unwrap();
     assert_eq!(parsed.source_module(), Some("backup"));
     assert!(error.contains("ambiguous"));
     assert!(error.contains("probe"));
