@@ -363,11 +363,13 @@ mod tests {
         let not_run = "impl StoreLane { fn other(&self) { tokio::task::spawn_blocking(move || guard(o, 1, None, |out| 0)); } }";
         assert_eq!(scan_source(STORE_ADAPTER, not_run).len(), 1);
         assert_eq!(scan_source(HOST, lane).len(), 1);
-        assert!(scan_source(
-            HOST,
-            "fn f() { pool.spawn(|| guard(o, 1, None, |out| 0)); }"
-        )
-        .is_empty());
+        assert!(
+            scan_source(
+                HOST,
+                "fn f() { pool.spawn(|| guard(o, 1, None, |out| 0)); }"
+            )
+            .is_empty()
+        );
     }
 
     #[test]
