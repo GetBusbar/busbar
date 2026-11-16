@@ -15,7 +15,7 @@ use busbar_contract::services::{Caller, Incarnation};
 use busbar_plugin_abi::fail::failed::F_INTERNAL;
 use busbar_plugin_abi::fail::refused::R_CONFIG;
 use busbar_plugin_abi::host_side::needs::Needs;
-use busbar_plugin_abi::plane::{ADMIN_CARRIER_END, ADMIN_TICK};
+use busbar_plugin_abi::plane::{ADMIN_CARRIER_END, ADMIN_TICK, RQ_PROJECT};
 use busbar_plugin_abi::records::{tag as g, Reply, U64Rec, Writer};
 use busbar_plugin_loader::instance::{InstanceSpec, OpenError, Registry};
 use busbar_plugin_loader::ports::plane::{PlaneIn, PlanePort};
@@ -686,6 +686,8 @@ pub struct HttpIn {
 pub struct Unit {
     pub money: PortMoney,
     pub ctx: UnitCtx,
+    /// Where the unit's end user goes (`records.user`); `None` keeps none.
+    pub journal: Option<Arc<dyn super::HookJournal>>,
 }
 
 /// What the route layer hands [`PortDriver::serve`] beside the request.
@@ -763,9 +765,14 @@ fn serve_blocking(
             value: Bytes::new(value),
         })
         .collect();
+    // `records.user`: a node that keeps the end user asks the plane for its projection (PJ_END_USER).
+    let project = unit
+        .as_ref()
+        .and_then(|u| u.journal.as_deref())
+        .is_some_and(|journal| journal.keeps_end_user());
     let build = one_lifetime(|auth, identity, ticket_record| PlaneIn {
         route: route.route,
-        flags: 0,
+        flags: if project { RQ_PROJECT } else { 0 },
         auth,
         method: &http.method,
         path: &http.path,
@@ -844,7 +851,9 @@ fn drive_blocking(
     };
     let dialect = port.dialects().first().map_or("", |d| &**d);
     let ran = {
-        let unit_books = unit.map(|u| UnitBooks::new(&u.money, &u.ctx, principal));
+        let unit_books = unit.map(|u| {
+            UnitBooks::new(&u.money, &u.ctx, principal).with_journal(u.journal.as_deref())
+        });
         let audit_books = AuditOnly {
             sink: audit,
             principal,

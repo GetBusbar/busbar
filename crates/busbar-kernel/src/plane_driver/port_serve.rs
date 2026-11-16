@@ -23,6 +23,7 @@ use busbar_plugin_abi::plane::{FROM_CORE, P_EXHAUSTED};
 use busbar_plugin_abi::records::Reply;
 use busbar_plugin_loader::encode::plane::encode_refusal;
 use busbar_plugin_loader::ports::plane::PlaneIn;
+use busbar_plugin_loader::ports::FactVal;
 use std::sync::Arc;
 
 use super::port_auth::{plain_refusal, TicketDoor};
@@ -45,6 +46,9 @@ pub trait Books {
     fn ended(&self, ending: Ending, usage: &SessionUsage);
     /// One AUDIT row the plane stated.
     fn audit(&self, row: &AuditRow);
+
+    /// The end user the plane projected on its request answer (PJ_END_USER), once. Default: kept nowhere.
+    fn end_user(&self, _user: &str) {}
 }
 
 /// The books of a billed unit: the end through the unit's money seam, audit rows under the verified principal.
@@ -52,6 +56,7 @@ pub struct UnitBooks<'a> {
     money: &'a PortMoney,
     ctx: &'a UnitCtx,
     principal: Option<&'a str>,
+    journal: Option<&'a dyn super::HookJournal>,
 }
 
 impl<'a> UnitBooks<'a> {
@@ -61,7 +66,15 @@ impl<'a> UnitBooks<'a> {
             money,
             ctx,
             principal,
+            journal: None,
         }
+    }
+
+    /// The node's journal, told the end user the plane projects (`records.user`, ADMIN-API-1.6 §3.5).
+    #[must_use]
+    pub fn with_journal(mut self, journal: Option<&'a dyn super::HookJournal>) -> Self {
+        self.journal = journal;
+        self
     }
 }
 
@@ -73,6 +86,12 @@ impl Books for UnitBooks<'_> {
     fn audit(&self, row: &AuditRow) {
         if self.money.audit(row, self.principal).is_err() {
             tracing::warn!(action = &*row.action, "a plane audit row was not accepted");
+        }
+    }
+
+    fn end_user(&self, user: &str) {
+        if let Some(journal) = self.journal.filter(|journal| journal.keeps_end_user()) {
+            journal.end_user(self.ctx.key, user);
         }
     }
 }
@@ -196,6 +215,9 @@ pub fn run_session<K: Calls + ?Sized>(
     mut drive: Drive<'_>,
 ) -> Result<Ran, SessionError> {
     let (mut task, first) = Task::begin(calls, req, body, drive.effects)?;
+    if let Some(user) = end_user_of(&first) {
+        drive.books.end_user(user);
+    }
     match drive_task(&mut task, first, req, &mut drive) {
         Ok(ran) => Ok(ran),
         Err(error) => {
@@ -203,6 +225,18 @@ pub fn run_session<K: Calls + ?Sized>(
             Err(error)
         }
     }
+}
+
+/// The end user a plane projected on its request answer (PJ_END_USER), when it stated one.
+fn end_user_of(first: &Answer) -> Option<&str> {
+    first.facts.iter().find_map(|(key, value)| match value {
+        FactVal::Text(user)
+            if *key == busbar_plugin_abi::fail::fact::PJ_END_USER && !user.is_empty() =>
+        {
+            Some(&**user)
+        }
+        _ => None,
+    })
 }
 
 fn drive_task<K: Calls + ?Sized>(
