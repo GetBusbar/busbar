@@ -2199,3 +2199,19 @@ WITH tooling:
 
 Booting a 1.x config directly REFUSES with a named error pointing at the migrator; nothing from
 1.x can boot-and-silently-flip semantics.
+## Fixed engine resource budgets
+
+These limits are engine constants, not configuration keys. All framed listeners
+share a **256 MiB** budget for admitted request-body payload. Each incoming body
+piece is charged before it is queued; the charge remains until the request ends,
+including while its body is assembled and dispatched. Exhaustion refuses the
+stream with **503**; the configured per-request body limit still uses **413**.
+The budget measures payload bytes, not total process memory or allocator overhead.
+
+Datagram claim doors share a process-wide maximum of **1,024 associations** and
+allow at most **64 associations per claim door**. Capacity is reserved before an
+association is installed and released on failed installation or close. An
+association expires after **300 seconds**, even when its transport supplies no
+deadline. Exhaustion refuses association admission. Expiry closes the association;
+clients must establish a new one.
+
