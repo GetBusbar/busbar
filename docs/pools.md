@@ -78,7 +78,7 @@ Pools are optional: you can route directly to a single model. But the moment you
 
 By default a pool uses **smooth weighted round-robin (SWRR)** over the healthy members: each request goes to the next member by weight, and a tripped, dead, or capacity-exhausted member is skipped with its share redistributed to the rest. If the chosen lane fails before the client has seen a byte, Busbar fails over to the next member, even on a streaming request. That is the whole reliability story: weighting for the happy path, automatic failover for the bad one.
 
-Want a different order than weighted? Name a **selection strategy** (`cheapest`, `fastest`, `least_busy`, `usage`, or your own ordering hook) as one entry in the pool's `hooks:` list. That is all of **[Routing](/docs/routing/)**, which owns every strategy, the routing signals, and the ordering-hook contract, with worked examples. The rest of *this* page is pool **structure**: members, weights, failover, and affinity.
+Want a different order than weighted? Name a **selection strategy** (`cheapest`, `fastest`, `least_busy`, `usage`, or your own ordering hook) as one entry in the pool's `hooks:` list. That is all of **[Hooks](hooks.md)**, which owns every strategy, the routing signals, and the ordering-hook contract, with worked examples. The rest of *this* page is pool **structure**: members, weights, failover, and affinity.
 
 ## Config reference
 
@@ -99,7 +99,8 @@ pools:
       - model: gemini-pro                # weight defaults to 1
 ```
 
-An equivalent shorthand is accepted for pools whose members carry nothing but a weight: list the members as bare names and put the weights in a pool-level `weights:` map (`weights:` present ⇒ weighted distribute; absent ⇒ ordered failover with the first member as primary). The two spellings mean the same thing and may be mixed; a per-member `weight:` written inline wins over the `weights:` map for that member. The bare-name form is also how MCP and A2A failover pools name their `tools:` / `agents:` members, since those carry no per-member capabilities.
+A member that carries nothing else may be written as a bare name (shorthand for `{ model: <name> }`). That is also how MCP and A2A failover pools name their `tools:` / `agents:` members, since those carry no per-member capabilities. Weights, tier and the attempt timeout are per-member fields only; there is no pool-level `weights:`, `tier:` or `attempt_timeout_ms:`.
+<!-- docs-truth: depends on !2665 (unmerged): pool-level weights/tier/attempt_timeout_ms/repeatable deleted -->
 
 Each block with its own guide: [Hooks](/docs/hooks/) for the selection strategies, the ordering-hook contract, and [what a gate receives](hooks.md#what-a-gate-receives); [Circuit breaker](/docs/circuit-breaker/#circuit-breaker-configuration) for the per-pool `breaker` block; and [In-flight failover](/docs/failover/) for `failover` and `on_exhausted`.
 
@@ -118,15 +119,6 @@ pools:
       - { model: gpt-4o,        weight: 8 }   # ~80% of traffic
       - { model: claude-sonnet, weight: 2 }   # ~20%
       - { model: gemini-pro,    weight: 1 }   # picks up load when the others trip
-```
-
-The same pool in the bare-name shorthand:
-
-```yaml
-pools:
-  chat:
-    members: [gpt-4o, claude-sonnet, gemini-pro]
-    weights: { gpt-4o: 8, claude-sonnet: 2, gemini-pro: 1 }
 ```
 
 ### Same model, two providers (cross-provider failover)
