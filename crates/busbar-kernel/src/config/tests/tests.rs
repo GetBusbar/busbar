@@ -288,6 +288,49 @@ fn current_reader_rejects_retired_observability_fields() {
     }
 }
 
+/// The pre-release `limits.migration_index_bytes`, `limits.migration_value_bytes`,
+/// `limits.datagram_line_memory_bytes`, `advanced.shutdown` and `advanced.governance` keys were
+/// removed before 1.6.0 shipped (fixed values replace them): a config that sets one is refused as an
+/// unknown key, never silently ignored.
+#[test]
+fn removed_pre_release_limits_and_drain_keys_are_refused_as_unknown() {
+    for (document, key) in [
+        (
+            "limits:\n  migration_index_bytes: 1048576\n",
+            "migration_index_bytes",
+        ),
+        (
+            "limits:\n  migration_value_bytes: 1048576\n",
+            "migration_value_bytes",
+        ),
+        (
+            "limits:\n  datagram_line_memory_bytes: 4096\n",
+            "datagram_line_memory_bytes",
+        ),
+        (
+            "limits:\n  datagram_line_memory_bytes: null\n",
+            "datagram_line_memory_bytes",
+        ),
+        (
+            "advanced:\n  shutdown:\n    drain_timeout: 30s\n",
+            "shutdown",
+        ),
+        (
+            "advanced:\n  governance:\n    max_pending_checkpoints: 7\n",
+            "governance",
+        ),
+    ] {
+        let yaml = format!("providers: {{}}\nmodels: {{}}\n{document}");
+        let err = deploy_from_yaml_str(&yaml, &crate::config::Grammar::empty())
+            .expect_err("a removed pre-release key must be refused");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("unknown field") && msg.contains(key),
+            "expected an unknown-field error naming `{key}`; got: {msg}"
+        );
+    }
+}
+
 #[test]
 fn test_emit_server_timing_moved_to_advanced_response_headers() {
     let err = busbar_contract::yaml::from_str::<DeployCfg>(
@@ -1464,7 +1507,6 @@ models:
 "#;
     let deploy: DeployCfg =
         busbar_contract::yaml::from_str(yaml).expect("config without a limits block must parse");
-    assert_eq!(deploy.limits.datagram_line_memory_bytes, None);
     let l = LimitsResolved::from_sections(
         &deploy.limits,
         &deploy.advanced,
@@ -1472,7 +1514,6 @@ models:
         &deploy.health,
         &deploy.routing,
     );
-    assert_eq!(l.datagram_line_memory_bytes, None);
     assert_eq!(
         l.upstream_request_timeout_secs,
         DEFAULT_UPSTREAM_REQUEST_TIMEOUT_SECS
@@ -1519,61 +1560,6 @@ models:
     assert_eq!(l.default_probe_interval_secs, DEFAULT_PROBE_INTERVAL_SECS);
     assert_eq!(l.default_probe_timeout_secs, DEFAULT_PROBE_TIMEOUT_SECS);
     assert_eq!(l.default_policy_timeout_ms, DEFAULT_POLICY_TIMEOUT_MS);
-}
-
-#[test]
-fn datagram_line_memory_limit_is_opt_in_and_resolves_to_root() {
-    assert_eq!(LimitsCfg::default().datagram_line_memory_bytes, None);
-    assert_eq!(LimitsResolved::default().datagram_line_memory_bytes, None);
-    for (yaml, expected) in [
-        ("{}", None),
-        ("datagram_line_memory_bytes: null", None),
-        ("datagram_line_memory_bytes: 1", Some(1)),
-        ("datagram_line_memory_bytes: 12345", Some(12345)),
-    ] {
-        let document = format!("providers: {{}}\nmodels: {{}}\nlimits:\n  {yaml}\n");
-        let deploy = deploy_from_yaml_str(&document, &crate::config::Grammar::empty())
-            .expect("boot parser accepts the optional limit");
-        assert_eq!(deploy.limits.datagram_line_memory_bytes, expected);
-        let cfg = resolve(&deploy, &HashMap::new()).expect("resolve the real config");
-        assert_eq!(cfg.limits.datagram_line_memory_bytes, expected);
-    }
-
-    assert!(serde_json::to_value(LimitsCfg::default())
-        .unwrap()
-        .get("datagram_line_memory_bytes")
-        .is_none());
-}
-
-#[test]
-fn datagram_line_memory_limit_refuses_invalid_types_and_out_of_range_values() {
-    for value in [
-        "-1",
-        "1.5",
-        "true",
-        "'1024'",
-        "[]",
-        "{}",
-        "18446744073709551616",
-    ] {
-        let yaml = format!("datagram_line_memory_bytes: {value}");
-        assert!(
-            busbar_contract::yaml::from_str::<LimitsCfg>(&yaml).is_err(),
-            "{yaml}"
-        );
-    }
-    for value in [
-        "-1",
-        "1.5",
-        "true",
-        "\"1024\"",
-        "[]",
-        "{}",
-        "18446744073709551616",
-    ] {
-        let json = format!(r#"{{"datagram_line_memory_bytes":{value}}}"#);
-        assert!(serde_json::from_str::<LimitsCfg>(&json).is_err(), "{json}");
-    }
 }
 
 #[test]

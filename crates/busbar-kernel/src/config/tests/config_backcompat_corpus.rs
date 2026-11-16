@@ -212,6 +212,23 @@ fn golden_path(config_path: &Path) -> PathBuf {
     config_path.with_extension("snap")
 }
 
+/// A 1.5.5-shaped `limits:` config still parses and resolves after the pre-release limits and
+/// drain keys were removed: none of them existed in 1.5.5, so its operator's surface is unchanged.
+#[test]
+fn a_1_5_5_limits_config_parses_and_resolves_after_the_pre_release_key_removal() {
+    let snap = snapshot_for(&corpus_dir().join("03_limits_and_effort_budgets.yaml"));
+    assert!(
+        snap.contains("limits.default_max_tokens = 2048\n"),
+        "{snap}"
+    );
+    assert!(
+        snap.contains(
+            "limits.reasoning_effort_budgets = minimal=512 low=2000 medium=10000 high=50000\n"
+        ),
+        "{snap}"
+    );
+}
+
 #[test]
 fn resolved_billing_and_limits_config_is_byte_stable() {
     let configs = corpus_configs();

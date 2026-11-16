@@ -111,6 +111,10 @@ fn line_serve_requested(planes: &[&[root::linked::CliHelpRow]], argv: &root::cli
 
 const MAX_WORKER_THREADS: usize = 128;
 
+/// Allocation ceiling for each startup migration frame/page/semantic working buffer. Fixed; there
+/// is no config key for it.
+const MIGRATION_VALUE_BYTES: usize = 64 * 1024 * 1024;
+
 #[cfg(test)]
 fn worker_threads_from_env(name: &str) -> Option<usize> {
     let mut warnings = Vec::new();
@@ -742,9 +746,9 @@ async fn run(
                     &prepared_store,
                     busbar_contract::persistence::lifecycle::Bounds {
                         items: 4096,
-                        bytes: u32::try_from(base_cfg.limits.migration_value_bytes)
+                        bytes: u32::try_from(MIGRATION_VALUE_BYTES)
                             .unwrap_or_else(|_| {
-                                die("limits.migration_value_bytes exceeds native frame capacity")
+                                die("startup migration value bytes exceed native frame capacity")
                             }),
                     },
                     &control_work.shutdown_rx,
@@ -1091,12 +1095,6 @@ async fn run(
     let admin_tls_cfg = cfg.admin_tls.clone();
     let req_body_max = cfg.limits.request_body_max_bytes;
     let max_inbound = cfg.limits.max_inbound_concurrent;
-    // `advanced.shutdown.drain_timeout` and `advanced.governance.max_pending_checkpoints`;
-    // validation already refused a value out of range, so this never clamps.
-    let drain_settings = cfg
-        .limits
-        .drain_settings()
-        .unwrap_or_else(|refusals| die_list("shutdown drain settings refused:", refusals));
 
     root::registry::check_or_exit(LINKED.claims);
 
@@ -1595,10 +1593,10 @@ async fn run(
         app_handle.attach_on_swap(spawn);
     }
 
-    // SHUTDOWN-HANG F4: one drain owner holds the budget from the first broadcast to exit. The
-    // budget and the terminal-backlog cap are `drain_settings`, read beside the other limits.
-    let drain_clock =
-        busbar_kernel::governance::drain::DrainClock::new(drain_settings.drain_timeout);
+    // SHUTDOWN-HANG F4: one drain owner holds the fixed budget from the first broadcast to exit.
+    let drain_clock = busbar_kernel::governance::drain::DrainClock::new(
+        busbar_kernel::governance::drain::DRAIN_TIMEOUT,
+    );
     let drain = root::shutdown::ShutdownDrain::new(Arc::clone(&drain_clock));
     let (shutdown_tx, _keep_open) = tokio::sync::broadcast::channel::<()>(1);
     // Persistence failure can request shutdown before a listener exists. A watch
@@ -1650,11 +1648,9 @@ async fn run(
     // The listener's handler drains on a signal from here on.
     let _ = signal_handoff.send(());
 
+    // Governed admission keeps its fixed terminal-backlog cap
+    // (`governance::drain::MAX_PENDING_CHECKPOINTS`), set when the gate is built.
     let governance = app_handle.load().governance.clone();
-    if let Some(gov) = &governance {
-        gov.admissions()
-            .set_cap(drain_settings.max_pending_checkpoints);
-    }
     let budget_flusher = governance.clone().map(|gov| {
         tokio::spawn(root::measurements::maintenance(
             busbar_kernel::governance::run_budget_flusher(

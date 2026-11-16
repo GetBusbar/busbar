@@ -151,7 +151,6 @@ impl ConfiguredView {
             fields!(
                 upstream_request_timeout_secs,
                 request_body_max_bytes,
-                datagram_line_memory_bytes,
                 pool_max_idle_per_host,
                 pool_idle_timeout_secs,
                 max_inbound_concurrent,

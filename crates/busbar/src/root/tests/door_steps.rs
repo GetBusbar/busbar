@@ -3393,7 +3393,6 @@ fn kernel_sections_preserve_numeric_scalars_in_every_projected_section() {
     cfg.pools.insert("all".into(), pool);
     cfg.limits.default_max_tokens = u32::MAX;
     cfg.limits.request_body_max_bytes = usize::MAX;
-    cfg.limits.datagram_line_memory_bytes = Some(usize::MAX - 1);
     cfg.limits.reasoning_effort_budgets = busbar_kernel::config::limits::ReasoningEffortBudgets {
         minimal: 1,
         low: 1024,
@@ -3418,8 +3417,8 @@ fn kernel_sections_preserve_numeric_scalars_in_every_projected_section() {
     );
     assert!(members.at(1).get("context_max").is_none());
     let expected: busbar_contract::yaml::Value = busbar_contract::yaml::from_str(&format!(
-        "default_max_tokens: {}\nrequest_body_max_bytes: {}\ndatagram_line_memory_bytes: {}\nreasoning_effort_budgets: {{minimal: 1, low: 1024, medium: 8192, high: {}}}",
-        u32::MAX, usize::MAX, usize::MAX - 1, u32::MAX,
+        "default_max_tokens: {}\nrequest_body_max_bytes: {}\nreasoning_effort_budgets: {{minimal: 1, low: 1024, medium: 8192, high: {}}}",
+        u32::MAX, usize::MAX, u32::MAX,
     )).expect("exact limits");
     assert_eq!(sections["limits"], expected);
     let numbers = sections[busbar_contract::plugin::Kind::Transport.root()]
@@ -3431,10 +3430,6 @@ fn kernel_sections_preserve_numeric_scalars_in_every_projected_section() {
     assert!(numbers.at("nested").at(1).is_null());
     assert_eq!(numbers.at("nested").at(2).as_f64(), Some(1.25));
     assert_eq!(numbers.at("nested").at(3).as_f64(), Some(100.0));
-    cfg.limits.datagram_line_memory_bytes = None;
-    assert!(super::kernel_sections(&cfg).unwrap()["limits"]
-        .at("datagram_line_memory_bytes")
-        .is_null());
 }
 
 #[test]

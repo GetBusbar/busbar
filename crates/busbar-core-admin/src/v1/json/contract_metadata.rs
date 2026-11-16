@@ -86,7 +86,7 @@ pub(super) fn root_settings_schema() -> Value {
             "per_request_fee": {"type":["integer","null"],"format":"int64","minimum":i64::MIN,"maximum":i64::MAX},
             "store": section("Store selection: module and module-owned settings; requires restart."),
             "security": section("Per-field SecurityPatch; omitted or null members preserve their value."),
-            "limits": section("Per-field LimitsPatch; omitted members preserve their value. Null datagram_line_memory_bytes explicitly disables that limit."),
+            "limits": section("Per-field LimitsPatch; omitted or null members preserve their value."),
             "advanced": section("Per-field AdvancedPatch; omitted or null members preserve their value."),
             "health": section("Per-field HealthPatch; omitted or null members preserve their value."),
             "routing": section("Per-field RoutingPatch; omitted or null members preserve their value.")
