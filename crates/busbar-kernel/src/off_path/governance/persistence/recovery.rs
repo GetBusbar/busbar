@@ -14,7 +14,8 @@ use crate::{
         facade::CoreStore,
         journal::{
             runtime::{Carried, LiveChange, RuntimeError, RuntimeJournal, StagedRun},
-            ForeignJournal, OwnHistory, Replay, RowChange, Selection, VerifiedHead, WriteResult,
+            Error as JournalError, ForeignJournal, OwnHistory, Pin, Replay, RowChange, Selection,
+            VerifiedHead, WriteResult,
         },
         partition,
     },
@@ -480,13 +481,12 @@ enum NodeJournal<'a> {
 }
 impl<'a> NodeJournal<'a> {
     /// The historical verifier; this node's own continues from `base` when given.
-    async fn replay(&self, base: Option<&VerifiedHead>) -> Result<Replay<'_, 'a>, RecoveryError> {
+    async fn replay(&self, base: Option<&VerifiedHead>) -> Result<Replay<'_, 'a>, JournalError> {
         match (self, base) {
             (Self::Own(own), Some(base)) => own.replay_after(base).await,
             (Self::Own(own), None) => own.replay().await,
             (Self::Foreign(foreign), _) => foreign.proof().await,
         }
-        .map_err(unavailable)
     }
     async fn record(&self, proof: &VerifiedHead, sequence: u64) -> Result<Record, RecoveryError> {
         match self {
@@ -631,19 +631,43 @@ impl<'a> History<'a> {
         }
         let journal = self.journal_of(node)?;
         let local = matches!(journal, NodeJournal::Own(_));
-        let mut cursor = journal
-            .replay(self.base.as_deref().filter(|_| local))
-            .await?;
         // Keep staging private until the entire prefix and its seal are valid.
         // Taking the old cache also bounds the total retained allocation while
         // proving another node; a failed proof simply discards cached frames.
         let mut staged = std::mem::take(&mut self.records);
+        let mut base = self.base.clone().filter(|_| local);
+        let mut restarts = 0;
+        let proof = loop {
+            match self
+                .walk_from(&journal, base.as_deref(), local, &mut staged)
+                .await
+            {
+                Err(JournalError::Rebased) if restarts < 3 => {
+                    restarts += 1;
+                    staged = HistoryRecords::default();
+                    base = None;
+                }
+                Err(JournalError::Rebased) => return Err(unavailable(JournalError::Busy)),
+                done => break Arc::new(done.map_err(unavailable)?),
+            }
+        };
+        self.records = staged;
+        self.proofs.insert(node, proof.clone());
+        Ok(proof)
+    }
+
+    async fn walk_from(
+        &self,
+        journal: &NodeJournal<'_>,
+        base: Option<&VerifiedHead>,
+        local: bool,
+        staged: &mut HistoryRecords,
+    ) -> Result<VerifiedHead, JournalError> {
+        let mut cursor = journal.replay(base).await?;
         let limits = self.store.limits();
         let mut ordinal = cursor.position();
-        while let Some(record) = cursor.next().await.map_err(unavailable)? {
-            ordinal = ordinal
-                .checked_add(1)
-                .ok_or_else(|| invalid("journal ordinal overflow"))?;
+        while let Some(record) = cursor.next().await? {
+            ordinal = ordinal.checked_add(1).ok_or(JournalError::Overflow)?;
             // The live journal also carries audit, usage and checkpoint frames;
             // only its recovery frames are ever looked up, so only they are
             // kept, and the bounded cache holds the newest of them.
@@ -651,10 +675,7 @@ impl<'a> History<'a> {
                 staged.insert(ordinal, record, limits.scan_items, limits.scan_bytes);
             }
         }
-        let proof = Arc::new(cursor.finish().map_err(unavailable)?);
-        self.records = staged;
-        self.proofs.insert(node, proof.clone());
-        Ok(proof)
+        cursor.finish()
     }
     async fn candidate(&mut self, at: &Head) -> Result<Candidate, RecoveryError> {
         // (SHUTDOWN-HANG F1) An own original this process appended (or the boot replay verified)
@@ -865,6 +886,8 @@ struct DriverState {
     carried: BTreeMap<u64, ([u8; 32], usize)>,
     /// The carried sequences of each operation, dropped by `release(op)`.
     carried_by_op: BTreeMap<[u8; 16], Vec<u64>>,
+    /// A row stays pinned until its last unsettled operation releases its carried evidence.
+    pins: BTreeMap<u64, Pin>,
 }
 impl DriverState {
     fn carry(&mut self, operation: [u8; 16], carried: Carried) {
@@ -983,10 +1006,12 @@ impl StoreRecovery {
     }
     fn carry(&self, operation: [u8; 16], carried: Option<Carried>) {
         if let Some(carried) = carried {
-            self.state
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .carry(operation, carried);
+            let pin = self.journal.pin(carried.seq);
+            let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+            if let Some(pin) = pin {
+                state.pins.entry(carried.seq).or_insert(pin);
+            }
+            state.carry(operation, carried);
         }
     }
     /// Drop every sequence carried for `operation` (F1 `RecoverySink::release`).
@@ -998,6 +1023,7 @@ impl StoreRecovery {
                     *owners -= 1;
                     if *owners == 0 {
                         state.carried.remove(&seq);
+                        state.pins.remove(&seq);
                     }
                 }
             }
@@ -1294,6 +1320,9 @@ impl StoreRecovery {
         if selection.selected.state != RecoveryState::Settled {
             let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
             for carried in history.own_seen.drain(..) {
+                if let Some(pin) = self.journal.pin(carried.seq) {
+                    state.pins.entry(carried.seq).or_insert(pin);
+                }
                 state.carry(*operation, carried);
             }
         }
