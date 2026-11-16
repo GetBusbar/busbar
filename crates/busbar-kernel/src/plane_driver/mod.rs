@@ -14,6 +14,7 @@ pub mod host;
 mod money;
 pub mod plane_judge;
 pub mod port;
+pub mod port_admin;
 pub mod port_auth;
 pub mod port_channels;
 pub mod port_intents;

@@ -84,3 +84,147 @@ fn a_session_that_wrote_no_head_is_a_gateway_failure_not_a_200() {
     let (status, fields, body) = parts_of(vec![ToClient::Body(b"x".to_vec()), ToClient::End]);
     assert_eq!((status, fields.len(), body), (502, 0, Vec::new()));
 }
+
+mod optional_principal {
+    use busbar_contract::auth::Principal;
+    use busbar_kernel::auth::IdentityRefusal;
+    use busbar_kernel::governance::GovCtx;
+
+    use super::super::*;
+
+    fn principal(id: &str) -> busbar_kernel::auth::AuthPrincipal {
+        busbar_kernel::auth::AuthPrincipal(Some(Principal {
+            id: id.into(),
+            name: None,
+            roles: Vec::new(),
+            ttl_secs: None,
+        }))
+    }
+
+    #[test]
+    fn a_credential_the_chain_identifies_is_the_verified_principal() {
+        assert_eq!(
+            seen_of(Ok((principal("alice"), GovCtx::default()))),
+            Seen::Verified("alice".into())
+        );
+    }
+
+    #[test]
+    fn an_open_chain_or_no_identity_is_anonymous_and_a_refused_credential_is_rejected() {
+        assert_eq!(
+            seen_of(Ok((
+                busbar_kernel::auth::AuthPrincipal(None),
+                GovCtx::default()
+            ))),
+            Seen::Anonymous
+        );
+        assert_eq!(seen_of(Err(IdentityRefusal::Denied)), Seen::Rejected);
+        assert_eq!(seen_of(Err(IdentityRefusal::NoGrant)), Seen::Rejected);
+    }
+
+    #[test]
+    fn only_a_route_with_optional_and_no_principal_class_resolves_a_credential_itself() {
+        use busbar_plugin_abi::plane::{AUTH_OPTIONAL, AUTH_PRINCIPAL, AUTH_PUBLIC};
+        assert!(resolves_optional(AUTH_OPTIONAL));
+        assert!(resolves_optional(AUTH_OPTIONAL | AUTH_PUBLIC));
+        // PRINCIPAL runs behind the data chain (auth_of); PUBLIC never authenticates.
+        assert!(!resolves_optional(AUTH_PRINCIPAL));
+        assert!(!resolves_optional(AUTH_PRINCIPAL | AUTH_OPTIONAL));
+        assert!(!resolves_optional(AUTH_PUBLIC));
+    }
+}
+
+mod signed_ingress {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use busbar_contract::secret_ref::SecretRef;
+    use busbar_kernel::plane_driver::port_routes::Mounted;
+    use busbar_kernel::plane_grants::{IngressVerifier, ReplayGuard};
+    use busbar_kernel::plugin_records::RecordsDenied;
+    use busbar_plugin_abi::host_side::caller::{BoxFut, Caller};
+    use busbar_plugin_abi::plane::{AUTH_PRINCIPAL, AUTH_SIGNED_INGRESS};
+    use busbar_plugin_abi::types::Pair;
+
+    use super::super::*;
+
+    struct Verifier(bool);
+    impl IngressVerifier for Verifier {
+        fn verify<'a>(
+            &'a self,
+            _: &'a SecretRef,
+            _: &'a [Pair<'a>],
+            _: &'a [u8],
+            _: u64,
+        ) -> BoxFut<'a, bool> {
+            Box::pin(core::future::ready(self.0))
+        }
+    }
+
+    struct Guard(AtomicBool);
+    impl ReplayGuard for Guard {
+        fn claim<'a>(
+            &'a self,
+            _: &'a Caller<'_>,
+            _: &'a [u8],
+            _: u64,
+        ) -> BoxFut<'a, Result<bool, RecordsDenied>> {
+            Box::pin(core::future::ready(Ok(self.0.swap(false, Ordering::SeqCst))))
+        }
+    }
+
+    fn route(effective: u32) -> Mounted {
+        Mounted {
+            route: 4,
+            methods: 0,
+            flags: 0,
+            auth: effective,
+            effective,
+            pattern: "/hooks/in".into(),
+            cred_header: None,
+            catalog: false,
+        }
+    }
+
+    fn ingress(verified: bool, secret: bool) -> Ingress {
+        Ingress {
+            verifier: Arc::new(Verifier(verified)),
+            replay: Arc::new(Guard(AtomicBool::new(true))),
+            secrets: Arc::new(move |_: &str, _: u32| secret.then_some(SecretRef::None)),
+        }
+    }
+
+    fn who() -> busbar_kernel::plane_driver::port_intents::Namespace {
+        busbar_kernel::plane_driver::port_intents::Namespace {
+            plugin: "plane-x".into(),
+            name: "x".into(),
+            instance: 1,
+            slot: 0,
+        }
+    }
+
+    async fn check(ingress: &Ingress, effective: u32) -> Option<bool> {
+        signed_of(ingress, &who(), &route(effective), &[], b"{}", 1_000).await
+    }
+
+    #[tokio::test]
+    async fn a_route_that_is_not_signed_ingress_runs_no_check() {
+        assert_eq!(check(&ingress(true, true), AUTH_PRINCIPAL).await, None);
+    }
+
+    #[tokio::test]
+    async fn a_verified_first_sighting_is_admitted_and_its_replay_is_not() {
+        let ingress = ingress(true, true);
+        assert_eq!(check(&ingress, AUTH_SIGNED_INGRESS).await, Some(true));
+        assert_eq!(
+            check(&ingress, AUTH_SIGNED_INGRESS).await,
+            Some(false),
+            "the same signed request is replayed"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_bad_signature_or_a_route_with_no_secret_is_not_admitted() {
+        assert_eq!(check(&ingress(false, true), AUTH_SIGNED_INGRESS).await, Some(false));
+        assert_eq!(check(&ingress(true, false), AUTH_SIGNED_INGRESS).await, Some(false));
+    }
+}
