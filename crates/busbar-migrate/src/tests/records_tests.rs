@@ -8,7 +8,7 @@
 use std::cell::{Cell as Counter, RefCell};
 use std::collections::BTreeMap;
 
-use busbar_contract::abi::sdk::store::cells::{self, table, Cell, HEADLESS, IMPORT_NS};
+use busbar_contract::persistence::cells::{self, table, Cell, HEADLESS, IMPORT_NS};
 use busbar_contract::persistence::NamespaceId;
 use busbar_contract::records::{CredentialMeta, SecretForm};
 use busbar_contract::secure::SecureVec;

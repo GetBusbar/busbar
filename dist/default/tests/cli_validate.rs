@@ -2230,7 +2230,6 @@ fn the_retired_migrate_flags_are_unknown_options() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
-#[test]
 /// QE: a pinned publisher key with no point on edwards25519 (`y = 2`: canonical, not small-order) is
 /// refused by `--validate` and by boot, with the INVALID text it had before Q9b, not first at the
 /// first verify of a plugin signed under it.

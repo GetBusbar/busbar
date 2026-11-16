@@ -9,7 +9,7 @@
 use std::path::{Path, PathBuf};
 
 use busbar_contract::secure::SecureString;
-use busbar_kernel::appbuild::{load_config_from_disk_judged, ConfigDocument, RootRules};
+use busbar_kernel::appbuild::{load_config_from_disk_judged, RootRules};
 use busbar_kernel::config::{EnvSubst, RootCfg};
 
 fn scratch(tag: &str) -> PathBuf {
@@ -24,18 +24,18 @@ fn scratch(tag: &str) -> PathBuf {
 const DEPLOYMENT: &str = "providers: {}\nmodels: {}\nstore:\n  module: memory\n  settings: {}\n";
 
 /// Holds one document per path, as the migrate-on-boot seam holds its plan.
-struct Held(Vec<(ConfigDocument, PathBuf, String)>);
+struct Held(Vec<(PathBuf, String)>);
 
 impl RootRules for Held {
     fn check(&self, _: &RootCfg) -> Result<(), String> {
         Ok(())
     }
 
-    fn held_document(&self, kind: ConfigDocument, path: &Path) -> Option<SecureString> {
+    fn held_document(&self, path: &Path) -> Option<SecureString> {
         self.0
             .iter()
-            .find(|(held, at, _)| *held == kind && at == path)
-            .map(|(_, _, text)| SecureString::from(text.as_str()))
+            .find(|(at, _)| at == path)
+            .map(|(_, text)| SecureString::from(text.as_str()))
     }
 }
 
@@ -47,7 +47,7 @@ fn a_held_deployment_is_read_in_place_of_the_file() {
     let config = dir.join("config.yaml");
     std::fs::write(&config, format!("listen: 127.0.0.1:1111\n{DEPLOYMENT}")).expect("config");
     let planned = format!("config_version: 1\nlisten: 127.0.0.1:2222\n{DEPLOYMENT}");
-    let rules = Held(vec![(ConfigDocument::Deployment, config.clone(), planned)]);
+    let rules = Held(vec![(config.clone(), planned)]);
     let loaded = load_config_from_disk_judged(&config, None, false, EnvSubst::Strict, &rules)
         .expect("the held deployment loads");
     assert_eq!(loaded.deploy.listen, "127.0.0.1:2222");
@@ -65,11 +65,7 @@ fn a_held_deployment_is_read_in_place_of_the_file() {
 fn a_held_deployment_opens_no_file() {
     let dir = scratch("no-file");
     let config = dir.join("config.yaml");
-    let rules = Held(vec![(
-        ConfigDocument::Deployment,
-        config.clone(),
-        DEPLOYMENT.to_owned(),
-    )]);
+    let rules = Held(vec![(config.clone(), DEPLOYMENT.to_owned())]);
     load_config_from_disk_judged(&config, None, false, EnvSubst::Strict, &rules)
         .expect("a held deployment needs no file");
     assert!(!config.exists());
@@ -86,12 +82,8 @@ fn a_held_catalog_is_read_in_place_of_the_file() {
         format!("config_version: 1\nproviders_file: providers.busbar-1.6.yaml\n{DEPLOYMENT}");
     let catalog = dir.join("providers.busbar-1.6.yaml");
     let rules = Held(vec![
-        (ConfigDocument::Deployment, config.clone(), planned),
-        (
-            ConfigDocument::Providers,
-            catalog.clone(),
-            "{}\n".to_owned(),
-        ),
+        (config.clone(), planned),
+        (catalog.clone(), "{}\n".to_owned()),
     ]);
     let loaded = load_config_from_disk_judged(&config, None, false, EnvSubst::Strict, &rules)
         .expect("the held catalog loads");
