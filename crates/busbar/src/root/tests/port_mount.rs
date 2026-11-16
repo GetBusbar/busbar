@@ -84,3 +84,86 @@ fn a_session_that_wrote_no_head_is_a_gateway_failure_not_a_200() {
     let (status, fields, body) = parts_of(vec![ToClient::Body(b"x".to_vec()), ToClient::End]);
     assert_eq!((status, fields.len(), body), (502, 0, Vec::new()));
 }
+
+fn pipe() -> (
+    Pipe,
+    oneshot::Receiver<(u16, HeadFields)>,
+    mpsc::UnboundedReceiver<Bytes>,
+) {
+    let (head_tx, head_rx) = oneshot::channel();
+    let (body_tx, body_rx) = mpsc::unbounded_channel();
+    (
+        Pipe {
+            head: Mutex::new(Some(head_tx)),
+            body: body_tx,
+        },
+        head_rx,
+        body_rx,
+    )
+}
+
+async fn frames(mut body: PipeBody) -> Vec<Vec<u8>> {
+    let mut out = Vec::new();
+    while let Some(frame) =
+        std::future::poll_fn(|cx| http_body::Body::poll_frame(std::pin::Pin::new(&mut body), cx))
+            .await
+    {
+        out.push(frame.unwrap().into_data().unwrap().to_vec());
+    }
+    out
+}
+
+#[tokio::test]
+async fn a_streamed_reply_decides_its_head_first_and_streams_the_body_in_the_order_written() {
+    let (pipe, head, body) = pipe();
+    assert!(pipe.items(vec![ToClient::Head {
+        status: 201,
+        fields: vec![(b"content-type".to_vec(), b"text/event-stream".to_vec())],
+    }]));
+    // The head is available before any body was written: the response can begin.
+    let (status, fields) = head.await.unwrap();
+    assert_eq!(status, 201);
+    assert_eq!(fields.len(), 1);
+    assert!(pipe.items(vec![
+        ToClient::Body(b"one".to_vec()),
+        ToClient::Msg {
+            flags: 0,
+            bytes: b"two".to_vec()
+        },
+        ToClient::Body(Vec::new()),
+        ToClient::Trailers(Vec::new()),
+        ToClient::End,
+    ]));
+    drop(pipe);
+    assert_eq!(
+        frames(PipeBody(body)).await,
+        vec![b"one".to_vec(), b"two".to_vec()]
+    );
+}
+
+#[tokio::test]
+async fn a_second_head_changes_nothing_once_the_response_began() {
+    let (pipe, head, _body) = pipe();
+    let head_of = |status| ToClient::Head {
+        status,
+        fields: Vec::new(),
+    };
+    assert!(pipe.items(vec![head_of(200), head_of(500)]));
+    assert_eq!(head.await.unwrap().0, 200);
+}
+
+#[test]
+fn a_client_that_went_away_tells_the_session_to_stop() {
+    let (gone_body, _head, body) = pipe();
+    drop(body);
+    assert!(!gone_body.items(vec![ToClient::Body(b"x".to_vec())]));
+    let (gone_head, head, _body) = pipe();
+    drop(head);
+    assert!(
+        !gone_head.items(vec![ToClient::Head {
+            status: 200,
+            fields: Vec::new()
+        }]),
+        "the response was dropped before its head: nothing more is wanted"
+    );
+}
