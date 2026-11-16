@@ -41,6 +41,8 @@ Over-budget is `429 rate_limited` with a **`Retry-After: 60`** header, and the e
 
 **The static admin token is single-factor.** It is one shared bearer secret: whoever holds it holds `full` scope, and nothing in the request proves a second factor. Wherever the admin plane is reachable beyond a trusted operator network, authenticate people through a **role-bound external `kind: auth` module** (for example an OIDC or SSO provider, listed in `admin_auth:` and bound with `auth.role_bindings.<provider>`) backed by an identity provider that enforces phishing-resistant MFA (FIDO2/WebAuthn passkeys or hardware security keys), and keep the static token for break-glass and automation only. Busbar does not enforce MFA itself: it trusts the identity provider's assertion, so the MFA policy lives in the provider.
 
+**The static admin token is single-factor.** It is one shared bearer secret: whoever holds it holds `full` scope, and nothing in the request proves a second factor. For any deployment where the admin plane is reachable beyond a trusted operator network, authenticate people through a **role-bound external admin module** (OIDC/SSO, a `kind: auth` plugin under `identity-providers:` bound with `auth.role_bindings.<provider>`) backed by an identity provider that enforces phishing-resistant MFA (FIDO2/WebAuthn passkeys or hardware security keys), and keep the static token for break-glass and automation only. Busbar does not enforce MFA itself; it trusts the identity provider's assertion, so the MFA policy lives in the provider.
+
 ## Security-sensitive config and queued effects
 
 Named edits, whole-config apply, document pointers (including parent replacement and removal),
