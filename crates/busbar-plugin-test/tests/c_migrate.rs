@@ -151,13 +151,13 @@ fn the_macro_echo_and_the_settled_shim() {
 }
 
 #[test]
-#[ignore = "blocked: no core-cfg conflict/secret round-trip/former-names driver reachable from this crate (loader migrate door only covers open shape); owner W1-L2"]
+#[ignore = "owner: W1-L2 + W1-K9; blocked (re-checked on dev 2026-11-16): the CORE_CFG collision clause runs as busbar_migrate::settle::tests::a_named_section_is_one_entry_when_two_instances_state_it_identically_else_refused; the $secret round trip, the invented n and the former_names mismatch need a booted fixture's settled answer through the boot, and the boot passes none (busbar root::migrate::finish() calls finish_settled(Vec::new()), no Registry::take_settled: K9 remainder)"]
 fn core_cfg_conflicts_secret_round_trip_and_former_names_mismatch() {
     todo!("owner: W1-L2 (C-MIGRATE)")
 }
 
 #[test]
-#[ignore = "blocked: write-back through boot is busbar root/migrate.rs (tests/migrate_seam.rs); busbar-plugin-test cannot depend on busbar; owner W1-K9"]
+#[ignore = "owner: W1-K9; blocked (re-checked on dev 2026-11-16): the boot writes no settled answer back: busbar root::migrate::write_back_settled is #[cfg(test)] only and finish() passes finish_settled an empty list (no Registry::take_settled), so a through-boot arm is red. The write-back itself runs as busbar::root::migrate::tests::a_stamped_boot_writes_the_settled_answer_back_once; the through-boot arm then moves there (crates/busbar is a bin crate, so nothing can depend on it)"]
 fn the_settled_write_back_through_boot() {
     todo!("owner: W1-K9 (C-MIGRATE)")
 }

@@ -8,7 +8,7 @@
 //! the arm's body and un-ignores it in its own MR (red first, then green).
 
 #[test]
-#[ignore = "blocked: H_BUDGET_NS/H_BODY_LEN are defined in busbar-plugin-abi but no core-connector code emits them on E_HEAD yet (W1-C1C); no fake gRPC upstream reachable from this crate"]
+#[ignore = "owner: W1-C1C; blocked (re-checked on dev 2026-11-16): H_BUDGET_NS/H_BODY_LEN are defined in busbar-plugin-abi but no busbar-core-connector code emits them on E_HEAD (the connector still drives framers over the old FramerDoor, OUTSTANDING row 6); the core arm then moves into busbar-core-connector, and the grpc-timeout half is transport-grpc's P arm"]
 fn budget_and_body_length_on_the_client_head() {
     todo!("blocked: H_BUDGET_NS/H_BODY_LEN are defined in busbar-plugin-abi but no core-connector code emits them on E_HEAD yet (W1-C1C); no fake gRPC upstream reachable from this crate (C-GRPC-DEADLINE)")
 }
