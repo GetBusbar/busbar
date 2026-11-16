@@ -14,8 +14,8 @@ use crate::diag_warn;
 use crate::diagnostics::TELEMETRY_SLOT_TABLE_FULL;
 use crate::telemetry::{
     bank_key, counter_slot, declared_dialects, histogram_slot, phase_duration_slot, registry,
-    AppSlots, CounterSlot, LaneFamily, LocalBank, MountedFamily, RequestFamily, SlotDesc,
-    SlotTable, COUNTER_CHUNK, DISPOSITIONS, HIST_CHUNK, HIST_PARKED, KEY_SEP, OUTCOMES,
+    AppSlots, CounterSlot, HistogramSlot, LaneFamily, LocalBank, MountedFamily, RequestFamily,
+    SlotDesc, SlotTable, COUNTER_CHUNK, DISPOSITIONS, HIST_CHUNK, HIST_PARKED, KEY_SEP, OUTCOMES,
     POOL_LABEL_UNRESOLVED, PRODUCER_DRIVE, REASONS, RESPONSE_READY,
 };
 
@@ -42,6 +42,57 @@ pub(crate) fn translation_slots() -> Vec<(&'static str, &'static str, CounterSlo
 }
 
 impl AppSlots {
+    /// One duration histogram per lane, keyed by the lane id alone at record time. The labels
+    /// `pool`, `target`, `model` and `instance` are read from the lane table here, once, so the
+    /// request path hashes no label. Lanes past `telemetry.max_lane_series` fold into
+    /// `target="other"` and are counted (`dropped.lane_series`).
+    pub(crate) fn attach_lane_durations<'a>(
+        &mut self,
+        lane_model: impl Fn(usize) -> Option<&'a str>,
+        lane_provider: impl Fn(usize) -> Option<&'a str>,
+        cap: usize,
+    ) {
+        use crate::snapshot::LANE_REQUEST_DURATION_SECONDS;
+
+        let mut lane_pool: std::collections::BTreeMap<usize, &str> = Default::default();
+        for (pool, lanes) in &self.lane {
+            for &idx in lanes.keys() {
+                let held = lane_pool.entry(idx).or_insert(&**pool);
+                if &**pool < *held {
+                    *held = &**pool;
+                }
+            }
+        }
+        let mut durations =
+            vec![HistogramSlot::INVALID; lane_pool.keys().next_back().map_or(0, |max| max + 1)];
+        let mut folded = 0u64;
+        for (n, (&idx, &pool)) in lane_pool.iter().enumerate() {
+            let Some(model) = lane_model(idx) else {
+                continue;
+            };
+            let (instance, name) = model
+                .split_once('\u{1f}')
+                .unwrap_or_else(|| (crate::plane_driver::dispatch::fallback_key(), model));
+            let (target, model_label) = if n < cap {
+                (lane_provider(idx).unwrap_or(""), name)
+            } else {
+                folded += 1;
+                ("other", "other")
+            };
+            durations[idx] = histogram_slot(
+                LANE_REQUEST_DURATION_SECONDS,
+                &[
+                    ("pool", pool),
+                    ("target", target),
+                    ("model", model_label),
+                    ("instance", instance),
+                ],
+            );
+        }
+        crate::telemetry::count_lane_series_dropped(folded);
+        self.lane_duration = durations.into();
+    }
+
     pub(crate) fn build<'a>(
         pools: &[(&'a str, Vec<usize>)],
         by_model: &[(&'a str, usize)],
@@ -176,6 +227,7 @@ impl AppSlots {
             request,
             lane: lane_map,
             failover,
+            lane_duration: Box::default(),
         }
     }
 }
