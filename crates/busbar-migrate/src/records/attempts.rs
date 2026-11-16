@@ -11,7 +11,7 @@
 //! node's upgrade in progress). So every attempt ends COMPLETED, REFUSED or ABANDONED, and no path
 //! writes MIGRATION_COMPLETED for an attempt whose config.yaml was not renamed into place.
 
-use busbar_contract::abi::sdk::store::cells::{self, Cell, IMPORT_NS};
+use busbar_contract::persistence::cells::{self, Cell, IMPORT_NS};
 use busbar_contract::secure::SecureVec;
 
 use super::{Audit, Candidate, Committed, RecordStore, Refusal, ATTEMPT_PREFIX, PAGE};

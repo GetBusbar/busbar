@@ -5,6 +5,7 @@
 //! live in busbar-migrations, which depends on this facade; kernel never imports it.
 
 pub mod candidate_codec;
+pub mod r0;
 pub mod records;
 pub mod target;
 
