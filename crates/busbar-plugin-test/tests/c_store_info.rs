@@ -153,3 +153,121 @@ fn public_store_host_opens_and_reads_without_a_caller_seal() {
     host.finish()
         .expect("live target completion is part of facade finish");
 }
+
+#[test]
+fn typed_store_check_keeps_endpoints_and_check_open_keep_refusals() {
+    use busbar_plugin_test::fake_needs::ConnScript;
+    use busbar_plugin_test::store::{StoreCase, StoreHarness};
+
+    let mut needs = FakeNeeds::new();
+    needs.conn(observation_fixture::DEST, ConnScript::new().eof());
+    let host = StoreHarness::admit(observation_fixture::PLUGIN.plugin(), needs)
+        .expect("endpoint store admission");
+    let case = StoreCase::new(
+        "store_observation",
+        br#"{"id":"store-observation"}"#.to_vec(),
+    );
+    host.check(&case).expect("declares the connection endpoint");
+    let store = host.open(&case).expect("opens the scripted connection");
+    assert_eq!(
+        host.harness().declared().len(),
+        1,
+        "typed check keeps ENDPOINT"
+    );
+    assert_eq!(
+        host.harness().seen().len(),
+        1,
+        "the store really issued OPEN"
+    );
+    host.harness()
+        .assert_needs_declared("typed-store-observation");
+    assert!(host.harness().refusals().is_empty());
+    drop(store);
+    host.finish().expect("all store connections released");
+
+    // Intentional negative operations have their own host, preserving the successful suite's accounting.
+    let refused = StoreHarness::admit(inline::PLUGIN.plugin(), FakeNeeds::new())
+        .expect("refusal store admission");
+    let invalid = StoreCase::new("invalid_store", b"null".to_vec());
+    assert!(refused.check(&invalid).is_err());
+    assert_eq!(
+        refused.harness().refusals().len(),
+        1,
+        "check refusal recorded"
+    );
+    assert!(refused.open(&invalid).is_err());
+    assert_eq!(
+        refused.harness().refusals().len(),
+        2,
+        "open refusal recorded"
+    );
+    refused
+        .finish()
+        .expect("no live operations on refused host");
+}
+
+mod observation_fixture {
+    use busbar_plugin_abi::fail::Fail;
+    use busbar_plugin_abi::host::Host;
+    use busbar_plugin_abi::need::{egress, need, need_flag, ChainBytes, TrustHandle};
+    use busbar_plugin_abi::plugin::{Describe, Endpoints, Open};
+    use busbar_plugin_abi::records::{Out, Reply};
+    use busbar_plugin_abi::Store;
+
+    use crate::min3_store::Fixture;
+
+    pub const DEST: &str = "store.example:5432";
+    pub struct ObservedStore(Fixture<0>);
+
+    impl Open for ObservedStore {
+        async fn open(h: &'static Host, config: ChainBytes) -> Result<Self, Fail> {
+            let store = Fixture::<0>::open(h, config).await?;
+            let opened = need::open(
+                DEST,
+                need::Tls::Required {
+                    sni: "store.example",
+                    alpn: &[],
+                    trust: TrustHandle(0),
+                },
+                egress::OPERATOR_INFRASTRUCTURE,
+            )
+            .await?;
+            need::close(opened.conn, false).await?;
+            Ok(Self(store))
+        }
+
+        fn check(h: &Host, config: &[u8], ends: &mut Endpoints<'_>) -> Result<(), Fail> {
+            Fixture::<0>::check(h, config, ends)?;
+            ends.open(
+                DEST,
+                need_flag::TLS_REQUIRED,
+                egress::OPERATOR_INFRASTRUCTURE,
+            );
+            Ok(())
+        }
+
+        fn describe(d: &mut Describe<'_>) {
+            Fixture::<0>::describe(d);
+        }
+    }
+
+    impl Store for ObservedStore {
+        async fn read(&self, _h: &'static Host, _req: ChainBytes) -> Result<Reply, Fail> {
+            Err(Fail::unsupported())
+        }
+        async fn scan(&self, _h: &'static Host, _req: ChainBytes) -> Result<Reply, Fail> {
+            Err(Fail::unsupported())
+        }
+        async fn commit(&self, _h: &'static Host, _req: ChainBytes) -> Result<Reply, Fail> {
+            Err(Fail::unsupported())
+        }
+        async fn clock(&self, _h: &'static Host, _req: ChainBytes) -> Result<Reply, Fail> {
+            Err(Fail::unsupported())
+        }
+        fn info(&self, h: &Host, out: &mut Out<'_>) -> Result<(), Fail> {
+            self.0.info(h, out)
+        }
+    }
+
+    busbar_plugin_abi::plugin!(Store, ObservedStore, name: "fixture-observed-store");
+}
