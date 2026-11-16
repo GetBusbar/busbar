@@ -1,20 +1,10 @@
 # Where the published proof manifests live
 
-The Build Proof Dashboard manifest is collated by `cargo xtask proof-manifest`. The `proof-manifest`
-job that ran it (in the removed `ci.yml`, on a push to `dev`, `qa` or `main`) is deleted with the rest of busbar's
-workflows, and `promote.yml` is deleted too: nothing in this repository refreshes the published
-copies; the project's CI runs the collator on a landing. The last published manifests are on the
+The Build Proof Dashboard manifest was collated by `cargo xtask proof-manifest`. That collator was
+removed from this tree with the rest of the gate tooling (`xtask`), and the GitHub workflows that ran
+it (`ci.yml`, `promote.yml`) are retired with GitHub Actions. No CI job produces or refreshes a
+manifest today ([what CI checks](../ci.md)). The last published manifests are on the
 `proof-manifests` branch.
-
-Usage:
-
-```
-cargo xtask proof-manifest --version dev --out docs/proof/dev.json
-cargo xtask proof-manifest --version 1.6.0 --out docs/proof/1.6.0.json \
-    --sha <40hex> --run-id 123 --run-url https://github.com/.../runs/123 \
-    --staged-json /path/to/staged.json --reports-dir testing --run-cargo --index
-cargo xtask proof-manifest --selftest
-```
 
 1. **The `proof-manifests` branch** (canonical, for readers). One file per SOURCE branch —
    `docs/proof/dev.json`, `docs/proof/qa.json`, `docs/proof/main.json` — plus the `index.json`
@@ -23,11 +13,9 @@ cargo xtask proof-manifest --selftest
 
 ## Why not commit it back to dev/qa/main
 
-It used to. A push of the manifest back to `qa` or `main` is rejected, because both are protected
-(required status checks, linear history, `enforce_admins: true`). And if such a push ever did land it
-would mint a release-branch HEAD for which no required run exists. `cargo xtask gate workflow-rules`
-rule R11 fails if any workflow pushes a commit to a release branch, so this cannot come back by
-accident.
+It used to. A push of the manifest back to `qa` or `main` is rejected, because both are protected,
+and if such a push ever did land it would mint a release-branch HEAD for which no required run
+exists.
 
 ## Reading it
 
@@ -38,6 +26,6 @@ in the file name, so one checkout serves all three deploys.
 
 ## The files in this directory
 
-`dev.json` / `index.json` committed here are the seed the collator and the public-safety guard were
-developed against, and are what `cargo xtask proof-manifest --check` (no arguments; every `docs/proof/*.json`
-except `index.json`) checks locally. Nothing refreshes them; the live manifests are on the `proof-manifests` branch.
+`dev.json` / `index.json` committed here are the seed the collator and its public-safety guard were
+developed against. Nothing checks or refreshes them; the live manifests are on the `proof-manifests`
+branch.
