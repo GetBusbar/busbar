@@ -111,6 +111,13 @@ fn line_serve_requested(planes: &[&[root::linked::CliHelpRow]], argv: &root::cli
 
 const MAX_WORKER_THREADS: usize = 128;
 
+/// Allocation ceiling for each startup migration index (not a dataset-size or RSS cap). Fixed; there
+/// is no config key for it.
+const MIGRATION_INDEX_BYTES: usize = 256 * 1024 * 1024;
+/// Allocation ceiling for each startup migration frame/page/semantic working buffer. Fixed; there
+/// is no config key for it.
+const MIGRATION_VALUE_BYTES: usize = 64 * 1024 * 1024;
+
 #[cfg(test)]
 fn worker_threads_from_env(name: &str) -> Option<usize> {
     let mut warnings = Vec::new();
@@ -734,8 +741,8 @@ async fn run(
                 config_path.clone(),
                 providers_override.clone(),
                 ignore_overlay,
-                base_cfg.limits.migration_index_bytes,
-                base_cfg.limits.migration_value_bytes,
+                MIGRATION_INDEX_BYTES,
+                MIGRATION_VALUE_BYTES,
                 &binding_inventory,
             )
             .unwrap_or_else(|_| die("startup plane binding inventory refused")),
@@ -744,23 +751,23 @@ async fn run(
             prepared_store,
             busbar_contract::persistence::lifecycle::Bounds {
                 items: 4096,
-                bytes: u32::try_from(base_cfg.limits.migration_value_bytes).unwrap_or_else(|_| {
-                    die("limits.migration_value_bytes exceeds native frame capacity")
+                bytes: u32::try_from(MIGRATION_VALUE_BYTES).unwrap_or_else(|_| {
+                    die("startup migration value bytes exceed native frame capacity")
                 }),
             },
         )
         .with_source_spool(
             Arc::new(root::startup_upgrade::spool::Factory),
             busbar_contract::persistence::archive::Limits {
-                frame_bytes: base_cfg.limits.migration_value_bytes,
+                frame_bytes: MIGRATION_VALUE_BYTES,
                 total_bytes: u64::MAX,
                 rows: u64::MAX,
                 tables: u32::MAX,
                 columns: u32::MAX,
-                index_bytes: base_cfg.limits.migration_index_bytes,
+                index_bytes: MIGRATION_INDEX_BYTES,
             },
-            base_cfg.limits.migration_index_bytes,
-            base_cfg.limits.migration_value_bytes,
+            MIGRATION_INDEX_BYTES,
+            MIGRATION_VALUE_BYTES,
         )
         .unwrap_or_else(|_| die("startup migration allocation limits must be positive"))
         .with_binding_inventory(binding_inventory.clone(), binding_resolver)
@@ -832,7 +839,7 @@ async fn run(
                 documents: documents.clone(),
                 native_upgrade_id: prepared.upgrade_id,
                 host: root::durability::host_identity(),
-                checkpoint_budget: base_cfg.limits.migration_value_bytes,
+                checkpoint_budget: MIGRATION_VALUE_BYTES,
                 fs: Arc::new(root::admission::RootDurable),
             },
         )
@@ -1200,12 +1207,6 @@ async fn run(
     let admin_tls_cfg = cfg.admin_tls.clone();
     let req_body_max = cfg.limits.request_body_max_bytes;
     let max_inbound = cfg.limits.max_inbound_concurrent;
-    // `advanced.shutdown.drain_timeout` and `advanced.governance.max_pending_checkpoints`;
-    // validation already refused a value out of range, so this never clamps.
-    let drain_settings = cfg
-        .limits
-        .drain_settings()
-        .unwrap_or_else(|refusals| die_list("shutdown drain settings refused:", refusals));
 
     root::registry::check_or_exit(LINKED.claims);
 
@@ -1740,10 +1741,10 @@ async fn run(
         app_handle.attach_on_swap(spawn);
     }
 
-    // SHUTDOWN-HANG F4: one drain owner holds the budget from the first broadcast to exit. The
-    // budget and the terminal-backlog cap are `drain_settings`, read beside the other limits.
-    let drain_clock =
-        busbar_kernel::governance::drain::DrainClock::new(drain_settings.drain_timeout);
+    // SHUTDOWN-HANG F4: one drain owner holds the fixed budget from the first broadcast to exit.
+    let drain_clock = busbar_kernel::governance::drain::DrainClock::new(
+        busbar_kernel::governance::drain::DRAIN_TIMEOUT,
+    );
     let drain = root::shutdown::ShutdownDrain::new(Arc::clone(&drain_clock));
     let (shutdown_tx, _keep_open) = tokio::sync::broadcast::channel::<()>(1);
     // Persistence failure can request shutdown before a listener exists. A watch
@@ -1789,11 +1790,9 @@ async fn run(
     // The listener's handler drains on a signal from here on.
     let _ = signal_handoff.send(());
 
+    // Governed admission keeps its fixed terminal-backlog cap
+    // (`governance::drain::MAX_PENDING_CHECKPOINTS`), set when the gate is built.
     let governance = app_handle.load().governance.clone();
-    if let Some(gov) = &governance {
-        gov.admissions()
-            .set_cap(drain_settings.max_pending_checkpoints);
-    }
     let budget_flusher = governance.clone().map(|gov| {
         tokio::spawn(root::measurements::maintenance(
             busbar_kernel::governance::run_budget_flusher(

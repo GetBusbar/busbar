@@ -598,3 +598,13 @@ receives identity-provider settings, not deployment credential references.
 The upgrade boot folds the 1.5.5 overlay file into config.yaml and keeps the file as
 `<overlay>.1.5.5` ([the 1.5.5 overlay file](#the-155-overlay-file)); there is no separate import
 step, and a stamped boot never reads an overlay file.
+
+## Removed pre-release keys
+
+These keys appeared only in 1.6.0 pre-releases; no released configuration sets them.
+
+- `limits.migration_index_bytes`: removed; startup migration index allocations are capped at a fixed 256 MiB. A config that sets it is refused as an unknown key.
+- `limits.migration_value_bytes`: removed; startup migration frame/page/working-buffer allocations are capped at a fixed 64 MiB. A config that sets it is refused as an unknown key.
+- `limits.datagram_line_memory_bytes`: removed; datagram LINE pairings have no per-pairing retained-memory limit (the previous default). A config that sets it is refused as an unknown key.
+- `advanced.shutdown` (`drain_timeout`): removed; the shutdown drain budget is a fixed 20 s. A config that sets it is refused as an unknown key.
+- `advanced.governance` (`max_pending_checkpoints`): removed; the governed-admission settlement backlog cap is a fixed 20,000. A config that sets it is refused as an unknown key.

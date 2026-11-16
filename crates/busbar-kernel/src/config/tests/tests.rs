@@ -1503,7 +1503,6 @@ models:
 "#;
     let deploy: DeployCfg =
         busbar_contract::yaml::from_str(yaml).expect("config without a limits block must parse");
-    assert_eq!(deploy.limits.datagram_line_memory_bytes, None);
     let l = LimitsResolved::from_sections(
         &deploy.limits,
         &deploy.advanced,
@@ -1511,7 +1510,6 @@ models:
         &deploy.health,
         &deploy.routing,
     );
-    assert_eq!(l.datagram_line_memory_bytes, None);
     assert_eq!(
         l.upstream_request_timeout_secs,
         DEFAULT_UPSTREAM_REQUEST_TIMEOUT_SECS
@@ -1558,61 +1556,6 @@ models:
     assert_eq!(l.default_probe_interval_secs, DEFAULT_PROBE_INTERVAL_SECS);
     assert_eq!(l.default_probe_timeout_secs, DEFAULT_PROBE_TIMEOUT_SECS);
     assert_eq!(l.default_policy_timeout_ms, DEFAULT_POLICY_TIMEOUT_MS);
-}
-
-#[test]
-fn datagram_line_memory_limit_is_opt_in_and_resolves_to_root() {
-    assert_eq!(LimitsCfg::default().datagram_line_memory_bytes, None);
-    assert_eq!(LimitsResolved::default().datagram_line_memory_bytes, None);
-    for (yaml, expected) in [
-        ("{}", None),
-        ("datagram_line_memory_bytes: null", None),
-        ("datagram_line_memory_bytes: 1", Some(1)),
-        ("datagram_line_memory_bytes: 12345", Some(12345)),
-    ] {
-        let document = format!("providers: {{}}\nmodels: {{}}\nlimits:\n  {yaml}\n");
-        let deploy = deploy_from_yaml_str(&document, &crate::config::Grammar::empty())
-            .expect("boot parser accepts the optional limit");
-        assert_eq!(deploy.limits.datagram_line_memory_bytes, expected);
-        let cfg = resolve(&deploy, &HashMap::new()).expect("resolve the real config");
-        assert_eq!(cfg.limits.datagram_line_memory_bytes, expected);
-    }
-
-    assert!(serde_json::to_value(LimitsCfg::default())
-        .unwrap()
-        .get("datagram_line_memory_bytes")
-        .is_none());
-}
-
-#[test]
-fn datagram_line_memory_limit_refuses_invalid_types_and_out_of_range_values() {
-    for value in [
-        "-1",
-        "1.5",
-        "true",
-        "'1024'",
-        "[]",
-        "{}",
-        "18446744073709551616",
-    ] {
-        let yaml = format!("datagram_line_memory_bytes: {value}");
-        assert!(
-            busbar_contract::yaml::from_str::<LimitsCfg>(&yaml).is_err(),
-            "{yaml}"
-        );
-    }
-    for value in [
-        "-1",
-        "1.5",
-        "true",
-        "\"1024\"",
-        "[]",
-        "{}",
-        "18446744073709551616",
-    ] {
-        let json = format!(r#"{{"datagram_line_memory_bytes":{value}}}"#);
-        assert!(serde_json::from_str::<LimitsCfg>(&json).is_err(), "{json}");
-    }
 }
 
 #[test]

@@ -203,7 +203,7 @@ pub const PLUGIN_TEXT_CUT_TOTAL: &str = "busbar_plugin_text_cut_total";
 pub const JOURNAL_QUARANTINED_TOTAL: &str = "busbar_journal_quarantined_total";
 
 /// Finished governed units whose spend still awaits settlement in the store (the admission gate's
-/// terminal backlog, SHUTDOWN-HANG F4a); `advanced.governance.max_pending_checkpoints` caps it.
+/// terminal backlog, SHUTDOWN-HANG F4a); `governance::drain::MAX_PENDING_CHECKPOINTS` caps it.
 pub const UNIT_CHECKPOINTS_TERMINAL: &str = "busbar_unit_checkpoints_terminal";
 
 /// Governed admissions alive (an admission grant not yet released after its unit's terminal
@@ -588,7 +588,7 @@ fn describe() {
     describe_gauge!(
         UNIT_CHECKPOINTS_TERMINAL,
         Unit::Count,
-        "Finished governed units whose spend awaits settlement in the store (the admission gate's terminal backlog, capped by advanced.governance.max_pending_checkpoints) (scrape-time)"
+        "Finished governed units whose spend awaits settlement in the store (the admission gate's terminal backlog, capped at 20,000) (scrape-time)"
     );
     describe_gauge!(
         GOVERNED_ADMISSIONS_LIVE,

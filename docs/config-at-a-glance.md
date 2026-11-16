@@ -221,9 +221,7 @@ advanced:                       # internal tuning (normally omitted)  → #advan
     worker_threads: 4,          # data-plane worker count, one runtime+listener each; omit ⇒ one per core
     upstream_http1_only: false, upstream_h2_prior_knowledge: false,
     response_headers: { server_timing: false, route_policy: false },  # opt-in headers → observability.md#response-headers
-    block_private_addresses: true, allow_destinations: [],  # the destination guard → #advanced
-    shutdown: { drain_timeout: 20s },                         # the shutdown drain budget → #advanced
-    governance: { max_pending_checkpoints: 20000 } }          # settlement backlog cap → #advanced
+    block_private_addresses: true, allow_destinations: [] }  # the destination guard → #advanced
 config:                         # config-management policy (persistence follows Store) → #config
   { locked: false }
 providers_file: providers.yaml  # provider catalog pointer (overridden by the --providers flag)

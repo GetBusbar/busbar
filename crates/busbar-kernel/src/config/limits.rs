@@ -129,24 +129,11 @@ pub fn default_probe_timeout_secs() -> u64 {
     DEFAULT_PROBE_TIMEOUT_SECS
 }
 
-pub(crate) fn default_migration_index_bytes() -> usize {
-    256 * 1024 * 1024
-}
-pub(crate) fn default_migration_value_bytes() -> usize {
-    64 * 1024 * 1024
-}
-
 /// The `limits:` block — global operational caps. Each field defaults to its historical behavior,
 /// so an absent field (or an absent block) changes nothing. Optional opt-in caps default to unset.
 #[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct LimitsCfg {
-    /// Allocation ceiling for each startup migration index, not a dataset-size or RSS cap.
-    #[serde(default = "default_migration_index_bytes")]
-    pub migration_index_bytes: usize,
-    /// Allocation ceiling for each migration frame/page/semantic working buffer.
-    #[serde(default = "default_migration_value_bytes")]
-    pub migration_value_bytes: usize,
     #[serde(default = "default_upstream_request_timeout_secs")]
     pub upstream_request_timeout_secs: u64,
     /// Max accepted inbound body (bytes). COUPLED: also drives the egress translate-body cap
@@ -154,12 +141,6 @@ pub struct LimitsCfg {
     /// always buffer-translatable on egress.
     #[serde(default = "default_request_body_max_bytes")]
     pub request_body_max_bytes: usize,
-    /// Advanced opt-in byte limit per datagram LINE pairing. Counts combined retained requested
-    /// capacity across both directions, including queued output ownership and metadata. Omitted
-    /// or null = unlimited by this mechanism; a configured value must be positive. Exhaustion
-    /// closes only the affected connection. This is not a process RSS limit.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub datagram_line_memory_bytes: Option<usize>,
     #[serde(default = "default_pool_max_idle_per_host")]
     pub pool_max_idle_per_host: usize,
     /// Idle keep-alive lifetime (seconds) for pooled upstream connections — see
@@ -261,11 +242,8 @@ pub fn default_reasoning_high() -> u32 {
 impl Default for LimitsCfg {
     fn default() -> Self {
         Self {
-            migration_index_bytes: default_migration_index_bytes(),
-            migration_value_bytes: default_migration_value_bytes(),
             upstream_request_timeout_secs: default_upstream_request_timeout_secs(),
             request_body_max_bytes: default_request_body_max_bytes(),
-            datagram_line_memory_bytes: None,
             pool_max_idle_per_host: default_pool_max_idle_per_host(),
             pool_idle_timeout_secs: default_pool_idle_timeout_secs(),
             max_inbound_concurrent: default_max_inbound_concurrent(),
@@ -384,36 +362,13 @@ impl Default for ExportLimits {
     }
 }
 
-/// `advanced.shutdown.drain_timeout`'s floor, in seconds.
-pub const MIN_DRAIN_TIMEOUT_SECS: u64 = 1;
-
-/// `advanced.governance.max_pending_checkpoints`'s default per second of drain budget: the
-/// finished units the networked store settles in that second (SHUTDOWN-HANG F4a).
-pub const PENDING_CHECKPOINTS_PER_DRAIN_SECOND: u64 = 1_000;
-
-/// The shutdown drain's two settings, resolved and range-checked
-/// ([`LimitsResolved::drain_settings`]).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct DrainSettings {
-    /// `advanced.shutdown.drain_timeout`: the budget from the first shutdown signal to exit.
-    pub drain_timeout: std::time::Duration,
-    /// `advanced.governance.max_pending_checkpoints`: the terminal-backlog cap of governed
-    /// admission.
-    pub max_pending_checkpoints: u64,
-}
-
 /// Fully-resolved operational limits, projected onto `RootCfg` by `resolve`. Grouped here so the
 /// startup wiring (`limits::install` + the explicit main.rs/store threading) reads a flat
 /// struct rather than re-walking optional config sections.
 #[derive(Debug, Clone)]
 pub struct LimitsResolved {
-    pub migration_index_bytes: usize,
-    pub migration_value_bytes: usize,
     pub upstream_request_timeout_secs: u64,
     pub request_body_max_bytes: usize,
-    /// Per-pairing datagram LINE retained-capacity limit. None leaves the mechanism disabled;
-    /// new pairings capture the resolved setting and keep it for their lifetime.
-    pub datagram_line_memory_bytes: Option<usize>,
     pub pool_max_idle_per_host: usize,
     pub pool_idle_timeout_secs: u64,
     pub max_inbound_concurrent: usize,
@@ -446,12 +401,6 @@ pub struct LimitsResolved {
     pub default_probe_interval_secs: u64,
     pub default_probe_timeout_secs: u64,
     pub default_policy_timeout_ms: u64,
-    /// `advanced.shutdown.drain_timeout`, as written (`None`: the default). BOOT-TIME; read
-    /// through [`LimitsResolved::drain_settings`], which validation also runs.
-    pub drain_timeout: Option<String>,
-    /// `advanced.governance.max_pending_checkpoints`, as written (`None`: derived from the
-    /// drain budget). Read through [`LimitsResolved::drain_settings`].
-    pub max_pending_checkpoints: Option<u64>,
 }
 
 impl Default for LimitsResolved {
@@ -476,11 +425,8 @@ impl LimitsResolved {
     ) -> Self {
         let ExportLimits { key_gauge_limit } = export.into();
         Self {
-            migration_index_bytes: limits.migration_index_bytes,
-            migration_value_bytes: limits.migration_value_bytes,
             upstream_request_timeout_secs: limits.upstream_request_timeout_secs,
             request_body_max_bytes: limits.request_body_max_bytes,
-            datagram_line_memory_bytes: limits.datagram_line_memory_bytes,
             pool_max_idle_per_host: limits.pool_max_idle_per_host,
             pool_idle_timeout_secs: limits.pool_idle_timeout_secs,
             max_inbound_concurrent: limits.max_inbound_concurrent,
@@ -502,73 +448,6 @@ impl LimitsResolved {
             default_probe_interval_secs: health.default_probe_interval_secs,
             default_probe_timeout_secs: health.default_probe_timeout_secs,
             default_policy_timeout_ms: routing.default_policy_timeout_ms,
-            drain_timeout: advanced.shutdown.drain_timeout.clone(),
-            max_pending_checkpoints: advanced.governance.max_pending_checkpoints,
-        }
-    }
-
-    /// The shutdown drain's budget and the terminal-backlog cap (SHUTDOWN-HANG F4, F4a). Never
-    /// clamped: a value that does not parse, or is out of range, is a refusal that names the key,
-    /// what was written and the range. Validation runs this, so boot refuses before serving.
-    pub fn drain_settings(&self) -> Result<DrainSettings, Vec<String>> {
-        let mut refusals: Vec<String> = Vec::new();
-        let drain_timeout = match self.drain_timeout.as_deref() {
-            None => Some(crate::governance::drain::DEFAULT_DRAIN_TIMEOUT),
-            Some(written) => match crate::config::parse::parse_duration_secs(written) {
-                Ok(secs) if secs >= MIN_DRAIN_TIMEOUT_SECS => {
-                    Some(std::time::Duration::from_secs(secs))
-                }
-                Ok(secs) => {
-                    refusals.push(
-                        crate::diagnostics::coded::config_setting_out_of_range(format!(
-                            "advanced.shutdown.drain_timeout '{written}' ({secs} s) is below the \
-                             minimum of {MIN_DRAIN_TIMEOUT_SECS} s: the drain needs at least one \
-                             second to settle spend, flush the journal and retire the writer. Set \
-                             it to 1s or more, or omit it for the default of 20s"
-                        ))
-                        .into(),
-                    );
-                    None
-                }
-                Err(why) => {
-                    refusals.push(
-                        crate::diagnostics::coded::config_setting_out_of_range(format!(
-                            "advanced.shutdown.drain_timeout '{written}' is not a duration ({why}); \
-                             write <number><s|m|h|d>, at least 1s (for example 30s), or omit it \
-                             for the default of 20s"
-                        ))
-                        .into(),
-                    );
-                    None
-                }
-            },
-        };
-        let max_pending_checkpoints = match self.max_pending_checkpoints {
-            Some(0) => {
-                refusals.push(
-                    crate::diagnostics::coded::config_setting_out_of_range(
-                        "advanced.governance.max_pending_checkpoints is 0; it must be >= 1 (0 \
-                         would refuse every governed request). It caps the finished governed \
-                         requests awaiting settlement in the store; omit it for the default of \
-                         1,000 per second of advanced.shutdown.drain_timeout",
-                    )
-                    .into(),
-                );
-                None
-            }
-            Some(cap) => Some(cap),
-            None => drain_timeout.map(|budget| {
-                PENDING_CHECKPOINTS_PER_DRAIN_SECOND.saturating_mul(budget.as_secs())
-            }),
-        };
-        match (drain_timeout, max_pending_checkpoints) {
-            (Some(drain_timeout), Some(max_pending_checkpoints)) if refusals.is_empty() => {
-                Ok(DrainSettings {
-                    drain_timeout,
-                    max_pending_checkpoints,
-                })
-            }
-            _ => Err(refusals),
         }
     }
 

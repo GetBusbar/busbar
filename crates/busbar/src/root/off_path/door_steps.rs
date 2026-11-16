@@ -888,12 +888,6 @@ pub(crate) fn kernel_sections(
             Value::from(cfg.limits.request_body_max_bytes as u64),
         ),
         (
-            "datagram_line_memory_bytes",
-            cfg.limits
-                .datagram_line_memory_bytes
-                .map_or(Value::Null, |n| Value::from(n as u64)),
-        ),
-        (
             "reasoning_effort_budgets",
             section_map([
                 (

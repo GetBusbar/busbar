@@ -2741,7 +2741,6 @@ fn reload_to_apply_fields(req: &busbar_kernel::config::overlay::RootSettings) ->
 
             max_keys_per_principal: _,
 
-            datagram_line_memory_bytes: _,
             max_auto_provisioned_groups: _,
 
             hook_content_max_bytes: _,

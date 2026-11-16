@@ -1398,7 +1398,6 @@ limits:
 |---|---|---|---|
 | `max_inbound_concurrent` | integer | `8192` | Global inbound concurrency cap, applied outermost (before request bodies are buffered), so it is the global bound on peak request memory: worst case is this limit times `request_body_max_bytes`. A request that arrives while the cap is full is **shed**, returned a `503` with `Retry-After` immediately, rather than queued behind the cap (the layer is a `tower::limit::GlobalConcurrencyLimitLayer` wrapped in `tower::load_shed`). `0` = unlimited (no cap layer installed, the pre-1.5.0 posture). **Restart-to-apply**: it is captured once in `main()` and baked into the router at process start; a config apply swaps only the `App`, never the router, so the semaphore's permit count cannot change live. `reload_to_apply` flags `limits.max_inbound_concurrent` when set. |
 | `request_body_max_bytes` | integer | `33554432` | Maximum inbound request body size (bytes). Exceeding this returns a protocol-native 413. **Partially restart-to-apply, undocumented in the API today (known gap, tracked for post-1.5.0):** the inbound 413 threshold (`axum::extract::DefaultBodyLimit`) is boot-frozen the same way as `max_inbound_concurrent` above, but the coupled egress translate/buffer cap (`limits::translate_body_max_bytes()`) reads a live snapshot re-installed on every apply. A live `PUT` therefore only half-applies: **lowering** this value moves the egress cap down immediately while the inbound 413 threshold stays at the boot value, so a request body can land in the gap between the two: accepted inbound, but no longer buffer-translatable on a cross-protocol hop, breaking the "accepted implies translatable" invariant. `reload_to_apply` does not flag this field: flagging it dotted would mis-state that the whole field is stored-not-live when three of its four consumers are in fact live. The fix (make the inbound limit read the live snapshot, or otherwise pin the coupling) is deferred past 1.5.0 because it touches the request path and the router layer stack. |
-| `datagram_line_memory_bytes` | positive integer or `null` | unset (off) | Advanced opt-in memory limit for each datagram LINE connection pairing. It counts combined retained requested capacity across both paired directions, including queued output ownership and metadata. It measures the pairing's retained allocations, not process RSS or allocator overhead. Exhaustion explicitly closes only the affected connection. Omit the field or set `null` to leave this mechanism disabled; `0` is invalid. Applying config changes the setting captured by new pairings; existing connections retain their chosen limit. The settings API also accepts `null` to disable a previously set limit. |
 | `upstream_request_timeout_secs` | integer | `300` | Per-upstream-request wall-clock timeout. Applies to both the connect and the full response. **Restart-to-apply**: the upstream `reqwest::Client` is built once at boot and reused across config applies (warm connection pools are kept deliberately), so a live `PUT` changes the stored value but not the running client. `reload_to_apply` flags `limits.upstream_request_timeout_secs` when set. |
 | `tls_handshake_timeout_secs` | integer | `10` | Wall-clock cap on each inbound TLS handshake; prevents slowloris / handshake-flood. Ignored when `tls:` is absent. |
 | `request_body_read_timeout_secs` | integer | `30` | Maximum time allowed between inbound request-body frames before the connection is dropped. Closes the slow-loris body gap the header-read timeout does not cover. |
@@ -1411,21 +1410,6 @@ limits:
 | `max_keys_per_principal` | integer | `0` | Anti-sprawl cap: the maximum number of **live** keys (enabled and not revoked) that may be bound to one group, the unbound bucket included. `0` = unlimited. Enforced on `POST /keys` **and** on a `PATCH /keys/{id}` rebind; over cap is a terminal `409 conflict`. |
 | `max_auto_provisioned_groups` | integer | `0` | Anti-sprawl cap on the SHAPE of the limit tree: the maximum size of the runtime group set that `POST /keys` may grow by auto-provisioning (`parent:`). `0` = unlimited. Over ceiling is a terminal `409 conflict`; binding to an existing group is unaffected. |
 | `hook_content_max_bytes` | integer | `0` | Ceiling on the request CONTENT a hook holding a `prompt: ro`/`rw` grant is shown in one projection. `0` = **unlimited (the default)**: the projection is sent uncapped. A non-zero value is an **opt-in** ceiling — when set, over-cap content is omitted **whole** — never truncated mid-value, because a guardrail that screens half a payload and passes it is worse than one that refuses — and the hook receives a present-but-empty content projection, which the wire distinguishes from the absent one an ungranted hook sees; the always-present size fields still report the real totals, so an omission is visible in the payload rather than silent. `busbar_hook_content_truncated_total` counts it. Leaving it at the `0` default keeps a `prompt: rw` redaction gate from being fail-open no-op'd by a blanked projection. Live: a `PUT` takes effect on the next request. This bounds the tool-argument and tool-result content a hook now sees, which on an agent request is limited by neither a context window nor a token count. |
-
-`datagram_line_memory_bytes` allocates on demand. It reserves conservatively before each framer
-crossing, including independent overlapping-span copies, and counts accepted application input,
-both LINE directions, reader-held CHANNEL buffers, empty-message descriptors and queue owners.
-Reader consumption or actual storage retirement returns credit. Existing fixed association/framer
-loans, secure-engine state, socket storage and allocator retention remain separate; this setting
-does not establish a process RSS or unconditional aggregate-memory bound. A value below a required
-single-crossing reservation can fail that connection even when its next answer would be small.
-
-The host first publishes runnable FIFO output or waits for an independent transfer that can free
-storage. If the required reservation cannot fit, it reports `resource_exhausted` once and closes
-only that pairing. Some finite expanding feedback chains therefore fail when the option is set.
-Accepted input is never replayed as untaken; publication records distinguish handed-on bytes,
-cancelled output and unknown crossing results. A synchronous connection-write success still means
-accepted input, rather than an acknowledgment of remote delivery.
 
 New raw UDP packets for an association that is busy or lacks pre-crossing output credit are
 discarded before framer acceptance and counted separately. The port reports its
@@ -1998,23 +1982,17 @@ advanced:
   allow_destinations: []            # always allowed: hosts, `*.domain` wildcards, IPs, CIDRs
   trusted_proxies: []               # ingresses/load balancers whose forwarded client address is believed (IPs, CIDRs)
   forwarded_header: x-forwarded-for # the one header read from a trusted proxy: x-forwarded-for | forwarded
-  shutdown:
-    drain_timeout: 20s              # the shutdown drain budget, first signal to exit (>= 1s; never clamped)
-  governance:
-    max_pending_checkpoints: 20000  # finished governed requests awaiting settlement before new governed admission waits (>= 1; default 1,000 per second of drain_timeout)
 ```
 
-`shutdown.drain_timeout` bounds the whole shutdown drain, from the first SIGTERM (or admin restart) to
-exit. A quarter of it is a reserve: requests are cut at three quarters, then spend is settled, the
-audit tail sealed, the journal flushed and the writer retired inside the reserve. A second signal ends
-the drain at once. The exit is `0` when the writer retired, `75` when every completed request's spend
+The shutdown drain is fixed at 20 s, from the first SIGTERM (or admin restart) to exit; there is no
+config key for it. A quarter of it is a reserve: requests are cut at three quarters, then spend is
+settled, the audit tail sealed, the journal flushed and the writer retired inside the reserve. A
+second signal ends the drain at once. The exit is `0` when the writer retired, `75` when every completed request's spend
 is durable but running requests were cut (each listed on stderr as `open_at_exit`), and `70` when some
-completed spend is not durable (listed on stderr as evidence). `governance.max_pending_checkpoints`
-caps the finished governed requests whose spend still awaits settlement in the store: at the cap, a
-new governed request is refused with `503 durability_unavailable` and `Retry-After: 1` until the
-backlog falls (`busbar_unit_checkpoints_terminal`); running requests never count. Both are
-**boot-time** knobs; a value that does not parse or is out of range refuses boot (BUSBAR-3117) and is
-never clamped.
+completed spend is not durable (listed on stderr as evidence). Governed admission caps the finished
+governed requests whose spend still awaits settlement in the store at a fixed 20,000 (1,000 per
+second of drain); at the cap, a new governed request is refused with `503 durability_unavailable` and `Retry-After: 1` until the
+backlog falls (`busbar_unit_checkpoints_terminal`); running requests never count.
 
 `trusted_proxies` and `forwarded_header` decide **who sent a request** for the login attempt limiter
 and the admin door. A forwarding header is read only when the socket peer is inside
