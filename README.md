@@ -31,7 +31,7 @@ For traffic routed through Busbar, operators can verify, govern, route,
 and record model calls, tool use, and agent delegation before they reach
 approved destinations.
 
-Busbar is a self-hosted, customer-operated static Rust binary. It keeps
+Busbar is a self-hosted, customer-operated, self-contained Rust binary. It keeps
 provider credentials at the boundary, preserves supported native SDK
 workflows, and puts policy, budgets, routing, resilience, and execution
 evidence in one enforcement point.
@@ -351,7 +351,7 @@ The broader execution-boundary model spans three planes:
 The SemVer-protected contract is the runtime: the data-plane HTTP
 surface and supported wire-protocol contracts do not break inside a
 major version. `config.yaml` is an operator artifact outside that
-freeze; changes ship with `busbar --migrate-config` and a loud
+freeze; changes ship with the first-boot migration and a loud
 fail-closed boot rather than silent behavior changes.
 
 Single Rust binary, MSRV 1.97, Apache-2.0. Docs at

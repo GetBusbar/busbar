@@ -468,7 +468,7 @@ A model has a `rate_card` entry present but every tier (input, output, cache_rea
 - **Since:** 1.5.0
 - **Slug:** `deprecated-env-var-honored`
 
-RETIRED. Serving no longer applies deprecated operational environment overrides. Use --migrate-config with the old deployment environment and working directory to capture provider, worker and upstream HTTP settings; old file-overlay selection is migration input only.
+RETIRED. Serving no longer applies deprecated operational environment overrides. Move the provider, worker and upstream HTTP settings they set into config.yaml; old file-overlay selection is read only by the one-time upgrade boot.
 
 **What to do:** Run the 1.6 migration before serving, review and validate its output, then remove the retired variables from launchers. See docs/migration-1.6.md. See BUSBAR-3029.
 
@@ -503,7 +503,7 @@ RETIRED. Nothing emits this code: a metadata host-list entry that names no host 
 
 A provider's `base_url` or `token_url` names a private or loopback address (an RFC 1918, loopback, link-local, CGNAT or unique-local literal, or the `localhost` name), and `advanced.block_private_addresses` is on (the default) and `advanced.allow_destinations` does not name it. The destination guard refuses every request to it, so the provider would fail on its first request rather than at startup. 1.5.5 had no such guard. Emitted once per URL at config load, naming the provider, the key and the host.
 
-**What to do:** Add exactly that host to `advanced.allow_destinations` (`busbar --migrate-config` adds the hosts a provider's plane reports), or point the provider at a public address. Turning `block_private_addresses` off also admits it, and every other private address with it.
+**What to do:** Add exactly that host to `advanced.allow_destinations` (the first-boot migration adds the hosts a provider's plane reports), or point the provider at a public address. Turning `block_private_addresses` off also admits it, and every other private address with it.
 
 <a id="config-rate-card-missing"></a>
 ### BUSBAR-3026 — Declared billable classes have no configured rate
@@ -525,7 +525,7 @@ A plugin declares billable classes for a configured lane, but that lane lacks on
 
 A plane registration (an MCP server under `tools:`, an A2A agent under `agents:`) sets `allow_private`. 1.6.0 has one private-address policy for every outbound connection, `advanced.block_private_addresses` with `advanced.allow_destinations`; a per-registration switch that lifted it for one plugin is retired. The configuration is refused, naming the registration, rather than read with the switch ignored or applied.
 
-**What to do:** Run `busbar --migrate-config`: it removes the key and lists exactly that registration's host in `advanced.allow_destinations`. Or do the same by hand: delete `allow_private` and add the host (or its address) to `advanced.allow_destinations`. A cloud-metadata address stays refused whatever is listed.
+**What to do:** Run the first-boot migration: it removes the key and lists exactly that registration's host in `advanced.allow_destinations`. Or do the same by hand: delete `allow_private` and add the host (or its address) to `advanced.allow_destinations`. A cloud-metadata address stays refused whatever is listed.
 
 <a id="config-legacy-overlay-not-read"></a>
 ### BUSBAR-3028 — A 1.5.5 overlay selector, variable or file is not read (nothing to import)
@@ -536,7 +536,7 @@ A plane registration (an MCP server under `tools:`, an A2A agent under `agents:`
 
 The deployment still carries a 1.5.5 file-overlay input that 1.6 serving does not read: a config.overlay selector or BUSBAR_CONFIG_OVERLAY naming a file that does not exist, an overlay file that holds no settings, a file whose settings this Store has already imported, or a file beside a locked config (which 1.5.5 ignored too). Nothing is lost, so the boot continues; the message names the file and how it was selected.
 
-**What to do:** Remove the leftover input: delete the imported or empty overlay file, and remove BUSBAR_CONFIG_OVERLAY from the launcher. `busbar --migrate-config` removes config.overlay from config.yaml. See docs/migration-1.6.md.
+**What to do:** Remove the leftover input: delete the imported or empty overlay file, and remove BUSBAR_CONFIG_OVERLAY from the launcher. the first-boot migration removes config.overlay from config.yaml. See docs/migration-1.6.md.
 
 <a id="retired-env-var-ignored"></a>
 ### BUSBAR-3029 — A retired launch environment variable is set and IGNORED
@@ -547,7 +547,7 @@ The deployment still carries a 1.5.5 file-overlay input that 1.6 serving does no
 
 busbar 1.6 no longer reads BUSBAR_PROVIDERS, BUSBAR_WORKER_THREADS, BUSBAR_UPSTREAM_HTTP1_ONLY or BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE. A set one has NO effect: the config key (or its default) is in force. Emitted pre-tracing, to stderr, at boot and by --validate.
 
-**What to do:** Run busbar --migrate-config in the old launch environment to write the value into config.yaml, validate, then remove the variable from the launcher.
+**What to do:** Write the value into config.yaml, validate, then remove the variable from the launcher.
 
 <a id="config-operator-inert"></a>
 ### BUSBAR-3030 — An auth plugin states the operator credential but is not first-party (ignored)
@@ -1401,15 +1401,15 @@ RETIRED. The breaker failure-recording path read an unexpected cell state (not C
 **What to do:** Nothing emits this code. The one breaker keeps its cell state behind a lock and answers an unreachable encoding silently, with the same fail-safe result.
 
 <a id="metadata-protection-disabled"></a>
-### BUSBAR-5045 — Cloud-metadata SSRF protection DISABLED (allow_all_metadata is set)
+### BUSBAR-5045 — Cloud-metadata SSRF protection DISABLED (allow_all_metadata is set) — RETIRED *(retired)*
 
 - **Severity:** actionable
 - **Since:** 1.6.0
 - **Slug:** `metadata-protection-disabled`
 
-The deployment set the nuclear `allow_all_metadata` escape hatch, so busbar's cloud-metadata SSRF guard is OFF and EVERY cloud-metadata endpoint (e.g. 169.254.169.254, the GCP/Azure metadata hosts) is reachable through the proxy. That is a security-relevant degradation: a crafted upstream URL or a compromised plugin can reach the instance's credential endpoint. Emitted once at boot.
+RETIRED. Nothing emits this code: 1.6.0 refuses `security.allow_all_metadata` at startup (BUSBAR-3136), and cloud metadata is refused for every outbound connection, so the guard can no longer be disabled.
 
-**What to do:** Remove `allow_all_metadata` unless a specific, understood need requires it. If metadata access is genuinely needed, scope it with `security.blocked_metadata_hosts` instead of disabling the guard wholesale (`--print-metadata-blocklist` shows the effective list).
+**What to do:** Nothing emits this code. See BUSBAR-3136.
 
 <a id="plane-usage-unread"></a>
 ### BUSBAR-5046 — Provider usage not read (a unit settled without billing its final stated usage)

@@ -2562,37 +2562,6 @@
         ],
         "type": "object"
       },
-      "Dropped": {
-        "properties": {
-          "boot_nonce_unavailable": {
-            "$ref": "#/components/schemas/TelemetryExactU64"
-          },
-          "histogram_capacity": {
-            "$ref": "#/components/schemas/TelemetryExactU64"
-          },
-          "integer_overflow": {
-            "$ref": "#/components/schemas/TelemetryExactU64"
-          },
-          "invalid_duration": {
-            "$ref": "#/components/schemas/TelemetryExactU64"
-          },
-          "series_capacity": {
-            "$ref": "#/components/schemas/TelemetryExactU64"
-          },
-          "unregistered_labels": {
-            "$ref": "#/components/schemas/TelemetryExactU64"
-          }
-        },
-        "required": [
-          "invalid_duration",
-          "integer_overflow",
-          "series_capacity",
-          "boot_nonce_unavailable",
-          "histogram_capacity",
-          "unregistered_labels"
-        ],
-        "type": "object"
-      },
       "EffectiveConfigView": {
         "description": "The EFFECTIVE config snapshot (`GET /api/v1/admin/config`): the running configuration as busbar\nresolved it, for drift detection (compare against your desired config) and one-shot inspection.\nComposed from the same REDACTED reads as the individual endpoints (auth chain names, pool/model/\nprovider topology, hook definitions, global-hook wiring), so it carries NO secret: no client\ntokens, no provider keys, no hook payloads. Additive-only; the source-layer annotation (base vs\noverlay) lands with the config overlay substrate.",
         "properties": {
@@ -3354,58 +3323,6 @@
         ],
         "type": "object"
       },
-      "Identity": {
-        "properties": {
-          "bins": {
-            "description": "Exclusive bins corresponding to `upper_bounds_ms`; their sum equals `count`.",
-            "items": {
-              "$ref": "#/components/schemas/TelemetryExactU64"
-            },
-            "maxItems": 16,
-            "minItems": 16,
-            "type": "array"
-          },
-          "client_errors": {
-            "$ref": "#/components/schemas/TelemetryExactU64",
-            "description": "Observations whose existing outcome is `client_error` (HTTP 4xx)."
-          },
-          "count": {
-            "$ref": "#/components/schemas/TelemetryExactU64"
-          },
-          "errors": {
-            "$ref": "#/components/schemas/TelemetryExactU64",
-            "description": "Observations whose existing outcome is `error` or `exhausted` (including HTTP 503)."
-          },
-          "ingress_protocol": {
-            "type": "string"
-          },
-          "phase": {
-            "$ref": "#/components/schemas/Phase"
-          },
-          "plane": {
-            "type": "string"
-          },
-          "pool": {
-            "type": "string"
-          },
-          "sum_us": {
-            "$ref": "#/components/schemas/TelemetryExactU64",
-            "description": "Cumulative sum of individual durations truncated to whole microseconds."
-          }
-        },
-        "required": [
-          "plane",
-          "phase",
-          "pool",
-          "ingress_protocol",
-          "count",
-          "errors",
-          "client_errors",
-          "sum_us",
-          "bins"
-        ],
-        "type": "object"
-      },
       "InfoView": {
         "description": "The compiled-in plugin catalog + topology + uptime returned by `GET /api/v1/admin/info`. Powers\nversion negotiation for tooling AND the compliance-by-compilation proof: `auth_modules`/`hook_plugins` reflect\nthe ACTUAL binary (feature-gated at compile time), not config, so `--no-default-features` shows a\nprovably smaller surface. No LLM content, ever.",
         "properties": {
@@ -3428,7 +3345,7 @@
             }
           },
           "process_boot_nonce": {
-            "description": "Random 128-bit process generation, shared with `GET /telemetry` and available even when\nmetrics are disabled. Stable across configuration reloads; a new process generates a new\nnonce. Null when OS randomness failed; clients must not fabricate a restart identity.",
+            "description": "Random 128-bit process generation, shared with the `/metrics` build_info series and available even when\nmetrics are disabled. Stable across configuration reloads; a new process generates a new\nnonce. Null when OS randomness failed; clients must not fabricate a restart identity.",
             "pattern": "^[0-9a-f]{32}$",
             "type": [
               "string",
@@ -5380,14 +5297,6 @@
         ],
         "type": "object"
       },
-      "Phase": {
-        "description": "LlmProducerDrive: producer drive returned; buffered response bytes may still be draining. MountedResponseReady: mounted handler returned its response; its body may still be streaming.",
-        "enum": [
-          "LlmProducerDrive",
-          "MountedResponseReady"
-        ],
-        "type": "string"
-      },
       "PlaneFactsClass": {
         "description": "One billable class a plane ledgers.",
         "properties": {
@@ -6595,78 +6504,6 @@
         },
         "required": [
           "backup_ref"
-        ],
-        "type": "object"
-      },
-      "TelemetryExactU64": {
-        "description": "Unsigned 64-bit integer as an exact decimal string.",
-        "maxLength": 20,
-        "pattern": "^(0|[1-9][0-9]*)$",
-        "type": "string"
-      },
-      "TelemetryView": {
-        "description": "Cumulative metrics for one process generation, bounded to 32 identities and 64 KiB.\nThis is a process snapshot, not a time window or a history query.",
-        "properties": {
-          "captured_at_unix_ms": {
-            "$ref": "#/components/schemas/TelemetryExactU64",
-            "description": "Engine wall-clock Unix milliseconds sampled while this snapshot is captured. Distinct\nfrom monotonic uptime and from the consumer's receive time; wall time may move backwards."
-          },
-          "dropped": {
-            "$ref": "#/components/schemas/Dropped",
-            "description": "Cumulative losses. Each identity's count/sum/bins is coherent; these diagnostic counters\nare not a single atomic snapshot with one another or with every identity."
-          },
-          "identities": {
-            "items": {
-              "$ref": "#/components/schemas/Identity"
-            },
-            "maxItems": 32,
-            "type": "array"
-          },
-          "omitted_identities": {
-            "$ref": "#/components/schemas/TelemetryExactU64",
-            "description": "Identities omitted for the row cap, oversized labels, or the response byte cap."
-          },
-          "process_boot_nonce": {
-            "description": "Random 128-bit process nonce. Stable across scrapes and configuration reloads.",
-            "pattern": "^[0-9a-f]{32}$",
-            "type": "string"
-          },
-          "truncated": {
-            "type": "boolean"
-          },
-          "upper_bounds_ms": {
-            "description": "Inclusive upper edge for each exclusive bin; final null means positive infinity.",
-            "items": {
-              "format": "uint64",
-              "minimum": 0,
-              "type": [
-                "integer",
-                "null"
-              ],
-              "x-busbar-exact-number": {
-                "client": "lossless-number-token-v1; preserve raw token before binary64 conversion",
-                "integer_format": "uint64",
-                "representation": "json-integer-token"
-              }
-            },
-            "maxItems": 16,
-            "minItems": 16,
-            "type": "array"
-          },
-          "uptime_since_start_ms": {
-            "$ref": "#/components/schemas/TelemetryExactU64",
-            "description": "Monotonic milliseconds since shared process-generation initialization (first use), not OS\nprocess creation. Reading `GET /info` may establish this epoch before metrics are enabled."
-          }
-        },
-        "required": [
-          "process_boot_nonce",
-          "uptime_since_start_ms",
-          "captured_at_unix_ms",
-          "upper_bounds_ms",
-          "identities",
-          "omitted_identities",
-          "truncated",
-          "dropped"
         ],
         "type": "object"
       },
@@ -27088,127 +26925,6 @@
         "x-busbar-since": "1.6.0"
       }
     },
-    "/api/v1/admin/telemetry": {
-      "get": {
-        "description": "An admin read of already-collected request-phase metrics. At most 32 identities and 65536 JSON bytes; omitted identities are explicitly counted. Counts, microsecond sums, bins and uptime are exact decimal strings. Bins are exclusive, not Prometheus cumulative buckets. The process boot nonce survives config reloads and scrapes; uptime_since_start_ms is monotonic time since shared process generation initialization (first info read or recorder setup), not OS process creation. LlmProducerDrive ends at producer completion; MountedResponseReady ends when the response is returned, before its body completes. Neither phase measures completed client delivery. This opens no outbound connection.",
-        "operationId": "GetTelemetry",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/TelemetryView"
-                }
-              }
-            },
-            "description": "A bounded cumulative snapshot; no-store",
-            "headers": {
-              "Cache-Control": {
-                "description": "Administrative responses, including credential issuance and replay, must not be stored.",
-                "schema": {
-                  "const": "no-store",
-                  "type": "string"
-                }
-              }
-            }
-          },
-          "401": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "Missing/invalid admin credential (error code `unauthorized`)",
-            "headers": {
-              "Cache-Control": {
-                "description": "Administrative responses, including credential issuance and replay, must not be stored.",
-                "schema": {
-                  "const": "no-store",
-                  "type": "string"
-                }
-              }
-            }
-          },
-          "413": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "Admin request exceeds the listener body limit (request_too_large)",
-            "headers": {
-              "Cache-Control": {
-                "description": "Administrative responses, including credential issuance and replay, must not be stored.",
-                "schema": {
-                  "const": "no-store",
-                  "type": "string"
-                }
-              }
-            }
-          },
-          "503": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "`unavailable`: telemetry collection is disabled, unavailable, or could not produce a bounded snapshot. The body is the admin error envelope with code `unavailable`",
-            "headers": {
-              "Cache-Control": {
-                "description": "Administrative responses, including credential issuance and replay, must not be stored.",
-                "schema": {
-                  "const": "no-store",
-                  "type": "string"
-                }
-              },
-              "Retry-After": {
-                "description": "Delay in seconds when supplied by the listener's rate/backpressure refusal; absence makes no retry promise.",
-                "schema": {
-                  "minimum": 0,
-                  "type": "integer"
-                }
-              }
-            }
-          },
-          "default": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "Other typed administrative refusal. Branch on known codes while preserving unknown strings; retry depends on operation semantics.",
-            "headers": {
-              "Cache-Control": {
-                "description": "Administrative responses, including credential issuance and replay, must not be stored.",
-                "schema": {
-                  "const": "no-store",
-                  "type": "string"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "adminToken": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "summary": "Bounded request-phase telemetry snapshot",
-        "x-busbar-required-scope": "read-only",
-        "x-busbar-since": "1.6.0"
-      }
-    },
     "/api/v1/admin/tools": {
       "get": {
         "operationId": "GetTools",
@@ -30388,11 +30104,6 @@
         "bound": true,
         "name": "recovery_resolve",
         "scope": "full"
-      },
-      {
-        "bound": true,
-        "name": "get_telemetry",
-        "scope": "read-only"
       },
       {
         "bound": true,
@@ -36567,7 +36278,6 @@
                       "amend_rate_history",
                       "recovery_list",
                       "recovery_resolve",
-                      "get_telemetry",
                       "get_trust",
                       "trust_approve",
                       "trust_revoke",
@@ -37031,7 +36741,7 @@
               "string",
               "null"
             ],
-            "description": "Random 128-bit process generation, shared with `GET /telemetry` and available even when\nmetrics are disabled. Stable across configuration reloads; a new process generates a new\nnonce. Null when OS randomness failed; clients must not fabricate a restart identity.",
+            "description": "Random 128-bit process generation, shared with the `/metrics` build_info series and available even when\nmetrics are disabled. Stable across configuration reloads; a new process generates a new\nnonce. Null when OS randomness failed; clients must not fabricate a restart identity.",
             "pattern": "^[0-9a-f]{32}$"
           },
           "topology": {
@@ -41046,169 +40756,6 @@
           "verdict_landed",
           "verdict_not_landed",
           "settled"
-        ]
-      },
-      "TelemetryView": {
-        "type": "object",
-        "properties": {
-          "process_boot_nonce": {
-            "type": "string",
-            "description": "Random 128-bit process nonce. Stable across scrapes and configuration reloads.",
-            "pattern": "^[0-9a-f]{32}$"
-          },
-          "uptime_since_start_ms": {
-            "$ref": "#/components/schemas/TelemetryExactU64",
-            "description": "Monotonic milliseconds since shared process-generation initialization (first use), not OS\nprocess creation. Reading `GET /info` may establish this epoch before metrics are enabled."
-          },
-          "captured_at_unix_ms": {
-            "$ref": "#/components/schemas/TelemetryExactU64",
-            "description": "Engine wall-clock Unix milliseconds sampled while this snapshot is captured. Distinct\nfrom monotonic uptime and from the consumer's receive time; wall time may move backwards."
-          },
-          "upper_bounds_ms": {
-            "type": "array",
-            "items": {
-              "type": [
-                "integer",
-                "null"
-              ],
-              "format": "uint64",
-              "minimum": 0,
-              "x-busbar-exact-number": {
-                "representation": "json-integer-token",
-                "integer_format": "uint64",
-                "client": "lossless-number-token-v1; preserve raw token before binary64 conversion"
-              }
-            },
-            "minItems": 16,
-            "maxItems": 16,
-            "description": "Inclusive upper edge for each exclusive bin; final null means positive infinity."
-          },
-          "identities": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/Identity"
-            },
-            "maxItems": 32
-          },
-          "omitted_identities": {
-            "$ref": "#/components/schemas/TelemetryExactU64",
-            "description": "Identities omitted for the row cap, oversized labels, or the response byte cap."
-          },
-          "truncated": {
-            "type": "boolean"
-          },
-          "dropped": {
-            "$ref": "#/components/schemas/Dropped",
-            "description": "Cumulative losses. Each identity's count/sum/bins is coherent; these diagnostic counters\nare not a single atomic snapshot with one another or with every identity."
-          }
-        },
-        "required": [
-          "process_boot_nonce",
-          "uptime_since_start_ms",
-          "captured_at_unix_ms",
-          "upper_bounds_ms",
-          "identities",
-          "omitted_identities",
-          "truncated",
-          "dropped"
-        ],
-        "description": "Cumulative metrics for one process generation, bounded to 32 identities and 64 KiB.\nThis is a process snapshot, not a time window or a history query."
-      },
-      "TelemetryExactU64": {
-        "type": "string",
-        "pattern": "^(0|[1-9][0-9]*)$",
-        "maxLength": 20,
-        "description": "Unsigned 64-bit integer as an exact decimal string."
-      },
-      "Identity": {
-        "type": "object",
-        "properties": {
-          "plane": {
-            "type": "string"
-          },
-          "phase": {
-            "$ref": "#/components/schemas/Phase"
-          },
-          "pool": {
-            "type": "string"
-          },
-          "ingress_protocol": {
-            "type": "string"
-          },
-          "count": {
-            "$ref": "#/components/schemas/TelemetryExactU64"
-          },
-          "errors": {
-            "$ref": "#/components/schemas/TelemetryExactU64",
-            "description": "Observations whose existing outcome is `error` or `exhausted` (including HTTP 503)."
-          },
-          "client_errors": {
-            "$ref": "#/components/schemas/TelemetryExactU64",
-            "description": "Observations whose existing outcome is `client_error` (HTTP 4xx)."
-          },
-          "sum_us": {
-            "$ref": "#/components/schemas/TelemetryExactU64",
-            "description": "Cumulative sum of individual durations truncated to whole microseconds."
-          },
-          "bins": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/TelemetryExactU64"
-            },
-            "minItems": 16,
-            "maxItems": 16,
-            "description": "Exclusive bins corresponding to `upper_bounds_ms`; their sum equals `count`."
-          }
-        },
-        "required": [
-          "plane",
-          "phase",
-          "pool",
-          "ingress_protocol",
-          "count",
-          "errors",
-          "client_errors",
-          "sum_us",
-          "bins"
-        ]
-      },
-      "Phase": {
-        "type": "string",
-        "enum": [
-          "LlmProducerDrive",
-          "MountedResponseReady"
-        ],
-        "description": "LlmProducerDrive: producer drive returned; buffered response bytes may still be draining. MountedResponseReady: mounted handler returned its response; its body may still be streaming."
-      },
-      "Dropped": {
-        "type": "object",
-        "properties": {
-          "invalid_duration": {
-            "$ref": "#/components/schemas/TelemetryExactU64"
-          },
-          "integer_overflow": {
-            "$ref": "#/components/schemas/TelemetryExactU64"
-          },
-          "series_capacity": {
-            "$ref": "#/components/schemas/TelemetryExactU64"
-          },
-          "boot_nonce_unavailable": {
-            "$ref": "#/components/schemas/TelemetryExactU64"
-          },
-          "histogram_capacity": {
-            "$ref": "#/components/schemas/TelemetryExactU64"
-          },
-          "unregistered_labels": {
-            "$ref": "#/components/schemas/TelemetryExactU64"
-          }
-        },
-        "required": [
-          "invalid_duration",
-          "integer_overflow",
-          "series_capacity",
-          "boot_nonce_unavailable",
-          "histogram_capacity",
-          "unregistered_labels"
         ]
       },
       "TrustListView": {
@@ -65192,127 +64739,6 @@
           }
         },
         "operationId": "PostLedgerRecoveryResolve"
-      }
-    },
-    "/api/v1/admin/telemetry": {
-      "get": {
-        "summary": "Bounded request-phase telemetry snapshot",
-        "description": "An admin read of already-collected request-phase metrics. At most 32 identities and 65536 JSON bytes; omitted identities are explicitly counted. Counts, microsecond sums, bins and uptime are exact decimal strings. Bins are exclusive, not Prometheus cumulative buckets. The process boot nonce survives config reloads and scrapes; uptime_since_start_ms is monotonic time since shared process generation initialization (first info read or recorder setup), not OS process creation. LlmProducerDrive ends at producer completion; MountedResponseReady ends when the response is returned, before its body completes. Neither phase measures completed client delivery. This opens no outbound connection.",
-        "security": [
-          {
-            "adminToken": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "x-busbar-required-scope": "read-only",
-        "x-busbar-since": "1.6.0",
-        "responses": {
-          "200": {
-            "description": "A bounded cumulative snapshot; no-store",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/TelemetryView"
-                }
-              }
-            },
-            "headers": {
-              "Cache-Control": {
-                "description": "Administrative responses, including credential issuance and replay, must not be stored.",
-                "schema": {
-                  "type": "string",
-                  "const": "no-store"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Missing/invalid admin credential (error code `unauthorized`)",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "headers": {
-              "Cache-Control": {
-                "description": "Administrative responses, including credential issuance and replay, must not be stored.",
-                "schema": {
-                  "type": "string",
-                  "const": "no-store"
-                }
-              }
-            }
-          },
-          "503": {
-            "description": "`unavailable`: telemetry collection is disabled, unavailable, or could not produce a bounded snapshot. The body is the admin error envelope with code `unavailable`",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "headers": {
-              "Retry-After": {
-                "description": "Delay in seconds when supplied by the listener's rate/backpressure refusal; absence makes no retry promise.",
-                "schema": {
-                  "type": "integer",
-                  "minimum": 0
-                }
-              },
-              "Cache-Control": {
-                "description": "Administrative responses, including credential issuance and replay, must not be stored.",
-                "schema": {
-                  "type": "string",
-                  "const": "no-store"
-                }
-              }
-            }
-          },
-          "413": {
-            "description": "Admin request exceeds the listener body limit (request_too_large)",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "headers": {
-              "Cache-Control": {
-                "description": "Administrative responses, including credential issuance and replay, must not be stored.",
-                "schema": {
-                  "type": "string",
-                  "const": "no-store"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "Other typed administrative refusal. Branch on known codes while preserving unknown strings; retry depends on operation semantics.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "headers": {
-              "Cache-Control": {
-                "description": "Administrative responses, including credential issuance and replay, must not be stored.",
-                "schema": {
-                  "type": "string",
-                  "const": "no-store"
-                }
-              }
-            }
-          }
-        },
-        "operationId": "GetTelemetry"
       }
     },
     "/api/v1/admin/trust": {

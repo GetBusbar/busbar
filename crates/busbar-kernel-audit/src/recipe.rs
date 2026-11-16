@@ -13,6 +13,11 @@ pub const DIGEST_RECIPE_V6: &str = "busbar.audit.digest.v6";
 /// quantities for every line, whole or fractional, plus the per-unit facts `/records` serves.
 pub const DIGEST_RECIPE_V7: &str = "busbar.audit.digest.v7";
 
+/// The link-only line's recipe (SEALING-FIX §3.1, ruling J8): SHA-256 from the crypto seam over the
+/// content first, then `linked_ms`, `seq` and the predecessor's fingerprint. The line carries no
+/// signature; a page stamp vouches for it ([`crate::stamp`]).
+pub const LINK_RECIPE: &str = busbar_contract::crypto::link::RECIPE;
+
 /// The unchanged legacy recipe with a chain-local rate-card ordinal.
 pub const DIGEST_RECIPE_V4: &str = "busbar.audit.digest.v4";
 
@@ -49,6 +54,10 @@ pub enum Recipe {
     /// The recipe this build seals under: every quantity as exact decimal text, plus
     /// [`crate::record::UnitFacts`] after the `v6` fields.
     V7,
+    /// The link-only line ([`LINK_RECIPE`], journal tag `audit.v8`): `v7`'s content, hashed first,
+    /// then [`crate::record::AuditRecord::linked_ms`], `seq` and the predecessor's 32 raw bytes.
+    /// Signed by no line; covered by a page stamp.
+    V8,
 }
 
 impl Recipe {
@@ -61,7 +70,20 @@ impl Recipe {
             Recipe::V5 => DIGEST_RECIPE,
             Recipe::V6 => DIGEST_RECIPE_V6,
             Recipe::V7 => DIGEST_RECIPE_V7,
+            Recipe::V8 => LINK_RECIPE,
         }
+    }
+
+    /// Whether the record carries [`crate::record::UnitFacts`] (`v7` on).
+    #[must_use]
+    pub fn carries_unit_facts(&self) -> bool {
+        matches!(self, Recipe::V7 | Recipe::V8)
+    }
+
+    /// Whether this is the link-only line: no per-line signature, a stamp vouches for it.
+    #[must_use]
+    pub fn is_link(&self) -> bool {
+        matches!(self, Recipe::V8)
     }
 
     /// Whether the recipe frames the incarnation, the node and the hook heads (`v4` on).
@@ -73,7 +95,7 @@ impl Recipe {
     /// Whether the recipe frames each quantity as exact decimal text (`v6` on).
     #[must_use]
     pub(crate) fn exact_quantities(&self) -> bool {
-        matches!(self, Recipe::V6 | Recipe::V7)
+        matches!(self, Recipe::V6 | Recipe::V7 | Recipe::V8)
     }
 }
 
@@ -119,6 +141,11 @@ pub trait FieldSink {
     fn text_fmt(&mut self, name: &'static str, value: std::fmt::Arguments<'_>);
     /// A number field.
     fn num(&mut self, name: &'static str, value: u64);
+    /// A 32-byte field (a fingerprint): the link recipe frames the raw bytes; everything that
+    /// prints a field prints it as 64 lowercase hex characters, which is this default.
+    fn bytes32(&mut self, name: &'static str, value: &[u8; 32]) {
+        self.text_fmt(name, format_args!("{}", crate::record::HexBytes(value)));
+    }
 }
 
 /// The record chain's digest takes the fields as framed bytes.
@@ -137,13 +164,28 @@ impl FieldSink for crate::digest::Digest {
 }
 
 /// EVERY FIELD THAT GOES INTO ONE RECORD'S DIGEST, IN ORDER, handed to `f`.
+///
+/// The link line ([`Recipe::V8`]) takes its content first and its position last (the trailer of
+/// [`crate::link`]), so its content can be hashed before the chain is read; every older recipe
+/// starts with `prev_hash` and `seq`.
 pub fn visit_fields(record: &crate::record::AuditRecord, f: &mut impl FieldSink) {
+    if record.recipe.is_link() {
+        visit_content(record, f);
+        crate::link::visit_trailer(record.linked_ms, record.seq, &record.prev_hash, f);
+        return;
+    }
+    f.text("prev_hash", &record.prev_hash);
+    f.num("seq", record.seq);
+    visit_content(record, f);
+}
+
+/// Every field of one record's digest after its position, in order: what [`crate::link`] hashes
+/// before the chain is read.
+pub(crate) fn visit_content(record: &crate::record::AuditRecord, f: &mut impl FieldSink) {
     use crate::record::{
         finish_tag, subject_tag, HexBytes, OutcomeTag, QuantitySourceTag, Subject,
     };
 
-    f.text("prev_hash", &record.prev_hash);
-    f.num("seq", record.seq);
     f.text("subject_tag", subject_tag(&record.subject));
     match &record.subject {
         Subject::PrincipalId(p) => f.text("subject_value", p),
@@ -226,7 +268,7 @@ pub fn visit_fields(record: &crate::record::AuditRecord, f: &mut impl FieldSink)
         } => {
             f.num("rate_card_version", legacy_rate_card_version);
         }
-        Recipe::V5 | Recipe::V6 | Recipe::V7 => {
+        Recipe::V5 | Recipe::V6 | Recipe::V7 | Recipe::V8 => {
             f.num(
                 "rate_card_key_present",
                 u64::from(record.usage.rate_card_version.is_some()),
@@ -274,7 +316,7 @@ pub fn visit_fields(record: &crate::record::AuditRecord, f: &mut impl FieldSink)
         "correlation_hash",
         record.correlation_hash.as_deref().unwrap_or(""),
     );
-    if matches!(record.recipe, Recipe::V7) {
+    if record.recipe.carries_unit_facts() {
         visit_unit_facts(&record.unit, f);
     }
 }
@@ -299,8 +341,13 @@ fn visit_unit_facts(unit: &crate::record::UnitFacts, f: &mut impl FieldSink) {
 }
 
 /// Hash one record under the record chain's framing, field by field, as [`visit_fields`] reads it.
+/// A link line ([`Recipe::V8`]) is hashed by the link recipe instead
+/// ([`crate::link::line_fingerprint`]), rendered as the same 64 lowercase hex characters.
 #[must_use]
 pub fn digest_record(record: &crate::record::AuditRecord) -> String {
+    if record.recipe.is_link() {
+        return hex::encode(crate::link::line_fingerprint(record).0);
+    }
     let mut d = crate::digest::Digest::new(crate::digest::Framing::LengthPrefixed);
     visit_fields(record, &mut d);
     d.finish()

@@ -17,7 +17,6 @@ const OPTION_METADATA_BLOCKLIST: &str = "--print-metadata-blocklist";
 const OPTION_VALIDATE: &str = "--validate";
 const OPTION_GENERATE_SIGNING_KEY: &str = "--generate-signing-key";
 const OPTION_LIST_PLUGINS: &str = "--list-plugins";
-const OPTION_MIGRATE_CONFIG: &str = "--migrate-config";
 const OPTION_HELP: &str = "--help";
 const OPTION_HELP_SHORT: &str = "-h";
 const OPTION_CONFIG: &str = "--config";
@@ -45,14 +44,6 @@ USAGE:
     busbar --list-plugins
                         manifest-only inventory of the plugins dir (name/alias/kind/version,
                         signature verdict, load status + exact reason); never loads plugin code
-    busbar --migrate-config <old-config.yaml>
-                        convert supported historical configuration to the current 1.6 shape;
-                        prints YAML to stdout and a change summary to stderr. Source files
-                        remain unchanged; literal secrets may create protected, retry-safe
-                        secret files beside the source configuration. Review reported decisions
-    busbar --config <migrated.yaml> --migrate-overlay <old-config.yaml>
-                        offline import of the actual 1.5.5 overlay into the configured durable Store;
-                        source files remain unchanged; matching retries are safe; exits without serving
     busbar --principal-transition <spec-or-plan.json>
            --transition-action inspect|prepare|check|apply|verify|initialize-fresh|
                                initialize-fresh-and-serve|reauthorize
@@ -184,7 +175,7 @@ pub(crate) enum Parsed {
 }
 
 /// The command line, read once by one lexopt parser. Every option takes its own value, so a value
-/// spelled like a flag (`--migrate-config --config`) is never read as one.
+/// spelled like a flag (`--config --providers`) is never read as one.
 #[derive(Default)]
 pub(crate) struct Argv {
     pub(crate) config: Option<String>,
@@ -192,8 +183,6 @@ pub(crate) struct Argv {
     pub(crate) ignore_overlay: bool,
     /// Every other argument, in order: the first one is the command.
     pub(crate) words: Vec<String>,
-    /// The path after a leading `--migrate-config`.
-    migrate_path: Option<String>,
     /// The principal-transition values, in `principal_transition::FLAGS` order.
     pub(crate) transition: [Option<String>; 4],
     /// The first malformed option; nothing runs past it.
@@ -236,13 +225,6 @@ impl Argv {
                 }
                 (OPTION_PROVIDERS, _) => {
                     argv.providers = Some(argv.value(&mut parser, PATH_VALUES, false));
-                }
-                (OPTION_MIGRATE_CONFIG | super::overlay_migrate::FLAG, _) => {
-                    let path = parser.value().ok().and_then(|path| path.into_string().ok());
-                    if argv.words.is_empty() && name == OPTION_MIGRATE_CONFIG {
-                        argv.migrate_path = path;
-                    }
-                    argv.words.push(name);
                 }
                 _ => match parser.optional_value() {
                     Some(value) => argv
@@ -290,9 +272,7 @@ pub(crate) fn handle_cli_flags() -> Parsed {
 fn ordinary_cli_flags() -> Option<i32> {
     let argv = argv();
     // A maintenance mode owns the whole command line; boot runs it once the Store is open.
-    let maintenance = super::overlay_migrate::command(std::env::args().skip(1))
-        .map(|overlay| overlay.is_some())
-        .and_then(|overlay| Ok(overlay || super::principal_transition::command(argv)?.is_some()));
+    let maintenance = super::principal_transition::command(argv).map(|command| command.is_some());
     match maintenance {
         Ok(true) => return None,
         Ok(false) => {}
@@ -380,7 +360,6 @@ fn ordinary_cli_flags() -> Option<i32> {
         Some(OPTION_VALIDATE) => Some(validate_config_command()),
         Some(OPTION_GENERATE_SIGNING_KEY) => Some(generate_signing_key_command()),
         Some(OPTION_LIST_PLUGINS) => Some(list_plugins_command()),
-        Some(OPTION_MIGRATE_CONFIG) => Some(migrate_config_command(argv.migrate_path.clone())),
         Some(OPTION_HELP | OPTION_HELP_SHORT) => {
             print!("{}", render_help(env!("CARGO_PKG_VERSION"), &help_rows()));
             Some(EXIT_SUCCESS)
@@ -748,110 +727,6 @@ fn list_plugins_command() -> i32 {
         );
     }
     EXIT_SUCCESS
-}
-
-fn migrate_config_command(path: Option<String>) -> i32 {
-    let Some(path) = path else {
-        eprintln!("[error] {}", diagnostics::coded::migrate_path_missing());
-        return EXIT_USAGE;
-    };
-    let raw = match std::fs::read_to_string(&path) {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!(
-                "[error] {}",
-                diagnostics::coded::migrate_source_unreadable(&path, e)
-            );
-            return EXIT_FAILURE;
-        }
-    };
-
-    let working_directory = match std::env::current_dir() {
-        Ok(directory) => directory,
-        Err(error) => {
-            eprintln!(
-                "[error] {}",
-                diagnostics::coded::migrate_launch_directory(error)
-            );
-            return EXIT_FAILURE;
-        }
-    };
-    let captured = match super::config_migrate::capture_environment(
-        &raw,
-        &working_directory,
-        argv().providers.as_deref(),
-        |name| std::env::var_os(name),
-    ) {
-        Ok(captured) => captured,
-        Err(error) => {
-            eprintln!("[error] {}", diagnostics::coded::migrate_failed(error));
-            return EXIT_FAILURE;
-        }
-    };
-    let raw = captured.yaml;
-    let (raw, captured_overlay_store) =
-        match super::overlay_migrate::capture_store(&raw, std::path::Path::new(&path)) {
-            Ok(captured) => captured,
-            Err(error) => {
-                eprintln!("[error] {}", diagnostics::coded::migrate_failed(error));
-                return EXIT_FAILURE;
-            }
-        };
-    let host =
-        crate::root::config_migrate::RootHost::for_document(&raw, std::path::Path::new(&path));
-    match busbar_migrations::config::migrate::migrate_config_with(&raw, &host) {
-        Ok(mut out) => {
-            out.changes.splice(0..0, captured.changes);
-            out.warnings.extend(captured.warnings);
-            if captured_overlay_store {
-                out.changes.insert(0, "store: captured the actual 1.5.5 overlay Store selection in the new base YAML; original configuration and overlay preserved".into());
-            }
-            print!("{}", out.yaml);
-            eprintln!(
-                "migrated '{path}' to the {} config shape.",
-                config::CONFIG_TARGET_VERSION
-            );
-            if !out.changes.is_empty() {
-                eprintln!(
-                    "
-CHANGES ({}):",
-                    out.changes.len()
-                );
-                for c in &out.changes {
-                    eprintln!("  - {c}");
-                }
-            }
-            if !out.warnings.is_empty() {
-                eprintln!(
-                    "
-WARNINGS ({}) - semantic flips needing review:",
-                    out.warnings.len()
-                );
-                for w in &out.warnings {
-                    eprintln!("  ! {w}");
-                }
-            }
-            if !out.todos.is_empty() {
-                eprintln!(
-                    "
-TODO ({}) - a human must decide:",
-                    out.todos.len()
-                );
-                for t in &out.todos {
-                    eprintln!("  * {t}");
-                }
-            }
-            eprintln!(
-                "
-Review the output, then run `busbar --config <migrated.yaml> --validate` before deploying."
-            );
-            EXIT_SUCCESS
-        }
-        Err(e) => {
-            eprintln!("[error] {}", diagnostics::coded::migrate_failed(e));
-            EXIT_FAILURE
-        }
-    }
 }
 
 pub(crate) fn resolve_config_path(cli: Option<&str>) -> String {

@@ -1,36 +1,20 @@
 ---
-title: "BUSBAR-3404: --migrate-config refused the file"
+title: "BUSBAR-3404: The retired migration command refused the file — RETIRED"
 description: "What Busbar error BUSBAR-3404 means, why it happens, and how to fix it."
 slug: docs/1.6/errors/BUSBAR-3404
 ---
 
 **Area:** Config (3xxx) · **Severity:** fatal · **Since:** 1.6.0
 
-## Message
-
-```text
-BUSBAR-3404: --migrate-config failed: <reason>. See https://getbusbar.com/docs/1.6/errors/BUSBAR-3404
-```
+> **Retired.** Busbar no longer reports this code. The page stays so an old log line still resolves; the code is never reused.
 
 ## What it means
 
-The old config could not be converted mechanically: it is not valid YAML, it has a shape no busbar release accepted, or it carries a value the migration cannot carry forward without guessing. The reason follows the code. Nothing was printed to stdout, so no half-migrated config can be deployed by accident.
+RETIRED. Nothing emits this code: the retired migration command is gone in 1.6.0; the first boot of a 1.5.5 config migrates it in place and keeps a `config.yaml.1.5.5` backup beside it. The number is kept so a log line from a pre-release build still resolves to this page.
 
 ## How to fix it
 
-Fix the reason the message names in the OLD file (or capture the setting by hand), then run the migration again. docs/migration-1-6.md lists every key the migration rewrites.
-
-## Example
-
-```text
-busbar --migrate-config not-yaml.txt
-```
-
-Busbar reports:
-
-```text
-BUSBAR-3404: --migrate-config failed: config is not a YAML mapping. See https://getbusbar.com/docs/1.6/errors/BUSBAR-3404
-```
+Nothing emits this code. Start busbar on the 1.5.5 config.yaml; the boot migrates it. See docs/migration-1.6.md.
 
 ---
 

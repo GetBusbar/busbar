@@ -52,12 +52,34 @@ pub struct StagedRun {
     owner: Arc<()>,
     ticket: u64,
     records: Arc<[Record]>,
+    /// The chain hash this process sealed for each record, in order (SHUTDOWN-HANG F1).
+    hashes: Arc<[[u8; 32]]>,
     bytes: usize,
 }
 impl StagedRun {
     pub fn records(&self) -> &[Record] {
         &self.records
     }
+    /// The evidence this process holds for each original of the run: its sequence and the chain
+    /// hash it sealed. It is evidence of a journal original only once `confirm` returned Ok.
+    pub fn carried(&self) -> impl Iterator<Item = Carried> + '_ {
+        self.records
+            .iter()
+            .zip(self.hashes.iter())
+            .map(|(record, hash)| Carried {
+                seq: record.node_seq,
+                hash: *hash,
+            })
+    }
+}
+
+/// What this process holds for one of its own originals (SHUTDOWN-HANG F1): the sequence it sealed
+/// and the chain hash of those exact bytes. A record read back against it is that original, or the
+/// read is refused as `Corrupt`. RAM only; never persisted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Carried {
+    pub seq: u64,
+    pub hash: [u8; 32],
 }
 
 /// A group submitted to the store: the proof it was appended under and how
@@ -68,18 +90,34 @@ impl StagedRun {
 struct Attempt {
     proof: Arc<VerifiedHead>,
     runs: usize,
+    /// The head and original-byte seal the group produces if it applies, computed once before
+    /// its first submit (SHUTDOWN-HANG H3): a confirmation accepts this head while the group is
+    /// in flight, and Applied publishes it without walking the group again.
+    next: Head,
+    records_seal: [u8; 32],
 }
 
-/// The selected-row change a domain owner asks `change_live` to make.
+/// The head and original-byte seal after `group`'s records, appended in order to `head`/`seal`.
+fn walk_group(
+    node: u64,
+    mut head: Head,
+    mut seal: [u8; 32],
+    group: &[Arc<StagedRun>],
+) -> std::result::Result<(Head, [u8; 32]), RuntimeError> {
+    for original in group.iter().flat_map(|run| run.records.iter()) {
+        let record = checked_record(node, &original.body, head).map_err(RuntimeError::from)?;
+        head = advance(head, &record).map_err(RuntimeError::from)?;
+        seal = super::extend_records_seal(seal, &original.body);
+    }
+    Ok((head, seal))
+}
+
+/// The selected-row change a domain owner asks `change_live` to make (a guarded selection; a
+/// delete, or several rows at once, go through `change_rows_live`).
 pub(crate) enum LiveChange<'a> {
     Select {
         selection: Selection,
         guards: &'a [Predicate],
-    },
-    Delete {
-        operation_id: [u8; 16],
-        address: Address,
-        expected: ExpectedValue,
     },
 }
 
@@ -136,6 +174,8 @@ pub struct RuntimeJournal {
     state: Mutex<State>,
     driving: tokio::sync::Mutex<()>,
     progress: tokio::sync::watch::Sender<Progress>,
+    /// Confirmations that fell back to the publication driver (SHUTDOWN-HANG F1, counted).
+    lane_fallbacks: std::sync::atomic::AtomicU64,
 }
 impl RuntimeJournal {
     /// Root constructs exactly one shared owner and passes this same Arc to
@@ -189,6 +229,7 @@ impl RuntimeJournal {
             }),
             driving: tokio::sync::Mutex::new(()),
             progress: tokio::sync::watch::Sender::new(Progress::default()),
+            lane_fallbacks: std::sync::atomic::AtomicU64::new(0),
         }))
     }
 
@@ -398,11 +439,16 @@ impl RuntimeJournal {
         records
             .try_reserve_exact(entries.len())
             .map_err(|_| RuntimeError::Budget)?;
+        let mut hashes = Vec::new();
+        hashes
+            .try_reserve_exact(entries.len())
+            .map_err(|_| RuntimeError::Budget)?;
         for entry in entries {
             let record = super::recovery_hooks::seal_record(self.node, head, entry.clone())
                 .map_err(RuntimeError::from)?;
             let decoded = decode_record(self.node, &record.body).map_err(RuntimeError::from)?;
             head = advance(head, &decoded).map_err(RuntimeError::from)?;
+            hashes.push(decoded.hash);
             records.push(record);
         }
         state
@@ -413,6 +459,7 @@ impl RuntimeJournal {
             owner: self.owner.clone(),
             ticket: state.next_ticket,
             records: records.into(),
+            hashes: hashes.into(),
             bytes,
         });
         state.pending.push_back(PendingRun {
@@ -589,9 +636,15 @@ impl RuntimeJournal {
     fn take_group(
         state: &mut State,
         limits: crate::persistence::facade::Limits,
-    ) -> std::result::Result<(Arc<VerifiedHead>, Vec<Arc<StagedRun>>), RuntimeError> {
+        node: u64,
+    ) -> std::result::Result<(Arc<VerifiedHead>, Vec<Arc<StagedRun>>, Head, [u8; 32]), RuntimeError>
+    {
         let verified = state.verified.clone();
         let front = state.pending.front().ok_or(RuntimeError::Corrupt)?;
+        let pinned = front
+            .attempt
+            .as_ref()
+            .map(|attempt| (attempt.next, attempt.records_seal));
         let (proof, runs) = match &front.attempt {
             Some(attempt) => (attempt.proof.clone(), attempt.runs),
             None => {
@@ -612,12 +665,16 @@ impl RuntimeJournal {
         if runs == 0 || runs > state.pending.len() {
             return Err(RuntimeError::Corrupt);
         }
-        let group = state
+        let group: Vec<Arc<StagedRun>> = state
             .pending
             .iter()
             .take(runs)
             .map(|pending| pending.run.clone())
             .collect();
+        let (next, records_seal) = match pinned {
+            Some(pinned) => pinned,
+            None => walk_group(node, proof.head, proof.records_seal, &group)?,
+        };
         state
             .pending
             .front_mut()
@@ -625,23 +682,10 @@ impl RuntimeJournal {
             .attempt = Some(Attempt {
             proof: proof.clone(),
             runs,
+            next,
+            records_seal,
         });
-        Ok((proof, group))
-    }
-
-    /// `confirm_live_owned` plus a domain's extra predicates (its selected row
-    /// or scan-generation guard) in the same authoritative read.
-    pub(crate) async fn confirm_live_owned_with(
-        &self,
-        extra: &[Predicate],
-    ) -> std::result::Result<(), RuntimeError> {
-        let _driver = self.driving.lock().await;
-        let verified = self.live_head()?;
-        StoreJournal::new(&self.store, self.node)
-            .map_err(RuntimeError::from)?
-            .confirm_owned_with(&verified, extra)
-            .await
-            .map_err(RuntimeError::from)
+        Ok((proof, group, next, records_seal))
     }
 
     /// Flush staged runs, then confirm this owner's live verified head against
@@ -703,36 +747,181 @@ impl RuntimeJournal {
         // later return or cancellation leaves the caller holding the exact
         // proof whose digest CoreStore may retain.
         retain(&proof);
-        let (selection, delete, guards) = match change {
-            LiveChange::Select { selection, guards } => (selection, false, guards),
-            LiveChange::Delete {
-                operation_id,
-                address,
-                expected,
-            } => (
-                Selection {
-                    operation_id,
-                    address,
-                    expected,
-                    value: Secret::default(),
-                },
-                true,
-                &[][..],
-            ),
-        };
+        let LiveChange::Select { selection, guards } = change;
         let result = journal
             .change_selection_at(
                 &proof,
                 records,
                 Some(located.as_slice()),
                 selection,
-                delete,
+                false,
                 guards,
             )
             .await
             .map_err(RuntimeError::from)?;
         drop(driver);
         Ok((proof, result))
+    }
+
+    /// `change_live` for several rows of one namespace in one CAS (SHUTDOWN-HANG F3.1): the same
+    /// driver, proof and `retain` rules, and every row's originals located in O(1) by
+    /// [`Self::locate`]. One row is the same attempt as `change_live`'s selection or delete.
+    pub(crate) async fn change_rows_live(
+        &self,
+        operation_id: [u8; 16],
+        rows: &[RowChange<'_>],
+        retained: Option<Arc<VerifiedHead>>,
+        retain: &(dyn Fn(&Arc<VerifiedHead>) + Send + Sync),
+    ) -> std::result::Result<(Arc<VerifiedHead>, WriteResult), RuntimeError> {
+        let journal = StoreJournal::new(&self.store, self.node).map_err(RuntimeError::from)?;
+        let pre = self.live_head()?;
+        let driver = self.driving.lock().await;
+        self.drive_locked(&driver, self.staged_target()?).await?;
+        let proof = match retained {
+            Some(proof) => proof,
+            None => {
+                let live = self.live_head()?;
+                if !Arc::ptr_eq(&live, &pre) {
+                    prefix_of(&pre, &live)?;
+                }
+                live
+            }
+        };
+        let mut located = Vec::new();
+        located
+            .try_reserve_exact(rows.iter().map(|row| row.records.len()).sum::<usize>())
+            .map_err(|_| RuntimeError::Budget)?;
+        for record in rows.iter().flat_map(|row| row.records) {
+            located.push(self.locate(&proof, record.node_seq)?);
+        }
+        // Retain before any claim, as `change_live` does.
+        retain(&proof);
+        let result = journal
+            .change_rows_at(&proof, operation_id, rows, &located)
+            .await
+            .map_err(RuntimeError::from)?;
+        drop(driver);
+        Ok((proof, result))
+    }
+
+    /// This owner's verified head right now, without the publication driver: a snapshot for
+    /// locating its own originals, never a CAS predicate by itself.
+    pub(crate) fn verified(&self) -> std::result::Result<Arc<VerifiedHead>, RuntimeError> {
+        self.live_head()
+    }
+
+    /// Custody and admission of this owner plus `guards`, in one read, without the publication
+    /// driver (SHUTDOWN-HANG F1). While O is ours and admission holds, only this owner's appends
+    /// move H, serially, each from the verified head to its pinned group's `next` in one CAS. So
+    /// the read is accepted iff O, admission and every guard match and H is one of the heads this
+    /// owner knew just before or just after it. Accepting a later own head is sound: own appends
+    /// only extend the prefix. Two own appends inside one read round trip leave H outside both
+    /// windows; the read is retried once, then made exact under the driver (counted).
+    pub(crate) async fn confirm_with(
+        &self,
+        guards: &[Predicate],
+    ) -> std::result::Result<(), RuntimeError> {
+        let journal = StoreJournal::new(&self.store, self.node).map_err(RuntimeError::from)?;
+        for _ in 0..2 {
+            let (verified, next) = self.head_window()?;
+            if verified.owner.is_none() {
+                // An unclaimed journal's first append also writes O: decide it under the driver.
+                break;
+            }
+            let observed = journal
+                .observe_owned_with(&verified, guards)
+                .await
+                .map_err(RuntimeError::from)?;
+            if Self::knows(&journal, &verified, next, &observed)? {
+                return Ok(());
+            }
+            let (after, next) = self.head_window()?;
+            if Self::knows(&journal, &after, next, &observed)? {
+                return Ok(());
+            }
+        }
+        self.lane_fallbacks
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let _driver = self.driving.lock().await;
+        // Under the driver nothing moves H; a pinned group whose reply was lost may still have
+        // applied, so its `next` stays a known own head.
+        let (verified, next) = self.head_window()?;
+        let observed = journal
+            .observe_owned_with(&verified, guards)
+            .await
+            .map_err(RuntimeError::from)?;
+        if Self::knows(&journal, &verified, next, &observed)? {
+            Ok(())
+        } else {
+            Err(RuntimeError::Authority)
+        }
+    }
+
+    /// Under the `state` lock: the verified head, and the head the pinned in-flight group produces
+    /// if it applies.
+    fn head_window(&self) -> std::result::Result<(Arc<VerifiedHead>, Option<Head>), RuntimeError> {
+        let state = self.state.lock().map_err(|_| RuntimeError::Corrupt)?;
+        if let Some(error) = state.failed {
+            return Err(error);
+        }
+        let next = state
+            .pending
+            .front()
+            .and_then(|front| front.attempt.as_ref())
+            .map(|attempt| attempt.next);
+        Ok((state.verified.clone(), next))
+    }
+
+    fn knows(
+        journal: &StoreJournal<'_>,
+        verified: &VerifiedHead,
+        next: Option<Head>,
+        observed: &Option<Secret<Vec<u8>>>,
+    ) -> std::result::Result<bool, RuntimeError> {
+        if journal
+            .names_head(verified, observed)
+            .map_err(RuntimeError::from)?
+        {
+            return Ok(true);
+        }
+        Ok(next.zip(observed.as_ref()).is_some_and(|(next, observed)| {
+            next.encode().expose(&crate::seal::lend()) == observed.expose(&crate::seal::lend())
+        }))
+    }
+
+    /// This owner's original at `carried.seq`, read lane-free by its computed ordinal and checked
+    /// against the evidence this process carried from its append (SHUTDOWN-HANG F1 `record`): the
+    /// WAL verifier and canonical encoding (`decode_record`), the sequence, and the chain hash.
+    /// A different original at that place is `Corrupt`; a sequence not yet applied is `Pending`.
+    pub(crate) async fn record(
+        &self,
+        carried: Carried,
+    ) -> std::result::Result<Record, RuntimeError> {
+        let verified = self.live_head()?;
+        if carried.seq == 0 {
+            return Err(RuntimeError::Invalid);
+        }
+        if carried.seq > verified.head.sequence {
+            return Err(RuntimeError::Pending);
+        }
+        let ordinal = self.locate(&verified, carried.seq)?;
+        let original = StoreJournal::new(&self.store, self.node)
+            .map_err(RuntimeError::from)?
+            .read_verified_record_at(&verified, carried.seq, ordinal)
+            .await
+            .map_err(RuntimeError::from)?;
+        let decoded = decode_record(self.node, &original.body).map_err(RuntimeError::from)?;
+        if decoded.node_seq != carried.seq || decoded.hash != carried.hash {
+            return Err(RuntimeError::Corrupt);
+        }
+        Ok(original)
+    }
+
+    /// Test probe: confirmations that fell back to the publication driver.
+    #[cfg(test)]
+    pub(crate) fn lane_fallbacks(&self) -> u64 {
+        self.lane_fallbacks
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     fn live_head(&self) -> std::result::Result<Arc<VerifiedHead>, RuntimeError> {
@@ -774,7 +963,7 @@ impl RuntimeJournal {
         let journal = StoreJournal::new(&self.store, self.node).map_err(RuntimeError::from)?;
         let limits = self.store.limits();
         loop {
-            let (proof, group) = {
+            let (proof, group, head, records_seal) = {
                 let mut state = self.state.lock().map_err(|_| RuntimeError::Corrupt)?;
                 if let Some(error) = state.failed {
                     return Err(error);
@@ -782,7 +971,7 @@ impl RuntimeJournal {
                 if state.completed >= target {
                     return Ok(());
                 }
-                Self::take_group(&mut state, limits)?
+                Self::take_group(&mut state, limits, self.node)?
             };
             // Runs chain from `state.reserved` in ticket order, so the group's
             // records are one contiguous chain; the same pinned runs in order
@@ -804,16 +993,9 @@ impl RuntimeJournal {
                     ) =>
                 {
                     // This is the precise head encoded in the Applied append,
-                    // built from unchanged verified frame headers/digests. The
-                    // old full proof and native H/O CAS establish its ancestry.
-                    let mut head = proof.head;
-                    let mut records_seal = proof.records_seal;
-                    for original in runs.iter().copied().flatten() {
-                        let record = checked_record(self.node, &original.body, head)
-                            .map_err(RuntimeError::from)?;
-                        head = advance(head, &record).map_err(RuntimeError::from)?;
-                        records_seal = super::extend_records_seal(records_seal, &original.body);
-                    }
+                    // built from unchanged verified frame headers/digests before
+                    // the first submit (`take_group`). The old full proof and
+                    // native H/O CAS establish its ancestry.
                     let verified = Arc::new(VerifiedHead {
                         dataset: proof.dataset,
                         node: proof.node,

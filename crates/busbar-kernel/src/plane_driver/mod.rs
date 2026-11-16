@@ -50,7 +50,7 @@ use busbar_contract::services::Caller;
 use tokio::sync::{watch, Notify};
 
 pub use answer::PlaneAnswer;
-pub use cancel::{CancelBill, Checkpoint, MoneySeam};
+pub use cancel::{CancelBill, Checkpoint, MoneySeam, OpenUnitEvidence};
 #[cfg(test)]
 pub(crate) use far_end::tests::lent_on_egress;
 pub use far_end::{

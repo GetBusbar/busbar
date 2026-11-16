@@ -341,3 +341,105 @@ fn settings_comments_cannot_exempt_raw_bags_and_guards_apply_to_bytes_only() {
         false
     ));
 }
+
+/// The admin surface (ADMIN-API-1.6 §14.2 rule 3): the crate that serves `/api/v1/admin/*` and
+/// the kernel's configuration readback it serves. Core's other serialized types (Store rows, wire
+/// frames to upstreams) carry `Secret<..>` through their own sealed serializers on purpose.
+const ADMIN_SURFACE_ROOTS: &[&str] = &["crates/busbar-core-admin"];
+const ADMIN_SURFACE_FILES: &[&str] = &["crates/busbar-kernel/src/config/readback.rs"];
+/// The two answers that hand a caller the credential it just had issued, exactly once: the mint
+/// and the rotation. No read returns them (`no_secret_in_any_admin_body` proves it over HTTP).
+const ONCE_SHOWN: &[&str] = &["CreatedKeyView", "RotatedKeyView"];
+/// The types that hold secret material or a reference to it.
+const SECRET_TYPES: &[&str] = &[
+    "Secret",
+    "SecretRef",
+    "SecureString",
+    "SecureVec",
+    "SecureArray",
+];
+
+/// Whether an item derives `Serialize` or `JsonSchema`, directly or under `cfg_attr`.
+fn serialized(attrs: &[syn::Attribute]) -> bool {
+    attrs.iter().any(|a| {
+        (a.path().is_ident("derive") || a.path().is_ident("cfg_attr"))
+            && walk::idents(&walk::tokens(&a.meta))
+                .iter()
+                .any(|i| i == "Serialize" || i == "JsonSchema")
+    })
+}
+
+/// A serialized admin-surface type may not declare a secret-named field holding bare material,
+/// even one marked `#[serde(skip)]`, and may not name a secret type at all. Views over a
+/// secret-holding record are separate projection types that list only public fields.
+fn serialized_secret_fields(src: &Source) -> Vec<String> {
+    let mut out = Vec::new();
+    for item in walk::items(&src.file.items) {
+        let (owner, attrs) = match item {
+            syn::Item::Struct(s) => (s.ident.to_string(), &s.attrs),
+            syn::Item::Enum(e) => (e.ident.to_string(), &e.attrs),
+            _ => continue,
+        };
+        if !serialized(attrs) || ONCE_SHOWN.contains(&owner.as_str()) {
+            continue;
+        }
+        for (ty_name, field) in walk::named_fields(item) {
+            if walk::is_cfg_test(&field.attrs) {
+                continue;
+            }
+            let Some(name) = field.ident.as_ref().map(ToString::to_string) else {
+                continue;
+            };
+            let names_secret = walk::idents(&walk::tokens(&field.ty))
+                .iter()
+                .any(|i| SECRET_TYPES.contains(&i.as_str()));
+            let bare_secret = secret_needle(&name, &ty_name).is_some()
+                && crate::credential_typecheck::owns_bare(&field.ty);
+            if names_secret || bare_secret {
+                out.push(format!(
+                    "{}:{}: {ty_name}.{name} puts secret material in a serialized admin type; \
+                     serve a projection type of public fields",
+                    src.rel,
+                    walk::line_of(field)
+                ));
+            }
+        }
+    }
+    out
+}
+
+#[test]
+fn serialized_types_carry_no_secret_field() {
+    let mut sources = walk::production(ADMIN_SURFACE_ROOTS);
+    sources.extend(ADMIN_SURFACE_FILES.iter().map(|rel| walk::one(rel)));
+    let findings: Vec<String> = sources.iter().flat_map(serialized_secret_fields).collect();
+    assert!(findings.is_empty(), "{}", findings.join("\n"));
+}
+
+#[test]
+fn a_serialized_secret_field_is_found() {
+    let src = Source {
+        rel: "planted.rs".into(),
+        file: syn::parse_file(
+            "#[derive(Serialize)] struct View { id: String, #[serde(skip)] api_key: String }\n\
+             #[cfg_attr(feature = \"openapi-schema\", derive(schemars::JsonSchema))]\n\
+             struct Row { key: Secret<Vec<u8>> }\n\
+             #[derive(serde::Serialize)] struct Holder { reference: Option<SecretRef> }\n\
+             #[derive(Deserialize)] struct Body { api_key: String }\n\
+             #[derive(JsonSchema)] struct CreatedKeyView { token: Secret<String> }\n\
+             #[derive(Serialize)] struct Public { credentials: Vec<KeyCredentialView>, upstream_credentials: &'static str }\n",
+        )
+        .expect("parses"),
+    };
+    let found = serialized_secret_fields(&src);
+    assert!(
+        found.iter().any(|f| f.contains("View.api_key")),
+        "{found:?}"
+    );
+    assert!(found.iter().any(|f| f.contains("Row.key")), "{found:?}");
+    assert!(
+        found.iter().any(|f| f.contains("Holder.reference")),
+        "{found:?}"
+    );
+    assert_eq!(found.len(), 3, "{found:?}");
+}

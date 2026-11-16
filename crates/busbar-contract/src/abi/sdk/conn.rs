@@ -17,8 +17,8 @@ use crate::abi::host::conn::connector::{
     CAUSE_CREDENTIAL_UNAVAILABLE, CAUSE_NONE,
 };
 use crate::abi::host::service::{
-    op, ClockNowIn, ClockReading, DiskAppendIn, DiskWritten, HostSlots, NeedAdmitIn, ServiceFn,
-    ServiceHead, ServiceOut,
+    op, ClockNowIn, ClockReading, DiskAppendIn, DiskWritten, HostSlots, MigrateAdmitIn,
+    NeedAdmitIn, ServiceFn, ServiceHead, ServiceOut,
 };
 use crate::abi::mechanism::call::{AbiStr, Blob, Outcome, RawOutcome, BLOB_OCTETS};
 use crate::abi::mechanism::ticket::{CompletionHandle, HostCtx, HostTables, Ticket, WakeFn};
@@ -233,7 +233,8 @@ snapshot_table!(
     directory_count,
     directory_create,
     directory_apply,
-    directory_delete
+    directory_delete,
+    migrate_admit
 );
 
 snapshot_table!(
@@ -435,6 +436,7 @@ service_in!(
     RequestIn,
     ClockNowIn,
     NeedAdmitIn,
+    MigrateAdmitIn,
     DiskAppendIn
 );
 
@@ -814,6 +816,24 @@ impl<K: KindMarker> Connector<'_, K> {
             _reserved: 0,
         };
         match self.cross_now(op::NEED_ADMIT, |s| s.need_admit, input) {
+            Poll::Ready(r) => r.map(|_| ()),
+
+            Poll::Pending => Err(ConnFailure::Fault),
+        }
+    }
+
+    /// THE RECOVERABLE GATE (`migrate.admit`, MIGRATE-ON-BOOT §4): whether the boot can seal the
+    /// `recoverable` 1.5.5 credential rows a store is about to hand core. Never pends, so it rides
+    /// no ticket and draws no handle. A store calls it through [`super::store::admit_recoverable`].
+    pub fn migrate_admit(&mut self, recoverable: u64) -> Result<(), ConnFailure>
+    where
+        K: crate::abi::host::access::Permitted<{ op::MIGRATE_ADMIT }>,
+    {
+        let input = MigrateAdmitIn {
+            head: blank_head(),
+            recoverable,
+        };
+        match self.cross_now(op::MIGRATE_ADMIT, |s| s.migrate_admit, input) {
             Poll::Ready(r) => r.map(|_| ()),
 
             Poll::Pending => Err(ConnFailure::Fault),

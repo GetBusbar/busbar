@@ -13,6 +13,11 @@ use serde::{Deserialize, Serialize};
 
 use super::recovery::{RecoveryEvent, RecoveryState};
 use super::{GovState, RecordStoreError, RecordStoreResult};
+use crate::persistence::journal::runtime::Carried;
+
+/// Units per flush batch (SHUTDOWN-HANG F3.3): the halt is read and the runtime yielded to between
+/// batches, so a drain stops within one batch and the control thread waits at most one batch.
+const UNIT_FLUSH_BATCH: usize = 128;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -62,6 +67,14 @@ impl UnitCheckpoint {
     }
 }
 
+/// One terminal unit's removal in a flush batch (SHUTDOWN-HANG F3.1). Not serialised: the hint is
+/// RAM-only evidence from the root's seal, and `UnitCheckpoint` is unchanged.
+pub struct UnitRemoval<'a> {
+    pub snapshot: &'a UnitCheckpoint,
+    /// The unit's live audit line as this process sealed it (F1a), when the root noted it.
+    pub audit: Option<Carried>,
+}
+
 /// The root implements this with kernel-owned named Store slots and journal evidence.
 #[async_trait::async_trait]
 pub trait UnitCheckpointSink: Send + Sync {
@@ -70,6 +83,22 @@ pub trait UnitCheckpointSink: Send + Sync {
     async fn replay(&self) -> RecordStoreResult<Vec<UnitCheckpoint>>;
     async fn recover_audit(&self, _snapshot: &UnitCheckpoint) -> RecordStoreResult<()> {
         Ok(())
+    }
+    /// One flush batch's phase P, a result per snapshot so one failure never fails its siblings.
+    async fn persist_batch(&self, snapshots: &[UnitCheckpoint]) -> Vec<RecordStoreResult<()>> {
+        let mut out = Vec::with_capacity(snapshots.len());
+        for snapshot in snapshots {
+            out.push(self.persist(snapshot).await);
+        }
+        out
+    }
+    /// One flush batch's phase R. The default drops the audit hint (the cold lookup).
+    async fn remove_batch(&self, items: &[UnitRemoval<'_>]) -> Vec<RecordStoreResult<()>> {
+        let mut out = Vec::with_capacity(items.len());
+        for item in items {
+            out.push(self.remove(item.snapshot).await);
+        }
+        out
     }
 }
 
@@ -170,6 +199,11 @@ impl GovState {
         self.unit_checkpoints.pending.lock().custody_states()
     }
 
+    /// Entries in custody, without copying them (the drain progress line).
+    pub(crate) fn unit_checkpoint_count(&self) -> usize {
+        self.unit_checkpoints.pending.lock().len()
+    }
+
     /// Whether a unit flush pass holds the book's flush lock right now.
     pub(crate) fn unit_checkpoints_flushing(&self) -> bool {
         self.unit_checkpoints.flushing.try_lock().is_err()
@@ -179,13 +213,28 @@ impl GovState {
         self.unit_checkpoints.pending.lock().get(id).is_some()
     }
 
-    /// Records the sequence of `unit`'s live audit line on its pending checkpoint. Zero or several
-    /// live checkpoints for the unit is a counted miss; the caller then uses its cold lookup.
-    pub fn note_unit_audit(&self, unit: u64, seq: u64) -> Result<(), UnitAuditMiss> {
+    /// Records `unit`'s live audit line (its sequence and the chain hash the root sealed) on its
+    /// pending checkpoint, so the removal reads that one line (SHUTDOWN-HANG F1a). Zero or several
+    /// live checkpoints for the unit is a counted miss; the removal then uses its cold lookup.
+    pub fn note_unit_audit(
+        &self,
+        unit: u64,
+        seq: u64,
+        hash: [u8; 32],
+    ) -> Result<(), UnitAuditMiss> {
         self.unit_checkpoints
             .pending
             .lock()
-            .note_unit_audit(unit, seq)
+            .note_unit_audit(unit, Carried { seq, hash })
+    }
+
+    /// The audit line hint noted for checkpoint `id`, if any.
+    pub fn unit_checkpoint_audit_hint(&self, id: &[u8; 16]) -> Option<Carried> {
+        self.unit_checkpoints
+            .pending
+            .lock()
+            .get(id)
+            .and_then(Pending::audit_hint)
     }
 
     /// The audit line sequence noted for checkpoint `id`, if any.
@@ -265,10 +314,11 @@ impl GovState {
         self.flush_unit_checkpoints_until(&|| false).await
     }
 
-    /// One pass that reads `halt` before each item and returns at the first boundary where it
-    /// is true (SHUTDOWN-HANG F3.3/F4 [M]). An item already started runs to its end, so no write
-    /// is dropped; the items not reached stay in custody. Terminal entries go first, then running
-    /// entries whose revision moved; the pass yields to the runtime after every item.
+    /// One pass in batches of `UNIT_FLUSH_BATCH` (SHUTDOWN-HANG F3.3/F4 [M]). `halt` is read before
+    /// each batch and the pass returns at the first boundary where it is true; a batch already
+    /// started runs to its end, so no write is dropped, and the items not reached stay in custody.
+    /// Terminal entries go first, then running entries whose revision moved; the pass yields to
+    /// the runtime after every batch.
     pub async fn flush_unit_checkpoints_until(
         &self,
         halt: &(impl Fn() -> bool + Sync),
@@ -279,11 +329,11 @@ impl GovState {
         let _flush = self.unit_checkpoints.flushing.lock().await;
         let ids = self.unit_checkpoints.pending.lock().flush_order();
         let mut first_error = None;
-        for id in ids {
+        for batch in ids.chunks(UNIT_FLUSH_BATCH) {
             if halt() {
                 break;
             }
-            if let Err(failed) = self.flush_unit_checkpoint(sink.as_ref(), id).await {
+            for (id, failed) in self.flush_unit_batch(sink.as_ref(), batch).await {
                 tracing::warn!(checkpoint = %hex::encode(id), error = %failed,
                     "running money checkpoint remains unresolved and will retry");
                 first_error.get_or_insert(failed);
@@ -293,42 +343,145 @@ impl GovState {
         first_error.map_or(Ok(()), Err)
     }
 
-    async fn flush_unit_checkpoint(
+    /// One batch through the phases (SHUTDOWN-HANG F3.3): P for every item that moved, then T
+    /// (every terminal operation selected before any is driven), then V-K2 (each operation driven
+    /// to Settled), then R (one removal per settled unit, carrying its audit hint). Per-item order
+    /// is unchanged, and every phase isolates its items: one that fails leaves the batch with its
+    /// error and is retried next pass, while its siblings continue. Returns the failures.
+    async fn flush_unit_batch(
         &self,
         sink: &dyn UnitCheckpointSink,
-        id: [u8; 16],
-    ) -> RecordStoreResult<()> {
-        let (snapshot, persisted, recovered) = {
-            let mut pending = self.unit_checkpoints.pending.lock();
-            let Some(mut entry) = pending.edit(&id) else {
-                return Ok(());
-            };
-            entry.snapshot().validate()?;
-            if entry.snapshot().ended && entry.snapshot().terminal.is_none() {
-                let events = self.unit_terminal_events(entry.snapshot())?;
-                let revision = entry
-                    .snapshot()
-                    .revision
-                    .checked_add(1)
-                    .ok_or_else(|| error("unit checkpoint revision exhausted"))?;
-                entry.set_terminal(events, revision);
-            }
-            (
-                entry.snapshot().clone(),
-                entry.persisted(),
-                entry.is_recovered(),
-            )
-        };
-        if persisted != Some(snapshot.revision) {
-            sink.persist(&snapshot).await?;
-            if let Some(mut entry) = self.unit_checkpoints.pending.lock().edit(&id) {
-                entry.set_persisted(snapshot.revision);
+        ids: &[[u8; 16]],
+    ) -> Vec<([u8; 16], RecordStoreError)> {
+        let mut failed = Vec::new();
+        let mut items = Vec::with_capacity(ids.len());
+        for id in ids {
+            match self.unit_flush_item(*id) {
+                Ok(Some(item)) => items.push(item),
+                Ok(None) => {}
+                Err(why) => failed.push((*id, why)),
             }
         }
-        let Some(events) = &snapshot.terminal else {
-            return Ok(());
+
+        // P: persist every item whose revision is not yet persisted.
+        let moved: Vec<usize> = (0..items.len())
+            .filter(|&at| items[at].persisted != Some(items[at].snapshot.revision))
+            .collect();
+        if !moved.is_empty() {
+            let snapshots: Vec<UnitCheckpoint> =
+                moved.iter().map(|&at| items[at].snapshot.clone()).collect();
+            let mut results = sink.persist_batch(&snapshots).await.into_iter();
+            for &at in &moved {
+                let item = &mut items[at];
+                match results.next() {
+                    Some(Ok(())) => {
+                        if let Some(mut entry) = self.unit_checkpoints.pending.lock().edit(&item.id)
+                        {
+                            entry.set_persisted(item.snapshot.revision);
+                        }
+                    }
+                    Some(Err(why)) => item.failed = Some(why),
+                    None => item.failed = Some(error("unit checkpoint batch result missing")),
+                }
+            }
+        }
+        // A running item is done once persisted; a failed one leaves the batch.
+        items.retain_mut(|item| match item.failed.take() {
+            Some(why) => {
+                failed.push((item.id, why));
+                false
+            }
+            None => item.snapshot.terminal.is_some(),
+        });
+
+        // T: select every terminal operation of the batch before driving any.
+        for item in &mut items {
+            if let Err(why) = self.select_unit_terminal(&item.snapshot).await {
+                item.failed = Some(why);
+            }
+        }
+        // V-K2: drive each selected operation to Settled.
+        for item in &mut items {
+            if item.failed.is_some() {
+                continue;
+            }
+            if let Err(why) = self.settle_unit_terminal(&item.snapshot).await {
+                item.failed = Some(why);
+            }
+        }
+        // R: recovered targets refreshed, then one removal per settled unit.
+        for item in &mut items {
+            if item.failed.is_none() && item.recovered {
+                if let Err(why) = self.refresh_recovered_unit_targets(&item.snapshot).await {
+                    item.failed = Some(why);
+                }
+            }
+        }
+        items.retain_mut(|item| match item.failed.take() {
+            Some(why) => {
+                failed.push((item.id, why));
+                false
+            }
+            None => true,
+        });
+        if items.is_empty() {
+            return failed;
+        }
+        let results = {
+            let removals: Vec<UnitRemoval<'_>> = items
+                .iter()
+                .map(|item| UnitRemoval {
+                    snapshot: &item.snapshot,
+                    audit: self.unit_checkpoint_audit_hint(&item.id),
+                })
+                .collect();
+            sink.remove_batch(&removals).await
         };
-        for initial in events {
+        let mut results = results.into_iter();
+        for item in &items {
+            match results.next() {
+                Some(Ok(())) => {
+                    self.unit_checkpoints.pending.lock().remove(&item.id);
+                    for event in item.snapshot.terminal.iter().flatten() {
+                        self.forget_confirmed_recovery(event.operation_id);
+                    }
+                }
+                Some(Err(why)) => failed.push((item.id, why)),
+                None => failed.push((item.id, error("unit checkpoint batch result missing"))),
+            }
+        }
+        failed
+    }
+
+    /// An entry's flush snapshot, with its terminal events sealed when it has just ended.
+    fn unit_flush_item(&self, id: [u8; 16]) -> RecordStoreResult<Option<UnitFlushItem>> {
+        let mut pending = self.unit_checkpoints.pending.lock();
+        let Some(mut entry) = pending.edit(&id) else {
+            return Ok(None);
+        };
+        entry.snapshot().validate()?;
+        if entry.snapshot().ended && entry.snapshot().terminal.is_none() {
+            let events = self.unit_terminal_events(entry.snapshot())?;
+            let revision = entry
+                .snapshot()
+                .revision
+                .checked_add(1)
+                .ok_or_else(|| error("unit checkpoint revision exhausted"))?;
+            entry.set_terminal(events, revision);
+        }
+        Ok(Some(UnitFlushItem {
+            id,
+            snapshot: entry.snapshot().clone(),
+            persisted: entry.persisted(),
+            recovered: entry.is_recovered(),
+            failed: None,
+        }))
+    }
+
+    /// Phase T for one unit: restore its terminal receipts and select each terminal operation's
+    /// Intent, or check the selected one is this exact identity.
+    async fn select_unit_terminal(&self, snapshot: &UnitCheckpoint) -> RecordStoreResult<()> {
+        for initial in snapshot.terminal.iter().flatten() {
             self.restore_unit_terminal_receipt(initial).await?;
             if self.recovery_event(initial.operation_id).is_none() {
                 self.keep_recovery_event(initial).await?;
@@ -338,10 +491,14 @@ impl GovState {
                 ));
             }
         }
-        // Select every exact terminal operation before driving any. One ambiguous operation must
-        // not strand its siblings without durable custody or hide the operator recovery surface.
+        Ok(())
+    }
+
+    /// Phases V-K2 for one unit: drive every terminal operation. One ambiguous operation does not
+    /// strand its siblings; the unit is settled only when all of them are.
+    async fn settle_unit_terminal(&self, snapshot: &UnitCheckpoint) -> RecordStoreResult<()> {
         let mut first_error = None;
-        for initial in events {
+        for initial in snapshot.terminal.iter().flatten() {
             if let Err(failed) = self.drive_raw_recovery(initial.operation_id).await {
                 first_error.get_or_insert(failed);
             }
@@ -354,19 +511,17 @@ impl GovState {
                 });
             }
         }
-        if let Some(failed) = first_error {
-            return Err(failed);
-        }
-        if recovered {
-            self.refresh_recovered_unit_targets(&snapshot).await?;
-        }
-        sink.remove(&snapshot).await?;
-        self.unit_checkpoints.pending.lock().remove(&id);
-        for event in events {
-            self.forget_confirmed_recovery(event.operation_id);
-        }
-        Ok(())
+        first_error.map_or(Ok(()), Err)
     }
+}
+
+/// One entry in a flush batch.
+struct UnitFlushItem {
+    id: [u8; 16],
+    snapshot: UnitCheckpoint,
+    persisted: Option<u64>,
+    recovered: bool,
+    failed: Option<RecordStoreError>,
 }
 
 #[cfg(test)]

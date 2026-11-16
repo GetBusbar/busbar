@@ -1310,3 +1310,41 @@ async fn scrape_reads_once_per_key() {
         .count();
     assert_eq!(spends, KEYS, "every key still gets its spend gauge");
 }
+
+/// SHUTDOWN-HANG F4a: the admission gate's two counts are scrape-time gauges, read from memory
+/// before any store read, so a held governed admission shows as one live admission.
+#[tokio::test]
+async fn the_admission_gate_counts_are_gauges() {
+    crate::snapshot::init_for_test(Duration::from_secs(3600));
+    let key = sample_vkey("vk_gate_gauges");
+    let gov = gov_with_key(key.clone()).await;
+    let cost = crate::cost::CostModel::flat(1);
+    let held = gov
+        .try_admit(&cost, &key, "", crate::store::now())
+        .expect("a governed admission");
+    let (recorder, handle) = local_source(GAUGE_IDLE_TIMEOUT);
+    with_recorder(&recorder, async {
+        money::refresh_governance_gauges(&gov, &cost, crate::store::now())
+            .await
+            .unwrap()
+    })
+    .await;
+    let out = handle();
+    let value = |name: &str| {
+        out.iter()
+            .flat_map(|family| &family.samples)
+            .find(|sample| sample.name == name)
+            .map(|sample| sample.value.clone())
+    };
+    assert_eq!(
+        value(GOVERNED_ADMISSIONS_LIVE).as_deref(),
+        Some("1"),
+        "got:\n{out:?}"
+    );
+    assert_eq!(
+        value(UNIT_CHECKPOINTS_TERMINAL).as_deref(),
+        Some("0"),
+        "got:\n{out:?}"
+    );
+    drop(held);
+}
