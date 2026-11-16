@@ -316,3 +316,35 @@ async fn failed_recheck_cannot_produce_a_bootstrap_handoff() {
     assert!(matches!(result, Err(BootRefused::Recheck { index: 1, .. })));
     assert!(!steps.opened_before(3));
 }
+
+#[tokio::test]
+async fn effective_replanning_retains_only_completed_bootstrap_leases() {
+    let steps = Recording::default();
+    let completed = crate::root::boot::walk::bootstrap(&chained_plan(), &steps)
+        .await
+        .unwrap();
+    let leases = completed.into_leases();
+    assert_eq!(leases.deployment, ID);
+    assert_eq!(
+        leases
+            .opened
+            .iter()
+            .map(|(index, _, value)| (*index, *value))
+            .collect::<Vec<_>>(),
+        vec![(0, 0), (1, 1), (2, 2)]
+    );
+    assert!(leases
+        .opened
+        .iter()
+        .all(|(_, phase, _)| *phase != BootPhase::Rest));
+    assert!(!steps.opened_before(3));
+    assert!(!steps.opened_before(4));
+    assert_eq!(
+        steps
+            .events()
+            .iter()
+            .filter(|event| matches!(event, Event::Publish(_)))
+            .count(),
+        1
+    );
+}
