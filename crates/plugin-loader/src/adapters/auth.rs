@@ -873,6 +873,7 @@ impl KeyRefresh {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn recs(w: &Reply) -> Records<'_> {
         Records::new(w.as_bytes())
@@ -894,6 +895,90 @@ mod tests {
             body: b"{}",
             now_s: 1_700_000_000,
         }
+    }
+
+    // C-SCRUB-CUT, auth adapter: a REFUSED/FAILED text is scrubbed, then cut to 512 bytes, before it is a
+    // PortError text; a short clean text passes unchanged.
+    #[test]
+    fn port_error_text_is_scrubbed_then_cut() {
+        let scrub = Scrub::new();
+        scrub.register(1, &[b"sk-live-0123456789"]);
+        let e = plugin_error(
+            Status::REFUSED,
+            7,
+            "bad key sk-live-0123456789 here",
+            None,
+            None,
+            None,
+            &scrub,
+        );
+        let PortError::Refused { code, text, error } = e else {
+            panic!("not Refused")
+        };
+        assert_eq!((code, error), (7, None));
+        assert!(!text.contains("sk-live-0123456789"), "{text}");
+        assert!(text.contains("***"), "{text}");
+        let long = "x".repeat(600);
+        let e = plugin_error(Status::FAILED, 1, &long, None, None, None, &scrub);
+        let PortError::Failed { text, .. } = e else {
+            panic!("not Failed")
+        };
+        assert_eq!(text.len(), 512);
+        let sixty = "y".repeat(60);
+        let e = plugin_error(Status::REFUSED, 1, &sixty, None, None, None, &scrub);
+        assert!(matches!(e, PortError::Refused { ref text, .. } if **text == *sixty));
+    }
+
+    // C-FAIL-FACTS, auth adapter: FAILED carries the backend's Retry-After and status facts and the resolved
+    // ERROR; REFUSED carries no fact; any other status is a FAULT.
+    #[test]
+    fn failed_carries_the_facts_refused_does_not() {
+        let scrub = Scrub::new();
+        let code = PluginCode {
+            plugin: "auth-oidc",
+            number: 12,
+        };
+        let e = plugin_error(
+            Status::FAILED,
+            failed::F_UNAVAILABLE,
+            "down",
+            Some(30),
+            Some(503),
+            Some(code),
+            &scrub,
+        );
+        assert_eq!(
+            e,
+            PortError::Failed {
+                code: failed::F_UNAVAILABLE,
+                text: Box::from("down"),
+                retry_after_s: Some(30),
+                backend_status: Some(503),
+                error: Some(code),
+            }
+        );
+        let e = plugin_error(
+            Status::REFUSED,
+            abi::SECURITY_CHECK,
+            "nonce",
+            Some(30),
+            None,
+            None,
+            &scrub,
+        );
+        assert_eq!(
+            e,
+            PortError::Refused {
+                code: abi::SECURITY_CHECK,
+                text: Box::from("nonce"),
+                error: None
+            }
+        );
+        let e = plugin_error(Status::OK, 0, "", None, None, None, &scrub);
+        assert_eq!(
+            e,
+            PortError::Call(CallError::Fault(FaultReason::BadStatus(0)))
+        );
     }
 
     #[test]
@@ -1147,6 +1232,46 @@ mod tests {
                 10,
                 1_700_000_000
             )
+        );
+    }
+
+    // C-KEYS-STALE, adapter side: one refresh for a burst of KEYS_STALE verifies (100 concurrent share it),
+    // and a second refresh inside the interval is declined.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn keys_stale_refreshes_once_and_declines_inside_the_interval() {
+        let keys = Arc::new(KeyRefresh::new(Duration::from_secs(30)));
+        let runs = Arc::new(AtomicUsize::new(0));
+        let gate = Arc::new(tokio::sync::Semaphore::new(0));
+        let mut joined = tokio::task::JoinSet::new();
+        let rounds = Arc::new(AtomicUsize::new(0));
+        for _ in 0..100 {
+            let round = keys.begin().expect("joins the round in flight");
+            rounds.fetch_add(1, Ordering::SeqCst);
+            let (runs, gate) = (Arc::clone(&runs), Arc::clone(&gate));
+            joined.spawn(async move {
+                round
+                    .get_or_init(|| async move {
+                        runs.fetch_add(1, Ordering::SeqCst);
+                        let _permit = gate.acquire().await.expect("gate open");
+                        Ok(())
+                    })
+                    .await
+                    .clone()
+            });
+        }
+        assert_eq!(rounds.load(Ordering::SeqCst), 100);
+        gate.add_permits(1);
+        while let Some(done) = joined.join_next().await {
+            assert_eq!(done.expect("task"), Ok(()));
+        }
+        assert_eq!(
+            runs.load(Ordering::SeqCst),
+            1,
+            "one refresh for the whole burst"
+        );
+        assert!(
+            keys.begin().is_none(),
+            "a second refresh inside the interval is declined"
         );
     }
 

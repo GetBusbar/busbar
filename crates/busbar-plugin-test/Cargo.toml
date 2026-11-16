@@ -92,6 +92,8 @@ tokio = { workspace = true, optional = true, features = ["rt", "net", "time", "s
 tikv-jemallocator = { workspace = true }
 
 [dev-dependencies]
+# W1-K8B: the head-authority and card-redirect arms build URLs.
+url = { workspace = true }
 # The bridge fixture image (W1-A3, `tests/bridge_fixture.rs`) is wired by hand over busbar-ffi's safe adapter and host
 # API, as `plugin!` wires an image; never `host` here (the loader side reaches it through busbar-plugin-abi).
 busbar-ffi = { path = "../busbar-ffi" }
