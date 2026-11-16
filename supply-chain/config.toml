@@ -444,6 +444,11 @@ version = "1.1.0"
 criteria = "safe-to-deploy"
 notes = "CryptoProvider release (decision 228), used with default-features = false and busbar's FacadeCrypto. Exempted, not audited: a 1.0.1 -> 1.1.0 delta review is outstanding."
 
+[[exemptions.object]]
+version = "0.37.3"
+criteria = "safe-to-deploy"
+notes = "Used by busbar-ffi (feature host) for the image bounds check, read feature only. Exempted, not audited."
+
 [[exemptions.olpc-cjson]]
 version = "0.1.4@git:0a96a65b1122a2bbb93fd36cae3b36dd2b045c7e"
 criteria = "safe-to-deploy"
