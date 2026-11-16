@@ -242,3 +242,39 @@ async fn dropping_export_loss_receipt_does_not_cancel_native_audit_custody() {
     assert_eq!(queue.len(), 0);
     assert_eq!(log.list_filtered(0, 10, None, None).len(), 1);
 }
+
+#[tokio::test]
+async fn cancelled_export_loss_drain_replays_one_original_and_keeps_receipt_pending() {
+    let (backend, _, native, log) = fixture().await;
+    let queue = PendingAuditQueue::new(1);
+    let facts = ExportLossFacts {
+        instance: "capture.test".into(),
+        observed_at: 789,
+        count: 1,
+        kind: ExportLossKind::CaptureRefused,
+    };
+    let receipt = enqueue_export_failure(&queue, &facts).unwrap();
+    backend.hang.store(true, Ordering::SeqCst);
+    assert!(tokio::time::timeout(
+        std::time::Duration::from_millis(10),
+        drain_native(&queue, &log, native.clone())
+    )
+    .await
+    .is_err());
+    assert!(!receipt.is_confirmed());
+    assert_eq!(queue.len(), 1);
+    let original = backend.state.lock().unwrap().sent.last().unwrap().clone();
+    backend.hang.store(false, Ordering::SeqCst);
+    drain_native(&queue, &log, native).await.unwrap();
+    assert!(receipt.is_confirmed());
+    let replay = backend.state.lock().unwrap().sent.last().unwrap().clone();
+    assert_eq!(original.fingerprint(), replay.fingerprint());
+    let rows = log.list_filtered(0, 10, None, None);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].action, "export.loss");
+    assert!(rows[0]
+        .resource
+        .contains("capture_refused.admission_rejected"));
+    assert_eq!(rows[0].request_id, None);
+    assert_eq!(rows[0].idempotency_key, None);
+}
