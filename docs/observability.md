@@ -79,7 +79,7 @@ export:
     settings: {}                # the module's own settings; see the plugin's own documentation
 ```
 
-At most ONE such instance is allowed, since it owns the one well-known `/metrics` route. The module's settings (including the retention window that bounds how many seconds of observations it buffers, and the cap on per-key gauge series per scrape) are documented by the plugin itself. The behavior to rely on regardless of module: quantile lines cover only the retained window, `_sum` and `_count` are cumulative, memory is bounded by the window rather than by uptime, and when the per-key gauge series (e.g. `busbar_key_spend_cents{key="…"}`) exceed the module's cap, the highest-spend keys are emitted first and a warning is logged. Aggregate totals are never affected.
+At most ONE such instance is allowed, since it owns the one well-known `/metrics` route. The module's settings (including the retention window that bounds how many seconds of observations it buffers, and the cap on per-key gauge series per scrape) are documented by the plugin itself. The behavior to rely on regardless of module: quantile lines cover only the retained window, `_sum` and `_count` are cumulative, memory is bounded by the window rather than by uptime, and when per-key gauge series (e.g. `busbar_key_spend_cents{key="…"}`) exceed the engine cap, only the first keys in store-returned order are emitted and a warning is logged. Selection occurs before usage reads to bound scrape-path database work; it is not a ranking by spend. Aggregate totals are never affected.
 
 Scraping is not required for correctness. A gateway with the instance configured and nothing scraping it retains one window and no more.
 
