@@ -721,6 +721,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "busbar-ffi"
+version = "1.6.0"
+dependencies = [
+ "libloading",
+ "loom",
+ "object",
+ "zerocopy",
+]
+
+[[package]]
 name = "busbar-hook-complexity"
 version = "1.6.0"
 source = "git+https://github.com/GetBusbar/busbar-hook-complexity?rev=372b3a6f618fbe387d343d4fbac10956b02932e4#372b3a6f618fbe387d343d4fbac10956b02932e4"
@@ -962,6 +972,7 @@ dependencies = [
  "arc-swap",
  "base64 0.22.1",
  "busbar-crypto",
+ "busbar-ffi",
  "hex",
  "percent-encoding",
  "zerocopy",
@@ -2564,6 +2575,15 @@ dependencies = [
  "http-body",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "object"
+version = "0.37.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ff76201f031d8863c38aa7f905eca4f53abbfa15f609db4277d44cd8938f33fe"
+dependencies = [
+ "memchr",
 ]
 
 [[package]]

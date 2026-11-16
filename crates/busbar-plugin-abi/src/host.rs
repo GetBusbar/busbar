@@ -410,7 +410,7 @@ pub trait HostExt {
 impl HostExt for Host {
     fn now_ns(&self) -> u64 {
         match self.fns().now {
-            Some(now) => self.scoped(now),
+            Some(now) => self.scoped(|ctx| now(ctx)),
             None => 0,
         }
     }
@@ -419,7 +419,7 @@ impl HostExt for Host {
     }
     fn mono_ns(&self) -> u64 {
         match self.fns().mono {
-            Some(mono) => self.scoped(mono),
+            Some(mono) => self.scoped(|ctx| mono(ctx)),
             None => 0,
         }
     }
@@ -639,11 +639,11 @@ impl HostExt for Host {
         let Some(log_level) = self.fns().log_level else {
             return false;
         };
-        level != 0 && level <= self.scoped(log_level)
+        level != 0 && level <= self.scoped(|ctx| log_level(ctx))
     }
     fn deployment_id(&self) -> Option<DeploymentId> {
         let deployment = self.fns().deployment?;
-        let id = self.scoped(deployment);
+        let id = self.scoped(|ctx| deployment(ctx));
         (id.0 != [0; 16]).then_some(id)
     }
     fn migrate_admit(&self, recoverable: u64) -> Result<(), Fail> {
