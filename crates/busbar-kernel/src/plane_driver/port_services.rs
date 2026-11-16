@@ -12,6 +12,7 @@ use std::sync::Arc;
 use super::plane_judge::PlaneJudge;
 use crate::connections::CallerConnections;
 use crate::plane_grants::{Entitlements, HostSigner, Tickets};
+use crate::trust::plane_book::TrustBook;
 
 /// The services behind the intents. `Default` installs none.
 #[derive(Clone, Default)]
@@ -26,4 +27,16 @@ pub struct Services {
     pub signer: Option<Arc<dyn HostSigner>>,
     /// CONNECT (§12.12).
     pub connections: Option<Arc<dyn CallerConnections>>,
+    /// SIGHT and TRUST (§12.14).
+    pub trust: Option<Arc<dyn TrustBook>>,
+}
+
+/// One item of a TRUST_STATE answer, owned (the book's sink borrows end with the call).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrustItemOwned {
+    pub name: String,
+    /// DISTRUST_* for this item.
+    pub verdict: u32,
+    pub approved: Option<[u8; 32]>,
+    pub sighted: Option<[u8; 32]>,
 }

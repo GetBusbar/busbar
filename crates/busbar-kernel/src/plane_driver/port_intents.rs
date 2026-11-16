@@ -27,23 +27,24 @@ use busbar_plugin_abi::fail::refused::{R_DENIED, R_INVALID, R_RATE_LIMITED, R_UN
 use busbar_plugin_abi::host_side::caller::{CallStack, Caller, InstanceLimits};
 use busbar_plugin_abi::plane::{
     CONNECT_BEGIN, CONNECT_REVOKE, CONNECT_STATUS, CONN_NONE, CONN_PENDING, CONN_REFUSED,
-    DEST_INTERNAL, FROM_CORE, LK_CALLER, LK_CHAIN, LK_PREFIX, MINT_ONCE, P_CHANNEL, P_COMMITTED,
-    P_CONNECT, P_ENTITLE, P_ERROR, P_JUDGED, P_LOOKUP, P_MINTED, P_SIGNAL, P_SIGNED,
-    P_STORE_FAILED, P_WORK, SIGN_JWS_DETACHED,
+    DEST_INTERNAL, DISTRUST_UNKNOWN, FROM_CORE, LK_CALLER, LK_CHAIN, LK_PREFIX, MINT_ONCE,
+    P_CHANNEL, P_COMMITTED, P_CONNECT, P_ENTITLE, P_ERROR, P_JUDGED, P_LOOKUP, P_MINTED, P_SIGNAL,
+    P_SIGNED, P_STORE_FAILED, P_TRUST, P_WORK, SIGNED_MALFORMED_ROOT, SIGN_JWS_DETACHED,
+    TRUST_SERVES, TRUST_STATE,
 };
 use busbar_plugin_abi::records::{commit, tag, RecDelRec, RecPredRec, RecPutRec, Records, Reply};
 use busbar_plugin_abi::types::KindCode;
 use busbar_plugin_loader::encode::plane::{
     encode_chain_state, encode_chan_attach, encode_committed, encode_connect_answers,
     encode_entitle_answers, encode_judged, encode_lookup_hits, encode_minted, encode_refusal,
-    encode_signed, encode_work_answers, SignedAnswer,
+    encode_signed, encode_trust_answers, encode_work_answers, SignedAnswer,
 };
-use busbar_plugin_loader::ports::plane::WorkAnswer;
+use busbar_plugin_loader::ports::plane::{TrustAnswer, TrustItem, WorkAnswer};
 use tokio::runtime::Handle;
 
 use super::plane_judge::PlaneJudge;
 use super::port_channels::{ChannelAttach, ChannelHost, Channels};
-use super::port_services::Services;
+use super::port_services::{Services, TrustItemOwned};
 use super::port_session::{Answer, Calls, Effects, SessionError, Task, Violation};
 use crate::channels::SessionSignals;
 use crate::hashing::Sha256;
@@ -129,6 +130,26 @@ pub enum Intent {
         op: u32,
         upstream: String,
         return_to: Option<String>,
+    },
+    /// SIGHT: the plane observed `party` offering `items` (name, SHA-256 digest); no answer (§12.14).
+    Sight {
+        party: String,
+        catalog: Option<[u8; 32]>,
+        items: Vec<(String, [u8; 32])>,
+    },
+    /// TRUST: `op` = TRUST_SERVES (with its optional item) or TRUST_STATE (§12.14).
+    Trust {
+        check: u32,
+        op: u32,
+        party: String,
+        item: Option<(String, Option<[u8; 32]>)>,
+    },
+    /// TRUST_VERIFY: `signatures` (a JSON array) over `payload`, against the root core holds for `party`.
+    TrustVerify {
+        check: u32,
+        party: String,
+        payload: Vec<u8>,
+        signatures: Vec<u8>,
     },
     /// CHANNEL: attach `exchange` to a shared upstream channel (§12.19); `head` = the nested HTTP head records.
     Channel {
@@ -249,6 +270,30 @@ pub trait IntentHost: Send + Sync {
     /// SIGN `payload` with the host key as a JWS, or the generic REFUSED code. The default is `R_UNSUPPORTED`.
     fn sign(&self, _payload: &[u8], _detached: bool) -> Result<SignedJws, u32> {
         Err(R_UNSUPPORTED)
+    }
+    /// SIGHT: record that `party` offered `items` (name, digest), under the listing's `catalog` hash. A sighting
+    /// the book cannot record is logged; the plane is not told (SIGHT has no answer). The default records nothing.
+    fn sight(
+        &self,
+        _party: &str,
+        _catalog: Option<[u8; 32]>,
+        _items: &[(&str, [u8; 32])],
+    ) -> Result<(), RecordsDenied> {
+        Err(RecordsDenied::Unavailable)
+    }
+    /// TRUST_SERVES: `DISTRUST_NONE` or the `DISTRUST_*` that refuses (digest `None` = the last sighting). The
+    /// default refuses as unknown.
+    fn trust_serves(&self, _party: &str, _item: Option<(&str, Option<[u8; 32]>)>) -> u32 {
+        DISTRUST_UNKNOWN
+    }
+    /// TRUST_STATE: the counterparty verdict and the per-item state. The default refuses as unknown.
+    fn trust_state(&self, _party: &str) -> (u32, Vec<TrustItemOwned>) {
+        (DISTRUST_UNKNOWN, Vec::new())
+    }
+    /// TRUST_VERIFY: the `SIGNED_*` verdict and, for `SIGNED_ALGORITHM` and `SIGNED_CRITICAL`, the named member.
+    /// The default has no root: `SIGNED_MALFORMED_ROOT`.
+    fn trust_verify(&self, _party: &str, _payload: &[u8], _signatures: &[u8]) -> (u32, String) {
+        (SIGNED_MALFORMED_ROOT, String::new())
     }
     /// CONNECT as the verified `subject`: the `CONN_*` state and, for a BEGIN, the URL to send the caller to.
     /// The default is `CONN_REFUSED`.
@@ -399,7 +444,20 @@ impl<'h> Resolver<'h> {
                         channel.ready(tail);
                     }
                 }
+                Intent::Sight {
+                    party,
+                    catalog,
+                    items,
+                } => {
+                    let seen: Vec<(&str, [u8; 32])> =
+                        items.iter().map(|(name, d)| (name.as_str(), *d)).collect();
+                    if let Err(denied) = self.host.sight(party, *catalog, &seen) {
+                        tracing::warn!(?denied, party, "a plane sighting was not recorded");
+                    }
+                }
                 Intent::Lookup { .. }
+                | Intent::Trust { .. }
+                | Intent::TrustVerify { .. }
                 | Intent::Work { .. }
                 | Intent::Entitle { .. }
                 | Intent::Judge { .. }
@@ -452,6 +510,13 @@ impl<'h> Resolver<'h> {
             pieces.push(Piece {
                 exchange: 0,
                 flags: P_JUDGED,
+                bytes,
+            });
+        }
+        if let Some(bytes) = self.trusts(intents) {
+            pieces.push(Piece {
+                exchange: 0,
+                flags: P_TRUST,
                 bytes,
             });
         }
@@ -671,6 +736,77 @@ impl<'h> Resolver<'h> {
         let mut reply = Reply::new();
         let put = encode_judged(&mut reply, &answers);
         debug_assert!(put.is_ok(), "JUDGE_ANS records fit a Reply");
+        Some(reply.as_bytes().to_vec())
+    }
+
+    /// The TRUST_ANS of every TRUST and TRUST_VERIFY of the answer, in intent order; `None` when it has none.
+    fn trusts(&self, intents: &[Intent]) -> Option<Vec<u8>> {
+        // (check, verdict, item states of a STATE, the named member of a VERIFY)
+        let mut rows: Vec<(u32, u32, Vec<TrustItemOwned>, String)> = Vec::new();
+        for intent in intents {
+            match intent {
+                Intent::Trust {
+                    check, op, party, ..
+                } if *op == TRUST_STATE => {
+                    let (verdict, items) = self.host.trust_state(party);
+                    rows.push((*check, verdict, items, String::new()));
+                }
+                Intent::Trust {
+                    check,
+                    op,
+                    party,
+                    item,
+                } if *op == TRUST_SERVES => {
+                    let item = item.as_ref().map(|(name, digest)| (name.as_str(), *digest));
+                    let verdict = self.host.trust_serves(party, item);
+                    rows.push((*check, verdict, Vec::new(), String::new()));
+                }
+                Intent::Trust { check, .. } => {
+                    // The adapter admits only SERVES and STATE; anything else does not serve.
+                    rows.push((*check, DISTRUST_UNKNOWN, Vec::new(), String::new()));
+                }
+                Intent::TrustVerify {
+                    check,
+                    party,
+                    payload,
+                    signatures,
+                } => {
+                    let (verdict, named) = self.host.trust_verify(party, payload, signatures);
+                    rows.push((*check, verdict, Vec::new(), named));
+                }
+                _ => {}
+            }
+        }
+        if rows.is_empty() {
+            return None;
+        }
+        let views: Vec<Vec<TrustItem<'_>>> = rows
+            .iter()
+            .map(|(_, _, items, _)| {
+                items
+                    .iter()
+                    .map(|i| TrustItem {
+                        name: &i.name,
+                        verdict: i.verdict,
+                        approved: i.approved,
+                        sighted: i.sighted,
+                    })
+                    .collect()
+            })
+            .collect();
+        let answers: Vec<TrustAnswer<'_>> = rows
+            .iter()
+            .zip(&views)
+            .map(|((check, verdict, _, named), items)| TrustAnswer {
+                check: *check,
+                verdict: *verdict,
+                items,
+                named,
+            })
+            .collect();
+        let mut reply = Reply::new();
+        let put = encode_trust_answers(&mut reply, &answers);
+        debug_assert!(put.is_ok(), "TRUST_ANS records fit a Reply");
         Some(reply.as_bytes().to_vec())
     }
 
@@ -1139,6 +1275,53 @@ impl<R: PluginRecords> IntentHost for KernelIntents<R> {
         self.rt
             .block_on(signer.sign_jws(&who, payload, detached))
             .map_err(|denied| denied_status(&denied))
+    }
+
+    fn sight(
+        &self,
+        party: &str,
+        catalog: Option<[u8; 32]>,
+        items: &[(&str, [u8; 32])],
+    ) -> Result<(), RecordsDenied> {
+        let book = self
+            .services
+            .trust
+            .as_ref()
+            .ok_or(RecordsDenied::Unavailable)?;
+        let who = self.who.caller();
+        self.rt.block_on(book.sight(&who, party, catalog, items))
+    }
+
+    fn trust_serves(&self, party: &str, item: Option<(&str, Option<[u8; 32]>)>) -> u32 {
+        match &self.services.trust {
+            Some(book) => book.serves(&self.who.caller(), party, item),
+            None => DISTRUST_UNKNOWN,
+        }
+    }
+
+    fn trust_state(&self, party: &str) -> (u32, Vec<TrustItemOwned>) {
+        let Some(book) = &self.services.trust else {
+            return (DISTRUST_UNKNOWN, Vec::new());
+        };
+        let mut items = Vec::new();
+        let verdict = book.state(&self.who.caller(), party, &mut |item| {
+            items.push(TrustItemOwned {
+                name: item.name.to_owned(),
+                verdict: item.verdict,
+                approved: item.approved,
+                sighted: item.sighted,
+            });
+        });
+        (verdict, items)
+    }
+
+    fn trust_verify(&self, party: &str, payload: &[u8], signatures: &[u8]) -> (u32, String) {
+        let Some(book) = &self.services.trust else {
+            return (SIGNED_MALFORMED_ROOT, String::new());
+        };
+        let mut named = String::new();
+        let verdict = book.verify(&self.who.caller(), party, payload, signatures, &mut named);
+        (verdict, named)
     }
 
     fn connect(

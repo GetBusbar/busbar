@@ -198,6 +198,8 @@ pub enum Violation {
     /// A JUDGE outside a `request` or `piece` answer, an egress class past 4, or a flag bit that is not
     /// JUDGE_RESOLVE or JUDGE_REFUSE_PRIVATE (§8.6 round 16: BadRecords).
     BadJudge,
+    /// A record the adapter validated did not read back (a core bug or a changed wire: the session is cut).
+    BadRecords,
 }
 
 /// Why a session call produced no usable answer.
@@ -682,6 +684,47 @@ impl Answer {
                 op,
                 upstream: upstream.to_owned(),
                 return_to: return_to.map(str::to_owned),
+            }),
+            PlaneOut::Sight {
+                party,
+                catalog,
+                items,
+            } => {
+                let mut seen = Vec::new();
+                for rec in items {
+                    let (name, digest) = rec
+                        .and_then(|rec| rec.pair())
+                        .map_err(|_| Violation::BadRecords)?;
+                    let digest = <[u8; 32]>::try_from(digest).map_err(|_| Violation::BadRecords)?;
+                    seen.push((name.to_owned(), digest));
+                }
+                self.intents.push(Intent::Sight {
+                    party: party.to_owned(),
+                    catalog,
+                    items: seen,
+                });
+            }
+            PlaneOut::Trust {
+                check,
+                op,
+                party,
+                item,
+            } => self.intents.push(Intent::Trust {
+                check,
+                op,
+                party: party.to_owned(),
+                item: item.map(|(name, digest)| (name.to_owned(), digest)),
+            }),
+            PlaneOut::TrustVerify {
+                check,
+                party,
+                payload,
+                signatures,
+            } => self.intents.push(Intent::TrustVerify {
+                check,
+                party: party.to_owned(),
+                payload: payload.to_vec(),
+                signatures: signatures.to_vec(),
             }),
             PlaneOut::Entitle { check, grant } => self.intents.push(Intent::Entitle {
                 check,
