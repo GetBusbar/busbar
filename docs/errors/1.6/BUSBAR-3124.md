@@ -18,7 +18,7 @@ A provider's `base_url`, `base_url` + `path`, `base_url` + `path_base` or `token
 
 ## How to fix it
 
-Point the provider at its real API host. If the host is deliberately reachable, list it under `security.allow_metadata_hosts`.
+Point the provider at its real API host. No setting admits a cloud-metadata host (BUSBAR-3136), so do not try to allow-list it; if the credential is for a cloud API, use that platform's workload identity.
 
 ## Example
 

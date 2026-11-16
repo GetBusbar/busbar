@@ -2,8 +2,8 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! WORKSPACE LAW (decision 124, UPG-A12): the launch env vars 1.6 retired are spelled, as a quoted
-//! string literal, in exactly one production file: `root/migrate_environment.rs`, whose
-//! `RETIRED_LAUNCH_ENV` table drives both `--migrate-config`'s capture and the BUSBAR-3029
+//! string literal, in exactly one production file: `root/retired_env.rs`, whose
+//! `RETIRED_LAUNCH_ENV` table drives the BUSBAR-3029
 //! "set but ignored" notice. A retired name spelled anywhere else is a reader (or a dead copy) the
 //! notice cannot see. Test code is exempt: files under a `tests/` directory, and the tail of a file
 //! from its first column-0 `#[cfg(test)]`.
@@ -17,7 +17,7 @@ const RETIRED: [&str; 4] = [
     "BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE",
 ];
 
-const SINGLE_SOURCE: &str = "crates/busbar/src/root/migrate_environment.rs";
+const SINGLE_SOURCE: &str = "crates/busbar/src/root/retired_env.rs";
 
 fn production_part(text: &str) -> &str {
     let mut at = 0;

@@ -12,8 +12,8 @@ use busbar_plugin_abi::plane::{
     ATT_DECLINE, ATT_HARD, ATT_RELAY, ATT_RETRY, AUDIT_APPLIED, AUDIT_REJECTED, FROM_CLIENT,
     FROM_CORE, FROM_UPSTREAM, MSG_FIN, MSG_TEXT, SRC_ESTIMATED, SRC_REPORTED,
 };
-use busbar_plugin_loader::ports::plane::{PlaneIn, PlaneOut, TargetIn};
-use busbar_plugin_loader::ports::{FactRef, FactVal, PortError};
+use busbar_ports::plane::{PlaneIn, PlaneOut, TargetIn};
+use busbar_ports::{FactRef, FactVal, PortError};
 
 use super::{
     deliver, render, run_local, Calls, Effects, Origin, SessionError, Task, ToClient, Violation,

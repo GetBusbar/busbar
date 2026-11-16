@@ -294,7 +294,7 @@ fn stage_plugins(s: &Scenario, env: &Env, work: &Path) -> Result<(), String> {
 
 fn admin_token() -> Result<String, String> {
     let mut b = [0u8; 16];
-    ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut b)
+    aws_lc_rs::rand::SecureRandom::fill(&aws_lc_rs::rand::SystemRandom::new(), &mut b)
         .map_err(|_| "admin token: system RNG fill failed".to_string())?;
     Ok(format!("hammer-admin-{}", hex(&b)))
 }
@@ -335,8 +335,8 @@ fn audience_token(signing_key_hex: &str, plain: &str, aud: &str) -> Result<Strin
         out.insert("g", g.clone());
     }
     let body = sonic_rs::to_vec(&Value::from(out)).map_err(|x| x.to_string())?;
-    let kp =
-        ring::signature::Ed25519KeyPair::from_seed_unchecked(&seed).map_err(|x| x.to_string())?;
+    let kp = aws_lc_rs::signature::Ed25519KeyPair::from_seed_unchecked(&seed)
+        .map_err(|x| x.to_string())?;
     Ok(format!(
         "bbk_{}.{}",
         e.encode(&body),
@@ -1089,7 +1089,7 @@ mod tests {
             "http://a/mcp",
         )
         .unwrap();
-        use ring::signature::{Ed25519KeyPair, KeyPair as _, UnparsedPublicKey, ED25519};
+        use aws_lc_rs::signature::{Ed25519KeyPair, KeyPair as _, UnparsedPublicKey, ED25519};
         let (b64, sig) = t.trim_start_matches("bbk_").split_once('.').unwrap();
         let body = e.decode(b64).unwrap();
         let kp = Ed25519KeyPair::from_seed_unchecked(&[0x11; 32]).unwrap();

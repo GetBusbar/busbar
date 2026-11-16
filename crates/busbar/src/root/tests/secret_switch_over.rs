@@ -12,8 +12,8 @@ use std::time::{Duration, Instant};
 use busbar_contract::secret_ref::SecretRef;
 use busbar_contract::secure::SecureVec;
 use busbar_kernel::custody::{CustodyDenied, SecretSource};
-use busbar_plugin_loader::ports::secret::{SecretAnswer, SecretPort};
-use busbar_plugin_loader::ports::{CallCx, PortError};
+use busbar_ports::secret::{SecretAnswer, SecretPort};
+use busbar_ports::{CallCx, PortError};
 
 use super::{BootRefs, BootSecrets};
 use busbar_kernel::plugin_config::{Binder, ConfigBinder};

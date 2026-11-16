@@ -68,6 +68,8 @@ fn declared_codes_do_not_collide_with_the_registry() {
 #[cfg(all(linked_every_plane_door, linked_axis_export_doors))]
 mod page {
     use super::*;
+    use busbar_contract::json;
+    use busbar_contract::json::JsonValueTrait as _;
     use busbar_kernel::diagnostics::{render_json_for, render_markdown_for, REGISTRY};
 
     const COMMITTED_MD: &str = concat!(env!("BUSBAR_CORE_DIR"), "/../../docs/diagnostics.md");
@@ -77,8 +79,8 @@ mod page {
     fn published_numbers() -> std::collections::BTreeSet<u64> {
         let text = std::fs::read_to_string(COMMITTED_JSON)
             .unwrap_or_else(|e| panic!("read {COMMITTED_JSON}: {e}"));
-        let entries: Vec<serde_json::Value> =
-            serde_json::from_str(&text).expect("docs/diagnostics.json is a JSON array");
+        let entries: Vec<json::Value> =
+            json::parse_str(&text).expect("docs/diagnostics.json is a JSON array");
         entries
             .iter()
             .map(|e| e["number"].as_u64().expect("every entry has a number"))

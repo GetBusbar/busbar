@@ -7,8 +7,8 @@
 use super::AuditChain;
 
 impl AuditChain {
-    /// Which key this chain signs with, by identifier. `None` on a node that seals unsigned.
-    pub fn signing_key_id(&self) -> Option<&str> {
-        self.signer.as_ref().map(|k| k.key_id())
+    /// Whether this chain is a legacy-signing chain (built with [`AuditChain::signing_with`]).
+    pub fn signs_lines(&self) -> bool {
+        self.signer.is_some()
     }
 }

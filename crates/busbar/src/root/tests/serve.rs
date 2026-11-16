@@ -118,9 +118,6 @@ impl HostServices for Judges {
     fn trust_serves(&self, _: &Caller, _: &str, _: Option<&str>, _: Option<&str>) -> Stored {
         Stored::refused(busbar_contract::services::UNSERVED)
     }
-    fn entitlement_check(&self, _: &Caller, _: Option<u64>, _: &str) -> Stored {
-        Stored::ready(8)
-    }
     fn random_fill(&self, _: u64) -> Stored {
         Stored::ready(9)
     }
@@ -228,7 +225,6 @@ fn every_service(late: &LateServices) -> Vec<Stored> {
         s.sign(&caller, b"data"),
         now(s.trust_sight(&caller, "peer", "hash", Box::new(|_| {}))),
         s.trust_due(&caller),
-        s.entitlement_check(&caller, None, "model:m"),
         s.random_fill(16),
         s.trust_verify(&caller, "peer", b"payload", b"[]"),
         now(s.records_secret("planted-scheme", "AKID", Box::new(|_| {}))),

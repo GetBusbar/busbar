@@ -16,8 +16,8 @@ use busbar_plugin_abi::plane::{
     W_UPSTREAM,
 };
 use busbar_plugin_abi::records::{tag as g, Records};
-use busbar_plugin_loader::ports::plane::{PlaneIn, PlaneOut, TargetIn};
-use busbar_plugin_loader::ports::{FactRef, FactVal, PortError};
+use busbar_ports::plane::{PlaneIn, PlaneOut, TargetIn};
+use busbar_ports::{FactRef, FactVal, PortError};
 
 use super::{
     probe_member, probe_wait, run_attempts, Attempted, Candidate, Failure, Members, ProbeOutcome,

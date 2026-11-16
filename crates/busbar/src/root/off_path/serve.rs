@@ -457,7 +457,8 @@ pub(crate) async fn compose_served_checked(
         Arc::clone(&gov),
         crate::root::plane_node::node().kernel_and_keys().1,
         Arc::new(busbar_kernel::plane_driver::CoreAudit),
-    );
+    )
+    .with_journal(Arc::clone(&post) as Arc<dyn busbar_kernel::plane_driver::HookJournal>);
     let money = move || {
         Arc::new(PlaneMoney::new(
             Arc::clone(&gov),

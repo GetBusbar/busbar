@@ -25,6 +25,13 @@ The appended facts:
 - `attempts`: at most four attempts, `attempts_count` of them, each with
   `outcome` (`ok`, `failover`, `failed` or `cancelled`), `target`, `reason` and
   `us`; `attempts_total` counts every attempt, including those beyond the four.
+- `user` and `labels` (the records tail, optional): what the operator switched
+  on with `records.user` and `records.labels`. `user` is the end user as kept
+  (a pseudonym `u_` + 32 hex digits, or the plain value cut to 128 bytes);
+  `labels` holds at most eight allow-listed request headers, each `name` (lower
+  case) and `value` (verbatim, at most 128 bytes), in the allow-list's order.
+  A record that keeps neither carries no tail at all, so every V7 record sealed
+  before the tail existed keeps its bytes and its digest.
 
 ## Digest framing
 
@@ -97,6 +104,22 @@ trust/anchor limits are unchanged from V4.
 | 56 | `attempts[].us` | number |
 | 57 | `attempts_total` | number |
 
+### The records tail
+
+Positions 58 to 62 follow position 57 ONLY when the record keeps an end user or
+a label (`user_present` is then `"1"` or `"0"`, and at least one of `user` and
+`labels` is set). A record that keeps neither ends at position 57; a verifier
+frames the tail exactly when the published record carries `user_present`. An
+empty tail is never framed, so each record has one framing.
+
+| Position | Field | Kind | Present |
+| --- | --- | --- | --- |
+| 58 | `user_present` | number | records tail |
+| 59 | `user` | text | records tail |
+| 60 | `labels_count` | number | records tail |
+| 61 | `labels[].name` | text | records tail |
+| 62 | `labels[].value` | text | records tail |
+
 ## Key representation and validation
 
 The rate-card key is represented and validated exactly as in V5 and V6:
@@ -112,6 +135,10 @@ facts in table order: `wall_ms` (u64), `attribution` (u32-length-prefixed UTF-8)
 `boot_nonce` (a u32-length-prefixed blob of exactly 16 bytes), `status`,
 `ttft_us`, `total_us` and the attempt count (u64 each; the count is at most 4),
 each attempt's `outcome`, `target` and `reason` (u32-length-prefixed UTF-8) and
-`us` (u64), then `attempts_total` (u64). A reader rejects an unknown outcome, more
-than four attempts, a nonce of another length, truncation, trailing bytes or a
-mismatched tag/recipe. V5 and V6 records keep their original journal bytes.
+`us` (u64), then `attempts_total` (u64). When the record keeps a records tail,
+the body goes on with `user` (u64 0 for none, or u64 1 and u32-length-prefixed
+UTF-8), the label count (u64, at most 8) and each label's `name` and `value`
+(u32-length-prefixed UTF-8); a body without it ends at `attempts_total`. A
+reader rejects an unknown outcome, more than four attempts, a nonce of another
+length, more than eight labels, an empty records tail, truncation, trailing
+bytes or a mismatched tag/recipe. V5 and V6 records keep their original journal bytes.

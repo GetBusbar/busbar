@@ -51,7 +51,7 @@ pub(crate) fn refuse(plane: &str, carrier: &str, sentence: &str) {
 pub(crate) struct LineCaller<R> {
     lines: AsyncMutex<tokio::io::BufReader<R>>,
     max_line: usize,
-    out: mpsc::UnboundedSender<Vec<u8>>,
+    out: mpsc::Sender<Vec<u8>>,
     /// The output lines the writer hands back once written.
     spare: Arc<LinePool>,
     failure: Arc<IoFailure>,
@@ -65,6 +65,8 @@ struct LinePool(std::sync::Mutex<Vec<Vec<u8>>>);
 
 const POOLED_LINES: usize = 16;
 const POOLED_LINE_BYTES: usize = 64 * 1024;
+/// Complete output lines awaiting the writer; individual body sizing is separate.
+const LINE_OUTPUT_QUEUE_CAPACITY: usize = 16;
 
 impl LinePool {
     fn take(&self) -> Vec<u8> {
@@ -99,7 +101,10 @@ impl LinePool {
 }
 
 #[derive(Default)]
-struct IoFailure(std::sync::Mutex<Option<(&'static str, std::io::Error)>>);
+struct IoFailure(
+    std::sync::Mutex<Option<(&'static str, std::io::Error)>>,
+    tokio::sync::Notify,
+);
 
 impl IoFailure {
     fn record(&self, direction: &'static str, error: std::io::Error) {
@@ -107,6 +112,8 @@ impl IoFailure {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get_or_insert((direction, error));
+        // A permit persists even when the input loop has not started waiting yet.
+        self.1.notify_one();
     }
 
     fn report(&self) -> bool {
@@ -127,7 +134,26 @@ impl<R: AsyncRead + Unpin + Send> CallerEnd for LineCaller<R> {
     fn head(&self, _status: u32, _fields: HeadFields) {}
 
     async fn write(&self, bytes: &[u8]) -> bool {
-        self.out.send(self.spare.line(bytes)).is_ok()
+        self.out.send(self.spare.line(bytes)).await.is_ok()
+    }
+}
+
+impl<R> LineCaller<R> {
+    fn emit(&self, bytes: &[u8]) -> bool {
+        match self.out.try_send(self.spare.line(bytes)) {
+            Ok(()) => true,
+            Err(error) => {
+                let kind = match error {
+                    mpsc::error::TrySendError::Full(_) => std::io::ErrorKind::WouldBlock,
+                    mpsc::error::TrySendError::Closed(_) => std::io::ErrorKind::BrokenPipe,
+                };
+                self.failure.record(
+                    "output",
+                    std::io::Error::new(kind, "line output queue unavailable"),
+                );
+                false
+            }
+        }
     }
 }
 
@@ -268,10 +294,7 @@ where
         let sink = Arc::clone(&caller);
         let session = std::num::NonZeroU64::new(
             driver
-                .open_carrier_session(
-                    &principal,
-                    Arc::new(move |bytes: &[u8]| sink.out.send(sink.spare.line(bytes)).is_ok()),
-                )
+                .open_carrier_session(&principal, Arc::new(move |bytes: &[u8]| sink.emit(bytes)))
                 .expect("served plane holds its core caller binding"),
         )
         .expect("kernel carrier sessions are minted above zero");
@@ -304,7 +327,7 @@ where
                     caller.spare.give(line);
                 } else {
                     terminate(&mut line);
-                    let _ = caller.out.send(line);
+                    let _ = caller.out.send(line).await;
                 }
             }
         };
@@ -379,10 +402,8 @@ where
             authenticated: gov.key().is_some(),
         };
         let sink = Arc::clone(&caller);
-        let carrier = open_driver.open_carrier(
-            &principal,
-            Arc::new(move |bytes: &[u8]| sink.out.send(sink.spare.line(bytes)).is_ok()),
-        );
+        let carrier =
+            open_driver.open_carrier(&principal, Arc::new(move |bytes: &[u8]| sink.emit(bytes)));
         let _ = opened_here.set(carrier);
         let requests = std::sync::atomic::AtomicU64::new(1);
         let answer = move |line: Vec<u8>| {
@@ -397,7 +418,7 @@ where
                 {
                     Ok(mut body) if !body.is_empty() => {
                         terminate(&mut body);
-                        let _ = caller.out.send(body);
+                        let _ = caller.out.send(body).await;
                     }
                     Ok(_) => {}
                     Err(refused) => tracing::warn!(?refused, "a line got no answer from its plane"),
@@ -429,7 +450,37 @@ where
     Unit: std::future::Future<Output = ()> + Send + 'static,
     Close: FnOnce(),
 {
-    let (out, mut lines_out) = mpsc::unbounded_channel::<Vec<u8>>();
+    let limits = busbar_kernel::config::limits::installed();
+    let max_line = limits.map_or_else(
+        busbar_kernel::config::limits::default_request_body_max_bytes,
+        |l| l.request_body_max_bytes,
+    );
+    let max_inbound = limits.map_or_else(
+        busbar_kernel::config::limits::default_max_inbound_concurrent,
+        |l| l.max_inbound_concurrent,
+    );
+    run_io_with_limits(carrier, reader, writer, stop, open, max_line, max_inbound).await
+}
+
+async fn run_io_with_limits<R, W, S, Open, Answer, Unit, Close>(
+    carrier: &str,
+    reader: R,
+    writer: W,
+    stop: S,
+    open: Open,
+    max_line: usize,
+    max_inbound: usize,
+) -> i32
+where
+    R: AsyncRead + Unpin + Send + 'static,
+    W: AsyncWrite + Unpin + Send + 'static,
+    S: std::future::Future<Output = ()>,
+    Open: FnOnce(Arc<LineCaller<R>>) -> (Answer, Close),
+    Answer: Fn(Vec<u8>) -> Unit,
+    Unit: std::future::Future<Output = ()> + Send + 'static,
+    Close: FnOnce(),
+{
+    let (out, mut lines_out) = mpsc::channel::<Vec<u8>>(LINE_OUTPUT_QUEUE_CAPACITY);
     let failure = Arc::new(IoFailure::default());
     let write_failure = Arc::clone(&failure);
     let spare = Arc::new(LinePool::default());
@@ -452,10 +503,6 @@ where
             write_failure.record("output", error);
         }
     });
-    let max_line = busbar_kernel::config::limits::installed().map_or_else(
-        busbar_kernel::config::limits::default_request_body_max_bytes,
-        |l| l.request_body_max_bytes,
-    );
     let caller = Arc::new(LineCaller {
         lines: AsyncMutex::new(tokio::io::BufReader::new(reader)),
         max_line,
@@ -468,8 +515,27 @@ where
     let mut stop = std::pin::pin!(stop);
     let mut writer_ended = false;
     loop {
+        // Reap only between reads: cancelling caller.read() on a unit completion
+        // would discard a partially read line.
+        while units.try_join_next().is_some() {}
+        if max_inbound != 0 && units.len() >= max_inbound {
+            tokio::select! {
+                biased;
+                () = &mut stop => break,
+                () = failure.1.notified() => break,
+                result = &mut written => {
+                    writer_ended = true;
+                    if let Err(error) = result {
+                        failure.record("output", std::io::Error::other(error));
+                    }
+                    break;
+                }
+                _ = units.join_next() => continue,
+            }
+        }
         let line = tokio::select! {
             biased;
+            () = failure.1.notified() => break,
             result = &mut written => {
                 writer_ended = true;
                 if let Err(error) = result {

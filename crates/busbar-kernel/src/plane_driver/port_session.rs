@@ -23,8 +23,8 @@ use busbar_plugin_abi::plane::{
     AUDIT_REJECTED, FROM_CORE, FROM_UPSTREAM, JUDGE_REFUSE_PRIVATE, JUDGE_RESOLVE, MSG_FIN,
     MSG_TEXT,
 };
-use busbar_plugin_loader::ports::plane::{PlaneIn, PlaneOut, PlanePort, PlaneSession, TargetIn};
-use busbar_plugin_loader::ports::{FactRef, FactVal, PortError};
+use busbar_ports::plane::{PlaneIn, PlaneOut, PlanePort, PlaneSession, TargetIn};
+use busbar_ports::{FactRef, FactVal, PortError};
 
 use super::port_channels::Channels;
 use super::port_intents::{Detach, Intent};

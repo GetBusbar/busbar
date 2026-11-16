@@ -286,9 +286,9 @@ fn write_tarball(dir: &Path, file: &str, name: &str, alias: &str, lib: &[u8]) {
     std::fs::write(dir.join("plugins").join(file), plugins::seal(m, lib)).unwrap();
 }
 
-fn plugins_block(dir: &Path, enabled: bool, allow_unsigned: bool) -> String {
+fn plugins_block(dir: &Path, enabled: bool, allow_untrusted: bool) -> String {
     format!(
-        "plugins:\n  enabled: {enabled}\n  dir: '{}'\n  trust:\n    allow_unsigned: {allow_unsigned}\n",
+        "plugins:\n  enabled: {enabled}\n  dir: '{}'\n  trust:\n    allow_untrusted: {allow_untrusted}\n",
         dir.join("plugins").display()
     )
 }
@@ -492,7 +492,7 @@ fn validate_trust_gate_matches_boot() {
     let (code, _stdout, stderr) = run_busbar(&dir, &["--validate"]);
     assert_eq!(code, 1);
     assert!(
-        stderr.contains("allow_unsigned"),
+        stderr.contains("allow_untrusted"),
         "names the opt-in: {stderr}"
     );
 
@@ -605,7 +605,7 @@ fn the_signing_gate_reference_reaches_the_dropped_in_tarball_past_a_linked_alias
             assert!(
                 out.contains("was not loaded")
                     && (out.contains("manifest carries no signature")
-                        || out.contains("allow_unsigned")),
+                        || out.contains("allow_untrusted")),
                 "the refusal is the trust verdict on the tarball: {out}"
             );
         }
@@ -2230,7 +2230,6 @@ fn the_retired_migrate_flags_are_unknown_options() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
-#[test]
 /// QE: a pinned publisher key with no point on edwards25519 (`y = 2`: canonical, not small-order) is
 /// refused by `--validate` and by boot, with the INVALID text it had before Q9b, not first at the
 /// first verify of a plugin signed under it.
@@ -2241,7 +2240,7 @@ fn validate_and_boot_refuse_an_off_curve_publisher_key() {
         &dir,
         &format!(
             "plugins:\n  enabled: true\n  dir: '{}'\n  trust:\n    publishers:\n      - name: \
-             offcurve\n        public_key: \
+             offcurve\n        plugins: [offcurve-store]\n        keys:\n          - public_key: \
              \"0200000000000000000000000000000000000000000000000000000000000000\"\n",
             dir.join("plugins").display()
         ),

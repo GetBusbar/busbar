@@ -102,7 +102,7 @@ impl core::fmt::Display for OpenText<'_> {
             word: &str,
             code: u32,
             text: &str,
-            error: Option<&busbar_plugin_loader::instance::PluginCode>,
+            error: Option<&busbar_ports::PluginCode>,
         ) -> core::fmt::Result {
             write!(f, "{word} {code}")?;
             if let Some(error) = error {
@@ -242,10 +242,8 @@ pub fn deployment_bytes(text: &str) -> Result<[u8; 16], String> {
 }
 
 /// The root's deployment-row read over the opened store; the future owns what it needs (the store's `Arc`).
-pub type DeploymentRead = dyn Fn(
-        &busbar_plugin_loader::ports::store::StoreHandle,
-    ) -> BoxFut<'static, Result<[u8; 16], String>>
-    + Sync;
+pub type DeploymentRead =
+    dyn Fn(&busbar_ports::store::StoreHandle) -> BoxFut<'static, Result<[u8; 16], String>> + Sync;
 
 /// The MIN-3 registry as the walk's steps: `instances[i]` is configured instance `i` with its kind, exactly the
 /// slice `Registry::boot_plan` was given. The kind picks the registry's typed `open_<kind>`; this table is the

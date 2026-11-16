@@ -10,7 +10,7 @@
 //! let svc = Arc::new(
 //!     Services::new()
 //!         .on_now(|| Reading { wall_ns: 1_700_000_000_000_000_000, mono_ns: 7 })
-//!         .on_entitlement_check(|_caller, _unit, target| Stored::ready(u64::from(target == "/a"))),
+//!         .on_ticket_take(|_caller, _unit| Stored::ready(0)),
 //! );
 //! let host = Host::new(test_caller_binding()).services(svc.clone());
 //! // .. drive the plugin ..
@@ -91,7 +91,6 @@ scripted! {
     trust_serves / on_trust_serves / TrustServesFn(&Caller, &str, Option<&str>, Option<&str>) -> Stored;
     trust_due / on_trust_due / TrustDueFn(&Caller) -> Stored;
     trust_verify / on_trust_verify / TrustVerifyFn(&Caller, &str, &[u8], &[u8]) -> Stored;
-    entitlement_check / on_entitlement_check / EntitlementCheckFn(&Caller, Option<u64>, &str) -> Stored;
     session_emit / on_session_emit / SessionEmitFn(&Caller, u64, &[u8]) -> Stored;
     ticket_mint / on_ticket_mint / TicketMintFn(&Caller, Option<u64>, u64, &[u8], Later) -> Ran;
     outbound_authorize / on_outbound_authorize / OutboundAuthorizeFn(&Caller, Option<u64>, OutboundAuthorization<'_>, Later) -> Ran;
@@ -245,13 +244,6 @@ impl HostServices for Services {
         match &self.trust_verify {
             Some(f) => f(caller, counterparty, payload, signatures),
             None => self.unset("trust_verify", unserved()),
-        }
-    }
-
-    fn entitlement_check(&self, caller: &Caller, unit: Option<u64>, target: &str) -> Stored {
-        match &self.entitlement_check {
-            Some(f) => f(caller, unit, target),
-            None => self.unset("entitlement_check", unserved()),
         }
     }
 

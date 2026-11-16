@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
 //! Crate-level test suite for the admin surface's declarations.
 
 use crate::admin_codec::verbs;

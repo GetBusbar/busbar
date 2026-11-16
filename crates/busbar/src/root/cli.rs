@@ -87,7 +87,7 @@ const HELP_ENDPOINTS_HEAD: &str = "
 ENDPOINTS (once running, listen address from config.yaml `listen`):
 ";
 
-const HELP_TAIL: &str = "    GET  /stats  /healthz  /metrics
+const HELP_TAIL: &str = "    GET  /stats  /livez  /readyz  /healthz  /metrics
 
 Docs: https://getbusbar.com   ·   Source: https://github.com/GetBusbar/busbar\n";
 
@@ -503,7 +503,7 @@ pub(crate) fn validate_judged(
 }
 
 pub(crate) fn validate_config_command() -> i32 {
-    for w in crate::root::config_migrate::ignored_launch_env(|n| std::env::var_os(n)) {
+    for w in crate::root::retired_env::ignored_launch_env(|n| std::env::var_os(n)) {
         eprintln!("{w}");
     }
     let argv = argv();

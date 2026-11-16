@@ -12,21 +12,21 @@ fn linked_events() -> (RecoveryEvent, RecoveryEvent, RecoveryEvent) {
     let mut child = intent();
     child.operation_id = [9; 16];
     child.body_fingerprint = [8; 32];
-    let template = serde_json::json!({"physical":[1,2,3]});
+    let template = json::json!({"physical":[1,2,3]});
     let mut parent = intent();
     parent.operation_id = [6; 16];
     parent.payload = b"{\"handoffs\":[]}".to_vec();
     let mut checkpoint = transition(&parent, RecoveryState::Applied);
-    checkpoint.payload = serde_json::to_vec(&serde_json::json!({"handoffs":[{
+    checkpoint.payload = json::to_vec(&json::json!({"handoffs":[{
         "operation_id":child.operation_id,"kind":child.kind,
         "body_fingerprint":child.body_fingerprint,"first_sent_at_ms":child.first_sent_at_ms,
-        "payload":serde_json::to_vec(&template).unwrap()
+        "payload":json::to_vec(&template).unwrap()
     }]}))
     .unwrap();
     let mut physical = template;
-    physical["origin"] = serde_json::json!({"operation_id":checkpoint.operation_id,
+    physical["origin"] = json::json!({"operation_id":checkpoint.operation_id,
         "event_fingerprint":checkpoint.fingerprint().unwrap()});
-    child.payload = serde_json::to_vec(&physical).unwrap();
+    child.payload = json::to_vec(&physical).unwrap();
     (parent, checkpoint, child)
 }
 async fn persist_all(recovery: &StoreRecovery, events: &[&RecoveryEvent]) {
@@ -107,7 +107,7 @@ async fn long_history(recovery: &StoreRecovery) -> (RecoveryEvent, Head) {
 fn select(backend: &Backend, event: &RecoveryEvent, tip: &Head) {
     backend.state.lock().unwrap().rows.insert(
         address(&event.operation_id),
-        Secret::new(serde_json::to_vec(tip).unwrap()),
+        Secret::new(json::to_vec(tip).unwrap()),
     );
 }
 async fn adopted(backend: Arc<Backend>, old: &StoreRecovery) -> (StoreRecovery, RecoveryEvent) {
@@ -146,7 +146,7 @@ async fn final_origin_fold_rejects_a_head_advanced_between_read_and_finish() {
     let initial = intent();
     recovery.persist(&initial).await.unwrap();
     after_read(&backend, address(&initial.operation_id), move |backend| {
-        let mut tip: Head = serde_json::from_slice(
+        let mut tip: Head = json::parse(
             backend.state.lock().unwrap().rows[&address(&initial.operation_id)]
                 .expose(&crate::seal::lend()),
         )
@@ -340,7 +340,7 @@ async fn final_origin_fold_rejects_parent_head_advanced_between_read_and_finish(
     let (parent, checkpoint, child) = linked_events();
     persist_all(&recovery, &[&parent, &checkpoint, &child]).await;
     after_read(&backend, address(&parent.operation_id), move |backend| {
-        let mut tip: Head = serde_json::from_slice(
+        let mut tip: Head = json::parse(
             backend.state.lock().unwrap().rows[&address(&parent.operation_id)]
                 .expose(&crate::seal::lend()),
         )

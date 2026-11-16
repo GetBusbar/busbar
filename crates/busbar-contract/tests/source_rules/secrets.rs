@@ -333,7 +333,7 @@ fn settings_comments_cannot_exempt_raw_bags_and_guards_apply_to_bytes_only() {
     ));
     assert!(!owns_settings_bag(&syn::parse_quote!(&str), false));
     assert!(owns_settings_bag(
-        &syn::parse_quote!(busbar_contract::Secret<serde_json::Value>),
+        &syn::parse_quote!(busbar_contract::Secret<busbar_contract::json::Value>),
         false
     ));
     assert!(owns_settings_bag(

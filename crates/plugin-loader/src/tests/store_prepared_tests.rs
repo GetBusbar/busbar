@@ -9,6 +9,7 @@ use busbar_contract::abi::mechanism::lifecycle::{OpenIn, OpenOut, OpsHead};
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::mechanism::{KindCode, DOOR_MAGIC, MECHANISM_VERSION};
 use busbar_contract::abi::sdk::door::abi_str;
+use busbar_contract::json::JsonValueTrait as _;
 use busbar_contract::plugin::TestKernelSeal;
 use std::collections::HashMap;
 use std::ffi::c_void;
@@ -201,10 +202,12 @@ extern "C" fn call(instance: *mut c_void, input: *const c_void, output: *mut c_v
                 let out = &mut *output.cast::<wire::BootstrapOut>();
                 assert!(!input.host.is_null(), "pre-open host tables are retained");
                 let state = if instance.is_null() {
-                    let settings: serde_json::Value = serde_json::from_slice(
-                        std::slice::from_raw_parts(input.settings.ptr, input.settings.len),
-                    )
-                    .unwrap();
+                    let settings: busbar_contract::json::Value =
+                        busbar_contract::json::parse_value(std::slice::from_raw_parts(
+                            input.settings.ptr,
+                            input.settings.len,
+                        ))
+                        .unwrap();
                     let stats = registry()
                         .lock()
                         .unwrap()
@@ -403,9 +406,10 @@ fn fixture_with(
         },
     )
     .unwrap();
-    let settings =
-        serde_json::to_vec(&serde_json::json!({"id":id,"password":"PREPARED_SECRET_CANARY"}))
-            .unwrap();
+    let settings = busbar_contract::json::to_vec(
+        &busbar_contract::json::json!({"id":id,"password":"PREPARED_SECRET_CANARY"}),
+    )
+    .unwrap();
     let prepared = LoadedPrepared::new(
         plugin,
         dispatcher.clone(),

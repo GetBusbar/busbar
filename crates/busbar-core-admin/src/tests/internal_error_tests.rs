@@ -19,6 +19,6 @@ async fn projects_a_500_internal_error_envelope() {
         !body.is_empty(),
         "the body must carry the error envelope, not be empty like `Response::default()`"
     );
-    let v: serde_json::Value = serde_json::from_slice(&body).expect("valid JSON body");
+    let v = busbar_contract::json::parse_value(&body).expect("valid JSON body");
     assert_eq!(v["error"]["code"], "internal");
 }

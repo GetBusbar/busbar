@@ -4,7 +4,7 @@
 //! The billed-count read. The cases are plane-llm's (`codec/tests/usage_count_tests.rs`), moved
 
 use super::read_count_u64;
-use serde_json::json;
+use crate::json::{json, JsonValueTrait as _};
 
 #[test]
 fn a_float_spelled_integer_is_the_integer() {
@@ -50,7 +50,7 @@ fn beyond_2_53_is_refused_because_the_fractional_test_goes_blind() {
 
 #[test]
 fn infinities_and_nan_are_refused() {
-    let inf = serde_json::Number::from_f64(f64::INFINITY);
+    let inf = crate::json::Number::from_f64(f64::INFINITY);
     assert!(
         inf.is_none(),
         "serde_json refuses non-finite numbers at construction"

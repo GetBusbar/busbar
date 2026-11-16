@@ -112,7 +112,7 @@ fn strict_posture() -> busbar_kernel::config::PluginsCfg {
 
 fn unsigned_ok_posture() -> busbar_kernel::config::PluginsCfg {
     let mut cfg = busbar_kernel::config::PluginsCfg::default();
-    cfg.trust.allow_unsigned = true;
+    cfg.trust.allow_untrusted = true;
     cfg
 }
 
@@ -120,7 +120,21 @@ fn publisher_posture(name: &str, key: &SigningKey) -> busbar_kernel::config::Plu
     let mut cfg = busbar_kernel::config::PluginsCfg::default();
     cfg.trust.publishers = vec![busbar_kernel::config::PluginPublisher {
         name: name.into(),
-        public_key: hex::encode(key.verifying_key().to_bytes()),
+        plugins: [
+            "acme-store-x",
+            "acme-store-disk",
+            "acme-store-kv",
+            "other-store-kv",
+            "acme-store-s",
+            "acme-store-anchor",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect(),
+        keys: vec![busbar_kernel::config::PluginPublisherKey {
+            public_key: hex::encode(key.verifying_key().to_bytes()),
+            revoked: false,
+        }],
     }];
     cfg
 }
@@ -176,13 +190,8 @@ async fn serve_admission_with_inputs(
         busbar_contract::abi::mechanism::door::SUGAR_ROLE_PATH,
         admin_token_file.to_string_lossy(),
     ));
-    let documents = Arc::new(crate::root::startup_upgrade::documents::Documents::default());
-    documents
-        .finish_upgrade()
-        .expect("the admitted current-format fixture has no pending historical documents");
-    let rules = Arc::new(crate::root::door_steps::Rules::hearing_with_documents(
+    let rules = Arc::new(crate::root::door_steps::Rules::hearing(
         crate::root::connector::dest_judge(&resolved),
-        documents,
     )) as Arc<dyn busbar_kernel::appbuild::RootRules>;
     static CORE: tokio::sync::OnceCell<Arc<busbar_kernel::persistence::facade::CoreStore>> =
         tokio::sync::OnceCell::const_new();
@@ -289,7 +298,7 @@ async fn serve_with_plugins_dir_and_hook_env(
 
 fn scanned_hook_env(dir: &std::path::Path) -> busbar_kernel::hooks::HookEnv {
     let policy = crate::root::loader::sign::TrustPolicy {
-        allow_unsigned: true,
+        allow_untrusted: true,
         ..Default::default()
     };
     let registry = crate::root::loader::scan_and_validate(dir, &policy).unwrap();
@@ -428,7 +437,7 @@ async fn inspect_previews_a_trusted_candidate_without_installing() {
     assert_eq!(v["name"], "acme-store-preview");
     assert_eq!(v["version"], "1.0.0");
     assert_eq!(v["kind"], "secret");
-    assert_eq!(v["trust"], "unverified");
+    assert_eq!(v["trust"]["verdict"], "unverified");
     assert_eq!(v["source"], "manifest");
     assert_eq!(v["schema_error"], serde_json::Value::Null);
     assert!(
@@ -462,7 +471,7 @@ async fn inspect_reports_rejected_trust_rather_than_erroring() {
 
     let (status, v) = inspect(addr, &tarball).await;
     assert_eq!(status, 200, "inspect still succeeds: {v}");
-    assert_eq!(v["trust"], "rejected");
+    assert_eq!(v["trust"]["verdict"], "rejected");
     assert_eq!(v["name"], "acme-store-untrusted");
     handle.abort();
 }
@@ -532,8 +541,7 @@ async fn install_strict_posture_rejects_unsigned() {
     let (status, b) = install(addr, "x.tar.gz", &tarball).await;
     assert!(
         status == 409
-            && (message(&b).contains("allow_third_party")
-                || message(&b).contains("allow_unsigned")),
+            && (message(&b).contains("allow_untrusted") || message(&b).contains("allow_untrusted")),
         "the rejection names the opt-in flag: {status} {b}"
     );
     assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
@@ -822,7 +830,7 @@ async fn catalog_does_not_dlopen_an_untrusted_plugin() {
         .find(|p| p["target"] == "evil.tar.gz")
         .expect("the untrusted plugin is listed in the catalog");
     assert_eq!(
-        row["trust"], "rejected",
+        row["trust"]["verdict"], "rejected",
         "an unsigned plugin under the strict default posture is reported rejected"
     );
     assert_eq!(row["valid"], false, "and it is not loadable");
@@ -855,7 +863,15 @@ async fn install_signed_is_trusted() {
         status, 201,
         "a signed, allowlisted upload installs under the strict posture: {view}"
     );
-    assert_eq!(view["trust"], "trusted");
+    assert_eq!(view["trust"]["verdict"], "trusted");
+    assert_eq!(view["trust"]["signature_present"], true);
+    assert_eq!(
+        view["trust"]["key_fingerprint"],
+        crate::root::loader::release_trust::wire::key_id(
+            &crate::root::loader::sign::ReleaseKey::Ed25519(key.verifying_key())
+        )
+    );
+    assert!(view["trust"]["keys_doc_version"].is_null());
     assert_eq!(view["publisher"], "acme");
     assert_eq!(view["version"], "2.1.0");
     assert_eq!(view["name"], "acme-store-disk");
@@ -865,7 +881,7 @@ async fn install_signed_is_trusted() {
         .iter()
         .find(|p| p["loader"] == "dynamic-library")
         .expect("dynamic plugin");
-    assert_eq!(row["trust"], "trusted");
+    assert_eq!(row["trust"]["verdict"], "trusted");
     assert_eq!(row["publisher"], "acme");
     assert_eq!(row["version"], "2.1.0");
     assert_eq!(row["name"], "acme-store-disk");
@@ -908,7 +924,7 @@ async fn install_downgraded_version_is_rejected_by_floor() {
         status, 201,
         "a signed release at/above the floor installs: {view}"
     );
-    assert_eq!(view["trust"], "trusted");
+    assert_eq!(view["trust"]["verdict"], "trusted");
     assert_eq!(view["version"], "2.1.0");
     handle.abort();
 }
@@ -981,7 +997,7 @@ fn the_root_admission_classes_an_upload_and_writes_nothing() {
     let unsigned = unsigned_tarball(test_manifest("acme-store-u", "u", "acme", "1.0.0"), b"u");
     let admitted = ADMISSION
         .admit_upload(&dir, "u.tar.gz", &unsigned, &unsigned_ok_posture())
-        .expect("an unsigned upload is admitted under allow_unsigned");
+        .expect("an unsigned upload is admitted under allow_untrusted");
     assert_eq!(admitted.judged, Judged::Allowed);
     assert!(!admitted.linked_serves);
     let key = SigningKey::from_bytes(&[13u8; 32]);
@@ -1071,7 +1087,7 @@ async fn test_admin_v1_plugin_install_list_reload_remove() {
     assert_eq!(resp.status().as_u16(), 201, "install returns 201 Created");
     let v: serde_json::Value = resp.json().await.unwrap();
     assert_eq!(file_of(&v).as_deref(), Some(file));
-    assert_eq!(v["trust"], "unverified");
+    assert_eq!(v["trust"]["verdict"], "unverified");
     assert_eq!(
         v["name"], "acme-store-junk",
         "identity from the signed manifest"
@@ -1468,7 +1484,7 @@ async fn test_admin_v1_plugins_inspect_previews_without_installing() {
     assert_eq!(v["version"], "1.0.0");
     assert_eq!(v["kind"], "store");
     assert_eq!(v["source"], "manifest");
-    assert_eq!(v["trust"], "unverified");
+    assert_eq!(v["trust"]["verdict"], "unverified");
 
     assert_eq!(
         std::fs::read_dir(&dir).unwrap().count(),
@@ -1569,7 +1585,7 @@ async fn test_admin_v1_plugin_schema_round_trips_from_manifest() {
     assert_eq!(got["schema_error"], serde_json::Value::Null);
     assert_eq!(got["source"], "manifest");
 
-    assert_eq!(got["trust"], "unverified");
+    assert_eq!(got["trust"]["verdict"], "unverified");
 
     handle.abort();
 
@@ -1810,7 +1826,7 @@ async fn a_bootstrap_archive_upload_and_rollback_refuse_a_changed_base_pin_befor
             "providers_file": providers,
             "store":{"module":"anchor","settings":{}},
             "plugins":{"enabled":true,"dir":dir,
-                "trust":{"publishers":[{"name":"acme","public_key":hex::encode(key.verifying_key().to_bytes())}]},
+                "trust":{"publishers":[{"name":"acme","plugins":["acme-store-anchor"],"keys":[{"public_key":hex::encode(key.verifying_key().to_bytes()),"revoked":false}]}]},
                 "fetch":[{"url":"https://plugins.invalid/anchor.tar.gz","sha256":hash}]}});
         std::fs::write(
             &config,
@@ -1851,4 +1867,45 @@ async fn a_bootstrap_archive_upload_and_rollback_refuse_a_changed_base_pin_befor
     std::fs::remove_file(config).unwrap();
     std::fs::remove_file(providers).unwrap();
     std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn admission_retains_the_actual_rotated_signer_and_never_claims_unknown_signature_text() {
+    let dir = tmp_plugins_dir("admission-actual-signer");
+    let old_key = SigningKey::from_bytes(&[71; 32]);
+    let active_key = SigningKey::from_bytes(&[72; 32]);
+    let mut cfg = publisher_posture("acme", &old_key);
+    cfg.trust.publishers[0]
+        .keys
+        .push(busbar_kernel::config::PluginPublisherKey {
+            public_key: hex::encode(active_key.verifying_key().to_bytes()),
+            revoked: false,
+        });
+    let bytes = signed_tarball(
+        &active_key,
+        test_manifest("acme-store-s", "s", "acme", "1.0.0"),
+        b"actual signer",
+    );
+    let expected = crate::root::loader::release_trust::wire::key_id(
+        &crate::root::loader::sign::ReleaseKey::Ed25519(active_key.verifying_key()),
+    );
+    let admitted = ADMISSION
+        .admit_upload(&dir, "s.tar.gz", &bytes, &cfg)
+        .expect("second active key admits");
+    assert_eq!(admitted.verification.signers, [expected.clone()]);
+    assert_eq!(admitted.verification.root, None);
+    assert_eq!(admitted.verification.keys_version, None);
+    let (_, judged, proof) = ADMISSION
+        .inspect_with_verification(&bytes, &cfg)
+        .expect("same prospective proof");
+    assert!(matches!(judged, Judged::Trusted { .. }));
+    assert_eq!(proof, admitted.verification);
+    cfg.trust.publishers.clear();
+    cfg.trust.allow_untrusted = true;
+    let (_, judged, proof) = ADMISSION
+        .inspect_with_verification(&bytes, &cfg)
+        .expect("unknown signature opt-in");
+    assert_eq!(judged, Judged::Allowed);
+    assert_eq!(proof, busbar_contract::plugin_rows::Verification::default());
+    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
 }

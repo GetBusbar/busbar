@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::hook_health_projection;
+use busbar_contract::json;
 
 #[tokio::test]
 async fn test_admin_v1_hook_health_best_effort() {
@@ -27,29 +28,28 @@ async fn test_admin_v1_hook_health_best_effort() {
     let bytes = axum::body::to_bytes(missing.into_body(), 4096)
         .await
         .unwrap();
-    let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let body = json::parse_value(&bytes).unwrap();
     assert_eq!(body["error"]["code"], "not_found");
 
     let web = mk("web-hook-plugin");
-    let web =
-        serde_json::to_value(hook_health_projection("web", Some(&web), &[], None, None).unwrap())
-            .unwrap();
+    let web = json::to_value(&hook_health_projection("web", Some(&web), &[], None, None).unwrap())
+        .unwrap();
     assert_eq!(web["name"], "web");
     assert_eq!(web["transport"]["kind"], "plugin");
     assert_eq!(
         web["reachable"],
-        serde_json::json!(false),
+        json::json!(false),
         "uninstalled plugin is unreachable"
     );
 
     let sock = mk("sock-hook-plugin");
     let sock =
-        serde_json::to_value(hook_health_projection("sock", Some(&sock), &[], None, None).unwrap())
+        json::to_value(&hook_health_projection("sock", Some(&sock), &[], None, None).unwrap())
             .unwrap();
     assert_eq!(sock["transport"]["kind"], "plugin");
     assert_eq!(
         sock["reachable"],
-        serde_json::json!(false),
+        json::json!(false),
         "uninstalled plugin is unreachable"
     );
 }

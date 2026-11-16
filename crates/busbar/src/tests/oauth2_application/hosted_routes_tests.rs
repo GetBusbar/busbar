@@ -4,6 +4,7 @@
 use std::sync::Arc;
 
 use super::{application, application_with_document};
+use busbar_contract::json::JsonValueTrait as _;
 
 async fn keys_application() -> Arc<busbar_kernel::state::App> {
     crate::dist_root_install::install();
@@ -233,12 +234,12 @@ async fn core_route_bypass_is_exact_in_path_and_method() {
     handle.abort();
 }
 
-fn golden_cell(name: &str) -> serde_json::Value {
+fn golden_cell(name: &str) -> busbar_contract::json::Value {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../testing/shadow-oracle/golden/1.5.5/cells")
         .join(name);
     let text = std::fs::read_to_string(&path).expect("the 1.5.5 golden cell");
-    serde_json::from_str(&text).expect("golden json")
+    busbar_contract::json::parse_value(text.as_bytes()).expect("golden json")
 }
 
 #[tokio::test]

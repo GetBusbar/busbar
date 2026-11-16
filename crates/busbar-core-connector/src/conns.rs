@@ -3689,26 +3689,17 @@ impl DeclaredConns for Connector {
         if self.framed(caller, need) {
             return Err(ConnError::Refused);
         }
-        let config = if verify_off {
-            let class = self
-                .over
-                .lock()
-                .expect("needs")
-                .get(&(caller, need))
-                .map(|d| d.egress_class);
-            if class != Some(EGRESS_OPERATOR_INFRASTRUCTURE) {
-                return Err(ConnError::Refused);
-            }
+        if verify_off {
             self.flag_once(
                 caller,
                 &busbar_kernel::diagnostics::PLUGIN_USES_DEPRECATED_ABI_VALUE,
                 busbar_kernel::audit::auditlog::PluginRefusal::Open,
-                "an operator-infrastructure connection was secured with UPGRADE_VERIFY_OFF: the far \
-                 end's certificate is NOT verified. The flag is deprecated and refused from busbar \
-                 1.7.0; configure the server's CA instead of disabling verification",
+                "UPGRADE_VERIFY_OFF is retired and refused in busbar 1.6.0; use the core-held \
+                 insecure_transport policy on a Need instead",
             );
-            Some(crate::tls::client::unverified_client_config().map_err(|_| ConnError::Refused)?)
-        } else {
+            return Err(ConnError::Refused);
+        }
+        let config = {
             let declared = self.declared.lock().expect("declared needs");
             let trust_from = declared
                 .get(&(caller, need))
@@ -5124,7 +5115,6 @@ mod real_tcp_tests;
 
 #[cfg(test)]
 #[path = "tests/callback_waker.rs"]
-#[allow(unsafe_code)]
 pub(crate) mod callback_waker;
 
 #[cfg(test)]

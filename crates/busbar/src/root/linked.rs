@@ -13,6 +13,8 @@ pub type Compose = Box<dyn FnOnce(&dyn busbar_contract::secret::SecretResolve) +
 pub type CliHelpRow = (&'static str, &'static str);
 
 pub struct Linked {
+    /// Compiled MIN-3 headers, admitted through the same checked loader path on every platform.
+    pub images: &'static [LinkedImage],
     pub plane_doors: &'static [busbar_contract::abi::mechanism::door::DoorFn],
 
     pub secrets: &'static [busbar_contract::abi::mechanism::door::DoorFn],
@@ -50,6 +52,16 @@ pub struct Linked {
     /// The former names each linked store, auth, secret and plane door declares
     /// (`DoorDecl::FORMER_NAMES`), read by [`words_of`].
     pub former: &'static std::sync::LazyLock<Vec<LinkedFormer>>,
+}
+
+/// The generated root calls the loader with the plugin's unforgeable static header. Keeping the
+/// admission function here avoids exposing the FFI header representation in the composition root.
+pub struct LinkedImage {
+    pub alias: &'static str,
+    pub admit: fn() -> Result<
+        busbar_plugin_loader::admit::Admitted,
+        busbar_plugin_loader::refusal::Refusal,
+    >,
 }
 
 pub mod node {
@@ -643,6 +655,7 @@ pub(crate) fn logs() -> &'static crate::root::loader::dispatch::PluginLogConfig 
 }
 
 pub(crate) const HOST_SERIES: &[&str] = &[
+    busbar_kernel::snapshot::AUDIT_STAGE_FAILURES_TOTAL,
     busbar_kernel::snapshot::ROUTE_POLICY_SELECTIONS_TOTAL,
     busbar_kernel::snapshot::ROUTE_POLICY_REJECTIONS_TOTAL,
     busbar_kernel::snapshot::HOOK_PROJECT_OVER_CAP_TOTAL,

@@ -112,17 +112,79 @@ fn hand_written_bad_fact_answers_fault() {
     }
 }
 
+/// The store arm (W1-L3), booted: a `plugin!` store whose `read` answers
+/// `Fail::failed_because(F_UPSTREAM, t).with_fact(FACT_RETRY_AFTER_S, 30).with_fact(FACT_BACKEND_STATUS, 503)`,
+/// opened through `Registry::open_store` and read through its `PersistenceBackend`. The adapter's `PortError` is
+/// what `exec` logs ("store call not answered OK", `error = ?e`): FAILED carries both facts, absent facts are
+/// None, REFUSED carries none; the kernel sees `Failure::Unavailable` and `Failure::Refused`.
 #[test]
-#[ignore = "owner: W1-L3; blocked (re-checked on dev 2026-11-16): the store adapter port_error(a, inst) is private and needs a live Instance; row 1 (store.rs request todo!) is in flight"]
 fn store_adapter_maps_the_facts() {
-    todo!("owner: W1-L3 (C-FAIL-FACTS)")
+    use busbar_contract::persistence::Failure;
+    use busbar_plugin_abi::fail::failed;
+    use busbar_plugin_test::fake_needs::FakeNeeds;
+    use busbar_ports::PortError;
+
+    use crate::min3_store::{booted, inline, read_one, Capture, NOT_ANSWERED_OK};
+
+    let h = booted(inline::PLUGIN.plugin(), FakeNeeds::new());
+    let cases: [(&str, &[u8], Failure, PortError); 3] = [
+        (
+            "facts-failed",
+            br#"{"read":{"status":"failed","code":7,"text":"the backend said 503","retry_after_s":30,"backend_status":503}}"#,
+            Failure::Unavailable,
+            PortError::Failed {
+                code: failed::F_UPSTREAM,
+                text: "the backend said 503".into(),
+                retry_after_s: Some(30),
+                backend_status: Some(503),
+                error: None,
+            },
+        ),
+        (
+            "facts-none",
+            br#"{"read":{"status":"failed","code":2,"text":"slow"}}"#,
+            Failure::Unavailable,
+            PortError::Failed {
+                code: failed::F_TIMEOUT,
+                text: "slow".into(),
+                retry_after_s: None,
+                backend_status: None,
+                error: None,
+            },
+        ),
+        (
+            "facts-refused",
+            br#"{"read":{"status":"refused","code":5,"text":"no","retry_after_s":1,"backend_status":1}}"#,
+            Failure::Refused,
+            PortError::Refused {
+                code: 5,
+                text: "no".into(),
+                error: None,
+            },
+        ),
+    ];
+    for (name, config, failure, want) in cases {
+        let store = h
+            .open_store(name, config)
+            .unwrap_or_else(|e| panic!("{name}: open failed: {e:?}"));
+        let capture = Capture::default();
+        let seen = {
+            let _tap = capture.install();
+            h.block_on(read_one(&*store.backend))
+        };
+        assert_eq!(seen.err(), Some(failure), "{name}");
+        let logged = capture.with_message(NOT_ANSWERED_OK);
+        assert_eq!(logged.len(), 1, "{name}: one warning per answer");
+        let want = format!("{want:?}");
+        assert_eq!(logged[0].field("error"), Some(want.as_str()), "{name}");
+    }
 }
 
 #[test]
 fn secret_adapter_maps_the_facts() {
     use busbar_plugin_abi::host_side::scrub::Scrub;
     use busbar_plugin_loader::adapters::secret::port_failure;
-    use busbar_plugin_loader::ports::PortError;
+    use busbar_ports::PortError;
 
     let scrub = Scrub::new();
     assert_eq!(
@@ -168,8 +230,8 @@ fn auth_adapter_maps_the_facts() {
     use busbar_plugin_abi::host_side::scrub::Scrub;
     use busbar_plugin_abi::types::Status;
     use busbar_plugin_loader::adapters::auth::plugin_error;
-    use busbar_plugin_loader::instance::PluginCode;
-    use busbar_plugin_loader::ports::PortError;
+    use busbar_ports::PluginCode;
+    use busbar_ports::PortError;
 
     let scrub = Scrub::new();
     let code = PluginCode {
@@ -239,7 +301,7 @@ fn hook_adapter_maps_the_facts() {
     use busbar_plugin_abi::fail::failed;
     use busbar_plugin_abi::host_side::scrub::Scrub;
     use busbar_plugin_loader::adapters::hook::port_error;
-    use busbar_plugin_loader::ports::PortError;
+    use busbar_ports::PortError;
 
     let scrub = Scrub::new();
     assert_eq!(
@@ -274,10 +336,70 @@ fn hook_adapter_maps_the_facts() {
     ));
 }
 
+/// The export arm (W1-L7), booted: a `plugin!` sink whose `deliver` answers the planned Fail, opened through
+/// `Registry::open_export`; the `deliver` port call's `PortError` carries both facts on FAILED, None for absent
+/// facts, and none on REFUSED.
 #[test]
-#[ignore = "owner: W1-L7; blocked (re-checked on dev 2026-11-16): the export adapter maps facts in a private method over a live ExportAdapter; no fixture image on dev"]
 fn export_adapter_maps_the_facts() {
-    todo!("owner: W1-L7 (C-FAIL-FACTS)")
+    use std::time::{Duration, Instant};
+
+    use busbar_plugin_abi::export::STREAM_LOGS;
+    use busbar_plugin_abi::fail::failed;
+    use busbar_plugin_abi::host_side::caller::CallStack;
+    use busbar_plugin_test::fake_needs::FakeNeeds;
+    use busbar_ports::{CallCx, PortError};
+
+    use crate::min3_store::booted;
+
+    let h = booted(crate::min3_export_fail::PLUGIN.plugin(), FakeNeeds::new());
+    let cases: [(&str, &[u8], PortError); 3] = [
+        (
+            "facts-failed",
+            br#"{"status":"failed","code":7,"text":"the backend said 503","retry_after_s":30,"backend_status":503}"#,
+            PortError::Failed {
+                code: failed::F_UPSTREAM,
+                text: "the backend said 503".into(),
+                retry_after_s: Some(30),
+                backend_status: Some(503),
+                error: None,
+            },
+        ),
+        (
+            "facts-none",
+            br#"{"status":"failed","code":2,"text":"slow"}"#,
+            PortError::Failed {
+                code: failed::F_TIMEOUT,
+                text: "slow".into(),
+                retry_after_s: None,
+                backend_status: None,
+                error: None,
+            },
+        ),
+        (
+            "facts-refused",
+            br#"{"status":"refused","code":5,"text":"no","retry_after_s":1,"backend_status":1}"#,
+            PortError::Refused {
+                code: 5,
+                text: "no".into(),
+                error: None,
+            },
+        ),
+    ];
+    let lines: [&[u8]; 1] = [b"one line"];
+    for (name, config, want) in cases {
+        let port = h
+            .open_export(name, config)
+            .unwrap_or_else(|e| panic!("{name}: open failed: {e:?}"));
+        let cx = CallCx {
+            deadline: Instant::now() + Duration::from_secs(30),
+            request_id: 1,
+            stack: CallStack::default(),
+        };
+        let got = h
+            .block_on(port.deliver(cx, STREAM_LOGS, 1, 1, &lines))
+            .err();
+        assert_eq!(got, Some(want), "{name}");
+    }
 }
 
 /// The plane admin arm (W1-L8): the one `port_error` builder fills the facts on FAILED only.
@@ -286,7 +408,7 @@ fn plane_admin_maps_the_facts() {
     use busbar_plugin_abi::fail::failed;
     use busbar_plugin_abi::host_side::scrub::Scrub;
     use busbar_plugin_loader::adapters::plane::port_error;
-    use busbar_plugin_loader::ports::PortError;
+    use busbar_ports::PortError;
 
     let scrub = Scrub::new();
     assert_eq!(
@@ -328,7 +450,7 @@ fn retry_policy_honours_retry_after() {
 
     use busbar_kernel::retry::{Policy, Retry, RetryPolicy, RetrySite};
     use busbar_plugin_abi::fail::failed;
-    use busbar_plugin_loader::ports::PortError;
+    use busbar_ports::PortError;
 
     let err = PortError::Failed {
         code: failed::F_UNAVAILABLE,

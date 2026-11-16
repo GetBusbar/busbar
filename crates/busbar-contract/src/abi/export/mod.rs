@@ -76,7 +76,7 @@ use super::mechanism::lifecycle::{OpsHead, LIFECYCLE_SLOTS};
 pub const ABI_VERSION: u32 = super::versions::EXPORT.raw();
 
 /// The export kind's layout fingerprint ([`crate::abi::mechanism::layout`]): the fold of
-pub const LAYOUT_FINGERPRINT: u64 = 0xfe016c85b529734e;
+pub const LAYOUT_FINGERPRINT: u64 = 0xe1324b294edbab7e;
 
 /// The export kind's shapes, in fold order ([`crate::layout_shape!`]): every `#[repr(C)]` struct
 pub const LAYOUT_SHAPES: &[&[u64]] = &[
@@ -97,6 +97,7 @@ pub const LAYOUT_SHAPES: &[&[u64]] = &[
     ),
     crate::layout_shape!(Route => path, method, auth, _reserved),
     crate::layout_shape!(Tail => head, streams, streams_len, routes, routes_len),
+    crate::abi::host::service::HOST_SLOTS_LAYOUT,
 ];
 
 /// [`InHead::op`] values the export kind adds after the shared lifecycle, in table order.

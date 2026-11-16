@@ -4,6 +4,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use busbar_contract::json::{self, JsonValueTrait};
 use busbar_contract::records::VirtualKey;
 use busbar_kernel::cost::{CostModel, PlaneFees};
 use busbar_kernel::governance::PLANE_LANE_SEP;
@@ -175,7 +176,7 @@ struct BreakdownRead {
     #[serde(default)]
     classes: BTreeMap<String, ClassUsage>,
     #[serde(skip)]
-    wire: serde_json::Value,
+    wire: json::Value,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -233,10 +234,10 @@ async fn read(app: busbar_kernel::state::App, bucket: Option<u64>) -> UsageRead 
         .await
         .unwrap();
     assert_eq!(response.status().as_u16(), 200);
-    let wire: serde_json::Value = response.json().await.unwrap();
+    let bytes = response.bytes().await.unwrap();
+    let wire = json::parse_value(&bytes).unwrap();
     server.abort();
-    let mut view: UsageRead =
-        serde_json::from_value(wire.clone()).expect("the actual usage response");
+    let mut view: UsageRead = json::parse_foreign(&bytes).expect("the actual usage response");
     view.total.wire = wire["total"].clone();
     for (row, wire) in view
         .by_model
@@ -683,10 +684,10 @@ async fn a_planes_class_rides_its_usage_row_with_its_count_and_its_cost() {
         30 * MICROS_PER_MINOR,
         "the class's cost is part of spend_micros, not added to it"
     );
-    let wire = serde_json::to_value(row).expect("the row serializes");
+    let wire = json::to_value(row).expect("the row serializes");
     assert_eq!(
         wire["classes"]["tool_calls"],
-        serde_json::json!({"count": 3, "cost": 21 * MICROS_PER_MINOR}),
+        json::json!({"count": 3, "cost": 21 * MICROS_PER_MINOR}),
         "the wire shape: classes keyed by class name, each {{count, cost}}"
     );
 }
@@ -704,12 +705,12 @@ async fn a_token_only_row_carries_no_classes_key_as_on_1_5_5() {
     let (_, view) = serve_calls_view(|| carded_cost(70_000, 3, 0), &[t]).await;
     let row = view.by_model.first().expect("the pools row");
     assert!(row.usage.classes.is_empty());
-    let wire = serde_json::to_value(row).expect("the row serializes");
+    let wire = json::to_value(row).expect("the row serializes");
     assert!(
         wire.get("classes").is_none(),
         "a token-only row is 1.5.5's shape: {wire}"
     );
-    let total = serde_json::to_value(&view.total).expect("the total serializes");
+    let total = json::to_value(&view.total).expect("the total serializes");
     assert!(total.get("classes").is_none());
 }
 
@@ -762,18 +763,18 @@ async fn a_pools_open_class_is_priced_and_itemized_on_every_usage_read() {
     );
     let mut wires = vec![(
         "total".to_string(),
-        serde_json::to_value(&view.total).expect("the total serializes"),
+        json::to_value(&view.total).expect("the total serializes"),
     )];
     for r in &view.by_model {
         wires.push((
             format!("model row {}/{}", r.model, r.upstream),
-            serde_json::to_value(r).expect("the row serializes"),
+            json::to_value(r).expect("the row serializes"),
         ));
     }
     for r in &view.by_key {
         wires.push((
             format!("key row {}", r.id),
-            serde_json::to_value(r).expect("the key row serializes"),
+            json::to_value(r).expect("the key row serializes"),
         ));
     }
     assert!(
@@ -783,12 +784,12 @@ async fn a_pools_open_class_is_priced_and_itemized_on_every_usage_read() {
     for (what, wire) in wires {
         assert_eq!(
             wire["classes"]["search_units"]["count"],
-            serde_json::json!(2_000_000),
+            json::json!(2_000_000),
             "the {what} includes every open class: {wire}"
         );
         assert_eq!(
             wire["classes"]["search_units"]["cost"],
-            serde_json::json!(600 * MICROS_PER_MINOR),
+            json::json!(600 * MICROS_PER_MINOR),
             "the {what} itemizes the class price separately from request fees: {wire}"
         );
     }

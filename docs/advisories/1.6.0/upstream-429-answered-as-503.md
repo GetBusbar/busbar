@@ -16,58 +16,27 @@ question directly: it is not a mis-attribution.
 
 When a single-member lane's upstream answers `429 Too Many Requests`, Busbar's own client-facing
 response for that request is `503 Service Unavailable` with kind `overloaded`, not a relayed 429.
-This is shipped behavior across the 1.5.x line and reproduced in 1.6.0's engine unchanged.
+This is shipped behavior across the 1.5.x line and is the 1.6.0 behavior too.
 
 ### Mechanism
 
-1. `busbar-unit-breaker`'s Stage 2 classifier maps every rate-limit signal to a transient
-   disposition that trips the pool cell's breaker, on the same footing as a 5xx or a timeout:
-
-   ```
-   (StatusClass::RateLimit, Disposition::TransientUpstream),
-   ```
-
-   (`crates/busbar-unit-breaker/src/classify.rs:69`, in the `DISPOSITION_TABLE`; the same file's
-   module doc, `:1-19`, states this classifier was moved byte-identical from 1.5.5's
-   `busbar-substrate::breaker`.)
-
-2. `busbar-llm`'s exhaustion handler, once the pool has no eligible member left to try (a
-   single-member lane trips its only member's breaker on the first 429), returns the client a
-   503 in the gateway's own `overloaded` shape:
-
-   ```rust
-   pub(crate) fn handle_status_503(
-       host: &Arc<dyn EngineHost>,
-       cands: &[WeightedLane],
-       now: u64,
-       pool: &str,
-       ingress_protocol: &str,
-   ) -> Response {
-       let retry_after = retry_after_secs(host, cands, now, pool);
-       let mut resp = ingress_error(
-           ingress_protocol,
-           StatusCode::SERVICE_UNAVAILABLE,
-           KIND_OVERLOADED,
-           "The service is temporarily overloaded. Please retry shortly.",
-       );
-       ...
-   }
-   ```
-
-   (`crates/busbar-llm/src/engine/exhaustion/mod.rs:181-199`.) A `Retry-After` header derived
-   from the upstream's own signal is preserved on the response
-   (`crates/busbar-llm/src/engine/exhaustion/mod.rs:186,195-198`), so a rate-aware client still
-   backs off correctly even though the status code it sees is 503, not 429.
-
-3. `wire.rs` documents the deliberate choice of the `overloaded` kind for this case specifically
-   because it is the SAME kind Busbar already uses for its own 503s
-   (`crates/busbar-llm/src/engine/wire.rs:171-174`), so a client cannot distinguish "the upstream
-   is rate-limiting this pool" from "Busbar itself has no capacity" by response shape alone.
+1. The breaker's classifier maps every rate-limit signal to the transient-upstream disposition, on the
+   same footing as a 5xx or a timeout, so a 429 trips the pool cell's breaker
+   (`classify` in `crates/busbar-kernel-breaker/src/classify.rs`: `WireFault::RateLimit` and
+   `WireFault::Transient` both yield `Disposition::TransientUpstream`; the rate-limit outcome keeps the
+   upstream's `retry_after`, `classify_upstream` in `crates/busbar-kernel-breaker/src/port.rs`).
+2. Once the pool has no eligible member left to try (a single-member lane trips its only member's
+   breaker on the first 429), the client is answered with Busbar's own `overloaded` kind and status 503
+   rather than a relayed 429, with a `Retry-After` taken from the upstream's own signal. The kernel
+   uses the same kind for its own capacity refusals (`KIND_OVERLOADED`,
+   `crates/busbar-kernel/src/ingress/mod.rs`), so a client cannot tell "the upstream is rate-limiting
+   this pool" from "Busbar itself has no capacity" by response shape alone. The exhaustion answer for
+   an LLM lane is built by the LLM plane plugin; its own documentation is authoritative for the exact
+   body.
 
 ## Affected versions
 
-Every 1.5.x and 1.6.0 line to date; unchanged by the 1.6.0 plane-extraction work (the classifier
-was carried byte-identical; see Evidence).
+Every 1.5.x release and 1.6.0.
 
 ## Impact
 
@@ -85,23 +54,20 @@ deliberate design decision layered on top of a correct classification.
 
 Not a vulnerability under SECURITY.md's Scope list. It is shipped, intended behavior: the
 breaker's classification of `RateLimit -> TransientUpstream` is correct (see Mechanism), and the
-503-with-Retry-After response is a documented design choice (`wire.rs:171-174`), not an
+503-with-Retry-After response is a documented design choice (the shared `overloaded` kind), not an
 unattributed fault. No severity band applies; recorded as an advisory for operator/client-
 integrator awareness, not as a fix-tracked defect.
 
 ## Evidence
 
-- `crates/busbar-unit-breaker/src/classify.rs:69` — `StatusClass::RateLimit` maps to
-  `Disposition::TransientUpstream` in `DISPOSITION_TABLE`.
-- `crates/busbar-llm/src/engine/exhaustion/mod.rs:181-199` — `handle_status_503`, the client-
-  facing 503 `overloaded` response with `Retry-After`.
-- `crates/busbar-llm/src/engine/wire.rs:171-174` — comment explaining the deliberate reuse of the
-  `overloaded` kind for a genuine upstream 503/exhaustion terminal.
-- `crates/busbar-llm/src/engine/health.rs:259,440,443,460` — `TransientUpstream` handling in the
-  health/breaker-write path, consistent with the classifier.
-- Internal audit ledger (`gate/held.txt`): "upstream 429 answers the client 503 overloaded
-  (breaker parks the single-member lane) — shipped behaviour, not a money-path change; advisory
-  candidate at the tag, owner to be told."
+- `crates/busbar-kernel-breaker/src/classify.rs`: `classify` maps `WireFault::RateLimit` to
+  `Disposition::TransientUpstream`.
+- `crates/busbar-kernel-breaker/src/port.rs`: `classify_upstream` carries the upstream's `retry_after`
+  into `Outcome::RateLimit`.
+- `crates/busbar-kernel/src/ingress/mod.rs`: the kernel's own 503 `overloaded` refusals use the same
+  kind.
+- The client-facing 503 for an exhausted LLM lane is the LLM plane plugin's; it was not re-measured
+  from this tree.
 
 ## Remediation / operator action
 
@@ -111,7 +77,7 @@ and the response `kind` (`overloaded`) rather than the HTTP status code, or conf
 multi-member pool so a single upstream's rate limit does not exhaust the pool. If distinguishing
 429-from-upstream as a first-class client-visible status is wanted, that is a wire-contract
 change scoped beyond this advisory (it would mean relaying upstream status codes verbatim,
-which the gateway does not do today by design — see `wire.rs`).
+which the gateway does not do today by design).
 
 ## Backport
 

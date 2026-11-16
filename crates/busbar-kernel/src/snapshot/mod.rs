@@ -200,6 +200,9 @@ pub const PLUGIN_TEXT_CUT_TOTAL: &str = "busbar_plugin_text_cut_total";
 
 pub const JOURNAL_QUARANTINED_TOTAL: &str = "busbar_journal_quarantined_total";
 
+/// Terminal audit originals refused before native confirmation (no labels).
+pub const AUDIT_STAGE_FAILURES_TOTAL: &str = "busbar_audit_stage_failures_total";
+
 /// Finished governed units whose spend still awaits settlement in the store (the admission gate's
 /// terminal backlog, SHUTDOWN-HANG F4a); `advanced.governance.max_pending_checkpoints` caps it.
 pub const UNIT_CHECKPOINTS_TERMINAL: &str = "busbar_unit_checkpoints_terminal";
@@ -523,6 +526,10 @@ fn describe() {
     describe_counter!(
         UNIT_REFUSALS_TOTAL,
         "Units that did not complete, by closed reason and plane instance"
+    );
+    describe_counter!(
+        AUDIT_STAGE_FAILURES_TOTAL,
+        "Terminal audit originals refused before native confirmation"
     );
 
     describe_gauge!(

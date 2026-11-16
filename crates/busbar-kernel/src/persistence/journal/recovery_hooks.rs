@@ -36,7 +36,7 @@ impl<'a> StoreJournal<'a> {
     /// frames for its existing quarantine authority; later ChainBreak records
     /// remain usable without buffering the whole history. Only finish grants a
     /// complete proof. No historical hash or sequence is reconstructed.
-    pub(crate) async fn historical_replay(&self) -> Result<Replay<'_, 'a>> {
+    pub(super) async fn historical_replay(&self) -> Result<Replay<'_, 'a>> {
         let mut replay = self.replay().await?;
         replay.historical = true;
         Ok(replay)
@@ -48,7 +48,7 @@ impl<'a> StoreJournal<'a> {
     /// link to `base`'s head, so a forked or rewritten journal fails; a changed
     /// dataset or owner, or a selected head before `base`, refuses before any
     /// original is read. An empty unclaimed `base` is a whole replay.
-    pub(crate) async fn historical_replay_after(
+    pub(super) async fn historical_replay_after(
         &self,
         base: &VerifiedHead,
     ) -> Result<Replay<'_, 'a>> {
@@ -75,7 +75,7 @@ impl<'a> StoreJournal<'a> {
     /// `current`'s head and original-byte seal exactly. A forked, rewritten or
     /// damaged original after `prior` fails. Custody and admission of
     /// `current` remain the caller's check.
-    pub(crate) async fn confirm_extends(
+    pub(super) async fn confirm_extends(
         &self,
         prior: &VerifiedHead,
         current: &VerifiedHead,
@@ -111,7 +111,7 @@ impl<'a> StoreJournal<'a> {
         Ok(())
     }
 
-    pub(crate) fn selected_predicates(&self, proof: &VerifiedHead) -> Result<Vec<Predicate>> {
+    pub(super) fn selected_predicates(&self, proof: &VerifiedHead) -> Result<Vec<Predicate>> {
         Ok(vec![
             self.selected_head_predicate(proof)?,
             Predicate {
@@ -123,7 +123,7 @@ impl<'a> StoreJournal<'a> {
         ])
     }
 
-    pub(crate) fn owned_predicates(&self, proof: &VerifiedHead) -> Result<Vec<Predicate>> {
+    pub(super) fn owned_predicates(&self, proof: &VerifiedHead) -> Result<Vec<Predicate>> {
         let owner = owner_bytes(self.store.authority()?);
         let empty_unclaimed =
             proof.owner.is_none() && proof.selected.is_none() && proof.head == Head::default();
@@ -136,7 +136,7 @@ impl<'a> StoreJournal<'a> {
     #[cfg(test)]
     /// Recheck a read-only complete prefix proof without granting append or
     /// replay ownership. A later append changes H and requires a fresh proof.
-    pub(crate) async fn confirm_selected(&self, proof: &VerifiedHead) -> Result<()> {
+    pub(super) async fn confirm_selected(&self, proof: &VerifiedHead) -> Result<()> {
         let predicates = self.selected_predicates(proof)?;
         let values = self
             .read(
@@ -159,13 +159,13 @@ impl<'a> StoreJournal<'a> {
     /// Read-only owned confirmation requires native live execution admission;
     /// equality to a cached local writer identity cannot prove that an old
     /// dataset epoch is still open after a cold cutover.
-    pub(crate) async fn confirm_owned(&self, proof: &VerifiedHead) -> Result<()> {
+    pub(super) async fn confirm_owned(&self, proof: &VerifiedHead) -> Result<()> {
         self.confirm_owned_with(proof, &[]).await
     }
 
     /// Include the recovery owner's selected row or scan-generation guards in
     /// the same authoritative observation as journal custody and admission.
-    pub(crate) async fn confirm_owned_with(
+    pub(super) async fn confirm_owned_with(
         &self,
         proof: &VerifiedHead,
         extra: &[Predicate],
@@ -184,7 +184,7 @@ impl<'a> StoreJournal<'a> {
     /// `confirm_owned_with`'s one authoritative read, except that the selected head `H` is
     /// returned as observed instead of compared: O, admission and every `extra` must match, and
     /// the caller accepts `H` only if it is a head it knows (SHUTDOWN-HANG F1 `confirm_with`).
-    pub(crate) async fn observe_owned_with(
+    pub(super) async fn observe_owned_with(
         &self,
         proof: &VerifiedHead,
         extra: &[Predicate],
@@ -205,7 +205,7 @@ impl<'a> StoreJournal<'a> {
     }
 
     /// Whether `observed` is the selected head `proof` names.
-    pub(crate) fn names_head(
+    pub(super) fn names_head(
         &self,
         proof: &VerifiedHead,
         observed: &Option<Secret<Vec<u8>>>,
@@ -371,7 +371,7 @@ impl<'a> StoreJournal<'a> {
     /// Lookup is scoped to a completed whole-node proof. The original ordinal
     /// and sealed identity must agree; an equivalent frame at another sequence
     /// is never accepted as evidence of this original record.
-    pub(crate) async fn read_verified_record(
+    pub(super) async fn read_verified_record(
         &self,
         proof: &VerifiedHead,
         sequence: u64,
@@ -384,7 +384,7 @@ impl<'a> StoreJournal<'a> {
     /// One point read of the frame a runtime-located ordinal names (W1 step 2), checked against
     /// the expected sequence and the proven prefix. A mismatch is `Corrupt`: a wrong ordinal fails
     /// closed instead of naming another frame.
-    pub(crate) async fn read_verified_record_at(
+    pub(super) async fn read_verified_record_at(
         &self,
         proof: &VerifiedHead,
         sequence: u64,
@@ -412,7 +412,7 @@ impl<'a> StoreJournal<'a> {
     /// Recheck the exact original at an ordinal retained by a completed replay.
     /// This only confirms unchanged bytes; it grants no prefix membership or
     /// selection authority. The caller still holds its complete prefix proof.
-    pub(crate) async fn confirm_original_record(
+    pub(super) async fn confirm_original_record(
         &self,
         proof: &VerifiedHead,
         ordinal: u64,

@@ -407,8 +407,8 @@ fn plain_metadata(server: &AsServer) -> bytes::Bytes {
     });
     meta.token_endpoint_auth_signing_alg_values_supported = None;
     meta.dpop_signing_alg_values_supported = None;
-    let document =
-        serde_json::to_vec(&meta).expect("the RFC 8414 document is plain JSON and serializes");
+    let document = busbar_contract::json::to_vec(&meta)
+        .expect("the RFC 8414 document is plain JSON and serializes");
     bytes::Bytes::from(document)
 }
 

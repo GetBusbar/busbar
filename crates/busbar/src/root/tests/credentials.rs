@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+use busbar_contract::json;
 use std::sync::Arc;
 
 use busbar_contract::abi::host::service::{SECRET_LIVE, SECRET_NOT_LIVE};
@@ -67,12 +68,14 @@ async fn the_credential_read_follows_the_app_swap() {
             .first()
             .expect("the distribution links its actual store")
             .0;
-        let settings: serde_json::Value = serde_json::from_str(
-            &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
+        let settings: json::Value = json::parse_value(
+            std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS")
+                .unwrap_or_else(|_| "{}".into())
+                .as_bytes(),
         )
         .unwrap();
         let deploy = busbar_kernel::config::deploy_from_deserializer(
-            serde_json::json!({
+            &json::json!({
                 "providers": {}, "models": {}, "auth": {"chain": [], "admin_auth": []},
                 "store": {"module": module, "settings": settings},
                 "advanced": {"allow_destinations": ["127.0.0.1"]}
@@ -129,13 +132,14 @@ async fn the_credential_read_follows_the_app_swap() {
                 .first()
                 .expect("the distribution links its actual store")
                 .0;
-            let settings: serde_json::Value = serde_json::from_str(
-                &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS")
-                    .unwrap_or_else(|_| "{}".into()),
+            let settings: json::Value = json::parse_value(
+                std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS")
+                    .unwrap_or_else(|_| "{}".into())
+                    .as_bytes(),
             )
             .unwrap();
             let deploy = busbar_kernel::config::deploy_from_deserializer(
-                serde_json::json!({
+                &json::json!({
                     "providers": {}, "models": {}, "auth": {"chain": [], "admin_auth": []},
                     "store": {"module": module, "settings": settings},
                     "advanced": {"allow_destinations": ["127.0.0.1"]}
@@ -243,12 +247,14 @@ async fn a_late_source_refuses_until_its_handle_is_set() {
             .first()
             .expect("the distribution links its actual store")
             .0;
-        let settings: serde_json::Value = serde_json::from_str(
-            &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
+        let settings: json::Value = json::parse_value(
+            std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS")
+                .unwrap_or_else(|_| "{}".into())
+                .as_bytes(),
         )
         .unwrap();
         let deploy = busbar_kernel::config::deploy_from_deserializer(
-            serde_json::json!({
+            &json::json!({
                 "providers": {}, "models": {}, "auth": {"chain": [], "admin_auth": []},
                 "store": {"module": module, "settings": settings},
                 "advanced": {"allow_destinations": ["127.0.0.1"]}

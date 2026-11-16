@@ -36,15 +36,11 @@ Build with `panic = "unwind"`. The SDK trampolines contain panics and report fau
 
 ## Start from the canonical scaffold
 
-Use the shared fleet generator's `plugin new <kind> <name>`.
-Add `--enterprise` for private source. The command creates a local repository; its
-package identities must enter the trusted admission policy before publication through GitLab.
-Public mirrors follow qualified canonical dev publication. Private repositories and artifacts
-never enter a public mirror.
+Start from the canonical scaffold for your kind (the fleet generator's `plugin new <kind> <name>`). It creates a local repository.
 
 The generated implementation initially refuses configuration and operations. Implement the
 kind's behavior before offering it to users. The skeleton has a working build, a narrow entry,
-and linked/dropped loading, wrong-kind and refusal checks. There is no second enterprise generator.
+and linked/dropped loading, wrong-kind and refusal checks.
 
 | Kind | SDK ownership | Plugin responsibility |
 |---|---|---|
@@ -95,14 +91,9 @@ lockfiles, assembly pins and generated C headers coherent. Do not use sibling ch
 in committed plugin manifests. Test-only SDK features (`test-seal`, `test-support`) are permitted
 only in approved test graphs and must not enter the shipping dependency closure.
 
-Locally run formatting, clippy/build and the targeted regressions for the change. Full suites and
-native assembled-product qualification run in CI. Build the real cdylib before a dropped-loading
+Run the targeted regressions for the change; full suites and native assembled-product
+qualification belong in your CI. Build the real cdylib before a dropped-loading
 test and supply `BUSBAR_PLUGIN_CDYLIB`; a missing library is a failure, not a skipped success.
-
-Trusted admission checks resolved Cargo identities, normal/build and inactive declarations,
-shipping features, source pins, public surfaces and forbidden-use fixtures. The candidate cannot
-approve its own broader policy or replace the trusted checker. The exact candidate revision must
-pass required checks against the current target before protected admission.
 
 These boundaries prevent accidental architectural coupling in maintained Rust code and enforce
 runtime authority at the ABI. Native plugins remain trusted native code; this is not a sandbox for

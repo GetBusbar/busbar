@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
 use super::*;
 use std::collections::HashSet;
 
@@ -408,7 +411,7 @@ fn preresolve_hook_secrets_fails_closed_on_unresolvable_secret() {
 
     let mut settings = serde_json::Map::new();
     settings.insert(
-        "licenseKey".to_string(),
+        "accessToken".to_string(),
         serde_json::json!({ "module": "fixture-source", "settings": { "slot": "BUSBAR_TEST_DEFINITELY_UNSET_SECRET_B1" } }),
     );
     let mut hook = base_gate();
@@ -453,7 +456,7 @@ fn preopen_gate_hooks_aborts_on_a_broken_gate_but_never_a_broken_tap() {
 
     let mut settings = serde_json::Map::new();
     settings.insert(
-        "licenseKey".to_string(),
+        "accessToken".to_string(),
         serde_json::json!({ "module": "fixture-source", "settings": { "slot": "BUSBAR_TEST_DEFINITELY_UNSET_SECRET_PREOPEN" } }),
     );
 
@@ -1513,7 +1516,7 @@ fn settings_drift_never_compares_a_secret_ref_field() {
         // Two canonical source references (core declares no built-in shorthand since db6f4149aa);
         // resolving either is a blocking FFI call, the one thing no read path may ever touch.
         "api_token": { "module": "fixture-source", "settings": { "slot": var } },
-        "licenseKey": { "module": "vault", "settings": { "path": "secret/busbar" } },
+        "accessToken": { "module": "vault", "settings": { "path": "secret/busbar" } },
         "ratio": 0.4
     })
     .as_object()
@@ -1522,8 +1525,8 @@ fn settings_drift_never_compares_a_secret_ref_field() {
     .into();
 
     for echoed in [
-        serde_json::json!({ "api_token": "the-real-secret", "licenseKey": "lic-1", "ratio": 0.4 }),
-        serde_json::json!({ "api_token": "a-stale-secret", "licenseKey": "lic-2", "ratio": 0.4 }),
+        serde_json::json!({ "api_token": "the-real-secret", "accessToken": "token-1", "ratio": 0.4 }),
+        serde_json::json!({ "api_token": "a-stale-secret", "accessToken": "token-2", "ratio": 0.4 }),
     ] {
         let observed = echoed.as_object().unwrap().clone();
         assert!(
@@ -1541,7 +1544,7 @@ fn settings_drift_never_compares_a_secret_ref_field() {
 
     let observed = serde_json::json!({
         "api_token": "the-real-secret",
-        "licenseKey": "lic-1",
+        "accessToken": "token-1",
         "ratio": 0.9
     })
     .as_object()
@@ -1580,7 +1583,7 @@ fn hook_with_plugin_secret() -> HookCfg {
         .settings
         .edit(
             &crate::config::secret::test_settings_value(&serde_json::json!({
-                "licenseKey": { "module": "vault", "settings": { "path": "kv/busbar" } }
+                "accessToken": { "module": "vault", "settings": { "path": "kv/busbar" } }
             })),
             &[],
         )

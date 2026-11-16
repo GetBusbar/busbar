@@ -562,6 +562,7 @@ pub(super) fn restart_unreachable(endpoint: &str, restart: &[String], msg: Strin
 
 fn restart_paths(paths: &[String]) -> Vec<String> {
     const BOOT: &[&str] = &[
+        "/records",
         "/listen",
         "/tls",
         "/admin_listen",
@@ -578,6 +579,8 @@ fn restart_paths(paths: &[String]) -> Vec<String> {
         "/advanced/worker_threads",
         "/advanced/upstream_http1_only",
         "/advanced/upstream_h2_prior_knowledge",
+        "/advanced/shutdown/drain_timeout",
+        "/advanced/governance/max_pending_checkpoints",
     ];
     paths
         .iter()
@@ -773,6 +776,22 @@ mod tests {
     }
 
     #[test]
+    fn record_capture_edits_require_restart_without_matching_unrelated_keys() {
+        let paths = [
+            "/records",
+            "/records/user",
+            "/records/labels/0",
+            "/records_extra",
+            "/limits/request_body_max_bytes",
+        ]
+        .map(str::to_owned);
+        assert_eq!(
+            restart_paths(&paths),
+            ["/records", "/records/user", "/records/labels/0"]
+        );
+    }
+
+    #[test]
     fn boot_changes_remain_explicitly_pending_and_live_limits_do_not() {
         let paths = [
             "/advanced/worker_threads",
@@ -785,6 +804,19 @@ mod tests {
             restart_paths(&paths),
             ["/advanced/worker_threads", "/store/settings", "/listen"]
         );
+    }
+
+    #[test]
+    fn shutdown_and_admission_caps_require_durable_restart_edits() {
+        for path in [
+            "/advanced/shutdown/drain_timeout",
+            "/advanced/governance/max_pending_checkpoints",
+            "/advanced/shutdown",
+            "/advanced/governance",
+        ] {
+            assert_eq!(restart_paths(&[path.to_owned()]), [path]);
+        }
+        assert!(restart_paths(&["/providers/example/timeout".to_owned()]).is_empty());
     }
 
     #[cfg(feature = "openapi-schema")]

@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use crate::root::test_plugins as plugins;
+use busbar_contract::json::{self, JsonValueTrait};
 use busbar_contract::persistence::*;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -185,7 +186,7 @@ async fn list_named_defs_reads_the_overlay_off_the_async_worker() {
         .await
         .unwrap();
     assert_eq!(response.status().as_u16(), 200);
-    let page: serde_json::Value = response.json().await.unwrap();
+    let page = json::parse_value(&response.bytes().await.unwrap()).unwrap();
     assert!(page["items"].as_array().unwrap().is_empty(), "{page}");
     assert!(
         watchdog.join().unwrap(),
@@ -321,7 +322,7 @@ async fn get_named_def_reads_the_overlay_off_the_async_worker() {
         .await
         .unwrap();
     assert_eq!(response.status().as_u16(), 404);
-    let error: serde_json::Value = response.json().await.unwrap();
+    let error = json::parse_value(&response.bytes().await.unwrap()).unwrap();
     assert_eq!(error["error"]["code"], "not_found");
     assert!(
         watchdog.join().unwrap(),
@@ -449,7 +450,7 @@ async fn named_defs_still_flag_an_unparseable_overlay_entry() {
         .await
         .unwrap();
     assert_eq!(response.status().as_u16(), 200);
-    let page: serde_json::Value = response.json().await.unwrap();
+    let page = json::parse_value(&response.bytes().await.unwrap()).unwrap();
     let names: Vec<&str> = page["items"]
         .as_array()
         .unwrap()
@@ -464,7 +465,7 @@ async fn named_defs_still_flag_an_unparseable_overlay_entry() {
         .await
         .unwrap();
     assert_eq!(response.status().as_u16(), 200);
-    let one: serde_json::Value = response.json().await.unwrap();
+    let one = json::parse_value(&response.bytes().await.unwrap()).unwrap();
     assert_eq!(
         one, page["items"][0],
         "the list and the single read give the one flagged view"
@@ -583,7 +584,7 @@ async fn named_defs_propagate_store_overlay_read_failures() {
             .await
             .unwrap();
         assert_eq!(response.status().as_u16(), 400);
-        let error: serde_json::Value = response.json().await.unwrap();
+        let error = json::parse_value(&response.bytes().await.unwrap()).unwrap();
         assert_eq!(error["error"]["code"], "invalid_request");
     }
     server.abort();

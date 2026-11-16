@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+use busbar_contract::json;
 use busbar_contract::persistence::*;
 use busbar_kernel::governance::NewKeySpec;
 use std::collections::HashSet;
@@ -382,7 +383,7 @@ async fn test_single_key_writes_use_get_key_for_their_existence_check() {
     let resp = client
         .patch(format!("http://{addr}/api/v1/admin/keys/{}", key_a.id))
         .header("x-admin-token", "admintok")
-        .json(&serde_json::json!({"enabled": false}))
+        .json(&json::json!({"enabled": false}))
         .send()
         .await
         .unwrap();

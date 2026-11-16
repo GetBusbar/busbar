@@ -60,7 +60,7 @@ plugins:
   enabled: true
   dir: '{plugins}'
   trust:
-    allow_unsigned: true
+    allow_untrusted: true
 export:
   trace: {{ module: otlp, settings: {{ url: "http://127.0.0.1:{collector}/v1/traces" }} }}
 providers:

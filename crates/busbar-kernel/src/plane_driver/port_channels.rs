@@ -22,8 +22,8 @@ use std::sync::Arc;
 use busbar_plugin_abi::host_side::caller::BoxFut;
 use busbar_plugin_abi::plane::{tag as t, EmitRec, PushRec};
 use busbar_plugin_abi::records::{RecErr, Records};
-use busbar_plugin_loader::ports::plane::{PlaneOut, PlanePort};
-use busbar_plugin_loader::ports::PortError;
+use busbar_ports::plane::{PlaneOut, PlanePort};
+use busbar_ports::PortError;
 use tokio::runtime::Handle;
 
 use super::port_intents::Namespace;

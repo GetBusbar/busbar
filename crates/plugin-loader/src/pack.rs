@@ -17,7 +17,7 @@
 //! The ed25519 SIGNING key is read from the `BUSBAR_SIGN_KEY` environment variable (64 hex chars:
 //! the 32-byte seed) - in CI this is the release secret; a third-party publisher uses their own.
 //! With no key set, `--allow-unsigned` produces an UNSIGNED tarball (dev only: busbar loads it
-//! solely under `plugins.trust.allow_unsigned: true`).
+//! solely under `plugins.trust.allow_untrusted: true`).
 //!
 //! `busbar-plugin-pack keygen` generates a fresh keypair and prints both halves (hex). The PUBLIC
 //! half goes in `plugins.trust.publishers` (third-party) or is embedded into the busbar binary at
@@ -84,7 +84,7 @@ USAGE:
     pack     builds manifest.json over the cdylib (sha256 binding), signs it with the ed25519 seed
              in $BUSBAR_SIGN_KEY (64 hex chars), and writes the {cdylib + manifest.json} .tar.gz.
              --allow-unsigned permits packaging WITHOUT a signature (dev only; busbar loads such a
-             tarball only under plugins.trust.allow_unsigned: true).
+             tarball only under plugins.trust.allow_untrusted: true).
              --needs-prompt / --needs-user declare a kind:hook plugin's ADVISORY intent (what caller
              content it asks to receive); SIGNED into the manifest. The operator's config grant still
              enforces — a plugin gets prompt/user content only when BOTH the manifest declares the
@@ -905,7 +905,7 @@ fn pack(args: &[String]) -> ExitCode {
                 return Err(format!(
                     "{SIGN_KEY_ENV} is not set. Set it to the 64-hex ed25519 seed to sign, or pass \
                      --allow-unsigned to package an UNSIGNED tarball (dev only; busbar loads it \
-                     only under plugins.trust.allow_unsigned: true)."
+                     only under plugins.trust.allow_untrusted: true)."
                 ));
             }
         };

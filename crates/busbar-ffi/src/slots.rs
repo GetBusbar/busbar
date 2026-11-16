@@ -20,7 +20,12 @@ use std::sync::OnceLock;
 #[cfg(loom)]
 use loom::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 #[cfg(not(loom))]
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::Ordering;
+#[cfg(all(not(loom), not(test)))]
+use std::sync::atomic::{AtomicU32, AtomicU64};
+// C-RMW: test builds count the slot table's RMWs (`counting`); every other build uses the std atomics.
+#[cfg(all(not(loom), test))]
+use counting::{AtomicU32, AtomicU64};
 
 use crate::raw::{ChainId, CurrentGuard, TOKEN_SESSION, Token};
 
@@ -231,6 +236,21 @@ impl<T: Send> Slots<T> {
         }
         live
     }
+
+    /// C-GEN-WRAP's hook (IF §14 round 4: the `busbar_abi_test` hook; test builds only): give free slot
+    /// `index` the generation `generation`, so the next insert there takes it. False, and nothing
+    /// written: an unknown index, a live slot, or no 31-bit generation (0 or above `GEN_MAX`).
+    #[cfg(all(test, not(loom)))]
+    fn force_generation(&self, index: u32, generation: u32) -> bool {
+        let Some(slot) = self.slot(index) else {
+            return false;
+        };
+        if generation == 0 || generation > GEN_MAX || slot.state.load(Ordering::Acquire) & 1 != 0 {
+            return false;
+        }
+        slot.state.store(generation << 1, Ordering::Release);
+        true
+    }
 }
 
 impl<T: Send> Default for Slots<T> {
@@ -375,9 +395,77 @@ impl<'c, R, X> ChainRef<'c, R, X> {
     }
 }
 
+/// C-RMW's counting configuration (IF §14 round 8, §0 I5; test builds only, so a release build keeps the
+/// std atomics unchanged): the slot table's `AtomicU32`/`AtomicU64` behind a wrapper that counts, on the
+/// calling thread, every read-modify-write that lands: `fetch_add` and each successful CAS. A weak CAS
+/// that fails (a lost race, or spuriously, as Miri makes it) is retried and counted once, when it lands.
+/// Loads and stores are not RMWs and are not counted.
+#[cfg(all(test, not(loom)))]
+pub(crate) mod counting {
+    use core::cell::Cell;
+    use std::sync::atomic::{self, Ordering};
+
+    std::thread_local! {
+        static RMW: Cell<u64> = const { Cell::new(0) };
+    }
+
+    /// The slot-table RMWs this thread has made so far.
+    pub(crate) fn rmw() -> u64 {
+        RMW.get()
+    }
+
+    fn landed() {
+        RMW.set(RMW.get() + 1);
+    }
+
+    pub(crate) struct AtomicU32(atomic::AtomicU32);
+
+    impl AtomicU32 {
+        pub(crate) const fn new(v: u32) -> Self {
+            AtomicU32(atomic::AtomicU32::new(v))
+        }
+        pub(crate) fn load(&self, order: Ordering) -> u32 {
+            self.0.load(order)
+        }
+        pub(crate) fn store(&self, v: u32, order: Ordering) {
+            self.0.store(v, order);
+        }
+        pub(crate) fn fetch_add(&self, v: u32, order: Ordering) -> u32 {
+            landed();
+            self.0.fetch_add(v, order)
+        }
+    }
+
+    pub(crate) struct AtomicU64(atomic::AtomicU64);
+
+    impl AtomicU64 {
+        pub(crate) const fn new(v: u64) -> Self {
+            AtomicU64(atomic::AtomicU64::new(v))
+        }
+        pub(crate) fn load(&self, order: Ordering) -> u64 {
+            self.0.load(order)
+        }
+        pub(crate) fn compare_exchange_weak(
+            &self,
+            current: u64,
+            new: u64,
+            success: Ordering,
+            failure: Ordering,
+        ) -> Result<u64, u64> {
+            let swapped = self.0.compare_exchange_weak(current, new, success, failure);
+            if swapped.is_ok() {
+                landed();
+            }
+            swapped
+        }
+    }
+}
+
 #[cfg(all(test, not(loom)))]
 mod tests {
     use super::*;
+    use crate::raw::seal::ToChain;
+    use crate::raw::{Arg, Bytes};
     use std::sync::atomic::AtomicBool;
 
     #[test]
@@ -428,6 +516,187 @@ mod tests {
         for (v, (index, generation)) in held.into_iter().enumerate() {
             assert_eq!(slots.remove(index, generation), Some(v as u64));
         }
+    }
+
+    /// A chain box over an empty future, with a fresh id of instance `serial`.
+    fn chain_box(serial: u64) -> ChainBox<(), ()> {
+        let Some(id) = ChainId::mint(serial) else {
+            panic!("mint");
+        };
+        ChainBox::new(Box::pin(async {}), id, ())
+    }
+
+    /// C-GEN-WRAP (IF §14 round 4; §2, §6.2, §6.5, §16.27): a slot's 31-bit generation is forced to
+    /// 2^31-2 and wrapped. The free list hands the same slot back every time and its generation runs
+    /// 2^31-2, 2^31-1, then wraps to 1 (never 0), so the token of the slot's first chain comes round
+    /// again; every older generation stays stale; and the ChainId, the never-reused check value of
+    /// chain-scoped bytes, still differs, so bytes stashed by the first chain are refused under the chain
+    /// that now holds its token.
+    #[test]
+    fn a_wrapped_generation_keeps_chain_ids_distinct() {
+        static STASHED: [u8; 5] = *b"stash";
+        const SERIAL: u64 = 9;
+        assert_eq!(GEN_MAX - 1, (1 << 31) - 2, "2^31-2");
+        let table: Slots<ChainBox<(), ()>> = Slots::new();
+
+        let first = chain_box(SERIAL);
+        let first_id = *first.id();
+        let Some((index, generation)) = table.insert(first) else {
+            panic!("insert");
+        };
+        assert_eq!(generation, 1, "a fresh slot's first generation");
+        let Some(first) = table.remove(index, generation) else {
+            panic!("remove");
+        };
+        assert_eq!(*first.id(), first_id);
+        drop(first);
+        assert!(
+            table.force_generation(index, GEN_MAX - 1),
+            "the hook takes the free slot"
+        );
+
+        let mut ids = vec![first_id];
+        let mut tokens = vec![pack(false, index, generation)];
+        for want in [GEN_MAX - 1, GEN_MAX, 1] {
+            let next = chain_box(SERIAL);
+            let id = *next.id();
+            let Some((at, generation)) = table.insert(next) else {
+                panic!("insert");
+            };
+            assert_eq!(at, index, "the free list hands the same slot back");
+            assert_eq!(generation, want, "2^31-2, 2^31-1, then the wrap to 1");
+            let token = pack(false, at, generation);
+            assert_eq!(unpack(token), (false, at, generation), "31 bits round-trip");
+            assert_eq!(
+                token & TOKEN_SESSION,
+                0,
+                "the generation never reaches bit 63"
+            );
+            for old in &tokens {
+                let (_, _, stale) = unpack(*old);
+                if stale != generation {
+                    assert!(
+                        table.remove(at, stale).is_none(),
+                        "an older generation never reaches the occupant"
+                    );
+                }
+            }
+            let Some(taken) = table.remove(at, generation) else {
+                panic!("remove");
+            };
+            assert_eq!(*taken.id(), id);
+            assert!(
+                ids.iter().all(|seen| *seen != id),
+                "a ChainId is never reused"
+            );
+            ids.push(id);
+            tokens.push(token);
+        }
+        assert_eq!(
+            tokens[3], tokens[0],
+            "after the wrap the slot's token comes round again"
+        );
+        assert_ne!(ids[3], ids[0], "and the ChainId still differs");
+
+        let stash = <Bytes<'static> as ToChain>::chain(Arg::bytes(Bytes::new(&STASHED)), &ids[0]);
+        {
+            let _current = CurrentGuard::enter(ids[3]);
+            let read = std::panic::catch_unwind(core::panic::AssertUnwindSafe(|| stash.to_vec()));
+            assert!(
+                read.is_err(),
+                "the first chain's bytes are refused under the chain that holds its token now"
+            );
+        }
+        let _current = CurrentGuard::enter(ids[0]);
+        assert_eq!(stash.to_vec(), b"stash", "and read under their own chain");
+    }
+
+    /// Fill pages 0 to 3 of an empty `table` (32 + 64 + 128 + 256 slots), check that every slot of every
+    /// allocated page sits at a 128-byte aligned address and that `free` shares no 128-byte line with
+    /// `pages`, then empty it again. Returns the pages allocated.
+    fn fill_and_check<T: Send>(table: &Slots<T>, make: impl Fn(u32) -> T) -> usize {
+        const LINE: usize = 128;
+        let mut held = Vec::new();
+        for v in 0..480u32 {
+            let Some(at) = table.insert(make(v)) else {
+                panic!("insert");
+            };
+            held.push(at);
+        }
+        let mut pages = 0;
+        for page in &table.pages {
+            let Some(slots) = page.get() else {
+                continue;
+            };
+            pages += 1;
+            for slot in slots.iter() {
+                assert_eq!(
+                    core::ptr::from_ref(slot).addr() % LINE,
+                    0,
+                    "every slot address is 128-byte aligned"
+                );
+            }
+        }
+        let pages_first = core::ptr::from_ref(&table.pages).addr();
+        let pages_last = pages_first + size_of_val(&table.pages) - 1;
+        let free_first = core::ptr::from_ref(&table.free).addr();
+        let free_last = free_first + size_of::<FreeHead>() - 1;
+        assert!(
+            free_last / LINE < pages_first / LINE || free_first / LINE > pages_last / LINE,
+            "free_head shares no 128-byte line with pages"
+        );
+        for (index, generation) in held {
+            assert!(table.remove(index, generation).is_some());
+        }
+        pages
+    }
+
+    /// C-SLOT-ALIGN (IF §14, the B-SYNC churn arm; §6.5 round 18): every slot address of every page is
+    /// 128-byte aligned, and `free_head` does not share a 128-byte line with `pages`. Checked on a table
+    /// on the stack, a `static` one (an image's open slab is one) and an instance's session and chain
+    /// tables, over the churn arm's 48-byte session state, a `u64` and the chain box.
+    #[test]
+    fn slots_are_128_byte_aligned() {
+        type State = [u8; 48];
+        static GLOBAL: Slots<u64> = Slots::new();
+        let local: Slots<State> = Slots::new();
+        assert_eq!(fill_and_check(&local, |_| [0u8; 48]), 4);
+        assert_eq!(fill_and_check(&GLOBAL, u64::from), 4);
+        let inst = Inst::<(), State, (), ()>::new(());
+        assert_eq!(fill_and_check(inst.sessions(), |_| [0u8; 48]), 4);
+        assert_eq!(
+            fill_and_check(inst.chains(), |_| chain_box(inst.serial())),
+            4
+        );
+    }
+
+    /// C-RMW's table share (IF §14 round 8; §6.5), on the counting configuration: an insert is one RMW
+    /// (the free-list pop CAS, or the fresh index's `fetch_add` while the list is empty), a remove one (the
+    /// push CAS), and a lookup that misses (a stale generation, an unknown index) or a scan none.
+    #[test]
+    fn an_insert_and_a_remove_make_one_rmw_each_and_a_miss_none() {
+        let table: Slots<u64> = Slots::new();
+        let rmw = counting::rmw();
+        let Some((index, generation)) = table.insert(1) else {
+            panic!("insert");
+        };
+        assert_eq!(counting::rmw() - rmw, 1, "a fresh index: one fetch_add");
+        let rmw = counting::rmw();
+        assert_eq!(table.remove(index, generation), Some(1));
+        assert_eq!(counting::rmw() - rmw, 1, "a remove: one push CAS");
+        let rmw = counting::rmw();
+        let Some((again, newer)) = table.insert(2) else {
+            panic!("insert");
+        };
+        assert_eq!(again, index);
+        assert_eq!(counting::rmw() - rmw, 1, "from the free list: one pop CAS");
+        let rmw = counting::rmw();
+        assert_eq!(table.remove(index, generation), None, "stale");
+        assert_eq!(table.remove(4_000, 1), None, "unknown");
+        assert_eq!(table.count_live(), 1);
+        assert_eq!(counting::rmw(), rmw, "a miss and a scan: none");
+        assert_eq!(table.remove(again, newer), Some(2));
+        assert_eq!(counting::rmw() - rmw, 1);
     }
 
     struct Plugin {

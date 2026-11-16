@@ -40,7 +40,7 @@ impl PersistenceBackend for Backend {
             dataset: DatasetId([1; 16]),
             atomic_domain: [2; 16],
             clock_authority: [3; 16],
-            physical_version: busbar_contract::abi::sdk::store::v4::slot::PHYSICAL_VERSION,
+            physical_version: busbar_contract::persistence::PHYSICAL_VERSION,
             durability: Durability::Local,
         }
     }
@@ -497,8 +497,8 @@ async fn strict_restart_refuses_unknown_metadata_and_missing_body() {
     opening(&store.prices()).await;
     let status_address = at(b'S', Some(key(1)));
     let original = backend.state.lock().unwrap().rows[&status_address].clone();
-    let mut value: serde_json::Value = decode(&original).unwrap();
-    value["unexpected"] = serde_json::json!(true);
+    let mut value: json::Value = decode(&original).unwrap();
+    value["unexpected"] = json::json!(true);
     backend
         .state
         .lock()

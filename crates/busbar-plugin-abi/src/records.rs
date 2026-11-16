@@ -129,7 +129,13 @@ pub mod tag {
     /// 1..=256 of them, each 1..=9999. At most one. Any kind. Core renders a number n of this image as
     /// BUSBAR-<identity>-<n as 4 digits> (§11.2 `ErrorBook`). A bad list drops that image's codes; the image is
     /// still admitted (never DescribeInvalid for this item's content).
-    pub const D_ERRORS: u16 = 0x004C;
+pub const D_ERRORS: u16 = 0x004C;
+/// RFC 6901 pointer to this plane's registrations. Final decoded token is `*` (object members),
+/// with no earlier wildcard. Plane only, at most four; duplicates and ancestor overlap refuse describe.
+/// Core consumes url, command, tls, auth, upstream_credentials and allow_private at each member before
+/// schema/check/open. Other path declarations may name plugin-owned siblings, never consumed core fields.
+/// Absence declares no registration upstreams. No ABI layout or version change.
+pub const D_UPSTREAM_PATH: u16 = 0x004D;
     /// Describe: one metric this plugin may report (Pod MetricDecl; tail = nested TEXT name, TEXT help,
     /// TEXT label key*). Any kind may declare metrics; core owns the series, retention and exposition (§12.17).
     pub const D_METRIC: u16 = 0x0047;

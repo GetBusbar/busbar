@@ -854,10 +854,6 @@ impl HostServices for NotInstalled {
         not_installed()
     }
 
-    fn entitlement_check(&self, _: &Caller, _: Option<u64>, _: &str) -> Stored {
-        not_installed()
-    }
-
     fn random_fill(&self, _: u64) -> Stored {
         not_installed()
     }
@@ -2624,6 +2620,7 @@ impl<'d> DoorFar<'d, '_> {
                     .with_routed(|routed| egress_pool(self.steps.lane_prefix(), routed))?;
                 let described = self.shown.and_then(|s| s.described.get(&pool).cloned());
                 let mut far = egress.unit(UnitRoute {
+                    member_grants: self.steps.member_grants(),
                     allowed_member: self.steps.child_member(),
                     unit: self.unit,
                     pool,
