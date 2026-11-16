@@ -578,10 +578,14 @@ pub(crate) fn claim_ticket_custody(
     TicketClaimDisposition::Refused
 }
 
-pub(crate) struct LiveTickets(pub std::sync::Weak<busbar_kernel::state::AppHandle>);
+/// Mint authority retained by the serving generation that admitted the unit.
+pub(crate) struct GenerationTickets {
+    pub(crate) governance: Arc<busbar_kernel::governance::GovState>,
+    pub(crate) block_max_ttl_secs: Option<u64>,
+}
 
 #[async_trait::async_trait]
-impl busbar_kernel::host_services::TicketPress for LiveTickets {
+impl busbar_kernel::host_services::TicketPress for GenerationTickets {
     async fn mint_for_unit(
         &self,
         unit: u64,
@@ -596,8 +600,7 @@ impl busbar_kernel::host_services::TicketPress for LiveTickets {
         if ttl_secs == 0 || now.checked_add(ttl_secs).is_none() {
             return Err(TicketRefusal::NoLifetime);
         }
-        let app = self.0.upgrade().ok_or(TicketRefusal::NoSigner)?.load();
-        let gov = app.governance.as_deref().ok_or(TicketRefusal::NoSigner)?;
+        let gov = &self.governance;
         let unit_key = busbar_contract::UnitKey::new(unit);
         let mut found = None;
         let mut after = None;
@@ -632,7 +635,7 @@ impl busbar_kernel::host_services::TicketPress for LiveTickets {
             &principal.id,
             prefix,
             ttl_secs,
-            app.mint_policy.block_max_ttl_secs,
+            self.block_max_ttl_secs,
             record,
             now,
             |identity| node.bind(&source, identity),
@@ -648,14 +651,12 @@ impl busbar_kernel::host_services::TicketPress for LiveTickets {
         record: &[u8],
         now: u64,
     ) -> Result<(String, u64), busbar_kernel::governance::TicketRefusal> {
-        use busbar_kernel::governance::TicketRefusal;
-        let app = self.0.upgrade().ok_or(TicketRefusal::NoSigner)?.load();
-        let gov = app.governance.as_deref().ok_or(TicketRefusal::NoSigner)?;
+        let gov = &self.governance;
         gov.mint_ticket(
             key_id,
             prefix,
             ttl_secs,
-            app.mint_policy.block_max_ttl_secs,
+            self.block_max_ttl_secs,
             record,
             now,
         )

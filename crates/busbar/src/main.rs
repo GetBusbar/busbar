@@ -1443,9 +1443,13 @@ async fn run(
     let _ = door_live_handle.set(std::sync::Arc::downgrade(&app_handle));
 
     if let Some(kernel) = late_services.kernel() {
-        kernel.attach_tickets(std::sync::Arc::new(root::serve::LiveTickets(
-            std::sync::Arc::downgrade(&app_handle),
-        )));
+        let app = app_handle.load();
+        if let Some(governance) = &app.governance {
+            kernel.attach_tickets(Arc::new(root::serve::GenerationTickets {
+                governance: Arc::clone(governance),
+                block_max_ttl_secs: app.mint_policy.block_max_ttl_secs,
+            }));
+        }
     }
 
     let _ = root::inbound::install(root::doors::dispatcher());
