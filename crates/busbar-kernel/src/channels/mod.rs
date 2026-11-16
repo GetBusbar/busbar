@@ -13,8 +13,8 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 
 pub mod ask_line;
-pub mod link;
 pub mod line_carriers;
+pub mod link;
 pub mod respawn;
 pub mod signals;
 #[cfg(test)]
