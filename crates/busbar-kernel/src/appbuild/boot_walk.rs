@@ -1,15 +1,4 @@
-    fn spec(&self, index: u32) -> Option<&(KindCode, InstanceSpec<'_>)> {
-        usize::try_from(index)
-            .ok()
-            .and_then(|at| self.instances.get(at))
-    }
-}
-
-/// The refusal of a plan step that names an instance the boot was not given.
-fn unconfigured(index: u32) -> OpenError {
-    OpenError::Unknown(format!(
-        "the boot plan names instance {index}, which is not configured"
-    ))// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The boot walk over `Registry::boot_plan` (ABI-MIN3-INTERFACE §11.2 `BootPlan`, §12.10 item 4; W2-BOOT).

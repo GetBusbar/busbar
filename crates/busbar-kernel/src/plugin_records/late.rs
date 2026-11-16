@@ -81,12 +81,7 @@ impl<R: PluginRecords> PluginRecords for LateRecords<R> {
             None => Err(RecordsDenied::Unavailable),
         }
     }
-    async fn del(
-        &self,
-        who: &Caller<'_>,
-        scope: Scope,
-        key: &[u8],
-    ) -> Result<(), RecordsDenied> {
+    async fn del(&self, who: &Caller<'_>, scope: Scope, key: &[u8]) -> Result<(), RecordsDenied> {
         match self.slot.get() {
             Some(records) => records.del(who, scope, key).await,
             None => Err(RecordsDenied::Unavailable),
