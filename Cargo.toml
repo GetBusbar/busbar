@@ -21,6 +21,7 @@ members = [
     "crates/busbar-kernel-wal",
     "crates/busbar-kernel-audit",
     "crates/plugin-loader",
+    "crates/busbar-ports",
     "crates/busbar-ffi",
     "crates/busbar-plugin-abi",
     "crates/busbar-plugin-bench",

@@ -21,7 +21,7 @@ use busbar_plugin_abi::kinds::export::export::{
 };
 use busbar_plugin_abi::records::{tag as generic, Full, RecErr, Records, Writer};
 
-use crate::ports::export::FamilyIn;
+use crate::export::FamilyIn;
 
 /// A record head and body into `out`, padded to the 8-byte record grid (the layout `Records` reads).
 fn put_rec(out: &mut Vec<u8>, tag: u16, parts: &[&[u8]]) -> Result<(), Full> {
@@ -229,7 +229,7 @@ mod tests {
     use busbar_plugin_abi::records::Reply;
 
     use super::*;
-    use crate::ports::export::SampleIn;
+    use crate::export::SampleIn;
 
     fn ack(w: &mut Reply, accepted: u64) {
         w.put_pod(tag::ACK, &Ack { accepted }).unwrap();

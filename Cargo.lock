@@ -313,6 +313,7 @@ dependencies = [
  "busbar-migrations",
  "busbar-plugin-abi",
  "busbar-plugin-loader",
+ "busbar-ports",
  "bytes",
  "close_fds",
  "core_affinity",
@@ -438,6 +439,7 @@ dependencies = [
  "busbar-kernel-egress",
  "busbar-plugin-abi",
  "busbar-plugin-loader",
+ "busbar-ports",
  "crc32fast",
  "dimpl",
  "foldhash",
@@ -549,6 +551,7 @@ dependencies = [
  "busbar-kernel-wal",
  "busbar-plugin-abi",
  "busbar-plugin-loader",
+ "busbar-ports",
  "bytes",
  "foldhash",
  "futures",
@@ -707,6 +710,7 @@ dependencies = [
  "busbar-contract",
  "busbar-ffi",
  "busbar-plugin-abi",
+ "busbar-ports",
  "flate2",
  "foldhash",
  "futures",
@@ -745,6 +749,7 @@ dependencies = [
  "busbar-plugin-abi",
  "busbar-plugin-loader",
  "busbar-plugin-test",
+ "busbar-ports",
  "http-body-util",
  "hyper",
  "hyper-util",
@@ -753,6 +758,15 @@ dependencies = [
  "tokio",
  "tracing",
  "url",
+ "zeroize",
+]
+
+[[package]]
+name = "busbar-ports"
+version = "1.6.0"
+dependencies = [
+ "busbar-contract",
+ "busbar-plugin-abi",
  "zeroize",
 ]
 

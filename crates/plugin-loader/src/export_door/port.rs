@@ -28,8 +28,8 @@ use busbar_plugin_abi::fail::CallError;
 use busbar_plugin_abi::host_side::caller::{CallStack, InstanceLimits};
 use busbar_plugin_abi::kinds::export::export as x;
 
-use crate::ports::export::{Delivered, ExportPort, FamilyIn, SampleIn};
-use crate::ports::{CallCx, PortError};
+use busbar_ports::export::{Delivered, ExportPort, FamilyIn, SampleIn};
+use busbar_ports::{CallCx, PortError};
 
 /// Lines one instance holds queued before the kernel's next line is shed (the old door's bound).
 pub const MAX_QUEUED_LINES: usize = super::MAX_QUEUED_LINES;

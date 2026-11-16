@@ -27,12 +27,12 @@ use busbar_plugin_abi::host_side::HOST;
 use busbar_plugin_abi::plugin::{Glue, Plugin};
 use busbar_plugin_abi::types::KindCode;
 use busbar_plugin_loader::admit::admit_header;
-use busbar_plugin_loader::binder::ConfigBinder;
 use busbar_plugin_loader::instance::{
     Ceilings, InstanceSpec, OpenError, OpenedPort, Reconfigured, Registry,
 };
 use busbar_plugin_test::fake_needs::FakeNeeds;
 use busbar_plugin_test::suites::harness::MemBinder;
+use busbar_ports::binder::ConfigBinder;
 
 #[test]
 #[ignore = "blocked (re-checked 2026-11-16): the pool acquire/release log the case instruments does not exist (busbar-plugin-abi host_side/pool.rs exposes only the misses()/drops() counters, no per-buffer acquire/release hook), so (a)'s order `req`, both OutBufs and `results` released zeroed, then `release`, then the lease, and 'a second chain never reacquires a buffer of the dropped chain before it is released' cannot be observed; arm (c) needs a MIN-3 `migrate` entry, which the branch does not have (busbar-ffi header.rs `entries()` = describe/open/resume/cancel/close; plugin-loader registry.rs `migrate` is the 1.x door path). Arms (a), (b), (d), (e) for `open` and the reconfigure future run as the sibling test below"]

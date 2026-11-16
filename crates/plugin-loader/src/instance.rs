@@ -35,18 +35,19 @@ use busbar_plugin_abi::types::KindCode;
 
 use crate::adapters::auth::AuthCore;
 use crate::admit::Admitted;
-use crate::binder::ConfigBinder;
 use crate::chains::{self, OwnedSpec};
-use crate::encode::plane;
-use crate::ports::auth::{AuthPort, IssuedShape};
-use crate::ports::export::ExportPort;
-use crate::ports::hook::HookPort;
-use crate::ports::plane::PlanePort;
-use crate::ports::secret::{SecretPort, SugarDecl};
-use crate::ports::store::StoreHandle;
-use crate::ports::transport::TransportPort;
 use crate::refusal::{Refusal, RefusalCode};
 use busbar_ffi::kind as k;
+use busbar_ports::auth::{AuthPort, IssuedShape};
+use busbar_ports::binder::ConfigBinder;
+use busbar_ports::codec::plane;
+use busbar_ports::export::ExportPort;
+use busbar_ports::hook::HookPort;
+use busbar_ports::plane::PlanePort;
+use busbar_ports::secret::{SecretPort, SugarDecl};
+use busbar_ports::store::StoreHandle;
+use busbar_ports::transport::TransportPort;
+use busbar_ports::PluginCode;
 
 /// Admission and description, before any binder, Needs or instance exists (HOST M3a).
 pub struct ImagesBuilder {
@@ -900,7 +901,7 @@ impl<N: Needs> Registry<N> {
                 .collect();
             let adapter =
                 crate::adapters::transport::TransportAdapter::open(proxy, opened.errors, protocols)
-                    .map_err(crate::ports::open_error)?;
+                    .map_err(crate::answer::open_error)?;
             self.remember(&spec, KindCode::Transport);
             let port: Arc<dyn TransportPort> = Arc::new(adapter);
             Ok(port)
@@ -1326,21 +1327,6 @@ pub enum ErrorBook {
     Refused,
     /// No D_ERRORS.
     None,
-}
-
-/// The resolved code, `Copy` over `&'static`, so carrying it does no refcount RMW (B-SYNC REFUSED arm unchanged).
-/// `Display` = `BUSBAR-{plugin}-{number:04}`; it always matches `^BUSBAR-[a-z][a-z0-9-]{0,63}-[0-9]{4}$` and can
-/// never start like a core `BUSBAR-[0-9]{4}` code.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct PluginCode {
-    pub plugin: &'static str,
-    pub number: u16,
-}
-
-impl core::fmt::Display for PluginCode {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "BUSBAR-{}-{:04}", self.plugin, self.number)
-    }
 }
 
 impl ErrorBook {
@@ -2038,7 +2024,7 @@ fn decode_kind_items(
     match described.kind {
         KindCode::Secret => {
             let who: Arc<str> = Arc::from(identity);
-            out.sugars = crate::encode::secret::decode_sugars(describe)
+            out.sugars = busbar_ports::codec::secret::decode_sugars(describe)
                 .map_err(|e| bad("describe.sugar", e))?
                 .into_iter()
                 .map(|mut sugar| {
@@ -2048,7 +2034,7 @@ fn decode_kind_items(
                 .collect();
         }
         KindCode::Auth => {
-            out.issued = crate::encode::auth::decode_issued_shape(describe)
+            out.issued = busbar_ports::codec::auth::decode_issued_shape(describe)
                 .map_err(|e| bad("describe.issued_shape", e))?
                 .into_iter()
                 .collect();
@@ -2070,10 +2056,11 @@ fn decode_kind_items(
                 .collect();
         }
         KindCode::Hook => {
-            crate::encode::hook::decode_words(describe).map_err(|e| bad("describe.word", e))?;
+            busbar_ports::codec::hook::decode_words(describe)
+                .map_err(|e| bad("describe.word", e))?;
         }
         KindCode::Export => {
-            crate::encode::export::decode_delivery(describe, described.methods)
+            busbar_ports::codec::export::decode_delivery(describe, described.methods)
                 .map_err(|e| bad("describe.delivery", e))?;
         }
         KindCode::Store | KindCode::Transport => {}

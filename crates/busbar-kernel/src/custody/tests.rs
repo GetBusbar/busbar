@@ -13,7 +13,7 @@ use busbar_plugin_abi::fail::refused::R_DENIED;
 use busbar_plugin_abi::host_side::caller::InstanceLimits;
 use busbar_plugin_abi::host_side::scrub::{fail_text, needles};
 use busbar_plugin_abi::types::KindCode;
-use busbar_plugin_loader::ports::secret::SecretAnswer;
+use busbar_ports::secret::SecretAnswer;
 use futures::FutureExt;
 
 use super::*;

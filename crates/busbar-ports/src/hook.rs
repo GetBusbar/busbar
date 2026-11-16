@@ -6,7 +6,7 @@
 use busbar_plugin_abi::host_side::caller::BoxFut;
 use busbar_plugin_abi::kinds::hook::hook::CandidateRec;
 
-use crate::ports::{CallCx, FactRef, PortError};
+use crate::{CallCx, FactRef, PortError};
 
 /// What core puts in a hook view (encoded once per decision point by `hook::encode_view`, §8.8).
 /// Round 17: K8 puts S_STAGE (FACT, `abi::hook::STAGE_*`) in `signals` for every stage tap (from today's

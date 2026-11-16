@@ -8,7 +8,7 @@ use std::sync::Arc;
 use busbar_plugin_abi::records::{tag, Full, RecErr, Records, Writer};
 use busbar_plugin_abi::secret;
 
-use crate::ports::secret::SugarDecl;
+use crate::secret::SugarDecl;
 
 /// At most this many D_SUGAR items per plugin (IF §8.2).
 const SUGARS_MAX: usize = 4;
