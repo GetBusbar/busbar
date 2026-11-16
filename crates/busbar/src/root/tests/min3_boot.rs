@@ -327,3 +327,45 @@ fn actual_plane_settlement_has_its_core_owned_block_and_described_lift_authority
     );
     assert!(answer.settings.unwrap().as_str().contains("literal"));
 }
+
+#[test]
+fn plugin_secret_paths_cannot_authorize_consumed_core_nonsecret_fields() {
+    let instance = Configured {
+        kind: KindCode::Plane,
+        identity: "image".to_owned(),
+        name: "plane".to_owned(),
+        config: b"{}".to_vec(),
+        limits: Default::default(),
+    };
+    let described = busbar_plugin_loader::instance::Described {
+        kind: KindCode::Plane,
+        methods: 0,
+        facts: 0,
+        items: vec![
+            (
+                busbar_plugin_abi::records::tag::D_UPSTREAM_PATH,
+                b"/members/*".to_vec(),
+            ),
+            (
+                busbar_plugin_abi::records::tag::D_SECRET_PATH,
+                b"/members/x/url".to_vec(),
+            ),
+            (
+                busbar_plugin_abi::records::tag::D_SECRET_PATH,
+                b"/members/x/opaque".to_vec(),
+            ),
+        ],
+        schema: None,
+        metrics: Vec::new(),
+        error_codes_refused: None,
+    };
+    let raw = busbar_plugin_loader::instance::Settled {
+        config_json: SecureVec::from(&br#"{"members":{"x":{"url":"https://public","opaque":"plugin-secret","auth":{"bearer":"core-secret"}}}}"#[..]),
+        core_cfg: Vec::new(),
+    };
+    let answer = settlement::answer(7, &instance, &described, raw).unwrap();
+    assert_eq!(
+        answer.allowed_lifts.into_iter().collect::<Vec<_>>(),
+        ["/members/x/auth/bearer", "/members/x/opaque"]
+    );
+}
