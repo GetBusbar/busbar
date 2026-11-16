@@ -6,8 +6,15 @@
 //! WBS rule 10: each arm is ignored for the task that lands the last piece it needs; that task writes
 //! the arm's body and un-ignores it in its own MR (red first, then green).
 
+use crate::bridge_fixture::{self as fx, Describe, Status};
+
+/// A chain leaks its `ChainBytes` (`Box::leak`) into a static; a later chain and a sync crossing (the describe
+/// entry) each read it: FAULT StaleHandle both times.
 #[test]
-#[ignore = "owner: W1-A3"]
 fn a_leaked_handle_used_later_faults() {
-    todo!("owner: W1-A3 (C-LEAK)")
+    let instance = fx::instance();
+    assert_eq!(fx::done(&instance, b"leak"), Status::OK);
+    assert_eq!(fx::done(&instance, b"read-leak"), Status::FAULT);
+    assert_eq!(fx::describe(Describe::ReadLeaked), Status::FAULT);
+    assert_eq!(fx::describe(Describe::Plain), Status::OK);
 }
