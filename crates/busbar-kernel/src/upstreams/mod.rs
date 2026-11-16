@@ -16,7 +16,7 @@ mod table;
 #[cfg(test)]
 mod tests;
 
-pub use declared::{core_secret_paths, declared, Declared};
+pub use declared::{core_field_paths, core_secret_paths, declared, Declared};
 pub use entry::{implicit_instance, DEFAULT_IDLE_S, MAX_NAME};
 pub use table::ConfiguredUpstreams;
 

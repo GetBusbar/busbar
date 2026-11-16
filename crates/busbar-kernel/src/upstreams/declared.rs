@@ -257,6 +257,23 @@ fn registrations<'a>(
     Ok(members)
 }
 
+/// Reserved core field prefixes for each admitted registration, including absent fields.
+/// Migration must exclude plugin-declared secret matches equal to a prefix or below it
+/// (prefix followed by `/`), then authorize only the exact leaves from [`core_secret_paths`].
+/// Returned paths use canonical RFC6901 escaping; no credential values are returned.
+pub fn core_field_paths(
+    authored: &Value,
+    pointers: &[&str],
+) -> Result<BTreeSet<String>, Vec<String>> {
+    let mut paths = BTreeSet::new();
+    for (_, path, _) in registrations(authored, pointers)? {
+        for key in CORE_KEYS {
+            paths.insert(format!("{path}/{key}"));
+        }
+    }
+    Ok(paths)
+}
+
 /// Exact core-owned secret positions admitted for migration LIFT, before literals become references.
 /// This only authorizes positions; it does not move, resolve or expose any credential value.
 pub fn core_secret_paths(
