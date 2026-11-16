@@ -8,7 +8,8 @@ use super::spdx::{header_finding, in_scope, spdx_headers};
 
 #[test]
 fn a_header_in_the_first_lines_passes() {
-    let rust = "// SPDX-License-Identifier: Apache-2.0\n// Copyright (C) 2026 Busbar Inc\nfn f() {}\n";
+    let rust =
+        "// SPDX-License-Identifier: Apache-2.0\n// Copyright (C) 2026 Busbar Inc\nfn f() {}\n";
     assert_eq!(header_finding("a.rs", rust), None);
     let yaml = "# SPDX-License-Identifier: Apache-2.0\nlisten: x\n";
     assert_eq!(header_finding("tests/migration-corpus/a.yaml", yaml), None);
@@ -36,6 +37,13 @@ fn another_licence_is_found() {
     // Apache-2.0 plus an exception is not the bare identifier.
     let with = "// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception\n";
     assert!(header_finding("a.rs", with).is_some());
+}
+
+#[test]
+fn an_apache_header_does_not_hide_a_conflicting_second_header() {
+    let mixed = "// SPDX-License-Identifier: Apache-2.0\n// SPDX-License-Identifier: MIT\n";
+    let found = header_finding("a.rs", mixed).expect("conflicting identifier must fail");
+    assert!(found.contains("names `MIT`"), "{found}");
 }
 
 #[test]
