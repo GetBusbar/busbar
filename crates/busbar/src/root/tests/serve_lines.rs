@@ -500,3 +500,52 @@ fn the_one_line_plane_is_bound_and_two_are_refused_naming_both() {
     assert!(refusal.contains("`mcp-2`"), "{refusal}");
     assert!(refusal.contains("first line"), "{refusal}");
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_blocked_output_backpressures_answer_futures() {
+    let probe = Arc::new(OutputProbe::default());
+    let writer = ProbeWriter::new(&probe, IoOutcome::Pending, IoOutcome::Ready);
+    let (stop, stopped) = tokio::sync::oneshot::channel();
+    let (completed, mut completions) = mpsc::channel(32);
+    let input = b"x\n".repeat(32);
+    let service = tokio::spawn(async move {
+        run_io(
+            TEST_CARRIER,
+            std::io::Cursor::new(input),
+            writer,
+            async {
+                let _ = stopped.await;
+            },
+            |caller| {
+                (
+                    move |line: Vec<u8>| {
+                        let caller = Arc::clone(&caller);
+                        let completed = completed.clone();
+                        async move {
+                            if caller.write(&line).await {
+                                let _ = completed.send(()).await;
+                            }
+                        }
+                    },
+                    || {},
+                )
+            },
+        )
+        .await
+    });
+    // One line can sit in the writer and sixteen in the bounded queue. The next
+    // answer must remain pending while stdout cannot make progress.
+    let overflow = tokio::time::timeout(std::time::Duration::from_millis(1), async {
+        for _ in 0..18 {
+            completions.recv().await.expect("answer completion");
+        }
+    })
+    .await;
+    let _ = stop.send(());
+    let code = service.await.unwrap();
+    assert_ne!(code, 0, "the blocked writer cannot report a clean drain");
+    assert!(
+        overflow.is_err(),
+        "an unbounded output queue lets every answer complete"
+    );
+}
