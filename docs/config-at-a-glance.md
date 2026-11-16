@@ -4,8 +4,7 @@ One whole, realistic `config.yaml` (Busbar 1.6.0) on a single page. It is a **ma
 reference**: every section header links to the exhaustive per-field docs in
 [configuration.md](configuration.md), so you can see the shape of a complete deployment and click
 straight through to the detail for any part. For the per-field tables with defaults and validation
-rules use [configuration.md](configuration.md); for a bootable file use
-[`examples/clean-config-1.5.0.yaml`](../examples/clean-config-1.5.0.yaml).
+rules use [configuration.md](configuration.md); for a bootable file, start from the `config.yaml` shipped in the repository root.
 
 > A fully hyperlinked version of this page (where every key, value, module name and enum links to
 > its own spec section) lives at **<https://getbusbar.com/docs/config-at-a-glance/>**. This file is
@@ -22,6 +21,9 @@ means "none"; a setting shared by every entity in a section is a RESERVED key at
 planes, whose failover pools sit under their own section as `tools.pools`/`agents.pools`), where
 LISTS combine ADDITIVELY and SCALARS OVERRIDE;
 windows are nouns (`minute|hour|day|month|total`); unknown keys fail boot.
+
+> The first key of a config is `config_version: 1`, written by the first 1.6.0 boot of a 1.5.5 config; do not
+> edit it ([`config_version`](configuration.md#config_version)).
 
 ## Transport: [`listen` / `tls`](configuration.md#listen)
 
@@ -43,8 +45,7 @@ tls:                            # absent = plain HTTP. Each field is a SECRET RE
 
 One signed artifact format, trust model, and loader for all seven plugin kinds (**store**,
 **secret**, **auth**, **hook**, **export**, **plane** and **transport**), every one loaded
-**in-process** over the memory ABI (see [plugins.md](plugins.md)). For out-of-process isolation, the first-party `busbar-hook-webrequest`
-plugin forwards to an HTTPS sidecar.
+**in-process** over the memory ABI (see [plugins.md](plugins.md)). A hook plugin may forward to an out-of-process sidecar; that is the plugin's own documentation.
 
 ```yaml
 plugins:
@@ -55,31 +56,31 @@ plugins:
     allow_unsigned: false
     allow_third_party: false
   # min_versions: { acme-store-dynamo: "2.0.0" }   # anti-downgrade floors
-  # logs: { dir: logs/plugins, level: info }        # each plugin instance's own log file
 ```
 
 Referenced below wherever a section names a `module:` outside the built-in default: `auth.chain`
-(an IdP), `store.module` (a durable backend), a `secret` reference, or a hook.
+(an IdP), `store.module` (a durable store plugin), a `secret` reference, or a hook.
 
 ## Identity: [`auth`](configuration.md#auth)
 
 ```yaml
 identity-providers:             # DEFINE each IdP ONCE; every chain references it BY BARE NAME
   admin-tokens: { module: admin-tokens, token: { env: BUSBAR_ADMIN_TOKEN } }
-  oidc:
-    module: oidc                # a kind:auth plugin
-    settings: { issuer: "https://login.example/" }
+  sso:
+    module: <auth-plugin>       # a kind:auth plugin
+    settings: { }               # the plugin's own settings
     # max_admin_scope:          # per-provider ADMIN ceiling: `read-only` | `full` ONLY.
     #                           # OMITTED = read-only (the most restrictive default)
 
 auth:
-  chain: [keys, oidc]           # ordered DATA-PLANE auth, as bare PROVIDER NAMES.
+  chain: [keys, sso]           # ordered DATA-PLANE auth, as bare PROVIDER NAMES.
                                 # `keys` = built-in signed-key verifier. [] = open (dev)
   admin_auth: [admin-tokens]    # chain gating /api/v1/admin/*
   signing_key: { file: /run/secrets/busbar-signing.key }     # REQUIRED with keys; no auto-gen
   #                                                          # (`busbar --generate-signing-key`)
+  # require_if_match: false     # true = guarded config mutations without If-Match are refused 428
   role_bindings:                # role → policy, NESTED BY PROVIDER NAME
-    oidc:
+    sso:
       platform: { group: acme, admin_scope: full }   # admin_scope: read-only|full
 ```
 
@@ -100,7 +101,7 @@ and ANDs every limit (atomic, all-or-nothing); a rejection names the exact block
 groups:
   acme:                                    # an org/team/user are the same primitive (a user = a leaf)
     limits:
-      - { requests: 500, per: minute }     # requests|tokens|tokens_*|budget need a `per:` window
+      - { requests: 500, per: minute }     # requests|tokens|budget need a `per:` window
       - { budget: 1000000, per: month }
       - { concurrent: 20 }                 # instantaneous in-flight cap: no `per:`, no `pool:`
   search-team:
@@ -140,10 +141,10 @@ and of each other; absent = that plane's traffic bills `0`, no refusal.
 ## Durability: [`store`](configuration.md#store)
 
 ```yaml
-store:
-  module: memory                # default: compiled-in, EPHEMERAL. sqlite|postgres|valkey = signed
-  # module: postgres            #   plugin tarballs (need plugins.enabled + the tarball in plugins.dir)
-  # settings: { url: "postgres://user:pass@host/busbar" }
+store:                          # REQUIRED (no default; BUSBAR-3120 when absent)
+  module: memory                # compiled-in, EPHEMERAL
+  # module: <store-plugin>      # a durable store = a signed kind:store plugin tarball
+  # settings: { }               #   (needs plugins.enabled + the tarball in plugins.dir); the plugin's own settings
 ```
 
 ## Hooks: [`hooks`](hooks.md)
@@ -155,18 +156,26 @@ old top-level `global_hooks:` list). The SAME `module:` may back several named h
 ```yaml
 hooks:
   audit:                        # the NAME is the instance
-    module: busbar-audit-hook   # which kind:hook plugin backs it
+    module: <hook-plugin>      # which kind:hook plugin backs it
     kind: tap                   # gate (fire-and-wait, may decide) | tap (fire-and-forget)
     phase: [response]           # a LIST: request|candidate|routing|response. Omit = those four.
     on_error: nothing           #   (1.5.3 generalized the old single-valued tap `at:` into this)
   pii:
-    module: busbar-phi
+    module: <hook-plugin>
     groups: [engineering]       # SCOPE: which callers. Omit/[] = all. A user is a leaf group.
     kind: gate
     prompt: ro                  # no|ro|rw   (prompt-content grant)
     user: no                    # no|ro      (caller-identity grant)
     on_error: reject            # nothing|weighted|first|reject|{ hook: <name> }
 ```
+
+## Plane sections: `tools` · `agents` · `streams` · `decisions` · `mcp` · `oauth_as`
+
+Each non-LLM plane owns its own top-level section, parsed and documented by that plane (see
+[MCP](https://getbusbar.com/docs/mcp/), [A2A](https://getbusbar.com/docs/a2a/) and [voice.md](voice.md)). Core
+reserves only `hooks`, `upstream_credentials`, `usage_observations`, `pools`, `rate_card` and `fees` inside
+them ([Reserved names](configuration.md#reserved-names)). `oauth_as:` is an opaque section owned by the OAuth
+authorization-server plane. Neither is detailed here.
 
 ## Routing surface: [`providers`](configuration.md#providers) · [`models`](configuration.md#models) · [`pools`](configuration.md#pools)
 
@@ -207,10 +216,7 @@ security:                       # SSRF metadata denylist tuning  → #security
 export:                         # THE telemetry-egress surface, a NAMED map, so SEVERAL instances
                                 #   of one module are legal. 1.5.3 DELETED `observability:` and the
                                 #   top-level `metrics:` block into it.  → #export
-  metrics:  { module: prometheus,          settings: { buffer_seconds: 60 } }   # OPT-IN; at most one
-  req-log:  { module: request-log-webhook, settings: { url: "https://logs.example.com/busbar" } }
-  req-siem: { module: request-log-webhook, settings: { url: "https://siem.internal/ingest" } }
-  traces:   { module: otlp,                settings: { url: "http://localhost:4318/v1/traces" } }
+  <name>: { module: <export-plugin>, settings: { } }   # a kind:export plugin and its own settings
 limits:                         # global operational caps  → #limits
   { upstream_request_timeout_secs: 300, request_body_max_bytes: 33554432, max_inbound_concurrent: 8192 }
 health:                         # process-wide probe fallbacks  → #health-probing
@@ -221,11 +227,11 @@ advanced:                       # internal tuning (normally omitted)  → #advan
     worker_threads: 4,          # data-plane worker count, one runtime+listener each; omit ⇒ one per core
     upstream_http1_only: false, upstream_h2_prior_knowledge: false,
     response_headers: { server_timing: false, route_policy: false },  # opt-in headers → observability.md#response-headers
-    block_private_addresses: true, allow_destinations: [],  # the destination guard → #advanced
-    shutdown: { drain_timeout: 20s },                         # the shutdown drain budget → #advanced
-    governance: { max_pending_checkpoints: 20000 } }          # settlement backlog cap → #advanced
+    trusted_proxies: [] }                                      # ingress addresses whose X-Forwarded-For is believed → #advanced
 config:                         # config-management policy (persistence follows Store) → #config
   { locked: false }
+telemetry:                      # in-process metric registry → #telemetry
+  { enabled: true, retention_seconds: 300, max_lane_series: 1024 }
 providers_file: providers.yaml  # provider catalog pointer (overridden by the --providers flag)
 ```
 
@@ -245,4 +251,4 @@ providers_file: providers.yaml  # provider catalog pointer (overridden by the --
   as attribution only, never billed). A plane section with no
   card of its own is unaffected.
 - **[Validation](configuration.md#startup-validation-summary)**: `busbar --validate` runs the exact
-  boot pipeline (config + plugins) with zero side effects. A clean validate means a clean boot.
+  boot pipeline (config + plugins) without opening a Store or making network calls. It is an offline check of operator inputs and local artifacts: passing does not guarantee boot, plugin readiness or backend reachability.

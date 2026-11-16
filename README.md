@@ -31,13 +31,13 @@ For traffic routed through Busbar, operators can verify, govern, route,
 and record model calls, tool use, and agent delegation before they reach
 approved destinations.
 
-Busbar is a self-hosted, customer-operated, self-contained Rust binary. It keeps
+Busbar is a self-hosted, customer-operated, single Rust binary (the Linux build links glibc and loads plugins at runtime). It keeps
 provider credentials at the boundary, preserves supported native SDK
 workflows, and puts policy, budgets, routing, resilience, and execution
 evidence in one enforcement point.
 
 > **Upgrading from 1.5.5?** Read [Migrating to 1.6](https://getbusbar.com/docs/migration-1-6/): your config, keys
-> and data carry over, one command converts the config, and every change you might notice is listed.
+> and data carry over, the first 1.6.0 boot upgrades the config in place, and every change you might notice is listed.
 
 > **What this README demonstrates today:** Busbar's model execution
 > plane—native provider protocols, credential boundary, routing,
@@ -70,7 +70,7 @@ path without becoming the bottleneck.
 sustained with zero failures; resident memory 7.3 MiB idle and 22.4 MiB under sustained load.
 Figures: [getbusbar.com/performance](https://getbusbar.com/performance/).
 
-*Busbar 1.5.1, AWS m7g.4xlarge (Graviton3), 4-core pin, measured 2026-08-03. Same-protocol OpenAI cell. Across all 36 cells idle stayed between 7.32 and 7.42 MiB.*
+*Measured on Busbar 1.5.1 (not re-measured for 1.6.0), AWS m7g.4xlarge (Graviton3), 4-core pin, 2026-08-03. Same-protocol OpenAI cell. Across all 36 cells idle stayed between 7.32 and 7.42 MiB.*
 
 ---
 
@@ -89,10 +89,10 @@ Comparison figures: [getbusbar.com/performance](https://getbusbar.com/performanc
 
 | | Container image | Install |
 |---|---|---|
-| Busbar | **5.74 MiB**, 3 layers | one **12.39 MiB** binary, no runtime |
+| Busbar | 5.74 MiB, 3 layers (1.5.1 scratch-based image; the 1.6.0 image uses a glibc base and is larger) | one 12.39 MiB binary (1.5.1) |
 | LiteLLM | 360.77 MiB, 21 layers | **558 MiB** across 107 packages |
 
-Measured 2026-08-03 on an m7g.4xlarge pinned to 4 cores. Image sizes are compressed registry layers for `getbusbar/busbar:latest` and `ghcr.io/berriai/litellm:main-latest`, linux/amd64.
+Measured on 1.5.1, 2026-08-03, on an m7g.4xlarge pinned to 4 cores. Image sizes are compressed registry layers for `getbusbar/busbar:latest` and `ghcr.io/berriai/litellm:main-latest`, linux/amd64.
 
 Busbar overlaps with AI gateways on protocol support, routing, and
 resilience. Its direction is broader: it is the customer-operated
@@ -232,13 +232,12 @@ docker run --rm -p 8080:8080 -e ANTHROPIC_KEY -e BUSBAR_ADMIN_TOKEN getbusbar/bu
 
 `busbar --validate` checks the selected config and provider catalog, plugin declarations and local artifacts, and built-in `env:` / `file:` secret references without starting the server or opening a Store. It makes no network calls and does not read the Store-backed admin overlay. A pass checks those operator inputs; boot separately recovers and validates the effective configuration and opens its runtime dependencies. Full walkthrough: [Getting started](https://getbusbar.com/docs/getting-started/).
 
-Runs on x86_64 and 64-bit ARM (Linux, macOS, Windows, Docker). On ARM Linux there are two builds of equal standing: the default (ARMv8.1+ — any cloud ARM, Raspberry Pi 5) and an `-armv8.0` compat build for Raspberry Pi 4-class boards — the ["which ARM build?" table](https://getbusbar.com/getting-started/) picks for you in one glance.
+Runs on x86_64 and 64-bit ARM Linux, macOS (Apple silicon and x86_64), Windows (x86_64 only), and Docker. On ARM Linux there are two builds of equal standing: the default (ARMv8.1+ — any cloud ARM, Raspberry Pi 5) and an `-armv8.0` compat build for Raspberry Pi 4-class boards — the ["which ARM build?" table](https://getbusbar.com/getting-started/) picks for you in one glance.
 
 ### Persistence
 
 A `store:` block is required (1.6.0; the 1.6.0 upgrade inserts `store: {module: memory}`), and `memory` is in-memory:
-keys, usage counters, ledgers, the audit trail and rate-card history all reset on restart (one WARN at boot says so). The admin-API config overlay is anchored in the base configuration's Store, so it also resets with a memory Store. There is no independent writable overlay file. Durable keys/usage/ledgers/audit, card history and admin config edits need a durable Store plugin (`sqlite`,
-`postgres`, `mysql` or `valkey`, each its own signed release) wired up with four config keys, not
+keys, usage counters, ledgers, the audit trail and rate-card history all reset on restart (one WARN at boot says so). The admin-API config overlay is anchored in the base configuration's Store, so it also resets with a memory Store. There is no independent writable overlay file. Durable keys/usage/ledgers/audit, card history and admin config edits need a durable store plugin (a `kind: store` plugin, released and signed on its own) wired up with the `plugins:` and `store:` config keys, not
 just a mounted volume — see [Durable store: giving persistence a writable
 volume](https://getbusbar.com/getting-started/) for the
 complete recipe.
@@ -247,7 +246,7 @@ complete recipe.
 
 ## Kubernetes
 
-One container, no sidecar, nothing to run beside it. The image is 5.74 MiB compressed and the process idles at 7.3 MiB, both stamped in the comparison below, so it fits a 32Mi request and a 128Mi limit with room to spare.
+One container, no sidecar, nothing to run beside it. The 1.5.1 process idled at 7.3 MiB (see the comparison above; not re-measured for 1.6.0), so size requests and limits from your own measurements. The example below uses a 32Mi request and a 128Mi limit.
 
 ```bash
 helm repo add busbar https://getbusbar.github.io/helm-charts
