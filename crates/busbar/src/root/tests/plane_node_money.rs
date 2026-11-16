@@ -381,17 +381,13 @@ async fn binding_the_node_keeps_every_confirmed_card_in_the_native_store() {
     use crate::root::kernel::RootHistory;
     use busbar_kernel::config::card::CardFields;
     let card = |input| CardFields {
-        rate_card: Some(
-            [(
-                "gpt".into(),
-                busbar_kernel::config::RateEntryCfg {
-                    input_utok: input,
-                    ..Default::default()
-                },
-            )]
-            .into_iter()
-            .collect::<std::collections::BTreeMap<_, _>>(),
-        ),
+        rate_card: Some(std::collections::BTreeMap::from([(
+            "gpt".into(),
+            busbar_kernel::config::RateEntryCfg {
+                input_utok: input,
+                ..Default::default()
+            },
+        )])),
         ..Default::default()
     };
     let core = (crate::root::real_store::core()).await;
@@ -701,7 +697,7 @@ impl busbar_kernel::teller::UnitEnds for DoorUnit {
             Frame {
                 direction: busbar_contract::Direction::Outbound,
                 stream: busbar_contract::StreamId(0),
-                bytes: busbar_contract::SlabBytes::new(<Arc<[u8]>>::from(&b""[..])),
+                bytes: busbar_contract::SlabBytes::new(Arc::from(&b""[..])),
                 meta: busbar_contract::FrameMeta::default(),
             },
         )
@@ -1103,7 +1099,7 @@ async fn a_screened_veto_through_the_node_admits_nothing() {
 async fn a_full_journal_lane_refuses_a_new_unit_with_the_reason() {
     for data_dir in [
         None,
-        Some(<std::path::PathBuf>::from("/dev/null/legacy-journal")),
+        Some(std::path::PathBuf::from("/dev/null/legacy-journal")),
     ] {
         let journal = native_journal(1, 1);
         let book = Arc::new(std::sync::Mutex::new(
@@ -1178,15 +1174,13 @@ fn concurrent_unit_ends_land_their_money_while_the_book_is_held() {
         .expect("governance builds"),
     );
     let money = Arc::new(PlaneMoney::new(Arc::clone(&gov), Arc::new(post)));
-    let rates = [(
+    let rates = std::collections::BTreeMap::from([(
         "m".to_string(),
         busbar_kernel::config::RateEntryCfg {
             input_utok: 1.0,
             ..Default::default()
         },
-    )]
-    .into_iter()
-    .collect::<std::collections::BTreeMap<_, _>>();
+    )]);
     let cost = Arc::new(busbar_kernel::cost::CostModel::resolve_parts(
         Some(&rates),
         0,
@@ -1220,7 +1214,7 @@ fn concurrent_unit_ends_land_their_money_while_the_book_is_held() {
                         cost,
                         pool: String::new(),
                         lane: "m".into(),
-                        classes: <Arc<[String]>>::from(vec!["input".to_string()]),
+                        classes: Arc::from(vec!["input".to_string()]),
                         arrived: EPOCH,
                         mode: busbar_kernel::config::groups::ExhaustionMode::FinishUnit,
                         fee: FeeRefund::CallerStatus,

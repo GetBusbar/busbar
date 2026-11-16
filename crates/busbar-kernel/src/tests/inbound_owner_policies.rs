@@ -485,9 +485,8 @@ fn listener_line_ids_are_nonzero_unique_unbound_and_match_the_exact_line_count()
 
 #[test]
 fn expired_positions_stop_before_the_provider_point_is_queried() {
-    let base = std::time::Instant::now();
-    let past = base - std::time::Duration::from_secs(1);
-    let future = base + std::time::Duration::from_secs(60);
+    let past = std::time::Instant::now() - std::time::Duration::from_secs(1);
+    let future = std::time::Instant::now() + std::time::Duration::from_secs(60);
     assert!(position_deadline_expired(Some(past)));
     assert!(!position_deadline_expired(Some(future)));
     assert!(!position_deadline_expired(None));

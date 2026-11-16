@@ -208,7 +208,7 @@ fn the_installed_services_answer_and_a_second_install_is_refused() {
 fn every_service(late: &LateServices) -> Vec<Stored> {
     let s = late.served();
     let caller = Caller::for_test(
-        <Arc<str>>::from("the-instance"),
+        Arc::from("the-instance"),
         busbar_contract::abi::mechanism::KindCode::Plane,
     );
     let now = |ran| match ran {
@@ -577,7 +577,7 @@ async fn the_late_attach_serves_sign_and_writes_trust_changes_down() {
     };
     k.admit("owner", facts).await.expect("admitted");
     let caller = Caller::for_test(
-        <Arc<str>>::from("owner"),
+        Arc::from("owner"),
         busbar_contract::abi::mechanism::KindCode::Plane,
     );
     let sight = |hash| {
@@ -737,16 +737,10 @@ fn an_applied_door_section_carries_its_pools_and_hands_the_plane_no_work_key() {
         members: vec!["fs".to_string()],
         ..Default::default()
     };
-    let pools = door_pools(
-        &[(
-            key,
-            [("files".to_string(), pool)]
-                .into_iter()
-                .collect::<BTreeMap<_, _>>(),
-        )]
-        .into_iter()
-        .collect::<BTreeMap<_, _>>(),
-    );
+    let pools = door_pools(&BTreeMap::from([(
+        key,
+        BTreeMap::from([("files".to_string(), pool)]),
+    )]));
 
     let applied = section_with_pools(key, &written, &pools);
     assert_eq!(
@@ -867,12 +861,10 @@ fn a_planes_inbound_need_binds_at_the_listen_its_block_states() {
         need(DIRECTION_INBOUND, "in-t", "media"),
     ];
     let doc = |yaml: &str| -> BTreeMap<&'static str, busbar_contract::yaml::Value> {
-        [(
+        BTreeMap::from([(
             "a-section",
             busbar_contract::yaml::from_str(yaml).expect("yaml"),
-        )]
-        .into_iter()
-        .collect::<BTreeMap<_, _>>()
+        )])
     };
     let sections =
         doc("far: {listen: \"127.0.0.1:7000\"}\nmedia: {listen: \"127.0.0.1:7001\"}\nquiet: {}\n");

@@ -82,7 +82,7 @@ fn deadline_armed_mid_drive_still_fires() {
             .await
             .expect("the deadline armed mid-drive fires; the connection does not hang");
         assert_eq!(r, Err(Failure::Timeout));
-        let took = crate::support::since(start);
+        let took = start.elapsed();
         assert!(
             took >= Duration::from_millis(300),
             "not before the deadline: {took:?}"

@@ -91,7 +91,7 @@ mod plugin {
                     name: Some("Alice".into()),
                     groups: vec!["ops".into(), "dev".into()],
                     ttl_secs: Some(60),
-                    credential: Some("good".to_owned().into()),
+                    credential: Some(String::from("good").into()),
                     ..VerifiedIdentity::default()
                 }),
                 Some(b"body")

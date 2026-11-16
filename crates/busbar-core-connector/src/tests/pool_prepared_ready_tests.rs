@@ -568,10 +568,8 @@ fn pending_until(c: &Connector, conn: ConnId, what: &str, ready: impl Fn() -> bo
 fn answer(c: &Connector, conn: ConnId) -> (Vec<u8>, bool, Option<ConnError>) {
     let mut buf = [0_u8; 64];
     let mut got = Vec::new();
-    // At most 2500 polls (about `BOUND`), counted rather than read off the clock.
-    let mut polls = 0_u32;
-    while polls < 2500 {
-        polls += 1;
+    let deadline = Instant::now() + BOUND;
+    while Instant::now() < deadline {
         match c.read(OWNER, conn, TICKET, &mut buf) {
             Ok(p) if p.kind == PieceKind::Completion => {
                 return (got, p.stream != StreamId(0), None);

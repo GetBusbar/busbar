@@ -1357,7 +1357,7 @@ fn a_request_bound_times_out_a_far_end_that_never_answers() {
         .await
         .expect("the bound woke the reader before the far end ever answered");
         assert_eq!(read, Err(ConnError::Timeout));
-        let took = crate::support::since(started);
+        let took = started.elapsed();
         assert!(
             took >= std::time::Duration::from_millis(300)
                 && took < std::time::Duration::from_secs(2),
@@ -1479,7 +1479,7 @@ fn a_request_bound_past_the_clock_is_no_bound_of_its_own() {
     assert_eq!(due_at(last, u64::MAX), None, "past the clock: no bound");
     assert_eq!(due_at(last, 1_000), None);
 
-    let held = Held::over(None, None, None).bounded(now, u64::MAX);
+    let held = Held::over(None, None, None).bounded(std::time::Instant::now(), u64::MAX);
     let due = held.due.lock().expect("due");
     assert!(
         due.as_ref().is_none_or(|d| d.at > now),
@@ -2155,10 +2155,8 @@ fn program(command: &str, args: &[&str], env: &[(&str, &str)]) -> busbar_contrac
 async fn read_all(c: &Connector, id: ConnId, want: usize) -> Vec<u8> {
     let mut got = Vec::new();
     let mut buf = [0_u8; 256];
-    // At most 2000 polls (about 10 s), counted rather than read off the clock.
-    let mut polls = 0_u32;
-    while got.len() < want && polls < 2000 {
-        polls += 1;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while got.len() < want && std::time::Instant::now() < deadline {
         match c.read(OWNER, id, 7, &mut buf) {
             Ok(piece) => {
                 got.extend_from_slice(&buf[..piece.len]);
@@ -2211,10 +2209,8 @@ fn a_program_need_spawns_its_program_and_kills_it_on_close() {
         assert_eq!(echoed, b"hello\n");
         assert!(!gone(&pid), "the program runs while the connection is open");
         c.close(OWNER, id).unwrap();
-        // At most 250 polls (about 5 s), counted rather than read off the clock.
-        let mut polls = 0_u32;
-        while !gone(&pid) && polls < 250 {
-            polls += 1;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !gone(&pid) && std::time::Instant::now() < deadline {
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
         assert!(gone(&pid), "the connector killed the program on close");
@@ -2334,10 +2330,8 @@ fn a_dialled_exchange_relays_empty_messages_and_completes_only_on_the_end_flag()
         let id = c.open(OWNER, NeedId(0), &desc).expect("opens");
         let mut buf = [0_u8; 64];
         let mut seen = Vec::new();
-        // At most 2000 polls (about 10 s), counted rather than read off the clock.
-        let mut polls = 0_u32;
-        while polls < 2000 {
-            polls += 1;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while std::time::Instant::now() < deadline {
             match c.read(OWNER, id, 7, &mut buf) {
                 Ok(p) => {
                     seen.push((p.kind, buf[..p.len].to_vec()));
@@ -2622,12 +2616,10 @@ mod transport_pin {
         };
         let id = c.open(OWNER, NeedId(0), &desc).expect("opens");
         let mut buf = [0_u8; 64];
-        // At most 2000 polls (about 10 s), counted rather than read off the clock.
-        let mut polls = 0_u32;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         loop {
             match c.read(OWNER, id, 7, &mut buf) {
-                Err(ConnError::Pending) if polls < 2000 => {
-                    polls += 1;
+                Err(ConnError::Pending) if std::time::Instant::now() < deadline => {
                     tokio::time::sleep(std::time::Duration::from_millis(5)).await;
                 }
                 Ok(p) => return (id, Ok(buf[..p.len].to_vec())),
@@ -2746,12 +2738,10 @@ mod transport_pin {
         };
         let id = c.open(OWNER, NeedId(0), &desc).expect("opens");
         let mut buf = [0_u8; 64];
-        // At most 2000 polls (about 10 s), counted rather than read off the clock.
-        let mut polls = 0_u32;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         loop {
             match c.read(OWNER, id, 7, &mut buf) {
-                Err(ConnError::Pending) if polls < 2000 => {
-                    polls += 1;
+                Err(ConnError::Pending) if std::time::Instant::now() < deadline => {
                     tokio::time::sleep(std::time::Duration::from_millis(5)).await;
                 }
                 Ok(p) => return Ok(buf[..p.len].to_vec()),
@@ -4492,10 +4482,8 @@ async fn pooled_exchange(
     let mut got = Vec::new();
     let mut whole = false;
     let mut failed = None;
-    // At most 1000 polls (about 5 s), counted rather than read off the clock.
-    let mut polls = 0_u32;
-    while polls < 1000 {
-        polls += 1;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while std::time::Instant::now() < deadline {
         match c.read(owner, id, 7, &mut buf) {
             Ok(p) if p.kind == PieceKind::Completion => {
                 whole = true;
@@ -4593,10 +4581,8 @@ fn a_forgotten_instances_pooled_line_and_listener_go_and_a_neighbours_line_is_ke
         );
         assert_eq!(accepted.load(Ordering::SeqCst), 2, "each kept its own line");
         c.forget(OTHER);
-        // At most 1000 polls (about 5 s), counted rather than read off the clock.
-        let mut polls = 0_u32;
-        while ended.load(Ordering::SeqCst) < 1 && polls < 1000 {
-            polls += 1;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while ended.load(Ordering::SeqCst) < 1 && std::time::Instant::now() < deadline {
             tokio::time::sleep(std::time::Duration::from_millis(5)).await;
         }
         assert_eq!(
@@ -4645,10 +4631,8 @@ fn an_idle_pooled_line_is_closed_once_its_idle_time_passes_whatever_is_opened_ne
             (b"x".to_vec(), true, None),
             "an open to another place"
         );
-        // At most 300 polls (about 3 s), counted rather than read off the clock.
-        let mut polls = 0_u32;
-        while first_closed.load(Ordering::SeqCst) == 0 && polls < 300 {
-            polls += 1;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while first_closed.load(Ordering::SeqCst) == 0 && std::time::Instant::now() < deadline {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
         assert_eq!(

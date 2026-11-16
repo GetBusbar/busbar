@@ -438,12 +438,9 @@ fn a_programs_own_exit_is_answered_by_ends_while_a_descendant_holds_its_output()
             )
             .unwrap();
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(4);
-        // At most 400 polls (about 4 s), counted rather than read off the clock.
-        let mut polls = 0_u32;
         let ends = loop {
             let ends = io.ends(OWNER, h).unwrap();
-            polls += 1;
-            if ends.exit.is_some() || polls > 400 {
+            if ends.exit.is_some() || tokio::time::Instant::now() > deadline {
                 break ends;
             }
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;

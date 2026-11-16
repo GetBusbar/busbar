@@ -301,7 +301,7 @@ fn migration_file_admission_refuses_oversized_and_nonregular_sources_before_cont
     #[cfg(unix)]
     let paths = {
         let mut paths = paths;
-        paths.push(std::path::Path::new("/dev/zero").to_path_buf());
+        paths.push(std::path::PathBuf::from("/dev/zero"));
         paths
     };
     for path in paths {

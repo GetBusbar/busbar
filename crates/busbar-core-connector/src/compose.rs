@@ -2145,11 +2145,13 @@ impl Connection {
         else {
             return Ok(true);
         };
-        let rest = t.head.split_off(end);
+        // The tunnel's head buffer leaves with the tunnel; bytes past the proxy's answer are the far
+        // end's first bytes, fed from that buffer in place (no copy of the tail).
+        let head = std::mem::take(&mut t.head);
         self.tunnel = None;
         self.connected()?;
-        if !rest.is_empty() {
-            self.feed(&rest, false, false)?;
+        if let Some(rest) = head.get(end..).filter(|rest| !rest.is_empty()) {
+            self.feed(rest, false, false)?;
         }
         Ok(true)
     }

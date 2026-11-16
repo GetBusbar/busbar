@@ -39,7 +39,7 @@ fn door() -> Arc<LengthDoor> {
     Arc::new(LengthDoor {
         facts: DoorFacts {
             dials: true,
-            name: "lp".to_owned(),
+            name: "lp".into(),
             claims: vec!["web", "lp"],
 
             role: busbar_contract::abi::transport::ROLE_FRAMER,

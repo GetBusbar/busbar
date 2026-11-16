@@ -295,7 +295,7 @@ fn credential_record_originals_and_clones_wipe_when_their_owners_drop() {
         key_id: "key".into(),
         kind: "sigv4".into(),
         slot: 0,
-        public_id: "public".to_owned(),
+        public_id: "public".into(),
         secret_form: crate::records::SecretForm::Recoverable,
         created_at: 0,
         updated_at: 0,
