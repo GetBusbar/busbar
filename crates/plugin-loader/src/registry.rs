@@ -24,7 +24,7 @@
 //! filename is irrelevant.
 
 use crate::sign::{
-    evaluate_with_evidence, validate_structure, Manifest, TrustPolicy, Verdict, HOST_IDENTITY,
+    evaluate_with_verification, validate_structure, Manifest, TrustPolicy, Verdict, HOST_IDENTITY,
 };
 use crate::tarball;
 use busbar_contract::abi::mechanism::kind;
@@ -67,7 +67,7 @@ pub struct LoadablePlugin {
     pub archive_sha256: Option<String>,
     /// Authenticated keys-document version from this exact image's successful first-party seal.
     /// Never recovered by parsing an unverified signature, and absent for linked/unverified rows.
-    accepted_release_keys_version: Option<u64>,
+    pub verification: crate::sign::Verification,
     /// Whether what this plugin holds is lost on restart — a store's own statement ([`LinkedPlugin`]).
     /// A dropped-in row never states it: the plugins directory is where a durable store comes from.
     pub ephemeral: bool,
@@ -101,7 +101,7 @@ impl LoadablePlugin {
 
     #[must_use]
     pub fn release_keys_version(&self) -> Option<u64> {
-        self.accepted_release_keys_version
+        self.verification.keys_version
     }
 
     pub fn key(&self) -> &str {
@@ -523,6 +523,7 @@ impl SkippedPlugin {
             RejectKind::Unsigned => "unsigned",
             RejectKind::Tampered => "tampered",
             RejectKind::UnknownPublisher => "unknown publisher",
+            RejectKind::PublisherScope => "publisher not authorized for this plugin",
             RejectKind::RetiredKey => "retired key",
             RejectKind::Revoked => "revoked",
             RejectKind::Superseded => "superseded",
@@ -658,7 +659,7 @@ impl PluginRegistry {
                 manifest,
                 lib_bytes: std::sync::Arc::default(),
                 archive_sha256: None,
-                accepted_release_keys_version: None,
+                verification: crate::sign::Verification::default(),
                 ephemeral,
                 entry: Some(entry),
                 keyed_by_alias,
@@ -1171,8 +1172,8 @@ fn examine(path: &Path, policy: &TrustPolicy) -> FileOutcome {
         return FileOutcome::Invalid { file, reason };
     }
 
-    match evaluate_with_evidence(&unpacked.lib_bytes, &unpacked.manifest, policy) {
-        Ok((verdict, accepted_release_keys_version)) => {
+    match evaluate_with_verification(&unpacked.lib_bytes, &unpacked.manifest, policy) {
+        Ok((verdict, verification)) => {
             let settings_schema = match unpacked.manifest.settings_schema_text() {
                 Ok(schema) => schema,
                 Err(reason) => return FileOutcome::Invalid { file, reason },
@@ -1187,7 +1188,7 @@ fn examine(path: &Path, policy: &TrustPolicy) -> FileOutcome {
                 verdict,
                 lib_bytes: std::sync::Arc::new(unpacked.lib_bytes),
                 archive_sha256: Some(crate::sign::sha256_hex(&bytes)),
-                accepted_release_keys_version,
+                verification,
                 ephemeral: false,
                 entry: None,
                 keyed_by_alias: false,
@@ -1417,15 +1418,7 @@ pub fn inventory(dir: &Path, policy: &TrustPolicy) -> Vec<InventoryEntry> {
                         first_party: true, ..
                     } => "first-party".to_string(),
                     Verdict::Trusted { publisher, .. } => format!("publisher:{publisher}"),
-                    Verdict::Allowed {
-                        allow: crate::sign::AllowReason::Unsigned,
-                        ..
-                    } => "unsigned (allowed)".to_string(),
-                    Verdict::Allowed {
-                        allow: crate::sign::AllowReason::RetiredKey,
-                        ..
-                    } => "retired-key (allowed)".to_string(),
-                    Verdict::Allowed { .. } => "third-party (allowed)".to_string(),
+                    Verdict::Allowed { .. } => "unverified (allow_untrusted)".to_string(),
                 };
                 rows.push(InventoryEntry {
                     file: p.file.clone(),
@@ -1442,6 +1435,7 @@ pub fn inventory(dir: &Path, policy: &TrustPolicy) -> Vec<InventoryEntry> {
 
                     RejectKind::UntrustedFloored => "untrusted (below floor)",
                     RejectKind::UnknownPublisher => "unknown-publisher",
+                    RejectKind::PublisherScope => "publisher-scope",
                     RejectKind::Tampered => "tampered",
                     RejectKind::Unsigned => "unsigned",
                     RejectKind::EgressGrant => "third-party (egress grant)",
