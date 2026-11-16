@@ -16,12 +16,15 @@ pub trait GrantResolver: Send + Sync + 'static {
     fn grants(&self, identity: &[u8], sink: &mut dyn FnMut(&str));
 }
 
+/// One identity's resolved grant set, shared by every `check` of the request that names it.
+type GrantSet = Arc<BTreeSet<Box<str>>>;
+
 /// One request's entitlements. K8 builds one per request; the first `check` for an identity resolves its whole
 /// grant set through the [`GrantResolver`] and every later `check` on the request is a lookup in it, so a
 /// principal changed mid-request is judged the same way for the whole request.
 pub struct RequestGrants<G> {
     resolver: G,
-    sets: Mutex<HashMap<Box<[u8]>, Arc<BTreeSet<Box<str>>>>>,
+    sets: Mutex<HashMap<Box<[u8]>, GrantSet>>,
 }
 
 impl<G: GrantResolver> RequestGrants<G> {
@@ -32,7 +35,7 @@ impl<G: GrantResolver> RequestGrants<G> {
         }
     }
 
-    fn set(&self, identity: &[u8]) -> Arc<BTreeSet<Box<str>>> {
+    fn set(&self, identity: &[u8]) -> GrantSet {
         if let Some(set) = self
             .sets
             .lock()
