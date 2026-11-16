@@ -352,7 +352,7 @@ async fn edit(
     });
     let installed = match apply(&handle, &actor, expected, audit, plan).await {
         Ok((installed, _)) => installed,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     let version = installed.config_version;
     with_config_etag(

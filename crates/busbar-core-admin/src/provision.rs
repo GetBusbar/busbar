@@ -38,10 +38,10 @@ pub fn mount_path(instance: &str) -> String {
 /// The instances that get a mount: a `provisioning:` block **and** an image that declared FB_PROVISION. An
 /// FB_PROVISION image without the block loads and mounts nothing (its DIRECTORY Needs are DENIED by the
 /// directory); the block without FB_PROVISION is refused at config load (W1-K6P), so it never reaches here.
-pub fn mounted<'a, F>(
-    provisioning: &'a BTreeMap<Box<str>, ProvisioningCfg>,
+pub fn mounted<F>(
+    provisioning: &BTreeMap<Box<str>, ProvisioningCfg>,
     declares_provision: F,
-) -> Vec<&'a str>
+) -> Vec<&str>
 where
     F: Fn(&str) -> bool,
 {

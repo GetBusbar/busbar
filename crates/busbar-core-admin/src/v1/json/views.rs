@@ -142,13 +142,12 @@ pub(crate) fn validate(descriptor: &Value) -> Result<Descriptor, Invalid> {
         match field.get(&"unit") {
             None => {}
             Some(unit) if unit.is_null() => {}
-            Some(unit) => {
-                if !unit.as_str().is_some_and(|u| UNITS.contains(&u)) {
-                    return invalid(format!(
-                        "view `{view}`: field `{name}`: `unit` is one of {UNITS:?}"
-                    ));
-                }
+            Some(unit) if !unit.as_str().is_some_and(|u| UNITS.contains(&u)) => {
+                return invalid(format!(
+                    "view `{view}`: field `{name}`: `unit` is one of {UNITS:?}"
+                ));
             }
+            Some(_) => {}
         }
         if role == "measure" && text(field, "unit").is_none() {
             return invalid(format!(
@@ -307,7 +306,7 @@ pub(crate) fn matches(row: &Value, filters: &[(usize, String)]) -> bool {
         };
         match cell.as_str() {
             Some(text) => text == wanted,
-            None => !cell.is_null() && cell.to_string() == *wanted,
+            None => !cell.is_null() && displays_as(cell, wanted),
         }
     })
 }
@@ -334,6 +333,21 @@ pub(crate) fn filters(
         })
         .collect()
 }
+
+/// Whether `value`'s `Display` text is exactly `wanted`, compared as it is written (no `String` built).
+fn displays_as(value: &Value, wanted: &str) -> bool {
+    use std::fmt::Write as _;
+    struct Matching<'a>(&'a str);
+    impl std::fmt::Write for Matching<'_> {
+        fn write_str(&mut self, piece: &str) -> std::fmt::Result {
+            self.0 = self.0.strip_prefix(piece).ok_or(std::fmt::Error)?;
+            Ok(())
+        }
+    }
+    let mut rest = Matching(wanted);
+    write!(rest, "{value}").is_ok() && rest.0.is_empty()
+}
+
 
 #[cfg(test)]
 #[path = "tests/views_tests.rs"]

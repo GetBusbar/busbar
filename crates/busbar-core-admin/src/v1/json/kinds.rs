@@ -979,10 +979,10 @@ pub(crate) async fn instances(
     send(&page(paged.items, paged.next_cursor), None)
 }
 
-fn find(all: Vec<Instance>, kind: &str, id: &str) -> Result<Instance, Response> {
+fn find(all: Vec<Instance>, kind: &str, id: &str) -> Result<Instance, Box<Response>> {
     all.into_iter()
         .find(|i| i.kind == kind && i.id == id)
-        .ok_or_else(|| unknown(format!("instance `{kind}/{id}`")))
+        .ok_or_else(|| Box::new(unknown(format!("instance `{kind}/{id}`"))))
 }
 
 /// `GET /kinds/{kind}/instances/{id}`.
@@ -993,7 +993,7 @@ pub(crate) async fn describe(
     let app = super::response_snapshot(handle.load()).await;
     match find(inventory(&app), &kind, &id) {
         Ok(instance) => send(&describe_of(&app, &instance), None),
-        Err(response) => response,
+        Err(response) => *response,
     }
 }
 
@@ -1032,7 +1032,7 @@ pub(crate) async fn view(
     let app = super::response_snapshot(handle.load()).await;
     let instance = match find(inventory(&app), &kind, &id) {
         Ok(instance) => instance,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     let Some(descriptor) = views_of(&instance).into_iter().find(|d| d.view == view) else {
         return unknown(format!("view `{view}` of `{kind}/{id}`"));

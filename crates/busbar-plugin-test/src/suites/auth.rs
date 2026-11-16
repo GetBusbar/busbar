@@ -29,7 +29,7 @@ use busbar_plugin_abi::host_side::caller::{BoxFut, CallStack, Caller};
 use busbar_plugin_abi::plugin::Plugin;
 use busbar_plugin_abi::types::KindCode;
 use busbar_plugin_loader::adapters::auth::AuthCore;
-use busbar_plugin_loader::ports::auth::{AuthPort, ServeIn, Verdict, Verify};
+use busbar_plugin_loader::ports::auth::{ServeIn, Verdict, Verify};
 use busbar_plugin_loader::ports::{CallCx, PortError};
 
 use super::harness::Harness;

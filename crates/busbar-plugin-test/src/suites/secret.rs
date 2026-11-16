@@ -26,7 +26,6 @@ use busbar_plugin_abi::fail::refused::{R_CONFIG, R_INVALID, R_NOT_FOUND};
 use busbar_plugin_abi::host_side::caller::CallStack;
 use busbar_plugin_abi::plugin::Plugin;
 use busbar_plugin_abi::types::KindCode;
-use busbar_plugin_loader::ports::secret::SecretPort;
 use busbar_plugin_loader::ports::{CallCx, PortError};
 
 use super::harness::{core_refusal, plugin_code, status_code, Harness};
@@ -288,10 +287,8 @@ async fn futures_join<F: std::future::Future>(futures: Vec<F>) -> Vec<F::Output>
         }
     })
     .await;
-    for value in done {
-        if let Some(value) = value {
-            out.push(value);
-        }
+    for value in done.into_iter().flatten() {
+        out.push(value);
     }
     handles.clear();
     out

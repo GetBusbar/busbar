@@ -622,18 +622,18 @@ async fn get_usage_series(
     use crate::v1::service::{parse_utc_day, SeriesSpec, UsageDim};
     let bad =
         |message: String| err_json_cond(&AdminError::Validation(message), Cond::InvalidQueryValue);
-    let day = |name: &str| -> Result<Option<u64>, Response> {
+    let day = |name: &str| -> Result<Option<u64>, Box<Response>> {
         q.get(name).map_or(Ok(None), |v| {
             parse_utc_day(v)
                 .map(Some)
-                .ok_or_else(|| bad(format!("invalid `{name}`: expected a UTC day, YYYY-MM-DD")))
+                .ok_or_else(|| Box::new(bad(format!("invalid `{name}`: expected a UTC day, YYYY-MM-DD"))))
         })
     };
     let step = busbar_kernel::governance::METERING_BUCKET_SECS;
     let current = busbar_kernel::governance::metering_bucket(busbar_kernel::store::now());
     let (from, to) = match (
-        ok_or_respond!(day("from")),
-        ok_or_respond!(day("to")),
+        ok_or_respond!(boxed day("from")),
+        ok_or_respond!(boxed day("to")),
         window,
     ) {
         (None, None, Some(w)) if w % step == 0 => (w, w),

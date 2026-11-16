@@ -222,11 +222,8 @@ pub(super) fn run(plugin: &'static Plugin, config: &[u8], needs: FakeNeeds) {
         "export suite: streams differ per instance"
     );
     drop(second);
-    match deliver(&h, &*port, first, id, 1, &[]) {
-        Err(PortError::Call(fault)) => {
-            panic!("export suite: faulted after a sibling closed: {fault:?}")
-        }
-        _ => {}
+    if let Err(PortError::Call(fault)) = deliver(&h, &*port, first, id, 1, &[]) {
+        panic!("export suite: faulted after a sibling closed: {fault:?}")
     }
 
     // Generic: nothing the suite did may leave a core refusal besides the junk config it asked for.
