@@ -94,10 +94,57 @@ fn confirm_and_delivery_describe_rules() {
     assert!(run(&short, M_DELIVER | M_CONFIRM).is_err());
 }
 
+/// (c) L7's half that needs no live image: how a decoded `deliver` answer becomes the port's `Delivered`. The
+/// CUSTODY grammar FAULTs and the `open` ceiling grammar are `encode::export`'s own unit tests; the same grammar
+/// through a running proxy waits on a kind-level export double.
 #[test]
-#[ignore = "owner: W1-L7"]
 fn custody_answer_rules() {
-    todo!("owner: W1-L7 (C-EXPORT-DELIVERY)")
+    use busbar_plugin_loader::adapters::export::delivered_from;
+    use busbar_plugin_loader::ports::export::{Custody, Delivered};
+
+    // No CUSTODY reads ACCEPTED with no recheck.
+    match delivered_from(3, None, None, 0).unwrap() {
+        Delivered::Acked { accepted, custody } => {
+            assert_eq!(accepted, 3);
+            assert_eq!(
+                custody,
+                Custody {
+                    level: CUSTODY_ACCEPTED,
+                    recheck_s: 0
+                }
+            );
+        }
+        other => panic!("{other:?}"),
+    }
+    // A stated CUSTODY is passed through, recheck included.
+    let stated = CustodyRec {
+        level: CUSTODY_DURABLE,
+        recheck_s: 30,
+    };
+    match delivered_from(2, None, Some(stated), 0).unwrap() {
+        Delivered::Acked { custody, .. } => assert_eq!(
+            custody,
+            Custody {
+                level: CUSTODY_DURABLE,
+                recheck_s: 30
+            }
+        ),
+        other => panic!("{other:?}"),
+    }
+    // APPEND: an empty tail is the batch itself, a tail is copied, and a dest past the bindings is a FAULT.
+    match delivered_from(1, Some((1, b"")), None, 2).unwrap() {
+        Delivered::Append {
+            dest,
+            bytes,
+            accepted,
+        } => assert_eq!((dest, bytes, accepted), (1, None, 1)),
+        other => panic!("{other:?}"),
+    }
+    match delivered_from(1, Some((0, b"x\n")), None, 2).unwrap() {
+        Delivered::Append { bytes, .. } => assert_eq!(bytes.as_deref(), Some(&b"x\n"[..])),
+        other => panic!("{other:?}"),
+    }
+    assert!(delivered_from(1, Some((2, b"")), None, 2).is_err());
 }
 
 #[test]

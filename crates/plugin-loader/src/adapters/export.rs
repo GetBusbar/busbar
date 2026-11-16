@@ -1,23 +1,48 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The export adapter: `ExportPort` over the export kind's `Proxy` (IF §11.3). W0-ABI stub: the adapter type only;
-//! L7 fills it.
+//! The export adapter: `ExportPort` over the export kind's `Proxy` (IF §11.3). L7.
 
-use busbar_plugin_abi::kinds::export::export::Proxy;
+use busbar_plugin_abi::kinds::export::export::{CustodyRec, Proxy};
+use busbar_plugin_abi::records::{RecErr, Records};
+
+use crate::ports::export::{Delivered, RecorderNeeds, ScopeInfo};
+
+/// What one export image's describe stated (§8.5), decoded and validated once at open.
+pub struct Described {
+    /// One bit per declared STREAM_* id.
+    pub streams: u32,
+    pub scopes: Vec<ScopeInfo>,
+    pub recorder: Option<RecorderNeeds>,
+    pub span_records: bool,
+    pub confirm: bool,
+}
+
+pub fn decode_describe(
+    describe: Records<'_>,
+    methods: u64,
+    facts: u64,
+) -> Result<Described, RecErr> {
+    let _ = (describe, methods, facts);
+    todo!()
+}
+
+pub fn delivered_from(
+    accepted: u64,
+    append: Option<(u32, &[u8])>,
+    custody: Option<CustodyRec>,
+    dest_count: u32,
+) -> Result<Delivered, RecErr> {
+    let _ = (accepted, append, custody, dest_count);
+    todo!()
+}
 
 /// The export port over one instance's proxy.
 pub struct ExportAdapter {
     proxy: Proxy,
 }
 
-// W0-ABI: the ten-stream const block (STREAM_* == `busbar_contract::export_stream::ExportStream as u32` for all 10,
-// `ALL.len() == STREAM_COUNT`) lands with W1-L7, after W1-K8C adds `ExportStream::Content`.
-
-// W0-ABI: impl ExportPort for ExportAdapter lands with W1-L7.
 impl ExportAdapter {
-    // W0-ABI: not in the IF (the IF names no adapter type); a minimal seam so the stub is warning-free. W1-L7
-    // replaces it with the real constructor and state.
     pub fn new(proxy: Proxy) -> Self {
         Self { proxy }
     }
