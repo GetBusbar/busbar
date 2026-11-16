@@ -26,7 +26,6 @@ pub(crate) use alloc_gate_instrument::CountingJemalloc;
 static GLOBAL: CountingJemalloc = CountingJemalloc;
 
 #[cfg(all(test, not(target_env = "msvc")))]
-#[allow(unsafe_code)]
 #[path = "tests/alloc_gate_instrument.rs"]
 mod alloc_gate_instrument;
 
