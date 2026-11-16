@@ -1727,13 +1727,12 @@ impl KernelServices {
         ruling: Ruling,
         expected_digest: Option<&str>,
     ) -> Result<KeyRow, TrustRefused> {
-        let mut matching = self.trust.rows().into_iter().filter(|r| r.key() == key);
-        let found = matching.next().ok_or(TrustRefused::NoSuchKey)?;
-        // A flattened key that names two rows (a registration name holding `/`) decides nothing:
-        // the first match would let an upstream choose the row by naming a tool.
-        if matching.next().is_some() {
-            return Err(TrustRefused::Ambiguous);
-        }
+        let found = self
+            .trust
+            .rows()
+            .into_iter()
+            .find(|r| r.key() == key)
+            .ok_or(TrustRefused::NoSuchKey)?;
         self.decide_key(
             &found.instance,
             &found.counterparty,
