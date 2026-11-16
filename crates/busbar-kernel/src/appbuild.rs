@@ -1666,6 +1666,7 @@ pub async fn build_app_from_config_with_store(
             boot_store,
             recover_usage_before_hydration,
             None,
+            None,
         )),
     )
     .await
@@ -1685,6 +1686,8 @@ pub struct BootBuild<'a> {
     pub config_paths: (Option<std::path::PathBuf>, Option<std::path::PathBuf>),
     pub rules: &'a Arc<dyn RootRules>,
     pub boot_store: Arc<crate::persistence::facade::CoreStore>,
+    /// The fully opened S5 secret view; application construction never reopens it.
+    pub secret_resolver: Arc<config::secret::SecretResolver>,
 }
 
 pub async fn build_boot_app(
@@ -1705,6 +1708,7 @@ pub async fn build_boot_app(
             Some(boot.boot_store),
             true,
             boot.judged,
+            Some(boot.secret_resolver),
         )),
     )
     .await
@@ -1735,6 +1739,7 @@ async fn build_app_native(
     boot_store: Option<Arc<crate::persistence::facade::CoreStore>>,
     recover_usage_before_hydration: bool,
     judged: Option<config_validate::Judged>,
+    opened_secrets: Option<Arc<config::secret::SecretResolver>>,
 ) -> Result<(state::App, Option<GovCredentialRotation>, InstalledLimits), String> {
     config::security_policy::check_candidate(prior, &cfg, &plugins_cfg)?;
     // The operator file-policy reference (§3.6.1): a disk read sets it on the candidate; every
@@ -1834,11 +1839,14 @@ async fn build_app_native(
     let transition_requirements =
         governance::principal_transition::requirements(&cfg, plugin_registry.as_ref())?;
 
-    let secret_resolver = Arc::new(build_secret_resolver(
-        plugin_registry.clone(),
-        &cfg.secrets,
-        &generation_sugars(&cfg),
-    )?);
+    let secret_resolver = match opened_secrets {
+        Some(resolver) => resolver,
+        None => Arc::new(build_secret_resolver(
+            plugin_registry.clone(),
+            &cfg.secrets,
+            &generation_sugars(&cfg),
+        )?),
+    };
 
     let mut lanes_data = Vec::new();
 
