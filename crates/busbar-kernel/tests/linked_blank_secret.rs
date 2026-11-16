@@ -8,6 +8,7 @@
 use std::sync::Arc;
 
 use busbar_contract::config_time::ConfigScope;
+use busbar_contract::json::{self, JsonValueTrait};
 use busbar_contract::plugin_settings::Settings;
 use busbar_contract::redacted::Secret;
 use busbar_contract::secret::{SecretAxis, SecretBytes, SecretCalls, SecretRefused};
@@ -18,7 +19,7 @@ const MODULE: &str = "test-blank-linked";
 struct Answers;
 impl SecretCalls for Answers {
     fn resolve(&self, settings: &[u8]) -> Result<Secret<Vec<u8>>, SecretRefused> {
-        let settings: serde_json::Value = serde_json::from_slice(settings).expect("settings json");
+        let settings: json::Value = json::parse_value(settings).expect("settings json");
         let value: &[u8] = match settings["v"].as_str().expect("v") {
             "spaces" => b"   ",
             "mixed" => b" \t\r\n ",
@@ -68,7 +69,7 @@ fn publish() {
 }
 
 fn reference(case: &str) -> SecretRef {
-    serde_json::from_value(serde_json::json!({"module": MODULE, "settings": {"v": case}}))
+    json::from_value(&json::json!({"module": MODULE, "settings": {"v": case}}))
         .expect("a canonical source reference")
 }
 

@@ -5,6 +5,8 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use busbar_contract::json::{self, JsonValueTrait as _};
+
 #[tokio::test]
 async fn test_admin_v1_usage_meters_by_model_and_key() {
     const CHILD: &str = "BUSBAR_ADMIN_MODEL_USAGE_CHILD";
@@ -155,16 +157,17 @@ async fn test_admin_v1_usage_meters_by_model_and_key() {
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
     let client = reqwest::Client::new();
     let now = busbar_kernel::store::now();
-    let created: serde_json::Value = client
+    let created = client
         .post(format!("http://{addr}/api/v1/admin/keys"))
         .header("x-admin-token", "admintok")
-        .json(&serde_json::json!({"name":"team-a"}))
+        .json(&json::json!({"name":"team-a"}))
         .send()
         .await
         .unwrap()
-        .json()
+        .bytes()
         .await
         .unwrap();
+    let created = json::parse_value(&created).unwrap();
     let minted = store
         .get_key(created["id"].as_str().expect("actual mint id"))
         .await
@@ -187,15 +190,16 @@ async fn test_admin_v1_usage_meters_by_model_and_key() {
     gov.record_metering(&minted.id, "model-2", "acme", None, now);
     gov.flush_metering().await;
 
-    let body: serde_json::Value = client
+    let body = client
         .get(format!("http://{addr}/api/v1/admin/usage"))
         .header("x-admin-token", "admintok")
         .send()
         .await
         .unwrap()
-        .json()
+        .bytes()
         .await
         .unwrap();
+    let body = json::parse_value(&body).unwrap();
 
     assert_eq!(
         body.get("currency").and_then(|c| c.as_str()),

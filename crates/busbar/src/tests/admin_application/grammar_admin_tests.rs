@@ -13,6 +13,8 @@ use std::collections::HashSet;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
+use busbar_contract::json;
+
 use crate::test_common as common;
 
 const AUDIENCE: &str = "api://admin-grammar-precheck";
@@ -153,7 +155,7 @@ async fn post(
     path: &str,
     token: &str,
     body: &serde_json::Value,
-) -> (u16, serde_json::Value) {
+) -> (u16, json::Value) {
     let response = reqwest::Client::new()
         .post(format!("http://{}/api/v1/admin/{path}", served.addr))
         .header("x-admin-token", token)
@@ -163,7 +165,11 @@ async fn post(
         .await
         .unwrap();
     let status = response.status().as_u16();
-    (status, response.json().await.unwrap_or_default())
+    let bytes = response.bytes().await.unwrap_or_default();
+    (
+        status,
+        json::parse_value(&bytes).unwrap_or_else(|_| json::Value::new()),
+    )
 }
 
 /// R12 (§3.12, F10): a caller without full-operator authority whose apply adds a `plugins.fetch`
@@ -253,7 +259,7 @@ async fn admin_validate_answers_needs_full_operator_where_apply_forbids() {
         "validate names the cause class and the field class: {view}"
     );
     assert!(
-        !errors.contains(".tar.gz") && !errors.contains("allow_unsigned"),
+        !errors.contains(".tar.gz") && !errors.contains("allow_untrusted"),
         "the answer carries no file name and no trust setting: {view}"
     );
 

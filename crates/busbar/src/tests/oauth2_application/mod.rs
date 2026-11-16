@@ -22,6 +22,12 @@ mod issuer;
 mod mount_tests;
 mod registration_tests;
 
+/// The JSON body of `response`, read as a tree (lexemes kept, last duplicate key wins).
+async fn read_json(response: reqwest::Response) -> busbar_contract::json::Value {
+    busbar_contract::json::parse_value(&response.bytes().await.expect("the response body reads"))
+        .expect("the response body is JSON")
+}
+
 fn tls_identity() -> (Arc<rustls::ServerConfig>, &'static str) {
     static IDENTITY: std::sync::LazyLock<(Arc<rustls::ServerConfig>, String)> =
         std::sync::LazyLock::new(|| {

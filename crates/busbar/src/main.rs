@@ -385,7 +385,7 @@ fn main() {
     }
     // Retired 1.5.x launch variables are never read; a set one is reported (BUSBAR-3029) here, where
     // 1.5.5 printed its deprecation line, before the config load that can refuse.
-    for w in root::config_migrate::ignored_launch_env(|n| std::env::var_os(n)) {
+    for w in root::retired_env::ignored_launch_env(|n| std::env::var_os(n)) {
         eprintln!("{w}");
     }
     // Migrate-on-boot step 1 (MIGRATE-ON-BOOT r42 §3): config.yaml's one field, before anything else
@@ -612,55 +612,51 @@ async fn run(
             detail
         }
     };
-    let documents = Arc::new(root::startup_upgrade::documents::Documents::default());
-    let bootstrap_rules = root::startup_upgrade::documents::BootstrapRules(documents.clone());
+    // Every configuration read of this boot runs under the boot's reader rules: an unstamped boot
+    // reads the document the migrate seam planned at step 1 (held in memory until step 5 writes it),
+    // every other boot reads the file. The gateway reads only current bytes.
+    let config_rules = root::boot_app::ConfigRules;
     if let Some(refusal) = root::boot::start_refusal() {
         die(boot_error(
             "plugins directory refused at process start",
             refusal,
         ));
     }
+    // A start whose `plugins:` block on disk is in a pre-1.6 shape judges the operator credential
+    // from the planned config's block, before the load (OPERATOR-FROM-ADMITTED-AUTH §3.4.1).
+    root::auth_bindings::bind_from_planned(&config_path).unwrap_or_else(|error| {
+        die(boot_error(
+            "principal transition operator credential refused",
+            error,
+        ))
+    });
     let loaded = busbar_kernel::appbuild::load_config_from_disk_judged(
         &config_path,
         providers_override.as_deref(),
         ignore_overlay,
         config::EnvSubst::Strict,
-        &bootstrap_rules,
+        &config_rules,
     )
+    // The read's own grammar already appended its report (one line per file not admitted).
     .unwrap_or_else(|e| {
-        let detail = match documents.take_debt() {
-            Some(todos) => root::startup_upgrade::documents::explain_debt(
-                &todos,
-                root::cli::validate_judged(
-                    &config_path,
-                    providers_override.as_deref(),
-                    ignore_overlay,
-                )
-                .err()
-                .as_ref(),
-                &config_path,
-            ),
-            // The read's own grammar already appended its report (one line per file not admitted).
-            None => e,
-        };
         die(boot_error(
             "principal transition configuration load refused",
-            detail,
+            e,
         ))
     });
     let LoadedConfig {
         deploy,
-        defs: _,
-        providers_path: _,
+        defs,
+        providers_path,
         overlay_path: _,
         config_locked,
         config_read_only: _,
         overlay_doc: _,
         unset_env_vars: _,
-        operator_reference: _,
+        operator_reference,
     } = loaded;
 
-    let base_cfg = root::startup_upgrade::bootstrap::bootstrap(&deploy).unwrap_or_else(|errors| {
+    let base_cfg = root::boot_app::store_bootstrap(&deploy).unwrap_or_else(|errors| {
         die(boot_error(
             "Store bootstrap configuration refused",
             format!(
@@ -715,7 +711,7 @@ async fn run(
         root::connector::install_trust_store(&base_cfg, false);
         // The MIN-3 registry boots here, before the Store opens and before any listener serves: images, the
         // kernel's sides, then 2a, 2b, the deployment point, 2c. Without a MIN-3 store image the old path boots.
-        root::min3_boot::run(
+        let walked = root::min3_boot::run(
             &base_cfg,
             &deploy.plugins,
             boot_guard,
@@ -723,159 +719,55 @@ async fn run(
         )
         .await
         .unwrap_or_else(|error| die(boot_error("MIN-3 plugin boot refused", error)));
-        let prepared_store = busbar_kernel::appbuild::prepare_config_store(&base_cfg, &deploy.plugins)
-            .await
-            .unwrap_or_else(|error| die(store_boot_refusal(principal_transition.is_some(), error)));
-        let binding_inventory = root::startup_upgrade::bindings::inventory()
-            .unwrap_or_else(|_| die("startup plane declaration inventory refused"));
-        let binding_resolver = Arc::new(
-            root::startup_upgrade::bindings::Resolver::new(
-                documents.clone(),
-                config_path.clone(),
-                providers_override.clone(),
-                ignore_overlay,
-                base_cfg.limits.migration_index_bytes,
-                base_cfg.limits.migration_value_bytes,
-                &binding_inventory,
-            )
-            .unwrap_or_else(|_| die("startup plane binding inventory refused")),
-        );
-        let mut upgrade = busbar_migrations::StartupUpgrade::new(
-            prepared_store,
-            busbar_contract::persistence::lifecycle::Bounds {
-                items: 4096,
-                bytes: u32::try_from(base_cfg.limits.migration_value_bytes).unwrap_or_else(|_| {
-                    die("limits.migration_value_bytes exceeds native frame capacity")
-                }),
-            },
-        )
-        .with_source_spool(
-            Arc::new(root::startup_upgrade::spool::Factory),
-            busbar_contract::persistence::archive::Limits {
-                frame_bytes: base_cfg.limits.migration_value_bytes,
-                total_bytes: u64::MAX,
-                rows: u64::MAX,
-                tables: u32::MAX,
-                columns: u32::MAX,
-                index_bytes: base_cfg.limits.migration_index_bytes,
-            },
-            base_cfg.limits.migration_index_bytes,
-            base_cfg.limits.migration_value_bytes,
-        )
-        .unwrap_or_else(|_| die("startup migration allocation limits must be positive"))
-        .with_binding_inventory(binding_inventory.clone(), binding_resolver)
-        .unwrap_or_else(|_| die("startup frozen binding resolver admission refused"));
-        let released_source = loop {
-            if *control_work.shutdown_rx.borrow() {
-                die("shutdown requested during native Store inspection");
-            }
-            match upgrade.inspect_released().await {
-                Ok(source) => break source,
-                Err(busbar_migrations::Error::IntentPending) => {
-                    tokio::time::sleep(Duration::from_millis(250)).await;
-                }
-                Err(error) => die(format!("automatic Store inspection refused: {error:?}")),
-            }
-        };
-        if let Some(source) = released_source.as_ref() {
-            documents
-                .enter_released_source(source)
-                .unwrap_or_else(|error| die(error));
-            let normalized = busbar_kernel::appbuild::load_config_from_disk_judged(
-                &config_path,
-                providers_override.as_deref(),
-                ignore_overlay,
-                config::EnvSubst::Strict,
-                &bootstrap_rules,
-            )
-            .unwrap_or_else(|error| die(error));
-            let normalized_bootstrap = root::startup_upgrade::bootstrap::bootstrap(&normalized.deploy)
-                .unwrap_or_else(|errors| die(errors.join("; ")));
-            let same_store = documents
-                .bootstrap_equivalent(&base_cfg.store, &normalized_bootstrap.store, &config_path)
-                .unwrap_or_else(|error| die(error));
-            if !same_store
-                || normalized.deploy.plugins != deploy.plugins
-                || normalized.config_locked != config_locked
-            {
-                die("configuration conversion changed its prepared Store bootstrap binding");
-            }
-        }
-        let prepared = loop {
-            if *control_work.shutdown_rx.borrow() {
-                die("shutdown requested during native Store preparation");
-            }
-            match upgrade
-                .prepare()
+        // The store's admission: the MIN-3 walk's own when it opened the configured store through the
+        // registry (its open converted a 1.5.5 store; core's records step runs below), so the old ABI's
+        // preparation is never entered for a store built only for the new ABI (COORD-STORE-C2). With no
+        // MIN-3 store image the old ABI path below stays until #274 deletes it.
+        let walk_admission = root::boot::walk_admission(walked, || {
+            root::min3_boot::booted().and_then(|booted| booted.startup.lock().ok()?.take())
+        })
+        .unwrap_or_else(|error| die(boot_error("MIN-3 store admission refused", error)));
+        // The old ABI store's prepared session is held with the boot's owners until serving (or the
+        // step-5 restart) so its native instance outlives the admission built over it.
+        let (old_store, store_admission) = match walk_admission {
+            Some(store_admission) => (None, store_admission),
+            None => {
+                let prepared_store =
+                    busbar_kernel::appbuild::prepare_config_store(&base_cfg, &deploy.plugins)
+                        .await
+                        .unwrap_or_else(|error| {
+                            die(store_boot_refusal(principal_transition.is_some(), error))
+                        });
+                let store_admission = root::boot::open_current_store(
+                    &prepared_store,
+                    busbar_contract::persistence::lifecycle::Bounds {
+                        items: 4096,
+                        bytes: u32::try_from(base_cfg.limits.migration_value_bytes)
+                            .unwrap_or_else(|_| {
+                                die("limits.migration_value_bytes exceeds native frame capacity")
+                            }),
+                    },
+                    &control_work.shutdown_rx,
+                )
                 .await
-                .unwrap_or_else(|error| die(format!("automatic Store upgrade refused: {error:?}")))
-            {
-                busbar_migrations::Preparation::Recovery(prepared) => break prepared,
-                busbar_migrations::Preparation::Pending => {
-                    tokio::time::sleep(Duration::from_millis(250)).await
-                }
+                .unwrap_or_else(|error| die(error));
+                (Some(prepared_store), store_admission)
             }
         };
-        let store_admission = root::boot::admit_prepared_store(&prepared)
-            .await
-            .unwrap_or_else(|error| die(error));
         let anchor_store = store_admission.store().expect("confirmed Store admission");
         root::exit::arm(&anchor_store);
-        let root::startup_upgrade::publication::Preparation {
-            mut publication,
-            mut progress,
-        } = root::startup_upgrade::publication::Publication::prepare(
-            &mut upgrade,
-            root::startup_upgrade::publication::Inputs {
-                backend: prepared.backend.clone(),
-                core: anchor_store.clone(),
-                documents: documents.clone(),
-                native_upgrade_id: prepared.upgrade_id,
-                host: root::durability::host_identity(),
-                checkpoint_budget: base_cfg.limits.migration_value_bytes,
-                fs: Arc::new(root::admission::RootDurable),
-            },
-        )
-        .await
-        .unwrap_or_else(|error| die(error));
-        while progress == root::startup_upgrade::publication::PrepareProgress::Pending {
-            if *control_work.shutdown_rx.borrow() {
-                die("shutdown requested during configuration preparation");
-            }
-            tokio::time::sleep(Duration::from_millis(250)).await;
-            progress = publication
-                .prepare_more(&mut upgrade)
-                .await
-                .unwrap_or_else(|error| die(error));
-        }
-        // A recovered inventory may contain a mixture of original and published files.
-        // Reload through its retained transformations before constructing the one App.
-        let resumed = busbar_kernel::appbuild::load_config_from_disk_judged(
-            &config_path,
-            providers_override.as_deref(),
-            ignore_overlay,
-            config::EnvSubst::Strict,
-            &bootstrap_rules,
-        )
-        .unwrap_or_else(|error| die(error));
-        let resumed_bootstrap = root::startup_upgrade::bootstrap::bootstrap(&resumed.deploy)
-            .unwrap_or_else(|errors| die(errors.join("; ")));
-        let same_store = documents
-            .bootstrap_equivalent(&base_cfg.store, &resumed_bootstrap.store, &config_path)
+        // Migrate-on-boot step 4 (MIGRATE-ON-BOOT r42 §3 4a, 4b): the 1.5.5 rows a store's data step
+        // left under IMPORT become native records under this admission, sealed and verified, before
+        // anything reads them. An empty IMPORT costs one one-row scan.
+        root::migrate::records(anchor_store.clone())
+            .await
             .unwrap_or_else(|error| die(error));
-        if !same_store
-            || resumed.deploy.plugins != deploy.plugins
-            || resumed.config_locked != config_locked
-        {
-            die("restored configuration changed its prepared Store bootstrap binding");
-        }
-        // config.yaml's operator definitions as read from disk, before any stored document patch:
-        // the operator file-policy reference this process starts with (OPERATOR-FROM-ADMITTED-AUTH
-        // §000.1).
-        let operator_reference = Arc::new(resumed.operator_reference);
-        let mut deploy = resumed.deploy;
-        let mut defs = resumed.defs;
-        let mut providers_path = resumed.providers_path;
+        // config.yaml's operator definitions as read, before any stored document patch: the operator
+        // file-policy reference this process starts with (OPERATOR-FROM-ADMITTED-AUTH §000.1).
+        let operator_reference = Arc::new(operator_reference);
+        let mut deploy = deploy;
+        let mut defs = defs;
+        let mut providers_path = providers_path;
         // Even --ignore-overlay must observe a pending transition in the anchor namespace before
         // overlay recovery or application construction can open another effective Store.
         if principal_transition.is_none() {
@@ -920,7 +812,7 @@ async fn run(
                 &config_path,
                 providers_override.as_deref(),
                 config::EnvSubst::Strict,
-                &bootstrap_rules,
+                &config_rules,
                 doc,
             )
             .unwrap_or_else(|error| {
@@ -1034,11 +926,9 @@ async fn run(
         }
 
         Some((
-            upgrade,
-            prepared,
+            old_store,
             store_admission,
             anchor_store,
-            publication,
             deploy,
             defs,
             providers_path,
@@ -1053,11 +943,9 @@ async fn run(
     }))
     .await;
     let Some((
-        mut upgrade,
-        prepared,
+        old_store,
         store_admission,
         anchor_store,
-        mut publication,
         deploy,
         defs,
         providers_path,
@@ -1089,6 +977,8 @@ async fn run(
     };
 
     let response_headers_cfg = deploy.advanced.response_headers.clone();
+    // `audit.seal_every` (SEALING-FIX §3.4): the notary's stamp cadence, validated 1-1000 ms.
+    let audit_seal_every = deploy.audit.seal_every;
 
     busbar_kernel::plane_driver::configure_route_policy_headers(response_headers_cfg.route_policy);
     busbar_kernel::router::configure_server_timing(response_headers_cfg.server_timing);
@@ -1101,6 +991,9 @@ async fn run(
             .as_ref()
             .map(|p| Duration::from_secs(p.retention_seconds)),
     );
+    // ADMIN-API-1.6 §3.5: what unit records keep of the end user and request headers, for the
+    // life of the process.
+    root::records_capture::configure(&deploy.records);
 
     let plugins_cfg = deploy.plugins.clone();
     root::measurements::maintenance(root::boot::admit_recovered_plugins(&plugins_cfg))
@@ -1115,8 +1008,6 @@ async fn run(
     }
 
     // The subscriber is `main`'s, installed once before any work; nothing here installs another.
-    // Startup conversion notices raised while the configuration loaded.
-    documents.replay_notices();
 
     if ignore_overlay {
         tracing::warn!(
@@ -1169,7 +1060,7 @@ async fn run(
     .unwrap_or_else(|error| die(format!("effective connector boot configuration: {error}")));
 
     // Semantic validation of the effective configuration runs once per boot. Ordinarily that is
-    // inside the application build the startup continuation drives (`appbuild` ->
+    // inside the boot's one application build (`root::boot_app::BootApp`: `appbuild` ->
     // `config_validate::check_with`), after the export sinks open and before any Store
     // publication or listener. A fresh-instance transition already judged its effective
     // configuration (the same deploy, definitions and overlay) before writing its Store baseline:
@@ -1231,10 +1122,7 @@ async fn run(
 
     let door_pools = root::serve::door_pools(&cfg.plane_pools);
 
-    let root_rules = Arc::new(root::door_steps::Rules::hearing_with_documents(
-        commit_guard,
-        documents.clone(),
-    ));
+    let root_rules = Arc::new(root::door_steps::Rules::hearing(commit_guard));
 
     root_rules.hold_unloaded(root::door_steps::unloaded_doors());
     let listener_plan = Arc::new(root::serve::ListenerPlan::new(
@@ -1274,79 +1162,45 @@ async fn run(
     };
 
     let _boot_store_binding = boot_store;
-    let continuation = root::startup_upgrade::continuation::StartupContinuation::for_upgrade(
-        root::startup_upgrade::continuation::Preparation {
-            startup: store_admission,
-            config: cfg,
-            judged,
-            plugins: plugins_cfg,
-            overlay: overlay_path,
-            deploy,
-            definitions: defs,
-            base_hook_names,
-            base_group_names,
-            config_path: config_path.clone(),
-            providers_path: providers_path.clone(),
-            providers_override: providers_override.clone(),
-            rules: root_rules.clone(),
-            shutdown_rx: control_work.shutdown_rx.clone(),
-            shutdown_tx: control_work.shutdown_tx.clone(),
-            configuration_fingerprint: documents.fingerprint().unwrap_or_else(|error| die(error)),
-        },
-        root::startup_upgrade::continuation::UpgradeBinding {
-            upgrade_id: prepared.upgrade_id,
-            target: prepared.target,
-        },
-    );
-    let readiness = loop {
+    let preparation = root::boot_app::Preparation {
+        startup: store_admission,
+        config: cfg,
+        judged,
+        plugins: plugins_cfg,
+        overlay: overlay_path,
+        deploy,
+        definitions: defs,
+        base_hook_names,
+        base_group_names,
+        config_path: config_path.clone(),
+        providers_path: providers_path.clone(),
+        providers_override: providers_override.clone(),
+        rules: root_rules.clone(),
+        shutdown_rx: control_work.shutdown_rx.clone(),
+        shutdown_tx: control_work.shutdown_tx.clone(),
+    };
+    // The boot's one App, built over the store admission it holds: the MIN-3 walk's, or the old ABI's
+    // current dataset (until #274).
+    let boot_app = root::boot_app::BootApp::new(preparation);
+    loop {
         if *control_work.shutdown_rx.borrow() {
             die("shutdown requested during startup validation");
         }
-        if let Some(readiness) = continuation
+        if boot_app
             .readiness()
             .await
             .unwrap_or_else(|error| die(error))
+            .is_some()
         {
-            break readiness;
+            break;
         }
         tokio::time::sleep(Duration::from_millis(250)).await;
-    };
-    loop {
-        if *control_work.shutdown_rx.borrow() {
-            die("shutdown requested during configuration publication");
-        }
-        match publication
-            .publish_complete(readiness)
-            .await
-            .unwrap_or_else(|error| die(error))
-        {
-            root::startup_upgrade::publication::PublishProgress::Complete => break,
-            root::startup_upgrade::publication::PublishProgress::Pending => {
-                tokio::time::sleep(Duration::from_millis(250)).await;
-            }
-        }
     }
-    let completion = loop {
-        if *control_work.shutdown_rx.borrow() {
-            die("shutdown requested during Store completion");
-        }
-        match upgrade.finalize(readiness).await {
-            Ok(completion) => break completion,
-            Err(busbar_migrations::Error::IntentPending) => {
-                tokio::time::sleep(Duration::from_millis(250)).await;
-            }
-            Err(error) => die(format!("automatic Store completion refused: {error:?}")),
-        }
-    };
     let ready = loop {
         if *control_work.shutdown_rx.borrow() {
             die("shutdown requested before startup publication");
         }
-        if let Some(candidate) = continuation
-            .take_ready(&completion)
-            .await
-            .unwrap_or_else(|error| die(error))
-        {
+        if let Some(candidate) = boot_app.take().await.unwrap_or_else(|error| die(error)) {
             break candidate;
         }
         tokio::time::sleep(Duration::from_millis(250)).await;
@@ -1354,23 +1208,14 @@ async fn run(
     // Migrate-on-boot step 5 (MIGRATE-ON-BOOT r42 §3): every instance has opened, and nothing
     // serves or produces yet. An upgraded config.yaml is written in place now. The boot then closes
     // every instance it owns (the App and each instance it opened, the core store and its
-    // admission, the node book and its lease task, the startup upgrade's holders), so no instance's
-    // descriptor reaches the new image, and re-executes onto the stamped file. A stamped boot
-    // passes straight through, with every owner kept as before.
-    if let Some(written) = root::migrate::finish()
+    // admission, the node book and its lease task, an old ABI store's prepared session), so no
+    // instance's descriptor reaches the new image, and re-executes onto the stamped file. A stamped
+    // boot passes straight through, with every owner kept as before.
+    if let Some(written) = root::migrate::finish(Some(ready.core.clone()))
         .await
         .unwrap_or_else(|error| die(error))
     {
-        let owners = (
-            ready,
-            continuation,
-            upgrade,
-            publication,
-            completion,
-            // The prepared Store's own holders (its target identity moved into the continuation).
-            (prepared.backend, prepared.recovery),
-            _boot_store_binding,
-        );
+        let owners = (ready, boot_app, old_store, _boot_store_binding);
         die(root::migrate::restart(
             written,
             owners,
@@ -1380,7 +1225,7 @@ async fn run(
             root::migrate::reexec,
         ));
     }
-    let root::startup_upgrade::continuation::ReadyCandidate {
+    let root::boot_app::ReadyCandidate {
         startup: store_admission,
         app,
         book,
@@ -1420,10 +1265,9 @@ async fn run(
         let kernel = late_services
             .kernel()
             .unwrap_or_else(|| die("record bootstrap has no installed kernel"));
-        let instance = receipt.instance.clone();
         kernel
             .arm_record_bootstrap(receipt, &fingerprint, |schema, key, value| {
-                root::boot::bootstrap_witness(&instance, schema, key, value)
+                root::boot::bootstrap_witness(schema, key, value)
             })
             .await
             .unwrap_or_else(|error| die(format!("fresh record bootstrap refused: {error}")));
@@ -1457,10 +1301,9 @@ async fn run(
         .unwrap_or_else(|error| die(format!("cold record bootstrap failed: {error}")));
         let receipt =
             receipt.unwrap_or_else(|error| die(format!("cold record bootstrap refused: {error}")));
-        let instance = receipt.instance.clone();
         kernel
             .arm_record_bootstrap(receipt, &fingerprint, |schema, key, value| {
-                root::boot::bootstrap_witness(&instance, schema, key, value)
+                root::boot::bootstrap_witness(schema, key, value)
             })
             .await
             .unwrap_or_else(|error| die(format!("cold record bootstrap refused: {error}")));
@@ -1569,28 +1412,36 @@ async fn run(
 
     drop(served);
     let app_handle = Arc::new(busbar_kernel::state::AppHandle::new(app));
+    let probes = Arc::new(busbar_kernel::endpoints::ProbeState::new(
+        book.as_ref().map(|book| book.runtime_journal.clone()),
+    ));
     let admin_router = busbar_kernel::router::build_admin_router_on_with_dispatch_layer(
         &app_handle,
         req_body_max,
         response_headers_cfg.server_timing,
         root::listener::deferred_dispatch_layer,
-    );
-    let data_router = listener_plan.router(
-        &app_handle,
-        "listen".into(),
-        req_body_max,
-        0, // The framed actor applies one physical cap to data and operator requests.
-        response_headers_cfg.server_timing,
-    );
+    )
+    .layer(axum::Extension(probes.clone()));
+    let data_router = listener_plan
+        .router(
+            &app_handle,
+            "listen".into(),
+            req_body_max,
+            0, // The framed actor applies one physical cap to data and operator requests.
+            response_headers_cfg.server_timing,
+        )
+        .layer(axum::Extension(probes.clone()));
     let mut physical_routers = std::collections::HashMap::new();
     for bind in listener_plan.stream_binds() {
-        let router = listener_plan.router(
-            &app_handle,
-            bind.at.clone(),
-            req_body_max,
-            0, // The framed actor owns this listener's shared admission cap.
-            response_headers_cfg.server_timing,
-        );
+        let router = listener_plan
+            .router(
+                &app_handle,
+                bind.at.clone(),
+                req_body_max,
+                0, // The framed actor owns this listener's shared admission cap.
+                response_headers_cfg.server_timing,
+            )
+            .layer(axum::Extension(probes.clone()));
         physical_routers.insert(bind.at.clone(), router);
     }
     credential_handle.set(std::sync::Arc::clone(&app_handle));
@@ -1751,10 +1602,12 @@ async fn run(
     {
         let mut stop = control_work.shutdown_rx.clone();
         let shutdown = shutdown_tx.clone();
+        let probes = probes.clone();
         tokio::spawn(async move {
             if !*stop.borrow_and_update() {
                 let _ = stop.wait_for(|stopping| *stopping).await;
             }
+            probes.begin_stopping();
             let _ = shutdown.send(());
         });
     }
@@ -1764,8 +1617,10 @@ async fn run(
         let rx = shutdown_tx.subscribe();
         let shutdown_level = control_work.shutdown_tx.clone();
         let clock = Arc::clone(&drain_clock);
+        let probes = probes.clone();
         tokio::spawn(async move {
             recv_shutdown(rx).await;
+            probes.begin_stopping();
             clock.arm(tokio::time::Instant::now() + clock.budget());
             let _ = shutdown_level.send(true);
         });
@@ -1773,13 +1628,15 @@ async fn run(
 
     let line_shutdown = line_served.as_ref().map(|_| shutdown_tx.subscribe());
 
-    busbar_core_admin::restart::publish_shutdown(shutdown_tx.clone());
+    busbar_core_admin::restart::publish_shutdown(shutdown_tx.clone(), probes.clone());
     // The first signal starts the drain; a second one ends it at once (the deadline branch).
     {
         let shutdown_tx = shutdown_tx.clone();
         let clock = Arc::clone(&drain_clock);
+        let probes = probes.clone();
         tokio::spawn(async move {
             shutdown_signal().await;
+            probes.begin_stopping();
             let _ = shutdown_tx.send(());
             shutdown_signal().await;
             tracing::warn!("second shutdown signal: the drain deadline is now");
@@ -1810,6 +1667,10 @@ async fn run(
 
     busbar_kernel::boot::start_planes(&app_handle).unwrap_or_else(|e| die(e));
     let predecessor = spawn_predecessor_task(governance.as_ref(), control_work.shutdown_rx.clone());
+    // SEALING-FIX §3.3: the audit notary, after `Ready`, on this control runtime.
+    if let Some(audit) = book.as_ref().and_then(|book| book.audit.as_ref()) {
+        audit.start_notary(audit_seal_every, Arc::clone(&drain_clock));
+    }
 
     let mut threads: Vec<std::thread::JoinHandle<()>> = Vec::new();
     let mut admin: Option<std::pin::Pin<Box<dyn std::future::Future<Output = ()> + '_>>> = None;
@@ -2083,7 +1944,7 @@ async fn refresh_node_lease(
 
 #[cfg(unix)]
 const ROOT_BIND_LIMITS: AcceptLimits = AcceptLimits {
-    max_conns: usize::MAX,
+    max_conns: busbar_core_connector::listen::DEFAULT_MAX_CONNS,
     handshake_timeout: DEFAULT_HANDSHAKE_TIMEOUT,
 };
 
@@ -2497,3 +2358,13 @@ mod dist_root_install;
 #[cfg(all(test, distribution_root))]
 #[path = "tests/distribution.rs"]
 mod distribution;
+
+#[cfg(all(test, unix))]
+#[test]
+fn root_listeners_keep_the_connector_connection_bound() {
+    assert_eq!(
+        ROOT_BIND_LIMITS.max_conns,
+        busbar_core_connector::listen::DEFAULT_MAX_CONNS,
+        "root data and admin binds must not disable connection admission"
+    );
+}

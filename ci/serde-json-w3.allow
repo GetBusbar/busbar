@@ -26,13 +26,8 @@ crates/busbar-kernel/src/off_path/plane_door.rs
 crates/busbar-kernel/src/tests/trust_verify_tests.rs
 crates/busbar-kernel/tests/support/plane_driver_actual.rs
 crates/busbar/src/main.rs
-crates/busbar/src/root/config_migrate.rs
 crates/busbar/src/root/door_steps.rs
-crates/busbar/src/root/startup_upgrade/bindings.rs
-crates/busbar/src/root/startup_upgrade/continuation.rs
-crates/busbar/src/root/startup_upgrade/documents.rs
 crates/busbar/src/root/tests/auth_bindings.rs
-crates/busbar/src/root/tests/config_migrate.rs
 crates/busbar/src/root/tests/node_door_cells.rs
 crates/busbar/src/root/tests/node_door_rig.rs
 crates/busbar/src/root/tests/serve.rs
@@ -64,6 +59,3 @@ tools/plugin-bench/
 
 # W3-D-LOADER: the old dispatch and the loader modules it alone references.
 crates/plugin-loader/src/dispatch/
-
-# W3-D-MIGRATIONS: the 1.5.5 migration crate.
-crates/busbar-migrations/

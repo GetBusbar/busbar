@@ -3,16 +3,16 @@
 
 use crate::root::test_plugins as plugins;
 use base64::Engine as _;
+use busbar_contract::json::{self, JsonValueTrait};
 use std::sync::Arc;
 
 fn trust_document(config: &busbar_kernel::config::PluginsCfg) -> serde_json::Value {
     let publishers: Vec<_> = config.trust.publishers.iter().map(|publisher| {
-        serde_json::json!({"name": publisher.name, "public_key": publisher.public_key})
+        serde_json::json!({"name": publisher.name, "plugins": publisher.plugins, "keys": publisher.keys.iter().map(|key| serde_json::json!({"public_key": key.public_key, "revoked": key.revoked})).collect::<Vec<_>>()})
     }).collect();
     serde_json::json!({
         "publishers": publishers,
-        "allow_unsigned": config.trust.allow_unsigned,
-        "allow_third_party": config.trust.allow_third_party,
+        "allow_untrusted": config.trust.allow_untrusted,
     })
 }
 
@@ -117,7 +117,11 @@ async fn rollback_refuses_the_anchor_below_its_operator_bootstrap_floor_before_a
         .publishers
         .push(busbar_kernel::config::PluginPublisher {
             name: "acme".into(),
-            public_key: publisher_hex.clone(),
+            plugins: vec![target_name.clone()],
+            keys: vec![busbar_kernel::config::PluginPublisherKey {
+                public_key: publisher_hex.clone(),
+                revoked: false,
+            }],
         });
     app.plugins_cfg
         .min_versions
@@ -179,12 +183,12 @@ async fn rollback_refuses_the_anchor_below_its_operator_bootstrap_floor_before_a
     let response = client
         .post(format!("http://{addr}/api/v1/admin/plugins/rollback"))
         .header("x-admin-token", "admintok")
-        .json(&serde_json::json!({"file":"target.tar.gz"}))
+        .json(&json::json!({"file":"target.tar.gz"}))
         .send()
         .await
         .unwrap();
     assert_eq!(response.status().as_u16(), 409);
-    let error: serde_json::Value = response.json().await.unwrap();
+    let error = json::parse_value(&response.bytes().await.unwrap()).unwrap();
     let message = error["error"]["message"].as_str().unwrap();
     assert!(
         message.contains("bootstrap dependency")
@@ -366,7 +370,11 @@ async fn safe_anchor_and_nonanchor_rollbacks_preserve_the_existing_pin_merge() {
             .publishers
             .push(busbar_kernel::config::PluginPublisher {
                 name: "acme".into(),
-                public_key: publisher_hex.clone(),
+                plugins: vec![target_name.clone()],
+                keys: vec![busbar_kernel::config::PluginPublisherKey {
+                    public_key: publisher_hex.clone(),
+                    revoked: false,
+                }],
             });
         app.plugins_cfg
             .min_versions
@@ -427,12 +435,12 @@ async fn safe_anchor_and_nonanchor_rollbacks_preserve_the_existing_pin_merge() {
         let response = client
             .post(format!("http://{addr}/api/v1/admin/plugins/rollback"))
             .header("x-admin-token", "admintok")
-            .json(&serde_json::json!({"file":"target.tar.gz"}))
+            .json(&json::json!({"file":"target.tar.gz"}))
             .send()
             .await
             .unwrap();
         let status = response.status().as_u16();
-        let view: serde_json::Value = response.json().await.unwrap();
+        let view = json::parse_value(&response.bytes().await.unwrap()).unwrap();
         assert_eq!(status, 200, "safe anchor/nonanchor rollback: {view}");
         assert_eq!(view["name"], target_name);
         let persisted = overlay
@@ -547,7 +555,11 @@ async fn an_upload_cannot_replace_the_anchor_with_a_target_only_the_running_pin_
         .publishers
         .push(busbar_kernel::config::PluginPublisher {
             name: "acme".into(),
-            public_key: publisher_hex.clone(),
+            plugins: vec![target_name.clone()],
+            keys: vec![busbar_kernel::config::PluginPublisherKey {
+                public_key: publisher_hex.clone(),
+                revoked: false,
+            }],
         });
     app.plugins_cfg
         .min_versions
@@ -607,9 +619,9 @@ async fn an_upload_cannot_replace_the_anchor_with_a_target_only_the_running_pin_
         .timeout(std::time::Duration::from_secs(15))
         .build()
         .unwrap();
-    let response = client.post(format!("http://{addr}/api/v1/admin/plugins")).header("x-admin-token", "admintok").json(&serde_json::json!({"file":"target.tar.gz", "tarball_b64":base64::engine::general_purpose::STANDARD.encode(&target)})).send().await.unwrap();
+    let response = client.post(format!("http://{addr}/api/v1/admin/plugins")).header("x-admin-token", "admintok").json(&json::json!({"file":"target.tar.gz", "tarball_b64":base64::engine::general_purpose::STANDARD.encode(&target)})).send().await.unwrap();
     assert_eq!(response.status().as_u16(), 409);
-    let error: serde_json::Value = response.json().await.unwrap();
+    let error = json::parse_value(&response.bytes().await.unwrap()).unwrap();
     let message = error["error"]["message"].as_str().unwrap();
     assert!(
         message.contains("bootstrap dependency") && message.contains("install"),

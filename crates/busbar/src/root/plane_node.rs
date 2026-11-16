@@ -137,7 +137,7 @@ pub(crate) struct Node {
     lane: std::sync::OnceLock<Arc<busbar_kernel::persistence::journal::runtime::RuntimeJournal>>,
 
     /// The node the bound book seals as: the node half of every unit id this node stamps.
-    sealing: std::sync::OnceLock<u64>,
+    sealing: std::sync::OnceLock<crate::root::durability::LineIdentity>,
 
     durability_token: busbar_contract::caps::Grant<busbar_contract::caps::DurableWrite>,
 
@@ -254,7 +254,7 @@ impl Node {
     pub(crate) fn bind_book(&self, book: Arc<Mutex<crate::root::durability::Durability>>) {
         let (journal, sealing) = {
             let held = book.lock().unwrap_or_else(|poison| poison.into_inner());
-            (held.journal.clone(), held.record.node())
+            (held.journal.clone(), held.line_identity())
         };
         let _ = self.lane.set(journal);
         let _ = self.sealing.set(sealing);
@@ -266,7 +266,7 @@ impl Node {
     /// when the process has no boot nonce.
     #[must_use]
     pub(crate) fn unit_id(&self, unit: UnitKey) -> Option<busbar_kernel_audit::UnitId> {
-        let node = *self.sealing.get()?;
+        let node = self.sealing.get()?.node;
         busbar_kernel_audit::UnitId::of(node, busbar_kernel::snapshot::boot_nonce(), unit.get())
     }
     pub(crate) async fn retry_held_journal(&self) -> Result<(), String> {
@@ -340,10 +340,10 @@ impl Node {
             matches!(&ended, Ended::Settled { end, .. } if end.outcome().is_completed());
         let receipt = self.seal_end_ack(principal, arrived, card, ended, seal, lines);
         match receipt {
-            Some(receipt) => receipt.confirm_terminal(self.ticket_custody.clone(), key, completed),
-            None => {
+            Ok(receipt) => receipt.confirm_terminal(self.ticket_custody.clone(), key, completed),
+            Err(error) => {
                 self.ticket_custody.terminal(key, false);
-                None
+                Some(TerminalConfirmation::failed(error))
             }
         }
     }
@@ -356,15 +356,22 @@ impl Node {
         ended: busbar_kernel::teller::Ended,
         seal: Sealing,
         lines: Vec<RecordLine>,
-    ) -> Option<StagedAudit> {
-        let book = self.book.get()?;
+    ) -> Result<StagedAudit, busbar_contract::caps::DurabilityLost> {
+        let lost = || {
+            busbar_contract::caps::DurabilityLost::observed(
+                &self.durability_token,
+                busbar_contract::caps::StepName::Audit,
+            )
+        };
+        let book = self.book.get().ok_or_else(lost)?;
         let busbar_kernel::teller::Ended::Settled { end, .. } = ended else {
-            return None;
+            return Err(lost());
         };
         let outcome = end.outcome();
-        end.into_posted().ok()?;
+        end.into_posted().map_err(|_| lost())?;
         seal.seal(
             book,
+            self.sealing.get().copied(),
             &self.durability_token,
             principal,
             arrived,
@@ -375,7 +382,6 @@ impl Node {
             None,
             String::new(),
         )
-        .ok()
     }
 
     pub(crate) fn sweep(&self, now: Arrived) -> usize {
@@ -523,6 +529,7 @@ impl Node {
         });
         let _ = seal.seal(
             book,
+            self.sealing.get().copied(),
             &self.durability_token,
             principal,
             self.arrived(),
@@ -854,6 +861,7 @@ impl Node {
             .unwrap_or_default();
         let acknowledged = seal.seal(
             book,
+            self.sealing.get().copied(),
             &self.durability_token,
             &principal,
             arrived,
@@ -868,9 +876,9 @@ impl Node {
             Ok(receipt) => {
                 receipt.confirm_terminal(self.ticket_custody.clone(), key, outcome.is_completed())
             }
-            Err(_) => {
+            Err(error) => {
                 self.ticket_custody.terminal(key, false);
-                None
+                Some(TerminalConfirmation::failed(error))
             }
         }
     }
@@ -1045,6 +1053,7 @@ impl Node {
         let late = late?;
         Some(LateAccrual {
             book: Arc::clone(book),
+            line: self.sealing.get().copied(),
             custody: Arc::clone(&self.ticket_custody),
             history,
 
@@ -1096,6 +1105,8 @@ impl Report {
 struct LateAccrual {
     custody: Arc<crate::root::serve::TicketCustody>,
     book: Arc<Mutex<crate::root::durability::Durability>>,
+    /// The book's boot constants, so the late line is prepared before its lock.
+    line: Option<crate::root::durability::LineIdentity>,
 
     history: crate::root::kernel::PinnedHistory,
     durability_token: busbar_contract::caps::Grant<busbar_contract::caps::DurableWrite>,
@@ -1124,6 +1135,7 @@ impl LateAccrual {
         let LateAccrual {
             custody,
             book,
+            line,
             history,
             durability_token,
             principal,
@@ -1162,6 +1174,7 @@ impl LateAccrual {
                 } = report;
                 seal.seal(
                     &book,
+                    line,
                     &durability_token,
                     &principal,
                     arrived,
@@ -1176,6 +1189,7 @@ impl LateAccrual {
 
             None if posted => seal.seal(
                 &book,
+                line,
                 &durability_token,
                 &principal,
                 arrived,
@@ -1193,9 +1207,9 @@ impl LateAccrual {
         };
         match acknowledged {
             Ok(receipt) => receipt.confirm_terminal(custody, key, posted && completed),
-            Err(_) => {
+            Err(error) => {
                 custody.terminal(key, false);
-                None
+                Some(TerminalConfirmation::failed(error))
             }
         }
     }
@@ -1802,6 +1816,33 @@ impl busbar_kernel::plane_driver::HookJournal for NodeEndPost {
             open.sealing.ran.hooks.extend(record.hooks.iter().cloned());
         }
     }
+
+    fn keeps_end_user(&self) -> bool {
+        crate::root::records_capture::keeps_user()
+    }
+
+    /// `records.user` (ADMIN-API-1.6 §3.5): the end user as the record keeps it, a pseudonym or
+    /// the cut plain value, onto the unit's record-to-be.
+    fn end_user(&self, unit: UnitKey, user: &str) {
+        let Some(kept) = crate::root::records_capture::user(user) else {
+            return;
+        };
+        if let Some(open) = self.lock(unit).get_mut(&unit) {
+            open.sealing.ran.records.user = Some(kept);
+        }
+    }
+
+    /// `records.labels` (ADMIN-API-1.6 §3.5): the allow-listed headers, copied at Decode. Off,
+    /// nothing is copied and no lock is taken.
+    fn decoded_fields(&self, unit: UnitKey, fields: &[(Vec<u8>, Vec<u8>)]) {
+        let labels = crate::root::records_capture::labels(fields);
+        if labels.is_empty() {
+            return;
+        }
+        if let Some(open) = self.lock(unit).get_mut(&unit) {
+            open.sealing.ran.records.labels = labels;
+        }
+    }
 }
 
 /// A unit's captured checkpoint facts, borrowed from the open unit: the fields of
@@ -1944,6 +1985,9 @@ struct Ran {
     walked: [Option<Walked>; ATTEMPT_SLOTS],
     /// Every dial made, including those beyond the slots.
     walked_total: u32,
+    /// What `records.user` and `records.labels` keep of the unit (ADMIN-API-1.6 §3.5): empty, with
+    /// no allocation, unless the operator switched them on.
+    records: busbar_kernel_audit::RecordFacts,
 }
 
 /// The drive's clock and the caller it reads the unit's first write and status from (§9).
@@ -2096,7 +2140,7 @@ impl Accruing {
 // awaited, or its awaiter cancelled mid-confirm) is restarted in one detached
 // task, so cancellation never abandons its original. `confirm` is cancel-safe.
 struct TerminalConfirmation {
-    inner: Option<Confirm>,
+    inner: Result<Option<Confirm>, String>,
 }
 
 struct Confirm {
@@ -2119,15 +2163,21 @@ impl Confirm {
 }
 
 impl TerminalConfirmation {
+    fn failed(error: busbar_contract::caps::DurabilityLost) -> Self {
+        Self {
+            inner: Err(crate::root::cold::terminal_audit_stage_failed(&error)),
+        }
+    }
+
     async fn wait(mut self) -> Result<(), String> {
-        let Some(inner) = self.inner.as_ref() else {
+        let Some(inner) = self.inner.as_ref().map_err(Clone::clone)? else {
             return Ok(());
         };
         let confirmed = inner.audit.journal.confirm(&inner.audit.run).await;
         if confirmed.is_ok() {
             crate::root::durability::records_pulse().notify_waiters();
         }
-        let Some(inner) = self.inner.take() else {
+        let Ok(Some(inner)) = std::mem::replace(&mut self.inner, Ok(None)) else {
             return Ok(());
         };
         inner
@@ -2139,7 +2189,7 @@ impl TerminalConfirmation {
 
 impl Drop for TerminalConfirmation {
     fn drop(&mut self) {
-        let Some(inner) = self.inner.take() else {
+        let Ok(Some(inner)) = std::mem::replace(&mut self.inner, Ok(None)) else {
             return;
         };
         match tokio::runtime::Handle::try_current() {
@@ -2172,12 +2222,12 @@ impl StagedAudit {
             return None;
         }
         Some(TerminalConfirmation {
-            inner: Some(Confirm {
+            inner: Ok(Some(Confirm {
                 audit: self,
                 custody,
                 key,
                 completed,
-            }),
+            })),
         })
     }
 }
@@ -2308,6 +2358,7 @@ impl Sealing {
     fn seal(
         self,
         book: &Arc<Mutex<crate::root::durability::Durability>>,
+        line: Option<crate::root::durability::LineIdentity>,
         token: &Grant<busbar_contract::caps::DurableWrite>,
         principal: &PrincipalId,
         arrived: Arrived,
@@ -2372,14 +2423,30 @@ impl Sealing {
                 total_us: measured.total_us,
                 attempts,
                 attempts_total,
+                records: ran.records,
             },
         };
         let unit = seal.key.get();
-        let mut book = book.lock().unwrap_or_else(|poison| poison.into_inner());
-        let journal = book.journal.clone();
-        let (_, run) = book.stage_unit(inputs, seal.pass, token)?;
-        let hints = book.audit_hints.clone();
-        drop(book);
+        // The line is built and its content hashed BEFORE the book's lock (SEALING-FIX §3.2): the
+        // lock covers only the clock read, the link trailer, the stage and the head publish. The
+        // request path never signs; the notary stamps pages off this path.
+        let (journal, run, hints) = match line {
+            Some(id) => {
+                let mut inputs = inputs;
+                inputs.what.incarnation = id.incarnation;
+                let prepared = busbar_kernel_audit::AuditChain::prepare(inputs, id.node);
+                let mut book = book.lock().unwrap_or_else(|poison| poison.into_inner());
+                let journal = book.journal.clone();
+                let (_, run) = book.stage_prepared(prepared, &seal.pass, token)?;
+                (journal, run, book.audit_hints.clone())
+            }
+            None => {
+                let mut book = book.lock().unwrap_or_else(|poison| poison.into_inner());
+                let journal = book.journal.clone();
+                let (_, run) = book.stage_line(inputs, seal.pass, token)?;
+                (journal, run, book.audit_hints.clone())
+            }
+        };
         // The unit's checkpoint removal reads this one line by the evidence sealed here, not by a
         // journal scan (SHUTDOWN-HANG F1a). A unit with no checkpoint entry is a counted miss.
         if let Some(gov) = hints.as_ref().and_then(std::sync::Weak::upgrade) {
@@ -2539,8 +2606,8 @@ fn checkpoint_facts_serialize_to_the_running_audit_record_bytes() {
         ],
     };
     assert_eq!(
-        serde_json::to_vec(&borrowed).unwrap(),
-        serde_json::to_vec(&owned).unwrap()
+        busbar_contract::json::to_vec(&borrowed).unwrap(),
+        busbar_contract::json::to_vec(&owned).unwrap()
     );
     let empty = RunningAuditFacts {
         destination: None,
@@ -2557,7 +2624,7 @@ fn checkpoint_facts_serialize_to_the_running_audit_record_bytes() {
         ..owned
     };
     assert_eq!(
-        serde_json::to_vec(&empty).unwrap(),
-        serde_json::to_vec(&empty_owned).unwrap()
+        busbar_contract::json::to_vec(&empty).unwrap(),
+        busbar_contract::json::to_vec(&empty_owned).unwrap()
     );
 }

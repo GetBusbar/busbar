@@ -12,6 +12,7 @@ use crate::audit_ring::{AuditData, AuditEntry, MAX_AUDIT_ENTRIES};
 use crate::host_records_async::{AsyncHistory, HistoryCollection, HistoryMode, HistoryOutcome};
 use crate::persistence::facade::CoreStore;
 use crate::store::plane_view::{encode, KIND_AUDIT};
+use busbar_contract::export_calls::{ExportLossFacts, ExportLossKind};
 use busbar_contract::records::Retention;
 use busbar_contract::records::{
     PlaneDisposition, PlaneRecord, PlaneSelector, RecordStoreError, RecordStoreResult,
@@ -278,6 +279,7 @@ fn entry_of(
 /// and `store.disconnected` are the engine events section 17 writes; they are published ahead of
 /// their emitters.
 pub const AUDIT_ACTIONS: &[&str] = &[
+    "export.loss",
     "admin.forbidden",
     "admin.rate_limited",
     "admin.restart",
@@ -411,7 +413,7 @@ struct PersistedAuditBody {
     content: Vec<u8>,
 }
 fn decode_audit_body(body: &[u8]) -> RecordStoreResult<NeutralBody> {
-    let value: PersistedAuditBody = serde_json::from_slice(body)
+    let value: PersistedAuditBody = busbar_contract::json::parse(body)
         .map_err(|_| RecordStoreError("unknown or damaged native audit body".into()))?;
     Ok(NeutralBody {
         seq: value.seq,
@@ -1035,9 +1037,14 @@ impl PendingAuditQueue {
     }
 
     fn try_enqueue(&self, p: PendingAudit) -> RecordStoreResult<()> {
+        self.try_enqueue_background(p)
+            .inspect_err(|_| request_failed())
+    }
+
+    /// Transfer a background original without borrowing an unrelated request's audit context.
+    fn try_enqueue_background(&self, p: PendingAudit) -> RecordStoreResult<()> {
         let mut q = self.rows.lock().unwrap_or_else(|e| e.into_inner());
         if q.queued.len() >= self.cap {
-            request_failed();
             return Err(RecordStoreError(
                 "the admin audit recovery queue is full".into(),
             ));
@@ -1123,6 +1130,61 @@ impl PendingAuditQueue {
 }
 
 static PENDING_AUDIT: PendingAuditQueue = PendingAuditQueue::new(MAX_PENDING_AUDIT);
+
+/// An observer of one original. Dropping this receipt never abandons queued evidence.
+#[derive(Clone, Debug)]
+pub struct ExportAuditReceipt(Arc<AtomicBool>);
+
+impl ExportAuditReceipt {
+    #[must_use]
+    pub fn is_confirmed(&self) -> bool {
+        self.0.load(Ordering::Acquire)
+    }
+}
+
+/// Transfer first-loss evidence once. On refusal the caller retains its facts for retry;
+/// on success the native queue owns the exact operation until confirmation. This synchronous
+/// transfer neither starts I/O nor inherits the current request's principal or confirmation.
+pub fn try_enqueue_export_failure(
+    facts: &ExportLossFacts,
+) -> RecordStoreResult<ExportAuditReceipt> {
+    enqueue_export_failure(&PENDING_AUDIT, facts)
+}
+
+fn enqueue_export_failure(
+    queue: &PendingAuditQueue,
+    facts: &ExportLossFacts,
+) -> RecordStoreResult<ExportAuditReceipt> {
+    let (class, reason) = match facts.kind {
+        ExportLossKind::Dropped(reason) => ("dropped", reason.as_str()),
+        ExportLossKind::CaptureRefused => ("capture_refused", "admission_rejected"),
+        ExportLossKind::IntegrityFailed => ("integrity_failed", "audit_unavailable"),
+    };
+    let row = AuditRowInput {
+        action: "export.loss".into(),
+        resource: format!("{class}.{reason}.count_{}", facts.count),
+        outcome: busbar_contract::vocab::OUTCOME_DEGRADED.into(),
+        principal: PLUGIN_REFUSAL_PRINCIPAL.into(),
+        kind: Some(busbar_contract::plugin::Kind::Export.root().into()),
+        instance: Some(facts.instance.clone()),
+        severity: "error".into(),
+        ..AuditRowInput::default()
+    };
+    let suffix = row_suffix(facts.observed_at, &row);
+    let mut operation = [0; 16];
+    busbar_contract::crypto::fill(&mut operation)
+        .map_err(|error| RecordStoreError(format!("export audit operation entropy: {error}")))?;
+    let confirmed = Arc::new(AtomicBool::new(false));
+    queue.try_enqueue_background(PendingAudit {
+        scope: ADMIN_LOG.into(),
+        suffix,
+        origin: EventOrigin::ExportFailure,
+        operation,
+        prepared: None,
+        confirmation: Some(confirmed.clone()),
+    })?;
+    Ok(ExportAuditReceipt(confirmed))
+}
 
 fn pending_audit(
     scope: &str,

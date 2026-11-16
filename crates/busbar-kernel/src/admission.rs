@@ -53,6 +53,8 @@ pub struct Stated {
     pub kind: String,
     /// The version.
     pub version: String,
+    /// Whether the exact manifest carries signature text; not a verification claim.
+    pub signature_present: bool,
     /// The publisher.
     pub publisher: String,
     /// The kind's ABI version as the manifest states it.
@@ -110,6 +112,8 @@ pub struct Admitted {
     pub stated: Stated,
     /// The trust verdict: [`Judged::Trusted`] or [`Judged::Allowed`].
     pub judged: Judged,
+    /// Actual cryptographic proof from the same evaluation; empty for unverified admission.
+    pub verification: busbar_contract::plugin_rows::Verification,
     /// The build links this plugin at this version and the linked build serves it: nothing is to
     /// be written.
     pub linked_serves: bool,
@@ -168,6 +172,31 @@ pub trait PluginAdmission: Send + Sync {
         tarball: &[u8],
         cfg: &crate::config::PluginsCfg,
     ) -> Result<(Stated, Judged), Refusal>;
+
+    /// Inspect prospective bytes and retain the proof from that same evaluation. Implementations
+    /// without cryptographic evidence return an empty proof, never inferred publisher identities.
+    fn inspect_with_verification(
+        &self,
+        tarball: &[u8],
+        cfg: &crate::config::PluginsCfg,
+    ) -> Result<(Stated, Judged, busbar_contract::plugin_rows::Verification), Refusal> {
+        self.inspect(tarball, cfg).map(|(stated, judged)| {
+            (
+                stated,
+                judged,
+                busbar_contract::plugin_rows::Verification::default(),
+            )
+        })
+    }
+
+    /// Read installed artifact facts under boot-time expiry policy, retaining hard trust gates.
+    fn inspect_installed_with_verification(
+        &self,
+        tarball: &[u8],
+        cfg: &crate::config::PluginsCfg,
+    ) -> Result<(Stated, Judged, busbar_contract::plugin_rows::Verification), Refusal> {
+        self.inspect_with_verification(tarball, cfg)
+    }
 
     fn rollback_target(
         &self,

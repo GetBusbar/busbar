@@ -3,6 +3,7 @@
 
 use crate::root::test_plugins as plugins;
 use base64::Engine as _;
+use busbar_contract::json::{self, JsonValueTrait};
 use busbar_kernel::admission::{Admitted, Inventoried, Judged, PluginAdmission, Refusal, Stated};
 use busbar_kernel::config::PluginsCfg;
 use std::path::Path;
@@ -13,12 +14,11 @@ use std::sync::{
 
 pub(super) fn trust_document(config: &PluginsCfg) -> serde_json::Value {
     let publishers: Vec<_> = config.trust.publishers.iter().map(|publisher| {
-        serde_json::json!({"name": publisher.name, "public_key": publisher.public_key})
+        serde_json::json!({"name": publisher.name, "plugins": publisher.plugins, "keys": publisher.keys.iter().map(|key| serde_json::json!({"public_key": key.public_key, "revoked": key.revoked})).collect::<Vec<_>>()})
     }).collect();
     serde_json::json!({
         "publishers": publishers,
-        "allow_unsigned": config.trust.allow_unsigned,
-        "allow_third_party": config.trust.allow_third_party,
+        "allow_untrusted": config.trust.allow_untrusted,
     })
 }
 
@@ -203,18 +203,18 @@ async fn install_answers_the_admissions_refusals_in_their_classes() {
         .unwrap()
         .map(|e| e.unwrap().file_name())
         .collect();
-    let malformed = client.post(format!("http://{addr}/api/v1/admin/plugins")).header("x-admin-token", "admintok").json(&serde_json::json!({"file":"x.tar.gz", "tarball_b64":base64::engine::general_purpose::STANDARD.encode(b"garbage, not a tarball")})).send().await.unwrap();
+    let malformed = client.post(format!("http://{addr}/api/v1/admin/plugins")).header("x-admin-token", "admintok").json(&json::json!({"file":"x.tar.gz", "tarball_b64":base64::engine::general_purpose::STANDARD.encode(b"garbage, not a tarball")})).send().await.unwrap();
     assert_eq!(malformed.status().as_u16(), 400);
-    let error: serde_json::Value = malformed.json().await.unwrap();
+    let error = json::parse_value(&malformed.bytes().await.unwrap()).unwrap();
     assert_eq!(error["error"]["code"], "invalid_request");
     assert!(error["error"]["message"]
         .as_str()
         .unwrap()
         .starts_with("invalid plugin tarball"));
     let rejected = plugins::seal(manifest, &library);
-    let response = client.post(format!("http://{addr}/api/v1/admin/plugins")).header("x-admin-token", "admintok").json(&serde_json::json!({"file":"x.tar.gz", "tarball_b64":base64::engine::general_purpose::STANDARD.encode(&rejected)})).send().await.unwrap();
+    let response = client.post(format!("http://{addr}/api/v1/admin/plugins")).header("x-admin-token", "admintok").json(&json::json!({"file":"x.tar.gz", "tarball_b64":base64::engine::general_purpose::STANDARD.encode(&rejected)})).send().await.unwrap();
     assert_eq!(response.status().as_u16(), 409);
-    let error: serde_json::Value = response.json().await.unwrap();
+    let error = json::parse_value(&response.bytes().await.unwrap()).unwrap();
     assert_eq!(error["error"]["code"], "conflict");
     assert!(error["error"]["message"]
         .as_str()
@@ -312,7 +312,7 @@ async fn install_catalog_remove_roundtrip() {
         rotate.await;
     }
     std::fs::remove_file(directory.join("store.tar.gz")).unwrap();
-    app.plugins_cfg.trust.allow_unsigned = true;
+    app.plugins_cfg.trust.allow_untrusted = true;
     let router =
         busbar_kernel::build_router(crate::root::real_store::hydrated(Arc::new(app)).await);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -346,10 +346,10 @@ async fn install_catalog_remove_roundtrip() {
     manifest.version = upload.version;
     manifest.statement = Some(hex::encode(upload_statement));
     let tarball = plugins::seal(manifest, &library);
-    let response = client.post(format!("http://{addr}/api/v1/admin/plugins")).header("x-admin-token", "admintok").json(&serde_json::json!({"file":"junk.tar.gz", "tarball_b64":base64::engine::general_purpose::STANDARD.encode(&tarball)})).send().await.unwrap();
+    let response = client.post(format!("http://{addr}/api/v1/admin/plugins")).header("x-admin-token", "admintok").json(&json::json!({"file":"junk.tar.gz", "tarball_b64":base64::engine::general_purpose::STANDARD.encode(&tarball)})).send().await.unwrap();
     assert_eq!(response.status().as_u16(), 201);
-    let view: serde_json::Value = response.json().await.unwrap();
-    assert_eq!(view["trust"], "unverified");
+    let view = json::parse_value(&response.bytes().await.unwrap()).unwrap();
+    assert_eq!(view["trust"]["verdict"], "unverified");
     assert_eq!(view["name"], upload_name);
     assert!(directory.join("junk.tar.gz").exists(), "tarball published");
     let response = client
@@ -359,7 +359,7 @@ async fn install_catalog_remove_roundtrip() {
         .await
         .unwrap();
     assert_eq!(response.status().as_u16(), 200);
-    let catalog: serde_json::Value = response.json().await.unwrap();
+    let catalog = json::parse_value(&response.bytes().await.unwrap()).unwrap();
     let row = catalog["items"]
         .as_array()
         .unwrap()
@@ -369,7 +369,7 @@ async fn install_catalog_remove_roundtrip() {
     assert_eq!(row["valid"], true);
     assert_eq!(row["name"], upload_name);
     assert_eq!(row["target"], "junk.tar.gz");
-    assert_eq!(row["trust"], "unverified");
+    assert_eq!(row["trust"]["verdict"], "unverified");
     let reloaded = client
         .post(format!("http://{addr}/api/v1/admin/plugins/reload"))
         .header("x-admin-token", "admintok")
@@ -377,7 +377,7 @@ async fn install_catalog_remove_roundtrip() {
         .await
         .unwrap();
     assert_eq!(reloaded.status().as_u16(), 200);
-    let reload: serde_json::Value = reloaded.json().await.unwrap();
+    let reload = json::parse_value(&reloaded.bytes().await.unwrap()).unwrap();
     let rows = reload["plugins"].as_array().unwrap();
     assert!(rows.iter().all(|p| p["loader"] == "dynamic-library"));
     assert_eq!(rows.len(), 1);
@@ -527,7 +527,7 @@ async fn remove_filesystem_failure_is_internal_error() {
         .await
         .unwrap();
     assert_eq!(response.status().as_u16(), 500);
-    let error: serde_json::Value = response.json().await.unwrap();
+    let error = json::parse_value(&response.bytes().await.unwrap()).unwrap();
     assert_eq!(error["error"]["code"], "internal");
     assert_eq!(std::fs::read(&file).unwrap(), b"keep this plugin");
 
@@ -646,7 +646,7 @@ async fn catalog_repeat_gets_reuse_the_cached_scan() {
             .await
             .unwrap();
         assert_eq!(response.status().as_u16(), 200);
-        let view: serde_json::Value = response.json().await.unwrap();
+        let view = json::parse_value(&response.bytes().await.unwrap()).unwrap();
         assert!(view["items"]
             .as_array()
             .unwrap()
@@ -685,7 +685,7 @@ async fn catalog_repeat_gets_reuse_the_cached_scan() {
     second.version = upload.version;
     second.statement = Some(hex::encode(upload_statement));
     let tarball = plugins::signed(&crate::dist_root_install::release_key(), second, &library);
-    let installed = client.post(format!("http://{addr}/api/v1/admin/plugins")).header("x-admin-token", "admintok").json(&serde_json::json!({"file":"cache2.tar.gz", "tarball_b64":base64::engine::general_purpose::STANDARD.encode(&tarball)})).send().await.unwrap();
+    let installed = client.post(format!("http://{addr}/api/v1/admin/plugins")).header("x-admin-token", "admintok").json(&json::json!({"file":"cache2.tar.gz", "tarball_b64":base64::engine::general_purpose::STANDARD.encode(&tarball)})).send().await.unwrap();
     assert_eq!(installed.status().as_u16(), 201);
     let response = client
         .get(format!("http://{addr}/api/v1/admin/plugins?type=store"))
@@ -693,7 +693,7 @@ async fn catalog_repeat_gets_reuse_the_cached_scan() {
         .send()
         .await
         .unwrap();
-    let view: serde_json::Value = response.json().await.unwrap();
+    let view = json::parse_value(&response.bytes().await.unwrap()).unwrap();
     assert!(
         view["items"]
             .as_array()
@@ -825,7 +825,7 @@ async fn catalog_unreadable_dir_does_not_serve_stale_cache() {
         .send()
         .await
         .unwrap();
-    let view: serde_json::Value = first.json().await.unwrap();
+    let view = json::parse_value(&first.bytes().await.unwrap()).unwrap();
     assert!(view["items"]
         .as_array()
         .unwrap()
@@ -846,7 +846,7 @@ async fn catalog_unreadable_dir_does_not_serve_stale_cache() {
             .send()
             .await
             .unwrap();
-        let view: serde_json::Value = response.json().await.unwrap();
+        let view = json::parse_value(&response.bytes().await.unwrap()).unwrap();
         assert!(
             view["items"]
                 .as_array()
@@ -980,7 +980,7 @@ async fn list_plugins_store_single_flights_concurrent_misses() {
                 .await
                 .unwrap();
             assert_eq!(response.status().as_u16(), 200);
-            response.json::<serde_json::Value>().await.unwrap()
+            json::parse_value(&response.bytes().await.unwrap()).unwrap()
         }));
     }
     for request in requests {
@@ -1119,7 +1119,7 @@ async fn store_plugin_catalog_async_survives_a_spawn_blocking_panic() {
         500,
         "a panicking scan reports an explicit failure, never a partial successful catalog"
     );
-    let error: serde_json::Value = response.json().await.unwrap();
+    let error = json::parse_value(&response.bytes().await.unwrap()).unwrap();
     assert_eq!(error["error"]["code"], "internal");
     assert_eq!(observed.scans.load(Ordering::SeqCst), 1);
     let response = client
@@ -1129,7 +1129,7 @@ async fn store_plugin_catalog_async_survives_a_spawn_blocking_panic() {
         .await
         .unwrap();
     assert_eq!(response.status().as_u16(), 200);
-    let view: serde_json::Value = response.json().await.unwrap();
+    let view = json::parse_value(&response.bytes().await.unwrap()).unwrap();
     assert!(
         view["items"]
             .as_array()
@@ -1265,7 +1265,7 @@ async fn list_plugins_store_scan_does_not_park_the_reactor() {
             .await
             .unwrap();
         assert_eq!(response.status().as_u16(), 200);
-        response.json::<serde_json::Value>().await.unwrap()
+        json::parse_value(&response.bytes().await.unwrap()).unwrap()
     });
     tokio::time::timeout(
         std::time::Duration::from_secs(5),
@@ -1453,7 +1453,7 @@ async fn store_plugin_catalog_async_times_out_when_gate_is_held() {
         503,
         "the genuine shared scan gate returns a bounded retryable refusal"
     );
-    let error: serde_json::Value = response.json().await.unwrap();
+    let error = json::parse_value(&response.bytes().await.unwrap()).unwrap();
     assert_eq!(error["error"]["code"], "unavailable");
     release.send(()).unwrap();
     assert_eq!(first.await.unwrap().status().as_u16(), 200);
@@ -1560,7 +1560,7 @@ async fn the_store_catalog_heads_with_the_linked_store_rows() {
         .await
         .unwrap();
     assert_eq!(response.status().as_u16(), 200);
-    let view: serde_json::Value = response.json().await.unwrap();
+    let view = json::parse_value(&response.bytes().await.unwrap()).unwrap();
     let catalog = view["items"].as_array().unwrap();
     let linked = busbar_kernel::preflight::root_rows().stores;
     assert!(
@@ -1574,7 +1574,7 @@ async fn the_store_catalog_heads_with_the_linked_store_rows() {
                 p["name"].as_str().unwrap(),
                 p["type"].as_str().unwrap(),
                 p["loader"].as_str().unwrap(),
-                p.get("active").and_then(serde_json::Value::as_bool),
+                p.get("active").and_then(|active| active.as_bool()),
             )
         })
         .collect();
@@ -1693,7 +1693,7 @@ async fn validate_config_pins_the_scan_to_the_running_plugins_dir() {
         .await
         .unwrap();
     assert_eq!(response.status().as_u16(), 200);
-    let view: serde_json::Value = response.json().await.unwrap();
+    let view = json::parse_value(&response.bytes().await.unwrap()).unwrap();
     assert_eq!(
         view["ok"], true,
         "the caller's garbage plugins.dir must not be scanned; errors: {:?}",
@@ -1850,7 +1850,7 @@ async fn validate_config_waits_on_the_plugin_scan_gate_and_runs_off_the_reactor(
     assert_eq!(scanner.await.unwrap().status().as_u16(), 200);
     let response = validator.await.expect("the caller must not panic");
     assert_eq!(response.status().as_u16(), 200);
-    let view: serde_json::Value = response.json().await.unwrap();
+    let view = json::parse_value(&response.bytes().await.unwrap()).unwrap();
     assert_eq!(
         view["ok"], true,
         "the verdict is unchanged: {:?}",
@@ -1956,7 +1956,11 @@ async fn every_admin_trust_moment_resolves_through_the_snapshots_builder() {
         .publishers
         .push(busbar_kernel::config::PluginPublisher {
             name: "acme".into(),
-            public_key: "not-an-ed25519-public-key".into(),
+            plugins: vec!["invalid-publisher-fixture".into()],
+            keys: vec![busbar_kernel::config::PluginPublisherKey {
+                public_key: "not-an-ed25519-public-key".into(),
+                revoked: false,
+            }],
         });
     let refusal = app
         .plugin_admission
@@ -1975,7 +1979,7 @@ async fn every_admin_trust_moment_resolves_through_the_snapshots_builder() {
         .build()
         .unwrap();
 
-    let request = serde_json::json!({"file":"p.tar.gz", "tarball_b64":base64::engine::general_purpose::STANDARD.encode(&archive)});
+    let request = json::json!({"file":"p.tar.gz", "tarball_b64":base64::engine::general_purpose::STANDARD.encode(&archive)});
     for endpoint in ["plugins/inspect", "plugins"] {
         let response = client
             .post(format!("http://{addr}/api/v1/admin/{endpoint}"))
@@ -1985,7 +1989,7 @@ async fn every_admin_trust_moment_resolves_through_the_snapshots_builder() {
             .await
             .unwrap();
         assert_eq!(response.status().as_u16(), 400);
-        let error: serde_json::Value = response.json().await.unwrap();
+        let error = json::parse_value(&response.bytes().await.unwrap()).unwrap();
         assert_eq!(
             error["error"]["message"], refusal,
             "{endpoint} uses the actual snapshot's invalid trust posture"
@@ -1994,12 +1998,12 @@ async fn every_admin_trust_moment_resolves_through_the_snapshots_builder() {
     let response = client
         .post(format!("http://{addr}/api/v1/admin/plugins/rollback"))
         .header("x-admin-token", "admintok")
-        .json(&serde_json::json!({"file":"store.tar.gz"}))
+        .json(&json::json!({"file":"store.tar.gz"}))
         .send()
         .await
         .unwrap();
     assert_eq!(response.status().as_u16(), 400);
-    let error: serde_json::Value = response.json().await.unwrap();
+    let error = json::parse_value(&response.bytes().await.unwrap()).unwrap();
     assert_eq!(
         error["error"]["message"], refusal,
         "rollback resolves through the same actual snapshot policy"
@@ -2011,7 +2015,7 @@ async fn every_admin_trust_moment_resolves_through_the_snapshots_builder() {
         .await
         .unwrap();
     assert_eq!(response.status().as_u16(), 200);
-    let view: serde_json::Value = response.json().await.unwrap();
+    let view = json::parse_value(&response.bytes().await.unwrap()).unwrap();
     assert!(
         view["items"]
             .as_array()
@@ -2026,13 +2030,13 @@ async fn every_admin_trust_moment_resolves_through_the_snapshots_builder() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let other_addr = listener.local_addr().unwrap();
     let other_server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let response = client.post(format!("http://{other_addr}/api/v1/admin/plugins")).header("x-admin-token", "admintok").json(&serde_json::json!({"file":"plain.tar.gz", "tarball_b64":base64::engine::general_purpose::STANDARD.encode(&archive)})).send().await.unwrap();
+    let response = client.post(format!("http://{other_addr}/api/v1/admin/plugins")).header("x-admin-token", "admintok").json(&json::json!({"file":"plain.tar.gz", "tarball_b64":base64::engine::general_purpose::STANDARD.encode(&archive)})).send().await.unwrap();
     assert_eq!(
         response.status().as_u16(),
         400,
         "filename validation refuses a snapshot without a production admission"
     );
-    let error: serde_json::Value = response.json().await.unwrap();
+    let error = json::parse_value(&response.bytes().await.unwrap()).unwrap();
     assert!(
         error["error"]["message"]
             .as_str()
@@ -2131,7 +2135,11 @@ async fn rollback_reads_the_target_and_merges_pins() {
     let publisher_key = plugins::key(67);
     let publisher = busbar_kernel::config::PluginPublisher {
         name: "acme".into(),
-        public_key: hex::encode(publisher_key.verifying_key().to_bytes()),
+        plugins: vec![manifest.name.clone()],
+        keys: vec![busbar_kernel::config::PluginPublisherKey {
+            public_key: hex::encode(publisher_key.verifying_key().to_bytes()),
+            revoked: false,
+        }],
     };
     app.plugins_cfg.trust.publishers.push(publisher);
     document["plugins"] = serde_json::json!({"enabled":true, "dir":directory, "trust":trust_document(&app.plugins_cfg)});
@@ -2191,7 +2199,7 @@ async fn rollback_reads_the_target_and_merges_pins() {
     let absent = client
         .post(format!("http://{addr}/api/v1/admin/plugins/rollback"))
         .header("x-admin-token", "admintok")
-        .json(&serde_json::json!({"file":"nope.tar.gz"}))
+        .json(&json::json!({"file":"nope.tar.gz"}))
         .send()
         .await
         .unwrap();
@@ -2199,7 +2207,7 @@ async fn rollback_reads_the_target_and_merges_pins() {
     let untrusted = client
         .post(format!("http://{addr}/api/v1/admin/plugins/rollback"))
         .header("x-admin-token", "admintok")
-        .json(&serde_json::json!({"file":"unsigned.tar.gz"}))
+        .json(&json::json!({"file":"unsigned.tar.gz"}))
         .send()
         .await
         .unwrap();
@@ -2212,12 +2220,12 @@ async fn rollback_reads_the_target_and_merges_pins() {
     let response = client
         .post(format!("http://{addr}/api/v1/admin/plugins/rollback"))
         .header("x-admin-token", "admintok")
-        .json(&serde_json::json!({"file":"old.tar.gz"}))
+        .json(&json::json!({"file":"old.tar.gz"}))
         .send()
         .await
         .unwrap();
     let status = response.status().as_u16();
-    let view: serde_json::Value = response.json().await.unwrap();
+    let view = json::parse_value(&response.bytes().await.unwrap()).unwrap();
     assert_eq!(status, 200, "the actual trusted target rolls back: {view}");
     assert_eq!(view["name"], module);
     assert_eq!(view["version"], module_version);
@@ -2367,13 +2375,13 @@ async fn install_filesystem_failures_are_internal_errors() {
     manifest.version = upload.version;
     manifest.statement = Some(hex::encode(upload_statement));
     let tarball = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
-    let malformed = client.post(format!("http://{addr}/api/v1/admin/plugins")).header("x-admin-token", "admintok").json(&serde_json::json!({"file":"plugin.tar.gz", "tarball_b64":base64::engine::general_purpose::STANDARD.encode(b"not a tarball")})).send().await.unwrap();
+    let malformed = client.post(format!("http://{addr}/api/v1/admin/plugins")).header("x-admin-token", "admintok").json(&json::json!({"file":"plugin.tar.gz", "tarball_b64":base64::engine::general_purpose::STANDARD.encode(b"not a tarball")})).send().await.unwrap();
     assert_eq!(malformed.status().as_u16(), 400);
-    let error: serde_json::Value = malformed.json().await.unwrap();
+    let error = json::parse_value(&malformed.bytes().await.unwrap()).unwrap();
     assert_eq!(error["error"]["code"], "invalid_request");
-    let response = client.post(format!("http://{addr}/api/v1/admin/plugins")).header("x-admin-token", "admintok").json(&serde_json::json!({"file":"plugin.tar.gz", "tarball_b64":base64::engine::general_purpose::STANDARD.encode(&tarball)})).send().await.unwrap();
+    let response = client.post(format!("http://{addr}/api/v1/admin/plugins")).header("x-admin-token", "admintok").json(&json::json!({"file":"plugin.tar.gz", "tarball_b64":base64::engine::general_purpose::STANDARD.encode(&tarball)})).send().await.unwrap();
     assert_eq!(response.status().as_u16(), 500);
-    let error: serde_json::Value = response.json().await.unwrap();
+    let error = json::parse_value(&response.bytes().await.unwrap()).unwrap();
     assert_eq!(error["error"]["code"], "internal");
     assert_eq!(error["error"]["message"], "internal error");
     assert!(publish_dir.join("plugin.tar.gz").is_dir());
@@ -2399,7 +2407,7 @@ async fn install_filesystem_failures_are_internal_errors() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let blocked_addr = listener.local_addr().unwrap();
     let blocked_server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let malformed = client.post(format!("http://{blocked_addr}/api/v1/admin/plugins")).header("x-admin-token", "admintok").json(&serde_json::json!({"file":"plugin.tar.gz", "tarball_b64":base64::engine::general_purpose::STANDARD.encode(b"not a tarball")})).send().await.unwrap();
+    let malformed = client.post(format!("http://{blocked_addr}/api/v1/admin/plugins")).header("x-admin-token", "admintok").json(&json::json!({"file":"plugin.tar.gz", "tarball_b64":base64::engine::general_purpose::STANDARD.encode(b"not a tarball")})).send().await.unwrap();
     assert_eq!(
         malformed.status().as_u16(),
         400,
@@ -2409,13 +2417,13 @@ async fn install_filesystem_failures_are_internal_errors() {
         blocked_dir.is_dir(),
         "a refused real admission does not inject a publication failure"
     );
-    let response = client.post(format!("http://{blocked_addr}/api/v1/admin/plugins")).header("x-admin-token", "admintok").json(&serde_json::json!({"file":"plugin.tar.gz", "tarball_b64":base64::engine::general_purpose::STANDARD.encode(&tarball)})).send().await.unwrap();
+    let response = client.post(format!("http://{blocked_addr}/api/v1/admin/plugins")).header("x-admin-token", "admintok").json(&json::json!({"file":"plugin.tar.gz", "tarball_b64":base64::engine::general_purpose::STANDARD.encode(&tarball)})).send().await.unwrap();
     assert_eq!(
         response.status().as_u16(),
         500,
         "create_dir_all fails on the actual regular-file path after genuine admission"
     );
-    let error: serde_json::Value = response.json().await.unwrap();
+    let error = json::parse_value(&response.bytes().await.unwrap()).unwrap();
     assert_eq!(error["error"]["code"], "internal");
     assert_eq!(error["error"]["message"], "internal error");
     assert_eq!(std::fs::read(&blocked_dir).unwrap(), b"keep this file");
@@ -2426,7 +2434,7 @@ async fn install_filesystem_failures_are_internal_errors() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let success_server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let response = client.post(format!("http://{addr}/api/v1/admin/plugins")).header("x-admin-token", "admintok").json(&serde_json::json!({"file":"ok.tar.gz", "tarball_b64":base64::engine::general_purpose::STANDARD.encode(&tarball)})).send().await.unwrap();
+    let response = client.post(format!("http://{addr}/api/v1/admin/plugins")).header("x-admin-token", "admintok").json(&json::json!({"file":"ok.tar.gz", "tarball_b64":base64::engine::general_purpose::STANDARD.encode(&tarball)})).send().await.unwrap();
     assert_eq!(response.status().as_u16(), 201);
     assert_eq!(std::fs::read(directory.join("ok.tar.gz")).unwrap(), tarball);
     let response = client
@@ -2443,7 +2451,7 @@ async fn install_filesystem_failures_are_internal_errors() {
         .await
         .unwrap();
     assert_eq!(missing.status().as_u16(), 404);
-    let error: serde_json::Value = missing.json().await.unwrap();
+    let error = json::parse_value(&missing.bytes().await.unwrap()).unwrap();
     assert_eq!(error["error"]["code"], "not_found");
     success_server.abort();
 

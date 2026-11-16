@@ -277,6 +277,13 @@ VERIFIER_BIN="target/audit-verifier/${SPEC_TRIPLE}/release/$VERIFIER_EXE"
 
 fi
 
+# Third-party attribution (Apache-2.0 s4 and the MIT/BSD/ISC/OpenSSL notice terms) ships with the
+# binary: LICENSE, NOTICE and this generated file are archive members beside it.
+# cargo-about (https://github.com/EmbarkStudios/cargo-about) reads about.toml and about.hbs; CI installs it.
+THIRD_PARTY_LICENSES="$EVIDENCE_DIR/THIRD-PARTY-LICENSES"
+cargo about generate --workspace --all-features --locked --fail --config about.toml --output-file "$THIRD_PARTY_LICENSES" about.hbs
+export THIRD_PARTY_LICENSES
+
 # ── PACKAGE ─────────────────────────────────────────────────────────────────────────────────────
 # One archiver, parameterised by the declared extension, rather than tar here and a zip action
 # there. The archive contains exactly one member under exactly the declared name, which is what
@@ -312,9 +319,10 @@ def package(out, members, digest_out):
     with open(digest_out, "w") as receipt:
         receipt.write(digest.hexdigest() + "  " + os.path.basename(out) + "\n")
     print("[release-build] " + out + " sha256=" + digest.hexdigest())
-package(core_out, [(core, core_member, 0o755)], core_digest)
+legal = [(p, os.path.basename(p), 0o644) for p in ("LICENSE", "NOTICE", os.environ["THIRD_PARTY_LICENSES"])]
+package(core_out, [(core, core_member, 0o755)] + legal, core_digest)
 if verifier:
-    package(verifier_out, [(verifier, verifier_member, 0o755), ("docs/audit-verify.md", "audit-verify.md", 0o644)], verifier_digest)
+    package(verifier_out, [(verifier, verifier_member, 0o755), ("docs/audit-verify.md", "audit-verify.md", 0o644)] + legal, verifier_digest)
 PYARCHIVE
 # Derive the inventory from the actual final build, never a separately resolved SBOM command.
 RELEASE_VERSION="$("$PY" -c 'import tomllib; print(tomllib.load(open("dist/default/Cargo.toml", "rb"))["package"]["version"])')"

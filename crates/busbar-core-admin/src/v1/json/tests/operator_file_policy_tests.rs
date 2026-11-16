@@ -392,7 +392,7 @@ async fn r23e_a_patch_on_the_trust_policy_is_refused() {
     bind_operator();
     assert_patch_refused(
         "r23e",
-        json!({"set": {"/plugins/trust/allow_third_party": true}}),
+        json!({"set": {"/plugins/trust/allow_untrusted": true}}),
         "plugins",
     )
     .await;

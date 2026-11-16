@@ -529,7 +529,7 @@ pub struct InstanceFacts {
     pub signing: Option<Signing>,
     /// Its trust entries, one per counterparty, as `trust::section` parsed them.
     pub trust: Vec<(String, TrustEntry)>,
-    /// The scope kinds its tail declares: `entitlement.check` answers only for these.
+    /// The scope kinds its tail declares: a scope check answers only for these.
     pub scope_kinds: Vec<String>,
     /// Its chained record kinds, as its tail declares them (`PlaneTail::record_chains`, each `kind`
     /// an index into [`InstanceFacts::record_kinds`]): a record write of one is APPENDED to its
@@ -1052,7 +1052,7 @@ fn trust_refused(why: Undecided) -> TrustRefused {
 fn trust_decision_answer(result: Result<KeyRow, TrustRefused>) -> Stored {
     Stored::ready(match result {
         Ok(row) => decided_code(row.state),
-        Err(TrustRefused::NoSuchKey) => svc::UNDECIDED_UNKNOWN,
+        Err(TrustRefused::NoSuchKey | TrustRefused::Ambiguous) => svc::UNDECIDED_UNKNOWN,
         Err(TrustRefused::NothingSighted | TrustRefused::Unverified) => svc::UNDECIDED_UNPINNED,
         Err(TrustRefused::Stale) => svc::UNDECIDED_STALE,
         Err(TrustRefused::Rootless) => svc::UNDECIDED_ROOTLESS,
@@ -1727,12 +1727,13 @@ impl KernelServices {
         ruling: Ruling,
         expected_digest: Option<&str>,
     ) -> Result<KeyRow, TrustRefused> {
-        let found = self
-            .trust
-            .rows()
-            .into_iter()
-            .find(|r| r.key() == key)
-            .ok_or(TrustRefused::NoSuchKey)?;
+        let mut matching = self.trust.rows().into_iter().filter(|r| r.key() == key);
+        let found = matching.next().ok_or(TrustRefused::NoSuchKey)?;
+        // A flattened key that names two rows (a registration name holding `/`) decides nothing:
+        // the first match would let an upstream choose the row by naming a tool.
+        if matching.next().is_some() {
+            return Err(TrustRefused::Ambiguous);
+        }
         self.decide_key(
             &found.instance,
             &found.counterparty,
@@ -1823,7 +1824,7 @@ impl KernelServices {
                         .get(caller.namespace().as_ref())
                         .is_some_and(|grant| grant.native_accepts(caller)));
         }
-        if target == busbar_contract::abi::host::service::ENTITLEMENT_STANDING {
+        if target == "standing:" {
             return self.stands(unit);
         }
         let Some((kind, name)) = target.split_once(':') else {
@@ -2566,6 +2567,8 @@ fn span(key_off: usize, key_len: usize, value_off: usize, value_len: usize) -> I
 pub enum TrustRefused {
     /// No admitted instance has the key.
     NoSuchKey,
+    /// The flattened key names more than one row (an instance or registration name holds `/`).
+    Ambiguous,
     /// The key was never sighted (nor declared) at anything to approve.
     NothingSighted,
     /// The counterparty declares no authenticity root: nothing at it can be approved.
@@ -3118,14 +3121,6 @@ impl HostServices for KernelServices {
             }
         }));
         Ran::Later
-    }
-
-    fn entitlement_check(&self, caller: &Caller, unit: Option<u64>, target: &str) -> Stored {
-        Stored::ready(if self.entitled(caller, unit, target) {
-            svc::ENTITLED
-        } else {
-            svc::NOT_ENTITLED
-        })
     }
 
     fn records_secret(&self, kind: &str, id: &str, _later: Later) -> Ran {

@@ -414,7 +414,7 @@ fn write_json_text(text: &mut String, value: Attr) {
         }
         Attr::Bool(b) => text.push_str(if b { "true" } else { "false" }),
         Attr::F64(v) if v.is_finite() => {
-            let _ = serde_json::to_writer(TextSink(text), &v);
+            let _ = busbar_contract::json::to_writer(TextSink(text), &v);
         }
         Attr::F64(v) => {
             let _ = write!(text, "{{\"$busbar_f64\":\"{v}\"}}");
@@ -423,7 +423,7 @@ fn write_json_text(text: &mut String, value: Attr) {
     }
 }
 
-/// serde_json's output appended to a text buffer (serde_json writes whole UTF-8 tokens).
+/// The JSON facade's output appended to a text buffer (it writes whole UTF-8 tokens).
 struct TextSink<'a>(&'a mut String);
 
 impl std::io::Write for TextSink<'_> {

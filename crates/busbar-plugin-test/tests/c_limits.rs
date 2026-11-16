@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use busbar_kernel::port_call::PortGate;
 use busbar_plugin_abi::fail::CallError;
 use busbar_plugin_abi::host_side::caller::{CallStack, InstanceLimits};
-use busbar_plugin_loader::ports::{CallCx, PortError};
+use busbar_ports::{CallCx, PortError};
 use tokio::sync::Notify;
 
 fn cx(within: Duration) -> CallCx {
@@ -91,7 +91,7 @@ async fn timeout_ms_and_max_inflight_at_port_call_sites() {
 }
 
 #[test]
-#[ignore = "owner: W1-C1A"]
+#[ignore = "re-checked 2026-11-16: the connect cap is implemented (crates/busbar-core-connector/src/need.rs:600 and :678 budget(), min of the class default, limits.connect_timeout_ms and the call deadline, passed as Dial.timeout; config parse is the live limits_config_arms arm and kernel appbuild.rs:1434 carries the value into Caller.limits), but nothing tests it: the dial seam (NeedIo, Dial) is connector-internal and busbar-plugin-test has no busbar-core-connector dependency, and the case names store-valkey's black-holed dial (plugin repo image). Needs a connector unit test over a scripted NeedIo (OUTSTANDING row 2 harness for HostNeeds, none exists) or the valkey image (W2-SW-STORE)"]
 fn connect_timeout_ms_at_the_dial() {
     todo!("owner: W1-C1A (C-LIMITS)")
 }

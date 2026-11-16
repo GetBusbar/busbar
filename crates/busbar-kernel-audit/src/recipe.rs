@@ -338,6 +338,24 @@ fn visit_unit_facts(unit: &crate::record::UnitFacts, f: &mut impl FieldSink) {
         f.num("attempts[].us", attempt.us);
     }
     f.num("attempts_total", u64::from(unit.attempts_total));
+    visit_records_tail(&unit.records, f);
+}
+
+/// THE RECORDS TAIL (ADMIN-API-1.6 §3.5; `docs/audit-chain-digest-v7.md`, positions 58 to 62):
+/// `records.user` and `records.labels`, framed ONLY when the record keeps either. A record that
+/// keeps neither ends at `attempts_total`, so every `v7` record sealed before the tail existed
+/// keeps its digest. An empty tail is never framed, so each record has one framing.
+fn visit_records_tail(records: &crate::record::RecordFacts, f: &mut impl FieldSink) {
+    if records.is_empty() {
+        return;
+    }
+    f.num("user_present", u64::from(records.user.is_some()));
+    f.text("user", records.user.as_deref().unwrap_or(""));
+    f.num("labels_count", records.labels.len() as u64);
+    for (name, value) in &records.labels {
+        f.text("labels[].name", name);
+        f.text("labels[].value", value);
+    }
 }
 
 /// Hash one record under the record chain's framing, field by field, as [`visit_fields`] reads it.

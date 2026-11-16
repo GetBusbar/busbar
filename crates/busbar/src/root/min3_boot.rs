@@ -27,7 +27,7 @@ use busbar_kernel::appbuild::boot_walk::{
 };
 use busbar_kernel::channels::signals::SignalRegistry;
 use busbar_kernel::channels::SessionSignals;
-use busbar_kernel::config::{PluginsCfg, RootCfg};
+use busbar_kernel::config::{AtRestCfg, PluginsCfg, RootCfg};
 use busbar_kernel::directory::{KernelDirectory, LateDirectory, LogEvents};
 use busbar_kernel::host_services::{DestJudge, KernelServices};
 use busbar_kernel::ingress::replay::StoreReplay;
@@ -58,7 +58,7 @@ use busbar_plugin_loader::admit::Admitted;
 use busbar_plugin_loader::instance::{
     Ceilings, InstanceSpec, OpenError, OpenedPort, Registry, StoreSeal,
 };
-use busbar_plugin_loader::ports::store::StoreHandle;
+use busbar_ports::store::StoreHandle;
 
 use busbar_kernel::teller::Kernel;
 use busbar_kernel::upstreams::ConfiguredUpstreams;
@@ -428,14 +428,34 @@ pub(crate) fn signed_ingress() -> Option<Arc<Ingress>> {
 /// The MIN-3 images the plugins directory's scan holds, each with its signed manifest's `alias` (a plane instance is
 /// named by it, [`plane_instances`]). The scan verified each one; admission re-verifies the same bytes. An image that
 /// is not MIN-3 (a refusal at admit) stays on the old path, which judges it as before.
-#[cfg(target_os = "linux")]
 pub(crate) fn admit_images(plugins: &PluginsCfg) -> Result<Vec<(Admitted, String)>, String> {
+    let mut admitted = admit_linked_images(crate::LINKED.images)?;
+    admit_dropped_images(plugins, &mut admitted)?;
+    Ok(admitted)
+}
+
+fn admit_linked_images(
+    rows: &[super::linked::LinkedImage],
+) -> Result<Vec<(Admitted, String)>, String> {
+    rows.iter()
+        .map(|row| {
+            (row.admit)()
+                .map(|image| (image, row.alias.to_owned()))
+                .map_err(|refusal| refusal.to_string())
+        })
+        .collect()
+}
+
+#[cfg(target_os = "linux")]
+fn admit_dropped_images(
+    plugins: &PluginsCfg,
+    admitted: &mut Vec<(Admitted, String)>,
+) -> Result<(), String> {
     let Some(scanned) = super::boot::dropped_registry() else {
-        return Ok(Vec::new());
+        return Ok(());
     };
     let policy = super::boot::trust_policy(plugins, env!("CARGO_PKG_VERSION"))
         .map_err(|error| format!("plugins.trust is invalid: {error}"))?;
-    let mut admitted = Vec::new();
     for row in scanned.loadable() {
         if row.linked() {
             continue;
@@ -449,13 +469,16 @@ pub(crate) fn admit_images(plugins: &PluginsCfg) -> Result<Vec<(Admitted, String
             ),
         }
     }
-    Ok(admitted)
+    Ok(())
 }
 
 /// Only Linux loads plugin images.
 #[cfg(not(target_os = "linux"))]
-pub(crate) fn admit_images(_plugins: &PluginsCfg) -> Result<Vec<(Admitted, String)>, String> {
-    Ok(Vec::new())
+fn admit_dropped_images(
+    _plugins: &PluginsCfg,
+    _admitted: &mut Vec<(Admitted, String)>,
+) -> Result<(), String> {
+    Ok(())
 }
 
 /// One configured instance, owned until the plan borrows it.
@@ -658,17 +681,17 @@ fn build(guard: Guard, cfg: &RootCfg, images: Vec<Admitted>) -> Result<Built, St
         Arc::clone(&binder),
         NeedLimits::default(),
     );
-    let mut registry = Registry::new(
-        &HOST,
-        Arc::new(needs),
-        Arc::clone(&binder),
-        Ceilings::DEFAULT,
-    );
+    let slots = Arc::new(busbar_plugin_loader::instance::SlotTable::new());
+    busbar_plugin_loader::instance::install_sinks(&slots);
+    let mut described =
+        busbar_plugin_loader::instance::ImagesBuilder::new(&HOST, slots, Ceilings::DEFAULT);
     for image in images {
-        registry
-            .add(image)
+        described
+            .admit(image)
             .map_err(|refusal| format!("plugin image refused: {refusal}"))?;
     }
+    let registry = Registry::new(described.finish(), Arc::new(needs), Arc::clone(&binder));
+
     let sugars = sugars_of(&registry)?;
     binder.set_sugars(Arc::new(sugars.clone()));
     binder.set_ref_schemas(ref_schemas(&registry, cfg));
@@ -703,6 +726,8 @@ struct Steps<'r> {
     signing_key: Option<SecretRef>,
     /// The process's secret kind: the open secret instances and the custody that resolves through them.
     secrets: &'static BootSecrets,
+    /// `credentials.at_rest`: what the recoverable gate seals with, resolved before the store opens (2b).
+    at_rest: Option<AtRestCfg>,
     /// K9: what every seat's egress walk and carrier are composed over (the boot's one upstream table).
     seat: SeatShared,
     /// The seats' probe targets, held for their probers.
@@ -852,6 +877,18 @@ impl BootSteps for Steps<'_> {
                     })
             }),
             KindCode::Plane => Box::pin(async move { self.open_plane(spec).await.map(|()| None) }),
+            KindCode::Store => Box::pin(async move {
+                // The secret instances are open (2a): the gate's key is published before the store's open asks.
+                let secrets = self.secrets;
+                publish_at_rest(self.at_rest.as_ref(), |what, reference| async move {
+                    secrets
+                        .resolve_ref(Instant::now() + CORE_SECRET_DEADLINE, &reference)
+                        .await
+                        .map_err(|denied| format!("{what} could not be resolved ({denied:?})"))
+                })
+                .await;
+                self.inner.open(index).await.map(Some)
+            }),
             _ => {
                 let opened = self.inner.open(index);
                 Box::pin(async move { opened.await.map(Some) })
@@ -948,6 +985,37 @@ async fn core_secrets_of(cfg: &RootCfg, secrets: &BootSecrets) -> Result<CoreSec
     Ok(out)
 }
 
+/// THE RECOVERABLE GATE's key on this path (MIGRATE-ON-BOOT §3 step 2 (a)): the walk opens every secret instance
+/// (2a) before the store (2b), so `credentials.at_rest` is resolved through them here, parsed exactly as the records
+/// step parses it, and published for `root::migrate::admit_for_host` before the store's open asks. `resolve` is the
+/// walk's core-secret resolution (by reference, the text naming only `what`).
+async fn publish_at_rest<F, Fut>(at_rest: Option<&AtRestCfg>, resolve: F)
+where
+    F: Fn(&'static str, SecretRef) -> Fut,
+    Fut: std::future::Future<Output = Result<SecureVec, String>>,
+{
+    let verdict = match at_rest {
+        None => Ok(false),
+        Some(keys) => at_rest_resolves(keys, resolve).await,
+    };
+    busbar_kernel::appbuild::publish_bootstrap_at_rest(verdict);
+}
+
+/// Whether `keys` resolve and parse as at-rest keys; `Err` the first refusal's text.
+async fn at_rest_resolves<F, Fut>(keys: &AtRestCfg, resolve: F) -> Result<bool, String>
+where
+    F: Fn(&'static str, SecretRef) -> Fut,
+    Fut: std::future::Future<Output = Result<SecureVec, String>>,
+{
+    let key = resolve("the at-rest key", keys.key.clone()).await?;
+    let previous = match &keys.previous {
+        Some(previous) => Some(resolve("the previous at-rest key", previous.clone()).await?),
+        None => None,
+    };
+    busbar_kernel::appbuild::records_keys_from(Some(&*key), previous.as_deref(), None)
+        .map(|parsed| parsed.at_rest.is_some())
+}
+
 /// Boot through the MIN-3 registry, before any listener serves. `Ok(false)`: the configured store is not a MIN-3
 /// image, so the old path boots (nothing here ran past admission). `Ok(true)`: every instance opened in plan
 /// order, core's own secrets are resolved and the process holds the registry ([`registry`], [`seats`]).
@@ -1034,6 +1102,7 @@ pub(crate) async fn run(
         shared: Arc::clone(&shared),
         signing_key: cfg.auth.as_ref().and_then(|auth| auth.signing_key.clone()),
         secrets: built.secrets,
+        at_rest: cfg.credentials.at_rest.clone(),
         seat,
         probes: Mutex::default(),
     };

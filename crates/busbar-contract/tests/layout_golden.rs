@@ -1498,7 +1498,6 @@ fn compute_layout() -> String {
     record!(s, hsvc::TrustDueIn, [head, into]);
     record!(s, hsvc::VerifyLookupIn, [head, key, into]);
     record!(s, hsvc::VerifyStoreIn, [head, key, entry, ttl_ms]);
-    record!(s, hsvc::EntitlementCheckIn, [head, target]);
     record!(s, hsvc::ContentScanIn, [head, content, into]);
     record!(s, hsvc::HookCallIn, [head, stage, from, prompt, into]);
     record!(s, hsvc::RandomFillIn, [head, len, into]);
@@ -1523,7 +1522,6 @@ fn compute_layout() -> String {
             trust_due,
             verify_lookup,
             verify_store,
-            entitlement_check,
             content_scan,
             hook_call,
             random_fill,

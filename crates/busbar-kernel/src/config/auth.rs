@@ -3,6 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use busbar_contract::json::JsonValueTrait as _;
 use busbar_contract::secret_ref::SecretRef;
 
 /// One entry in the top-level `identity-providers:` NAMED-DEFINITION map (1.5.3). The map
@@ -200,7 +201,7 @@ pub struct RoleBindingCfg {
     /// `config_validate` refuses any other shape and any name the closed table does not declare
     /// (fail closed: a typo'd verb must never sit inert while the operator believes it granted).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub verbs: Option<serde_json::Value>,
+    pub verbs: Option<busbar_contract::json::Value>,
     /// DATA-PLANE grants of the plane-declared scope kinds (W9), each under its frozen wire field
     /// `allowed_{kind}s` (a tool plane's server and tool kinds, an agent plane's `agent`, ...) and
     /// three-state exactly as `allowed_pools` is, read as ONE grant with it
@@ -217,7 +218,7 @@ where
     D: serde::Deserializer<'de>,
 {
     use serde::de::Error as _;
-    let raw = std::collections::BTreeMap::<String, serde_json::Value>::deserialize(de)?;
+    let raw = std::collections::BTreeMap::<String, busbar_contract::json::Value>::deserialize(de)?;
     let mut grants = std::collections::BTreeMap::new();
     for (field, value) in raw {
         if crate::governance::plane_grant_kind(&field).is_none() {
@@ -276,9 +277,10 @@ impl RoleBindingCfg {
 
     pub fn verb_grant(&self) -> Option<Result<VerbGrant, String>> {
         let value = self.verbs.as_ref()?;
-        Some(match value {
-            serde_json::Value::String(s) if s == ALL_ADMIN_VERBS => Ok(VerbGrant::All),
-            serde_json::Value::Array(items) => items
+        Some(if value.as_str() == Some(ALL_ADMIN_VERBS) {
+            Ok(VerbGrant::All)
+        } else if let Some(items) = value.as_array() {
+            items
                 .iter()
                 .map(|item| {
                     item.as_str()
@@ -286,8 +288,9 @@ impl RoleBindingCfg {
                         .ok_or_else(|| format!("a list holding {item}"))
                 })
                 .collect::<Result<Vec<_>, _>>()
-                .map(VerbGrant::Named),
-            other => Err(other.to_string()),
+                .map(VerbGrant::Named)
+        } else {
+            Err(value.to_string())
         })
     }
 }

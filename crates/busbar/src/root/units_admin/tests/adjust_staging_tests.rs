@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::*;
+use busbar_contract::json;
 use busbar_contract::persistence::{
     BackendInfo, Call, ClockObservation, DatasetId, Decision, Failure, Mutation, Page,
     PersistenceBackend, PreparedCandidate, Read, ReadResult, Scan,
@@ -266,7 +267,7 @@ impl Fixture {
             path: "/api/v1/admin/adjust".into(),
             credential: None,
             headers: vec![("idempotency-key".into(), action.into())],
-            body: serde_json::to_vec(&serde_json::json!({
+            body: json::to_vec(&json::json!({
                 "key": "exact-staging-key", "lane": "lane",
                 "entry": busbar_kernel::cost::EntryKey::new(self.era, [7; 8], 1).hex(),
                 "card_epoch_ms": self.now * 1000, "pool": "pool",
@@ -329,7 +330,7 @@ impl Fixture {
 
 fn assert_effect(answer: &AdminAnswer, status: u16, effect: &str) {
     assert_eq!(answer.status, status);
-    let receipt: serde_json::Value = serde_json::from_slice(&answer.body).unwrap();
+    let receipt: json::Value = json::parse_value(&answer.body).unwrap();
     assert_eq!(receipt["effect"], effect);
     assert_eq!(receipt["recovery"], "receipt");
 }
@@ -522,7 +523,7 @@ async fn committed_correction_lost_reply_stays_unknown_and_replay_does_not_resub
     let unit = fixture.unit("lost-committed-reply", "0.000001");
     let first = fixture.ask(&unit).await;
     assert_eq!(first.status, 409);
-    let receipt: serde_json::Value = serde_json::from_slice(&first.body).unwrap();
+    let receipt: json::Value = json::parse_value(&first.body).unwrap();
     assert_eq!(receipt["effect"], "unknown");
     assert_eq!(receipt["recovery"], "reconcile_ledger_recovery");
     assert_eq!(
@@ -544,7 +545,7 @@ async fn committed_correction_lost_reply_stays_unknown_and_replay_does_not_resub
     let blocked = fixture
         .ask(&fixture.unit("new-action-during-custody", "0.000001"))
         .await;
-    let blocked_receipt: serde_json::Value = serde_json::from_slice(&blocked.body).unwrap();
+    let blocked_receipt: json::Value = json::parse_value(&blocked.body).unwrap();
     assert_eq!(blocked.status, 409);
     assert_eq!(blocked_receipt["effect"], "unknown");
     assert_eq!(fixture.faults.submissions.load(Ordering::SeqCst), 2);

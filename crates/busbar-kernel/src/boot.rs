@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
 use std::sync::Arc;
 
 pub async fn hydrate_all(app: &Arc<crate::state::App>) -> Result<(), String> {

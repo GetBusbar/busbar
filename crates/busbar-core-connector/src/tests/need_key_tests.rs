@@ -9,6 +9,7 @@ use super::*;
 
 fn key(dest: &str) -> NeedKey {
     NeedKey {
+        instance: busbar_contract::conn::InstanceId(1),
         dest: dest.into(),
         sni: dest.into(),
         alpn: "".into(),
@@ -126,4 +127,96 @@ fn the_cap_returns_the_extra_conn_and_ids_ride_along() {
     assert_eq!(pool.take(&k).map(|p| p.id), Some(2));
     assert_eq!(pool.take(&k).map(|p| p.id), Some(1));
     assert_eq!(pool.idle(), 0);
+}
+
+/// SEC-M5: authenticated sessions belong to an instance, even at identical endpoints.
+#[test]
+fn pooled_sessions_never_cross_instance_boundaries() {
+    for dest in ["db:5432", "unix:/run/database.sock"] {
+        for tls in [Tls::None, Tls::Direct, Tls::Upgraded] {
+            let pool = NeedPool::with_hasher(4, One);
+            let owner = NeedKey {
+                instance: busbar_contract::conn::InstanceId(1),
+                tls,
+                ..key(dest)
+            };
+            let stranger = NeedKey {
+                instance: busbar_contract::conn::InstanceId(2),
+                ..owner.clone()
+            };
+            pool.put(owner.clone(), pooled(41)).unwrap();
+            assert!(pool.take(&stranger).is_none(), "another instance at {dest}");
+            assert_eq!(pool.take(&owner).unwrap().id, 41, "owner retains reuse");
+        }
+    }
+}
+
+/// C-POOL-KEY round 11, the source check (moved here from busbar-plugin-test `c_pool_key`, whose case index
+/// points at this test): the MIN-3 pool key, [`NeedKey`] (the IF's `PoolKey`), holds `dest`, `sni` and `alpn`
+/// by value with no `u64` hash field, and the production pool, `HostNeeds::pool`, is `NeedPool` over std's
+/// `RandomState`. The pattern below names every field and its type, so a field added to the key stops it
+/// compiling; the text scan backs it on the declaration itself. (`pool::PoolKey`, which carries a `u64` by
+/// design, is the pre-MIN-3 framer pool and leaves with W3-D-CONNECTOR; no Need is pooled through it.)
+#[test]
+fn pool_key_has_no_u64_hash_and_production_uses_random_state() {
+    let NeedKey {
+        instance,
+        dest,
+        sni,
+        alpn,
+        class,
+        tls,
+        trust,
+        cert,
+        waived,
+    } = key("a.test:443");
+    let _: (
+        busbar_contract::conn::InstanceId,
+        Box<str>,
+        Box<str>,
+        Box<str>,
+        u32,
+        Tls,
+        [u8; 32],
+        [u8; 32],
+        bool,
+    ) = (instance, dest, sni, alpn, class, tls, trust, cert, waived);
+
+    let key_rs = include_str!("../need/key.rs");
+    let start = key_rs
+        .find("pub struct NeedKey {")
+        .expect("NeedKey is declared in need/key.rs");
+    let body = &key_rs[start..];
+    let body = &body[..body.find("\n}").expect("NeedKey's declaration ends")];
+    assert!(
+        !body.contains("u64"),
+        "NeedKey carries no u64 (no precomputed hash):\n{body}"
+    );
+
+    assert!(
+        key_rs.contains("use std::hash::{BuildHasher, RandomState};"),
+        "the pool's RandomState is std's"
+    );
+    assert!(
+        key_rs.contains("pub struct NeedPool<V, S = RandomState> {"),
+        "NeedPool defaults to RandomState"
+    );
+    assert!(
+        key_rs.contains("impl<V> NeedPool<V, RandomState> {")
+            && key_rs.contains("Self::with_hasher(per_key, RandomState::new())"),
+        "NeedPool::new builds over RandomState"
+    );
+    let need_rs = include_str!("../need.rs");
+    assert!(
+        need_rs.contains("    pool: NeedPool<I::Conn>,"),
+        "HostNeeds' pool takes NeedPool's default hasher, never another"
+    );
+    assert!(
+        need_rs.contains("pool: NeedPool::new(POOL_PER_KEY),"),
+        "HostNeeds builds its pool with NeedPool::new"
+    );
+    assert!(
+        !need_rs.contains("NeedPool::with_hasher"),
+        "production never pins a hasher of its own"
+    );
 }

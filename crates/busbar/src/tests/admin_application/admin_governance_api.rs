@@ -4,6 +4,8 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
+use busbar_contract::json::{self, JsonValueTrait as _};
+
 const X_ADMIN_TOKEN: &str = "x-admin-token";
 
 #[tokio::test]
@@ -104,7 +106,7 @@ async fn test_1_5_2_admin_path_bypasses_governance_and_mints() {
         .post(format!("http://{addr}/api/v1/admin/keys"))
         .header(X_ADMIN_TOKEN, "admintok")
         .header("content-type", "application/json")
-        .body(serde_json::json!({"name": "minted-via-admin"}).to_string())
+        .body(json::json!({"name": "minted-via-admin"}).to_string())
         .send()
         .await
         .unwrap();
@@ -118,7 +120,7 @@ async fn test_1_5_2_admin_path_bypasses_governance_and_mints() {
         .post(format!("http://{addr}/api/v1/admin/keys"))
         .header(X_ADMIN_TOKEN, "nope")
         .header("content-type", "application/json")
-        .body(serde_json::json!({"name": "x"}).to_string())
+        .body(json::json!({"name": "x"}).to_string())
         .send()
         .await
         .unwrap();
@@ -166,7 +168,7 @@ async fn test_governance_admin_api() {
 
     let r = client
         .post(format!("{base}/api/v1/admin/keys"))
-        .json(&serde_json::json!({"name": "x"}))
+        .json(&json::json!({"name": "x"}))
         .send()
         .await
         .unwrap();
@@ -175,12 +177,12 @@ async fn test_governance_admin_api() {
     let r = client
         .post(format!("{base}/api/v1/admin/keys"))
         .bearer_auth("admintok")
-        .json(&serde_json::json!({"name": "team-a", "allowed_pools": ["allowedpool"]}))
+        .json(&json::json!({"name": "team-a", "allowed_pools": ["allowedpool"]}))
         .send()
         .await
         .unwrap();
     assert_eq!(r.status().as_u16(), 201, "admin create → 201");
-    let created: serde_json::Value = r.json().await.unwrap();
+    let created = json::parse_value(&r.bytes().await.unwrap()).unwrap();
     let id = created["id"].as_str().unwrap().to_string();
 
     let secret = created["token"].as_str().unwrap().to_string();
@@ -197,7 +199,7 @@ async fn test_governance_admin_api() {
         .send()
         .await
         .unwrap();
-    let listed: serde_json::Value = r.json().await.unwrap();
+    let listed = json::parse_value(&r.bytes().await.unwrap()).unwrap();
     assert_eq!(listed["items"].as_array().unwrap().len(), 1);
     assert!(listed["items"][0].get("generation_hash").is_none());
 
@@ -235,7 +237,7 @@ async fn test_governance_admin_api() {
         .send()
         .await
         .unwrap();
-    let listed: serde_json::Value = r.json().await.unwrap();
+    let listed = json::parse_value(&r.bytes().await.unwrap()).unwrap();
     assert_eq!(listed["items"].as_array().unwrap().len(), 0, "deleted");
 
     handle.abort();

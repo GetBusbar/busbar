@@ -561,15 +561,15 @@ fn normalize_restrict_precedence_and_fail_closed() {
 
 #[test]
 fn parse_restrict_is_fail_closed() {
-    let ok = parse_restrict(&serde_json::json!({"tags_any": ["baa", " gpu ", ""]}))
+    let ok = parse_restrict(&busbar_contract::json::json!({"tags_any": ["baa", " gpu ", ""]}))
         .expect("well-formed restrict parses");
     assert_eq!(ok.tags_any, vec!["baa".to_string(), "gpu".to_string()]);
 
-    assert!(parse_restrict(&serde_json::json!({})).is_none());
-    assert!(parse_restrict(&serde_json::json!({"tags_any": []})).is_none());
-    assert!(parse_restrict(&serde_json::json!({"tags_any": ["", "  "]})).is_none());
-    assert!(parse_restrict(&serde_json::json!({"tags_any": "baa"})).is_none());
-    assert!(parse_restrict(&serde_json::json!("baa")).is_none());
+    assert!(parse_restrict(&busbar_contract::json::json!({})).is_none());
+    assert!(parse_restrict(&busbar_contract::json::json!({"tags_any": []})).is_none());
+    assert!(parse_restrict(&busbar_contract::json::json!({"tags_any": ["", "  "]})).is_none());
+    assert!(parse_restrict(&busbar_contract::json::json!({"tags_any": "baa"})).is_none());
+    assert!(parse_restrict(&busbar_contract::json::json!("baa")).is_none());
 }
 
 #[test]

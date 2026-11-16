@@ -462,7 +462,16 @@ fn a_fetched_third_party_archive_still_requires_the_publishers_trust() {
             .kind,
         RejectKind::UnknownPublisher
     );
-    policy.publishers.insert("acme".into(), key.verifying_key());
+    policy.publishers.insert(
+        "acme".into(),
+        crate::sign::PublisherTrust {
+            plugins: [installed.manifest.name.clone()].into_iter().collect(),
+            keys: vec![crate::sign::PublisherKey {
+                key: key.verifying_key(),
+                revoked: false,
+            }],
+        },
+    );
     assert!(matches!(
         evaluate(&installed.lib_bytes, &installed.manifest, &policy).unwrap(),
         Verdict::Trusted {

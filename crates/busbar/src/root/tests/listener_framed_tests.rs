@@ -60,3 +60,69 @@ include!(concat!(env!("OUT_DIR"), "/context_test_sources.rs"));
 owner_test_sources!(listener_framed);
 owner_test_sources!(listener_session);
 owner_test_sources!(listener_carrier);
+#[test]
+fn aggregate_body_charge_survives_reader_and_releases_at_request_end() {
+    let budget = std::sync::Arc::new(tokio::sync::Semaphore::new(8));
+    let charge = std::sync::Arc::new(super::BodyCharge::default());
+    assert!(charge.take(&budget, 5));
+    let reader = std::sync::Arc::clone(&charge);
+    assert!(!reader.take(&budget, 4));
+    assert_eq!(budget.available_permits(), 3);
+    assert!(reader.take(&budget, 3));
+    drop(reader);
+    assert_eq!(budget.available_permits(), 0);
+    drop(charge);
+    assert_eq!(budget.available_permits(), 8);
+}
+
+#[tokio::test]
+async fn framed_body_refuses_a_drip_below_the_shared_throughput_floor() {
+    use std::future::Future as _;
+    tokio::time::pause();
+    let (send, pieces) = tokio::sync::mpsc::unbounded_channel();
+    let mut gather = Box::pin(super::gather_body(
+        super::InboundBody {
+            pieces,
+            ended: false,
+        },
+        0,
+        Duration::from_secs(30),
+    ));
+    let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+    send.send(Ok(bytes::Bytes::from_static(b"a"))).unwrap();
+    assert!(gather.as_mut().poll(&mut cx).is_pending());
+    tokio::time::advance(Duration::from_secs(11)).await;
+    send.send(Ok(bytes::Bytes::from_static(b"b"))).unwrap();
+    assert!(
+        matches!(
+            gather.as_mut().poll(&mut cx),
+            Poll::Ready(Err(busbar_contract::caps::ReasonCode::DeadlineExceeded))
+        ),
+        "periodic bytes must not retain an inbound permit forever"
+    );
+}
+
+#[tokio::test]
+async fn framed_body_preserves_prompt_pieces_and_per_request_size_limit() {
+    for (limit, expected) in [
+        (6, Ok(bytes::Bytes::from_static(b"abcdef"))),
+        (5, Err(busbar_contract::caps::ReasonCode::BodyTooLarge)),
+    ] {
+        let (send, pieces) = tokio::sync::mpsc::unbounded_channel();
+        send.send(Ok(bytes::Bytes::from_static(b"abc"))).unwrap();
+        send.send(Ok(bytes::Bytes::from_static(b"def"))).unwrap();
+        drop(send);
+        assert_eq!(
+            super::gather_body(
+                super::InboundBody {
+                    pieces,
+                    ended: false
+                },
+                limit,
+                Duration::from_secs(30)
+            )
+            .await,
+            expected
+        );
+    }
+}

@@ -25,9 +25,9 @@ use busbar_plugin_abi::plane::{
 };
 use busbar_plugin_abi::records::{self, Reply, Writer};
 use busbar_plugin_abi::types::{Bytes, Pair, Str};
-use busbar_plugin_loader::encode::plane::{encode_refusal, encode_upstream_head};
-use busbar_plugin_loader::ports::plane::TargetIn;
-use busbar_plugin_loader::ports::{FactVal, PortError};
+use busbar_ports::codec::plane::{encode_refusal, encode_upstream_head};
+use busbar_ports::plane::TargetIn;
+use busbar_ports::{FactVal, PortError};
 
 use super::port_session::{
     hand_out, AttemptItem, Calls, Effects, SessionError, Task, ToClient, UpExchange, Violation,

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+use busbar_contract::json::{self, JsonValueTrait as _};
 use std::collections::HashSet;
 use std::sync::Arc;
 
@@ -32,9 +33,9 @@ async fn test_admin_v1_openapi_paths_all_resolve() {
         );
         // Each path composes an isolated router over the actual Store. The bounded child
         // budget must grow with the complete document, not stop a progressing census halfway.
-        let document: serde_json::Value = serde_json::from_str(include_str!(
-            "../../../../busbar-core-admin/src/v1/json/openapi.json"
-        ))
+        let document = json::parse_value(
+            include_str!("../../../../busbar-core-admin/src/v1/json/openapi.json").as_bytes(),
+        )
         .expect("the committed administrative document parses");
         let path_count = document["paths"].as_object().expect("document paths").len();
         let budget = std::time::Duration::from_secs(30 + 5 * path_count as u64);
@@ -151,7 +152,7 @@ async fn test_admin_v1_openapi_paths_all_resolve() {
     let mut plugin_config = busbar_kernel::config::PluginsCfg {
         enabled: true,
         dir: directory.to_string_lossy().into_owned(),
-        fetch: vec![serde_json::from_value(serde_json::json!({
+        fetch: vec![json::from_value(&json::json!({
             "url": "https://plugins.example/store.tar.gz", "sha256": archive_sha256
         }))
         .expect("the exact signed archive has a normal fetch pin")],
@@ -162,7 +163,11 @@ async fn test_admin_v1_openapi_paths_all_resolve() {
         .publishers
         .push(busbar_kernel::config::PluginPublisher {
             name: "third-party".into(),
-            public_key: hex::encode(plugins::key(0x33).verifying_key().as_bytes()),
+            plugins: vec![module.clone()],
+            keys: vec![busbar_kernel::config::PluginPublisherKey {
+                public_key: hex::encode(plugins::key(0x33).verifying_key().as_bytes()),
+                revoked: false,
+            }],
         });
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the actual admin deployment resolves");
@@ -275,9 +280,13 @@ async fn test_admin_v1_openapi_paths_all_resolve() {
     };
 
     let (addr, handle) = spawn().await;
-    let doc: serde_json::Value =
-        serde_json::from_str(&ask(addr, "GET", &format!("{PREFIX}/openapi.json")).await.1)
-            .expect("the served openapi.json parses");
+    let doc = json::parse_value(
+        ask(addr, "GET", &format!("{PREFIX}/openapi.json"))
+            .await
+            .1
+            .as_bytes(),
+    )
+    .expect("the served openapi.json parses");
     assert_eq!(doc["openapi"], "3.1.0");
     assert_eq!(doc["info"]["title"], "Busbar Admin API");
     let codes = doc["components"]["schemas"]["Error"]["properties"]["error"]["properties"]["code"]
@@ -301,9 +310,9 @@ async fn test_admin_v1_openapi_paths_all_resolve() {
                 .as_object()
                 .unwrap_or_else(|| panic!("{method} {path} documents no status"))
                 .keys()
-                .cloned()
+                .map(str::to_owned)
                 .collect();
-            documented.insert((method, path.clone()), statuses);
+            documented.insert((method, path.to_owned()), statuses);
         }
     }
 

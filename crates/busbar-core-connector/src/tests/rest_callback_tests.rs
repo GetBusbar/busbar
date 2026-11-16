@@ -7,7 +7,7 @@ use crate::registry::{Entry, Transports};
 use crate::support::{worker, TestDoor};
 
 #[test]
-fn a_public_read_of_busy_rest_clones_and_retires_its_waiter_after_unlocking() {
+fn a_public_read_of_busy_rest_retains_and_retires_its_waiter_after_unlocking() {
     worker().block_on(async {
         let owner = InstanceId(1);
         let need = NeedId(1);
@@ -55,8 +55,10 @@ fn a_public_read_of_busy_rest_clones_and_retires_its_waiter_after_unlocking() {
         assert!(c
             .poll_read(owner, id, &mut Context::from_waker(&waker), &mut [0; 1])
             .is_pending());
+        drop(waker);
+        assert_eq!(probe.live.load(Ordering::SeqCst), 1);
         drop(reading);
-        assert!(probe.clones.load(Ordering::SeqCst) >= 2);
+        assert_eq!(probe.live.load(Ordering::SeqCst), 0);
         assert_eq!(
             probe.wakes.load(Ordering::SeqCst),
             1,

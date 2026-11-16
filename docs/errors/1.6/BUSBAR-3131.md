@@ -18,7 +18,7 @@ An entry under `export:` cannot deliver what it promises: an unknown module, set
 
 ## How to fix it
 
-Fix the sink the message names; the message lists the valid streams and fields. docs/export.md documents every stream.
+Fix the sink the message names; the message lists the valid streams and fields. The `export` section of docs/configuration.md describes the sinks, and docs/export/busbar.content.v1.schema.json is the content schema.
 
 ## Example
 

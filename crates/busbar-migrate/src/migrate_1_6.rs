@@ -28,12 +28,67 @@ pub(crate) fn run(
     facts: &Facts,
     report: &mut Vec<String>,
 ) -> Result<(), Refusal> {
+    migrate_plugin_trust(root, resolved, report)?;
     drop_overlay_selector(root, report);
     unfold_zero_cache_write(root, resolved, report);
     drop_hostless_metadata_entries(root, resolved, report);
     retire_metadata_carve_outs(root, resolved, report);
     price_open_units(root, facts, report)?;
     bind_ungoverned_principals(root, report);
+    Ok(())
+}
+
+/// Replace old opt-ins only when both grant the same permission. Validate before any mutation,
+/// so an ambiguous trust decision or unscoped publisher leaves the input intact.
+fn migrate_plugin_trust(
+    root: &mut Pairs,
+    resolved: &Value,
+    report: &mut Vec<String>,
+) -> Result<(), Refusal> {
+    let trust = resolved.at("plugins").at("trust");
+    let Some(policy) = trust.as_mapping() else {
+        return Ok(());
+    };
+    if let Some(publishers) = trust.at("publishers").as_sequence() {
+        for publisher in publishers {
+            if publisher.get("public_key").is_some()
+                || publisher.get("plugins").is_none()
+                || publisher.get("keys").is_none()
+            {
+                return Err(Refusal::Config(
+                    "plugins.trust.publishers requires explicit plugin scope: use {name: vendor, plugins: [exact-plugin-name], keys: [{public_key: <existing-hex-key>, revoked: false}]}; no wildcard scope is inferred".into(),
+                ));
+            }
+        }
+    }
+    let has_old = policy.contains_key("allow_unsigned") || policy.contains_key("allow_third_party");
+    if !has_old {
+        return Ok(());
+    }
+    if policy.contains_key("allow_untrusted") {
+        return Err(Refusal::Config("plugins.trust mixes obsolete allow_unsigned/allow_third_party with allow_untrusted; remove the old fields and explicitly decide allow_untrusted".into()));
+    }
+    let read_flag = |name: &str| -> Result<bool, Refusal> {
+        match policy.get_key(name) {
+            None => Ok(false),
+            Some(value) => value.as_bool().ok_or_else(|| Refusal::Config(format!("plugins.trust.{name} must resolve to a boolean; explicitly decide allow_untrusted"))),
+        }
+    };
+    let unsigned = read_flag("allow_unsigned")?;
+    let third_party = read_flag("allow_third_party")?;
+    if unsigned != third_party {
+        return Err(Refusal::Config("plugins.trust has exactly one old opt-in enabled; the combined permission would broaden intent. Replace both old fields with an explicit allow_untrusted decision".into()));
+    }
+    let Some(plugins) = mapping_mut(root, "plugins") else {
+        return Ok(());
+    };
+    let Some(policy) = mapping_mut(plugins, "trust") else {
+        return Ok(());
+    };
+    remove_kept(policy, "allow_unsigned");
+    remove_kept(policy, "allow_third_party");
+    policy.insert_key("allow_untrusted", Value::from(unsigned));
+    report.push(format!("plugins.trust.allow_unsigned/allow_third_party replaced with allow_untrusted: {unsigned}; invalid known-publisher signatures, revoked keys and integrity failures always refuse"));
     Ok(())
 }
 
@@ -196,7 +251,7 @@ type WriteRate = (&'static str, Option<(Value, String)>);
 /// The entry's cache-write rate as an exact `UnitRate` value and its rendering: `cache_write_utok`
 /// when present (never falling back), else `input_utok`. `Ok(None)`: not an exact rate (the units
 /// stay unpriced). A template slot refuses by 1t: the rate would be computed from it.
-fn write_unit_rate(lane: &str, entry: &Pairs) -> Result<WriteRate, Refusal> {
+fn write_unit_rate(lane: &str, entry: &Pairs, missing: &[&str]) -> Result<WriteRate, Refusal> {
     let key = if entry.contains_key("cache_write_utok") {
         "cache_write_utok"
     } else {
@@ -206,7 +261,21 @@ fn write_unit_rate(lane: &str, entry: &Pairs) -> Result<WriteRate, Refusal> {
         return Ok((key, None));
     };
     if is_template(source) {
-        return Err(computed(&format!("rate_card.{lane}.{key}")));
+        let source_path = format!("rate_card.{lane}.{key}");
+        let destinations = missing
+            .iter()
+            .map(|unit| format!("`rate_card.{lane}.units.{unit}`"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let mut refusal = computed(&source_path);
+        if let Refusal::Config(reason) = &mut refusal {
+            reason.push_str(&format!(
+                "; add {destinations}, each at the same rate as `{source_path}` in \
+             micro-units per unit, keeping the template as a quoted decimal reference \
+             (open-unit rates require an exact decimal string, not a bare float)"
+            ));
+        }
+        return Err(refusal);
     }
     let rate = source
         .as_f64()
@@ -265,7 +334,7 @@ fn price_open_units(
         let write_rate = if written.is_empty() {
             None
         } else {
-            Some(write_unit_rate(lane, entry)?)
+            Some(write_unit_rate(lane, entry, &written)?)
         };
         let units = entry.entry_or_insert_with("units", || Value::Map(Pairs::new()));
         let Value::Map(units) = units else {

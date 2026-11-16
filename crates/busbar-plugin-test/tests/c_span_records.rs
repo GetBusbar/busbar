@@ -8,7 +8,7 @@
 //! the arm's body and un-ignores it in its own MR (red first, then green).
 
 #[test]
-#[ignore = "owner: W1-K8C (blocked: no kernel span-record consumer on dev to drive: export pump and projection are absent; OUTSTANDING A4)"]
+#[ignore = "owner: W1-K8C; re-checked 2026-11-16: the kernel has the delivery ids, custody counting and per-instance breaker cell (busbar-kernel export/delivery.rs, unit-tested in export/tests/delivery_tests.rs) but no export pump and no DiskSink (no DiskSink or ExportPump type in busbar-kernel or busbar; plugin-loader ports/export.rs:68 only names it), so the booted arm waits on open MR !2645 (W1-K8C + W2-SW-EXPORT, OUTSTANDING rows 4 and 9); there is no kernel span-record consumer to drive (OUTSTANDING A4)"]
 fn span_records_core_arms() {
     todo!("owner: W1-K8C (C-SPAN-RECORDS)")
 }

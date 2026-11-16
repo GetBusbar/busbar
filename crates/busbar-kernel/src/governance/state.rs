@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
 use super::*;
 use busbar_contract::redacted::Secret;
 use busbar_kernel_ledger::cost::{
@@ -19,6 +22,7 @@ pub(super) mod identity_runtime;
 
 #[path = "self_serve.rs"]
 mod self_serve;
+pub use self_serve::self_subject_id;
 
 #[path = "ledger_adjust.rs"]
 pub(super) mod ledger_adjust;

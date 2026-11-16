@@ -17,8 +17,8 @@ use busbar_contract::Secret;
 use busbar_plugin_abi::fail::refused::R_NOT_FOUND;
 use busbar_plugin_abi::host_side::caller::{BoxFut, CallStack, Caller};
 use busbar_plugin_abi::host_side::scrub::{Scrub, MIN_NEEDLE};
-use busbar_plugin_loader::ports::secret::SecretPort;
-use busbar_plugin_loader::ports::{CallCx, PortError};
+use busbar_ports::secret::SecretPort;
+use busbar_ports::{CallCx, PortError};
 use foldhash::HashMap;
 
 mod cred;

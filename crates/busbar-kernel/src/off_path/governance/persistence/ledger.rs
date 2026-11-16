@@ -283,7 +283,7 @@ struct Record<T> {
     record: T,
 }
 fn encode<T: Serialize>(record: &T) -> Result<Vec<u8>> {
-    serde_json::to_vec(&Record { version: 1, record }).map_err(|_| corrupt())
+    busbar_contract::json::to_vec(&Record { version: 1, record }).map_err(|_| corrupt())
 }
 trait Canonical {
     /// The record's canonical member names (checked on the stored bytes, no DOM).
@@ -333,7 +333,7 @@ fn decode<T: DeserializeOwned + Canonical>(bytes: &Secret<Vec<u8>>) -> Result<T>
     if !shape::check(bytes, &metadata) {
         return Err(corrupt());
     }
-    let value: Record<T> = serde_json::from_slice(bytes).map_err(|_| corrupt())?;
+    let value: Record<T> = busbar_contract::json::parse(bytes).map_err(|_| corrupt())?;
     if value.version != 1 {
         return Err(corrupt());
     }

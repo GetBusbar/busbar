@@ -11,6 +11,26 @@ use busbar_plugin_abi::plane::DEST_INTERNAL;
 
 use super::*;
 
+#[test]
+fn a_refused_compiled_image_refuses_boot_instead_of_falling_back() {
+    use busbar_plugin_loader::refusal::{Refusal, RefusalCode};
+    let rows = [super::super::linked::LinkedImage {
+        alias: "fixture",
+        admit: || {
+            Err(Refusal::new(
+                RefusalCode::Layout,
+                "layout",
+                "old",
+                "current",
+            ))
+        },
+    }];
+    let refusal = admit_linked_images(&rows).err().expect("boot must refuse");
+    assert!(refusal.contains("layout"), "{refusal}");
+    assert!(refusal.contains("old"), "{refusal}");
+    assert!(refusal.contains("current"), "{refusal}");
+}
+
 struct Open;
 
 impl Tickets for Open {
@@ -229,4 +249,43 @@ fn the_boot_s_upstream_table_is_the_configured_upstreams_section() {
         .expect("local is configured")
         .command
         .is_some());
+}
+
+/// (sl3) on the MIN-3 path the recoverable gate knows the at-rest key while the store opens: the walk publishes
+/// what `credentials.at_rest` resolved to through the open secret instances (2a) before the store's open (2b),
+/// so a 1.5.5 store holding SigV4 credentials is admitted when a key is configured. With no block the gate
+/// answers TEXT_ADD_KEY; a key that does not resolve answers the resolution's own text. One test: the verdict is
+/// the process's.
+#[tokio::test]
+async fn the_recoverable_gate_sees_the_walks_at_rest_key_while_the_store_opens() {
+    use crate::root::migrate::admit_for_host;
+    let configured = AtRestCfg {
+        key: SecretRef::None,
+        previous: None,
+    };
+    let hex = "ab".repeat(32);
+    publish_at_rest(Some(&configured), |_, _| {
+        let hex = hex.clone();
+        async move { Ok(SecureVec::from(hex.into_bytes())) }
+    })
+    .await;
+    assert_eq!(
+        admit_for_host(3),
+        Ok(()),
+        "a configured key admits the store's recoverable rows"
+    );
+
+    publish_at_rest(None, |_, _| async { Err("nothing is resolved".to_owned()) }).await;
+    let no_key = admit_for_host(3).unwrap_err();
+    assert!(no_key.contains("Add an at-rest"), "{no_key}");
+
+    publish_at_rest(Some(&configured), |what, _| async move {
+        Err(format!("{what} could not be resolved (Denied)"))
+    })
+    .await;
+    assert_eq!(
+        admit_for_host(3),
+        Err("CONFIG: the at-rest key could not be resolved (Denied)".to_owned())
+    );
+    assert_eq!(admit_for_host(0), Ok(()), "no recoverable row asks nothing");
 }

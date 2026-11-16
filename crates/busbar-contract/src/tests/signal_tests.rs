@@ -4,17 +4,18 @@
 //! Tests for `crates/busbar-contract/src/signal.rs`.
 
 use super::*;
+use crate::json::{JsonContainerTrait as _, JsonValueTrait as _};
 
 /// Signal names accepted by configuration agree with their serialized spelling.
 #[test]
 fn signal_names_match_serde() {
     for &s in Signal::ALL {
-        let derived = serde_json::to_value(s).unwrap();
-        assert_eq!(derived, serde_json::Value::String(s.name().to_string()));
+        let derived = crate::json::to_value(&s).unwrap();
+        assert_eq!(derived, crate::json::Value::from(s.name()));
     }
 
     for &s in Signal::ALL {
-        let parsed: Signal = serde_json::from_value(serde_json::json!(s.name())).unwrap();
+        let parsed: Signal = crate::json::from_value(&crate::json::json!(s.name())).unwrap();
         assert_eq!(parsed, s);
     }
 
@@ -29,8 +30,8 @@ fn signal_names_match_serde() {
 #[test]
 fn empty_bag_serializes_as_empty_map() {
     let bag = SignalBag::new();
-    let v = serde_json::to_value(&bag).unwrap();
-    assert_eq!(v, serde_json::json!({}));
+    let v = crate::json::to_value(&bag).unwrap();
+    assert_eq!(v, crate::json::json!({}));
     assert!(bag.is_empty());
 }
 
@@ -43,7 +44,7 @@ fn populated_bag_serializes_flat_scalars() {
         SignalValue::Str(Cow::Borrowed("closed")),
     );
     bag.push(Signal::CandidateErrorRate, SignalValue::F64(0.125));
-    let v = serde_json::to_value(&bag).unwrap();
+    let v = crate::json::to_value(&bag).unwrap();
     assert_eq!(v["candidate_breaker_state"], "closed");
     assert_eq!(v["candidate_error_rate"], 0.125);
     assert_eq!(bag.len(), 2);
@@ -133,13 +134,13 @@ fn a_repeated_signal_serializes_as_one_array_in_push_order() {
             },
         ],
     );
-    let v = serde_json::to_value(&bag).unwrap();
+    let v = crate::json::to_value(&bag).unwrap();
     let arr = v["candidate_route_cost"].as_array().expect("array");
     assert_eq!(arr.len(), 7, "{v}");
-    assert_eq!(arr[0], serde_json::json!(true));
-    assert_eq!(arr[1], serde_json::json!("a"));
-    assert_eq!(arr[4], serde_json::json!("b"));
-    assert_eq!(v["requested_model"], serde_json::json!(true));
+    assert_eq!(arr[0], crate::json::json!(true));
+    assert_eq!(arr[1], crate::json::json!("a"));
+    assert_eq!(arr[4], crate::json::json!("b"));
+    assert_eq!(v["requested_model"], crate::json::json!(true));
 }
 
 /// LEGACY the retired engine crate's `src/engine/tests/signal_catalog_tests.rs::default_path_allocates_no_signals_container`.

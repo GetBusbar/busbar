@@ -3,6 +3,7 @@
 
 use super::*;
 use busbar_contract::abi::sdk::{exchange, hook};
+use busbar_contract::json;
 use std::sync::Mutex;
 use std::task::Poll;
 
@@ -115,7 +116,7 @@ fn install(g: &Governed, grant: busbar_kernel::hook_child::Grant) -> Arc<App> {
         axis,
         g.app.hook_env.secret_resolver.clone(),
     );
-    let cfg = serde_json::from_value(serde_json::json!({
+    let cfg = json::from_value(&json::json!({
         "kind": "gate", "module": NAME, "timeout_ms": 5_000,
         "on_error": "weighted", "prompt": "no", "user": "no",
         "child_dispatch": grant,

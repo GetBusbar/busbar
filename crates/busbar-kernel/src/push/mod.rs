@@ -21,7 +21,7 @@ use busbar_plugin_abi::host_side::caller::{BoxFut, Caller};
 use busbar_contract::Secret;
 
 use crate::persistence::facade::CoreStore;
-use crate::persistence::scoped::ScopedStore;
+use crate::persistence::scoped::{Expected, Mutation, Predicate, Request, ScopedStore};
 use crate::plugin_records::store::{denied, expiry, label, live, operation, InDoubt};
 use crate::plugin_records::RecordsDenied;
 use crate::retry::{PortError, Retry, RetryPolicy, RetrySite};
@@ -299,9 +299,25 @@ impl StorePushQueue {
                                 attempt,
                                 &row.recs,
                             );
-                            let first = records.put(PUSHES, &row.key, value).await;
-                            self.in_doubt.decided(&records, first).await?;
-                            round.retried += 1;
+                            // A removal or another worker may have settled this row while the
+                            // connector was in flight. Retry only the version we delivered.
+                            let request = Request {
+                                op_id: operation(&self.store)?,
+                                predicates: vec![Predicate {
+                                    schema: PUSHES.into(),
+                                    key: row.key.clone(),
+                                    expected: Expected::Exact(row.raw.clone()),
+                                }],
+                                mutations: vec![Mutation::Put {
+                                    schema: PUSHES.into(),
+                                    key: row.key.clone(),
+                                    value,
+                                }],
+                            };
+                            let first = records.conditional_native(&request).await;
+                            if self.in_doubt.decided(&records, first).await? {
+                                round.retried += 1;
+                            }
                         }
                     }
                 }

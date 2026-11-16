@@ -36,6 +36,7 @@ impl ConfiguredView {
         deploy: &super::DeployCfg,
         catalog: &std::collections::HashMap<String, super::ProviderDef>,
     ) {
+        super::restart::capture_documents(app, deploy);
         app.document_source_fingerprints = deploy.document_source_fingerprints;
         let Some(view) = app.configured_view.as_mut() else {
             return;
@@ -68,6 +69,15 @@ impl ConfiguredView {
         view.sections.insert(
             "admin_require_mtls".into(),
             json!(deploy.admin_require_mtls),
+        );
+        // ADMIN-API-1.6 §3.5: the switches only. `K_user` is derived from the keyset at boot and
+        // is never configuration, so no surface can serve it.
+        view.sections.insert(
+            "records".into(),
+            json!({
+                "user": deploy.records.user.as_str(),
+                "labels": deploy.records.labels,
+            }),
         );
         if let Some(Value::Object(advanced)) = view.sections.get_mut("advanced") {
             advanced.insert(
@@ -261,10 +271,9 @@ impl ConfiguredView {
                 "enabled": plugins.enabled, "dir": plugins.dir,
                 "min_versions": plugins.min_versions,
                 "trust": {
-                    "allow_unsigned": plugins.trust.allow_unsigned,
-                    "allow_third_party": plugins.trust.allow_third_party,
+                    "allow_untrusted": plugins.trust.allow_untrusted,
                     "publishers": plugins.trust.publishers.iter().map(|p| json!({
-                        "name": p.name, "public_key": p.public_key,
+                        "name": p.name, "plugins": p.plugins, "keys": p.keys.iter().map(|key| json!({"public_key_sha256": hex::decode(&key.public_key).ok().map(|bytes| hex::encode(crate::hashing::Sha256::digest(&bytes))), "revoked": key.revoked})).collect::<Vec<_>>(),
                     })).collect::<Vec<_>>(),
                 },
                 "fetch": {"count": plugins.fetch.len(), "values": "hidden"},
