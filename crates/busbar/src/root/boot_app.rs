@@ -57,6 +57,32 @@ impl RootRules for ConfigRules {
     }
 }
 
+/// Reads after the bootstrap Store opens must preserve the images and inputs that opened it.
+pub(crate) struct ProtectedRules {
+    pub(crate) reader: ConfigRules,
+    pub(crate) images: crate::root::boot::images::BootImages,
+    pub(crate) instances: Arc<crate::root::boot::inputs::BootInstances>,
+}
+
+impl RootRules for ProtectedRules {
+    fn grammar(
+        &self,
+        input: &config::grammar::PhaseOneIn<'_>,
+    ) -> Result<config::Grammar, config::GrammarRefusal> {
+        let candidate = crate::root::boot::images::prepare(&self.reader.process, input)?;
+        self.images.check(&candidate)?;
+        Ok(candidate.grammar)
+    }
+
+    fn check(&self, cfg: &RootCfg) -> Result<(), String> {
+        self.instances.check(cfg)
+    }
+
+    fn held_document(&self, path: &Path) -> Option<SecureString> {
+        self.reader.held_document(path)
+    }
+}
+
 /// THE STORE BOOTSTRAP: the non-serving projection of the deployment the store opens under, before the
 /// effective configuration resolves. The deployment is current bytes (the seam converted any 1.5.5 shape
 /// before this read), so it is the kernel's projection with nothing narrowed.

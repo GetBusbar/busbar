@@ -3,6 +3,7 @@
 
 //! S2 admission owns the same image leases through parsing and instance construction.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use busbar_kernel::config::grammar::PhaseOneIn;
@@ -15,6 +16,7 @@ pub(crate) struct FileImages {
     pub(crate) images: Images,
     pub(crate) aliases: Vec<(String, String)>,
     pub(crate) grammar: Grammar,
+    proofs: BTreeMap<String, ImageProof>,
 }
 
 pub(crate) fn prepare(
@@ -30,6 +32,18 @@ pub(crate) fn prepare(
             .insert(name.clone(), version.clone());
     }
     let admitted = crate::root::min3_boot::admit_images(&plugins).map_err(GrammarRefusal)?;
+    let proofs = admitted
+        .iter()
+        .map(|(image, _)| {
+            (
+                image.identity().to_owned(),
+                ImageProof {
+                    kind: image.kind(),
+                    digest: image.sha256().copied(),
+                },
+            )
+        })
+        .collect();
     let aliases = admitted
         .iter()
         .map(|(image, alias)| (image.identity().to_owned(), alias.clone()))
@@ -58,7 +72,72 @@ pub(crate) fn prepare(
         images,
         aliases,
         grammar,
+        proofs,
     })
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct ImageProof {
+    kind: busbar_plugin_abi::types::KindCode,
+    // A linked image cannot be replaced within the running process.
+    digest: Option<[u8; 32]>,
+}
+
+/// Immutable archive identities that already participate in the bootstrap or its grammar.
+pub(crate) struct BootImages {
+    proofs: BTreeMap<String, ImageProof>,
+}
+
+impl FileImages {
+    pub(crate) fn protect(
+        &self,
+        cfg: &busbar_kernel::config::RootCfg,
+    ) -> Result<BootImages, String> {
+        use busbar_plugin_abi::types::KindCode;
+        let store = cfg
+            .store
+            .as_ref()
+            .ok_or_else(busbar_kernel::config::store_required)?;
+        let identity = self
+            .images
+            .identities()
+            .find(|identity| self.images.names(identity).contains(&store.module.as_str()))
+            .ok_or_else(|| "store.module has no admitted bootstrap image".to_owned())?;
+        let proofs = self
+            .proofs
+            .iter()
+            .filter(|(name, proof)| {
+                name.as_str() == identity
+                    || matches!(proof.kind, KindCode::Secret | KindCode::Transport)
+            })
+            .map(|(name, proof)| (name.clone(), proof.clone()))
+            .collect();
+        Ok(BootImages { proofs })
+    }
+}
+
+impl BootImages {
+    pub(crate) fn check(&self, candidate: &FileImages) -> Result<(), GrammarRefusal> {
+        self.check_proofs(&candidate.proofs).map_err(GrammarRefusal)
+    }
+
+    fn check_proofs(&self, candidate: &BTreeMap<String, ImageProof>) -> Result<(), String> {
+        for (name, proof) in &self.proofs {
+            if candidate.get(name) != Some(proof) {
+                return Err(format!(
+                    "protected boot image {name} changed or was removed; restart required"
+                ));
+            }
+        }
+        for (name, proof) in candidate {
+            if proof.kind == busbar_plugin_abi::types::KindCode::Secret
+                && !self.proofs.contains_key(name)
+            {
+                return Err(format!("overlay-only image {name} contributes secret reference grammar; restart required"));
+            }
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]

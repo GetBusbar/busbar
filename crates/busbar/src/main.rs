@@ -698,7 +698,14 @@ async fn run(
             format!("base Store settings: {error}"),
         ))
     });
-    let boot_instances = root::boot::inputs::BootInstances::capture(&base_cfg);
+    let boot_instances = Arc::new(root::boot::inputs::BootInstances::capture(&base_cfg));
+    let config_rules = root::boot_app::ProtectedRules {
+        reader: config_rules,
+        images: file_images
+            .protect(&base_cfg)
+            .unwrap_or_else(|error| die(error)),
+        instances: Arc::clone(&boot_instances),
+    };
     let guard_judge = root::connector::dest_judge(&base_cfg);
     let boot_guard = guard_judge.guard().clone();
     let dest = BootstrapDestJudge::new(guard_judge);
