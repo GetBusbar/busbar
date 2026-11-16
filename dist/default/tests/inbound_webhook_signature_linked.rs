@@ -32,7 +32,7 @@ fn a_chain_naming_the_webhook_signature_plugin_resolves_to_the_linked_row() {
              identity-providers:\n  twilio:\n    module: busbar-auth-webhook-signature\n    \
              settings: {{ variant: twilio, origin: \"wss://edge.example.com\", signing_secret: {{ env: {SECRET_ENV} }} }}\n\
              auth:\n  chain: [twilio]\n\
-             plugins:\n  enabled: true\n  dir: '{}'\n  trust:\n    allow_unsigned: true\n",
+             plugins:\n  enabled: true\n  dir: '{}'\n  trust:\n    allow_untrusted: true\n",
             dir.join("plugins").display()
         ),
     )

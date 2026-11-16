@@ -3,24 +3,19 @@
 
 mod linked;
 
-mod migration {
-    include!(concat!(env!("OUT_DIR"), "/migration_table.rs"));
-}
-
 use busbar_contract::yaml::{self, prelude::*};
 use busbar_kernel::config::{deploy_from_yaml_str, resolve, DeployCfg, ProviderDef};
-use busbar_migrations::config::migrate::migrate_config;
 
 fn register_planes() {
-    busbar_kernel::config::declared_vocabulary::install(migration::MIGRATION_ROWS);
     linked::install();
 }
 
 #[test]
-fn end_to_end_a_full_legacy_config_migrates_validates_and_drops_every_deprecated_spelling() {
+fn canonical_cross_plane_config_preserves_each_resolved_pool() {
     register_planes();
     let raw = r#"
 listen: "0.0.0.0:8080"
+store: {module: memory}
 providers:
   acme:
     api_key: { env: BUSBAR_T_E2E_ACME }
@@ -32,8 +27,8 @@ models:
 hooks:
   audit:
     kind: gate
-    plugin: audit-hook
-    at: request
+    module: audit-hook
+    phase: [request]
 tools:
   search-eu:
     url: "https://eu.example/t"
@@ -62,41 +57,18 @@ pools:
     hooks: [audit]
 "#;
 
-    let out = migrate_config(raw).expect("the full legacy config migrates");
-
-    for needle in ["plugin:", "at: "] {
-        assert!(
-            !out.yaml.contains(needle),
-            "the migrated config still contains the deprecated spelling `{needle}`:\n{}",
-            out.yaml
-        );
-    }
-
-    assert!(
-        out.yaml.contains("module: audit-hook"),
-        "`plugin: audit-hook` must become `module: audit-hook`:\n{}",
-        out.yaml
-    );
-    assert!(
-        out.yaml.contains("phase:"),
-        "the single-stage `at: request` must become a `phase:` list:\n{}",
-        out.yaml
-    );
-
-    let deploy: DeployCfg = deploy_from_yaml_str(&out.yaml, &live_grammar()).unwrap_or_else(|e| {
-        panic!(
-            "migrated config must boot-parse on 1.6.0: {e}\n{}",
-            out.yaml
-        )
-    });
+    // MIGRATE-ON-BOOT retires broad spelling rewrites; retain resolved-pool assertions
+    // against canonical input independently of the deleted normalizer.
+    let deploy: DeployCfg = deploy_from_yaml_str(raw, &live_grammar())
+        .unwrap_or_else(|e| panic!("canonical config must boot-parse on 1.6.0: {e}\n{}", raw));
 
     let defs: std::collections::HashMap<String, ProviderDef> =
         yaml::from_str("acme:\n  protocol: anthropic\n  base_url: https://api.acme.example\n")
             .expect("provider defs parse");
     let cfg = resolve(&deploy, &defs)
-        .unwrap_or_else(|e| panic!("migrated config must resolve on 1.6.0: {e:?}"));
+        .unwrap_or_else(|e| panic!("canonical config must resolve on 1.6.0: {e:?}"));
     busbar_kernel::config_validate::validate(&cfg)
-        .unwrap_or_else(|e| panic!("migrated config must validate clean on 1.6.0: {e:?}"));
+        .unwrap_or_else(|e| panic!("canonical config must validate clean on 1.6.0: {e:?}"));
 
     let pools_of = |section: &str| cfg.plane_pools.get(section).cloned().unwrap_or_default();
     assert!(
@@ -113,6 +85,25 @@ pools:
         cfg.pools.contains_key("fast"),
         "the model pool resolves onto the model plane"
     );
+}
+
+#[test]
+fn unreleased_tool_and_agent_pool_keys_are_left_for_admission_to_refuse() {
+    register_planes();
+    for key in ["tool_pools", "agent_pools"] {
+        let raw = format!(
+            "providers: {{}}\nmodels: {{}}\n{key}:\n  MIGRATION_PRIVATE_SENTINEL:\n    members: [a]\n"
+        );
+        let error = deploy_from_yaml_str(&raw, &live_grammar())
+            .err()
+            .unwrap_or_else(|| panic!("`{key}:` must be refused at admission"))
+            .to_string();
+        assert!(error.contains(key), "the refusal names `{key}`: {error}");
+        assert!(
+            !error.contains("MIGRATION_PRIVATE_SENTINEL"),
+            "the refusal never echoes authored values: {error}"
+        );
+    }
 }
 
 #[test]
@@ -192,42 +183,6 @@ agents:
                 .as_ref()
                 .is_err_and(|e| e.contains(&format!("{section}.pools"))),
             "a {section} pool must refuse a member's own keys: {refused:?}"
-        );
-    }
-}
-
-#[test]
-fn unreleased_tool_and_agent_pool_keys_are_left_for_admission_to_refuse() {
-    register_planes();
-    for (key, raw) in [
-        (
-            "tool_pools",
-            "providers: {}\nmodels: {}\ntool_pools:\n  MIGRATION_PRIVATE_SENTINEL:\n    members: [a]\n",
-        ),
-        (
-            "agent_pools",
-            "providers: {}\nmodels: {}\nagent_pools:\n  MIGRATION_PRIVATE_SENTINEL:\n    members: [a]\n",
-        ),
-    ] {
-        let out = migrate_config(raw).expect("the config still parses as YAML");
-        assert!(
-            out.yaml.contains(&format!("{key}:")),
-            "`{key}:` was never written by a released Busbar, so it is not rewritten:\n{}",
-            out.yaml
-        );
-        assert!(
-            !out.changes.iter().any(|line| line.contains(key)),
-            "no rewrite is reported for `{key}`: {:?}",
-            out.changes
-        );
-        let error = deploy_from_yaml_str(&out.yaml, &live_grammar())
-            .err()
-            .unwrap_or_else(|| panic!("`{key}:` must be refused at admission"))
-            .to_string();
-        assert!(error.contains(key), "the refusal names `{key}`: {error}");
-        assert!(
-            !error.contains("MIGRATION_PRIVATE_SENTINEL"),
-            "the refusal never echoes authored values: {error}"
         );
     }
 }

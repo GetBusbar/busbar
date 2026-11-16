@@ -34,7 +34,9 @@
 //! The loader reads this into `PlaneRegistration::provider_keys`; the kernel parses plane-owned
 //! provider values against these neutral shapes and carries the resulting values unread.
 
-use crate::json::{JsonValueMutTrait as _, JsonValueTrait as _, Map, Value};
+use crate::json::{
+    JsonContainerTrait as _, JsonValueMutTrait as _, JsonValueTrait as _, Map, Value,
+};
 
 /// THE STATEMENT-EXTENSIONS KEY a plane states its provider-key descriptor under
 pub const EXT_PROVIDER_KEYS: &str = "provider_keys";

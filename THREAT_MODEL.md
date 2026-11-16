@@ -213,13 +213,13 @@ code-execution foothold. **Mitigation:**
 - **Off by default.** `plugins.enabled` defaults to `false`; with it off, nothing in the plugins
   directory is read, and a config that references a plugin that is not available refuses boot
   (`crates/busbar-kernel/src/config/mod.rs`, `crates/busbar/src/root/boot.rs`).
-- **Signed.** Every dropped-in plugin's signed manifest is verified (`verify_strict`) against the
-  Ed25519 release key embedded in the binary at build time (first party, no config) or a publisher
-  key the operator allowlisted under `plugins.trust.publishers`; unsigned or third-party plugins
-  load only with `allow_unsigned` / `allow_third_party`, both `false` by default
-  (`crates/plugin-loader/src/sign.rs`). An untrusted plugin is logged and skipped, never loaded.
-  Only a first-party plugin may claim a first-party egress class
-  (`crates/plugin-loader/src/registry.rs`).
+- **Authenticated provenance.** Busbar releases verify through the embedded root, a root-signed
+  keys document and delegated release signatures. Configured publisher keys authenticate only
+  the exact plugin names the operator permits. Multiple keys allow overlap, and explicit revoked
+  keys cannot admit code. `allow_untrusted`, default false, permits unsigned or unknown-publisher
+  code with an unverified audit/admin verdict. Invalid known-publisher signatures, altered bytes,
+  out-of-scope names and authenticated revocations are hard refusals regardless of that flag
+  (`crates/plugin-loader/src/sign.rs`). Signature provenance grants no runtime egress privilege.
 - **No replay of older builds.** `plugins.min_versions` floors any trusted plugin. A first-party
   plugin is also floored at the highest version this host has loaded (kept in `data_dir` and in the
   store); loading below it refuses boot unless an operator records a rollback through the audited
@@ -295,7 +295,7 @@ stop someone who holds both from re-signing history.
   configured store.
 - Operators who deliberately configure Busbar insecurely (`admin_require_mtls: false` on an exposed
   admin listener, an empty auth chain in production,
-  `allow_unsigned`, `allow_third_party`): documented foot-guns behind explicit settings, warned at
+  `allow_untrusted`): documented foot-guns behind explicit settings, warned at
   boot.
 - Physical access and side channels beyond the constant-time comparisons noted above.
 - A malicious plugin reading a credential out of Busbar's own process memory (T10's accepted

@@ -50,6 +50,7 @@ enum It {
     UpEnd,
     Usage(&'static str, u64),
     Audit(&'static str),
+    Fact(u32, &'static str),
 }
 
 fn play(items: &[It], sink: &mut dyn FnMut(PlaneOut<'_>)) {
@@ -74,6 +75,7 @@ fn play(items: &[It], sink: &mut dyn FnMut(PlaneOut<'_>)) {
                 scale: 0,
                 source: SRC_REPORTED,
             },
+            It::Fact(k, v) => PlaneOut::Fact(*k, FactRef::Text(v)),
             It::Audit(action) => PlaneOut::Audit {
                 verdict: AUDIT_APPLIED,
                 action,
@@ -219,6 +221,10 @@ impl Books for Log {
 
     fn audit(&self, row: &AuditRow) {
         self.0.lock().unwrap().push(format!("audit {}", row.action));
+    }
+
+    fn end_user(&self, user: &str) {
+        self.0.lock().unwrap().push(format!("user {user}"));
     }
 }
 
@@ -368,6 +374,35 @@ fn a_local_answer_is_served_with_its_audit_rows_and_billed_as_an_end() {
         *books.0.lock().unwrap(),
         ["audit did_it", "ended End classes=1"]
     );
+}
+
+/// RED (ADMIN-API-1.6 §3.5, `records.user` on the MIN-3 path): the end user the plane projected (PJ_END_USER on
+/// its request answer) reaches the unit's books once, before the session ends; a plane that states none tells
+/// the books nothing.
+#[test]
+fn the_end_user_a_plane_projects_reaches_the_books() {
+    let stated = Plane {
+        request: vec![
+            It::Fact(busbar_plugin_abi::fail::fact::PJ_END_USER, "u-1"),
+            It::Respond(200),
+            It::End,
+        ],
+        ..Plane::default()
+    };
+    let books = Log::default();
+    run(&stated, None, &books).unwrap();
+    assert_eq!(
+        *books.0.lock().unwrap(),
+        ["user u-1", "ended End classes=0"]
+    );
+
+    let silent = Plane {
+        request: vec![It::Respond(200), It::End],
+        ..Plane::default()
+    };
+    let books = Log::default();
+    run(&silent, None, &books).unwrap();
+    assert_eq!(*books.0.lock().unwrap(), ["ended End classes=0"]);
 }
 
 #[test]

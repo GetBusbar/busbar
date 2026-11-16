@@ -10,7 +10,7 @@ use busbar_plugin_abi::host_side::caller::Caller;
 
 use super::Entitlements;
 
-/// The existing entitlement code (today's `entitlement.check` service): every grant the verified principal (or
+/// The core principal grant resolver: every grant the verified principal (or
 /// ticket) whose identity records are `identity` holds, handed to `sink` one at a time.
 pub trait GrantResolver: Send + Sync + 'static {
     fn grants(&self, identity: &[u8], sink: &mut dyn FnMut(&str));

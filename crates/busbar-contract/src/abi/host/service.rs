@@ -283,70 +283,68 @@ pub mod op {
     pub const VERIFY_LOOKUP: u32 = 13;
     /// `verify.store`.
     pub const VERIFY_STORE: u32 = 14;
-    /// `entitlement.check`.
-    pub const ENTITLEMENT_CHECK: u32 = 15;
     /// `content.scan`.
-    pub const CONTENT_SCAN: u32 = 16;
+    pub const CONTENT_SCAN: u32 = 15;
     /// `hook.call`.
-    pub const HOOK_CALL: u32 = 17;
+    pub const HOOK_CALL: u32 = 16;
     /// `random.fill`.
-    pub const RANDOM_FILL: u32 = 18;
+    pub const RANDOM_FILL: u32 = 17;
     /// `need.admit`.
-    pub const NEED_ADMIT: u32 = 19;
+    pub const NEED_ADMIT: u32 = 18;
     /// `trust.verify`.
-    pub const TRUST_VERIFY: u32 = 20;
+    pub const TRUST_VERIFY: u32 = 19;
     /// `records.secret`.
-    pub const RECORDS_SECRET: u32 = 21;
+    pub const RECORDS_SECRET: u32 = 20;
     /// `disk.append`.
-    pub const DISK_APPEND: u32 = 22;
+    pub const DISK_APPEND: u32 = 21;
     /// `snapshot.read`.
-    pub const SNAPSHOT_READ: u32 = 23;
+    pub const SNAPSHOT_READ: u32 = 22;
     /// `trust.sight_item`.
-    pub const TRUST_SIGHT_ITEM: u32 = 24;
+    pub const TRUST_SIGHT_ITEM: u32 = 23;
     /// `trust.serves`.
-    pub const TRUST_SERVES: u32 = 25;
+    pub const TRUST_SERVES: u32 = 24;
     /// `trust.decide`.
-    pub const TRUST_DECIDE: u32 = 26;
+    pub const TRUST_DECIDE: u32 = 25;
     /// `trust.state`.
-    pub const TRUST_STATE: u32 = 27;
+    pub const TRUST_STATE: u32 = 26;
     /// `session.emit`.
-    pub const SESSION_EMIT: u32 = 28;
+    pub const SESSION_EMIT: u32 = 27;
     /// `auth.call`.
-    pub const AUTH_CALL: u32 = 29;
+    pub const AUTH_CALL: u32 = 28;
     /// `unit.hand_in`.
-    pub const UNIT_HAND_IN: u32 = 30;
+    pub const UNIT_HAND_IN: u32 = 29;
     /// `unit.refuse`.
-    pub const UNIT_REFUSE: u32 = 31;
+    pub const UNIT_REFUSE: u32 = 30;
     /// `ticket.mint`.
-    pub const TICKET_MINT: u32 = 32;
+    pub const TICKET_MINT: u32 = 31;
     /// `ticket.take`.
-    pub const TICKET_TAKE: u32 = 33;
+    pub const TICKET_TAKE: u32 = 32;
     /// `work.status`: instance-scoped, read-only durable receipt status.
-    pub const WORK_STATUS: u32 = 34;
+    pub const WORK_STATUS: u32 = 33;
     /// `outbound.authorize`: publish, bind, revoke or prepare scoped outbound custody.
-    pub const OUTBOUND_AUTHORIZE: u32 = 35;
+    pub const OUTBOUND_AUTHORIZE: u32 = 34;
     /// Invocation-scoped, configured hook child dispatch.
-    pub const HOOK_CHILD: u32 = 36;
+    pub const HOOK_CHILD: u32 = 35;
     /// `directory.get` ([`super::directory`]).
-    pub const DIRECTORY_GET: u32 = 37;
+    pub const DIRECTORY_GET: u32 = 36;
     /// `directory.lookup`.
-    pub const DIRECTORY_LOOKUP: u32 = 38;
+    pub const DIRECTORY_LOOKUP: u32 = 37;
     /// `directory.scan`.
-    pub const DIRECTORY_SCAN: u32 = 39;
+    pub const DIRECTORY_SCAN: u32 = 38;
     /// `directory.count`.
-    pub const DIRECTORY_COUNT: u32 = 40;
+    pub const DIRECTORY_COUNT: u32 = 39;
     /// `directory.create`.
-    pub const DIRECTORY_CREATE: u32 = 41;
+    pub const DIRECTORY_CREATE: u32 = 40;
     /// `directory.apply`.
-    pub const DIRECTORY_APPLY: u32 = 42;
+    pub const DIRECTORY_APPLY: u32 = 41;
     /// `directory.delete`.
-    pub const DIRECTORY_DELETE: u32 = 43;
+    pub const DIRECTORY_DELETE: u32 = 42;
     /// `migrate.admit`: whether the boot can seal a store's recoverable 1.5.5 credentials.
-    pub const MIGRATE_ADMIT: u32 = 44;
+    pub const MIGRATE_ADMIT: u32 = 43;
 }
 
 /// How many services [`HostSlots`] holds.
-pub const SERVICES: u32 = 45;
+pub const SERVICES: u32 = 44;
 
 /// Whether a service may answer PENDING, and so is callable only inside a ticketed op. `false` for a service that always answers at once.
 #[must_use]
@@ -357,7 +355,6 @@ pub const fn may_pend(service: u32) -> bool {
             | op::SIGN
             | op::TRUST_DUE
             | op::VERIFY_STORE
-            | op::ENTITLEMENT_CHECK
             | op::RANDOM_FILL
             | op::NEED_ADMIT
             | op::TRUST_VERIFY
@@ -944,25 +941,6 @@ pub const VERIFY_HIT: u64 = 1;
 pub const VERIFY_LEAD: u64 = 2;
 /// `verify.lookup`: the caller followed a leader, whose entry is in span `0`.
 pub const VERIFY_FOLLOW: u64 = 3;
-
-/// [`op::ENTITLEMENT_CHECK`]'s `in`: whether the caller is entitled to the target (the catalogue
-/// visibility filter). `value` = [`ENTITLED`] | [`NOT_ENTITLED`]. Never pends.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct EntitlementCheckIn {
-    /// The head.
-    pub head: ServiceHead,
-    /// The target.
-    pub target: AbiStr,
-}
-
-/// `entitlement.check`: not entitled.
-pub const NOT_ENTITLED: u64 = 0;
-/// `entitlement.check`: entitled.
-pub const ENTITLED: u64 = 1;
-
-/// [`op::ENTITLEMENT_CHECK`]'s target that asks whether the unit's PRINCIPAL STILL STANDS: the host
-pub const ENTITLEMENT_STANDING: &str = "standing:";
 
 /// The most bytes one `random.fill` answers.
 pub const MAX_RANDOM_FILL: u64 = 1024;
@@ -1904,8 +1882,6 @@ pub struct HostSlots {
     pub verify_lookup: Option<ServiceFn>,
     /// [`op::VERIFY_STORE`], in [`VerifyStoreIn`].
     pub verify_store: Option<ServiceFn>,
-    /// [`op::ENTITLEMENT_CHECK`], in [`EntitlementCheckIn`].
-    pub entitlement_check: Option<ServiceFn>,
     /// [`op::CONTENT_SCAN`], in [`ContentScanIn`].
     pub content_scan: Option<ServiceFn>,
     /// [`op::HOOK_CALL`], in [`HookCallIn`].
@@ -1965,6 +1941,19 @@ pub struct HostSlots {
     /// [`op::MIGRATE_ADMIT`], in [`MigrateAdmitIn`]. A tail addition (MIGRATE-ON-BOOT r34).
     pub migrate_admit: Option<ServiceFn>,
 }
+
+// Every direct-contract kind receives this common positional table. Fold its complete shape
+// into each kind's admission fingerprint so an earlier table cohort cannot bind.
+pub(crate) const HOST_SLOTS_LAYOUT: &[u64] = crate::layout_shape!(HostSlots =>
+    size, slots, clock_now, records_get, records_list, records_claim, dest_judge, sign,
+    unit_nest, work_open, work_find, work_settle, work_resume, trust_sight, trust_due,
+    verify_lookup, verify_store, content_scan, hook_call, random_fill, need_admit,
+    trust_verify, records_secret, disk_append, snapshot_read, trust_sight_item,
+    trust_serves, trust_decide, trust_state, session_emit, auth_call, unit_hand_in,
+    unit_refuse, ticket_mint, ticket_take, work_status, outbound_authorize, hook_child,
+    directory_get, directory_lookup, directory_scan, directory_count, directory_create,
+    directory_apply, directory_delete, migrate_admit
+);
 
 /// The head of an `in` for `service`, whose `in` type is `in_size` bytes: the op is the slot's, and
 pub const fn check_head(head: &ServiceHead, service: u32, in_size: usize) -> Result<(), Fault> {
@@ -2655,23 +2644,6 @@ pub fn check_verify_store(
     unsafe {
         // SAFETY: `bare` has no buffers or raw memory to read.
         answer(ret, &i.head, out, bare(op::VERIFY_STORE, (0, 0)))
-    }
-}
-
-/// `entitlement.check`'s answer.
-pub fn check_entitlement_check(
-    i: &EntitlementCheckIn,
-    ret: RawOutcome,
-    out: &ServiceOut,
-) -> Result<Filled, Fault> {
-    unsafe {
-        // SAFETY: `bare` has no buffers or raw memory to read.
-        answer(
-            ret,
-            &i.head,
-            out,
-            bare(op::ENTITLEMENT_CHECK, (NOT_ENTITLED, ENTITLED)),
-        )
     }
 }
 

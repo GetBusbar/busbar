@@ -306,8 +306,16 @@ pub(crate) fn project(record: &AuditRecord, planes: Planes<'_>) -> (UnitRecord, 
             Subject::PrincipalId(key) => Some(key.clone()),
             _ => None,
         },
-        user: None,
-        labels: BTreeMap::new(),
+        // §3.5: what `records.user` and `records.labels` sealed, from the record's own bytes; a
+        // record sealed before either was on, or with both off, keeps neither.
+        user: record.unit.records.user.clone(),
+        labels: record
+            .unit
+            .records
+            .labels
+            .iter()
+            .map(|(name, value)| (name.to_string(), value.clone()))
+            .collect(),
         attributes: BTreeMap::new(),
         outcome: outcome_tag(record.outcome.unit_end),
         finish: finish_tag(record.outcome.finish),

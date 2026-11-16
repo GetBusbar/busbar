@@ -88,3 +88,7 @@ mod socket_tests;
 #[cfg(feature = "target-sockets")]
 #[path = "host_target/sockets.rs"]
 pub mod sockets;
+
+/// Typed live store test requests and harness; never exports a production KernelSeal.
+#[cfg(feature = "test-seal")]
+pub mod store;
