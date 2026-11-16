@@ -267,6 +267,8 @@ struct Walk {
     queue: VecDeque<Candidate>,
     served: Vec<String>,
     failed: usize,
+    /// The Retry-After the walk states once it is exhausted.
+    wait: Option<u32>,
 }
 
 impl Members for Walk {
@@ -279,6 +281,9 @@ impl Members for Walk {
     }
     fn served(&mut self, member: &Candidate) {
         self.served.push(member.upstream.to_string());
+    }
+    fn retry_after(&self) -> Option<u32> {
+        self.wait
     }
 }
 
@@ -625,4 +630,74 @@ async fn a_ticket_gate_asks_the_ticket_store_as_its_instance() {
         door.admit("aud", "bbt1.abc", 100).await,
         Err(TicketDenied::Expired)
     ));
+}
+
+/// The `retry-after` value of the first head in `client`, if it states one.
+fn retry_after_of(client: &[ToClient]) -> Option<String> {
+    client.iter().find_map(|item| match item {
+        ToClient::Head { fields, .. } => fields
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case(b"retry-after"))
+            .map(|(_, value)| String::from_utf8_lossy(value).into_owned()),
+        _ => None,
+    })
+}
+
+#[test]
+fn an_exhausted_walk_s_wait_rides_on_the_refusal_the_client_gets() {
+    let rendered = Plane {
+        request: vec![It::Forward],
+        pieces: Mutex::new(VecDeque::from([vec![
+            It::Respond(503),
+            It::Body(b"busy"),
+            It::End,
+        ]])),
+        ..Plane::default()
+    };
+    let mut walk = Walk {
+        wait: Some(30),
+        ..Walk::default()
+    };
+    let ran = run(&rendered, Some(&mut walk), &Log::default()).unwrap();
+    assert!(ran.exhausted);
+    assert_eq!(retry_after_of(&ran.client).as_deref(), Some("30"));
+
+    let silent = Plane {
+        request: vec![It::Forward],
+        ..Plane::default()
+    };
+    let mut walk = Walk {
+        wait: Some(7),
+        ..Walk::default()
+    };
+    let ran = run(&silent, Some(&mut walk), &Log::default()).unwrap();
+    assert_eq!(
+        retry_after_of(&ran.client).as_deref(),
+        Some("7"),
+        "core's own refusal carries it too"
+    );
+
+    let unstated = Plane {
+        request: vec![It::Forward],
+        ..Plane::default()
+    };
+    let ran = run(&unstated, Some(&mut Walk::default()), &Log::default()).unwrap();
+    assert_eq!(retry_after_of(&ran.client), None, "no wait, no field");
+}
+
+#[test]
+fn a_retry_after_the_plane_stated_is_never_overwritten() {
+    let mut items = vec![
+        ToClient::Head {
+            status: 429,
+            fields: vec![(b"Retry-After".to_vec(), b"9".to_vec())],
+        },
+        ToClient::End,
+    ];
+    super::stamp_retry_after(&mut items, Some(30));
+    assert_eq!(retry_after_of(&items).as_deref(), Some("9"));
+    let Some(ToClient::Head { fields, .. }) = items.first() else {
+        panic!("a head");
+    };
+    assert_eq!(fields.len(), 1);
 }

@@ -9,6 +9,7 @@ mod exhaustion_tests;
 mod pick_order_tests;
 mod probe_tests;
 mod relay_tests;
+mod seat_pool_tests;
 mod walk_tests;
 mod zero_copy_tests;
 

@@ -57,6 +57,8 @@ struct Fake {
     refuse_send: bool,
     sent: Mutex<Vec<OutboundRequest>>,
     judged: Mutex<Vec<u8>>,
+    /// The waits the plane's verdicts carried, in order.
+    waits: Mutex<Vec<Option<u64>>>,
 }
 
 impl FarEnd for Fake {
@@ -84,6 +86,11 @@ impl FarEnd for Fake {
 
     fn judged_stating(&self, _: &Pass<Route>, fault: u8, _: Option<&str>) {
         self.judged.lock().unwrap().push(fault);
+    }
+
+    fn judged_waiting(&self, token: &Pass<Route>, fault: u8, retry_after_s: Option<u64>) {
+        self.waits.lock().unwrap().push(retry_after_s);
+        self.judged_stating(token, fault, None);
     }
 
     fn write<'a>(
@@ -489,4 +496,64 @@ fn the_route_a_session_walks_under_states_the_wants_and_the_acceptance() {
         Some(Accept::default()),
         "judged even with no acceptance"
     );
+}
+
+#[test]
+fn the_plane_s_wait_rides_with_its_verdict_into_the_breaker() {
+    let fake = Fake::default();
+    let rt = Runtime::new().unwrap();
+    let tok = token();
+    let cell = Mutex::new(Some(picking(fake)));
+    let make = |_: &Wants| cell.lock().unwrap().take().unwrap();
+    let handle = rt.handle().clone();
+    let walk = EgressWalk::new(&make, &tok, &handle, &target_for);
+    let mut members = walk.members();
+    let _ = members.next(&Wants::default());
+    members.failed(
+        &candidate(),
+        &Failure {
+            verdict: ATT_RETRY,
+            class: FC_RATE_LIMIT,
+            retry_after_s: 9,
+        },
+    );
+    members.failed(
+        &candidate(),
+        &Failure {
+            verdict: ATT_RETRY,
+            class: FC_SERVER,
+            retry_after_s: 0,
+        },
+    );
+    drop(members);
+    let waits = walk.far().map(|far| far.waits.lock().unwrap().clone());
+    assert_eq!(
+        waits,
+        Some(vec![Some(9), None]),
+        "no wait stated is no wait"
+    );
+}
+
+#[test]
+fn an_exhausted_walk_keeps_the_wait_it_stated_for_the_client() {
+    let fake = Fake::default();
+    fake.picks.lock().unwrap().push_back(Pick::Exhausted {
+        status: 503,
+        retry_after: Some(30),
+        detail: "",
+    });
+    let rt = Runtime::new().unwrap();
+    let tok = token();
+    let cell = Mutex::new(Some(fake));
+    let make = |_: &Wants| cell.lock().unwrap().take().unwrap();
+    let handle = rt.handle().clone();
+    let walk = EgressWalk::new(&make, &tok, &handle, &target_for);
+    let mut members = walk.members();
+    assert_eq!(
+        members.retry_after(),
+        None,
+        "nothing stated before the walk ends"
+    );
+    assert!(members.next(&Wants::default()).is_none());
+    assert_eq!(members.retry_after(), Some(30));
 }

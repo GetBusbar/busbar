@@ -25,8 +25,8 @@ const WAIT: Duration = Duration::from_secs(5);
 struct Fixed(Option<&'static str>);
 
 impl SpawnSecrets for Fixed {
-    fn resolve(&self, _: &SecretRef) -> Option<String> {
-        self.0.map(str::to_owned)
+    fn resolve<'a>(&'a self, _: &'a SecretRef) -> BoxFut<'a, Option<String>> {
+        Box::pin(core::future::ready(self.0.map(str::to_owned)))
     }
 }
 
