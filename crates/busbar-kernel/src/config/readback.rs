@@ -208,7 +208,6 @@ impl ConfiguredView {
                 "other_fields": "hidden",
             })
         );
-        put!("credentials", presence(cfg.credentials.at_rest.is_some()));
         put!("oauth_as", presence(cfg.oauth_as.is_some()));
 
         put!("export", exporters_view(&cfg.export_defs, sources));

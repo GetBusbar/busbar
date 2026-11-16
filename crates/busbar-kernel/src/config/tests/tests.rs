@@ -88,7 +88,6 @@ pub(crate) fn base_deploy() -> DeployCfg {
 
         endpoint: Default::default(),
         oauth_as: None,
-        credentials: Default::default(),
         public_url: None,
         tls: None,
         admin_listen: DEFAULT_ADMIN_LISTEN_ADDR.into(),
@@ -2726,19 +2725,19 @@ fn core_sections_parse_directly_and_are_named_in_unknown_field_errors() {
         )
     };
     let error = parse("bogus_key: true\n").expect_err("unknown field");
-    // `oauth_as` and `credentials` are named among the document's fields, in 1.5.5's spelling
+    // `oauth_as` is named among the document's fields, in 1.5.5's spelling
     // (serde's backticked list). `config_version` is the 1.6.0 stamp (MIGRATE-ON-BOOT r42 §3, 257c).
     assert_eq!(
         error.to_string(),
         "bogus_key: unknown field `bogus_key`, expected one of `config_version`, `listen`, \
          `public_url`, `tls`, \
-         `admin_listen`, `config`, `providers_file`, `oauth_as`, `credentials`, `admin_tls`, \
+         `admin_listen`, `config`, `providers_file`, `oauth_as`, `admin_tls`, \
          `admin_require_mtls`, `auth`, `identity-providers`, `providers`, `models`, `pools`, \
          `hooks`, `groups`, `rate_card`, `per_request_fee`, `store`, \
          `secrets`, `advanced`, `export`, `plugins`, `security`, `limits`, `health`, `routing`, \
          `telemetry`, `records`, `audit` at line 3 column 1"
     );
-    for field in ["oauth_as", "credentials"] {
+    for field in ["oauth_as"] {
         let duplicate =
             parse(&format!("{field}: {{}}\n{field}: {{}}\n")).expect_err("duplicate core section");
         assert!(
@@ -2746,15 +2745,36 @@ fn core_sections_parse_directly_and_are_named_in_unknown_field_errors() {
             "{duplicate}"
         );
     }
-    let empty = parse("oauth_as: null\ncredentials: null\n").expect("null optional sections");
+    let empty = parse("oauth_as: null\n").expect("null optional sections");
     assert!(empty.oauth_as.is_none());
-    assert!(empty.credentials.at_rest.is_none());
-    let credentials = parse("credentials:\n  at_rest:\n    key: { module: fixture-source, settings: { slot: TEST_KEY } }\n")
-        .expect("current credential schema");
-    assert!(credentials.credentials.at_rest.is_some());
-    let typo = parse("credentials:\n  unknowable: true\n").expect_err("strict credential schema");
-    assert!(typo.to_string().contains("unknown field `unknowable`"));
-    assert_eq!(typo.location().unwrap().line(), 4);
+}
+
+#[test]
+fn the_removed_credentials_section_is_refused_as_an_unknown_key() {
+    for tail in [
+        "credentials:\n  at_rest:\n    key: { module: fixture-source, settings: { slot: TEST_KEY } }\n",
+        "credentials: {}\n",
+    ] {
+        let error = crate::config::deploy_from_yaml_str(
+            &format!("providers: {{}}\nmodels: {{}}\n{tail}"),
+            &crate::config::Grammar::empty(),
+        )
+        .expect_err("`credentials` is no longer a config key");
+        assert!(
+            error.to_string().contains("unknown field `credentials`"),
+            "{error}"
+        );
+    }
+}
+
+#[test]
+fn a_1_5_5_shaped_config_still_parses() {
+    let deploy = crate::config::deploy_from_yaml_str(
+        "listen: \"0.0.0.0:8080\"\nauth:\n  signing_key: { module: fixture-source, settings: { slot: SIGNING } }\nproviders: {}\nmodels: {}\n",
+        &crate::config::Grammar::empty(),
+    )
+    .expect("a 1.5.5-shaped config parses");
+    assert!(deploy.auth.is_some_and(|a| a.signing_key.is_some()));
 }
 
 fn parse_records(tail: &str) -> Result<DeployCfg, String> {

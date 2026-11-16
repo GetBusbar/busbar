@@ -729,11 +729,8 @@ async fn test_create_key_with_aws_credential_returns_secret_once_and_hides_on_re
     let operator_token = directory.join("operator-token");
     std::fs::write(&signing_key, hex::encode([9u8; 32])).expect("write the test signing input");
     std::fs::write(&operator_token, "admintok").expect("write the test operator input");
-    let at_rest_key = directory.join("at-rest-key");
-    std::fs::write(&at_rest_key, hex::encode([3u8; 32])).expect("write the at-rest key input");
     let operator = busbar_kernel::config::operator_provider();
     let mut document = serde_json::json!({
-        "credentials": { "at_rest": { "key": { "file": at_rest_key } } },
         "providers": {},
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },

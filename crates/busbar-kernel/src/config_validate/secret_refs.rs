@@ -24,8 +24,8 @@ use busbar_contract::plugin_rows::PluginRows;
 /// 1. A NEW FIELD ON A TYPE ALREADY WALKED HERE is a COMPILE ERROR. Every struct below is taken
 ///    apart with an EXHAUSTIVE destructure and no `..`, the idiom already used by
 ///    `RootSettings::is_empty` and `config::patch`. Adding a field to `RootCfg`, `TlsCfg`,
-///    `AuthCfg`, `AuthChainEntry`, `AuthMethodCfg`, `BrowserLoginCfg`, `IdentityProviderCfg`,
-///    `CredentialsCfg`, `AtRestCfg` or `ResolvedProvider` fails to build with `E0027 pattern does not mention field` until somebody has
+///    `AuthCfg`, `AuthChainEntry`, `AuthMethodCfg`, `BrowserLoginCfg`, `IdentityProviderCfg`
+///    or `ResolvedProvider` fails to build with `E0027 pattern does not mention field` until somebody has
 ///    decided, here, whether it carries a secret.
 /// 2. A NEW SECRET-BEARING TYPE is a TEST failure. The compiler cannot help with a `SecretRef`
 ///    added to a struct this function never destructures, so
@@ -176,7 +176,6 @@ fn walk_secret_refs_with_boot_token<'a>(
         auth,
         providers,
         identity_providers,
-        credentials,
         operator_overlay_names: _,
         operator_file_defs: _,
 
@@ -229,14 +228,6 @@ fn walk_secret_refs_with_boot_token<'a>(
     }) = oauth_as
     {
         refs.extend(secret_refs.iter().map(|(path, key)| (path.clone(), key)));
-    }
-
-    let crate::config::CredentialsCfg { at_rest } = credentials;
-    if let Some(crate::config::AtRestCfg { key, previous }) = at_rest {
-        refs.push(("credentials.at_rest.key".to_string(), key));
-        if let Some(previous) = previous {
-            refs.push(("credentials.at_rest.previous".to_string(), previous));
-        }
     }
 
     for (name, p) in providers {
@@ -405,7 +396,6 @@ pub(crate) const SECRET_BEARING_TYPES: &[(&str, SecretBearing)] = &[
         ),
     ),
     ("AuthCfg", SecretBearing::Walked),
-    ("AtRestCfg", SecretBearing::Walked),
     ("AuthChainEntry", SecretBearing::Walked),
     ("IdentityProviderCfg", SecretBearing::Walked),
     ("BrowserLoginCfg", SecretBearing::Walked),
