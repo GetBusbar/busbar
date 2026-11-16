@@ -261,10 +261,9 @@ impl ConfiguredView {
                 "enabled": plugins.enabled, "dir": plugins.dir,
                 "min_versions": plugins.min_versions,
                 "trust": {
-                    "allow_unsigned": plugins.trust.allow_unsigned,
-                    "allow_third_party": plugins.trust.allow_third_party,
+                    "allow_untrusted": plugins.trust.allow_untrusted,
                     "publishers": plugins.trust.publishers.iter().map(|p| json!({
-                        "name": p.name, "public_key": p.public_key,
+                        "name": p.name, "plugins": p.plugins, "keys": p.keys.iter().map(|key| json!({"public_key_sha256": hex::decode(&key.public_key).ok().map(|bytes| hex::encode(crate::hashing::Sha256::digest(&bytes))), "revoked": key.revoked})).collect::<Vec<_>>(),
                     })).collect::<Vec<_>>(),
                 },
                 "fetch": {"count": plugins.fetch.len(), "values": "hidden"},
