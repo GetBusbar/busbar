@@ -196,6 +196,9 @@ where
     W: AsyncWrite + Unpin + Send + 'static,
     S: std::future::Future<Output = ()>,
 {
+    if let Some(seat) = served.ports.iter().find(|p| p.driver.serves_lines()) {
+        return serve_port_lines(seat.clone(), app, reader, writer, stop).await;
+    }
     let Some(carrier) = carrier() else {
         eprintln!("busbar: no linked transport carries lines: nothing to serve on stdin");
         return 1;
@@ -295,6 +298,85 @@ where
         (answer, move || kernel.close_carrier_session(session.get()))
     })
     .await
+}
+
+/// The label a MIN-3 line session is bound and logged under: the process's own stdin/stdout (IF §12.23).
+const PORT_LINE_CARRIER: &str = "stdio";
+
+/// IF §12.23 over the plane port: the one `ROUTE_LINE` plane's lines go to `PortDriver::answer_line` with the
+/// carrier id in `PlaneReq.carrier`; on EOF, a write failure or shutdown core stops reading, ends the in-flight
+/// lines, closes the writer, and then calls `admin(ADMIN_CARRIER_END)` once.
+async fn serve_port_lines<R, W, S>(
+    seat: busbar_kernel::plane_driver::port::PortSeat,
+    app: Arc<busbar_kernel::state::AppHandle>,
+    reader: R,
+    writer: W,
+    stop: S,
+) -> i32
+where
+    R: AsyncRead + Unpin + Send + 'static,
+    W: AsyncWrite + Unpin + Send + 'static,
+    S: std::future::Future<Output = ()>,
+{
+    let instance = seat.instance.as_str();
+    let credential = std::env::var(env_credential(instance, PORT_LINE_CARRIER))
+        .ok()
+        .filter(|c| !c.is_empty());
+    let gov = match session(
+        app.load(),
+        instance,
+        PORT_LINE_CARRIER,
+        seat.audience.as_deref(),
+        credential.as_deref(),
+    )
+    .await
+    {
+        Ok(gov) => gov,
+        Err(sentence) => {
+            refuse(instance, PORT_LINE_CARRIER, &sentence);
+            return 1;
+        }
+    };
+    tracing::info!(
+        governed = gov.is_governed(),
+        "{PORT_LINE_CARRIER} serve: session bound; serving on stdin/stdout"
+    );
+    let driver = Arc::clone(&seat.driver);
+    let opened: Arc<std::sync::OnceLock<std::num::NonZeroU64>> = Arc::default();
+    let opened_here = Arc::clone(&opened);
+    let open_driver = Arc::clone(&driver);
+    let code = run_io(PORT_LINE_CARRIER, reader, writer, stop, move |caller| {
+        let principal = crate::root::off_path::serve_lines::session_principal(&gov);
+        let sink = Arc::clone(&caller);
+        let carrier = open_driver.open_carrier(
+            &principal,
+            Arc::new(move |bytes: &[u8]| sink.out.send(sink.spare.line(bytes)).is_ok()),
+        );
+        let _ = opened_here.set(carrier);
+        let requests = std::sync::atomic::AtomicU64::new(1);
+        let answer_driver = Arc::clone(&open_driver);
+        let answer = move |line: Vec<u8>| {
+            let request_id = requests.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let driver = Arc::clone(&answer_driver);
+            let caller = Arc::clone(&caller);
+            async move {
+                match driver.answer_line(carrier, request_id, line).await {
+                    Ok(mut body) if !body.is_empty() => {
+                        terminate(&mut body);
+                        let _ = caller.out.send(body);
+                    }
+                    Ok(_) => {}
+                    Err(refused) => tracing::warn!(?refused, "a line got no answer from its plane"),
+                }
+            }
+        };
+        (answer, move || open_driver.close_carrier(carrier))
+    })
+    .await;
+    if let Some(carrier) = opened.get() {
+        driver.carrier_ended(*carrier).await;
+    }
+    code
 }
 
 async fn run_io<R, W, S, Open, Answer, Unit, Close>(
