@@ -361,6 +361,10 @@ fn served_openapi_equals_committed_file() {
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target"));
     let artifact = target.join("openapi.generated.json");
+    // The facade has no pretty printer, so the artifact is written as the emit path writes the
+    // committed file (`emit_openapi_artifact`, `openapi_for_configured_planes`: serde_json's pretty
+    // form), byte for byte what to copy over it. Those two paths name serde_json directly (DEP-3);
+    // this line follows them and moves with them when the facade grows a pretty writer.
     let pretty = serde_json::to_string_pretty(&generated).expect("pretty openapi");
     let written = std::fs::create_dir_all(&target)
         .and_then(|()| std::fs::write(&artifact, format!("{pretty}\n")))

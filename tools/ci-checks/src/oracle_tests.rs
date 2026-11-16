@@ -435,3 +435,31 @@ fn an_unknown_subcommand_or_a_bad_regex_is_refused() {
     assert_eq!(run(&["no-such"]).code, 2);
     assert_eq!(run(&["regex-search", "(", "x"]).code, 2);
 }
+
+#[test]
+fn the_json_tree_reads_through_the_facade_and_keeps_the_last_duplicate() {
+    use super::Node;
+    let tree = Node::parse(r#"{"a": 1.50, "b": [true, null, "x"], "a": 0}"#).expect("parses");
+    assert_eq!(tree.get("a"), Some(&Node::Number(String::from("0"))));
+    assert_eq!(
+        tree.get("b").and_then(Node::as_array).map(Vec::len),
+        Some(3)
+    );
+    assert_eq!(tree.to_string(), r#"{"b":[true,null,"x"],"a":0}"#);
+    assert!(Node::parse("{").is_err());
+}
+
+#[test]
+fn the_launcher_helpers_read_what_the_shell_read() {
+    use crate::oracle_judge::{base64_decode, base64_encode, pin_in};
+    for sample in [&b""[..], b"f", b"fo", b"foo", b"foob", b"fooba", b"foobar"] {
+        assert_eq!(
+            base64_decode(&base64_encode(sample)).as_deref(),
+            Some(sample)
+        );
+    }
+    assert_eq!(base64_encode(b"fo"), "Zm8=");
+    assert_eq!(base64_decode("Zm9v\nYmFy").as_deref(), Some(&b"foobar"[..]));
+    assert_eq!(pin_in("release_ref=abc\nsha=1=2\n", "sha"), "1=2");
+    assert_eq!(pin_in("release_ref=abc\n", "sha"), "");
+}

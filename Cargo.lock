@@ -344,6 +344,7 @@ dependencies = [
 name = "busbar-ci-checks"
 version = "1.6.0"
 dependencies = [
+ "busbar-contract",
  "object",
  "proc-macro2",
  "quote",
