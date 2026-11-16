@@ -592,7 +592,6 @@ dependencies = [
  "foldhash",
  "hex",
  "lexopt",
- "serde_json",
  "zeroize",
 ]
 

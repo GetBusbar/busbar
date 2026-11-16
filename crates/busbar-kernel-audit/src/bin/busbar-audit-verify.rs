@@ -35,7 +35,7 @@ fn main() -> std::process::ExitCode {
     }
 }
 
-fn run(args: Vec<std::ffi::OsString>) -> Result<serde_json::Value, &'static str> {
+fn run(args: Vec<std::ffi::OsString>) -> Result<busbar_contract::json::Value, &'static str> {
     let mut keys = None;
     let mut range = None;
     let mut head = None;
@@ -58,8 +58,10 @@ fn run(args: Vec<std::ffi::OsString>) -> Result<serde_json::Value, &'static str>
     audit_verify::verify(&keys, &range, head.as_ref())
 }
 
-fn read_json(path: PathBuf) -> Result<serde_json::Value, &'static str> {
+fn read_json(path: PathBuf) -> Result<busbar_contract::json::Value, &'static str> {
     let file = std::fs::File::open(path).map_err(|_| "could not open an input file")?;
-    serde_json::from_reader(std::io::BufReader::new(file))
-        .map_err(|_| "an input file is not valid JSON")
+    let mut bytes = Vec::new();
+    std::io::Read::read_to_end(&mut std::io::BufReader::new(file), &mut bytes)
+        .map_err(|_| "an input file is not valid JSON")?;
+    busbar_contract::json::parse_value(&bytes).map_err(|_| "an input file is not valid JSON")
 }

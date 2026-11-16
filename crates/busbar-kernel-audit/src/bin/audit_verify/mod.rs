@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+use busbar_contract::json::{self, JsonValueTrait, Value};
 use busbar_kernel_audit::digest::{Digest, Framing};
 use busbar_kernel_audit::sign::{SIGNATURE_ALGORITHM, SIGNATURE_DOMAIN};
 use busbar_kernel_audit::{
     AuditVerifyingKey, DIGEST_RECIPE, DIGEST_RECIPE_V2, DIGEST_RECIPE_V4, DIGEST_RECIPE_V6,
     DIGEST_RECIPE_V7,
 };
-use serde_json::{json, Value};
 use std::collections::BTreeMap;
 
 const V2: &str = include_str!("../../../../../docs/audit-chain-digest-v2.md");
@@ -337,7 +337,7 @@ pub(super) fn verify(keys: &Value, range: &Value, head: Option<&Value>) -> Resul
             records.last().ok_or("the requested fetch is empty")?,
         )?;
     }
-    Ok(json!({
+    Ok(json::json!({
         "result": if head.is_some() { "complete-through-trusted-head" } else { "signed-consistent-window" },
         "from": from,
         "to": to,
