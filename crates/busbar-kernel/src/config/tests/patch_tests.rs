@@ -18,7 +18,6 @@ fn every_patch_mirrors_every_field_of_its_section() {
         max_inbound_concurrent,
         max_keys_per_principal,
         max_auto_provisioned_groups,
-        hook_content_max_bytes,
         hard_down_cooldown_secs,
         upstream_error_body_max_bytes,
         tls_handshake_timeout_secs,
@@ -36,7 +35,6 @@ fn every_patch_mirrors_every_field_of_its_section() {
         max_inbound_concurrent: Some(max_inbound_concurrent),
         max_keys_per_principal: Some(max_keys_per_principal),
         max_auto_provisioned_groups: Some(max_auto_provisioned_groups),
-        hook_content_max_bytes: Some(hook_content_max_bytes),
         hard_down_cooldown_secs: Some(hard_down_cooldown_secs),
         upstream_error_body_max_bytes: Some(upstream_error_body_max_bytes),
         tls_handshake_timeout_secs: Some(tls_handshake_timeout_secs),
@@ -167,4 +165,37 @@ fn datagram_line_memory_patch_distinguishes_omission_set_and_disable() {
     restored.apply(&mut base);
     assert_eq!(base.datagram_line_memory_bytes, None);
     assert_eq!(base.max_inbound_concurrent, 7);
+}
+
+#[test]
+fn hook_content_max_bytes_is_refused_as_an_unknown_limits_key() {
+    let yaml = "{ default_max_tokens: 2048, hook_content_max_bytes: 4096 }";
+    let err = busbar_contract::yaml::from_str::<crate::config::LimitsCfg>(yaml)
+        .expect_err("limits.hook_content_max_bytes no longer exists")
+        .to_string();
+    assert!(
+        err.contains("unknown field `hook_content_max_bytes`"),
+        "{err}"
+    );
+}
+
+#[test]
+fn hook_content_max_bytes_is_refused_by_the_admin_settings_patch() {
+    let err = serde_json::from_str::<LimitsPatch>(r#"{"hook_content_max_bytes":4096}"#)
+        .expect_err("PUT /config/settings must refuse limits.hook_content_max_bytes")
+        .to_string();
+    assert!(
+        err.contains("unknown field `hook_content_max_bytes`"),
+        "{err}"
+    );
+}
+
+#[test]
+fn a_1_5_5_shaped_limits_block_still_parses() {
+    let yaml = "{ default_max_tokens: 2048, request_body_max_bytes: 1048576, \
+                hard_down_cooldown_secs: 30, max_keys_per_principal: 5 }";
+    let limits = busbar_contract::yaml::from_str::<crate::config::LimitsCfg>(yaml)
+        .expect("a 1.5.5 limits block parses");
+    assert_eq!(limits.default_max_tokens, 2048);
+    assert_eq!(limits.hard_down_cooldown_secs, 30);
 }

@@ -475,22 +475,17 @@ fn project<'a>(
     send_user: bool,
 ) -> (RoutingRequest<'a>, bool) {
     let shape = subject.facts.shape();
-    let mut content_delivered = false;
+    let content_delivered = send_prompt;
     let prompt = send_prompt.then(|| {
         let messages = items
             .iter()
             .filter(|(i, _)| i.slot() != Slot::System)
             .map(|(i, t)| (Cow::Borrowed(i.author()), Cow::Borrowed(t)))
             .collect();
-        let prompt = crate::hooks::PromptProjection {
+        crate::hooks::PromptProjection {
             system: join_system(items),
             messages,
-        };
-        let was_empty = prompt.system.is_none() && prompt.messages.is_empty();
-        let prompt = crate::hooks::content_capped(prompt);
-
-        content_delivered = was_empty || prompt.system.is_some() || !prompt.messages.is_empty();
-        prompt
+        }
     });
     let request = RoutingRequest {
         request_id: subject.request_id,
