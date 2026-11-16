@@ -21,6 +21,15 @@ provider dial) · [Configuration](/docs/configuration/) · [Observability](/docs
 
 ---
 
+## Media and control paths
+
+<figure class="doc-diagram">
+<img src="/docs/diagrams/realtime-media-control.svg" alt="Direct WebRTC audio flows between browser and provider; Busbar brokers and controls the session separately. Other transports use their configured bridge." loading="lazy" />
+<figcaption><a href="/docs/diagrams/realtime-media-control.svg" download>Download SVG</a></figcaption>
+</figure>
+
+Do not assume all audio traverses Busbar. Direct browser-to-provider WebRTC media and the broker/sideband control channel are separate paths. Check the provider/transport tables below for session mutation, reconnect and usage behavior. Protocol or loopback tests are not evidence of qualification against a real provider account.
+
 ## What the plane is
 
 The `streams:` section is the fourth top-level plane noun, beside `pools:` / `tools:` / `agents:`.

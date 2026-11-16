@@ -96,7 +96,7 @@ The config keys:
 (The two keys keep their plane-native spellings; the admin API projects both under one view field, so
 the concept is one across the planes.)
 
-### Single-flight coalescing (A2A)
+### Single-flight coalescing
 
 On the A2A plane, when many delegations hit a stale card at the same instant, exactly **one** look
 runs per agent and every other caller waits for its verdict rather than fetching again; a look
@@ -104,10 +104,7 @@ abandoned before it lands releases its waiters to look again (`busbar-plane-a2a`
 `verify_agent_on_call`). Upstream load is then held to about one card fetch per `reverify_ttl` per
 agent regardless of caller count.
 
-The MCP plane does **not** coalesce in this release: each `tools/call` that finds its server's last
-fetch older than `verify_ttl` fetches `tools/list` itself, so a burst of calls against a stale server
-can produce one fetch per call. Each fetch is bounded by the server's `timeout:`. Size `verify_ttl`
-with that in mind for high-fan-in tools.
+The MCP plane also shares an in-flight `tools/list` fetch among concurrent calls to the same server and catalogue generation. The fetch lease is bounded by the server's `timeout:`; callers join the result instead of issuing a fetch each. `verify_ttl: 0s` still shares concurrent in-flight work. This is process-local coordination, not one fetch across the fleet. A failed verification does not authorize dispatch.
 
 A clock that moved backwards, or a clock read that fails, is treated as stale, never as fresh, so a
 corrected or tampered clock cannot make an observation permanently fresh

@@ -5,8 +5,8 @@ validated memory ABI for linked and dynamically loaded plugins. An incompatible 
 kind version is refused before the plugin opens. Product version 1.6.0 does not mean that every
 unreleased development SDK revision is binary compatible.
 
-The current mechanism is **3**. Rebuild every linked or dropped plugin against the
-current immutable SDK pin. A mechanism-2 bundle is rejected before loading its library
+The current mechanism is **2**, from `abi::versions::MECHANISM`. Rebuild every linked or dropped plugin against the
+current immutable SDK pin. A bundle with a different mechanism is rejected before loading its library
 or calling OPEN; it cannot obtain the new host authority through a compatibility alias.
 This change does not change the seven kind wire layouts or customer persistence formats.
 

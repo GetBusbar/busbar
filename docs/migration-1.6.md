@@ -136,8 +136,8 @@ state). Selectors and `BUSBAR_CONFIG_OVERLAY` that hold nothing get a warning (B
 records when upgrading 1.5.5: existing signed keys do not need to be reminted merely for this upgrade.
 
 In 1.6.0, changes made through the admin API are stored in the store, not in an overlay file. The
-first boot imports your 1.5.5 overlay file (`config.overlay.file`, else `BUSBAR_CONFIG_OVERLAY`,
-else `busbar-overlay.json` beside the config) into the store once:
+explicit migration command imports your 1.5.5 overlay file (`config.overlay.file`, else `BUSBAR_CONFIG_OVERLAY`,
+else `busbar-overlay.json` beside the old config) into the store once. Run it before serving; startup refuses unimported legacy state:
 
 - hooks, wiring, groups, root controls, named definitions and plugin floors are kept;
 - if the overlay chose the store, that choice is written into `config.yaml`;
@@ -145,7 +145,7 @@ else `busbar-overlay.json` beside the config) into the store once:
 - the import needs a durable store; an overlay with the memory store is refused;
 - an unknown or invalid overlay is refused, never partly imported;
 - the old file is not read again after import.
-<!-- TODO(migrate-design): whether the imported overlay file is renamed (design: <file>.imported-1.5.5). -->
+The original files remain unchanged; the import and digest receipt commit atomically. See [overlay import](migration-overlay-1.6.md).
 
 ### Credentials moved to files
 
@@ -187,8 +187,7 @@ Hook configuration and admin writes use one canonical spelling. Convert existing
 once and update clients that submit or read retired fields.
 
 - **`config.overlay` is retired.** 1.6.0 keeps admin-API config changes in the configured Store,
-  not in an overlay file, so `config:` accepts only `locked`. `busbar --migrate-config` and the
-  first 1.6.0 boot remove `overlay: false` and `overlay: { file: <path> }` and keep
+  not in an overlay file, so `config:` accepts only `locked`. `busbar --migrate-config` removes `overlay: false` and `overlay: { file: <path> }` and keep
   `config.locked`. Import the old file into the Store once with
   `busbar --config <new-config.yaml> --migrate-overlay <old-config.yaml>`
   ([overlay import](migration-overlay-1.6.md)). Where the selector is still present and nothing

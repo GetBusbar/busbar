@@ -29,6 +29,21 @@ A hook is a **`kind: hook` plugin**: the same signed-tarball, in-process plugin 
 <path d="M363.5 184 V226" stroke="#f87171" stroke-width="2"/><rect x="218.5" y="226" width="290" height="54" rx="8" fill="#271e2a" stroke="#f87171"/><text x="363.5" y="259" text-anchor="middle" fill="#fca5a5" font-size="15" font-weight="600">Reject: no upstream dispatch</text>
 <text x="32" y="318" fill="#94a3b8" font-size="14">Taps run at their configured stages. The diagram shows a response-stage tap.</text></svg>
 
+## What ships and what connects
+
+| Category | Examples | What to expect |
+| --- | --- | --- |
+| First-party hook modules | Webrequest, Ranking | Install the matching artifact and configure its documented actions |
+| Custom plugin examples | PHI, audit and smart-router examples | Source examples to build and qualify; not shipped PII detectors |
+| External policy services | An HTTPS service called through Webrequest | Connectivity does not establish detector coverage or policy correctness |
+| Provider-native controls | Bedrock guardrail configuration, Gemini safety settings | Provider and protocol specific; not interchangeable gateway hooks |
+
+Use `on_error: reject` for required gates and test rejection, timeout and dependency failure before rollout. LLM rewrite, ordering and restriction actions are not automatically available on MCP/A2A rejection gates. Optional transformations can retain the original content; that is inappropriate for a mandatory redaction policy.
+
+### Preserve required provider protections
+
+Same-protocol routing preserves supported native controls. Cross-protocol translation can drop provider-specific settings with a warning, including Gemini `safetySettings`. If a protection is required, restrict the pool to compatible provider/protocol lanes, include failover lanes in the review, and exercise the protection on the actual route. Do not configure a cross-provider fallback that loses a mandatory control. A warning is not an enforcement policy.
+
 ## How a hook attaches
 
 A hook instance is a **module ref** whose `module:` names a loaded `kind: hook` plugin (by its signed-manifest name/alias); `settings:` is the plugin's opaque config. Loading any hook plugin requires `plugins.enabled: true` and the signed tarball in the plugins directory. A `module:` that does not resolve to an installed plugin is a fail-closed boot error.

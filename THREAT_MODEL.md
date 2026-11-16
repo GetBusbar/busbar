@@ -206,11 +206,7 @@ dropped-in plugins are signature-checked before they load (see the plugin threat
 Dependency checks use `deny.toml` through internal CI. GitHub is a public source mirror only.
 
 
-**Not built:** the 1.6.0 release publication step (`.ci/qa.yaml`) is not written yet, so this tree
-does not yet produce the signed, attested release binaries and images. Until it lands nothing is
-published from `main` (`RELEASE.md`). Release artifacts are published only from the build that was
-judged; the version tag is an output of a green release, not an input. See the
-[Security page](https://getbusbar.com/security/) for verification recipes of published releases.
+**Release availability:** the 1.6.0 provenance producer and verifier are implemented, but production signing and publication are not activated. No published 1.6.0 attestation bundle or production verification identity is claimed here. Verify each released binary, container and plugin using that artifact's published verification material; a signed plugin does not authenticate its host engine. See the [release verification guide](https://getbusbar.com/docs/deploy/binary/) for published releases and current development limitations.
 
 ### T9: Malicious or tampered plugin (boundary 6)
 A plugin is native code in Busbar's process with the process's privileges, so a hostile plugin is a
@@ -281,8 +277,7 @@ backwards counts as stale (`crates/busbar-kernel/src/trust/reverify.rs`). An A2A
 [Tool and agent trust](docs/tool-and-agent-trust.md).
 
 **Limits:** verification checks the advertised surface, not what the upstream does when called. The
-MCP plane does not coalesce concurrent re-fetches, so a burst against a stale server can fetch once
-per call.
+MCP plane coalesces concurrent tool-list refreshes per server and catalogue generation within the process. This does not coordinate refreshes across nodes or detect malicious behavior hidden behind an unchanged advertised definition.
 
 ### T12: Audit-chain tampering (boundary 5, store)
 **Mitigation:** the audit log is a hash chain whose records and ledger checkpoints are signed with

@@ -888,3 +888,19 @@ remain explicitly refused.
 | Cross-protocol responses missing fields | Check whether the target protocol represents the missing field. Cross-protocol responses are re-encoded, and fields without a target representation may be omitted or normalized. In the 1.6.0 development LLM plane, inspect the request diagnostics for dropped field paths. See [translation behavior and limits](https://getbusbar.com/docs/protocols/#what-lossless-means-here); use a compatible same-protocol backend when you need a provider-specific field. |
 | `journal corruption in ... quarantined to ...` error at boot | A journal segment in the data directory was damaged mid-log. The node booted without the damaged records. Keep the quarantine file and follow [Journal corruption at boot](#journal-corruption-at-boot). |
 | High `busbar_failovers_total` for one lane | That backend is flapping; inspect its `busbar_upstream_failures_total` `disposition`. |
+
+
+## Listeners and health checks
+
+| Route | Listener | Access and purpose |
+| --- | --- | --- |
+| `/api/v1/admin/*` | Separate administration listener, default `127.0.0.1:8081` | Configured admin authentication; exposed binds require mTLS unless explicitly waived |
+| `/healthz` | Data and administration listeners | HTTP authentication exempt; listener TLS/mTLS still applies. Readiness reports dispatch health and usable upstream lanes |
+
+An upstream outage can make `/healthz` return 503 while the process is healthy. Use it for readiness, not a restart-triggering liveness check. A TCP probe of the data listener is independent of upstream health but proves only that the socket accepts a connection; it does not detect every application deadlock. `busbar --validate` checks configuration and plugin preflight, not the running process.
+
+## Configuration recovery boundaries
+
+Admin mutations persist through the configured Store. A read-only config directory does not prevent Store writes. Keep the base configuration, Store backup, signing material and required plugin packages together when planning recovery. A failed persistence operation must not be treated as a successful configuration update; retain ETag/concurrency checks and inspect the effective configuration after recovery. Memory Store state is lost on restart. `config.locked: true` selects configuration managed outside runtime mutation; retired file-overlay settings are migration inputs only.
+
+Durable MCP task records can be queried through a shared persistent Store. Legacy MCP transport sessions remain process-local: preserve session affinity and expect clients to reconnect after a node restart. Shared task storage does not make every live session portable.
