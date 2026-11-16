@@ -65,3 +65,7 @@ impl core::fmt::Display for Refusal {
         todo!()
     }
 }
+
+#[cfg(test)]
+#[path = "tests/refusal_tests.rs"]
+mod tests;

@@ -79,3 +79,7 @@ pub fn admit_linked(plugin: &'static Plugin) -> Result<Admitted, Refusal> {
     let _ = plugin;
     todo!()
 }
+
+#[cfg(test)]
+#[path = "tests/admit_tests.rs"]
+mod tests;

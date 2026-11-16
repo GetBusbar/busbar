@@ -37,3 +37,7 @@ pub enum IdentityFault {
     Length { len: u32 },
     TrailingDash,
 }
+
+#[cfg(test)]
+#[path = "tests/scan_tests.rs"]
+mod tests;
