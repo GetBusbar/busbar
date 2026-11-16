@@ -440,7 +440,7 @@ impl PersistenceBackend for Store {
             dataset: DATASET,
             atomic_domain: [2; 16],
             clock_authority: CLOCK_AUTHORITY,
-            physical_version: busbar_contract::abi::sdk::store::v4::slot::PHYSICAL_VERSION,
+            physical_version: busbar_contract::persistence::PHYSICAL_VERSION,
             durability: Durability::Local,
         }
     }

@@ -11,9 +11,7 @@
 //! - `migrate-retired-words` (red (k)): none of the migration table's vocabulary survives. No
 //!   `[package.metadata.busbar.*]` table carries a `former.`, `retired.` or `name_1_5_5` key (the root
 //!   migration table is gone, names resolve through each plugin's `FORMER_NAMES`), and no production
-//!   source names `RootHost`, the host the retired flag ran plugin migrations through. The files
-//!   `PENDING_BINDING` lists still hold `RootHost`: package 4 (mob/c1c2-binding) deletes them with
-//!   the `main.rs` interleave, and removes the entries.
+//!   source names `RootHost`, the host the retired flag ran plugin migrations through.
 //! - `migrate-anchors` (red (sz1)(3c)): each anchor the `migrate-size` job sums from carries
 //!   `#[cold]` and `#[inline(never)]` in the source, so fat LTO cannot inline it away and a
 //!   rename cannot hide code: "anchor not pinned" otherwise, "anchor not found" when it is gone.
@@ -37,13 +35,6 @@ const RETIRING: &str = "busbar-migrations";
 
 /// The host of the retired flag's plugin migrations.
 pub(crate) const ROOT_HOST: &str = "RootHost";
-
-/// Files that still name `RootHost` because `startup_upgrade/` is called from the `main.rs` boot
-/// interleave, which package 4 rebuilds around the seam. Package 4 deletes them and this list.
-const PENDING_BINDING: [&str; 2] = [
-    "crates/busbar/src/root/config_migrate.rs",
-    "crates/busbar/src/root/startup_upgrade/",
-];
 
 /// Metadata key prefixes that belonged to the root migration table.
 const RETIRED_KEYS: [&str; 3] = ["former.", "retired.", "name_1_5_5"];
@@ -210,7 +201,7 @@ impl<'ast> Visit<'ast> for WordScan<'_> {
 }
 
 /// The migration table's vocabulary that must not come back: metadata keys in any `Cargo.toml` and
-/// production `RootHost`. See the module comment for `PENDING_BINDING`.
+/// production `RootHost`.
 pub(crate) fn retired_words(root: &Path) -> Result<Vec<String>, String> {
     let mut findings = Vec::new();
     let mut manifests = vec![root.join("dist/default/Cargo.toml")];
@@ -243,12 +234,6 @@ pub(crate) fn retired_words(root: &Path) -> Result<Vec<String>, String> {
     let mut test_modules = Vec::new();
     for file in files {
         let shown = rel(root, &file);
-        if PENDING_BINDING
-            .iter()
-            .any(|prefix| shown.starts_with(prefix))
-        {
-            continue;
-        }
         let text = std::fs::read_to_string(&file).map_err(|error| format!("{shown}: {error}"))?;
         test_modules.extend(scan_source(&file, &text).test_modules);
         for line in root_host_sites(&text) {

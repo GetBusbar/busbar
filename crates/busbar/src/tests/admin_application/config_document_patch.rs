@@ -1067,21 +1067,6 @@ impl busbar_kernel::appbuild::RootRules for PlaneOnMarker {
     fn check(&self, cfg: &busbar_kernel::config::RootCfg) -> Result<(), String> {
         self.inner.check(cfg)
     }
-    fn normalize_document(
-        &self,
-        kind: busbar_kernel::appbuild::ConfigDocument,
-        path: &std::path::Path,
-        raw: &str,
-    ) -> Result<Option<busbar_contract::secure::SecureString>, String> {
-        self.inner.normalize_document(kind, path, raw)
-    }
-    fn absent_document(
-        &self,
-        kind: busbar_kernel::appbuild::ConfigDocument,
-        path: &std::path::Path,
-    ) -> Result<(), String> {
-        self.inner.absent_document(kind, path)
-    }
     fn check_built(&self, app: &busbar_kernel::state::App) -> Result<(), String> {
         self.inner.check_built(app)
     }

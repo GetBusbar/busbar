@@ -1,18 +1,25 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! One application construction and retained readiness boundary for current and upgraded boot.
+//! The boot's configuration reader and its one application build (MIGRATE-ON-BOOT r42 §3 step 2).
+//!
+//! [`ConfigRules`] are the rules every boot read of config.yaml and its providers catalog runs under:
+//! an unstamped boot reads the document the migrate seam planned in memory ([`crate::root::migrate::held`]),
+//! every other read reads the file. The gateway reads only current bytes: conversion runs in the seam, before
+//! the re-exec. [`BootApp`] builds the one `App` over the store admission the boot holds and retains the
+//! build and its readiness checks until the boot adopts the ready candidate.
 
 use std::{
     collections::{HashMap, HashSet},
     future::Future,
-    path::PathBuf,
+    path::{Path, PathBuf},
     pin::Pin,
     sync::Arc,
     time::Duration,
 };
 
 use busbar_contract::crypto::Sha256;
+use busbar_contract::secure::SecureString;
 use busbar_kernel::{
     appbuild::{self, ConfirmedLimits, InstalledLimits, RootRules},
     config::{self, overlay::OverlayStore, DeployCfg, PluginsCfg, ProviderDef, RootCfg},
@@ -22,13 +29,32 @@ use busbar_kernel::{
     },
     state::App,
 };
-use busbar_migrations as migration;
 use tokio::{
     sync::{watch, Mutex},
     task::JoinHandle,
 };
 
 use crate::root::{durability::NodeBook, linked::Compose};
+
+/// The rules of the boot's configuration reads: the held plan in place of config.yaml (and of the planned
+/// providers catalog) on an unstamped boot, the file otherwise. The build judges the configuration itself.
+pub(crate) struct ConfigRules;
+
+impl RootRules for ConfigRules {
+    fn check(&self, _: &RootCfg) -> Result<(), String> {
+        Ok(())
+    }
+    fn held_document(&self, path: &Path) -> Option<SecureString> {
+        crate::root::migrate::held(path)
+    }
+}
+
+/// THE STORE BOOTSTRAP: the non-serving projection of the deployment the store opens under, before the
+/// effective configuration resolves. The deployment is current bytes (the seam converted any 1.5.5 shape
+/// before this read), so it is the kernel's projection with nothing narrowed.
+pub(crate) fn store_bootstrap(deploy: &DeployCfg) -> Result<RootCfg, Vec<String>> {
+    config::bootstrap::resolve_store_bootstrap(deploy)
+}
 
 pub(crate) struct Preparation {
     pub startup: Startup,
@@ -48,11 +74,10 @@ pub(crate) struct Preparation {
     pub rules: Arc<dyn RootRules>,
     pub shutdown_rx: watch::Receiver<bool>,
     pub shutdown_tx: watch::Sender<bool>,
-    pub configuration_fingerprint: [u8; 32],
 }
 
 /// Moving this value into serving transfers the actual validated owners.
-/// No field is rebuilt or reopened after the migration checkpoint commits.
+/// No field is rebuilt or reopened after readiness is validated.
 pub(crate) struct ReadyCandidate {
     pub startup: Startup,
     pub core: Arc<CoreStore>,
@@ -118,8 +143,8 @@ impl std::fmt::Debug for PreparationFailure {
 }
 impl std::error::Error for PreparationFailure {}
 
-/// The exact application-building segment shared by normal and upgraded startup.
-/// Call through StartupContinuation so cancellation retains this future.
+/// The one application-building segment of the boot.
+/// Call through [`BootApp`] so cancellation retains this future.
 pub(crate) async fn prepare(input: Preparation) -> Result<ReadyCandidate, Box<PreparationFailure>> {
     // The retained future may be polled by a task other than its creator. Scope its execution,
     // including appbuild's Secret/Store work before BookPreparation installs measurement custody.
@@ -143,7 +168,6 @@ async fn prepare_inner(input: Preparation) -> Result<ReadyCandidate, Box<Prepara
         rules,
         shutdown_rx,
         shutdown_tx,
-        configuration_fingerprint,
     } = input;
     let mut failed = PreparationFailure::new(startup);
     let Some(core) = failed.startup.as_ref().and_then(Startup::store) else {
@@ -162,7 +186,6 @@ async fn prepare_inner(input: Preparation) -> Result<ReadyCandidate, Box<Prepara
     let mut configuration_binding = Sha256::new();
     configuration_binding.update(b"busbar.startup-configuration.v1\0");
     configuration_binding.update(&source.binding_digest()[..]);
-    configuration_binding.update(&configuration_fingerprint[..]);
     let configuration_fingerprint = configuration_binding.finish();
     if *shutdown_rx.borrow() {
         return Err(failed.refused("startup was stopped before application preparation"));
@@ -259,14 +282,7 @@ pub(crate) enum Phase {
     Reopening,
     Hydrating,
     Validating,
-    Finalizing,
     Ready,
-}
-
-#[derive(Clone)]
-pub(crate) struct UpgradeBinding {
-    pub upgrade_id: [u8; 16],
-    pub target: migration::Identity,
 }
 
 type Preparing =
@@ -312,23 +328,15 @@ impl Drop for State {
 
 /// Owns both pending futures and their candidate. A bounded-out caller cannot
 /// restart application construction or initialize the global owners a second time.
-pub(crate) struct StartupContinuation {
-    /// `None` binds the current format (no upgrade).
-    binding: Option<UpgradeBinding>,
+pub(crate) struct BootApp {
     state: Mutex<State>,
 }
 
-impl StartupContinuation {
-    #[cfg(test)]
-    pub(crate) fn current(input: Preparation) -> Arc<Self> {
-        Self::new(input, None)
-    }
-    pub(crate) fn for_upgrade(input: Preparation, binding: UpgradeBinding) -> Arc<Self> {
-        Self::new(input, Some(binding))
-    }
-    fn new(input: Preparation, binding: Option<UpgradeBinding>) -> Arc<Self> {
+impl BootApp {
+    /// The boot's one application build over its store admission: the MIN-3 walk's (its store's own open
+    /// converted its data; core's records step ran after admission) or the old ABI's current dataset.
+    pub(crate) fn new(input: Preparation) -> Arc<Self> {
         Arc::new(Self {
-            binding,
             state: Mutex::new(State {
                 phase: Phase::Reopening,
                 preparing: Some(Box::pin(prepare(input))),
@@ -396,13 +404,11 @@ impl StartupContinuation {
                 .as_ref()
                 .ok_or("startup candidate missing")?
                 .clone();
-            let binding = self.binding.clone();
             state.validating = Some(Box::pin(async move {
                 let mut candidate = candidate.lock().await;
                 loop {
                     match Box::pin(crate::root::measurements::maintenance(validate(
                         &mut candidate,
-                        &binding,
                     )))
                     .await
                     {
@@ -447,38 +453,13 @@ impl StartupContinuation {
                 state.validating = None;
                 state.receipt = Some(receipt);
                 state.pending_reason = None;
-                state.phase = if self.binding.is_none() {
-                    Phase::Ready
-                } else {
-                    Phase::Finalizing
-                };
+                state.phase = Phase::Ready;
                 Ok(Some(receipt.digest))
             }
         }
     }
-    #[cfg(test)]
-    pub(crate) async fn verify_target(
-        &self,
-        target: &migration::Identity,
-    ) -> Result<[u8; 32], migration::Error> {
-        if !matches!(&self.binding, Some(binding) if &binding.target == target) {
-            return Err(migration::Error::Verification);
-        }
-        self.readiness()
-            .await
-            .map_err(|_| migration::Error::Verification)?
-            .ok_or(migration::Error::ReconciliationRequired)
-    }
-    pub(crate) async fn take_ready(
-        &self,
-        completion: &migration::CompletionReceipt,
-    ) -> Result<Option<ReadyCandidate>, String> {
-        self.take(Some(completion)).await
-    }
-    async fn take(
-        &self,
-        completion: Option<&migration::CompletionReceipt>,
-    ) -> Result<Option<ReadyCandidate>, String> {
+    /// The ready candidate, once [`Self::readiness`] answered: checked live again, and handed over once.
+    pub(crate) async fn take(&self) -> Result<Option<ReadyCandidate>, String> {
         let mut state = self.state.lock().await;
         if state.taken {
             return Err("startup candidate was already adopted".into());
@@ -489,14 +470,6 @@ impl StartupContinuation {
         let receipt = state
             .receipt
             .ok_or("startup candidate has no readiness receipt")?;
-        match (&self.binding, completion) {
-            (None, None) => {}
-            (Some(binding), Some(completion))
-                if completion.upgrade_id() == binding.upgrade_id
-                    && completion.target() == &binding.target
-                    && completion.readiness_digest() == receipt.digest => {}
-            _ => return Err("completion receipt belongs to another startup candidate".into()),
-        }
         let candidate = state
             .candidate
             .as_ref()
@@ -637,10 +610,7 @@ fn check_live(candidate: &ReadyCandidate) -> Result<(), ValidationError> {
     Ok(())
 }
 
-async fn validate(
-    candidate: &mut ReadyCandidate,
-    binding: &Option<UpgradeBinding>,
-) -> Result<Readiness, ValidationError> {
+async fn validate(candidate: &mut ReadyCandidate) -> Result<Readiness, ValidationError> {
     use ValidationError::Permanent;
     check_owners(candidate)?;
     let governance = candidate
@@ -749,18 +719,6 @@ async fn validate(
         .map_err(|_| Permanent("candidate writer observation refused"))?;
     let mut proof = Sha256::new();
     proof.update(b"busbar.startup-readiness.v1\0");
-    if let Some(binding) = binding {
-        if !binding.target.realized_by(&candidate.core.info()) {
-            return Err(Permanent(
-                "candidate target identity does not match the upgrade",
-            ));
-        }
-        proof.update(&binding.upgrade_id[..]);
-        proof.update(
-            &serde_json::to_vec(&binding.target)
-                .map_err(|_| Permanent("candidate target identity binding refused"))?,
-        );
-    }
     proof.update(&candidate.core.info().dataset.0[..]);
     proof.update(&candidate.core.info().atomic_domain[..]);
     proof.update(&candidate.core.info().clock_authority[..]);

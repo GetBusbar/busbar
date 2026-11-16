@@ -4,7 +4,7 @@ version = "1.6.0"
 publish = false            # internal workspace tool; never goes to crates.io
 edition = "2021"
 rust-version = "1.97"
-description = "Core's repository checks, one CI job line each in busbar-release ci/core.yml: no-getrandom, crypto-graph, the MIN-3 fleet manifest, C-TRANSPORT source checks, C-EXPORT-STREAMS, C-NO-LICENCE, the section 15.8 core scan, the LOC report, the per-plugin-repo checks (template-drift, patch-drift, no-host-link, plugin-rules, c-alias), and bin/oracle's logic (oracle)."
+description = "Core's repository checks, one CI job line each in busbar-release ci/core.yml: no-getrandom, crypto-graph, the MIN-3 fleet manifest, C-TRANSPORT source checks, C-EXPORT-STREAMS, C-NO-LICENCE, the section 15.8 core scan, the LOC report, the per-plugin-repo checks (template-drift, patch-drift, no-host-link, plugin-rules, c-alias), the migrate-on-boot checks (migrate-flag-text, migrate-retired-words, migrate-anchors, the three migrate-overlay checks and migrate-size), and bin/oracle's logic (oracle)."
 license = "Apache-2.0"
 
 [[bin]]
