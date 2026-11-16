@@ -148,13 +148,113 @@ fn custody_answer_rules() {
 }
 
 #[test]
-#[ignore = "owner: W1-K8C; blocked (re-checked on dev 2026-11-16): the kernel export pump, DiskSink and stream routing are not on dev (OUTSTANDING row 4)"]
+#[ignore = "owner: W1-K8C; re-checked 2026-11-16: the ids, resends and partial ACKs run as delivery_ids_resends_and_partial_acks_in_the_kernel_types below; the booted half (the pump minting an id per line set, an APPEND delivery counted accepted in export_custody_total, a LOGS answer CUSTODY{DURABLE, 10} never confirmed or paused, the admin instance view showing the ceiling) waits on open MR !2645 (kernel export pump and DiskSink, OUTSTANDING row 4)"]
 fn delivery_ids_resends_and_acks() {
     todo!("owner: W1-K8C (C-EXPORT-DELIVERY)")
 }
 
 #[test]
-#[ignore = "owner: W1-K3; blocked (re-checked on dev 2026-11-16): the export breaker lives in the export pump, which is not on dev (OUTSTANDING row 4); the backoff schedule itself is covered by busbar-kernel retry tests"]
+#[ignore = "owner: W1-K3; re-checked 2026-11-16: the breaker clauses of (e) run as the sibling breaker tests below; the booted half (the pump waiting Backoff [floor, ceiling], Retry-After 30 giving a wait of at least 30 s, Retry-After 900 giving a 300 s wait with the cell open 900 s, a non-content delivery stopping after attempt 3) waits on open MR !2645 (the pump that drives the cell); the backoff schedule itself is covered by busbar-kernel retry tests"]
 fn backoff_waits_and_breaker() {
     todo!("owner: W1-K3 (C-EXPORT-DELIVERY)")
+}
+
+// Sibling arms: the parts of (d) and (e) that run on the kernel's own delivery types (K8C and K3 landed
+// `busbar_kernel::export::delivery`; the pump that drives them is open MR !2645).
+mod kernel_types {
+    use std::collections::HashSet;
+
+    use busbar_kernel::export::delivery::{
+        Admit, Delivery, DeliveryIds, ExportBreaker, Outcome, BREAKER_OPENS_AFTER,
+        RETRY_AFTER_CLAMP_S,
+    };
+    use busbar_plugin_abi::fail::failed::{F_BUSY, F_LIMIT, F_UNAVAILABLE};
+
+    const NOW: u64 = 1_800_000_000;
+
+    fn failed(code: u32) -> Outcome {
+        Outcome::Failed {
+            code,
+            retry_after_s: None,
+        }
+    }
+
+    #[test]
+    fn delivery_ids_resends_and_partial_acks_in_the_kernel_types() {
+        // (d) every delivery id is non-zero and distinct over a run (the counter skips 0 when it wraps).
+        let ids = DeliveryIds::from_seed(u64::MAX - 2);
+        let minted: Vec<u64> = (0..8).map(|_| ids.mint()).collect();
+        assert!(minted.iter().all(|&id| id != 0), "{minted:?}");
+        assert_eq!(minted.iter().collect::<HashSet<_>>().len(), minted.len());
+
+        // A FAILED delivery is resent with the same id and attempt + 1.
+        let ids = DeliveryIds::from_seed(5);
+        let first = Delivery::first(&ids);
+        assert_eq!(first.attempt, 1);
+        let resent = first.resend();
+        assert_eq!((resent.id, resent.attempt), (first.id, 2));
+
+        // ACK{2} of 5 lines keeps the id on lines 0..2 and resends 2..5 under a fresh id with attempt 2.
+        let (kept, rest) = first.after_ack(2, 5, &ids).expect("three lines remain");
+        assert_eq!(kept, 2);
+        assert_ne!(rest.id, first.id);
+        assert_ne!(rest.id, 0);
+        assert_eq!(rest.attempt, 2);
+        // Everything taken: nothing to resend.
+        assert_eq!(first.after_ack(5, 5, &ids), None);
+    }
+
+    #[test]
+    fn five_failed_open_the_export_breaker_and_one_probe_follows() {
+        // (e) 5 consecutive FAILED open the cell and one half-open probe follows; F_BUSY feeds no breaker.
+        assert_eq!(BREAKER_OPENS_AFTER, 5);
+        let b = ExportBreaker::new();
+        for _ in 0..4 {
+            b.record(NOW, failed(F_UNAVAILABLE));
+            b.record(NOW, failed(F_BUSY));
+        }
+        assert_eq!(b.admit(NOW), Admit::Ready, "F_BUSY feeds no breaker");
+        b.record(NOW, failed(F_LIMIT));
+        assert!(matches!(b.admit(NOW), Admit::Held { .. }));
+        let later = NOW + RETRY_AFTER_CLAMP_S + 1;
+        let Admit::Probe(epoch) = b.admit(later) else {
+            panic!("one half-open probe follows the cooldown");
+        };
+        assert!(
+            matches!(b.admit(later), Admit::Held { .. }),
+            "only one probe"
+        );
+        b.probe_done(epoch, later, Outcome::Delivered);
+        assert_eq!(b.admit(later), Admit::Ready);
+    }
+
+    #[test]
+    fn a_long_retry_after_holds_the_cell_and_stops_do_not_feed_it() {
+        // Retry-After 900 holds the cell open for 900 s; at the clamp it is the retry schedule's business.
+        let b = ExportBreaker::new();
+        b.record(
+            NOW,
+            Outcome::Failed {
+                code: F_UNAVAILABLE,
+                retry_after_s: Some(900),
+            },
+        );
+        assert_eq!(b.admit(NOW + 899), Admit::Held { until: NOW + 900 });
+        assert!(matches!(b.admit(NOW + 900), Admit::Probe(_)));
+        let short = ExportBreaker::new();
+        short.record(
+            NOW,
+            Outcome::Failed {
+                code: F_UNAVAILABLE,
+                retry_after_s: Some(RETRY_AFTER_CLAMP_S),
+            },
+        );
+        assert_eq!(short.admit(NOW), Admit::Ready);
+        // REFUSED and FAULT are not backend health.
+        let stops = ExportBreaker::new();
+        for _ in 0..10 {
+            stops.record(NOW, Outcome::NotHealth);
+        }
+        assert_eq!(stops.admit(NOW), Admit::Ready);
+    }
 }

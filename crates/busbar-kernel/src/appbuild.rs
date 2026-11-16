@@ -455,7 +455,7 @@ pub fn read_config_documents<'a>(
 
     // A document the composition root holds (an unstamped boot's planned config.yaml) is read in
     // place of the file, which is then not opened (MIGRATE-ON-BOOT r42 §3 step 2).
-    let raw_config = match rules.held_document(ConfigDocument::Deployment, config_path) {
+    let raw_config = match rules.held_document(config_path) {
         Some(held) => held,
         None => busbar_contract::secure::SecureString::from(
             std::fs::read_to_string(config_path).map_err(|e| {
@@ -466,14 +466,9 @@ pub fn read_config_documents<'a>(
             })?,
         ),
     };
-    let normalized_config =
-        rules.normalize_document(ConfigDocument::Deployment, config_path, &raw_config)?;
-    let interpolated_config = config::interpolate_env_with(
-        normalized_config.as_deref().unwrap_or(&*raw_config),
-        env_mode,
-        &mut unset_env_vars,
-    )
-    .map_err(|e| format!("config.yaml: {e}"))?;
+    let interpolated_config =
+        config::interpolate_env_with(&raw_config, env_mode, &mut unset_env_vars)
+            .map_err(|e| format!("config.yaml: {e}"))?;
 
     if let Some(admission) = admission.as_deref_mut() {
         admission.check_config(&interpolated_config)?;
@@ -573,29 +568,19 @@ fn typed_rest(
     let providers_path = location.path.clone();
     // A held catalog (the planned `providers.busbar-1.6.yaml` step 5 creates) is read in place of
     // its file (MIGRATE-ON-BOOT r42 §3 step 2).
-    let source = match rules.held_document(ConfigDocument::Providers, &providers_path) {
+    let source = match rules.held_document(&providers_path) {
         Some(held) => config::providers::CatalogSource::Authored(String::from(&*held)),
         None => location.read()?,
     };
-    let normalized_providers = match &source {
-        config::providers::CatalogSource::Authored(raw) => {
-            rules.normalize_document(ConfigDocument::Providers, &providers_path, raw)?
-        }
-        config::providers::CatalogSource::AbsentDefault => {
-            tracing::info!(
-                path = %providers_path.display(),
-                "no providers file at the default location; running with an empty provider catalog"
-            );
-            rules.absent_document(ConfigDocument::Providers, &providers_path)?;
-            None
-        }
-    };
-    let interpolated_providers = config::interpolate_env_with(
-        normalized_providers.as_deref().unwrap_or(source.text()),
-        env_mode,
-        unset_env_vars,
-    )
-    .map_err(|e| format!("providers.yaml: {e}"))?;
+    if matches!(source, config::providers::CatalogSource::AbsentDefault) {
+        tracing::info!(
+            path = %providers_path.display(),
+            "no providers file at the default location; running with an empty provider catalog"
+        );
+    }
+    let interpolated_providers =
+        config::interpolate_env_with(source.text(), env_mode, unset_env_vars)
+            .map_err(|e| format!("providers.yaml: {e}"))?;
     if let Some(admission) = admission {
         admission.check_catalog(&interpolated_providers)?;
     }
@@ -998,52 +983,20 @@ pub(crate) fn plane_is_open_for_build(
     (fallback || written.contains(section)) && (fallback || !awaiting_restart.contains(&section))
 }
 
-/// An authored input document. Historical conversion belongs to the composition root's
-/// migration library; the kernel continues to parse only its current format.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ConfigDocument {
-    Deployment,
-    Providers,
-}
-
 pub trait RootRules: Send + Sync {
     fn check(&self, cfg: &config::RootCfg) -> Result<(), String>;
 
     /// The document this read runs in place of the file at `path`, held in memory by the
     /// composition root (MIGRATE-ON-BOOT r42 §3 step 2): an unstamped boot runs the *planned*
     /// document, which step 5 writes only once every instance has opened. `Some` replaces the read
-    /// of the file (it is not opened); the held text is then normalized, interpolated and typed
-    /// exactly as the file's bytes would be. `None`, every other read, reads the file.
+    /// of the file (it is not opened); the held text is then interpolated and typed exactly as the
+    /// file's bytes would be. `None`, every other read, reads the file. The gateway reads only
+    /// current bytes: conversion runs in the composition root's migrate seam, before the re-exec.
     fn held_document(
         &self,
-        _kind: ConfigDocument,
         _path: &std::path::Path,
     ) -> Option<busbar_contract::secure::SecureString> {
         None
-    }
-
-    /// Normalize authored bytes before environment expansion. Returning `None` preserves
-    /// the exact original document. Converted material remains in wiping custody and must
-    /// preserve authored secret references; this hook never publishes a configuration.
-    fn normalize_document(
-        &self,
-        _kind: ConfigDocument,
-        _path: &std::path::Path,
-        _raw: &str,
-    ) -> Result<Option<busbar_contract::secure::SecureString>, String> {
-        Ok(None)
-    }
-
-    /// The document's unnamed default file is absent and reads as its empty form
-    /// ([`config::providers::CatalogSource::AbsentDefault`]). There are no authored bytes to
-    /// normalize, so this replaces [`RootRules::normalize_document`] for that load; custody
-    /// records the absence as an unchanged document that is never published or created.
-    fn absent_document(
-        &self,
-        _kind: ConfigDocument,
-        _path: &std::path::Path,
-    ) -> Result<(), String> {
-        Ok(())
     }
 
     fn check_built(&self, _app: &App) -> Result<(), String> {
@@ -1158,21 +1111,89 @@ async fn bootstrap_store_inputs(
         &generation_sugars(cfg),
     )?;
 
-    let _signer = resolve_signing_key(cfg.auth.as_ref(), &resolver)?;
+    let signer = resolve_signing_key(cfg.auth.as_ref(), &resolver)?;
     let at_rest = resolve_at_rest_keys(&cfg.credentials, &resolver);
     publish_bootstrap_at_rest(at_rest.as_ref().map(Option::is_some).map_err(Clone::clone));
-    let _at_rest = at_rest?;
+    publish_records_keys(RecordsKeys {
+        at_rest: at_rest?,
+        signer,
+    });
     Ok((registry, resolver))
+}
+
+/// What core's records step (MIGRATE-ON-BOOT r42 §3 4a, §6 (2) and (4)) seals and verifies with: the
+/// at-rest key and the token-signing key the latest store bootstrap resolved, with the secret instances
+/// the store boot opened (2a), before the store opened. Taken once, by the step; dropped after it.
+pub struct RecordsKeys {
+    /// `credentials.at_rest`, `None` when the block is absent.
+    pub at_rest: Option<crate::governance::at_rest::AtRestKeys>,
+    /// `auth.signing_key`, `None` when it is absent.
+    pub signer: Option<crate::governance::signing::TokenSigner>,
+}
+
+static BOOTSTRAP_RECORDS_KEYS: std::sync::Mutex<Option<RecordsKeys>> = std::sync::Mutex::new(None);
+
+fn publish_records_keys(keys: RecordsKeys) {
+    *BOOTSTRAP_RECORDS_KEYS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(keys);
+}
+
+/// [`RecordsKeys`] from the raw secret bytes a MIN-3 boot's walk resolved (its core secrets), parsed exactly as the
+/// store bootstrap parses them.
+///
+/// # Errors
+/// A key that is not 32 bytes (raw or hex).
+pub fn records_keys_from(
+    at_rest_key: Option<&[u8]>,
+    at_rest_previous: Option<&[u8]>,
+    signing_key: Option<&[u8]>,
+) -> Result<RecordsKeys, String> {
+    let at_rest = match at_rest_key {
+        None => None,
+        Some(key) => {
+            let key = crate::governance::at_rest::parse_key("credentials.at_rest.key", key)?;
+            let previous = at_rest_previous
+                .map(|p| crate::governance::at_rest::parse_key("credentials.at_rest.previous", p))
+                .transpose()?;
+            Some(crate::governance::at_rest::AtRestKeys::new(
+                &key,
+                previous.as_deref(),
+            ))
+        }
+    };
+    let signer = signing_key
+        .map(|bytes| {
+            crate::preflight::parse_signing_secret(bytes).map(|secret| {
+                crate::governance::signing::TokenSigner::from_secret_bytes(
+                    &secret,
+                    crate::governance::signing::DEFAULT_KID,
+                )
+            })
+        })
+        .transpose()?;
+    Ok(RecordsKeys { at_rest, signer })
+}
+
+/// The latest store bootstrap's [`RecordsKeys`], moved out: `None` before any bootstrap or once taken.
+#[must_use]
+pub fn take_bootstrap_records_keys() -> Option<RecordsKeys> {
+    BOOTSTRAP_RECORDS_KEYS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take()
 }
 
 /// What the latest store bootstrap resolved of `credentials.at_rest`, before the store opened:
 /// `Ok(true)` the key resolved, `Ok(false)` no `credentials.at_rest` block, `Err` the resolver's
 /// own text. The migration seam's recoverable gate reads it while the store's data step runs
-/// (MIGRATE-ON-BOOT §3 step 2 (a)); nothing else does.
+/// (MIGRATE-ON-BOOT §3 step 2 (a)); nothing else does. A MIN-3 boot's walk publishes it after its
+/// secret instances opened (2a), before its store opens (2b).
 static BOOTSTRAP_AT_REST: std::sync::Mutex<Option<Result<bool, String>>> =
     std::sync::Mutex::new(None);
 
-fn publish_bootstrap_at_rest(verdict: Result<bool, String>) {
+/// Publishes the at-rest verdict the recoverable gate reads (see `BOOTSTRAP_AT_REST`).
+pub fn publish_bootstrap_at_rest(verdict: Result<bool, String>) {
     *BOOTSTRAP_AT_REST
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(verdict);

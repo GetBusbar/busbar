@@ -176,13 +176,8 @@ async fn serve_admission_with_inputs(
         busbar_contract::abi::mechanism::door::SUGAR_ROLE_PATH,
         admin_token_file.to_string_lossy(),
     ));
-    let documents = Arc::new(crate::root::startup_upgrade::documents::Documents::default());
-    documents
-        .finish_upgrade()
-        .expect("the admitted current-format fixture has no pending historical documents");
-    let rules = Arc::new(crate::root::door_steps::Rules::hearing_with_documents(
+    let rules = Arc::new(crate::root::door_steps::Rules::hearing(
         crate::root::connector::dest_judge(&resolved),
-        documents,
     )) as Arc<dyn busbar_kernel::appbuild::RootRules>;
     static CORE: tokio::sync::OnceCell<Arc<busbar_kernel::persistence::facade::CoreStore>> =
         tokio::sync::OnceCell::const_new();

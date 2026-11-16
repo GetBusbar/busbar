@@ -118,7 +118,7 @@ fn a_route_header_no_instance_reads_refuses_config() {
 }
 
 #[test]
-#[ignore = "owner: W2-SW-PLANE (arms (a), (b), (f), (g): the plane-streaming and auth-webhook-signature images, #217)"]
+#[ignore = "re-checked 2026-11-16: arms (a), (b), (f), (g) need the plane-streaming image and the auth-webhook-signature image (plugin repos, not in this tree) and the route-scoped auth chain run through the auth port, which is W2-SW-AUTH (!2481, AGREED 2026-11-16 ~21:30Z); (c), (d), (e) are the live arms. The plane half lands with W2-SW-PLANE (!2480)"]
 fn route_credential_header_core_arms() {
     todo!("owner: W2-SW-PLANE (C-ROUTE-CRED-HEADER image arms)")
 }

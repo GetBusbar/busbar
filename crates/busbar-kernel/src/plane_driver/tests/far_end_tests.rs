@@ -936,6 +936,36 @@ async fn host_member_binding_confines_candidates_dispatch_and_followup() {
 }
 
 #[tokio::test]
+async fn member_grants_confine_candidates_and_dispatch_per_pool() {
+    let r = rig(
+        &[
+            ("a.test", Script::Answer(200, None, vec![b"denied"])),
+            ("b.test", Script::Answer(200, None, vec![b"allowed"])),
+        ],
+        OnExhausted::Status503,
+        None,
+    );
+    let t = token();
+    let far = r.egress.unit(UnitRoute {
+        member_grants: Some(std::collections::BTreeMap::from([
+            (POOL.into(), vec!["m1".into()]),
+            ("another-pool".into(), vec!["m0".into()]),
+        ])),
+        ..route()
+    });
+    let candidates = far.candidates(&t).unwrap();
+    assert_eq!(candidates.members.len(), 1);
+    assert_eq!(candidates.members[0].idx, 1);
+    assert!(matches!(far.member(&t, 1).await, Pick::Member { name, .. } if name == "m1"));
+    assert!(far.send(&t, request()).await);
+    drain(&far, &t).await;
+    assert!(matches!(far.member(&t, 2).await, Pick::Exhausted { .. }));
+    let opened = r.table.opened.lock().unwrap();
+    assert_eq!(opened.len(), 1);
+    assert!(opened[0].0.starts_with("https://b.test/"));
+}
+
+#[tokio::test]
 async fn one_attempt_end_to_end() {
     let r = rig(
         &[("a.test", Script::Answer(200, None, vec![b"hel", b"lo"]))],

@@ -5,7 +5,8 @@
 //! The compile-fail bounds of the safe `Host::random::<N>` and the failing-backend arm (the facade's test-support
 //! stub: `random` returns `Err(Rng)` and the arena holds no zero-filled result) need A2's safe API and `HOST`, so
 //! they are W1-A2's, not H0's (W1-H0 handoff, design hole 1). W1-A2 runs the safe layer over a vtable answering
-//! what host_vt answers when `fill_checked` fails; the same run through host_vt over the stub backend is busbar#262.
+//! what host_vt answers when `fill_checked` fails; the same run through host_vt over the stub backend
+//! (busbar#262) is `the_arena_holds_no_zero_filled_result_through_host_vt`.
 //!
 //! WBS rule 10: each ignored arm waits for the task that lands the last piece it needs; that task writes the
 //! arm's body and un-ignores it in its own MR (red first, then green). Arms of tasks merged before W1-T1 run now.
@@ -126,10 +127,43 @@ fn a_failing_backend_answers_err_rng_with_no_zero_filled_array() {
     );
 }
 
-/// The same failure produced by host_vt itself over the CRYPTO-SEAM stub (`BUSBAR_STUB_FILL=rng|crngt`): `random`
-/// answers RNG and lends nothing, so the arena holds no zero-filled result (busbar#262).
+/// The same failure produced by host_vt itself over the CRYPTO-SEAM stub (`BUSBAR_STUB_FILL=rng|crngt`, busbar#262;
+/// the scratch build is `c_unavailable::stub_host_vt`): inside an entry, `random` answers RNG and lends nothing
+/// (`out` EMPTY), the safe layer answers `Err(Rng)` from `random`, `random_vec` and `random_into` (whose buffer is
+/// left zeroed, nothing usable), and the arena holds no zero-filled result: two HMAC outputs lent around the failed
+/// `random(32)` in one scope sit back to back. The control run (`fill` filling) lends the stub's 32 bytes between
+/// them, so the probe reaches the backend; outside an entry `random` answers RNG whatever the backend says.
 #[test]
-#[ignore = "owner: busbar#262 (host_vt over the stub backend)"]
 fn the_arena_holds_no_zero_filled_result_through_host_vt() {
-    todo!("owner: busbar#262 (C-RANDOM)")
+    let (ok, rng) = (crypto_status::OK, crypto_status::RNG);
+    for (fill, random, safe, into, buf, gap) in [
+        ("", format!("{ok}/32"), "Ok(true)", "Ok(())", "5a", 32),
+        ("rng", format!("{rng}/0"), "Err(Rng)", "Err(Rng)", "zero", 0),
+        (
+            "crngt",
+            format!("{rng}/0"),
+            "Err(Rng)",
+            "Err(Rng)",
+            "zero",
+            0,
+        ),
+    ] {
+        let got = crate::c_unavailable::stub_host_vt::probe("random", fill, "1000");
+        let want = format!(
+            "outside={rng}/0\n\
+             random={random}\n\
+             random32={safe}\n\
+             random_vec={safe}\n\
+             random_into={into} buf={buf}\n\
+             arena_gap=Some({gap})\n\
+             host_panic=0\n\
+             entry=ran\n"
+        );
+        assert_eq!(got, want, "BUSBAR_STUB_FILL={fill:?}");
+    }
+    let fail = Fail::from(CryptoErr::Rng);
+    assert_eq!(
+        (fail.status(), fail.code()),
+        (Status::FAILED, failed::F_UNAVAILABLE)
+    );
 }

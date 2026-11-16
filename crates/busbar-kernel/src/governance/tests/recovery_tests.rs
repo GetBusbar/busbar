@@ -19,11 +19,21 @@ pub(in crate::governance) struct Journal {
     lose_adoption_reply: AtomicBool,
     pub(in crate::governance) persists: std::sync::atomic::AtomicUsize,
     pub(in crate::governance) persisted_ops: Mutex<Vec<([u8; 16], u64)>>,
+    /// The size of each `persist_batch` call, in order.
+    pub(in crate::governance) batches: Mutex<Vec<usize>>,
 }
 #[async_trait::async_trait]
 impl RecoverySink for Journal {
     async fn replay(&self) -> Result<Vec<RecoveryEvent>, RecoveryError> {
         Ok(self.selected.lock().unwrap().clone())
+    }
+    async fn persist_batch(&self, events: &[RecoveryEvent]) -> Vec<Result<(), RecoveryError>> {
+        self.batches.lock().unwrap().push(events.len());
+        let mut out = Vec::with_capacity(events.len());
+        for event in events {
+            out.push(self.persist(event).await);
+        }
+        out
     }
     async fn persist(&self, event: &RecoveryEvent) -> Result<(), RecoveryError> {
         self.persists.fetch_add(1, Ordering::Relaxed);

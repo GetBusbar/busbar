@@ -14,6 +14,7 @@ use crate::redacted::{Kernel, Secret};
 
 pub mod archive;
 pub mod axis;
+pub mod cells;
 mod commit_key;
 pub mod control;
 pub mod legacy_row;
@@ -60,6 +61,10 @@ pub struct BackendInfo {
     /// Effective acknowledgement guarantee; asynchronous replicas are not a quorum.
     pub durability: Durability,
 }
+
+/// The [`BackendInfo::physical_version`] of a store built for the slot-row commit rule: what core's
+/// in-process backends and test doubles answer. A plugin store answers its own in its INFO record.
+pub const PHYSICAL_VERSION: u32 = 2;
 
 /// A record address; key bytes are ordered lexicographically, without text collation.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]

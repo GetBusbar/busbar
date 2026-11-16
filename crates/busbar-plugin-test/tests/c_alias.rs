@@ -7,10 +7,114 @@
 //! WBS rule 10: each arm is ignored for the task that lands the last piece it needs; that task writes
 //! the arm's body and un-ignores it in its own MR (red first, then green).
 
+use std::time::{Duration, Instant};
+
+use busbar_plugin_abi::host_side::caller::CallStack;
+use busbar_plugin_loader::ports::CallCx;
+use busbar_plugin_loader::refusal::RefusalCode;
+use busbar_plugin_test::fake_needs::FakeNeeds;
+use busbar_plugin_test::suites::harness::Harness;
+
+use crate::min3_second::{self as fx, ALIAS, ALIAS_WORDS};
+
+fn cx(id: u64) -> CallCx {
+    CallCx {
+        deadline: Instant::now() + Duration::from_secs(10),
+        request_id: id,
+        stack: CallStack::default(),
+    }
+}
+
+/// L2's arm: the generic `module:` match resolves the identity and then each `former_names` word to the one
+/// admitted image, an instance opens under every word, and `Registry::add` refuses `NameConflict` for a
+/// newcomer whose word equals an admitted identity or word, whose identity equals an admitted word, or whose
+/// identity is already admitted; a refused newcomer answers to nothing, whatever the admission order.
 #[test]
-#[ignore = "owner: W1-L2; blocked (re-checked on dev 2026-11-16): no test constructor for Registry<N> (Needs impl, ConfigBinder, Ceilings, a static Host) and no second-identity MIN-3 fixture image exist in busbar-plugin-test on dev"]
 fn former_names_match_and_name_conflict_at_add() {
-    todo!("owner: W1-L2 (C-ALIAS)")
+    let mut h = Harness::admit(fx::alias::PLUGIN.plugin(), FakeNeeds::new())
+        .unwrap_or_else(|r| panic!("the alias image is admitted: {r:?}"));
+    assert_eq!(h.identity(), ALIAS);
+
+    for word in [ALIAS, ALIAS_WORDS[0], ALIAS_WORDS[1]] {
+        assert_eq!(
+            h.registry().identity_of(word).as_deref(),
+            Some(ALIAS),
+            "module: {word} resolves to the alias image"
+        );
+    }
+    assert_eq!(h.registry().identity_of("alias-unknown"), None);
+
+    for (at, word) in [ALIAS, ALIAS_WORDS[0], ALIAS_WORDS[1]]
+        .into_iter()
+        .enumerate()
+    {
+        let name = format!("alias-{at}");
+        let config = format!(r#"{{"tag":"{name}"}}"#);
+        let spec = h.spec_for(word, &name, config.as_bytes());
+        let port = h
+            .block_on(h.registry().open_secret(&spec))
+            .unwrap_or_else(|e| panic!("module: {word} opens: {e:?}"));
+        let answer = h
+            .block_on(port.resolve(cx(at as u64 + 1), br#"{"name":"db"}"#))
+            .ok()
+            .unwrap_or_else(|| panic!("the instance opened as {word} resolves"));
+        assert_eq!(answer.value.as_slice(), b"db");
+        assert_eq!(fx::count(&name, "built"), 1);
+    }
+
+    let conflicts = [
+        (
+            fx::alias_identity_word::PLUGIN.plugin(),
+            "former_names",
+            ALIAS,
+        ),
+        (
+            fx::alias_shared_word::PLUGIN.plugin(),
+            "former_names",
+            ALIAS_WORDS[0],
+        ),
+        (
+            fx::alias_named_word::PLUGIN.plugin(),
+            "identity",
+            ALIAS_WORDS[0],
+        ),
+        (fx::alias::PLUGIN.plugin(), "identity", ALIAS),
+    ];
+    for (plugin, field, word) in conflicts {
+        let refused = h
+            .add(plugin)
+            .err()
+            .unwrap_or_else(|| panic!("a newcomer answering to {word} is refused"));
+        assert_eq!(
+            (refused.code, refused.field, refused.have.as_str()),
+            (RefusalCode::NameConflict, field, word),
+            "{refused:?}"
+        );
+    }
+    for refused in ["fixture-alias-b", "fixture-alias-c"] {
+        assert_eq!(
+            h.registry().identity_of(refused),
+            None,
+            "{refused} was not admitted"
+        );
+    }
+    assert_eq!(
+        h.registry().identity_of(ALIAS_WORDS[0]).as_deref(),
+        Some(ALIAS)
+    );
+
+    // The other order: the word's owner admitted first, the alias image is the newcomer refused.
+    let mut first = Harness::admit(fx::alias_shared_word::PLUGIN.plugin(), FakeNeeds::new())
+        .unwrap_or_else(|r| panic!("{r:?}"));
+    let refused = first
+        .add(fx::alias::PLUGIN.plugin())
+        .err()
+        .unwrap_or_else(|| panic!("the alias image shares alias-old"));
+    assert_eq!(
+        (refused.code, refused.field, refused.have.as_str()),
+        (RefusalCode::NameConflict, "former_names", ALIAS_WORDS[0])
+    );
+    assert_eq!(first.registry().identity_of(ALIAS), None);
 }
 
 #[test]

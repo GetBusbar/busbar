@@ -377,78 +377,164 @@ impl GovState {
         }
     }
 
+    /// One operation through the raw recovery state machine: `drive_raw_recoveries` with a slice
+    /// of one, so the single driver and the flush pass are one machine (SHUTDOWN-HANG F3.3).
     pub(super) async fn drive_raw_recovery(&self, operation_id: [u8; 16]) -> RecordStoreResult<()> {
-        self.confirm_pending_recovery(operation_id).await?;
-        let runner = self.recovery_driver(operation_id)?;
-        let _running = runner.try_enter().map_err(invalid)?;
-        let mut event = self
-            .recovery_event(operation_id)
-            .ok_or_else(|| invalid("raw operation is not selected"))?;
-        self.validate_recovery_origin(&event).await?;
-        self.restore_raw_recovery(&event)?;
-        if event.state == RecoveryState::Intent {
-            self.keep_recovery_event(&event).await?;
-            if !self.recovery_sent_here(event.operation_id) {
-                let next = self
-                    .new_recovery_event(
-                        event.operation_id,
-                        event.kind,
-                        event.body_fingerprint,
-                        RecoveryState::LandedUnknown,
-                        event.first_sent_at_ms,
-                        Self::quarantined_raw_payload(&event)?,
-                    )
-                    .map_err(invalid)?;
-                self.keep_recovery_event(&next).await?;
-                self.drive_recovery_children(&next).await?;
-                return Ok(());
+        self.drive_raw_recoveries(&[operation_id])
+            .await
+            .pop()
+            .unwrap_or_else(|| Err(invalid("raw recovery result missing")))
+    }
+
+    /// The raw recovery state machine over several operations in lockstep (SHUTDOWN-HANG F3.3):
+    /// T re-keeps every retained candidate in one batch; V takes each operation's driver and
+    /// validates it; A makes each ledger commit; K1 keeps every Applied and LandedUnknown event in
+    /// one batch; C selects children; K2 keeps every Settled event in one batch. Per-operation
+    /// order is unchanged (Intent, apply, Applied, children, Settled), and every phase isolates
+    /// its operations: one that fails leaves the pass with its error while the rest continue.
+    /// Returns a result per operation, in order.
+    pub(super) async fn drive_raw_recoveries(
+        &self,
+        operation_ids: &[[u8; 16]],
+    ) -> Vec<RecordStoreResult<()>> {
+        let mut out: Vec<Option<RecordStoreResult<()>>> = Vec::with_capacity(operation_ids.len());
+        out.resize_with(operation_ids.len(), || None);
+
+        // T: every retained candidate is confirmed first, in one keep.
+        let retained: Vec<(usize, RecoveryEvent)> = operation_ids
+            .iter()
+            .enumerate()
+            .filter_map(|(at, id)| self.pending_recovery_event(*id).map(|event| (at, event)))
+            .collect();
+        self.keep_phase(&mut out, retained).await;
+
+        // V: each operation's driver is held for the rest of the pass. The guards borrow
+        // `runners`, declared before them.
+        let mut runners = Vec::with_capacity(operation_ids.len());
+        for (at, id) in operation_ids.iter().enumerate() {
+            if out[at].is_some() {
+                runners.push(None);
+                continue;
             }
-            match event.kind {
-                RecoveryKind::Usage => {
-                    let custody: UsageCustody = decode(&event.payload)?;
-                    let owned = usage_operation_values(custody);
-                    let cells =
-                        crate::off_path::governance::runtime::raw_recovery_cell_refs(&owned);
-                    self.core_store()?
-                        .ledger()
-                        .add_usage_batch_deduped(
-                            busbar_contract::records::OpId(operation_id),
-                            &cells,
-                        )
-                        .await?;
+            match self.recovery_driver(*id) {
+                Ok(runner) => runners.push(Some(runner)),
+                Err(why) => {
+                    out[at] = Some(Err(why));
+                    runners.push(None);
                 }
-                RecoveryKind::Metering => {
-                    let custody: MeteringCustody = decode(&event.payload)?;
-                    self.core_store()?
-                        .ledger()
-                        .add_metering_batch_deduped(
-                            busbar_contract::records::OpId(operation_id),
-                            &[custody.delta],
-                        )
-                        .await?;
-                }
-                RecoveryKind::Correction => return Err(invalid("incorrect raw driver kind")),
             }
-            let payload = self.applied_raw_payload(&event)?;
-            let next = self
-                .new_recovery_event(
-                    event.operation_id,
-                    event.kind,
-                    event.body_fingerprint,
-                    RecoveryState::Applied,
-                    event.first_sent_at_ms,
-                    payload,
-                )
-                .map_err(invalid)?;
-            self.keep_recovery_event(&next).await?;
-            event = next;
         }
-        match event.state {
-            RecoveryState::Applied
-            | RecoveryState::VerdictLanded
-            | RecoveryState::VerdictNotLanded => {
-                self.drive_recovery_children(&event).await?;
-                let settled = self
+        let mut running = Vec::with_capacity(runners.len());
+        let mut selected: Vec<(usize, RecoveryEvent)> = Vec::with_capacity(runners.len());
+        for (at, runner) in runners.iter().enumerate() {
+            let Some(runner) = runner else {
+                continue;
+            };
+            match runner.try_enter() {
+                Ok(guard) => running.push(guard),
+                Err(why) => {
+                    out[at] = Some(Err(invalid(why)));
+                    continue;
+                }
+            }
+            let event = match self.recovery_event(operation_ids[at]) {
+                Some(event) => event,
+                None => {
+                    out[at] = Some(Err(invalid("raw operation is not selected")));
+                    continue;
+                }
+            };
+            if let Err(why) = self.validate_recovery_origin(&event).await {
+                out[at] = Some(Err(why));
+                continue;
+            }
+            if let Err(why) = self.restore_raw_recovery(&event) {
+                out[at] = Some(Err(why));
+                continue;
+            }
+            selected.push((at, event));
+        }
+        // The verify-only Intent re-keep: a no-op unless a candidate reappeared.
+        let intents: Vec<(usize, RecoveryEvent)> = selected
+            .iter()
+            .filter(|(_, event)| event.state == RecoveryState::Intent)
+            .cloned()
+            .collect();
+        let verified = self.keep_phase(&mut out, intents).await;
+
+        // A: each Intent sent here is applied to the ledger, then staged Applied; an Intent never
+        // sent here is staged LandedUnknown. Both are kept in K1.
+        let mut k1: Vec<(usize, RecoveryEvent)> = Vec::new();
+        let mut settle: Vec<(usize, RecoveryEvent)> = Vec::new();
+        let mut children: Vec<(usize, RecoveryEvent)> = Vec::new();
+        for (at, event) in selected {
+            if out[at].is_some() {
+                continue;
+            }
+            let step = match event.state {
+                RecoveryState::Intent if verified.contains(&at) => {
+                    let next = if self.recovery_sent_here(event.operation_id) {
+                        self.apply_raw_intent(&event).await
+                    } else {
+                        Self::quarantined_raw_payload(&event).and_then(|payload| {
+                            self.new_recovery_event(
+                                event.operation_id,
+                                event.kind,
+                                event.body_fingerprint,
+                                RecoveryState::LandedUnknown,
+                                event.first_sent_at_ms,
+                                payload,
+                            )
+                            .map_err(invalid)
+                        })
+                    };
+                    next.map(|next| k1.push((at, next)))
+                }
+                RecoveryState::Intent => Ok(()),
+                RecoveryState::Applied
+                | RecoveryState::VerdictLanded
+                | RecoveryState::VerdictNotLanded => {
+                    settle.push((at, event));
+                    Ok(())
+                }
+                RecoveryState::LandedUnknown => {
+                    children.push((at, event));
+                    Ok(())
+                }
+                RecoveryState::Settled => {
+                    out[at] = Some(Ok(()));
+                    Ok(())
+                }
+                _ => Err(invalid("unsupported raw recovery state")),
+            };
+            if let Err(why) = step {
+                out[at] = Some(Err(why));
+            }
+        }
+
+        // K1: every Applied and LandedUnknown event in one keep. An Applied event goes on to be
+        // settled; a LandedUnknown one only selects its children.
+        let kept = self.keep_phase(&mut out, k1.clone()).await;
+        for (at, next) in k1 {
+            if !kept.contains(&at) {
+                continue;
+            }
+            if next.state == RecoveryState::Applied {
+                settle.push((at, next));
+            } else {
+                children.push((at, next));
+            }
+        }
+        for (at, event) in children {
+            out[at] = Some(self.drive_recovery_children(&event).await);
+        }
+
+        // C, then K2: children selected for each settling operation, then every Settled event in
+        // one keep.
+        let mut k2: Vec<(usize, RecoveryEvent)> = Vec::with_capacity(settle.len());
+        for (at, event) in settle {
+            let settled = match self.drive_recovery_children(&event).await {
+                Ok(()) => self
                     .new_recovery_event(
                         event.operation_id,
                         event.kind,
@@ -457,14 +543,82 @@ impl GovState {
                         event.first_sent_at_ms,
                         event.payload.clone(),
                     )
-                    .map_err(invalid)?;
-                self.keep_recovery_event(&settled).await?;
+                    .map_err(invalid),
+                Err(why) => Err(why),
+            };
+            match settled {
+                Ok(settled) => k2.push((at, settled)),
+                Err(why) => out[at] = Some(Err(why)),
             }
-            RecoveryState::LandedUnknown => self.drive_recovery_children(&event).await?,
-            RecoveryState::Settled => {}
-            _ => return Err(invalid("unsupported raw recovery state")),
         }
-        Ok(())
+        for at in self.keep_phase(&mut out, k2).await {
+            out[at] = Some(Ok(()));
+        }
+        drop(running);
+        out.into_iter()
+            .map(|answer| answer.unwrap_or_else(|| Err(invalid("raw recovery result missing"))))
+            .collect()
+    }
+
+    /// One keep phase: every event in one keep batch. A failure is written to its operation's
+    /// slot in `out`; returns the positions whose event is now selected.
+    async fn keep_phase(
+        &self,
+        out: &mut [Option<RecordStoreResult<()>>],
+        events: Vec<(usize, RecoveryEvent)>,
+    ) -> Vec<usize> {
+        if events.is_empty() {
+            return Vec::new();
+        }
+        let (at, events): (Vec<usize>, Vec<RecoveryEvent>) = events.into_iter().unzip();
+        let mut kept = Vec::with_capacity(at.len());
+        let mut results = self.keep_recovery_events(&events).await.into_iter();
+        for at in at {
+            match results.next() {
+                Some(Ok(())) => kept.push(at),
+                Some(Err(why)) => out[at] = Some(Err(why)),
+                None => out[at] = Some(Err(invalid("raw recovery keep result missing"))),
+            }
+        }
+        kept
+    }
+
+    /// Phase A for one Intent sent here: its exact ledger commit (deduplicated by operation id),
+    /// then its Applied event, staged.
+    async fn apply_raw_intent(&self, event: &RecoveryEvent) -> RecordStoreResult<RecoveryEvent> {
+        let operation_id = event.operation_id;
+        match event.kind {
+            RecoveryKind::Usage => {
+                let custody: UsageCustody = decode(&event.payload)?;
+                let owned = usage_operation_values(custody);
+                let cells = crate::off_path::governance::runtime::raw_recovery_cell_refs(&owned);
+                self.core_store()?
+                    .ledger()
+                    .add_usage_batch_deduped(busbar_contract::records::OpId(operation_id), &cells)
+                    .await?;
+            }
+            RecoveryKind::Metering => {
+                let custody: MeteringCustody = decode(&event.payload)?;
+                self.core_store()?
+                    .ledger()
+                    .add_metering_batch_deduped(
+                        busbar_contract::records::OpId(operation_id),
+                        &[custody.delta],
+                    )
+                    .await?;
+            }
+            RecoveryKind::Correction => return Err(invalid("incorrect raw driver kind")),
+        }
+        let payload = self.applied_raw_payload(event)?;
+        self.new_recovery_event(
+            event.operation_id,
+            event.kind,
+            event.body_fingerprint,
+            RecoveryState::Applied,
+            event.first_sent_at_ms,
+            payload,
+        )
+        .map_err(invalid)
     }
 
     fn quarantined_raw_payload(event: &RecoveryEvent) -> RecordStoreResult<Vec<u8>> {
