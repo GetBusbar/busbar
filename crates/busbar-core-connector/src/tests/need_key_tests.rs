@@ -9,6 +9,7 @@ use super::*;
 
 fn key(dest: &str) -> NeedKey {
     NeedKey {
+        instance: 1,
         dest: dest.into(),
         sni: dest.into(),
         alpn: "".into(),
