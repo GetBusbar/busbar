@@ -12,6 +12,10 @@
 
 #[path = "bridge_fixture.rs"]
 mod bridge_fixture;
+#[path = "fixtures/min3_export.rs"]
+mod min3_export;
+#[path = "fixtures/min3_secret.rs"]
+mod min3_secret;
 #[path = "c_a2a_card_redirect.rs"]
 mod c_a2a_card_redirect;
 #[path = "c_a2a_push_url.rs"]
@@ -300,6 +304,10 @@ mod c_transport_close;
 mod c_transport_defaults;
 #[path = "c_transport_refuse.rs"]
 mod c_transport_refuse;
+#[path = "c_suite_export.rs"]
+mod c_suite_export;
+#[path = "c_suite_secret.rs"]
+mod c_suite_secret;
 #[path = "c_trust_verify.rs"]
 mod c_trust_verify;
 #[path = "c_unavailable.rs"]
