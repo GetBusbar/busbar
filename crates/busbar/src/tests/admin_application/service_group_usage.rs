@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use crate::root::test_plugins as plugins;
+use busbar_contract::json::{self, JsonValueTrait};
 use busbar_kernel::config::groups::{LimitMetric, LimitWindow};
 use busbar_kernel::config::{GroupCfg, LimitCfg};
 use busbar_kernel::governance::VirtualKey;
@@ -361,7 +362,7 @@ async fn get_group_usage_unknown_group_not_found() {
         .await
         .unwrap();
     assert_eq!(response.status().as_u16(), 404);
-    let error: serde_json::Value = response.json().await.unwrap();
+    let error = json::parse_value(&response.bytes().await.unwrap()).unwrap();
     assert_eq!(error["error"]["code"], "not_found");
     assert!(
         error["error"]["message"]

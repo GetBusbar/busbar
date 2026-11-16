@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use crate::root::test_plugins as plugins;
+use busbar_contract::json::{self, JsonValueTrait};
 use std::collections::HashSet;
 use std::sync::Arc;
 const TOKEN: &str = "admintok";
@@ -106,14 +107,14 @@ async fn application() -> (Arc<busbar_kernel::state::App>, Scratch) {
     (app, Scratch(directory))
 }
 
-async fn body(response: reqwest::Response, status: u16) -> serde_json::Value {
+async fn body(response: reqwest::Response, status: u16) -> json::Value {
     let actual = response.status().as_u16();
     let bytes = response.bytes().await.unwrap();
     assert_eq!(actual, status, "{}", String::from_utf8_lossy(&bytes));
     if bytes.is_empty() {
-        serde_json::Value::Null
+        json::Value::new()
     } else {
-        serde_json::from_slice(&bytes).unwrap()
+        json::parse_value(&bytes).unwrap()
     }
 }
 
@@ -147,7 +148,7 @@ async fn plugin_archive_preconditions_fence_replacement_delete_and_rollback() {
     let digest = busbar_contract::redacted::sha256_hex(&archive);
     use base64::Engine as _;
     let installed = body(client.post(format!("{base}/plugins")).bearer_auth(TOKEN)
-        .json(&serde_json::json!({"file":"reviewed.tar.gz","tarball_b64":base64::engine::general_purpose::STANDARD.encode(&archive)}))
+        .json(&json::json!({"file":"reviewed.tar.gz","tarball_b64":base64::engine::general_purpose::STANDARD.encode(&archive)}))
         .send().await.unwrap(), 201).await;
     assert_eq!(installed["file"], "reviewed.tar.gz");
     let listing = body(
@@ -181,7 +182,7 @@ async fn plugin_archive_preconditions_fence_replacement_delete_and_rollback() {
     assert_ne!(digest, next_digest);
     // Exercise the real install route: replacing archive bytes does not publish a config generation.
     body(client.post(format!("{base}/plugins")).bearer_auth(TOKEN)
-        .json(&serde_json::json!({"file":"reviewed.tar.gz","tarball_b64":base64::engine::general_purpose::STANDARD.encode(&replacement)}))
+        .json(&json::json!({"file":"reviewed.tar.gz","tarball_b64":base64::engine::general_purpose::STANDARD.encode(&replacement)}))
         .send().await.unwrap(),201).await;
     assert_eq!(handle.load().config_version, version);
     let listed = body(
@@ -244,7 +245,7 @@ async fn plugin_archive_preconditions_fence_replacement_delete_and_rollback() {
             .post(format!("{base}/plugins/rollback"))
             .bearer_auth(TOKEN)
             .header("If-Match", format!("\"{version}\""))
-            .json(&serde_json::json!({"file":"reviewed.tar.gz","expected_archive_sha256":digest}))
+            .json(&json::json!({"file":"reviewed.tar.gz","expected_archive_sha256":digest}))
             .send()
             .await
             .unwrap(),
@@ -278,7 +279,7 @@ async fn plugin_archive_preconditions_fence_replacement_delete_and_rollback() {
         client
             .post(format!("{base}/plugins/rollback"))
             .bearer_auth(TOKEN)
-            .json(&serde_json::json!({"file":"reviewed.tar.gz","expected_archive_sha256":null}))
+            .json(&json::json!({"file":"reviewed.tar.gz","expected_archive_sha256":null}))
             .send()
             .await
             .unwrap(),
@@ -318,7 +319,17 @@ async fn plugin_archive_preconditions_fence_replacement_delete_and_rollback() {
         404,
     )
     .await;
-    body(client.post(format!("{base}/plugins/rollback")).bearer_auth(TOKEN).json(&serde_json::json!({"file":"reviewed.tar.gz","expected_archive_sha256":next_digest})).send().await.unwrap(),409).await;
+    body(
+        client
+            .post(format!("{base}/plugins/rollback"))
+            .bearer_auth(TOKEN)
+            .json(&json::json!({"file":"reviewed.tar.gz","expected_archive_sha256":next_digest}))
+            .send()
+            .await
+            .unwrap(),
+        409,
+    )
+    .await;
     server.abort();
     let _ = server.await;
 }
@@ -367,7 +378,7 @@ async fn restart_if_match_is_checked_at_serialized_admission_without_stale_drain
         .post(&url)
         .bearer_auth(TOKEN)
         .header("If-Match", format!("\"{version}\""))
-        .json(&serde_json::json!({"confirm":true}))
+        .json(&json::json!({"confirm":true}))
         .send();
     tokio::pin!(request);
     assert!(
@@ -388,7 +399,7 @@ async fn restart_if_match_is_checked_at_serialized_admission_without_stale_drain
             .post(&url)
             .bearer_auth(TOKEN)
             .header("If-Match", "malformed")
-            .json(&serde_json::json!({"confirm":true}))
+            .json(&json::json!({"confirm":true}))
             .send()
             .await
             .unwrap(),
@@ -404,7 +415,7 @@ async fn restart_if_match_is_checked_at_serialized_admission_without_stale_drain
             .post(&url)
             .bearer_auth(TOKEN)
             .header("If-Match", format!("\"{}\"", handle.load().config_version))
-            .json(&serde_json::json!({"confirm":true}))
+            .json(&json::json!({"confirm":true}))
             .send()
             .await
             .unwrap(),
@@ -419,7 +430,7 @@ async fn restart_if_match_is_checked_at_serialized_admission_without_stale_drain
         client
             .post(&url)
             .bearer_auth(TOKEN)
-            .json(&serde_json::json!({"confirm":true}))
+            .json(&json::json!({"confirm":true}))
             .send()
             .await
             .unwrap(),
@@ -437,7 +448,7 @@ async fn restart_if_match_is_checked_at_serialized_admission_without_stale_drain
 // Decode the listing row's field schema; the field name is not a provider selector. A
 // compiled-in row has no backing artifact, so the listing contract omits its `file`; every
 // other row is an archive row and must name its file.
-fn artifact_file(row: &serde_json::Value) -> Option<&str> {
+fn artifact_file(row: &json::Value) -> Option<&str> {
     #[derive(serde::Deserialize)]
     struct Artifact<'a> {
         loader: &'a str,
