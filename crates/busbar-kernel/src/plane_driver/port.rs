@@ -25,14 +25,20 @@ use crate::channels::line_carriers::{CarrierSink, LineCarriers};
 use crate::host_services::KernelServices;
 
 use super::port_auth::{
-    admit, refuse, subject_identity, Admitted, Credentials, NoTickets, Principal,
+    admit, refuse, subject_identity, Admitted, Credentials, NoTickets, Principal, TicketDoor,
 };
 use super::port_channels::{decode_tick, TickOut};
+use super::port_intents::{subject_scope, IntentHost, Resolver};
 use super::port_money::write_audit;
-use super::port_routes::{admin_catalog, admin_hydrate, plan, PortRoutes};
+use super::port_money::PortMoney;
+use super::port_routes::{admin_catalog, admin_hydrate, plan, Mounted, PortRoutes};
+use super::port_serve::{run_session, AuditOnly, Books, Drive, Ran, UnitBooks};
 use super::port_session::{run_local, Effects, SessionError, ToClient};
+use super::port_upstream::{Members, UpSend};
 use super::{AuditSink, CoreAudit};
 use crate::refusal::{ClientRefusal, RefusalMap};
+use crate::teller::UnitCtx;
+use busbar_plugin_abi::types::{Bytes, Pair, Str};
 
 /// How long the plane has to drop its per-carrier state at a carrier's end.
 const CARRIER_END_GRACE: Duration = Duration::from_secs(5);
@@ -121,6 +127,7 @@ pub struct PortDriver {
     audit: Arc<dyn AuditSink>,
     line: Option<LineRoute>,
     routes: PortRoutes,
+    tickets: Arc<dyn TicketDoor>,
 }
 
 impl PortDriver {
@@ -154,6 +161,7 @@ impl PortDriver {
             audit: Arc::new(CoreAudit),
             line,
             routes,
+            tickets: Arc::new(NoTickets),
         })
     }
 
@@ -184,6 +192,72 @@ impl PortDriver {
     pub fn with_audit(mut self, audit: Arc<dyn AuditSink>) -> Self {
         self.audit = audit;
         self
+    }
+
+    /// The tickets this instance admits on an `AUTH_TICKET` route (default: none; `port_serve::TicketGate` is the
+    /// production door, built where the ticket key is known).
+    #[must_use]
+    pub fn with_tickets(mut self, tickets: Arc<dyn TicketDoor>) -> Self {
+        self.tickets = tickets;
+        self
+    }
+
+    /// Serves one request of a mounted route: admission (§12.11, the call site of `admit` for HTTP), then the
+    /// whole session ([`run_session`]) with its books. The plane's calls are synchronous, so they run off the
+    /// executor.
+    ///
+    /// # Errors
+    /// [`ServeError`]; a refusal is not an error, it is [`Served::Refused`].
+    pub async fn serve(&self, input: ServeIn<'_>) -> Result<Served, ServeError> {
+        let route = self
+            .routes
+            .data
+            .iter()
+            .chain(&self.routes.upgrade)
+            .find(|m| m.route == input.route)
+            .cloned()
+            .ok_or(ServeError::NoRoute)?;
+        let admission = admit(
+            route.route,
+            route.effective,
+            &input.creds,
+            &*self.tickets,
+            &*self.refusals,
+            input.audience,
+            input.now_s,
+        )
+        .await;
+        let ServeIn {
+            http,
+            principal,
+            unit,
+            upstream,
+            intents,
+            ..
+        } = input;
+        let port = Arc::clone(&self.port);
+        let refusals = Arc::clone(&self.refusals);
+        let audit = Arc::clone(&self.audit);
+        let services = Arc::clone(&self.services);
+        let owner = self.caller.incarnation().clone();
+        tokio::task::spawn_blocking(move || {
+            serve_blocking(
+                &*port,
+                &*refusals,
+                &*audit,
+                services.line_carriers(),
+                &owner,
+                &route,
+                admission,
+                http,
+                principal,
+                unit,
+                upstream,
+                &*intents,
+            )
+        })
+        .await
+        .map_err(|_| ServeError::Cancelled)?
     }
 
     /// D_TICK_S: the period core calls [`tick`](Self::tick) at, if the plane declares one.
@@ -392,6 +466,149 @@ fn run_line(
     }
 }
 
+/// One request of a mounted route, as the route layer read it.
+pub struct HttpIn {
+    pub method: String,
+    pub path: String,
+    pub query: String,
+    pub headers: Vec<(String, Vec<u8>)>,
+    pub body: Vec<u8>,
+    pub request_id: u64,
+}
+
+/// The billed unit a request runs as: its money seam and the unit it posts to.
+pub struct Unit {
+    pub money: PortMoney,
+    pub ctx: UnitCtx,
+}
+
+/// What the route layer hands [`PortDriver::serve`] beside the request.
+pub struct ServeIn<'a> {
+    /// The mounted route's id (`PortRoutes`).
+    pub route: u32,
+    pub http: HttpIn,
+    /// What the request carries into admission (§12.11).
+    pub creds: Credentials<'a>,
+    /// The audience a ticket must match (the config block's `canonical_uri`).
+    pub audience: &'a str,
+    pub now_s: u64,
+    /// The verified principal's ID_SUBJECT text: the scope of its caller-bound records, its audit rows and its WORK.
+    pub principal: Option<Arc<str>>,
+    /// The unit the request bills to; `None` = not a billed unit (audit rows only).
+    pub unit: Option<Unit>,
+    /// The member walk and the far end for a FORWARD; `None` = the route never forwards.
+    pub upstream: Option<(Box<dyn Members + Send>, Box<dyn UpSend + Send>)>,
+    /// What the plane's intents run against.
+    pub intents: Arc<dyn IntentHost>,
+}
+
+/// How a request ended, for the route layer.
+pub enum Served {
+    /// Admission refused it, or the plane refused it: the client items are already rendered.
+    Refused(Vec<ToClient>),
+    Ran(Ran),
+}
+
+/// Why a request got no answer.
+#[derive(Debug)]
+pub enum ServeError {
+    /// The id names no data or upgrade route of this instance.
+    NoRoute,
+    Session(SessionError),
+    /// The request's task was cancelled.
+    Cancelled,
+}
+
+/// One request, on a blocking thread: the admission's refusal, or the session.
+#[allow(clippy::too_many_arguments)]
+fn serve_blocking(
+    port: &dyn PlanePort,
+    refusals: &dyn RefusalMap,
+    audit: &dyn AuditSink,
+    carriers: &LineCarriers,
+    owner: &Incarnation,
+    route: &Mounted,
+    admission: Result<Admitted, ClientRefusal>,
+    http: HttpIn,
+    principal: Option<Arc<str>>,
+    unit: Option<Unit>,
+    upstream: Option<(Box<dyn Members + Send>, Box<dyn UpSend + Send>)>,
+    intents: &dyn IntentHost,
+) -> Result<Served, ServeError> {
+    let effects = LineEffects { carriers, owner };
+    let headers: Vec<Pair<'_>> = http
+        .headers
+        .iter()
+        .map(|(name, value)| Pair {
+            name: Str::new(name),
+            value: Bytes::new(value),
+        })
+        .collect();
+    let build = |auth: u32, identity: &'_ [u8], ticket_record: &'_ [u8]| PlaneIn {
+        route: route.route,
+        flags: 0,
+        auth,
+        method: &http.method,
+        path: &http.path,
+        query: &http.query,
+        headers: &headers,
+        identity,
+        request_id: http.request_id,
+        carrier: 0,
+        work: "",
+        ticket_record,
+    };
+    let admitted = match admission {
+        Ok(admitted) => admitted,
+        Err(refusal) => {
+            let lowest = route.effective & route.effective.wrapping_neg();
+            let req = build(lowest, &[], &[]);
+            return Ok(Served::Refused(refuse(port, &req, &refusal, &effects)));
+        }
+    };
+    let req = build(admitted.auth, &admitted.identity, admitted.ticket_record());
+    let resolver = Resolver::new(intents, principal.as_deref().map(subject_scope));
+    let dialect = port.dialects().first().map_or("", |d| &**d);
+    let (mut members, mut send) = match upstream {
+        Some((members, send)) => (Some(members), Some(send)),
+        None => (None, None),
+    };
+    let ran = {
+        let unit_books = unit
+            .as_ref()
+            .map(|u| UnitBooks::new(&u.money, &u.ctx, principal.as_deref()));
+        let audit_books = AuditOnly {
+            sink: audit,
+            principal: principal.as_deref(),
+        };
+        let books: &dyn Books = match &unit_books {
+            Some(books) => books,
+            None => &audit_books,
+        };
+        run_session(
+            port,
+            &req,
+            &http.body,
+            Drive {
+                resolver: &resolver,
+                members: members.as_deref_mut().map(|m| m as &mut dyn Members),
+                send: send.as_deref_mut().map(|s| s as &mut dyn UpSend),
+                dialect,
+                refusals,
+                effects: &effects,
+                books,
+            },
+        )
+    };
+    match ran {
+        Ok(ran) => Ok(Served::Ran(ran)),
+        Err(SessionError::Port(error)) => {
+            let refusal = refusal_of(route.route, &error, refusals);
+            Ok(Served::Refused(refuse(port, &req, &refusal, &effects)))
+        }
+        Err(error) => Err(ServeError::Session(error)),
+    }
+}
 #[cfg(test)]
 #[path = "tests/port_tests.rs"]
 mod tests;

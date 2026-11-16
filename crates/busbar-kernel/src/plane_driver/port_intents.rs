@@ -163,7 +163,7 @@ impl WorkOutcome {
 
 /// What resolving an intent needs from core. The calls are synchronous: a driver runs a task inside
 /// `spawn_blocking`, and a production host blocks on the runtime for the store.
-pub trait IntentHost {
+pub trait IntentHost: Send + Sync {
     /// LOOKUP in the scope the resolver chose. `flags` carries `LK_PREFIX` and `LK_CHAIN` (for `LK_CHAIN` the key
     /// is the chain key followed by the 8-byte `after`).
     fn lookup(

@@ -137,7 +137,12 @@ impl Calls for Plane {
         Ok(())
     }
 
-    fn rewrite(&self, _: &mut Live, _: &[u8], _: &mut dyn FnMut(PlaneOut<'_>)) -> Result<(), PortError> {
+    fn rewrite(
+        &self,
+        _: &mut Live,
+        _: &[u8],
+        _: &mut dyn FnMut(PlaneOut<'_>),
+    ) -> Result<(), PortError> {
         Ok(())
     }
 
@@ -146,7 +151,13 @@ impl Calls for Plane {
         Ok(())
     }
 
-    fn render(&self, _: &PlaneIn<'_>, _: u32, _: &[u8], _: &mut dyn FnMut(PlaneOut<'_>)) -> Result<(), PortError> {
+    fn render(
+        &self,
+        _: &PlaneIn<'_>,
+        _: u32,
+        _: &[u8],
+        _: &mut dyn FnMut(PlaneOut<'_>),
+    ) -> Result<(), PortError> {
         Err(nope())
     }
 
@@ -160,7 +171,12 @@ impl Calls for Plane {
         _: &TargetIn<'_>,
         sink: &mut dyn FnMut(PlaneOut<'_>),
     ) -> Result<(), PortError> {
-        let items = self.upstream.lock().unwrap().pop_front().unwrap_or_default();
+        let items = self
+            .upstream
+            .lock()
+            .unwrap()
+            .pop_front()
+            .unwrap_or_default();
         play(&items, sink);
         Ok(())
     }
@@ -269,7 +285,11 @@ impl Members for Walk {
 struct Far;
 
 impl UpSend for Far {
-    fn send(&mut self, _: &Candidate, _: &crate::plane_driver::port_session::UpExchange) -> Result<UpReply, SendFailed> {
+    fn send(
+        &mut self,
+        _: &Candidate,
+        _: &crate::plane_driver::port_session::UpExchange,
+    ) -> Result<UpReply, SendFailed> {
         Ok(UpReply {
             status: 200,
             headers: Vec::new(),
@@ -278,11 +298,7 @@ impl UpSend for Far {
     }
 }
 
-fn run(
-    plane: &Plane,
-    walk: Option<&mut Walk>,
-    books: &Log,
-) -> Result<super::Ran, SessionError> {
+fn run(plane: &Plane, walk: Option<&mut Walk>, books: &Log) -> Result<super::Ran, SessionError> {
     let store = Store;
     let resolver = Resolver::new(&store, Some([1; 32]));
     let refusals = CoreRefusals::new();
@@ -314,11 +330,8 @@ fn forwarding() -> Plane {
     };
     *plane.upstream.lock().unwrap() =
         VecDeque::from([vec![It::UpMethod("POST"), It::UpPath("/p"), It::UpEnd]]);
-    *plane.pieces.lock().unwrap() = VecDeque::from([
-        vec![It::Respond(200)],
-        vec![It::Body(b"hi")],
-        vec![It::End],
-    ]);
+    *plane.pieces.lock().unwrap() =
+        VecDeque::from([vec![It::Respond(200)], vec![It::Body(b"hi")], vec![It::End]]);
     plane
 }
 
@@ -401,7 +414,10 @@ fn an_exhausted_walk_tells_the_plane_and_serves_what_it_renders_else_cores_refus
     assert!(ran.exhausted);
     let log = rendered.piece_log.lock().unwrap().clone();
     assert_eq!((log[0].0, log[0].2), (FROM_CORE, P_EXHAUSTED));
-    assert_eq!(statuses(&ran.client), ["head 503", "body plane words", "end"]);
+    assert_eq!(
+        statuses(&ran.client),
+        ["head 503", "body plane words", "end"]
+    );
 
     let silent = Plane {
         request: vec![It::Forward],
@@ -410,7 +426,10 @@ fn an_exhausted_walk_tells_the_plane_and_serves_what_it_renders_else_cores_refus
     let ran = run(&silent, Some(&mut Walk::default()), &Log::default()).unwrap();
     assert!(ran.exhausted);
     let items = statuses(&ran.client);
-    assert!(items[0].starts_with("head 5"), "core's own refusal: {items:?}");
+    assert!(
+        items[0].starts_with("head 5"),
+        "core's own refusal: {items:?}"
+    );
     assert_eq!(items.last().map(String::as_str), Some("end"));
 }
 
@@ -522,7 +541,10 @@ struct Audits(Mutex<Vec<(String, String)>>);
 
 impl AuditSink for Audits {
     fn record(&self, action: &str, _: &str, _: &'static str, principal: &str) {
-        self.0.lock().unwrap().push((action.into(), principal.into()));
+        self.0
+            .lock()
+            .unwrap()
+            .push((action.into(), principal.into()));
     }
 }
 
@@ -562,7 +584,10 @@ fn the_unit_books_post_the_end_through_the_unit_and_write_audit_rows_under_the_p
         resource: "res".into(),
     });
     books.ended(Ending::End, &usage);
-    assert_eq!(*audits.0.lock().unwrap(), vec![("act".to_owned(), "alice".to_owned())]);
+    assert_eq!(
+        *audits.0.lock().unwrap(),
+        vec![("act".to_owned(), "alice".to_owned())]
+    );
     assert_eq!(*seam.0.lock().unwrap(), ["checkpoint", "finished"]);
     books.ended(
         Ending::Cancel {
@@ -572,5 +597,11 @@ fn the_unit_books_post_the_end_through_the_unit_and_write_audit_rows_under_the_p
         },
         &usage,
     );
-    assert!(seam.0.lock().unwrap().last().unwrap().starts_with("cancelled"));
+    assert!(seam
+        .0
+        .lock()
+        .unwrap()
+        .last()
+        .unwrap()
+        .starts_with("cancelled"));
 }

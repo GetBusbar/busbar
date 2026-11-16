@@ -36,7 +36,12 @@ fn nope() -> PortError {
 impl Calls for Plane {
     type Session = Live;
 
-    fn request(&self, _: &PlaneIn<'_>, _: &[u8], _: &mut dyn FnMut(PlaneOut<'_>)) -> Result<Live, PortError> {
+    fn request(
+        &self,
+        _: &PlaneIn<'_>,
+        _: &[u8],
+        _: &mut dyn FnMut(PlaneOut<'_>),
+    ) -> Result<Live, PortError> {
         Err(nope())
     }
 
@@ -54,7 +59,12 @@ impl Calls for Plane {
         Ok(())
     }
 
-    fn rewrite(&self, _: &mut Live, _: &[u8], _: &mut dyn FnMut(PlaneOut<'_>)) -> Result<(), PortError> {
+    fn rewrite(
+        &self,
+        _: &mut Live,
+        _: &[u8],
+        _: &mut dyn FnMut(PlaneOut<'_>),
+    ) -> Result<(), PortError> {
         Ok(())
     }
 
@@ -63,15 +73,30 @@ impl Calls for Plane {
         Ok(())
     }
 
-    fn render(&self, _: &PlaneIn<'_>, _: u32, _: &[u8], _: &mut dyn FnMut(PlaneOut<'_>)) -> Result<(), PortError> {
+    fn render(
+        &self,
+        _: &PlaneIn<'_>,
+        _: u32,
+        _: &[u8],
+        _: &mut dyn FnMut(PlaneOut<'_>),
+    ) -> Result<(), PortError> {
         Err(nope())
     }
 
-    fn upstream(&self, _: &mut Live, _: &TargetIn<'_>, _: &mut dyn FnMut(PlaneOut<'_>)) -> Result<(), PortError> {
+    fn upstream(
+        &self,
+        _: &mut Live,
+        _: &TargetIn<'_>,
+        _: &mut dyn FnMut(PlaneOut<'_>),
+    ) -> Result<(), PortError> {
         Err(nope())
     }
 
-    fn probe(&self, t: &TargetIn<'_>, sink: &mut dyn FnMut(PlaneOut<'_>)) -> Result<Live, PortError> {
+    fn probe(
+        &self,
+        t: &TargetIn<'_>,
+        sink: &mut dyn FnMut(PlaneOut<'_>),
+    ) -> Result<Live, PortError> {
         self.seen
             .lock()
             .unwrap()
@@ -173,11 +198,17 @@ async fn a_probe_asks_the_plane_about_that_member_and_reports_what_it_found() {
         *plane.seen.lock().unwrap(),
         vec![(1, "m1".to_owned(), "probe-model".to_owned())]
     );
-    assert_eq!(*far.reported.lock().unwrap(), vec![(1, ProbeOutcome::Healthy)]);
+    assert_eq!(
+        *far.reported.lock().unwrap(),
+        vec![(1, ProbeOutcome::Healthy)]
+    );
 
     let (probes, _, far) = target(plane_unwell(), Members::default());
     probes.probe(0, Duration::from_secs(1)).await;
-    assert_eq!(*far.reported.lock().unwrap(), vec![(0, ProbeOutcome::Unhealthy)]);
+    assert_eq!(
+        *far.reported.lock().unwrap(),
+        vec![(0, ProbeOutcome::Unhealthy)]
+    );
 }
 
 fn plane_unwell() -> Plane {
@@ -206,7 +237,10 @@ async fn an_unknown_member_or_one_with_no_way_to_reach_it_is_not_probed() {
         },
     );
     probes.probe(0, Duration::from_secs(1)).await;
-    assert!(plane.seen.lock().unwrap().is_empty(), "no plane call without a far end");
+    assert!(
+        plane.seen.lock().unwrap().is_empty(),
+        "no plane call without a far end"
+    );
 }
 
 fn plane_ok() -> Plane {
