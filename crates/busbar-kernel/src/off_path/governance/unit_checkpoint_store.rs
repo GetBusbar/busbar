@@ -10,7 +10,7 @@ use crate::persistence::{
     facade::CoreStore,
     journal::{
         runtime::{Carried, RuntimeError, RuntimeJournal, StagedRun},
-        RowChange, VerifiedHead, WriteResult,
+        Pin, RowChange, VerifiedHead, WriteResult,
     },
     partition,
 };
@@ -114,7 +114,7 @@ impl UnitCheckpointEvidence {
     async fn proof(&self) -> RecordStoreResult<Arc<VerifiedHead>> {
         self.journal.live_proof().await.map_err(error)
     }
-    pub fn pending_audit(&self, unit: u64, incarnation: u64) -> Option<AuditRecord> {
+    pub fn pending_audit(&self, unit: u64, incarnation: u64) -> Option<(u64, AuditRecord)> {
         self.audit_pending
             .lock()
             .unwrap_or_else(|p| p.into_inner())
@@ -122,14 +122,19 @@ impl UnitCheckpointEvidence {
             .filter(|p| {
                 p.audit.what.unit_key.get() == unit && p.audit.what.incarnation == incarnation
             })
-            .map(|p| p.audit.clone())
+            .and_then(|p| {
+                p.run
+                    .records()
+                    .first()
+                    .map(|record| (record.node_seq, p.audit.clone()))
+            })
     }
     /// Complete the native chain before returning any reconstructed audit facts.
     pub async fn find_audit(
         &self,
         unit: u64,
         incarnation: u64,
-    ) -> RecordStoreResult<Option<AuditRecord>> {
+    ) -> RecordStoreResult<Option<(u64, AuditRecord)>> {
         crate::off_path::governance::runtime::unit_checkpoint_store_find_audit(
             &self.journal,
             unit,
@@ -162,8 +167,8 @@ impl UnitCheckpointEvidence {
     /// Retain the exact signed audit and original sealed frame before native IO.
     /// Callers reuse pending_audit after uncertainty rather than sealing a new line.
     /// Append a recovered running unit's audit line and confirm it. Returns the WAL `node_seq` of
-    /// the record that carries it (SEALING-FIX §3.5 r16), or 0 when the identical line was already
-    /// in the journal (found by scan, whose position this path does not keep).
+    /// the record that carries it (SEALING-FIX §3.5 r16), including when the identical line was
+    /// already confirmed in the journal by an earlier attempt.
     pub async fn append_audit(&self, audit: AuditRecord) -> RecordStoreResult<u64> {
         let _driving = self.audit_driving.lock().await;
         let existing = self
@@ -177,12 +182,12 @@ impl UnitCheckpointEvidence {
             }
             pending
         } else {
-            if let Some(selected) = self
+            if let Some((node_seq, selected)) = self
                 .find_audit(audit.what.unit_key.get(), audit.what.incarnation)
                 .await?
             {
                 return if selected == audit {
-                    Ok(0)
+                    Ok(node_seq)
                 } else {
                     Err(refusal("running audit identity already differs"))
                 };
@@ -199,7 +204,12 @@ impl UnitCheckpointEvidence {
             pending
         };
         self.journal.confirm(&pending.run).await.map_err(error)?;
-        let node_seq = pending.run.records().first().map_or(0, |r| r.node_seq);
+        let node_seq = pending
+            .run
+            .records()
+            .first()
+            .ok_or_else(|| refusal("running audit staging produced no original"))?
+            .node_seq;
         self.audit_pending
             .lock()
             .unwrap_or_else(|p| p.into_inner())
@@ -294,8 +304,10 @@ pub struct StoreUnitCheckpoints {
     driving: tokio::sync::Mutex<()>,
     /// The selected original of each checkpoint in custody: inserted when P's append is
     /// confirmed (or by the boot replay), replaced by a later revision, popped when R's delete
-    /// applies (SHUTDOWN-HANG F1). About 56 B per checkpoint; RAM only.
-    carried: Mutex<HashMap<[u8; 16], Carried>>,
+    /// applies (SHUTDOWN-HANG F1). About 56 B per checkpoint; RAM only. On an Ephemeral journal
+    /// each entry also pins its original, so no cut deletes it before R's
+    /// `record(seq, carried)` reads it (SEALING-FIX §3.9 floor (d)).
+    carried: Mutex<HashMap<[u8; 16], (Carried, Option<Pin>)>>,
 }
 impl StoreUnitCheckpoints {
     pub fn new(evidence: Arc<UnitCheckpointEvidence>, audit: Arc<dyn UnitCheckpointAudit>) -> Self {
@@ -435,13 +447,16 @@ impl StoreUnitCheckpoints {
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .get(id)
-            .copied()
+            .map(|(carried, _)| *carried)
     }
+    /// Carry (or drop) checkpoint `id`'s original. Called while the original's staged run, or
+    /// the boot replay before any cut, still covers it, so its pin is taken in time.
     fn carry(&self, id: [u8; 16], carried: Option<Carried>) {
         let mut map = self.carried.lock().unwrap_or_else(|p| p.into_inner());
         match carried {
             Some(carried) => {
-                map.insert(id, carried);
+                let pin = self.evidence.journal.pin(carried.seq);
+                map.insert(id, (carried, pin));
             }
             None => {
                 map.remove(&id);

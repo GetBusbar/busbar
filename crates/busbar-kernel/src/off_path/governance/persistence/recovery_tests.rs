@@ -70,6 +70,7 @@ type ScanHook = Arc<dyn Fn(Arc<Scan>) -> Call<'static, Page> + Send + Sync>;
 
 #[derive(Default)]
 struct Backend {
+    ephemeral: AtomicBool,
     after_read: Mutex<Option<ReadHook>>,
     read_hook: Mutex<Option<AsyncReadHook>>,
     scan_hook: Mutex<Option<ScanHook>>,
@@ -174,7 +175,11 @@ impl PersistenceBackend for Backend {
             atomic_domain: [2; 16],
             clock_authority: [3; 16],
             physical_version: busbar_contract::persistence::PHYSICAL_VERSION,
-            durability: Durability::Local,
+            durability: if self.ephemeral.load(Ordering::SeqCst) {
+                Durability::Ephemeral
+            } else {
+                Durability::Local
+            },
         }
     }
     fn read(&self, request: Arc<Read>) -> Call<'_, ReadResult> {
@@ -1855,6 +1860,90 @@ async fn shared_carried_evidence_survives_until_the_last_operation_releases() {
     recovery.release([2; 16]);
     assert!(recovery.carried(1).is_none());
     assert!(recovery.state.lock().unwrap().carried_by_op.is_empty());
+}
+
+/// SF-6 test 30(c): release the last operation's pin so settled usage cannot stop cuts forever.
+#[tokio::test]
+async fn recovery_original_is_pinned_until_its_last_operation_releases() {
+    use crate::persistence::journal::{CutProgress, CUT_BATCH, RETAIN_TAIL};
+    let backend = Arc::new(Backend::default());
+    backend.ephemeral.store(true, Ordering::SeqCst);
+    let recovery = sink(Arc::new(attach(backend, 1).await), 7).await;
+    let journal = recovery.journal.clone();
+    let run = journal
+        .stage_run(&[Entry::new(RecordClass::Reconciliation, vec![1])])
+        .unwrap();
+    journal.confirm(&run).await.unwrap();
+    let evidence = run.carried().next().unwrap();
+    recovery.carry([1; 16], Some(evidence));
+    recovery.carry([2; 16], Some(evidence));
+    drop(run);
+    for _ in 0..(2 * RETAIN_TAIL + CUT_BATCH) {
+        let run = journal
+            .stage_run(&[Entry::new(RecordClass::Transaction, vec![2])])
+            .unwrap();
+        journal.confirm(&run).await.unwrap();
+    }
+    let mut cut = journal.cutter().unwrap();
+    assert_eq!(cut.truncate_through(u64::MAX).await, CutProgress::Idle);
+    recovery.release([1; 16]);
+    assert_eq!(cut.truncate_through(u64::MAX).await, CutProgress::Idle);
+    assert_eq!(
+        journal.record(evidence).await.unwrap().node_seq,
+        evidence.seq
+    );
+    assert_eq!(journal.locate_truncated(), 0);
+    recovery.release([2; 16]);
+    assert!(
+        matches!(
+            cut.truncate_through(u64::MAX).await,
+            CutProgress::Cut { .. }
+        ),
+        "the last release must not retain a process-lifetime pin"
+    );
+}
+
+/// SF-6 test 30(d): a recovery proof restarts when a cut lands after its base snapshot.
+#[tokio::test]
+async fn recovery_history_restarts_from_the_cut_base() {
+    use crate::persistence::journal::{journal_walk_restarts, CUT_BATCH, RETAIN_TAIL};
+    let backend = Arc::new(Backend::default());
+    backend.ephemeral.store(true, Ordering::SeqCst);
+    let recovery = sink(Arc::new(attach(backend.clone(), 1).await), 7).await;
+    let journal = recovery.journal.clone();
+    for _ in 0..(RETAIN_TAIL + 3 * CUT_BATCH) {
+        let run = journal
+            .stage_run(&[Entry::new(RecordClass::Transaction, vec![2])])
+            .unwrap();
+        journal.confirm(&run).await.unwrap();
+    }
+    let before = backend.state.lock().unwrap().rows.clone();
+    journal.cutter().unwrap().truncate_through(u64::MAX).await;
+    let after = Mutex::new(Some(backend.state.lock().unwrap().rows.clone()));
+    let mut fresh = History::observing(&recovery.store, &journal);
+    let expected = fresh.proof(journal.node()).await.unwrap();
+    backend.state.lock().unwrap().rows = before;
+    *backend.after_read.lock().unwrap() = Some(Arc::new(move |backend, read| {
+        if read
+            .addresses
+            .iter()
+            .any(|address| address.key.get(24) == Some(&b'B'))
+        {
+            if let Some(rows) = after.lock().unwrap().take() {
+                backend.state.lock().unwrap().rows = rows;
+            }
+        }
+    }));
+    let restarts = journal_walk_restarts();
+    let mut racing = History::observing(&recovery.store, &journal);
+    let actual = racing.proof(journal.node()).await.unwrap();
+    assert!(actual.head == expected.head);
+    assert_eq!(actual.records_seal, expected.records_seal);
+    assert!(
+        journal_walk_restarts() > restarts,
+        "recovery uses the shared journal restart accounting"
+    );
+    *backend.after_read.lock().unwrap() = None;
 }
 
 /// WHO: a metering flush driving one operation while the settlement flusher's recovery batch

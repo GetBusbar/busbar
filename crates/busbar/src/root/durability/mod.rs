@@ -54,6 +54,8 @@ mod audit_page;
 
 pub(crate) mod audit_services;
 pub(crate) mod notary;
+pub(crate) mod predecessor;
+pub(crate) mod restart_seal;
 pub(crate) mod signer;
 pub(crate) use notary::HeadFeed;
 
@@ -120,6 +122,10 @@ pub struct Durability {
 
     /// The WAL `node_seq` of the newest audit line read back at reopen (0 for none).
     resumed_head_node_seq: u64,
+
+    /// THE RECORDS READ AT REOPEN, kept only until the own-node restart seal walks them
+    /// ([`restart_seal::seal_own_node`], SEALING-FIX §3.6.1: "no extra store read"), then taken.
+    boot_records: Vec<JournalRecord>,
 }
 
 impl Durability {
@@ -151,15 +157,23 @@ pub(crate) struct ChainAt {
 }
 impl ChainAt {
     pub async fn read(self) -> ChainRead {
+        // `read_node_walk` already verifies the retained originals from their replay base.
+        // Rechecking them as genesis would reject every legitimate Ephemeral cut.
+        Ok(Ok(self.read_walk().await?.rows))
+    }
+
+    pub(crate) async fn read_walk(
+        self,
+    ) -> std::io::Result<busbar_kernel::persistence::journal::NodeRecords> {
         let mut records = self
             .journal
-            .read_records(self.budget)
+            .read_node_walk(self.journal.node(), self.budget)
             .await
             .map_err(|error| {
                 std::io::Error::other(format!("native journal read failed: {error:?}"))
             })?;
-        records.retain(|record| record.node_seq < self.through);
-        Ok(busbar_kernel_wal::verify_journal(&records).map(|()| records))
+        records.rows.retain(|record| record.node_seq < self.through);
+        Ok(records)
     }
     fn store(&self) -> Option<&str> {
         None
@@ -533,6 +547,7 @@ pub(crate) async fn build_on_store(
         audit_hints: None,
         head: Arc::new(HeadFeed::default()),
         resumed_head_node_seq: 0,
+        boot_records: Vec::new(),
     };
     let mut findings = Vec::new();
     if let Some(cards) = cards {
@@ -563,6 +578,7 @@ pub(crate) async fn build_on_store(
     durability.void_claims(open).await?;
     findings.dedup();
     durability.restart_findings = findings;
+    durability.boot_records = records;
     Ok(durability)
 }
 

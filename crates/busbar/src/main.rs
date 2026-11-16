@@ -1651,10 +1651,21 @@ async fn run(
     drop(recovery_served);
 
     busbar_kernel::boot::start_planes(&app_handle).unwrap_or_else(|e| die(e));
-    let predecessor = spawn_predecessor_task(governance.as_ref(), control_work.shutdown_rx.clone());
+    let predecessor = spawn_predecessor_task(
+        governance.as_ref(),
+        book.as_ref(),
+        control_work.shutdown_rx.clone(),
+    );
     // SEALING-FIX §3.3: the audit notary, after `Ready`, on this control runtime.
     if let Some(audit) = book.as_ref().and_then(|book| book.audit.as_ref()) {
-        audit.start_notary(audit_seal_every, Arc::clone(&drain_clock));
+        // SEALING-FIX §3.9 floor (b): an Ephemeral journal's cut never passes the oldest audit
+        // line a checkpoint in custody names. Weak: governance owns the book's sinks.
+        let floor = governance.as_ref().map(|gov| {
+            let gov = Arc::downgrade(gov);
+            Arc::new(move || gov.upgrade().and_then(|gov| gov.oldest_unit_audit_seq()))
+                as root::durability::notary::FloorHints
+        });
+        audit.start_notary(audit_seal_every, Arc::clone(&drain_clock), floor);
     }
 
     let mut threads: Vec<std::thread::JoinHandle<()>> = Vec::new();
@@ -1826,12 +1837,14 @@ async fn run(
     root::exit::exit(code);
 }
 
-/// The start-up predecessor task (SHUTDOWN-HANG F5), after `Ready`, in the background and never
-/// on the request path: it closes writers whose lease expired at least one TTL ago, on any host,
-/// and records those that never retired. `stop` (the first shutdown broadcast) ends it at a step
-/// boundary; the drain joins it and settles its fence in the seal phase.
+/// The start-up predecessor task, after `Ready`, in the background and never on the request path:
+/// it seals the crash tails of this host's dead predecessors (SEALING-FIX §3.6.2), then closes
+/// writers whose lease expired at least one TTL ago, on any host, and records those that never
+/// retired (SHUTDOWN-HANG F5). `stop` (the first shutdown broadcast) ends it at a step boundary;
+/// the drain joins it and settles its fence in the seal phase.
 fn spawn_predecessor_task(
     gov: Option<&Arc<busbar_kernel::governance::GovState>>,
+    book: Option<&root::durability::NodeBook>,
     stop: tokio::sync::watch::Receiver<bool>,
 ) -> Option<(
     tokio::task::JoinHandle<()>,
@@ -1847,9 +1860,13 @@ fn spawn_predecessor_task(
             return None;
         }
     };
+    let sealing = book
+        .and_then(|book| book.audit.as_ref())
+        .and_then(|audit| audit.take_predecessor());
+    let durability = book.map(|book| Arc::clone(&book.durability));
     let task = Arc::clone(&fence);
     let handle = tokio::spawn(root::measurements::maintenance(async move {
-        task.run(stop).await;
+        root::durability::predecessor::run(task, sealing, durability, stop).await;
     }));
     Some((handle, fence))
 }

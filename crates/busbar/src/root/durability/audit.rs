@@ -122,9 +122,11 @@ impl Durability {
         let linked: Linked = self.record.link(prepared, linked_ms, pass);
         let entry = audit_entry(linked.record())
             .map_err(|_| DurabilityLost::observed(token, StepName::Audit))?;
+        // The line's chain seq and fingerprint ride with its run, so an Ephemeral journal's cut
+        // writes the audit tail into its base without reading a row (SEALING-FIX §3.9).
         let run = self
             .journal
-            .stage_run(&[entry])
+            .stage_audit_run(&[entry], linked.record().seq, linked.fingerprint().0)
             .map_err(|_| DurabilityLost::observed(token, StepName::Audit))?;
         self.record.advance(&linked);
         let line = LineAt {

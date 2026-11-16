@@ -294,6 +294,50 @@ The journal refused the terminal audit original before native confirmation. The 
 
 **What to do:** Check store availability and journal custody pressure. A closed journal can also indicate shutdown. Do not assume an upstream operation was undone when its terminal audit failed.
 
+<a id="audit-sealed-after-restart"></a>
+### BUSBAR-2052 — An unstamped audit tail was sealed after a restart
+
+- **Severity:** benign_recurring
+- **Since:** 1.6.0
+- **Slug:** `audit-sealed-after-restart`
+
+A busbar process stopped before its audit notary stamped its last lines. On restart, the node itself (same holder) or the next process on the same host walked the links from the last valid stamp to the tail, found them intact and no longer than any crash leaves, and signed one after_restart page over exactly those lines with the deployment key. The verify tool reports such pages under restart_sealed, apart from live pages, with the sealer node and the down interval.
+
+**What to do:** None: this is the designed outcome of a crash. Look for the crash itself (exit code, kill, host restart) if it was not expected.
+
+<a id="audit-chain-broken-at-boot"></a>
+### BUSBAR-2053 — An audit chain is broken after its last valid stamp; the tail is recorded, never sealed
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `audit-chain-broken-at-boot`
+
+On restart the walk from a node's last valid audit stamp to its tail failed: a line does not link or hash (link, sequence, digest), a body does not decode (decode), a stamp failed its own check (stamp), a legacy line carries no signature (unsigned), the tail has no stamp of this node on this host (unanchored), it follows a clean-shutdown page (after_final), it is longer than any crash leaves (span), the walk ran out of budget (budget), or a fenced node has no seal row (unsealed_fenced). A signed break notice records the node, the last good line and the unsealed range; no stamp vouches for those lines. Boot continues.
+
+**What to do:** Treat the named lines as unauthenticated until explained: compare the store with a backup or the export of earlier audit pages. The fields node, last_good, unsealed_from, unsealed_to and reason locate the damage.
+
+<a id="audit-predecessor-refused"></a>
+### BUSBAR-2054 — A crashed predecessor on this host was not sealed
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `audit-predecessor-refused`
+
+The start-up predecessor sealer found a node on this host that it may not seal: the process has no host name (host_unknown), the node's host or archive row does not match its id reservation (assignment), its last stamp names another host (foreign_host), its liveness at this process's start cannot be shown (sibling_unknown), its seal row does not verify (seal_row_invalid), its records use a recipe this build cannot read (recipe_unsupported), or a step failed for good (permanent). Nothing was fenced, signed or written for it; its tail stays reported as unauthenticated, and the next process on the host retries it.
+
+**What to do:** For host_unknown, set HOSTNAME to a value unique to the machine. For assignment or seal_row_invalid, treat the store as tampered until explained. For the rest, check the store and start the next process on the host.
+
+<a id="audit-predecessor-seal-failed"></a>
+### BUSBAR-2055 — Sealing a crashed predecessor is failing and is retried
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `audit-predecessor-seal-failed`
+
+A step of sealing a crashed predecessor's audit tail (fence, tail read, sign or seal write) failed or did not answer within one second. The step is retried on a capped backoff of up to one second, and a write is never dropped mid-flight. An Info line follows once the node is sealed.
+
+**What to do:** Check the store's health and the audit signing key. If the process stops first, the next process on the host seals the node.
+
 ## 3xxx — Config
 
 <a id="config-overlay-corrupt-refuse-write"></a>

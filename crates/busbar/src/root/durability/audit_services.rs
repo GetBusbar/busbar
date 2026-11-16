@@ -17,7 +17,7 @@ use busbar_kernel::governance::drain::DrainClock;
 use busbar_kernel::persistence::journal::runtime::RuntimeJournal;
 use busbar_kernel_audit::{BootstrapSigner, Notary};
 
-use super::notary::{self, HeadFeed, NotaryConfig, NotaryStart, NotaryTask};
+use super::notary::{self, FloorHints, HeadFeed, NotaryConfig, NotaryStart, NotaryTask};
 use super::signer::{self, Checkpoint, Live, Seal, SignerHandle, SignerThreads};
 
 /// The handles and threads before their owners take them.
@@ -37,6 +37,7 @@ pub(crate) struct AuditServices {
     boot: Mutex<Option<SignerHandle<Seal>>>,
     sealer: Mutex<Option<SignerHandle<Seal>>>,
     notary: Mutex<Option<NotaryTask>>,
+    predecessor: Mutex<Option<super::predecessor::PredecessorInputs>>,
     stopping: Arc<AtomicBool>,
 }
 
@@ -52,6 +53,14 @@ impl std::fmt::Debug for AuditServices {
 pub(crate) type CheckpointHandle = SignerHandle<Checkpoint>;
 
 impl AuditServices {
+    #[cfg(test)]
+    pub(crate) fn cut_retained(&self) -> bool {
+        self.notary
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_ref()
+            .is_some_and(|task| task.progress().journal_cut_retained.load(Ordering::Acquire))
+    }
     /// START THE SIGNER THREADS from the bound key's capabilities. `start` is the resumed head the
     /// notary will begin after (read before recovery appends anything).
     pub(crate) fn spawn(
@@ -77,6 +86,7 @@ impl AuditServices {
             boot: Mutex::new(Some(signers.boot)),
             sealer: Mutex::new(Some(signers.sealer)),
             notary: Mutex::new(None),
+            predecessor: Mutex::new(None),
             stopping: Arc::new(AtomicBool::new(false)),
         };
         Ok((services, signers.checkpoint))
@@ -84,9 +94,15 @@ impl AuditServices {
 
     /// START THE NOTARY (once; later calls do nothing) on the current runtime, with
     /// `audit.seal_every` and SHUTDOWN-HANG's drain clock, and its 1 s watch. Returns whether this
-    /// call started it.
-    pub(crate) fn start_notary(&self, every_ms: u64, clock: Arc<DrainClock>) -> bool {
-        let _ = self.clock.set(clock);
+    /// call started it. `floor` is the Ephemeral journal cut's floor (b) source (SEALING-FIX §3.9):
+    /// the oldest audit line a checkpoint in custody names.
+    pub(crate) fn start_notary(
+        &self,
+        every_ms: u64,
+        clock: Arc<DrainClock>,
+        floor: Option<FloorHints>,
+    ) -> bool {
+        let _ = self.clock.set(Arc::clone(&clock));
         let Some(Unstarted { live, threads }) = self
             .unstarted
             .lock()
@@ -95,7 +111,7 @@ impl AuditServices {
         else {
             return false;
         };
-        let task = notary::spawn(
+        let task = notary::spawn_with_floor(
             NotaryConfig {
                 node: self.node,
                 host: super::host_identity(),
@@ -106,6 +122,8 @@ impl AuditServices {
             Arc::clone(&self.journal),
             Arc::clone(&self.feed),
             live,
+            floor,
+            Some(clock),
         );
         let progress = Arc::clone(task.progress());
         let stall_after_ms = task.stall_after_ms();
@@ -137,6 +155,25 @@ impl AuditServices {
     /// The predecessor sealer's Bootstrap handle (taken once).
     pub(crate) fn take_sealer_handle(&self) -> Option<SignerHandle<Seal>> {
         self.sealer.lock().unwrap_or_else(|p| p.into_inner()).take()
+    }
+
+    /// What the boot book knows that the predecessor sealer needs (this node, its take time and
+    /// the bound key), set once at boot.
+    pub(crate) fn set_predecessor_inputs(&self, inputs: super::predecessor::PredecessorInputs) {
+        *self.predecessor.lock().unwrap_or_else(|p| p.into_inner()) = Some(inputs);
+    }
+
+    /// THE PREDECESSOR SEALER'S INPUTS and its Bootstrap handle, taken once by `main` after
+    /// `Ready`.
+    pub(crate) fn take_predecessor(
+        &self,
+    ) -> Option<(super::predecessor::PredecessorInputs, SignerHandle<Seal>)> {
+        let inputs = self
+            .predecessor
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take()?;
+        Some((inputs, self.take_sealer_handle()?))
     }
 }
 

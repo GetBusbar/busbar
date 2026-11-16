@@ -246,6 +246,13 @@ impl GovState {
             .and_then(Pending::audit_seq)
     }
 
+    /// The WAL `node_seq` of the oldest audit line a checkpoint in custody still names: the
+    /// Ephemeral journal cut never passes the row before it (SEALING-FIX §3.9 floor (b)). One
+    /// pass over the book, off the request path (the notary, once per cut trigger).
+    pub fn oldest_unit_audit_seq(&self) -> Option<u64> {
+        self.unit_checkpoints.pending.lock().oldest_audit_seq()
+    }
+
     /// `note_unit_audit` misses since boot.
     pub fn unit_audit_misses(&self) -> u64 {
         self.unit_checkpoints.pending.audit_misses()

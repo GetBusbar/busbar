@@ -170,7 +170,7 @@ impl WriterRetirements {
         core: &CoreStore,
         epoch: u64,
         writer: [u8; 16],
-    ) -> Result<WriterRetirement, String> {
+    ) -> Result<WriterRetirement, RetireError> {
         self.retire_after(core, epoch, writer, 0, None).await
     }
 
@@ -185,7 +185,7 @@ impl WriterRetirements {
         writer: [u8; 16],
         grace_ms: u64,
         seen: Option<UndrainedWriter>,
-    ) -> Result<WriterRetirement, String> {
+    ) -> Result<WriterRetirement, RetireError> {
         use super::{commit::SubmitResult, facade::PendingId};
         use busbar_contract::persistence::{self as native, control};
         let _gate = self.gate.lock().await;
@@ -199,7 +199,7 @@ impl WriterRetirements {
             let submission = core
                 .retry(PendingId(candidate.candidate().id.operation))
                 .await
-                .map_err(error)?;
+                .map_err(RetireError::from)?;
             match submission.result {
                 SubmitResult::Decided(decision) => {
                     self.take_decided(target, matches!(*decision, native::Decision::Applied(_)));
@@ -240,7 +240,7 @@ impl WriterRetirements {
                 time: None,
             }))
             .await
-            .map_err(error)?;
+            .map_err(RetireError::from)?;
         let native::ReadResult::Values {
             observed_at,
             mut values,
@@ -307,6 +307,13 @@ impl WriterRetirements {
                 retry_at_ms: closable_ms,
             });
         }
+        let mark_address = super::scoped::migration_address(
+            true,
+            INSTANCE,
+            NODE_SCHEMA,
+            &predecessor_seal::fenced_key(epoch, writer),
+        )
+        .map_err(error)?;
         let fence = super::fences::writer(
             core.next_id().map_err(error)?,
             writer,
@@ -329,15 +336,29 @@ impl WriterRetirements {
                     expected: native::ExpectedValue::Exact(lease),
                 },
             ],
-            mutations: vec![native::Mutation::Put {
-                address: control_address,
-                value: Secret::new(
-                    permanently_closed
-                        .encode()
-                        .ok_or("invalid permanent fence")?
-                        .to_vec(),
-                ),
-            }],
+            mutations: vec![
+                native::Mutation::Put {
+                    address: control_address,
+                    value: Secret::new(
+                        permanently_closed
+                            .encode()
+                            .ok_or("invalid permanent fence")?
+                            .to_vec(),
+                    ),
+                },
+                // SEALING-FIX r11-r12 (decision 193): the fence mark commits with the fence, so a
+                // fenced node with no seal row is known to be between its fence and its seal.
+                native::Mutation::Put {
+                    address: mark_address,
+                    value: Secret::new(
+                        predecessor_seal::FenceMark {
+                            lease_expires_ms: lease_row.expires_ms,
+                            sealed: Vec::new(),
+                        }
+                        .bytes(),
+                    ),
+                },
+            ],
             time: Some(native::TimeGuard {
                 not_before: Some(closable_ms.div_ceil(1000)),
                 before: None,
@@ -361,7 +382,7 @@ impl WriterRetirements {
             Err(cause) => {
                 // Nothing crossed: drop the target with no record.
                 self.take_decided(target, false);
-                return Err(error(cause));
+                return Err(cause.into());
             }
         };
         #[cfg(test)]
@@ -795,6 +816,7 @@ impl BootIdentity {
                     {
                         return Ok(TakenNode {
                             id: assignment.id,
+                            taken_at_ms: now,
                             lease: Some(NodeLease {
                                 owner: self.clone(),
                                 host: host.into(),
@@ -882,6 +904,7 @@ impl BootIdentity {
             if self.records.decide(predicates, mutations).await? {
                 return Ok(TakenNode {
                     id,
+                    taken_at_ms: now,
                     lease: Some(NodeLease {
                         owner: self.clone(),
                         host: host.into(),
@@ -1328,6 +1351,8 @@ pub struct PredecessorFence {
     identity: Arc<BootIdentity>,
     host: String,
     retirements: WriterRetirements,
+    /// Its own seal-row owner: a seal write never takes the node lease's gate or retained slot.
+    seals: BootRecords,
 }
 
 /// What one F5 pass did, for its Info line.
@@ -1344,6 +1369,7 @@ impl PredecessorFence {
     pub fn new(core: Arc<CoreStore>, host: &str) -> Result<Arc<Self>, String> {
         Ok(Arc::new(Self {
             identity: Arc::new(BootIdentity::new(core.clone())?),
+            seals: predecessor_seal::seal_records(core.clone())?,
             core,
             host: host.into(),
             retirements: WriterRetirements::default(),
@@ -1486,8 +1512,21 @@ impl PredecessorFence {
     }
 }
 
+#[path = "predecessor_seal.rs"]
+mod predecessor_seal;
+#[path = "retire_error.rs"]
+mod retire_error;
+pub use predecessor_seal::{
+    FenceMark, HostNode, HostNodes, PredecessorRetire, RefusedNode, SealOutcome, SealRow,
+    SealState, TailView,
+};
+pub use retire_error::RetireError;
+
 pub struct TakenNode {
     pub id: u64,
+    /// The store clock (ms) `take_node` read: a predecessor renewed no later than this (SEALING-FIX
+    /// §3.6.2 "Dead at start").
+    pub taken_at_ms: u64,
     pub lease: Option<NodeLease>,
 }
 #[derive(Clone)]
@@ -1627,3 +1666,7 @@ mod expired_writers_tests;
 #[cfg(test)]
 #[path = "tests/fence_settle_tests.rs"]
 mod fence_settle_tests;
+
+#[cfg(test)]
+#[path = "tests/predecessor_seal_tests.rs"]
+mod predecessor_seal_tests;

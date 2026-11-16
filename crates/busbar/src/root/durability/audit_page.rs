@@ -147,7 +147,7 @@ impl Durability {
             .next_journal
             .saturating_add(SCAN_POSITIONS)
             .min(cursor.journal_end);
-        let (records, stored) = if exhausted || covered {
+        let (records, stored) = if self.journal.base_tail().is_none() && (exhausted || covered) {
             (
                 self.audit_records()
                     .iter()
@@ -173,12 +173,30 @@ impl Durability {
 impl AuditPagePlan {
     pub async fn finish(mut self) -> Result<Vec<u8>, GovernanceError> {
         let journal_page = if let Some(stored) = self.stored.take() {
-            let records = stored
-                .read()
+            let walked = stored
+                .read_walk()
                 .await
-                .map_err(|_| GovernanceError::Store)?
                 .map_err(|_| GovernanceError::Store)?;
-            let records: Vec<_> = records
+            if let Some(base) = walked.base_tail {
+                self.body["truncated_below_base"] = json!({"base_seq": base.chain_seq.to_string()});
+                self.body["retention"]["durable_from"] =
+                    json!(base.chain_seq.saturating_add(1).to_string());
+                self.body["retention"]["durable_from_known"] = json!(true);
+                self.cursor.next_audit =
+                    self.cursor.next_audit.max(base.chain_seq.saturating_add(1));
+                // The base may be a non-audit row. Start at the first retained WAL row, not
+                // at the audit tail's WAL position; the two are deliberately independent.
+                if let Some(first) = walked.rows.first() {
+                    self.cursor.next_journal = self.cursor.next_journal.max(first.node_seq);
+                    self.scan_end = self
+                        .cursor
+                        .next_journal
+                        .saturating_add(SCAN_POSITIONS)
+                        .min(self.cursor.journal_end);
+                }
+            }
+            let records: Vec<_> = walked
+                .rows
                 .into_iter()
                 .filter(|record| {
                     record.node_seq >= self.cursor.next_journal && record.node_seq < self.scan_end
