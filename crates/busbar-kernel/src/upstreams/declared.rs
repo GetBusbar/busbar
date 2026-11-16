@@ -5,7 +5,8 @@ use std::sync::Arc;
 
 use busbar_contract::json::{JsonContainerTrait, JsonValueMutTrait, JsonValueTrait, Map, Value};
 
-use super::{ConfiguredUpstreams, UpstreamDef};
+use super::{ConfiguredUpstreams, UpstreamDef, Upstreams};
+use crate::auth_bindings::{bind_upstreams_for, ImplicitInstance, OperatorAuth, UpstreamView};
 use crate::config::min3::{parse_upstream_entry, UpstreamAuthForm, UpstreamCfg};
 use crate::plugin_config::TrustAnchor;
 
@@ -27,9 +28,87 @@ pub struct Declared {
     pub parsed: BTreeMap<Box<str>, UpstreamCfg>,
     retained: BTreeMap<String, Map>,
     pointers: Vec<String>,
+    instance: String,
+}
+
+/// An implicit outbound auth instance to open, scoped to one declared registration.
+/// Credentials remain source references, never resolved values in plane-visible config.
+pub struct DeclaredAuth {
+    pub upstream: Box<str>,
+    pub spec: ImplicitInstance,
+    pub credential: Option<busbar_contract::secret_ref::SecretRef>,
 }
 
 impl Declared {
+    /// Resolve binding owners and mode flags against admitted descriptions before this generation opens.
+    pub fn resolve_bindings(
+        &mut self,
+        styles: &[(&str, Vec<&str>)],
+        operator: &[OperatorAuth<'_>],
+        flags: &dyn Fn(&str, &str) -> u64,
+    ) -> Result<Vec<DeclaredAuth>, Vec<String>> {
+        let views: Vec<_> = self
+            .parsed
+            .iter()
+            .map(|(name, cfg)| UpstreamView {
+                name,
+                auth: cfg.auth.as_ref(),
+                upstream_credentials: cfg.upstream_credentials,
+                stdio: self
+                    .definitions
+                    .get(name)
+                    .is_some_and(|d| d.command.is_some()),
+            })
+            .collect();
+        let bindings = bind_upstreams_for(&self.instance, &views, styles, operator, flags)?;
+        let mut definitions = BTreeMap::new();
+        let mut implicit = Vec::new();
+        for binding in bindings {
+            let Some(current) = self.definitions.get(&binding.name) else {
+                return Err(vec![
+                    "an outbound binding has no declared registration".into()
+                ]);
+            };
+            let mut definition = (*current).clone();
+            definition.auth = binding.auth;
+            if let Some(spec) = binding.implicit {
+                let credential = self
+                    .parsed
+                    .get(&binding.name)
+                    .and_then(|cfg| cfg.auth.as_ref())
+                    .and_then(|auth| match &auth.form {
+                        UpstreamAuthForm::Bearer(value) => Some(value.clone()),
+                        UpstreamAuthForm::ApiKey { secret, .. } => Some(secret.clone()),
+                        UpstreamAuthForm::TokenExchange { subject_token, .. } => {
+                            Some(subject_token.clone())
+                        }
+                        _ => None,
+                    });
+                implicit.push(DeclaredAuth {
+                    upstream: binding.name.clone(),
+                    spec,
+                    credential,
+                });
+            }
+            definitions.insert(binding.name, Arc::new(definition));
+        }
+        self.definitions = ConfiguredUpstreams::from_definitions(definitions);
+        Ok(implicit)
+    }
+
+    /// Only this instance's caller-mode registrations, after resolve_bindings.
+    pub fn caller_upstreams(&self) -> Vec<Box<str>> {
+        self.definitions
+            .names()
+            .filter(|name| {
+                self.definitions
+                    .get(name)
+                    .is_some_and(|d| d.auth.as_ref().is_some_and(|a| a.caller))
+            })
+            .map(Box::from)
+            .collect()
+    }
+
     /// Reattach core fields after a plane normalizes its visible bag. A plane may not change core policy.
     pub fn reattach(&self, normalized_visible: &Value) -> Result<Value, Vec<String>> {
         let pointers: Vec<_> = self.pointers.iter().map(String::as_str).collect();
@@ -129,6 +208,7 @@ pub fn declared(
         parsed,
         retained,
         pointers: pointers.iter().map(|p| (*p).to_owned()).collect(),
+        instance: instance.to_owned(),
     })
 }
 
