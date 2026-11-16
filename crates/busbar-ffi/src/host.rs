@@ -819,3 +819,651 @@ impl Admitted {
         OpenAnswer::Done(status, instance)
     }
 }
+
+/// The slot cases that need the shims (IF §14 C-TOKEN-SPACE's shim arm, C-RMW's slot share): one fixture
+/// image type serving a plane and a transport table, driven through this module's safe API. A test forges
+/// a token of the other space by building a `Session` or `Chain` over it, which only this module can.
+#[cfg(all(test, not(loom)))]
+mod tests {
+    use super::*;
+    use core::task::Poll;
+
+    use crate::header::{LinkedPlugin, STAMP_KIND_AT, STAMP_SIZE, StampBytes, plugin};
+    use crate::raw::{ChainBytes, HostFns, KindCode, Out, Slice, Str};
+    use crate::shim::{
+        Call1, Call2, Call3, ChainFut, End0, Image, InstOf, Opener1, Opener2, Opening, Session0,
+        Session1, Session2, Session3, Session4, Start2, Step,
+    };
+    use crate::slots::{ChainBox, ChainRef, Slots, counting, unpack};
+    use crate::vt::views::{ConnInfo, PlaneReq, Target};
+    use crate::vt::{Built, ConnRef, PlaneRef, TargetRef, kind, plane, transport};
+
+    type B = Bytes<'static>;
+    type St = Str<'static>;
+
+    std::thread_local! {
+        static SESSION_DROPS: Cell<u32> = const { Cell::new(0) };
+        static CHAIN_DROPS: Cell<u32> = const { Cell::new(0) };
+    }
+
+    // `pub`, as header.rs's fixture: the image type is only ever a type parameter.
+    pub struct Fx;
+
+    /// A session's state; its drop is counted.
+    struct Sess;
+    impl Drop for Sess {
+        fn drop(&mut self) {
+            SESSION_DROPS.set(SESSION_DROPS.get() + 1);
+        }
+    }
+
+    /// Held by a chain future; its drop is the chain's, counted.
+    struct Held;
+    impl Drop for Held {
+        fn drop(&mut self) {
+            CHAIN_DROPS.set(CHAIN_DROPS.get() + 1);
+        }
+    }
+
+    static GLOBAL: Slots<ChainBox<(), ()>> = Slots::new();
+    static HOST: Host = Host::new(
+        0,
+        HostFns {
+            now: None,
+            mono: None,
+            random: None,
+            crypto: None,
+            log: None,
+            log_level: None,
+            grow: None,
+            deployment: None,
+            migrate_admit: None,
+        },
+    );
+
+    /// One record (IF §3): the head, then an 8-byte body.
+    fn record(out: &mut Out<'_>, tag: u16, body: u64) -> bool {
+        let mut rec = [0u8; 16];
+        rec[..2].copy_from_slice(&tag.to_ne_bytes());
+        rec[4..8].copy_from_slice(&8u32.to_ne_bytes());
+        rec[8..].copy_from_slice(&body.to_le_bytes());
+        out.append(&rec)
+    }
+
+    impl Image for Fx {
+        type Plugin = ();
+        type Session = Sess;
+        type Reply = ();
+        type Inbox = ();
+        fn global() -> &'static Slots<ChainBox<(), ()>> {
+            &GLOBAL
+        }
+        fn describe(_h: &'static Host, _out: &mut Out<'_>) -> Status {
+            Status::OK
+        }
+        fn open(
+            _h: &'static Host,
+            _config: Bytes<'_>,
+            _chained: ChainBytes,
+            _flags: u32,
+            out: &mut Out<'_>,
+        ) -> Opening<(), ()> {
+            let inst = Box::new(InstOf::<Fx>::new(())).into_instance();
+            Opening::Done(if record(out, TAG_INSTANCE, inst) {
+                Status::OK
+            } else {
+                Status::FAULT
+            })
+        }
+        fn poll(
+            mut chain: ChainRef<'_, (), ()>,
+            _results: Option<ChainBytes>,
+            _out: &mut Out<'_>,
+        ) -> Step {
+            match chain.poll() {
+                Poll::Ready(()) => Step::Ready(Status::OK),
+                Poll::Pending => Step::Need,
+            }
+        }
+        fn parked(token: Token, out: &mut Out<'_>) -> Status {
+            if record(out, TAG_TOKEN, token) {
+                Status::NEED
+            } else {
+                Status::FAULT
+            }
+        }
+        fn opened(token: Token, out: &mut Out<'_>) -> Status {
+            if record(out, TAG_TOKEN, token) {
+                Status::OK
+            } else {
+                Status::FAULT
+            }
+        }
+    }
+
+    // ---- the plane table ----
+
+    impl Opener2<PlaneRef, B, 0> for Fx {
+        fn begin(
+            _p: &(),
+            _h: &'static Host,
+            _a1: Arg<'_, PlaneRef>,
+            _a2: Arg<'_, B>,
+            _out: &mut Out<'_>,
+        ) -> Result<Sess, Status> {
+            Ok(Sess)
+        }
+    }
+    impl Session1<TargetRef, 1> for Fx {
+        fn on(
+            _p: &(),
+            _h: &'static Host,
+            _s: &mut Sess,
+            _a1: Arg<'_, TargetRef>,
+            _out: &mut Out<'_>,
+        ) -> Status {
+            Status::OK
+        }
+    }
+    impl Session4<u32, u32, u32, B, 2> for Fx {
+        fn on(
+            _p: &(),
+            _h: &'static Host,
+            _s: &mut Sess,
+            _a1: Arg<'_, u32>,
+            _a2: Arg<'_, u32>,
+            _a3: Arg<'_, u32>,
+            _a4: Arg<'_, B>,
+            _out: &mut Out<'_>,
+        ) -> Status {
+            Status::OK
+        }
+    }
+    impl End0<3> for Fx {
+        fn end(_p: &(), _h: &'static Host, _s: Sess, _out: &mut Out<'_>) -> Status {
+            Status::OK
+        }
+    }
+    impl Session1<B, 4> for Fx {
+        fn on(
+            _p: &(),
+            _h: &'static Host,
+            _s: &mut Sess,
+            _a1: Arg<'_, B>,
+            _out: &mut Out<'_>,
+        ) -> Status {
+            Status::OK
+        }
+    }
+    impl Call3<PlaneRef, u32, B, 5> for Fx {
+        fn call(
+            _p: &(),
+            _h: &'static Host,
+            _a1: Arg<'_, PlaneRef>,
+            _a2: Arg<'_, u32>,
+            _a3: Arg<'_, B>,
+            _out: &mut Out<'_>,
+        ) -> Status {
+            Status::OK
+        }
+    }
+    /// `admin`: a chain that NEEDs `needs` times (0: first-poll Ready), then answers OK.
+    impl Start2<u32, B, 6> for Fx {
+        fn start<'i>(
+            _p: &'i (),
+            _h: &'static Host,
+            needs: u32,
+            _body: ChainBytes,
+        ) -> (ChainFut<'i, ()>, ()) {
+            let held = Held;
+            let mut left = needs;
+            let fut = core::future::poll_fn(move |_| {
+                let _held = &held;
+                if left == 0 {
+                    return Poll::Ready(());
+                }
+                left -= 1;
+                Poll::Pending
+            });
+            (Box::pin(fut), ())
+        }
+    }
+    impl Opener1<TargetRef, 7> for Fx {
+        fn begin(
+            _p: &(),
+            _h: &'static Host,
+            _a1: Arg<'_, TargetRef>,
+            _out: &mut Out<'_>,
+        ) -> Result<Sess, Status> {
+            Ok(Sess)
+        }
+    }
+    impl Call2<St, B, 8> for Fx {
+        fn call(
+            _p: &(),
+            _h: &'static Host,
+            _a1: Arg<'_, St>,
+            _a2: Arg<'_, B>,
+            _out: &mut Out<'_>,
+        ) -> Status {
+            Status::OK
+        }
+    }
+
+    // ---- the transport table ----
+
+    impl Opener1<ConnRef, 0> for Fx {
+        fn begin(
+            _p: &(),
+            _h: &'static Host,
+            _a1: Arg<'_, ConnRef>,
+            _out: &mut Out<'_>,
+        ) -> Result<Sess, Status> {
+            Ok(Sess)
+        }
+    }
+    impl Session1<B, 1> for Fx {
+        fn on(
+            _p: &(),
+            _h: &'static Host,
+            _s: &mut Sess,
+            _a1: Arg<'_, B>,
+            _out: &mut Out<'_>,
+        ) -> Status {
+            Status::OK
+        }
+    }
+    impl Session4<u64, u32, u32, B, 2> for Fx {
+        fn on(
+            _p: &(),
+            _h: &'static Host,
+            _s: &mut Sess,
+            _a1: Arg<'_, u64>,
+            _a2: Arg<'_, u32>,
+            _a3: Arg<'_, u32>,
+            _a4: Arg<'_, B>,
+            _out: &mut Out<'_>,
+        ) -> Status {
+            Status::OK
+        }
+    }
+    impl Session0<3> for Fx {
+        fn on(_p: &(), _h: &'static Host, _s: &mut Sess, _out: &mut Out<'_>) -> Status {
+            Status::OK
+        }
+    }
+    impl Session3<u32, u32, B, 4> for Fx {
+        fn on(
+            _p: &(),
+            _h: &'static Host,
+            _s: &mut Sess,
+            _a1: Arg<'_, u32>,
+            _a2: Arg<'_, u32>,
+            _a3: Arg<'_, B>,
+            _out: &mut Out<'_>,
+        ) -> Status {
+            Status::OK
+        }
+    }
+    impl Session2<u32, B, 5> for Fx {
+        fn on(
+            _p: &(),
+            _h: &'static Host,
+            _s: &mut Sess,
+            _a1: Arg<'_, u32>,
+            _a2: Arg<'_, B>,
+            _out: &mut Out<'_>,
+        ) -> Status {
+            Status::OK
+        }
+    }
+    impl Call1<u32, 6> for Fx {
+        fn call(_p: &(), _h: &'static Host, _a1: Arg<'_, u32>, _out: &mut Out<'_>) -> Status {
+            Status::OK
+        }
+    }
+
+    const fn stamp(code: KindCode) -> StampBytes {
+        let mut bytes = [0u8; STAMP_SIZE];
+        bytes[STAMP_KIND_AT] = code as u8;
+        StampBytes(bytes)
+    }
+    static PLANE_VT: Built<Fx, plane::Vt> = plane::Vt::build::<Fx>();
+    static PLANE_STAMP: StampBytes = stamp(KindCode::Plane);
+    static PLANE: LinkedPlugin = plugin::<Fx, kind::Plane>(&PLANE_VT, &PLANE_STAMP, Str::EMPTY);
+    static TRANSPORT_VT: Built<Fx, transport::Vt> = transport::Vt::build::<Fx>();
+    static TRANSPORT_STAMP: StampBytes = stamp(KindCode::Transport);
+    static TRANSPORT: LinkedPlugin =
+        plugin::<Fx, kind::Transport>(&TRANSPORT_VT, &TRANSPORT_STAMP, Str::EMPTY);
+
+    const TARGET: Target<'static> = Target {
+        attempt: 0,
+        flags: 0,
+        dialect: Str::EMPTY,
+        model: Str::EMPTY,
+        base_path: Str::EMPTY,
+        upstream: Str::EMPTY,
+        provider: Str::EMPTY,
+        params: Slice::EMPTY,
+    };
+    const REQUEST: PlaneReq<'static> = PlaneReq {
+        route: 0,
+        flags: 0,
+        auth: 0,
+        _r: 0,
+        method: Str::EMPTY,
+        path: Str::EMPTY,
+        query: Str::EMPTY,
+        headers: Slice::EMPTY,
+        identity: Bytes::EMPTY,
+        request_id: 0,
+        carrier: 0,
+        work: Str::EMPTY,
+        ticket_record: Bytes::EMPTY,
+    };
+    const CONN: ConnInfo<'static> = ConnInfo {
+        role: 0,
+        flags: 0,
+        alpn: Str::EMPTY,
+        sni: Str::EMPTY,
+        peer: Str::EMPTY,
+        local: Str::EMPTY,
+        tls_peer_cert: Bytes::EMPTY,
+        leftover: Bytes::EMPTY,
+        head: Bytes::EMPTY,
+        local_fingerprint: Str::EMPTY,
+        mono_ns: 0,
+    };
+
+    /// A fresh out lease (one per entry, so an opener's TOKEN is the answer's first record).
+    fn lease() -> OutLease {
+        let Some(lease) = OutLease::new(vec![0; 256], 4096) else {
+            panic!("the ACTIVE stack is full");
+        };
+        lease
+    }
+
+    fn open_fixture<K: Kind>(image: &'static LinkedPlugin) -> Arc<Instance<K>> {
+        let Ok(admitted) = Admitted::linked(image) else {
+            panic!("the fixture header is complete");
+        };
+        match admitted.open::<K>(&HOST, Vec::new(), 0, &mut lease()) {
+            OpenAnswer::Done(Status::OK, Some(instance)) => Arc::new(instance),
+            _ => panic!("the fixture opens with an INSTANCE record"),
+        }
+    }
+
+    fn session_of<K: Kind>((status, session): (Status, Option<Session<K>>)) -> Session<K> {
+        assert_eq!(status, Status::OK);
+        let Some(session) = session else {
+            panic!("the opener answers a session");
+        };
+        session
+    }
+
+    fn open_probe(inst: &Arc<Instance<kind::Plane>>) -> Session<kind::Plane> {
+        session_of(inst.open_session1(|vt| &vt.probe, Arg::view(&TARGET), &mut lease()))
+    }
+
+    fn open_request(inst: &Arc<Instance<kind::Plane>>) -> Session<kind::Plane> {
+        session_of(inst.open_session2(
+            |vt| &vt.request,
+            Arg::view(&REQUEST),
+            Arg::bytes(Bytes::EMPTY),
+            &mut lease(),
+        ))
+    }
+
+    fn open_begin(inst: &Arc<Instance<kind::Transport>>) -> Session<kind::Transport> {
+        session_of(inst.open_session1(|vt| &vt.begin, Arg::view(&CONN), &mut lease()))
+    }
+
+    fn piece(session: &mut Session<kind::Plane>) -> Status {
+        session.call4(
+            |vt| &vt.piece,
+            (
+                Arg::u32(0),
+                Arg::u32(0),
+                Arg::u32(0),
+                Arg::bytes(Bytes::EMPTY),
+            ),
+            &mut lease(),
+        )
+    }
+
+    fn admin(inst: &Instance<kind::Plane>, needs: u32) -> Started<'_, kind::Plane> {
+        inst.start2(
+            |vt| &vt.admin,
+            ChainBufs::new(),
+            move |_| (Arg::u32(needs), Arg::bytes(Bytes::EMPTY)),
+            &mut lease(),
+        )
+    }
+
+    fn resume(chain: &mut Chain<'_, kind::Plane>) -> Resumed<kind::Plane> {
+        chain.resume(Vec::new(), &mut lease())
+    }
+
+    /// C-TOKEN-SPACE, the shim arm (IF §14; §2, §6.4 steps 4 and 5): with a live session and a live chain
+    /// at the same index of one instance (their tokens differ in bit 63 only), a session token passed to
+    /// `resume`, and a chain token passed to a session method or to `end`, are FAULT and touch nothing; a
+    /// chain token passed to `cancel` with a live session at the same index drops at most the chain it
+    /// names, and is a no-op once stale; a session-space token at a live chain's slot is a no-op. Nothing
+    /// ever cross-drops.
+    #[test]
+    fn a_token_of_the_other_space_never_cross_drops() {
+        let inst = open_fixture::<kind::Plane>(&PLANE);
+        let sessions = SESSION_DROPS.get();
+        let chains = CHAIN_DROPS.get();
+        let mut session = open_probe(&inst);
+        let Started::Need(mut chain) = admin(&inst, 2) else {
+            panic!("a chain that NEEDs is parked");
+        };
+        let (_, index, _) = unpack(session.token());
+        assert_eq!(
+            unpack(chain.token()).1,
+            index,
+            "the same index in both tables"
+        );
+        assert_eq!(
+            session.token() & !TOKEN_SESSION,
+            chain.token(),
+            "the two tokens differ in bit 63 only"
+        );
+
+        // A session token passed to `resume`: FAULT, and the chain at that index is not polled.
+        let mut forged = Chain {
+            owner: Owner::Instance(&*inst),
+            tok: session.token(),
+            bufs: ChainBufs::new(),
+        };
+        assert!(matches!(
+            resume(&mut forged),
+            Resumed::Done(Status::FAULT, None)
+        ));
+        drop(forged);
+
+        // A chain token passed to a session method, and to the consuming `end`: FAULT.
+        let mut forged = Session::<kind::Plane> {
+            inst: Arc::clone(&inst),
+            tok: chain.token(),
+            _ns: PhantomData,
+        };
+        assert_eq!(piece(&mut forged), Status::FAULT);
+        assert_eq!(forged.end(|vt| &vt.end, &mut lease()), Status::FAULT);
+        assert_eq!(
+            (SESSION_DROPS.get(), CHAIN_DROPS.get()),
+            (sessions, chains),
+            "nothing dropped"
+        );
+
+        // Both are intact: the session answers, and the chain still has its second NEED to make.
+        assert_eq!(piece(&mut session), Status::OK);
+        assert!(
+            matches!(resume(&mut chain), Resumed::Need),
+            "the forged resume never polled the chain"
+        );
+
+        // A chain token passed to `cancel` with a live session at the same index: its own chain only.
+        let header = inst.image.header();
+        assert_eq!(cancel_raw(header, inst.ptr(), chain.token()), Status::OK);
+        assert_eq!(CHAIN_DROPS.get(), chains + 1, "the chain the token names");
+        assert_eq!(
+            SESSION_DROPS.get(),
+            sessions,
+            "never the session at that index"
+        );
+        assert_eq!(
+            cancel_raw(header, inst.ptr(), chain.token()),
+            Status::OK,
+            "stale now: a no-op"
+        );
+        drop(chain);
+        assert_eq!(
+            (SESSION_DROPS.get(), CHAIN_DROPS.get()),
+            (sessions, chains + 1)
+        );
+        assert_eq!(piece(&mut session), Status::OK, "the session still answers");
+
+        // A session-space token at a live chain's slot (its index and generation): a no-op.
+        let Started::Need(mut next) = admin(&inst, 1) else {
+            panic!("a chain that NEEDs is parked");
+        };
+        assert_eq!(
+            unpack(next.token()).1,
+            index,
+            "the chain table hands the slot back"
+        );
+        assert_eq!(
+            cancel_raw(header, inst.ptr(), next.token() | TOKEN_SESSION),
+            Status::OK
+        );
+        assert_eq!(
+            (SESSION_DROPS.get(), CHAIN_DROPS.get()),
+            (sessions, chains + 1)
+        );
+        assert!(matches!(resume(&mut next), Resumed::Done(Status::OK, None)));
+        assert_eq!(CHAIN_DROPS.get(), chains + 2);
+        assert_eq!(piece(&mut session), Status::OK);
+        drop(session);
+        assert_eq!(
+            SESSION_DROPS.get(),
+            sessions + 1,
+            "its own cancel drops it, once"
+        );
+    }
+
+    /// C-RMW's slot share (IF §14 round 8; §0 I5, §6.5), on the counting configuration of `slots.rs`: a
+    /// plane `piece` and a transport `ingest`, `emit` and `timer` make no slot-table RMW (the session
+    /// lookup is one Acquire load and a compare); a session opener (`request`, `probe`, `begin`) makes one
+    /// CAS on the session table's free list and its end (`end`, or the handle's drop) one; the handle holds
+    /// the instance's `Arc` (strong count +1 from open to end). Steady state: the free list holds a slot.
+    #[test]
+    fn session_methods_make_no_slot_rmw_and_open_and_end_one_cas_each() {
+        let plane = open_fixture::<kind::Plane>(&PLANE);
+        drop(open_probe(&plane));
+        let strong = Arc::strong_count(&plane);
+        for request in [true, false] {
+            let rmw = counting::rmw();
+            let mut session = if request {
+                open_request(&plane)
+            } else {
+                open_probe(&plane)
+            };
+            assert_eq!(counting::rmw() - rmw, 1, "one free-list CAS per opener");
+            assert_eq!(Arc::strong_count(&plane), strong + 1);
+            let rmw = counting::rmw();
+            for _ in 0..3 {
+                assert_eq!(piece(&mut session), Status::OK);
+            }
+            assert_eq!(counting::rmw(), rmw, "no RMW per piece");
+            assert_eq!(session.end(|vt| &vt.end, &mut lease()), Status::OK);
+            assert_eq!(counting::rmw() - rmw, 1, "one free-list CAS per end");
+            assert_eq!(Arc::strong_count(&plane), strong);
+        }
+
+        let transport = open_fixture::<kind::Transport>(&TRANSPORT);
+        drop(open_begin(&transport));
+        let strong = Arc::strong_count(&transport);
+        let rmw = counting::rmw();
+        let mut session = open_begin(&transport);
+        assert_eq!(counting::rmw() - rmw, 1, "one free-list CAS per opener");
+        assert_eq!(Arc::strong_count(&transport), strong + 1);
+        let rmw = counting::rmw();
+        for _ in 0..3 {
+            let ingest = session.call1(|vt| &vt.ingest, Arg::bytes(Bytes::EMPTY), &mut lease());
+            assert_eq!(ingest, Status::OK);
+            let emit = session.call4(
+                |vt| &vt.emit,
+                (
+                    Arg::u64(0),
+                    Arg::u32(0),
+                    Arg::u32(0),
+                    Arg::bytes(Bytes::EMPTY),
+                ),
+                &mut lease(),
+            );
+            assert_eq!(emit, Status::OK);
+            assert_eq!(session.call0(|vt| &vt.timer, &mut lease()), Status::OK);
+        }
+        assert_eq!(counting::rmw(), rmw, "no RMW per ingest, emit or timer");
+        drop(session);
+        assert_eq!(
+            counting::rmw() - rmw,
+            1,
+            "one free-list CAS when the handle ends it"
+        );
+        assert_eq!(Arc::strong_count(&transport), strong);
+    }
+
+    /// C-RMW, round 10 (IF §14; §6.4 steps 1 to 3), on the counting configuration: a never-NEED chain
+    /// makes no chain-slot RMW (the shim polls before it inserts); a chain that NEEDs makes exactly one
+    /// insert CAS (its first NEED) and one remove CAS (its end, or its cancel), however many NEEDs it
+    /// makes, because each resume's lookup makes none. Steady state: the free list holds a slot.
+    #[test]
+    fn a_chain_makes_one_slot_cas_on_its_first_need_and_one_at_its_end() {
+        let inst = open_fixture::<kind::Plane>(&PLANE);
+        let Started::Need(mut warm) = admin(&inst, 1) else {
+            panic!("a chain that NEEDs is parked");
+        };
+        assert!(matches!(resume(&mut warm), Resumed::Done(Status::OK, None)));
+        drop(warm);
+
+        let rmw = counting::rmw();
+        assert!(matches!(admin(&inst, 0), Started::Done(Status::OK)));
+        assert_eq!(counting::rmw(), rmw, "no slot RMW for a never-NEED chain");
+
+        for needs in [1, 4] {
+            let rmw = counting::rmw();
+            let Started::Need(mut chain) = admin(&inst, needs) else {
+                panic!("a chain that NEEDs is parked");
+            };
+            assert_eq!(
+                counting::rmw() - rmw,
+                1,
+                "one insert CAS, on the first NEED"
+            );
+            for _ in 1..needs {
+                assert!(matches!(resume(&mut chain), Resumed::Need));
+            }
+            assert_eq!(counting::rmw() - rmw, 1, "no RMW per resume lookup");
+            assert!(matches!(
+                resume(&mut chain),
+                Resumed::Done(Status::OK, None)
+            ));
+            assert_eq!(counting::rmw() - rmw, 2, "one remove CAS at its end");
+        }
+
+        let rmw = counting::rmw();
+        let Started::Need(mut chain) = admin(&inst, 3) else {
+            panic!("a chain that NEEDs is parked");
+        };
+        assert!(matches!(resume(&mut chain), Resumed::Need));
+        drop(chain);
+        assert_eq!(
+            counting::rmw() - rmw,
+            2,
+            "one insert CAS and one remove CAS at its cancel"
+        );
+    }
+}
