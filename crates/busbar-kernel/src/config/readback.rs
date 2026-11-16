@@ -69,6 +69,15 @@ impl ConfiguredView {
             "admin_require_mtls".into(),
             json!(deploy.admin_require_mtls),
         );
+        // ADMIN-API-1.6 §3.5: the switches only. `K_user` is derived from the keyset at boot and
+        // is never configuration, so no surface can serve it.
+        view.sections.insert(
+            "records".into(),
+            json!({
+                "user": deploy.records.user.as_str(),
+                "labels": deploy.records.labels,
+            }),
+        );
         if let Some(Value::Object(advanced)) = view.sections.get_mut("advanced") {
             advanced.insert(
                 "worker_threads".into(),

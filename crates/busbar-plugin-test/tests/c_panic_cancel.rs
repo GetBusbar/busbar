@@ -14,8 +14,8 @@ use std::time::{Duration, Instant};
 
 use busbar_plugin_abi::host_side::caller::CallStack;
 use busbar_plugin_loader::instance::Registry;
-use busbar_plugin_loader::ports::export::{Delivered, ExportPort};
-use busbar_plugin_loader::ports::CallCx;
+use busbar_ports::export::{Delivered, ExportPort};
+use busbar_ports::CallCx;
 
 use crate::c_cancel_inflight::{counting_waker, poll_once, rig, spec, YieldNeeds};
 

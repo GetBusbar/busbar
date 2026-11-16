@@ -25,10 +25,11 @@ use busbar_plugin_abi::kinds::hook::hook::{
 use busbar_plugin_abi::records::{tag as gtag, RecErr, Records};
 use busbar_plugin_abi::types::Status;
 
-use crate::encode::hook::encode_view;
-use crate::instance::{ErrorBook, PluginCode};
-use crate::ports::hook::{HookAnswer, HookCall, HookPort, HookView};
-use crate::ports::{CallCx, PortError};
+use crate::instance::ErrorBook;
+use busbar_ports::codec::hook::encode_view;
+use busbar_ports::hook::{HookAnswer, HookCall, HookPort, HookView};
+use busbar_ports::PluginCode;
+use busbar_ports::{CallCx, PortError};
 
 /// The hook port over one instance's proxy.
 pub struct HookAdapter<N: Needs> {

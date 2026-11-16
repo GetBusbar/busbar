@@ -10,10 +10,10 @@
 use std::time::{Duration, Instant};
 
 use busbar_plugin_abi::host_side::caller::CallStack;
-use busbar_plugin_loader::ports::CallCx;
 use busbar_plugin_loader::refusal::RefusalCode;
 use busbar_plugin_test::fake_needs::FakeNeeds;
 use busbar_plugin_test::suites::harness::Harness;
+use busbar_ports::CallCx;
 
 use crate::min3_second::{self as fx, ALIAS, ALIAS_WORDS};
 

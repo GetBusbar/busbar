@@ -359,7 +359,8 @@ impl StoreUnitCheckpoints {
         raw: &Secret<Vec<u8>>,
         proof: &VerifiedHead,
     ) -> RecordStoreResult<(Head, UnitCheckpoint, Record, Option<u64>, Carried)> {
-        let head: Head = serde_json::from_slice(raw.expose(&crate::seal::lend())).map_err(error)?;
+        let head: Head =
+            busbar_contract::json::parse(raw.expose(&crate::seal::lend())).map_err(error)?;
         if head.version != 1 || head.node != self.evidence.node || head.sequence == 0 {
             return Err(refusal("invalid running money head"));
         }
@@ -414,7 +415,7 @@ impl StoreUnitCheckpoints {
         {
             return Err(refusal("host measurement evidence exceeds bound"));
         }
-        let snapshot: UnitCheckpoint = serde_json::from_slice(encoded).map_err(error)?;
+        let snapshot: UnitCheckpoint = busbar_contract::json::parse(encoded).map_err(error)?;
         snapshot.validate()?;
         if tag != Some(checkpoint_tag(&snapshot)) {
             return Err(refusal(

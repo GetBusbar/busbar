@@ -77,9 +77,9 @@ fn the_2a_and_2b_recheck_sees_the_id_before_any_2c_open() {
     use busbar_plugin_abi::host_side::caller::BoxFut;
     use busbar_plugin_abi::types::KindCode;
     use busbar_plugin_loader::instance::{BootPhase, BootPlan, OpenError, OpenedPort};
-    use busbar_plugin_loader::ports::store::StoreHandle;
     use busbar_plugin_test::fake_needs::FakeNeeds;
     use busbar_plugin_test::suites::harness::Harness;
+    use busbar_ports::store::StoreHandle;
 
     use crate::{min3_second as probe, min3_store as store};
 

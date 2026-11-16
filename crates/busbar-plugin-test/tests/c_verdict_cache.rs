@@ -26,11 +26,11 @@ use busbar_plugin_abi::auth::{BAD_CREDENTIAL, FB_NEEDS_BODY, KEYS_STALE};
 use busbar_plugin_abi::fail::refused::R_UNSUPPORTED;
 use busbar_plugin_abi::host_side::caller::{BoxFut, CallStack};
 use busbar_plugin_abi::types::{Bytes, Pair, Str};
-use busbar_plugin_loader::ports::auth::{
+use busbar_ports::auth::{
     AuthIn, AuthPort, Identity, LoginAnswer, LoginIn, OutboundAnswer, ServeIn, ServeOut,
     UpstreamIn, Verdict, Verify,
 };
-use busbar_plugin_loader::ports::{CallCx, PortError};
+use busbar_ports::{CallCx, PortError};
 
 /// What the fake answers on every verify.
 #[derive(Clone)]
