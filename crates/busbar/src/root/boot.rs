@@ -2579,3 +2579,7 @@ pub(crate) fn walk_admission<T>(
             .to_owned()
     })
 }
+
+#[cfg(test)]
+#[path = "tests/boot_walk.rs"]
+mod boot_walk_tests;
