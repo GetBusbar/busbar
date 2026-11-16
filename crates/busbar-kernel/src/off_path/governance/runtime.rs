@@ -601,7 +601,7 @@ pub(crate) async fn unit_checkpoint_store_find_audit(
     journal: &crate::persistence::journal::runtime::RuntimeJournal,
     unit: u64,
     incarnation: u64,
-) -> RecordStoreResult<Option<busbar_kernel_audit::AuditRecord>> {
+) -> RecordStoreResult<Option<(u64, busbar_kernel_audit::AuditRecord)>> {
     use busbar_kernel_wal::{JournalRecord, RecordClass};
     let error = |e: &dyn std::fmt::Debug| RecordStoreError(format!("unit checkpoint: {e:?}"));
     journal.flush().await.map_err(|e| error(&e))?;
@@ -624,7 +624,7 @@ pub(crate) async fn unit_checkpoint_store_find_audit(
                         "duplicate original audit for recovered unit".into(),
                     ));
                 }
-                found = Some(audit);
+                found = Some((original.node_seq, audit));
             }
         }
     }
