@@ -139,8 +139,82 @@ pub(crate) enum VerifyOk {
 /// records are skipped (they are decoded once, by `decode_metrics`). Every other shape is RecErr, which the
 /// adapter turns into a FAULT (BadRecords / UnknownTag).
 pub(crate) fn decode_verify_ok(records: Records<'_>) -> Result<VerifyOk, RecErr> {
-    let _ = records;
-    todo!("W1-L5 red")
+    let mut w = Reply::new();
+    let mut id_len: Option<usize> = None;
+    let mut subject = false;
+    let mut wanted: Option<&str> = None;
+    let mut cache_s: Option<u32> = None;
+    let mut expires_at_s: Option<u64> = None;
+    let mut replay: Option<(Box<[u8]>, u64)> = None;
+    let mut any = false;
+    let full = |_: Full| RecErr::Size;
+    for rec in records {
+        let rec = rec?;
+        if rec.tag == tag::METRIC {
+            continue;
+        }
+        if wanted.is_some() {
+            return Err(RecErr::Unknown(rec.tag));
+        }
+        match rec.tag {
+            tag::ID_SUBJECT if !any => {
+                w.put_text(tag::ID_SUBJECT, rec.text()?).map_err(full)?;
+                subject = true;
+            }
+            tag::ID_GROUP if subject && id_len.is_none() => {
+                w.put_text(tag::ID_GROUP, rec.text()?).map_err(full)?;
+            }
+            tag::ID_CLAIM if subject && id_len.is_none() => {
+                let (name, value) = rec.pair()?;
+                w.put_pair(tag::ID_CLAIM, name, value).map_err(full)?;
+            }
+            t::ISSUED_WANTED if !any => wanted = Some(rec.text()?),
+            other if !subject => return Err(RecErr::Unknown(other)),
+            t::STRIP => {
+                id_len.get_or_insert(w.len());
+                w.put_text(t::STRIP, rec.text()?).map_err(full)?;
+            }
+            tag::FACT => {
+                id_len.get_or_insert(w.len());
+                let f = rec.pod::<FactRec>()?;
+                if f._r != 0 {
+                    return Err(RecErr::Reserved);
+                }
+                match f.key {
+                    abi::F_CACHE_S if cache_s.is_none() => {
+                        cache_s = Some(u32::try_from(f.value).unwrap_or(u32::MAX));
+                    }
+                    abi::F_EXPIRES_AT_S if expires_at_s.is_none() => expires_at_s = Some(f.value),
+                    _ => return Err(RecErr::Size),
+                }
+            }
+            t::REPLAY if replay.is_none() => {
+                id_len.get_or_insert(w.len());
+                let (head, key) = rec.pod_tail::<U64Rec>()?;
+                if key.is_empty() || key.len() > REPLAY_KEY_MAX {
+                    return Err(RecErr::Size);
+                }
+                let ttl_s = head.value.clamp(*REPLAY_TTL_S.start(), *REPLAY_TTL_S.end());
+                replay = Some((Box::from(key), ttl_s));
+            }
+            other => return Err(RecErr::Unknown(other)),
+        }
+        any = true;
+    }
+    if let Some(id) = wanted {
+        return Ok(VerifyOk::IssuedWanted(Box::from(id)));
+    }
+    if !subject {
+        return Err(RecErr::Truncated);
+    }
+    let id_len = u32::try_from(id_len.unwrap_or(w.len())).map_err(|_| RecErr::Size)?;
+    Ok(VerifyOk::Identity(Identity {
+        recs: Arc::from(w.as_bytes()),
+        id_len,
+        cache_s,
+        expires_at_s,
+        replay,
+    }))
 }
 
 /// Decodes the identity of an OK login answer (ID_* only; no STRIP, FACT or REPLAY belongs there, §8.3).

@@ -665,14 +665,60 @@ fn decode_login(step: u32, connect: bool, records: Records<'_>) -> Result<LoginA
 /// An outbound OK answer (§8.3): SET_HEADER*, SET_QUERY* (pair shape), GRANT_UPDATE?, FACT(F_CACHE_S)? (absent
 /// = 0, already expired, §12.2 rule 5).
 fn decode_outbound(records: Records<'_>) -> Result<OutboundAnswer, RecErr> {
-    let _ = records;
-    todo!("W1-L5 red")
+    let mut out = OutboundAnswer {
+        headers: Vec::new(),
+        query: Vec::new(),
+        cache_s: 0,
+        grant_update: None,
+    };
+    let mut cache = false;
+    for rec in records {
+        let rec = rec?;
+        match rec.tag {
+            tag::METRIC => {}
+            t::SET_HEADER => {
+                let (name, value) = rec.pair()?;
+                out.headers.push((Box::from(name), SecureVec::from(value)));
+            }
+            t::SET_QUERY => {
+                let (name, value) = rec.pair()?;
+                out.query.push((Box::from(name), SecureVec::from(value)));
+            }
+            t::GRANT_UPDATE if out.grant_update.is_none() => {
+                out.grant_update = Some(SecureVec::from(rec.body));
+            }
+            tag::FACT if !cache => {
+                let f = fact_rec(rec.pod::<FactRec>()?)?;
+                if f.key != abi::F_CACHE_S {
+                    return Err(RecErr::Size);
+                }
+                out.cache_s = u32::try_from(f.value).unwrap_or(u32::MAX);
+                cache = true;
+            }
+            other => return Err(RecErr::Unknown(other)),
+        }
+    }
+    Ok(out)
 }
 
 /// A refresh OK answer (§8.3): FACT(F_NEXT_REFRESH_S)?.
 fn decode_refresh(records: Records<'_>) -> Result<Option<u32>, RecErr> {
-    let _ = records;
-    todo!("W1-L5 red")
+    let mut next: Option<u32> = None;
+    for rec in records {
+        let rec = rec?;
+        match rec.tag {
+            tag::METRIC => {}
+            tag::FACT if next.is_none() => {
+                let f = fact_rec(rec.pod::<FactRec>()?)?;
+                if f.key != abi::F_NEXT_REFRESH_S {
+                    return Err(RecErr::Size);
+                }
+                next = Some(u32::try_from(f.value).unwrap_or(u32::MAX));
+            }
+            other => return Err(RecErr::Unknown(other)),
+        }
+    }
+    Ok(next)
 }
 
 fn fact_rec(f: FactRec) -> Result<FactRec, RecErr> {
@@ -722,15 +768,29 @@ fn bad_credential() -> Verdict {
 /// crypto algorithm the module does not offer is not a credential judgement, so nothing caches it as one; the
 /// adapter adds the resolved ERROR); every other code is `Rejected` (`rejected`).
 pub fn verify_refusal(code: u32, text: &str, scrub: &Scrub) -> Result<Option<Verdict>, PortError> {
-    let _ = (code, text, scrub);
-    todo!("W1-L5 red")
+    match code {
+        abi::NOT_MINE => Ok(Some(Verdict::NotMine)),
+        abi::KEYS_STALE => Ok(None),
+        refused::R_UNSUPPORTED => Err(plugin_error(
+            Status::REFUSED,
+            code,
+            text,
+            None,
+            None,
+            None,
+            scrub,
+        )),
+        _ => Ok(Some(rejected(code, text, scrub))),
+    }
 }
 
 /// `Verdict::Rejected` with the plugin's text scrubbed, then cut (§12.16, `scrub::fail_text`): one lock-free
 /// snapshot read and one scan, the B-SYNC REFUSED arm's whole text path.
 pub fn rejected(code: u32, text: &str, scrub: &Scrub) -> Verdict {
-    let _ = (code, text, scrub);
-    todo!("W1-L5 red")
+    Verdict::Rejected {
+        code,
+        text: Box::from(&*fail_text(scrub, text)),
+    }
 }
 
 /// The one REFUSED/FAILED mapping (IF §11.3 round 21/34): the text is always `scrub::fail_text`'s; FAILED carries
@@ -744,8 +804,24 @@ pub fn plugin_error(
     error: Option<PluginCode>,
     scrub: &Scrub,
 ) -> PortError {
-    let _ = (status, code, text, retry_after_s, backend_status, error, scrub);
-    todo!("W1-L5 red")
+    let shown = || -> Box<str> { Box::from(&*fail_text(scrub, text)) };
+    if status == Status::REFUSED {
+        return PortError::Refused {
+            code,
+            text: shown(),
+            error,
+        };
+    }
+    if status == Status::FAILED {
+        return PortError::Failed {
+            code,
+            text: shown(),
+            retry_after_s,
+            backend_status,
+            error,
+        };
+    }
+    PortError::Call(CallError::Fault(FaultReason::BadStatus(status.0)))
 }
 
 /// One single-flight refresh round: every KEYS_STALE verify of the round awaits the same `refresh`.
@@ -777,8 +853,20 @@ impl KeyRefresh {
 
     /// Some(round) = join the refresh in flight or start one; None = declined by the rate limit.
     pub fn begin(&self) -> Option<KeyRound> {
-        let _ = &self.state;
-        todo!("W1-L5 red")
+        let mut s = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(round) = s.round.as_ref().filter(|r| !r.initialized()) {
+            return Some(Arc::clone(round));
+        }
+        let now = Instant::now();
+        if s.last_started
+            .is_some_and(|at| now.saturating_duration_since(at) < self.min_interval)
+        {
+            return None;
+        }
+        s.last_started = Some(now);
+        let round = KeyRound::default();
+        s.round = Some(Arc::clone(&round));
+        Some(round)
     }
 }
 
