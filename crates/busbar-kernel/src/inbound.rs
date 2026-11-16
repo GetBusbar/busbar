@@ -38,7 +38,7 @@ pub const LINE_OPEN: &str = "the line's auth is none: it has no auth to call";
 
 pub(crate) const POINT_UNNEEDED: &str = "the line's auth needs no call at this point";
 
-pub const PEER_BYTES: &str = "a peer-point call presents no unit, no request and no body";
+pub(crate) const PEER_BYTES: &str = "a peer-point call presents no unit, no request and no body";
 
 pub const PEER_CONNECTIONS_MAX: usize = 65_536;
 
@@ -51,7 +51,7 @@ pub const UNIT_FOREIGN: &str = "the unit is not one the kernel minted for this r
 
 pub const UNIT_UNMINTED: &str = "the kernel could not mint the request's unit";
 
-pub const CONN_MISMATCH: &str =
+pub(crate) const CONN_MISMATCH: &str =
     "the call names another connection than the one its framing's calls named";
 
 pub(crate) const CAUSE_UNKNOWN: &str = "the refusal names no cause the kernel answers";

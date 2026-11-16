@@ -53,7 +53,7 @@ impl IssuedShapes {
 }
 
 /// Core's text when issuing a credential of a kind no admitted auth plugin declares (IF §12.8).
-pub fn unissued_text(kind: &str) -> String {
+pub(crate) fn unissued_text(kind: &str) -> String {
     format!("no admitted auth plugin uses issued credentials of kind `{kind}`")
 }
 

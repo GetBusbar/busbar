@@ -359,7 +359,7 @@ impl RawDocuments<'_> {
 
     /// Phase 1 over this read's own block with the Store's plugin version pins: the boot
     /// post-Store recompute (SECRET-SHORTHAND-BOOT §3.7). No fetch: bootstrap already fetched.
-    pub fn grammar_with_pins(
+    pub(crate) fn grammar_with_pins(
         &self,
         pins: &std::collections::BTreeMap<String, String>,
     ) -> Result<config::Grammar, String> {

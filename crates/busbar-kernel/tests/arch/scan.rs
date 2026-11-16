@@ -665,7 +665,7 @@ impl Parsed {
     }
 
     /// `unsafe` keywords outside test and doc ranges: blocks, fns, impls, traits, attributes.
-    pub fn unsafe_keywords(&self) -> usize {
+    pub(crate) fn unsafe_keywords(&self) -> usize {
         let mut lines = Vec::new();
         if let Some(stream) = &self.tokens {
             idents_named(stream.clone(), "unsafe", &mut lines);

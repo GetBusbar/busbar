@@ -1195,7 +1195,7 @@ impl BootIdentity {
     /// epoch first, excluding this process's own writer. The gate is taken once per page, so
     /// this process's own lease refresh waits at most one page. The scan is an inventory, not
     /// a proof: every close is re-checked by the store.
-    pub async fn expired_writers(
+    pub(crate) async fn expired_writers(
         &self,
         grace_ms: u64,
         max: usize,
@@ -1299,7 +1299,7 @@ impl BootIdentity {
 
     /// Deletes a closed writer's lease row, guarded by the exact bytes scanned. A row another
     /// process deleted or changed first makes this a no-op.
-    pub async fn delete_writer_lease(&self, row: &ExpiredWriter) -> Result<bool, String> {
+    pub(crate) async fn delete_writer_lease(&self, row: &ExpiredWriter) -> Result<bool, String> {
         let _gate = self.records.gate.lock().await;
         self.records.resume().await?;
         self.records
@@ -1319,7 +1319,7 @@ impl BootIdentity {
 }
 
 /// At most this many writers closed per start; the next start continues.
-pub const EXPIRED_PASS_MAX: usize = 256;
+pub(crate) const EXPIRED_PASS_MAX: usize = 256;
 
 /// The start-up predecessor task's owner (SEALING-FIX §3.6.2; this design ships its F5 step and
 /// its fence settle). Its own `WriterRetirements` records into the process-wide ledger.

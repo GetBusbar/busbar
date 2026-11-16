@@ -55,7 +55,7 @@ pub trait RefusalMap: Send + Sync + 'static {
 }
 
 /// The most hook MESSAGE bytes core appends to its own text (IF §12.15).
-pub const HOOK_MESSAGE_MAX: usize = 300;
+pub(crate) const HOOK_MESSAGE_MAX: usize = 300;
 
 /// The generic refusal codes a client may see, with their default status and core's fixed text.
 fn refused_row(code: u32) -> Option<(u16, &'static str)> {

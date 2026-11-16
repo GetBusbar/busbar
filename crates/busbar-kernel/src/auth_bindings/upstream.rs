@@ -34,7 +34,7 @@ pub struct UpstreamBinding {
 
 /// The auth instance name core gives an upstream's implicit binding.
 #[must_use]
-pub fn implicit_name(upstream: &str) -> String {
+pub(crate) fn implicit_name(upstream: &str) -> String {
     format!("upstream-{upstream}-outbound")
 }
 

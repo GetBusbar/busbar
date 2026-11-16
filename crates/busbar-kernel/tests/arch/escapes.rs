@@ -482,7 +482,7 @@ mod manifest {
 
     /// busbar-ffi's dependencies, each with its role: `always`, `host` (optional, enabled by feature
     /// `host`), `optional`, `dev`, `build`, or the target cfg it is under.
-    pub fn ffi_dependencies(text: &str) -> Result<BTreeMap<String, String>, String> {
+    pub(crate) fn ffi_dependencies(text: &str) -> Result<BTreeMap<String, String>, String> {
         let entries = entries(text);
         let host_feature: String = entries
             .iter()
@@ -522,7 +522,7 @@ mod manifest {
 
     /// How a manifest depends on busbar-ffi: `host`, `forwards host` (a feature enables
     /// `busbar-ffi/host`), `no host`; None when it does not.
-    pub fn ffi_dependent(text: &str) -> Option<String> {
+    pub(crate) fn ffi_dependent(text: &str) -> Option<String> {
         let entries = entries(text);
         let mut role = None;
         let mut forwards = false;
@@ -882,7 +882,10 @@ mod fixtures {
             ("#[export_name = \"f\"] pub fn f() {}\n", "export_name"),
             ("unsafe extern \"C\" { fn f(); }\n", "extern block"),
             ("#![cfg_attr(unix, allow(unsafe_code))]\n", "cfg_attr allow"),
-            ("#![expect(dead_code, unsafe_code)]\n", "multi-lint expect"),
+            (
+                "#![expect(non_snake_case, unsafe_code)]\n",
+                "multi-lint expect",
+            ),
             ("core::arch::global_asm!(\"nop\");\n", "global_asm"),
             (
                 "include!(concat!(env!(\"OUT_DIR\"), \"/g.rs\"));\n",

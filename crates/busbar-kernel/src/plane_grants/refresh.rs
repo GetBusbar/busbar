@@ -13,7 +13,7 @@ use tokio::sync::OnceCell;
 use tokio::time::Instant;
 
 /// The least `min_interval` core keeps (config `auth.unknown_key_refresh_s`, min 5 s).
-pub const MIN_INTERVAL: Duration = Duration::from_secs(5);
+pub(crate) const MIN_INTERVAL: Duration = Duration::from_secs(5);
 
 /// One refresh round: its outcome, set once by whichever caller's run finishes first. A run whose future is
 /// dropped leaves the cell empty, so the next caller of the same round runs it instead (no waiter is stranded).
@@ -36,7 +36,7 @@ pub struct KeyRefresh {
 }
 
 impl KeyRefresh {
-    /// `min_interval` below [`MIN_INTERVAL`] is raised to it.
+    /// `min_interval` below `MIN_INTERVAL` is raised to it.
     pub fn new(min_interval: std::time::Duration) -> Self {
         Self {
             min_interval: min_interval.max(MIN_INTERVAL),

@@ -11,7 +11,7 @@ use crate::plugin_records::{PluginRecords, RecordsDenied, Scope};
 
 const TAG: &str = "replay";
 /// The ttl bounds of a claim, seconds.
-pub const MIN_TTL_S: u64 = 1;
+pub(crate) const MIN_TTL_S: u64 = 1;
 pub const MAX_TTL_S: u64 = 86_400;
 
 /// Replay claims over the plugin-records store `R`.
