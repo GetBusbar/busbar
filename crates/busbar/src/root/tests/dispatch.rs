@@ -54,7 +54,8 @@ fn the_binarys_dispatcher_serves_dest_judge_once_composed() {
     )
     .expect("a minimal deployment");
     let cfg = busbar_kernel::config::resolve(&deploy, &Default::default()).expect("resolves");
-    let (credentials, credential_handle) = crate::root::credentials::AppCredentials::late();
+    let credentials = crate::root::credentials::AppCredentials::new(None);
+    let credential_owner = credentials.clone();
     crate::root::serve::compose(crate::root::connector::dest_judge(&cfg), &late, credentials);
     assert_eq!(
         judged(&dispatcher, "https://93.184.216.34/"),
@@ -71,7 +72,9 @@ fn the_binarys_dispatcher_serves_dest_judge_once_composed() {
         ),
         Ran::Later => panic!("the credential read answers at once"),
     }
-    assert!(!credential_handle.is_set());
+    assert!(!busbar_contract::services::CredentialRead::installed(
+        &credential_owner
+    ));
     assert_eq!(
         judged(&dispatcher, "https://169.254.169.254/latest/meta-data/"),
         Stored::ready(svc::DEST_METADATA)

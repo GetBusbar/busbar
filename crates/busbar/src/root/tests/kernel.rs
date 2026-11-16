@@ -628,7 +628,7 @@ async fn actual_card_store_and_root_rate_apply_gate_the_real_app_generation_comm
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the actual product deployment resolves");
     let judge = crate::root::connector::dest_judge(&config);
-    let (credentials, _handle) = crate::root::credentials::AppCredentials::late();
+    let credentials = crate::root::credentials::AppCredentials::new(None);
     crate::root::serve::compose(judge.clone(), &late, credentials);
     crate::root::doors::install_plugin_logs(crate::root::boot::plugin_logs());
     crate::root::connector::boot(

@@ -54,7 +54,7 @@ async fn gov_with_key(name: &str) -> (Arc<GovState>, String, String) {
 }
 
 #[tokio::test]
-async fn the_credential_read_follows_the_app_swap() {
+async fn each_app_generation_constructs_its_own_credential_read() {
     let (first, old_id, old_secret) = gov_with_key("first").await;
     let (second, new_id, new_secret) = gov_with_key("second").await;
     let kind = signed_kind();
@@ -115,7 +115,7 @@ async fn the_credential_read_follows_the_app_swap() {
         app.governance = Some(first);
         Arc::new(app)
     }));
-    let creds = AppCredentials::new(Arc::clone(&handle));
+    let creds = AppCredentials::new(handle.load().governance.clone());
     let (s, live) = creds.read(&kind, &old_id);
     assert_eq!(
         (s.expose(&busbar_kernel::seal::lend()).as_str(), live),
@@ -180,12 +180,13 @@ async fn the_credential_read_follows_the_app_swap() {
             Arc::new(app)
         })
         .await;
-    let (s, live) = creds.read(&kind, &new_id);
+    let current = AppCredentials::new(handle.load().governance.clone());
+    let (s, live) = current.read(&kind, &new_id);
     assert_eq!(
         (s.expose(&busbar_kernel::seal::lend()).as_str(), live),
         (new_secret.as_str(), true)
     );
-    let (s, live) = creds.read(&kind, &old_id);
+    let (s, live) = current.read(&kind, &old_id);
     assert_eq!(
         (s.expose(&busbar_kernel::seal::lend()).as_str(), live),
         ("", false),
@@ -227,16 +228,16 @@ fn the_kernel_serves_the_read_from_its_source() {
 }
 
 #[tokio::test]
-async fn a_late_source_refuses_until_its_handle_is_set() {
+async fn absent_custody_stays_refused_and_complete_custody_retains_no_app_owner() {
     let (gov, id, secret) = gov_with_key("late").await;
     let kind = signed_kind();
-    let (credentials, late) = AppCredentials::late();
-    let s = KernelServices::new().with_credentials(Arc::new(credentials));
+    let credentials = Arc::new(AppCredentials::new(None));
+    let s = KernelServices::new().with_credentials(credentials.clone());
     let Ran::Now(before) = s.records_secret(&kind, &id, Box::new(|_| {})) else {
         panic!("answered at once");
     };
     assert_eq!(before, Stored::refused(NOT_READABLE), "not installed yet");
-    assert!(!late.is_set());
+    assert!(!credentials.installed());
     let handle = Arc::new(busbar_kernel::state::AppHandle::new({
         crate::dist_root_install::install();
         let module = busbar_kernel::preflight::root_rows()
@@ -294,9 +295,10 @@ async fn a_late_source_refuses_until_its_handle_is_set() {
         app.governance = Some(gov);
         Arc::new(app)
     }));
-    late.set(Arc::clone(&handle));
-    assert!(late.is_set());
-    let Ran::Now(after) = s.records_secret(&kind, &id, Box::new(|_| {})) else {
+    let installed = Arc::new(AppCredentials::new(handle.load().governance.clone()));
+    assert!(installed.installed());
+    let current = KernelServices::new().with_credentials(installed);
+    let Ran::Now(after) = current.records_secret(&kind, &id, Box::new(|_| {})) else {
         panic!("answered at once");
     };
     let span = after.spans[0];
@@ -308,7 +310,11 @@ async fn a_late_source_refuses_until_its_handle_is_set() {
         owner.upgrade().is_none(),
         "the credential source cannot keep its owner alive"
     );
-    assert!(!late.is_set());
+    assert_eq!(
+        now(current.records_secret(&kind, &id, Box::new(|_| {}))).value,
+        SECRET_LIVE
+    );
+    assert!(!credentials.installed());
     assert_eq!(
         now(s.records_secret(&kind, &id, Box::new(|_| {}))),
         Stored::refused(NOT_READABLE)

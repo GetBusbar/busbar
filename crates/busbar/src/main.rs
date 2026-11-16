@@ -717,8 +717,6 @@ async fn run(
     let boot_guard = guard_judge.guard().clone();
     let dest = BootstrapDestJudge::new(guard_judge);
     let commit_guard: Arc<dyn busbar_kernel::host_services::DestJudge> = dest.clone();
-    let (credentials, credential_handle) = root::credentials::AppCredentials::late();
-    root::serve::compose(dest.clone(), &late_services, credentials);
     root::boot::note_provider_urls(
         base_cfg
             .providers
@@ -1265,6 +1263,11 @@ async fn run(
         .governance
         .clone()
         .map(|g| g as Arc<dyn busbar_kernel::host_services::SignKey>);
+    root::serve::compose(
+        dest.clone(),
+        &late_services,
+        root::credentials::AppCredentials::new(app.governance.clone()),
+    );
     root::serve::attach(
         &late_services,
         app.governance.as_deref(),
@@ -1484,7 +1487,6 @@ async fn run(
             .layer(axum::Extension(probes.clone()));
         physical_routers.insert(bind.at.clone(), router);
     }
-    credential_handle.set(std::sync::Arc::clone(&app_handle));
     let _ = door_live_handle.set(std::sync::Arc::downgrade(&app_handle));
 
     let _ = root::inbound::install(root::doors::dispatcher());

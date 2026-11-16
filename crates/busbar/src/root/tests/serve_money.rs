@@ -156,7 +156,7 @@ async fn governed_full(
         .expect("the loopback deployment parses");
         let initial = busbar_kernel::config::resolve(&initial, &Default::default()).unwrap();
         let judge = crate::root::connector::dest_judge(&initial);
-        let (credentials, _handle) = crate::root::credentials::AppCredentials::late();
+        let credentials = crate::root::credentials::AppCredentials::new(None);
         super::compose(judge.clone(), &late, credentials);
         crate::root::doors::install_plugin_logs(crate::root::boot::plugin_logs());
         if crate::root::connector::installed().is_none() {
