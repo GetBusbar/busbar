@@ -624,9 +624,11 @@ async fn get_usage_series(
         |message: String| err_json_cond(&AdminError::Validation(message), Cond::InvalidQueryValue);
     let day = |name: &str| -> Result<Option<u64>, Box<Response>> {
         q.get(name).map_or(Ok(None), |v| {
-            parse_utc_day(v)
-                .map(Some)
-                .ok_or_else(|| Box::new(bad(format!("invalid `{name}`: expected a UTC day, YYYY-MM-DD"))))
+            parse_utc_day(v).map(Some).ok_or_else(|| {
+                Box::new(bad(format!(
+                    "invalid `{name}`: expected a UTC day, YYYY-MM-DD"
+                )))
+            })
         })
     };
     let step = busbar_kernel::governance::METERING_BUCKET_SECS;

@@ -270,12 +270,15 @@ async fn chain_principal(ctx: &PlaneReqCtx, bearer: Option<&str>) -> Seen {
     ))
 }
 
+/// The webhook secret configured for (plane instance, route), if any.
+pub(crate) type IngressSecrets = Arc<dyn Fn(&str, u32) -> Option<SecretRef> + Send + Sync>;
+
 /// What a signed route needs, built at boot from the process's custody: the Standard Webhooks verifier, the replay
 /// guard, and the webhook secret of (plane instance, route) the operator configured.
 pub(crate) struct Ingress {
     pub(crate) verifier: Arc<dyn IngressVerifier>,
     pub(crate) replay: Arc<dyn ReplayGuard>,
-    pub(crate) secrets: Arc<dyn Fn(&str, u32) -> Option<SecretRef> + Send + Sync>,
+    pub(crate) secrets: IngressSecrets,
 }
 
 /// The route's signature check for `PlaneIn`'s admission: `None` when the route is not AUTH_SIGNED_INGRESS (no

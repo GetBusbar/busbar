@@ -118,9 +118,8 @@ impl GuardJudge {
         if literal.is_some() {
             plaintext_to_loopback(class, target.secure, host)?;
         }
-        let host = crate::off_path::process::host_text(
-            url_host_to_ascii(host).map_err(|_| DEST_NO_HOST)?,
-        );
+        let host =
+            crate::off_path::process::host_text(url_host_to_ascii(host).map_err(|_| DEST_NO_HOST)?);
         Ok((host, port, target.secure, literal))
     }
 

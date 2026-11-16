@@ -1957,7 +1957,12 @@ pub(crate) struct Timing<'a> {
 impl Timing<'_> {
     /// Read the unit's three measurements: one monotonic read, and atomic loads.
     fn read(&self) -> Measured {
-        let total = u64::try_from(self.started.elapsed().as_micros()).unwrap_or(u64::MAX);
+        let total = u64::try_from(
+            busbar_core_connector::framer::now()
+                .saturating_duration_since(self.started)
+                .as_micros(),
+        )
+        .unwrap_or(u64::MAX);
         let first_ns = self.caller.first_write_ns();
         Measured {
             status: self
@@ -2367,7 +2372,6 @@ impl Sealing {
                 total_us: measured.total_us,
                 attempts,
                 attempts_total,
-                ..busbar_kernel_audit::UnitFacts::default()
             },
         };
         let unit = seal.key.get();

@@ -348,7 +348,6 @@ fn displays_as(value: &Value, wanted: &str) -> bool {
     write!(rest, "{value}").is_ok() && rest.0.is_empty()
 }
 
-
 #[cfg(test)]
 #[path = "tests/views_tests.rs"]
 mod tests;
