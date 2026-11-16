@@ -1,7 +1,20 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Configured upstreams: where each is, how its peer is authenticated, its outbound binding (IF §12.1). W0-ABI stub: frozen signatures, `todo!()` bodies; W1-K1 fills it.
+//! Configured upstreams: where each is, how its peer is authenticated, its outbound binding (IF §12.1).
+//!
+//! The types below are frozen (IF r35). [`UpstreamDef::from_config`] types one `upstreams.<name>` entry over the
+//! `auth` and `upstream_credentials` keys the config grammar parsed ([`crate::config::min3::UpstreamCfg`]), and
+//! [`ConfiguredUpstreams`] is the table every consumer reads through [`Upstreams`]. There is no egress judge here:
+//! the connector's destination guard is it (§12.1).
+
+mod entry;
+mod table;
+#[cfg(test)]
+mod tests;
+
+pub use entry::{implicit_instance, DEFAULT_IDLE_S, MAX_NAME};
+pub use table::ConfiguredUpstreams;
 
 /// A configured upstream (operator vocabulary: `upstreams.<name>`; `Target::upstream` names it). Holds what a
 /// plane used to keep in its own config: where it is, how its peer is authenticated, which client identity core

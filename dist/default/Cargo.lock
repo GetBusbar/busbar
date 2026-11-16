@@ -826,6 +826,7 @@ version = "1.6.0"
 dependencies = [
  "busbar-contract",
  "busbar-kernel-breaker",
+ "busbar-plugin-abi",
  "foldhash 0.2.0",
  "futures",
 ]
