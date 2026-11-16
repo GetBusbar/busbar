@@ -2539,8 +2539,8 @@ fn checkpoint_facts_serialize_to_the_running_audit_record_bytes() {
         ],
     };
     assert_eq!(
-        serde_json::to_vec(&borrowed).unwrap(),
-        serde_json::to_vec(&owned).unwrap()
+        busbar_contract::json::to_vec(&borrowed).unwrap(),
+        busbar_contract::json::to_vec(&owned).unwrap()
     );
     let empty = RunningAuditFacts {
         destination: None,
@@ -2557,7 +2557,7 @@ fn checkpoint_facts_serialize_to_the_running_audit_record_bytes() {
         ..owned
     };
     assert_eq!(
-        serde_json::to_vec(&empty).unwrap(),
-        serde_json::to_vec(&empty_owned).unwrap()
+        busbar_contract::json::to_vec(&empty).unwrap(),
+        busbar_contract::json::to_vec(&empty_owned).unwrap()
     );
 }

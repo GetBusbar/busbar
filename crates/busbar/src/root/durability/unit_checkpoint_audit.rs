@@ -48,7 +48,7 @@ pub(super) async fn confirm(
     snapshot: &UnitCheckpoint,
     hint: Option<Carried>,
 ) -> RecordStoreResult<()> {
-    let facts: RunningAudit = serde_json::from_slice(
+    let facts: RunningAudit = busbar_contract::json::parse(
         snapshot
             .audit
             .as_deref()
@@ -101,7 +101,7 @@ pub(super) async fn recover(
             "running money checkpoint lacks captured admission audit facts",
         ));
     };
-    let facts: RunningAudit = serde_json::from_slice(encoded).map_err(error)?;
+    let facts: RunningAudit = busbar_contract::json::parse(encoded).map_err(error)?;
     if facts.principal != snapshot.principal || facts.op_class.is_empty() {
         return Err(error(
             "running money audit identity differs from its admitted principal",

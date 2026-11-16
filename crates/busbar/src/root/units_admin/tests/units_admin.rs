@@ -1,4 +1,5 @@
 use super::*;
+use busbar_contract::json::{self, JsonValueTrait};
 
 fn a_fresh_unit() -> u64 {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -80,7 +81,7 @@ fn the_door_answers_the_published_releases_own_bytes() {
         env!("BUSBAR_CORE_DIR"),
         "/../../testing/shadow-oracle/golden/1.5.5/cells/admin.ops__GetConfig__unauth.json"
     ));
-    let cell: serde_json::Value = serde_json::from_str(GOLDEN).expect("the golden cell parses");
+    let cell: json::Value = json::parse_value(GOLDEN.as_bytes()).expect("the golden cell parses");
     let answer = door_answer();
     assert!(
         answer.headers.iter().any(|(name, value)| {
@@ -95,7 +96,7 @@ fn the_door_answers_the_published_releases_own_bytes() {
         "the door's status is the recorded one"
     );
 
-    let recorded = serde_json::to_vec(&cell["body"]["json"]).expect("the recorded body serialises");
+    let recorded = json::to_vec(&cell["body"]["json"]).expect("the recorded body serialises");
     assert_eq!(
         answer.body, recorded,
         "the door's bytes are the recorded answer's bytes"
@@ -828,7 +829,7 @@ async fn the_admin_listener_is_exempt_from_the_cap_the_data_listener_is_refused_
         answer_for(Outcome::Refused(StepName::Arrival, ReasonCode::InFlightCap)),
         "the answer is the request's own, not the gate's refusal"
     );
-    let document: serde_json::Value = serde_json::from_slice(&answer.body).expect("audit JSON");
+    let document: json::Value = json::parse_value(&answer.body).expect("audit JSON");
     assert!(
         document["items"].is_array(),
         "the real audit handler answered"
@@ -958,7 +959,7 @@ async fn one_admin_unit_seals_exactly_one_entry_on_the_one_ring_and_a_read_seals
         "the actual Store settings are an object"
     );
     let deploy = busbar_kernel::config::deploy_from_deserializer(
-        serde_json::json!({
+        json::json!({
             "providers": {}, "models": {},
             "auth": {"chain": [], "admin_auth": []},
             "store": {"module": module, "settings": settings},
@@ -1446,7 +1447,7 @@ fn one_lane_rates() -> std::collections::BTreeMap<String, busbar_kernel::config:
         busbar_kernel::plane_driver::dispatch::fallback_key(),
     )
     .expect("the actual fallback plane declares its billable classes");
-    let zero = serde_json::from_value(serde_json::json!(0)).expect("an exact free unit rate");
+    let zero = json::from_value(&json::json!(0)).expect("an exact free unit rate");
     for class in plane.billable_classes {
         if !busbar_contract::records::RESERVED_UNITS.contains(&class.class)
             && !plane.fee_units.contains(&class.class)
@@ -1468,7 +1469,7 @@ fn one_lane_card() -> busbar_kernel::cost::CostModel {
 async fn answer_over_counts(
     gov: Arc<busbar_kernel::governance::GovState>,
     path: &str,
-) -> serde_json::Value {
+) -> json::Value {
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
     let statement = crate::root::loader::dispatch::rendering_of_library(&library_path)
@@ -1499,10 +1500,9 @@ async fn answer_over_counts(
         settings.is_object(),
         "the actual Store settings are an object"
     );
-    let dialects: serde_json::Value = serde_json::from_str(include_str!(
-        "../../tests/fixtures/plane_node_dialects.json"
-    ))
-    .expect("the actual model dialects are recorded");
+    let dialects: json::Value =
+        json::parse_value(include_str!("../../tests/fixtures/plane_node_dialects.json").as_bytes())
+            .expect("the actual model dialects are recorded");
     let dialect = dialects["body_model"]
         .as_object()
         .and_then(|rows| rows.keys().next())
@@ -1512,7 +1512,7 @@ async fn answer_over_counts(
         &crate::root::boot::axis_test_grammar(),
     )
     .expect("the actual wire provider has its catalog declaration");
-    let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
+    let deploy = busbar_kernel::config::deploy_from_deserializer(json::json!({
         "providers": {"wire": {"protocol": dialect, "base_url": "http://127.0.0.1:9", "api_key": "none"}},
         "models": {"m": {"provider": "wire"}},
         "rate_card": one_lane_rates(),
@@ -1576,7 +1576,7 @@ async fn answer_over_counts(
         .answer(a_ledger_request(path))
         .await;
     assert_eq!(answer.status, 200, "{path} did not answer");
-    serde_json::from_slice(&answer.body).unwrap_or_else(|e| panic!("{path}: {e}"))
+    json::parse_value(&answer.body).unwrap_or_else(|e| panic!("{path}: {e}"))
 }
 
 #[tokio::test]
@@ -1675,8 +1675,8 @@ async fn every_ledger_view_answers_from_the_ledger_and_not_from_the_dispatch() {
             vec![("content-type".to_string(), "application/json".to_string())],
             "{path} carried a header the view does not set"
         );
-        let parsed: serde_json::Value =
-            serde_json::from_slice(&answer.body).unwrap_or_else(|e| panic!("{path}: {e}"));
+        let parsed: json::Value =
+            json::parse_value(&answer.body).unwrap_or_else(|e| panic!("{path}: {e}"));
         assert!(parsed.is_object(), "{path} did not answer a JSON object");
         assert_ne!(
             answer.body, br#"{"entries":[]}"#,
@@ -1696,8 +1696,8 @@ async fn every_ledger_view_answers_from_the_ledger_and_not_from_the_dispatch() {
 
 #[tokio::test]
 async fn each_view_serves_the_figures_the_ledger_holds() {
-    let body = async |path: &str| -> serde_json::Value {
-        serde_json::from_slice(&answer_over_seeded_ledger(a_ledger_request(path)).await.body)
+    let body = async |path: &str| -> json::Value {
+        json::parse_value(&answer_over_seeded_ledger(a_ledger_request(path)).await.body)
             .expect("valid JSON")
     };
 
@@ -1719,11 +1719,11 @@ async fn each_view_serves_the_figures_the_ledger_holds() {
 
     assert_eq!(
         body("/api/v1/admin/ledger/checkpoints").await,
-        serde_json::json!({"checkpoints": []})
+        json::json!({"checkpoints": []})
     );
     assert_eq!(
         body("/api/v1/admin/ledger/migration").await,
-        serde_json::json!({"migrated": false, "marker": null})
+        json::json!({"migrated": false, "marker": null})
     );
 
     let document = body("/api/v1/admin/ledger/openapi.json").await;
@@ -1773,7 +1773,7 @@ async fn real_admin_dispatch() -> RouterDispatch {
         "the actual Store settings are an object"
     );
     let deploy = busbar_kernel::config::deploy_from_deserializer(
-        serde_json::json!({
+        json::json!({
             "providers": {}, "models": {},
             "auth": {"chain": [], "admin_auth": []},
             "store": {"module": module, "settings": settings},
@@ -1884,7 +1884,7 @@ async fn a_panicking_step_leaves_the_node_serving_valid_operations() {
         .is_panic());
     let answer = node.answer(authenticated_admin_request()).await;
     assert_eq!(answer.status, 200);
-    let document: serde_json::Value = serde_json::from_slice(&answer.body).expect("audit JSON");
+    let document: json::Value = json::parse_value(&answer.body).expect("audit JSON");
     assert!(
         document["items"].is_array(),
         "a real valid operation answered after the panic"
@@ -1898,18 +1898,18 @@ async fn an_unopened_ledger_answers_empty_rather_than_absent() {
         crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch), open_door())
             .await;
     let node = AdminNode::new(crate::root::kernel::new_kernel(), units);
-    let body = async |path: &str| -> serde_json::Value {
+    let body = async |path: &str| -> json::Value {
         let answer = node.answer(a_ledger_request(path)).await;
         assert_eq!(answer.status, 200, "{path}");
-        serde_json::from_slice(&answer.body).expect("valid JSON")
+        json::parse_value(&answer.body).expect("valid JSON")
     };
     assert_eq!(
         body("/api/v1/admin/ledger/totals").await["rows"],
-        serde_json::json!([])
+        json::json!([])
     );
     assert_eq!(
         body("/api/v1/admin/ledger/checkpoints").await["checkpoints"],
-        serde_json::json!([])
+        json::json!([])
     );
     assert_eq!(
         body("/api/v1/admin/ledger/migration").await["migrated"],
@@ -1917,7 +1917,7 @@ async fn an_unopened_ledger_answers_empty_rather_than_absent() {
     );
     assert_eq!(
         body("/api/v1/admin/ledger/migration").await["marker"],
-        serde_json::Value::Null
+        json::Value::new()
     );
 
     assert_eq!(
@@ -1928,7 +1928,7 @@ async fn an_unopened_ledger_answers_empty_rather_than_absent() {
 
 #[tokio::test]
 async fn the_reconciliation_holds_unless_a_row_is_refused_and_names_it() {
-    let served: serde_json::Value = serde_json::from_slice(
+    let served: json::Value = json::parse_value(
         &answer_over_seeded_ledger(a_ledger_request("/api/v1/admin/ledger/reconciliation"))
             .await
             .body,
@@ -1938,7 +1938,7 @@ async fn the_reconciliation_holds_unless_a_row_is_refused_and_names_it() {
         served["holds"], false,
         "a refused row is a row not measured"
     );
-    assert_eq!(served["discrepancies"], serde_json::json!([]));
+    assert_eq!(served["discrepancies"], json::json!([]));
     let refused = served["refused"].as_array().expect("refused");
     assert_eq!(refused.len(), 1);
     assert_eq!(refused[0]["bucket"], "key-3");
@@ -1964,12 +1964,12 @@ async fn verify_names_a_refused_row_and_every_other_finding() {
     let answer = crate::root::units_admin::bound::verify_effect(&SeededLedger, Some(&audit), None)
         .await
         .expect("a refused row must not take /admin/verify down");
-    let body: serde_json::Value = serde_json::from_slice(&answer.body).expect("valid JSON");
+    let body: json::Value = json::parse_value(&answer.body).expect("valid JSON");
     let findings: Vec<&str> = body["findings"]
         .as_array()
         .expect("findings")
         .iter()
-        .filter_map(serde_json::Value::as_str)
+        .filter_map(json::Value::as_str)
         .collect();
     assert!(
         findings
@@ -2439,16 +2439,16 @@ async fn the_ledger_document_path_serves_the_one_document_and_it_describes_the_v
         busbar_core_admin::v1::json::openapi_document(),
         "the ledger's document path must serve the one generated document, byte for byte"
     );
-    let document: serde_json::Value = serde_json::from_str(&served).expect("it is JSON");
+    let document: json::Value = json::parse_value(served.as_bytes()).expect("it is JSON");
     let paths = document["paths"].as_object().expect("it declares paths");
     assert!(
-        paths.contains_key("/api/v1/admin/usage"),
+        paths.contains_key(&"/api/v1/admin/usage"),
         "the ledger path serves a document that is not the administrative one"
     );
 
     for path in LEDGER_PATHS {
         let op = &paths
-            .get(*path)
+            .get(path)
             .unwrap_or_else(|| panic!("{path} is served and in no document"))["get"];
         assert!(
             op.is_object(),
@@ -2469,10 +2469,13 @@ async fn the_ledger_document_path_serves_the_one_document_and_it_describes_the_v
         );
     }
 
-    let pinned: serde_json::Value = serde_json::from_str(include_str!(concat!(
-        env!("BUSBAR_CORE_DIR"),
-        "/../../testing/shadow-oracle/fixtures/openapi-1.5.5.json"
-    )))
+    let pinned: json::Value = json::parse_value(
+        include_str!(concat!(
+            env!("BUSBAR_CORE_DIR"),
+            "/../../testing/shadow-oracle/fixtures/openapi-1.5.5.json"
+        ))
+        .as_bytes(),
+    )
     .expect("the pinned fixture is JSON");
     let pinned_paths = pinned["paths"].as_object().expect("it declares paths");
     assert!(
@@ -2516,8 +2519,8 @@ fn a_configured_name_cannot_break_out_of_the_document() {
             refusal: hostile.to_string(),
         }],
     };
-    let parsed: serde_json::Value =
-        serde_json::from_str(&render_totals(&ledger).expect("projects"))
+    let parsed: json::Value =
+        json::parse_value(render_totals(&ledger).expect("projects").as_bytes())
             .expect("a hostile name still renders JSON");
     assert_eq!(parsed["rows"][0]["bucket"], hostile);
     assert_eq!(parsed["refused"][0]["bucket"], hostile);
@@ -2542,8 +2545,8 @@ fn a_seeded_history() -> crate::root::kernel::RootHistory {
 }
 
 #[cfg(test)]
-fn a_body(body: serde_json::Value) -> Vec<u8> {
-    serde_json::to_vec(&body).expect("the correction serialises")
+fn a_body(body: json::Value) -> Vec<u8> {
+    json::to_vec(&body).expect("the correction serialises")
 }
 
 #[cfg(test)]
@@ -2722,7 +2725,7 @@ const ARRIVED: u64 = 86_406;
 
 #[cfg(test)]
 fn a_correction_body() -> Vec<u8> {
-    a_body(serde_json::json!({
+    a_body(json::json!({
         "effective_from": 0,
         "effective_until": 86_400_000,
         "rates": [ { "lane": "gpt", "class": "input", "micro_per_unit": 1.0 } ],
@@ -2746,7 +2749,7 @@ async fn amend_rate_history_appends_a_signed_back_dated_correction_and_rewrites_
         .await
         .expect("the correction applies");
     assert_eq!(answer.status, 200);
-    let doc: serde_json::Value = serde_json::from_slice(&answer.body).expect("the answer is JSON");
+    let doc: json::Value = json::parse_value(&answer.body).expect("the answer is JSON");
     assert_eq!(doc["history_seq"], 1);
     assert_eq!(doc["effective_from"], 0);
     assert_eq!(doc["effective_until"], 86_400_000);
@@ -2798,13 +2801,13 @@ async fn amend_rate_history_appends_a_signed_back_dated_correction_and_rewrites_
 #[tokio::test]
 async fn amend_rate_history_refuses_a_correction_that_names_a_currency() {
     for named in [
-        serde_json::json!("JPY"),
-        serde_json::json!("USD"),
-        serde_json::json!("nonsense"),
-        serde_json::json!(null),
+        json::json!("JPY"),
+        json::json!("USD"),
+        json::json!("nonsense"),
+        json::json!(null),
     ] {
         let history = a_seeded_history();
-        let body = a_body(serde_json::json!({
+        let body = a_body(json::json!({
             "effective_from": 0,
             "effective_until": 86_400_000,
             "currency": named,
@@ -2834,7 +2837,7 @@ async fn amend_rate_history_refuses_a_correction_that_names_a_currency() {
 
 #[test]
 fn the_canonical_amend_payload_names_no_currency() {
-    let body = serde_json::json!({
+    let body = json::json!({
         "effective_from": 0,
         "effective_until": 86_400_000,
         "rates": [ { "lane": "gpt", "class": "input", "micro_per_unit": 1.0 } ],
@@ -2864,7 +2867,7 @@ fn the_canonical_amend_payload_names_no_currency() {
 #[test]
 fn the_canonical_amend_payload_keeps_the_reason_hash_not_its_text() {
     let reason = "vendor corrected the March price sheet";
-    let body = serde_json::json!({
+    let body = json::json!({
         "effective_from": 0,
         "rates": [ { "lane": "gpt", "class": "input", "micro_per_unit": 1.0 } ],
         "reason": reason,
@@ -2886,7 +2889,7 @@ fn the_canonical_amend_payload_keeps_the_reason_hash_not_its_text() {
 async fn amend_rate_history_refuses_a_negative_fee_and_appends_nothing() {
     for fee in [-1_i64, -5, i64::MIN] {
         let history = a_seeded_history();
-        let body = a_body(serde_json::json!({
+        let body = a_body(json::json!({
             "effective_from": 0,
             "effective_until": 86_400_000,
             "per_request_fee": fee,
@@ -2905,7 +2908,7 @@ async fn amend_rate_history_refuses_a_negative_fee_and_appends_nothing() {
 
     for fee in [5_i64, 0] {
         let history = a_seeded_history();
-        let body = a_body(serde_json::json!({
+        let body = a_body(json::json!({
             "effective_from": 0,
             "effective_until": 86_400_000,
             "per_request_fee": fee,
@@ -3031,7 +3034,7 @@ async fn a_correction_of_one_cell_keeps_every_other_price_and_the_fee() {
 #[tokio::test]
 async fn a_fee_or_plane_correction_moves_only_what_it_names() {
     let history = a_full_card_history();
-    let body = a_body(serde_json::json!({
+    let body = a_body(json::json!({
         "effective_from": 0,
         "effective_until": 86_400_000,
         "per_request_fee": 7,
@@ -3088,7 +3091,7 @@ async fn a_correction_across_a_card_boundary_or_onto_an_absent_plane_is_refused(
     );
 
     let history = a_full_card_history();
-    let body = a_body(serde_json::json!({
+    let body = a_body(json::json!({
         "effective_from": 0,
         "effective_until": 86_400_000,
         "rates": [ { "lane": "plane-c\u{1f}hop", "class": "bytes", "micro_per_unit": 1.0 } ],
@@ -3109,7 +3112,7 @@ const HOUR_MS: u64 = 3_600_000;
 
 #[cfg(test)]
 fn a_window_correction(from: u64, until: Option<u64>) -> Vec<u8> {
-    a_body(serde_json::json!({
+    a_body(json::json!({
         "effective_from": from,
         "effective_until": until,
         "rates": [ { "lane": "gpt", "class": "input", "micro_per_unit": 1.0 } ],
@@ -3270,7 +3273,7 @@ async fn a_replayed_signed_correction_is_refused_and_appends_nothing() {
     let book = a_memory_book().await;
     let journal = a_journal_over(&book);
     let history = a_seeded_history();
-    let first = a_priced_correction(5, serde_json::json!(1.5));
+    let first = a_priced_correction(5, json::json!(1.5));
     let apply = async |body: &[u8], arrival_secs: u64| {
         amend_rate_history_effect(
             &history,
@@ -3284,7 +3287,7 @@ async fn a_replayed_signed_correction_is_refused_and_appends_nothing() {
     apply(&first, ARRIVED)
         .await
         .expect("the first correction applies");
-    apply(&a_priced_correction(9, serde_json::json!(3.0)), ARRIVED + 1)
+    apply(&a_priced_correction(9, json::json!(3.0)), ARRIVED + 1)
         .await
         .expect("a later correction of the same window applies");
     assert_eq!(history.len(), 3);
@@ -3340,8 +3343,8 @@ impl Drop for AmendScratch {
 }
 
 #[cfg(test)]
-fn a_priced_correction(fee: i64, micro: serde_json::Value) -> Vec<u8> {
-    a_body(serde_json::json!({
+fn a_priced_correction(fee: i64, micro: json::Value) -> Vec<u8> {
+    a_body(json::json!({
         "effective_from": 0,
         "effective_until": 86_400_000,
         "per_request_fee": fee,
@@ -3359,7 +3362,7 @@ async fn a_sealed_amendment_survives_a_restart_with_its_figures() {
         amend_rate_history_effect(
             &history,
             Some(&a_journal_over(&book)),
-            &a_priced_correction(5, serde_json::json!(1.5)),
+            &a_priced_correction(5, json::json!(1.5)),
             ARRIVED,
             &an_attribution(),
         )
@@ -3397,11 +3400,11 @@ async fn a_sealed_amendment_survives_a_restart_with_its_figures() {
 #[tokio::test]
 async fn a_correction_rate_is_sealed_as_an_exact_integer_or_refused() {
     for (micro, nanos) in [
-        (serde_json::json!(1.5), 1_500),
-        (serde_json::json!(0.001), 1),
-        (serde_json::json!(2e-3), 2),
-        (serde_json::json!(7), 7_000),
-        (serde_json::json!(0.0), 0),
+        (json::json!(1.5), 1_500),
+        (json::json!(0.001), 1),
+        (json::json!(2e-3), 2),
+        (json::json!(7), 7_000),
+        (json::json!(0.0), 0),
     ] {
         let scratch = AmendScratch::new("exact-rate").await;
         let book = scratch.book().await;
@@ -3422,11 +3425,11 @@ async fn a_correction_rate_is_sealed_as_an_exact_integer_or_refused() {
         );
     }
     for micro in [
-        serde_json::json!(0.0001),
-        serde_json::json!(0.0015),
-        serde_json::json!(-1.0),
-        serde_json::json!(1e30),
-        serde_json::json!("1.5"),
+        json::json!(0.0001),
+        json::json!(0.0015),
+        json::json!(-1.0),
+        json::json!(1e30),
+        json::json!("1.5"),
     ] {
         let scratch = AmendScratch::new("inexact-rate").await;
         let book = scratch.book().await;
@@ -3466,7 +3469,7 @@ async fn a_thousand_later_amendments_do_not_erase_the_first() {
         amend_rate_history_effect(
             &history,
             Some(&journal),
-            &a_priced_correction(7, serde_json::json!(2.0)),
+            &a_priced_correction(7, json::json!(2.0)),
             ARRIVED,
             &an_attribution(),
         )
@@ -3477,7 +3480,7 @@ async fn a_thousand_later_amendments_do_not_erase_the_first() {
             amend_rate_history_effect(
                 &history,
                 Some(&journal),
-                &a_priced_correction(fee, serde_json::json!(1.0)),
+                &a_priced_correction(fee, json::json!(1.0)),
                 ARRIVED + 1,
                 &an_attribution(),
             )
@@ -3537,7 +3540,7 @@ async fn a_refused_amendment_leaves_no_record() {
     amend_rate_history_effect(
         &history,
         Some(&a_journal_over(&book)),
-        &a_priced_correction(-5, serde_json::json!(1.0)),
+        &a_priced_correction(-5, json::json!(1.0)),
         ARRIVED,
         &an_attribution(),
     )
@@ -3549,15 +3552,15 @@ async fn a_refused_amendment_leaves_no_record() {
 
 #[tokio::test]
 async fn amend_rate_history_refuses_a_correction_that_names_no_reason_window_or_price() {
-    let cases: &[serde_json::Value] = &[
-        serde_json::json!({ "effective_from": 1, "rates": [{"lane":"gpt","class":"input","micro_per_unit":1.0}] }),
-        serde_json::json!({ "effective_from": 9, "effective_until": 1, "rates": [{"lane":"gpt","class":"input","micro_per_unit":1.0}], "reason": "r" }),
-        serde_json::json!({ "effective_from": 1, "reason": "r" }),
-        serde_json::json!({ "rates": [{"lane":"gpt","class":"input","micro_per_unit":1.0}], "reason": "r" }),
+    let cases: &[json::Value] = &[
+        json::json!({ "effective_from": 1, "rates": [{"lane":"gpt","class":"input","micro_per_unit":1.0}] }),
+        json::json!({ "effective_from": 9, "effective_until": 1, "rates": [{"lane":"gpt","class":"input","micro_per_unit":1.0}], "reason": "r" }),
+        json::json!({ "effective_from": 1, "reason": "r" }),
+        json::json!({ "rates": [{"lane":"gpt","class":"input","micro_per_unit":1.0}], "reason": "r" }),
     ];
     for case in cases {
         let history = a_seeded_history();
-        let body = serde_json::to_vec(case).expect("serialises");
+        let body = json::to_vec(case).expect("serialises");
         let err = amend_through_a_journal(&history, &body, ARRIVED)
             .await
             .expect_err("a malformed correction must be refused");
@@ -3594,13 +3597,13 @@ async fn amend_rate_history_refuses_when_there_is_no_history_to_amend() {
 async fn amend_rate_history_applies_a_correction_that_carries_no_signature() {
     let history = a_seeded_history();
     let body = a_correction_body();
-    let doc: serde_json::Value = serde_json::from_slice(&body).expect("the body is JSON");
+    let doc: json::Value = json::parse_value(&body).expect("the body is JSON");
     assert!(doc.get("signature").is_none() && doc.get("operator_fingerprint").is_none());
     let answer = amend_through_a_journal(&history, &body, ARRIVED)
         .await
         .expect("an unsigned correction applies");
     assert_eq!(answer.status, 200);
-    let doc: serde_json::Value = serde_json::from_slice(&answer.body).expect("JSON");
+    let doc: json::Value = json::parse_value(&answer.body).expect("JSON");
     assert!(
         doc.get("operator_fingerprint").is_none(),
         "the answer names no signer: {doc}"
@@ -3611,14 +3614,13 @@ async fn amend_rate_history_applies_a_correction_that_carries_no_signature() {
 #[tokio::test]
 async fn amend_rate_history_ignores_a_signature_a_body_still_carries() {
     let history = a_seeded_history();
-    let mut doc: serde_json::Value =
-        serde_json::from_slice(&a_correction_body()).expect("the body is JSON");
-    doc["operator_fingerprint"] = serde_json::json!("a-fingerprint-nothing-checks");
-    doc["signature"] = serde_json::json!("00".repeat(64));
+    let mut doc: json::Value = json::parse_value(&a_correction_body()).expect("the body is JSON");
+    doc["operator_fingerprint"] = json::json!("a-fingerprint-nothing-checks");
+    doc["signature"] = json::json!("00".repeat(64));
     let answer = amend_through_a_journal(&history, &a_body(doc), ARRIVED)
         .await
         .expect("a body carrying a stale signature still applies");
-    let doc: serde_json::Value = serde_json::from_slice(&answer.body).expect("JSON");
+    let doc: json::Value = json::parse_value(&answer.body).expect("JSON");
     assert!(
         doc.get("operator_fingerprint").is_none(),
         "the answer names no signer: {doc}"
@@ -3669,7 +3671,7 @@ async fn a_signed_record_verifies_against_the_served_audit_keys() {
     let audit_token = an_audit_pass();
     let served_keys = async |units: crate::root::kernel::ProductionUnits| -> Vec<String> {
         let node = AdminNode::new(crate::root::kernel::new_kernel(), units);
-        let served: serde_json::Value = serde_json::from_slice(
+        let served: json::Value = json::parse_value(
             &node
                 .answer(a_ledger_request("/api/v1/admin/audit/keys"))
                 .await
@@ -3736,7 +3738,7 @@ async fn a_correction_on_a_node_with_no_data_dir_is_kept_by_the_store_and_surviv
         let answered = amend_rate_history_effect(
             &a_seeded_history(),
             Some(&a_journal_over(&book)),
-            &a_priced_correction(5, serde_json::json!(1.5)),
+            &a_priced_correction(5, json::json!(1.5)),
             ARRIVED,
             &an_attribution(),
         )
@@ -3763,7 +3765,7 @@ async fn a_correction_the_store_refuses_answers_503_with_the_reason() {
     let answered = amend_rate_history_effect(
         &a_seeded_history(),
         Some(&a_journal_over(&book)),
-        &a_priced_correction(5, serde_json::json!(1.5)),
+        &a_priced_correction(5, json::json!(1.5)),
         ARRIVED,
         &an_attribution(),
     )
@@ -3782,7 +3784,7 @@ async fn a_correction_the_store_refuses_answers_503_with_the_reason() {
     let again = amend_rate_history_effect(
         &a_seeded_history(),
         Some(&a_journal_over(&book)),
-        &a_priced_correction(6, serde_json::json!(2)),
+        &a_priced_correction(6, json::json!(2)),
         ARRIVED + 1,
         &an_attribution(),
     )
@@ -3798,8 +3800,7 @@ async fn a_correction_the_store_refuses_answers_503_with_the_reason() {
 
 #[tokio::test]
 async fn commit_upgrade_answers_only_once_the_store_kept_its_record() {
-    let body = serde_json::to_vec(&serde_json::json!({ "version": bound::RUNNING_RELEASE }))
-        .expect("json");
+    let body = json::to_vec(&json::json!({ "version": bound::RUNNING_RELEASE })).expect("json");
 
     let refusing = NativeJournalStore::new().await;
     refusing.refuse(true);
@@ -3870,7 +3871,7 @@ async fn a_correction_the_journal_retained_is_in_force_and_answered_not_yet_kept
     let answered = amend_rate_history_effect(
         &history,
         Some(&a_journal_over(&book)),
-        &a_priced_correction(5, serde_json::json!(1.5)),
+        &a_priced_correction(5, json::json!(1.5)),
         ARRIVED,
         &an_attribution(),
     )
@@ -3897,7 +3898,7 @@ async fn a_correction_the_journal_retained_is_in_force_and_answered_not_yet_kept
             amend_rate_history_effect(
                 &history,
                 Some(&a_journal_over(&book)),
-                &a_priced_correction(5, serde_json::json!(1.5)),
+                &a_priced_correction(5, json::json!(1.5)),
                 ARRIVED + 1,
                 &an_attribution(),
             )
@@ -3914,8 +3915,7 @@ async fn a_commit_the_journal_retained_is_answered_not_yet_kept_and_lands() {
     let refusing = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let book = a_book_whose_store_switches(&refusing).await;
     refusing.store(true, std::sync::atomic::Ordering::SeqCst);
-    let body = serde_json::to_vec(&serde_json::json!({ "version": bound::RUNNING_RELEASE }))
-        .expect("json");
+    let body = json::to_vec(&json::json!({ "version": bound::RUNNING_RELEASE })).expect("json");
     let answer =
         bound::commit_upgrade_effect(&body, 1_700_000_000, "admin", Some(&a_journal_over(&book)))
             .await
@@ -3965,8 +3965,7 @@ async fn a_keyed_commit_with_a_late_store_ack_seals_one_policy() {
     request.method = "POST".into();
     request.path = "/api/v1/admin/commit-upgrade".into();
     request.headers = vec![("idempotency-key".into(), "late-commit-ack".into())];
-    request.body =
-        serde_json::to_vec(&serde_json::json!({ "version": bound::RUNNING_RELEASE })).unwrap();
+    request.body = json::to_vec(&json::json!({ "version": bound::RUNNING_RELEASE })).unwrap();
     let cache = Arc::new(bound::ReplayCache::new());
     let admin = crate::root::kernel::new_kernel().admin_token();
     let ask = async |cache: Arc<bound::ReplayCache>,
@@ -4098,8 +4097,7 @@ async fn a_keyed_commit_refused_before_sealing_accepts_corrected_input() {
         before,
         "a definite refusal sealed nothing"
     );
-    request.body =
-        serde_json::to_vec(&serde_json::json!({ "version": bound::RUNNING_RELEASE })).unwrap();
+    request.body = json::to_vec(&json::json!({ "version": bound::RUNNING_RELEASE })).unwrap();
     let accepted = ask(&request).await;
     assert_eq!(accepted.status, 200);
     assert_eq!(ask(&request).await, accepted);

@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::*;
+use busbar_contract::json;
 use std::marker::PhantomData;
 use std::sync::{Condvar, Mutex};
 use std::time::Duration;
@@ -130,7 +131,7 @@ async fn hooked_app() -> Arc<busbar_kernel::state::App> {
         axis,
         app.hook_env.secret_resolver.clone(),
     );
-    let cfg = serde_json::from_value(serde_json::json!({
+    let cfg = json::from_value(&json::json!({
         "kind": "gate", "module": NAME,
         "settings": { "uncached": { "file": secret } }
     }))
