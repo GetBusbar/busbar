@@ -740,3 +740,20 @@ fn a_list_entry_is_read_as_a_targets_host_is_read() {
         );
     }
 }
+
+/// C-SCRUB-ONE, kernel-egress arm (IF §12.16): a refusal's URL and a stripped base URL come out of core's one
+/// redactor, byte for byte, so the egress refusal text, config_validate and the instance scrub set agree.
+#[test]
+fn refusal_and_dial_urls_come_from_the_one_scrub_redactor() {
+    use busbar_plugin_abi::host_side::scrub;
+    for url in [
+        "https://svc:hunter2@good.example/rpc",
+        "postgres://admin:s3cret@10.0.0.5/db?sslmode=require",
+        "redis://:onlypass@cache.test:6379",
+        "https://good.example/x@y",
+        "https://good.example",
+    ] {
+        assert_eq!(redact_userinfo(url), scrub::mask_url(url), "{url}");
+        assert_eq!(strip_userinfo(url), scrub::strip_userinfo(url), "{url}");
+    }
+}
