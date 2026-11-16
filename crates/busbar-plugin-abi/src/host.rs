@@ -276,6 +276,37 @@ impl Hash {
     }
 }
 
+/// Fixed-size custody for secret bytes a plugin must retain beyond the current call.
+/// It never grows or exposes ownership of its allocation. Debug reports length only; dropping wipes it.
+pub struct SecretBytes(Box<[u8]>);
+
+impl SecretBytes {
+    /// Copies borrowed secret bytes into one allocation of exactly the required length.
+    #[must_use]
+    pub fn copy_from_slice(bytes: &[u8]) -> Self {
+        Self(Box::from(bytes))
+    }
+}
+
+impl Deref for SecretBytes {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+impl Drop for SecretBytes {
+    fn drop(&mut self) {
+        self.0.zeroize();
+    }
+}
+
+impl fmt::Debug for SecretBytes {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "SecretBytes({} bytes)", self.0.len())
+    }
+}
+
 /// The plaintext `aead_open` returns. It stands where the IF writes `zeroize::Zeroizing<Vec<u8>>`, which core
 /// bans (LR-094, BLD-9); `busbar_contract::secure` sits above this crate (IF §16.23) and a plugin links only this
 /// crate, so the value keeps that module's rule itself, as `host_side::scrub::Needle` does: allocated once at its
@@ -1118,5 +1149,15 @@ mod tests {
         assert_eq!(digest.as_ref().map(|d| d.ct_eq(&[8; 32])), Ok(true));
         assert_eq!(digest.as_ref().map(|d| d.ct_eq(&[8; 31])), Ok(false));
         assert_eq!(digest.map(|d| d.ct_eq(&[9; 32])), Ok(false));
+    }
+
+    #[test]
+    fn retained_secret_bytes_own_their_copy_and_redact_debug() {
+        let mut source = b"callback-secret".to_vec();
+        let secret = SecretBytes::copy_from_slice(&source);
+        source.fill(0);
+        assert_eq!(&*secret, b"callback-secret");
+        assert_eq!(format!("{secret:?}"), "SecretBytes(15 bytes)");
+        assert!(!format!("{secret:?}").contains("callback"));
     }
 }
