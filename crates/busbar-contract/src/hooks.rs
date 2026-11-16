@@ -383,6 +383,16 @@ pub trait RoutingPolicy: Send + Sync + 'static {
         self.transform(req, budget).await
     }
 
+    /// Apply a named fallback when the plane cannot apply this hook's rewrite. The request
+    /// is the unchanged pre-rewrite projection. `None` leaves the ordinary refusal in force.
+    async fn fallback_rewrite_recording(
+        &self,
+        _req: &RoutingRequest<'_>,
+        _reads: &dyn ReadRecorder,
+    ) -> Option<TransformOutcome> {
+        None
+    }
+
     /// Whether a REWRITE this hook answered that the plane then refuses to apply (one naming a
     /// model other than the routed one, say) refuses the unit: the hook's own failure, answered by
     /// its own `on_error`, as a failed `transform` call of the same hook is. `true` = the operator

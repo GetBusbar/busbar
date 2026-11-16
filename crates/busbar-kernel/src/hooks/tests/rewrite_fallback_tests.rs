@@ -303,7 +303,41 @@ fn original_turns() -> Vec<Vec<(String, String)>> {
 
 /// The rewrite pass's entry into a resolved rewrite hook.
 async fn rewrite(policy: &dyn RoutingPolicy) -> TransformOutcome {
-    policy.transform(&request(), Duration::from_secs(1)).await
+    policy
+        .transform_recording(&request(), Duration::from_secs(1), &Recorded)
+        .await
+}
+
+struct Recorded;
+
+#[async_trait::async_trait]
+impl busbar_contract::hooks::ReadRecorder for Recorded {
+    async fn record(&self, hook: &str, identity: bool) -> bool {
+        assert_eq!(hook, SCREEN);
+        assert!(!identity);
+        true
+    }
+}
+
+#[tokio::test]
+async fn a_plane_rejected_rewrite_screens_the_unchanged_request() {
+    let (policy, seen) = resolved(Primary::Malformed, Screen::Refuse, "weighted");
+    let outcome = policy
+        .fallback_rewrite_recording(&request(), &Recorded)
+        .await;
+    assert!(matches!(
+        outcome,
+        Some(TransformOutcome::Reject { status: 451, .. })
+    ));
+    assert_eq!(*seen.lock().unwrap(), original_turns());
+}
+
+#[tokio::test]
+async fn fallback_content_is_not_sent_without_a_confirmed_read() {
+    let (policy, seen) = resolved(Primary::Malformed, Screen::Pass, "weighted");
+    let outcome = policy.transform(&request(), Duration::from_secs(1)).await;
+    assert!(matches!(outcome, TransformOutcome::Reject { .. }));
+    assert!(seen.lock().unwrap().is_empty());
 }
 
 /// (a) The primary's rewrite fails (malformed, or no answer in time): the named fallback is sent

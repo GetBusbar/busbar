@@ -96,6 +96,79 @@ fn failed_rewrite(
 pub(crate) struct RewriteOnError {
     pub(crate) inner: Arc<dyn RoutingPolicy>,
     pub(crate) on_error: crate::config::PolicyOnError,
+    pub(crate) on_error_chain: Vec<FallbackHook>,
+}
+
+impl RewriteOnError {
+    async fn rewrite(
+        &self,
+        req: &RoutingRequest<'_>,
+        budget: std::time::Duration,
+        reads: Option<&dyn busbar_contract::hooks::ReadRecorder>,
+    ) -> busbar_contract::hooks::TransformOutcome {
+        use busbar_contract::hooks::TransformOutcome;
+        let message = match tokio::time::timeout(budget, self.inner.transform(req, budget)).await {
+            Ok(TransformOutcome::Failed { message }) => message,
+            Ok(other) => return other,
+            Err(_) => "rewrite hook timed out".to_string(),
+        };
+        self.fallback(req, message, reads).await
+    }
+
+    async fn fallback(
+        &self,
+        req: &RoutingRequest<'_>,
+        message: String,
+        reads: Option<&dyn busbar_contract::hooks::ReadRecorder>,
+    ) -> busbar_contract::hooks::TransformOutcome {
+        use busbar_contract::hooks::TransformOutcome;
+        for fallback in &self.on_error_chain {
+            if fallback.send_prompt && req.prompt.is_none() {
+                continue;
+            }
+            let mut original = req.clone();
+            if !fallback.send_prompt {
+                original.prompt = None;
+            }
+            if !fallback.send_user {
+                original.identity = None;
+            }
+            if original.prompt.is_some() {
+                let recorded = match reads {
+                    Some(reads) => {
+                        reads
+                            .record(fallback.policy.name(), original.identity.is_some())
+                            .await
+                    }
+                    None => false,
+                };
+                if !recorded {
+                    return failed_rewrite(&crate::config::PolicyOnError::Reject, message);
+                }
+            }
+            let context = RoutingContext {
+                pool: req.pool,
+                budget_remaining: None,
+                budget: &[],
+            };
+            match tokio::time::timeout(
+                fallback.timeout,
+                fallback
+                    .policy
+                    .decide(&original, &[], &context, fallback.timeout),
+            )
+            .await
+            {
+                Ok(Ok(RoutingDecision::Reject { status, message })) => {
+                    return TransformOutcome::Reject { status, message }
+                }
+                Ok(Ok(RoutingDecision::Abstain)) => return TransformOutcome::Failed { message },
+                Ok(Ok(_)) => return failed_rewrite(&crate::config::PolicyOnError::Reject, message),
+                Ok(Err(_)) | Err(_) => {}
+            }
+        }
+        failed_rewrite(&self.on_error, message)
+    }
 }
 
 #[async_trait::async_trait]
@@ -123,20 +196,30 @@ impl RoutingPolicy for RewriteOnError {
         req: &RoutingRequest<'_>,
         budget: std::time::Duration,
     ) -> busbar_contract::hooks::TransformOutcome {
-        match self.inner.transform(req, budget).await {
-            busbar_contract::hooks::TransformOutcome::Failed { message } => {
-                if busbar_kernel::hooks::failed_call_refuses(&self.on_error) {
-                    tracing::warn!(
-                        hook = self.inner.name(),
-                        error = %message,
-                        "rewrite hook call failed and the hook is declared load-bearing \
-                         (on_error: reject); refusing the request"
-                    );
-                }
-                failed_rewrite(&self.on_error, message)
-            }
-            other => other,
+        self.rewrite(req, budget, None).await
+    }
+
+    async fn transform_recording(
+        &self,
+        req: &RoutingRequest<'_>,
+        budget: std::time::Duration,
+        reads: &dyn busbar_contract::hooks::ReadRecorder,
+    ) -> busbar_contract::hooks::TransformOutcome {
+        self.rewrite(req, budget, Some(reads)).await
+    }
+
+    async fn fallback_rewrite_recording(
+        &self,
+        req: &RoutingRequest<'_>,
+        reads: &dyn busbar_contract::hooks::ReadRecorder,
+    ) -> Option<busbar_contract::hooks::TransformOutcome> {
+        if self.on_error_chain.is_empty() {
+            return None;
         }
+        Some(
+            self.fallback(req, "rewrite could not be applied".into(), Some(reads))
+                .await,
+        )
     }
 
     /// A rewrite the plane refuses to apply is this hook's failure: the same disposition, by the
