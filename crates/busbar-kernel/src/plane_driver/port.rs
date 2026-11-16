@@ -455,6 +455,15 @@ pub(crate) fn refusal_of(
     refusals.for_port(route, error)
 }
 
+/// Ties a request builder's two borrowed inputs to the one lifetime of the [`PlaneIn`] it returns (a closure
+/// with elided reference parameters would give each its own, and the result borrows both).
+fn one_lifetime<'a, F>(build: F) -> F
+where
+    F: Fn(u32, &'a [u8], &'a [u8]) -> PlaneIn<'a>,
+{
+    build
+}
+
 /// One line: admission, then `request` and `end`. A refused admission, or a `request` the plane refused or
 /// failed, is rendered by the plane (`render(RENDER_REFUSAL)`) and its body is the response line.
 #[allow(clippy::too_many_arguments)]
@@ -472,7 +481,7 @@ fn run_line(
     line: &[u8],
 ) -> Result<Vec<u8>, LineRefused> {
     let effects = LineEffects { carriers, owner };
-    let build = |auth: u32, identity: &'_ [u8], ticket_record: &'_ [u8]| PlaneIn {
+    let build = one_lifetime(|auth, identity, ticket_record| PlaneIn {
         route: route.id,
         flags: 0,
         auth,
@@ -485,7 +494,7 @@ fn run_line(
         carrier,
         work: "",
         ticket_record,
-    };
+    });
     let admitted = match admission {
         Ok(admitted) => admitted,
         Err(refusal) => {
@@ -591,7 +600,7 @@ fn serve_blocking(
             value: Bytes::new(value),
         })
         .collect();
-    let build = |auth: u32, identity: &'_ [u8], ticket_record: &'_ [u8]| PlaneIn {
+    let build = one_lifetime(|auth, identity, ticket_record| PlaneIn {
         route: route.route,
         flags: 0,
         auth,
@@ -604,7 +613,7 @@ fn serve_blocking(
         carrier: 0,
         work: "",
         ticket_record,
-    };
+    });
     let admitted = match admission {
         Ok(admitted) => admitted,
         Err(refusal) => {

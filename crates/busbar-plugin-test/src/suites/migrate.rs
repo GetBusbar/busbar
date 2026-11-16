@@ -21,7 +21,9 @@
 
 use std::sync::Arc;
 
-use busbar_contract::json::{self as facade, JsonValueMutTrait, JsonValueTrait, Value};
+use busbar_contract::json::{
+    self as facade, JsonContainerTrait, JsonValueMutTrait, JsonValueTrait, Value,
+};
 use busbar_plugin_abi::fail::refused;
 use busbar_plugin_abi::plugin::Plugin;
 
