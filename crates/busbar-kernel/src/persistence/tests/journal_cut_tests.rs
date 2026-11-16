@@ -537,3 +537,62 @@ async fn checkpoint_audit_lookup_restarts_when_its_prefix_is_cut() {
         "checkpoint lookup restarted its complete proof"
     );
 }
+
+/// Test 30(f): paired confirm samples with the cut disabled and with a Store crossing delayed
+/// by 50 ms. Alternate measurement order to avoid assigning executor warm-up to one side.
+#[tokio::test]
+async fn delayed_cut_keeps_confirm_p99_within_ten_percent() {
+    use std::time::{Duration, Instant};
+    const SAMPLES: usize = 2_000;
+    async fn sample(owner: &RuntimeJournal) -> Duration {
+        let run = owner
+            .stage_run(&[Entry::new(RecordClass::Load, vec![8; 8])])
+            .unwrap();
+        let started = Instant::now();
+        owner.confirm(&run).await.unwrap();
+        started.elapsed()
+    }
+    let baseline_backend = ephemeral();
+    let delayed_backend = ephemeral();
+    let (_, baseline) = owner_on(&baseline_backend).await;
+    let (_, delayed) = owner_on(&delayed_backend).await;
+    append(&baseline, RETAIN_TAIL + 2 * CUT_BATCH).await;
+    append(&delayed, RETAIN_TAIL + 2 * CUT_BATCH).await;
+    // Both histories and both publication drivers have identical warm-up.
+    for _ in 0..128 {
+        let _ = sample(&baseline).await;
+        let _ = sample(&delayed).await;
+    }
+    delayed_backend.hold_cut.store(true, Ordering::SeqCst);
+    let mut cut = delayed.cutter().unwrap();
+    let cutting = tokio::spawn(async move { cut.truncate_through(u64::MAX).await });
+    delayed_backend.cut_entered.notified().await;
+    let releasing = {
+        let backend = delayed_backend.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            backend.hold_cut.store(false, Ordering::SeqCst);
+            backend.release_cut.notify_one();
+        })
+    };
+    let mut without_cut = Vec::with_capacity(SAMPLES);
+    let mut with_cut = Vec::with_capacity(SAMPLES);
+    for index in 0..SAMPLES {
+        if index % 2 == 0 {
+            without_cut.push(sample(&baseline).await);
+            with_cut.push(sample(&delayed).await);
+        } else {
+            with_cut.push(sample(&delayed).await);
+            without_cut.push(sample(&baseline).await);
+        }
+    }
+    releasing.await.unwrap();
+    assert!(matches!(cutting.await.unwrap(), CutProgress::Cut { .. }));
+    without_cut.sort_unstable();
+    with_cut.sort_unstable();
+    let percentile = (SAMPLES * 99).div_ceil(100) - 1;
+    let baseline_p99 = without_cut[percentile].as_nanos();
+    let delayed_p99 = with_cut[percentile].as_nanos();
+    assert!(delayed_p99 * 100 <= baseline_p99 * 110,
+        "50 ms cut delay raised confirm p99 by more than 10%: baseline={baseline_p99} ns delayed={delayed_p99} ns");
+}
