@@ -2,38 +2,244 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The hook adapter: `HookPort` over the hook kind's `Proxy` (IF §11.3, §8.4).
+//!
+//! A hook is sync (`on`) or async (`on_io`), as its describe declared (`M_ON` / `M_ON_IO`). Core's view is
+//! encoded once per call with the §8.8 `encode_view` into a pooled buffer; the answer is decoded straight into
+//! `HookAnswer`. A REFUSED or FAILED answer becomes a `PortError` whose text went through `scrub::fail_text`
+//! (scrub, then cut: I14, C-SCRUB-CUT); a hook `MESSAGE` is operator text and takes the same path.
 
-use busbar_plugin_abi::host_side::scrub::Scrub;
-use busbar_plugin_abi::kinds::hook::hook::{Proxy, Verdict as VerdictRec};
-use busbar_plugin_abi::records::{RecErr, Records};
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
-use crate::instance::PluginCode;
-use crate::ports::PortError;
-use crate::ports::hook::HookAnswer;
+use busbar_plugin_abi::fail::fact::{FACT_BACKEND_STATUS, FACT_RETRY_AFTER_S};
+use busbar_plugin_abi::fail::{CallError, FaultReason, failed};
+use busbar_plugin_abi::host_side::answer::Answer;
+use busbar_plugin_abi::host_side::caller::Caller;
+use busbar_plugin_abi::host_side::driver::Driver;
+use busbar_plugin_abi::host_side::needs::Needs;
+use busbar_plugin_abi::host_side::pool::{Pool, sync_bufs};
+use busbar_plugin_abi::host_side::scrub::{Scrub, fail_text};
+use busbar_plugin_abi::kinds::hook::hook::{
+    M_ON_IO, Proxy, VERB_REJECT, VERB_REWRITE, Verdict as VerdictRec, tag,
+};
+use busbar_plugin_abi::records::{RecErr, Records, tag as gtag};
+use busbar_plugin_abi::types::Status;
+
+use crate::encode::hook::encode_view;
+use crate::instance::{ErrorBook, PluginCode};
+use crate::ports::hook::{HookAnswer, HookCall, HookPort, HookView};
+use crate::ports::{CallCx, PortError};
 
 /// The hook port over one instance's proxy.
-pub struct HookAdapter {
+pub struct HookAdapter<N: Needs> {
     proxy: Proxy,
+    needs: Arc<N>,
+    /// D_POINTS, decoded at describe.
+    points: u32,
+    /// The image's `ErrorBook` (§11.2), for the ERROR number of a REFUSED or FAILED answer.
+    errors: &'static ErrorBook,
+    /// The undeclared-number WARN latch (once per instance, Relaxed, no RMW).
+    latch: AtomicBool,
+    /// The image declared `M_ON_IO` (exactly one of `on` / `on_io` is declared).
+    io: bool,
 }
 
-impl HookAdapter {
-    pub fn new(proxy: Proxy) -> Self {
-        Self { proxy }
+impl<N: Needs> HookAdapter<N> {
+    /// Built by `Registry::open_hook` after INSTANCE: `points` is the describe's D_POINTS mask and `errors` the
+    /// owning image's book.
+    pub fn new(proxy: Proxy, needs: Arc<N>, points: u32, errors: &'static ErrorBook) -> Self {
+        let io = proxy.instance().methods & M_ON_IO != 0;
+        Self {
+            proxy,
+            needs,
+            points,
+            errors,
+            latch: AtomicBool::new(false),
+            io,
+        }
     }
 
     pub fn proxy(&self) -> &Proxy {
         &self.proxy
     }
+
+    /// The call's `Caller`, borrowed from the instance (no refcount RMW). `chain` is 0: `Driver::new` mints it.
+    fn caller<'a>(&'a self, cx: &CallCx) -> Caller<'a> {
+        let inst = self.proxy.instance();
+        Caller {
+            plugin: &inst.identity,
+            kind: inst.kind,
+            name: &inst.name,
+            instance: inst.id,
+            slot: inst.slot,
+            chain: 0,
+            deadline: cx.deadline,
+            stack: cx.stack,
+            out_of_process: false,
+            limits: inst.limits,
+        }
+    }
+
+    /// An answer as the port's value. REFUSED and FAILED are `PortError`s; any other status is a contract break.
+    fn finish(&self, answer: &Answer<'_>) -> Result<HookAnswer, PortError> {
+        let inst = self.proxy.instance();
+        let status = answer.status;
+        if status == Status::OK {
+            return decode_answer(answer.records(), &inst.scrub)
+                .map_err(|e| PortError::Call(CallError::Fault(fault(e))));
+        }
+        let refused = status == Status::REFUSED;
+        if !refused && status != Status::FAILED {
+            return Err(PortError::Call(CallError::Fault(FaultReason::BadStatus(
+                status.0,
+            ))));
+        }
+        let Some((code, text)) = answer.fail() else {
+            return Err(PortError::Call(CallError::Fault(FaultReason::MissingFail)));
+        };
+        let error = self.errors.resolve(answer.fail_error(), &self.latch);
+        let (retry, backend) = if refused {
+            (None, None)
+        } else {
+            (
+                answer.fail_fact(FACT_RETRY_AFTER_S),
+                answer.fail_fact(FACT_BACKEND_STATUS),
+            )
+        };
+        Err(port_error(
+            &inst.scrub,
+            !refused,
+            code,
+            text,
+            retry,
+            backend,
+            error,
+        ))
+    }
 }
 
-/// The VERDICT then the answer's data records (IF §8.4); METRIC records are skipped.
+impl<N: Needs> HookPort for HookAdapter<N> {
+    fn points(&self) -> u32 {
+        self.points
+    }
+
+    fn facts(&self) -> u64 {
+        self.proxy.instance().facts
+    }
+
+    fn on<'a>(&'a self, cx: CallCx, point: u32, view: &'a HookView<'a>) -> HookCall<'a> {
+        let inst = self.proxy.instance();
+        if !inst.is_live() {
+            return HookCall::Done(Err(PortError::Call(CallError::Quarantined)));
+        }
+        if !self.io {
+            // Sync: no box, no hop. The view goes into the thread's args buffer, the answer is decoded before
+            // the buffers are reset.
+            let r = sync_bufs(inst.max_out, |args, out| {
+                encode_view(args, view).map_err(|_| view_too_big())?;
+                let answer = self
+                    .proxy
+                    .on(out, point, args.bytes())
+                    .map_err(PortError::Call)?;
+                self.finish(&answer)
+            });
+            return HookCall::Done(r);
+        }
+        let mut req = Pool::global().acquire(inst.max_out);
+        if encode_view(&mut req, view).is_err() {
+            return HookCall::Done(Err(view_too_big()));
+        }
+        HookCall::Io(Box::pin(async move {
+            let mut drv = Driver::new(&*self.needs, self.caller(&cx));
+            let owned = self
+                .proxy
+                .on_io(&mut drv, req, point)
+                .await
+                .map_err(PortError::Call)?;
+            self.finish(&owned.answer())
+        }))
+    }
+}
+
+/// Core built a view the request buffer cannot hold: core's own limit, not the plugin's text.
+fn view_too_big() -> PortError {
+    PortError::Failed {
+        code: failed::F_LIMIT,
+        text: "the hook view does not fit the request buffer".into(),
+        retry_after_s: None,
+        backend_status: None,
+        error: None,
+    }
+}
+
+/// A malformed answer is a plugin contract break (FAULT), reported with the record error's reason.
+fn fault(e: RecErr) -> FaultReason {
+    match e {
+        RecErr::Unknown(t) => FaultReason::UnknownTag(t),
+        e => FaultReason::BadRecords(e),
+    }
+}
+
+/// The VERDICT then the answer's data records (IF §8.4); METRIC records are skipped (core keeps the series from
+/// the answer, §12.17, not from this port). Anything else is `RecErr`.
 fn decode_answer(recs: Records<'_>, scrub: &Scrub) -> Result<HookAnswer, RecErr> {
-    let _ = (recs, scrub);
-    let _: Option<VerdictRec> = None;
-    todo!()
+    let mut recs = recs;
+    let first = recs.next().ok_or(RecErr::Truncated)??;
+    if first.tag != tag::VERDICT {
+        return Err(RecErr::Unknown(first.tag));
+    }
+    let v: VerdictRec = first.pod()?;
+    if v.verb > VERB_REWRITE {
+        return Err(RecErr::Size);
+    }
+    let mut out = HookAnswer {
+        verb: v.verb,
+        // Core clamps to 400..=499 (else 403); 0 or an out-of-range number states no status.
+        reject_status: (v.verb == VERB_REJECT)
+            .then(|| u16::try_from(v.reject_status).ok().filter(|s| *s != 0))
+            .flatten(),
+        order: Vec::new(),
+        restrict: Vec::new(),
+        message: None,
+        rewrite: None,
+    };
+    let (mut order, mut message, mut rewrite) = (false, false, false);
+    for rec in recs {
+        let rec = rec?;
+        match rec.tag {
+            tag::ORDER => {
+                if core::mem::replace(&mut order, true) || rec.body.len() % 4 != 0 {
+                    return Err(RecErr::Size);
+                }
+                out.order = rec
+                    .body
+                    .chunks_exact(4)
+                    .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                    .collect();
+            }
+            tag::RESTRICT => out.restrict.push(rec.text()?.into()),
+            tag::MESSAGE => {
+                if core::mem::replace(&mut message, true) {
+                    return Err(RecErr::Size);
+                }
+                // Operator text from the plugin: scrub first, cut after (I14).
+                out.message = Some(fail_text(scrub, rec.text()?).as_ref().into());
+            }
+            tag::REWRITE => {
+                if core::mem::replace(&mut rewrite, true) {
+                    return Err(RecErr::Size);
+                }
+                out.rewrite = Some(rec.body.to_vec());
+            }
+            gtag::METRIC => {}
+            t => return Err(RecErr::Unknown(t)),
+        }
+    }
+    Ok(out)
 }
 
-/// A REFUSED or FAILED answer as a `PortError`. The text is scrubbed whole, then cut (I14).
+/// A REFUSED or FAILED answer as a `PortError`. The text is scrubbed whole, then cut (I14). The facts are the
+/// FAILED answer's own; a REFUSED answer never carries any.
 #[allow(clippy::too_many_arguments)]
 fn port_error(
     scrub: &Scrub,
@@ -44,16 +250,18 @@ fn port_error(
     backend_status: Option<u64>,
     error: Option<PluginCode>,
 ) -> PortError {
-    let _ = (
-        scrub,
-        failed_answer,
-        code,
-        text,
-        retry_after_s,
-        backend_status,
-        error,
-    );
-    todo!()
+    let text: Box<str> = fail_text(scrub, text).as_ref().into();
+    if failed_answer {
+        PortError::Failed {
+            code,
+            text,
+            retry_after_s,
+            backend_status,
+            error,
+        }
+    } else {
+        PortError::Refused { code, text, error }
+    }
 }
 
 #[cfg(test)]
