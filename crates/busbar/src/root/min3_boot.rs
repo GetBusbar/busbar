@@ -13,6 +13,7 @@
 //! own late handles the walk fills at the deployment point, after the store opened and before the first 2c
 //! instance.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -24,6 +25,8 @@ use busbar_kernel::appbuild::boot_registry::{boot, install_kernel_sides, KernelA
 use busbar_kernel::appbuild::boot_walk::{
     deployment_bytes, BootSteps, DeploymentRead, RegistryBoot,
 };
+use busbar_kernel::channels::signals::SignalRegistry;
+use busbar_kernel::channels::SessionSignals;
 use busbar_kernel::config::{PluginsCfg, RootCfg};
 use busbar_kernel::directory::{KernelDirectory, LateDirectory, LogEvents};
 use busbar_kernel::host_services::KernelServices;
@@ -32,9 +35,14 @@ use busbar_kernel::issued::IssuedCredentials;
 use busbar_kernel::persistence::boot_identity::BootIdentity;
 use busbar_kernel::persistence::startup::Startup;
 use busbar_kernel::plane_driver::port::{PortDriver, PortSeat};
+use busbar_kernel::plane_driver::port_intents::{KernelIntents, Namespace};
+use busbar_kernel::plane_driver::port_serve::{LateDoor, TicketGate};
+use busbar_kernel::plane_grants::{SealedTickets, Tickets};
 use busbar_kernel::plugin_config::{Binder, ConfigBinder};
-use busbar_kernel::plugin_records::{LateRecords, StoreRecords};
-use busbar_plugin_abi::host_side::caller::BoxFut;
+use busbar_kernel::plugin_records::{LateRecords, RecordsDenied, StoreRecords};
+use busbar_kernel::push::{PushQueue, StorePushQueue};
+use busbar_kernel::retry::Policy as RetryPolicyImpl;
+use busbar_plugin_abi::host_side::caller::{BoxFut, Caller as LoaderCaller};
 use busbar_plugin_abi::host_side::host_vt::HOST;
 use busbar_plugin_abi::types::KindCode;
 use busbar_plugin_loader::admit::Admitted;
@@ -82,6 +90,96 @@ pub(crate) struct CoreSecrets {
     pub(crate) signing_key: Option<SecureVec>,
     pub(crate) at_rest_key: Option<SecureVec>,
     pub(crate) at_rest_previous: Option<SecureVec>,
+}
+
+/// The push queue the plane instances' PUSH intents and ticks enqueue into: filled once the store is open (the
+/// queue is rows in the core store), `Unavailable` until then. Clones share the one slot.
+#[derive(Clone, Default)]
+pub(crate) struct LatePush {
+    slot: Arc<OnceLock<StorePushQueue>>,
+}
+
+impl LatePush {
+    /// The queue every clone enqueues into from now on (the first install stays).
+    fn install(&self, queue: StorePushQueue) {
+        let _ = self.slot.set(queue);
+    }
+}
+
+impl PushQueue for LatePush {
+    fn enqueue<'a>(
+        &'a self,
+        who: &'a LoaderCaller<'_>,
+        ttl_s: u64,
+        recs: &'a [u8],
+    ) -> BoxFut<'a, Result<(), RecordsDenied>> {
+        match self.slot.get() {
+            Some(queue) => queue.enqueue(who, ttl_s, recs),
+            None => Box::pin(core::future::ready(Err(RecordsDenied::Unavailable))),
+        }
+    }
+}
+
+/// What the plane instances' intents, tickets and tick share, built before any instance opens and filled as the
+/// boot proceeds: the records and push queue are filled at the deployment point, the ticket doors once core's own
+/// secrets resolve.
+struct Shared {
+    records: Records,
+    push: LatePush,
+    signals: Arc<SignalRegistry>,
+    /// One per plane instance, with the namespace its gate asks the ticket store as.
+    doors: Mutex<Vec<(LateDoor, Namespace)>>,
+    next_instance: AtomicU64,
+}
+
+impl Shared {
+    fn new(records: Records, push: LatePush) -> Self {
+        Self {
+            records,
+            push,
+            signals: SignalRegistry::new(),
+            doors: Mutex::default(),
+            next_instance: AtomicU64::new(1),
+        }
+    }
+
+    /// The ticket host key (§12.11) is derived from core's `auth.signing_key`; every door installs its gate under
+    /// its instance's namespace. Without a signing key the doors stay shut (fail closed): no ticket admits.
+    fn install_tickets(&self, core: &CoreSecrets) {
+        let Some(signing) = &core.signing_key else {
+            tracing::info!("no auth.signing_key: plane tickets are not admitted");
+            return;
+        };
+        let mut key = SecureVec::zeroed(32);
+        if busbar_contract::crypto::hkdf_sha256(
+            b"busbar.ticket-host.v1",
+            &signing[..],
+            b"host-key",
+            &mut key[..],
+        )
+        .is_err()
+        {
+            tracing::warn!(
+                "the ticket host key could not be derived: plane tickets are not admitted"
+            );
+            return;
+        }
+        let Some(sealed) =
+            SealedTickets::new(self.records.clone(), &key[..], busbar_kernel::store::now)
+        else {
+            tracing::warn!("the ticket store refused its host key: plane tickets are not admitted");
+            return;
+        };
+        let tickets: Arc<dyn Tickets> = Arc::new(sealed);
+        for (door, who) in self
+            .doors
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+        {
+            door.install(Arc::new(TicketGate::new(Arc::clone(&tickets), who.clone())));
+        }
+    }
 }
 
 /// What a boot through the MIN-3 registry leaves running.
@@ -336,6 +434,7 @@ struct Steps<'r> {
     inner: RegistryBoot<'r, Needs>,
     services: Option<Arc<KernelServices>>,
     seats: Mutex<Vec<PortSeat>>,
+    shared: Arc<Shared>,
 }
 
 impl Steps<'_> {
@@ -359,6 +458,27 @@ impl Steps<'_> {
             &|_| None,
         )
         .await?;
+        let who = Namespace {
+            plugin: Arc::from(spec.identity),
+            name: Arc::from(spec.name),
+            instance: self.shared.next_instance.fetch_add(1, Ordering::Relaxed),
+            slot: 0,
+        };
+        // Tickets: shut until core's own secrets resolve and `Shared::install_tickets` opens every door.
+        let door = LateDoor::default();
+        self.shared
+            .doors
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push((door.clone(), who.clone()));
+        let driver = driver.with_tickets(Arc::new(door));
+        let intents = KernelIntents::new(
+            Arc::new(self.shared.records.clone()),
+            Arc::new(self.shared.push.clone()),
+            Arc::clone(&self.shared.signals) as Arc<dyn SessionSignals>,
+            who.clone(),
+            tokio::runtime::Handle::current(),
+        );
         self.seats
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -366,6 +486,8 @@ impl Steps<'_> {
                 instance: spec.name.to_owned(),
                 driver: Arc::new(driver),
                 audience: audience_of(spec.config_json),
+                intents: Arc::new(intents),
+                who,
             });
         Ok(())
     }
@@ -442,6 +564,7 @@ fn deployment_read(
     records: Records,
     directory: Directory,
     startup: Arc<Mutex<Option<Startup>>>,
+    push: LatePush,
 ) -> Box<DeploymentRead> {
     Box::new(
         move |handle: &StoreHandle| -> BoxFut<'static, Result<[u8; 16], String>> {
@@ -449,12 +572,17 @@ fn deployment_read(
             let records = records.clone();
             let directory = directory.clone();
             let startup = Arc::clone(&startup);
+            let push = push.clone();
             Box::pin(async move {
                 let admitted = super::boot::admit_format(backend, true).await?;
                 let core = admitted
                     .store()
                     .ok_or_else(|| "the store format admission left no core store".to_owned())?;
                 records.install(Arc::new(StoreRecords::new(Arc::clone(&core))));
+                push.install(StorePushQueue::new(
+                    Arc::clone(&core),
+                    Arc::new(RetryPolicyImpl::default()),
+                ));
                 let (served, _holds) =
                     KernelDirectory::build(Arc::clone(&core), Arc::new(LogEvents), Vec::new())
                         .await?;
@@ -539,10 +667,13 @@ pub(crate) async fn run(
         })
         .collect();
     let startup: Arc<Mutex<Option<Startup>>> = Arc::default();
+    let push = LatePush::default();
+    let shared = Arc::new(Shared::new(built.records.clone(), push.clone()));
     let reader = deployment_read(
         built.records.clone(),
         built.directory.clone(),
         Arc::clone(&startup),
+        push,
     );
     let steps = Steps {
         inner: RegistryBoot {
@@ -552,6 +683,7 @@ pub(crate) async fn run(
         },
         services,
         seats: Mutex::default(),
+        shared: Arc::clone(&shared),
     };
     let core_modules = busbar_kernel::appbuild::core_secret_modules(cfg);
     let core_refs: Vec<&str> = core_modules.iter().map(String::as_str).collect();
@@ -559,10 +691,12 @@ pub(crate) async fn run(
         .await
         .map_err(|refused| refused.to_string())?;
     let core = core_secrets_of(cfg).await?;
+    shared.install_tickets(&core);
     let seats = steps
         .seats
         .into_inner()
         .unwrap_or_else(PoisonError::into_inner);
+    let ticking = seats.clone();
     let installed = BOOTED.set(Booted {
         registry: built.registry,
         seats,
@@ -577,6 +711,12 @@ pub(crate) async fn run(
     });
     if installed.is_err() {
         return Err("the MIN-3 boot ran twice in one process".to_owned());
+    }
+    // The tick timer task of every seat whose plane states a period (§8.6 `tick_s`): its PUSHes queue under the
+    // instance's namespace, its EMITs go to their carriers.
+    let queue: Arc<dyn PushQueue> = Arc::new(shared.push.clone());
+    for seat in &ticking {
+        tokio::spawn(seat.clone().tick_task(Arc::clone(&queue)));
     }
     if let Some(held) = booted() {
         tracing::info!("{}", held.describe());

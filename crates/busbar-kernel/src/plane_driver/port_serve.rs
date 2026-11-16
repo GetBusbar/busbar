@@ -23,7 +23,7 @@ use busbar_plugin_abi::plane::{FROM_CORE, P_EXHAUSTED};
 use busbar_plugin_abi::records::Reply;
 use busbar_plugin_loader::encode::plane::encode_refusal;
 use busbar_plugin_loader::ports::plane::PlaneIn;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use super::port_auth::{plain_refusal, TicketDoor};
 use super::port_intents::{Detach, Namespace, Resolver};
@@ -119,6 +119,41 @@ impl TicketDoor for TicketGate {
             let who = self.who.caller();
             self.tickets.admit(&who, audience, credential, now_s).await
         })
+    }
+}
+
+/// A [`TicketDoor`] whose gate is installed after the plane opened: the ticket host key comes from core's own
+/// secrets, which resolve only after the plane instances open (IF §11.2). Until [`LateDoor::install`] it fails
+/// closed: nothing is a ticket, every admit is `Unavailable`. Clones share the one slot.
+#[derive(Clone, Default)]
+pub struct LateDoor {
+    slot: Arc<OnceLock<Arc<dyn TicketDoor>>>,
+}
+
+impl LateDoor {
+    /// The door every clone answers through from now on. The first install stays: `false` = one was installed.
+    pub fn install(&self, door: Arc<dyn TicketDoor>) -> bool {
+        self.slot.set(door).is_ok()
+    }
+}
+
+impl TicketDoor for LateDoor {
+    fn is_ticket(&self, credential: &str) -> bool {
+        self.slot
+            .get()
+            .is_some_and(|door| door.is_ticket(credential))
+    }
+
+    fn admit<'a>(
+        &'a self,
+        audience: &'a str,
+        credential: &'a str,
+        now_s: u64,
+    ) -> BoxFut<'a, Result<TicketAdmitted, TicketDenied>> {
+        match self.slot.get() {
+            Some(door) => door.admit(audience, credential, now_s),
+            None => Box::pin(core::future::ready(Err(TicketDenied::Unavailable))),
+        }
     }
 }
 

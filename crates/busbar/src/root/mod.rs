@@ -196,6 +196,8 @@ pub(crate) mod migrate;
 pub mod migration_secrets;
 /// The boot's MIN-3 registry: Need handlers, image admission, the boot walk (ROOT-BOOT).
 pub(crate) mod min3_boot;
+/// The HTTP mount of the MIN-3 plane instances: their data routes onto `PortDriver::serve`.
+pub(crate) mod port_mount;
 // busbar:request-path
 #[cfg_attr(
     not(test),

@@ -1631,6 +1631,49 @@ pub enum OpenError {
 mod l2_tests {
     use super::*;
 
+    /// The 2a walk from secret `from` of a store, through the shared `chains::plan_order` (secret `i` of
+    /// `deps` is instance `i + 1`; instance 0 is the store; core's own sections name no root).
+    fn walk(deps: &[Vec<usize>], from: usize) -> Result<Vec<u32>, OpenError> {
+        let mut kinds = vec![KindCode::Store];
+        kinds.extend(deps.iter().map(|_| KindCode::Secret));
+        let mut of = |at: usize| {
+            Ok(if at == 0 {
+                vec![from + 1]
+            } else {
+                deps[at - 1].iter().map(|d| d + 1).collect()
+            })
+        };
+        let plan = chains::plan_order(&kinds, &[], &mut of)?;
+        Ok(plan
+            .into_iter()
+            .filter(|(_, phase)| matches!(phase, BootPhase::StoreSecrets))
+            .map(|(i, _)| i - 1)
+            .collect())
+    }
+
+    #[test]
+    fn secret_dependencies_come_first_and_once() {
+        let deps = vec![vec![1, 2], vec![2], vec![]];
+        assert_eq!(walk(&deps, 0).unwrap(), vec![2, 1, 0]);
+    }
+
+    #[test]
+    fn a_secret_cycle_refuses_config_naming_the_indices() {
+        let deps = vec![vec![1], vec![0]];
+        let err = walk(&deps, 0).unwrap_err();
+        assert!(
+            matches!(&err, OpenError::Config { text, .. } if text.contains("reference each other"))
+        );
+    }
+
+    #[test]
+    fn a_secret_chain_deeper_than_four_is_refused() {
+        let deps = vec![vec![1], vec![2], vec![3], vec![4], vec![5], vec![]];
+        assert!(matches!(walk(&deps, 0), Err(OpenError::Config { .. })));
+        let four = vec![vec![1], vec![2], vec![3], vec![]];
+        assert_eq!(walk(&four, 0).unwrap(), vec![3, 2, 1, 0]);
+    }
+
     fn body(numbers: &[u16]) -> Vec<u8> {
         numbers.iter().flat_map(|n| n.to_le_bytes()).collect()
     }

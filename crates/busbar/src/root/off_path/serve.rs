@@ -3545,7 +3545,7 @@ pub(crate) fn attach_nest_routes(kernel: Option<Arc<KernelServices>>, routes: Ne
 
 pub(crate) fn public_routes(served: &Served) -> Vec<PlaneRouteSpec> {
     let tables = &served.tables;
-    let tail = served
+    let mut tail: Vec<PlaneRouteSpec> = served
         .planes
         .iter()
         .flat_map(|p| p.snapshot.admin_routes.iter())
@@ -3582,6 +3582,8 @@ pub(crate) fn public_routes(served: &Served) -> Vec<PlaneRouteSpec> {
             })
         })
         .collect();
+    // The MIN-3 plane instances serve their data routes through their ports (PLANE-BOOT-MOUNT).
+    tail.extend(crate::root::port_mount::routes(&served.ports));
     tail
 }
 
