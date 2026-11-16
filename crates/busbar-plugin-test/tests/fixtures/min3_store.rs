@@ -25,6 +25,14 @@
 //! - `"commit_code"`: `"time_guard_failed"` answers COMMIT_TIME_GUARD_FAILED (default COMMIT_APPLIED).
 //! - `"settle": true`: `open` answers a canonical CONFIG beside INSTANCE (`{"canonical":true}`), which core keeps
 //!   for the write-back (`Registry::take_settled`) only when the open succeeds.
+//! - `"hold": true`: `open` holds a guard across its Needs whose `Drop` is counted (`open_drops`, with the thread
+//!   in `drop_threads`): a cancel drops it with the parked chain (C-CANCEL-MIGRATE). A value that was built is
+//!   counted in `built`.
+//! - `"loop": n`: after the `secret`, `open` NEEDs SECRET of handle n for ever.
+//! - `"deployment": true`: `check` and `open` record what `Host::deployment_id` answered (`checks_saw`,
+//!   `opens_saw`: the 16 bytes, or empty for None) (C-DEPLOYMENT-ID).
+//! - `"install": text`: the install binding `check` decides on once `deployment_id()` is Some: 16 bytes other than
+//!   the id refuse R_CONFIG with [`INSTALL_REFUSAL`] (whose URL carries [`INSTALL_PASSWORD`]); None skips.
 //!
 //! It answers `read` with READ_DONE (READ_VALUES) and one absent VALUE per ADDRESS, `scan` with an exhausted
 //! empty page, `commit` with COMMITTED (evaluating nothing) and `clock` with CLOCK.
@@ -38,7 +46,7 @@ use std::time::Duration;
 use busbar_contract::json::{self as facade, JsonValueTrait, Value};
 use busbar_plugin_abi::fail::refused::R_CONFIG;
 use busbar_plugin_abi::fail::{fact, Fail};
-use busbar_plugin_abi::host::Host;
+use busbar_plugin_abi::host::{Host, HostExt};
 use busbar_plugin_abi::need::need::secret;
 use busbar_plugin_abi::need::{ChainBytes, SecretHandle};
 use busbar_plugin_abi::plugin::{Describe, Endpoints, Open};
@@ -68,6 +76,12 @@ pub const LANE_SCAN_CLAMPED_US: u64 = 120_000_000;
 /// The stall image's describe runs this long (the describe ceiling is 5 s).
 pub const STALL_DESCRIBE: Duration = Duration::from_secs(6);
 
+/// The password in the URL an `"install"` refusal names (core's scrub masks URL userinfo).
+pub const INSTALL_PASSWORD: &str = "pw-install-7781";
+/// The text a wrong install binding refuses with.
+pub const INSTALL_REFUSAL: &str =
+    "the install binding https://installer:pw-install-7781@licence.example names another deployment";
+
 /// What one config `"id"` saw.
 #[derive(Clone, Debug, Default)]
 pub struct Counts {
@@ -75,6 +89,31 @@ pub struct Counts {
     pub commits: u32,
     pub commit_threads: Vec<ThreadId>,
     pub closes: u32,
+    pub built: u32,
+    pub open_drops: u32,
+    pub drop_threads: Vec<ThreadId>,
+    pub opens_saw: Vec<Vec<u8>>,
+    pub checks_saw: Vec<Vec<u8>>,
+}
+
+/// Held across a `"hold"` open's Needs; its drop is the open future's.
+struct HeldOpen(String);
+
+impl Drop for HeldOpen {
+    fn drop(&mut self) {
+        let thread = std::thread::current().id();
+        bump(&self.0, |c| {
+            c.open_drops += 1;
+            c.drop_threads.push(thread);
+        });
+    }
+}
+
+/// What `Host::deployment_id` answers now: the 16 bytes, or nothing for None.
+fn deployment_seen(h: &Host) -> Vec<u8> {
+    h.deployment_id()
+        .map(|id| id.0.to_vec())
+        .unwrap_or_default()
 }
 
 static COUNTS: Mutex<BTreeMap<String, Counts>> = Mutex::new(BTreeMap::new());
@@ -178,6 +217,10 @@ pub struct Plan {
     authority: [u8; 16],
     commit_code: u32,
     settle: bool,
+    hold: bool,
+    looping: Option<u32>,
+    deployment: bool,
+    install: Option<String>,
 }
 
 impl Plan {
@@ -202,6 +245,13 @@ impl Plan {
                 wire::COMMIT_APPLIED
             },
             settle: config.get("settle").and_then(|v| v.as_bool()) == Some(true),
+            hold: config.get("hold").and_then(|v| v.as_bool()) == Some(true),
+            looping: config
+                .get("loop")
+                .and_then(number)
+                .and_then(|n| u32::try_from(n).ok()),
+            deployment: config.get("deployment").and_then(|v| v.as_bool()) == Some(true),
+            install: text("install"),
         }
     }
 }
@@ -224,15 +274,27 @@ impl<const MODE: u8> Drop for Fixture<MODE> {
 }
 
 impl<const MODE: u8> Open for Fixture<MODE> {
-    async fn open(_h: &'static Host, config: ChainBytes) -> Result<Self, Fail> {
+    async fn open(h: &'static Host, config: ChainBytes) -> Result<Self, Fail> {
         let (plan, handle, sleep) = config.with(|bytes| {
             object(bytes).map(|v| (Plan::of(&v), secret_handle(&v), millis(&v, "open_sleep_ms")))
         })?;
+        if plan.deployment {
+            let seen = deployment_seen(h);
+            bump(&plan.id, |c| c.opens_saw.push(seen));
+        }
         std::thread::sleep(sleep);
+        let held = plan.hold.then(|| HeldOpen(plan.id.clone()));
         if let Some(handle) = handle {
             // The backend password: resolved and used once, never kept (wiped on drop).
             drop(secret(handle).await?);
         }
+        if let Some(handle) = plan.looping {
+            loop {
+                let _ = secret(SecretHandle(handle)).await;
+            }
+        }
+        drop(held);
+        bump(&plan.id, |c| c.built += 1);
         Ok(Fixture(plan))
     }
 
@@ -243,8 +305,18 @@ impl<const MODE: u8> Open for Fixture<MODE> {
         Ok(())
     }
 
-    fn check(_h: &Host, config: &[u8], _ends: &mut Endpoints<'_>) -> Result<(), Fail> {
-        object(config).map(|_| ())
+    fn check(h: &Host, config: &[u8], _ends: &mut Endpoints<'_>) -> Result<(), Fail> {
+        let plan = Plan::of(&object(config)?);
+        let seen = deployment_seen(h);
+        if plan.deployment {
+            bump(&plan.id, |c| c.checks_saw.push(seen.clone()));
+        }
+        match &plan.install {
+            Some(install) if !seen.is_empty() && seen != install.as_bytes() => {
+                Err(Fail::refused_because(R_CONFIG, INSTALL_REFUSAL))
+            }
+            _ => Ok(()),
+        }
     }
 
     fn describe(d: &mut Describe<'_>) {

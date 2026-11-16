@@ -19,7 +19,16 @@
 //! [`OPEN_ERROR`]), `need` (VALUE n after a SECRET of handle 1), `stale` (reads the stash), `panic` and
 //! `resume-panic` (panics, the second after a SECRET).
 //!
-//! [`ParkNeeds`] and [`registry`] are the doubles the cancel arms open these images over.
+//! Members for the entry-guard, close-log and deployment arms (C-ENTRY-GUARD, C-CLOSE-LOG, C-DEPLOYMENT-ID):
+//! `open_log` (`open` logs [`OPEN_LINE`] followed by the password it resolved), `close_log` (the value's `close`
+//! logs [`CLOSE_LINE`] followed by that password, through the `Host` its `open` was handed), `settle_pad` (a
+//! count: `open` answers a canonical CONFIG beside INSTANCE whose `pad` member is that many bytes) and
+//! `deployment` (`check` and `open` record what `Host::deployment_id` answered, as `check.deployment` and
+//! `open.deployment`: the 16 bytes, or nothing for None). [`threads`] names the thread each `describe`, `open`
+//! and `close` ran on; [`on_close`] runs a test's hook inside one instance's `close`.
+//!
+//! [`ParkNeeds`] and [`registry`] are the doubles the cancel arms open these images over; [`trace`] is the
+//! ordered record of what they, the held `open` futures and a test's pool observer saw.
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -39,12 +48,13 @@ use busbar_plugin_abi::host_side::HOST;
 use busbar_plugin_abi::need::need;
 use busbar_plugin_abi::need::{ChainBytes, SecretHandle};
 use busbar_plugin_abi::plugin::{Describe, Endpoints, Plugin};
-use busbar_plugin_abi::records::{tag, Records, Reply, Writer};
+use busbar_plugin_abi::records::{settled, tag, Full, Out, Records, Reply, Writer};
 use busbar_plugin_abi::types::Str;
 use busbar_plugin_loader::admit::admit_header;
 use busbar_plugin_loader::binder::ConfigBinder;
 use busbar_plugin_loader::instance::{Ceilings, InstanceSpec, Registry};
-use busbar_plugin_test::suites::harness::MemBinder;
+use busbar_plugin_test::fake_needs::FakeNeeds;
+use busbar_plugin_test::suites::harness::{Harness, MemBinder};
 
 /// The error numbers the probe image declares (D_ERRORS).
 pub const ERRORS: &[u16] = &[OPEN_ERROR, LOG_ERROR];
@@ -63,6 +73,17 @@ pub const PROBE_FORMER: &str = "second-old";
 pub const ALIAS: &str = "fixture-alias-a";
 pub const ALIAS_WORDS: [&str; 2] = ["alias-old", "alias-older"];
 
+/// The loud image's identity (C-ENTRY-GUARD, C-CLOSE-LOG): a 64 KiB D_SCHEMA and a describe that logs.
+pub const LOUD: &str = "fixture-entry-guard";
+/// The line the loud image's describe logs.
+pub const DESCRIBE_LINE: &str = "the fixture logs from describe";
+/// What an `open_log` open logs, followed by a space and the password it resolved.
+pub const OPEN_LINE: &str = "the fixture logs from open with";
+/// What a `close_log` instance's close logs, followed by a space and the password its open resolved.
+pub const CLOSE_LINE: &str = "the fixture logs from close with";
+/// The loud image's D_SCHEMA is at least this long (the `description` member alone is).
+pub const BIG: usize = 64 << 10;
+
 const SCHEMA: &str = r#"{"type":"object"}"#;
 const REF_SCHEMA: &str = r#"{"type":"object","properties":{"name":{"type":"string"}}}"#;
 
@@ -75,6 +96,7 @@ struct Book {
     inputs: Vec<(String, &'static str, Vec<u8>)>,
     counts: BTreeMap<(String, &'static str), u32>,
     drops: BTreeMap<String, Vec<ThreadId>>,
+    threads: BTreeMap<(String, &'static str), Vec<ThreadId>>,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -120,6 +142,66 @@ pub fn drop_threads(tag: &str) -> Vec<ThreadId> {
     book().drops.get(tag).cloned().unwrap_or_default()
 }
 
+fn ran(tag: &str, what: &'static str) {
+    book()
+        .threads
+        .entry((tag.to_owned(), what))
+        .or_default()
+        .push(std::thread::current().id());
+}
+
+/// The threads `what` ran on under `tag`, in order: `describe` (under the tag `describe`, the loud image's
+/// describe), `open` and `close` (an instance's, under its config's tag).
+pub fn threads(tag: &str, what: &'static str) -> Vec<ThreadId> {
+    book()
+        .threads
+        .get(&(tag.to_owned(), what))
+        .cloned()
+        .unwrap_or_default()
+}
+
+/// One step of the ordered trace the cancel arms read.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Step {
+    /// [`ParkNeeds`] parked a SECRET of the chain running on watchdog slot `.0`.
+    Parked(u32),
+    /// A held `open` future of this tag was dropped (inside the plugin's cancel).
+    Dropped(String),
+    /// [`ParkNeeds`]' `release` ran for the chain on slot `.0` (the driver's release, after its cancel returned).
+    NeedsReleased(u32),
+    /// A test's pool observer saw this block leave the pool.
+    Taken(usize),
+    /// A test's pool observer saw this block come back: whether every byte of it was zero, and whether the
+    /// slot under watch was still leased at that moment.
+    Returned {
+        block: usize,
+        zeroed: bool,
+        leased: bool,
+    },
+}
+
+static TRACE: Mutex<Vec<Step>> = Mutex::new(Vec::new());
+
+/// Appends `step` to the trace.
+pub fn step(step: Step) {
+    lock(&TRACE).push(step);
+}
+
+/// Every step so far, in order.
+pub fn trace() -> Vec<Step> {
+    lock(&TRACE).clone()
+}
+
+type CloseHook = Box<dyn FnOnce() + Send>;
+
+static CLOSE_HOOKS: Mutex<BTreeMap<String, CloseHook>> = Mutex::new(BTreeMap::new());
+
+/// Runs `hook` inside the `close` of the instance whose config's tag is `tag`, after its `close_log` line and
+/// before the close returns (once).
+pub fn on_close(tag: &str, hook: CloseHook) {
+    lock(&CLOSE_HOOKS).insert(tag.to_owned(), hook);
+}
+
 /// C-STASH-REOPEN: the one stashed `ChainBytes` (the first `stash` open's config).
 static STASH: Mutex<Option<ChainBytes>> = Mutex::new(None);
 
@@ -136,6 +218,10 @@ struct Cfg {
     looping: Option<u32>,
     refuse: bool,
     panic: String,
+    open_log: bool,
+    close_log: bool,
+    settle_pad: usize,
+    deployment: bool,
 }
 
 impl Cfg {
@@ -164,6 +250,14 @@ impl Cfg {
             looping: handle(v.get("loop")),
             refuse: flag("refuse"),
             panic: text("panic"),
+            open_log: flag("open_log"),
+            close_log: flag("close_log"),
+            settle_pad: v
+                .get("settle_pad")
+                .and_then(|x| x.as_u64())
+                .and_then(|n| usize::try_from(n).ok())
+                .unwrap_or(0),
+            deployment: flag("deployment"),
         })
     }
 }
@@ -181,6 +275,7 @@ impl Drop for Held {
             .entry(self.tag.clone())
             .or_default()
             .push(std::thread::current().id());
+        step(Step::Dropped(self.tag.clone()));
     }
 }
 
@@ -188,15 +283,33 @@ impl Drop for Held {
 pub struct Probe {
     tag: String,
     panic_close: bool,
+    /// `close_log`: the line `close` logs and the `Host` its `open` was handed.
+    close_line: Option<(&'static Host, String)>,
+    settle_pad: usize,
 }
 
 impl Drop for Probe {
     fn drop(&mut self) {
         bump(&self.tag, "close");
+        ran(&self.tag, "close");
+        if let Some((h, line)) = &self.close_line {
+            h.log(level::WARN, line);
+        }
+        let hook = lock(&CLOSE_HOOKS).remove(&self.tag);
+        if let Some(hook) = hook {
+            hook();
+        }
         if self.panic_close {
             panic!("the probe fixture panics in close");
         }
     }
+}
+
+/// What `Host::deployment_id` answers now: the 16 bytes, or nothing for None.
+fn deployment_seen(h: &Host) -> Vec<u8> {
+    h.deployment_id()
+        .map(|id| id.0.to_vec())
+        .unwrap_or_default()
 }
 
 /// The reference's settings object: the request is one CONFIG record whose body is the object (IF §8.2).
@@ -238,10 +351,15 @@ fn read_stash() {
 }
 
 impl Probe {
-    async fn open(config: ChainBytes) -> Result<Probe, Fail> {
+    async fn open(h: &'static Host, config: ChainBytes) -> Result<Probe, Fail> {
         let bytes = config.to_vec();
         let cfg = Cfg::read(&bytes)?;
         note(&cfg.tag, "open.config", &bytes);
+        ran(&cfg.tag, "open");
+        if cfg.deployment {
+            note(&cfg.tag, "open.deployment", &deployment_seen(h));
+        }
+        let mut password = String::new();
         if cfg.panic == "open" {
             panic!("the probe fixture panics in open");
         }
@@ -259,9 +377,13 @@ impl Probe {
                 .await
                 .map_err(Fail::from)?;
             note(&cfg.tag, "open.need", &value);
+            password = String::from_utf8_lossy(&value).into_owned();
             if cfg.panic == "resume" {
                 panic!("the probe fixture panics in a resumed open");
             }
+        }
+        if cfg.open_log {
+            h.log(level::WARN, &format!("{OPEN_LINE} {password}"));
         }
         if let Some(handle) = cfg.looping {
             loop {
@@ -277,14 +399,34 @@ impl Probe {
         }
         bump(&cfg.tag, "built");
         Ok(Probe {
+            close_line: cfg
+                .close_log
+                .then(|| (h, format!("{CLOSE_LINE} {password}"))),
             tag: cfg.tag,
             panic_close: cfg.panic == "close",
+            settle_pad: cfg.settle_pad,
         })
     }
 
-    fn check(config: &[u8]) -> Result<(), Fail> {
+    /// `settle_pad`: a canonical CONFIG of the tag and a `pad` member that many bytes long.
+    fn settled(&self, w: &mut Out<'_>) -> Result<(), Full> {
+        if self.settle_pad == 0 {
+            return Ok(());
+        }
+        let bag = format!(
+            r#"{{"tag":"{}","pad":"{}"}}"#,
+            self.tag,
+            "p".repeat(self.settle_pad)
+        );
+        settled::config(w, bag.as_bytes())
+    }
+
+    fn check(h: &Host, config: &[u8]) -> Result<(), Fail> {
         let cfg = Cfg::read(config)?;
         note(&cfg.tag, "check.config", config);
+        if cfg.deployment {
+            note(&cfg.tag, "check.deployment", &deployment_seen(h));
+        }
         if cfg.panic == "check" {
             panic!("the probe fixture panics in check");
         }
@@ -336,12 +478,16 @@ macro_rules! probe_image {
         pub struct $T(super::Probe);
 
         impl busbar_plugin_abi::plugin::Open for $T {
-            async fn open(_h: &'static Host, config: ChainBytes) -> Result<Self, Fail> {
-                super::Probe::open(config).await.map($T)
+            async fn open(h: &'static Host, config: ChainBytes) -> Result<Self, Fail> {
+                super::Probe::open(h, config).await.map($T)
             }
 
-            fn check(_h: &Host, config: &[u8], _ends: &mut Endpoints<'_>) -> Result<(), Fail> {
-                super::Probe::check(config)
+            fn settled(&self, w: &mut Out<'_>) -> Result<(), Full> {
+                self.0.settled(w)
+            }
+
+            fn check(h: &Host, config: &[u8], _ends: &mut Endpoints<'_>) -> Result<(), Fail> {
+                super::Probe::check(h, config)
             }
 
             fn describe($d: &mut Describe<'_>) $describe
@@ -370,6 +516,30 @@ pub mod probe {
     });
 
     busbar_plugin_abi::plugin!(Secret, Image, former_names: "second-old", name: "fixture-second-b");
+}
+
+/// The loud image's D_SCHEMA: a permissive object schema whose `description` alone is [`BIG`] bytes.
+fn big_schema() -> &'static str {
+    static SCHEMA: OnceLock<String> = OnceLock::new();
+    SCHEMA.get_or_init(|| format!(r#"{{"type":"object","description":"{}"}}"#, "d".repeat(BIG)))
+}
+
+/// C-ENTRY-GUARD, C-CLOSE-LOG: the probe behind an identity whose describe answers a 64 KiB D_SCHEMA and logs
+/// [`DESCRIBE_LINE`]. The SDK hands `describe` no `Host`, so the line goes through the host table this
+/// in-process image is admitted over (`HOST`, the one [`registry`] and the harness pass), as a C image's describe
+/// logs through the `bb_host` its entry receives.
+pub mod loud {
+    use super::*;
+
+    probe_image!(Image, |d| {
+        ran("describe", "describe");
+        HOST.log(level::WARN, DESCRIBE_LINE);
+        d.schema(big_schema());
+        d.secret_path("/password");
+        d.item_text(busbar_plugin_abi::secret::tag::D_REF_SCHEMA, REF_SCHEMA);
+    });
+
+    busbar_plugin_abi::plugin!(Secret, Image, name: "fixture-entry-guard");
 }
 
 /// C-ALIAS: an identity with two `former_names` words.
@@ -497,12 +667,13 @@ impl Needs for ParkNeeds {
 
     fn secret(
         &self,
-        _cx: &Caller<'_>,
+        cx: &Caller<'_>,
         handle: u32,
         _res: &mut NeedOut<'_>,
     ) -> impl core::future::Future<Output = Result<(), NeedErr>> + Send {
         let parks = handle == Self::PARK;
         if parks {
+            step(Step::Parked(cx.slot));
             self.parked.fetch_add(1, Ordering::SeqCst);
         }
         Park(parks)
@@ -526,7 +697,9 @@ impl Needs for ParkNeeds {
         core::future::ready(Err(NeedErr::Denied))
     }
 
-    fn release(&self, _cx: &Caller<'_>) {}
+    fn release(&self, cx: &Caller<'_>) {
+        step(Step::NeedsReleased(cx.slot));
+    }
 }
 
 /// A SECRET answer: pending for ever when it parks, DENIED at once otherwise.
@@ -583,4 +756,18 @@ pub fn spec<'a>(module: &'a str, name: &'a str, config: &'a [u8]) -> InstanceSpe
         public_url: None,
         caller_upstreams: &[],
     }
+}
+
+/// `plugin` admitted into a [`Harness`] over `needs` whose every answered SECRET is first registered in the
+/// asking chain's scrub set (`Registry::scrub_of`, as the boot attaches it to custody), with the watchdog slot of
+/// each such chain recorded, in order, in the returned list.
+pub fn scrubbed(plugin: &'static Plugin, needs: FakeNeeds) -> (Arc<Harness>, Arc<Mutex<Vec<u32>>>) {
+    let h = Arc::new(Harness::admit(plugin, needs).unwrap_or_else(|r| panic!("admit: {r:?}")));
+    let slots = Arc::new(Mutex::new(Vec::new()));
+    let (weak, seen) = (Arc::downgrade(&h), Arc::clone(&slots));
+    h.needs().attach_scrubs(Arc::new(move |slot| {
+        lock(&seen).push(slot);
+        weak.upgrade()?.registry().scrub_of(slot)
+    }));
+    (h, slots)
 }

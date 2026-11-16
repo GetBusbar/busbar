@@ -6,15 +6,17 @@
 //! WBS rule 10: each arm is ignored for the task that lands the last piece it needs; that task writes
 //! the arm's body and un-ignores it in its own MR (red first, then green).
 
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use busbar_plugin_abi::fail::CallError;
 use busbar_plugin_abi::host_side::caller::CallStack;
+use busbar_plugin_abi::host_side::pool::{observe_pool, PoolEvent};
 use busbar_plugin_loader::instance::{OpenError, Registry};
 use busbar_plugin_loader::ports::CallCx;
 
-use crate::min3_second::{self as fx, ParkNeeds, PROBE};
+use crate::min3_second::{self as fx, ParkNeeds, Step, PROBE};
 
 /// The registry's step cap here: an `open` that NEEDs more often than this is cancelled `Steps`.
 const MAX_STEPS: u32 = 4;
@@ -142,8 +144,146 @@ fn an_open_parked_mid_need_is_cancelled_three_ways_once_inline() {
     assert_eq!(fx::count("cancel-after", "built"), 1);
 }
 
+/// The registry the pool observer asks about the watched slot.
+static WATCHED: OnceLock<&'static Registry<ParkNeeds>> = OnceLock::new();
+/// The slot of the parked chain, once known (`u32::MAX` before).
+static SLOT: AtomicU32 = AtomicU32::new(u32::MAX);
+
+/// The pool observer: every block taken and returned, in the fixture's trace, each return with whether its bytes
+/// were all zero and whether the watched slot was still leased (its record still in the slot table).
+fn observe(event: PoolEvent<'_>) {
+    match event {
+        PoolEvent::Taken { block } => fx::step(Step::Taken(block)),
+        PoolEvent::Released { block, bytes } => {
+            let slot = SLOT.load(Ordering::SeqCst);
+            let leased = WATCHED
+                .get()
+                .and_then(|registry| registry.scrub_of(slot))
+                .is_some();
+            fx::step(Step::Returned {
+                block,
+                zeroed: bytes.iter().all(|&b| b == 0),
+                leased,
+            });
+        }
+    }
+}
+
+/// Round 8: the boot future dropped on this thread while the probe's `open` is parked on a SECRET that never
+/// answers, with the pool instrumented (`pool::observe_pool`). The chain's four blocks (`req`, both OutBufs and
+/// `results`) stay out of the pool, so nothing can take them again, until the cancel has dropped the plugin's
+/// future and returned (the driver's `Needs::release` runs only after `cancel` returns); then each comes back
+/// once, all zero, while the slot is still leased; the lease goes last.
 #[test]
-#[ignore = "owner: W1-H1; blocked (re-checked on dev 2026-11-16): needs a pool instrumented to record acquire and release in order (busbar-plugin-abi host_side/pool.rs exposes only the misses/drops counters), so 'held until cancel returned, then released zeroed, the slot lease last' is not observable from busbar-plugin-test; the cancel itself runs in an_open_parked_mid_need_is_cancelled_three_ways_once_inline"]
 fn buffers_are_released_zeroed_after_cancel_returns_and_the_lease_last() {
-    todo!("owner: W1-H1 (C-CANCEL-OPEN)")
+    observe_pool(observe);
+    let me = std::thread::current().id();
+    let needs = Arc::new(ParkNeeds::default());
+    let registry: &'static Registry<ParkNeeds> = Box::leak(Box::new(fx::registry(
+        Arc::clone(&needs),
+        MAX_STEPS,
+        &[fx::probe::PLUGIN.plugin()],
+    )));
+    assert!(WATCHED.set(registry).is_ok());
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("a current-thread runtime");
+
+    let start = fx::trace().len();
+    let spec = fx::spec(
+        PROBE,
+        "cancel-bufs",
+        br#"{"tag":"cancel-bufs","hold":true,"loop":1}"#,
+    );
+    let mut boot = registry.open_secret(&spec);
+    let polled = rt.block_on(tokio::time::timeout(Duration::from_millis(200), &mut boot));
+    assert!(polled.is_err(), "the parked open never finished");
+    let parked = fx::trace();
+    let (at_park, slot) = parked
+        .iter()
+        .enumerate()
+        .skip(start)
+        .find_map(|(at, s)| match s {
+            Step::Parked(slot) => Some((at, *slot)),
+            _ => None,
+        })
+        .expect("the open chain parked on its SECRET");
+    let mut held: Vec<usize> = Vec::new();
+    for s in &parked[start..at_park] {
+        match s {
+            Step::Taken(block) => held.push(*block),
+            Step::Returned { block, .. } => held.retain(|b| b != block),
+            _ => {}
+        }
+    }
+    assert_eq!(
+        held.len(),
+        4,
+        "req, both OutBufs and results are out of the pool while the chain is parked: {held:x?}"
+    );
+    assert!(
+        registry.scrub_of(slot).is_some(),
+        "the chain's slot is leased while it is parked"
+    );
+    SLOT.store(slot, Ordering::SeqCst);
+
+    drop(boot);
+    let full = fx::trace();
+    assert!(
+        registry.scrub_of(slot).is_none(),
+        "the slot lease was released by the drop"
+    );
+    let after = |at: usize| full.iter().enumerate().skip(at);
+    let dropped = after(at_park)
+        .find(|(_, s)| **s == Step::Dropped("cancel-bufs".to_owned()))
+        .map(|(at, _)| at)
+        .expect("the cancel dropped the plugin's open future");
+    let released = after(at_park)
+        .find(|(_, s)| **s == Step::NeedsReleased(slot))
+        .map(|(at, _)| at)
+        .expect("the driver released the chain's Needs");
+    assert!(
+        dropped < released,
+        "the plugin's future dropped inside the cancel, before the release that follows its return"
+    );
+    for block in &held {
+        let returns: Vec<(usize, bool, bool)> = after(at_park)
+            .filter_map(|(at, s)| match s {
+                Step::Returned {
+                    block: b,
+                    zeroed,
+                    leased,
+                } if b == block => Some((at, *zeroed, *leased)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            returns.len(),
+            1,
+            "block {block:#x} came back exactly once: {returns:?}"
+        );
+        let (at, zeroed, leased) = returns[0];
+        assert!(
+            at > released,
+            "block {block:#x} came back only after the cancel had returned"
+        );
+        assert!(
+            !after(at_park)
+                .take_while(|(i, _)| *i < at)
+                .any(|(_, s)| *s == Step::Taken(*block)),
+            "block {block:#x} was not taken again before it came back"
+        );
+        assert!(zeroed, "block {block:#x} came back zeroed");
+        assert!(
+            leased,
+            "the slot lease was still held when block {block:#x} came back"
+        );
+    }
+    cancelled_once("cancel-bufs");
+    assert_eq!(
+        fx::drop_threads("cancel-bufs"),
+        vec![me],
+        "cancelled inline"
+    );
 }

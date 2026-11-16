@@ -345,6 +345,25 @@ pub struct Pool {
 
 static GLOBAL: OnceLock<Pool> = OnceLock::new();
 
+/// C-CANCEL-OPEN (IF §14 round 8: "a pool instrumented to record acquire/release"): one block leaving or coming
+/// back to a pool, as the process's [`observe_pool`] observer sees it, on the thread that moved it.
+#[derive(Clone, Copy, Debug)]
+pub enum PoolEvent<'a> {
+    /// A block left the pool for an acquire or a growth (popped, or allocated zeroed on a miss): its address.
+    Taken { block: usize },
+    /// A block came back: its address and its whole bytes, after the release zeroed what it exposed and before it
+    /// is pushed to its queue or freed.
+    Released { block: usize, bytes: &'a [u8] },
+}
+
+static OBSERVER: OnceLock<for<'a> fn(PoolEvent<'a>)> = OnceLock::new();
+
+/// Installs the process's one pool observer (a conformance probe: production installs none, and every take and
+/// release then costs one load). The first call wins; later ones are ignored.
+pub fn observe_pool(observer: for<'a> fn(PoolEvent<'a>)) {
+    let _ = OBSERVER.set(observer);
+}
+
 impl Pool {
     /// A pool sized by `caps` (tests build their own and leak it; production has the one global).
     pub(crate) fn new(caps: PoolCaps) -> Pool {
@@ -401,25 +420,37 @@ impl Pool {
     /// A block of the smallest class that fits `want` (one pop; a miss allocates it zeroed), or an exact zeroed
     /// block above 16 MiB (never pooled). Every block comes back with `len = high_water = 0`.
     fn take(&self, want: usize, max_out: usize) -> OutBuf {
-        let Some(class) = CLASSES.iter().position(|&size| size >= want) else {
-            return OutBuf::zeroed(want.next_multiple_of(8), max_out);
+        let buf = match CLASSES.iter().position(|&size| size >= want) {
+            None => OutBuf::zeroed(want.next_multiple_of(8), max_out),
+            Some(class) => match self.queues.get(class).and_then(ArrayQueue::pop) {
+                Some(mut buf) => {
+                    buf.max_out = max_out;
+                    buf
+                }
+                None => {
+                    self.misses.fetch_add(1, Ordering::Relaxed);
+                    OutBuf::zeroed(CLASSES[class], max_out)
+                }
+            },
         };
-        match self.queues.get(class).and_then(ArrayQueue::pop) {
-            Some(mut buf) => {
-                buf.max_out = max_out;
-                buf
-            }
-            None => {
-                self.misses.fetch_add(1, Ordering::Relaxed);
-                OutBuf::zeroed(CLASSES[class], max_out)
-            }
+        if let Some(observer) = OBSERVER.get() {
+            observer(PoolEvent::Taken {
+                block: buf.buf.as_ptr().addr(),
+            });
         }
+        buf
     }
 
     /// Zeroes what the block exposed, then one push to its current class; a full queue, or a block of no class,
     /// frees it.
     fn release(&self, mut buf: OutBuf) {
         buf.clear();
+        if let Some(observer) = OBSERVER.get() {
+            observer(PoolEvent::Released {
+                block: buf.buf.as_ptr().addr(),
+                bytes: &buf.buf,
+            });
+        }
         let pushed = match class_of(buf.cap()).and_then(|class| self.queues.get(class)) {
             Some(queue) => queue.push(buf).is_ok(),
             None => false,
