@@ -21,7 +21,7 @@ more. **A compiled-in plugin is a dropped-in plugin:** a compiled-in plugin expo
 called through the same table, and the same checks run on both, so a build that links a plugin in and
 a tarball that is dropped into the plugins directory are indistinguishable to Busbar. The `memory`
 store is such a plugin, compiled in. The engine crate keeps `#![forbid(unsafe_code)]`; the FFI `unsafe` is isolated in
-`busbar-ffi` and `busbar-plugin-loader`. For plugin authors, [Rebuilding a plugin against the
+`busbar-ffi`. For plugin authors, [Rebuilding a plugin against the
 1.6.0 SDK](plugin-sdk-migration-1.6.md) is the build guide.
 
 **A plugin built against an earlier SDK does not load.** Boot refuses it with a message naming
@@ -608,8 +608,7 @@ get code executed, and a compromised or replayed plugin must not load.
    `%TEMP%`, which is narrower than a world-writable `/tmp` but is NOT the `0700` guarantee, and an
    operator running busbar as a user whose `%TEMP%` is shared does not get one. The properties that
    do NOT depend on mode bits hold on every platform: the file is regenerated from the verified
-   bytes on every load, a pre-existing on-disk library is never loaded, and clean shutdown unloads
-   the library and then removes the file. There is no time-of-check/time-of-use window between
+   bytes on every load and a pre-existing on-disk library is never loaded. Admitted libraries remain mapped for the process lifetime, including after instance shutdown; releasing an instance is not a library unload. The operating system releases the mapping when the process exits. There is no time-of-check/time-of-use window between
    verification and load. The boot-time sweep of staging left by a **crashed** prior process is
    **unix-only**: it decides a prior pid is dead with `kill(pid, 0)`, and on Windows that liveness
    test is not implemented and reports every pid as alive, so the sweep removes nothing. A Windows
@@ -624,7 +623,7 @@ get code executed, and a compromised or replayed plugin must not load.
    Staging directories left at the top of the temp directory by a pre-1.6.0 busbar are not swept;
    the OS temp cleaner reaps them, or remove `$TMPDIR/busbar-plugins-*` by hand.
 7. **The engine stays memory-safe.** The engine crate compiles under `forbid(unsafe_code)`; the
-   FFI is confined to `busbar-ffi` and `busbar-plugin-loader`. The loader also bounds every plugin response (a buggy or
+   FFI is confined to `busbar-ffi`. The loader also bounds every plugin response (a buggy or
    hostile plugin cannot force an unbounded allocation).
 8. **Pre-flight checks are shared; boot checks the effective runtime configuration.**
    `busbar --validate` reads the selected config and provider catalog, checks consistency and
