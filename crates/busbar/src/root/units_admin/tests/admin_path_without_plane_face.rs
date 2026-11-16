@@ -1591,14 +1591,11 @@ async fn over_as_json(
     )
 }
 
-fn the_q71_verbs() -> [(&'static str, &'static str, String); 4] {
+/// The Q71 verbs still served. `/plane-facts` was the fourth: ADMIN-API-1.6 MR5 deletes it (§0.2), its
+/// body now being `runtime.plane.facts` on the plane instance's describe.
+fn the_q71_verbs() -> [(&'static str, &'static str, String); 3] {
     [
         ("GET", "/api/v1/admin/verify", String::new()),
-        (
-            "GET",
-            "/api/v1/admin/plane-facts?plane=example",
-            String::new(),
-        ),
         (
             "POST",
             "/api/v1/admin/plane-record-write",
@@ -1625,6 +1622,8 @@ async fn the_four_q71_verbs_are_served_and_refuse_by_name() {
             "findings": [], "identity_holds": true, "ok": true, "since": null})
     );
 
+    // ADMIN-API-1.6 §0.2: `/plane-facts` is deleted in MR5; the facts are the plane instance's
+    // `runtime.plane.facts`.
     let (status, body) = over_as(
         &node,
         "GET",
@@ -1633,32 +1632,9 @@ async fn the_four_q71_verbs_are_served_and_refuse_by_name() {
         op,
     )
     .await;
-    assert_eq!(status, 200, "plane_facts is served: {body}");
-    let facts: serde_json::Value = serde_json::from_str(&body).expect("JSON");
-    assert_eq!(facts["plane"], "example");
-    assert_eq!(facts["config_section"], "examples");
-    assert_eq!(
-        facts["billable_classes"],
-        serde_json::json!([{"class": "calls", "family": "count"}])
-    );
-    assert_eq!(facts["fee_units"], serde_json::json!(["per_request"]));
-    assert_eq!(facts["record_kinds"], serde_json::json!(["note"]));
-    assert_eq!(
-        over_as(&node, "GET", "/api/v1/admin/plane-facts?plane=nope", "", op).await,
-        (
-            404,
-            r#"{"error":{"code":"not_found","message":"plane `nope` not found"}}"#.to_string()
-        )
-    );
-    assert_eq!(
-        over_as(&node, "GET", "/api/v1/admin/plane-facts", "", op).await,
-        (
-            400,
-            r#"{"error":{"code":"invalid_request","message":"plane is required"}}"#.to_string()
-        )
-    );
+    assert_eq!(status, 404, "plane_facts is gone: {body}");
 
-    let (_, _, write) = the_q71_verbs()[2].clone();
+    let (_, _, write) = the_q71_verbs()[1].clone();
     let (status, body) = over_as(
         &node,
         "POST",
@@ -1742,7 +1718,7 @@ async fn the_four_q71_verbs_are_served_and_refuse_by_name() {
         "a refusal writes nothing"
     );
 
-    let (_, _, commit) = the_q71_verbs()[3].clone();
+    let (_, _, commit) = the_q71_verbs()[2].clone();
     let (status, body) = over_as(&node, "POST", "/api/v1/admin/commit-upgrade", &commit, op).await;
     assert_eq!(status, 200, "commit_upgrade is served: {body}");
     let committed: serde_json::Value = serde_json::from_str(&body).expect("JSON");
@@ -1804,7 +1780,7 @@ async fn the_four_q71_verbs_refuse_an_unauthorized_caller_by_text() {
     }
 
     let (plain, _) = a_q71_node(a_door_that_identifies_the_operator()).await;
-    let (_, _, commit) = the_q71_verbs()[3].clone();
+    let (_, _, commit) = the_q71_verbs()[2].clone();
     assert_ne!(
         over_as(
             &plain,
@@ -1847,7 +1823,7 @@ async fn the_q71_writes_replay_under_an_idempotency_key() {
     const MISMATCH: &str = r#"{"error":{"code":"conflict","message":"this Idempotency-Key was already used with a different request body"}}"#;
     let (node, kept) = a_q71_node(a_door_that_identifies_the_operator()).await;
 
-    let (_, _, write) = the_q71_verbs()[2].clone();
+    let (_, _, write) = the_q71_verbs()[1].clone();
     let path = "/api/v1/admin/plane-record-write";
     let first = over_with_key(&node, path, &write, "k-write").await;
     assert_eq!(first.0, 200, "the first call writes: {}", first.1);
@@ -1879,7 +1855,7 @@ async fn the_q71_writes_replay_under_an_idempotency_key() {
         "a different key runs"
     );
 
-    let (_, _, commit) = the_q71_verbs()[3].clone();
+    let (_, _, commit) = the_q71_verbs()[2].clone();
     let path = "/api/v1/admin/commit-upgrade";
     let first = over_with_key(&node, path, &commit, "k-commit").await;
     assert_eq!(first.0, 200, "the first commit seals: {}", first.1);

@@ -323,10 +323,11 @@ fn a_provider_key_never_appears_in_logs_errors_or_stats() {
     surfaces.push(("GET /metrics".into(), scrape.0, scrape.1, scrape.2));
     for path in [
         "/api/v1/admin/info",
-        "/api/v1/admin/pools?detail=true",
-        "/api/v1/admin/pools/everyone",
-        "/api/v1/admin/models",
-        "/api/v1/admin/providers",
+        // ADMIN-API-1.6 §0.2 (CON-6): the topology reads are the /kinds reads.
+        "/api/v1/admin/kinds/core/instances/routing",
+        "/api/v1/admin/kinds/core/instances/routing/views/pools",
+        "/api/v1/admin/kinds/core/instances/routing/views/pools?filter=pool:everyone",
+        "/api/v1/admin/kinds/transport/instances",
         "/api/v1/admin/config",
         "/api/v1/admin/config/settings",
         "/api/v1/admin/auth",

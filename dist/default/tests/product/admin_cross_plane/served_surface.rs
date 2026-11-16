@@ -76,7 +76,24 @@ fn unbound_declared_operations() -> BTreeSet<Op> {
         .collect()
 }
 
-const REMOVED_OPERATIONS: [(&str, &str); 9] = [
+const REMOVED_OPERATIONS: [(&str, &str); 24] = [
+    // ADMIN-API-1.6 §0.2 (CON-6): the 1.5.5 per-kind paths, and the pre-release `/plane-facts`,
+    // removed in favour of `/kinds`.
+    ("GET", "/api/v1/admin/models"),
+    ("GET", "/api/v1/admin/providers"),
+    ("GET", "/api/v1/admin/pools"),
+    ("GET", "/api/v1/admin/pools/{name}"),
+    ("GET", "/api/v1/admin/export"),
+    ("GET", "/api/v1/admin/export/{name}"),
+    ("PUT", "/api/v1/admin/export/{name}"),
+    ("DELETE", "/api/v1/admin/export/{name}"),
+    ("PATCH", "/api/v1/admin/export/{name}/settings"),
+    ("GET", "/api/v1/admin/identity-providers"),
+    ("GET", "/api/v1/admin/identity-providers/{name}"),
+    ("PUT", "/api/v1/admin/identity-providers/{name}"),
+    ("DELETE", "/api/v1/admin/identity-providers/{name}"),
+    ("PATCH", "/api/v1/admin/identity-providers/{name}/settings"),
+    ("GET", "/api/v1/admin/plane-facts"),
     ("POST", "/api/v1/admin/operator-key"),
     ("POST", "/api/v1/admin/escrow"),
     ("POST", "/api/v1/admin/dual-control"),
@@ -112,7 +129,10 @@ fn served_admin_operations() -> BTreeMap<Op, Source> {
         };
         out.insert(op, source);
     }
-    for section in NamedMapSection::sections() {
+    for section in NamedMapSection::sections()
+        .into_iter()
+        .filter(|s| matches!(s, NamedMapSection::Plane(_)))
+    {
         let source = match section {
             NamedMapSection::Plane(key) => Source::Plane(key),
             _ => Source::Router,
@@ -848,14 +868,17 @@ async fn named_map_section_routes_answer_wrong_method_unknown_name_and_bad_body(
     use reqwest::Method as M;
     let (root, item) = (abs("/export"), abs("/export/served-surface-probe"));
     let settings = format!("{item}/settings");
+    // ADMIN-API-1.6 §0.2 (CON-6): `/export` is removed in 1.6.0 (its instances read at
+    // `/kinds/export/instances`), so every method on every one of its routes is the unmounted 404.
+    // The named-map CRUD serves the plane-owned sections only.
     let cases = [
-        (M::GET, &root, "", 200, "list"),
-        (M::POST, &root, "", 405, "wrong method on the root"),
-        (M::POST, &item, "", 405, "wrong method on one name"),
-        (M::PUT, &settings, "", 405, "wrong method on settings"),
+        (M::GET, &root, "", 404, "list"),
+        (M::POST, &root, "", 404, "wrong method on the root"),
+        (M::POST, &item, "", 404, "wrong method on one name"),
+        (M::PUT, &settings, "", 404, "wrong method on settings"),
         (M::GET, &item, "", 404, "unknown name"),
-        (M::PUT, &item, "{", 400, "malformed definition body"),
-        (M::PATCH, &settings, "{", 400, "malformed settings body"),
+        (M::PUT, &item, "{", 404, "malformed definition body"),
+        (M::PATCH, &settings, "{", 404, "malformed settings body"),
     ];
     for (method, path, body, want, what) in cases {
         assert_eq!(ask(method, path, body).await, want, "{what}");

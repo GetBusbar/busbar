@@ -4,6 +4,58 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
+use busbar_contract::json::{JsonContainerTrait, JsonValueTrait, Map, Value};
+
+/// GET one admin path as the operator, parsed.
+async fn read(client: &reqwest::Client, addr: std::net::SocketAddr, path: &str) -> Value {
+    let bytes = client
+        .get(format!("http://{addr}/api/v1/admin{path}"))
+        .header("x-admin-token", "admintok")
+        .send()
+        .await
+        .unwrap()
+        .bytes()
+        .await
+        .unwrap();
+    busbar_contract::json::parse_value(&bytes).unwrap()
+}
+
+/// The `core/routing` view `pools` (ADMIN-API-1.6 §5.5; `/pools` is removed, §0.2): each
+/// positional row keyed back by its field names. `pool` narrows to one pool.
+async fn pool_rows(
+    client: &reqwest::Client,
+    addr: std::net::SocketAddr,
+    pool: Option<&str>,
+) -> Vec<Value> {
+    let filter = pool
+        .map(|p| format!("?filter=pool:{p}"))
+        .unwrap_or_default();
+    let view = read(
+        client,
+        addr,
+        &format!("/kinds/core/instances/routing/views/pools{filter}"),
+    )
+    .await;
+    let names: Vec<String> = view["fields"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["name"].as_str().unwrap().to_owned())
+        .collect();
+    view["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| {
+            let mut keyed = Map::new();
+            for (name, cell) in names.iter().zip(row.as_array().unwrap().iter()) {
+                keyed.insert(name, cell.clone());
+            }
+            Value::from(keyed)
+        })
+        .collect()
+}
+
 #[tokio::test]
 async fn test_admin_v1_topology_reads_pools_models_providers() {
     const CHILD: &str = "BUSBAR_ADMIN_BOOT_21F2E6F67B18";
@@ -104,47 +156,32 @@ async fn test_admin_v1_topology_reads_pools_models_providers() {
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
     let client = reqwest::Client::new();
 
-    let get = |path: String| {
-        let url = format!("http://{addr}{path}");
-        let client = client.clone();
-        async move {
-            client
-                .get(url)
-                .header("x-admin-token", "admintok")
-                .send()
-                .await
-                .unwrap()
-                .json::<serde_json::Value>()
-                .await
-                .unwrap()
-        }
-    };
-
-    let pools = get("/api/v1/admin/pools".into()).await;
-    let items = pools["items"].as_array().unwrap();
-    let mypool = items
-        .iter()
-        .find(|p| p["name"] == "mypool")
-        .expect("mypool present");
-    let members = mypool["members"].as_array().unwrap();
+    // `/pools`, `/models` and `/providers` are removed in 1.6.0 (ADMIN-API-1.6 §0.2, CON-6): the
+    // topology is core/routing's configuration.
+    let routing = read(&client, addr, "/kinds/core/instances/routing").await;
+    let config = &routing["config"];
+    let members = config["pools"]["definitions"]["mypool"]["members"]
+        .as_array()
+        .unwrap_or_else(|| panic!("mypool present: {routing}"));
     assert_eq!(members.len(), 2, "pool has two members");
     let weight_a = members.iter().find(|m| m["model"] == "model-a").unwrap()["weight"].as_u64();
     assert_eq!(weight_a, Some(3), "model-a weight projected");
 
-    let models = get("/api/v1/admin/models".into()).await;
-    let m_items = models["items"].as_array().unwrap();
-    assert!(m_items
-        .iter()
-        .any(|m| m["model"] == "model-a" && m["provider"] == "prov-x"));
-    assert!(m_items
-        .iter()
-        .any(|m| m["model"] == "model-b" && m["provider"] == "prov-y"));
+    assert_eq!(config["models"]["model-a"]["provider"], "prov-x");
+    assert_eq!(config["models"]["model-b"]["provider"], "prov-y");
 
-    let providers = get("/api/v1/admin/providers".into()).await;
-    let p_items = providers["items"].as_array().unwrap();
-    let px = p_items.iter().find(|p| p["provider"] == "prov-x").unwrap();
-    assert_eq!(px["model_count"].as_u64(), Some(1));
-    assert!(p_items.iter().any(|p| p["provider"] == "prov-y"));
+    for provider in ["prov-x", "prov-y"] {
+        assert!(
+            config["providers"].get(provider).is_some(),
+            "{provider} is configured: {routing}"
+        );
+    }
+    let rows = pool_rows(&client, addr, None).await;
+    assert_eq!(
+        rows.iter().filter(|r| r["pool"] == "mypool").count(),
+        2,
+        "the live view carries one row per pool member"
+    );
 
     handle.abort();
     println!("{WITNESS}");
@@ -240,19 +277,12 @@ async fn test_admin_v1_pool_detail_live_status() {
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
     let client = reqwest::Client::new();
 
-    let ok: serde_json::Value = client
-        .get(format!("http://{addr}/api/v1/admin/pools/mypool"))
-        .header("x-admin-token", "admintok")
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    assert_eq!(ok["name"], "mypool");
-    let members = ok["members"].as_array().unwrap();
-    assert_eq!(members.len(), 1);
-    let m = &members[0];
+    // `/pools/{name}` and `/pools?detail=true` are removed in 1.6.0 (ADMIN-API-1.6 §0.2): the live
+    // per-member status is the core/routing view `pools`, one row per member.
+    let rows = pool_rows(&client, addr, Some("mypool")).await;
+    assert_eq!(rows.len(), 1);
+    let m = &rows[0];
+    assert_eq!(m["pool"], "mypool");
     assert_eq!(m["model"], "m1");
     assert_eq!(m["weight"], 5);
 
@@ -266,50 +296,18 @@ async fn test_admin_v1_pool_detail_live_status() {
     assert_eq!(m["trip_count"], 0);
     assert!(m["last_trip_at"].is_null());
 
-    let detailed: serde_json::Value = client
-        .get(format!("http://{addr}/api/v1/admin/pools?detail=true"))
-        .header("x-admin-token", "admintok")
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let items = detailed["items"].as_array().unwrap();
-    assert_eq!(items.len(), 1);
-    assert_eq!(items[0]["name"], "mypool");
+    let every = pool_rows(&client, addr, None).await;
+    assert_eq!(every.len(), 1, "the unfiltered view carries every member");
+    assert_eq!(every[0]["pool"], "mypool");
     assert_eq!(
-        items[0]["members"][0]["usable"], true,
-        "detail rows carry the live status inline: {detailed}"
+        every[0]["usable"], true,
+        "rows carry the live status inline"
     );
-    assert_eq!(items[0]["members"][0]["trip_count"], 0);
+    assert_eq!(every[0]["trip_count"], 0);
 
-    let plain_via_false = client
-        .get(format!("http://{addr}/api/v1/admin/pools?detail=false"))
-        .header("x-admin-token", "admintok")
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(plain_via_false.status(), 200);
-    let plain_via_false: serde_json::Value = plain_via_false.json().await.unwrap();
-    let plain_items = plain_via_false["items"].as_array().unwrap();
-    assert_eq!(plain_items.len(), 1);
-    assert_eq!(plain_items[0]["name"], "mypool");
     assert!(
-        plain_items[0]["members"][0].get("usable").is_none(),
-        "detail=false must NOT carry the live-status row shape: {plain_via_false}"
-    );
-
-    let missing = client
-        .get(format!("http://{addr}/api/v1/admin/pools/nope"))
-        .header("x-admin-token", "admintok")
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(missing.status().as_u16(), 404);
-    assert_eq!(
-        missing.json::<serde_json::Value>().await.unwrap()["error"]["code"],
-        "not_found"
+        pool_rows(&client, addr, Some("nope")).await.is_empty(),
+        "an unknown pool has no rows"
     );
 
     handle.abort();
@@ -423,16 +421,9 @@ async fn test_admin_v1_pool_detail_reports_the_per_pool_breaker_cell() {
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
     let client = reqwest::Client::new();
 
-    let fast: serde_json::Value = client
-        .get(format!("http://{addr}/api/v1/admin/pools/fast"))
-        .header("x-admin-token", "admintok")
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let fm = &fast["members"][0];
+    let fast = pool_rows(&client, addr, Some("fast")).await;
+    let fm = &fast[0];
+    let fast = Value::from(fast.clone());
     assert_eq!(
         fm["usable"], false,
         "the tripped pool's OWN cell must report unusable: {fast}"
@@ -447,16 +438,9 @@ async fn test_admin_v1_pool_detail_reports_the_per_pool_breaker_cell() {
          advancing between seeding the cell and serving the request); got {remaining}: {fast}"
     );
 
-    let cheap: serde_json::Value = client
-        .get(format!("http://{addr}/api/v1/admin/pools/cheap"))
-        .header("x-admin-token", "admintok")
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let cm = &cheap["members"][0];
+    let cheap = pool_rows(&client, addr, Some("cheap")).await;
+    let cm = &cheap[0];
+    let cheap = Value::from(cheap.clone());
     assert_eq!(
         cm["usable"], true,
         "an untouched pool's own cell must still be usable, not the any-cell aggregate: {cheap}"

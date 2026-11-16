@@ -166,19 +166,3 @@ async fn an_export_removal_pending_restart_returns_the_existing_metadata_pair() 
         .unwrap()
         .is_empty());
 }
-
-#[cfg(feature = "openapi-schema")]
-#[test]
-fn export_removal_schema_describes_both_live_and_restart_pending_answers() {
-    let ops = openapi_paths();
-    let (_, route) = ops
-        .iter()
-        .find(|(path, _)| path.ends_with("/export/{name}"))
-        .unwrap();
-    let responses = &route["delete"][super::super::RESPONSES_KEY];
-    assert!(responses.get("204").is_some());
-    assert!(responses["200"]["description"]
-        .as_str()
-        .unwrap()
-        .contains("reload_to_apply"));
-}

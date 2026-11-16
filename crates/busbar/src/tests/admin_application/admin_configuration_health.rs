@@ -4,6 +4,55 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
+use busbar_contract::json::{JsonContainerTrait, JsonValueTrait, Map, Value};
+
+/// GET one admin path as the operator, parsed.
+async fn read(client: &reqwest::Client, addr: std::net::SocketAddr, path: &str) -> Value {
+    let bytes = client
+        .get(format!("http://{addr}/api/v1/admin{path}"))
+        .header("x-admin-token", "admintok")
+        .send()
+        .await
+        .unwrap()
+        .bytes()
+        .await
+        .unwrap();
+    busbar_contract::json::parse_value(&bytes).unwrap()
+}
+
+/// One pool's live members: the `core/routing` view `pools` (ADMIN-API-1.6 §5.5; `/pools/{name}` is
+/// removed, §0.2), each positional row keyed back by its field names.
+async fn pool_members(
+    client: &reqwest::Client,
+    addr: std::net::SocketAddr,
+    pool: &str,
+) -> Vec<Value> {
+    let view = read(
+        client,
+        addr,
+        &format!("/kinds/core/instances/routing/views/pools?filter=pool:{pool}"),
+    )
+    .await;
+    let names: Vec<String> = view["fields"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["name"].as_str().unwrap().to_owned())
+        .collect();
+    view["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| {
+            let mut keyed = Map::new();
+            for (name, cell) in names.iter().zip(row.as_array().unwrap().iter()) {
+                keyed.insert(name, cell.clone());
+            }
+            Value::from(keyed)
+        })
+        .collect()
+}
+
 #[tokio::test]
 async fn test_admin_v1_config_apply_body_swaps_and_carries_health() {
     const CHILD: &str = "BUSBAR_ADMIN_BOOT_6DF4B04AB8AF";
@@ -144,15 +193,7 @@ async fn test_admin_v1_config_apply_body_swaps_and_carries_health() {
         .unwrap();
     assert_eq!(resp.status().as_u16(), 200, "{:?}", resp.text().await);
 
-    let pool: serde_json::Value =
-        admin(client.get(format!("http://{addr}/api/v1/admin/pools/apply-pool")))
-            .send()
-            .await
-            .unwrap()
-            .json()
-            .await
-            .unwrap();
-    let members = pool["members"].as_array().unwrap();
+    let members = pool_members(&client, addr, "apply-pool").await;
     let m0 = members.iter().find(|m| m["model"] == "m0").unwrap();
     let ma = members.iter().find(|m| m["model"] == "m-applied").unwrap();
     assert_eq!(m0["usable"], false, "carried trip: {m0}");
@@ -312,33 +353,20 @@ async fn test_admin_v1_config_reload_swaps_disk_truth_and_carries_health() {
         .await
         .unwrap();
     assert_eq!(resp.status().as_u16(), 200, "{:?}", resp.text().await);
-    let models: serde_json::Value = admin(client.get(format!("http://{addr}/api/v1/admin/models")))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let names: Vec<&str> = models["items"]
-        .as_array()
+    // `/models` is removed in 1.6.0 (ADMIN-API-1.6 §0.2): the models are core/routing's `config.models`.
+    let routing = read(&client, addr, "/kinds/core/instances/routing").await;
+    let names: Vec<&str> = routing["config"]["models"]
+        .as_object()
         .unwrap()
         .iter()
-        .map(|m| m["model"].as_str().unwrap())
+        .map(|(name, _)| name)
         .collect();
     assert!(
         names.contains(&"m-new"),
         "the reloaded topology is live: {names:?}"
     );
 
-    let pool: serde_json::Value =
-        admin(client.get(format!("http://{addr}/api/v1/admin/pools/reload-pool")))
-            .send()
-            .await
-            .unwrap()
-            .json()
-            .await
-            .unwrap();
-    let members = pool["members"].as_array().unwrap();
+    let members = pool_members(&client, addr, "reload-pool").await;
     let m0 = members
         .iter()
         .find(|m| m["model"] == "m0")
