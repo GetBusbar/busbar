@@ -142,6 +142,32 @@ mod two_replicas {
         holds
     }
 
+    #[tokio::test(start_paused = true)]
+    async fn candidate_directory_does_not_refresh_before_publication() {
+        let store = crate::real_store::core().await;
+        let spec = ProvisioningInstance {
+            plugin: "scim".into(),
+            name: "scim".into(),
+            cfg: cfg(),
+            link_auth_ids: vec![INBOUND],
+        };
+        let (_directory, holds_index, workers) =
+            KernelDirectory::prepare(Arc::clone(&store), Arc::new(LogEvents), vec![spec])
+                .await
+                .expect("prepare candidate");
+        commit_held(&store, "ann").await;
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        assert!(!holds(&holds_index, "ann"), "unpublished candidate must not run refresh workers");
+        workers.start();
+        for _ in 0..10 {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            if holds(&holds_index, "ann") {
+                return;
+            }
+        }
+        panic!("published directory did not refresh");
+    }
+
     fn holds(h: &super::super::Holds, principal: &str) -> bool {
         h.for_inbound(INBOUND)
             .is_some_and(|sets| sets.iter().any(|s| s.holds(principal)))
