@@ -1,8 +1,8 @@
 # Plugins
 
 Busbar ships as one small self-contained binary, no runtime, no interpreter, no sidecar (see the
-image-size badge on the repo), with nothing compiled in that you did not ask for: no SQLite built in
-(add it as a signed plugin), no Postgres, no Valkey. The default deploy needs no plugins at all.
+image-size badge on the repo), with nothing compiled in that you did not ask for: no database drivers built in
+(add the store you need as a signed plugin). The default deploy needs no plugins at all.
 When you do need more, a durable store, a secret backend, auth or hook modules, you add exactly that
 capability as a signed plugin tarball dropped into a directory. Lightweight by default, extend when
 needed.
@@ -20,12 +20,12 @@ passed as bytes in memory. There is no JSON call contract and no separate "hot" 
 more. **A compiled-in plugin is a dropped-in plugin:** a compiled-in plugin exports the same door and is
 called through the same table, and the same checks run on both, so a build that links a plugin in and
 a tarball that is dropped into the plugins directory are indistinguishable to Busbar. The `memory`
-store is such a plugin, compiled in. The engine crate keeps `#![forbid(unsafe_code)]` with every FFI
-`unsafe` isolated in `busbar-plugin-loader`. For plugin authors, [Rebuilding a 1.5.5 plugin against the
+store is such a plugin, compiled in. The engine crate keeps `#![forbid(unsafe_code)]`; the FFI `unsafe` is isolated in
+`busbar-ffi` and `busbar-plugin-loader`. For plugin authors, [Rebuilding a plugin against the
 1.6.0 SDK](plugin-sdk-migration-1.6.md) is the build guide.
 
-**A plugin built for 1.5.5 does not load.** The published 1.5.5 plugins spoke JSON through six C
-symbols; boot refuses one with a message naming the rebuild against the 1.6.0 SDK. See [Plugins and
+**A plugin built against an earlier SDK does not load.** Boot refuses it with a message naming
+the rebuild against the 1.6.0 SDK. See [Plugins and
 1.6.0](#plugins-and-160).
 
 - [What makes it a plugin](#what-makes-it-a-plugin)
@@ -52,8 +52,8 @@ The rule applies on two axes, against a config that references zero plugins: onl
 inline signed-key verifier), `weighted` (the inline SWRR floor), and `store.module: memory`, which is
 the compiled-in store plugin, not a dropped-in one:
 
-- **compiled out**: built `--no-default-features`, so the built-in plugin features (for example
-  `auth-admin-tokens` and `hooks-ranking`) are not in the binary at all;
+- **compiled out**: built `--no-default-features`, so the built-in plugin features are not in
+  the binary at all;
 - **not installed**: built with default features, but `plugins.dir` holds zero artifacts, so core
   cannot assume some `dlopen`ed plugin is present on disk. The first axis cannot cover this: a
   compiled-in feature is not a dlopened artifact.
@@ -63,8 +63,8 @@ upstream: removing the built-in plugins must change nothing core serves.
 
 What is *not* a violation: a config that names a plugin the binary does not have. That is a loud,
 fail-closed boot error, and it is the compliance-by-compilation guarantee working as designed.
-`auth.admin_auth: [admin-tokens]` on a `--no-default-features` binary refuses to boot rather than
-silently disabling the admin API.
+An `auth.admin_auth` entry naming a built-in auth plugin on a `--no-default-features` binary
+refuses to boot rather than silently disabling the admin API.
 
 ## The artifact
 
@@ -75,15 +75,15 @@ One plugin is one `.tar.gz` per (plugin, target) containing exactly two members:
 
 ```json
 {
-  "name": "busbar-store-valkey",
-  "alias": "valkey",
+  "name": "acme-store-example",
+  "alias": "example",
   "kind": "store",
   "version": "1.6.0",
-  "publisher": "busbar",
+  "publisher": "acme",
   "abi_version": 3,
   "sha256": "<64-hex sha256 of the cdylib bytes>",
   "signature": "<128-hex ed25519 signature over the canonical manifest>",
-  "description": "busbar valkey store plugin",
+  "description": "example store plugin",
   "homepage": "",
   "license": "Apache-2.0"
 }
@@ -124,8 +124,8 @@ you can name the tarball anything.
 > product (busbar-ui) does exactly this, and its own test fixtures deliberately include an `&`,
 > `<`, and `>` in a URL field to keep the case covered.
 
-`name` is the canonical identity (`[a-z0-9-]+`, e.g. `busbar-store-valkey`); `alias` is the short
-config name (`valkey`). `store.module:` accepts either. `kind` is one of the seven plugin kinds:
+`name` is the canonical identity (`[a-z0-9-]+`, e.g. `acme-store-example`); `alias` is the short
+config name (`example`). `store.module:` accepts either. `kind` is one of the seven plugin kinds:
 `store`, `secret`, `auth`, `hook`, `export`, `plane` or `transport`. `version` is strict semver.
 `abi_version` declares which version of its kind's memory ABI the cdylib was built against. It is
 set **per kind**: store `3`, secret `2`, auth `3`, hook `2`, export `3`, plane `1`, transport `1`
@@ -135,15 +135,12 @@ than mis-called. The mechanism has its own version too, stamped in every door.
 
 ### Plugins and 1.6.0
 
-**A published 1.5.5 JSON-contract plugin no longer loads** (an owner-signed change from 1.5.5; spec
-section 11.8). That includes the four published store plugins (`busbar-store-sqlite`, `-postgres`,
-`-mysql`, `-valkey`; all `abi_version: 2`). Boot refuses the plugin with a message naming the rebuild
-against the 1.6.0 SDK, and `busbar --validate` reports it without opening the library. Every
-first-party plugin has been rewritten and re-released; a third-party plugin is rebuilt against the
-1.6.0 SDK. Install the rebuilt releases before upgrading, and raise any `plugins.min_versions` floor
-to match. Your data carries over: a rebuilt store plugin opens its own database and upgrades it with
-its own `migrate()`. Build steps are in [Rebuilding a 1.5.5 plugin against the 1.6.0
-SDK](plugin-sdk-migration-1.6.md).
+**A plugin built against an earlier SDK no longer loads.** Boot refuses it with a message naming
+the rebuild against the 1.6.0 SDK, and `busbar --validate` reports it without opening the library.
+A third-party plugin is rebuilt against the 1.6.0 SDK; install rebuilt releases before upgrading,
+and raise any `plugins.min_versions` floor to match. Your data carries over: a rebuilt store plugin
+opens its own database and upgrades it with its own `migrate()`. Build steps are in [Rebuilding a
+plugin against the 1.6.0 SDK](plugin-sdk-migration-1.6.md).
 
 ## Enabling plugins
 
@@ -163,12 +160,12 @@ plugins:
     acme-store-dynamo: "2.0.0"
 
 store:
-  module: valkey          # alias or canonical name, resolved against the signed manifests
-  settings: { url: "rediss://:password@valkey.example.com:6380/0" }
+  module: <store-plugin>  # alias or canonical name, resolved against the signed manifests
+  settings: { }           # the plugin's own settings; see the plugin's documentation
 ```
 
 With `enabled: false` (or the block absent) a tarball in the directory is inert: Busbar does not
-read it, and referencing a plugin store (`store.module: valkey`) fails boot with an error naming
+read it, and referencing a plugin store (`store.module: <store-plugin>`) fails boot with an error naming
 `plugins.enabled`. See [configuration.md](configuration.md#plugins) for the field reference.
 
 ## Building a store plugin
@@ -181,8 +178,7 @@ startup migration.
 
 Start with the fleet generator's `plugin new store <name>`. The canonical scaffold supplies the typed
 kind, lifecycle, narrow ABI entry, export wrapper and linked/dropped conformance tests. Keep
-runtime modules private. The maintained `busbar-store-memory` repository is a worked example.
-See [SDK migration and authoring](plugin-sdk-migration-1.6.md#one-entry-seven-kinds).
+runtime modules private. See [SDK migration and authoring](plugin-sdk-migration-1.6.md#one-entry-seven-kinds).
 
 Build per target:
 
@@ -196,7 +192,7 @@ cargo build --release -p my-store-plugin --target aarch64-unknown-linux-gnu
 Every secret value in the config (provider `api_key`, `auth.signing_key`, the admin token, each
 TLS `cert`/`key`/`client_ca`) is a secret **reference**, not a literal. Core declares no secret
 source of its own: every reference resolves through an admitted `kind: secret` plugin, whether it
-reads an environment variable, a file, a vault or a cloud secret manager. A reference is written in
+reads an environment variable, a file, a secret manager. A reference is written in
 one of two forms: the canonical `{ module: <secret-plugin>, settings: {...} }`, or a shorthand
 (such as `{ env: VAR }` or `{ file: /path }`) that an admitted `kind: secret` plugin declares. A
 shorthand no admitted plugin declares is refused, naming the word. `busbar --list-plugins` shows
@@ -236,42 +232,23 @@ configure the backend. Use the shared credential SDK for guarded response bodies
 values and opaque held results. Readable secret bytes must not escape into logs, persisted
 configuration or unrelated plugin state. An unresolved reference fails boot or config apply.
 
-A complete, real reference implementation is the HashiCorp Vault plugin
-([GetBusbar/busbar-secret-vault](https://github.com/GetBusbar/busbar-secret-vault)): the Vault KV v2 client
-crate beside its thin ABI adapter crate.
-
-Reference it from any secret field, for example a provider credential pulled from a vault:
+Reference it from any secret field, for example a provider credential pulled from a secret backend:
 
 ```yaml
 providers:
   openai:
-    api_key: { module: acme-vault, settings: { path: "kv/data/openai#api_key" } }
+    api_key: { module: <secret-plugin>, settings: { ... } }   # per-reference settings are defined by the plugin
 ```
 
-The MODULE's own open-time config (the vault address + auth) is delivered by a top-level `secrets:`
+The MODULE's own open-time config (backend address and credentials) is delivered by a top-level `secrets:`
 entry, keyed by the module name/alias, exactly as `store.settings` carries a store plugin's `open()`
 config:
 
 ```yaml
 secrets:
-  acme-vault:
-    settings: { addr: "https://vault.internal:8200", token: { env: VAULT_TOKEN } }
+  <secret-plugin>:
+    settings: { }   # the plugin's own open-time settings; see the plugin's documentation
 ```
-
-The first-party **`vault`** module (`busbar-secret-vault-plugin`, released from
-[`GetBusbar/busbar-secret-vault`](https://github.com/GetBusbar/busbar-secret-vault)) is exactly such a
-plugin: the first-party HashiCorp Vault KV v2 backend (a same-repo `busbar-secret-vault` crate for
-the logic, `busbar-secret-vault-plugin` for the thin cdylib adapter, mirroring the `busbar-auth-oidc`
-/ `busbar-auth-oidc-plugin` split). Open-time config is
-`{ addr, token, ca_cert_pem?, timeout_secs? }`; auth is a pre-obtained `X-Vault-Token` only, Vault's
-simplest and most universal scheme. AppRole/Kubernetes login flows are a natural future extension of
-`busbar-secret-vault` itself. Per-reference `settings` accepts the `#field` suffix shown above
-(`path: "kv/data/openai#api_key"`) OR the equivalent two-key form `{ path: "kv/data/openai", field:
-"api_key" }` for callers that would rather not embed `#` in one string; `field` wins if both are
-given. `path` is the full Vault v1 API path INCLUDING the KV v2 `data/` segment (i.e. exactly what
-`vault kv get`/the Vault UI show), read via `GET {addr}/v1/{path}` with `X-Vault-Token: <token>`. A
-404 (no secret there), a 403 (bad token / missing policy), and a 5xx (Vault itself unhealthy) each
-surface as a distinct, specific error, never collapsed into a generic failure.
 
 > **Not the built-in `keys` identity provider.** A `kind: secret` plugin resolves *config secret
 > references* (fetching key material from a backend). The built-in `keys` module in `auth.chain`
@@ -292,35 +269,24 @@ credential authority. See [SDK authoring](plugin-sdk-migration-1.6.md).
 An identity provider returns **identity only**: who the caller is (`id` + `roles`). Policy (which
 pools, which group's limits, which admin scope) is resolved by Busbar from
 `auth.role_bindings.<provider>` and capped by that provider's `max_admin_scope`, never asserted by
-the plugin. As of 1.5.3 `<provider>` is the NAME you chose in the top-level `identity-providers:`
+the plugin. `<provider>` is the NAME you chose in the top-level `identity-providers:`
 map (the definition key you also write in `auth.chain:`), which is what lets one plugin back two
 providers with independent bindings and ceilings.
 
 Like every configured plugin, an auth plugin that cannot load is a hard error and never silently
 degrades. See [Fail-closed loading](#fail-closed-loading), below.
 
-The first-party **`oidc`** module (`busbar-auth-oidc`, released from `GetBusbar/busbar-auth-oidc`)
-is exactly such a plugin. See
-[configuration.md](configuration.md#identity-provider-plugins) for the `auth.chain: [oidc]` + `settings:` recipe
-(including an Entra ID example, and the **app roles vs. security groups** gotcha that trips up most
-first-time Entra setups).
+See [configuration.md](configuration.md#identity-provider-plugins) for how an auth plugin is named in
+`auth.chain` and given `settings:`; each plugin's own documentation lists its settings.
 
-### First-party auth plugins
+### Login-capable auth plugins
 
-Three first-party login-capable `kind: auth` plugins ship for busbar, each an independently-versioned repo (the other first-party auth modules, such as `admin-tokens`, verify credentials only):
-
-| Plugin | Repo | Identity | Flow |
-|--------|------|----------|------|
-| **`oidc`** (`busbar-auth-oidc`) | `GetBusbar/busbar-auth-oidc` | `oidc:<sub>` from a verified id_token (RS256/ES256 JWKS, iss/aud/exp/nbf) | verify a held bearer, **or** browser/headless [token-exchange](token-exchange.md) |
-| **`github`** (`busbar-auth-github`) | `GetBusbar/busbar-auth-github` | `github:<login>` + `github:org/<org>` groups | OAuth authorization-code (opaque token → core-executed `/user` + `/user/orgs` hops), via the [token-exchange](token-exchange.md) `GET` browser flow |
-| **`ldap`** (`busbar-auth-ldap`) | `GetBusbar/busbar-auth-ldap` | `ldap:<dn>` + `memberOf` groups | credential form (username/password → the plugin's own LDAP/LDAPS bind), via the [token-exchange](token-exchange.md) credential flow |
-
-GitHub is **not** OIDC (its access token is opaque, so there is nothing to verify offline): identity
-comes from REST userinfo hops the core executes on the plugin's behalf. LDAP is a **credential**
-method. It renders a username/password form and binds against the directory itself. All three declare
-the auth kind's login capability (the `begin_login`/`complete_login` slots of auth ABI v3), so they
-can mint a self-serve key via `/auth/token`; a verify-only auth plugin still loads for chain use, but
-hosted login needs a plugin that declares the login capability.
+An auth plugin may declare the auth kind's login capability (the `begin_login`/`complete_login`
+slots of auth ABI v3). Such a plugin can mint a self-serve key via `/auth/token`, through the
+[token-exchange](token-exchange.md) browser or credential flow, depending on what it declares. A
+verify-only auth plugin still loads for chain use, but hosted login needs a plugin that declares
+the login capability. Which flows and identities a plugin offers is described in the plugin's own
+documentation.
 
 ## What a plugin reports back
 
@@ -336,9 +302,8 @@ consumers: the hook `cdylib` exports the one `busbar_plugin_door` symbol and the
 calls it directly. Trust is signature-based, not process-based: the manifest `kind` and the signed
 Statement are cross-checked against the door at load, and the signed `needs`
 field caps what grants the plugin may receive. For process isolation of out-of-process logic, the
-first-party `busbar-hook-webrequest` plugin forwards the decision to an HTTPS sidecar (1.5.0
-retired the standalone built-in `socket`/`webhook` transports; a hook is now always a signed
-plugin).
+a hook plugin can forward the decision to an out-of-process sidecar; a hook is always a
+signed plugin.
 
 A Rust hook implements `abi::sdk::hook::{Hook, HookOpen}` and uses `hook_door!`. It receives a
 typed projection and returns typed decisions or rewrites. The SDK's `projection_json` and
@@ -357,16 +322,8 @@ self-grant above what it declares.
 As with every plugin kind, a configured `kind: hook` module that cannot load fails closed. See
 [Fail-closed loading](#fail-closed-loading), below.
 
-**First-party hook plugins:**
-
-- **Webrequest** (`busbar-hook-webrequest`, alias `webrequest`): an HTTP forwarder, the out-of-process
-  isolation path for code you don't want in-process. Forwards each `decide`/`transform`/`notify` call
-  over HTTPS to an operator-run sidecar (any language). SSRF-guarded, signed by release CI, and
-  auto-trusted by the embedded release key; no `trust.publishers` entry is needed.
-- **Ranking** (`busbar-hook-ranking`, alias `ranking`): the built-in ordering strategies (`cheapest`,
-  `fastest`, `least_busy`, `usage`), linked into the default build.
-
-See [hooks.md](hooks.md#the-sidecar-wire-busbar-hook-webrequest) for the sidecar wire.
+Which hook plugins exist, and any out-of-process forwarding they offer, is described in each
+plugin's own documentation. See [hooks.md](hooks.md) for how hooks are wired.
 
 ## Settings schema (`settings_schema`)
 
@@ -430,7 +387,7 @@ value: busbar-ui composes one of
 ```json
 {"env": "VAR_NAME"}
 {"file": "/path/to/secret"}
-{"module": "vault", "settings": {"...": "..."}}
+{"module": "<secret-plugin>", "settings": {"...": "..."}}
 ```
 
 (the exact shapes accepted by `SecretRef`, `busbar_contract::secret_ref`), and
@@ -474,8 +431,8 @@ Whether a settings change needs a process restart to take effect is a property o
 binding lifecycle for that plugin `kind`, not something a plugin author has visibility into:
 `store`/`secret` plugins bind once at process start (every field is restart-scoped by construction);
 `hook`/`auth` plugin registries rebuild hot. The default is therefore DERIVED from `kind`, not
-plugin-declared (`export`, like any kind that is not `hook`/`auth`, falls through to the fail-safe
-`restart-required` default — see `kind_restart_default` in `busbar-plugin-loader`):
+plugin-declared (every kind other than `hook`/`auth` falls through to the fail-safe `restart-required`
+default; see `kind_restart_default` in `busbar-plugin-loader`):
 
 | kind     | default            |
 |----------|--------------------|
@@ -484,6 +441,8 @@ plugin-declared (`export`, like any kind that is not `hook`/`auth`, falls throug
 | `hook`   | hot-appliable      |
 | `auth`   | hot-appliable      |
 | `export` | restart-required   |
+| `plane`  | restart-required   |
+| `transport` | restart-required |
 
 The export row is the setting-schema default. At runtime, settings of an existing instance of the
 same module are offered through live refresh; a refused refresh retains its prior settings. Export
@@ -525,7 +484,7 @@ against the same structural validation Busbar runs at load, and writes the tarba
 development, `--allow-unsigned` (with no `BUSBAR_SIGN_KEY`) packages an unsigned tarball that
 Busbar loads only under `plugins.trust.allow_unsigned: true`.
 
-`--kind` selects the plugin kind (`store` / `secret` / `auth` / `hook` / `export`). A `kind: hook` pack adds
+`--kind` selects the plugin kind (`store` / `secret` / `auth` / `hook` / `export` / `plane` / `transport`). A `kind: hook` pack adds
 the grant-declaration flags `--needs-prompt <no|ro|rw>` and `--needs-user <no|ro>`, which stamp the
 signed manifest `needs` field. The core enforces the actual projection, so a plugin can never
 receive more than it declared.
@@ -537,20 +496,11 @@ signer, signed by one of the ROOT keys the busbar binary compiles in (`busbar-pl
 HSM, and `busbar-plugins-2026a`, a YubiKey PIV slot). A release packs every plugin unsigned;
 `busbar-plugin-pack release-manifest`, `envelope` and `seal` build the seal, and `seal` refuses any
 tarball that does not verify through the chain against the compiled-in roots. The design, formats
-and refusals are in [design/release-trust.md](design/release-trust.md). The *release* a plugin
-ships from depends on the plugin:
+and refusals are in [design/release-trust.md](design/release-trust.md).
 
-- **Store plugins** (`busbar-store-sqlite`, `busbar-store-postgres`, `busbar-store-mysql`,
-  `busbar-store-valkey`), the **auth plugin** (`busbar-auth-oidc`), and the **secret plugin**
-  (`busbar-secret-vault`) each live in their own standalone repo (`GetBusbar/busbar-store-sqlite`,
-  `GetBusbar/busbar-store-postgres`, `GetBusbar/busbar-store-mysql`, `GetBusbar/busbar-store-valkey`,
-  `GetBusbar/busbar-auth-oidc`, `GetBusbar/busbar-secret-vault`) with its own CI and its own release workflow. Download the tarball for the backend you need from *that plugin's own*
-  GitHub Release, not from busbar's.
-- **Hook plugins** (`busbar-hook-webrequest`) also live in their own repos
-  (`GetBusbar/busbar-hook-webrequest`) with their own CI and release workflow,
-  same as every other kind. Busbar's own release no longer builds or re-publishes any plugin
-  tarball, hook or otherwise: download the tarball for the plugin you need from *that plugin's own*
-  GitHub Release, not from busbar's.
+Every plugin lives in its own repository with its own CI and release workflow. Busbar's own
+release does not build or re-publish plugin tarballs: download the tarball for the plugin you
+need from *that plugin's own* release, not from busbar's.
 
 Regardless of which repo's Release page a tarball comes from, release binaries embed the matching
 public key, so every first-party plugin verifies with zero configuration. The signature is what
@@ -644,11 +594,13 @@ get code executed, and a compromised or replayed plugin must not load.
    With plugins enabled, ANY invalid artifact in the directory aborts boot with the file and the
    exact reason named. There is no partial or degraded boot.
 5. **Conflicts are hard errors.** No two loadable plugins may share a name or alias, and no alias
-   may collide with another plugin's name. You cannot run the first-party `valkey` store and a
-   third-party plugin that also claims `valkey`; boot stops and names both.
+   may collide with another plugin's name. You cannot run a first-party plugin and a
+   third-party plugin that claim the same alias; boot stops and names both.
 6. **Verified bytes are the loaded bytes.** The tarball is unpacked and verified fully in memory;
-   the manifest never touches disk. On Linux the verified library bytes go into a `memfd` and are
-   loaded from `/proc/self/fd/N`: zero disk files, no path for anyone to race or swap. On macOS
+   the manifest never touches disk. On Linux the verified library bytes go into a sealed `memfd` and are
+   loaded from `/proc/self/fd/N`: no disk file, no path for anyone to race or swap. If the memfd
+   cannot be created or loaded, busbar logs a warning and falls back to the private staging
+   directory described next. On macOS
    and Windows the verified bytes are written to a fresh file inside a per-process private
    staging directory and loaded from there. On macOS that directory is created `0700` and the file
    `0600`. **On Windows it is neither**: mode bits do not exist there, so the staging directory and
@@ -671,8 +623,8 @@ get code executed, and a compromised or replayed plugin must not load.
    never the whole temp directory, so boot time does not grow with the size of `$TMPDIR`.
    Staging directories left at the top of the temp directory by a pre-1.6.0 busbar are not swept;
    the OS temp cleaner reaps them, or remove `$TMPDIR/busbar-plugins-*` by hand.
-7. **The engine stays memory-safe.** The engine crate compiles under `forbid(unsafe_code)`; all
-   FFI lives in `busbar-plugin-loader`. The loader also bounds every plugin response (a buggy or
+7. **The engine stays memory-safe.** The engine crate compiles under `forbid(unsafe_code)`; the
+   FFI is confined to `busbar-ffi` and `busbar-plugin-loader`. The loader also bounds every plugin response (a buggy or
    hostile plugin cannot force an unbounded allocation).
 8. **Pre-flight checks are shared; boot checks the effective runtime configuration.**
    `busbar --validate` reads the selected config and provider catalog, checks consistency and
@@ -706,10 +658,10 @@ license policy does not grant a plugin access to another plugin or to core persi
 $ busbar --list-plugins
 plugins dir: plugins (plugins.enabled: true)
 FILE                               NAME                     ALIAS        KIND   VERSION   SIGNATURE                STATUS
-busbar-store-valkey-1.6.0.tar.gz   busbar-store-valkey      valkey       store  1.6.0     first-party              LOADS (store.module: valkey)
-busbar-store-sqlite-1.6.0.tar.gz   busbar-store-sqlite      sqlite       store  1.6.0     first-party              ready
+busbar-store-example-1.6.0.tar.gz  busbar-store-example     example      store  1.6.0     first-party              LOADS (store.module: example)
+busbar-store-other-1.6.0.tar.gz    busbar-store-other       other        store  1.6.0     first-party              ready
 acme-store-dynamo-1.0.0.tar.gz     acme-store-dynamo        dynamo       store  1.0.0     unknown-publisher        SKIPPED: publisher 'acme' is not in the allowlist; ...
-old-valkey.tar.gz                  busbar-store-valkey      valkey       store  1.2.0     trusted (below floor)    REJECTED: ... (anti-downgrade)
+old-example.tar.gz                 busbar-store-example     example      store  1.2.0     trusted (below floor)    REJECTED: ... (anti-downgrade)
 broken.tar.gz                      -                        -            -      -         INVALID                  INVALID: manifest.json does not parse: ...
 ```
 
