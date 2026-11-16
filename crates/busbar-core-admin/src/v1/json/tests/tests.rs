@@ -307,12 +307,9 @@ fn served_openapi_equals_committed_file() {
 #[test]
 fn restart_unreachable_is_documented_on_every_restart_scoped_route() {
     let doc = openapi_doc();
-    for (path, method) in [
-        ("/api/v1/admin/config/settings", "put"),
-        ("/api/v1/admin/export/{name}", "put"),
-        ("/api/v1/admin/export/{name}", "delete"),
-        ("/api/v1/admin/export/{name}/settings", "patch"),
-    ] {
+    // The `/export/{name}` writes left with `/export` (ADMIN-API-1.6 §0.2, CON-6): an export section
+    // is written through `/config/settings`, which carries the refusal.
+    for (path, method) in [("/api/v1/admin/config/settings", "put")] {
         let description = doc["paths"][path][method]["responses"]["409"]["description"]
             .as_str()
             .unwrap_or_else(|| panic!("{method} {path} documents a 409"));
@@ -696,34 +693,6 @@ fn openapi_existing_sdk_routes_named_mutations_include_restart_metadata() {
     {
         assert!(mutation["properties"].get(field).is_some(), "{field}");
     }
-}
-
-#[cfg(feature = "openapi-schema")]
-#[test]
-fn openapi_existing_sdk_routes_pool_list_includes_summary_and_detail() {
-    let doc = openapi_doc();
-    let response = &doc["paths"]["/api/v1/admin/pools"]["get"][OAS_OPERATION_STATUSES]["200"]
-        ["content"]["application/json"]["schema"];
-    assert_eq!(response["$ref"], "#/components/schemas/PoolListView");
-    let schemas = &doc["components"]["schemas"];
-    let branches = schemas["PoolListView"]["anyOf"]
-        .as_array()
-        .expect("inclusive union");
-    assert_eq!(branches.len(), 2);
-    for item in ["PoolView", "PoolDetailView"] {
-        let page_ref = format!("#/components/schemas/Page_{item}");
-        assert!(branches.iter().any(|branch| branch["$ref"] == page_ref));
-        assert_eq!(
-            schemas[format!("Page_{item}")]["properties"]["items"]["items"]["$ref"],
-            format!("#/components/schemas/{item}")
-        );
-    }
-    assert!(schemas["PoolMemberStatusView"]["properties"]
-        .get("usable")
-        .is_some());
-    assert!(schemas["PoolMemberView"]["properties"]
-        .get("usable")
-        .is_none());
 }
 
 #[cfg(feature = "openapi-schema")]

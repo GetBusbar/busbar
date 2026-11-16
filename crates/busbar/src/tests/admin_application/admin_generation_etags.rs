@@ -116,7 +116,14 @@ async fn serve(name: &str, require_if_match: bool) -> Served {
 async fn every_get_has_etag_and_304() {
     isolated!(CHILD, WITNESS, witness = "generation");
     let s = serve("every-get-has-etag", false).await;
-    for path in ["/info", "/pools", "/hooks", "/groups", "/config", "/auth"] {
+    for path in [
+        "/info",
+        "/kinds/core/instances",
+        "/hooks",
+        "/groups",
+        "/config",
+        "/auth",
+    ] {
         let first = s.get(path).send().await.unwrap();
         assert_eq!(first.status().as_u16(), 200, "{path}");
         let etag = first

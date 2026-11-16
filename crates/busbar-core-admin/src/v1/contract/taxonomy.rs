@@ -502,6 +502,7 @@ pub fn declared_errors(method: MethodTag, rel: &str) -> &'static [DocErr] {
             VersionConflict / StaleIfMatch,
             Conflict / RestartUnreachable,
             Conflict / OperatorFilePolicy,
+            Conflict / TrustCeilingRaise,
         ],
         (Post, "/config/validate") => {
             de![Validation / MalformedBody, Conflict / OperatorFilePolicy]
@@ -539,7 +540,18 @@ pub fn declared_errors(method: MethodTag, rel: &str) -> &'static [DocErr] {
             Conflict / ArchiveChanged,
         ],
         (Get, "/plugins") => de![Validation / MissingRequiredQuery],
-        (Get, "/pools") => de![Validation / InvalidQueryValue],
+        (Get, "/kinds") => de![Validation / InvalidQueryValue, Validation / MalformedCursor],
+        (Get, "/kinds/{kind}/instances") => de![
+            Validation / InvalidQueryValue,
+            Validation / MalformedCursor,
+            NotFound / UnknownResource,
+        ],
+        (Get, "/kinds/{kind}/instances/{id}") => de![NotFound / UnknownResource],
+        (Get, "/kinds/{kind}/instances/{id}/views/{view}") => de![
+            Validation / InvalidQueryValue,
+            Validation / MalformedCursor,
+            NotFound / UnknownResource,
+        ],
         (Get, "/usage") => de![
             Validation / InvalidQueryValue,
             Validation / MalformedCursor,

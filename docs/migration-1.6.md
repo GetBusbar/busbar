@@ -398,6 +398,29 @@ See the [1.6.0 advisories](advisories/1.6.0/README.md) for the full disclosures.
 - Remove `persist` from `PUT /api/v1/admin/config/settings` requests; it is refused with 400.
   Every successful change is saved to the store.
 - A `rate_card` written through the admin API must include the `units:` map below.
+- The admin API speaks kinds. Discover what exists with `GET /api/v1/admin/kinds`, then each
+  kind's instances with `GET /kinds/{kind}/instances`, then one instance with
+  `GET /kinds/{kind}/instances/{id}`. These 1.5.5 paths are removed and answer 404 `not_found`:
+  - `GET /models`: read `GET /kinds/core/instances/routing` (`config.models`), and the `core/routing`
+    view `lanes`.
+  - `GET /providers`: read `GET /kinds/core/instances/routing` (`config.providers`).
+  - `GET /pools` and `GET /pools/{name}`: read `GET /kinds/core/instances/routing`
+    (`config.pools`), and the `core/routing` view `pools` (live member status).
+  - `GET /export` and `GET /export/{name}`: read `GET /kinds/export/instances` and
+    `GET /kinds/export/instances/{name}`.
+  - `PUT` and `DELETE /export/{name}`, `PATCH /export/{name}/settings`: write the `export.<name>`
+    section with `PUT /config/settings` and `POST /config/apply`; read it back on
+    `GET /kinds/export/instances/{name}`.
+  - `GET /identity-providers` and `GET /identity-providers/{name}`: read `GET /kinds/auth/instances`
+    and `GET /kinds/auth/instances/{name}`.
+  - `PUT` and `DELETE /identity-providers/{name}`, `PATCH /identity-providers/{name}/settings`: write
+    the identity-provider section with `PUT /config/settings` and `POST /config/apply`; read it
+    back on `GET /kinds/auth/instances/{name}`.
+  - `GET /plane-facts` (1.6 pre-releases only): read the plane instance's `runtime.plane.facts`.
+- 1.6 refuses a config that uses one instance name in two sections, or a core instance id
+  (`process`, `routing`, `units`, `limits`, `ledger`, `credentials`, `durability`, `connector`,
+  `trust`); rename the instance before upgrading, and update any client that filters by
+  `instance`.
 
 ## Rate cards
 

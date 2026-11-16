@@ -91,6 +91,7 @@ impl AdminService {
             },
             config_persistence: self.app.overlay_path.is_some(),
             config_version: self.app.config_version,
+            kinds_revision: crate::v1::json::kinds::kinds_revision(&self.app),
             config_generation: self
                 .app
                 .config_generation
@@ -121,16 +122,6 @@ impl AdminService {
             .collect();
         pool_views.sort_by(|a, b| a.name.cmp(&b.name));
         Ok(Page::single(pool_views))
-    }
-
-    pub(crate) async fn get_pool(&self, name: &str) -> Result<PoolDetailView, AdminError> {
-        let view = self.app.engine_tables_view();
-
-        if !view.pools().iter().any(|(n, _)| *n == name) {
-            return Err(AdminError::not_found(format!("pool `{name}`")));
-        }
-        let members = view.pool_members(name);
-        Ok(self.pool_detail(name, &members))
     }
 
     fn pool_detail(&self, name: &str, members: &[(usize, u32)]) -> PoolDetailView {

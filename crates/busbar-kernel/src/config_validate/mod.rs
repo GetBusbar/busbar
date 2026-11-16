@@ -212,6 +212,8 @@ fn judge_with_plugins(
         }
     }
 
+    errors.extend(instance_ids::instance_id_collisions(cfg));
+
     refused_provider_destinations(cfg, advisories);
 
     let provider_names: HashSet<&str> = cfg.providers.keys().map(|s| s.as_str()).collect();
@@ -2192,7 +2194,9 @@ pub fn metadata_enforced_entries() -> Vec<String> {
 
 pub mod deal;
 mod destinations;
+pub mod instance_ids;
 pub use destinations::{validate_provider_destinations, ProviderDestination};
+pub use instance_ids::{instance_id_collisions, CORE_INSTANCES};
 
 pub(crate) mod secret_refs;
 mod undeclared_secret_refs;
@@ -2711,3 +2715,7 @@ mod boot_advice_tests;
 #[cfg(test)]
 #[path = "tests/operator_third_party_tests.rs"]
 mod operator_third_party_tests;
+
+#[cfg(test)]
+#[path = "tests/instance_id_tests.rs"]
+mod instance_id_tests;

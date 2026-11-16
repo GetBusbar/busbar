@@ -351,6 +351,11 @@ pub fn mark_start() {
     let _ = PROCESS_START_EPOCH.set(busbar_kernel::store::now());
 }
 
+/// Epoch seconds the process started, once [`mark_start`] ran.
+pub(crate) fn started_at() -> Option<u64> {
+    PROCESS_START_EPOCH.get().copied()
+}
+
 struct CatalogCacheEntry {
     key: u64,
     rows: Vec<PluginView>,

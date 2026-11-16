@@ -48,11 +48,14 @@ impl AdminTransport for JsonV1 {
         let router = Router::new()
             .route("/info", get(info))
             .route("/operations/{key}", get(generation::get_operation))
+            .route("/kinds", get(kinds::list))
+            .route("/kinds/{kind}/instances", get(kinds::instances))
+            .route("/kinds/{kind}/instances/{id}", get(kinds::describe))
+            .route(
+                "/kinds/{kind}/instances/{id}/views/{view}",
+                get(kinds::view),
+            )
             .route("/whoami", get(whoami::get))
-            .route("/pools", get(list_pools))
-            .route("/pools/{name}", get(get_pool))
-            .route("/models", get(list_models))
-            .route("/providers", get(list_providers))
             .route(PATH_HOOKS, get(list_hooks).post(register_hook))
             .route(
                 "/hooks/{name}",
@@ -615,7 +618,9 @@ fn with_config_etag(mut resp: Response, version: u64) -> Response {
 
 mod config_document;
 mod config_tree;
+pub(crate) mod kinds;
 mod plane_input_schemas;
+mod views;
 pub use plane_input_schemas::install_plane_input_schemas;
 #[cfg(feature = "openapi-schema")]
 mod config_forms;

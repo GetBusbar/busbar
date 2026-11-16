@@ -32,9 +32,11 @@ impl VerbScope {
 /// Which group of the module doc a row belongs to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Class {
-    /// One of the 66 operations of 1.5.5's `openapi.json`.
+    /// One of the 1.5.5 `openapi.json` operations 1.6.0 keeps: the 66, less the 14 per-kind
+    /// operations (`/models`, `/providers`, `/pools`, `/export`, `/identity-providers`) removed in
+    /// favour of `/kinds` (ADMIN-API-1.6 §0.2, CON-6).
     Legacy,
-    /// One of the 15 new 1.6.0 verbs.
+    /// One of the new 1.6.0 verbs.
     New,
     /// One of the five 1.6.0 ledger views.
     Ledger,
@@ -133,19 +135,16 @@ pub enum KernelVerb {
     GetAudit,
     GetAuth,
     PostAuthCacheFlush,
-    GetModels,
     GetInfo,
     GetOperationsKey,
     GetWhoami,
     GetConfigTree,
+    GetKinds,
+    GetKindInstances,
+    GetKindInstance,
+    GetKindInstanceView,
     GetUsage,
     GetOpenapiJson,
-
-    GetExport,
-    DeleteExportName,
-    GetExportName,
-    PutExportName,
-    PatchExportNameSettings,
 
     GetGroups,
     PostGroups,
@@ -167,12 +166,6 @@ pub enum KernelVerb {
     PutHooksNameAttachmentsTarget,
     DeleteHooksNameAttachmentsTarget,
 
-    GetIdentityProviders,
-    DeleteIdentityProvidersName,
-    GetIdentityProvidersName,
-    PutIdentityProvidersName,
-    PatchIdentityProvidersNameSettings,
-
     GetKeys,
     PostKeys,
     DeleteKeysId,
@@ -192,15 +185,10 @@ pub enum KernelVerb {
     DeletePluginsFile,
     GetPluginsFileSchema,
 
-    GetPools,
-    GetPoolsName,
-    GetProviders,
-
     PostRestart,
     PostSigningKeyRotate,
 
     Verify,
-    PlaneFacts,
     PlaneRecordWrite,
     ChainBreak,
     StoreRestore,
@@ -256,11 +244,6 @@ pub const TABLE: &[VerbRow] = table! {
     Legacy PostConfigValidate "POST" "/api/v1/admin/config/validate" "post_config_validate";
     Legacy GetConfigVersions "GET" "/api/v1/admin/config/versions" "get_config_versions";
     Legacy GetConfigVersionsV "GET" "/api/v1/admin/config/versions/{v}" "get_config_versions_v";
-    Legacy GetExport "GET" "/api/v1/admin/export" "get_export";
-    Legacy DeleteExportName "DELETE" "/api/v1/admin/export/{name}" "delete_export_name";
-    Legacy GetExportName "GET" "/api/v1/admin/export/{name}" "get_export_name";
-    Legacy PutExportName "PUT" "/api/v1/admin/export/{name}" "put_export_name";
-    Legacy PatchExportNameSettings "PATCH" "/api/v1/admin/export/{name}/settings" "patch_export_name_settings";
     Legacy GetGroups "GET" "/api/v1/admin/groups" "get_groups";
     Legacy PostGroups "POST" "/api/v1/admin/groups" "post_groups";
     Legacy DeleteGroupsName "DELETE" "/api/v1/admin/groups/{name}" "delete_groups_name";
@@ -277,11 +260,6 @@ pub const TABLE: &[VerbRow] = table! {
     Legacy GetHooksNameSchema "GET" "/api/v1/admin/hooks/{name}/schema" "get_hooks_name_schema";
     Legacy PatchHooksNameSettings "PATCH" "/api/v1/admin/hooks/{name}/settings" "patch_hooks_name_settings";
     Legacy GetHooksNameStatus "GET" "/api/v1/admin/hooks/{name}/status" "get_hooks_name_status";
-    Legacy GetIdentityProviders "GET" "/api/v1/admin/identity-providers" "get_identity_providers";
-    Legacy DeleteIdentityProvidersName "DELETE" "/api/v1/admin/identity-providers/{name}" "delete_identity_providers_name";
-    Legacy GetIdentityProvidersName "GET" "/api/v1/admin/identity-providers/{name}" "get_identity_providers_name";
-    Legacy PutIdentityProvidersName "PUT" "/api/v1/admin/identity-providers/{name}" "put_identity_providers_name";
-    Legacy PatchIdentityProvidersNameSettings "PATCH" "/api/v1/admin/identity-providers/{name}/settings" "patch_identity_providers_name_settings";
     Legacy GetInfo "GET" "/api/v1/admin/info" "get_info";
     Legacy GetKeys "GET" "/api/v1/admin/keys" "get_keys";
     Legacy PostKeys "POST" "/api/v1/admin/keys" "post_keys";
@@ -291,7 +269,6 @@ pub const TABLE: &[VerbRow] = table! {
     Legacy PostKeysIdRevoke "POST" "/api/v1/admin/keys/{id}/revoke" "post_keys_id_revoke";
     Legacy PostKeysIdRotate "POST" "/api/v1/admin/keys/{id}/rotate" "post_keys_id_rotate";
     Legacy GetKeysIdUsage "GET" "/api/v1/admin/keys/{id}/usage" "get_keys_id_usage";
-    Legacy GetModels "GET" "/api/v1/admin/models" "get_models";
     Legacy GetOpenapiJson "GET" "/api/v1/admin/openapi.json" "get_openapi_json";
     Legacy DeleteOverlaySection "DELETE" "/api/v1/admin/overlay/{section}" "delete_overlay_section";
     Legacy GetPlugins "GET" "/api/v1/admin/plugins" "get_plugins";
@@ -301,14 +278,10 @@ pub const TABLE: &[VerbRow] = table! {
     Legacy PostPluginsRollback "POST" "/api/v1/admin/plugins/rollback" "post_plugins_rollback";
     Legacy DeletePluginsFile "DELETE" "/api/v1/admin/plugins/{file}" "delete_plugins_file";
     Legacy GetPluginsFileSchema "GET" "/api/v1/admin/plugins/{file}/schema" "get_plugins_file_schema";
-    Legacy GetPools "GET" "/api/v1/admin/pools" "get_pools";
-    Legacy GetPoolsName "GET" "/api/v1/admin/pools/{name}" "get_pools_name";
-    Legacy GetProviders "GET" "/api/v1/admin/providers" "get_providers";
     Legacy PostRestart "POST" "/api/v1/admin/restart" "post_restart";
     Legacy PostSigningKeyRotate "POST" "/api/v1/admin/signing-key/rotate" "post_signing_key_rotate";
     Legacy GetUsage "GET" "/api/v1/admin/usage" "get_usage";
     New Verify "GET" "/api/v1/admin/verify" "verify";
-    New PlaneFacts "GET" "/api/v1/admin/plane-facts" "plane_facts";
     New PlaneRecordWrite "POST" "/api/v1/admin/plane-record-write" "plane_record_write";
     New ChainBreak "POST" "/api/v1/admin/chain-break" "chain_break";
     New StoreRestore "POST" "/api/v1/admin/store-restore" "store_restore";
@@ -322,6 +295,10 @@ pub const TABLE: &[VerbRow] = table! {
     New PutHooksNameAttachmentsTarget "PUT" "/api/v1/admin/hooks/{name}/attachments/{target}" "put_hooks_name_attachments_target";
     New DeleteHooksNameAttachmentsTarget "DELETE" "/api/v1/admin/hooks/{name}/attachments/{target}" "delete_hooks_name_attachments_target";
     New GetConfigTree "GET" "/api/v1/admin/config/tree" "get_config_tree";
+    New GetKinds "GET" "/api/v1/admin/kinds" "get_kinds";
+    New GetKindInstances "GET" "/api/v1/admin/kinds/{kind}/instances" "get_kind_instances";
+    New GetKindInstance "GET" "/api/v1/admin/kinds/{kind}/instances/{id}" "get_kind_instance";
+    New GetKindInstanceView "GET" "/api/v1/admin/kinds/{kind}/instances/{id}/views/{view}" "get_kind_instance_view";
     New GetTrust "GET" "/api/v1/admin/trust" "get_trust";
     New TrustApprove "POST" "/api/v1/admin/trust/approve" "trust_approve";
     New TrustRevoke "POST" "/api/v1/admin/trust/revoke" "trust_revoke";
