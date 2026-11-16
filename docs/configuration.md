@@ -81,6 +81,7 @@ Busbar at config.yaml, taking precedence over `BUSBAR_CONFIG`; `--providers <pat
 See [Operations → Process configuration](operations.md#process-configuration).
 
 **Operational environment overrides are retired in 1.6.0.** `BUSBAR_PROVIDERS`, `BUSBAR_WORKER_THREADS`, `BUSBAR_UPSTREAM_HTTP1_ONLY` and `BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE` are read once by the first-boot upgrade of a 1.5.5 config, which copies their values into the upgraded config before serving. Startup does not import or apply them. Serving reads `providers_file:` (or `--providers`) and the corresponding `advanced` keys. The old `BUSBAR_CONFIG_OVERLAY` file is folded into `config.yaml` on that same upgrade boot; runtime config is persisted through the Store. `BUSBAR_CONFIG` (bootstrap), explicit secret `{ env: NAME }` references, `RUST_LOG`, and the `TOKIO_WORKER_THREADS` fallback remain supported. See [the 1.6 upgrade instructions](migration-1.6.md#retired-environment-variables).
+<!-- docs-truth: code gap #329 (audit-1.6): the design (MIGRATE-ON-BOOT retired-inputs pass) captures these variables on the upgrade boot, but dev only reports a set one as ignored (crates/busbar/src/root/migrate_environment.rs; capture is test-only). Until #329 lands, write `providers_file:` and the `advanced` keys by hand. -->
 
 ### `config`
 
@@ -120,7 +121,7 @@ telemetry:
 
 A plane owns its own top-level section (`tools:`, `agents:`, `streams:`, `decisions:`, `mcp:`, and
 any other registered plane), parsed by that plane and documented in that plane's own documentation:
-[MCP](https://getbusbar.com/docs/mcp/), [A2A](https://getbusbar.com/docs/a2a/) and
+[MCP](mcp.md), [A2A](a2a.md) and
 [voice.md](voice.md). Core reserves only the words listed under [Reserved names](#reserved-names) inside
 a plane section. `oauth_as:` is likewise an opaque section owned by the OAuth authorization-server
 plane (the MCP protected-resource metadata and its authorization servers); see that plane's
@@ -349,7 +350,7 @@ the files and restarting. Full operational guide:
 
 Front-door identity for the data plane plus the admin chain and role policy.
 
-**1.5.3: define once, reference by name.** Every identity provider is DEFINED once in the top-level
+**Define once, reference by name.** Every identity provider is DEFINED once in the top-level
 `identity-providers:` map (`name -> {module, settings, max_admin_scope, token, browser_login}`) and
 REFERENCED BY BARE NAME from `auth.chain:`, `auth.admin_auth:` and `auth.role_bindings:`. One IdP that
 serves both planes is therefore configured ONCE. Under the retired grammar it had to be written
@@ -357,20 +358,19 @@ inline in both chains, and nothing stopped the two copies from drifting. The bui
 signed-key verifier) and `admin-tokens` (the operator credential) are referenced bare and need a
 definition only when they carry config.
 
-Static token allowlists are GONE in 1.5.0: every caller carries either a minted signed key or an IdP
+Static token allowlists do not exist: every caller carries either a minted signed key or an IdP
 credential a chain provider verifies.
 
 Giving a provider definition a `browser_login:` block also lets developers **self-serve** their own
-budgeted key by signing in. Busbar exposes a `GET`/`POST /auth/token` exchange automatically. (1.5.3
-folded the retired parallel `auth.methods:` map into the provider definition: a client id/secret
-belongs to ONE IdP registration, so it belongs on that provider.) See
+budgeted key by signing in. Busbar exposes a `GET`/`POST /auth/token` exchange automatically. (A client id/secret
+belongs to ONE IdP registration, so it lives on that provider.) See
 [Token exchange (self-serve keys)](token-exchange.md). A sign-in never undoes an administrator's
 action on a self-serve key: a disabled key stays disabled, a revoked key is permanent, and an admin
 regroup or rotation stands ([Admin actions and self-service](token-exchange.md#admin-actions-and-self-service)).
 
 ```yaml
 identity-providers:
-  admin-tokens: { module: admin-tokens, token: { env: BUSBAR_ADMIN_TOKEN } }
+  <operator-auth>: { module: <operator-auth-module>, token: { env: BUSBAR_ADMIN_TOKEN } }
   ad:
     module: ad                                            # a `kind: auth` plugin
     settings: { server: "ldaps://corp", base_dn: "dc=corp" }
@@ -381,7 +381,7 @@ identity-providers:
 auth:
   signing_key: { file: /run/secrets/busbar-signing.key }  # REQUIRED with `keys`; busbar --generate-signing-key
   chain: [keys, ad]                                       # bare PROVIDER NAMES
-  admin_auth: [admin-tokens, ad]
+  admin_auth: [<operator-auth>, ad]
   role_bindings:
     ad:
       growth-eng: { allowed_pools: [fast], group: growth }
@@ -390,7 +390,7 @@ auth:
 
 | Field | Type | Required | Default | Notes |
 |---|---|---|---|---|
-| `signing_key` | secret reference | **when `keys` is in the chain** | none | The ed25519 key Busbar signs + verifies virtual-key tokens with, as a secret reference (the canonical `{ module: <secret-plugin>, settings: {…} }` form, or a shorthand an admitted secret module declares; never an inline literal). Fleet-shared (every node verifying the same tokens resolves the same key). **Required whenever the data-plane chain names the built-in `keys` verifier**; its absence there fails `--validate`/boot. Busbar does **not** auto-generate one (1.5.1: the earlier generate-and-persist-beside-config behavior boot-looped read-only config mounts). Generate a key with `busbar --generate-signing-key`. Rotating it revokes every outstanding key. |
+| `signing_key` | secret reference | **when `keys` is in the chain** | none | The ed25519 key Busbar signs + verifies virtual-key tokens with, as a secret reference (the canonical `{ module: <secret-plugin>, settings: {…} }` form, or a shorthand an admitted secret module declares; never an inline literal). Fleet-shared (every node verifying the same tokens resolves the same key). **Required whenever the data-plane chain names the built-in `keys` verifier**; its absence there fails `--validate`/boot. Busbar does **not** auto-generate one. Generate a key with `busbar --generate-signing-key`. Rotating it revokes every outstanding key. |
 | `chain` | list of provider NAMES | no | `[]` | The ordered DATA-PLANE authentication chain: the **sole** authority over whether a data-plane request needs a credential (the admin token never gates the data plane; see the axis note below). Each entry is a bare NAME: either a built-in (`keys`) or a key of the top-level `identity-providers:` map. A name that is neither is a **hard startup error** (fail-closed: never a silently-skipped identity provider). `[]` (default) is the open front door: development only, loud startup warning (the admin API stays gated by `admin_auth`). When the chain names `keys`, a **usable admin mint path** must exist (an `admin-tokens` provider with a `token:`, an admin provider granting `full`, or an explicit open `admin_auth: []`). Otherwise no virtual key could ever be minted and the data plane would reject every request, so it is a **hard startup error**. A configured auth plugin that cannot be loaded (missing/untrusted tarball, wrong kind, `plugins.enabled: false`, or an ABI failure) is likewise a **hard startup error**. |
 | `admin_auth` | list of provider NAMES | no | `[admin-tokens]` | The chain gating `/api/v1/admin/*`, same bare-name references as `chain`. The built-in `admin-tokens` provider carries the operator credential as a secret reference (`token:`) on its definition. `[]` = OPEN admin (dev only; loud warning). |
 | `role_bindings` | map | no | `{}` | Role policy, NESTED BY PROVIDER NAME: `role_bindings.<provider>.<role> -> { allowed_pools?, group?, admin_scope?, verbs? }`. Keying by NAME (not by the backing plugin's own name) is what lets two named providers share one module and still hold independent grants. See below. |
@@ -407,12 +407,12 @@ auth:
 | `token` | secret reference | no | none | The operator ADMIN credential, only meaningful on a provider whose `module` is the built-in `admin-tokens`; anywhere else it is a boot error. |
 | `browser_login` | map | no | none | `{ client_id?, client_secret? }`. PRESENCE puts a button on the hosted login page; a provider without it is headless-only (still usable via `POST /auth/token`). Failed credential sign-ins are limited by fixed engine constants (see [Login attempt limits](#login-attempt-limits)). <!-- docs-truth: depends on !2696 (unmerged; deletes `browser_login.failure_window`, `auth.login_limits.*`) and the owner ruling fixing `browser_login.max_failures` at 3 (no MR yet) --> |
 
-**Where did `auth.upstream_credentials` go?** To `pools.upstream_credentials` (1.5.3): whose credential reaches the provider is a ROUTING property, not an inbound-auth one. See [`pools`](#pools).
+**Where did `auth.upstream_credentials` go?** To `pools.upstream_credentials`: whose credential reaches the provider is a ROUTING property, not an inbound-auth one. See [`pools`](#pools).
 
 **Token extraction order (data plane):** `Authorization: Bearer`, then `x-api-key`, then
 `x-goog-api-key`. Blank values are treated as absent.
 
-**Three orthogonal axes (as of 1.5.3).** Data-plane admission, admin-API access, and governance
+**Three orthogonal axes.** Data-plane admission, admin-API access, and governance
 enforcement are independent, each with one local source of truth:
 
 - **Data-plane admission** is decided **solely** by `auth.chain`: `[]` = open/anonymous, `[keys]` =
@@ -424,8 +424,7 @@ enforcement are independent, each with one local source of truth:
   resolved. An open chain resolves no principal, so there is nothing to enforce.
 
 This makes **"protected admin API + open (anonymous) relay for users"** expressible: set
-`chain: []` with an `admin_auth` operator credential. (Before 1.5.2, configuring an admin token
-silently forced a virtual key onto every data-plane request, so that posture was impossible.)
+`chain: []` with an `admin_auth` operator credential.
 
 **Bedrock ingress.** Native Bedrock SDK clients authenticate with AWS SigV4. Mint a key with
 `"issue_aws_credential": true`; the response includes `aws_access_key_id` +
@@ -442,7 +441,7 @@ still hold independent grants.
 
 | Field | Notes |
 |---|---|
-| `allowed_pools` | DATA-PLANE grant: pools this role may target. OMITTED = ALL pools; an explicit `[]` = NO pools (an empty list is the empty set, everywhere in the 1.5.0 config). Pool lists union across a principal's granting roles; any omitted grant widens the union to all pools. |
+| `allowed_pools` | DATA-PLANE grant: pools this role may target. OMITTED = ALL pools; an explicit `[]` = NO pools (an empty list is the empty set, everywhere in the config). Pool lists union across a principal's granting roles; any omitted grant widens the union to all pools. |
 | `allowed_<kind>s` | PLANE grant: the names of a plane kind's items this role may use, for example the servers or tools of a tool plane or the agents of an agent plane (the key is `allowed_` plus the plane's kind plus `s`). Three-state exactly as `allowed_pools`: omitted = all, an explicit `[]` = none, and the lists union across a principal's granting roles. The plane's own documentation names its kinds. |
 | `group` | The `groups:` bucket this role's principals charge through. Absent = no group (authed + unlimited). With several bound groups the first in role order wins. |
 | `admin_scope` | The admin authority this role grants: `read-only` \| `full` (see [admin-api.md](admin-api.md#authentication--scopes)). Absent = none. A principal holds the highest scope its bound roles grant, then the asserting provider's `max_admin_scope` ceiling caps it (a `read-only` ceiling, which is the default and the recommended posture for an external IdP, reduces a `full` grant to `read-only`). Omitting `admin_scope` here is how a role gets no admin authority at all. |
@@ -483,7 +482,7 @@ silent no-match, not an error.
 public_url: "https://busbar.example.com"
 plugins: { enabled: true }                      # the auth plugin's tarball is in plugins.dir
 identity-providers:
-  admin-tokens: { module: admin-tokens, token: { env: BUSBAR_ADMIN_TOKEN } }   # mints the keys
+  <operator-auth>: { module: <operator-auth-module>, token: { env: BUSBAR_ADMIN_TOKEN } }   # mints the keys
   sso:                                          # the provider NAME
     module: <auth-plugin>                       # the `kind: auth` plugin
     settings: { }                               # the plugin's own settings
@@ -690,8 +689,8 @@ The reserved `rate_card` key is also accepted, core-owned, under every non-LLM p
 flat/`pools` card above and of every other plane's card. Each entry is the same `{ *_utok fields,
 units: {...} }` shape (a non-LLM plane's classes are all OPEN, so only `units:` is meaningful for
 it); the field-by-field grammar for each is documented in
-[MCP](https://getbusbar.com/docs/mcp/) (`tools.rate_card`, keyed by tool name — prices `tool_calls` and `bytes`),
-[A2A](https://getbusbar.com/docs/a2a/) (`agents.rate_card`, keyed `agent:<id>` — prices `bytes`, the request + response
+[MCP](mcp.md) (`tools.rate_card`, keyed by tool name — prices `tool_calls` and `bytes`),
+[A2A](a2a.md) (`agents.rate_card`, keyed `agent:<id>` — prices `bytes`, the request + response
 body bytes an A2A hop relayed both ways), and
 [voice.md](voice.md) (`streams.rate_card`). The same rule applies to every plane:
 its plugin declares the units it measures, and the host checks its configured lanes against
@@ -905,7 +904,7 @@ pools:
 
 | Field | Type | Required | Default | Notes |
 |---|---|---|---|---|
-| `model` | string | **yes** | n/a | Name of a model in `models`. Must be a configured model; a missing model is a startup error. (Renamed from the 1.4.x `target`; the old key is a startup error.) |
+| `model` | string | **yes** | n/a | Name of a model in `models`. Must be a configured model; a missing model is a startup error. |
 | `weight` | integer | no | `1` | Relative selection share under smooth weighted round-robin (SWRR), computed over the currently healthy/usable members. Must be ≥ 1. `0` is a startup error. |
 | `context_max` | integer | no | none | This member's maximum context window (tokens). Used for [context-length failover](#context-length-failover). |
 | `attempt_timeout_ms` | integer | no | the model's value | Per-attempt time-to-response-headers cap for this member **in this pool**, overriding the model-level `attempt_timeout_ms`. Lets the same model carry different hang tolerances per pool (e.g. `10000` in a batch pool, `50` in a latency-critical one). Must be ≥ 1 when set (0 is a startup error). See [Per-attempt timeouts](#per-attempt-timeouts-attempt_timeout_ms). |
@@ -993,7 +992,7 @@ Guard rails, applied automatically: the budget is clamped to leave at least 1024
 
 #### Pool `hooks`: ordering and gates
 
-**1.5.3: hooks are DEFINED once, at the top level, and REFERENCED by bare name.** The top-level
+**Hooks are DEFINED once, at the top level, and REFERENCED by bare name.** The top-level
 `hooks:` map is the definition surface: `<instance-name>: { module, settings, … }`. Every ATTACH
 point (the reserved all-pools `pools.hooks:` list and each pool's own `hooks:` list) carries BARE
 NAMES only. Inline hook instances are gone, and so is the removed top-level `global_hooks:` list.
@@ -1006,8 +1005,8 @@ A pool's `hooks:` list therefore holds two kinds of bare name:
   (at most one per pool: it sets the base ranking; the default is `weighted`, the zero-cost SWRR
   baseline);
 - a **defined hook name**: a key of the top-level `hooks:` map. Its `module:` names a loaded
-  `kind: hook` plugin by signed-manifest name/alias (1.5.0 retired the built-in `socket`/`webhook`
-  transports; a hook is now always a signed plugin), so it requires `plugins.enabled: true` and the
+  `kind: hook` plugin by signed-manifest name/alias (there are no built-in `socket`/`webhook`
+  transports; a hook is always a signed plugin), so it requires `plugins.enabled: true` and the
   tarball installed in `plugins.dir`. An unresolvable `module:`, or a
   reference to a name that no `hooks:` entry defines, is a fail-closed boot error.
 
@@ -1084,7 +1083,7 @@ with a pool's own value differently, by TYPE:
 | `module` | string | **required** | The `kind: hook` plugin backing this named instance, by signed-manifest name/alias. The same module may back several named hooks. |
 | `settings` | map | `{}` | The plugin's own opaque config, pushed to it via the `configure` wire message. Its keys are the plugin's own documentation; any outbound call it makes goes through the [destination guard](#advanced). |
 | `groups` | list<string> | `[]` (every caller) | SCOPE: the caller groups this hook fires for. A USER is a leaf group (e.g. `user:bob`); membership walks the [`groups:`](#groups) tree, matching the caller's own group or any ancestor. |
-| `phase` | list<string> | all four stages | The pipeline stages this hook fires at: `request` \| `candidate` \| `routing` \| `response`. A **LIST**. 1.5.3 generalized the single-valued tap `at:` into it (`route`→`candidate`, `attempt`→`routing`, `completion`→`response`). Omitting `phase:` means exactly those four core stages. |
+| `phase` | list<string> | all four stages | The pipeline stages this hook fires at: `request` \| `candidate` \| `routing` \| `response`. A **LIST**. Omitting `phase:` means exactly those four core stages. |
 | `kind` | `tap` \| `gate` | `gate` | `gate` = fire-and-wait (may rank/reject/restrict/rewrite); `tap` = fire-and-forget observation. |
 | `timeout_ms` | integer | `1` | Hard wall-clock deadline for a gate decision. Raise it when the hook does I/O. On timeout the decision is coerced to `on_error`. |
 | `on_error` | keyword or ref | `nothing` | Fallback when a gate times out / errors / saturates: a bare terminal (`nothing` \| `weighted` \| `reject` \| `first`) or a structured hook reference `{ hook: <name> }` (a chain, proven terminating at boot). A gate's deliberate `reject` reply is a decision, not a failure. |
@@ -1106,7 +1105,7 @@ chosen lane.
 
 Circuit-breaker tuning for one target. On the LLM plane a target is a `(pool, lane)` cell, and the state is independent per pool: a lane open in pool A can be closed in pool B. Lane-global state (hard-down, lifetime budget, concurrency semaphore) is shared across all pools.
 
-**This block is accepted on a pool, and only on a pool.** On the LLM plane that is an entry of the top-level `pools:` map. MCP and A2A failover pools are NOT in the top-level `pools:` map: each plane's pools live under the reserved `pools` sub-key of that plane's own section (`tools.pools.<name>`, `agents.pools.<name>`), and the section a pool is written in is its plane. Such a pool takes `members:` (bare registration names from the same section; a member from another section, or one the section does not define, fails boot), `repeatable:` (the operations that may be performed twice; default none) and the same `breaker:` block with the same keys, validation and defaults as below. A plane pool written in the top-level `pools:` is read as an LLM pool, so its members are refused as unknown models; the first-boot migration moves such pools under their section. A `breaker:` on a registration itself (`tools.<server>.breaker:`, `agents.<agent>.breaker:`) is not accepted: `tools:` and `agents:` entries reject unknown keys, so it fails at boot rather than running with the block ignored. The complete MCP and A2A grammar, with every boot refusal, is in [MCP](https://getbusbar.com/docs/mcp/) and [A2A](https://getbusbar.com/docs/a2a/). The fourth plane noun, `streams:` (live voice), is a singular section rather than a named-definition registry, so it has no pools and no `breaker:` block of its own; its complete grammar is in [voice.md](voice.md). The same is true of `tools.<server>.sampling_bounds`, the per-upstream bounds on a server-initiated `sampling/createMessage` ask (`max_messages`, `max_prompt_bytes`, `max_stop_sequences`, `max_stop_sequence_bytes`, `temperature_min_milli`/`temperature_max_milli`, `max_input_response_bytes`): each defaults to a shipped ceiling and an ask past a bound is refused by name, never relayed; the full grammar is in [MCP](https://getbusbar.com/docs/mcp/).
+**This block is accepted on a pool, and only on a pool.** On the LLM plane that is an entry of the top-level `pools:` map. MCP and A2A failover pools are NOT in the top-level `pools:` map: each plane's pools live under the reserved `pools` sub-key of that plane's own section (`tools.pools.<name>`, `agents.pools.<name>`), and the section a pool is written in is its plane. Such a pool takes `members:` (bare registration names from the same section; a member from another section, or one the section does not define, fails boot), `repeatable:` (the operations that may be performed twice; default none) and the same `breaker:` block with the same keys, validation and defaults as below. A plane pool written in the top-level `pools:` is read as an LLM pool, so its members are refused as unknown models; the first-boot migration moves such pools under their section. A `breaker:` on a registration itself (`tools.<server>.breaker:`, `agents.<agent>.breaker:`) is not accepted: `tools:` and `agents:` entries reject unknown keys, so it fails at boot rather than running with the block ignored. The complete MCP and A2A grammar, with every boot refusal, is in [MCP](mcp.md) and [A2A](a2a.md). The fourth plane noun, `streams:` (live voice), is a singular section rather than a named-definition registry, so it has no pools and no `breaker:` block of its own; its complete grammar is in [voice.md](voice.md). The same is true of `tools.<server>.sampling_bounds`, the per-upstream bounds on a server-initiated `sampling/createMessage` ask (`max_messages`, `max_prompt_bytes`, `max_stop_sequences`, `max_stop_sequence_bytes`, `temperature_min_milli`/`temperature_max_milli`, `max_input_response_bytes`): each defaults to a shipped ceiling and an ask past a bound is refused by name, never relayed; the full grammar is in [MCP](mcp.md).
 
 ```yaml
 tools:
@@ -1138,10 +1137,10 @@ pools:
 | Field | Type | Default | Validation | Notes |
 |---|---|---|---|---|
 | `trip.mode` | string | `error_rate` | Must be `error_rate` or `consecutive` | **`error_rate`**: trips when `errors/total ≥ threshold` over `window_secs` seconds, with at least `min_requests` outcomes in the window. **`consecutive`**: trips after `consecutive_n` consecutive failures regardless of window. |
-| `trip.window_secs` | integer | `30` | Must be ≥ 1 | Sliding outcome window for `error_rate` mode. Outcomes older than `window_secs` are evicted. (`window_secs` is the ONLY spelling; the pre-1.0 `window_s` alias is gone and fails boot.) |
+| `trip.window_secs` | integer | `30` | Must be ≥ 1 | Sliding outcome window for `error_rate` mode. Outcomes older than `window_secs` are evicted. (`window_secs` is the ONLY spelling; `window_s` fails boot.) |
 | `trip.threshold` | float | `0.5` | Must be in `(0.0, 1.0]` | Error fraction threshold for `error_rate` mode. `0.5` means more than half of outcomes in the window must be errors to trip. |
 | `trip.min_requests` | integer | `5` | Must be ≥ 1 | `error_rate` mode: minimum outcomes required in the window before the threshold is evaluated. Prevents tripping on a single failure with no baseline. |
-| `trip.consecutive_n` | integer | `3` | Must be ≥ 1 | `consecutive` mode: number of consecutive failures that trip the breaker. (`consecutive_n` is the ONLY spelling; the pre-1.0 `n` alias is gone and fails boot.) |
+| `trip.consecutive_n` | integer | `3` | Must be ≥ 1 | `consecutive` mode: number of consecutive failures that trip the breaker. (`consecutive_n` is the ONLY spelling; `n` fails boot.) |
 | `base_cooldown_secs` | integer | `15` | Must be ≥ 1 | Initial cooldown duration after a trip. Subsequent trips without a successful recovery double the cooldown (exponential backoff). |
 | `max_cooldown_secs` | integer | `120` | Must be ≥ `base_cooldown_secs` | Maximum cooldown regardless of backoff. |
 
@@ -1216,7 +1215,7 @@ pools:
     on_exhausted: least_bad
 ```
 
-A keyword stays bare; a reference is structured (the 1.5.0 `on_X` convention):
+A keyword stays bare; a reference is structured (the `on_X` convention):
 
 | Value | Behavior |
 |---|---|
@@ -1321,7 +1320,7 @@ limits:
 
 ### `export`
 
-**1.5.3: `export:` is the single telemetry-egress surface, and the `observability:` block is DELETED.**
+**`export:` is the single telemetry-egress surface.**
 It is a NAMED map (`<instance-name>: { module, settings }`), so the SAME module can back SEVERAL
 instances, which the retired type-keyed block could not express at all (two request-log webhooks to
 two URLs is a real deployment: app logs plus SIEM). Presence is the switch; an absent/empty block
@@ -1363,7 +1362,7 @@ absent at boot remains unavailable until restart. Export definitions are not par
 
 ### Virtual keys and enforcement
 
-The 1.5.0 identity/enforcement model in one page. (The config pieces live in the sections above:
+The identity/enforcement model in one page. (The config pieces live in the sections above:
 [`auth`](#auth) for the chain and role bindings, [`groups`](#groups) for the limit tree,
 [`rate_card`](#rate_card-and-per_request_fee) for pricing, [`store`](#store) for durability.)
 
@@ -1558,17 +1557,17 @@ admin_listen: "127.0.0.1:8081"      # the admin API always runs on its own liste
 
 # ---------------------------------------------------------------------------
 # Auth: data-plane callers present minted signed keys (the built-in `keys`
-# verifier); the admin API is gated by the admin-tokens operator credential.
+# verifier); the admin API is gated by the operator credential provider.
 # ---------------------------------------------------------------------------
 identity-providers:
-  admin-tokens: { module: admin-tokens, token: { env: BUSBAR_ADMIN_TOKEN } }
+  <operator-auth>: { module: <operator-auth-module>, token: { env: BUSBAR_ADMIN_TOKEN } }
 
 auth:
   signing_key: { file: /run/secrets/busbar-signing.key }  # REQUIRED with `keys`; no auto-gen
   #                                                        # (`busbar --generate-signing-key`)
   chain:
     - keys
-  admin_auth: [admin-tokens]           # a bare PROVIDER NAME (defined above)
+  admin_auth: [<operator-auth>]           # a bare PROVIDER NAME (defined above)
 
 # ---------------------------------------------------------------------------
 # Groups: the ONE limit tree. Keys bind to a group at mint; enforcement walks
@@ -1715,7 +1714,7 @@ pools:
 
 # ---------------------------------------------------------------------------
 # Export: the single telemetry-egress surface. Metrics, traces and per-request
-# logging are all NAMED instances here (1.5.3 deleted `observability:` and the
+# logging are all NAMED instances here (there is no `observability:` or
 # top-level `metrics:` block). Each instance names a `kind: export` plugin and
 # gives it that plugin's own settings. Omit the block and collection is inert.
 # ---------------------------------------------------------------------------
@@ -1758,7 +1757,7 @@ Busbar validates the merged config before accepting any traffic. Fatal errors ab
 | `auth` value unknown | `auth` names a style no admitted `kind: auth` plugin implements (and is not a `module:` instance name) |
 | `affinity.mode` value unknown | `affinity.mode` not `session` (the only supported value) |
 | 1.x config detected | A 1.x structural marker is present (a `governance:` block, `auth.group_map:`, `auth.mode:`, a top-level `hooks:` **REGISTRY** block (one with `socket:`/`webhook:` entries, or any entry lacking `module:`; the 1.5.3 `hooks:` DEFINITION map is valid and passes straight through), `api_key_env`, `target:` in a pool member): an unstamped 1.x config is migrated by the first boot, and a stamped config holding one is refused by the strict parse (`unknown field`) |
-| Retired 1.5.3 key present | A retired grammar key is present (`global_hooks:`, `observability:`, a top-level `metrics:` block, `admin_insecure:`, `auth.upstream_credentials:`, `auth.methods:`, `otlp_url`/`otlp_endpoint`): the first boot of an unstamped config migrates it; a stamped config holding one is refused by the strict parse (`unknown field`) |
+| Retired key present | A retired grammar key is present (`global_hooks:`, `observability:`, a top-level `metrics:` block, `admin_insecure:`, `auth.upstream_credentials:`, `auth.methods:`, `otlp_url`/`otlp_endpoint`): the first boot of an unstamped config migrates it; a stamped config holding one is refused by the strict parse (`unknown field`) |
 | Provider `api_key` unresolvable | A provider's `api_key` reference does not resolve (unset variable, missing or empty file, unknown module, secret-plugin error). `BUSBAR-8020` names the provider and the reference (`env:VAR`, `file:/path`), never the value. Declare `api_key: none` for an upstream that takes no credential |
 | `api_key: none` where a credential is required | `none` on any secret other than a provider `api_key`, or on a provider using `auth: jwt-bearer` / `auth: oauth-client-credentials` (both mint their token FROM the credential) |
 | `path` malformed | `path` does not begin with `/` |

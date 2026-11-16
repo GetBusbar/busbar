@@ -10,10 +10,10 @@ rules use [configuration.md](configuration.md); for a bootable file, start from 
 > its own spec section) lives at **<https://getbusbar.com/docs/config-at-a-glance/>**. This file is
 > the plain-markdown equivalent kept in the repo; the website page is the canonical rendering.
 
-The whole surface follows a few rules, all locked by the 1.5.3 grammar freeze: **every
+The whole surface follows a few rules, all locked by the config grammar freeze: **every
 plugin-instance kind is a top-level NAMED-DEFINITION map (`name -> {module, settings, …}`) referenced
 BY BARE NAME everywhere else**: `hooks:`, `identity-providers:`, `export:` (and singular `store:`);
-built-ins (`keys`, `admin-tokens`, `cheapest`) are referenced bare. Beyond that: the object that OWNS
+built-ins (`keys`, the operator-credential provider, `cheapest`) are referenced bare. Beyond that: the object that OWNS
 a concept is the only place it is defined; every secret is a reference (`{ env: VAR }` /
 `{ file: /path }` / `{ module: <secret-plugin> }`); an omitted list means "all", an explicit `[]`
 means "none"; a setting shared by every entity in a section is a RESERVED key at that section's level
@@ -32,7 +32,6 @@ listen: "0.0.0.0:8080"          # data-plane bind
 admin_listen: "127.0.0.1:8081"  # admin-plane bind (always its own listener; loopback by default)
 admin_require_mtls: true        # DEFAULT: an exposed admin_listen without admin_tls.client_ca
                                 #   refuses to boot. `false` waives it (mTLS terminated upstream).
-                                #   Replaces the retired, INVERTED `admin_insecure:` (1.5.3)
 
 tls:                            # absent = plain HTTP. Each field is a SECRET REFERENCE.  → #tls
   cert: { file: /run/secrets/tls-cert.pem }
@@ -65,7 +64,7 @@ Referenced below wherever a section names a `module:` outside the built-in defau
 
 ```yaml
 identity-providers:             # DEFINE each IdP ONCE; every chain references it BY BARE NAME
-  admin-tokens: { module: admin-tokens, token: { env: BUSBAR_ADMIN_TOKEN } }
+  <operator-auth>: { module: <operator-auth-module>, token: { env: BUSBAR_ADMIN_TOKEN } }
   sso:
     module: <auth-plugin>       # a kind:auth plugin
     settings: { }               # the plugin's own settings
@@ -75,7 +74,7 @@ identity-providers:             # DEFINE each IdP ONCE; every chain references i
 auth:
   chain: [keys, sso]           # ordered DATA-PLANE auth, as bare PROVIDER NAMES.
                                 # `keys` = built-in signed-key verifier. [] = open (dev)
-  admin_auth: [admin-tokens]    # chain gating /api/v1/admin/*
+  admin_auth: [<operator-auth>]  # chain gating /api/v1/admin/*
   signing_key: { file: /run/secrets/busbar-signing.key }     # REQUIRED with keys; no auto-gen
   #                                                          # (`busbar --generate-signing-key`)
   # require_if_match: false     # true = guarded config mutations without If-Match are refused 428
@@ -150,8 +149,8 @@ store:                          # REQUIRED (no default; BUSBAR-3120 when absent)
 ## Hooks: [`hooks`](hooks.md)
 
 Hooks are DEFINED once here and REFERENCED by bare name from the reserved `pools.hooks:` all-pools
-list or a pool's own `hooks:` list. No inline instances anywhere (1.5.3 removed them, along with the
-old top-level `global_hooks:` list). The SAME `module:` may back several named hooks.
+list or a pool's own `hooks:` list. No inline instances anywhere (there is no top-level
+`global_hooks:` list). The SAME `module:` may back several named hooks.
 
 ```yaml
 hooks:
@@ -159,7 +158,7 @@ hooks:
     module: <hook-plugin>      # which kind:hook plugin backs it
     kind: tap                   # gate (fire-and-wait, may decide) | tap (fire-and-forget)
     phase: [response]           # a LIST: request|candidate|routing|response. Omit = those four.
-    on_error: nothing           #   (1.5.3 generalized the old single-valued tap `at:` into this)
+    on_error: nothing
   pii:
     module: <hook-plugin>
     groups: [engineering]       # SCOPE: which callers. Omit/[] = all. A user is a leaf group.
@@ -172,7 +171,7 @@ hooks:
 ## Plane sections: `tools` · `agents` · `streams` · `decisions` · `mcp` · `oauth_as`
 
 Each non-LLM plane owns its own top-level section, parsed and documented by that plane (see
-[MCP](https://getbusbar.com/docs/mcp/), [A2A](https://getbusbar.com/docs/a2a/) and [voice.md](voice.md)). Core
+[MCP](mcp.md), [A2A](a2a.md) and [voice.md](voice.md)). Core
 reserves only `hooks`, `upstream_credentials`, `usage_observations`, `pools`, `rate_card` and `fees` inside
 them ([Reserved names](configuration.md#reserved-names)). `oauth_as:` is an opaque section owned by the OAuth
 authorization-server plane. Neither is detailed here.
@@ -214,8 +213,8 @@ pools:                                      # a pool is weighted lanes with shar
 security:                       # SSRF metadata denylist tuning  → #security
   { blocked_metadata_hosts: [] }  # extends the denylist; nothing admits cloud metadata
 export:                         # THE telemetry-egress surface, a NAMED map, so SEVERAL instances
-                                #   of one module are legal. 1.5.3 DELETED `observability:` and the
-                                #   top-level `metrics:` block into it.  → #export
+                                #   of one module are legal. There is no `observability:` or
+                                #   top-level `metrics:` block.  → #export
   <name>: { module: <export-plugin>, settings: { } }   # a kind:export plugin and its own settings
 limits:                         # global operational caps  → #limits
   { upstream_request_timeout_secs: 300, request_body_max_bytes: 33554432, max_inbound_concurrent: 8192 }
