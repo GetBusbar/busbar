@@ -11,8 +11,9 @@ use busbar_contract::services::{Caller, Incarnation};
 use busbar_plugin_abi::records::{tag as g, Records, U64Rec};
 use busbar_plugin_loader::ports::plane::PlaneOut;
 
-use super::{carrier_end_arg, LineAnswer};
+use super::{carrier_end_arg, line_of, LineEffects, LineRefused};
 use crate::channels::line_carriers::{CarrierSink, LineCarriers};
+use crate::plane_driver::port_session::{Answer, Once, Origin, SessionError};
 
 fn owner(name: &str) -> Incarnation {
     Caller::for_test(Arc::from(name), KindCode::Plane)
@@ -30,32 +31,53 @@ fn recording() -> (CarrierSink, Arc<Mutex<Vec<Vec<u8>>>>) {
     (sink, seen)
 }
 
+/// One request answer as a line session reads it.
+fn answered(
+    items: Vec<PlaneOut<'_>>,
+    carriers: &LineCarriers,
+    me: &Incarnation,
+) -> Result<Vec<u8>, LineRefused> {
+    let effects = LineEffects {
+        carriers,
+        owner: me,
+    };
+    let mut once = Once::default();
+    let mut answer = Answer::default();
+    for item in items {
+        answer.take(item, Origin::Request, &mut once, &effects);
+    }
+    line_of(answer.seal().client)
+}
+
 #[test]
 fn body_pieces_are_one_line_and_respond_and_head_are_not_written() {
     let carriers = LineCarriers::new();
     let me = owner("mcp");
-    let mut answer = LineAnswer::default();
-    for item in [
-        PlaneOut::Respond { status: 200 },
-        PlaneOut::Header("content-type", b"application/json"),
-        PlaneOut::Body(b"{\"a\":"),
-        PlaneOut::Body(b"1}"),
-        PlaneOut::End,
-        PlaneOut::Finish,
-    ] {
-        answer.take(item, &carriers, &me);
-    }
-    assert_eq!(answer.into_line().unwrap(), b"{\"a\":1}".to_vec());
+    let line = answered(
+        vec![
+            PlaneOut::Respond { status: 200 },
+            PlaneOut::Header("content-type", b"application/json"),
+            PlaneOut::Body(b"{\"a\":"),
+            PlaneOut::Body(b"1}"),
+            PlaneOut::End,
+            PlaneOut::Finish,
+        ],
+        &carriers,
+        &me,
+    );
+    assert_eq!(line.unwrap(), b"{\"a\":1}".to_vec());
 }
 
 #[test]
 fn an_answer_with_no_body_writes_no_line() {
     let carriers = LineCarriers::new();
     let me = owner("mcp");
-    let mut answer = LineAnswer::default();
-    answer.take(PlaneOut::Respond { status: 202 }, &carriers, &me);
-    answer.take(PlaneOut::End, &carriers, &me);
-    assert!(answer.into_line().unwrap().is_empty());
+    let line = answered(
+        vec![PlaneOut::Respond { status: 202 }, PlaneOut::End],
+        &carriers,
+        &me,
+    );
+    assert!(line.unwrap().is_empty());
 }
 
 #[test]
@@ -64,18 +86,19 @@ fn an_emit_goes_to_its_carrier_at_once_not_into_the_response_line() {
     let me = owner("mcp");
     let (sink, seen) = recording();
     let id = carriers.open(&me, Arc::from("anon"), sink).get();
-    let mut answer = LineAnswer::default();
-    answer.take(
-        PlaneOut::Emit {
-            carrier: id,
-            bytes: b"{\"ask\":1}",
-        },
+    let line = answered(
+        vec![
+            PlaneOut::Emit {
+                carrier: id,
+                bytes: b"{\"ask\":1}",
+            },
+            PlaneOut::Body(b"{\"r\":1}"),
+        ],
         &carriers,
         &me,
     );
     assert_eq!(*seen.lock().unwrap(), vec![b"{\"ask\":1}".to_vec()]);
-    answer.take(PlaneOut::Body(b"{\"r\":1}"), &carriers, &me);
-    assert_eq!(answer.into_line().unwrap(), b"{\"r\":1}".to_vec());
+    assert_eq!(line.unwrap(), b"{\"r\":1}".to_vec());
     assert_eq!(carriers.dropped(), 0);
 }
 
@@ -86,27 +109,35 @@ fn an_emit_to_a_carrier_another_instance_owns_is_dropped_and_counted() {
     let id = carriers
         .open(&owner("other"), Arc::from("anon"), sink)
         .get();
-    let mut answer = LineAnswer::default();
-    answer.take(
-        PlaneOut::Emit {
+    let line = answered(
+        vec![PlaneOut::Emit {
             carrier: id,
             bytes: b"x",
-        },
+        }],
         &carriers,
         &owner("mcp"),
     );
     assert!(seen.lock().unwrap().is_empty());
     assert_eq!(carriers.dropped(), 1);
-    assert!(answer.into_line().unwrap().is_empty());
+    assert!(line.unwrap().is_empty());
 }
 
 #[test]
-fn an_intent_this_slice_does_not_drive_refuses_the_line() {
+fn a_message_item_has_no_line_form() {
     let carriers = LineCarriers::new();
     let me = owner("mcp");
-    let mut answer = LineAnswer::default();
-    answer.take(PlaneOut::Forward { stream: false }, &carriers, &me);
-    assert!(answer.into_line().is_err());
+    let line = answered(
+        vec![PlaneOut::Msg {
+            flags: 1,
+            bytes: b"x",
+        }],
+        &carriers,
+        &me,
+    );
+    assert!(matches!(
+        line,
+        Err(LineRefused::Session(SessionError::NotDriven))
+    ));
 }
 
 #[test]
