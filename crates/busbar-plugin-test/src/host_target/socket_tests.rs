@@ -632,3 +632,221 @@ fn unserved_failure_cannot_be_hidden_by_omitting_finish() {
     })
     .is_err());
 }
+
+#[test]
+fn reservation_release_before_connect_and_close_release_race_are_safe() {
+    run(async {
+        let (addr, server) = echo().await;
+        let needs = host(addr);
+        let cx = caller(1);
+        let dest = addr.to_string();
+        let target = needs.socket_report().unwrap();
+        let opening = target.prepare(&cx, open(&dest), 99, 99).unwrap();
+        target.release(&cx);
+        assert!(
+            target.finish().is_err(),
+            "reservation counts until the future actually releases it"
+        );
+        assert!(matches!(opening.run().await, Err(NeedErr::Closed)));
+        target.finish().unwrap();
+        for chain in 1..=16 {
+            let needs = std::sync::Arc::new(host(addr));
+            let cx = caller(chain);
+            let first = needs.open_answer(&cx, open(&dest)).await.unwrap();
+            let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+            let closing = needs.clone();
+            let signal = barrier.clone();
+            let thread = std::thread::spawn(move || {
+                signal.wait();
+                run(async {
+                    closing.close(&cx, ConnId(first.id), true).await;
+                });
+            });
+            barrier.wait();
+            needs.release(&cx);
+            thread.join().unwrap();
+            let next = caller(chain + 100);
+            let opened = needs.open_answer(&next, open(&dest)).await.unwrap();
+            needs
+                .write_answer(&next, ConnId(opened.id), b"q")
+                .await
+                .unwrap();
+            assert_eq!(
+                needs
+                    .read_answer(&next, ConnId(opened.id), 1)
+                    .await
+                    .unwrap()
+                    .bytes
+                    .as_slice(),
+                b"q"
+            );
+            needs.release(&next);
+            needs.socket_report().unwrap().finish().unwrap();
+        }
+        server.abort();
+    });
+}
+#[test]
+fn capacity_and_pool_keys_never_alias_instances_or_egress() {
+    run(async {
+        let (addr, server) = echo().await;
+        let dest = addr.to_string();
+        let mut targets = SocketTargets::new(Limits {
+            live: 2,
+            ..limits()
+        })
+        .unwrap();
+        targets.allow("db", addr, Security::Plaintext).unwrap();
+        let needs = FakeNeeds::new().with_sockets(targets).unwrap();
+        let cx = caller(1);
+        let a = needs.open_answer(&cx, open(&dest)).await.unwrap();
+        let b = needs.open_answer(&cx, open(&dest)).await.unwrap();
+        assert!(matches!(
+            needs.open_answer(&cx, open(&dest)).await,
+            Err(NeedErr::Limit)
+        ));
+        needs.close(&cx, ConnId(a.id), true).await;
+        needs.close(&cx, ConnId(b.id), false).await;
+        let mut foreign = caller(2);
+        foreign.instance = 2;
+        let f = needs.open_answer(&foreign, open(&dest)).await.unwrap();
+        assert_eq!(
+            f.flags & open_flag::REUSED,
+            0,
+            "another instance never borrows the idle socket"
+        );
+        needs.close(&foreign, ConnId(f.id), false).await;
+        let c = needs
+            .open_answer(
+                &cx,
+                OpenNeed {
+                    egress: 4,
+                    ..open(&dest)
+                },
+            )
+            .await
+            .unwrap();
+        assert_ne!(c.pooled, a.pooled);
+        assert_eq!(c.flags & open_flag::REUSED, 0);
+        needs.release(&cx);
+        needs.release(&foreign);
+        needs.socket_report().unwrap().finish().unwrap();
+        server.abort();
+    });
+}
+#[test]
+fn declared_client_identity_is_bound_and_verified_without_exposing_its_key() {
+    run(async {
+        use crate::suites::harness::MemBinder;
+        use busbar_plugin_loader::binder::ConfigBinder;
+        use rustls::pki_types::{pem::PemObject, CertificateDer, PrivateKeyDer};
+        use std::sync::Arc;
+        let (server_pem, server_key) = certificate();
+        let (client_pem, client_key) = certificate();
+        let mut roots = rustls::RootCertStore::empty();
+        for cert in CertificateDer::pem_slice_iter(client_pem.as_bytes()) {
+            roots.add(cert.unwrap()).unwrap();
+        }
+        let verifier =
+            busbar_contract::crypto::tls::client_verifier(Arc::new(roots), |b| b).unwrap();
+        let chain = CertificateDer::pem_slice_iter(server_pem.as_bytes())
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        let key = PrivateKeyDer::from_pem_slice(server_key.as_bytes()).unwrap();
+        let config = busbar_contract::crypto::tls::server_config(move |b| {
+            b.with_client_cert_verifier(verifier)
+                .with_single_cert(chain, key)
+        })
+        .unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            let mut tls = tokio_rustls::TlsAcceptor::from(config)
+                .accept(socket)
+                .await
+                .unwrap();
+            assert!(!tls.get_ref().1.peer_certificates().unwrap().is_empty());
+            tls.write_all(b"verified").await.unwrap();
+        });
+        let mut targets = SocketTargets::new(limits()).unwrap();
+        targets
+            .allow(
+                "db",
+                addr,
+                Security::Tls(crate::sockets::TlsProfile {
+                    server_name: "localhost".into(),
+                    alpn: vec![],
+                    trust: crate::sockets::TrustSource::Explicit {
+                        roots_pem: server_pem,
+                    },
+                    client: Some(crate::sockets::ClientSource {
+                        pointer: "/identity".into(),
+                    }),
+                }),
+            )
+            .unwrap();
+        let mut needs = FakeNeeds::new();
+        needs.secret("/identity", format!("{client_pem}{client_key}").as_bytes());
+        let needs = Arc::new(needs.with_sockets(targets).unwrap());
+        let binder = MemBinder::over(needs.clone());
+        binder
+            .bind(
+                1,
+                br#"{"identity":{"env":"CLIENT_IDENTITY"}}"#,
+                &["/identity"],
+                &[],
+                &[],
+                &[],
+            )
+            .unwrap();
+        let cx = caller(1);
+        let dest = addr.to_string();
+        assert!(matches!(
+            needs
+                .open_answer(
+                    &cx,
+                    OpenNeed {
+                        dest: &dest,
+                        tls: TlsMode::Mutual {
+                            sni: "localhost",
+                            alpn: "",
+                            trust: 0,
+                            cert: 2
+                        },
+                        egress: 2
+                    }
+                )
+                .await,
+            Err(NeedErr::Denied)
+        ));
+        let a = needs
+            .open_answer(
+                &cx,
+                OpenNeed {
+                    dest: &dest,
+                    tls: TlsMode::Mutual {
+                        sni: "localhost",
+                        alpn: "",
+                        trust: 0,
+                        cert: 1,
+                    },
+                    egress: 2,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            needs
+                .read_answer(&cx, ConnId(a.id), 32)
+                .await
+                .unwrap()
+                .bytes
+                .as_slice(),
+            b"verified"
+        );
+        needs.release(&cx);
+        needs.socket_report().unwrap().finish().unwrap();
+        server.await.unwrap();
+    });
+}
