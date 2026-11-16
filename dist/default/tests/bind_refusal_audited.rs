@@ -6,6 +6,7 @@
 
 mod common;
 
+use busbar_contract::json::{self, JsonContainerTrait, JsonValueTrait};
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
@@ -140,9 +141,9 @@ fn a_loopback_webhook_refusal_at_boot_is_one_audit_record() {
         std::thread::sleep(Duration::from_millis(50));
     };
 
-    let page: serde_json::Value = serde_json::from_str(&body).expect("the audit page is JSON");
+    let page: json::Value = json::parse_value(body.as_bytes()).expect("the audit page is JSON");
     let items = page["items"].as_array().expect("the page lists items");
-    let refusals: Vec<&serde_json::Value> = items
+    let refusals: Vec<&json::Value> = items
         .iter()
         .filter(|i| i["action"] == "plugin.need")
         .collect();

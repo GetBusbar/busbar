@@ -162,7 +162,7 @@ async fn opened(core: Arc<CoreStore>, host: &str) -> TestBook {
     book.record = std::mem::take(&mut book.record)
         .signing_with(busbar_kernel_audit::AuditSigningKey::from_seed(&[0x53; 32]));
     let book = Arc::new(Mutex::new(book));
-    let sink = super::unit_checkpoint_sink(&book, journal.clone()).unwrap();
+    let sink = super::unit_checkpoint_sink(&book, journal.clone(), None).unwrap();
     let evidence = Arc::new(UnitCheckpointEvidence::new(
         journal.clone(),
         busbar_kernel::teller::Kernel::new().durability_token(),

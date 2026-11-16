@@ -3226,6 +3226,7 @@ async fn a_late_arm_with_no_reading_writes_the_exits_own_line() {
     let arm = LateAccrual {
         custody: node.ticket_custody.clone(),
         book: book.durability.clone(),
+        line: None,
         history,
         durability_token: node.kernel.durability_token(),
         principal: PrincipalId::new("acct:late-none"),
