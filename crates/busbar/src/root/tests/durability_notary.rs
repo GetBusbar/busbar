@@ -322,11 +322,18 @@ async fn ephemeral_journal_is_bounded_after_n_requests() {
             chain.read().await.unwrap().is_ok(),
             "the retained WAL is verified from its base, never as a new genesis"
         );
-        let plan = book.lock().unwrap().prepare_audit_page(1, sample, None).unwrap();
+        let plan = book
+            .lock()
+            .unwrap()
+            .prepare_audit_page(1, sample, None)
+            .unwrap();
         let page: busbar_contract::json::Value =
             busbar_contract::json::from_slice(&plan.finish().await.unwrap()).unwrap();
         let base_seq = page["truncated_below_base"]["base_seq"]
-            .as_str().unwrap().parse::<u64>().unwrap();
+            .as_str()
+            .unwrap()
+            .parse::<u64>()
+            .unwrap();
         assert!(base_seq > 0);
         assert_eq!(page["returned_from"], (base_seq + 1).to_string());
         assert!(page["gaps"].as_array().unwrap().is_empty());

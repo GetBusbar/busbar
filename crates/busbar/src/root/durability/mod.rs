@@ -151,15 +151,23 @@ pub(crate) struct ChainAt {
 }
 impl ChainAt {
     pub async fn read(self) -> ChainRead {
+        // `read_node_walk` already verifies the retained originals from their replay base.
+        // Rechecking them as genesis would reject every legitimate Ephemeral cut.
+        Ok(Ok(self.read_walk().await?.rows))
+    }
+
+    pub(crate) async fn read_walk(
+        self,
+    ) -> std::io::Result<busbar_kernel::persistence::journal::NodeRecords> {
         let mut records = self
             .journal
-            .read_records(self.budget)
+            .read_node_walk(self.journal.node(), self.budget)
             .await
             .map_err(|error| {
                 std::io::Error::other(format!("native journal read failed: {error:?}"))
             })?;
-        records.retain(|record| record.node_seq < self.through);
-        Ok(busbar_kernel_wal::verify_journal(&records).map(|()| records))
+        records.rows.retain(|record| record.node_seq < self.through);
+        Ok(records)
     }
     fn store(&self) -> Option<&str> {
         None
