@@ -1,0 +1,529 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
+//! `config::file_core_cfg` and the settled write-back (IF §7.2, §12.10; MIGRATE-ON-BOOT r42 §4): what
+//! an instance's `open` settled, its canonical settings bag and the core config its older bag held
+//! (CORE_CFG), is written back by core without interpretation, keyed by core's own instance path and
+//! index (never the plugin's identity). On an unstamped boot this is step 5; on a stamped boot or a
+//! reload it is the seam's patch-writer edit of the same answer.
+//!
+//! Filing rules: UPSTREAM files `upstreams.<name>`, TRUST_APPROVAL `trust.<instance>.<name>`,
+//! ROUTE_MEDIA `routes.<name>.media`; a name two instances state with equal values is one entry, a
+//! different value or a clash with what the operator wrote refuses CONFIG naming the instance
+//! indices. LIMITS fills the instance's own `limits` (empty name, once; an operator key wins and the
+//! fragment's value is dropped with a report line). LIFT (empty name, one JSON pointer, once per
+//! pointer) moves a literal secret out of the settings bag into a planned 0600 secret file under the
+//! config directory and leaves a `{file: <path>}` reference; the value never enters a report. Any
+//! other section, and any fragment at all on a stamped boot (a current config moves nothing), refuses
+//! CONFIG naming the instance index. Each fragment's own schema is the boot's strict parse of the
+//! result (`Check`), which runs on the planned document before anything is written.
+
+use std::fmt;
+use std::io::Write;
+use std::os::unix::fs::OpenOptionsExt;
+use std::path::{Path, PathBuf};
+
+use busbar_contract::yaml::{self, MappingExt, Pairs, Value, ValueExt};
+use zeroize::Zeroize;
+
+use crate::patch::{rewrite, schema_insert};
+use crate::templates::Template;
+use crate::{Env, Refusal};
+
+/// `abi::core_cfg::*` (IF §8.8): the sections a plugin's `open` may hand back. 5 and 6 are retired
+/// and never reused.
+pub mod section {
+    pub const UPSTREAM: u32 = 1;
+    pub const TRUST_APPROVAL: u32 = 2;
+    pub const ROUTE_MEDIA: u32 = 3;
+    pub const LIMITS: u32 = 4;
+    pub const LIFT: u32 = 7;
+}
+
+/// One CORE_CFG fragment: the section, its name and its value in that section's grammar.
+#[derive(Debug, Clone)]
+pub struct CoreCfg {
+    pub section: u32,
+    pub name: String,
+    pub value: Value,
+}
+
+/// What instance `index`'s `open` settled. `path` is core's path of the instance's block in the
+/// document (`["store"]`, `["auth", "<name>"]`); `settings` replaces its `settings` bag (`None`: the
+/// bag as written), secret references already restored to the operator's form.
+#[derive(Debug, Clone)]
+pub struct Settled {
+    pub index: u32,
+    pub path: Vec<String>,
+    pub settings: Option<Value>,
+    pub core_cfg: Vec<CoreCfg>,
+}
+
+/// A planned 0600 secret file: a lifted literal. The bytes are wiped on drop and never printed.
+pub struct SecretFile {
+    path: PathBuf,
+    bytes: Vec<u8>,
+}
+
+impl SecretFile {
+    /// Where the file is written.
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// The slot's exact UTF-8 bytes.
+    #[must_use]
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+}
+
+impl fmt::Debug for SecretFile {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SecretFile")
+            .field("path", &self.path)
+            .field("len", &self.bytes.len())
+            .finish()
+    }
+}
+
+impl Drop for SecretFile {
+    fn drop(&mut self) {
+        self.bytes.zeroize();
+    }
+}
+
+/// The settled answers applied to a document: its new text, one report line per change, and the
+/// secret files to write first.
+#[derive(Debug)]
+pub struct Applied {
+    text: String,
+    report: Vec<String>,
+    secrets: Vec<SecretFile>,
+}
+
+impl Applied {
+    /// The document after the settled answers.
+    #[must_use]
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+
+    /// One line per change (never a secret value).
+    #[must_use]
+    pub fn report(&self) -> &[String] {
+        &self.report
+    }
+
+    /// The secret files a lift planned.
+    #[must_use]
+    pub fn secrets(&self) -> &[SecretFile] {
+        &self.secrets
+    }
+}
+
+fn refuse(index: u32, text: &str) -> Refusal {
+    Refusal::Config(format!("instance {index}: {text}"))
+}
+
+/// The instance's block: the mapping at `path` of the document.
+fn block_mut<'v>(root: &'v mut Pairs, path: &[String]) -> Option<&'v mut Pairs> {
+    let (first, rest) = path.split_first()?;
+    let Some(Value::Map(head)) = root.get_key_mut(first.as_str()) else {
+        return None;
+    };
+    let mut at: &mut Pairs = head;
+    for key in rest {
+        let Some(Value::Map(inner)) = at.get_key_mut(key.as_str()) else {
+            return None;
+        };
+        at = inner;
+    }
+    Some(at)
+}
+
+/// RFC 6901 over a settings bag.
+fn pointer_mut<'v>(root: &'v mut Value, pointer: &str) -> Option<&'v mut Value> {
+    if pointer.is_empty() {
+        return Some(root);
+    }
+    let mut at = root;
+    for raw in pointer.strip_prefix('/')?.split('/') {
+        let step = raw.replace("~1", "/").replace("~0", "~");
+        at = match at {
+            Value::Map(entries) => {
+                let found = entries
+                    .iter()
+                    .position(|(key, _)| key.as_text() == Some(step.as_str()))?;
+                &mut entries[found].1
+            }
+            Value::Array(items) => items.get_mut(step.parse::<usize>().ok()?)?,
+            _ => return None,
+        };
+    }
+    Some(at)
+}
+
+fn valid_name(name: &str) -> bool {
+    (1..=64).contains(&name.len())
+        && name.bytes().all(|b| {
+            b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'_' | b'.' | b'-')
+        })
+}
+
+/// Where a named fragment lands: the document path, the section's word for the report.
+fn target(frag: &CoreCfg, instance: &str, index: u32) -> Result<Vec<String>, Refusal> {
+    let (head, ok): (Vec<&str>, bool) = match frag.section {
+        section::UPSTREAM => (vec!["upstreams"], valid_name(&frag.name)),
+        section::TRUST_APPROVAL => (vec!["trust", instance], valid_name(&frag.name)),
+        section::ROUTE_MEDIA => (
+            vec!["routes"],
+            !frag.name.is_empty() && frag.name.bytes().all(|b| b.is_ascii_digit()),
+        ),
+        _ => (Vec::new(), false),
+    };
+    if !ok {
+        return Err(refuse(
+            index,
+            &format!(
+                "core config section {} carries the name `{}`, which that section does not accept",
+                frag.section, frag.name
+            ),
+        ));
+    }
+    let mut path: Vec<String> = head.into_iter().map(str::to_owned).collect();
+    path.push(frag.name.clone());
+    if frag.section == section::ROUTE_MEDIA {
+        path.push("media".to_owned());
+    }
+    Ok(path)
+}
+
+/// Put `value` at `path`, creating the mappings on the way; `Ok(false)` when an equal value is
+/// already there; CONFIG when the operator's value differs.
+fn put(root: &mut Pairs, path: &[String], value: &Value, index: u32) -> Result<bool, Refusal> {
+    let shown = path.join(".");
+    let clash = || {
+        refuse(
+            index,
+            &format!("`{shown}` is already written by the operator with another value"),
+        )
+    };
+    let Some((last, parents)) = path.split_last() else {
+        return Ok(false);
+    };
+    let mut at: &mut Pairs = root;
+    for (depth, key) in parents.iter().enumerate() {
+        if at.get_key(key.as_str()).is_none() {
+            if depth == 0 {
+                schema_insert(at, key, Value::Map(Pairs::new()));
+            } else {
+                at.insert_key(key.as_str(), Value::Map(Pairs::new()));
+            }
+        }
+        at = match at.get_key_mut(key.as_str()) {
+            Some(Value::Map(inner)) => inner,
+            _ => return Err(clash()),
+        };
+    }
+    match at.get_key(last.as_str()) {
+        Some(existing) if yaml::same_tree(existing, value) => Ok(false),
+        Some(_) => Err(clash()),
+        None => {
+            at.insert_key(last.as_str(), value.clone());
+            Ok(true)
+        }
+    }
+}
+
+/// The directory beside config.yaml that lifted secrets are written in.
+fn secret_path(dir: &Path, instance: &[String], pointer: &str) -> Result<PathBuf, Refusal> {
+    let digest = busbar_contract::crypto::sha256(pointer.as_bytes());
+    let tag: String = digest[..6]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    let slug: String = instance
+        .join("-")
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let file = dir.join(format!("{slug}.{tag}.secret"));
+    if file.to_str().is_none() {
+        return Err(Refusal::Config(format!(
+            "{} is not UTF-8, so a lifted secret cannot be referenced there; nothing was written",
+            file.display()
+        )));
+    }
+    Ok(file)
+}
+
+/// What one instance's settled answer changes inside its own block: its bag, its `limits`, its lifts.
+fn settle_block(
+    block: &mut Pairs,
+    answer: &Settled,
+    dir: &Path,
+    report: &mut Vec<String>,
+    secrets: &mut Vec<SecretFile>,
+) -> Result<(), Refusal> {
+    let index = answer.index;
+    let shown = answer.path.join(".");
+    if let Some(settings) = &answer.settings {
+        block.insert_key("settings", settings.clone());
+    }
+    let mut limits_seen = false;
+    let mut lifted: Vec<&str> = Vec::new();
+    for frag in &answer.core_cfg {
+        match frag.section {
+            section::LIMITS => {
+                if !frag.name.is_empty() || limits_seen {
+                    return Err(refuse(
+                        index,
+                        "`limits` carries an empty name and appears once",
+                    ));
+                }
+                limits_seen = true;
+                let Value::Map(fragment) = &frag.value else {
+                    return Err(refuse(index, "`limits` is not a mapping"));
+                };
+                let Value::Map(limits) =
+                    block.entry_or_insert_with("limits", || Value::Map(Pairs::new()))
+                else {
+                    return Err(refuse(index, &format!("`{shown}.limits` is not a mapping")));
+                };
+                for (key, value) in fragment {
+                    let held = limits
+                        .iter()
+                        .find(|(held_key, _)| held_key == key)
+                        .map(|(_, held)| held.clone());
+                    match held {
+                        None => limits.push((key.clone(), value.clone())),
+                        Some(held) if yaml::same_tree(&held, value) => {}
+                        Some(_) => report.push(format!(
+                            "{shown}.limits.{}: the operator's value is kept, and instance \
+                             {index}'s old setting is dropped (operator config is never \
+                             overwritten)",
+                            key.as_text().unwrap_or("?")
+                        )),
+                    }
+                }
+            }
+            section::LIFT => {
+                let (Some(pointer), true) = (frag.value.as_text(), frag.name.is_empty()) else {
+                    return Err(refuse(
+                        index,
+                        "a lift carries an empty name and one JSON pointer string",
+                    ));
+                };
+                if lifted.contains(&pointer) {
+                    return Err(refuse(
+                        index,
+                        &format!("the lift of `{pointer}` appears more than once"),
+                    ));
+                }
+                lifted.push(pointer);
+                let bag = block.get_key_mut("settings").ok_or_else(|| {
+                    refuse(
+                        index,
+                        "a lift names a slot, but the instance has no settings",
+                    )
+                })?;
+                let slot = pointer_mut(bag, pointer)
+                    .filter(|slot| slot.as_text().is_some())
+                    .ok_or_else(|| {
+                        refuse(
+                            index,
+                            &format!("the lift of `{pointer}` names no string in its settings"),
+                        )
+                    })?;
+                let file = secret_path(dir, &answer.path, pointer)?;
+                let reference = Value::Map(vec![(
+                    Value::from("file"),
+                    Value::from(file.to_str().unwrap_or_default()),
+                )]);
+                let Value::Text(literal) = std::mem::replace(slot, reference) else {
+                    return Err(refuse(index, "a lifted slot was not text"));
+                };
+                report.push(format!(
+                    "{shown}: the literal secret at `{pointer}` moved to the 0600 file {}",
+                    file.display()
+                ));
+                secrets.push(SecretFile {
+                    path: file,
+                    bytes: literal.into_bytes(),
+                });
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+/// File one named fragment (UPSTREAM, TRUST_APPROVAL, ROUTE_MEDIA) of `index`: one entry when another
+/// instance stated it with an equal value, CONFIG naming both indices when the values differ.
+fn file_named(
+    root: &mut Pairs,
+    filed: &mut Vec<(String, Value, u32)>,
+    frag: &CoreCfg,
+    instance: &str,
+    index: u32,
+    report: &mut Vec<String>,
+) -> Result<(), Refusal> {
+    let path = target(frag, instance, index)?;
+    let id = path.join(".");
+    if let Some((_, held, other)) = filed.iter().find(|(held_id, _, _)| *held_id == id) {
+        if yaml::same_tree(held, &frag.value) {
+            return Ok(());
+        }
+        return Err(Refusal::Config(format!(
+            "instance {other} and instance {index} state `{id}` with different values"
+        )));
+    }
+    if put(root, &path, &frag.value, index)? {
+        report.push(format!("{id}: filed from instance {index}'s old settings"));
+    }
+    filed.push((id, frag.value.clone(), index));
+    Ok(())
+}
+
+/// Apply `settled` to `text` (config.yaml, after the chain): each instance's bag replaced, its
+/// CORE_CFG filed, its LIFT pointers lifted. `stamped` is a stamped boot or a reload: no fragment is
+/// then accepted. Nothing is written; the secret files are the caller's to write ([`write_secrets`]).
+///
+/// # Errors
+/// CONFIG naming the instance index for any rule above, or when the patch writer cannot keep the
+/// operator's text (VERIFY).
+#[cold]
+#[inline(never)]
+pub fn apply_settled(
+    text: &str,
+    config: &Path,
+    settled: &[Settled],
+    stamped: bool,
+    env: Env,
+) -> Result<Applied, Refusal> {
+    let mut report = Vec::new();
+    let mut secrets = Vec::new();
+    if settled.is_empty() {
+        return Ok(Applied {
+            text: text.to_owned(),
+            report,
+            secrets,
+        });
+    }
+    let template = Template::read(text, env, "config.yaml")?;
+    let mut after = template.tree().clone();
+    let dir = match config.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => {
+            std::path::absolute(parent).unwrap_or_else(|_| parent.to_path_buf())
+        }
+        _ => std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+    };
+    let Value::Map(root) = &mut after else {
+        return Ok(Applied {
+            text: text.to_owned(),
+            report,
+            secrets,
+        });
+    };
+    let mut filed: Vec<(String, Value, u32)> = Vec::new();
+    for answer in settled {
+        let index = answer.index;
+        if stamped && !answer.core_cfg.is_empty() {
+            return Err(refuse(
+                index,
+                "answered core config for a current config, which moves nothing; the instance \
+                 must not hand back CORE_CFG when its settings are already canonical",
+            ));
+        }
+        let shown = answer.path.join(".");
+        let block = block_mut(root, &answer.path).ok_or_else(|| {
+            refuse(
+                index,
+                &format!("`{shown}` is not an instance block of this document"),
+            )
+        })?;
+        settle_block(block, answer, &dir, &mut report, &mut secrets)?;
+        let instance = answer.path.last().map_or("", String::as_str);
+        for frag in &answer.core_cfg {
+            match frag.section {
+                section::LIMITS | section::LIFT => {}
+                section::UPSTREAM | section::TRUST_APPROVAL | section::ROUTE_MEDIA => {
+                    file_named(root, &mut filed, frag, instance, index, &mut report)?;
+                }
+                other => {
+                    return Err(refuse(
+                        index,
+                        &format!("core config section {other} is not one this release reads"),
+                    ));
+                }
+            }
+        }
+    }
+    let patched = rewrite(text, template.tree(), &after, "config.yaml")?;
+    if patched != text {
+        template.parity(&patched, &after, env, "config.yaml")?;
+    }
+    Ok(Applied {
+        text: patched,
+        report,
+        secrets,
+    })
+}
+
+/// 5a: write each planned secret file (`O_EXCL`, 0600, fsynced). A file already there with the same
+/// bytes (an interrupted upgrade's) is kept; one with other bytes is refused, nothing overwritten.
+///
+/// # Errors
+/// CONFIG naming the file.
+#[cold]
+#[inline(never)]
+pub fn write_secrets(secrets: &[SecretFile]) -> Result<(), Refusal> {
+    for secret in secrets {
+        let shown = secret.path.display();
+        match std::fs::read(&secret.path) {
+            Ok(mut held) => {
+                let same = held == secret.bytes;
+                held.zeroize();
+                if same {
+                    continue;
+                }
+                return Err(Refusal::Config(format!(
+                    "{shown} exists and holds other bytes than the secret this upgrade lifts; move \
+                     it aside, then boot again; nothing was written"
+                )));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(Refusal::Config(format!(
+                    "cannot read {shown}: {error}; nothing was written"
+                )))
+            }
+        }
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&secret.path)
+            .map_err(|error| {
+                Refusal::Config(format!(
+                    "cannot create {shown}: {error}; nothing was renamed"
+                ))
+            })?;
+        file.write_all(&secret.bytes)
+            .and_then(|()| file.sync_all())
+            .map_err(|error| Refusal::Config(format!("cannot write {shown}: {error}")))?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+#[path = "tests/settle_tests.rs"]
+mod tests;

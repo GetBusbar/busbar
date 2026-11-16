@@ -12,7 +12,7 @@ A plane registration (an MCP server under `tools:`, an A2A agent under `agents:`
 
 ## How to fix it
 
-Run `busbar --migrate-config`: it removes the key and lists exactly that registration's host in `advanced.allow_destinations`. Or do the same by hand: delete `allow_private` and add the host (or its address) to `advanced.allow_destinations`. A cloud-metadata address stays refused whatever is listed.
+Delete `allow_private` and add the host (or its address) to `advanced.allow_destinations`. A cloud-metadata address stays refused whatever is listed.
 
 ---
 

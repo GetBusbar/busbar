@@ -1,36 +1,20 @@
 ---
-title: "BUSBAR-3402: --migrate-config could not read the file it was given"
+title: "BUSBAR-3402: The retired migration command could not read the file it was given — RETIRED"
 description: "What Busbar error BUSBAR-3402 means, why it happens, and how to fix it."
 slug: docs/1.6/errors/BUSBAR-3402
 ---
 
 **Area:** Config (3xxx) · **Severity:** fatal · **Since:** 1.6.0
 
-## Message
-
-```text
-BUSBAR-3402: cannot read '<path>': <error>. See https://getbusbar.com/docs/1.6/errors/BUSBAR-3402
-```
+> **Retired.** Busbar no longer reports this code. The page stays so an old log line still resolves; the code is never reused.
 
 ## What it means
 
-The old config file named to `--migrate-config` could not be read: it does not exist, it is not readable by this user, or it is not UTF-8 text. The operating system's reason follows the path. Nothing was migrated.
+RETIRED. Nothing emits this code: the retired migration command is gone in 1.6.0; the first boot of a 1.5.5 config migrates it in place and keeps a `config.yaml.1.5.5` backup beside it. The number is kept so a log line from a pre-release build still resolves to this page.
 
 ## How to fix it
 
-Check the path and its permissions, then run the migration again.
-
-## Example
-
-```text
-busbar --migrate-config /etc/busbar/old.yaml
-```
-
-Busbar reports:
-
-```text
-BUSBAR-3402: cannot read '/etc/busbar/old.yaml': No such file or directory (os error 2). See https://getbusbar.com/docs/1.6/errors/BUSBAR-3402
-```
+Nothing emits this code. Start busbar on the 1.5.5 config.yaml; the boot migrates it. See docs/migration-1.6.md.
 
 ---
 

@@ -43,7 +43,7 @@ The sections below list every change by release.
 ## From 1.2.x: routing, hooks and auth (1.3)
 
 1.3 moved routing and hooks into one per-pool `hooks:` list and replaced `auth.mode`.
-`busbar --migrate-config` rewrites all of these; the 1.5.5 shape is shown.
+the first-boot migration rewrites all of these; the 1.5.5 shape is shown.
 
 | 1.2.x | 1.5.5 |
 |---|---|
@@ -156,7 +156,7 @@ The `governance:` block dissolved; its contents moved to owning top-level keys:
 | `governance.budget_groups` | `groups:` (the generic limit tree, described below) |
 | `governance.rate_card` | top-level `rate_card:` |
 | `governance.price_per_request_cents` | top-level `per_request_fee:` |
-| `governance.price_per_1k_tokens_cents` / member `cost_per_mtok` | `rate_card:` is the only cost source (`--migrate-config` synthesizes card entries) |
+| `governance.price_per_1k_tokens_cents` / member `cost_per_mtok` | `rate_card:` is the only cost source (the first-boot migration synthesizes card entries) |
 | `governance.store` / `governance.db_path` | `store: { module, settings }` |
 | `governance.admin_token` | the `admin-tokens` module's `token` secret reference |
 | `governance.rate_sweep_interval` / `usage_flush_interval_ms` | `advanced:` |
@@ -227,7 +227,7 @@ store:
   settings: { url: "postgres://user:pass@host/busbar" }
 ```
 
-> **Renamed in 1.5.3 (the only place these words still appear):** the first-party Redis-protocol store plugin is now **Valkey**. `store.module: redis` → `valkey`, artifact `busbar-store-redis-*.tar.gz` → `busbar-store-valkey-<ver>-<target>.tar.gz`, manifest name `busbar-store-redis` → `busbar-store-valkey`. `busbar --migrate-config` rewrites the module for you and boot loud-fails on the old spelling; install the renamed tarball, and leave your `settings.url` alone (`redis://` / `rediss://` is the driver's URL scheme, not a Busbar name). Any `plugins.min_versions` / pinned version floor keyed by the OLD name no longer applies. Re-pin it under the new name if you rely on it.
+> **Renamed in 1.5.3 (the only place these words still appear):** the first-party Redis-protocol store plugin is now **Valkey**. `store.module: redis` → `valkey`, artifact `busbar-store-redis-*.tar.gz` → `busbar-store-valkey-<ver>-<target>.tar.gz`, manifest name `busbar-store-redis` → `busbar-store-valkey`. the first-boot migration rewrites the module for you and boot loud-fails on the old spelling; install the renamed tarball, and leave your `settings.url` alone (`redis://` / `rediss://` is the driver's URL scheme, not a Busbar name). Any `plugins.min_versions` / pinned version floor keyed by the OLD name no longer applies. Re-pin it under the new name if you rely on it.
 
 See [Configuration → `store`](configuration.md#store) and [plugins.md](plugins.md).
 
@@ -395,7 +395,7 @@ Define once, reference many; the name is the instance, `module:` is which plugin
 carry config.
 
 Every change below is detected at boot: an un-migrated config **refuses to start**, naming the
-retired key AND its new home. `busbar --migrate-config <config.yaml>` rewrites all of them.
+retired key AND its new home. the first-boot migration rewrites all of them.
 
 | Retired in 1.5.2 and earlier | 1.5.3 |
 |---|---|

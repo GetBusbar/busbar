@@ -64,6 +64,55 @@ impl StoreRow<LinkedStoreDoor> {
 
 pub type StoreAxisOf =
     fn() -> std::sync::Arc<dyn busbar_contract::persistence::axis::PersistenceAxis>;
+
+/// The store's MIN-3 open (W2-SW-STORE; IF §11.2 `Registry::open_store`, §11.3): the one way the kernel's store
+/// boot opens its configured store. The answer's backend is the store adapter, the kernel's own
+/// `PersistenceBackend` over the proxy (on the store lane for a blocking-file store); there is no other store
+/// port. The store converts its own bag in that `open` (WBS rule 12): no migrate call is made here.
+pub trait StoreOpener: Send + Sync {
+    /// `Registry::open_store` for `spec`.
+    fn open_store<'a>(
+        &'a self,
+        spec: &'a busbar_plugin_loader::instance::InstanceSpec<'a>,
+    ) -> busbar_plugin_abi::host_side::caller::BoxFut<
+        'a,
+        Result<
+            busbar_plugin_loader::ports::store::StoreHandle,
+            busbar_plugin_loader::instance::OpenError,
+        >,
+    >;
+}
+
+impl<N: busbar_plugin_abi::host_side::needs::Needs> StoreOpener
+    for busbar_plugin_loader::instance::Registry<N>
+{
+    fn open_store<'a>(
+        &'a self,
+        spec: &'a busbar_plugin_loader::instance::InstanceSpec<'a>,
+    ) -> busbar_plugin_abi::host_side::caller::BoxFut<
+        'a,
+        Result<
+            busbar_plugin_loader::ports::store::StoreHandle,
+            busbar_plugin_loader::instance::OpenError,
+        >,
+    > {
+        busbar_plugin_loader::instance::Registry::open_store(self, spec)
+    }
+}
+
+static STORE_OPENER: std::sync::OnceLock<Arc<dyn StoreOpener>> = std::sync::OnceLock::new();
+
+/// Installs the boot's MIN-3 registry as the store opener, once per process. `false` when one is already
+/// installed (the first stays).
+pub fn install_store_opener(opener: Arc<dyn StoreOpener>) -> bool {
+    STORE_OPENER.set(opener).is_ok()
+}
+
+/// The installed store opener, if the boot installed one.
+#[must_use]
+pub fn store_opener() -> Option<&'static Arc<dyn StoreOpener>> {
+    STORE_OPENER.get()
+}
 use busbar_contract::plugin_rows::PluginRows;
 pub use busbar_kernel_identity::operator::LinkedAuth;
 
@@ -548,7 +597,9 @@ fn missing_plugin_error(
     want: PluginRef<'_>,
     loadable: &[busbar_contract::plugin_rows::Row],
 ) -> String {
-    format!(
+    // On the upgrade boot of an unstamped config, a name no installed plugin answers may predate
+    // 1.5.5: the refusal carries the one generic upgrade line (MIGRATE-ON-BOOT §A2).
+    busbar_contract::upgrade::unknown_module(format!(
         "{} is installed in '{dir}' (plugins ARE enabled; loadable: [{}]). Two things to \
                  check: is the plugin subsystem enabled? (it is) — and is the signed {}tarball \
                  actually IN the folder? \
@@ -561,7 +612,7 @@ fn missing_plugin_error(
             .join(", "),
         want.label,
         want.remedy
-    )
+    ))
 }
 
 fn require_plugin(
@@ -809,7 +860,7 @@ pub fn plugins_preflight(
                          it was not loaded: {}",
                         s.name, s.file, s.reason
                     ),
-                    None => format!(
+                    None => busbar_contract::upgrade::unknown_module(format!(
                         "identity-providers.{name}.module: no `kind: auth` plugin named or aliased \
                          '{module}' is installed in '{}' (plugins ARE enabled), and it is not a \
                          built-in. The modules a provider may name right now are: {}. Check the \
@@ -817,7 +868,7 @@ pub fn plugins_preflight(
                          add the signed tarball to the plugins directory, or name a built-in.",
                         plugins_cfg.dir,
                         valid_identity_provider_modules(rows)
-                    ),
+                    )),
                 });
             }
         }

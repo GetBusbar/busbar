@@ -12,7 +12,7 @@ busbar 1.6 no longer reads BUSBAR_PROVIDERS, BUSBAR_WORKER_THREADS, BUSBAR_UPSTR
 
 ## How to fix it
 
-Run busbar --migrate-config in the old launch environment to write the value into config.yaml, validate, then remove the variable from the launcher.
+Write the value into config.yaml, validate, then remove the variable from the launcher.
 
 ---
 

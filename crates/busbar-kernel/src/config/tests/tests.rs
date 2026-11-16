@@ -75,6 +75,7 @@ fn provider_deploy(env_var: &str) -> ProviderDeploy {
 pub(crate) fn base_deploy() -> DeployCfg {
     DeployCfg {
         declared: Default::default(),
+        config_version: None,
         listen: DEFAULT_LISTEN_ADDR.into(),
         listen_explicit: false,
         authored_routing: None,
@@ -2730,10 +2731,11 @@ fn core_sections_parse_directly_and_are_named_in_unknown_field_errors() {
     };
     let error = parse("bogus_key: true\n").expect_err("unknown field");
     // `oauth_as` and `credentials` are named among the document's fields, in 1.5.5's spelling
-    // (serde's backticked list).
+    // (serde's backticked list). `config_version` is the 1.6.0 stamp (MIGRATE-ON-BOOT r42 §3, 257c).
     assert_eq!(
         error.to_string(),
-        "bogus_key: unknown field `bogus_key`, expected one of `listen`, `public_url`, `tls`, \
+        "bogus_key: unknown field `bogus_key`, expected one of `config_version`, `listen`, \
+         `public_url`, `tls`, \
          `admin_listen`, `config`, `providers_file`, `oauth_as`, `credentials`, `admin_tls`, \
          `admin_require_mtls`, `auth`, `identity-providers`, `providers`, `models`, `pools`, \
          `hooks`, `groups`, `rate_card`, `plugin_rate_cards`, `per_request_fee`, `store`, \
@@ -3017,12 +3019,6 @@ pub(crate) fn install_normal_root_metadata() {
                 })
                 .collect()
         };
-        let migration = Box::leak(table("migration").into_boxed_slice());
-        assert!(
-            !migration.is_empty(),
-            "the normal root carries its migration table"
-        );
-        crate::config::declared_vocabulary::install(migration);
         let operator = table("operator-auth");
         let row = operator
             .iter()
@@ -3056,4 +3052,35 @@ pub(crate) fn install_normal_root_metadata() {
             ),
         );
     });
+}
+
+/// MIGRATE-ON-BOOT r42 §3: a stamped config.yaml (`config_version: 1`, its first key) passes the
+/// strict parse; the seam has already judged the value.
+#[test]
+fn a_stamped_config_passes_the_strict_parse() {
+    let grammar = crate::config::Grammar::empty();
+    let stamped = "config_version: 1\nlisten: 0.0.0.0:8080\nproviders: {}\nmodels: {}\n";
+    let deploy = crate::config::deploy_from_yaml_str(stamped, &grammar)
+        .unwrap_or_else(|error| panic!("a stamped config is refused: {error}"));
+    assert_eq!(deploy.listen, "0.0.0.0:8080");
+    let unstamped = "listen: 0.0.0.0:8080\nproviders: {}\nmodels: {}\n";
+    assert!(crate::config::deploy_from_yaml_str(unstamped, &grammar).is_ok());
+}
+
+/// MIGRATE-ON-BOOT r41 §9 C1 (u)(2): the schema order the one-time upgrade places an added
+/// top-level key by is the document's own field order.
+#[test]
+fn document_keys_are_the_schema_order_of_config_yaml() {
+    let keys = crate::config::document_keys();
+    let at = |key: &str| {
+        keys.iter()
+            .position(|k| *k == key)
+            .unwrap_or_else(|| panic!("`{key}` is a top-level key: {keys:?}"))
+    };
+    assert_eq!(keys.first(), Some(&"config_version"), "{keys:?}");
+    assert!(at("listen") < at("providers_file"));
+    assert!(at("providers_file") < at("models"));
+    assert!(at("rate_card") < at("store"));
+    assert!(at("store") < at("advanced"));
+    assert!(at("identity-providers") < at("providers"));
 }

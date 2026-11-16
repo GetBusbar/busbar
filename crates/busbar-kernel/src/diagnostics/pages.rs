@@ -136,8 +136,8 @@ fn render_index(catalog: &[&Diagnostic]) -> String {
     out.push_str("---\n\n");
     out.push_str(
         "Every operator-facing error and warning Busbar prints carries a permanent `BUSBAR-NNNN` \
-         code: config refusals at `--validate` and startup, `--migrate-config` messages, CLI errors, \
-         admin API error responses (the `code` field) and warn/error log lines (the `diag` field). \
+         code: config refusals at `--validate` and startup (the one-time upgrade included), CLI \
+         errors, admin API error responses (the `code` field) and warn/error log lines (the `diag` field). \
          A message reads `BUSBAR-NNNN: <what is wrong>. See <link>`; the link is the code's page \
          below. Codes are never reused: a retired code keeps its page.\n\n",
     );

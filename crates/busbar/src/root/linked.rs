@@ -274,7 +274,7 @@ pub(crate) fn linked_exports(
             former_names: Vec::new(),
         })
     };
-    let mut rows = doors
+    doors
         .iter()
         .map(|d| {
             manifest(d.name, d.alias, d.declares).map(|m| {
@@ -287,16 +287,7 @@ pub(crate) fn linked_exports(
                     .with_former_names(door_words(d.former_names, &rewrites))
             })
         })
-        .collect::<Result<Vec<_>, String>>()?;
-
-    let order = crate::root::migration_table::export_order();
-    rows.sort_by_key(|p| {
-        order
-            .iter()
-            .position(|m| *m == p.manifest.alias)
-            .unwrap_or(usize::MAX)
-    });
-    Ok(rows)
+        .collect::<Result<Vec<_>, String>>()
 }
 
 pub struct RootUnit {

@@ -7,11 +7,11 @@
 use super::*;
 use std::time::Duration;
 
-fn p(s: &str) -> SocketAddr {
+pub(super) fn p(s: &str) -> SocketAddr {
     s.parse().expect("addr")
 }
 
-fn creds(ufrag: &str, pwd: &str) -> IceCredentials {
+pub(super) fn creds(ufrag: &str, pwd: &str) -> IceCredentials {
     IceCredentials {
         ufrag: ufrag.into(),
         pwd: pwd.into(),
@@ -19,7 +19,7 @@ fn creds(ufrag: &str, pwd: &str) -> IceCredentials {
 }
 
 /// A Binding request as a peer sends it to the owner of `to`: USERNAME "to.ufrag:from_ufrag",
-fn check(to: &IceCredentials, from_ufrag: &str, key: &str) -> Vec<u8> {
+pub(super) fn check(to: &IceCredentials, from_ufrag: &str, key: &str) -> Vec<u8> {
     let username = format!("{}:{from_ufrag}", to.ufrag).into_bytes();
     let padded = username.len().div_ceil(4) * 4;
     let mut m = vec![0x00, 0x01, 0, 0, 0x21, 0x12, 0xa4, 0x42];
@@ -38,7 +38,7 @@ fn check(to: &IceCredentials, from_ufrag: &str, key: &str) -> Vec<u8> {
 }
 
 /// The success response a full ICE agent sends to a probe: same transaction id, MESSAGE-INTEGRITY
-fn answer(probe: &[u8], pwd: &str) -> Vec<u8> {
+pub(super) fn answer(probe: &[u8], pwd: &str) -> Vec<u8> {
     let mut m = vec![0x01, 0x01, 0, 0, 0x21, 0x12, 0xa4, 0x42];
     m.extend_from_slice(&probe[8..20]);
     let covered_len = u16::try_from(m.len() - 20 + 24).unwrap();
@@ -50,7 +50,7 @@ fn answer(probe: &[u8], pwd: &str) -> Vec<u8> {
     m
 }
 
-fn is_probe(d: &[u8]) -> bool {
+pub(super) fn is_probe(d: &[u8]) -> bool {
     d.len() >= 20 && d[0..2] == [0x00, 0x01]
 }
 

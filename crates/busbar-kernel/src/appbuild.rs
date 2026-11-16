@@ -453,16 +453,23 @@ pub fn read_config_documents<'a>(
     } = edits;
     let mut unset_env_vars: Vec<String> = Vec::new();
 
-    let raw_config = std::fs::read_to_string(config_path).map_err(|e| {
-        format!(
-            "cannot read config file '{}': {e} (set {ENV_CONFIG})",
-            config_path.display()
-        )
-    })?;
+    // A document the composition root holds (an unstamped boot's planned config.yaml) is read in
+    // place of the file, which is then not opened (MIGRATE-ON-BOOT r42 §3 step 2).
+    let raw_config = match rules.held_document(ConfigDocument::Deployment, config_path) {
+        Some(held) => held,
+        None => busbar_contract::secure::SecureString::from(
+            std::fs::read_to_string(config_path).map_err(|e| {
+                format!(
+                    "cannot read config file '{}': {e} (set {ENV_CONFIG})",
+                    config_path.display()
+                )
+            })?,
+        ),
+    };
     let normalized_config =
         rules.normalize_document(ConfigDocument::Deployment, config_path, &raw_config)?;
     let interpolated_config = config::interpolate_env_with(
-        normalized_config.as_deref().unwrap_or(raw_config.as_str()),
+        normalized_config.as_deref().unwrap_or(&*raw_config),
         env_mode,
         &mut unset_env_vars,
     )
@@ -476,13 +483,6 @@ pub fn read_config_documents<'a>(
         busbar_contract::yaml::from_str::<busbar_contract::yaml::Value>(&interpolated_config)
     {
         use busbar_contract::yaml::{MappingExt as _, ValueExt as _};
-        let markers = config::current_format::detect_legacy_markers(&doc);
-        if !markers.is_empty() {
-            return Err(format!(
-                "config.yaml: {}",
-                config::current_format::legacy_config_error(&markers)
-            ));
-        }
         // Startup unfolds a literal 1.5.5 `cache_write_utok: 0` before this reader; one that still
         // arrives (a runtime edit, or an env-interpolated value) is refused rather than made free.
         // Admin-API zeros live in the overlay patch, applied below, and are not touched.
@@ -571,7 +571,12 @@ fn typed_rest(
         deploy.providers_file.as_deref(),
     );
     let providers_path = location.path.clone();
-    let source = location.read()?;
+    // A held catalog (the planned `providers.busbar-1.6.yaml` step 5 creates) is read in place of
+    // its file (MIGRATE-ON-BOOT r42 §3 step 2).
+    let source = match rules.held_document(ConfigDocument::Providers, &providers_path) {
+        Some(held) => config::providers::CatalogSource::Authored(String::from(&*held)),
+        None => location.read()?,
+    };
     let normalized_providers = match &source {
         config::providers::CatalogSource::Authored(raw) => {
             rules.normalize_document(ConfigDocument::Providers, &providers_path, raw)?
@@ -1004,6 +1009,19 @@ pub enum ConfigDocument {
 pub trait RootRules: Send + Sync {
     fn check(&self, cfg: &config::RootCfg) -> Result<(), String>;
 
+    /// The document this read runs in place of the file at `path`, held in memory by the
+    /// composition root (MIGRATE-ON-BOOT r42 §3 step 2): an unstamped boot runs the *planned*
+    /// document, which step 5 writes only once every instance has opened. `Some` replaces the read
+    /// of the file (it is not opened); the held text is then normalized, interpolated and typed
+    /// exactly as the file's bytes would be. `None`, every other read, reads the file.
+    fn held_document(
+        &self,
+        _kind: ConfigDocument,
+        _path: &std::path::Path,
+    ) -> Option<busbar_contract::secure::SecureString> {
+        None
+    }
+
     /// Normalize authored bytes before environment expansion. Returning `None` preserves
     /// the exact original document. Converted material remains in wiping custody and must
     /// preserve authored secret references; this hook never publishes a configuration.
@@ -1070,8 +1088,9 @@ pub async fn bootstrap_config_store(
     cfg: &config::RootCfg,
     plugins: &config::PluginsCfg,
 ) -> Result<busbar_contract::persistence::axis::OpenedBackend, String> {
-    let (registry, resolver) = bootstrap_store_inputs(cfg, plugins).await?;
-    open_config_store(cfg.store.as_ref(), &registry, &resolver).await
+    // Validation, fetch, admission and the bootstrap secrets run as before; the open itself is the registry's.
+    bootstrap_store_inputs(cfg, plugins).await?;
+    open_config_store(cfg).await
 }
 
 /// Inspect a configured Store before ordinary OPEN can initialize or select its dataset.
@@ -1139,8 +1158,32 @@ async fn bootstrap_store_inputs(
     )?;
 
     let _signer = resolve_signing_key(cfg.auth.as_ref(), &resolver)?;
-    let _at_rest = resolve_at_rest_keys(&cfg.credentials, &resolver)?;
+    let at_rest = resolve_at_rest_keys(&cfg.credentials, &resolver);
+    publish_bootstrap_at_rest(at_rest.as_ref().map(Option::is_some).map_err(Clone::clone));
+    let _at_rest = at_rest?;
     Ok((registry, resolver))
+}
+
+/// What the latest store bootstrap resolved of `credentials.at_rest`, before the store opened:
+/// `Ok(true)` the key resolved, `Ok(false)` no `credentials.at_rest` block, `Err` the resolver's
+/// own text. The migration seam's recoverable gate reads it while the store's data step runs
+/// (MIGRATE-ON-BOOT §3 step 2 (a)); nothing else does.
+static BOOTSTRAP_AT_REST: std::sync::Mutex<Option<Result<bool, String>>> =
+    std::sync::Mutex::new(None);
+
+fn publish_bootstrap_at_rest(verdict: Result<bool, String>) {
+    *BOOTSTRAP_AT_REST
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(verdict);
+}
+
+/// The latest store bootstrap's at-rest verdict (see `BOOTSTRAP_AT_REST`); `None` before any.
+#[must_use]
+pub fn bootstrap_at_rest() -> Option<Result<bool, String>> {
+    BOOTSTRAP_AT_REST
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
 }
 
 /// The secret shorthand of the generation `cfg` was read under (SECRET-SHORTHAND-BOOT §3.4): what
@@ -1338,20 +1381,63 @@ pub fn validate_bootstrap_archive(
     Ok(())
 }
 
+/// The configured store, opened through the MIN-3 registry (W2-SW-STORE; IF §11.2 `Registry::open_store`).
+/// The bag goes in operator form (secret references with their `module`): the registry's binder binds it, the
+/// store converts an older shape inside its own `open` and the registry keeps the settled bag for the boot's
+/// write-back (`Registry::take_settled`, step 5 / 5W). The instance name is the section key, `store`.
 async fn open_config_store(
-    store: Option<&config::StoreCfg>,
-    registry: &Arc<dyn busbar_contract::plugin_rows::PluginRows>,
-    resolver: &config::secret::SecretResolver,
+    cfg: &config::RootCfg,
 ) -> Result<busbar_contract::persistence::axis::OpenedBackend, String> {
-    let (door, label, settings) = config_store_inputs(store, registry, resolver)?;
-    let failed = |error: String| format!("store '{label}' plugin load failed: {error}");
-    let axis = crate::preflight::root_rows()
-        .store_axis
-        .ok_or_else(|| failed("no store axis is installed".into()))?;
-    axis()
-        .open(door, &label, settings.as_bytes())
+    let store = cfg.store.as_ref().ok_or_else(config::store_required)?;
+    let failed = |error: String| format!("store '{}' plugin load failed: {error}", store.module);
+    let opener = crate::preflight::store_opener()
+        .ok_or_else(|| failed("no store registry is installed".into()))?;
+    let config_json = store
+        .settings
+        .encode()
+        .map_err(|error| failed(error.to_string()))?
+        .into_exposed(&crate::seal::lend());
+    let limits = cfg
+        .min3
+        .limits
+        .get(&(Box::from(STORE_INSTANCE), Box::from(STORE_INSTANCE)))
+        .map_or_else(Default::default, |limits| {
+            busbar_plugin_abi::host_side::caller::InstanceLimits {
+                timeout_ms: limits.timeout_ms,
+                connect_timeout_ms: limits.connect_timeout_ms,
+                max_inflight: limits.max_inflight,
+                ..Default::default()
+            }
+        });
+    let spec = busbar_plugin_loader::instance::InstanceSpec {
+        identity: &store.module,
+        name: STORE_INSTANCE,
+        config_json: &config_json,
+        limits,
+        public_url: None,
+        caller_upstreams: &[],
+    };
+    opener
+        .open_store(&spec)
         .await
-        .map_err(failed)
+        .map(|handle| handle.backend)
+        .map_err(|error| failed(store_open_refusal(&error)))
+}
+
+/// The store's configured instance name: its config section key.
+const STORE_INSTANCE: &str = "store";
+
+/// Core's own words for a refused store open, with the code only (IF §12.16: the plugin's text is never
+/// interpolated into a core message).
+fn store_open_refusal(error: &busbar_plugin_loader::instance::OpenError) -> String {
+    use busbar_plugin_loader::instance::OpenError;
+    match error {
+        OpenError::Refused { refusal, .. } => format!("refused: {refusal}"),
+        OpenError::Config { code, .. } => format!("its settings were refused (code {code})"),
+        OpenError::Failed { code, .. } => format!("its open failed (code {code})"),
+        OpenError::Call(_) => "its open faulted".to_owned(),
+        OpenError::Unknown(what) => format!("unknown store open answer: {what}"),
+    }
 }
 
 fn config_store_inputs(

@@ -99,6 +99,7 @@ fn table(slot: Option<ServiceFn>) -> HostSlots {
         directory_create: None,
         directory_apply: None,
         directory_delete: None,
+        migrate_admit: None,
     }
 }
 
