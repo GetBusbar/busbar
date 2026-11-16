@@ -224,6 +224,18 @@ pub(crate) async fn records(
     crate::root::migrate_records::step4(core, config, stamped()).await
 }
 
+/// Step 4 using the secrets already resolved by the pre-publication boot stages.
+pub(crate) async fn records_with_keys(
+    core: std::sync::Arc<busbar_kernel::persistence::facade::CoreStore>,
+    keys: crate::root::migrate_records::Keys,
+) -> Result<(), String> {
+    let config = CONFIG_PATH
+        .get()
+        .cloned()
+        .unwrap_or_else(|| PathBuf::from(crate::root::cli::resolve_config_path(None)));
+    crate::root::migrate_records::step4_with_keys(core, keys, config, stamped()).await
+}
+
 /// Step 5 with what every instance's `open` settled (MIGRATE-ON-BOOT r42 §4, `Registry::take_settled`): the
 /// bags and CORE_CFG are filed into the re-run document, the lifted secret files written, then the stamp.
 /// A refusal of a settled answer writes nothing.
