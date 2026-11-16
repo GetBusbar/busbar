@@ -821,7 +821,19 @@ mod tests {
                 NO_HOST.scoped(|ctx| {
                     let raw = seen(vt::random(ctx, 16));
                     assert_eq!((raw.0, raw.1.len()), (status::OK, 16));
-                    assert_eq!(seen(vt::random(ctx, 0)), (status::INVALID, vec![]));
+                    // Moved here from the plugin-test crate's c_random.rs: `vt::random` answers only inside an
+                    // entry, and only this module can enter one (`entry::within`).
+                    for len in [0, RANDOM_MAX + 1] {
+                        assert_eq!(
+                            seen(vt::random(ctx, len)),
+                            (status::INVALID, vec![]),
+                            "{len}"
+                        );
+                    }
+                    let (st, full) = seen(vt::random(ctx, RANDOM_MAX));
+                    assert_eq!(st, status::OK);
+                    assert_eq!(full.len(), RANDOM_MAX);
+                    assert!(full.iter().any(|&b| b != 0));
                 });
             });
         });

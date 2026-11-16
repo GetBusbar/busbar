@@ -160,7 +160,7 @@ fn a_chain_cancelled_mid_chain_drops_its_future_once() {
         "released once, at the drop"
     );
     let mut needs = FakeNeeds::new();
-    needs.secret("/k", b"v");
+    FakeNeeds::secret(&mut needs, "/k", b"v");
     let mut drv = Driver::new(&needs, caller());
     let req = Pool::global().acquire(1 << 20);
     let mut fut = pin!(drv.run(0, 1 << 20, req, |_, lease| first(fx::start(
