@@ -77,6 +77,18 @@ async fn base_store_bootstrap_and_effective_build_share_the_same_opened_store() 
     .unwrap();
     let rules: std::sync::Arc<dyn busbar_kernel::appbuild::RootRules> =
         std::sync::Arc::new(AcceptAll);
+    let first = rules
+        .secret_resolver(&cfg, &plugin_config)
+        .await
+        .expect("the bootstrap fixture retains its opened S5 resolver");
+    let second = rules
+        .secret_resolver(&cfg, &plugin_config)
+        .await
+        .expect("a later read uses the already opened S5 resolver");
+    assert!(
+        Arc::ptr_eq(&first, &second),
+        "the fixture must not reopen secret instances between Store and App construction"
+    );
     let (app, _, _limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         cfg,
         plugin_config,
