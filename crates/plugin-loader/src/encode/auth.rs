@@ -658,12 +658,9 @@ mod tests {
             "space in prefix"
         );
         let long_prefix = "A".repeat(17);
+        let long_prefix_shape = [long_prefix.as_str(), AKIA_IDS, B64];
         assert!(
-            bad(
-                Some("k"),
-                Some((40, 40, &[long_prefix.as_str(), AKIA_IDS, B64])),
-                false
-            ),
+            bad(Some("k"), Some((40, 40, &long_prefix_shape[..])), false),
             "prefix over 16"
         );
         assert!(
