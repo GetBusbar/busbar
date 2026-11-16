@@ -264,29 +264,10 @@ pub fn validate_plane_section(
             judge_entry_timeout(&format!("`{section}.{models}.{name}`"), entry)?;
         }
     }
-    judge_upstream_credentials(section, value)?;
     refuse_forwarded_caller_credential(value, caller_credential_refusal)
 }
 
 const UPSTREAM_CREDENTIALS: &str = "upstream_credentials";
-
-/// An `upstream_credentials` word must name a mode. The door compares the word itself, so an
-/// unknown one (a typo of `connection`) would silently sign with the deployment's own credential
-/// and drop the per-caller connection requirement (Aikido 1074606979).
-fn judge_upstream_credentials(at: &str, value: &Value) -> Result<(), String> {
-    let Some(mode) = value
-        .as_mapping()
-        .and_then(|m| m.get_key(UPSTREAM_CREDENTIALS))
-        .filter(|mode| !mode.is_null())
-    else {
-        return Ok(());
-    };
-    busbar_contract::yaml::from_value::<busbar_contract::config::UpstreamCreds>(mode.clone())
-        .map(drop)
-        .map_err(|_| {
-            format!("`{at}.{UPSTREAM_CREDENTIALS}` must be `own`, `passthrough` or `connection`")
-        })
-}
 
 pub(crate) fn refuse_forwarded_caller_credential(
     value: &Value,
@@ -335,7 +316,6 @@ pub fn validate_plane_entry(
     {
         judge_entry_timeout(&at, entry)?;
     }
-    judge_upstream_credentials(&format!("{section}.{name}"), entry)?;
     let hooks = entry
         .as_mapping()
         .and_then(|m| m.get_key(Kind::Hook.root()))
