@@ -8,7 +8,7 @@
 //! the arm's body and un-ignores it in its own MR (red first, then green).
 
 #[test]
-#[ignore = "owner: W1-K10"]
+#[ignore = "blocked: STORE/LOOKUP/COMMIT request state (IF 12.11) lives in the kernel/root, not a busbar-plugin-test dev dep; owner W1-K10"]
 fn mcp_ask_core_arms() {
     todo!("owner: W1-K10 (C-MCP-ASK)")
 }

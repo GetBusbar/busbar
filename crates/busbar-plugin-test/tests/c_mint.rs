@@ -8,7 +8,7 @@
 //! the arm's body and un-ignores it in its own MR (red first, then green).
 
 #[test]
-#[ignore = "owner: W1-K8A"]
+#[ignore = "blocked: FROM_CORE MINT result ordering needs the core plane driver (K10) and a serving plane image; loader MINT decode is adapters/plane.rs only; owner W1-K8A"]
 fn mint_results_arrive_first_in_order() {
     todo!("owner: W1-K8A (C-MINT)")
 }
