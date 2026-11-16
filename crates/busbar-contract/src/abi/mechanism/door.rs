@@ -39,7 +39,7 @@ pub struct Door {
     pub(crate) ready: Option<Op>,
     /// APPEND-ONLY TAIL: `migrate` (`abi::mechanism::lifecycle`, MIGRATE), in
     /// [`super::lifecycle::ValidateIn`], out [`super::call::OutHead`]; `None` = the plugin has none,
-    /// and `busbar --migrate-config` passes its settings section through unchanged. A door whose
+    /// and the boot's migration passes its settings section through unchanged. A door whose
     /// `size` ends before this field has none: the host reads it only when `size` covers it.
     pub(crate) migrate: Option<Op>,
     /// APPEND-ONLY TAIL: the kind's layout fingerprint as the plugin was built

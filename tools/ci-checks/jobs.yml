@@ -31,6 +31,17 @@ core-source-checks:
     - k cargo run --locked --quiet -p busbar-ci-checks -- core-scan --words "$ENTERPRISE_STAMP_WORDS"
     - k_done
 
+# IF §15 rule 13 (W2-FU5B): a dlopened library leaves the loader only by IF §11.1's two exits (the I13 scan).
+rule-13:
+  stage: check
+  tags: [size-s]
+  extends: .cache-all
+  rules: !reference [.checked, rules]
+  script:
+    - if green_skip; then green_exit; fi
+    - k cargo run --locked --quiet -p busbar-ci-checks -- rule-13
+    - k_done
+
 # The per-file LOC report (IF §15 rule 7; Δ2: a report, no gate; test_host.rs counts as test code).
 loc-report:
   stage: check

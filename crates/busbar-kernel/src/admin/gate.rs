@@ -157,6 +157,13 @@ pub fn current_request_id() -> String {
     })
 }
 
+/// The id of the admin request in flight, or `None` outside one (an audit row written by no
+/// request carries no `request_id`).
+#[must_use]
+pub fn request_id_in_scope() -> Option<String> {
+    REQUEST_ID.try_with(Clone::clone).ok()
+}
+
 /// `r_` and the sixteen hex digits of a request counter value.
 #[must_use]
 pub fn request_id_of(counter: u64) -> String {

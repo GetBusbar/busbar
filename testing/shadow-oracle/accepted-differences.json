@@ -6836,6 +6836,57 @@
         ]
       },
       "rationale": "Owner decision 316 (3), 2026-11-14: serve GET /v1/models/<id>; the 1.5.5 405 was a bug that 1.6.0 fixes. CELL: ops.scrape|v1modelsid|retrieve (GET /v1/models/m-openai-chat on the data listener). BYTES MOVED (golden -> candidate): status 405 -> 200; body, the method-not-allowed error -> the OpenAI model object GET /v1/models already lists for that name; headers, content-length. The route is a busbar-plane-llm catalog claim; a name outside the caller-visible catalog answers 404 model_not_found. REGISTERED `breaking`, NOT `improvement`, only because the differ accepts the `status` class on no other kind; in substance an improvement, presented under Improvements. SCOPE: exactly this one cell."
+    },
+    {
+      "id": "QM1 --migrate-config and --migrate-overlay are removed",
+      "kind": "breaking",
+      "changelog": "**`busbar --migrate-config` and `busbar --migrate-overlay` are removed; the first boot migrates.** 1.5.5 operators ran `--migrate-config` to convert a config and `--migrate-overlay` to import a file overlay. 1.6.0 has neither: either name is now the CLI's unknown-option usage error (exit 2). The first boot of a 1.5.5 `config.yaml` (no `config_version`) migrates it once, in place, stamps `config_version: 1`, keeps the original as `config.yaml.1.5.5`, and folds a 1.5.5 overlay file into the same write. BUSBAR-3401 to 3404 are retired and keep their pages.",
+      "by": "owner (Matthew Jackson), QM1 2026-11-15T21:01Z (AGREED.md)",
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-11-15",
+        "ruling": "AGREED.md QM1 RULED (owner, 2026-11-15T21:01Z): boot-migration cells replace the 84 --migrate-config oracle cells; owner-signed accepted-difference for removing the flag"
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      },
+      "cells": "^cli\\|--migrate-config\\|(missing-path|unreadable)$",
+      "expected_cells": 2,
+      "classes": [
+        "status",
+        "body"
+      ],
+      "premise": {
+        "cell": "cli|--migrate-config|missing-path",
+        "body_contains": "unrecognized argument '--migrate-config'"
+      },
+      "rationale": "Owner ruling QM1 (AGREED.md, 2026-11-15T21:01Z): the flag is deleted, not kept as a second path to the same migration. CELLS (1.5.5 golden -> 1.6.0 candidate): cli|--migrate-config|missing-path (exit 2 with the flag's own 'requires a path' usage line -> exit 2 with the CLI's unknown-option line 'unrecognized argument'); cli|--migrate-config|unreadable (exit 1, 'cannot read' -> exit 2, the same unknown-option line). The 1.5.5 behaviour those cells pin is the deleted command itself. The migration they stood for is asserted by the first-boot cells that replace the 78 config.migrate|<tag>|migrate cells (next entry)."
+    },
+    {
+      "id": "QM1 first-boot migration cells replace the --migrate-config corpus cells",
+      "kind": "breaking",
+      "changelog": "**`busbar --migrate-config` and `busbar --migrate-overlay` are removed; the first boot migrates.** 1.5.5 operators ran `--migrate-config` to convert a config and `--migrate-overlay` to import a file overlay. 1.6.0 has neither: either name is now the CLI's unknown-option usage error (exit 2). The first boot of a 1.5.5 `config.yaml` (no `config_version`) migrates it once, in place, stamps `config_version: 1`, keeps the original as `config.yaml.1.5.5`, and folds a 1.5.5 overlay file into the same write. BUSBAR-3401 to 3404 are retired and keep their pages.",
+      "by": "owner (Matthew Jackson), QM1 2026-11-15T21:01Z (AGREED.md)",
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-11-15",
+        "ruling": "AGREED.md QM1 RULED (owner, 2026-11-15T21:01Z): boot-migration cells replace the 84 --migrate-config oracle cells; owner-signed accepted-difference for removing the flag"
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      },
+      "cells": "^config\\.migrate\\|v[0-9][0-9A-Za-z.\\-]*\\|migrate$",
+      "expected_cells": 78,
+      "classes": [
+        "body"
+      ],
+      "premise": {
+        "cell": "config.migrate|v1.5.5|migrate",
+        "body_contains": "config_version: 1"
+      },
+      "rationale": "Owner ruling QM1 (AGREED.md, 2026-11-15T21:01Z): boot-migration cells replace the 84 --migrate-config oracle cells. CELLS: the 78 config.migrate|<tag>|migrate cells now boot the corpus config of that tag (mode boot, config corpus:<path>) instead of running the removed flag. BYTES MOVED (golden -> candidate): the 1.5.5 golden is the flag's stdout (a banner naming the flag, the TODO(migrate) comment block, the YAML) and its stderr summary; the candidate is the config.yaml the first boot wrote in place (the migrated YAML with config_version: 1, no banner, no summary). The YAML is the 1.5.5 to 1.6 output; the premise withholds this entry unless the candidate carries the stamp. The 78 validate-migrated cells are unchanged."
     }
   ]
 }

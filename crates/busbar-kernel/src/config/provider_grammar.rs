@@ -197,6 +197,18 @@ impl<'de> Visitor<'de> for Fields<'_> {
     }
 }
 
+/// The expected names as serde's derived refusals word them (1.5.5's spelling): "`a`",
+/// "`a` or `b`", or "one of `a`, `b`, `c`".
+fn one_of<'a>(names: impl Iterator<Item = &'a str>) -> String {
+    let quoted: Vec<String> = names.map(|name| format!("`{name}`")).collect();
+    match quoted.as_slice() {
+        [] => "nothing".to_string(),
+        [one] => one.clone(),
+        [a, b] => format!("{a} or {b}"),
+        all => format!("one of {}", all.join(", ")),
+    }
+}
+
 #[cfg(test)]
 #[path = "tests/provider_grammar_tests.rs"]
 mod tests;
@@ -291,17 +303,5 @@ mod actual_plane_legacy_grammar {
             .unwrap(),
             Value::Null
         );
-    }
-}
-
-/// The expected names as serde's derived refusals word them (1.5.5's spelling): "`a`",
-/// "`a` or `b`", or "one of `a`, `b`, `c`".
-fn one_of<'a>(names: impl Iterator<Item = &'a str>) -> String {
-    let quoted: Vec<String> = names.map(|name| format!("`{name}`")).collect();
-    match quoted.as_slice() {
-        [] => "nothing".to_string(),
-        [one] => one.clone(),
-        [a, b] => format!("{a} or {b}"),
-        all => format!("one of {}", all.join(", ")),
     }
 }

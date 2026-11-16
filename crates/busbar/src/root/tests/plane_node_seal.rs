@@ -232,6 +232,7 @@ async fn a_borrowed_unit_seals_its_verified_destination() {
             None,
             OpClassId::new("seal"),
             None,
+            None,
         )
         .await;
     assert!(outcome.is_some(), "the table took the unit and it ended");
@@ -666,6 +667,7 @@ async fn sealed_after(
             None,
             OpClassId::new("seal"),
             None,
+            None,
         )
         .await;
     assert!(outcome.is_some(), "the table took the unit and it ended");
@@ -775,6 +777,7 @@ async fn sealed_under(
             history(arrived.ms()),
             None,
             OpClassId::new("seal"),
+            None,
             None,
         )
         .await;
@@ -960,4 +963,80 @@ async fn a_completed_terminal_receipt_requires_actual_seal_success_even_when_the
         );
         assert_eq!(post.open_units(), 0);
     }
+}
+
+/// A caller that stated 200 and wrote its first byte `first_write_ns` after the unit began.
+struct Clocked {
+    first_write_ns: u64,
+}
+
+impl crate::root::serve::Stated for Clocked {
+    fn stated(&self) -> Option<u32> {
+        Some(200)
+    }
+
+    fn first_write_ns(&self) -> u64 {
+        self.first_write_ns
+    }
+}
+
+async fn sealed_unit_of(caller: &Clocked) -> busbar_kernel_audit::UnitFacts {
+    let node = Arc::new(Node::new());
+    let fixture = crate::root::durability::tests::NativeFixture::new(7).await;
+    let book = crate::root::durability::node_book(
+        fixture.journal.clone(),
+        crate::root::durability::tests::BUDGET,
+    )
+    .await
+    .unwrap();
+    node.bind_book(Arc::clone(&book.durability));
+    let post = NodeEndPost::new(Arc::clone(&node));
+    let outcome = node
+        .drive_borrowed(
+            node.mint(),
+            node.arrived(),
+            &PrincipalId::new("acct:seal"),
+            &post,
+            &ToDestination,
+            Box::new(|| -> Option<Reported> { None }),
+            None,
+            None,
+            OpClassId::new("seal"),
+            None,
+            Some(crate::root::plane_node::Timing {
+                started: std::time::Instant::now(),
+                caller,
+            }),
+        )
+        .await;
+    assert!(outcome.is_some(), "the table took the unit and it ended");
+    let durability = book.durability.lock().unwrap_or_else(|p| p.into_inner());
+    let records = durability.audit_records().to_vec();
+    assert_eq!(records.len(), 1, "one record for the one unit: {records:?}");
+    records[0].unit.clone()
+}
+
+/// RED (ADMIN-API-1.6 §9): the status, the first write and the total are read before the seal and
+/// sealed into the `v7` slots, with no switch.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn timing_sealed_before_post() {
+    let unit = sealed_unit_of(&Clocked {
+        first_write_ns: 5_000,
+    })
+    .await;
+    assert_eq!(unit.status, 200, "the status the caller was answered with");
+    assert_eq!(unit.ttft_us, 5, "the first write, in microseconds");
+    assert!(unit.total_us > 0, "the total is measured on every unit");
+}
+
+/// RED: a unit that never wrote a body has a total and no time to first byte.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_unit_that_wrote_nothing_has_no_ttft() {
+    let unit = sealed_unit_of(&Clocked { first_write_ns: 0 }).await;
+    assert_eq!(unit.ttft_us, 0);
+    assert!(unit.total_us > 0);
+    assert_eq!(
+        unit.attempts_total, 0,
+        "a unit that dialled made no attempt"
+    );
 }

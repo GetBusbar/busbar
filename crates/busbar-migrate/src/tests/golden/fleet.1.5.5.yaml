@@ -1,0 +1,29 @@
+# fleet gateway (1.5.5)
+listen: 0.0.0.0:8080
+config:
+  locked: true
+  overlay: false   # 1.5.5: no overlay file
+
+auth:
+  chain: [keys, sso]
+
+models:
+  claude:
+    provider: anthropic
+
+rate_card:
+  claude:
+    input_utok: 3
+    output_utok: 15
+    cache_write_utok: 0 # no separate write tariff
+
+store:
+  module: busbar-store-sqlite-plugin
+  settings:
+    db_path: /var/lib/busbar/busbar.db
+
+security:
+  blocked_metadata_hosts:
+    - 169.254.169.254
+    - db.1
+    - metadata.corp

@@ -29,8 +29,9 @@ pub(crate) fn row(p: &LoadablePlugin) -> Row {
                 publisher: publisher.clone(),
                 first_party: *first_party,
             },
-            Verdict::Allowed { reason, .. } => Trust::Allowed {
+            Verdict::Allowed { reason, allow } => Trust::Allowed {
                 reason: reason.clone(),
+                setting: allow.setting(),
             },
         },
         ephemeral: p.ephemeral,

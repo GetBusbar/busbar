@@ -154,7 +154,7 @@ impl Grammar {
     }
 
     /// Add one report line (the first-boot fetch limit, §3.9), within the cap.
-    pub(crate) fn push_report(&mut self, line: String) {
+    fn push_report(&mut self, line: String) {
         if self.report.len() < REPORT_LINES {
             self.report.push(line);
         }

@@ -66,7 +66,7 @@ observability:
 #[test]
 fn legacy_markers_detected_and_named() {
     crate::dist_root_install::install();
-    crate::root::migration_table::install();
+    crate::distribution::install_migration_rows();
     let doc: Value = yaml::from_str(LEGACY_14X).unwrap();
     let markers = detect_legacy_markers(&doc);
     let joined = markers.join("\n");
@@ -107,7 +107,7 @@ fn legacy_markers_detected_and_named() {
 #[test]
 fn auth_mode_marker_detected() {
     crate::dist_root_install::install();
-    crate::root::migration_table::install();
+    crate::distribution::install_migration_rows();
     let doc: Value = yaml::from_str("auth:\n  mode: token\nproviders: {}\nmodels: {}\n").unwrap();
     let markers = detect_legacy_markers(&doc);
     assert!(
@@ -119,7 +119,7 @@ fn auth_mode_marker_detected() {
 #[test]
 fn migrate_14x_round_trips_into_deploy_cfg() {
     crate::dist_root_install::install();
-    crate::root::migration_table::install();
+    crate::distribution::install_migration_rows();
     let out = migrate_config(LEGACY_14X).expect("migrates");
     let doc: Value = yaml::from_str(&out.yaml).expect("output is valid YAML");
     let root = doc.as_mapping().unwrap();
@@ -327,7 +327,7 @@ fn dig<'a>(doc: &'a Value, path: &[&str]) -> Option<&'a Value> {
 #[test]
 fn detect_real_14x_top_level_and_on_exhausted_markers() {
     crate::dist_root_install::install();
-    crate::root::migration_table::install();
+    crate::distribution::install_migration_rows();
     let raw = r#"
 auth:
   chain: [tokens]
@@ -360,7 +360,7 @@ pools:
 #[test]
 fn migrate_realistic_14x_governance_preserves_the_real_db_path() {
     crate::dist_root_install::install();
-    crate::root::migration_table::install();
+    crate::distribution::install_migration_rows();
     let raw = r#"
 governance:
   enabled: true
@@ -408,7 +408,7 @@ pools: {}
 #[test]
 fn migrate_14x_governance_with_no_explicit_db_path_uses_the_14x_default() {
     crate::dist_root_install::install();
-    crate::root::migration_table::install();
+    crate::distribution::install_migration_rows();
     let raw = r#"
 governance:
   enabled: true
@@ -453,7 +453,7 @@ pools: {}
 #[test]
 fn detect_retired_observability_export_keys_loud_fail() {
     crate::dist_root_install::install();
-    crate::root::migration_table::install();
+    crate::distribution::install_migration_rows();
     let raw = r#"
 observability:
   request_log_webhook_url: "https://logs.example.com/busbar"
@@ -485,7 +485,7 @@ pools: {}
 #[test]
 fn migrate_1_5_x_inline_hooks_converge_and_are_idempotent() {
     crate::dist_root_install::install();
-    crate::root::migration_table::install();
+    crate::distribution::install_migration_rows();
     let raw = r#"
 providers: {}
 models: {}
@@ -582,7 +582,7 @@ fn migrate_golden(raw: &str) -> (busbar_migrations::config::migrate::MigrateOutp
 #[test]
 fn golden_migrate_admin_insecure_inverts_to_admin_require_mtls() {
     crate::dist_root_install::install();
-    crate::root::migration_table::install();
+    crate::distribution::install_migration_rows();
     let raw = "admin_insecure: true\nproviders: {}\nmodels: {}\npools: {}\n";
     assert_loud_fail_with_breadcrumb(raw, "admin_insecure");
 
@@ -612,7 +612,7 @@ fn golden_migrate_admin_insecure_inverts_to_admin_require_mtls() {
 #[test]
 fn golden_migrate_auth_upstream_credentials_moves_to_pools() {
     crate::dist_root_install::install();
-    crate::root::migration_table::install();
+    crate::distribution::install_migration_rows();
     let raw = "auth:\n  chain: [keys]\n  upstream_credentials: passthrough\n\
                providers: {}\nmodels: {}\npools: {}\n";
     assert_loud_fail_with_breadcrumb(raw, "auth.upstream_credentials");
@@ -639,7 +639,7 @@ fn golden_migrate_auth_upstream_credentials_moves_to_pools() {
 #[test]
 fn golden_migrate_observability_block_folds_into_an_otlp_export_instance() {
     crate::dist_root_install::install();
-    crate::root::migration_table::install();
+    crate::distribution::install_migration_rows();
     let raw = "observability:\n  otlp_url: \"http://otel:4318/v1/traces\"\n\
                providers: {}\nmodels: {}\npools: {}\n";
     assert_loud_fail_with_breadcrumb(raw, "observability");
@@ -677,7 +677,7 @@ fn golden_migrate_observability_block_folds_into_an_otlp_export_instance() {
 #[test]
 fn golden_migrate_type_keyed_export_becomes_a_named_map() {
     crate::dist_root_install::install();
-    crate::root::migration_table::install();
+    crate::distribution::install_migration_rows();
     let raw = "export:\n\
                \x20 prometheus: { settings: { buffer_seconds: 60 } }\n\
                \x20 request-log-webhook: { settings: { url: \"https://logs.example.com/a\" } }\n\
@@ -723,7 +723,7 @@ fn golden_migrate_type_keyed_export_becomes_a_named_map() {
 #[test]
 fn golden_migrate_inline_chain_entries_dedupe_into_identity_providers() {
     crate::dist_root_install::install();
-    crate::root::migration_table::install();
+    crate::distribution::install_migration_rows();
 
     let op = busbar_kernel::config::operator_provider();
     let raw = format!(
@@ -861,7 +861,7 @@ fn golden_migrate_inline_chain_entries_dedupe_into_identity_providers() {
 #[test]
 fn golden_migrate_bare_tap_pins_the_legacy_request_only_phase() {
     crate::dist_root_install::install();
-    crate::root::migration_table::install();
+    crate::distribution::install_migration_rows();
     let raw = "global_hooks:\n  - { module: busbar-audit-hook, kind: tap }\n\
                providers: {}\nmodels: {}\npools: {}\n";
     let (_, doc) = migrate_golden(raw);
@@ -920,7 +920,7 @@ fn golden_migrate_bare_tap_pins_the_legacy_request_only_phase() {
 #[test]
 fn migrate_store_module_retired_1_5_3_spellings_to_the_renamed_alias() {
     crate::dist_root_install::install();
-    crate::root::migration_table::install();
+    crate::distribution::install_migration_rows();
     let renamed = yaml::from_str::<Value>(include_str!(
         "../../../../busbar-kernel/src/tests/fixtures/frozen_customer_text.yaml"
     ))
@@ -1020,7 +1020,7 @@ fn built_ins(defs: &busbar_kernel::config::ExportDefs) -> busbar_kernel::config:
 #[test]
 fn golden_migrate_terraform_acceptance_admin_insecure_inline_admin_auth() {
     crate::dist_root_install::install();
-    crate::root::migration_table::install();
+    crate::distribution::install_migration_rows();
     let raw = r#"admin_listen: "0.0.0.0:8081"
 admin_insecure: true
 models:

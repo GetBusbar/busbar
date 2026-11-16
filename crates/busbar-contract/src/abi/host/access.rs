@@ -278,6 +278,7 @@ services! {
     DIRECTORY_CREATE: Records, Active => [AuthKind];
     DIRECTORY_APPLY: Records, Active => [AuthKind];
     DIRECTORY_DELETE: Records, Active => [AuthKind];
+    MIGRATE_ADMIT: Lifecycle, Lifecycle => [StoreKind];
 }
 
 /// Lookup is exhaustive over the advertised service table; unknown codes fail closed.

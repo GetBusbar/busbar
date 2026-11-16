@@ -6,6 +6,8 @@ All notable changes to Busbar are documented here. The format is based on
 
 ## [1.6.0], unreleased
 
+- **`busbar --migrate-config` and `busbar --migrate-overlay` are removed; the first boot migrates.** 1.5.5 operators ran `--migrate-config` to convert a config and `--migrate-overlay` to import a file overlay. 1.6.0 has neither: either name is now the CLI's unknown-option usage error (exit 2). The first boot of a 1.5.5 `config.yaml` (no `config_version`) migrates it once, in place, stamps `config_version: 1`, keeps the original as `config.yaml.1.5.5`, and folds a 1.5.5 overlay file into the same write. BUSBAR-3401 to 3404 are retired and keep their pages.
+
 - **A plane member's upstream credential rides out a source outage until its lease ends.**
   1.6.0 Changed: a renewal that cannot read the source (unavailable, internal fault, an empty or non-text value) keeps the held credential until `lease_ttl_ms` runs out and retries with a jittered backoff, reported as `BUSBAR-8026`; a source that answers not-found or permission-denied twice, one second apart, drops it at once (`BUSBAR-8027`, cause `revoked-at-source`), and a lease that ends unrenewed reports `BUSBAR-8027` when it ends. Renewal runs at half the lease, at most every five minutes, on a bounded pool so one hung source never delays another member (owner-signed 2026-11-12).
 - **A secret or auth plugin's own rotating credential is re-lent without a reload.**
