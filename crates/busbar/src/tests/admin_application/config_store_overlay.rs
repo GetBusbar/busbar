@@ -120,10 +120,10 @@ async fn apply_refuses_unrecoverable_store_overlay_before_replacing_security_sta
         let plugin_config = crate::root::test_plugins::trusted_config(&directory);
         let rules = Arc::new(crate::root::door_steps::Rules::default())
             as Arc<dyn busbar_kernel::appbuild::RootRules>;
-        let actual = busbar_kernel::appbuild::bootstrap_config_store(
+        let actual = crate::root::boot::store::bootstrap_config_store(
             &config,
             &plugin_config,
-            &busbar_kernel::preflight::Unopened,
+            &crate::root::boot::store::Unopened,
         )
         .await
         .expect("actual native Store opens");
@@ -293,10 +293,10 @@ async fn reload_refuses_a_store_read_failure_and_preserves_the_running_generatio
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let actual = busbar_kernel::appbuild::bootstrap_config_store(
+    let actual = crate::root::boot::store::bootstrap_config_store(
         &config,
         &plugin_config,
-        &busbar_kernel::preflight::Unopened,
+        &crate::root::boot::store::Unopened,
     )
     .await
     .expect("actual native Store opens");
@@ -472,10 +472,10 @@ async fn group_creation_refuses_store_failure_and_unknown_commit() {
         let plugin_config = crate::root::test_plugins::trusted_config(&directory);
         let rules = Arc::new(crate::root::door_steps::Rules::default())
             as Arc<dyn busbar_kernel::appbuild::RootRules>;
-        let actual = busbar_kernel::appbuild::bootstrap_config_store(
+        let actual = crate::root::boot::store::bootstrap_config_store(
             &config,
             &plugin_config,
-            &busbar_kernel::preflight::Unopened,
+            &crate::root::boot::store::Unopened,
         )
         .await
         .expect("actual native Store opens");
@@ -599,10 +599,10 @@ async fn settings_preserves_a_large_store_overlay_across_reload() {
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let actual = busbar_kernel::appbuild::bootstrap_config_store(
+    let actual = crate::root::boot::store::bootstrap_config_store(
         &config,
         &plugin_config,
-        &busbar_kernel::preflight::Unopened,
+        &crate::root::boot::store::Unopened,
     )
     .await
     .expect("actual native Store opens");
@@ -760,10 +760,10 @@ async fn unknown_settings_receipt_requires_successful_reload_before_new_mutation
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let actual = busbar_kernel::appbuild::bootstrap_config_store(
+    let actual = crate::root::boot::store::bootstrap_config_store(
         &config,
         &plugin_config,
-        &busbar_kernel::preflight::Unopened,
+        &crate::root::boot::store::Unopened,
     )
     .await
     .expect("actual native Store opens");
@@ -1001,10 +1001,10 @@ async fn an_unknown_store_overlay_commit_never_swaps_or_claims_success() {
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let actual = busbar_kernel::appbuild::bootstrap_config_store(
+    let actual = crate::root::boot::store::bootstrap_config_store(
         &config,
         &plugin_config,
-        &busbar_kernel::preflight::Unopened,
+        &crate::root::boot::store::Unopened,
     )
     .await
     .expect("actual native Store opens");
@@ -1147,10 +1147,10 @@ async fn a_cancelled_store_overlay_persist_finishes_before_releasing_the_domain(
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let actual = busbar_kernel::appbuild::bootstrap_config_store(
+    let actual = crate::root::boot::store::bootstrap_config_store(
         &config,
         &plugin_config,
-        &busbar_kernel::preflight::Unopened,
+        &crate::root::boot::store::Unopened,
     )
     .await
     .expect("actual native Store opens");

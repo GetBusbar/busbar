@@ -56,10 +56,10 @@ async fn base_store_bootstrap_and_effective_build_share_the_same_opened_store() 
         },
     )];
     let cfg = config;
-    let opened = busbar_kernel::appbuild::bootstrap_config_store(
+    let opened = crate::root::boot::store::bootstrap_config_store(
         &cfg,
         &plugin_config,
-        &busbar_kernel::preflight::Unopened,
+        &crate::root::boot::store::Unopened,
     )
     .await
     .unwrap();
@@ -146,10 +146,10 @@ async fn a_cross_node_sibling_update_and_intervening_get_cannot_authorize_a_stal
             sha256: Some(digest),
         },
     )];
-    let opened = busbar_kernel::appbuild::bootstrap_config_store(
+    let opened = crate::root::boot::store::bootstrap_config_store(
         &config,
         &plugin_config,
-        &busbar_kernel::preflight::Unopened,
+        &crate::root::boot::store::Unopened,
     )
     .await
     .unwrap();
@@ -290,10 +290,10 @@ async fn bootstrap_opens_the_anchor_before_requiring_modules_whose_pins_it_must_
         )
         .unwrap(),
     );
-    let opened = busbar_kernel::appbuild::bootstrap_config_store(
+    let opened = crate::root::boot::store::bootstrap_config_store(
         &cfg,
         &plugin_config,
-        &busbar_kernel::preflight::Unopened,
+        &crate::root::boot::store::Unopened,
     )
     .await
     .unwrap();
@@ -370,10 +370,10 @@ async fn root_recovery_can_run_before_hydration_without_changing_standalone_buil
             },
         )];
         let cfg = config;
-        let opened = busbar_kernel::appbuild::bootstrap_config_store(
+        let opened = crate::root::boot::store::bootstrap_config_store(
             &cfg,
             &plugin_config,
-            &busbar_kernel::preflight::Unopened,
+            &crate::root::boot::store::Unopened,
         )
         .await
         .unwrap();

@@ -172,10 +172,10 @@ async fn test_admin_v1_openapi_paths_all_resolve() {
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the actual admin deployment resolves");
     eprintln!("OpenAPI census: opening the shared actual Store");
-    let backend = busbar_kernel::appbuild::bootstrap_config_store(
+    let backend = crate::root::boot::store::bootstrap_config_store(
         &config,
         &plugin_config,
-        &busbar_kernel::preflight::Unopened,
+        &crate::root::boot::store::Unopened,
     )
     .await
     .expect("the actual Store opens the configuration authority");

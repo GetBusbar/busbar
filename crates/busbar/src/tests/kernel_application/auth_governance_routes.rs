@@ -198,10 +198,10 @@ async fn keys_chain_preserves_carriers_disable_revoke_and_metering_controls() {
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let anchor = crate::root::real_store::core_over(
-        busbar_kernel::appbuild::bootstrap_config_store(
+        crate::root::boot::store::bootstrap_config_store(
             &config,
             &plugin_config,
-            &busbar_kernel::preflight::Unopened,
+            &crate::root::boot::store::Unopened,
         )
         .await
         .expect("actual native Store opens"),
@@ -359,10 +359,10 @@ async fn open_chain_with_operator_is_anonymous_keyless_and_unmetered() {
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let anchor = crate::root::real_store::core_over(
-        busbar_kernel::appbuild::bootstrap_config_store(
+        crate::root::boot::store::bootstrap_config_store(
             &config,
             &plugin_config,
-            &busbar_kernel::preflight::Unopened,
+            &crate::root::boot::store::Unopened,
         )
         .await
         .expect("actual native Store opens"),
@@ -477,10 +477,10 @@ async fn open_chain_without_operator_still_inserts_default_context() {
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let anchor = crate::root::real_store::core_over(
-        busbar_kernel::appbuild::bootstrap_config_store(
+        crate::root::boot::store::bootstrap_config_store(
             &config,
             &plugin_config,
-            &busbar_kernel::preflight::Unopened,
+            &crate::root::boot::store::Unopened,
         )
         .await
         .expect("actual native Store opens"),

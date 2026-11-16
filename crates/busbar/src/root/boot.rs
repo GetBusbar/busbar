@@ -2557,3 +2557,5 @@ pub(crate) mod registry;
 pub(crate) mod walk;
 
 pub(crate) mod images;
+
+pub(crate) mod store;

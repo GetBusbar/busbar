@@ -183,7 +183,7 @@ async fn the_host_hook_read_port_seals_one_access_amendment_on_the_node_journal(
                 kernel::appbuild::bootstrap_config_store(
                     &config,
                     &plugin_config,
-                    &busbar_kernel::preflight::Unopened,
+                    &crate::root::boot::store::Unopened,
                 )
                 .await
                 .expect("the shared configured backend opens"),
