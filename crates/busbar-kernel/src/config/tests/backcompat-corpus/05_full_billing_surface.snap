@@ -18,8 +18,4 @@ groups:
     child_default.limit: metric=tokens amount=2000000 per=day scope=- on_exhaust=- downgrade_to=-
     child_default.limit: metric=concurrent amount=8 per=- scope=- on_exhaust=- downgrade_to=-
   team-research: enabled=true parent=org
-    limit: metric=tokens_input amount=5000000 per=hour scope=- on_exhaust=- downgrade_to=-
-    limit: metric=tokens_output amount=1000000 per=hour scope=- on_exhaust=- downgrade_to=-
-    limit: metric=tokens_cache_read amount=8000000 per=day scope=- on_exhaust=- downgrade_to=-
-    limit: metric=tokens_cache_write amount=500000 per=day scope=- on_exhaust=- downgrade_to=-
     limit: metric=budget amount=250000 per=month scope=pool:premium on_exhaust=downgrade downgrade_to=pool:economy
