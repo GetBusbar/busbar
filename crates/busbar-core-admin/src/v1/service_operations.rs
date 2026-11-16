@@ -1262,9 +1262,11 @@ impl AdminService {
 
     pub(crate) async fn get_admin_auth(&self) -> Result<AdminAuthView, AdminError> {
         let modules = self.app.admin_chain.clone();
+        let default = modules == busbar_kernel::config::auth::default_admin_auth_names();
         Ok(AdminAuthView {
             configured: !modules.is_empty(),
             modules,
+            default,
         })
     }
 

@@ -5249,6 +5249,7 @@ async fn proof_one_session_mints_a_personal_key_plus_n_independent_app_tokens() 
             minted_by: Some(admin.to_string()),
             binding_mode: Some("time-bound".to_string()),
             plane_scopes: None,
+            admin: None,
         };
         let (key, token) = gov
             .mint_signed_async(spec, now + 30 * 86_400, now)

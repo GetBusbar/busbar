@@ -1102,6 +1102,9 @@ pub struct AdminAuthView {
     /// Empty when the admin plane is open.
     #[cfg_attr(feature = "openapi-schema", schemars(description = modules_description()))]
     pub modules: Vec<String>,
+    /// Whether the chain is the default one (`auth.admin_auth` absent): the operator credential
+    /// when one is admitted, then `keys`.
+    pub default: bool,
 }
 
 #[cfg(feature = "openapi-schema")]

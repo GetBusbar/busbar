@@ -1117,6 +1117,8 @@ pub(crate) struct AdminCarried {
     strips: Vec<Strip>,
     replay: Option<(String, Box<Replay>)>,
     no_verdict: bool,
+    /// The closed 401 reason a presented `keys` admin credential was refused for.
+    denial: Option<&'static str>,
 }
 
 fn carry_admin_outcome(
@@ -1163,7 +1165,32 @@ async fn run_admin_chain(
         headers,
     );
     let now = busbar_kernel::store::now();
+    // The built-in `keys` position. A busbar-signed key credential is told by its prefix, so it is
+    // judged before the operator arm, which would otherwise refuse a credential it does not own.
+    if app
+        .admin_chain
+        .iter()
+        .any(|name| name == crate::config::KEYS_MODULE)
+    {
+        match admin_keys_arm(app, headers, now) {
+            KeysAdmin::Absent => {}
+            KeysAdmin::Refused(reason) => {
+                carried.denial = Some(reason);
+                return (ChainVerdict::Denied, None);
+            }
+            KeysAdmin::Identified(verdict) => {
+                if admin_sender_constraint::downgraded(app, crate::config::KEYS_MODULE, headers) {
+                    return (ChainVerdict::Denied, None);
+                }
+                return (verdict, None);
+            }
+        }
+    }
     for name in &app.admin_chain {
+        if name == crate::config::KEYS_MODULE {
+            // Judged first, above the loop: a busbar-signed key is told by its prefix.
+            continue;
+        }
         let operator = app.admin_modules.operator.is(name);
         let outcome = match name.as_str() {
             // The operator arm stays first. A backed provider with an opened instance is judged
@@ -1200,6 +1227,50 @@ async fn run_admin_chain(
         }
     }
     (complete_chain(None), None)
+}
+
+/// What the built-in `keys` position of an admin chain made of one request.
+enum KeysAdmin {
+    /// No busbar-signed key credential is carried: the chain goes on to the next position.
+    Absent,
+    /// A key credential is carried and refused, for this closed 401 reason.
+    Refused(&'static str),
+    /// A live key holding an `admin` grant: identified as `key:<id>`, the key riding along.
+    Identified(ChainVerdict),
+}
+
+/// The principal an admin key is: `key:<id>` (ADMIN-API r5 section 2.1).
+fn admin_key_principal(key: &crate::governance::VirtualKey) -> Principal {
+    Principal {
+        id: format!("key:{}", key.id),
+        name: Some(key.name.clone()),
+        roles: Vec::new(),
+        ttl_secs: None,
+    }
+}
+
+/// The admin chain's `keys` position: a busbar-signed key credential carried as the bearer or in
+/// `x-admin-token`, verified as the data plane's `keys` verifier does, and admitted only when the
+/// key holds an `admin` grant. A key without one is a data-plane key and is refused here
+/// (`credential_invalid`), exactly as an admin key is refused by the data plane's Approve step.
+fn admin_keys_arm(app: &crate::state::App, headers: &HeaderMap, now: u64) -> KeysAdmin {
+    let Some(token) = carried_named([AUTHORIZATION.as_str(), "x-admin-token"], headers)
+        .filter(|t| t.starts_with(crate::governance::signing::TOKEN_PREFIX))
+    else {
+        return KeysAdmin::Absent;
+    };
+    let Some(gov) = app.governance.as_deref() else {
+        return KeysAdmin::Refused("credential_invalid");
+    };
+    match gov.verify_token(token, now, None) {
+        Some(key) if key.admin.is_some() => KeysAdmin::Identified(ChainVerdict::Identified {
+            module: crate::config::KEYS_MODULE.to_string(),
+            principal: admin_key_principal(&key),
+            resolved: Some(key),
+        }),
+        Some(_) => KeysAdmin::Refused("credential_invalid"),
+        None => KeysAdmin::Refused(gov.token_refusal(token, now, None)),
+    }
 }
 
 async fn external_admin_module(
@@ -1285,9 +1356,10 @@ fn admin_scope_from_door(door: &AdminDoor) -> busbar_contract::authz::Grants {
     match door {
         AdminDoor::Identified(_, grants) | AdminDoor::Listed(_, grants, _) => *grants,
 
-        AdminDoor::Open | AdminDoor::Denied | AdminDoor::Unavailable(_) => {
-            busbar_contract::authz::Grants::default()
-        }
+        AdminDoor::Open
+        | AdminDoor::Denied
+        | AdminDoor::Rejected(_)
+        | AdminDoor::Unavailable(_) => busbar_contract::authz::Grants::default(),
     }
 }
 
@@ -1311,6 +1383,9 @@ pub enum AdminDoor {
     Unavailable(VerifierUnavailable),
     /// Refused: invalid credentials or the unchanged admin overload policy.
     Denied,
+    /// Refused as [`AdminDoor::Denied`] is, for a presented `keys` admin credential, naming the
+    /// closed 401 reason (`credential_expired`, `credential_revoked`, `credential_invalid`).
+    Rejected(&'static str),
 }
 
 fn admin_chain_outcome(
@@ -1352,10 +1427,10 @@ async fn judge_admin_door(
     probe: bool,
     claim: bool,
 ) -> Result<(AdminDoor, Vec<Strip>), VerifierUnavailable> {
-    let (verdict, cap, replay, no_verdict, strips) =
+    let (verdict, cap, replay, no_verdict, strips, denial) =
         judge_admin_chain(app, method, target, headers, probe).await;
     let verdict = admin_chain_outcome(verdict, no_verdict)?;
-    let (door, pending) = admin_door_claim_of(app, verdict, cap, replay);
+    let (door, pending) = admin_door_claim_of(app, verdict, cap, replay, denial);
 
     Ok((
         claimed_admin_door(door, pending.as_ref(), method, target, claim).await,
@@ -1398,12 +1473,16 @@ fn admin_door_claim_of(
     verdict: ChainVerdict,
     cap: Option<busbar_contract::authz::Scope>,
     replay: Option<(String, Box<Replay>)>,
+    denial: Option<&'static str>,
 ) -> (AdminDoor, Option<PendingClaim>) {
     let identified = matches!(verdict, ChainVerdict::Identified { .. });
     let now = busbar_kernel::store::now();
     let claim = unclaimed_admin_replay(identified, replay, now);
     (
-        admin_door_of(app, verdict, cap),
+        match (admin_door_of(app, verdict, cap), denial) {
+            (AdminDoor::Denied, Some(reason)) => AdminDoor::Rejected(reason),
+            (door, _) => door,
+        },
         PendingClaim::of(claim, app.governance.clone()),
     )
 }
@@ -1413,7 +1492,7 @@ pub fn admin_door_admits(door: &AdminDoor, method: &str, target: &str) -> bool {
     let required = crate::admin::scope::admin_required_scope(method, path);
     match door {
         AdminDoor::Open => true,
-        AdminDoor::Denied | AdminDoor::Unavailable(_) => false,
+        AdminDoor::Denied | AdminDoor::Rejected(_) | AdminDoor::Unavailable(_) => false,
         AdminDoor::Identified(_, grants) => grants.allows(required),
         AdminDoor::Listed(_, grants, list) => {
             grants.allows(required)
@@ -1434,6 +1513,7 @@ async fn judge_admin_chain(
     Option<(String, Box<Replay>)>,
     bool,
     Vec<Strip>,
+    Option<&'static str>,
 ) {
     let mut carried = AdminCarried::default();
     let (verdict, cap) = run_admin_chain(app, method, target, headers, probe, &mut carried).await;
@@ -1443,6 +1523,7 @@ async fn judge_admin_chain(
         carried.replay,
         carried.no_verdict,
         carried.strips,
+        carried.denial,
     )
 }
 
@@ -1480,6 +1561,13 @@ fn admin_door_from_bindings(
         ChainVerdict::Open => AdminDoor::Open,
         ChainVerdict::Denied => AdminDoor::Denied,
         ChainVerdict::Identified {
+            module,
+            principal,
+            resolved: Some(key),
+        } if module == crate::config::KEYS_MODULE && key.admin.is_some() => {
+            admin_door_of_key(principal, &key, &rung_of)
+        }
+        ChainVerdict::Identified {
             module, principal, ..
         } => {
             let grants = admin_scope_from_bindings(
@@ -1501,6 +1589,109 @@ fn admin_door_from_bindings(
             AdminDoor::Listed(principal, reach, VerbAllowList { rungs, named })
         }
     }
+}
+
+/// The door a key holding an `admin` grant opens (ADMIN-API r5 section 2.1). The scope is the
+/// ceiling: with no verbs named the key holds every verb within it (the rung alone); with verbs
+/// named it holds exactly those, each only when the closed table declares it and its rung is
+/// within the ceiling. A scope the grant spells otherwise is read as `read-only`.
+fn admin_door_of_key(
+    principal: Principal,
+    key: &crate::governance::VirtualKey,
+    rung_of: &impl Fn(&str) -> Option<busbar_contract::authz::Scope>,
+) -> AdminDoor {
+    use busbar_contract::authz::{Grants, Scope};
+    let Some(grant) = key.admin.as_ref() else {
+        return AdminDoor::Denied;
+    };
+    let ceiling = Scope::parse(&grant.scope).unwrap_or(Scope::ReadOnly);
+    if grant.verbs.is_empty() {
+        return AdminDoor::Identified(principal, Grants::of(ceiling));
+    }
+    let named: std::collections::BTreeSet<String> = (grant.verbs.iter())
+        .filter(|verb| rung_of(verb.as_str()).is_some_and(|rung| ceiling.allows(rung)))
+        .cloned()
+        .collect();
+    let reach = (named.iter())
+        .filter_map(|verb| rung_of(verb.as_str()))
+        .fold(Grants::default(), Grants::with);
+    AdminDoor::Listed(
+        principal,
+        reach,
+        VerbAllowList {
+            rungs: Grants::default(),
+            named,
+        },
+    )
+}
+
+/// Who the admin chain says a request is, for `GET /whoami` (ADMIN-API r5 section 2.2): the door
+/// the request holds, and what stands behind it.
+#[derive(Debug, Clone)]
+pub struct AdminWho {
+    /// The door the credential opens: the grants and verbs `/whoami` reports.
+    pub door: AdminDoor,
+    /// `operator`, `key`, `identity_provider` or `open`.
+    pub kind: &'static str,
+    /// The credential's id: the key id for `key`, the principal id for `identity_provider`.
+    pub id: Option<String>,
+    /// The identity provider (or operator provider) that identified the principal.
+    pub provider: Option<String>,
+    /// The credential's expiry, Unix seconds, when one is stated.
+    pub expires_at: Option<u64>,
+}
+
+/// The request extension `GET /whoami` reads: [`admin_who`] taken at the gate, before the credential
+/// lines are struck from the request.
+#[derive(Debug, Clone)]
+pub struct AdminWhoSlot(pub Option<AdminWho>);
+
+/// The identity of an admitted admin request: the chain read again for `headers`, on the same path
+/// the gate read it. `None` when the chain refuses the credential (the gate answered first, so a
+/// handler never sees that).
+pub async fn admin_who(app: &App, headers: &HeaderMap) -> Option<AdminWho> {
+    let (verdict, cap, _, no_verdict, _, _) =
+        judge_admin_chain(app, "GET", "/api/v1/admin/whoami", headers, false).await;
+    if no_verdict {
+        return None;
+    }
+    let (kind, id, provider, expires_at) = match &verdict {
+        ChainVerdict::Denied => return None,
+        ChainVerdict::Open => ("open", None, None, None),
+        ChainVerdict::Identified {
+            module, resolved, ..
+        } if module == crate::config::KEYS_MODULE => (
+            "key",
+            resolved.as_ref().map(|key| key.id.clone()),
+            None,
+            resolved.as_ref().and_then(|key| key.expires_at),
+        ),
+        ChainVerdict::Identified {
+            module, principal, ..
+        } if app.admin_modules.operator.mints(
+            Some(module.as_str()),
+            &principal.id,
+            crate::config::operator_principal_id(),
+        ) =>
+        {
+            ("operator", None, Some(module.clone()), None)
+        }
+        ChainVerdict::Identified {
+            module, principal, ..
+        } => (
+            "identity_provider",
+            Some(principal.id.clone()),
+            Some(module.clone()),
+            None,
+        ),
+    };
+    Some(AdminWho {
+        door: admin_door_of(app, verdict, cap),
+        kind,
+        id,
+        provider,
+        expires_at,
+    })
 }
 
 pub fn admin_verdict(app: &App, method: &str, target: &str, headers: &HeaderMap) -> AdminVerdict {
@@ -1569,10 +1760,10 @@ async fn probe_admin_verdict_async(
     probe: bool,
 ) -> (AdminDoor, Option<PendingClaim>) {
     // A probe judges only; the lines the chain named for stripping are dropped with it.
-    let (verdict, cap, replay, no_verdict, _) =
+    let (verdict, cap, replay, no_verdict, _, denial) =
         judge_admin_chain(app, method, target, headers, probe).await;
     admin_probe_projection(admin_chain_outcome(verdict, no_verdict), |verdict| {
-        admin_door_claim_of(app, verdict, cap, replay)
+        admin_door_claim_of(app, verdict, cap, replay, denial)
     })
 }
 
@@ -1624,10 +1815,14 @@ pub struct VerbAllowList {
     pub named: std::collections::BTreeSet<String>,
 }
 
+/// The verb every identified admin principal holds whatever it names: reading its own identity.
+pub const WHOAMI_VERB: &str = "get_whoami";
+
 impl VerbAllowList {
     #[must_use]
     pub fn admits(&self, verb: Option<&str>, needed: busbar_contract::authz::Scope) -> bool {
-        self.rungs.allows(needed) || verb.is_some_and(|v| self.named.contains(v))
+        self.rungs.allows(needed)
+            || verb.is_some_and(|v| v == WHOAMI_VERB || self.named.contains(v))
     }
 }
 
@@ -1640,8 +1835,18 @@ fn admin_unauthorized_response() -> Response {
     response
 }
 
-fn forbidden_response(needed: busbar_contract::authz::Scope) -> Response {
-    crate::admin::gate::scope_insufficient(needed.as_str())
+/// The admin 401 for a presented `keys` credential refused for the closed `reason`.
+fn admin_rejected_response(reason: &str) -> Response {
+    let mut response = crate::admin::gate::unauthorized_for(reason);
+    response.headers_mut().insert(
+        axum::http::header::WWW_AUTHENTICATE,
+        HeaderValue::from_static("Bearer"),
+    );
+    response
+}
+
+fn forbidden_response(needed: busbar_contract::authz::Scope, verb: Option<&str>) -> Response {
+    crate::admin::gate::scope_insufficient_for(needed.as_str(), verb)
 }
 
 /// The admin door's 429: `rate_limited` (BUSBAR-8108) with the REAL time until the source's oldest
@@ -1775,6 +1980,7 @@ fn admin_principal_or_response(door: AdminDoor) -> Result<Option<Principal>, Box
         }
         AdminDoor::Open => Ok(None),
         AdminDoor::Denied => Err(Box::new(admin_unauthorized_response())),
+        AdminDoor::Rejected(reason) => Err(Box::new(admin_rejected_response(reason))),
         AdminDoor::Unavailable(_) => Err(Box::new(admin_unavailable_response())),
     }
 }
@@ -2197,10 +2403,18 @@ pub(crate) async fn auth_middleware(
             &door,
         );
         let authorized = admin_door_admits(&door, req.method().as_str(), path);
+        if path == crate::admin::gate::WHOAMI_PATH
+            || (req.method() == axum::http::Method::POST && path == crate::admin::gate::KEYS_PATH)
+        {
+            let who = admin_who(&app, inbound_headers.unwrap_or_else(|| req.headers())).await;
+            req.extensions_mut().insert(AdminWhoSlot(who));
+        }
         strike_named(&mut req, &mut consumed, strips.iter());
         req.extensions_mut().insert(consumed);
 
-        if presented && matches!(door, AdminDoor::Denied) {
+        if (presented && matches!(door, AdminDoor::Denied))
+            || matches!(door, AdminDoor::Rejected(_))
+        {
             app.login_guard.admin_refused(admin_source, now);
         }
         let principal = match admin_principal_or_response(door) {
@@ -2244,7 +2458,10 @@ pub(crate) async fn auth_middleware(
                 diag_debug!(ADMIN_FORBIDDEN_SUPPRESSED, principal = %actor, path = %path, required = %required.as_str(),
                     "admin request forbidden (audit suppressed: already recorded this window)");
             }
-            return Err(forbidden_response(required));
+            return Err(forbidden_response(
+                required,
+                crate::admin::seam::admin_verb_at(req.method().as_str(), path),
+            ));
         }
 
         let method = req.method();
@@ -2664,3 +2881,7 @@ impl AuthMiddleware {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "tests/admin_grant_tests.rs"]
+mod admin_grant_tests;

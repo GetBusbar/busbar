@@ -34,7 +34,7 @@ impl VerbScope {
 pub enum Class {
     /// One of the 66 operations of 1.5.5's `openapi.json`.
     Legacy,
-    /// One of the 14 new 1.6.0 verbs.
+    /// One of the 15 new 1.6.0 verbs.
     New,
     /// One of the five 1.6.0 ledger views.
     Ledger,
@@ -137,6 +137,7 @@ pub enum KernelVerb {
     GetInfo,
     GetTelemetry,
     GetOperationsKey,
+    GetWhoami,
     GetUsage,
     GetOpenapiJson,
 
@@ -315,6 +316,7 @@ pub const TABLE: &[VerbRow] = table! {
     New RecoveryResolve "POST" "/api/v1/admin/ledger/recovery/resolve" "recovery_resolve";
     New GetTelemetry "GET" "/api/v1/admin/telemetry" "get_telemetry";
     New GetOperationsKey "GET" "/api/v1/admin/operations/{key}" "get_operations_key";
+    New GetWhoami "GET" "/api/v1/admin/whoami" "get_whoami";
     New GetTrust "GET" "/api/v1/admin/trust" "get_trust";
     New TrustApprove "POST" "/api/v1/admin/trust/approve" "trust_approve";
     New TrustRevoke "POST" "/api/v1/admin/trust/revoke" "trust_revoke";

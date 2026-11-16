@@ -49,6 +49,7 @@ impl AdminTransport for JsonV1 {
             .route("/info", get(info))
             .route("/telemetry", get(telemetry::get))
             .route("/operations/{key}", get(generation::get_operation))
+            .route("/whoami", get(whoami::get))
             .route("/pools", get(list_pools))
             .route("/pools/{name}", get(get_pool))
             .route("/models", get(list_models))
@@ -656,7 +657,9 @@ mod handlers;
 mod replay_metadata;
 mod settings_edit;
 pub(super) mod telemetry;
+mod whoami;
 pub(crate) use handlers::*;
+pub(crate) use whoami::who_of as whoami_of;
 
 mod kernel_verbs;
 
@@ -682,3 +685,7 @@ mod operator_file_policy_tests;
 
 #[cfg(feature = "test-support")]
 pub use handlers::credential_flush_response_for_test;
+
+#[cfg(test)]
+#[path = "tests/admin_grant_tests.rs"]
+mod admin_grant_tests;
