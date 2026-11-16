@@ -1526,10 +1526,6 @@ async fn run(
         }));
     }
 
-    app_handle.on_apply(Box::new(|app| {
-        root::boot::follow_plugin_logs(root::boot::plugin_logs(), &app.plugins_cfg);
-    }));
-
     app_handle.on_apply(Box::new(|_| {
         let refused = root::doors::refresh_live(&root::policy::client_settings(
             &busbar_kernel::config::limits::installed().unwrap_or_default(),

@@ -135,7 +135,6 @@ impl HookEnv {
         name: &str,
         timeout_ms: u64,
         signals: &[Signal],
-        child: Option<&crate::hook_child::Grant>,
     ) -> Result<Arc<dyn RoutingPolicy>, String> {
         if let Some(opened) = self.route_calls.get(name).filter(|opened| {
             same_resolved_inputs(
@@ -151,7 +150,6 @@ impl HookEnv {
                 opened.calls.clone(),
                 name,
                 signals,
-                child,
             ));
         }
         let axis = self
@@ -160,7 +158,7 @@ impl HookEnv {
             .ok_or_else(|| format!("no `kind: hook` plugin answers to '{module}'"))?;
         let calls = axis.open(module, name, settings, policy_timeout(timeout_ms))?;
         Ok(crate::plane_driver::hooks::policy::HookPolicy::policy(
-            calls, name, signals, child,
+            calls, name, signals,
         ))
     }
 
@@ -275,7 +273,6 @@ impl HookEnv {
                     name,
                     hook.timeout_ms,
                     &hook.signals,
-                    hook.child_dispatch.as_ref(),
                 )
                 .map(|_| ())
             },
@@ -700,7 +697,6 @@ pub(crate) fn gate_transport_named(
                 opened.calls.clone(),
                 name,
                 &hook.signals,
-                hook.child_dispatch.as_ref(),
             ),
             opened.resolved.clone(),
         ));
@@ -729,16 +725,7 @@ pub(crate) fn gate_transport_uncached(
         name,
         hook,
         env.resolve_hook_settings(&hook.plugin, &hook.settings),
-        |resolved| {
-            env.open(
-                &hook.plugin,
-                resolved,
-                name,
-                hook.timeout_ms,
-                &hook.signals,
-                hook.child_dispatch.as_ref(),
-            )
-        },
+        |resolved| env.open(&hook.plugin, resolved, name, hook.timeout_ms, &hook.signals),
     )
 }
 
@@ -891,22 +878,7 @@ pub(crate) mod resolution {
         super::policy_timeout(hook.timeout_ms).hash(&mut h);
         settings.hash(&mut h);
         hook.signals.hash(&mut h);
-        busbar_contract::json::to_writer(HashWriter(&mut h), &hook.child_dispatch).ok()?;
         Some(h.finish())
-    }
-
-    /// Feeds serialized bytes straight into a hasher, so a key never materializes the encoding.
-    struct HashWriter<'a, H>(&'a mut H);
-
-    impl<H: std::hash::Hasher> std::io::Write for HashWriter<'_, H> {
-        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-            self.0.write(bytes);
-            Ok(bytes.len())
-        }
-
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
     }
 
     pub(crate) enum Admission {

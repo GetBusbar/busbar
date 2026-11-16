@@ -29874,17 +29874,6 @@
               ],
               "default": null
             },
-            "protocol": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "default": null
-            },
             "provider": {
               "type": "string"
             },
@@ -29942,56 +29931,6 @@
           ],
           "description": "One `plugins.fetch:` entry — an UNTAGGED enum discriminated by which key is present. `github` is a\n`org/repo@tag` release ref (asset resolved by the loader); `url` is a direct tarball URL; `env`\nnames an environment variable holding a URL (or `url@sha256`). `sha256` (github/url) is the\nlowercase-hex integrity pin: it is BOTH the download-skip cache key (a file in `dir` already\nhashing to it ⇒ no network) and the verify-before-write gate. Per-variant `deny_unknown_fields`\nso a typo'd key can't be silently reinterpreted as a different variant."
         },
-        "PluginLogsCfg": {
-          "additionalProperties": false,
-          "description": "`plugins.logs:` — `dir` (default `logs/plugins`), `level` (default `info`), per-instance\n`levels`, `rotate_mb` (unset: never rotate; the host's rename rotation) and `keep` (default 5).\nEvery default and every refusal is the plugin log configuration's own; the binary resolves this\nblock at boot, so a bad value fails the boot naming its key.",
-          "properties": {
-            "dir": {
-              "default": null,
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "keep": {
-              "default": null,
-              "format": "uint32",
-              "maximum": 4294967295,
-              "minimum": 0,
-              "type": [
-                "integer",
-                "null"
-              ],
-              "x-busbar-integer-token": "unsigned"
-            },
-            "level": {
-              "default": null,
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "levels": {
-              "additionalProperties": {
-                "type": "string"
-              },
-              "default": {},
-              "type": "object"
-            },
-            "rotate_mb": {
-              "default": null,
-              "format": "uint64",
-              "maximum": 18446744073709551615,
-              "minimum": 0,
-              "type": [
-                "integer",
-                "null"
-              ],
-              "x-busbar-integer-token": "unsigned"
-            }
-          },
-          "type": "object"
-        },
         "PluginPublisher": {
           "additionalProperties": false,
           "description": "One scoped publisher authority with exact plugin names and overlapping Ed25519 keys.",
@@ -30040,17 +29979,6 @@
                 "$ref": "#/$defs/PluginFetch"
               },
               "type": "array"
-            },
-            "logs": {
-              "$ref": "#/$defs/PluginLogsCfg",
-              "default": {
-                "dir": null,
-                "keep": null,
-                "level": null,
-                "levels": {},
-                "rotate_mb": null
-              },
-              "description": "PLUGIN LOGS (`plugins.logs:`): every plugin instance logs to its own file, which the host\nwrites from what the plugin reported on its replies (`BUSBAR-1.6.0.md` decision #85)."
             },
             "min_versions": {
               "additionalProperties": {

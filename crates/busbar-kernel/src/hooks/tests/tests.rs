@@ -518,7 +518,6 @@ fn pool_with_hook(name: &str) -> crate::config::PoolCfg {
 
 fn base_gate() -> HookCfg {
     HookCfg {
-        child_dispatch: None,
         kind: HookKind::Gate,
         plugin: "test-hook".to_string(),
         timeout_ms: crate::config::DEFAULT_POLICY_TIMEOUT_MS,

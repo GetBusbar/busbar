@@ -160,7 +160,6 @@ fn make_model_unbounded(provider: &str) -> config::ModelCfg {
     config::ModelCfg {
         reasoning: None,
         prompt_caching: None,
-        protocol: None,
         max_requests: -1,
         provider: provider.into(),
         max_concurrent: None,
@@ -2457,7 +2456,6 @@ fn plugin_pool_cfg(plugin: &str) -> RootCfg {
 
 fn gate_hook(plugin: &str, timeout_ms: u64) -> config::HookCfg {
     config::HookCfg {
-        child_dispatch: None,
         kind: config::HookKind::Gate,
         plugin: plugin.to_string(),
         timeout_ms,

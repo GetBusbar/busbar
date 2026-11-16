@@ -267,9 +267,6 @@ pub struct RootInstall {
     /// The ONE durable-write primitive ([`crate::durable`]). `None` = no durable write: every write
     /// through the seam answers an error naming the missing root.
     pub durable: Option<&'static dyn crate::durable::DurableFs>,
-    /// The root's reading of the `plugins.logs` block (the plugin log sinks are the loader's): a
-    /// block it cannot use is refused, on every path the preflight runs. `None` = nothing to check.
-    pub plugin_logs: Option<PluginLogsCheck>,
     /// Whether a DROPPED-IN `kind: hook` row of a registry answers a word by the rule the hook axis
     /// opens it by (its signed Statement's names and hook words beside the manifest's). `None` =
     /// only the registry's own words answer.
@@ -312,8 +309,6 @@ pub type SecretRestoreFn = Box<dyn FnOnce() + Send>;
 
 /// Takes the live dropped-in secret set and returns what puts it back ([`SecretRestoreFn`]).
 pub type SecretSnapshotTake = fn() -> SecretRestoreFn;
-
-pub type PluginLogsCheck = fn(&config::PluginsCfg) -> Result<(), String>;
 
 pub type HookAnswers = fn(&dyn PluginRows, &str) -> bool;
 
@@ -690,10 +685,6 @@ pub fn plugins_preflight(
     plugins_cfg: &config::PluginsCfg,
     export_cfg: &config::ExportCfg,
 ) -> Result<Arc<dyn PluginRows>, String> {
-    if let Some(check) = root_rows().plugin_logs {
-        check(plugins_cfg)?;
-    }
-
     let store_ref = store_cfg.map(|g| g.module.clone()).unwrap_or_default();
 
     let store_is_plugin = store_cfg.is_some() && linked()?.resolve(&store_ref).is_none();

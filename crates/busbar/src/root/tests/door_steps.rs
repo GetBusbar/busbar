@@ -2760,28 +2760,6 @@ fn a_members_base_url_userinfo_reaches_its_attempts_only_through_its_binding() {
 }
 
 #[test]
-fn a_member_whose_protocol_states_no_default_style_rides_its_providers() {
-    let routes = resolve(
-        "models: {m: {provider: p, protocol: x-envelope}}",
-        &[("p", provider("d", None))],
-    )
-    .expect("the member resolves under its provider's default style");
-    assert!(
-        routes["m"].auth.is_some(),
-        "bound by the plugin serving `bearer`"
-    );
-    let styleless = resolve(
-        "models: {m: {provider: p, protocol: x-envelope}}",
-        &[("p", provider("x", None))],
-    );
-    assert!(
-        styleless.as_ref().is_err_and(|e| e.contains("no `auth:`")),
-        "neither the member's protocol nor its provider's states a default: {:?}",
-        styleless.err()
-    );
-}
-
-#[test]
 fn a_member_that_cannot_be_reached_refuses_the_load_naming_it() {
     let unknown = resolve("models: {m: {provider: q}}", &[("p", provider("d", None))]);
     assert!(
