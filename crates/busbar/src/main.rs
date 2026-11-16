@@ -575,6 +575,8 @@ async fn run(
     catalogue: busbar_kernel::diagnostics::Catalogue,
     control_work: ControlWork,
 ) {
+    let plugin_process =
+        busbar_plugin_loader::process::ProcessResources::new().unwrap_or_else(|error| die(error));
     root::observe::install(catalogue);
     // Until the listener's own handler owns signals, SIGTERM/SIGINT exit through `root::exit`, so
     // an armed first-start owner hands over (FIRST-START-TAKEOVER §2.7).
@@ -712,6 +714,7 @@ async fn run(
         // The MIN-3 registry boots here, before the Store opens and before any listener serves: images, the
         // kernel's sides, then 2a, 2b, the deployment point, 2c. Without a MIN-3 store image the old path boots.
         let walked = root::min3_boot::run(
+            &plugin_process,
             &base_cfg,
             &deploy.plugins,
             boot_guard,
