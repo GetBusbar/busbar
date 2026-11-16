@@ -276,25 +276,16 @@ impl PluginAdmission for RootAdmission {
         cfg: &PluginsCfg,
     ) -> Result<(Stated, Judged, busbar_contract::plugin_rows::Verification), Refusal> {
         let policy = install_policy(cfg, env!("CARGO_PKG_VERSION")).map_err(Refusal::Validation)?;
-        let unpacked = unpack_checked(tarball, "")?;
-        let (judged, verification) =
-            match evaluate_with_verification(&unpacked.lib_bytes, &unpacked.manifest, &policy) {
-                Ok((Verdict::Trusted { publisher, .. }, verification)) => {
-                    (Judged::Trusted { publisher }, verification)
-                }
-                Ok((Verdict::Allowed { .. }, verification)) => (Judged::Allowed, verification),
-                Err(rejected) => (
-                    Judged::Rejected {
-                        reason: rejected.reason,
-                    },
-                    Default::default(),
-                ),
-            };
-        Ok((
-            stated(&unpacked.manifest).map_err(Refusal::Validation)?,
-            judged,
-            verification,
-        ))
+        inspect_with_policy(tarball, &policy)
+    }
+
+    fn inspect_installed_with_verification(
+        &self,
+        tarball: &[u8],
+        cfg: &PluginsCfg,
+    ) -> Result<(Stated, Judged, busbar_contract::plugin_rows::Verification), Refusal> {
+        let policy = policy(cfg, env!("CARGO_PKG_VERSION")).map_err(Refusal::Validation)?;
+        inspect_with_policy(tarball, &policy)
     }
 
     fn rollback_target(
@@ -322,6 +313,31 @@ impl PluginAdmission for RootAdmission {
             ))),
         }
     }
+}
+
+fn inspect_with_policy(
+    tarball: &[u8],
+    policy: &TrustPolicy,
+) -> Result<(Stated, Judged, busbar_contract::plugin_rows::Verification), Refusal> {
+    let unpacked = unpack_checked(tarball, "")?;
+    let (judged, verification) =
+        match evaluate_with_verification(&unpacked.lib_bytes, &unpacked.manifest, policy) {
+            Ok((Verdict::Trusted { publisher, .. }, verification)) => {
+                (Judged::Trusted { publisher }, verification)
+            }
+            Ok((Verdict::Allowed { .. }, verification)) => (Judged::Allowed, verification),
+            Err(rejected) => (
+                Judged::Rejected {
+                    reason: rejected.reason,
+                },
+                Default::default(),
+            ),
+        };
+    Ok((
+        stated(&unpacked.manifest).map_err(Refusal::Validation)?,
+        judged,
+        verification,
+    ))
 }
 
 #[cfg(test)]

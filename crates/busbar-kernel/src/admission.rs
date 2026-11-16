@@ -189,6 +189,15 @@ pub trait PluginAdmission: Send + Sync {
         })
     }
 
+    /// Read installed artifact facts under boot-time expiry policy, retaining hard trust gates.
+    fn inspect_installed_with_verification(
+        &self,
+        tarball: &[u8],
+        cfg: &crate::config::PluginsCfg,
+    ) -> Result<(Stated, Judged, busbar_contract::plugin_rows::Verification), Refusal> {
+        self.inspect_with_verification(tarball, cfg)
+    }
+
     fn rollback_target(
         &self,
         file: &str,
