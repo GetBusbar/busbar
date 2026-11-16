@@ -314,3 +314,33 @@ async fn a_late_source_refuses_until_its_handle_is_set() {
         Stored::refused(NOT_READABLE)
     );
 }
+
+#[tokio::test]
+async fn a_generation_credential_source_retains_exact_governance_custody() {
+    let (first, old_id, old_secret) = gov_with_key("retained-generation").await;
+    let (second, new_id, new_secret) = gov_with_key("next-generation").await;
+    let retained = AppCredentials::new(Some(first));
+    let current = AppCredentials::new(Some(second));
+    let kind = signed_kind();
+    let (old, live) = retained.read(&kind, &old_id);
+    assert_eq!(
+        (old.expose(&busbar_kernel::seal::lend()).as_str(), live),
+        (old_secret.as_str(), true)
+    );
+    let (new, live) = current.read(&kind, &new_id);
+    assert_eq!(
+        (new.expose(&busbar_kernel::seal::lend()).as_str(), live),
+        (new_secret.as_str(), true)
+    );
+    assert!(
+        !current.read(&kind, &old_id).1,
+        "new generation cannot read old custody"
+    );
+    assert!(
+        !retained.read(&kind, &new_id).1,
+        "retained generation cannot read new custody"
+    );
+    let absent = AppCredentials::new(None);
+    assert!(!absent.installed());
+    assert!(!absent.read(&kind, &old_id).1);
+}
