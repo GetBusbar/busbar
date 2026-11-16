@@ -1,7 +1,16 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The config binder: secret, trust, dest and reference bindings of one instance's operator config (IF §12.7). W0-ABI stub: frozen signatures, `todo!()` bodies; W1-K7 fills it.
+//! The config binder: secret, trust, dest and reference bindings of one instance's operator config (IF §12.7).
+//! The frozen types and the trait are below; [`Binder`] (binder.rs) is core's one implementation of the trait.
+
+mod binder;
+mod pem;
+mod pointer;
+#[cfg(test)]
+mod tests;
+
+pub use binder::{Binder, RefSource, MAX_BINDINGS, MAX_UNIX_PATHS};
 
 use busbar_plugin_abi::host_side::caller::BoxFut;
 
