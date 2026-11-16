@@ -312,3 +312,50 @@ async fn probe_routes_are_public_and_head_has_no_body() {
         }
     }
 }
+
+#[tokio::test]
+async fn readiness_refuses_missing_durability_and_closed_governed_admission() {
+    let app = lane_less_app(None).await;
+    let gov = app.governance.as_ref().unwrap();
+    let without_journal = Arc::new(kernel::endpoints::ProbeState::new(None));
+    assert_eq!(
+        kernel::endpoints::readyz(
+            kernel::state::CurrentApp(app.clone()),
+            Some(axum::Extension(without_journal))
+        )
+        .await
+        .status(),
+        503
+    );
+    let journal = kernel::persistence::journal::runtime::RuntimeJournal::open(
+        gov.core_store_handle().unwrap(),
+        901,
+        kernel::persistence::journal::runtime::BufferBudget {
+            records: 1,
+            bytes: 4096,
+        },
+    )
+    .await
+    .unwrap();
+    let probes = Arc::new(kernel::endpoints::ProbeState::new(Some(journal)));
+    assert_eq!(
+        kernel::endpoints::readyz(
+            kernel::state::CurrentApp(app.clone()),
+            Some(axum::Extension(probes.clone()))
+        )
+        .await
+        .status(),
+        200
+    );
+    gov.admissions().close();
+    assert_eq!(
+        kernel::endpoints::readyz(
+            kernel::state::CurrentApp(app),
+            Some(axum::Extension(probes))
+        )
+        .await
+        .status(),
+        503
+    );
+    assert_eq!(kernel::endpoints::livez().await.status(), 200);
+}
