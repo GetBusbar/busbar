@@ -88,6 +88,17 @@ impl LoadablePlugin {
         self.configuration_statement.as_deref()
     }
 
+    /// Whether this row is the module `name`: its manifest's name, or the name its Statement
+    /// states. Process start registers a plane under its Statement's name (`decision`), while its
+    /// signed manifest carries its repo's (`busbar-plane-decisions`).
+    #[must_use]
+    pub fn is_module(&self, name: &str) -> bool {
+        self.manifest.name == name
+            || self
+                .configuration_statement()
+                .is_some_and(|stated| stated.name == name)
+    }
+
     #[must_use]
     pub fn release_keys_version(&self) -> Option<u64> {
         self.accepted_release_keys_version
@@ -727,6 +738,17 @@ impl PluginRegistry {
 
     pub fn skipped(&self) -> &[SkippedPlugin] {
         &self.skipped
+    }
+
+    /// The image the dropped-in row of `kind` that is the module `name`
+    /// ([`LoadablePlugin::is_module`]) is bound from: its archive's SHA-256. `None`: this registry
+    /// admits no such dropped-in row.
+    #[must_use]
+    pub fn dropped_image(&self, kind: &str, name: &str) -> Option<String> {
+        self.loadable()
+            .iter()
+            .find(|row| !row.linked() && row.manifest.kind == kind && row.is_module(name))
+            .map(|row| row.archive_sha256.clone().unwrap_or_default())
     }
 
     pub fn dropped_hooks(&self) -> impl Iterator<Item = &LoadablePlugin> {
