@@ -141,9 +141,9 @@ pub const CARD_ISSUER_SEED: [u8; 32] = [0x42; 32];
 
 /// The card issuer key as busbar's `jws_issuer_key` pin takes it: base64 SubjectPublicKeyInfo DER.
 pub fn card_issuer_key() -> String {
+    use aws_lc_rs::signature::KeyPair as _;
     use base64::Engine as _;
-    use ring::signature::KeyPair as _;
-    let kp = ring::signature::Ed25519KeyPair::from_seed_unchecked(&CARD_ISSUER_SEED)
+    let kp = aws_lc_rs::signature::Ed25519KeyPair::from_seed_unchecked(&CARD_ISSUER_SEED)
         .expect("a 32-byte seed");
     let mut der = vec![
         0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00,
@@ -183,7 +183,7 @@ fn signed_card(base: &str) -> Bytes {
             "tags": ["echo"]}]});
     let protected = e.encode(r#"{"alg":"EdDSA","kid":"hammer"}"#);
     let input = format!("{protected}.{}", e.encode(jcs(&card)));
-    let kp = ring::signature::Ed25519KeyPair::from_seed_unchecked(&CARD_ISSUER_SEED)
+    let kp = aws_lc_rs::signature::Ed25519KeyPair::from_seed_unchecked(&CARD_ISSUER_SEED)
         .expect("a 32-byte seed");
     let sig = e.encode(kp.sign(input.as_bytes()).as_ref());
     card["signatures"] = json!([{"protected": protected, "signature": sig}]);
@@ -320,7 +320,7 @@ fn tls_acceptor() -> std::io::Result<(tokio_rustls::TlsAcceptor, String, String)
         .map_err(std::io::Error::other)?;
     let ck = rcgen::CertifiedKey { cert, signing_key };
     let spki = ck.signing_key.subject_public_key_info();
-    let digest = ring::digest::digest(&ring::digest::SHA256, &spki);
+    let digest = aws_lc_rs::digest::digest(&aws_lc_rs::digest::SHA256, &spki);
     let pin = format!(
         "sha256/{}",
         base64::engine::general_purpose::STANDARD.encode(digest.as_ref())
@@ -328,7 +328,7 @@ fn tls_acceptor() -> std::io::Result<(tokio_rustls::TlsAcceptor, String, String)
     let pem = ck.cert.pem();
     let key = rustls::pki_types::PrivateKeyDer::Pkcs8(ck.signing_key.serialize_der().into());
     let mut cfg = rustls::ServerConfig::builder_with_provider(Arc::new(
-        rustls::crypto::ring::default_provider(),
+        rustls::crypto::aws_lc_rs::default_provider(),
     ))
     .with_safe_default_protocol_versions()
     .map_err(std::io::Error::other)?

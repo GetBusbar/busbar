@@ -48,6 +48,8 @@ pub use crate::off_path::export::validate_configuration_projection;
 pub(crate) use crate::off_path::export::{route_decls, route_projection};
 
 pub(crate) struct RequestLogFacts<'a> {
+    /// The unit's node-qualified id (the reply's `X-Request-Id`); `None` where no unit was minted.
+    pub(crate) correlation_id: Option<&'a str>,
     pub(crate) ts: u64,
     pub(crate) ingress_protocol: &'a str,
     pub(crate) pool: &'a str,
@@ -61,6 +63,9 @@ pub(crate) fn build_request_log(
     f: &RequestLogFacts,
 ) -> Rendered {
     let mut rec = ProjectedRecord::new(projection, ExportStream::Logs);
+    if let Some(id) = f.correlation_id {
+        rec.set(ExportField::CorrelationId, id);
+    }
     rec.set(ExportField::Ts, f.ts)
         .set(ExportField::IngressProtocol, f.ingress_protocol)
         .set(ExportField::Pool, f.pool)

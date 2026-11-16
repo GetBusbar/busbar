@@ -1,0 +1,105 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "busbar.content.v1",
+  "title": "busbar content stream, version 1",
+  "description": "The `content` export stream: every record is one line (`$defs.line`). Part 0 of an exchange is `exchange.json` (`$defs.exchange`), carried as the concatenated `data` of its utf8 chunks. Both shapes are closed: adding, removing or retyping any member makes the schema `busbar.content.v2`. Custody: a delivery ACK means the chunk is durable. The idempotence key is (correlation_id, chunk.part, chunk.chunk_index). Part 0's last chunk is delivered only after every other part's chunks are acknowledged.",
+  "oneOf": [
+    { "$ref": "#/$defs/line" }
+  ],
+  "$defs": {
+    "line": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "correlation_id", "ts", "deployment_id", "node_id", "content_ref", "chunk", "enc", "data"],
+      "properties": {
+        "schema": { "const": "busbar.content.v1" },
+        "correlation_id": { "type": "string", "description": "The node-qualified unit id: node_<16 hex>.<32 hex>.<unit key>. Equals the response X-Request-Id." },
+        "ts": { "type": "integer", "minimum": 0, "description": "Unix seconds." },
+        "deployment_id": { "type": "string" },
+        "node_id": { "type": "string" },
+        "content_ref": { "type": "string", "description": "<deployment_id>/<date>/<correlation_id>" },
+        "chunk": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["part", "chunk_index", "last", "sha256"],
+          "properties": {
+            "part": { "type": "integer", "minimum": 0, "maximum": 255 },
+            "chunk_index": { "type": "integer", "minimum": 0, "maximum": 4294967295 },
+            "last": { "enum": [0, 1] },
+            "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$", "description": "Over the decoded bytes of this chunk." }
+          }
+        },
+        "enc": { "enum": ["utf8", "b64"], "description": "Part 0 is utf8; parts 1 to 255 are b64. One chunk is at most 4 MiB decoded." },
+        "data": { "type": "string" }
+      }
+    },
+    "exchange": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "record_id", "started_at", "ended_at", "plane", "dialect", "pool", "request", "response", "redaction", "sampling"],
+      "properties": {
+        "schema": { "const": "busbar.content.v1" },
+        "record_id": { "type": "string", "description": "Equals the line's correlation_id." },
+        "started_at": { "type": "integer", "minimum": 0 },
+        "ended_at": { "type": "integer", "minimum": 0 },
+        "plane": { "type": "string" },
+        "dialect": { "type": "string" },
+        "pool": { "type": "string" },
+        "key_id": { "type": "string", "description": "Present only when the sink also takes the identity stream." },
+        "groups": { "type": "array", "items": { "type": "string" }, "description": "Present only when the sink also takes the identity stream." },
+        "model_requested": { "type": "string" },
+        "model_served": { "type": "string" },
+        "request": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "body": {},
+            "parts": { "type": "array", "items": { "$ref": "#/$defs/partRef" } }
+          }
+        },
+        "response": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["end"],
+          "properties": {
+            "body": {},
+            "parts": { "type": "array", "items": { "$ref": "#/$defs/partRef" } },
+            "assembled": {},
+            "end": { "type": "string" }
+          }
+        },
+        "redaction": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["profile", "scope", "applied"],
+          "properties": {
+            "profile": { "type": "string" },
+            "scope": { "type": "string" },
+            "applied": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["rule", "count"],
+                "properties": {
+                  "rule": { "type": "string" },
+                  "count": { "type": "integer", "minimum": 0 }
+                }
+              }
+            }
+          }
+        },
+        "sampling": { "type": "object" }
+      }
+    },
+    "partRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["$part", "sha256"],
+      "properties": {
+        "$part": { "type": "integer", "minimum": 1, "maximum": 255 },
+        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+      }
+    }
+  }
+}

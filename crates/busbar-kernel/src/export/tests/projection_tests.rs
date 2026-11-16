@@ -151,19 +151,93 @@ fn durable_true_is_a_loud_not_yet_implemented_error() {
 }
 
 #[test]
-fn fields_on_logs_is_refused_while_its_pinned_field_has_no_producer() {
+fn logs_fields_override_accepted() {
     let errors = resolve_errs(
-        "soc2:\n  module: fixture-export\n  streams: [logs]\n  fields: [ts, pool]\n  settings: {}\n", &[ExportStream::Logs]);
-    assert_error_mentions(
-        &errors,
-        &[
-            "logs",
-            "PINNED",
-            "correlation_id",
-            "NO PRODUCER",
-            "later release",
-        ],
+        "soc2:\n  module: fixture-export\n  streams: [logs]\n  fields: [correlation_id, ts]\n  settings: {}\n",
+        &[ExportStream::Logs],
     );
+    assert!(errors.is_empty(), "{errors:#?}");
+}
+
+#[test]
+fn logs_fields_override_omitting_correlation_id_is_refused_at_the_pin() {
+    let errors = resolve_errs(
+        "soc2:\n  module: fixture-export\n  streams: [logs]\n  fields: [ts, pool]\n  settings: {}\n",
+        &[ExportStream::Logs],
+    );
+    assert_error_mentions(&errors, &["logs", "PINNED", "correlation_id"]);
+}
+
+#[test]
+fn logs_never_carry_deployment_or_node() {
+    for token in ["deployment_id", "node_id"] {
+        let errors = resolve_errs(
+            &format!(
+                "soc2:\n  module: fixture-export\n  streams: [logs]\n  fields: [correlation_id, ts, {token}]\n  settings: {{}}\n"
+            ),
+            &[ExportStream::Logs],
+        );
+        assert_error_mentions(&errors, &[token, "is not a field of any subscribed stream"]);
+    }
+    assert!(!produced_fields(ExportStream::Logs).contains(&ExportField::DeploymentId));
+    assert!(!produced_fields(ExportStream::Logs).contains(&ExportField::NodeId));
+}
+
+#[test]
+fn logs_default_grant_adds_only_correlation_id() {
+    assert_eq!(
+        produced_fields(ExportStream::Logs),
+        &[
+            ExportField::CorrelationId,
+            ExportField::Ts,
+            ExportField::IngressProtocol,
+            ExportField::Pool,
+            ExportField::Outcome,
+            ExportField::LatencyMs,
+        ]
+    );
+}
+
+#[test]
+fn logs_default_line_carries_correlation_id() {
+    let all_logs = Projection::for_test(&[ExportStream::Logs], produced_fields(ExportStream::Logs));
+    let facts = crate::export::RequestLogFacts {
+        correlation_id: Some("node_00000000000000aa.0123456789abcdef0123456789abcdef.7"),
+        ts: 1,
+        ingress_protocol: "acme",
+        pool: "p",
+        outcome: "ok",
+        latency_ms: 5,
+    };
+    let line: serde_json::Value =
+        serde_json::from_slice(&crate::export::build_request_log(all_logs, &facts).line).unwrap();
+    assert_eq!(
+        line["correlation_id"],
+        "node_00000000000000aa.0123456789abcdef0123456789abcdef.7"
+    );
+}
+
+#[test]
+fn omitted_streams_take_only_produced() {
+    let mut errors = Vec::new();
+    let proj = resolve_projection(
+        "mixed",
+        "fixture-export",
+        Some(&[ExportStream::Logs, ExportStream::Content]),
+        None,
+        None,
+        false,
+        &mut errors,
+    );
+    assert!(errors.is_empty(), "{errors:#?}");
+    assert!(proj.wants_stream(ExportStream::Logs));
+    assert!(!proj.wants_stream(ExportStream::Content));
+
+    let errors = resolve_errs(
+        "only:\n  module: fixture-export\n  settings: {}\n",
+        &[ExportStream::Content],
+    );
+    assert_error_mentions(&errors, &["only", "content", "NO PRODUCER"]);
 }
 
 #[test]
@@ -417,6 +491,7 @@ fn projection_union_is_the_compute_gate() {
 fn produced_logs_fields_match_the_request_log_producer() {
     let all_logs = Projection::for_test(&[ExportStream::Logs], ExportStream::Logs.default_fields());
     let facts = crate::export::RequestLogFacts {
+        correlation_id: Some("node_1.n.1"),
         ts: 1,
         ingress_protocol: "acme",
         pool: "p",

@@ -35,15 +35,15 @@ hdrhistogram = { version = "7", default-features = false }
 serde = { version = "1", features = ["derive"] }
 sonic-rs = "0.5"
 serde-saphyr = { version = "2.1.1", default-features = false, features = ["deserialize"] }
-ring = "0.17"
+aws-lc-rs = { version = "1.19", default-features = false, features = ["aws-lc-sys"] }
 base64 = "0.22"
 crc32fast = "1"
 # Safe syscalls: kill the child, the clock tick and the page size (no libc, no unsafe).
 rustix = { version = "1", default-features = false, features = ["std", "process", "param"] }
-# The mock's TLS listener (MCP cert_spki pins, https JWKS): ring only, as the product uses.
-rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
-tokio-rustls = { version = "0.26", default-features = false, features = ["ring"] }
-rcgen = { version = "0.14", default-features = false, features = ["crypto", "ring", "pem"] }
+# The mock's TLS listener (MCP cert_spki pins, https JWKS): AWS-LC only, the one provider the product ships (busbar-crypto, 229).
+rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "std", "tls12"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["aws_lc_rs"] }
+rcgen = { version = "0.14", default-features = false, features = ["crypto", "aws_lc_rs", "pem"] }
 
 [profile.release]
 debug = "line-tables-only"

@@ -139,7 +139,7 @@ fn the_recovery_request_is_a_principal_request_on_the_recovery_route_carrying_th
     )
     .unwrap();
     let identity = b"identity-records";
-    let req = recovery_request(&m.recovery[0], "ref-1", identity, 77);
+    let req = recovery_request(&m.recovery[0], "ref-1", identity, "/v1/poll", 77);
     assert_eq!(req.route, 6);
     assert_eq!(req.flags & RQ_RECOVERY, RQ_RECOVERY);
     assert_eq!(req.work, "ref-1");
@@ -149,6 +149,22 @@ fn the_recovery_request_is_a_principal_request_on_the_recovery_route_carrying_th
         (req.method, req.path, req.request_id, req.carrier),
         ("GET", "/v1/poll", 77, 0)
     );
+}
+
+/// IF §12.24 step 3: the poll's path and query are the WORK_OPEN target's, not the route pattern (the route
+/// only selected the poll).
+#[test]
+fn the_recovery_request_carries_the_path_and_query_of_the_work_target() {
+    let m = plan(
+        &[route(6, ROUTE_RECOVERY, AUTH_PRINCIPAL, "/v1/jobs")],
+        None,
+        &none,
+    )
+    .unwrap();
+    let req = recovery_request(&m.recovery[0], "ref-2", b"id", "/v1/jobs/42?cursor=7", 9);
+    assert_eq!((req.path, req.query), ("/v1/jobs/42", "cursor=7"));
+    let bare = recovery_request(&m.recovery[0], "ref-2", b"id", "/v1/jobs/42", 9);
+    assert_eq!((bare.path, bare.query), ("/v1/jobs/42", ""));
 }
 
 /// A plane that answers `admin` with the op it was called with, recorded.
