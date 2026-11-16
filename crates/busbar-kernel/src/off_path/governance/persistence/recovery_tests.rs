@@ -1903,6 +1903,40 @@ async fn recovery_original_is_pinned_until_its_last_operation_releases() {
     );
 }
 
+/// SF-6 test 30(d): a recovery proof restarts when a cut lands after its base snapshot.
+#[tokio::test]
+async fn recovery_history_restarts_from_the_cut_base() {
+    use crate::persistence::journal::{journal_walk_restarts, CUT_BATCH, RETAIN_TAIL};
+    let backend = Arc::new(Backend::default());
+    backend.ephemeral.store(true, Ordering::SeqCst);
+    let recovery = sink(Arc::new(attach(backend.clone(), 1).await), 7).await;
+    let journal = recovery.journal.clone();
+    for _ in 0..(RETAIN_TAIL + 3 * CUT_BATCH) {
+        let run = journal.stage_run(&[Entry::new(RecordClass::Transaction, vec![2])]).unwrap();
+        journal.confirm(&run).await.unwrap();
+    }
+    let before = backend.state.lock().unwrap().rows.clone();
+    journal.cutter().unwrap().truncate_through(u64::MAX).await;
+    let after = Mutex::new(Some(backend.state.lock().unwrap().rows.clone()));
+    let mut fresh = History::observing(&recovery.store, &journal);
+    let expected = fresh.proof(journal.node()).await.unwrap();
+    backend.state.lock().unwrap().rows = before;
+    *backend.after_read.lock().unwrap() = Some(Arc::new(move |backend, read| {
+        if read.addresses.iter().any(|address| address.key.get(24) == Some(&b'B')) {
+            if let Some(rows) = after.lock().unwrap().take() {
+                backend.state.lock().unwrap().rows = rows;
+            }
+        }
+    }));
+    let restarts = journal_walk_restarts();
+    let mut racing = History::observing(&recovery.store, &journal);
+    let actual = racing.proof(journal.node()).await.unwrap();
+    assert_eq!(actual.head, expected.head);
+    assert_eq!(actual.records_seal, expected.records_seal);
+    assert!(journal_walk_restarts() > restarts, "recovery uses the shared journal restart accounting");
+    *backend.after_read.lock().unwrap() = None;
+}
+
 /// WHO: a metering flush driving one operation while the settlement flusher's recovery batch
 /// that holds it is in doubt (its select crossed and its reply was lost).
 /// DOES: (SHUTDOWN-HANG F3.2, 8.4(g)) the single driver gets `Unavailable` and stages nothing;
