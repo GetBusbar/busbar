@@ -6,10 +6,11 @@
 //! scripted host. The plane itself is exercised by the image arms; these run the part core owns.
 
 use std::collections::VecDeque;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use busbar_plugin_abi::fail::failed::F_UNAVAILABLE;
-use busbar_plugin_abi::fail::refused::{R_DENIED, R_INVALID, R_UNSUPPORTED};
+use busbar_plugin_abi::fail::refused::{R_DENIED, R_INVALID, R_NOT_FOUND, R_UNSUPPORTED};
+use busbar_plugin_abi::host_side::caller::{BoxFut, Caller};
 use busbar_plugin_abi::plane::{
     CommittedRec, ConnectAns, LookupHit, MintedRec, ObsReceipt, ObsScopeAns, RefusalRec, SignedRec,
     TrustAns, TrustItemState, UsageRec, WorkAns, CONNECT_BEGIN, CONNECT_STATUS, CONN_READY,
@@ -19,13 +20,16 @@ use busbar_plugin_abi::plane::{
     P_COMMITTED, P_CONNECT, P_ENTITLE, P_JUDGED, P_LOOKUP, P_MINTED, P_OBSERVED, P_RENDEZVOUS,
     P_RV_FAILED, P_SIGNED, P_STORE_FAILED, P_TRUST, P_WORK, RV_ACCEPT, RV_REMOTE, SIGNED_ALGORITHM,
     SIGNED_VERIFIED, SIGN_JWS_COMPACT, SIGN_JWS_DETACHED, TRUST_SERVES, TRUST_STATE, TS_APPROVED,
-    TS_SIGHTED, WORK_OPEN,
+    TS_SIGHTED, WORK_FIND, WORK_LIVE, WORK_OPEN, WORK_SETTLE, WORK_SETTLED,
 };
 use busbar_plugin_abi::records::{commit, tag as g, RecPredRec, RecPutRec, Records, Reply, Writer};
 use busbar_plugin_loader::ports::plane::{PlaneIn, PlaneOut, TargetIn};
 use busbar_plugin_loader::ports::PortError;
 
-use super::{Hit, IntentHost, Looked, Resolver, WorkIntent, WorkOutcome};
+use super::{
+    DurableDecider, DurableWork, Hit, IntentHost, Looked, Namespace, Resolver, WorkDecider,
+    WorkIntent, WorkOutcome,
+};
 use crate::plane_driver::port_channels::Held;
 use crate::plane_driver::port_services::{ObservationIn, TrustItemOwned};
 use crate::plane_driver::port_session::{Calls, Effects, SessionError, Task, ToClient, Violation};
@@ -411,6 +415,7 @@ struct Host {
     rendezvous: Option<RecordsDenied>,
     mirrored: Option<&'static str>,
     obs_status: u32,
+    work_identity: Mutex<Vec<u8>>,
 }
 
 impl Host {
@@ -491,6 +496,7 @@ impl IntentHost for Host {
     }
 
     fn work(&self, w: &WorkIntent) -> WorkOutcome {
+        *self.work_identity.lock().unwrap() = w.identity.clone();
         self.note(format!("work op={} target={:?}", w.op, w.target));
         self.work.clone().unwrap_or_else(WorkOutcome::unsupported)
     }
@@ -1899,4 +1905,197 @@ fn a_host_with_no_media_or_observation_service_answers_fail_closed() {
         evidence: b"",
     };
     assert_eq!(host.observe(b"ID", &o).0, OBS_REFUSED);
+}
+
+/// A scripted `DurableWork`: what it was asked, and its canned answers.
+#[derive(Default)]
+struct Ledger {
+    asked: Mutex<Vec<String>>,
+    open: Option<u32>,
+    found: Option<(u32, &'static str)>,
+    refuse: Option<u32>,
+}
+
+impl DurableWork for Ledger {
+    fn open<'a>(
+        &'a self,
+        _: &'a Caller<'_>,
+        principal: &'a [u8],
+        target: &'a str,
+    ) -> BoxFut<'a, Result<Box<str>, u32>> {
+        self.asked.lock().unwrap().push(format!(
+            "open {} {target}",
+            String::from_utf8_lossy(principal)
+        ));
+        let answer = match self.open.or(self.refuse) {
+            Some(code) => Err(code),
+            None => Ok("ref-1".into()),
+        };
+        Box::pin(async move { answer })
+    }
+
+    fn find<'a>(
+        &'a self,
+        _: &'a Caller<'_>,
+        principal: &'a [u8],
+        reference: &'a str,
+    ) -> BoxFut<'a, Result<(u32, Box<str>), u32>> {
+        self.asked.lock().unwrap().push(format!(
+            "find {} {reference}",
+            String::from_utf8_lossy(principal)
+        ));
+        let answer = match (self.refuse, self.found) {
+            (Some(code), _) => Err(code),
+            (None, Some((state, target))) => Ok((state, target.into())),
+            (None, None) => Err(R_NOT_FOUND),
+        };
+        Box::pin(async move { answer })
+    }
+
+    fn settle<'a>(
+        &'a self,
+        _: &'a Caller<'_>,
+        principal: &'a [u8],
+        reference: &'a str,
+    ) -> BoxFut<'a, Result<(), u32>> {
+        self.asked.lock().unwrap().push(format!(
+            "settle {} {reference}",
+            String::from_utf8_lossy(principal)
+        ));
+        let answer = self.refuse.map_or(Ok(()), Err);
+        Box::pin(async move { answer })
+    }
+}
+
+fn namespace() -> Namespace {
+    Namespace {
+        plugin: "plane-llm".into(),
+        name: "llm".into(),
+        instance: 1,
+        slot: 0,
+    }
+}
+
+/// Runs `decide` for `intent` as the principal `ID` against `ledger`; recovery routes match `/poll...`.
+fn decide(
+    ledger: Arc<Ledger>,
+    op: u32,
+    target: Option<&str>,
+    reference: Option<&str>,
+) -> WorkOutcome {
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let decider = DurableDecider::new(
+        ledger,
+        Box::new(|target: &str| target.starts_with("/poll")),
+        rt.handle().clone(),
+    );
+    decider.decide(
+        &namespace(),
+        &WorkIntent {
+            op,
+            target: target.map(str::to_owned),
+            reference: reference.map(str::to_owned),
+            identity: b"ID".to_vec(),
+        },
+    )
+}
+
+#[test]
+fn work_open_on_a_recovery_route_opens_durable_work_for_the_principal_and_answers_live_with_its_reference(
+) {
+    let ledger = Arc::new(Ledger::default());
+    let out = decide(ledger.clone(), WORK_OPEN, Some("/poll?id=1"), None);
+    assert_eq!(*ledger.asked.lock().unwrap(), ["open ID /poll?id=1"]);
+    assert_eq!(
+        (
+            out.status,
+            out.state,
+            out.reference.as_str(),
+            out.target.as_str()
+        ),
+        (0, WORK_LIVE, "ref-1", "")
+    );
+}
+
+#[test]
+fn work_open_for_a_target_on_no_recovery_route_or_with_none_is_invalid_and_the_ledger_is_not_touched(
+) {
+    let ledger = Arc::new(Ledger::default());
+    for target in [Some("/data/x"), None] {
+        let out = decide(ledger.clone(), WORK_OPEN, target, None);
+        assert_eq!(out.status, R_INVALID, "target {target:?}");
+    }
+    assert!(ledger.asked.lock().unwrap().is_empty());
+}
+
+#[test]
+fn work_open_core_cannot_recover_is_unsupported_so_the_plane_sends_no_paid_create() {
+    let ledger = Arc::new(Ledger {
+        open: Some(R_UNSUPPORTED),
+        ..Ledger::default()
+    });
+    let out = decide(ledger, WORK_OPEN, Some("/poll"), None);
+    assert_eq!((out.status, out.state), (R_UNSUPPORTED, 0));
+    assert!(out.reference.is_empty());
+}
+
+#[test]
+fn work_find_answers_the_state_the_reference_and_the_target_and_passes_a_refusal_through() {
+    let ledger = Arc::new(Ledger {
+        found: Some((WORK_SETTLED, "/poll?id=1")),
+        ..Ledger::default()
+    });
+    let out = decide(ledger.clone(), WORK_FIND, None, Some("ref-1"));
+    assert_eq!(*ledger.asked.lock().unwrap(), ["find ID ref-1"]);
+    assert_eq!(
+        (
+            out.status,
+            out.state,
+            out.reference.as_str(),
+            out.target.as_str()
+        ),
+        (0, WORK_SETTLED, "ref-1", "/poll?id=1")
+    );
+    // Another principal's row, or an unknown one.
+    for code in [R_DENIED, R_NOT_FOUND] {
+        let ledger = Arc::new(Ledger {
+            refuse: Some(code),
+            ..Ledger::default()
+        });
+        let out = decide(ledger, WORK_FIND, None, Some("ref-1"));
+        assert_eq!((out.status, out.state), (code, 0));
+        assert!(out.reference.is_empty() && out.target.is_empty());
+    }
+}
+
+#[test]
+fn work_settle_settles_durably_and_answers_settled() {
+    let ledger = Arc::new(Ledger::default());
+    let out = decide(ledger.clone(), WORK_SETTLE, None, Some("ref-1"));
+    assert_eq!(*ledger.asked.lock().unwrap(), ["settle ID ref-1"]);
+    assert_eq!((out.status, out.state), (0, WORK_SETTLED));
+}
+
+#[test]
+fn work_find_and_settle_without_a_reference_and_an_unknown_op_are_invalid() {
+    let ledger = Arc::new(Ledger::default());
+    for (op, reference) in [(WORK_FIND, None), (WORK_SETTLE, None), (99, Some("ref-1"))] {
+        let out = decide(ledger.clone(), op, None, reference);
+        assert_eq!(out.status, R_INVALID, "op {op}");
+    }
+    assert!(ledger.asked.lock().unwrap().is_empty());
+}
+
+#[test]
+fn work_reaches_the_host_with_the_requests_identity() {
+    let script = Script {
+        request: vec![It::Work {
+            op: WORK_OPEN,
+            target: Some("/poll"),
+        }],
+        ..Script::default()
+    };
+    let host = Host::default();
+    run_as(&script, &host, b"ID-RECORDS").unwrap();
+    assert_eq!(*host.work_identity.lock().unwrap(), b"ID-RECORDS");
 }
