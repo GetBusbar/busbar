@@ -164,6 +164,8 @@ impl Base {
 /// (empty without a base) and the verified rows after the base.
 #[derive(Debug, Default)]
 pub struct NodeRecords {
+    /// Audit context at the exact replay base that precedes `rows`.
+    pub base_tail: Option<AuditTail>,
     pub kept: Vec<JournalRecord>,
     pub rows: Vec<JournalRecord>,
 }

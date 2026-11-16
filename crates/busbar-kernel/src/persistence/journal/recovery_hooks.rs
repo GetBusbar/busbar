@@ -112,6 +112,7 @@ impl<'a> StoreJournal<'a> {
                 ahead: Default::default(),
                 floor: from.count,
                 kept: Vec::new(),
+                base_tail: None,
             };
             match replay.to_end().await {
                 Ok(proof) if proof.records_seal == current.records_seal => return Ok(()),
@@ -404,6 +405,7 @@ impl<'a> StoreJournal<'a> {
             ahead: Default::default(),
             floor: observed.count,
             kept: Vec::new(),
+            base_tail: base.as_ref().map(Base::tail),
         };
         let mut found = None;
         let mut ordinal = observed.count;

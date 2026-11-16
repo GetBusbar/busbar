@@ -440,8 +440,16 @@ impl RuntimeJournal {
     ) -> std::result::Result<NodeRecords, RuntimeError> {
         let journal = StoreJournal::new(&self.store, node).map_err(RuntimeError::from)?;
         let (walked, _) = journal
-            .walk(
-                || (NodeRecords::default(), 0usize),
+            .walk_from_base(
+                |base_tail| {
+                    (
+                        NodeRecords {
+                            base_tail,
+                            ..NodeRecords::default()
+                        },
+                        0usize,
+                    )
+                },
                 |(records, bytes): &mut (NodeRecords, usize), original, kept| {
                     let decoded =
                         JournalRecord::decode(&original.body).map_err(|_| Error::Corrupt)?;

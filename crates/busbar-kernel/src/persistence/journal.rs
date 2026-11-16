@@ -280,6 +280,7 @@ impl<'a> StoreJournal<'a> {
         {
             return Err(Error::Corrupt);
         }
+        let base_tail = base.as_ref().map(Base::tail);
         let (observed, records_seal, kept) = match base {
             Some(base) => (base.head, base.records_seal, base.keep),
             None => (Head::default(), [0; 32], Vec::new()),
@@ -301,6 +302,7 @@ impl<'a> StoreJournal<'a> {
             ahead: Ahead::default(),
             floor: observed.count,
             kept,
+            base_tail,
         })
     }
 
@@ -334,13 +336,22 @@ impl<'a> StoreJournal<'a> {
     pub(crate) async fn walk<S>(
         &self,
         mut fresh: impl FnMut() -> S,
+        each: impl FnMut(&mut S, &Record, bool) -> Result<()>,
+    ) -> Result<(S, VerifiedHead)> {
+        self.walk_from_base(|_| fresh(), each).await
+    }
+
+    /// Like `walk`, with audit context from the same snapshot as the rows. A retry drops both
+    /// together so a concurrent base move cannot pair a new tail with an old retained prefix.
+    pub(crate) async fn walk_from_base<S>(
+        &self,
+        mut fresh: impl FnMut(Option<base::AuditTail>) -> S,
         mut each: impl FnMut(&mut S, &Record, bool) -> Result<()>,
     ) -> Result<(S, VerifiedHead)> {
         let mut restarts = 0u32;
         loop {
-            let mut state = fresh();
-            match self.walk_once(&mut state, &mut each).await {
-                Ok(proof) => return Ok((state, proof)),
+            match self.walk_once(&mut fresh, &mut each).await {
+                Ok(done) => return Ok(done),
                 Err(Error::Rebased) if restarts < base::WALK_RESTART_LIMIT => {
                     restarts += 1;
                     base::count_walk_restart();
@@ -353,17 +364,18 @@ impl<'a> StoreJournal<'a> {
 
     async fn walk_once<S>(
         &self,
-        state: &mut S,
+        fresh: &mut impl FnMut(Option<base::AuditTail>) -> S,
         each: &mut impl FnMut(&mut S, &Record, bool) -> Result<()>,
-    ) -> Result<VerifiedHead> {
+    ) -> Result<(S, VerifiedHead)> {
         let mut replay = self.historical_replay().await?;
+        let mut state = fresh(replay.base_tail);
         for kept in std::mem::take(&mut replay.kept) {
-            each(state, &kept, true)?;
+            each(&mut state, &kept, true)?;
         }
         while let Some(record) = replay.next().await? {
-            each(state, &record, false)?;
+            each(&mut state, &record, false)?;
         }
-        replay.finish()
+        Ok((state, replay.finish()?))
     }
 
     #[cfg(test)]
@@ -636,6 +648,7 @@ pub(crate) struct Replay<'j, 's> {
     floor: u64,
     /// The base's kept copies (§3.9 "Kept rows first"); `walk` feeds them before the rows.
     kept: Vec<Record>,
+    base_tail: Option<base::AuditTail>,
 }
 
 /// Read-ahead for a replay. The proven prefix is immutable, so reading the next few ordinals in
