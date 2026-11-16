@@ -10,6 +10,14 @@
 //! WBS rule 10: each ignored arm waits for the task that lands the last piece it needs; that task writes the
 //! arm's body and un-ignores it in its own MR (red first, then green). Arms of tasks merged before W1-T1 run now.
 
+use std::sync::Mutex;
+
+use busbar_plugin_abi::fail::{failed, Fail};
+use busbar_plugin_abi::host::{
+    alg, crypto_status, CryptoErr, CryptoReq, CryptoRet, Ctx, Hash, Host, HostExt, HostFns, SignAlg,
+};
+use busbar_plugin_abi::types::Status;
+
 fn host_vt() -> String {
     let path = concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -40,12 +48,63 @@ fn the_status_map_has_no_panic_path() {
     }
 }
 
-#[test]
-#[ignore = "owner: W1-A2"]
-fn self_test_answers_rng_with_empty_out_and_no_fault() {
-    todo!("owner: W1-A2 (C-CRYPTO-SELFTEST)")
+static ASKED: Mutex<Vec<u32>> = Mutex::new(Vec::new());
+
+/// What host_vt's `random` answers while the backend is in its self-test failure state (§5.2 round 23).
+extern "C" fn failed_random(ctx: Ctx<'_>, _len: usize) -> CryptoRet<'_> {
+    CryptoRet::empty(ctx, crypto_status::RNG)
 }
 
+/// What host_vt's `crypto` answers then for any alg: RNG with `out` EMPTY. The algs asked are recorded.
+extern "C" fn failed_crypto<'e>(ctx: Ctx<'e>, req: &CryptoReq<'_>) -> CryptoRet<'e> {
+    if let Ok(mut asked) = ASKED.lock() {
+        asked.push(req.alg);
+    }
+    CryptoRet::empty(ctx, crypto_status::RNG)
+}
+
+static SELF_TEST: Host = Host::new(
+    0,
+    HostFns {
+        now: None,
+        mono: None,
+        random: Some(failed_random),
+        crypto: Some(failed_crypto),
+        log: None,
+        log_level: None,
+        grow: None,
+        deployment: None,
+        migrate_admit: None,
+    },
+);
+
+/// Arms (a)-(c), the plugin-facing half: `random` first, then `crypto(HMAC_SHA256)` and `crypto(SIGN_ES256)`, each
+/// RNG with `out` EMPTY, reach the plugin as `Err(Rng)` with no panic and no zero-filled value, and the plugin's `?`
+/// is FAILED F_UNAVAILABLE (retried or rerouted by core), never a REFUSED verdict and never a fault. host_vt's
+/// half (SelfTest -> RNG, `HOST_FAULTS[SELF_TEST]`) is H0's `status_of`, checked by the source arms above.
+#[test]
+fn self_test_answers_rng_with_empty_out_and_no_fault() {
+    assert_eq!(SELF_TEST.random::<16>(), Err(CryptoErr::Rng));
+    let mac = SELF_TEST.hmac(Hash::Sha256, b"key", b"message");
+    assert_eq!(mac.err(), Some(CryptoErr::Rng));
+    let signed = SELF_TEST.sign(SignAlg::Es256, b"pkcs8", b"message");
+    assert_eq!(signed, Err(CryptoErr::Rng));
+    let asked = ASKED.lock().map(|asked| asked.clone()).unwrap_or_default();
+    assert_eq!(asked, [alg::HMAC_SHA256, alg::SIGN_ES256]);
+    let fail = Fail::from(CryptoErr::Rng);
+    assert_eq!(
+        (fail.status(), fail.code()),
+        (Status::FAILED, failed::F_UNAVAILABLE)
+    );
+}
+
+/// Arms (a)-(c) through host_vt itself over the CRYPTO-SEAM stub backend (SelfTest from `fill_checked`, then from
+/// `hmac_sha256` and `ecdsa_p256` signing after N good calls), with `HOST_FAULTS[SELF_TEST]` moving (busbar#262).
+#[test]
+#[ignore = "owner: busbar#262 (host_vt over the stub backend)"]
+fn self_test_through_host_vt_on_the_stub_backend() {
+    todo!("owner: busbar#262 (C-CRYPTO-SELFTEST)")
+}
 #[test]
 #[ignore = "owner: W1-L2"]
 fn one_crypto_self_test_failed_row_and_metric_within_a_tick() {
