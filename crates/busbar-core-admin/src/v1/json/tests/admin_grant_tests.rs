@@ -84,7 +84,7 @@ fn whoami_matches_gate() {
                 VerbScope::Full => Scope::Full,
             };
             assert_eq!(
-                super::super::whoami::door_admits_verb(door, row.name, needed),
+                super::whoami::door_admits_verb(door, row.name, needed),
                 admin_door_admits(door, row.method, &path),
                 "{door:?} disagrees with the gate on {} {path}",
                 row.name
