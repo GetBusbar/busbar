@@ -168,9 +168,10 @@ impl<'de> Deserialize<'de> for TlsSource {
     }
 }
 
-/// One `advanced.tls.destinations` entry.
+/// One `advanced.tls.destinations` entry. Parsed through [`RawTlsDestinationCfg`]: a `plaintext: true` entry and a
+/// `verify: pin` entry with no pins are refused at parse (TRANSPORT-SECURITY-POLICY §3, §6).
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
+#[serde(try_from = "RawTlsDestinationCfg")]
 pub struct TlsDestinationCfg {
     /// An exact host, a `*.domain` wildcard (names under it, never the apex), an IP or a CIDR.
     /// Name entries match a dial of a name; IP and CIDR entries match only a dial of an IP literal.
@@ -178,27 +179,86 @@ pub struct TlsDestinationCfg {
     pub matches: String,
     /// The CAs this destination is verified against. They REPLACE `roots` and the global
     /// `trust_anchors` for a matching dial unless `include_roots` is set.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub trust_anchors: Vec<TlsSource>,
     /// Trust `roots` and the global `trust_anchors` as well as this entry's anchors.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub include_roots: bool,
-    /// SHA-256 pins of the far end's SubjectPublicKeyInfo (`sha256/<base64>`), checked on top of
-    /// ordinary chain and name verification, never instead of it.
-    #[serde(
-        default,
-        skip_serializing_if = "Vec::is_empty",
-        deserialize_with = "one_or_many"
-    )]
+    /// SHA-256 pins of the far end's SubjectPublicKeyInfo (`sha256/<base64>`). Without `verify: pin` they are
+    /// checked on top of ordinary chain and name verification.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub pin_spki_sha256: Vec<String>,
+    /// `verify: pin`: the far end is trusted by its pinned key alone, so a private or self-signed server needs no
+    /// CA. Requires at least one pin. Absent = ordinary chain and name verification.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verify: Option<TlsVerify>,
     /// The client certificate busbar presents to this destination when it asks for one.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub client_identity: Option<TlsClientIdentityCfg>,
-    /// Admit plaintext (no TLS) to this destination. Accepted only on an exact host or IP, never
-    /// with anchors, a pin or a client identity. Credentials are never sent in clear to a host that
-    /// is not loopback, whatever this says.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    /// Always false after parse: `plaintext: true` is refused (transport security is the instance's
+    /// `insecure_transport`). The field stays for the old plaintext rule's callers until W3-D-CONTRACT.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub plaintext: bool,
+}
+
+/// `advanced.tls.destinations[].verify`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TlsVerify {
+    /// Trust the far end by its pinned SubjectPublicKeyInfo.
+    Pin,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawTlsDestinationCfg {
+    #[serde(rename = "match")]
+    matches: String,
+    #[serde(default)]
+    trust_anchors: Vec<TlsSource>,
+    #[serde(default)]
+    include_roots: bool,
+    #[serde(default, deserialize_with = "one_or_many")]
+    pin_spki_sha256: Vec<String>,
+    #[serde(default)]
+    verify: Option<TlsVerify>,
+    #[serde(default)]
+    client_identity: Option<TlsClientIdentityCfg>,
+    #[serde(default, deserialize_with = "plaintext_refused")]
+    plaintext: bool,
+}
+
+impl TryFrom<RawTlsDestinationCfg> for TlsDestinationCfg {
+    type Error = String;
+
+    fn try_from(raw: RawTlsDestinationCfg) -> Result<Self, String> {
+        if raw.verify == Some(TlsVerify::Pin) && raw.pin_spki_sha256.is_empty() {
+            return Err(format!(
+                "advanced.tls.destinations entry `{}` sets `verify: pin` but lists no `pin_spki_sha256` pin",
+                raw.matches
+            ));
+        }
+        Ok(Self {
+            matches: raw.matches,
+            trust_anchors: raw.trust_anchors,
+            include_roots: raw.include_roots,
+            pin_spki_sha256: raw.pin_spki_sha256,
+            verify: raw.verify,
+            client_identity: raw.client_identity,
+            plaintext: raw.plaintext,
+        })
+    }
+}
+
+/// `plaintext: false` parses; `plaintext: true` is refused, naming the replacement.
+fn plaintext_refused<'de, D: serde::Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
+    use serde::de::Error as _;
+    if bool::deserialize(d)? {
+        return Err(D::Error::custom(
+            "`plaintext` on an `advanced.tls.destinations` entry is refused: set `insecure_transport: { accept: plaintext, reason: \"...\" }` on the instance that needs it",
+        ));
+    }
+    Ok(false)
 }
 
 /// A client identity: the certificate chain (leaf first) and its private key, each a PEM source.

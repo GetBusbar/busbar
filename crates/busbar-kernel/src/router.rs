@@ -155,7 +155,7 @@ tokio::task_local! {
 /// replace those framework errors without inspecting or retaining their body.
 async fn admin_response_boundary(
     axum::extract::State(handle): axum::extract::State<std::sync::Arc<state::AppHandle>>,
-    req: axum::extract::Request,
+    mut req: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
     use axum::http::{header::CONTENT_TYPE, StatusCode};
@@ -171,6 +171,9 @@ async fn admin_response_boundary(
         return next.run(req).await;
     }
     let request_id = crate::admin::gate::request_id_of(handle.load().next_request_id());
+    // The admin router layer that owns ETags and `Idempotency-Key` (ADMIN-API-1.6 6) reads the
+    // handle from here: a layer on a `Router<Arc<AppHandle>>` cannot extract `State`.
+    req.extensions_mut().insert(handle.clone());
     let mut response = crate::admin::gate::with_request_id(request_id.clone(), next.run(req)).await;
     let plain_text = response
         .headers()

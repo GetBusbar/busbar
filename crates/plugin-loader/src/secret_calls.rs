@@ -26,10 +26,10 @@ use busbar_contract::secure::SecureVec;
 
 use crate::boot::Candidate;
 use crate::cold::secret_calls::{
-    answer_text, budget_left, check_answered, check_failed, declares_unread, encode_refused,
-    instance_label, label, lane_copies, lent_material, load_refused, module_name,
-    not_a_secret_door, open_timed_out, open_unsealed, open_without_ticket, refused_fmt,
-    secret_blobs, statement_unread, unanswered, unencodable_settings, unsealed_check,
+    answer_text, check_answered, check_failed, declares_unread, encode_refused, instance_label,
+    label, lane_copies, lent_material, load_refused, module_name, not_a_secret_door,
+    open_timed_out, open_unsealed, open_without_ticket, refused_fmt, secret_blobs,
+    statement_unread, unanswered, unencodable_settings, unsealed_check,
 };
 use crate::dispatch::kinds::secret::Secret;
 use crate::dispatch::lifecycle::{self, blob, AnswerLease};
@@ -401,8 +401,9 @@ impl LoadedSecret {
                 format_args!("secret module '{name}' could not reach the host's disk lane: {e}"),
             )
         })?;
-        let left = budget_left(deadline);
-        let answer = rx.recv_timeout(left);
+        // The budget was read once, into `deadline`; only a non-blocking enqueue ran since, so the
+        // wait is the whole budget (no second clock read through a cold helper).
+        let answer = rx.recv_timeout(WAIT);
 
         drop(waiting);
         answer.unwrap_or_else(|_| {

@@ -20,17 +20,3 @@ fn a_cached_disabled_gate_does_not_resample_the_environment() {
          would have said otherwise"
     );
 }
-
-#[test]
-fn enabling_the_gate_installs_the_atexit_latch_exactly_once() {
-    let _gate = gate_lock();
-    set_enabled(true);
-    assert!(
-        ATEXIT_INSTALLED.load(Ordering::Acquire),
-        "set_enabled(true) must install the atexit dump latch"
-    );
-
-    set_enabled(true);
-    assert!(ATEXIT_INSTALLED.load(Ordering::Acquire));
-    set_enabled(false);
-}

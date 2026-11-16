@@ -6,9 +6,6 @@
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 use zeroize::Zeroize;
 
-use crate::host::Host;
-use crate::types::RawOut;
-
 /// Round 8: the one bound for every record payload (replaces `bytemuck::Pod`; zerocopy is already in every lock,
 /// §1). Blanket-implemented, so no type implements it by hand. Reads are `T::read_from_prefix` (a copy: no
 /// alignment assumption about the body); writes are `v.as_bytes()`. `IntoBytes`'s derive refuses a struct with
@@ -425,6 +422,11 @@ impl<'a> Records<'a> {
             fused: false,
         }
     }
+    /// The bytes not yet read, from the next record on. W1-A5: `decode_settled` hands the CORE_CFG tail of an
+    /// answer on as `Records` over the answer's own bytes.
+    pub fn rest(&self) -> &'a [u8] {
+        self.bytes.get(self.at..).unwrap_or_default()
+    }
     /// Bounds-checked iteration. After the first Err the iterator is fused.
     ///
     /// Framing only: `_r` must be 0 (else Reserved); the head, the body and its zero padding must lie inside the
@@ -698,34 +700,41 @@ impl Writer for Nested<'_> {
     }
 }
 
-/// Sync-method output: writes straight into the host buffer, growing it through Host::grow (r4 H2).
+/// Sync-method output: writes straight into the host buffer, growing it through Host::grow (r4 H2). The write
+/// view, the raw channel and the grow call are busbar-ffi's `Out` (UNSAFE-MIN r3.1); this wraps it 1:1 so the
+/// records codec stays the safe `Writer` over four sink operations. The shims mint it from the ffi `Out` they are
+/// handed (`From`); a plugin never builds one.
 pub struct Out<'a> {
-    raw: &'a mut RawOut,
-    host: &'a Host,
+    sink: busbar_ffi::Out<'a>,
 }
-// W1-A1: the IF's Out writes straight into the host buffer (`raw.ptr`) and grows it through `Host::grow`, a raw
-// `unsafe extern "C"` field. Both are `unsafe`; the owner's "no unsafe" ruling holds them (and the constructor the
-// shims need) until UNSAFE-MIN decides the boundary. The `Writer` impl below is the real one, over this stub
-// sink, so only the four sink operations change when the boundary lands.
+impl<'a> From<busbar_ffi::Out<'a>> for Out<'a> {
+    fn from(sink: busbar_ffi::Out<'a>) -> Self {
+        Out { sink }
+    }
+}
 impl RawWrite for Out<'_> {
     fn written(&self) -> usize {
-        self.raw.len
+        self.sink.written()
     }
     fn room(&mut self, need: usize) -> Result<(), Full> {
-        let _ = (need, self.host);
-        todo!("UNSAFE-MIN: Out grows the host buffer through Host::grow")
+        if self.sink.room(need) {
+            Ok(())
+        } else {
+            Err(Full)
+        }
     }
     fn append(&mut self, bytes: &[u8]) {
-        let _ = bytes;
-        todo!("UNSAFE-MIN: Out writes the host buffer in place")
+        // `put_parts` made `room` for the whole record first, so the append fits; a false is a host that
+        // shrank its buffer mid-entry, which the debug build refuses.
+        let appended = self.sink.append(bytes);
+        debug_assert!(appended, "append inside the room the last `room` made");
     }
     fn patch(&mut self, at: usize, bytes: &[u8]) {
-        let _ = (at, bytes);
-        todo!("UNSAFE-MIN: Out writes the host buffer in place")
+        let patched = self.sink.patch(at, bytes);
+        debug_assert!(patched, "patch inside what was written");
     }
     fn truncate(&mut self, len: usize) {
-        let _ = len;
-        todo!("UNSAFE-MIN: Out zeroes the host buffer in place")
+        self.sink.truncate(len);
     }
 }
 impl Writer for Out<'_> {

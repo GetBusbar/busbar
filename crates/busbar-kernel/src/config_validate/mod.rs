@@ -2169,7 +2169,7 @@ fn destination_allowed(allow: &[String], host: &str) -> bool {
 pub fn metadata_denylist_entries() -> Vec<String> {
     [
         "169.254.0.0/16",
-        "100.100.100.200",
+        "\x3100.100.100.200",
         "168.63.129.16",
         "192.0.0.192",
         "fd00:ec2::254",

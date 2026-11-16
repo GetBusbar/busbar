@@ -270,9 +270,11 @@ pub fn signatures() {
         assert!(k.is_weak(), "{weak}");
         assert!(k.verify_strict(b"", &sig).is_err());
     }
-    // Off-curve and non-canonical encodings do not decode (RFC 8032 §5.1.3).
+    // Non-canonical encodings (y >= p) do not decode (RFC 8032 §5.1.3), and neither does the
+    // negative-zero encoding of the two x = 0 points (y = 1 and y = p - 1 with the sign bit set).
     for bad in [
-        "0200000000000000000000000000000000000000000000000000000000000000",
+        "0100000000000000000000000000000000000000000000000000000000000080",
+        "ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
         "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
         "eeffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
     ] {
@@ -284,6 +286,49 @@ pub fn signatures() {
             "{bad}"
         );
     }
+    // An encoding with no point on the curve (y = 2) is not refused at load (Q9b: no arithmetic in the
+    // decode); it is no weak key either, and it verifies nothing, so it fails closed at the first verify.
+    let off = ed25519::VerifyingKey::from_bytes(&a(
+        "0200000000000000000000000000000000000000000000000000000000000000",
+    ))
+    .unwrap();
+    assert!(!off.is_weak());
+    assert!(off.verify_strict(b"", &sig).is_err());
+    // QE: the pinned-key check refuses that key, and every encoding `from_bytes` refuses; it accepts
+    // every point, small-order and mixed-order ones included (weakness is `is_weak`'s question).
+    assert_eq!(
+        ed25519::validate_public_key(&off.to_bytes()),
+        Err(Error::Invalid(
+            "Ed25519 public key is not a canonical curve point"
+        ))
+    );
+    for bad in [
+        "0100000000000000000000000000000000000000000000000000000000000080",
+        "ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "eeffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+        "edffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+    ] {
+        assert!(
+            matches!(
+                ed25519::validate_public_key(&a(bad)),
+                Err(Error::Invalid(_))
+            ),
+            "{bad}"
+        );
+    }
+    for good in [
+        "0100000000000000000000000000000000000000000000000000000000000000",
+        "c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a",
+        "98519eadf35b995233b51b5cd23e9cc5a28b639b5a4af0ec903cb960d81b7819",
+    ] {
+        assert_eq!(ed25519::validate_public_key(&a(good)), Ok(()), "{good}");
+    }
+    assert_eq!(
+        ed25519::validate_public_key(&vk.to_bytes()),
+        Ok(()),
+        "the RFC 8032 key"
+    );
     // Mixed-order (non-weak, not torsion-free) keys decode and are not weak.
     let mixed = ed25519::VerifyingKey::from_bytes(&a(
         "98519eadf35b995233b51b5cd23e9cc5a28b639b5a4af0ec903cb960d81b7819",

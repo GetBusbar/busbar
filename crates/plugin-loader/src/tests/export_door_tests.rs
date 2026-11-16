@@ -67,7 +67,7 @@ fn linked() -> (Plugin<Export>, Arc<Dispatcher>) {
     ));
     let row = LinkedRow::of(TEST_EXPORT_DOOR).expect("the door states itself");
     let bind = Bind {
-        instance: crate::cold::export_axis::instance("export.metrics"),
+        instance: Arc::from("export.metrics"),
         max_inflight_cap: 64,
         sink: Arc::new(NoSink),
         dispatcher: dispatcher.adopter(),
@@ -195,7 +195,7 @@ fn stopping_counts_queued_lines_and_releases_their_holds_outside_the_queue_lock(
     let plugin = load_linked::<Export>(
         &LinkedRow::of(stop_accounting_door).unwrap(),
         Bind {
-            instance: crate::cold::export_axis::instance("export.stop-accounting"),
+            instance: Arc::from("export.stop-accounting"),
             max_inflight_cap: 8,
             sink: Arc::new(NoSink),
             dispatcher: dispatcher.adopter(),
@@ -370,7 +370,7 @@ fn an_instance_let_go_has_its_io_handles_reaped() {
     assert!(dispatcher.install_io(io.clone()));
     let row = LinkedRow::of(TEST_EXPORT_DOOR).expect("the door states itself");
     let bind = Bind {
-        instance: crate::cold::export_axis::instance("export.metrics"),
+        instance: Arc::from("export.metrics"),
         max_inflight_cap: 64,
         sink: Arc::new(NoSink),
         dispatcher: dispatcher.adopter(),
@@ -428,7 +428,7 @@ fn a_door_that_states_span_records_takes_them() {
         ));
         let row = LinkedRow::of(door).expect("the door states itself");
         let bind = Bind {
-            instance: crate::cold::export_axis::instance("export.metrics"),
+            instance: Arc::from("export.metrics"),
             max_inflight_cap: 64,
             sink: Arc::new(NoSink),
             dispatcher: dispatcher.adopter(),
@@ -573,7 +573,7 @@ fn a_lease_named_on_a_failed_or_refused_answer_is_released() {
     ));
     let row = LinkedRow::of(leaky::door).expect("the door states itself");
     let bind = Bind {
-        instance: crate::cold::export_axis::instance("export.leaky"),
+        instance: Arc::from("export.leaky"),
         max_inflight_cap: 4,
         sink: Arc::new(NoSink),
         dispatcher: dispatcher.adopter(),
@@ -688,7 +688,7 @@ fn a_push_sink_may_leave_scrape_and_serve_unstated() {
         busbar_contract::services::test_caller_binding(),
     ));
     let bind = |name: &str| Bind {
-        instance: crate::cold::export_axis::instance(name),
+        instance: Arc::from(name),
         max_inflight_cap: 4,
         sink: Arc::new(NoSink),
         dispatcher: dispatcher.adopter(),
@@ -773,7 +773,7 @@ fn a_batch_dropped_after_failed_delivery_is_counted_as_shed() {
     let plugin = load_linked::<Export>(
         &LinkedRow::of(pl_src_1_failing::door).unwrap(),
         Bind {
-            instance: crate::cold::export_axis::instance("export.pl-src-1-failing"),
+            instance: Arc::from("export.pl-src-1-failing"),
             max_inflight_cap: 4,
             sink: Arc::new(NoSink),
             dispatcher: dispatcher.adopter(),
@@ -967,7 +967,7 @@ fn counting_sink_of(
     let plugin = load_linked::<Export>(
         &LinkedRow::of(door).unwrap(),
         Bind {
-            instance: crate::cold::export_axis::instance("export.waste-counting"),
+            instance: Arc::from("export.waste-counting"),
             max_inflight_cap: 64,
             sink: Arc::new(NoSink),
             dispatcher: dispatcher.adopter(),
@@ -1029,11 +1029,8 @@ fn flush_until(shared: &Arc<Shared>, lines: usize) {
             shared.flush();
         }
     });
-    // Up to ten seconds of 5 ms polls.
-    for _ in 0..2000 {
-        if counting::LINES.load(Ordering::SeqCst) >= lines {
-            break;
-        }
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while counting::LINES.load(Ordering::SeqCst) < lines && std::time::Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(5));
     }
     shared.stop.store(true, Ordering::Release);

@@ -1079,6 +1079,9 @@ pub struct DeployCfg {
     /// Routing global default policy timeout (per-policy override still wins).
     #[serde(default)]
     pub routing: RoutingCfg,
+    /// The `telemetry:` block (the metric registry; default on).
+    #[serde(default)]
+    pub telemetry: TelemetryCfg,
 }
 
 impl DeployCfg {
@@ -1592,7 +1595,7 @@ pub use busbar_kernel::config::limits::{
     default_request_body_read_timeout_secs, default_tls_handshake_timeout_secs,
     default_upstream_error_body_max_bytes, default_upstream_request_timeout_secs,
     default_usage_flush_interval_ms, ExportLimits, HealthDefaultsCfg, LimitsCfg, LimitsResolved,
-    ReasoningEffortBudgets, RoutingCfg, DEFAULT_DEFAULT_MAX_TOKENS,
+    ReasoningEffortBudgets, RoutingCfg, TelemetryCfg, DEFAULT_DEFAULT_MAX_TOKENS,
     DEFAULT_HARD_DOWN_COOLDOWN_SECS, DEFAULT_KEY_GAUGE_LIMIT, DEFAULT_MAX_HONORED_RETRY_AFTER_SECS,
     DEFAULT_MAX_INBOUND_CONCURRENT, DEFAULT_PLUGIN_FETCH_MAX_BYTES, DEFAULT_POOL_IDLE_TIMEOUT_SECS,
     DEFAULT_POOL_MAX_IDLE_PER_HOST, DEFAULT_PROBE_INTERVAL_SECS, DEFAULT_PROBE_TIMEOUT_SECS,

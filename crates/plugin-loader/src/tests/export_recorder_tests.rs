@@ -86,7 +86,7 @@ fn open(settings: &[u8]) -> Result<ExportInstance, String> {
     let p = crate::dispatch::load_linked::<Export>(
         &row,
         Bind {
-            instance: crate::cold::export_axis::instance("export.neutral"),
+            instance: Arc::from("export.neutral"),
             max_inflight_cap: 4,
             sink: Arc::new(NoSink),
             dispatcher: d.adopter(),

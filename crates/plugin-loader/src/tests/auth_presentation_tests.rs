@@ -48,7 +48,7 @@ impl Life for Choice {
         }
         busbar_contract::abi::sdk::auth_door::presentation_extensions(
             &busbar_contract::auth_calls::LoginPresentation {
-                label: if refreshed { "Changed" } else { "Original" }.to_owned(),
+                label: if refreshed { "Changed" } else { "Original" }.into(),
                 icon: None,
             },
         )

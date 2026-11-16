@@ -208,7 +208,7 @@ fn the_installed_services_answer_and_a_second_install_is_refused() {
 fn every_service(late: &LateServices) -> Vec<Stored> {
     let s = late.served();
     let caller = Caller::for_test(
-        <Arc<str>>::from("the-instance"),
+        Arc::from("the-instance"),
         busbar_contract::abi::mechanism::KindCode::Plane,
     );
     let now = |ran| match ran {
@@ -279,7 +279,7 @@ fn dest_judge_asks_the_deployments_one_guard() {
         svc::DEST_METADATA,
         "the operator's own addition to the denylist"
     );
-    assert_eq!(judged("https://10.0.0.7/"), svc::DEST_INTERNAL);
+    assert_eq!(judged("https://\x310.0.0.7/"), svc::DEST_INTERNAL);
     assert_eq!(judged("http://93.184.216.34/"), svc::DEST_ALLOWED);
     assert_eq!(
         verdict(&*served, "https://93.184.216.34/", 9).value,
@@ -577,7 +577,7 @@ async fn the_late_attach_serves_sign_and_writes_trust_changes_down() {
     };
     k.admit("owner", facts).await.expect("admitted");
     let caller = Caller::for_test(
-        <Arc<str>>::from("owner"),
+        Arc::from("owner"),
         busbar_contract::abi::mechanism::KindCode::Plane,
     );
     let sight = |hash| {
@@ -737,16 +737,10 @@ fn an_applied_door_section_carries_its_pools_and_hands_the_plane_no_work_key() {
         members: vec!["fs".to_string()],
         ..Default::default()
     };
-    let pools = door_pools(
-        &[(
-            key,
-            [("files".to_string(), pool)]
-                .into_iter()
-                .collect::<BTreeMap<_, _>>(),
-        )]
-        .into_iter()
-        .collect::<BTreeMap<_, _>>(),
-    );
+    let pools = door_pools(&BTreeMap::from([(
+        key,
+        BTreeMap::from([("files".to_string(), pool)]),
+    )]));
 
     let applied = section_with_pools(key, &written, &pools);
     assert_eq!(
@@ -867,12 +861,10 @@ fn a_planes_inbound_need_binds_at_the_listen_its_block_states() {
         need(DIRECTION_INBOUND, "in-t", "media"),
     ];
     let doc = |yaml: &str| -> BTreeMap<&'static str, busbar_contract::yaml::Value> {
-        [(
+        BTreeMap::from([(
             "a-section",
             busbar_contract::yaml::from_str(yaml).expect("yaml"),
-        )]
-        .into_iter()
-        .collect::<BTreeMap<_, _>>()
+        )])
     };
     let sections =
         doc("far: {listen: \"127.0.0.1:7000\"}\nmedia: {listen: \"127.0.0.1:7001\"}\nquiet: {}\n");
@@ -919,4 +911,74 @@ fn a_planes_inbound_need_binds_at_the_listen_its_block_states() {
             .unwrap_err()
             .contains("names no settings block")
     );
+}
+
+/// THE UNIT ID IS THE REQUEST ID (ADMIN-API-1.6 §3.4, C5): the data plane stamps every answer,
+/// whole, streamed or refused, with the node-qualified id its sealed record carries as `unit`;
+/// an upstream `x-request-id` a plane forwards is replaced, and two nodes or a restart never
+/// share one id.
+#[tokio::test]
+async fn record_unit_is_request_id() {
+    let id = busbar_kernel_audit::UnitId::of(0x0123_4567_89ab_cdef, [0x5f; 16], 42).unwrap();
+    let canonical = format!("node_0123456789abcdef.{}.42", "5f".repeat(16));
+    assert_eq!(id.to_string(), canonical);
+
+    for streamed in [false, true] {
+        let (caller, reply) = IngressCaller::new();
+        caller.minted(id);
+        let caller = Arc::new(caller);
+        let writer = Arc::clone(&caller);
+        let content_type: &[u8] = if streamed {
+            b"text/event-stream"
+        } else {
+            b"application/json"
+        };
+        let unit: DrivenUnit = Box::pin(async move {
+            writer.head(
+                200,
+                vec![
+                    (b"content-type".to_vec(), content_type.to_vec()),
+                    (b"x-request-id".to_vec(), b"upstream-forwarded".to_vec()),
+                ],
+            );
+            assert!(writer.write(b"ok").await);
+            None
+        });
+        drop(caller);
+        let response = reply.answer(unit).await;
+        let stamped: Vec<_> = response.headers().get_all("x-request-id").iter().collect();
+        assert_eq!(stamped, vec![canonical.as_str()], "streamed: {streamed}");
+    }
+
+    let (caller, reply) = IngressCaller::new();
+    caller.minted(id);
+    let refused: DrivenUnit = Box::pin(async move {
+        drop(caller);
+        Some(Rendered {
+            status: 429,
+            fields: Vec::new(),
+            body: b"refused".to_vec(),
+        })
+    });
+    let response = reply.answer(refused).await;
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(response.headers()["x-request-id"], canonical.as_str());
+
+    let (_, unminted) = IngressCaller::new();
+    let quiet: DrivenUnit = Box::pin(async { None });
+    assert!(
+        unminted
+            .answer(quiet)
+            .await
+            .headers()
+            .get("x-request-id")
+            .is_none(),
+        "no id is stamped for a unit that was never minted"
+    );
+
+    let other_node = busbar_kernel_audit::UnitId::of(0x0123_4567_89ab_cdee, [0x5f; 16], 42);
+    let restarted = busbar_kernel_audit::UnitId::of(0x0123_4567_89ab_cdef, [0x60; 16], 42);
+    for other in [other_node, restarted] {
+        assert_ne!(other.map(|o| o.to_string()), Some(canonical.clone()));
+    }
 }

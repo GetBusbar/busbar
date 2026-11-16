@@ -54,7 +54,7 @@
     "store_settings": "{}",
     "receipt": "delivery-1706-native/actual-recovery2-16530-569f/terminal.json",
     "environment_audit": "delivery-1706-native/actual-recovery2-16530-569f/environment-audit.json",
-    "receipt_custody_root": "/Users/matthew/Developer/tmp/cleanup/lead-session/development-resume-20261101",
+    "receipt_custody_root": "<custody-root>",
     "compile": {
       "exit": 0,
       "seconds": 98.11763381958008

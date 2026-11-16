@@ -239,6 +239,34 @@ pub struct PlaneAuditLog {
     kind_id: u32,
 
     ring: Mutex<VecDeque<KeptAuditEntry>>,
+
+    /// Pulsed by `push_entry` so `GET /audit?wait=` wakes on the next mutation.
+    appended: tokio::sync::Notify,
+}
+
+/// One keyset read of the live ring (`GET /audit`): rows strictly after `after` in `seq` order.
+pub struct AuditQuery<'a> {
+    /// Resume strictly after this `seq` (ascending: greater; descending: smaller). `None` starts at
+    /// the oldest (ascending) or newest (descending) retained row.
+    pub after: Option<u64>,
+    pub descending: bool,
+    pub limit: usize,
+    /// Each entry is an exact `noun.verb` or a bare `noun` that matches every `noun.*`. Empty admits all.
+    pub actions: &'a [&'a str],
+    pub resource: Option<&'a str>,
+}
+
+/// Whether `action` is admitted by an `action=` filter: an entry with a dot is an exact action name,
+/// a dot-free entry is a noun and admits its whole family.
+pub fn action_admitted(filter: &[&str], action: &str) -> bool {
+    filter.is_empty()
+        || filter.iter().any(|f| {
+            if f.contains('.') {
+                action == *f
+            } else {
+                action.split('.').next() == Some(*f)
+            }
+        })
 }
 
 pub static AUDIT_LOG: std::sync::LazyLock<PlaneAuditLog> =
@@ -263,6 +291,7 @@ impl PlaneAuditLog {
         Self {
             kind_id: KIND_ID_AUDIT,
             ring: Mutex::new(VecDeque::new()),
+            appended: tokio::sync::Notify::new(),
         }
     }
 
@@ -271,6 +300,7 @@ impl PlaneAuditLog {
         Self {
             kind_id,
             ring: Mutex::new(VecDeque::new()),
+            appended: tokio::sync::Notify::new(),
         }
     }
 
@@ -298,6 +328,7 @@ impl PlaneAuditLog {
             q.pop_front();
         }
         drop(q);
+        self.appended.notify_waiters();
         #[cfg(any(test, feature = "test-support"))]
         if core::ptr::eq(self, &*AUDIT_LOG) {
             if let Some(entry) = observed {
@@ -342,6 +373,69 @@ impl PlaneAuditLog {
             truncated: has_more,
             items,
         }
+    }
+
+    /// A future that completes at the next append. Create it (and `enable` it) before the read it
+    /// guards, so an append between the read and the await is not missed.
+    pub fn notified(&self) -> tokio::sync::futures::Notified<'_> {
+        self.appended.notified()
+    }
+
+    /// One bounded keyset read of the live ring: rows strictly after `query.after` in `seq` order.
+    /// `Err(oldest_available)` when an ascending read resumes below what the ring still holds, so
+    /// rows between were lost (the caller answers 410 `cursor_expired`); the value is the `seq` a
+    /// cursor must carry to start at the oldest retained row.
+    pub fn list_after(&self, query: &AuditQuery<'_>) -> Result<crate::audit_ring::AuditPage, u64> {
+        let q = self.ring.lock().unwrap_or_else(|e| e.into_inner());
+        let limit = query.limit.clamp(1, MAX_AUDIT_ENTRIES);
+        let oldest = q.front().map(|kept| kept.entry.seq);
+        if let (false, Some(after), Some(oldest)) = (query.descending, query.after, oldest) {
+            if after.saturating_add(1) < oldest {
+                return Err(oldest - 1);
+            }
+        }
+        let admitted = |e: &&AuditEntry| {
+            action_admitted(query.actions, &e.action)
+                && query.resource.is_none_or(|r| e.resource == r)
+        };
+        let mut items: Vec<AuditEntry> = if query.descending {
+            q.iter()
+                .rev()
+                .map(|kept| &kept.entry)
+                .filter(|e| query.after.is_none_or(|a| e.seq < a))
+                .filter(admitted)
+                .take(limit + 1)
+                .cloned()
+                .collect()
+        } else {
+            q.iter()
+                .map(|kept| &kept.entry)
+                .filter(|e| query.after.is_none_or(|a| e.seq > a))
+                .filter(admitted)
+                .take(limit + 1)
+                .cloned()
+                .collect()
+        };
+        let has_more = items.len() > limit;
+        items.truncate(limit);
+        let (lowest, highest) = if query.descending {
+            (items.last(), items.first())
+        } else {
+            (items.first(), items.last())
+        };
+        Ok(crate::audit_ring::AuditPage {
+            returned_from: lowest.map(|e| e.seq.to_string()),
+            returned_to: highest.map(|e| e.seq.to_string()),
+            retained_from: q.front().map(|e| e.entry.seq.to_string()),
+            retained_to: q.back().map(|e| e.entry.seq.to_string()),
+            retention_limit: MAX_AUDIT_ENTRIES.to_string(),
+            semantics: "keyset".into(),
+            // An ascending read that reached the tail is caught up; a descending list is a
+            // finite inventory and proves nothing about coverage.
+            complete: !query.descending && !has_more,
+            truncated: has_more,
+            items,
+        })
     }
 
     pub fn list_filtered(
@@ -900,6 +994,9 @@ pub enum PluginRefusal {
     /// Another op of the instance answered with a diagnostic its Statement declares, at error: a
     /// refusal it met while serving (an IdP destination it refused, say).
     Op,
+    /// The image's D_ERRORS declaration was malformed (PLUGIN-ERROR-CODES §2.4): it loaded without error codes,
+    /// flagged.
+    ErrorCodes,
 }
 
 impl PluginRefusal {
@@ -910,6 +1007,7 @@ impl PluginRefusal {
             Self::Need => "plugin.need",
             Self::Open => "plugin.open",
             Self::Op => "plugin.op",
+            Self::ErrorCodes => "plugin.error_codes_refused",
         }
     }
 
@@ -917,9 +1015,43 @@ impl PluginRefusal {
     pub const fn outcome(self) -> &'static str {
         match self {
             Self::Trust | Self::Need | Self::Op => busbar_contract::vocab::OUTCOME_REJECTED,
-            Self::Open | Self::Unverified => busbar_contract::vocab::OUTCOME_DEGRADED,
+            Self::Open | Self::Unverified | Self::ErrorCodes => {
+                busbar_contract::vocab::OUTCOME_DEGRADED
+            }
         }
     }
+}
+
+/// The fixed `want` of every refused D_ERRORS declaration (PLUGIN-ERROR-CODES §2.4).
+pub const ERROR_CODES_WANT: &str = "1..=256 numbers, each 1..=9999, strictly ascending; name ^[a-z][a-z0-9-]{0,63}$ not ending '-'";
+
+/// A malformed D_ERRORS declaration (IF §50, PLUGIN-ERROR-CODES §2.4): the image is admitted without codes. One
+/// WARN line (BUSBAR-6018, `field`, `have`, `want`) and one `plugin.error_codes_refused` row (outcome `degraded`),
+/// held like every plugin refusal until the audit chain opens. `have` is the registry's fault text (counts,
+/// numbers and positions only, never a plugin byte); `file` and `library_sha256` name the image.
+pub fn record_error_codes_refused(kind: &str, file: &str, library_sha256: &str, have: &str) {
+    let diag = crate::diagnostics::PLUGIN_ERROR_CODES_REFUSED.banner();
+    tracing::warn!(
+        diag = diag.as_str(),
+        kind,
+        file,
+        library_sha256,
+        field = "errors",
+        have,
+        want = ERROR_CODES_WANT,
+        "plugin error numbers refused; the plugin is admitted and runs without error codes"
+    );
+    let refusal = PluginRefusal::ErrorCodes;
+    PLUGIN_REFUSALS.raise(
+        HeldRefusal {
+            ts: busbar_kernel::store::now(),
+            action: refusal.action(),
+            outcome: refusal.outcome(),
+            resource: plugin_refusal_resource(kind, file, have),
+            origin: EventOrigin::for_plugin_refusal(refusal, kind),
+        },
+        seal_refusal,
+    );
 }
 
 pub const PLUGIN_REFUSAL_PRINCIPAL: &str = "host";
@@ -1596,3 +1728,7 @@ pub fn held_operator_rows() -> Vec<String> {
         .map(|row| format!("{} {}", row.action, row.resource))
         .collect()
 }
+
+#[cfg(test)]
+#[path = "tests/audit_keyset_tests.rs"]
+mod keyset_tests;

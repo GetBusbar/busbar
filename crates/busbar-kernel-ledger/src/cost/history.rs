@@ -579,6 +579,31 @@ impl HistoryView<'_> {
         }
     }
 
+    /// The entry this view holds under `key`, voided or not: the entry a sealed record names.
+    pub fn entry_keyed(&self, key: &EntryKey) -> Option<&CardEntry> {
+        by_key(self.entries, key)
+    }
+}
+
+/// **THE ONE PRICING RULE `/usage` AND `/records` SHARE** (ADMIN-API-1.6 §3.2): the card that
+/// prices counts accrued under the entry `entry_id` (effective from `effective_from`) at the
+/// instant `wall_at`. The original entry is found by id, voided or not, and any later amendment
+/// that prices `wall_at` is applied, so a back-dated amendment, or its void, moves both reads
+/// together. `entry_id` `None` is a legacy era without an entry identity.
+pub fn price_era<'v>(
+    view: &'v HistoryView<'_>,
+    entry_id: Option<EntryId>,
+    effective_from: u64,
+    wall_at: u64,
+) -> Option<(EntryKey, &'v RateCard)> {
+    let era = match entry_id {
+        Some(id) => RawRateEra::entry(effective_from, id),
+        None => RawRateEra::legacy(effective_from),
+    };
+    view.card_for_raw_era(era, wall_at)
+}
+
+impl HistoryView<'_> {
     fn card_after_amendments<'v>(
         &'v self,
         original: &'v CardEntry,

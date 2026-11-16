@@ -193,7 +193,7 @@ pub(crate) async fn node_rig(instance: &'static str, port: u16, opts: NodeRigOpt
         load_linked::<Plane>(
             &row,
             Bind {
-                instance: <Arc<str>>::from(instance),
+                instance: Arc::from(instance),
                 max_inflight_cap: 64,
                 sink: Arc::new(crate::root::loader::dispatch::NoSink),
                 dispatcher: dispatcher.adopter(),
@@ -210,7 +210,7 @@ pub(crate) async fn node_rig(instance: &'static str, port: u16, opts: NodeRigOpt
     std::fs::write(&key_file, "sk-node-rig").expect("the credential file");
     let signing_file = key_file.with_extension("signing");
     std::fs::write(&signing_file, [7u8; 32]).expect("the token signing secret");
-    let store_path = <std::path::PathBuf>::from(
+    let store_path = std::path::PathBuf::from(
         std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
             .expect("the actual configured Store image"),
     );

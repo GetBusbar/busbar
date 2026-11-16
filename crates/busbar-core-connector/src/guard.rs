@@ -3,8 +3,10 @@
 
 //! THE DESTINATION GUARD: the one check every outbound connection asks, whatever dials it. It is
 
-use std::net::IpAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, PoisonError, RwLock};
+
+use arc_swap::ArcSwap;
 
 use busbar_contract::abi::host::conn::connector;
 use busbar_contract::abi::host::service::{
@@ -207,6 +209,17 @@ pub struct Guard {
     allow: Allow,
     /// The 1.5.5 metadata lists in force, replaced whole at a commit.
     metadata: Arc<RwLock<Arc<Metadata>>>,
+    /// The node's own listen ports and bound addresses, replaced whole when the boot metadata is
+    /// finalised ([`Guard::publish_own`]); every clone reads the set in force now.
+    node: Arc<ArcSwap<OwnNode>>,
+}
+
+/// The node's own front door: every configured listener's port (`listen`, `admin_listen`, each
+/// listener and media listener) and the addresses those listeners are bound to.
+#[derive(Debug, Default)]
+pub(crate) struct OwnNode {
+    ports: Vec<u16>,
+    ips: Vec<IpAddr>,
 }
 
 impl Default for Guard {
@@ -216,6 +229,7 @@ impl Default for Guard {
             block_private: true,
             allow: Allow::default(),
             metadata: Arc::default(),
+            node: Arc::default(),
         }
     }
 }
@@ -227,7 +241,46 @@ impl Guard {
             block_private: d.block_private_addresses,
             allow: crate::off_path::egress::guard::allow_list(d)?,
             metadata: Arc::new(RwLock::new(Arc::new(Metadata::from_config(d)))),
+            node: Arc::default(),
         })
+    }
+
+    /// Publish the node's own listen ports and the addresses its listeners are bound to (boot
+    /// metadata, IF 12.1): what [`Guard::not_the_node`] refuses. Replaces the set whole.
+    pub fn publish_own(&self, ports: &[u16], bound: &[IpAddr]) {
+        self.node.store(Arc::new(OwnNode {
+            ports: ports.to_vec(),
+            ips: bound.iter().copied().map(canonical).collect(),
+        }));
+    }
+
+    /// The node's own ports (IF 12.1): `addr` is refused `DEST_INTERNAL` when its port is one of
+    /// the node's own listen ports and its IP is loopback, unspecified, or one the listeners are
+    /// bound to, so no dial reaches a plane route, the admin API or another plugin's listener
+    /// through core's front door. A Need dial passes `all_classes = true` (every class); core's own
+    /// upstream exchanges and push deliveries pass `false` and keep today's scope, the
+    /// loopback-allowed class only. The refusal names no route.
+    pub fn not_the_node(
+        &self,
+        class: u32,
+        addr: SocketAddr,
+        all_classes: bool,
+    ) -> Result<(), Refusal> {
+        if !all_classes && class != LOOPBACK_CLASS {
+            return Ok(());
+        }
+        let node = self.node.load();
+        let ip = canonical(addr.ip());
+        let own_front_door = node.ports.contains(&addr.port())
+            && (is_loopback(ip) || ip.is_unspecified() || node.ips.contains(&ip));
+        if own_front_door {
+            return Err(crate::cold::egress::refusal(
+                DEST_INTERNAL,
+                &addr.to_string(),
+                Some(addr.ip()),
+            ));
+        }
+        Ok(())
     }
 
     /// A config commit: the metadata lists `d` states (the carve-outs and the extra refusals)

@@ -60,7 +60,7 @@ Both files support `${VAR}` environment interpolation before YAML is parsed. A m
 
 ## Environment variables
 
-The environment variables Busbar reads by design (excluding test-only `BUSBAR_T_*` / `BUSBAR_SENTINEL_*` names, and the deprecated operational names listed below the table):
+The environment variables Busbar reads by design (excluding test-only `BUSBAR_T_*` / `BUSBAR_SENTINEL_*` names):
 
 | Variable | Where read | Purpose / default |
 |---|---|---|
@@ -76,7 +76,7 @@ Busbar at config.yaml, taking precedence over `BUSBAR_CONFIG`; `--providers <pat
 `--providers=<path>`) points it at the provider catalog, taking precedence over `providers_file:`.
 See [Operations → Process configuration](operations.md#process-configuration).
 
-**Operational environment overrides are retired in 1.6.0.** `BUSBAR_PROVIDERS`, `BUSBAR_WORKER_THREADS`, `BUSBAR_UPSTREAM_HTTP1_ONLY` and `BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE` are read once, by the first 1.6.0 boot on a 1.5.5 config, and copied into config. Serving reads `providers_file:` (or `--providers`) and the corresponding `advanced` keys. The old `BUSBAR_CONFIG_OVERLAY` file is imported into the Store by that boot; runtime config is persisted through Store. `BUSBAR_CONFIG` (bootstrap), explicit secret `{ env: NAME }` references, `RUST_LOG`, and the `TOKIO_WORKER_THREADS` fallback remain supported. See [the 1.6 upgrade instructions](migration-1.6.md#retired-environment-variables).
+**Operational environment overrides are retired in 1.6.0.** `BUSBAR_PROVIDERS`, `BUSBAR_WORKER_THREADS`, `BUSBAR_UPSTREAM_HTTP1_ONLY` and `BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE` are inputs to the explicit configuration migration, which copies their values into the generated config before serving. Startup does not import or apply them. Serving reads `providers_file:` (or `--providers`) and the corresponding `advanced` keys. The old `BUSBAR_CONFIG_OVERLAY` file is imported into the Store by the explicit overlay migration before startup; runtime config is persisted through Store. `BUSBAR_CONFIG` (bootstrap), explicit secret `{ env: NAME }` references, `RUST_LOG`, and the `TOKIO_WORKER_THREADS` fallback remain supported. See [the 1.6 upgrade instructions](migration-1.6.md#retired-environment-variables).
 
 ### `config`
 
@@ -1881,7 +1881,7 @@ Busbar validates the merged config before accepting any traffic. Fatal errors ab
 |---|---|
 | Provider name reserved | Any provider named `admin` or beginning with `admin/` |
 | Protocol unknown | `protocol` not in `{anthropic, openai, gemini, bedrock, responses, cohere}` |
-| `base_url` SSRF | `base_url` resolves to a cloud-metadata/IMDS host (e.g. `169.254.169.254`, `100.100.100.200`, `metadata.google.internal`) or uses an alternate IP encoding (decimal-int, hex, octal, IPv4-mapped IPv6) that decodes to a metadata address |
+| `base_url` SSRF | `base_url` resolves to a cloud-metadata/IMDS host (e.g. `169.254.169.254`, `metadata.google.internal`) or uses an alternate IP encoding (decimal-int, hex, octal, IPv4-mapped IPv6) that decodes to a metadata address |
 | `base_url` plaintext | `base_url` uses `http://` with a public (non-private, non-loopback) host: plain HTTP to a public host would expose the API key on the wire |
 | `error_map` value unknown | A value in `error_map` is not one of the nine canonical disposition classes |
 | `auth` value unknown | `auth` field value not `bearer`, `api-key`, `jwt-bearer`, or `oauth-client-credentials` |
@@ -2027,8 +2027,7 @@ ingress's budget. IPv4-mapped IPv6 peers are their IPv4 address. Both are boot-t
 `worker_threads`, `upstream_http1_only`, and `upstream_h2_prior_knowledge` are **boot-time** knobs (read
 once at process/client construction), so unlike `rate_sweep_interval` / `usage_flush_interval_ms` they are
 not live-mutable via `PUT /config/settings`. A change takes effect on the next restart. The
-`BUSBAR_*` env vars that used to back these knobs are deprecated but still honoured (each warns with
-BUSBAR-3021 at boot); `TOKIO_WORKER_THREADS` remains, undeprecated, as a fallback for `worker_threads`.
+`BUSBAR_*` env vars that used to back these knobs are retired in 1.6.0 and never read at serve time (the first 1.6.0 boot on a 1.5.5 config copies them into config); `TOKIO_WORKER_THREADS` remains a fallback for `worker_threads`.
 
 `response_headers` is likewise **restart-to-apply**: `server_timing` is baked into router middleware
 composition at boot and `route_policy` seeds a process-wide flag, so a live `PUT` stores the new value
@@ -2041,7 +2040,7 @@ outbound connection busbar makes (provider upstreams, token endpoints, health pr
 plugin fetches, plane and plugin dials). With `block_private_addresses: true` (the default) a provider
 upstream (its `base_url` and `token_url` included), and a destination that comes from request data or
 the network (a target a caller or a plane names), is refused when it is, or resolves to, a private
-(RFC 1918), loopback, link-local, CGNAT (`100.64.0.0/10`), IPv6 unique-local (`fc00::/7`) or IPv6
+(RFC 1918), loopback, link-local, CGNAT, IPv6 unique-local (`fc00::/7`) or IPv6
 site-local (`fec0::/10`) address,
 unless `allow_destinations` names it: a provider on `localhost` or an internal name is listed there.
 Operator infrastructure a plugin's config names (a database, a secret service, a directory) may be
@@ -2049,7 +2048,7 @@ private or loopback without an entry. A cloud-metadata address is refused for ev
 configured ones included (a configured name that later resolves to one is refused). The check runs after name resolution, and the connection is
 made to the address that was checked; an IP address written in a URL is checked as that address. Through an HTTP(S)/ALL_PROXY CONNECT proxy, the target is still checked by address: with `advanced.proxy_resolution: local` (the default) busbar resolves the target, judges every address it answers, and the CONNECT names the judged address, so the proxy dials exactly what was checked (a name that does not resolve locally is refused). `proxy_resolution: proxy` restores name CONNECTs for split-horizon DNS: a name that resolves locally is still judged by address, and one that does not is the proxy's to check. BUSBAR-3149 states the posture at boot (proxy endpoints without credentials, `NO_PROXY`, the mode) and writes a `config.egress_proxy` audit record. `allow_destinations` lists what is always allowed: an exact host (`ollama.internal`), a
 wildcard (`*.corp.example.com` matches names under it, not the apex), an IP (`127.0.0.1`), or a CIDR
-(`10.20.0.0/16`). Cloud metadata (the built-in metadata names and addresses, IPv4 and IPv6 link-local,
+(`192.0.2.0/24`). Cloud metadata (the built-in metadata names and addresses, IPv4 and IPv6 link-local,
 and `security.blocked_metadata_hosts`) is refused in every egress class and no entry admits it: an
 entry that names a metadata host, a metadata address or a /32 or /128 equal to one refuses startup
 (BUSBAR-3134), and a wider network that merely covers a metadata address (`169.254.0.0/16`) loads but
@@ -2088,7 +2087,7 @@ An internal MCP server on a private network:
 ```yaml
 advanced:
   allow_destinations:
-    - mcp.tools.internal        # or its address, `10.20.30.40`, or its network, `10.20.30.0/24`
+    - mcp.tools.internal        # or its address, `192.0.2.40`, or its network, `192.0.2.0/24`
 tools:
   search:
     url: https://mcp.tools.internal/mcp
@@ -2119,7 +2118,7 @@ advanced:
       - match: ccp.corp.example.com
         pin_spki_sha256: sha256/4Bm1...=        # held on top of verification, never instead of it
         client_identity: { cert: { file: /etc/busbar/ccp.crt }, key: { file: /etc/busbar/ccp.key } }
-      - { match: 10.0.0.9, plaintext: true }    # the only way to reach a non-loopback host in clear
+      - { match: 192.0.2.9, plaintext: true }    # the only way to reach a non-loopback host in clear
 ```
 
 * **`roots`**: `bundled` is the Mozilla root set busbar ships (1.5.5 parity). `system` reads the

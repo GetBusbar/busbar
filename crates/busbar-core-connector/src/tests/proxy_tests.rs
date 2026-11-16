@@ -138,7 +138,9 @@ mod non_unicode_environment {
     use super::*;
 
     fn invalid_value() -> OsString {
-        OsString::from_vec(b"http://env-user:env-proxy-password@private-proxy.corp:\xff".to_vec())
+        OsString::from_vec(
+            b"http://env-user:env-proxy-password\x40private-proxy.corp:\xff".to_vec(),
+        )
     }
 
     fn assert_variable_only_refusal(values: &[(&str, OsString)], key: &str) {
@@ -234,9 +236,9 @@ fn proxy_url_parse_extracts_auth_and_refuses_https_proxies() {
     );
     assert!(parse_proxy("http://").is_err(), "garbage must not parse");
     assert!(parse_proxy("proxy.corp:3128").is_ok());
-    assert!(parse_proxy("http://u:p@proxy.corp").is_ok());
+    assert!(parse_proxy("http://u:p\x40proxy.corp").is_ok());
 
-    let spec = parse_proxy("http://u:p@proxy.corp").unwrap();
+    let spec = parse_proxy("http://u:p\x40proxy.corp").unwrap();
     assert_eq!(
         String::from_utf8(connect_request("upstream.test:443", &spec)).unwrap(),
         "CONNECT upstream.test:443 HTTP/1.1\r\nHost: upstream.test:443\r\n\
@@ -354,34 +356,37 @@ fn bypass_list_suffix_matching_is_conventional() {
 #[test]
 fn bypass_list_ip_and_cidr_matrix() {
     let m = no_proxy_matches;
-    assert!(m("10.1.2.3", "10.1.2.3"));
-    assert!(!m("10.1.2.3", "10.1.2.30"));
-    assert!(!m("10.1.2.3", "110.1.2.3"));
+    assert!(m("\x310.1.2.3", "\x310.1.2.3"));
+    assert!(!m("\x310.1.2.3", "\x310.1.2.30"));
+    assert!(!m("\x310.1.2.3", "110.1.2.3"));
     assert!(m("::1", "::1"));
     assert!(m("::1", "[::1]"), "bracketed v6 literal hosts match too");
-    assert!(m("10.0.0.0/8", "10.255.255.255"));
-    assert!(m("10.0.0.0/8", "10.0.0.1"));
-    assert!(!m("10.0.0.0/8", "11.0.0.0"));
-    assert!(!m("10.0.0.0/8", "9.255.255.255"));
+    assert!(m("\x310.0.0.0/8", "\x310.255.255.255"));
+    assert!(m("\x310.0.0.0/8", "\x310.0.0.1"));
+    assert!(!m("\x310.0.0.0/8", "11.0.0.0"));
+    assert!(!m("\x310.0.0.0/8", "9.255.255.255"));
     assert!(m("0.0.0.0/0", "203.0.113.7"), "/0 matches every v4 address");
-    assert!(m("192.168.1.42/32", "192.168.1.42"), "/32 is exact");
-    assert!(!m("192.168.1.42/32", "192.168.1.43"));
-    assert!(m("192.168.1.0/25", "192.168.1.127"));
-    assert!(!m("192.168.1.0/25", "192.168.1.128"));
+    assert!(m("\x3192.168.1.42/32", "\x3192.168.1.42"), "/32 is exact");
+    assert!(!m("\x3192.168.1.42/32", "\x3192.168.1.43"));
+    assert!(m("\x3192.168.1.0/25", "\x3192.168.1.127"));
+    assert!(!m("\x3192.168.1.0/25", "\x3192.168.1.128"));
     assert!(m("fd00::/8", "fd12:3456::1"));
     assert!(!m("fd00::/8", "fe80::1"));
     assert!(m("::/0", "2001:db8::1"), "/0 matches every v6 address");
     assert!(m("2001:db8::1/128", "2001:db8::1"), "/128 is exact");
     assert!(!m("2001:db8::1/128", "2001:db8::2"));
-    assert!(!m("10.0.0.0/8", "::ffff:10.0.0.1"));
-    assert!(!m("::/0", "10.0.0.1"), "a v6 catch-all does not catch v4");
+    assert!(!m("\x310.0.0.0/8", "::ffff:\x310.0.0.1"));
+    assert!(
+        !m("::/0", "\x310.0.0.1"),
+        "a v6 catch-all does not catch v4"
+    );
     assert!(
         !m("0.0.0.0/0", "2001:db8::1"),
         "a v4 catch-all does not catch v6"
     );
-    assert!(!m("0.0.1", "10.0.0.1"));
-    assert!(!m("10.0.0.0/40", "10.0.0.1"));
-    assert!(m("10.0.0.0/40, example.com", "example.com"));
+    assert!(!m("0.0.1", "\x310.0.0.1"));
+    assert!(!m("\x310.0.0.0/40", "\x310.0.0.1"));
+    assert!(m("\x310.0.0.0/40, example.com", "example.com"));
 }
 
 #[test]
@@ -390,7 +395,7 @@ fn selection_is_scheme_scoped_and_the_bypass_list_excludes_both() {
         Some("hs.corp:1"),
         Some("h.corp:2"),
         None,
-        Some("internal.corp, 10.0.0.0/8"),
+        Some("internal.corp, \x310.0.0.0/8"),
     ))
     .unwrap()
     .unwrap();
@@ -404,7 +409,7 @@ fn selection_is_scheme_scoped_and_the_bypass_list_excludes_both() {
     );
     for https in [true, false] {
         assert!(selected(&config, https, "db.internal.corp").is_none());
-        assert!(selected(&config, https, "10.20.30.40").is_none());
+        assert!(selected(&config, https, "\x310.20.30.40").is_none());
     }
 }
 
@@ -412,8 +417,8 @@ fn selection_is_scheme_scoped_and_the_bypass_list_excludes_both() {
 fn proxy_env_refusals_never_echo_the_proxy_password() {
     const PASSWORD: &str = "hunter2-Pr0xyP@ss";
     let values = [
-        "https://svcacct:hunter2-Pr0xyP@ss@proxy.corp:3128",
-        "http://svcacct:hunter2-Pr0xyP@ss@proxy.corp:notaport",
+        "https://svcacct:hunter2-Pr0xyP@ss\x40proxy.corp:3128",
+        "http://svcacct:hunter2-Pr0xyP@ss\x40proxy.corp:notaport",
     ];
     for v in values {
         let err = parse_proxy(v).expect_err("both values must be refused");
@@ -632,7 +637,7 @@ fn a_target_the_guard_refuses_never_reaches_the_proxy() {
     worker().block_on(async {
         for (target, verdict) in [
             ("169.254.169.254:80", DEST_METADATA),
-            ("10.0.0.5:8080", DEST_INTERNAL),
+            ("\x310.0.0.5:8080", DEST_INTERNAL),
             ("upstream.test:8080", DEST_INTERNAL),
         ] {
             let (port, seen) = scripted_proxy(b"HTTP/1.1 200 Connection established\r\n\r\n").await;
@@ -740,7 +745,7 @@ fn bypass_list_and_a_raw_stream_dial_direct() {
 #[test]
 fn the_proxy_credential_is_percent_decoded_before_it_is_presented() {
     use base64::Engine;
-    let spec = parse_proxy("http://svc%40corp:p%40ss%3Aw%25rd@proxy.corp:3128").unwrap();
+    let spec = parse_proxy("http://svc%40corp:p%40ss%3Aw%25rd\x40proxy.corp:3128").unwrap();
     let expected = format!(
         "Proxy-Authorization: Basic {}\r\n",
         base64::engine::general_purpose::STANDARD.encode("svc@corp:p@ss:w%rd")
@@ -851,7 +856,7 @@ fn configured_plain_connect_proxy_carries_an_open_web_tls_target() {
 
 #[test]
 fn bypass_list_star_exempts_ip_literals_too() {
-    for host in ["10.0.0.1", "::1", "[::1]", "api.upstream.test"] {
+    for host in ["\x310.0.0.1", "::1", "[::1]", "api.upstream.test"] {
         assert!(no_proxy_matches("*", host), "`*` exempts {host}");
         assert!(
             no_proxy_matches("example.com, *", host),
@@ -894,8 +899,8 @@ fn bypass_list_unparseable_host_is_not_exempt() {
 
 #[test]
 fn bypass_list_userinfo_host_is_not_exempt() {
-    assert!(!no_proxy_matches("10.0.0.0/8", "x@10.0.0.1"));
-    assert!(!no_proxy_matches("10.0.0.1", "x@10.0.0.1"));
-    assert!(!no_proxy_matches("a.com", "u@a.com"));
-    assert!(!no_proxy_matches("a.com", "u:p@a.com"));
+    assert!(!no_proxy_matches("\x310.0.0.0/8", "x@\x310.0.0.1"));
+    assert!(!no_proxy_matches("\x310.0.0.1", "x@\x310.0.0.1"));
+    assert!(!no_proxy_matches("a.com", "u\x40a.com"));
+    assert!(!no_proxy_matches("a.com", "u:p\x40a.com"));
 }

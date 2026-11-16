@@ -628,8 +628,8 @@ diagnostics! {
     /// A plugin is present in the directory but not loaded because the trust policy skips it. Lives in `preflight.rs`, but the subject is plugin trust, so it is a 6000 code.
     PLUGIN_SKIPPED_TRUST_POLICY = 6002, Plugins, Actionable, "plugin-skipped-trust-policy", "1.6.0", false,
         "Plugin present but NOT loaded (skipped by trust policy)",
-        "A plugin artifact is present in the plugins directory but was NOT loaded because the configured trust policy skipped it (unsigned, an untrusted publisher, or a failed signature/floor check). busbar fails closed: an untrusted plugin is left inert rather than loaded. Emitted once per skipped plugin at boot.",
-        "If the plugin should load, sign it with a trusted publisher key or add that publisher to `plugins.trust` (the log names the plugin, file, and reason). If the skip is intended, remove the artifact from the directory to silence the notice.";
+        "A plugin artifact is present in the plugins directory but was NOT loaded because the configured trust policy skipped it (unsigned, an untrusted publisher, or a failed signature/floor check), or because this build's crypto backend admits no external plugin (a FIPS build loads only busbar's own verified release, whatever `plugins.trust` allows; reason code `external_crypto`). busbar fails closed: an untrusted plugin is left inert rather than loaded. Emitted once per skipped plugin at boot.",
+        "If the plugin should load, sign it with a trusted publisher key or add that publisher to `plugins.trust` (the log names the plugin, file, and reason). Under `external_crypto` no `plugins.trust` setting helps: install busbar's first-party release of the plugin. If the skip is intended, remove the artifact from the directory to silence the notice.";
 
     /// A plugin was loaded but its signature is UNVERIFIED, permitted by an explicit plugins.trust opt-in. Lives in `preflight.rs`, but the subject is plugin trust, so it is a 6000 code.
     PLUGIN_LOADED_UNVERIFIED = 6003, Plugins, Actionable, "plugin-loaded-unverified", "1.6.0", false,
@@ -1145,6 +1145,19 @@ diagnostics! {
         "Plugin-supplied text exceeded its cap and was cut",
         "A plugin or hook sent text longer than its documented cap: a hook reject message, a metric help, label, unit or label value, or a plugin diagnostic message or field. busbar kept the first `cap` sanitised characters exactly as 1.5.5 did, with nothing appended (for a reject whose kept text is all whitespace, clients see the default reject message instead). This warning fires once per plugin and field for the life of the process; `busbar_plugin_text_cut_total{plugin,field}` counts over-cap values received in plugin and hook replies (counted at parse, including values in metrics later refused).",
         "Shorten the named plugin's text for the named field to within the cap; the log gives the cap and the text's length after sanitising (control and format characters removed).";
+
+    /// A plugin's D_ERRORS declaration is malformed: the plugin is admitted, its error codes are dropped (PLUGIN-ERROR-CODES §2.4). WARN once at admission, beside one `plugin.error_codes_refused` audit row.
+    PLUGIN_ERROR_CODES_REFUSED = 6018, Plugins, Actionable, "plugin-error-codes-refused", "1.6.0", false,
+        "A plugin's error-number declaration was refused; it runs without error codes",
+        "The plugin declared its error numbers (D_ERRORS) in a form core does not accept: more than one declaration, an empty, odd or over-long body, a number 0 or above 9999, numbers out of ascending order (or repeated), or a plugin name that cannot form a code. The plugin was admitted and serves; its failures and log lines carry their text with no `BUSBAR-<plugin>-NNNN` code. `have` names the fault (counts, numbers and byte positions only) and `want` the accepted form. The image's admission record carries the same fault.",
+        "Report the plugin to its author: its declared numbers must be 1..=256 numbers, each 1..=9999, strictly ascending, under a name matching ^[a-z][a-z0-9-]{0,63}$ that does not end in '-'. Nothing to change in the configuration.";
+
+    /// A plugin reported an error number it did not declare in D_ERRORS (PLUGIN-ERROR-CODES §2.5). WARN once per instance slot; the text is kept without a code; no audit row.
+    PLUGIN_ERROR_NUMBER_UNDECLARED = 6019, Plugins, Actionable, "plugin-error-number-undeclared", "1.6.0", false,
+        "A plugin reported an error number it did not declare",
+        "A plugin failed a call or wrote a log line with an error number that is not in its D_ERRORS declaration (or declared none), or above 9999. Core kept the plugin's text and wrote no `BUSBAR-<plugin>-NNNN` code for it. This warning fires once per instance; the instance keeps serving.",
+        "Report the plugin to its author with the logged `number`: the plugin's docs/diagnostics.json and its declared numbers disagree (its C-ERRORS conformance case catches this in its own CI).";
+
 
     /// A group `/usage` read could not derive a bucket's usage from the governance store. Read-path fault.
     GROUP_USAGE_READ_FAILED = 8018, Governance, Actionable, "group-usage-read-failed", "1.6.0", false,

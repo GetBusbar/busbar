@@ -37,18 +37,18 @@ fn a_program_upstream_does_not_print_or_serialise_its_environment_values() {
 #[test]
 fn the_socket_arms_still_print_what_they_carry() {
     let socket = UpstreamAddress::Socket {
-        authority: "10.0.0.7:443",
+        authority: "\x310.0.0.7:443",
         sni: Some("api.example.com"),
         extras: &[],
     };
     let printed = format!("{socket:?}");
     assert!(
-        printed.contains("10.0.0.7:443") && printed.contains("api.example.com"),
+        printed.contains("\x310.0.0.7:443") && printed.contains("api.example.com"),
         "{printed}"
     );
 
     let per_path = UpstreamAddress::Socket {
-        authority: "10.0.0.7:443",
+        authority: "\x310.0.0.7:443",
         sni: None,
         extras: &[(
             busbar_contract::transport::facts::METHOD,
@@ -57,7 +57,7 @@ fn the_socket_arms_still_print_what_they_carry() {
     };
     let printed = format!("{per_path:?}");
     assert!(
-        printed.contains("10.0.0.7:443") && printed.contains("/pkg.Service/Method"),
+        printed.contains("\x310.0.0.7:443") && printed.contains("/pkg.Service/Method"),
         "{printed}"
     );
 }

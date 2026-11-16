@@ -1008,6 +1008,24 @@ impl PlaneMoney {
             .map(|open| (open.money.lane.clone(), open.usage_fold()))
     }
 
+    /// [`PlaneMoney::usage`] with the unit's sealed attribution (ADMIN-API-1.6 §3.2): its key's
+    /// `group`, its `pool` and its serving `provider`, the fields the settlement meters
+    /// with, joined into one text — one allocation per unit.
+    #[must_use]
+    pub fn attributed_usage(&self, key: UnitKey) -> Option<(String, String, Arc<UsageFold>)> {
+        busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::MoneyShardLock);
+        self.shard(key).get_mut(&key).map(|open| {
+            let m = &open.money;
+            let (_, pool) = busbar_kernel_ledger::cost::split_plane_lane(&m.pool);
+            let attribution = busbar_kernel_audit::attribution(
+                m.key.group.as_deref().unwrap_or_default(),
+                pool,
+                open.provider.as_deref().unwrap_or_default(),
+            );
+            (m.lane.clone(), attribution, open.usage_fold())
+        })
+    }
+
     #[must_use]
     pub fn serving(&self, key: UnitKey) -> Option<String> {
         busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::MoneyShardLock);

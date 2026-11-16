@@ -66,6 +66,15 @@ pub(crate) use plugin_floor::{
 
 pub(crate) const AUDIT_RING: usize = 1_024;
 
+/// PULSED WHEN A RUN OF AUDIT RECORDS IS CONFIRMED: the one `Notify` a `/records?wait=` read
+/// sleeps on (ADMIN-API-1.6 §3.3, V7). A pulse wakes only the reads waiting at that moment, so a
+/// read arms its wait before it looks for records.
+pub(crate) fn records_pulse() -> &'static tokio::sync::Notify {
+    static PULSE: std::sync::LazyLock<tokio::sync::Notify> =
+        std::sync::LazyLock::new(tokio::sync::Notify::new);
+    &PULSE
+}
+
 /// The accepted journal configuration. Persistence is always owned by the configured Store.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub(crate) struct DurabilityConfig {

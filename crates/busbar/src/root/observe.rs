@@ -3,7 +3,7 @@
 
 use busbar_contract::abi::mechanism::KindCode;
 use busbar_kernel::snapshot::observe::{
-    Grants, KernelPluginObserver, ObservationOwner, ObservationSink, PLUGIN_LABEL,
+    Grants, KernelPluginObserver, ObservationOwner, ObservationSink, INSTANCE_LABEL, KIND_LABEL,
 };
 use foldhash::HashMap;
 use std::sync::{Arc, Mutex};
@@ -47,7 +47,7 @@ impl PluginObserver for Observer {
                 plugin,
                 owner: &owner,
             },
-            &Output(&name),
+            &Output(&name, kind.word()),
             kind,
             metrics,
             diagnostics,
@@ -105,10 +105,12 @@ impl std::fmt::Display for Fields<'_> {
     }
 }
 
-struct Output<'a>(&'a Arc<str>);
+/// A plugin's observation output: its name (for log lines only) and its kind word, the one label core writes on
+/// its metrics (IF §12.17: no `plugin` label).
+struct Output<'a>(&'a Arc<str>, &'static str);
 impl ObservationSink for Output<'_> {
     fn metric(&self, m: &busbar_contract::hook_wire::reply::HookMetric, canonical: bool) {
-        let labels = labels_for((!canonical).then_some(self.0), m);
+        let labels = labels_for((!canonical).then_some(self.1), m);
         match m.kind.as_str() {
             "counter" => metrics::counter!(m.name.clone(), &labels).increment(m.value as u64),
             "gauge" => metrics::gauge!(m.name.clone(), &labels).set(m.value),
@@ -163,7 +165,7 @@ impl ObservationSink for Output<'_> {
 /// The labels one metric carries. The metrics macros take it by reference and build the key's
 /// label set themselves, so this module hands over borrowed fields and allocates no label list.
 struct LabelsOf<'a> {
-    plugin: Option<&'a Arc<str>>,
+    kind: Option<&'static str>,
     own: Option<&'a std::collections::BTreeMap<String, String>>,
 }
 
@@ -172,33 +174,34 @@ impl<'a> IntoIterator for &LabelsOf<'a> {
     type IntoIter = std::iter::Chain<std::option::IntoIter<metrics::Label>, OwnLabels<'a>>;
 
     fn into_iter(self) -> Self::IntoIter {
-        let provenance = self
-            .plugin
-            .map(|p| metrics::Label::new(PLUGIN_LABEL, Arc::clone(p)));
+        let provenance = self.kind.map(|k| metrics::Label::new(KIND_LABEL, k));
         provenance
             .into_iter()
             .chain(OwnLabels(self.own.map(|own| own.iter())))
     }
 }
 
-/// A metric's own labels, less any that claims the reserved plugin label.
+/// A metric's own labels, less any that claims a label core writes (`kind`, `instance`).
 struct OwnLabels<'a>(Option<std::collections::btree_map::Iter<'a, String, String>>);
 
 impl Iterator for OwnLabels<'_> {
     type Item = metrics::Label;
 
     fn next(&mut self) -> Option<metrics::Label> {
-        let (k, v) = self.0.as_mut()?.find(|(k, _)| k.as_str() != PLUGIN_LABEL)?;
+        let (k, v) = self
+            .0
+            .as_mut()?
+            .find(|(k, _)| k.as_str() != KIND_LABEL && k.as_str() != INSTANCE_LABEL)?;
         Some(metrics::Label::new(k.clone(), v.clone()))
     }
 }
 
 fn labels_for<'a>(
-    plugin: Option<&'a Arc<str>>,
+    kind: Option<&'static str>,
     m: &'a busbar_contract::hook_wire::reply::HookMetric,
 ) -> LabelsOf<'a> {
     LabelsOf {
-        plugin,
+        kind,
         own: m.labels.as_ref(),
     }
 }

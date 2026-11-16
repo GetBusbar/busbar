@@ -7,15 +7,17 @@
 //!
 //! Wave 0 (W0-ABI) landed every frozen signature as a compiling stub; each wave-1 task replaces the stubs in
 //! the files it owns. W1-A1 owns this file, `types.rs`, `records.rs`, `fail.rs`, `fp.rs`, `versions.rs` and the
-//! `mechanism!` block. The crate has no `unsafe` (owner ruling); every IF item that needs it (the Host and
-//! header fn pointers, the `Vt` tables, `unsafe impl`s, the non-empty view read, `Out`'s in-place writes) is
-//! held as a stub or a signature comment until the UNSAFE-MIN design decides the boundary.
+//! `mechanism!` block. The crate has no `unsafe` (owner ruling, `deny(unsafe_code)`): every IF item that needs it
+//! lives in busbar-ffi, the plugin boundary (UNSAFE-MIN r3.1), and is re-exported here under its frozen path: the
+//! views, `Status`/`KindCode`/`Token`, the `Host` table, the `Plugin` header, `ChainBytes`, the slot table and
+//! `Out`'s in-place writes (wrapped by `records::Out`). The safe host methods are `host::HostExt`.
 
-#![deny(unsafe_code)]
+#![forbid(unsafe_code)]
+#![doc(test(attr(forbid(unsafe_code))))]
 
 /// The `mechanism!` block (IF §7.5). It emits its items unchanged and records their tokens, doc comments
-/// included, as `stringify!` spells them; `fp::CORE_FP` folds the five blocks (types.rs, records.rs, host.rs,
-/// need.rs, plugin.rs, in that order) with `fp`'s whitespace-blind FNV-1a, so a token or doc change in any
+/// included, as `stringify!` spells them; `fp::CORE_FP` folds the three blocks here (records.rs, host.rs,
+/// need.rs, in that order) and then busbar-ffi's three (`busbar_ffi::MECHANISM`) with `fp`'s whitespace-blind FNV-1a, so a token or doc change in any
 /// block moves CORE_FP and the pin in `ci/abi.pin` fails until it is moved with it. The rustc pin there covers
 /// token-spelling drift (r4 §3.2). Each block holds only the `#[repr(C)]`/Pod type definitions and `pub const`
 /// items §7.5 lists; impl blocks, the safe API, slots and the bridge stay outside, so refactoring them never
@@ -32,6 +34,7 @@ macro_rules! mechanism {
     };
 }
 
+#[doc(hidden)]
 pub mod bridge;
 pub mod fail;
 pub mod fp;
@@ -57,3 +60,7 @@ pub use kinds::plane::{Plane, plane};
 pub use kinds::secret::{Secret, secret};
 pub use kinds::store::{Store, store};
 pub use kinds::transport::{Transport, transport};
+
+/// `export!` emits the one exported symbol (IF §7.7). It is busbar-ffi's, the only macro that crate exports,
+/// because its `#[unsafe(no_mangle)]` is the one `unsafe` token a plugin's cdylib crate cannot avoid.
+pub use busbar_ffi::export;

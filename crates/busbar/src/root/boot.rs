@@ -1381,16 +1381,6 @@ fn owners_of(
         .collect()
 }
 
-/// The image a dropped-in row of `registry` named `name` and of `kind` is bound from: its archive's
-/// SHA-256. `None`: the registry admits no such dropped-in row.
-fn dropped_image(registry: &PluginRegistry, kind: &str, name: &str) -> Option<String> {
-    registry
-        .loadable()
-        .iter()
-        .find(|row| !row.linked() && row.manifest.kind == kind && row.manifest.name == name)
-        .map(|row| row.archive_sha256.clone().unwrap_or_default())
-}
-
 /// Why a read does not admit the dropped-in file `file` a running module came from: the scan's own
 /// fixed reason class when it skipped the file, else that the file is gone or the scan is off.
 fn not_admitted(registry: &PluginRegistry, plugins: Option<&PluginsCfg>, file: &str) -> String {
@@ -1483,9 +1473,9 @@ pub(crate) fn classify_against(
     let judged = |kind: &str, name: &str, file: &str| -> (String, Standing) {
         let running = registered
             .start
-            .and_then(|start| dropped_image(start, kind, name))
+            .and_then(|start| start.dropped_image(kind, name))
             .unwrap_or_default();
-        let standing = match dropped_image(registry, kind, name) {
+        let standing = match registry.dropped_image(kind, name) {
             Some(now) if now == running => Standing::Counts,
             Some(_) => Standing::Replaced,
             None => Standing::NotAdmitted(not_admitted(registry, plugins, file)),
@@ -1542,7 +1532,7 @@ pub(crate) fn classify_against(
     for row in registry.loadable().iter().filter(|row| {
         !row.linked()
             && (row.manifest.kind == "plane" || row.manifest.kind == "auth")
-            && !known.contains(&row.manifest.name)
+            && !known.iter().any(|name| row.is_module(name))
     }) {
         let image = row.archive_sha256.clone().unwrap_or_default();
         if row.manifest.kind == "auth" {
@@ -2150,6 +2140,21 @@ impl BookPreparation {
             node,
             deployment_id,
         );
+        // ADMIN-API-1.6 6.1: boot publishes through the same compare-and-set as every later
+        // publication, so a restart never repeats a generation the previous process served.
+        if let Some(live) = busbar_kernel::persistence::boot_identity::live() {
+            let prior = app
+                .config_generation
+                .load(std::sync::atomic::Ordering::Acquire);
+            let generation = live.advance_generation(prior).await.map_err(|why| {
+                format!(
+                    "{}: {why}",
+                    busbar_kernel::config::transaction::GENERATION_REFUSED
+                )
+            })?;
+            app.config_generation
+                .store(generation, std::sync::atomic::Ordering::Release);
+        }
         self.phase = BookPhase::OpenJournal;
         self.journal = Some(
             RuntimeJournal::open(

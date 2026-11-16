@@ -103,6 +103,7 @@ async fn seal(durability: &mut Durability) -> AuditRecord {
         },
         controls: Controls::default(),
         correlation_label: None,
+        unit: busbar_kernel_audit::UnitFacts::default(),
     };
     let (record, original) = durability
         .stage_unit(

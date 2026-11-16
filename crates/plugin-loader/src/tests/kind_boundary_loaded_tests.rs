@@ -16,7 +16,7 @@ fn instance<K: Kind>(
 ) -> Plugin<K> {
     let row = LinkedRow::of(door).expect("neutral descriptor states itself");
     let bind = Bind {
-        instance: "kind-boundary-loaded".into(),
+        instance: Arc::from("kind-boundary-loaded"),
         max_inflight_cap: 8,
         sink: Arc::new(NoSink),
         dispatcher: dispatcher.adopter(),

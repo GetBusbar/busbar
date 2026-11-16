@@ -12,7 +12,7 @@ pub(crate) mod hooks;
 
 mod source;
 
-pub use source::{process_generation, RequestIdentity, RequestSnapshot};
+pub use source::{boot_nonce, process_generation, RequestIdentity, RequestSnapshot};
 
 #[cfg(test)]
 pub use source::Source;
@@ -235,6 +235,41 @@ pub fn enabled() -> bool {
 #[path = "../observe.rs"]
 pub mod observe;
 
+static EXPLICITLY_OFF: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The recorder retention a deployment runs with: the registry is ON by default (`telemetry.enabled`,
+/// whatever the exports are), and an export recorder only raises the retention. An explicit
+/// `enabled: false` leaves only what an export recorder itself asks for.
+#[must_use]
+pub fn retention_for(
+    enabled: bool,
+    retention_seconds: u64,
+    export: Option<Duration>,
+) -> Option<Duration> {
+    if !enabled {
+        return export;
+    }
+    let own = Duration::from_secs(retention_seconds.max(1));
+    Some(export.map_or(own, |export| export.max(own)))
+}
+
+/// Configure the registry from the `telemetry:` block and the resolved export recorder.
+pub fn configure_telemetry(telemetry: &crate::config::TelemetryCfg, export: Option<Duration>) {
+    EXPLICITLY_OFF.store(!telemetry.enabled, std::sync::atomic::Ordering::Relaxed);
+    crate::telemetry::set_max_lane_series(telemetry.max_lane_series);
+    configure(retention_for(
+        telemetry.enabled,
+        telemetry.retention_seconds,
+        export,
+    ));
+}
+
+/// Whether the operator set `telemetry.enabled: false`: `/metrics` answers 503 `telemetry_disabled`.
+#[must_use]
+pub fn explicitly_off() -> bool {
+    EXPLICITLY_OFF.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 pub fn configure(buffer: Option<Duration>) {
     let _ = ENABLED.set(buffer.is_some());
     if let Some(buffer) = buffer {
@@ -264,6 +299,13 @@ pub const TRANSLATIONS_TOTAL: &str = "busbar_translations_total";
 
 pub const PLANE_REQUESTS_TOTAL: &str = "busbar_plane_requests_total";
 pub const PLANE_REQUEST_DURATION_SECONDS: &str = "busbar_plane_request_duration_seconds";
+
+/// Per-lane request duration; labels `pool`, `target`, `model`, `instance`, attached at build from the
+/// lane table, never from the request.
+pub const LANE_REQUEST_DURATION_SECONDS: &str = "busbar_lane_request_duration_seconds";
+
+/// Units that did not complete, by closed unit `reason` and `instance`.
+pub const UNIT_REFUSALS_TOTAL: &str = "busbar_unit_refusals_total";
 
 pub const BILLING_TAP_DECODE_FAIL_TOTAL: &str = "busbar_billing_tap_decode_fail_total";
 
@@ -472,6 +514,15 @@ fn describe() {
         PLANE_REQUEST_DURATION_SECONDS,
         Unit::Seconds,
         "End-to-end mounted-plane request duration in seconds, by plane"
+    );
+    describe_histogram!(
+        LANE_REQUEST_DURATION_SECONDS,
+        Unit::Seconds,
+        "Request duration in seconds by lane, labelled pool, target, model and instance"
+    );
+    describe_counter!(
+        UNIT_REFUSALS_TOTAL,
+        "Units that did not complete, by closed reason and plane instance"
     );
 
     describe_gauge!(

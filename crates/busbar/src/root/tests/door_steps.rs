@@ -1,13 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
 
-fn store_secs() -> u64 {
-    busbar_kernel::store::now()
-}
-
-fn instant_now() -> std::time::Instant {
-    std::time::Instant::now()
-}
-
 fn source_path(value: impl AsRef<str>) -> busbar_contract::secret_ref::SecretRef {
     use busbar_contract::secret::SecretAxis as _;
     #[cfg(distribution_root)]
@@ -126,16 +118,14 @@ async fn routing_recipe_preserves_configured_float_prices_before_ranking() {
     );
     facts.route_cost = vec![(0, 0.5), (1, 0.5)];
     let p = pools("a: {}");
-    let card = [(
+    let card = BTreeMap::from([(
         super::plane_lane("p", "a"),
         RateEntryCfg {
             input_utok: 0.1,
             output_utok: 0.2,
             ..RateEntryCfg::default()
         },
-    )]
-    .into_iter()
-    .collect::<BTreeMap<_, _>>();
+    )]);
     let mut app = {
         #[cfg(distribution_root)]
         crate::dist_root_install::install();
@@ -259,17 +249,13 @@ async fn routing_recipe_uses_the_admitted_planes_card_and_keeps_unknown_prices_u
     let generation_store = crate::root::real_store::core().await;
     let app = async |price| {
         let entry = RateEntryCfg {
-            units: [
+            units: BTreeMap::from([
                 ("frames".into(), UnitRate::from_whole_micros(price).unwrap()),
                 ("seconds".into(), UnitRate::from_whole_micros(0).unwrap()),
-            ]
-            .into_iter()
-            .collect::<BTreeMap<_, _>>(),
+            ]),
             ..RateEntryCfg::default()
         };
-        let card = [(super::plane_lane("p", "a"), entry)]
-            .into_iter()
-            .collect::<BTreeMap<_, _>>();
+        let card = BTreeMap::from([(super::plane_lane("p", "a"), entry)]);
         let mut generation = {
             #[cfg(distribution_root)]
             crate::dist_root_install::install();
@@ -779,8 +765,7 @@ fn named_definition_pools_are_tiered_in_declared_order_and_the_plane_sees_bare_n
                 breaker: None,
             },
         )]
-        .into_iter()
-        .collect();
+        .into();
     let mut section: busbar_contract::yaml::Value =
         busbar_contract::yaml::from_str("a: {}\nb: {}").expect("yaml");
     crate::root::serve::pools_into(&mut section, &stated);
@@ -837,8 +822,7 @@ fn a_planes_pool_breaker_block_reaches_its_egress_and_never_the_plane() {
             },
         ),
     ]
-    .into_iter()
-    .collect();
+    .into();
     let mut section: busbar_contract::yaml::Value =
         busbar_contract::yaml::from_str("a: {}\nb: {}").expect("yaml");
     crate::root::serve::pools_into(&mut section, &stated);
@@ -917,7 +901,7 @@ fn a_blocked_admission_renders_as_the_budget_units_door_does() {
     use busbar_contract::caps::ReasonCode;
     use busbar_kernel::governance::LimitBlocked;
     let limit = |metric: &'static str, retry_after| LimitBlocked::Limit {
-        group: "g".to_owned(),
+        group: "g".into(),
         metric,
         window: Some("day"),
         pool: None,
@@ -1127,7 +1111,7 @@ async fn money_book(
         .expect("the real store opens governance"),
     );
 
-    let groups = [(
+    let groups = std::collections::BTreeMap::from([(
         "team".to_string(),
         busbar_kernel::config::groups::GroupCfg {
             parent: None,
@@ -1135,9 +1119,7 @@ async fn money_book(
             limits,
             ..Default::default()
         },
-    )]
-    .into_iter()
-    .collect::<std::collections::BTreeMap<_, _>>();
+    )]);
     let cost =
         busbar_kernel::cost::CostModel::resolve_parts(rate_card.as_ref(), per_request_fee, &groups);
     let (key, _secret) = gov
@@ -1838,7 +1820,7 @@ async fn exhausted_pool_walk_bills_under_a_member_lane() {
         &app.cost,
         &fresh,
         "oracle-fo",
-        store_secs(),
+        busbar_kernel::store::now(),
         &["m-openai-chat", "m-anthropic"],
         &std::collections::BTreeMap::new(),
     );
@@ -1947,7 +1929,7 @@ async fn child_grant_on_a_pooled_llm_target_walks_only_the_target() {
                 timeout_ms: 1_000,
                 max_budget_micros: 1_000_000,
             }),
-            deadline: instant_now() + std::time::Duration::from_secs(60),
+            deadline: std::time::Instant::now() + std::time::Duration::from_secs(60),
             cancellation: Arc::new(busbar_kernel::hook_child::Cancellation::default()),
         }));
         steps.decoded(&ctx, OpClassId::new("op"), ROUTE_POOL, Some(b"oracle-fo"));
@@ -2775,7 +2757,7 @@ fn the_signing_region_is_read_off_the_host_the_request_dials() {
     let params = br#"{"region":{"host_label_after":["svc-runtime"],"default":"us-east-1"}}"#;
     for base_url in [
         "https://svc-runtime.us-west-2.amazonaws.com\\@svc-runtime.eu-west-1.amazonaws.com/",
-        "https://svc-runtime.us-west-2.amazonaws.com\\x@svc-runtime.eu-west-1.amazonaws.com",
+        "https://svc-runtime.us-west-2.amazonaws.com\\x\x40svc-runtime.eu-west-1.amazonaws.com",
     ] {
         let dialled = busbar_contract::net::url_host(base_url).expect("the base URL reads a host");
         assert_eq!(dialled, "svc-runtime.us-west-2.amazonaws.com", "{base_url}");
@@ -2869,13 +2851,11 @@ impl TokenEndpoint {
         };
         self.replies.lock().unwrap().insert(
             id,
-            [
+            std::collections::VecDeque::from([
                 (reply_piece(PieceKind::Fields, 0), Vec::new()),
                 (reply_piece(PieceKind::Body, body.len()), body.into_bytes()),
                 (reply_piece(PieceKind::Completion, 0), Vec::new()),
-            ]
-            .into_iter()
-            .collect::<std::collections::VecDeque<_>>(),
+            ]),
         );
     }
 
@@ -3203,7 +3183,7 @@ impl busbar_contract::conn::Conns for TokenEndpoint {
             peer_cert: self
                 .secure
                 .then(|| busbar_contract::transport::wire::CertFacts {
-                    subject: "scripted token endpoint".to_owned(),
+                    subject: "scripted token endpoint".into(),
                     issuer: "scripted test authority".into(),
                     fingerprint: "ab".repeat(32),
                 }),
@@ -3723,7 +3703,7 @@ fn an_expired_lease_is_refused_on_the_next_hop() {
         Some(first),
         "inside its lease the credential is presented"
     );
-    let resolved = instant_now();
+    let resolved = Instant::now();
     for hop in 0..8 {
         assert_eq!(
             per.handle_at(resolved + lease + Duration::from_millis(1 + hop)),
@@ -3731,9 +3711,9 @@ fn an_expired_lease_is_refused_on_the_next_hop() {
             "past its lease, with no refresh, the hop is refused, never presented"
         );
     }
-    let before = instant_now();
+    let before = Instant::now();
     per.refresh(&busbar_contract::config_time::ConfigScope::config_time());
-    let after = instant_now();
+    let after = Instant::now();
     assert!(
         per.handle_at(before + lease - Duration::from_millis(1))
             .is_some(),
@@ -4570,9 +4550,7 @@ fn a_registration_members_anchors_reach_and_binding_hold_on_every_need_it_rides(
         },
         spelled: Vec::new(),
     };
-    let routes = [("fs".to_string(), route)]
-        .into_iter()
-        .collect::<std::collections::BTreeMap<_, _>>();
+    let routes = std::collections::BTreeMap::from([("fs".to_string(), route)]);
     let table = std::sync::Arc::new(Sealing::default());
     let instance = busbar_contract::conn::InstanceId(7);
     super::bind_member_fetches(
@@ -5258,7 +5236,7 @@ async fn the_doors_admission_check_reads_the_arrival_window_and_not_the_clock() 
         .expect("the real store opens governance"),
     );
 
-    let groups = [(
+    let groups = std::collections::BTreeMap::from([(
         "team".to_string(),
         busbar_kernel::config::groups::GroupCfg {
             parent: None,
@@ -5275,9 +5253,7 @@ async fn the_doors_admission_check_reads_the_arrival_window_and_not_the_clock() 
             }],
             ..Default::default()
         },
-    )]
-    .into_iter()
-    .collect::<std::collections::BTreeMap<_, _>>();
+    )]);
     let cost = busbar_kernel::cost::CostModel::resolve_parts(None, 1, &groups);
     let (key, _secret) = gov
         .mint_signed_async(
@@ -5434,8 +5410,7 @@ async fn the_doors_admission_check_reads_the_arrival_window_and_not_the_clock() 
 #[tokio::test]
 async fn asking_whether_a_name_is_configured_allocates_nothing() {
     use busbar_kernel::door::PoolView as _;
-    use busbar_kernel::mallctl;
-    let mut yaml = "m: {}\npools:\n".to_owned();
+    let mut yaml = String::from("m: {}\npools:\n");
     for i in 0..8 {
         yaml.push_str(&format!("  p{i}:\n    members: [m]\n"));
     }
@@ -5514,7 +5489,7 @@ async fn asking_whether_a_name_is_configured_allocates_nothing() {
         app: &app,
     };
     let allocated = || {
-        mallctl::thread_allocated()
+        tikv_jemalloc_ctl::thread::allocatedp::read()
             .map(|m| m.get())
             .expect("jemalloc's per-thread counter reads")
     };
@@ -5656,7 +5631,7 @@ fn a_dropped_rows_styles_are_read_from_its_signed_manifest_with_no_library_load(
             alias: "dropped-styles".into(),
             kind: "auth".into(),
             version: "1.0.0".into(),
-            publisher: FIRST_PARTY_PUBLISHER.to_owned(),
+            publisher: FIRST_PARTY_PUBLISHER.into(),
             abi_version: crate::root::loader::supported_abi("auth").unwrap(),
             statement: Some(hex::encode(stated)),
             ..Default::default()
@@ -5758,7 +5733,7 @@ fn settings_only_validation_requires_the_auth_declaration_capability() {
     let plugin = load_linked::<Auth>(
         &LinkedRow::of(door).unwrap(),
         Bind {
-            instance: <std::sync::Arc<str>>::from("missing-settings-check"),
+            instance: std::sync::Arc::from("missing-settings-check"),
             max_inflight_cap: 1,
             sink: std::sync::Arc::new(NoSink),
             dispatcher: dispatcher.adopter(),

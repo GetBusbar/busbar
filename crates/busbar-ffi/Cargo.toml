@@ -1,0 +1,36 @@
+[package]
+name = "busbar-ffi"
+version = "1.6.0"
+publish = false            # internal workspace crate; plugins name it by git
+edition = "2024"
+rust-version = "1.97"
+description = "The plugin boundary: the only busbar crate that may hold `unsafe` (UNSAFE-MIN r3.1). Pinned in unsafe.yaml: files, per-file counts, dependencies and dependents."
+license = "Apache-2.0"
+
+[lib]
+name = "busbar_ffi"
+path = "src/lib.rs"
+
+[[test]]
+name = "loom_slots"
+path = "tests/loom_slots.rs"
+
+[features]
+default = []
+# The loader's side: instances, sessions, chains, the out lease, the crypto arena and dlopen with its
+# bounds check. busbar-plugin-abi forwards it from its own `host`; plugin crates never enable it.
+host = ["dep:libloading", "dep:object"]
+
+# Pinned (unsafe.yaml `ffi.dependencies`): no other dependency, no build-dependency, no proc macro of ours.
+[dependencies]
+zerocopy = { version = "0.8", features = ["derive"] }
+libloading = { workspace = true, optional = true }
+# H4: a read-only parse of the bytes the loader already holds (segments and the `busbar_plugin` symbol).
+object = { version = "0.37", optional = true, default-features = false, features = ["read", "std"] }
+
+# The slot model check (tests/loom_slots.rs) swaps the slot atomics only under `--cfg loom`.
+[target.'cfg(loom)'.dependencies]
+loom = { workspace = true }
+
+[lints]
+workspace = true

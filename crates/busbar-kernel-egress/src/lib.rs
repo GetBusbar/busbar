@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 #![forbid(unsafe_code)]
+#![doc(test(attr(forbid(unsafe_code))))]
 #![deny(missing_docs)]
 
 //! # busbar-kernel-egress — the egress unit

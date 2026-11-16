@@ -164,7 +164,7 @@ async fn governed_full(
             crate::root::connector::install_io(&on);
             let mut transports = Vec::new();
             for variable in ["BUSBAR_TEST_TCP_CDYLIB", "BUSBAR_TEST_HTTP_CDYLIB"] {
-                let path = <std::path::PathBuf>::from(std::env::var_os(variable).expect(variable));
+                let path = std::path::PathBuf::from(std::env::var_os(variable).expect(variable));
                 let statement = rendering_of_library(&path)
                     .unwrap()
                     .expect("the actual transport states itself");
@@ -172,7 +172,7 @@ async fn governed_full(
                     &path,
                     &statement,
                     Bind {
-                        instance: <Arc<str>>::from(variable),
+                        instance: Arc::from(variable),
                         max_inflight_cap: 1024,
                         sink: Arc::new(NoSink),
                         dispatcher: on.adopter(),
@@ -235,7 +235,7 @@ async fn governed_full(
         let path = if kind == "store" {
             crate::root::test_plugins::application_store_library()
         } else {
-            <std::path::PathBuf>::from(std::env::var_os(variable).expect(variable))
+            std::path::PathBuf::from(std::env::var_os(variable).expect(variable))
         };
         let statement = crate::root::loader::dispatch::rendering_of_library(&path)
             .unwrap()
@@ -1694,7 +1694,7 @@ async fn reserved_source(g: &Governed, group: &str) -> ReservedSource {
         admission: None,
         on_exhaustion: None,
     };
-    let groups = [(
+    let groups = BTreeMap::from([(
         group.to_owned(),
         GroupCfg {
             enabled: true,
@@ -1704,9 +1704,7 @@ async fn reserved_source(g: &Governed, group: &str) -> ReservedSource {
             ],
             ..Default::default()
         },
-    )]
-    .into_iter()
-    .collect::<BTreeMap<_, _>>();
+    )]);
     let cost = Arc::new(CostModel::resolve_parts(None, 0, &groups));
     let now = busbar_kernel::store::now();
     let (key, _) = g
@@ -1842,7 +1840,7 @@ async fn mint_reserved_source(g: &Governed, source: &ReservedSource, at: u64) ->
 
 async fn assert_concurrent_custody(g: &Governed, group: &str, held: bool, now: u64) {
     use busbar_kernel::config::groups::{GroupCfg, LimitCfg, LimitMetric};
-    let groups = [(
+    let groups = BTreeMap::from([(
         group.to_owned(),
         GroupCfg {
             enabled: true,
@@ -1858,9 +1856,7 @@ async fn assert_concurrent_custody(g: &Governed, group: &str, held: bool, now: u
             }],
             ..Default::default()
         },
-    )]
-    .into_iter()
-    .collect::<BTreeMap<_, _>>();
+    )]);
     let cost = CostModel::resolve_parts(None, 0, &groups);
     let (probe, _) = g
         .gov
@@ -2111,7 +2107,9 @@ async fn root_custody_expiry_obeys_store_liveness_and_preserves_the_paid_request
     // Expire the accepted ticket on the actual Store's clock, rather than
     // asking a native transaction to mint an already-expired capability.
     tokio::time::sleep(std::time::Duration::from_secs(
-        expiry.saturating_sub(at).saturating_add(1),
+        expiry
+            .saturating_sub(busbar_kernel::store::now())
+            .saturating_add(1),
     ))
     .await;
     source.owner.custody.sweep().await;

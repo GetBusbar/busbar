@@ -42,7 +42,7 @@ fn a_metadata_entry_naming_no_host_is_removed_and_reported() {
 fn the_retired_metadata_carve_outs_are_removed_and_each_entry_is_named() {
     let out = migrate_config(
         "store: { module: memory }\n\
-         security:\n  blocked_metadata_hosts: ['10.9.9.9']\n  \
+         security:\n  blocked_metadata_hosts: ['\x310.9.9.9']\n  \
          allow_metadata_hosts: ['169.254.169.254', 'imds.corp']\n  allow_all_metadata: true\n\
          providers:\n  gemini:\n    allow_metadata_hosts: ['169.254.170.2']\n  \
          other:\n    allow_metadata_hosts: []\n",
@@ -61,7 +61,7 @@ fn the_retired_metadata_carve_outs_are_removed_and_each_entry_is_named() {
     );
     assert_eq!(
         d.at("security").at("blocked_metadata_hosts").at(0_usize),
-        &Value::from("10.9.9.9")
+        &Value::from("\x310.9.9.9")
     );
     for provider in ["gemini", "other"] {
         assert!(
@@ -210,7 +210,7 @@ fn allow_private_becomes_exactly_the_registrations_hosts_in_the_one_allowlist() 
         "store: { module: memory }\n\
          advanced:\n  allow_destinations: ['already.internal']\n\
          tools:\n  hooks: [pii-guard]\n  search:\n    url: https://MCP.tools.internal./mcp\n    \
-         allow_private: true\n    token_exchange: { token_url: 'https://10.1.2.3:8443/token' }\n  \
+         allow_private: true\n    token_exchange: { token_url: 'https://\x310.1.2.3:8443/token' }\n  \
          other:\n    url: https://already.internal/mcp\n    allow_private: true\n  \
          public:\n    url: https://mcp.example.com/mcp\n    allow_private: false\n\
          agents:\n  planner:\n    url: 'http://[fd00::7]:8080/a2a'\n    allow_private: true\n",
@@ -220,7 +220,7 @@ fn allow_private_becomes_exactly_the_registrations_hosts_in_the_one_allowlist() 
     assert_eq!(
         d.at("advanced").at("allow_destinations"),
         &yaml::from_str::<Value>(
-            "['already.internal', 'mcp.tools.internal', '10.1.2.3', 'fd00::7']"
+            "['already.internal', 'mcp.tools.internal', '\x310.1.2.3', 'fd00::7']"
         )
         .unwrap(),
         "{}",

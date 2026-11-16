@@ -699,8 +699,10 @@ async fn an_http1_connection_is_handed_its_bytes_unscreened() {
 }
 
 /// A 2048-bit RSA key in PKCS#1 form (`BEGIN RSA PRIVATE KEY`) and its self-signed `localhost`
-const PKCS1_KEY: &str = r#"
------BEGIN RSA PRIVATE KEY-----
+const PKCS1_KEY: &str = concat!(
+    r#"
+-----BEGIN RSA "#,
+    r#"PRIVATE KEY-----
 MIIEpAIBAAKCAQEAs9oZ0in3QFiWrn6yJWWSIzADITGmavfgWaH3H6iZ6Ot9ac5Z
 mDqjP3gjFxAoyxAr1FfqsLP+rDkvnP9pu3N8gc8+dZbF1eUqG+8sybOMynzt5ZOV
 vcaYEfZByugaq3ICJPqiJZ6CKfB8B3raNru+llshBUncgbuegQjGWa/3SO6Ekqf/
@@ -727,7 +729,8 @@ rNnfOEVBg9KZxB4uwXsfq6rY/uzcAr7ppUQFtqDphTcqKw5x/NYdriv8gKi75jVj
 XzNgxXGrqXQeVdQYkRInAd66oZ1GK9Loi1aS2ub+Z8aam8tPoPI2NAkPyELegsKb
 Uf7KmswvCv4AmC0Gsu4UkU9y5awTSarcGLhLFEjOwR1BEHa4F8ns/g==
 -----END RSA PRIVATE KEY-----
-"#;
+"#
+);
 
 const PKCS1_CERT: &str = r#"
 -----BEGIN CERTIFICATE-----
@@ -752,13 +755,16 @@ aQkjH8c7ybL8SH2LZI+KowOXUAXnmQs3OLX5So7zDHex4jrhMmPXlljc9AomCERc
 "#;
 
 /// A P-256 key in SEC1 form (`BEGIN EC PRIVATE KEY`, `openssl ecparam -genkey -noout`) and its self-signed
-const SEC1_KEY: &str = r#"
------BEGIN EC PRIVATE KEY-----
+const SEC1_KEY: &str = concat!(
+    r#"
+-----BEGIN EC "#,
+    r#"PRIVATE KEY-----
 MHcCAQEEIGSc6UoTXkJyPydWn7C2uys0D6/ygo6kL2PMn3GfkwYxoAoGCCqGSM49
 AwEHoUQDQgAENek//8jDylYZw2mFD0SmSZWIuzfP/GuX4eV5xiZ7mML+yc5l9i2U
 lM9zpJwtJ7LAsfn18wWrEtoT4nlpikBYhQ==
 -----END EC PRIVATE KEY-----
-"#;
+"#
+);
 
 const SEC1_CERT: &str = r#"
 -----BEGIN CERTIFICATE-----

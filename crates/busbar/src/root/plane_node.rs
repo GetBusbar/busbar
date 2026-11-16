@@ -135,6 +135,9 @@ pub(crate) struct Node {
 
     lane: std::sync::OnceLock<Arc<busbar_kernel::persistence::journal::runtime::RuntimeJournal>>,
 
+    /// The node the bound book seals as: the node half of every unit id this node stamps.
+    sealing: std::sync::OnceLock<u64>,
+
     durability_token: busbar_contract::caps::Grant<busbar_contract::caps::DurableWrite>,
 
     #[cfg(test)]
@@ -164,6 +167,7 @@ impl Node {
             durability_token: kernel.durability_token(),
             book: std::sync::OnceLock::new(),
             lane: std::sync::OnceLock::new(),
+            sealing: std::sync::OnceLock::new(),
             kernel: Arc::new(kernel),
 
             inflight: busbar_kernel::inflight::InFlight::new(usize::MAX),
@@ -247,13 +251,22 @@ impl Node {
 
     #[cfg(any(test, distribution_root))]
     pub(crate) fn bind_book(&self, book: Arc<Mutex<crate::root::durability::Durability>>) {
-        let journal = book
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner())
-            .journal
-            .clone();
+        let (journal, sealing) = {
+            let held = book.lock().unwrap_or_else(|poison| poison.into_inner());
+            (held.journal.clone(), held.record.node())
+        };
         let _ = self.lane.set(journal);
+        let _ = self.sealing.set(sealing);
         let _ = self.book.set(book);
+    }
+
+    /// THE NODE-QUALIFIED ID of `unit` (ADMIN-API-1.6 §3.4): the one string its sealed record's
+    /// `unit` and its data-plane `X-Request-Id` both carry. `None` before a book is bound, or
+    /// when the process has no boot nonce.
+    #[must_use]
+    pub(crate) fn unit_id(&self, unit: UnitKey) -> Option<busbar_kernel_audit::UnitId> {
+        let node = *self.sealing.get()?;
+        busbar_kernel_audit::UnitId::of(node, busbar_kernel::snapshot::boot_nonce(), unit.get())
     }
     pub(crate) async fn retry_held_journal(&self) -> Result<(), String> {
         if let Some(journal) = self.lane.get() {
@@ -359,6 +372,7 @@ impl Node {
             lines,
             0,
             None,
+            String::new(),
         )
         .ok()
     }
@@ -516,6 +530,7 @@ impl Node {
             Vec::new(),
             0,
             None,
+            String::new(),
         );
     }
 
@@ -820,12 +835,16 @@ impl Node {
             mut sealing,
             ..
         } = open;
-        let (said, report) = (sealing.said.take(), sealing.report.take());
+        let (said, mut report) = (sealing.said.take(), sealing.report.take());
         let outcome = said?;
         let seal = sealing.into_seal(key, self.kernel.origin(OriginKind::Client), None)?;
         let (lines, fee_count) = report
             .as_ref()
             .map_or((Vec::new(), 0), |r| (report_lines(r), r.fee_count));
+        let attribution = report
+            .as_mut()
+            .map(|r| std::mem::take(&mut r.attribution))
+            .unwrap_or_default();
         let acknowledged = seal.seal(
             book,
             &self.durability_token,
@@ -836,6 +855,7 @@ impl Node {
             lines,
             fee_count,
             report.as_ref().map(|r| r.lane.as_str()),
+            attribution,
         );
         match acknowledged {
             Ok(receipt) => {
@@ -1051,14 +1071,17 @@ pub(crate) struct Report {
     /// The SERVING lane's config name — the lane that actually answered, after any failover, which
     /// is the key a rate card is written against and the key the legacy row carries.
     pub lane: String,
+    /// The unit's metering `group`, `pool` and `provider`, as recipe `v7` seals them.
+    pub attribution: String,
 }
 
 impl Report {
-    fn of((usage, fee_count, lane): Reported) -> Self {
+    fn of((usage, fee_count, lane, attribution): Reported) -> Self {
         Report {
             usage,
             fee_count,
             lane,
+            attribution,
         }
     }
 }
@@ -1105,27 +1128,44 @@ impl LateAccrual {
         } = self;
 
         let completed = outcome.is_some_and(Outcome::is_completed);
-        let report = late().map(Report::of).filter(|report| {
-            completed
-                || report.fee_count > 0
-                || report.usage.usage_units.values().any(|n| !n.is_zero())
-        });
+        // A report that bills nothing is not sealed as usage, but its attribution still is.
+        let (report, attribution) = match late().map(Report::of) {
+            Some(report)
+                if completed
+                    || report.fee_count > 0
+                    || report.usage.usage_units.values().any(|n| !n.is_zero()) =>
+            {
+                (Some(report), String::new())
+            }
+            Some(report) => (None, report.attribution),
+            None => (None, String::new()),
+        };
         let (Some(seal), Some(outcome)) = (seal, outcome) else {
             return None;
         };
         let key = seal.seal.key;
         let acknowledged = match report {
-            Some(report) => seal.seal(
-                &book,
-                &durability_token,
-                &principal,
-                arrived,
-                Some(&history),
-                outcome,
-                report_lines(&report),
-                report.fee_count,
-                Some(report.lane.as_str()),
-            ),
+            Some(report) => {
+                let lines = report_lines(&report);
+                let Report {
+                    fee_count,
+                    lane,
+                    attribution,
+                    ..
+                } = report;
+                seal.seal(
+                    &book,
+                    &durability_token,
+                    &principal,
+                    arrived,
+                    Some(&history),
+                    outcome,
+                    lines,
+                    fee_count,
+                    Some(lane.as_str()),
+                    attribution,
+                )
+            }
 
             None if posted => seal.seal(
                 &book,
@@ -1137,6 +1177,7 @@ impl LateAccrual {
                 Vec::new(),
                 0,
                 None,
+                attribution,
             ),
             None => {
                 custody.terminal(key, false);
@@ -1368,6 +1409,13 @@ impl SessionSlot<'_> {
             .unwrap_or(Outcome::Aborted(busbar_contract::caps::Abort::Kernel {
                 reason: busbar_contract::caps::ReasonCode::ClientGone,
             }));
+        if let Some(reason) = refusal_reason(outcome) {
+            let instance: &str = match self.money.as_ref() {
+                Some((_, facts)) => facts.plane.plane_key(),
+                None => busbar_kernel::plane_driver::dispatch::fallback_key(),
+            };
+            busbar_kernel::telemetry::unit_refusal_on(instance, reason.as_str());
+        }
         let ended = self.own.take().map(|own| {
             own.finish(
                 &node.kernel,
@@ -1396,13 +1444,23 @@ impl SessionSlot<'_> {
     }
 }
 
+/// The closed reason a unit that did not complete ended under; `None` for a completed unit.
+fn refusal_reason(outcome: Outcome) -> Option<busbar_contract::caps::ReasonCode> {
+    match outcome {
+        Outcome::Completed => None,
+        Outcome::Refused(_, reason) | Outcome::Failed(_, reason) => Some(reason),
+        Outcome::Aborted(abort) => Some(abort.reason()),
+        Outcome::TimedOut(_) => Some(busbar_contract::caps::ReasonCode::DeadlineExceeded),
+    }
+}
+
 impl Drop for SessionSlot<'_> {
     fn drop(&mut self) {
         if self.own.is_some() {
             if let Some(post) = self.occupied.post {
                 let evidence = self
                     .money_report()
-                    .map(|(_, fee_units, _)| Evidence {
+                    .map(|(_, fee_units, _, _)| Evidence {
                         fee_units,
                         ..Evidence::default()
                     })
@@ -1912,6 +1970,9 @@ struct Confirm {
 impl Confirm {
     async fn run(self) -> Result<(), String> {
         let confirmed = self.audit.journal.confirm(&self.audit.run).await;
+        if confirmed.is_ok() {
+            crate::root::durability::records_pulse().notify_waiters();
+        }
         self.custody
             .terminal(self.key, self.completed && confirmed.is_ok());
         confirmed.map_err(|error| crate::root::cold::terminal_audit_unconfirmed(&error))
@@ -1924,6 +1985,9 @@ impl TerminalConfirmation {
             return Ok(());
         };
         let confirmed = inner.audit.journal.confirm(&inner.audit.run).await;
+        if confirmed.is_ok() {
+            crate::root::durability::records_pulse().notify_waiters();
+        }
         let Some(inner) = self.inner.take() else {
             return Ok(());
         };
@@ -2056,6 +2120,7 @@ impl Sealing {
         lines: Vec<RecordLine>,
         fee_count: u32,
         served: Option<&str>,
+        attribution: String,
     ) -> Result<StagedAudit, busbar_contract::caps::DurabilityLost> {
         let Sealing { seal, ran } = self;
         let refused = matches!(outcome, Outcome::Refused(..));
@@ -2098,6 +2163,14 @@ impl Sealing {
             },
             controls,
             correlation_label: None,
+            // Recipe v7 (ADMIN-API-1.6 §3.2): copies of what the unit already holds, and the one
+            // attribution text its report built.
+            unit: busbar_kernel_audit::UnitFacts {
+                wall_ms: arrived.ms(),
+                attribution,
+                boot_nonce: busbar_kernel::snapshot::boot_nonce(),
+                ..busbar_kernel_audit::UnitFacts::default()
+            },
         };
         let unit = seal.key.get();
         let mut book = book.lock().unwrap_or_else(|poison| poison.into_inner());

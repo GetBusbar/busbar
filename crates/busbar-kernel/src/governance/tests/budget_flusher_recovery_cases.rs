@@ -60,9 +60,7 @@ async fn flusher_resumes_not_landed_with_current_cost(drain: bool) {
     journal
         .fail_after_write
         .store(true, std::sync::atomic::Ordering::SeqCst);
-    let correction_delta = [(busbar_contract::records::UNIT_INPUT.into(), -60)]
-        .into_iter()
-        .collect::<std::collections::BTreeMap<_, _>>();
+    let correction_delta = BTreeMap::from([(busbar_contract::records::UNIT_INPUT.into(), -60)]);
     let adjustment = crate::governance::Adjustment {
         key_id: &key.id,
         pool: "",

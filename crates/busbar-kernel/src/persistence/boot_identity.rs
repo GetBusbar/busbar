@@ -19,6 +19,9 @@ const KEYSET_KEY: &[u8] = b"deployment";
 /// The keep-once deployment identity row (ADMIN-API-1.6 4.1): not the secret keyset row.
 pub const DEPLOYMENT_SCHEMA: &str = "busbar.deployment.v1";
 const DEPLOYMENT_KEY: &[u8] = b"id";
+/// The durable config generation row (ADMIN-API-1.6 6.1): an 8-byte big-endian counter.
+pub const GENERATION_SCHEMA: &str = "busbar.config.generation.v1";
+const GENERATION_KEY: &[u8] = b"generation";
 const ASSIGNMENT_MAGIC: &[u8; 8] = b"BBNODE01";
 const ID_ATTEMPTS: usize = 16;
 const JOURNAL_INVENTORY_PREFIX: &[u8] = b"journal:";
@@ -684,7 +687,12 @@ impl BootIdentity {
         Ok(Self {
             records: BootRecords::new(
                 core.clone(),
-                &[NODE_SCHEMA, KEYSET_SCHEMA, DEPLOYMENT_SCHEMA],
+                &[
+                    NODE_SCHEMA,
+                    KEYSET_SCHEMA,
+                    DEPLOYMENT_SCHEMA,
+                    GENERATION_SCHEMA,
+                ],
             )?,
             core,
             holder: random()?,
@@ -953,6 +961,53 @@ impl BootIdentity {
         }
     }
 
+    /// Compare-and-sets the durable config generation to `max(stored, prior) + 1` and returns it
+    /// (ADMIN-API-1.6 6.1). The caller publishes only after this returns; an error refuses the
+    /// publication. Another node's concurrent advance makes the compare fail and the loop re-reads.
+    pub async fn advance_generation(&self, prior: u64) -> Result<u64, String> {
+        let _gate = self.records.gate.lock().await;
+        self.records.resume().await?;
+        loop {
+            let held = self
+                .records
+                .records
+                .get(GENERATION_SCHEMA, GENERATION_KEY)
+                .await
+                .map_err(error)?;
+            let held_bytes = held
+                .as_ref()
+                .map(|row| row.expose(&crate::seal::lend()).clone());
+            let stored = match &held_bytes {
+                None => 0,
+                Some(bytes) => <[u8; 8]>::try_from(bytes.as_slice())
+                    .map(u64::from_be_bytes)
+                    .map_err(|_| "malformed config generation row".to_string())?,
+            };
+            let next = stored
+                .max(prior)
+                .checked_add(1)
+                .ok_or_else(|| "config generation exhausted".to_string())?;
+            let applied = self
+                .records
+                .decide(
+                    vec![predicate(
+                        GENERATION_SCHEMA,
+                        GENERATION_KEY.into(),
+                        held_bytes.map(Secret::new),
+                    )],
+                    vec![put(
+                        GENERATION_SCHEMA,
+                        GENERATION_KEY.into(),
+                        next.to_be_bytes().to_vec(),
+                    )],
+                )
+                .await?;
+            if applied {
+                return Ok(next);
+            }
+        }
+    }
+
     /// Every node the store holds a lease row for, lowest id first: the `/info.nodes` read.
     /// `live`: its lease is unexpired by the store's clock; `lost`: it expired without release;
     /// `stopped`: it was released, or its writer's lease row was closed. `writer` marks the node
@@ -1089,6 +1144,10 @@ impl LiveIdentity {
     }
     pub async fn nodes(&self) -> Result<Vec<NodeRow>, String> {
         self.owner.nodes().await
+    }
+    /// The durable generation step for a publication; see [`BootIdentity::advance_generation`].
+    pub async fn advance_generation(&self, prior: u64) -> Result<u64, String> {
+        self.owner.advance_generation(prior).await
     }
 }
 static LIVE: std::sync::OnceLock<LiveIdentity> = std::sync::OnceLock::new();
