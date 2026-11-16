@@ -7,6 +7,49 @@ fn test_key(seed: u8) -> SigningKey {
     SigningKey::from_bytes(&[seed; 32])
 }
 
+#[test]
+fn known_publisher_invalid_signature_never_uses_the_untrusted_override() {
+    let trusted = test_key(91);
+    let imposter = test_key(92);
+    let bytes = b"known-publisher artifact";
+    let m = sign(&imposter, manifest("acme-store", "acme", "acme"), bytes);
+    let pol = policy(None, &[("acme", &trusted.verifying_key())], true, true);
+    assert!(evaluate(bytes, &m, &pol).is_err());
+}
+
+#[test]
+fn untrusted_override_never_accepts_a_library_hash_mismatch() {
+    let key = test_key(93);
+    let m = sign(
+        &key,
+        manifest("unknown-store", "unknown", "unknown"),
+        b"original",
+    );
+    let pol = policy(None, &[], true, true);
+    assert!(evaluate(b"altered", &m, &pol).is_err());
+}
+
+#[test]
+fn busbar_root_cannot_sign_an_artifact_directly_to_bypass_the_keys_floor() {
+    let root = test_key(94);
+    let bytes = b"bare-root artifact";
+    let m = sign(
+        &root,
+        manifest("busbar-store-test", "test", FIRST_PARTY_PUBLISHER),
+        bytes,
+    );
+    for permissive in [false, true] {
+        for floor in [0, 9] {
+            let mut pol = policy(Some(&root), &[], permissive, permissive);
+            pol.release_keys_floor = floor;
+            assert!(
+                evaluate(bytes, &m, &pol).is_err(),
+                "override={permissive}, floor={floor}"
+            );
+        }
+    }
+}
+
 fn manifest(name: &str, alias: &str, publisher: &str) -> Manifest {
     Manifest {
         name: name.to_string(),
