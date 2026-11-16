@@ -240,6 +240,64 @@ pub(crate) fn served(sink: Arc<dyn ExportCalls>) -> Arc<dyn PluginHttpDispatch> 
 pub(crate) struct Served(pub(crate) Arc<dyn ExportCalls>);
 
 impl PluginHttpDispatch for Served {
+    fn handle_http_with_app(
+        &self,
+        app: &Arc<crate::state::App>,
+        req: &EndpointRequest,
+    ) -> EndpointResponse {
+        let Some(scope) = self.0.scope(&req.path) else {
+            return self.handle_http(req);
+        };
+        // Plugin HTTP dispatch runs on the blocking lane. Collect under the request's
+        // exact App generation before making the one synchronous render call.
+        let families = match scope {
+            busbar_plugin_abi::kinds::export::export::SCOPE_METRICS => {
+                let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+                    return EndpointResponse {
+                        status: 503,
+                        headers: Vec::new(),
+                        body: Vec::new(),
+                    };
+                };
+                match runtime.block_on(super::scrape::app_families(app)) {
+                    Ok(families) => families,
+                    Err(_) => {
+                        return EndpointResponse {
+                            status: 503,
+                            headers: Vec::new(),
+                            body: Vec::new(),
+                        }
+                    }
+                }
+            }
+            busbar_plugin_abi::kinds::export::export::SCOPE_HOOKS => {
+                super::scrape::hook_families(app)
+            }
+            _ => {
+                return EndpointResponse {
+                    status: 404,
+                    headers: Vec::new(),
+                    body: Vec::new(),
+                }
+            }
+        };
+        match self.0.render_scope(scope, &families) {
+            Ok(response) => EndpointResponse {
+                status: response.status,
+                headers: response.headers,
+                body: response.body,
+            },
+            Err(error) => {
+                tracing::warn!(%error, "export scope render failed");
+                EndpointResponse {
+                    status: 502,
+                    headers: Vec::new(),
+                    body: Vec::new(),
+                }
+            }
+        }
+    }
+
     fn handle_http(&self, req: &EndpointRequest) -> EndpointResponse {
         let request = ServeRequest {
             method: &req.method,
@@ -264,6 +322,22 @@ impl PluginHttpDispatch for Served {
             }
         }
     }
+}
+
+/// Complete the unpublished application's export routes from the instances opened in S8.
+/// ListenerPlan freezes its physical mounts only after this assembly succeeds.
+pub fn assemble_routes(
+    mut app: crate::state::App,
+    cfg: &crate::config::ExportCfg,
+) -> Result<crate::state::App, String> {
+    let (routes, withheld) = crate::off_path::export::route_projection(cfg);
+    let routes = app
+        .plugin_routes
+        .with_export_routes(routes)?
+        .with_withheld_public_exports(withheld);
+    app.boot_route_paths = Arc::new(routes.paths());
+    app.plugin_routes = Arc::new(routes);
+    Ok(app)
 }
 
 #[cfg(test)]

@@ -1338,6 +1338,10 @@ async fn run(catalogue: busbar_kernel::diagnostics::Catalogue, control_work: Con
 
     export::plugin::open_prepared(&export_config, &exports.calls())
         .unwrap_or_else(|error| die_list("config errors", [error]));
+    let app = Arc::new(
+        export::plugin::assemble_routes(Arc::unwrap_or_clone(app), &export_config)
+            .unwrap_or_else(|error| die_list("config errors", [error])),
+    );
 
     let door_live_handle = Arc::default();
     let door_models = model_serving(door_model_pools, &app, &door_live_handle);

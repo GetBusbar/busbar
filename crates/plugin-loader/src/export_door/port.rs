@@ -19,7 +19,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
 
-use busbar_contract::abi::mechanism::route::Route;
+use busbar_contract::abi::mechanism::route::{Route, RouteAuth, RouteMethod};
 use busbar_contract::export_calls::{
     Delivered as Queued, ExportCalls, Family, RecorderRequirements, ServeRequest, Served,
 };
@@ -451,6 +451,8 @@ impl Shared {
 pub struct PortDoor {
     shared: Arc<Shared>,
     streams: Vec<u8>,
+    routes: Vec<Route>,
+    public_routes: Vec<String>,
     pump: Mutex<Option<std::thread::JoinHandle<()>>>,
 }
 
@@ -553,6 +555,20 @@ impl PortDoor {
             ms => Duration::from_millis(u64::from(ms)),
         };
         let streams = stream_ids(port.streams());
+        let routes = port
+            .scopes()
+            .iter()
+            .map(|scope| Route {
+                path: scope.path.to_string(),
+                method: RouteMethod::Get,
+                auth: RouteAuth::None,
+            })
+            .collect();
+        let public_routes = port
+            .scopes()
+            .iter()
+            .map(|scope| scope.path.to_string())
+            .collect();
         let shared = Arc::new(Shared {
             port,
             disk,
@@ -576,6 +592,8 @@ impl PortDoor {
         Arc::new(Self {
             shared,
             streams,
+            routes,
+            public_routes,
             pump: Mutex::new(None),
         })
     }
@@ -685,9 +703,55 @@ impl ExportCalls for PortDoor {
         &self.streams
     }
 
-    /// MIN-3 exporters serve no routes of their own: core mounts each D_SCOPE path (§12.26).
+    /// Core mounts these immutable D_SCOPE paths and supplies each scope's snapshot.
     fn routes(&self) -> &[Route] {
-        &[]
+        &self.routes
+    }
+
+    fn public_routes(&self) -> &[String] {
+        &self.public_routes
+    }
+
+    fn scope(&self, path: &str) -> Option<u32> {
+        self.shared
+            .port
+            .scopes()
+            .iter()
+            .find(|scope| scope.path.as_ref() == path)
+            .map(|scope| scope.scope)
+    }
+
+    fn render_scope(&self, scope: u32, families: &[Family]) -> Result<Served, String> {
+        if !self
+            .shared
+            .port
+            .scopes()
+            .iter()
+            .any(|declared| declared.scope == scope)
+        {
+            return Err("the export instance did not declare this snapshot scope".into());
+        }
+        let mut response = Served {
+            status: 200,
+            headers: Vec::new(),
+            body: Vec::new(),
+        };
+        with_snapshot(families, |snapshot| {
+            self.shared
+                .port
+                .render(scope, snapshot, &mut |content_type, bytes| {
+                    response.headers = vec![("content-type".into(), content_type.into())];
+                    response.body.extend_from_slice(bytes);
+                })
+        })
+        .map_err(|error| {
+            format!(
+                "export instance `{}` did not render ({})",
+                self.shared.label,
+                why(&error)
+            )
+        })?;
+        Ok(response)
     }
 
     fn deliver(&self, stream: u8, line: Vec<u8>, hold: Box<dyn Send>) -> Queued {

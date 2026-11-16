@@ -131,6 +131,38 @@ impl PluginRouteTable {
         self
     }
 
+    /// Replace the unpublished candidate's export declarations with its actual opened routes.
+    pub fn with_export_routes(&self, mut declarations: Vec<RouteDecl>) -> Result<Self, String> {
+        if declarations
+            .iter()
+            .any(|route| route.kind != RouteKind::Export)
+        {
+            return Err("export route assembly requires only export declarations".into());
+        }
+        for (path, entries) in &self.by_path {
+            for (method, registered) in entries
+                .iter()
+                .filter(|(_, route)| route.kind != RouteKind::Export)
+            {
+                declarations.push(RouteDecl {
+                    owner: registered.owner.clone(),
+                    source_instance: registered.source_instance.clone(),
+                    dispatch_available: registered.dispatch_available,
+                    kind: registered.kind,
+                    route: Route {
+                        path: path.clone(),
+                        method: *method,
+                        auth: registered.auth,
+                    },
+                    scrape: false,
+                    persistent: registered.persistent,
+                    dispatch: registered.dispatch.clone(),
+                });
+            }
+        }
+        build_route_table(declarations)
+    }
+
     pub fn with_hook_routes(&self, declarations: Vec<RouteDecl>) -> Result<Self, String> {
         if declarations
             .iter()
