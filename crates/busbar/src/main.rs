@@ -1384,12 +1384,9 @@ async fn run(
         die(root::migrate::restart(
             written,
             owners,
-            |owners| {
-                if let Some(task) = owners.0.node_lease_task.as_ref() {
-                    task.abort();
-                }
-                drop(owners);
-            },
+            // Nothing is cancelled (R16): dropping the lease task's handle leaves it running until
+            // the exec replaces this image a moment later.
+            drop,
             root::migrate::reexec,
         ));
     }

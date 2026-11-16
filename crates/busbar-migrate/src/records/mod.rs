@@ -406,7 +406,7 @@ impl Summary {
 }
 
 /// What the read-only pass over IMPORT found.
-struct Pass {
+struct Survey {
     summary: Option<(Summary, SecureVec)>,
     /// Per tag: folds and rows still under IMPORT.
     remaining: [[u64; 2]; 8],
@@ -424,8 +424,8 @@ fn is_row(key: &[u8]) -> bool {
 /// The closure pre-check (§A6): one read-only pass over IMPORT, before any core write, on the
 /// first run and on every resume. Every row is converted (without sealing) so a value 1.5.5 could
 /// not have returned, or a counter 1.6.0 cannot store, refuses here and not mid-way.
-fn pass(store: &dyn RecordStore) -> Result<Pass, Refusal> {
-    let mut found = Pass {
+fn pass(store: &dyn RecordStore) -> Result<Survey, Refusal> {
+    let mut found = Survey {
         summary: None,
         remaining: [[0; 2]; 8],
         plain: 0,

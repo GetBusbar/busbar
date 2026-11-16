@@ -114,12 +114,17 @@ const OVERLAY_N: &str = r#"{
   "plugin_versions": {"busbar-auth-oidc": "1.0.3"}
 }"#;
 
-/// v1.5.5's effective config for `BASE_NO_STORE` ⊕ `OVERLAY_N`, as config.yaml.
+/// v1.5.5's effective config for `BASE_NO_STORE` ⊕ `OVERLAY_N`, as config.yaml after STEPS[0]
+/// (1d binds the ungoverned `idp1` principals as 1.5.5 admitted them).
 const EFFECTIVE_N: &str = "\
 config_version: 1
 listen: 0.0.0.0:8080
 auth:
   chain: [idp1]
+  role_bindings:
+    idp1:
+      "
+    * ": {}
 models:
   sonnet:
     provider: anthropic
@@ -188,7 +193,8 @@ fn a_drop_in_overlay_folds_to_1_5_5s_effective_config() {
         assert_tree(plan.planned(), &format!("{EFFECTIVE_N}{effective_store}"));
         for kept in [
             "# 1.5.5 deployment\n",
-            "auth:\n  chain: [idp1]\nmodels:\n  sonnet:\n    provider: anthropic\n",
+            "auth:\n  chain: [idp1]\n",
+            "models:\n  sonnet:\n    provider: anthropic\n",
             "  main:\n    members:\n      - model: sonnet\n",
             "  base_group: {}\n",
             store,

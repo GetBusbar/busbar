@@ -468,7 +468,7 @@ A model has a `rate_card` entry present but every tier (input, output, cache_rea
 - **Since:** 1.5.0
 - **Slug:** `deprecated-env-var-honored`
 
-RETIRED. Serving no longer applies deprecated operational environment overrides. Use --migrate-config with the old deployment environment and working directory to capture provider, worker and upstream HTTP settings; old file-overlay selection is migration input only.
+RETIRED. Serving no longer applies deprecated operational environment overrides. Move the provider, worker and upstream HTTP settings they set into config.yaml; old file-overlay selection is read only by the one-time upgrade boot.
 
 **What to do:** Run the 1.6 migration before serving, review and validate its output, then remove the retired variables from launchers. See docs/migration-1.6.md. See BUSBAR-3029.
 
@@ -547,7 +547,7 @@ The deployment still carries a 1.5.5 file-overlay input that 1.6 serving does no
 
 busbar 1.6 no longer reads BUSBAR_PROVIDERS, BUSBAR_WORKER_THREADS, BUSBAR_UPSTREAM_HTTP1_ONLY or BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE. A set one has NO effect: the config key (or its default) is in force. Emitted pre-tracing, to stderr, at boot and by --validate.
 
-**What to do:** Run busbar --migrate-config in the old launch environment to write the value into config.yaml, validate, then remove the variable from the launcher.
+**What to do:** Write the value into config.yaml, validate, then remove the variable from the launcher.
 
 <a id="config-operator-inert"></a>
 ### BUSBAR-3030 — An auth plugin states the operator credential but is not first-party (ignored)

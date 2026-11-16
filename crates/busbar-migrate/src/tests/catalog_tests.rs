@@ -86,7 +86,11 @@ fn an_unchanged_catalog_plans_no_file() {
     scratch.file("providers.yaml", CATALOG_1_6);
     let (report, handed) = upgrade(&scratch, "listen: x\nstore: {module: sqlite}\n", &facts());
     assert_eq!(handed, None);
-    assert!(report.is_empty(), "{report:?}");
+    // 1b always reports the overlay it looked for (package 2); the chain itself changed nothing.
+    assert!(
+        report.iter().all(|line| line.starts_with("overlay: ")),
+        "{report:?}"
+    );
     assert!(!scratch.dir().join("providers.busbar-1.6.yaml").exists());
     assert_eq!(
         std::fs::read_to_string(scratch.dir().join("config.yaml")).unwrap(),

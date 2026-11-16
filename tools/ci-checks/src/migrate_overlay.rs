@@ -38,6 +38,9 @@ const HELPER: &str = "busbar-migrate";
 pub(crate) const HOOK_KEY: &str = "global_hooks";
 /// That pass.
 const HOOK_PASS: &str = "crates/busbar-migrate/src/overlay_hooks.rs";
+/// 1a's port of v1.5.5's marker function, which must name the retired top-level key in its refusal
+/// (MIGRATE-ON-BOOT §A7: banned "outside `config/markers.rs` (1a's port, which must name them)").
+const MARKERS: &str = "crates/busbar-migrate/src/legacy_markers.rs";
 const DOCS: &str = "docs/migration-1.6.md";
 /// (f2) the sentence the upgrade page carries.
 pub(crate) const ONE_BOOT: &str = "1.6.0 checks the overlay only on this one upgrade boot";
@@ -86,7 +89,7 @@ pub(crate) fn hook_keys(root: &Path) -> Result<Vec<String>, String> {
         let text = std::fs::read_to_string(&file)
             .map_err(|error| format!("{}: {error}", rel(root, &file)))?;
         test_modules.extend(scan_source(&file, &text).test_modules);
-        if rel(root, &file) == HOOK_PASS {
+        if [HOOK_PASS, MARKERS].contains(&rel(root, &file).as_str()) {
             continue;
         }
         for (line, _) in word_sites(&text, &[HOOK_KEY], false) {
@@ -99,7 +102,7 @@ pub(crate) fn hook_keys(root: &Path) -> Result<Vec<String>, String> {
         .map(|(file, line)| {
             format!(
                 "{}:{line}: names the 1.5.5 overlay key `{HOOK_KEY}` outside {HOOK_PASS}, the one \
-                 overlay-shape pass (it reads the key and never writes it)",
+                 overlay-shape pass (it reads the key and never writes it), and {MARKERS} (1a)",
                 rel(root, &file)
             )
         })

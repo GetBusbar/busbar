@@ -52,8 +52,9 @@ const POOLS_SECTION: [&str; 2] = ["hooks", "upstream_credentials"];
 /// v1.5.5's `DEFAULT_POLICY_TIMEOUT_MS`.
 const DEFAULT_TIMEOUT_MS: u64 = 1;
 
-/// One overlay hook as v1.5.5's `HookCfg` read it.
-struct Hook {
+/// One overlay hook as v1.5.5's `HookCfg` read it. Its `settings` stay in the overlay document,
+/// borrowed (no readable bag is copied out), and are converted only when the definition is written.
+struct Hook<'a> {
     name: String,
     kind: String,
     module: String,
@@ -64,7 +65,7 @@ struct Hook {
     priority: u64,
     at: Option<String>,
     on_empty: Option<String>,
-    settings: Option<Value>,
+    settings: Option<&'a json::Value>,
     signals: Vec<String>,
     global: bool,
     default: bool,
@@ -74,7 +75,7 @@ struct Hook {
 
 /// Read `hooks.<name>` as v1.5.5's `HookCfg`; an entry 1.5.5 could not read refuses (the
 /// unparseable-overlay case).
-fn read(name: &str, value: &json::Value, o: &str) -> Result<Hook, Refusal> {
+fn read<'a>(name: &str, value: &'a json::Value, o: &str) -> Result<Hook<'a>, Refusal> {
     let bad = |why: &str| unparseable(o, &format!("`hooks.{name}`: {why}"));
     let fields = value
         .as_object()
@@ -157,12 +158,7 @@ fn read(name: &str, value: &json::Value, o: &str) -> Result<Hook, Refusal> {
     }
     let settings = match fields.get(&"settings") {
         None => None,
-        Some(value) if value.is_object() => {
-            match to_yaml(value, &format!("hooks.{name}.settings"), o)? {
-                Value::Map(pairs) if pairs.is_empty() => None,
-                settings => Some(settings),
-            }
-        }
+        Some(value) if value.is_object() => Some(value),
         Some(_) => return Err(bad("`settings` is not an object")),
     };
     Ok(Hook {
@@ -194,7 +190,7 @@ fn key(name: &str) -> Value {
 /// stages in both releases); `on_error` always written (the releases' defaults differ), bare for
 /// a terminal and `{hook: <name>}` otherwise; the rest copied as held, with empty lists and maps
 /// and nulls dropped. `at`, `global`, `default` and `plugin` are never written.
-fn definition(hook: &Hook, o: &str) -> Result<Value, Refusal> {
+fn definition(hook: &Hook<'_>, o: &str) -> Result<Value, Refusal> {
     let path = |field: &str| format!("hooks.{}.{field}", hook.name);
     let strings = |items: &[String], field: &str| -> Result<Value, Refusal> {
         let mut out = Vec::new();
@@ -204,8 +200,11 @@ fn definition(hook: &Hook, o: &str) -> Result<Value, Refusal> {
         Ok(Value::Array(out))
     };
     let mut out: Pairs = vec![(key("module"), text(&hook.module, &path("module"), o)?)];
-    if let Some(settings) = &hook.settings {
-        out.push((key("settings"), settings.clone()));
+    if let Some(settings) = hook.settings {
+        match to_yaml(settings, &path("settings"), o)? {
+            Value::Map(pairs) if pairs.is_empty() => {}
+            settings => out.push((key("settings"), settings)),
+        }
     }
     if !hook.groups.is_empty() {
         out.push((key("groups"), strings(&hook.groups, "groups")?));

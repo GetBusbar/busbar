@@ -280,12 +280,15 @@ fn is_scalar(value: &Value) -> bool {
     !matches!(value, Value::Map(_) | Value::Array(_))
 }
 
-/// Whether two values are the same kind of node (mapping, sequence or scalar).
+/// Whether two values are the same kind of node (mapping, sequence or scalar), so `b` can be
+/// written by editing `a`'s children. A collection emptied by the chain is not: a block mapping
+/// or sequence with no entries left reads back as null, so its entry is re-emitted (`key: {}`).
 fn same_kind(a: &Value, b: &Value) -> bool {
-    matches!(
-        (a, b),
-        (Value::Map(_), Value::Map(_)) | (Value::Array(_), Value::Array(_))
-    ) || (is_scalar(a) && is_scalar(b))
+    match (a, b) {
+        (Value::Map(was), Value::Map(now)) => was.is_empty() || !now.is_empty(),
+        (Value::Array(was), Value::Array(now)) => was.is_empty() || !now.is_empty(),
+        _ => is_scalar(a) && is_scalar(b),
+    }
 }
 
 /// One byte-range edit of the source.

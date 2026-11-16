@@ -172,15 +172,23 @@ fn config_overlay_file_wins_over_the_environment() {
 /// through the boot's interpolation.
 #[test]
 fn the_selector_is_read_as_1_5_5_resolved_it() {
+    // 1t reads the whole document through the boot's environment too, so STATE is set there.
+    fn boot_env(name: &str) -> Option<String> {
+        (name == "STATE").then(|| "/state".to_owned())
+    }
     let scratch = Scratch::new();
     let path = scratch.deployment("listen: x\nconfig:\n  overlay:\n    file: ${STATE}/o.json\n");
     let state = scratch.dir().join("state");
     let interpolate = |text: &str| -> Result<String, String> {
         Ok(text.replace("${STATE}", &state.display().to_string()))
     };
+    let facts = crate::Facts {
+        env: boot_env,
+        ..crate::scratch::facts()
+    };
     let plan = plan(&Inputs {
         interpolate: &interpolate,
-        ..Inputs::new(&path, &crate::scratch::facts(), &accept)
+        ..Inputs::new(&path, &facts, &accept)
     })
     .unwrap();
     assert_eq!(plan.overlay().unwrap().path, state.join("o.json"));

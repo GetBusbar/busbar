@@ -94,7 +94,11 @@ fn a_store_less_1_5_5_config_names_the_store_1_5_5_implied() {
     // A config that names its store keeps it, whatever the word.
     let (written, report) = upgrade("store:\n  module: postgres\n", &facts());
     assert_eq!(written, "config_version: 1\nstore:\n  module: postgres\n");
-    assert!(report.is_empty(), "{report:?}");
+    // 1b always reports the overlay it looked for (package 2); the chain itself changed nothing.
+    assert!(
+        report.iter().all(|line| line.starts_with("overlay: ")),
+        "{report:?}"
+    );
 }
 
 /// (j) and (l): `module:` values are the plugins' (step 2): the migrator resolves no name. A 1.5.5

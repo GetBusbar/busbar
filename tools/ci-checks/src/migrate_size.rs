@@ -31,6 +31,11 @@ pub(crate) const BYTE_GATE: u64 = 300 * 1024;
 const MIGRATE_CRATE: &str = "busbar-migrate";
 /// The shared facade `busbar-migrate` is allowed to reach (YAML, digests); not entered.
 const FACADE: &str = "busbar-contract";
+/// The facade and the gateway's own config vocabulary the kept passes read (MIGRATE-ON-BOOT §A7
+/// "Build target": the kernel with default features off, and its ledger's rate encoding). They
+/// are the gateway's, linked anyway; a dependency of theirs is not one the migrator adds, so
+/// they are not entered. A forbidden crate named directly by `busbar-migrate` is still found.
+const NOT_ENTERED: [&str; 3] = [FACADE, "busbar-kernel", "busbar-kernel-ledger"];
 /// Forbidden whatever the manifests say.
 const FORBIDDEN: [&str; 5] = [
     "busbar-plugin-loader",
@@ -219,7 +224,7 @@ pub(crate) fn separation_deps(lock: &str, forbidden: &BTreeSet<String>) -> Vec<S
                         "Cargo.lock: `{MIGRATE_CRATE}` reaches forbidden crate `{dep}` (via `{name}`); \
                          the migrator takes YAML and digests only from {FACADE}"
                     ));
-                } else if dep != FACADE {
+                } else if !NOT_ENTERED.contains(&dep.as_str()) {
                     stack.push(dep.clone());
                 }
             }
