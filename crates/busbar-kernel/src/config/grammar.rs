@@ -104,6 +104,7 @@ pub struct SecretSource {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Grammar {
+    secret_binding_required: bool,
     /// Image identities and former names mapped to the verified secret declaration.
     pub secret_sources: BTreeMap<String, SecretSource>,
     /// Configured and implicit instance names, bound for this read.
@@ -121,8 +122,14 @@ pub struct Grammar {
 impl Grammar {
     #[must_use]
     pub fn with_secret_sources(mut self, sources: BTreeMap<String, SecretSource>) -> Self {
+        self.secret_binding_required = true;
         self.secret_sources = sources;
         self
+    }
+
+    /// Even an empty admitted image set must reject configured unknown sources.
+    pub fn secret_binding_required(&self) -> bool {
+        self.secret_binding_required
     }
 
     /// Bind the raw secret-instance envelope before parsing any SecretRef in the document.
@@ -180,6 +187,7 @@ impl Grammar {
     #[must_use]
     pub fn empty() -> Self {
         Self {
+            secret_binding_required: false,
             secret_sources: BTreeMap::new(),
             secret_instances: BTreeMap::new(),
             sugars: Sugars::default(),
@@ -192,6 +200,7 @@ impl Grammar {
     #[must_use]
     pub fn new(sugars: Sugars, owners: BTreeMap<String, Owner>, report: Vec<String>) -> Self {
         Self {
+            secret_binding_required: false,
             secret_sources: BTreeMap::new(),
             secret_instances: BTreeMap::new(),
             sugars,
