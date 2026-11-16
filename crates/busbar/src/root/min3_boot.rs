@@ -70,7 +70,7 @@ impl IssuedCredentials for Unissued {
         _kind: &'a str,
         _id: &'a str,
     ) -> BoxFut<'a, SecureVec> {
-        Box::pin(core::future::ready(SecureVec::from(&[][..])))
+        Box::pin(core::future::ready(SecureVec::from(&[0u8; 0][..])))
     }
 }
 
