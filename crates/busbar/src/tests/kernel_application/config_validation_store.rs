@@ -1,16 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use busbar_contract::yaml::{self, prelude::*};
+use busbar_contract::yaml;
 use busbar_kernel::config;
 use busbar_kernel::config_validate::validate;
-
-const NO_STORE: &str = "listen: \"127.0.0.1:8080\"\nproviders:\n  acme:\n    auth: bearer\n    api_key: { env: ACME_KEY }\nmodels:\n  m:\n    provider: acme\n";
 
 #[test]
 fn a_config_without_a_store_block_is_refused() {
     crate::dist_root_install::install();
-    crate::distribution::install_migration_rows();
 
     let deploy: config::DeployCfg = yaml::from_str(
         "providers: {}\nmodels: {}\nstore: {module: inert-store-metadata}\nauth: {chain: [], admin_auth: []}\n",
@@ -33,78 +30,4 @@ fn a_config_without_a_store_block_is_refused() {
     for part in ["store is required", "configured Store module"] {
         assert!(line.contains(part), "the refusal names `{part}`: {line}");
     }
-}
-
-#[test]
-fn migrate_inserts_the_memory_store_into_a_config_without_one() {
-    crate::dist_root_install::install();
-    crate::distribution::install_migration_rows();
-    let out = busbar_migrations::config::migrate::migrate_config(NO_STORE)
-        .expect("the no-store document migrates");
-    let doc: Value = yaml::from_str(&out.yaml).expect("the output is YAML");
-    let store = doc.get("store").expect("the migrated config names a store");
-    let want: Value = yaml::from_str("module: memory").expect("yaml");
-    assert_eq!(store, &want, "exactly `store: {{module: memory}}`");
-    assert!(
-        out.changes
-            .iter()
-            .any(|c| c.starts_with("store: inserted `store: {module: memory}`")),
-        "the change is recorded: {:?}",
-        out.changes
-    );
-    assert!(
-        out.todos.is_empty() && out.warnings.is_empty(),
-        "explicit bearer credentials need no catalog decision: todos={:?}, warnings={:?}",
-        out.todos,
-        out.warnings
-    );
-    assert!(
-        !out.yaml.starts_with('#'),
-        "no banner on a migration with nothing to decide"
-    );
-
-    let again =
-        busbar_migrations::config::migrate::migrate_config(&out.yaml).expect("the output migrates");
-    assert_eq!(again.yaml, out.yaml, "a migrated config migrates to itself");
-    assert!(
-        !again.changes.iter().any(|c| c.starts_with("store")),
-        "a config that names its store gains nothing: {:?}",
-        again.changes
-    );
-
-    let deploy: config::DeployCfg = yaml::from_str(&out.yaml).expect("the output parses");
-    assert_eq!(
-        deploy.store.map(|s| s.module),
-        Some(busbar_migrations::config::migrated_store_module().to_string())
-    );
-}
-
-#[test]
-fn migrate_names_the_module_of_a_store_block_without_one_and_leaves_a_named_one() {
-    crate::dist_root_install::install();
-    crate::distribution::install_migration_rows();
-    let unnamed = format!("{NO_STORE}store:\n  settings: {{ k: v }}\n");
-    let out = busbar_migrations::config::migrate::migrate_config(&unnamed).expect("migrates");
-    let doc: Value = yaml::from_str(&out.yaml).expect("yaml");
-    let want: Value = yaml::from_str("settings: { k: v }\nmodule: memory").expect("yaml");
-    assert_eq!(doc.get("store"), Some(&want));
-
-    let named = format!("{NO_STORE}store:\n  module: acme-durable\n");
-    let out = busbar_migrations::config::migrate::migrate_config(&named).expect("migrates");
-    let doc: Value = yaml::from_str(&out.yaml).expect("yaml");
-    let want: Value = yaml::from_str("module: acme-durable").expect("yaml");
-    assert_eq!(doc.get("store"), Some(&want));
-    assert!(!out.changes.iter().any(|c| c.starts_with("store")));
-}
-
-#[test]
-fn the_store_double_answers_to_the_migrated_store_module() {
-    crate::dist_root_install::install();
-    crate::distribution::install_migration_rows();
-    assert_eq!(
-        busbar_migrations::config::migrated_store_module(),
-        busbar_migrations::config::migration_table::text("store_1_5_default")
-    );
-    assert!(!busbar_migrations::config::migrated_store_module().is_empty());
-    assert!(busbar_kernel::config::store_required().contains("store is required"));
 }

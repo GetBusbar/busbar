@@ -34,7 +34,6 @@ async-trait = { workspace = true }
 # depends on nothing here), so the registration is the one place the binary's own manifest and
 # `main.rs` have to know this plane exists.
 busbar-core-oauth2 = { path = "../../crates/busbar-core-oauth2" }
-busbar-migrations = { path = "../../crates/busbar-migrations" }
 # The boot's one-time config upgrade (MIGRATE-ON-BOOT), cold library code.
 busbar-migrate = { path = "../../crates/busbar-migrate" }
 # The admin API service (`/api/v1/admin/*`), a MANDATORY sibling crate (not a plugin). Always linked;
