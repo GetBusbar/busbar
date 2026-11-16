@@ -566,3 +566,11 @@ mod boot_reads;
 #[cfg(test)]
 #[path = "../tests/durability_reads_unlocked.rs"]
 mod reads_unlocked;
+
+#[cfg(test)]
+#[path = "../tests/durability_notary.rs"]
+mod notary_tests;
+
+#[cfg(test)]
+#[path = "../tests/durability_signer.rs"]
+mod signer_tests;

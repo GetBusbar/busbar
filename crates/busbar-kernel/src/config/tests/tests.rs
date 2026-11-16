@@ -3088,3 +3088,46 @@ fn document_keys_are_the_schema_order_of_config_yaml() {
     assert!(at("store") < at("advanced"));
     assert!(at("identity-providers") < at("providers"));
 }
+
+/// SEALING-FIX r20 §9 test 8 (§3.4): `audit.seal_every` is a whole number of milliseconds from 1
+/// to 1000, default 1; every other form is refused at parse, explained; `audit:` has no other key.
+#[test]
+fn audit_seal_every_is_whole_milliseconds_from_1_to_1000() {
+    let parse = |tail: &str| {
+        crate::config::deploy_from_yaml_str(
+            &format!("providers: {{}}\nmodels: {{}}\n{tail}"),
+            &crate::config::Grammar::empty(),
+        )
+    };
+    assert_eq!(
+        parse("").unwrap().audit.seal_every,
+        1,
+        "absent: one stamp per ms"
+    );
+    assert_eq!(parse("audit: {}\n").unwrap().audit.seal_every, 1);
+    for ok in [1u64, 250, 1000] {
+        let cfg = parse(&format!("audit:\n  seal_every: {ok}\n")).unwrap();
+        assert_eq!(cfg.audit.seal_every, ok);
+    }
+    for (bad, shown) in [
+        ("0", "0"),
+        ("1001", "1001"),
+        ("-1", "-1"),
+        ("\"1ms\"", "\"1ms\""),
+        ("1.5", "1.5"),
+    ] {
+        let error = parse(&format!("audit:\n  seal_every: {bad}\n"))
+            .expect_err("refused")
+            .to_string();
+        assert!(
+            error.contains(&format!(
+                "audit.seal_every must be a whole number of milliseconds from 1 to 1000 (got {shown})"
+            )),
+            "{bad}: {error}"
+        );
+    }
+    let unknown = parse("audit:\n  seal_every: 1\n  sign_every: 2\n")
+        .expect_err("an unknown key under audit: is refused")
+        .to_string();
+    assert!(unknown.contains("sign_every"), "{unknown}");
+}

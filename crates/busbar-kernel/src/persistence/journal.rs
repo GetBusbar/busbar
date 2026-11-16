@@ -636,3 +636,11 @@ impl Replay<'_, '_> {
 #[cfg(test)]
 #[path = "journal_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/head_cell_tests.rs"]
+mod head_cell_tests;
+
+#[cfg(all(test, feature = "loom-model"))]
+#[path = "tests/head_cell_loom.rs"]
+mod head_cell_loom;
