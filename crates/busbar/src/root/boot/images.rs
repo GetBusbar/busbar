@@ -60,3 +60,46 @@ pub(crate) fn prepare(
         grammar,
     })
 }
+
+#[cfg(test)]
+mod pin_tests {
+    use super::*;
+    use busbar_plugin_abi::types::KindCode;
+
+    #[test]
+    fn unchanged_grammar_does_not_authorize_replacing_its_image() {
+        let old = ImageProof {
+            kind: KindCode::Secret,
+            digest: Some([1; 32]),
+        };
+        let held = BootImages {
+            proofs: [("source".into(), old.clone())].into(),
+        };
+        assert!(held.check_proofs(&held.proofs).is_ok());
+        let new = ImageProof {
+            digest: Some([2; 32]),
+            ..old
+        };
+        assert!(held.check_proofs(&[("source".into(), new)].into()).is_err());
+        assert!(held.check_proofs(&BTreeMap::new()).is_err());
+    }
+
+    #[test]
+    fn non_boot_plane_change_is_allowed_but_new_secret_grammar_is_not() {
+        let held = BootImages {
+            proofs: BTreeMap::new(),
+        };
+        let plane = ImageProof {
+            kind: KindCode::Plane,
+            digest: Some([2; 32]),
+        };
+        assert!(held.check_proofs(&[("plane".into(), plane)].into()).is_ok());
+        let secret = ImageProof {
+            kind: KindCode::Secret,
+            digest: Some([3; 32]),
+        };
+        assert!(held
+            .check_proofs(&[("source".into(), secret)].into())
+            .is_err());
+    }
+}
