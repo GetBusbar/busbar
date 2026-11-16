@@ -3,8 +3,13 @@
 For anyone on 1.3, 1.4 or 1.5.0 to 1.5.4 (1.2.x configs convert too).
 
 The upgrade path is: any older version → 1.5.5 → 1.6.0. 1.6.0 converts only 1.5.5 data and
-config. 1.5.5 has been the stable release for three months, so going through it means every
-upgrade runs on proven code.
+config. Going through 1.5.5 means every upgrade runs on proven code.
+
+**Everything on this page describes the 1.5.5 binary, not 1.6.0.** Several things below do not exist
+in 1.6.0: `busbar --migrate-config` is gone; the retired environment variables are never read, only
+reported as ignored; `config:` accepts only `locked` (the `config.overlay` block is refused); and a
+provider `api_key` that does not resolve refuses startup. The [1.6.0 guide](migration-1.6.md) is
+authoritative for 1.6.0.
 
 **Which page do I need?** On 1.5.5: [Upgrade from 1.5.5 to 1.6.0](migration-1.6.md). On anything
 older: this page first, run 1.5.5 once so it converts your data, then the 1.6.0 page.
@@ -43,7 +48,7 @@ The sections below list every change by release.
 ## From 1.2.x: routing, hooks and auth (1.3)
 
 1.3 moved routing and hooks into one per-pool `hooks:` list and replaced `auth.mode`.
-the first-boot migration rewrites all of these; the 1.5.5 shape is shown.
+`busbar --migrate-config` in 1.5.5 rewrites all of these; the 1.5.5 shape is shown.
 
 | 1.2.x | 1.5.5 |
 |---|---|
@@ -496,7 +501,7 @@ purpose.
 
 1.5.3 also moves operational config out of environment variables and **into `config.yaml`**, and makes admin-API
 config mutability explicit and **durable by default**. 
-#### Env var → config.yaml (deprecated since 1.5.3, still honored)
+#### Env var → config.yaml (deprecated since 1.5.3, still honored by 1.5.5; **not read at all by 1.6.0**)
 
 | Deprecated env var | New home in config.yaml |
 |---|---|
@@ -525,7 +530,9 @@ advanced:
   worker_threads: 4
 ```
 
-#### Behavior change: durable-by-default config mutation
+#### Behavior change: durable-by-default config mutation (1.5.x only)
+
+This section and the overlay settings below describe 1.5.5. In 1.6.0 `config:` accepts only `locked`; `config.overlay` is refused.
 
 Before 1.5.3, admin-API config changes were **live-only unless** you set `BUSBAR_CONFIG_OVERLAY`, so a group
 or hook provisioned over the API **silently vanished on restart**. Now, with nothing configured, config is
@@ -578,7 +585,8 @@ whose green result does not distinguish a working deployment from a broken one i
 
 **Scope.** Only `--validate` changed.
 
-- BOOT is unchanged. An unresolvable reference still logs a warning and Busbar still serves, so no
+- BOOT is unchanged (on 1.5.5; 1.6.0 refuses startup for a provider `api_key` that does not
+  resolve). An unresolvable reference still logs a warning and Busbar still serves, so no
   running deployment starts failing on upgrade and no restart turns into an outage.
 - The admin apply/reload path is unchanged, and still WARNS rather than rejecting. A live config
   change must not be refused for a secret that will resolve on the next deploy.

@@ -1,7 +1,18 @@
 # Outbound destination guard and TLS trust store: one place for each
 
-Status: DESIGN, Revision 2 (after the adversarial review, verdict REWORK targeted). For owner
-sign-off. Nothing past the design is built. Revision 2 (the next section) supersedes Revision 1
+> **HISTORICAL DESIGN RECORD (2026-11-12). This is not the shipped contract.** It is kept as the
+> record of how the outbound destination guard and the TLS trust store were designed. Where it
+> differs from busbar 1.6.0, 1.6.0 wins: the shipped configuration surface and error codes are in
+> [the configuration reference](../config-at-a-glance.md) and [the diagnostics catalog](../diagnostics.md).
+> In particular: the `plaintext: true` destination row is deleted (transport security is
+> `insecure_transport`); there is no `busbar --migrate-config` (the first-boot migration is described
+> in [the migration guide](../migration-1.6.md)); `advanced.allow_destinations` is being replaced by a
+> per-registration `allow_private`; the "Sunday 2026-11-15" slices below have shipped or been dropped;
+> and the diagnostic-code table in R2.5 is corrected to the shipped catalog. Plugin and repository
+> names below are those of the design's time.
+
+
+Status when written: DESIGN, Revision 2 (after the adversarial review, verdict REWORK targeted). Revision 2 (the next section) supersedes Revision 1
 wherever they differ; Revision 1 is kept below it unchanged, for history.
 Date: 2026-11-12. Revision 1 base: core `fix/corefix-integration` @ e207f2aea4. Revision 2 code read
 at: core `origin/feat/single-destination-policy` @ 43fda1da12, `origin/feat/single-destination-policy-retire-allow-private`
@@ -304,41 +315,39 @@ and the sibling designs. 3133 is claimed by `login-attempt-limiter.md`, and 8026
 `secret-refresh-resilience.md`. Re-check at merge. Each operator-facing entry carries `text`,
 `example` and `example_detail`.
 
-| Code | Slug | Severity | Slice |
-|---|---|---|---|
-| 3134 | config-destination-names-metadata | Fatal | PRE-GA |
-| 3135 | config-private-reach-retired (was 3027 on c61a57d82e, never shipped) | Fatal | PRE-GA |
-| 3136 | config-metadata-carve-out-retired | Fatal (Actionable warning if deferred to 1.7.0) | PRE-GA if signed |
-| 3137 | config-tls-anchor-invalid | Fatal | POST |
-| 3138 | config-tls-anchor-accepted (info; owner confirms info lines belong in 31xx) | Info | POST |
-| 3139 | config-tls-anchor-expiring | Actionable | POST |
-| 3140 | config-tls-base-set (dropped roots count / empty set / `none` with no anchor) | Actionable / Fatal | POST |
-| 3141 | config-plaintext-not-admitted | Fatal | POST |
-| 3142 | store-postgres-sslmode-opportunistic-refused (plugin-declared) | Fatal | POST |
-| 3143 | store-valkey-insecure-refused (plugin-declared) | Fatal | POST |
-| 3144 | config-plaintext-entry-not-exact | Fatal | POST |
-| 3145 | config-wildcard-over-public-suffix | Fatal | POST |
-| 3146 | config-credentials-over-plaintext | Fatal | POST |
-| 3149 | config-proxy-delegates-address-check | Info | POST |
-| 3410 | migrate-private-reach-to-allowlist | Warning | PRE-GA |
-| 3411 | migrate-metadata-carve-out-removed | Warning | PRE-GA if signed |
-| 3412 | migrate-sslmode-prefer-to-require | Warning | POST |
-| 3413 | migrate-valkey-insecure-removed (TODO for refs) | Warning | POST |
-| 3414 | migrate-plaintext-entry-written | Warning | POST |
-| 3415 | migrate-ca-cert-pem-to-tls-destinations | Warning | POST |
-| 3416 | migrate-discovered-host-todo | Warning | POST |
-| 3417 | migrate-insecure-transport-refused-todo | Warning | POST |
-| 3418 | migrate-anchor-not-a-ca | Warning | POST |
-| 5046 | egress-dial-refused (rate-limited, audited) | BenignRecurring | POST |
-| 5047 | egress-tls-verification-failed (audited; dial host, matched entries, anchor fingerprints, presented issuer and subject) | Actionable | POST |
-| 5048 | egress-tls-anchor-expired-withdrawn | Actionable | POST |
-| 5049 | egress-tls-anchor-file-changed | Actionable | POST |
-| 6013 | plugin-declares-retired-abi-value (load: role 4, framed op-infra without target; from 1.7.0 also the deprecated values) | Fatal | PRE-GA |
-| 6014 | plugin-call-refused-abi-rule (call: `dest.judge` op-infra, `offered_name` mismatch), once per instance, audited | Actionable | PRE-GA |
-| 6015 | plugin-uses-deprecated-abi-value (`UPGRADE_VERIFY_OFF` honoured), once per instance, audited | Actionable | PRE-GA |
+Shipped catalog (`crates/busbar-kernel/src/diagnostics/mod.rs`; each entry below is checked against it).
+The table of codes this design proposed was wrong in several places and is replaced by what shipped:
 
-3147, 3148 and 3150-3159 are left free for this design's review rounds. Revision 1's 3028-3031 are
-withdrawn.
+| Code | Slug | Notes |
+|---|---|---|
+| 3134 | config-destination-names-metadata | Fatal |
+| 3135 | config-private-reach-retired | Fatal |
+| 3136 | config-metadata-carve-out-retired | Fatal |
+| 3137 | config-tls-anchor-invalid | Fatal |
+| 3138 | config-tls-anchor-accepted | Info-level (BenignRecurring); not a `prefer` deprecation |
+| 3139 | config-tls-anchor-expiring | Actionable |
+| 3140 | config-tls-trust-empty | Fatal (this design called it `config-tls-base-set`) |
+| 3144 | config-plaintext-entry-not-exact | Fatal |
+| 3145 | config-wildcard-over-public-suffix | Fatal |
+| 3147 | config-tls-base-roots-dropped | Actionable |
+| 3148 | config-tls-destination-invalid | Fatal |
+| 3149 | config-proxy-delegates-address-check | BenignRecurring |
+| 3410 | migrate-private-reach-to-allowlist | Actionable |
+| 3411 | migrate-metadata-carve-out-removed | Actionable |
+| 5047 | egress-tls-verification-failed | Actionable |
+| 5048 | egress-tls-anchor-expired-withdrawn | Actionable |
+| 5049 | egress-tls-anchor-file-changed | Actionable |
+| 5051 | egress-dial-refused | BenignRecurring (5046 shipped as `plane-usage-unread`) |
+| 6014 | plugin-call-refused-abi-rule | Actionable |
+| 6015 | plugin-uses-deprecated-abi-value | Actionable |
+| 6017 | plugin-declares-retired-abi-value | Fatal (6013 shipped as `plugin-text-cut`) |
+
+Proposed here and **not in the shipped catalog**: 3141 (`config-plaintext-not-admitted`, though the
+catalog text for 5051 still names it), 3142 and 3143 (plugin-declared store refusals), 3146, and
+3412 to 3418. The migration guide's 3417 has no emitter. See issue #301 (error-catalog codes emitted
+with no catalog row). 3160 and 3161 appear only as literal strings in `crates/plugin-loader/src/instance.rs`.
+
+Revision 1's 3028-3031 were withdrawn.
 
 ### R2.6 Duplication audit additions (§6)
 

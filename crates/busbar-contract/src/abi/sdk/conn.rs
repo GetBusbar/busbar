@@ -823,7 +823,7 @@ impl<K: KindMarker> Connector<'_, K> {
 
     /// THE RECOVERABLE GATE (`migrate.admit`, MIGRATE-ON-BOOT §4): whether the boot can seal the
     /// `recoverable` 1.5.5 credential rows a store is about to hand core. Never pends, so it rides
-    /// no ticket and draws no handle. A store calls it through [`super::store::admit_recoverable`].
+    /// no ticket and draws no handle.
     pub fn migrate_admit(&mut self, recoverable: u64) -> Result<(), ConnFailure>
     where
         K: crate::abi::host::access::Permitted<{ op::MIGRATE_ADMIT }>,

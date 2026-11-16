@@ -2,7 +2,15 @@
 
 Hooks let your policy inspect, steer, or rewrite a request before it reaches an upstream. A **gate** can affect execution; a **tap** observes without deciding. Busbar bounds hook execution and applies the configured `on_error` behavior when a gate fails. Use `on_error: reject` when a request must not continue without its required check.
 
-A hook is a **`kind: hook` plugin**: the same signed-tarball, in-process plugin ABI that store, secret, and auth plugins use. There is no other hook transport: the built-in out-of-process `socket` and `webhook` transports were retired in 1.5.0. Out-of-process isolation is available through the first-party **`busbar-hook-webrequest`** plugin, which forwards each per-request hook call to an HTTPS sidecar. Write a hook once and it runs against all six LLM protocols and every provider, with failover and circuit breaking underneath it, in one hop.
+HEAD
+When a rewrite fails and `on_error` names a fallback hook, core sends the fallback
+the original request projection, subject to that hook's content grants. Partial or
+malformed rewrite output is never forwarded. The fallback's read must be recorded
+before content is sent; audit failure refuses the request. A fallback rejection
+refuses the request, while an abstention preserves the original body. If every
+fallback fails, the chain's configured terminal applies.
+
+A hook is a **`kind: hook` plugin**: the same signed-tarball, in-process plugin ABI that store, secret, and auth plugins use. There is no other hook transport. Out-of-process isolation is available through a hook plugin that forwards each per-request hook call to an operator-run service. Write a hook once and it runs against all six LLM protocols and every provider, with failover and circuit breaking underneath it, in one hop.
 
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 340" role="img" aria-label="A gate controls execution; a tap observes it. Taps run at their configured stages. The diagram shows a response-stage tap." style="width:100%;height:auto;font-family:ui-sans-serif,system-ui,sans-serif">
 <title>A gate controls execution; a tap observes it</title><defs><marker id="hook-path-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 Z" fill="#a3e635"/></marker></defs>
@@ -33,9 +41,9 @@ A hook is a **`kind: hook` plugin**: the same signed-tarball, in-process plugin 
 
 | Category | Examples | What to expect |
 | --- | --- | --- |
-| First-party hook modules | Webrequest, Ranking | Install the matching artifact and configure its documented actions |
+| First-party hook modules | Ordering strategies and forwarding hooks | Install the matching artifact and configure its documented actions |
 | Custom plugin examples | PHI, audit and smart-router examples | Source examples to build and qualify; not shipped PII detectors |
-| External policy services | An HTTPS service called through Webrequest | Connectivity does not establish detector coverage or policy correctness |
+| External policy services | An HTTPS service called through a forwarding hook plugin | Connectivity does not establish detector coverage or policy correctness |
 | Provider-native controls | Bedrock guardrail configuration, Gemini safety settings | Provider and protocol specific; not interchangeable gateway hooks |
 
 Use `on_error: reject` for required gates and test rejection, timeout and dependency failure before rollout. LLM rewrite, ordering and restriction actions are not automatically available on MCP/A2A rejection gates. Optional transformations can retain the original content; that is inappropriate for a mandatory redaction policy.
@@ -50,10 +58,10 @@ A hook instance is a **module ref** whose `module:` names a loaded `kind: hook` 
 
 | Posture | How it runs | Trust anchor |
 |---|---|---|
-| In-process `kind: hook` plugin | Loaded from a signed tarball at boot or on hot-reload. The hook is a `cdylib` exporting the hook kind's **memory ABI**: one symbol, `busbar_plugin_door`, answering a table of typed slots (`decide`, `transform`, `notify`, `configure`, `status`, `describe`, `serve`). A plugin built for 1.5.5 (JSON through `busbar_call`) is refused at boot. | ed25519 signature over the signed manifest; kind and Statement cross-checked at load |
-| Out-of-process via `busbar-hook-webrequest` | The first-party forwarder plugin POSTs each `decide`/`transform`/`notify` call to your HTTPS sidecar (any language) and returns its reply. The sidecar URL is `settings.url`, SSRF-guarded (loopback allowed, plaintext `http://` only to loopback; RFC-1918 / link-local / CGNAT / ULA / cloud-metadata rejected). | The plugin is signed + auto-trusted; the sidecar runs in its own process |
+| In-process `kind: hook` plugin | Loaded from a signed tarball at boot or on hot-reload. The hook is a `cdylib` exporting the hook kind's **memory ABI**: one symbol, `busbar_plugin_door`, answering a table of typed slots (`decide`, `transform`, `notify`, `configure`, `status`, `describe`, `serve`). A plugin built against an earlier SDK is refused at boot. | ed25519 signature over the signed manifest; kind and Statement cross-checked at load |
+| Out-of-process via a forwarding hook plugin | A forwarder plugin POSTs each `decide`/`transform`/`notify` call to your service (any language) and returns its reply. Its target URL, egress guard and timeouts are the plugin's own settings; see the plugin's documentation. | The plugin is signed; the service runs in its own process |
 
-**In-process trust is signature-based, not process-based.** A `kind: hook` plugin loads inside Busbar's address space, verified by ed25519 against the signed manifest. For fault isolation of untrusted logic, forward it out-of-process with `busbar-hook-webrequest` (see [Webrequest](#first-party-hook-plugins) below); the choice is performance and integration in-process vs. process isolation via the forwarder.
+**In-process trust is signature-based, not process-based.** A `kind: hook` plugin loads inside Busbar's address space, verified by ed25519 against the signed manifest. For fault isolation of untrusted logic, forward it out-of-process with a forwarding hook plugin (see [The forwarded wire](#the-forwarded-wire) below); the choice is performance and integration in-process vs. process isolation via the forwarder.
 
 **Admin opt-in required.** A `kind: hook` plugin cannot self-wire into a security-critical path. Wiring a hook with `prompt` above `no`, or attaching one at the all-pools `pools.hooks:` key, requires `full` admin scope.
 
@@ -70,12 +78,11 @@ Every hook is one of two kinds. That is the only structural distinction: the res
 
 A **tap** watches: logging, audit, metering, shipping records to a SIEM. It can never delay or change a request. A **gate** decides: it can reject the request, restrict which pool members may serve it, re-order the failover walk, or rewrite the request body. The PII guard, the smart router, and a prompt compressor are all gates: same wire, same timing, same fail-safe, different reply arm.
 
-## Named definitions, referenced by name (1.5.3)
+## Named definitions, referenced by name
 
 A hook is **DEFINED once** in the top-level `hooks:` map (`<instance-name>: { module, settings, … }`)
 and **REFERENCED by bare name** wherever it should fire. There are no inline hook instances
-anywhere in 1.5.3, and the old top-level `global_hooks:` list is gone: its job is now the reserved
-all-pools `pools.hooks:` attach key. The same `module:` may back **several named hooks**. A
+anywhere. The reserved all-pools `pools.hooks:` attach key fires a hook for every pool. The same `module:` may back **several named hooks**. A
 different scope or different settings is simply a new name, and *the name is the instance*.
 
 ```yaml
@@ -85,19 +92,19 @@ plugins:
 
 hooks:                                     # THE definition map
   audit:
-    module: busbar-audit-hook              # your signed audit tap
+    module: <audit-hook-plugin>          # your signed audit tap
     kind: tap
     phase: [response]                      # a LIST of stages; omit = all four
     prompt: ro
   pii-eng:
-    module: busbar-pii-hook
+    module: <pii-hook-plugin>
     groups: [engineering]                  # SCOPE: omit or [] = every caller
     kind: gate
     prompt: ro
     on_error: reject
   rtr:
-    module: webrequest                     # out-of-process forwarder to a sidecar
-    settings: { url: "https://hooks.internal/rtr" }
+    module: <forwarder-hook-plugin>       # out-of-process forwarder
+    settings: { url: "https://hooks.internal/rtr" }   # settings are the plugin's own
     timeout_ms: 50                         # a network hop needs more than the 1 ms default
 
 pools:
@@ -110,10 +117,9 @@ pools:
         tags: ["baa"]
 ```
 
-The `module` names a loaded `kind: hook` plugin by its signed-manifest name/alias (e.g. the
-first-party `webrequest` alias, or your own). Resolution is exact: name first,
-then alias, with no fuzzy matching. `settings:` is the plugin's opaque config. For `webrequest`
-that includes the SSRF-guarded sidecar `url`. Loading any of these requires
+The `module` names a loaded `kind: hook` plugin by its signed-manifest name/alias (a
+first-party plugin or your own). Resolution is exact: name first,
+then alias, with no fuzzy matching. `settings:` is the plugin's opaque config, documented by the plugin. Loading any of these requires
 `plugins.enabled: true` and the tarball installed in `plugins.dir`; an unresolved `module:`, or an attach-point name that no `hooks:` entry defines,
 refuses to boot.
 
@@ -131,8 +137,7 @@ with a magic flag.
 
 **Gates fire concurrently.** All of a request's decision gates (the pool's own and every all-pools attach) fire at once against the same candidate set, then reconcile deterministically: any **reject** wins (the lowest-`priority` gate's status/message surfaces), **restrict**s intersect, and with several **order**s the last in the priority chain wins, re-validated against the post-restrict set. Added latency is the slowest gate, not the sum.
 
-**A hook picks its observation stages** with `phase:`, a **LIST** (1.5.3 generalized the old
-single-valued tap `at:` into it). Omitting `phase:` means exactly these four core stages:
+**A hook picks its observation stages** with `phase:`, a **LIST**. Omitting `phase:` means exactly these four core stages:
 
 | `phase:` member | Observes | Extra payload |
 |---|---|---|
@@ -158,7 +163,7 @@ only the stage's own fields present:
 ```
 
 The completion `outcome` vocabulary is `ok | failed | rejected_by_gate | rejected_by_auth` and is
-**append-only**: treat unknown outcomes as "not ok", never crash on one. In 1.3 the `user:` grant
+**append-only**: treat unknown outcomes as "not ok", never crash on one. The `user:` grant
 projects identity on **gate decision payloads only**; tap and transform payloads omit identity
 (adding it later is an append-only change; key your parser on field presence).
 
@@ -244,7 +249,7 @@ For `kind: hook` plugins, the manifest `needs` field (set with `--needs-prompt r
 > and your hook and the provider are given the same one. That is what makes a hook behave
 > identically whichever dialect the client speaks, and it is why the list below is short.
 >
-> - **An in-band system turn is a turn, as in 1.5.5.** `system` carries the dialect's own system
+> - **An in-band system turn is a turn.** `system` carries the dialect's own system
 >   field (Anthropic/Bedrock `system`, Gemini `systemInstruction`, Responses `instructions`). A
 >   `{role: "system"}` or `{role: "developer"}` entry inside the client's turn array reaches your
 >   hook in `messages`, at its position and under its own role, and counts in `message_count`. A
@@ -265,7 +270,7 @@ For `kind: hook` plugins, the manifest `needs` field (set with `--needs-prompt r
 
 - **The request projection**: `pool`, `ingress_protocol`, `message_count`, `has_tools`, `total_chars` (a size signal; token counts do not exist pre-dispatch), `max_tokens`, `stream`. With `prompt: ro`/`rw`, also the flattened `system` + `messages` text. With `user: ro`, also caller identity.
   - **Reasoning/thinking text is included.** No content block that reaches the provider is silently omitted: Anthropic `thinking`, Bedrock `reasoningContent.reasoningText`, and Responses `reasoning` text project like any other text block. This is a widened scope for the `prompt` grant as of this release. An operator who wired `prompt: ro` for PII screening before now also sees replayed chain-of-thought, which is the correct behavior for a screening gate (content the provider sees that the gate does not is a bypass, not a feature) but is worth knowing if your hook logs or forwards the projection verbatim.
-  - **Redacted reasoning (Anthropic `redacted_thinking`, Bedrock `redactedContent`, a Responses `reasoning` item carrying only an opaque `encrypted_content` blob with no `content[]`/`summary[]` text) projects as a fixed marker, `[busbar:redacted_reasoning]`, never the ciphertext.** Busbar cannot decrypt it, so there is nothing to screen and handing a hook the raw bytes would be a new disclosure (they would reach your `prompt`-forwarder sidecar, which never received provider ciphertext before). Treat the marker as a **presence signal only, not a trust signal**: a client can also send ordinary text that happens to equal this string, so do not gate a decision on the marker's presence/absence alone. Also note `rewrite` (`prompt: rw`) is not index-aligned (see the `rewrite` arm below). A hook that echoes the marker back writes it into a real, visible content block on the outgoing request.
+  - **Redacted reasoning (Anthropic `redacted_thinking`, Bedrock `redactedContent`, a Responses `reasoning` item carrying only an opaque `encrypted_content` blob with no `content[]`/`summary[]` text) projects as a fixed marker, `[busbar:redacted_reasoning]`, never the ciphertext.** Busbar cannot decrypt it, so there is nothing to screen and handing a hook the raw bytes would be a new disclosure (they would reach your `prompt`-forwarder service, which never received provider ciphertext before). Treat the marker as a **presence signal only, not a trust signal**: a client can also send ordinary text that happens to equal this string, so do not gate a decision on the marker's presence/absence alone. Also note `rewrite` (`prompt: rw`) is not index-aligned (see the `rewrite` arm below). A hook that echoes the marker back writes it into a real, visible content block on the outgoing request.
 - **The candidate projection**: one entry per healthy member: `cost_per_mtok` (derived from the model's `rate_card` entry), `latency_ms` (rolling EWMA), `available_concurrency` (free slots now), `budget_remaining`, `rate_headroom` (fraction: the tightest requests/tokens limit headroom across the key's group chain), and your `tier`/`tags` labels. The full task/latency/cost/quality picture, every signal a built-in strategy ranks on is on the wire, so an external hook can implement any of them identically.
 - **The budget-chain state** (when the request carries a virtual key): the whole enforcement chain the request must clear, one entry per bucket from the key's own attribution bucket out through every ancestor group's budget-window buckets (`bucket_id` = `group:<name>@<window>`), each `{bucket_id, budget_group?, spend_micros_at_current_rate, remaining_micros, window_start, budget_period}`. `spend_micros_at_current_rate` is derived at hook-call time from the token ledger times the current top-level `rate_card` (micro-units, 10,000 per cent). This is the read surface for budget-aware routing: a gate can see how close the key or its team is to a cap and downshift to a cheaper `tier`. Busbar exposes the state only; the routing policy lives entirely in your hook.
 
@@ -277,12 +282,12 @@ A gate answers with exactly one of:
 - **reject** (`{"reject": {"status": 451, "message": "..."}}`): no upstream is dispatched; the caller gets a dialect-native error. Status clamped to 400 to 499 (default 403) so the caller's SDK catches the right typed class (429 → rate-limit, 401 → auth, …); message sanitized. Fail-closed: a malformed reject degrades to the defaults, never to silently routing the request. With `prompt: ro`, this is the PII-screen primitive: see content, say no, before it leaves your network.
 - **restrict** (`{"restrict": {"tags_any": ["baa"]}}`): only members carrying one of those `tags` may serve. The restriction **persists across failover** (every hop stays inside the surviving set); an empty intersection follows the gate's `on_empty` (default `reject`, fail-closed).
 - **order** (`{"order": [idx, ...]}`): rank the surviving candidates, most-preferred first (omitted members are demoted, not excluded). That order becomes the failover walk: Busbar tries your first choice, and on a pre-first-byte failure walks to your second. You choose the order; the breaker, concurrency caps, and failover budget still apply.
-- **rewrite** (`{"rewrite": {"messages": [...], "tools": [...]}}`): replace the request body (compression, redaction). Requires `prompt: rw`. Note the asymmetry: a hook *receives* messages as `{role, text}` (the flattened projection) but *replies* in body form (`{role, content}`); the system prompt is not rewritable; and a `busbar-hook-webrequest` sidecar reply is capped at 64 KiB, which bounds very large rewrites through the forwarder. Body-only: a rewrite never changes routing, the principal, or the target dialect. It fires **before dispatch and before the routing decision**, so both the decision and every upstream see the rewritten body, and it persists across failover. Token accounting (budgets, metrics) is on the provider-reported usage of the rewritten body: the savings are real and measured. A malformed/oversized rewrite follows `on_error` (default: proceed with the body **unmodified**; a broken compressor never corrupts a request). Pre-existing hazard, not introduced by reasoning-text projection but now more visible because of it: the write-back is **not index-aligned**. A hook that echoes what it was projected as literal `{role, content}` text loses every image/`tool_use`/`tool_result`/`signature`/cache-control block in that turn (only its text survives), and now also promotes any projected reasoning text (or the redacted-reasoning marker) into a real, visible content block shipped upstream. If your `rw` hook only inspects and passes through, prefer returning no `rewrite` (abstain) over echoing the projection verbatim.
+- **rewrite** (`{"rewrite": {"messages": [...], "tools": [...]}}`): replace the request body (compression, redaction). Requires `prompt: rw`. Note the asymmetry: a hook *receives* messages as `{role, text}` (the flattened projection) but *replies* in body form (`{role, content}`); the system prompt is not rewritable; and a forwarded reply is capped (the plugin documents the cap, 64 KiB for the first-party forwarder), which bounds very large rewrites through the forwarder. Body-only: a rewrite never changes routing, the principal, or the target dialect. It fires **before dispatch and before the routing decision**, so both the decision and every upstream see the rewritten body, and it persists across failover. Token accounting (budgets, metrics) is on the provider-reported usage of the rewritten body: the savings are real and measured. A malformed/oversized rewrite follows `on_error` (default: proceed with the body **unmodified**; a broken compressor never corrupts a request). Pre-existing hazard, not introduced by reasoning-text projection but now more visible because of it: the write-back is **not index-aligned**. A hook that echoes what it was projected as literal `{role, content}` text loses every image/`tool_use`/`tool_result`/`signature`/cache-control block in that turn (only its text survives), and now also promotes any projected reasoning text (or the redacted-reasoning marker) into a real, visible content block shipped upstream. If your `rw` hook only inspects and passes through, prefer returning no `rewrite` (abstain) over echoing the projection verbatim.
 
 ## Ordering
 
 - **`priority: <n>`** is the one ordering knob: it orders the rewrite transform chain (each rewrite sees the prior's output) and tie-breaks the concurrent decision reconcile: which reject's message surfaces, and which `order` counts as "last". Ties keep the all-pools `pools.hooks:` attaches first, then config order.
-- A pool that names no strategy gets the zero-cost inline `weighted` backstop. (The 1.4.x `default: true` registry flag is gone: name the base strategy per pool.)
+- A pool that names no strategy gets the zero-cost inline `weighted` backstop.
 
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 340" role="img" aria-label="Choose what a failed check means. Required security checks: on_error: reject. Optional checks may continue or use a fallback." style="width:100%;height:auto;font-family:ui-sans-serif,system-ui,sans-serif">
 <title>Choose what a failed check means</title><defs><marker id="hook-failure-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 Z" fill="#a3e635"/></marker></defs>
@@ -326,8 +331,8 @@ The transport is the **memory ABI**: the plugin exports one symbol, `busbar_plug
 answers a table of typed slots, one per operation: `decide`, `transform`, `notify`, `configure`,
 `status`, `describe`, `serve`. `abi_version` in the manifest is the hook kind's version
 (`abi::hook::ABI_VERSION`, 2); the host accepts exactly that version and refuses an older or newer
-plugin at boot. A hook plugin built for 1.5.5 (the six-symbol JSON contract) no longer loads; see
-[Rebuilding a 1.5.5 plugin against the 1.6.0 SDK](plugin-sdk-migration-1.6.md). Every slot is
+plugin at boot. A hook plugin built against an earlier SDK no longer loads; see
+[Rebuilding a plugin against the 1.6.0 SDK](plugin-sdk-migration-1.6.md). Every slot is
 called off the request's own worker thread, so a hook that sleeps or spins loses only its own call.
 
 - **`decide`** (a gate) and **`transform`** (a rewrite pass) are request-path calls bounded by the
@@ -342,43 +347,36 @@ called off the request's own worker thread, so a hook that sleeps or spins loses
   none, key or admin). Routes are confined to `/hooks/<name>/*`; the auth is enforced before
   `serve` is called, and admin routes are served on the admin listener only.
 
-### The sidecar wire (`busbar-hook-webrequest`)
+### The forwarded wire
 
-When a hook forwards out-of-process through `busbar-hook-webrequest` (`settings: { url, timeout_ms }`),
-the forwarder POSTs each **per-request** call to your sidecar: the projection JSON with an `op`
+When a hook plugin forwards out-of-process, it POSTs each **per-request** call to your service: the projection JSON with an `op`
 discriminator (`decide`, `transform` or `notify`), one POST per call. `configure`, `describe` and
-`status` are answered by the forwarder itself and never reach the sidecar. The rules a sidecar
-author must know:
+`status` are answered by the forwarder itself and never reach your service. The rules the author
+of the receiving service must know:
 
 - **Answer `decide` and `transform`; never rely on a `notify` reply.** A `notify` reply is not read
   and a `notify` failure is dropped: a tap can never delay or fail a request.
 - **Evolvability.** The wire is **append-only**: Busbar may add fields and `op` values at any
-  time. A sidecar MUST ignore unknown fields, MUST treat an unknown `op` as "not for me" (reply
+  time. The service MUST ignore unknown fields, MUST treat an unknown `op` as "not for me" (reply
   `{}`), and may attach extra fields to its own replies (they are ignored).
 - **Optional fields are absent, not `null`.** Key your parser on field **presence** (e.g.
   `"tier" in candidate`), never on null-ness, and never on key order.
-- **Abstain is `{}`.** A valid deliberate abstain is distinct from a failed sidecar call. A
+- **Abstain is `{}`.** A valid deliberate abstain is distinct from a failed forwarded call. A
   transport error, timeout, non-2xx status, empty reply (including a `204`), reply over 64 KiB,
   excessive nesting, or invalid JSON fails `decide` or `transform`, so the hook's `on_error`
-  applies. The forwarder logs forwarding failures in its own plugin log. A reject or rewrite
+  applies. A reject or rewrite
   must ride a 2xx response body. Redirects are never followed and a 3xx body is not a verdict.
   A `notify` acknowledges a 2xx/3xx response head without interpreting its body; any other final
   status logs a dropped notification and never fails the served request.
 - **Deadlines.** The gate's `timeout_ms` deadline (default 1 ms; raise it for a network hop)
-  caps the call. The forwarder's own per-call timeout is `settings.timeout_ms` (default 5000,
-  clamped to 1-5000). Either timeout is a failed call handled by `on_error`.
-- **Upgrading from 1.5.5.** Released `webrequest-hook` v1.0.6 converted forwarding errors to
-  abstain and could read redirect or 600–999 response bodies as verdicts. These behaviors are
-  not retained in 1.6: return a deliberate 2xx JSON abstain when that is your intent, and set
-  `on_error` for actual failures. URL userinfo that is invalid UTF-8 after percent decoding is
-  refused at open/configure instead of silently dropping the username or password. A refused
-  settings push keeps the complete live target; valid credentials remain unchanged.
+  caps the call. A forwarder may apply its own per-call timeout as well (see the plugin's
+  documentation). Either timeout is a failed call handled by `on_error`.
 - **Transform precedence.** A `transform` reply is read as **reject > rewrite > abstain**: a
   rewrite gate that also screens (a compressor with a PII check) returns `{"reject": ...}` and the
   request stops, exactly as on the decide path. `restrict`/`order` are decide-path verbs and are
   ignored on a transform reply.
 
-The payload a sidecar receives is the same projection an in-process plugin's SDK presents, so a
+The payload a forwarded service receives is the same projection an in-process plugin's SDK presents, so a
 hook's decision logic is the same on either path.
 
 ## Management calls: `configure`, `describe`, `status`
@@ -387,9 +385,9 @@ hook's decision logic is the same on either path.
   pushed with `PATCH /api/v1/admin/hooks/{name}/settings`: Busbar calls `configure` with the hook's
   instance name, the new settings and a `settings_version`. The plugin must acknowledge that exact
   version within 5s; only an exact acknowledgment commits the change (audited, versioned,
-  persisted). A refusal or timeout commits nothing and the operator gets a `400`. For
-  `busbar-hook-webrequest`, the forwarder validates the new `url`/`timeout_ms` itself (a blocked
-  URL refuses the whole push) and applies an acknowledged change to the next call.
+  persisted). A refusal or timeout commits nothing and the operator gets a `400`. A
+  forwarder validates its own settings (a refused value refuses the whole push) and applies an
+  acknowledged change to the next call.
 - **`describe`**: reply with your self-description ENVELOPE, `{"schema": <settings JSON Schema>}`.
   Busbar serves `schema` at `GET /api/v1/admin/hooks/{name}/schema`. Optional: no answer (or `{}`)
   and the API reports `schema: null`.
@@ -422,7 +420,7 @@ hook's decision logic is the same on either path.
   control group. Names/label keys are charset-enforced, every string sanitized + length-bounded,
   every number finite (a `prompt: ro` hook cannot smuggle content into a scrape). Busbar BOUNDS
   everything (64 entries/reply, 8 labels/entry); a malformed entry is dropped whole, a malformed
-  optional member individually, never the reply. Time series are the CONSUMER's job in 1.3 (a
+  optional member individually, never the reply. Time series are the CONSUMER's job (a
   dashboard samples `status` and accumulates); an engine-retained `series` member is the reserved
   additive path. Optional: reply `{}` and Busbar treats status as unsupported.
 - **Reserved:** the reply field name **`report`** is reserved on per-request replies for per-request
@@ -433,21 +431,13 @@ hook's decision logic is the same on either path.
 management calls can delay or fail request traffic: they run on a fresh management instance, never
 on a request's call.
 
-## First-party hook plugins
+## Shipped hook plugins
 
-Two `kind: hook` plugins are first-party:
-
-**Webrequest** (`busbar-hook-webrequest`, alias `webrequest`) is the HTTP forwarder, the path for
-code you don't want in Busbar's address space. It forwards each per-request call over HTTPS to an
-operator-run sidecar, so you get out-of-process isolation (the sidecar can be any language) without
-running an untrusted library in-process. The artifact itself is signed and auto-trusted; forwarding
-is SSRF-guarded; and the sidecar's reply rides the op-discriminated JSON contract above. It is
-installed from its signed release tarball and enabled under `plugins:` in the normal way. See
-[plugins.md](./plugins.md) for the artifact and trust model.
-
-**Ranking** (`busbar-hook-ranking`, alias `ranking`) carries the built-in ordering strategies
-(`cheapest`, `fastest`, `least_busy`, `usage`). The default build links it, which is what makes those
-bare names work in a pool's `hooks:` list with no plugin installed.
+The ordering strategies (`cheapest`, `fastest`, `least_busy`, `usage`) are carried by a hook plugin
+the default build links, which is what makes those bare names work in a pool's `hooks:` list with no
+plugin installed. Forwarding and other hook plugins are installed from their signed release
+tarballs and enabled under `plugins:` in the normal way; their settings and behaviour are in each
+plugin's own documentation. See [plugins.md](./plugins.md) for the artifact and trust model.
 
 ## Managing hooks over the API
 

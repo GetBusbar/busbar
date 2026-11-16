@@ -27,8 +27,7 @@ cadence; only the MySQL backend loses the count.
 ### Mechanism
 
 Not a hydration race — a **split flush**. The engine charges a request at ADMISSION
-(`governance/state.rs`, `try_admit` pass 2: `cell.requests += 1`, before any model/upstream is
-known) and accrues its tokens at COMPLETION, while the write-behind flusher ticks on its own
+(`crates/busbar-kernel/src/governance/state.rs`, before any model or upstream is known) and accrues its tokens at COMPLETION, while the write-behind flusher ticks on its own
 interval (100 ms by default). A request slower than one flush tick is therefore written to the
 store as **two separate deltas**: `{requests: +1, models: []}`, then later `{requests: 0,
 models: [<tokens>]}`. A backend that keys its request counters off its per-`(bucket, window,
@@ -56,49 +55,22 @@ every 1.5.x release to date.
 
 ## Fix (1.6.0)
 
-Fixed as a **contract** change rather than a MySQL-specific patch, because the durable ledger's
-shape is Busbar's to define and backends implement it:
-
-- `Store::add_usage`'s contract now states explicitly that request counters are BUCKET-level,
-  that `models` may legitimately be empty on a given delta, and that a conforming backend MUST
-  make the request-count portion of a delta durable independently of any per-model row
-  (`crates/api/src/store.rs:1046-1055` and the `UsageDelta::requests` field doc,
-  `crates/api/src/store.rs:602-611`).
-- A new conformance cell, `assert_usage_survives_reopen_atomically`
-  (`crates/plugin-testkit/src/store_conformance.rs`), drives exactly the two-flush admission/
-  completion sequence through `add_usage` and requires the whole `UsageLedger` back across a
-  reopen — all fields or none. The existing reopen check could not see this defect because it
-  wrote one complete ledger in a single `put_usage` call, which a model-keyed backend satisfies
-  trivially.
-- The new cell is proven able to fail: `RequestsKeyedByModel`, a reference backend built with the
-  defect on purpose (`crates/plugin-testkit/src/tests/store_conformance_tests.rs`), is required to
-  both trip the ruling and be shown to have kept the tokens — spend survives, the requests cap
-  does not — which is what makes this a money defect and not merely "wrote nothing."
-- `MemoryStore` and the file-backed `store-example-plugin` are both wired to the new ruling as
-  reference implementations (`crates/store-memory/tests/store_conformance.rs`,
-  `crates/store-example-plugin/src/tests/mod.rs`).
-
-The published MySQL store plugin itself is fixed by re-publishing it against the corrected
-contract and conformance suite; this repository fixes and proves the contract the plugin must
-satisfy.
+Fixed as a **contract** statement rather than a MySQL-specific patch, because the durable ledger's
+shape is Busbar's to define and backends implement it. In 1.6.0 the usage delta a store receives
+(`UsageDelta`, `crates/busbar-contract/src/records.rs`) carries the bucket-level `requests` and
+`billable_requests` counts as fields of their own, apart from the per-model token rows in `models`,
+and `UsageDelta::is_zero` treats a delta as empty only when the request counts and every model delta
+are all zero. A conforming store therefore has to make the request-count portion of a delta durable
+independently of any per-model row. The store plugin is fixed by re-publishing it against that
+contract; the plugin's own release notes and conformance run carry that proof, not this tree.
 
 ## Evidence
 
-<!-- public-hygiene-lint: allow — security advisory Evidence section: names the exact commit that fixed and measured this issue, which a reader auditing the fix needs -->
-- Commit `5e3c13044` ("store contract: a usage ledger is ONE accounting record, and the request
-  count was not in it"), 2026-09-11, `main`/`dev` line — full measurement (run counts, backend
-  comparison, failing-row readback) is in the commit body; files touched: `crates/api/src/store.rs`,
-  `crates/busbar-core/src/governance/tests/limits_tests.rs`,
-  `crates/plugin-testkit/src/store_conformance.rs`,
-  `crates/plugin-testkit/src/tests/store_conformance_tests.rs`,
-  `crates/store-example-plugin/src/tests/mod.rs`, `crates/store-memory/tests/store_conformance.rs`.
-- Internal audit ledger (`gate/held.txt`), OWNER ITEM NOTE-86: "the published mysql store loses
-  request counts on a split flush (1/40 at default cadence) — running 1.5.5 deployments are not
-  fixed until 1.6.0 ships; advisory at the tag."
-- CHANGELOG.md: **not found.** As of this worktree's tip (`143db6db6`), `CHANGELOG.md` has no
-  entry naming MySQL or the split flush. This advisory exists to record the disclosure the
-  changelog does not yet carry; a Changelog `### Security` or `### Fixed` line should be added
-  alongside it (not written here, to avoid asserting a changelog entry that has not landed).
+- `UsageDelta` and `UsageLedger` in `crates/busbar-contract/src/records.rs`: the contract shape
+  above.
+- The defect itself was measured against the published 1.5.5 binary and its published MySQL store
+  plugin, and the fix landed in the 1.6.0 line (commit `5e3c13044`, 2026-09-11). The MySQL store is
+  published out of tree, so there is no in-repo source to cite for it.
 
 ## Remediation / operator action
 

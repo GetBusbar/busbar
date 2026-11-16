@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
 use serde_json::json;
 
 use super::providers::{merge_tables, ProviderTable, CORE_PROVIDER_KEYS};

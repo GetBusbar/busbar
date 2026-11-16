@@ -213,7 +213,6 @@ impl<'ast> Visit<'ast> for Imports {
             || matches!(
                 word.as_str(),
                 "busbar_plugin_loader"
-                    | "busbar_migrations"
                     | "busbar_core_connector"
                     | "busbar_core_admin"
                     | "busbar_core_oauth2"

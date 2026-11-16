@@ -10,6 +10,7 @@ use crate::dispatch::kinds::hook::Hook;
 use crate::dispatch::{now_ns, Budgets, ConnTable, Frame, NoSink, Plugin};
 use busbar_contract::abi::mechanism::call::{DeadlineClass, Outcome};
 use busbar_contract::hook_calls::HookCalls;
+use busbar_contract::json::JsonValueTrait as _;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
@@ -169,10 +170,10 @@ async fn administrative_ready_preserves_backoff_and_a_serving_governance_rejecti
         .status(BUDGET)
         .await
         .expect("the actual STATUS is READY");
-    let status: serde_json::Value = serde_json::from_slice(&status).unwrap();
+    let status: busbar_contract::json::Value = busbar_contract::json::parse_value(&status).unwrap();
     assert!(status
         .get("held")
-        .and_then(serde_json::Value::as_u64)
+        .and_then(busbar_contract::json::Value::as_u64)
         .is_some());
     assert!(!instance.quarantined());
     assert_eq!(

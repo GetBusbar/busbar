@@ -29,12 +29,13 @@ use busbar_plugin_abi::records::{
 };
 use busbar_plugin_abi::types::{Bytes, Slice, Status, Str};
 
-use crate::encode::plane::decode_provider_schema;
-use crate::instance::{ErrorBook, PluginCode};
-use crate::ports::plane::{
+use crate::instance::ErrorBook;
+use busbar_ports::codec::plane::decode_provider_schema;
+use busbar_ports::plane::{
     PlaneIn, PlaneOut, PlanePort, PlaneSession, RouteInfo, TargetIn, UsageClass,
 };
-use crate::ports::{CallCx, FactRef, PortError};
+use busbar_ports::PluginCode;
+use busbar_ports::{CallCx, FactRef, PortError};
 
 /// `RouteRec.methods` bits. IF gap: the MIN-3 abi names no method bits; these are the kept encoding of
 /// busbar-contract abi/transport/route.rs (`METHOD_GET` = 1, `METHOD_POST` = 1 << 2), which K8C's path claims

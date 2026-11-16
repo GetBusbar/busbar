@@ -562,6 +562,7 @@ pub(super) fn restart_unreachable(endpoint: &str, restart: &[String], msg: Strin
 
 fn restart_paths(paths: &[String]) -> Vec<String> {
     const BOOT: &[&str] = &[
+        "/records",
         "/listen",
         "/tls",
         "/admin_listen",
@@ -770,6 +771,22 @@ mod tests {
         );
         assert!(doc.root.is_some());
         assert_eq!(doc.named_maps["export"].len(), 1);
+    }
+
+    #[test]
+    fn record_capture_edits_require_restart_without_matching_unrelated_keys() {
+        let paths = [
+            "/records",
+            "/records/user",
+            "/records/labels/0",
+            "/records_extra",
+            "/limits/request_body_max_bytes",
+        ]
+        .map(str::to_owned);
+        assert_eq!(
+            restart_paths(&paths),
+            ["/records", "/records/user", "/records/labels/0"]
+        );
     }
 
     #[test]

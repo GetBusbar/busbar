@@ -47,6 +47,44 @@ fn leg(capacity: usize) -> (Arc<ClaimDoor>, Arc<CallerLeg>, Arc<Pairing>, Arc<Me
 const SESSION_CHANNEL: u64 = 1;
 
 #[tokio::test]
+async fn association_capacity_is_per_claim_and_released_on_close() {
+    let (door, first, _, _) = leg(1);
+    let mut held = Vec::new();
+    for _ in 0..super::DATAGRAM_ASSOCIATIONS_PER_CLAIM {
+        let member = CallerLeg::new(&door, Messages::new(1));
+        assert!(door.reserve(&member).is_ok());
+        held.push(member);
+    }
+    assert!(door.reserve(&first).is_err());
+    use busbar_core_connector::datagram::LegSink;
+    held.pop().unwrap().close();
+    assert!(door.reserve(&first).is_ok());
+    first.close();
+    for member in held {
+        member.close();
+    }
+    assert_eq!(
+        door.capacity.available_permits(),
+        super::DATAGRAM_ASSOCIATIONS_PER_CLAIM
+    );
+}
+
+#[tokio::test]
+async fn expired_association_closes_even_without_a_plugin_deadline() {
+    let (door, leg, pairing, _) = leg(1);
+    door.reserve(&leg).unwrap();
+    lock(&door.legs).insert(1, Arc::clone(&leg));
+    leg.bind(1);
+    door.expire(Instant::now() + super::DATAGRAM_ASSOCIATION_LIFETIME);
+    assert!(pairing.closed());
+    assert!(lock(&door.legs).is_empty());
+    assert_eq!(
+        door.capacity.available_permits(),
+        super::DATAGRAM_ASSOCIATIONS_PER_CLAIM
+    );
+}
+
+#[tokio::test]
 async fn a_plane_that_falls_behind_its_caller_ends_the_session() {
     let (_door, leg, pairing, rx) = leg(2);
     let now = Instant::now();

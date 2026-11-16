@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
 static ISSUED_SHAPE: std::sync::LazyLock<busbar_contract::auth_calls::IssuedShape> =
     std::sync::LazyLock::new(|| busbar_contract::auth_calls::IssuedShape {
         id_prefix: "AKIA".to_string(),

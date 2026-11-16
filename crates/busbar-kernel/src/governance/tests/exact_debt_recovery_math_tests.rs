@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::*;
+use busbar_contract::json;
 
 fn unit(model: &str, input: i128) -> ExactUsageDelta {
     let mut delta = ExactUsageDelta::default();
@@ -99,10 +100,10 @@ fn custody_json_preserves_full_signed_counts_through_origin_value_rewrite() {
         billable_requests: i128::MIN,
         ..unit("model", i128::MAX)
     };
-    let encoded = serde_json::to_vec(&delta).unwrap();
-    let value: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
+    let encoded = json::to_vec(&delta).unwrap();
+    let value: json::Value = json::parse_value(&encoded).unwrap();
     assert_eq!(value["requests"], i128::MAX.to_string());
     assert_eq!(value["billable_requests"], i128::MIN.to_string());
-    let decoded: ExactUsageDelta = serde_json::from_value(value).unwrap();
+    let decoded: ExactUsageDelta = json::from_value(&value).unwrap();
     assert_eq!(decoded, delta);
 }

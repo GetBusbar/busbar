@@ -8,7 +8,7 @@
 
 use busbar_plugin_abi::host_side::caller::{BoxFut, Caller};
 use busbar_plugin_abi::types::Pair;
-use busbar_plugin_loader::ports::auth::Identity;
+use busbar_ports::auth::Identity;
 
 use crate::plugin_records::RecordsDenied;
 

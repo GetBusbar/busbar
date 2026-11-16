@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
 //! The shapes the plugin kinds share outside `abi/`: a plane's fact and credential-locator
 
 use crate::bounded::{Facts, MAX_RECORD_BYTES};

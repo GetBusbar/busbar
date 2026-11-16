@@ -7,6 +7,7 @@ use busbar_contract::abi::export::{
     SCRAPE_KIND_COUNTER, SCRAPE_KIND_HISTOGRAM, SCRAPE_KIND_SUMMARY,
 };
 use busbar_contract::export_calls::Sample;
+use busbar_contract::json::JsonValueTrait as _;
 use http_body_util::BodyExt;
 
 fn accept(value: &str) -> HeaderMap {
@@ -157,7 +158,7 @@ async fn metrics_json_by_accept_covers_every_family() {
         headers[header::CONTENT_TYPE],
         busbar_contract::protocol::APPLICATION_JSON
     );
-    let doc: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let doc = busbar_contract::json::parse_value(&bytes).unwrap();
     let listed: Vec<&str> = doc["families"]
         .as_array()
         .unwrap()
@@ -174,19 +175,19 @@ async fn metrics_json_by_accept_covers_every_family() {
     assert_eq!(counter["type"], "counter");
     assert_eq!(counter["owner"], "core");
     assert_eq!(counter["help"], "r");
-    assert_eq!(counter["labels"], serde_json::json!(["pool"]));
+    assert_eq!(counter["labels"], busbar_contract::json::json!(["pool"]));
     assert_eq!(
         counter["series"][1],
-        serde_json::json!({"labels": {"pool": "b"}, "value": 4.0})
+        busbar_contract::json::json!({"labels": {"pool": "b"}, "value": 4.0})
     );
 
     let histogram = &doc["families"][1];
     assert_eq!(histogram["type"], "histogram");
-    assert_eq!(histogram["labels"], serde_json::json!(["pool"]));
+    assert_eq!(histogram["labels"], busbar_contract::json::json!(["pool"]));
     assert_eq!(histogram["series"].as_array().unwrap().len(), 2);
     assert_eq!(
         histogram["series"][0],
-        serde_json::json!({
+        busbar_contract::json::json!({
             "labels": {"pool": "a"},
             "buckets": [{"le": "1", "count": 1.0}, {"le": "+Inf", "count": 2.0}],
             "sum": 1.5,
@@ -204,12 +205,12 @@ async fn metrics_json_by_accept_covers_every_family() {
 async fn metrics_explicit_off_is_503_with_reason_telemetry_disabled() {
     let (status, headers, bytes) = body(refused(ScrapeRefusal::TelemetryDisabled)).await;
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
-    let doc: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let doc = busbar_contract::json::parse_value(&bytes).unwrap();
     assert_eq!(doc["error"]["code"], "unavailable");
     assert_eq!(doc["error"]["reason"], "telemetry_disabled");
     assert!(headers.contains_key("x-request-id"));
     let (status, _, bytes) = body(refused(ScrapeRefusal::NotReady)).await;
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
-    let doc: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let doc = busbar_contract::json::parse_value(&bytes).unwrap();
     assert_ne!(doc["error"]["reason"], "telemetry_disabled");
 }

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
 //! The plugin-visible contract, and nothing else: the traits a plugin implements, the closed
 
 #![deny(unsafe_code)]

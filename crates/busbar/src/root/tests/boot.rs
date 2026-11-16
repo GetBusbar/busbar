@@ -1275,3 +1275,41 @@ include!(concat!(env!("OUT_DIR"), "/context_test_sources.rs"));
 owner_test_sources!(boot_http_locate);
 owner_test_sources!(boot_carrier_locate);
 owner_test_sources!(boot_session_locate);
+
+/// COORD-STORE-C2 (live boot bug): when the MIN-3 walk opened and admitted the configured store, that admission
+/// is the boot's store admission (taken once) and the old ABI's preparation is never entered; a boot with no
+/// MIN-3 store image keeps the old path and takes nothing from the walk; a walk that reports a store it did not
+/// admit refuses the boot.
+#[test]
+fn the_min3_walks_store_admission_is_the_boots() {
+    let taken = std::cell::Cell::new(0);
+    let admitted = walk_admission(true, || {
+        taken.set(taken.get() + 1);
+        Some(7u8)
+    });
+    assert_eq!(admitted, Ok(Some(7)));
+    assert_eq!(taken.get(), 1, "the walk's admission is taken once");
+    let old_path = walk_admission(false, || -> Option<u8> {
+        panic!("the old path takes nothing from the walk")
+    });
+    assert_eq!(old_path, Ok(None));
+    let refused = walk_admission(true, || None::<u8>).unwrap_err();
+    assert!(refused.contains("no admission"), "{refused}");
+}
+
+/// MIGRATE-ON-BOOT r42 §7 D14 (C3): a record-bootstrap store witness resolves only through a
+/// compiled core schema. busbar-migrations' `legacy::archive` route (1.5.5 raw-record framing of a
+/// plugin instance's rows) is deleted with the crate, so an instance-scoped row is refused, never
+/// adopted into a migration-scope address.
+#[test]
+fn a_record_bootstrap_witness_resolves_only_compiled_core_schemas() {
+    use busbar_kernel::persistence::import_target::records::builtin_record_address;
+    let core = "busbar.principal-transition.v1";
+    let expected = builtin_record_address(core, b"head", b"baseline")
+        .expect("a core schema routes")
+        .expect("a compiled core schema");
+    assert_eq!(bootstrap_witness(core, b"head", b"baseline"), Ok(expected));
+    let scoped = busbar_kernel::host_records::record_key("plane", b"row");
+    assert!(bootstrap_witness("plane-schema", &scoped, b"body").is_err());
+    assert!(bootstrap_witness("unknown", b"row", b"body").is_err());
+}

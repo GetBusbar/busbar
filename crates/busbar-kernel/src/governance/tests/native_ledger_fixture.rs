@@ -45,7 +45,8 @@ struct StoredLedger {
     record: UsageLedger,
 }
 fn ledger(value: &busbar_contract::Secret<Vec<u8>>) -> UsageLedger {
-    let value: StoredLedger = serde_json::from_slice(value.expose(&crate::seal::lend())).unwrap();
+    let value: StoredLedger =
+        busbar_contract::json::parse(value.expose(&crate::seal::lend())).unwrap();
     assert_eq!(value.version, 1);
     value.record
 }

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
 //! The closed JSON span grammar, on the plugin surface.
 
 pub use crate::json_grammar::{
@@ -125,7 +128,7 @@ pub fn value_end(b: &[u8], start: usize) -> Option<usize> {
 /// A key as written (quotes included), unescaped.
 fn unescape_key(raw: &[u8]) -> Option<String> {
     if raw.contains(&b'\\') {
-        serde_json::from_slice::<String>(raw).ok()
+        crate::json::parse::<String>(raw).ok()
     } else {
         std::str::from_utf8(raw.get(1..raw.len().saturating_sub(1))?)
             .ok()
@@ -301,8 +304,8 @@ fn same_value(a: &[u8], b: &[u8]) -> bool {
     a == b
         || matches!(
             (
-                serde_json::from_slice::<serde_json::Value>(a),
-                serde_json::from_slice::<serde_json::Value>(b),
+                crate::json::parse_value(a),
+                crate::json::parse_value(b),
             ),
             (Ok(x), Ok(y)) if x == y
         )
@@ -348,7 +351,7 @@ fn edit_cuts<'a>(b: &'a [u8], obj: &Object, edits: &'a [Edit<'a>]) -> Option<Vec
                 if !inserted.is_empty() {
                     inserted.push(b',');
                 }
-                inserted.extend_from_slice(&serde_json::to_vec(k).ok()?);
+                inserted.extend_from_slice(&crate::json::to_vec(k).ok()?);
                 inserted.push(b':');
                 inserted.extend_from_slice(v);
             }

@@ -2620,6 +2620,7 @@ impl<'d> DoorFar<'d, '_> {
                     .with_routed(|routed| egress_pool(self.steps.lane_prefix(), routed))?;
                 let described = self.shown.and_then(|s| s.described.get(&pool).cloned());
                 let mut far = egress.unit(UnitRoute {
+                    member_grants: self.steps.member_grants(),
                     allowed_member: self.steps.child_member(),
                     unit: self.unit,
                     pool,

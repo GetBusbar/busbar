@@ -4,7 +4,7 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use busbar_contract::json::{JsonContainerTrait, JsonValueTrait, Map, Value};
+use busbar_contract::json::{self, JsonContainerTrait, JsonValueTrait, Map, Value};
 
 /// GET one admin path as the operator, parsed.
 async fn read(client: &reqwest::Client, addr: std::net::SocketAddr, path: &str) -> Value {
@@ -95,7 +95,7 @@ async fn test_admin_v1_topology_reads_pools_models_providers() {
     let mut definitions = std::collections::HashMap::new();
     definitions.insert(
         "prov-x".to_string(),
-        serde_json::from_value::<busbar_kernel::config::ProviderDef>(serde_json::json!({
+        json::from_value::<busbar_kernel::config::ProviderDef>(&json::json!({
             "protocol": protocol, "base_url": "http://127.0.0.1:1/",
         }))
         .expect("the actual provider definition parses"),
@@ -103,7 +103,7 @@ async fn test_admin_v1_topology_reads_pools_models_providers() {
     document["providers"]["prov-x"] = serde_json::json!({ "api_key": { "file": upstream_key } });
     definitions.insert(
         "prov-y".to_string(),
-        serde_json::from_value::<busbar_kernel::config::ProviderDef>(serde_json::json!({
+        json::from_value::<busbar_kernel::config::ProviderDef>(&json::json!({
             "protocol": protocol, "base_url": "http://127.0.0.1:1/",
         }))
         .expect("the actual provider definition parses"),
@@ -229,7 +229,7 @@ async fn test_admin_v1_pool_detail_live_status() {
     let mut definitions = std::collections::HashMap::new();
     definitions.insert(
         "p".to_string(),
-        serde_json::from_value::<busbar_kernel::config::ProviderDef>(serde_json::json!({
+        json::from_value::<busbar_kernel::config::ProviderDef>(&json::json!({
             "protocol": protocol, "base_url": "http://127.0.0.1:1/",
         }))
         .expect("the actual provider definition parses"),
@@ -361,7 +361,7 @@ async fn test_admin_v1_pool_detail_reports_the_per_pool_breaker_cell() {
     let mut definitions = std::collections::HashMap::new();
     definitions.insert(
         "p".to_string(),
-        serde_json::from_value::<busbar_kernel::config::ProviderDef>(serde_json::json!({
+        json::from_value::<busbar_kernel::config::ProviderDef>(&json::json!({
             "protocol": protocol, "base_url": "http://127.0.0.1:1/",
         }))
         .expect("the actual provider definition parses"),

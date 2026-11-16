@@ -184,7 +184,7 @@ mod tests {
 
     #[test]
     fn legacy_migration_is_exact_reentrant_and_atomic() {
-        let mut ledger: UsageLedger = serde_json::from_str(
+        let mut ledger: UsageLedger = crate::json::parse_str(
             r#"{"requests":1,"models":[{"model":"m","usage_units":{"input":27}}]}"#,
         )
         .unwrap();
@@ -228,8 +228,8 @@ mod tests {
             ledger.models[0].counts().unwrap()["input"],
             Count::parse("27.5").unwrap()
         );
-        let wire = serde_json::to_vec(&ledger).unwrap();
-        let back: UsageLedger = serde_json::from_slice(&wire).unwrap();
+        let wire = crate::json::to_vec(&ledger).unwrap();
+        let back: UsageLedger = crate::json::parse(&wire).unwrap();
         assert_eq!(back, ledger);
         let before = ledger.clone();
         assert!(ledger
@@ -248,12 +248,12 @@ mod tests {
     #[test]
     fn decimal_json_stays_numeric_and_exact() {
         for text in ["27.5", "27.1", "27.0", "1e3", "0.000001"] {
-            let count: Count = serde_json::from_str(text).unwrap();
+            let count: Count = crate::json::parse_str(text).unwrap();
             assert_eq!(count, Count::parse(text).unwrap());
             let back: Count =
-                serde_json::from_str(&serde_json::to_string(&count).unwrap()).unwrap();
+                crate::json::parse_str(&crate::json::to_string(&count).unwrap()).unwrap();
             assert_eq!(back, count);
         }
-        assert!(serde_json::from_str::<Count>("0.0000001").is_err());
+        assert!(crate::json::parse_str::<Count>("0.0000001").is_err());
     }
 }

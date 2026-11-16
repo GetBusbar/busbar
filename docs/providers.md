@@ -13,7 +13,7 @@ Providers live in `providers.yaml` as a map of name → definition. The shipped 
 | `error_map` | no | Provider-specific **JSON** error codes → a canonical disposition: one of `auth`, `billing`, `rate_limit`, `context_length`, `overloaded`, `server_error`, `timeout`, `network`, or `client_error` (the shipped catalog mostly uses `billing`/`rate_limit`). HTTP-status errors (429/5xx/401/…) are classified automatically without this. |
 | `path` | no | Override the upstream request path appended to `base_url`: for providers that embed an API version in `base_url`. Static, ignores the per-request model. |
 | `path_base` | no | For URL-model protocols (Gemini): override the hardcoded base segment (`/v1beta/models`) while keeping the per-request `/{model}:verb` suffix, e.g. to reach Google Vertex AI's project/location-scoped layout. |
-| `auth` | no | The egress auth mechanism, when a backend doesn't use its protocol's native auth. One of: `bearer` (default) · `api-key` (header style) · `jwt-bearer` (OAuth 2.0 JWT-bearer, RFC 7523, mints + auto-refreshes a token from a service-account key; e.g. Google Vertex AI) · `oauth-client-credentials` (OAuth 2.0 client-credentials, RFC 6749 §4.4, the `api_key` reference resolves to `client_id:client_secret`; e.g. Azure OpenAI via Entra ID). |
+| `auth` | no | The egress auth mechanism, when a backend doesn't use its protocol's native auth. The accepted words are the outbound styles the admitted `kind: auth` plugins declare; the kernel names none itself, and a word no admitted auth plugin declares is refused at load (no admitted auth plugin implements the outbound style). Typical styles: `bearer` (default), `api-key` (header style), `jwt-bearer` (OAuth 2.0 JWT-bearer, RFC 7523, mints and auto-refreshes a token from a service-account key; e.g. Google Vertex AI) and `oauth-client-credentials` (OAuth 2.0 client-credentials, RFC 6749 §4.4, the `api_key` reference resolves to `client_id:client_secret`; e.g. Azure OpenAI via Entra ID). `jwt-bearer` and `oauth-client-credentials` need an installed auth plugin that declares them. |
 | `token_url` | no | OAuth token endpoint for `auth: oauth-client-credentials`. Required for that auth style. |
 | `scope` | no | OAuth scope for `auth: oauth-client-credentials`. Required for that auth style. |
 | `subject` | no | JWT-bearer `sub` claim (RFC 7523 §3) for `auth: jwt-bearer`. Opt-in only. Leave unset for a plain service account (e.g. the default Vertex AI setup below); set it only for Google domain-wide-delegation impersonation or a third-party IdP that requires `sub`. |
@@ -129,8 +129,7 @@ Conventional ports, for the entry's `base_url`:
 
 Two wrinkles worth stating plainly. `api_key` is required on every provider, including one that wants
 no credential — but you declare that rather than fake it: `api_key: none` starts the lane with no
-credential, sends no auth header and skips the health prober. (Pointing it at a variable you never
-set is not the workaround it used to be: a reference that does not resolve now refuses boot.) And
+credential, sends no auth header and skips the health prober. (A reference that does not resolve refuses boot, so pointing at a variable you never set is not a workaround.) And
 busbar permits plain `http://` only to a
 LITERAL private or loopback address (`127.0.0.1`, `::1`, `10/8`, `172.16/12`, `192.168/16`,
 `100.64/10`, link-local). It does not resolve names in order to classify them, because a name it
@@ -234,7 +233,7 @@ openai:
 The shipped catalog already sets these for `openai`, and for the `anthropic` models listed above. It
 also sets `thinking_always_on` for Claude Opus 5.5 and Fable 5 on `anthropic` and `bedrock`, and
 `reasoning_none` for GPT-5.1 and GPT-5.2 on `openai` and `responses`. The
-Azure OpenAI templates set `max_output_key: max_completion_tokens`. Every other catalog host keeps the
+Azure OpenAI fill-in templates at the foot of `providers.yaml` (comments you copy into your config, not live catalog entries) set `max_output_key: max_completion_tokens`. Every other catalog host keeps the
 defaults. A deployment in `config.yaml` can set any of the keys itself: a value overrides the
 catalog's, and a `model_capabilities` list replaces the catalog's list.
 

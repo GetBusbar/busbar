@@ -3,8 +3,8 @@
 
 //! The persistence facade's private holder of the slotted-key root token
 //! (STORE-TRANSACTIONS decision 164). `busbar-kernel::persistence` defines the root
-//! symbol; the holder type is private here, so no other crate (including
-//! busbar-migrations, which links this one) can open the box the contract hands out.
+//! symbol; the holder type is private here, so no other crate can open the box the
+//! contract hands out.
 
 use busbar_contract::caps::SlotSeal;
 use busbar_contract::persistence::CommitKey;

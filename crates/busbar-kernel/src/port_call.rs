@@ -21,7 +21,7 @@ use busbar_plugin_abi::fail::CallError;
 use busbar_plugin_abi::host_side::caller::InstanceLimits;
 #[cfg(test)]
 use busbar_plugin_abi::types::KindCode;
-use busbar_plugin_loader::ports::{CallCx, PortError};
+use busbar_ports::{CallCx, PortError};
 use tokio::sync::Semaphore;
 
 use crate::config::min3::InstanceLimitsCfg;

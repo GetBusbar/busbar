@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
 use super::*;
 
 const FROZEN_METRIC_WORDS: [&str; 4] = ["requests", "tokens", "budget", "concurrent"];

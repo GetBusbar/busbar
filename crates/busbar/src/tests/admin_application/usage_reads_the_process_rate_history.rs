@@ -4,6 +4,7 @@
 use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 
+use busbar_contract::json::{self, JsonValueTrait};
 use busbar_contract::records::MeteringDelta;
 use busbar_kernel::governance::METERING_BUCKET_SECS;
 
@@ -74,7 +75,7 @@ pub(super) fn complete_usage_fixture(
         .map(|(_, provider)| {
             (
                 (*provider).to_string(),
-                serde_json::from_value(serde_json::json!({
+                json::from_value(&json::json!({
                     "protocol": "openai", "base_url": "http://127.0.0.1:1",
                 }))
                 .expect("the usage provider's actual catalog definition parses"),
@@ -255,16 +256,17 @@ async fn the_usage_read_prices_through_the_kernels_rate_dater() {
         .await
         .expect("the surface answers");
     assert_eq!(response.status().as_u16(), 200, "the usage read answers");
-    let body: serde_json::Value = response.json().await.expect("a JSON body");
+    let body =
+        json::parse_value(&response.bytes().await.expect("a JSON body")).expect("a JSON body");
     assert_eq!(
         body["total"]["spend_micros"],
-        serde_json::json!(10 * TOKENS),
+        json::json!(10 * TOKENS),
         "the row prices at the card the kernel's dated history holds for its instant (10 a \
          token), not the current card (1 a token): {body}"
     );
     assert_eq!(
         body["rate_card_version"],
-        serde_json::json!(dated_key.hex()),
+        json::json!(dated_key.hex()),
         "the response names the history entry that priced it: {body}"
     );
     let key = dated_key.hex();
@@ -274,7 +276,8 @@ async fn the_usage_read_prices_through_the_kernels_rate_dater() {
     .await
     .expect("the keyed usage replay answers");
     assert_eq!(replay.status().as_u16(), 200);
-    let replay: serde_json::Value = replay.json().await.expect("a JSON replay");
+    let replay =
+        json::parse_value(&replay.bytes().await.expect("a JSON replay")).expect("a JSON replay");
     assert_eq!(replay["total"], body["total"]);
     assert_eq!(replay["rate_card_version"], body["rate_card_version"]);
     assert!(

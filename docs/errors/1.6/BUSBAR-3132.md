@@ -18,7 +18,7 @@ A configured outbound URL (an upstream, a token endpoint, a sink) is not one bus
 
 ## How to fix it
 
-Use an `https://` URL for a public host, fix the URL the message names, or list a deliberately reachable metadata host under `security.allow_metadata_hosts`.
+Use an `https://` URL for a public host, fix the URL the message names, or point the URL at its real host: no setting admits a cloud-metadata host (BUSBAR-3136).
 
 ## Example
 

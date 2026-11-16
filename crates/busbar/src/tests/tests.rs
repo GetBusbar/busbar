@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
 use super::*;
 use crate::root::cli::{
     config_override_notice, providers_override_notice, resolve_config_path,

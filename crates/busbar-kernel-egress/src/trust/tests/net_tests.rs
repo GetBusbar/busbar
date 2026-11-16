@@ -757,3 +757,62 @@ fn refusal_and_dial_urls_come_from_the_one_scrub_redactor() {
         assert_eq!(strip_userinfo(url), scrub::strip_userinfo(url), "{url}");
     }
 }
+
+/// Catch omitted 6to4 extraction, Teredo complement/byte-order errors, and URL-guard drift.
+#[test]
+fn tunnel_addresses_preserve_the_embedded_destination_policy() {
+    for (literal, octets, internal, metadata) in [
+        ("2002:a9fe:a9fe::", [169, 254, 169, 254], true, true),
+        ("2002:7f00:1::", [127, 0, 0, 1], true, false),
+        ("2002:a01:203::", [10, 1, 2, 3], true, false),
+        ("2002:808:808::", [8, 8, 8, 8], false, false),
+        (
+            "2001:0:4136:e378:8000:63bf:5601:5601",
+            [169, 254, 169, 254],
+            true,
+            true,
+        ),
+        (
+            "2001:0:4136:e378:8000:63bf:80ff:fffe",
+            [127, 0, 0, 1],
+            true,
+            false,
+        ),
+        (
+            "2001:0:4136:e378:8000:63bf:f5fe:fdfc",
+            [10, 1, 2, 3],
+            true,
+            false,
+        ),
+        (
+            "2001:0:4136:e378:8000:63bf:f7f7:f7f7",
+            [8, 8, 8, 8],
+            false,
+            false,
+        ),
+    ] {
+        let v6 = literal.parse().unwrap();
+        let addr = IpAddr::V6(v6);
+        assert_eq!(
+            embedded_ipv4(&v6),
+            Some(Ipv4Addr::from(octets)),
+            "{literal}"
+        );
+        assert_eq!(ipv6_is_internal(&v6), internal, "{literal}");
+        assert_eq!(ip_is_cloud_metadata(&addr), metadata, "{literal}");
+        let blocked = ssrf_blocked_host(&format!("https://[{literal}]/"), &[], false, &[]);
+        assert_eq!(
+            blocked.is_some(),
+            busbar_contract::net::ip_is_cloud_metadata(&addr),
+            "{literal}"
+        );
+    }
+    // Each reserved segment independently invalidates the well-known NAT64 prefix.
+    for literal in [
+        "64:ff9b:0:1::a9fe:a9fe",
+        "64:ff9b::1:0:a9fe:a9fe",
+        "64:ff9b::1:a9fe:a9fe",
+    ] {
+        assert_eq!(embedded_ipv4(&literal.parse().unwrap()), None, "{literal}");
+    }
+}

@@ -4,7 +4,7 @@
 //! Shared wire bodies, neutral IR outcomes, usage faults and explicit host services.
 
 use crate::bounded::SlabBytes;
-use serde_json::Value;
+use crate::json::Value;
 
 /// A serialized wire body plus the content type its producer chose for it. The engine relays both without
 #[derive(Debug)]
