@@ -76,6 +76,8 @@ pub(crate) fn make_root_cfg(
                     .name
             },
             settings: Default::default(),
+            limits: None,
+            insecure_transport: None,
         }),
         secrets: std::collections::BTreeMap::new(),
         global_hooks: Vec::new(),
@@ -3573,6 +3575,8 @@ fn test_validate_rejects_empty_store_module() {
     cfg.store = Some(config::StoreCfg {
         module: "   ".to_string(),
         settings: Default::default(),
+        limits: None,
+        insecure_transport: None,
     });
     let errs = validate(&cfg).expect_err("an empty store.module must fail validation");
     assert!(

@@ -287,3 +287,65 @@ async fn work_without_a_verified_subject_is_denied() {
         R_DENIED
     );
 }
+
+/// IF §12.24 step 3 (`DurableWork::recoverable`): a live, recovery-bound row is handed to one recovery session at a
+/// time. While its `RecoveryWork` is held a rescan does not hand it out again; once dropped, the next scan does.
+#[tokio::test]
+async fn recoverable_hands_a_live_row_to_one_recovery_session_at_a_time() {
+    let f = fixture().await;
+    let who = who();
+    let alice = subject_identity("alice");
+    let reference = f
+        .work
+        .open(&who.caller(), &alice, "/jobs/3?cursor=1")
+        .await
+        .unwrap();
+    let held = f.work.recoverable(&who.caller()).await.unwrap();
+    assert_eq!(held.len(), 1);
+    assert_eq!(held[0].reference(), &*reference);
+    assert_eq!(held[0].target(), "/jobs/3?cursor=1");
+    assert!(
+        f.work.recoverable(&who.caller()).await.unwrap().is_empty(),
+        "a row a recovery session holds is not handed out twice"
+    );
+    drop(held);
+    let again = f.work.recoverable(&who.caller()).await.unwrap();
+    assert_eq!(again.len(), 1, "the released row is recoverable again");
+}
+
+/// A settled row has no recovery binding and is never recovered; another instance's rows are not visible.
+#[tokio::test]
+async fn settled_and_foreign_rows_are_not_recoverable() {
+    let f = fixture().await;
+    let who = who();
+    let alice = subject_identity("alice");
+    let reference = f.work.open(&who.caller(), &alice, "/jobs/4").await.unwrap();
+    let other = Namespace {
+        plugin: "plane-llm".into(),
+        name: "llm-2".into(),
+        instance: 2,
+        slot: 0,
+    };
+    assert!(f
+        .work
+        .recoverable(&other.caller())
+        .await
+        .unwrap()
+        .is_empty());
+    f.work
+        .settle(&who.caller(), &alice, &reference)
+        .await
+        .unwrap();
+    assert!(f.work.recoverable(&who.caller()).await.unwrap().is_empty());
+}
+
+/// Core that cannot recover (no store yet) has nothing to recover rather than an error.
+#[tokio::test]
+async fn no_store_means_nothing_to_recover() {
+    let work = StoreWork::new(
+        LateStore::default(),
+        LateBinder::default(),
+        Arc::new(|| 1_000_000),
+    );
+    assert!(work.recoverable(&who().caller()).await.unwrap().is_empty());
+}

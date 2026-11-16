@@ -58,6 +58,8 @@ fn make_root_cfg(
                     .name
             },
             settings: Default::default(),
+            limits: None,
+            insecure_transport: None,
         }),
         secrets: std::collections::BTreeMap::new(),
         global_hooks: Vec::new(),

@@ -272,6 +272,8 @@ pub(crate) struct Booted {
     work_binder: LateBinder,
     /// The records the signed-ingress replay claims are written through.
     records: Records,
+    /// Durable WORK of every seat: what the recovery scheduler scans ([`recover_ports`]).
+    work: Arc<StoreWork>,
     /// The seats' probe targets: their probers hold them weakly, so the process holds them here.
     _probes: Vec<Arc<dyn Send + Sync>>,
 }
@@ -327,6 +329,74 @@ pub(crate) fn attach_governance(handle: Arc<busbar_kernel::state::AppHandle>) {
     }
 }
 
+/// How long one recovery scan, and one recovery poll, may take (today's scheduler's per-poll deadline).
+const RECOVERY_POLL: Duration = Duration::from_secs(30);
+
+/// The request ids of core-originated recovery polls (non-zero, unique for the process life).
+static RECOVERY_REQUESTS: AtomicU64 = AtomicU64::new(1);
+
+/// The recovery scheduler runs (`true`) or stopped (`false`): WORK_OPEN answers `R_UNSUPPORTED` while it does not
+/// (core cannot recover, IF §12.24 step 1). A boot that took the old path has no MIN-3 instances.
+pub(crate) fn set_recovery_ready(ready: bool) {
+    if let Some(booted) = booted() {
+        booted.work.set_recovery_ready(ready);
+    }
+}
+
+/// One recovery pass over the MIN-3 plane seats (IF §12.24 step 3), on the scheduler's cadence: per seat with a
+/// ROUTE_RECOVERY route, the live rows no recovery session holds (`DurableWork::recoverable`); for each whose binding
+/// still restores (`restore_for_app` + `standing_over`, today's standing and expiry rules) one poll as the restored
+/// principal (`PortSeat::recover`), the row held for the poll's life. Core never infers settlement: a row stays live
+/// until the plane settles it. Answers how many polls were attempted.
+pub(crate) async fn recover_ports(app: Arc<busbar_kernel::state::App>) -> usize {
+    let Some(booted) = booted() else {
+        return 0;
+    };
+    if app.governance.is_none() {
+        return 0;
+    }
+    let mut attempted = 0;
+    for seat in &booted.seats {
+        if seat.driver.routes().recovery.is_empty() {
+            continue;
+        }
+        let who = seat.who.caller();
+        let found = tokio::time::timeout(RECOVERY_POLL, booted.work.recoverable(&who)).await;
+        let work = match found {
+            Ok(Ok(work)) => work,
+            Ok(Err(error)) => {
+                tracing::warn!(instance = %seat.instance, error, "durable work recovery scan failed");
+                continue;
+            }
+            Err(_) => continue,
+        };
+        for work in work {
+            let now = busbar_kernel::store::now();
+            let Some(key) = work.restore_for_app(&app, now) else {
+                continue;
+            };
+            if busbar_kernel::plane_driver::standing_over(Arc::clone(&app))(&key, now).is_none() {
+                continue;
+            }
+            let request_id = RECOVERY_REQUESTS.fetch_add(1, Ordering::Relaxed);
+            match tokio::time::timeout(RECOVERY_POLL, seat.recover(&work, &key.id, request_id))
+                .await
+            {
+                Ok(Ok(())) => {}
+                Ok(Err(refused)) => {
+                    tracing::warn!(instance = %seat.instance, ?refused, "a durable work poll was not delivered");
+                }
+                Err(_) => {
+                    tracing::warn!(instance = %seat.instance, "a durable work poll ran past its deadline");
+                }
+            }
+            attempted += 1;
+            drop(work);
+        }
+    }
+    attempted
+}
+
 /// Webhook secrets by reference, through custody (a route's secret resolves like any other reference: by reference,
 /// an empty call stack, no source named in an error). A reference that does not resolve verifies nothing.
 struct CustodySecrets(&'static BootSecrets);
@@ -355,10 +425,11 @@ pub(crate) fn signed_ingress() -> Option<Arc<Ingress>> {
     }))
 }
 
-/// The MIN-3 images the plugins directory's scan holds. The scan verified each one; admission re-verifies the
-/// same bytes. An image that is not MIN-3 (a refusal at admit) stays on the old path, which judges it as before.
+/// The MIN-3 images the plugins directory's scan holds, each with its signed manifest's `alias` (a plane instance is
+/// named by it, [`plane_instances`]). The scan verified each one; admission re-verifies the same bytes. An image that
+/// is not MIN-3 (a refusal at admit) stays on the old path, which judges it as before.
 #[cfg(target_os = "linux")]
-pub(crate) fn admit_images(plugins: &PluginsCfg) -> Result<Vec<Admitted>, String> {
+pub(crate) fn admit_images(plugins: &PluginsCfg) -> Result<Vec<(Admitted, String)>, String> {
     let Some(scanned) = super::boot::dropped_registry() else {
         return Ok(Vec::new());
     };
@@ -370,7 +441,7 @@ pub(crate) fn admit_images(plugins: &PluginsCfg) -> Result<Vec<Admitted>, String
             continue;
         }
         match busbar_plugin_loader::admit::admit_bytes(&row.lib_bytes, &row.manifest, &policy) {
-            Ok(image) => admitted.push(image),
+            Ok(image) => admitted.push((image, row.manifest.alias.clone())),
             Err(refusal) => tracing::debug!(
                 plugin = %row.manifest.name,
                 %refusal,
@@ -383,7 +454,7 @@ pub(crate) fn admit_images(plugins: &PluginsCfg) -> Result<Vec<Admitted>, String
 
 /// Only Linux loads plugin images.
 #[cfg(not(target_os = "linux"))]
-pub(crate) fn admit_images(_plugins: &PluginsCfg) -> Result<Vec<Admitted>, String> {
+pub(crate) fn admit_images(_plugins: &PluginsCfg) -> Result<Vec<(Admitted, String)>, String> {
     Ok(Vec::new())
 }
 
@@ -396,9 +467,57 @@ struct Configured {
     limits: busbar_plugin_abi::host_side::caller::InstanceLimits,
 }
 
-/// Every configured instance of a kind the MIN-3 path serves, in config order: the secret instances, then the
-/// store. A later switch-over adds its kind here and nowhere else (the walk is generic).
-fn configured(cfg: &RootCfg) -> Result<Vec<Configured>, String> {
+/// One admitted MIN-3 plane image: its identity and its signed manifest's `alias` (today's plane name, IF §12.10:
+/// `llm`, `mcp`, `a2a`, `streaming`, `decisions`; empty when the manifest states none).
+pub(crate) struct PlaneImage {
+    identity: String,
+    alias: String,
+}
+
+/// The plane instances the admitted MIN-3 plane images make (W2-SW-PLANE). The operator serves a plane by serving it
+/// (IF §12.23 rule 1: "no config word is added"), so each admitted plane image is one instance. Its name is the
+/// image's alias, so an instance keeps today's plane name (ADMIN-API A-1), else its identity. Its config is the
+/// document's top-level section of that name, the plane's 1.x bag, which its own `migrate` converts (IF §12.10 item
+/// 2), else `{}`. The config grammar has no `planes.<name>` block yet (K7 owns it); when it lands, it replaces this
+/// rule here and nowhere else. Two images answering one name are refused.
+fn plane_instances(
+    images: &[PlaneImage],
+    sections: &std::collections::BTreeMap<&'static str, busbar_contract::yaml::Value>,
+    limits: &dyn Fn(&str) -> busbar_plugin_abi::host_side::caller::InstanceLimits,
+) -> Result<Vec<Configured>, String> {
+    let mut out: Vec<Configured> = Vec::with_capacity(images.len());
+    for image in images {
+        let name = if image.alias.is_empty() {
+            image.identity.clone()
+        } else {
+            image.alias.clone()
+        };
+        if let Some(first) = out.iter().find(|one| one.name == name) {
+            return Err(format!(
+                "the plane images `{}` and `{}` both answer to the instance name `{name}`; remove one",
+                first.identity, image.identity
+            ));
+        }
+        let config = match sections.get(name.as_str()) {
+            Some(section) => serde_json::to_vec(section)
+                .map_err(|error| format!("{name}: the plane's section is not JSON ({error})"))?,
+            None => b"{}".to_vec(),
+        };
+        out.push(Configured {
+            kind: KindCode::Plane,
+            identity: image.identity.clone(),
+            limits: limits(&name),
+            name,
+            config,
+        });
+    }
+    Ok(out)
+}
+
+/// Every configured instance of a kind the MIN-3 path serves, in config order: the secret instances, the store, then
+/// the plane instances ([`plane_instances`]). A later switch-over adds its kind here and nowhere else (the walk is
+/// generic).
+fn configured(cfg: &RootCfg, planes: &[PlaneImage]) -> Result<Vec<Configured>, String> {
     use busbar_kernel::appbuild::{instance_limits, STORE_INSTANCE};
     let seal = busbar_kernel::seal::lend();
     let mut out = Vec::new();
@@ -432,17 +551,20 @@ fn configured(cfg: &RootCfg) -> Result<Vec<Configured>, String> {
         config,
         limits: instance_limits(cfg, STORE_INSTANCE, STORE_INSTANCE),
     });
+    out.extend(plane_instances(
+        planes,
+        &super::door_steps::raw_sections(cfg),
+        &|name| instance_limits(cfg, "planes", name),
+    )?);
     Ok(out)
 }
 
-/// The boot's configured upstreams (IF §12.1): one table, shared by every plane seat's egress walk and carrier.
-/// `upstreams:` is not a key of the config grammar yet (K7 carries only each upstream's `auth` and
-/// `upstream_credentials` in `cfg.min3.upstreams`, and its parse is still the W0 stub), so the table is typed over
-/// an empty section: every seat composes its walk and carrier over no upstream (a FORWARD is exhausted, a CHANNEL is
-/// `P_ERROR`) until the grammar carries the section, which then lands in [`upstreams_of`] and nowhere else. A
-/// binding naming an upstream with no entry still refuses the boot.
+/// The boot's configured upstreams (IF §12.1): one table, shared by every plane seat's egress walk and carrier,
+/// typed over the config's `upstreams:` section and each entry's parsed binding (`cfg.min3`, W1-K7). The load
+/// already typed the same section once (`config::resolve`), so a refusal here means the config changed shape
+/// between load and boot; a binding naming an upstream with no entry still refuses the boot.
 fn configured_upstreams(cfg: &RootCfg) -> Result<Arc<ConfiguredUpstreams>, String> {
-    upstreams_of(&serde_json::Map::new(), cfg)
+    upstreams_of(&cfg.min3.upstream_section, cfg)
 }
 
 /// The table typed over `section` (upstream name to entry) and the config's bindings; Err = every refusal, joined.
@@ -842,7 +964,19 @@ pub(crate) async fn run(
     if images.is_empty() {
         return Ok(false);
     }
-    let built = build(guard, cfg, images)?;
+    let planes: Vec<PlaneImage> = images
+        .iter()
+        .filter(|(image, _)| matches!(image.kind(), KindCode::Plane))
+        .map(|(image, alias)| PlaneImage {
+            identity: image.identity().to_owned(),
+            alias: alias.clone(),
+        })
+        .collect();
+    let built = build(
+        guard,
+        cfg,
+        images.into_iter().map(|(image, _)| image).collect(),
+    )?;
     let store_module = cfg
         .store
         .as_ref()
@@ -851,7 +985,7 @@ pub(crate) async fn run(
     if built.registry.identity_of(store_module).is_none() {
         return Ok(false);
     }
-    let instances = configured(cfg)?;
+    let instances = configured(cfg, &planes)?;
     let specs: Vec<(KindCode, InstanceSpec<'_>)> = instances
         .iter()
         .map(|one| {
@@ -923,6 +1057,7 @@ pub(crate) async fn run(
         secrets: built.secrets,
         deployment: walked.deployment,
         work_binder: shared.work_binder.clone(),
+        work: Arc::clone(&shared.work),
         records: built.records.clone(),
         _probes: probes,
         startup: Mutex::new(
