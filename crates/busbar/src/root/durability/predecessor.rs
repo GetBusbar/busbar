@@ -76,12 +76,31 @@ pub(crate) struct SealerDone {
 
 /// One step's outcome when it gives up.
 enum Stop {
+    /// The fence mark changed meaning: restart this node at its mark read.
+    Restart,
     /// The shutdown flag is set: stop at this boundary.
     Flag,
     /// This predecessor is skipped for this process (already reported).
     Skip,
     /// The Bootstrap signer is gone: leave the rest to the next process.
     SignerGone,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum LostSeal {
+    ExistingRow,
+    RetrySigned,
+    Restart,
+}
+
+fn after_lost_seal(id: u64, state: &SealState, add_to_mark: bool) -> LostSeal {
+    if state.row.is_some() {
+        LostSeal::ExistingRow
+    } else if add_to_mark && state.mark.as_ref().is_some_and(|mark| mark.is_open_for(id)) {
+        LostSeal::RetrySigned
+    } else {
+        LostSeal::Restart
+    }
 }
 
 struct Sealer {
@@ -176,18 +195,21 @@ impl Sealer {
                 "the host or archive row does not match its id reservation",
             );
         }
-        for node in nodes {
+        'nodes: for node in nodes {
             if self.stopped() {
                 break;
             }
-            match self.seal_one(&node).await {
-                Ok(()) | Err(Stop::Skip) => {}
-                Err(Stop::Flag) => break,
-                Err(Stop::SignerGone) => {
-                    tracing::info!(
-                        "the Bootstrap signer is gone; the remaining predecessors are left to the next process on the host"
-                    );
-                    break;
+            loop {
+                match self.seal_one(&node).await {
+                    Ok(()) | Err(Stop::Skip) => break,
+                    Err(Stop::Restart) => continue,
+                    Err(Stop::Flag) => break 'nodes,
+                    Err(Stop::SignerGone) => {
+                        tracing::info!(
+                            "the Bootstrap signer is gone; the remaining predecessors are left to the next process on the host"
+                        );
+                        break 'nodes;
+                    }
                 }
             }
         }
@@ -571,22 +593,19 @@ impl Sealer {
                 }
                 Ok(false) => {
                     let next = self.seal_state(node).await?;
-                    if next.row.is_some() {
-                        // Another successor sealed it and reports its own outcome.
-                        self.cleared(id);
-                        return Ok(());
+                    match after_lost_seal(id, &next, add_to_mark) {
+                        LostSeal::ExistingRow => {
+                            if let Some(row) = &next.row {
+                                self.check_row(id, row);
+                            }
+                            self.cleared(id);
+                            return Ok(());
+                        }
+                        LostSeal::RetrySigned => {
+                            state = next;
+                        }
+                        LostSeal::Restart => return Err(Stop::Restart),
                     }
-                    let open = next.mark.as_ref().is_some_and(|m| m.is_open_for(id));
-                    if add_to_mark && open {
-                        state = next;
-                        continue;
-                    }
-                    self.refuse(
-                        id,
-                        "permanent",
-                        "its fence mark changed under the seal write; the next process re-walks it",
-                    );
-                    return Err(Stop::Skip);
                 }
                 Err(error) => {
                     failures += 1;
