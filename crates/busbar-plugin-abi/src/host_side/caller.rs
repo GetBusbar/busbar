@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The host-side caller identity, instance limits and the transport-security verdict (IF §10.3, §48). W0-ABI stub: frozen signatures, `todo!()` bodies; W1-H1 fills it.
+//! The host-side caller identity, instance limits and the transport-security verdict (IF §10.3, §48). W0-ABI stub: frozen signatures, `todo!()` bodies; W1-H1 fills it (`transport_verdict` is filled, S3-STORE-TLS).
 
 use std::time::Instant;
 
@@ -122,9 +122,27 @@ pub enum Verdict {
 /// and `http://` → Plain only under PLAINTEXT, else Refuse. It lives here (host side, H1) and not in the connector
 /// because busbar-kernel names nothing in busbar-core-connector (its Cargo.toml) and both callers reach this crate.
 pub fn transport_verdict(accept: Accept, tls: u32, dest: &str) -> Verdict {
-    // W0-ABI stub: answers `Verify` (today's behaviour) so existing paths stay green until W1-H1 lands the rule.
-    let _ = (accept, tls, dest);
-    Verdict::Verify
+    use crate::need::need_flag::{TLS_INBAND, TLS_MASK, TLS_NONE};
+    let mode = tls & TLS_MASK;
+    if mode > TLS_INBAND {
+        return Verdict::Refuse;
+    }
+    let names = |prefix: &str| {
+        dest.get(..prefix.len())
+            .is_some_and(|p| p.eq_ignore_ascii_case(prefix))
+    };
+    // The dest's own form decides first: a unix socket carries no TLS, and a FETCH URL's scheme is its mode.
+    let secured = if names("unix:") || names("http://") {
+        false
+    } else {
+        names("https://") || mode != TLS_NONE
+    };
+    match (secured, accept.0) {
+        (true, a) if a & Accept::UNVERIFIED_TLS != 0 => Verdict::WaiveVerify,
+        (true, _) => Verdict::Verify,
+        (false, a) if a & Accept::PLAINTEXT != 0 => Verdict::Plain,
+        (false, _) => Verdict::Refuse,
+    }
 }
 
 #[cfg(test)]
