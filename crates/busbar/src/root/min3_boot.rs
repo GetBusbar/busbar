@@ -45,7 +45,9 @@ use busbar_kernel::retry::Policy as RetryPolicyImpl;
 use busbar_plugin_abi::host_side::caller::{BoxFut, Caller as LoaderCaller};
 use busbar_plugin_abi::types::KindCode;
 use busbar_plugin_loader::admit::Admitted;
-use busbar_plugin_loader::instance::{InstanceSpec, OpenError, OpenedPort, Registry};
+use busbar_plugin_loader::instance::{
+    InstanceSpec, OpenError, OpenedPort, PreparedInstance, Registry,
+};
 use busbar_ports::store::StoreHandle;
 
 use busbar_kernel::teller::Kernel;
@@ -202,6 +204,12 @@ impl Shared {
 pub(crate) struct Booted {
     pub(crate) registry: Arc<MinRegistry>,
     _bootstrap_registry: Arc<MinRegistry>,
+    _opened: Vec<(
+        u32,
+        busbar_plugin_loader::instance::BootPhase,
+        Option<OpenedPort>,
+    )>,
+    pub(crate) instances: std::collections::BTreeMap<String, Namespace>,
     pub(crate) seats: Vec<PortSeat>,
     pub(crate) core: Arc<CoreSecrets>,
     /// The secret kind the boot opened its secret instances into (webhook secrets resolve through it).
@@ -751,46 +759,54 @@ impl Steps<'_> {
         Arc::clone(&self.secrets)
     }
 
-    async fn open_port(&self, index: u32) -> Result<OpenedPort, OpenError> {
+    async fn open_port(
+        &self,
+        index: u32,
+        prepared: PreparedInstance,
+    ) -> Result<OpenedPort, OpenError> {
         let prefix = self.prefix();
         let refs = prefix.refs();
         let needs =
             self.built
                 .needs_for(prefix, self.shared.records.clone(), self.directory.clone());
-        let Some((kind, spec)) = self.instances.get(index as usize) else {
+        let Some((kind, _spec)) = self.instances.get(index as usize) else {
             return Err(OpenError::Unknown("unconfigured serving step".into()));
         };
         match kind {
             KindCode::Auth => self
                 .registry
-                .open_auth(spec, &needs, &refs)
+                .open_auth_reserved(prepared, &needs, &refs)
                 .await
                 .map(OpenedPort::Auth),
             KindCode::Hook => self
                 .registry
-                .open_hook(spec, &needs, &refs)
+                .open_hook_reserved(prepared, &needs, &refs)
                 .await
                 .map(OpenedPort::Hook),
             KindCode::Export => self
                 .registry
-                .open_export(spec, &needs, &refs)
+                .open_export_reserved(prepared, &needs, &refs)
                 .await
                 .map(OpenedPort::Export),
             KindCode::Transport => self
                 .registry
-                .open_transport(spec, &needs, &refs)
+                .open_transport_reserved(prepared, &needs, &refs)
                 .await
                 .map(OpenedPort::Transport),
             KindCode::Plane => self
                 .registry
-                .open_plane(spec, &needs, &refs)
+                .open_plane_reserved(prepared, &needs, &refs)
                 .await
                 .map(OpenedPort::Plane),
             _ => Err(OpenError::Unknown("bootstrap kind in serving step".into())),
         }
     }
 
-    async fn open_plane(&self, spec: &InstanceSpec<'_>) -> Result<(), OpenError> {
+    async fn open_plane(
+        &self,
+        spec: &InstanceSpec<'_>,
+        prepared: PreparedInstance,
+    ) -> Result<(), OpenError> {
         let services = self.services.clone().ok_or_else(|| {
             OpenError::Unknown("the kernel services are not installed: a plane cannot open".into())
         })?;
@@ -800,7 +816,6 @@ impl Steps<'_> {
             Arc::from(spec.name),
             busbar_contract::abi::mechanism::KindCode::Plane,
         );
-        let prepared = self.registry.reserve(spec)?;
         let who = Namespace {
             plugin: Arc::from(prepared.identity()),
             name: Arc::from(prepared.name()),
@@ -904,52 +919,27 @@ fn audience_of(config_json: &[u8]) -> Option<String> {
         .map(str::to_owned)
 }
 
-impl BootSteps for Steps<'_> {
-    /// `None` for a plane: its port lives in its seat.
-    type Opened = Option<OpenedPort>;
-
-    fn open(&self, index: u32) -> BoxFut<'_, Result<Option<OpenedPort>, OpenError>> {
-        let found = usize::try_from(index)
-            .ok()
-            .and_then(|at| self.instances.get(at));
-        let Some((kind, spec)) = found else {
-            return Box::pin(core::future::ready(Err(OpenError::Unknown(format!(
-                "the boot plan names instance {index}, which is not configured"
-            )))));
+impl Steps<'_> {
+    async fn open_reserved(
+        &self,
+        index: u32,
+        prepared: PreparedInstance,
+    ) -> Result<Option<OpenedPort>, OpenError> {
+        let Some((kind, spec)) = self.instances.get(index as usize) else {
+            return Err(OpenError::Unknown("unconfigured serving step".into()));
         };
         match kind {
-            KindCode::Secret | KindCode::Store => Box::pin(async {
-                Err(OpenError::Unknown(
-                    "bootstrap instances cannot reopen in the serving stage".into(),
-                ))
-            }),
+            KindCode::Secret | KindCode::Store => Err(OpenError::Unknown(
+                "bootstrap instances cannot reopen in the serving stage".into(),
+            )),
             KindCode::Plane
                 if spec.purpose
-                    == busbar_plugin_loader::instance::OpenPurpose::ConvertUnstamped =>
+                    != busbar_plugin_loader::instance::OpenPurpose::ConvertUnstamped =>
             {
-                Box::pin(async move { self.open_port(index).await.map(Some) })
+                self.open_plane(spec, prepared).await.map(|()| None)
             }
-            KindCode::Plane => Box::pin(async move { self.open_plane(spec).await.map(|()| None) }),
-            _ => {
-                let opened = self.open_port(index);
-                Box::pin(async move { opened.await.map(Some) })
-            }
+            _ => self.open_port(index, prepared).await.map(Some),
         }
-    }
-
-    fn check(&self, index: u32) -> BoxFut<'_, Result<(), OpenError>> {
-        match self.instances.get(index as usize) {
-            Some((_, spec)) => self.registry.check(spec),
-            None => Box::pin(async move {
-                Err(OpenError::Unknown(format!(
-                    "unconfigured boot step {index}"
-                )))
-            }),
-        }
-    }
-
-    fn deployment<'a>(&'a self, _store: &'a Self::Opened) -> BoxFut<'a, Result<[u8; 16], String>> {
-        Box::pin(async { Err("serving steps have no deployment admission authority".into()) })
     }
 }
 
@@ -1040,7 +1030,7 @@ pub(crate) struct ServingReady {
     instances: Vec<Configured>,
     declared: std::collections::BTreeMap<String, busbar_kernel::upstreams::Declared>,
     leases: super::boot::walk::BootstrapLeases<Option<OpenedPort>>,
-    rest: Vec<u32>,
+    reserved: Vec<(u32, PreparedInstance)>,
     core: Arc<CoreSecrets>,
     public_url: Option<String>,
     prefix: Arc<BootSecrets>,
@@ -1280,6 +1270,18 @@ pub(crate) fn prepare_serving(
             return Err("effective configuration introduces a new bootstrap dependency".into());
         }
     }
+    let reserved = rest
+        .into_iter()
+        .map(|index| {
+            let (_, spec) = specs
+                .get(index as usize)
+                .ok_or("serving plan index is not configured")?;
+            registry
+                .reserve(spec)
+                .map(|prepared| (index, prepared))
+                .map_err(|error| format!("{error:?}"))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
     drop(specs);
     let built = Built {
         registry,
@@ -1293,7 +1295,7 @@ pub(crate) fn prepare_serving(
         instances,
         declared,
         leases,
-        rest,
+        reserved,
         core,
         prefix,
         public_url: cfg.public_url.clone(),
@@ -1314,7 +1316,7 @@ pub(crate) async fn finish(
         instances,
         declared,
         leases,
-        rest,
+        reserved,
         _bootstrap_registry,
         core: core_secrets,
         public_url,
@@ -1360,9 +1362,19 @@ pub(crate) async fn finish(
         probes: Mutex::default(),
     };
     let mut opened = leases.opened;
-    for index in rest {
+    let mut serving_instances = std::collections::BTreeMap::new();
+    for (index, prepared) in reserved {
+        serving_instances.insert(
+            prepared.name().to_owned(),
+            Namespace {
+                plugin: Arc::from(prepared.identity()),
+                name: Arc::from(prepared.name()),
+                instance: prepared.id(),
+                slot: prepared.slot(),
+            },
+        );
         let port = steps
-            .open(index)
+            .open_reserved(index, prepared)
             .await
             .map_err(|error| format!("serving open {index}: {error:?}"))?;
         opened.push((index, busbar_plugin_loader::instance::BootPhase::Rest, port));
@@ -1516,6 +1528,8 @@ pub(crate) async fn finish(
         resolver: secrets.resolver(reactor, built.sugars.clone()),
         registry: built.registry,
         _bootstrap_registry,
+        _opened: walked.opened,
+        instances: serving_instances,
         seats,
         core,
         secrets,
