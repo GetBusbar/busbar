@@ -57,6 +57,7 @@ impl StoreHarness {
     pub fn admit_admitted(image: Admitted, needs: FakeNeeds) -> Result<Self, Refusal> {
         Self::from_harness(Harness::admit_admitted(image, needs)?)
     }
+    /// Installs the test factory if none is present; a factory already set on the registry is retained.
     pub fn from_harness(inner: Harness) -> Result<Self, Refusal> {
         if inner.kind() != KindCode::Store {
             return Err(Refusal::new(
@@ -83,12 +84,12 @@ impl StoreHarness {
     pub fn check(&self, case: &StoreCase) -> Result<(), OpenError> {
         let mut spec = self.inner.spec(&case.name, &case.config);
         spec.limits = case.limits;
-        self.block_on(self.inner.registry().check(&spec))
+        self.inner.check_spec(&spec)
     }
     pub fn open(&self, case: &StoreCase) -> Result<StoreHandle, OpenError> {
         let mut spec = self.inner.spec(&case.name, &case.config);
         spec.limits = case.limits;
-        self.block_on(self.inner.registry().open_store(&spec))
+        self.inner.open_store_spec(&spec)
     }
     /// Inspect a store test's wiping byte value, without exposing a reusable production seal.
     pub fn value_bytes<'a>(&self, value: &'a Secret<Vec<u8>>) -> &'a [u8] {

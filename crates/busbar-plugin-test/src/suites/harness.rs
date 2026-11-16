@@ -880,7 +880,12 @@ impl Harness {
     /// for the generic match ([`Harness::undeclared`]).
     pub fn check(&self, name: &str, config: &[u8]) -> Result<(), OpenError> {
         let spec = self.spec(name, config);
-        let declared = self.noted(self.block_on(self.registry.check_endpoints(&spec)))?;
+        self.check_spec(&spec)
+    }
+
+    /// The typed store facade supplies limits without bypassing endpoint or refusal observations.
+    pub(crate) fn check_spec(&self, spec: &InstanceSpec<'_>) -> Result<(), OpenError> {
+        let declared = self.noted(self.block_on(self.registry.check_endpoints(spec)))?;
         self.declared
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -930,7 +935,12 @@ impl Harness {
     /// A store needs `registry().set_store_seal(..)` first (the kernel's seal factory).
     pub fn open_store(&self, name: &str, config: &[u8]) -> Result<StoreHandle, OpenError> {
         let spec = self.spec(name, config);
-        self.noted(self.block_on(self.registry.open_store(&spec)))
+        self.open_store_spec(&spec)
+    }
+
+    /// Open with an explicit spec through the same refusal recorder as the ordinary harness.
+    pub(crate) fn open_store_spec(&self, spec: &InstanceSpec<'_>) -> Result<StoreHandle, OpenError> {
+        self.noted(self.block_on(self.registry.open_store(spec)))
     }
 
     pub fn open_secret(&self, name: &str, config: &[u8]) -> Result<Arc<dyn SecretPort>, OpenError> {
