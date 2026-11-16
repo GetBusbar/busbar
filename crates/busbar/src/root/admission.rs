@@ -8,7 +8,8 @@ use busbar_kernel::config::PluginsCfg;
 use busbar_kernel::durable::{DurableFs, DurableOpts};
 
 use crate::root::loader::sign::{
-    evaluate, validate_structure, Manifest, TrustPolicy, Verdict, HOST_IDENTITY,
+    evaluate, evaluate_with_verification, validate_structure, Manifest, TrustPolicy, Verdict,
+    HOST_IDENTITY,
 };
 
 pub(crate) static ADMISSION: RootAdmission = RootAdmission;
@@ -45,6 +46,7 @@ pub(super) fn linked_configuration_from_statement(bytes: &[u8]) -> Result<Stated
             .map_or_else(|| statement.name.clone(), |(_, from, _)| from.clone()),
         kind: super::loader::boot::kind_of(kind).to_string(),
         version: statement.version.clone(),
+        signature_present: false,
         publisher: super::loader::sign::FIRST_PARTY_PUBLISHER.to_string(),
         abi_version: statement.kind_abi,
         settings_schema: schema,
@@ -60,6 +62,7 @@ fn stated(m: &Manifest) -> Result<Stated, String> {
         alias: m.alias.clone(),
         kind: m.kind.clone(),
         version: m.version.clone(),
+        signature_present: !m.signature.is_empty(),
         publisher: m.publisher.clone(),
         abi_version: m.abi_version,
         settings_schema: m.settings_schema_text()?,
@@ -196,16 +199,18 @@ impl PluginAdmission for RootAdmission {
         let policy = install_policy(cfg, env!("CARGO_PKG_VERSION")).map_err(Refusal::Validation)?;
         let unpacked = unpack_checked(tarball, "")?;
         let manifest = &unpacked.manifest;
-        let judged = match evaluate(&unpacked.lib_bytes, manifest, &policy) {
-            Ok(Verdict::Trusted { publisher, .. }) => Judged::Trusted { publisher },
-            Ok(Verdict::Allowed { .. }) => Judged::Allowed,
-
-            Err(rejected) => {
-                return Err(Refusal::Conflict(format!(
-                    "plugin rejected by the trust policy: {}",
-                    rejected.reason
-                )));
-            }
+        let (verdict, verification) =
+            evaluate_with_verification(&unpacked.lib_bytes, manifest, &policy).map_err(
+                |rejected| {
+                    Refusal::Conflict(format!(
+                        "plugin rejected by the trust policy: {}",
+                        rejected.reason
+                    ))
+                },
+            )?;
+        let judged = match verdict {
+            Verdict::Trusted { publisher, .. } => Judged::Trusted { publisher },
+            Verdict::Allowed { .. } => Judged::Allowed,
         };
 
         let installed_policy = TrustPolicy {
@@ -255,24 +260,40 @@ impl PluginAdmission for RootAdmission {
         Ok(Admitted {
             stated: stated(manifest).map_err(Refusal::Validation)?,
             judged,
+            verification,
             linked_serves,
         })
     }
 
     fn inspect(&self, tarball: &[u8], cfg: &PluginsCfg) -> Result<(Stated, Judged), Refusal> {
+        self.inspect_with_verification(tarball, cfg)
+            .map(|(stated, judged, _)| (stated, judged))
+    }
+
+    fn inspect_with_verification(
+        &self,
+        tarball: &[u8],
+        cfg: &PluginsCfg,
+    ) -> Result<(Stated, Judged, busbar_contract::plugin_rows::Verification), Refusal> {
         let policy = install_policy(cfg, env!("CARGO_PKG_VERSION")).map_err(Refusal::Validation)?;
         let unpacked = unpack_checked(tarball, "")?;
-
-        let judged = match evaluate(&unpacked.lib_bytes, &unpacked.manifest, &policy) {
-            Ok(Verdict::Trusted { publisher, .. }) => Judged::Trusted { publisher },
-            Ok(Verdict::Allowed { .. }) => Judged::Allowed,
-            Err(rejected) => Judged::Rejected {
-                reason: rejected.reason,
-            },
-        };
+        let (judged, verification) =
+            match evaluate_with_verification(&unpacked.lib_bytes, &unpacked.manifest, &policy) {
+                Ok((Verdict::Trusted { publisher, .. }, verification)) => {
+                    (Judged::Trusted { publisher }, verification)
+                }
+                Ok((Verdict::Allowed { .. }, verification)) => (Judged::Allowed, verification),
+                Err(rejected) => (
+                    Judged::Rejected {
+                        reason: rejected.reason,
+                    },
+                    Default::default(),
+                ),
+            };
         Ok((
             stated(&unpacked.manifest).map_err(Refusal::Validation)?,
             judged,
+            verification,
         ))
     }
 

@@ -133,6 +133,11 @@ pub trait PluginRows: Send + Sync + std::fmt::Debug {
         None
     }
 
+    /// Whether the admitted image carried signature text; presence alone is not trust.
+    fn signature_present(&self, _name_or_alias: &str) -> bool {
+        false
+    }
+
     /// Retained proof of the admission of this loaded generation; does not re-admit disk bytes.
     fn verification(&self, _name_or_alias: &str) -> Option<Verification> {
         None
