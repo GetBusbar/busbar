@@ -341,11 +341,17 @@ pub use opening::{ExportOpening, PreparedExport};
 /// Why bytes already in export custody were terminally discarded.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ExportDropReason {
+    /// The bounded export queue discarded the bytes when its capacity was exhausted.
     QueueFull,
+    /// The exporter discarded the bytes while stopping.
     Stopped,
+    /// Delivery exhausted its permitted attempts.
     AttemptsExhausted,
+    /// The destination refused delivery terminally.
     Refused,
+    /// The retained bytes named a destination outside this exporter.
     ForeignDestination,
+    /// The retained bytes exceeded their delivery lifetime.
     Expired,
     /// Only discarded bytes: retained ciphertext with an unavailable key is not a loss.
     KeyUnavailable,
@@ -353,6 +359,7 @@ pub enum ExportDropReason {
 
 impl ExportDropReason {
     #[must_use]
+    /// Stable host-owned reason used in loss records.
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::QueueFull => "queue_full",
@@ -369,18 +376,23 @@ impl ExportDropReason {
 /// Delivery loss, pre-custody refusal and audit integrity are distinct facts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ExportLossKind {
+    /// Bytes already accepted into export custody were discarded.
     Dropped(ExportDropReason),
+    /// Capture was refused before export custody accepted the bytes.
     CaptureRefused,
+    /// An integrity check failed, independently of a delivery-loss count.
     IntegrityFailed,
 }
 
 /// First-loss facts retained by the host observer before transfer into native audit custody.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ExportLossFacts {
+    /// Configured exporter instance that observed the event.
     pub instance: String,
     /// Wall-clock seconds when loss was first observed, not the eventual retry time.
     pub observed_at: u64,
     /// Dropped line count, or occurrence count for capture/integrity failures.
     pub count: u64,
+    /// Whether the event records delivery loss, capture refusal or integrity failure.
     pub kind: ExportLossKind,
 }
