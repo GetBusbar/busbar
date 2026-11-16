@@ -967,28 +967,27 @@ fn trust<'o>(rec: &Rec<'o>) -> Result<PlaneOut<'o>, RecErr> {
     Ok(out)
 }
 
-/// MINT: MT_SCOPE?, MT_AUDIENCE?, MT_PREFIX?, MT_RECORD?, each checked (§8.6 round 15).
-///
-/// IF gap: `PlaneOut::Mint` carries neither `MintRec.flags` (MINT_ONCE) nor MT_PREFIX/MT_RECORD, which §12.11
-/// `TicketMint` needs; they are validated here and cannot reach K8 until the frozen item gains them.
+/// MINT: MT_SCOPE?, MT_AUDIENCE?, MT_PREFIX?, MT_RECORD?, each checked (§8.6 round 15). The item carries
+/// `MintRec.flags` (MINT_ONCE), MT_PREFIX and MT_RECORD, which §12.11 `TicketMint` takes.
 fn mint<'o>(rec: &Rec<'o>) -> Result<PlaneOut<'o>, RecErr> {
     let (m, tail) = rec.pod_tail::<p::MintRec>()?;
     check(m.flags & !p::MINT_ONCE == 0)?;
     let mut n = Nested::new(tail);
     let scope = n.text(t::MT_SCOPE, 0)?;
     let audience = n.text(t::MT_AUDIENCE, 0)?;
-    check(
-        n.text(t::MT_PREFIX, 1)?
-            .is_none_or(|w| word_ok(w, 16) && !w.contains('.')),
-    )?;
+    let prefix = n.text(t::MT_PREFIX, 1)?;
+    check(prefix.is_none_or(|w| word_ok(w, 16) && !w.contains('.')))?;
     let record = n.one(t::MT_RECORD)?;
     check(record.is_none_or(|r| r.len() as u64 <= p::MAX_TICKET_RECORD))?;
     n.done()?;
     Ok(PlaneOut::Mint {
         check: m.check,
+        flags: m.flags,
         ttl_s: m.ttl_s,
         scope,
         audience,
+        prefix,
+        record,
     })
 }
 

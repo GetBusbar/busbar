@@ -20,7 +20,8 @@
 
 use busbar_plugin_abi::plane::{
     UsageRec, ATT_DECLINE, ATT_OK, ATT_RELAY, ATT_RETRY, AUDIT_APPLIED, AUDIT_DEGRADED,
-    AUDIT_REJECTED, FROM_CORE, FROM_UPSTREAM, MSG_FIN, MSG_TEXT,
+    AUDIT_REJECTED, FROM_CORE, FROM_UPSTREAM, JUDGE_REFUSE_PRIVATE, JUDGE_RESOLVE, MSG_FIN,
+    MSG_TEXT,
 };
 use busbar_plugin_loader::ports::plane::{PlaneIn, PlaneOut, PlanePort, PlaneSession, TargetIn};
 use busbar_plugin_loader::ports::{FactRef, FactVal, PortError};
@@ -149,6 +150,9 @@ impl Calls for dyn PlanePort {
     }
 }
 
+/// The highest egress class a JUDGE may name (the five `egress::*` numbers, 0..=4).
+const EGRESS_CLASS_MAX: u32 = 4;
+
 /// Which call produced an answer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Origin {
@@ -191,6 +195,11 @@ pub enum Violation {
     MissingExchange,
     /// A plane whose answers to core-resolved results keep stating more intents, past the round bound.
     IntentStorm,
+    /// A JUDGE outside a `request` or `piece` answer, an egress class past 4, or a flag bit that is not
+    /// JUDGE_RESOLVE or JUDGE_REFUSE_PRIVATE (§8.6 round 16: BadRecords).
+    BadJudge,
+    /// A record the adapter validated did not read back (a core bug or a changed wire: the session is cut).
+    BadRecords,
 }
 
 /// Why a session call produced no usable answer.
@@ -637,6 +646,170 @@ impl Answer {
                     verdict,
                     action: action.into(),
                     resource: resource.into(),
+                });
+            }
+            PlaneOut::Mint {
+                check,
+                flags,
+                ttl_s,
+                scope,
+                audience,
+                prefix,
+                record,
+            } => self.intents.push(Intent::Mint {
+                check,
+                flags,
+                ttl_s,
+                scope: scope.map(str::to_owned),
+                audience: audience.map(str::to_owned),
+                prefix: prefix.map(str::to_owned),
+                record: record.map(<[u8]>::to_vec),
+            }),
+            PlaneOut::Sign {
+                check,
+                flags,
+                payload,
+            } => self.intents.push(Intent::Sign {
+                check,
+                flags,
+                payload: payload.to_vec(),
+            }),
+            PlaneOut::Connect {
+                check,
+                op,
+                upstream,
+                return_to,
+            } => self.intents.push(Intent::Connect {
+                check,
+                op,
+                upstream: upstream.to_owned(),
+                return_to: return_to.map(str::to_owned),
+            }),
+            PlaneOut::Rendezvous {
+                exchange,
+                flags,
+                description,
+            } => self.intents.push(Intent::Rendezvous {
+                exchange,
+                flags,
+                description: description.to_owned(),
+            }),
+            PlaneOut::ObsScope {
+                check,
+                op,
+                scope,
+                require,
+            } => {
+                let mut classes = Vec::new();
+                for rec in require {
+                    let rec = rec.map_err(|_| Violation::BadRecords)?;
+                    classes.push(rec.text().map_err(|_| Violation::BadRecords)?.to_owned());
+                }
+                self.intents.push(Intent::ObsScope {
+                    check,
+                    op,
+                    scope,
+                    require: classes,
+                });
+            }
+            PlaneOut::Observe {
+                check,
+                state,
+                rated_subject,
+                revision_order,
+                scope,
+                event,
+                component,
+                revision,
+                counts,
+                evidence,
+            } => {
+                let mut seen = Vec::new();
+                for rec in counts {
+                    let rec = rec.map_err(|_| Violation::BadRecords)?;
+                    let (head, class) = rec
+                        .pod_tail::<UsageRec>()
+                        .map_err(|_| Violation::BadRecords)?;
+                    let class = std::str::from_utf8(class).map_err(|_| Violation::BadRecords)?;
+                    seen.push((class.to_owned(), head.amount, head.scale));
+                }
+                self.intents.push(Intent::Observe {
+                    check,
+                    state,
+                    rated_subject,
+                    revision_order,
+                    scope,
+                    event: event.to_vec(),
+                    component: component.to_vec(),
+                    revision: revision.map(<[u8]>::to_vec),
+                    counts: seen,
+                    evidence: evidence.map(<[u8]>::to_vec),
+                });
+            }
+            PlaneOut::Sight {
+                party,
+                catalog,
+                items,
+            } => {
+                let mut seen = Vec::new();
+                for rec in items {
+                    let (name, digest) = rec
+                        .and_then(|rec| rec.pair())
+                        .map_err(|_| Violation::BadRecords)?;
+                    let digest = <[u8; 32]>::try_from(digest).map_err(|_| Violation::BadRecords)?;
+                    seen.push((name.to_owned(), digest));
+                }
+                self.intents.push(Intent::Sight {
+                    party: party.to_owned(),
+                    catalog,
+                    items: seen,
+                });
+            }
+            PlaneOut::Trust {
+                check,
+                op,
+                party,
+                item,
+            } => self.intents.push(Intent::Trust {
+                check,
+                op,
+                party: party.to_owned(),
+                item: item.map(|(name, digest)| (name.to_owned(), digest)),
+            }),
+            PlaneOut::TrustVerify {
+                check,
+                party,
+                payload,
+                signatures,
+            } => self.intents.push(Intent::TrustVerify {
+                check,
+                party: party.to_owned(),
+                payload: payload.to_vec(),
+                signatures: signatures.to_vec(),
+            }),
+            PlaneOut::Entitle { check, grant } => self.intents.push(Intent::Entitle {
+                check,
+                grant: grant.to_owned(),
+            }),
+            PlaneOut::Judge {
+                check,
+                class,
+                flags,
+                dest,
+            } => {
+                // §8.6 round 16: allowed in `request` and `piece` answers only; class <= 4 and the two flag
+                // bits, else the plane's fault (BadRecords).
+                if !matches!(origin, Origin::Request | Origin::Piece(_))
+                    || class > EGRESS_CLASS_MAX
+                    || flags & !(JUDGE_RESOLVE | JUDGE_REFUSE_PRIVATE) != 0
+                {
+                    return Err(Violation::BadJudge);
+                }
+                self.intents.push(Intent::Judge {
+                    check,
+                    class,
+                    flags,
+                    dest: dest.to_owned(),
                 });
             }
             PlaneOut::Lookup { flags, limit, key } => self.intents.push(Intent::Lookup {

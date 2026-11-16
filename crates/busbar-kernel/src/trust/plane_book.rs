@@ -7,6 +7,7 @@
 // concrete `TrustBook` struct, so the trait lives in this new file (`crate::trust::plane_book::TrustBook`).
 
 use busbar_plugin_abi::host_side::caller::{BoxFut, Caller};
+use busbar_plugin_loader::ports::plane::TrustItem;
 
 use crate::plugin_records::RecordsDenied;
 
@@ -28,9 +29,8 @@ pub trait TrustBook: Send + Sync + 'static {
         party: &str,
         item: Option<(&str, Option<[u8; 32]>)>,
     ) -> u32;
-    // W0-ABI: `state(&self, plane: &Caller<'_>, party: &str, sink: &mut dyn FnMut(TrustItem<'_>)) -> u32` (doc:
-    // "TRUST_STATE: the counterparty verdict and per-item state, for the plane's admin views.") names `TrustItem`,
-    // a busbar-plugin-loader type (IF §11.3 plane); W1-K10 adds it once the kernel depends on the loader.
+    /// TRUST_STATE: the counterparty verdict and per-item state, for the plane's admin views.
+    fn state(&self, plane: &Caller<'_>, party: &str, sink: &mut dyn FnMut(TrustItem<'_>)) -> u32;
     /// Upstreams of this plane instance whose re-verification is due; K8 runs `probe(TGT_SIGHT)` for each
     /// (and on DX_RESIGHT), with RetrySite::PlaneProbe.
     fn due(&self, plane: &Caller<'_>, now_s: u64) -> Vec<Box<str>>;

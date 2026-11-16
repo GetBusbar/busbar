@@ -139,11 +139,15 @@ pub enum PlaneOut<'o> {
         flags: u32,
         description: &'o str,
     },
+    /// MINT (§12.11 `TicketMint`): `flags` = MINT_ONCE?, `prefix` = MT_PREFIX, `record` = MT_RECORD.
     Mint {
         check: u32,
+        flags: u32,
         ttl_s: u64,
         scope: Option<&'o str>,
         audience: Option<&'o str>,
+        prefix: Option<&'o str>,
+        record: Option<&'o [u8]>,
     },
     Sign {
         check: u32,

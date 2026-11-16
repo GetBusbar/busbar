@@ -36,6 +36,15 @@ pub trait Held: Send {
     fn send(&mut self, message: &[u8], ask: bool) -> Result<(), RecordsDenied>;
     /// CH_READY: `tail` is handed to later attachers (only the greeting session's takes effect).
     fn ready(&mut self, tail: &[u8]);
+    /// RV_REMOTE: the far end's answer for a dialled media session (§12.13). Only a media bridge takes one; the
+    /// default refuses.
+    fn remote(&mut self, _description: &str) -> Result<(), RecordsDenied> {
+        Err(RecordsDenied::Invalid)
+    }
+    /// Why the last `remote` was refused, in core's words (a mirror failure names the lines), if it says.
+    fn refusal(&self) -> Option<String> {
+        None
+    }
 }
 
 /// The channels of one session, by exchange.
@@ -69,6 +78,14 @@ pub trait ChannelHost {
 }
 
 impl<K: Calls + ?Sized> Task<'_, K> {
+    /// The exchanges this session holds a channel or a media bridge on.
+    #[must_use]
+    pub fn held_exchanges(&self) -> Vec<u32> {
+        let mut held: Vec<u32> = self.held.keys().copied().collect();
+        held.sort_unstable();
+        held
+    }
+
     /// Writes `message` to the channel held on `exchange`. `Ok(false)` = no channel is held there.
     pub fn send_channel(
         &mut self,
