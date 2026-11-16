@@ -92,7 +92,7 @@ impl AuditServices {
         clock: Arc<DrainClock>,
         floor: Option<FloorHints>,
     ) -> bool {
-        let _ = self.clock.set(clock);
+        let _ = self.clock.set(Arc::clone(&clock));
         let Some(Unstarted { live, threads }) = self
             .unstarted
             .lock()
@@ -113,6 +113,7 @@ impl AuditServices {
             Arc::clone(&self.feed),
             live,
             floor,
+            Some(clock),
         );
         let progress = Arc::clone(task.progress());
         let stall_after_ms = task.stall_after_ms();

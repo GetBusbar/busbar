@@ -13,7 +13,7 @@ use busbar_kernel_audit::{
     LiveSigner, Notary as NotaryCap, Stamp, StampKind,
 };
 
-use crate::root::durability::notary::{spawn, NotaryConfig, NotaryTask};
+use crate::root::durability::notary::{NotaryConfig, NotaryTask};
 use crate::root::durability::tests::{audit_inputs, audit_pass, token, NativeFixture};
 use crate::root::durability::{signer, Durability};
 
@@ -357,19 +357,36 @@ async fn ephemeral_journal_is_bounded_after_n_requests() {
 async fn first_shutdown_broadcast_stops_new_cuts_before_notary_stop() {
     use busbar_kernel::persistence::journal::{RuntimeJournal, CUT_BATCH, RETAIN_TAIL};
     let budget = crate::root::durability::tests::BUDGET;
-    let backend = crate::root::real_store::EphemeralInfo(crate::root::real_store::native_backend().await);
+    let backend =
+        crate::root::real_store::EphemeralInfo(crate::root::real_store::native_backend().await);
     let core = crate::root::real_store::core_over(Arc::new(backend)).await;
     let journal = RuntimeJournal::open(core, 44, budget).await.unwrap();
-    let book = Arc::new(Mutex::new(crate::root::durability::build_on_store(
-        &crate::root::durability::DurabilityConfig::default(), 44, journal.clone(), None, budget,
-    ).await.unwrap()));
+    let book = Arc::new(Mutex::new(
+        crate::root::durability::build_on_store(
+            &crate::root::durability::DurabilityConfig::default(),
+            44,
+            journal.clone(),
+            None,
+            budget,
+        )
+        .await
+        .unwrap(),
+    ));
     let clock = busbar_kernel::governance::drain::DrainClock::new(Duration::from_secs(20));
     let task = notary_over_clock(&book, 1, Some(clock.clone()));
     clock.arm(tokio::time::Instant::now() + clock.budget());
     let count = RETAIN_TAIL + 3 * CUT_BATCH;
     seal_n(&book, 1, count).await;
     stamped_through(&task, count).await;
-    assert_eq!(journal.base_count(), 0, "stamp confirmation after the first broadcast cannot start a cut");
+    assert_eq!(
+        journal.base_count(),
+        0,
+        "stamp confirmation after the first broadcast cannot start a cut"
+    );
     task.stop().await.unwrap();
-    assert_eq!(journal.base_count(), 0, "stop settles existing work but starts no new cut");
+    assert_eq!(
+        journal.base_count(),
+        0,
+        "stop settles existing work but starts no new cut"
+    );
 }

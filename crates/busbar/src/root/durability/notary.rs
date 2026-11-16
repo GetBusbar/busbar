@@ -256,19 +256,7 @@ struct Notary {
     /// A stamp was confirmed since the last cut started: the cut's trigger.
     cut_due: bool,
     floor_hints: Option<FloorHints>,
-}
-
-/// START THE NOTARY on the current runtime with no floor (b) source (the tests; boot uses
-/// [`spawn_with_floor`]).
-#[cfg(test)]
-pub(crate) fn spawn(
-    cfg: NotaryConfig,
-    start: NotaryStart,
-    journal: Arc<RuntimeJournal>,
-    feed: Arc<HeadFeed>,
-    live: SignerHandle<Live>,
-) -> NotaryTask {
-    spawn_with_floor(cfg, start, journal, feed, live, None)
+    drain_clock: Option<Arc<busbar_kernel::governance::drain::DrainClock>>,
 }
 
 /// START THE NOTARY on the current runtime (the control runtime, from boot), with the cut's floor
@@ -281,6 +269,7 @@ pub(crate) fn spawn_with_floor(
     feed: Arc<HeadFeed>,
     live: SignerHandle<Live>,
     floor_hints: Option<FloorHints>,
+    drain_clock: Option<Arc<busbar_kernel::governance::drain::DrainClock>>,
 ) -> NotaryTask {
     let cut = journal.cutter().map_or(CutSeat::None, CutSeat::Idle);
     let every_ms = cfg.every_ms.clamp(1, 1_000);
@@ -321,6 +310,7 @@ pub(crate) fn spawn_with_floor(
         cut,
         cut_due: false,
         floor_hints,
+        drain_clock,
     };
     let exited = Arc::new(AtomicBool::new(false));
     let flag = ExitFlag(Arc::clone(&exited));
@@ -466,7 +456,14 @@ impl Notary {
             },
             CutSeat::Idle(cut) => cut,
         };
-        if !self.cut_due || self.stopping || self.halted.is_some() {
+        let draining = self
+            .drain_clock
+            .as_ref()
+            .is_some_and(|clock| clock.armed_at().is_some());
+        if !self.cut_due || self.stopping || draining || self.halted.is_some() {
+            if draining {
+                self.cut_due = false;
+            }
             self.cut = CutSeat::Idle(cut);
             return;
         }
