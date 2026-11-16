@@ -283,6 +283,17 @@ The oldest audit line no stamp covers yet is older than the alert threshold (ten
 
 **What to do:** Look for BUSBAR-2049 just before this line and act on its reason. The gauge audit_unstamped_age_ms shows the current age.
 
+<a id="terminal-audit-stage-failed"></a>
+### BUSBAR-2051 — A request terminal audit original could not be staged
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `terminal-audit-stage-failed`
+
+The journal refused the terminal audit original before native confirmation. The request fails instead of reporting success without its audit evidence; an already streaming response terminates with an error. The journal and audit chain positions do not advance for the refused original. The counter busbar_audit_stage_failures_total counts these failures.
+
+**What to do:** Check store availability and journal custody pressure. A closed journal can also indicate shutdown. Do not assume an upstream operation was undone when its terminal audit failed.
+
 ## 3xxx — Config
 
 <a id="config-overlay-corrupt-refuse-write"></a>

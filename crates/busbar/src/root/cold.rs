@@ -151,6 +151,17 @@ pub(crate) fn terminal_audit_unconfirmed(error: &dyn std::fmt::Debug) -> String 
     format!("terminal audit is unconfirmed: {error:?}")
 }
 
+/// Staging refused the terminal original, so no confirmation can authorize success.
+#[cold]
+pub(crate) fn terminal_audit_stage_failed(error: &dyn std::fmt::Debug) -> String {
+    metrics::counter!(busbar_kernel::snapshot::AUDIT_STAGE_FAILURES_TOTAL).increment(1);
+    busbar_kernel::diagnostics::diag_error!(
+        busbar_kernel::diagnostics::TERMINAL_AUDIT_STAGE_FAILED,
+        "terminal audit staging failed; the request cannot report success"
+    );
+    terminal_audit_unconfirmed(error)
+}
+
 /// `plane_node`: the usage line a lost unit is sealed with, gathered only when the tick sweeps a
 /// unit that lost its owner.
 #[cold]
