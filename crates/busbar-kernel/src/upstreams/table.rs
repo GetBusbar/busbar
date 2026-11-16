@@ -12,21 +12,48 @@ use super::{UpstreamDef, Upstreams};
 use crate::config::min3::UpstreamCfg;
 use crate::plugin_config::TrustAnchor;
 
-/// Every `upstreams.<name>` of one config load, typed.
+/// Every `upstreams.<name>` of one config load, typed. Built once per load (a reload builds a new table); a lookup
+/// is one ordered-map probe and an `Arc` clone.
 #[derive(Default)]
 pub struct ConfiguredUpstreams {
     by_name: BTreeMap<Box<str>, Arc<UpstreamDef>>,
 }
 
 impl ConfiguredUpstreams {
-    /// Types the `upstreams:` section over the keys the config grammar parsed.
+    /// Types the `upstreams:` section `section` (upstream name → entry) over the `auth`/`upstream_credentials`
+    /// keys the config grammar parsed (`parsed`, [`crate::config::min3::Min3Config::upstreams`]). A `parsed` name
+    /// with no entry in `section` is refused: a binding needs an upstream to bind. Err = every refusal of every
+    /// entry, in name order.
     pub fn from_config(
         section: &Map<String, Value>,
         parsed: &BTreeMap<Box<str>, UpstreamCfg>,
         anchor: &dyn Fn(&str) -> Result<Arc<TrustAnchor>, String>,
     ) -> Result<Self, Vec<String>> {
-        let _ = (section, parsed, anchor);
-        todo!("W1-K1")
+        let unbound = UpstreamCfg::default();
+        let mut by_name = BTreeMap::new();
+        let mut refused = Vec::new();
+        for (name, entry) in section {
+            let cfg = parsed.get(name.as_str()).unwrap_or(&unbound);
+            match UpstreamDef::from_config(name, entry, cfg, anchor) {
+                Ok(def) => {
+                    by_name.insert(Box::<str>::from(name.as_str()), Arc::new(def));
+                }
+                Err(mut why) => refused.append(&mut why),
+            }
+        }
+        for name in parsed.keys() {
+            if !section.contains_key(&**name) {
+                refused.push(format!(
+                    "`upstreams.{name}`: `auth` or `upstream_credentials` is set for an upstream with no `url:` \
+                     or `command:`"
+                ));
+            }
+        }
+        if refused.is_empty() {
+            Ok(Self { by_name })
+        } else {
+            Err(refused)
+        }
     }
 
     /// The configured upstream names, in order.
@@ -45,11 +72,11 @@ impl ConfiguredUpstreams {
 
 impl Upstreams for ConfiguredUpstreams {
     fn get(&self, name: &str) -> Option<Arc<UpstreamDef>> {
-        let _ = name;
-        todo!("W1-K1")
+        self.by_name.get(name).cloned()
     }
 }
 
+/// A shared table answers as the table: consumers hold `Arc<ConfiguredUpstreams>` (or `Arc<dyn Upstreams>`).
 impl<U: Upstreams + ?Sized> Upstreams for Arc<U> {
     fn get(&self, name: &str) -> Option<Arc<UpstreamDef>> {
         (**self).get(name)
