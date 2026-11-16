@@ -268,6 +268,16 @@ impl Shared {
                         Err(_) => resend(&mut attempt, None),
                     }
                 }
+                Err(PortError::Failed {
+                    code: busbar_plugin_abi::fail::failed::F_LIMIT,
+                    ..
+                }) => {
+                    self.drop_lines(
+                        views.len(),
+                        "an export delivery reached a terminal limit; its lines are dropped",
+                    );
+                    return;
+                }
                 Err(PortError::Failed { retry_after_s, .. }) => resend(&mut attempt, retry_after_s),
                 Err(PortError::Call(CallError::Deadline)) => resend(&mut attempt, None),
                 Err(e) => {
