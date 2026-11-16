@@ -681,6 +681,7 @@ dependencies = [
  "arc-swap",
  "base64 0.22.1",
  "busbar-contract",
+ "busbar-ffi",
  "busbar-plugin-abi",
  "flate2",
  "foldhash",
