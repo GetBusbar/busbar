@@ -154,10 +154,9 @@ fn usage_group_by_each_dim() {
 
 #[test]
 fn usage_instance_derived_matches_metering_lane() {
-    let plane = busbar_kernel::plane_driver::registry::plane_decls()
-        .iter()
-        .find(|decl| !decl.fallback)
-        .expect("a non-fallback plane is registered");
+    busbar_kernel::plane_driver::registry::publish_planes(&[&SERIES_PLANE]);
+    let plane = busbar_kernel::plane_driver::registry::plane_decl_for(SERIES_PLANE.key)
+        .expect("the non-fallback plane is registered");
     let lane = busbar_kernel::governance::metering_lane(LANE, plane.key);
     assert_ne!(lane.as_ref(), LANE, "the plane provider qualifies the lane");
     let rows = vec![(
@@ -234,3 +233,54 @@ fn usage_day_parse_is_strict_utc() {
     assert_eq!(parse_utc_day("1969-12-31"), None);
     assert_eq!(parse_utc_day("2024-02-29T00:00"), None);
 }
+
+static SERIES_PLANE: busbar_kernel::plane_driver::registry::PlaneDecl =
+    busbar_kernel::plane_driver::registry::PlaneDecl {
+        declaration: busbar_kernel::plane_driver::registry::PlaneDeclaration {
+            key: "series-plane",
+            fallback: false,
+            config_section: "series_plane",
+            scope_kinds: &[],
+            subject_noun: "series",
+            admin_noun: "series",
+            audit_kind: "series",
+            card_signing_domain: None,
+            card_kid_prefix: None,
+            owned_config_sections: &[],
+            billable_classes: &[],
+            class_parents: &[],
+            fee_units: &[],
+            metric_families: &[],
+            record_kinds: &[],
+            required_config_sections: &[],
+            trust_keys: &[],
+            served_op_classes: &[],
+            caller_credential_refusal: None,
+        },
+        wire_format_names: |_| &[],
+        provider_dialects: |_| &[],
+        claims: |_| Vec::new(),
+        admission: |_| None,
+        build: |_, _| None,
+        routes: None,
+        admin_routes: None,
+        openapi: None,
+        hydrate: None,
+        start: None,
+        config_validate: None,
+        named_def_list: None,
+        named_def_get: None,
+        registry_contains: None,
+        reresolve_gates: None,
+        openapi_schemas: None,
+        on_swap: None,
+        parse_section: None,
+        parse_endpoint: None,
+        lower_endpoint: None,
+        build_runtime: None,
+        viewer: None,
+        retain_verify_gates: None,
+        default_section: None,
+        resolve_provider: None,
+        door: None,
+    };
