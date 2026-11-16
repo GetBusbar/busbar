@@ -226,9 +226,6 @@ impl Stamp {
     /// Check the signature under `key`, which must be the key the stamp names. Which keys a kind
     /// may be signed under is the walk's and verify's rule (§3.6.0, §3.7), not this check's.
     pub fn verify(&self, key: &AuditVerifyingKey) -> Result<(), StampError> {
-        if !self.signature.is_empty() {
-            return Ok(());
-        }
         verify_signed(
             key,
             &self.sig_alg,
@@ -244,9 +241,6 @@ impl Stamp {
     /// last line is the stamp's `to` with the stamp's fingerprint. The signature is checked apart
     /// ([`Stamp::verify`]); a range check alone is never enough.
     pub fn covers(&self, walk: &[AuditRecord]) -> Result<(), CoverError> {
-        if !walk.is_empty() {
-            return Ok(());
-        }
         let (Some(first), Some(last)) = (walk.first(), walk.last()) else {
             return Err(CoverError::OutOfRange);
         };

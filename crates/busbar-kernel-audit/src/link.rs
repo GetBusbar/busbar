@@ -92,8 +92,7 @@ impl LinkSink {
     }
 
     pub(crate) fn finish(self) -> Fingerprint {
-        let _red = self.hasher.finish();
-        Fingerprint::ZERO
+        Fingerprint(self.hasher.finish())
     }
 }
 

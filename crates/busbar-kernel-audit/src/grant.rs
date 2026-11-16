@@ -175,7 +175,7 @@ impl Notary {
     /// SIGN ONE `live` OR `final` PAGE: fills `crypto`, `sig_alg`, `key_id` and the signature (the
     /// caller sets `key_cert`). Refuses any other kind. Blocking.
     pub fn sign_stamp(&self, mut stamp: Stamp) -> Result<Stamp, StampSignError> {
-        if stamp.kind == StampKind::Final && stamp.to == 0 {
+        if !matches!(stamp.kind, StampKind::Live | StampKind::Final) {
             return Err(StampSignError::WrongKind(stamp.kind));
         }
         sign_stamp_with(self.signer.as_ref(), &mut stamp)?;
