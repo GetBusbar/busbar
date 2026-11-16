@@ -1119,4 +1119,14 @@ mod tests {
         assert_eq!(digest.as_ref().map(|d| d.ct_eq(&[8; 31])), Ok(false));
         assert_eq!(digest.map(|d| d.ct_eq(&[9; 32])), Ok(false));
     }
+
+    #[test]
+    fn retained_secret_bytes_own_their_copy_and_redact_debug() {
+        let mut source = b"callback-secret".to_vec();
+        let secret = SecretBytes::copy_from_slice(&source);
+        source.fill(0);
+        assert_eq!(&*secret, b"callback-secret");
+        assert_eq!(format!("{secret:?}"), "SecretBytes(15 bytes)");
+        assert!(!format!("{secret:?}").contains("callback"));
+    }
 }
