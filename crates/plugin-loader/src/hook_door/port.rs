@@ -629,13 +629,14 @@ async fn ask(
         body: owned.body.as_deref(),
         identity: None,
     };
-    match port.on(cx, point, &view) {
+    let out = match port.on(cx, point, &view) {
         HookCall::Done(r) => called(name, r),
         HookCall::Io(fut) => match tokio::time::timeout(budget, fut).await {
             Ok(r) => called(name, r),
             Err(_) => Called::TimedOut,
         },
-    }
+    };
+    out
 }
 
 fn indices(order: &[u32]) -> Vec<usize> {

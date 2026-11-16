@@ -12,10 +12,6 @@
 
 #[path = "bridge_fixture.rs"]
 mod bridge_fixture;
-#[path = "fixtures/min3_export.rs"]
-mod min3_export;
-#[path = "fixtures/min3_secret.rs"]
-mod min3_secret;
 #[path = "c_a2a_card_redirect.rs"]
 mod c_a2a_card_redirect;
 #[path = "c_a2a_push_url.rs"]
@@ -286,6 +282,10 @@ mod c_strategy_word;
 mod c_style_vocab;
 #[path = "c_sugar.rs"]
 mod c_sugar;
+#[path = "c_suite_export.rs"]
+mod c_suite_export;
+#[path = "c_suite_secret.rs"]
+mod c_suite_secret;
 #[path = "c_ticket_either.rs"]
 mod c_ticket_either;
 #[path = "c_tls_key.rs"]
@@ -304,10 +304,6 @@ mod c_transport_close;
 mod c_transport_defaults;
 #[path = "c_transport_refuse.rs"]
 mod c_transport_refuse;
-#[path = "c_suite_export.rs"]
-mod c_suite_export;
-#[path = "c_suite_secret.rs"]
-mod c_suite_secret;
 #[path = "c_trust_verify.rs"]
 mod c_trust_verify;
 #[path = "c_unavailable.rs"]
@@ -344,6 +340,10 @@ mod c_zeroize_grow;
 mod c_zeroize_sync;
 #[path = "fu3-check-crypto-failed.rs"]
 mod fu3_check_crypto_failed;
+#[path = "fixtures/min3_export.rs"]
+mod min3_export;
+#[path = "fixtures/min3_secret.rs"]
+mod min3_secret;
 
 /// Every `tests/*.rs` is wired: a module of this binary or a `[[test]]` target of the manifest
 /// (`autotests = false`, so an unwired file would never run).
