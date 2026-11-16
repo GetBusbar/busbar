@@ -264,6 +264,7 @@ struct Notary {
 /// START THE NOTARY on the current runtime (the control runtime, from boot), with the cut's floor
 /// (b) source. On an Ephemeral journal the notary takes the
 /// journal's one cut and calls it after each confirmed stamp (SEALING-FIX §3.9).
+#[cfg(test)]
 pub(crate) fn spawn_with_floor(
     cfg: NotaryConfig,
     start: NotaryStart,
@@ -273,6 +274,40 @@ pub(crate) fn spawn_with_floor(
     floor_hints: Option<FloorHints>,
     drain_clock: Option<Arc<busbar_kernel::governance::drain::DrainClock>>,
 ) -> NotaryTask {
+    spawn_with_boot(
+        cfg,
+        start,
+        journal,
+        feed,
+        live,
+        NotaryRuntime {
+            floor_hints,
+            drain_clock,
+            boot: None,
+        },
+    )
+}
+
+/// Cold ownership passed into the notary task; no slot is added to the request-path book.
+pub(crate) struct NotaryRuntime {
+    pub(crate) floor_hints: Option<FloorHints>,
+    pub(crate) drain_clock: Option<Arc<busbar_kernel::governance::drain::DrainClock>>,
+    pub(crate) boot: Option<super::boot_jobs::BootPreparation>,
+}
+
+pub(crate) fn spawn_with_boot(
+    cfg: NotaryConfig,
+    start: NotaryStart,
+    journal: Arc<RuntimeJournal>,
+    feed: Arc<HeadFeed>,
+    live: SignerHandle<Live>,
+    runtime: NotaryRuntime,
+) -> NotaryTask {
+    let NotaryRuntime {
+        floor_hints,
+        drain_clock,
+        boot,
+    } = runtime;
     let cut = journal.cutter().map_or(CutSeat::None, CutSeat::Idle);
     let every_ms = cfg.every_ms.clamp(1, 1_000);
     let cfg = NotaryConfig { every_ms, ..cfg };
@@ -286,8 +321,8 @@ pub(crate) fn spawn_with_floor(
     progress
         .stamped_node_seq
         .store(start.stamped_node_seq, Ordering::Relaxed);
-    let (stop, stop_rx) = watch::channel(false);
-    let notary = Notary {
+    let (stop, mut stop_rx) = watch::channel(false);
+    let mut notary = Notary {
         cfg,
         every: Duration::from_millis(every_ms),
         journal,
@@ -319,6 +354,34 @@ pub(crate) fn spawn_with_floor(
     NotaryTask {
         join: tokio::spawn(async move {
             let _flag = flag;
+            if let Some(mut boot) = boot {
+                let preparation = boot.run();
+                tokio::pin!(preparation);
+                let mut watch = tokio::time::interval(busbar_kernel::host_records::FLUSH_INTERVAL);
+                watch.set_missed_tick_behavior(MissedTickBehavior::Skip);
+                let outcome = loop {
+                    tokio::select! {
+                        biased;
+                        changed = stop_rx.changed() => {
+                            if changed.is_err() || *stop_rx.borrow() {
+                                break Err("shutdown before audit boot originals confirmed".into());
+                            }
+                        }
+                        answer = &mut preparation => break answer,
+                        _ = watch.tick() => {
+                            let head = notary.feed.head();
+                            if head.seq > notary.stamped_through {
+                                let _ = notary.progress.oldest_unstamped_ms.compare_exchange(
+                                    0, head.wall_ms, Ordering::Relaxed, Ordering::Relaxed);
+                            }
+                        }
+                    }
+                };
+                match outcome {
+                    Ok(key_cert) => notary.cfg.key_cert = key_cert,
+                    Err(reason) => notary.halt(reason),
+                }
+            }
             notary.run(stop_rx).await
         }),
         exited,

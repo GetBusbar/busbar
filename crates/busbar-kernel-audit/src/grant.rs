@@ -158,6 +158,12 @@ impl std::fmt::Debug for Notary {
 }
 
 impl Notary {
+    /// The public live key, for building its Bootstrap certificate before live signing starts.
+    #[must_use]
+    pub fn public_key(&self) -> &busbar_contract::crypto::PublicKey {
+        self.signer.public_key()
+    }
+
     /// The capability its grant names.
     #[must_use]
     pub fn new(grant: NotaryGrant) -> Self {
@@ -198,6 +204,12 @@ impl std::fmt::Debug for BootstrapSigner {
 }
 
 impl BootstrapSigner {
+    /// The bound public key; this lends no signing capability.
+    #[must_use]
+    pub fn public_key(&self) -> &busbar_contract::crypto::PublicKey {
+        self.signer.public_key()
+    }
+
     /// Certify a live key for exactly this node, chain position and predecessor. Blocking;
     /// only the Bootstrap signer thread holds this capability in production.
     pub fn sign_notary_key(

@@ -25,6 +25,7 @@ mod native_audit_group_atomic;
 #[path = "../tests/audit_group_lane.rs"]
 mod native_audit_group_lane;
 
+pub(crate) mod boot_jobs;
 mod unit_checkpoint;
 mod unit_checkpoint_audit;
 mod usage_recovery;
@@ -119,9 +120,6 @@ pub struct Durability {
     /// THE NOTARY'S HEAD FEED (SEALING-FIX §3.2): every staged line is published here under this
     /// book's lock, so the notary reads the head without taking it.
     pub(crate) head: Arc<HeadFeed>,
-
-    /// The WAL `node_seq` of the newest audit line read back at reopen (0 for none).
-    resumed_head_node_seq: u64,
 
     /// THE RECORDS READ AT REOPEN, kept only until the own-node restart seal walks them
     /// ([`restart_seal::seal_own_node`], SEALING-FIX §3.6.1: "no extra store read"), then taken.
@@ -546,7 +544,6 @@ pub(crate) async fn build_on_store(
         resumed: true,
         audit_hints: None,
         head: Arc::new(HeadFeed::default()),
-        resumed_head_node_seq: 0,
         boot_records: Vec::new(),
     };
     let mut findings = Vec::new();
@@ -556,8 +553,9 @@ pub(crate) async fn build_on_store(
             .await
             .map_err(|error| native_open_error(error.to_string()))?;
     }
-    durability.resume_audit(&records);
-    durability.publish_resumed_head();
+    durability
+        .resume_audit(&records)
+        .map_err(native_open_error)?;
     findings.extend(
         durability
             .audit_findings

@@ -24,6 +24,8 @@ use super::signer::{self, Checkpoint, Live, Seal, SignerHandle, SignerThreads};
 struct Unstarted {
     live: SignerHandle<Live>,
     threads: SignerThreads,
+    pending: Vec<super::boot_jobs::PendingBootJob>,
+    delegated: Option<busbar_contract::crypto::PublicKey>,
 }
 
 /// THE BOOK'S AUDIT SERVICES.
@@ -72,6 +74,8 @@ impl AuditServices {
         start: NotaryStart,
     ) -> std::io::Result<(Self, CheckpointHandle)> {
         let clock = Arc::new(OnceLock::new());
+        let delegated =
+            (notary.public_key() != bootstrap.public_key()).then(|| notary.public_key().clone());
         let signers = signer::spawn(notary, bootstrap, Arc::clone(&clock))?;
         let services = AuditServices {
             node,
@@ -82,6 +86,8 @@ impl AuditServices {
             unstarted: Mutex::new(Some(Unstarted {
                 live: signers.live,
                 threads: signers.threads,
+                pending: Vec::new(),
+                delegated,
             })),
             boot: Mutex::new(Some(signers.boot)),
             sealer: Mutex::new(Some(signers.sealer)),
@@ -101,9 +107,15 @@ impl AuditServices {
         every_ms: u64,
         clock: Arc<DrainClock>,
         floor: Option<FloorHints>,
+        book: Arc<Mutex<super::Durability>>,
     ) -> bool {
         let _ = self.clock.set(Arc::clone(&clock));
-        let Some(Unstarted { live, threads }) = self
+        let Some(Unstarted {
+            live,
+            threads,
+            pending,
+            delegated,
+        }) = self
             .unstarted
             .lock()
             .unwrap_or_else(|p| p.into_inner())
@@ -111,7 +123,20 @@ impl AuditServices {
         else {
             return false;
         };
-        let task = notary::spawn_with_floor(
+        let boot = self.boot.lock().unwrap_or_else(|p| p.into_inner()).take();
+        let needs_boot = !pending.is_empty() || delegated.is_some();
+        if needs_boot && boot.is_none() {
+            busbar_kernel::diag_error!(
+                busbar_kernel::diagnostics::AUDIT_STAMP_FAILED,
+                node = self.node,
+                reason = "bootstrap_signer_panic",
+                "audit live signing refused: pending boot work has no Bootstrap handle"
+            );
+            return false;
+        }
+        let boot = boot
+            .map(|handle| super::boot_jobs::BootPreparation::new(handle, book, pending, delegated));
+        let task = notary::spawn_with_boot(
             NotaryConfig {
                 node: self.node,
                 host: super::host_identity(),
@@ -122,8 +147,11 @@ impl AuditServices {
             Arc::clone(&self.journal),
             Arc::clone(&self.feed),
             live,
-            floor,
-            Some(clock),
+            notary::NotaryRuntime {
+                floor_hints: floor,
+                drain_clock: Some(clock),
+                boot,
+            },
         );
         let progress = Arc::clone(task.progress());
         let stall_after_ms = task.stall_after_ms();
@@ -150,6 +178,26 @@ impl AuditServices {
     /// The own-node boot phase's Bootstrap handle (taken once).
     pub(crate) fn take_boot_handle(&self) -> Option<SignerHandle<Seal>> {
         self.boot.lock().unwrap_or_else(|p| p.into_inner()).take()
+    }
+
+    /// Return the own-node phase's handle, retaining a failed sign or uncertain original ahead
+    /// of this boot's certificate. Called before start_notary consumes the cold ownership.
+    pub(crate) fn defer_boot(
+        &self,
+        handle: SignerHandle<Seal>,
+        pending: Option<super::boot_jobs::PendingBootJob>,
+    ) {
+        if let Some(job) = pending {
+            if let Some(unstarted) = self
+                .unstarted
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .as_mut()
+            {
+                unstarted.pending.push(job);
+            }
+        }
+        *self.boot.lock().unwrap_or_else(|p| p.into_inner()) = Some(handle);
     }
 
     /// The predecessor sealer's Bootstrap handle (taken once).

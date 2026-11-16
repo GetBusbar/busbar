@@ -65,6 +65,12 @@ fn certificate_codec_refuses_truncation_trailing_data_and_corruption() {
     let mut trailing = body;
     trailing.push(0);
     assert!(notary_key_from_journal_body(&trailing).is_err());
+    let mut unsupported = notary_key_body(&record).unwrap();
+    unsupported[tag_end - 1] = b'1';
+    assert!(
+        notary_key_from_journal_body(&unsupported).is_err(),
+        "v1 certificate must not silently disappear"
+    );
     let mut changed = record.clone();
     changed.linked_ms += 1;
     assert!(changed.verify(bootstrap.public_key()).is_err());
@@ -139,4 +145,57 @@ fn shared_linked_reader_and_head_preserve_certificate_positions() {
     assert_eq!(head.head.seq, record.seq);
     assert_eq!(head.head.hash, record.fingerprint.to_string());
     assert_eq!(head.prev_hash, "");
+}
+
+#[test]
+fn certified_stamp_checks_exact_original_wal_identity_and_kind() {
+    use busbar_kernel_audit::{Notary, Stamp, StampKind};
+    let (record, bootstrap) = fixture();
+    let live = LocalSigner::from_seed(&[9; 32]).unwrap();
+    let (grant, _) = AuditSigningKey::from_seed(&[7; 32])
+        .into_grants(LiveSigner::Delegated(Box::new(live)))
+        .unwrap();
+    let notary = Notary::new(grant);
+    let page = Stamp {
+        node: record.node,
+        from: 1,
+        to: 3,
+        fingerprint: Fingerprint([4; 32]),
+        kind: StampKind::Live,
+        sealer: record.node,
+        host: "certificate-test".into(),
+        every: 1,
+        stamped_ms: 140,
+        down_from_ms: 0,
+        down_to_ms: 0,
+        crypto: String::new(),
+        sig_alg: String::new(),
+        key_id: String::new(),
+        key_cert: 7,
+        signature: Vec::new(),
+    };
+    let page = notary.sign_stamp(page).unwrap();
+    record
+        .verify_stamp_signature(record.node, 7, 10, &page, bootstrap.public_key())
+        .unwrap();
+    assert!(record
+        .verify_stamp_signature(record.node, 8, 10, &page, bootstrap.public_key())
+        .is_err());
+    assert!(record
+        .verify_stamp_signature(record.node, 7, 6, &page, bootstrap.public_key())
+        .is_err());
+    assert!(record
+        .verify_stamp_signature(record.node + 1, 7, 10, &page, bootstrap.public_key())
+        .is_err());
+    let mut wrong = page;
+    wrong.kind = StampKind::AfterRestart;
+    // Even a valid delegated signature cannot authorize a restart page.
+    let signer = LocalSigner::from_seed(&[9; 32]).unwrap();
+    wrong.signature.clear();
+    signer
+        .sign(&wrong.preimage(), &mut wrong.signature)
+        .unwrap();
+    assert!(record
+        .verify_stamp_signature(record.node, 7, 10, &wrong, bootstrap.public_key())
+        .is_err());
 }

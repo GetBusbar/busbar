@@ -109,6 +109,34 @@ pub fn verify_linked_window(records: &[AuditLinkedRecord]) -> Result<(), String>
     walk(records, false)
 }
 
+impl AuditChain {
+    /// Reconstruct the claimed tail of a mixed window, like [`AuditChain::resume`]. This is
+    /// NOT integrity or authority verification: boot must retain a damaged tail's position so
+    /// it can report a break without reusing old sequence numbers. Call verify_linked_window
+    /// and the authority walk separately before authenticating history.
+    pub fn resume_linked(records: &[AuditLinkedRecord]) -> Result<Self, String> {
+        let mut chain = Self::new();
+        for record in records {
+            match record {
+                AuditLinkedRecord::Unit(record) => chain.heads.observe(record),
+                AuditLinkedRecord::NotaryKey(record) => chain.heads.observe_notary_key(record),
+            }
+        }
+        if let Some(last) = records.last() {
+            chain = chain.sealing_as(last.node());
+            chain.tail_hash = match last {
+                AuditLinkedRecord::Unit(record) => record.hash.clone(),
+                AuditLinkedRecord::NotaryKey(record) => record.fingerprint.to_string(),
+            };
+            chain.next_seq = last
+                .chain_seq()
+                .checked_add(1)
+                .ok_or_else(|| "an audit chain sequence overflowed".to_string())?;
+        }
+        Ok(chain)
+    }
+}
+
 fn walk(records: &[AuditLinkedRecord], genesis: bool) -> Result<(), String> {
     let Some(first) = records.first() else {
         return Ok(());

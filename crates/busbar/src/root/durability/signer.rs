@@ -20,8 +20,9 @@ use std::sync::mpsc::{sync_channel, Receiver, SyncSender, TrySendError};
 use std::sync::Arc;
 use std::time::Duration;
 
-use busbar_contract::crypto::SignError;
+use busbar_contract::crypto::{PublicKey, SignError};
 use busbar_kernel::governance::drain::{Cut, DrainClock};
+use busbar_kernel_audit::notary_key::NotaryKeyCertificate;
 use busbar_kernel_audit::{BootstrapSigner, BreakNotice, Notary, Stamp, StampSignError};
 use tokio::sync::oneshot;
 use tokio::time::Instant;
@@ -105,6 +106,13 @@ enum Job {
     Restart(Stamp, Reply<Stamp>),
     Break(BreakNotice, Reply<BreakNotice>),
     Checkpoint(Vec<Vec<u8>>, Reply<Vec<Vec<u8>>>),
+    Certificate {
+        node: u64,
+        seq: u64,
+        prev: busbar_kernel_audit::Fingerprint,
+        key: PublicKey,
+        reply: Reply<NotaryKeyCertificate>,
+    },
 }
 
 /// The notary task's handle: `live` and `final` pages.
@@ -225,6 +233,30 @@ fn queue(tx: &SyncSender<Job>, job: Job) -> Result<(), SignFailure> {
 }
 
 impl SignerHandle<Seal> {
+    /// Certify this boot's public key at an exact chain position on the Bootstrap thread.
+    pub(crate) async fn submit_certificate(
+        &self,
+        node: u64,
+        seq: u64,
+        prev: busbar_kernel_audit::Fingerprint,
+        key: PublicKey,
+    ) -> Result<NotaryKeyCertificate, SignFailure> {
+        probe();
+        let deadline = Instant::now() + JOB_DEADLINE;
+        let (reply, rx) = oneshot::channel();
+        queue(
+            self.boot_tx()?,
+            Job::Certificate {
+                node,
+                seq,
+                prev,
+                key,
+                reply,
+            },
+        )?;
+        reply_by(rx, deadline).await
+    }
+
     fn boot_tx(&self) -> Result<&SyncSender<Job>, SignFailure> {
         match &self.inner {
             Inner::Boot { tx } => Ok(tx),
@@ -380,6 +412,21 @@ fn bootstrap_thread(signer: BootstrapSigner, rx: Receiver<Job>) {
         // A job whose submitter already gave up (its deadline passed) is skipped, so a KMS that
         // recovers does not work through stale jobs.
         match job {
+            Job::Certificate {
+                node,
+                seq,
+                prev,
+                key,
+                reply,
+            } => {
+                if !reply.is_closed() {
+                    let _ = reply.send(
+                        signer
+                            .sign_notary_key(node, seq, prev, &key)
+                            .map_err(failure_of_sign),
+                    );
+                }
+            }
             Job::Restart(stamp, reply) => {
                 if !reply.is_closed() {
                     let _ = reply.send(signer.sign_restart_page(stamp).map_err(failure_of_stamp));

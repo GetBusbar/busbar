@@ -14,6 +14,7 @@ use crate::off_path::journal::Reader;
 
 /// The journal discriminator of a linked certificate, distinct from unit records.
 pub const NOTARY_KEY_JOURNAL_TAG: &str = "audit.notary_key.v2";
+const NOTARY_KEY_JOURNAL_PREFIX: &str = "audit.notary_key.";
 /// The signature domain approved for node-and-position-bound certificates.
 pub const NOTARY_KEY_DOMAIN: &str = "busbar.audit.notary_key.v2";
 /// The domain of the containing linked record's fingerprint.
@@ -104,7 +105,140 @@ pub struct NotaryKeyRecord {
     pub certificate: NotaryKeyCertificate,
 }
 
+/// A certificate signed for a snapshotted position, not staged into a journal yet.
+#[derive(Debug)]
+pub struct PreparedNotaryKey {
+    node: u64,
+    seq: u64,
+    prev_link: Fingerprint,
+    certificate: NotaryKeyCertificate,
+}
+
+/// A certificate linked over the current chain tail. Advance only after its journal stage
+/// succeeds, while still holding the same durability lock.
+#[derive(Debug)]
+pub struct LinkedNotaryKey {
+    record: NotaryKeyRecord,
+}
+
+impl LinkedNotaryKey {
+    /// The linked certificate, including its computed fingerprint.
+    #[must_use]
+    pub fn record(&self) -> &NotaryKeyRecord {
+        &self.record
+    }
+
+    /// Move the certificate out after staging and advancing.
+    #[must_use]
+    pub fn into_record(self) -> NotaryKeyRecord {
+        self.record
+    }
+}
+
+impl crate::AuditChain {
+    /// Prepare a signed certificate before the durability lock. The signer must have signed
+    /// exactly these position fields. Linking rechecks them against the live chain.
+    #[must_use]
+    pub fn prepare_notary_key(
+        node: u64,
+        seq: u64,
+        prev_link: Fingerprint,
+        certificate: NotaryKeyCertificate,
+    ) -> PreparedNotaryKey {
+        PreparedNotaryKey {
+            node,
+            seq,
+            prev_link,
+            certificate,
+        }
+    }
+
+    /// Link a certificate without changing the chain. A changed tail or position requires a
+    /// new Bootstrap signature; it is never repaired by relabelling the certificate.
+    pub fn link_notary_key(
+        &self,
+        prepared: PreparedNotaryKey,
+        linked_ms: u64,
+        _token: &busbar_contract::caps::Pass<busbar_contract::caps::Audit>,
+    ) -> Result<LinkedNotaryKey, crypto::Error> {
+        if prepared.node == 0
+            || prepared.node != self.node()
+            || prepared.seq != self.next_seq
+            || self.next_seq == u64::MAX
+            || Some(prepared.prev_link) != Fingerprint::from_hex(&self.tail_hash)
+        {
+            return Err(crypto::Error::Invalid("notary signing position changed"));
+        }
+        let mut record = NotaryKeyRecord {
+            node: prepared.node,
+            seq: prepared.seq,
+            linked_ms,
+            prev_link: prepared.prev_link,
+            fingerprint: Fingerprint::ZERO,
+            certificate: prepared.certificate,
+        };
+        record.fingerprint = record.recompute_fingerprint();
+        Ok(LinkedNotaryKey { record })
+    }
+
+    /// Advance past a successfully staged certificate. Stale or repeated advancement refuses
+    /// rather than creating a chain hole; it must share the staging lock with linking.
+    pub fn advance_notary_key(&mut self, linked: &LinkedNotaryKey) -> Result<(), crypto::Error> {
+        let record = linked.record();
+        let next = self
+            .next_seq
+            .checked_add(1)
+            .ok_or(crypto::Error::Invalid("notary chain sequence overflow"))?;
+        if record.node != self.node()
+            || record.seq != self.next_seq
+            || Some(record.prev_link) != Fingerprint::from_hex(&self.tail_hash)
+        {
+            return Err(crypto::Error::Invalid("notary signing position changed"));
+        }
+        self.tail_hash = record.fingerprint.to_string();
+        self.next_seq = next;
+        self.sealed = self.sealed.saturating_add(1);
+        self.heads.observe_notary_key(record);
+        Ok(())
+    }
+}
+
 impl NotaryKeyRecord {
+    /// Check only a stamp's signature and certificate binding at their original WAL positions.
+    /// This is NOT coverage or continued authority: callers must additionally validate the
+    /// endpoint, chain walk and complete supersession context. A retained certificate copy uses
+    /// its original WAL position, never the base row's position.
+    pub fn verify_stamp_signature(
+        &self,
+        expected_node: u64,
+        certificate_node_seq: u64,
+        stamp_node_seq: u64,
+        stamp: &crate::Stamp,
+        bootstrap: &PublicKey,
+    ) -> Result<(), crypto::Error> {
+        if self.node != expected_node
+            || stamp.node != expected_node
+            || stamp.sealer != expected_node
+            || !matches!(stamp.kind, crate::StampKind::Live | crate::StampKind::Final)
+            || certificate_node_seq == 0
+            || stamp.key_cert != certificate_node_seq
+            || stamp_node_seq <= certificate_node_seq
+            || stamp.to < self.seq
+            || stamp.from == 0
+            || stamp.from > stamp.to
+            || stamp.key_id != self.certificate.key_id
+            || stamp.sig_alg != self.certificate.sig_alg
+        {
+            return Err(crypto::Error::Invalid("stamp key not certified"));
+        }
+        self.verify(bootstrap)?;
+        crypto::verify(
+            &self.certificate.key()?,
+            &stamp.preimage(),
+            &stamp.signature,
+        )
+    }
+
     /// Recompute the record fingerprint with the independently versioned certificate payload.
     #[must_use]
     pub fn recompute_fingerprint(&self) -> Fingerprint {
@@ -170,8 +304,12 @@ pub fn notary_key_body(record: &NotaryKeyRecord) -> Result<Vec<u8>, FieldTooLong
 /// from the chain. Unrelated journal tags return None.
 pub fn notary_key_from_journal_body(bytes: &[u8]) -> Result<Option<NotaryKeyRecord>, String> {
     let mut r = Reader::new(bytes);
-    if r.text().as_deref() != Some(NOTARY_KEY_JOURNAL_TAG) {
-        return Ok(None);
+    match r.text() {
+        Some(tag) if tag == NOTARY_KEY_JOURNAL_TAG => {}
+        Some(tag) if tag.starts_with(NOTARY_KEY_JOURNAL_PREFIX) => {
+            return Err("an audit certificate uses an unsupported version".into());
+        }
+        _ => return Ok(None),
     }
     let bad = || "a notary_key.v2 record does not decode".to_string();
     if r.text().as_deref() != Some(crate::recipe::LINK_RECIPE) {

@@ -7,17 +7,65 @@ use busbar_kernel::persistence::journal::head_cell::Head;
 use busbar_kernel_audit::{Fingerprint, LineAt, Linked, Prepared};
 
 impl Durability {
-    pub(super) fn resume_audit(&mut self, records: &[JournalRecord]) {
+    /// Stage a Bootstrap-certified key into the ordinary audit chain. The caller confirms
+    /// this exact run before publishing its WAL position as the live signer's key_cert.
+    pub(crate) fn stage_notary_key(
+        &mut self,
+        prepared: busbar_kernel_audit::notary_key::PreparedNotaryKey,
+        pass: &busbar_contract::caps::Pass<busbar_contract::caps::Audit>,
+        token: &Grant<DurableWrite>,
+    ) -> Result<
+        (
+            busbar_kernel_audit::notary_key::NotaryKeyRecord,
+            Arc<StagedRun>,
+        ),
+        DurabilityLost,
+    > {
+        let linked_ms = busbar_kernel::store::now_ms();
+        let linked = self
+            .record
+            .link_notary_key(prepared, linked_ms, pass)
+            .map_err(|_| DurabilityLost::observed(token, StepName::Audit))?;
+        let body = busbar_kernel_audit::notary_key::notary_key_body(linked.record())
+            .map_err(|_| DurabilityLost::observed(token, StepName::Audit))?;
+        let entry = Entry::new(RecordClass::Transaction, body).at(linked_ms / 1_000, 0);
+        let run = self
+            .journal
+            .stage_run(&[entry])
+            .map_err(|_| DurabilityLost::observed(token, StepName::Audit))?;
+        self.record
+            .advance_notary_key(&linked)
+            .map_err(|_| DurabilityLost::observed(token, StepName::Audit))?;
+        self.head.publish(&Head {
+            seq: linked.record().seq,
+            node_seq: run.records().first().map_or(0, |row| row.node_seq),
+            fp: linked.record().fingerprint.0,
+            wall_ms: linked_ms,
+        });
+        Ok((linked.into_record(), run))
+    }
+
+    pub(super) fn resume_audit(&mut self, records: &[JournalRecord]) -> Result<(), String> {
+        use busbar_kernel_audit::linked_record::{
+            linked_record_from_journal_body, AuditLinkedRecord,
+        };
         let mut sealed = Vec::new();
+        let mut last_node_seq = 0;
         let mut keyed = false;
         for record in records {
             keyed |= record.class == RecordClass::Bootstrap;
-            match decode_audit(record) {
+            if record.class != RecordClass::Transaction {
+                continue;
+            }
+            match linked_record_from_journal_body(
+                &record.body,
+                &busbar_kernel::Registration::meter_class,
+            ) {
                 Ok(Some(audit)) => {
                     if keyed && self.audit_signed_from.is_none() {
-                        self.audit_signed_from = Some(audit.seq);
+                        self.audit_signed_from = Some(audit.chain_seq());
                     }
-                    self.resumed_head_node_seq = record.node_seq;
+                    last_node_seq = record.node_seq;
                     sealed.push(audit);
                 }
                 Ok(None) => {}
@@ -28,25 +76,28 @@ impl Durability {
             }
         }
         if !sealed.is_empty() {
-            self.record = AuditChain::resume(&sealed).sealing_as(self.record.node());
+            self.record = AuditChain::resume_linked(&sealed)?.sealing_as(self.record.node());
         }
-        self.audit_ring = AuditRing::from_sealed(sealed);
-    }
-
-    /// Publish the chain's resumed tail to the head feed, so the notary starts from it.
-    pub(super) fn publish_resumed_head(&mut self) {
-        let Some(last) = self.audit_records().last() else {
-            return;
-        };
-        let Some(fp) = Fingerprint::from_hex(&last.hash) else {
-            return;
-        };
-        self.head.publish(&Head {
-            seq: last.seq,
-            node_seq: self.resumed_head_node_seq,
-            fp: fp.0,
-            wall_ms: last.linked_ms,
-        });
+        if let Some(last) = sealed.last() {
+            let fp = last.fingerprint()?;
+            self.head.publish(&Head {
+                seq: last.chain_seq(),
+                node_seq: last_node_seq,
+                fp: fp.0,
+                wall_ms: last.linked_ms(),
+            });
+        }
+        // This ring is a unit-facts projection, never a complete mixed-chain authority proof.
+        self.audit_ring = AuditRing::from_sealed(
+            sealed
+                .into_iter()
+                .filter_map(|row| match row {
+                    AuditLinkedRecord::Unit(record) => Some(*record),
+                    AuditLinkedRecord::NotaryKey(_) => None,
+                })
+                .collect(),
+        );
+        Ok(())
     }
 
     /// The resumed head the notary starts from: everything at or below it was written before this
