@@ -25,6 +25,7 @@ use std::collections::HashMap;
 
 use busbar_plugin_abi::fail::refused::R_CONFIG;
 use busbar_plugin_abi::fail::Fail;
+use busbar_plugin_abi::need::need_flag::{TLS_INBAND, TLS_MUTUAL, TLS_NONE, TLS_REQUIRED};
 use busbar_plugin_abi::need::ChainBytes;
 use busbar_plugin_abi::plugin::{Describe, Endpoints};
 
@@ -40,10 +41,44 @@ fn parse_config(bytes: &[u8]) -> Result<Config, Fail> {
     })
 }
 
+fn bad_entry() -> Fail {
+    Fail::refused_because(
+        R_CONFIG,
+        "an endpoint entry is `<tls> <egress> <dest>` (open) or `<egress> <url>` (fetch)",
+    )
+}
+
+fn tls_of(word: &str) -> Result<u32, Fail> {
+    match word {
+        "none" => Ok(TLS_NONE),
+        "required" => Ok(TLS_REQUIRED),
+        "mutual" => Ok(TLS_MUTUAL),
+        "inband" => Ok(TLS_INBAND),
+        _ => Err(bad_entry()),
+    }
+}
+
+fn egress_of(word: &str) -> Result<u32, Fail> {
+    word.parse::<u32>().map_err(|_| bad_entry())
+}
+
 /// `check`'s declarations: every `open` entry, then every `fetch` entry, in config order, as stated. Whether a
 /// stated endpoint is admitted is core's verdict, never this fixture's.
-fn declare(bytes: &[u8], _ends: &mut Endpoints<'_>) -> Result<(), Fail> {
-    parse_config(bytes).map(drop)
+fn declare(bytes: &[u8], ends: &mut Endpoints<'_>) -> Result<(), Fail> {
+    let config = parse_config(bytes)?;
+    for entry in config.get("open").into_iter().flatten() {
+        let mut words = entry.splitn(3, ' ');
+        let (Some(tls), Some(egress), Some(dest)) = (words.next(), words.next(), words.next())
+        else {
+            return Err(bad_entry());
+        };
+        ends.open(dest, tls_of(tls)?, egress_of(egress)?);
+    }
+    for entry in config.get("fetch").into_iter().flatten() {
+        let (egress, url) = entry.split_once(' ').ok_or_else(bad_entry)?;
+        ends.fetch(url, egress_of(egress)?);
+    }
+    Ok(())
 }
 
 /// `open`: the same grammar `check` reads, and nothing dialled.
@@ -218,8 +253,13 @@ pub mod raw {
     use busbar_plugin_abi::bridge::{self, Inbox};
     use busbar_plugin_abi::fail::{refused, Fail};
     use busbar_plugin_abi::host::Host;
+    use busbar_plugin_abi::need::{egress, need_flag, op};
     use busbar_plugin_abi::plugin::OPEN_DRY_RUN;
-    use busbar_plugin_abi::records::{tag, MaskRec, Reply, Writer};
+    use busbar_plugin_abi::records::{tag, EndpointRec, MaskRec, Reply, Writer};
+
+    /// A valid record's flags: verified TLS to operator infrastructure.
+    const VALID: u32 =
+        need_flag::TLS_REQUIRED | (egress::OPERATOR_INFRASTRUCTURE << need_flag::EGRESS_SHIFT);
 
     /// The plugin value (never built: this image answers `check` only).
     pub struct RawPlugin;
@@ -228,6 +268,41 @@ pub mod raw {
     pub struct RawImage;
 
     static GLOBAL: Slots<ChainBox<Result<Reply, Fail>, Inbox>> = Slots::new();
+
+    fn endpoint(r: &mut Reply, code: u32, flags: u32, dest: &[u8]) -> Option<()> {
+        r.put_pod_tail(tag::ENDPOINT, &EndpointRec { op: code, flags }, dest)
+            .ok()
+    }
+
+    /// The ENDPOINT records of the case `config` names.
+    fn answer(config: &[u8]) -> Option<Reply> {
+        let names = |case: &str| config.windows(case.len()).any(|w| w == case.as_bytes());
+        let mut r = Reply::new();
+        if names("sixteen") || names("seventeen") {
+            let n = if names("seventeen") { 17 } else { 16 };
+            for i in 0..n {
+                endpoint(
+                    &mut r,
+                    op::OPEN,
+                    VALID,
+                    format!("db{i}.internal:5432").as_bytes(),
+                )?;
+            }
+        } else if names("max-dest") || names("long-dest") {
+            let len = if names("long-dest") { 2_049 } else { 2_048 };
+            let mut dest = vec![b'd'; len - ":5432".len()];
+            dest.extend_from_slice(b":5432");
+            endpoint(&mut r, op::OPEN, VALID, &dest)?;
+        } else if names("bad-op") {
+            endpoint(&mut r, op::SECRET, VALID, b"db.internal:5432")?;
+        } else if names("egress-five") {
+            let flags = need_flag::TLS_REQUIRED | (5 << need_flag::EGRESS_SHIFT);
+            endpoint(&mut r, op::OPEN, flags, b"db.internal:5432")?;
+        } else if names("bit-200") {
+            endpoint(&mut r, op::OPEN, VALID | 0x200, b"db.internal:5432")?;
+        }
+        Some(r)
+    }
 
     impl Image for RawImage {
         type Plugin = RawPlugin;
@@ -264,7 +339,7 @@ pub mod raw {
 
         fn open(
             _h: &'static Host,
-            _config: Bytes<'_>,
+            config: Bytes<'_>,
             _chained: ChainBytes,
             flags: u32,
             out: &mut Out<'_>,
@@ -278,7 +353,10 @@ pub mod raw {
                     )),
                 ));
             }
-            Opening::Done(Status::OK)
+            Opening::Done(match answer(config.get()) {
+                Some(records) if out.append(records.as_bytes()) => Status::OK,
+                _ => Status::FAULT,
+            })
         }
 
         fn poll(
@@ -302,9 +380,8 @@ pub mod raw {
         fn start<'i>(
             _p: &'i RawPlugin,
             _h: &'static Host,
-            reference: ChainBytes,
+            _reference: ChainBytes,
         ) -> (ChainFut<'i, Self::Reply>, Self::Inbox) {
-            drop(reference);
             (
                 Box::pin(core::future::ready(Err::<Reply, Fail>(Fail::refused(
                     refused::R_INVALID,
