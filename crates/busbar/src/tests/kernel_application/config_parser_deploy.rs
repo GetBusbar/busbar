@@ -34,7 +34,6 @@ pub(crate) fn base_deploy() -> DeployCfg {
         hooks: Default::default(),
         groups: Default::default(),
         rate_card: None,
-        plugin_rate_cards: Default::default(),
         per_request_fee: 0,
         plane_rate_cards: Default::default(),
         plane_fees: Default::default(),
@@ -407,7 +406,6 @@ fn test_auth_policy_block_parses_and_resolves() {
            policy:\n    \
              self_mint: true\n    \
              binding_modes: [time-bound, user-bound, both]\n    \
-             default_ttl: \"24h\"\n    \
              max_ttl: \"90d\"\n    \
              mint_ceilings:\n      \
                app-admin:\n        \
@@ -439,7 +437,6 @@ fn test_auth_policy_block_parses_and_resolves() {
             ][..]
         )
     );
-    assert_eq!(p.default_ttl.as_deref(), Some("24h"));
     assert_eq!(p.max_ttl.as_deref(), Some("90d"));
 
     let ceiling = p
@@ -475,7 +472,6 @@ fn test_auth_policy_absent_is_default() {
     let p = &auth.policy;
     assert_eq!(p.self_mint, None);
     assert!(p.binding_modes.is_none());
-    assert!(p.default_ttl.is_none());
     assert!(p.max_ttl.is_none());
     assert!(p.mint_ceilings.is_empty());
     assert_eq!(p, &busbar_kernel::config::AuthPolicyCfg::default());

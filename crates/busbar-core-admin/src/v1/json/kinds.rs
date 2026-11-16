@@ -82,10 +82,7 @@ const CORE_SECTIONS: [(&str, &[&str]); 9] = [
     ),
     ("units", &["global_hooks"]),
     ("limits", &["groups", "limits", "export_limits"]),
-    (
-        "ledger",
-        &["per_request_fee", "rate_card", "plugin_rate_cards"],
-    ),
+    ("ledger", &["per_request_fee", "rate_card"]),
     ("credentials", &["auth", "credentials", "oauth_as"]),
     ("durability", &[]),
     ("connector", &[]),

@@ -1400,11 +1400,11 @@ diagnostics! {
 
     CONFIG_AUTH_POLICY_INVALID = 3113, Config, Fatal, "config-auth-policy-invalid", "1.6.0", false,
         "An auth policy or key lifetime setting is invalid",
-        "A setting under `auth:` that governs minted keys cannot hold: a duration that does not parse, a default TTL above the maximum, a per-role mint ceiling wider than the deployment-wide policy, a delegated admin scope that does not parse, or a browser-login method without a `public_url:` to build its redirect URLs.",
+        "A setting under `auth:` that governs minted keys cannot hold: a duration that does not parse, a per-role mint ceiling wider than the deployment-wide policy, a delegated admin scope that does not parse, or a browser-login method without a `public_url:` to build its redirect URLs.",
         "Fix the named setting: durations are written like `30d` or `12h`, per-role ceilings must stay within `auth.policy`, and a browser login needs top-level `public_url: https://<busbar-host>`."
         => config_auth_policy_invalid(detail) "{detail}",
-        example "auth:\n  policy: { default_ttl: 90d, max_ttl: 30d }",
-        detail "auth.policy.default_ttl ('90d', 7776000s) exceeds auth.policy.max_ttl ('30d', 2592000s); the default a mint falls back to cannot be longer than the ceiling";
+        example "auth:\n  policy:\n    binding_modes: [time-bound]\n    mint_ceilings:\n      ci: { binding_modes: [both] }",
+        detail "auth.policy.mint_ceilings.ci.binding_modes names 'both', which auth.policy.binding_modes does not allow; a per-role ceiling cannot widen the deployment-wide binding modes";
 
     CONFIG_ROLE_BINDING_INVALID = 3114, Config, Fatal, "config-role-binding-invalid", "1.6.0", false,
         "A role binding is invalid",

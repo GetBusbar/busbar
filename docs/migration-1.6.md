@@ -598,3 +598,11 @@ receives identity-provider settings, not deployment credential references.
 The upgrade boot folds the 1.5.5 overlay file into config.yaml and keeps the file as
 `<overlay>.1.5.5` ([the 1.5.5 overlay file](#the-155-overlay-file)); there is no separate import
 step, and a stamped boot never reads an overlay file.
+
+## Removed pre-release keys
+
+These keys appeared in 1.6 pre-releases only; 1.5.5 never had them.
+
+- `auth.policy.default_ttl`: removed; a self-serve mint takes `auth.key_ttl` (default `90d`), an admin mint that names no expiry keeps its built-in 90-day default, and `auth.policy.max_ttl` still caps both. A config that sets it is refused as an unknown key.
+- `auth.policy.max_outstanding_tickets_per_key`: removed; one key holds at most 256 unredeemed ephemeral secrets on one node. A config that sets it is refused as an unknown key.
+- `plugin_rate_cards`: removed; plugin measurement counts are still recorded and are reported unpriced. A config (or `PUT /config/settings` body) that sets it is refused as an unknown key.

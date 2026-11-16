@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod card;
 pub mod measurement_rates;
-pub use measurement_rates::{validate_plugin_rate_coverage, PluginRateCards};
+pub use measurement_rates::PluginRateCards;
 pub mod overlay;
 mod overlay_native;
 mod overlay_store;
@@ -431,8 +431,6 @@ pub struct RootCfg {
     /// plane's own card rides in it under plane-qualified keys
     /// (`busbar_kernel_ledger::cost::compose_plane_cards`); with none, it is `rate_card:` verbatim.
     pub rate_card: Option<std::collections::BTreeMap<String, RateEntryCfg>>,
-    /// Exact host-owned rates for common plugin measurements, by kind, configured namespace, class.
-    pub plugin_rate_cards: PluginRateCards,
     /// Flat cents charged per request (default 0).
     pub per_request_fee: i64,
     /// Every other plane's own fees, by plane registry key. See `DeployCfg::plane_fees`.
@@ -1014,9 +1012,6 @@ pub struct DeployCfg {
     /// The numbers are ABSTRACT cost units (no currency, no FX).
     #[serde(default)]
     pub rate_card: Option<std::collections::BTreeMap<String, RateEntryCfg>>,
-    /// Common measurement rates: kind -> configured instance namespace -> declared class.
-    #[serde(default)]
-    pub plugin_rate_cards: PluginRateCards,
     /// Flat cents (abstract minor units) charged per request for budget accounting. Default 0.
     #[serde(default = "default_per_request_fee")]
     pub per_request_fee: i64,
@@ -1676,9 +1671,6 @@ pub fn resolve(
     defs: &HashMap<String, ProviderDef>,
 ) -> Result<RootCfg, Vec<String>> {
     let mut errors = Vec::new();
-    if let Err(error) = measurement_rates::validate(&deploy.plugin_rate_cards) {
-        errors.push(coded::config_rate_card_invalid(error).into());
-    }
     for name in deploy
         .rate_card
         .iter()
@@ -2105,7 +2097,6 @@ pub fn resolve(
             admin_auth: admin_auth_names,
             groups: deploy.groups.clone(),
             rate_card: compose_plane_cards(deploy.rate_card.as_ref(), &deploy.plane_rate_cards),
-            plugin_rate_cards: deploy.plugin_rate_cards.clone(),
             per_request_fee: deploy.per_request_fee,
             plane_fees: deploy.plane_fees.clone(),
             store: deploy.store.clone(),
@@ -2260,7 +2251,6 @@ impl std::fmt::Debug for RootCfg {
             .field("admin_auth", &self.admin_auth)
             .field("groups", &self.groups)
             .field("rate_card", &self.rate_card)
-            .field("plugin_rate_cards", &self.plugin_rate_cards)
             .field("per_request_fee", &self.per_request_fee)
             .field("plane_fees", &self.plane_fees)
             .field("store", &self.store)
@@ -2309,7 +2299,6 @@ impl std::fmt::Debug for DeployCfg {
             .field("hooks", &self.hooks)
             .field("groups", &self.groups)
             .field("rate_card", &self.rate_card)
-            .field("plugin_rate_cards", &self.plugin_rate_cards)
             .field("per_request_fee", &self.per_request_fee)
             .field("plane_rate_cards", &self.plane_rate_cards)
             .field("plane_fees", &self.plane_fees)

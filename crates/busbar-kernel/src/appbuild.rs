@@ -1806,10 +1806,7 @@ async fn build_app_native(
         cfg.per_request_fee,
         &cfg.groups,
     );
-    let cost = Arc::new(
-        cost.with_plane_fees(&cfg.plane_fees)
-            .with_measurement_rates(&cfg.plugin_rate_cards),
-    );
+    let cost = Arc::new(cost.with_plane_fees(&cfg.plane_fees));
 
     let (mut lanes, mut units) = (Vec::new(), Vec::new());
     for (lane, e) in cfg.rate_card.iter().flatten() {
@@ -1818,10 +1815,6 @@ async fn build_app_native(
             units.push((lane.clone(), class.clone(), rate.nanos_per_unit()));
         }
     }
-    units.extend(
-        crate::cost::measurement_rate_cells(&cfg.plugin_rate_cards)
-            .map(|(cell, rate)| (cell.lane, cell.class, rate)),
-    );
     let resolved_rates = config::card::CardRates {
         lanes,
         units,

@@ -361,7 +361,7 @@ auth:
 | `admin_auth` | list of provider NAMES | no | `[admin-tokens]` | The chain gating `/api/v1/admin/*`, same bare-name references as `chain`. The built-in `admin-tokens` provider carries the operator credential as a secret reference (`token:`) on its definition. `[]` = OPEN admin (dev only; loud warning). |
 | `role_bindings` | map | no | `{}` | Role policy, NESTED BY PROVIDER NAME: `role_bindings.<provider>.<role> -> { allowed_pools?, group?, admin_scope?, verbs? }`. Keying by NAME (not by the backing plugin's own name) is what lets two named providers share one module and still hold independent grants. See below. |
 | `key_ttl` | duration string | no | `90d` | The lifetime of a key minted by the self-serve token exchange (`POST /auth/token`): the key expires `key_ttl` after it is minted. Read at every apply/reload. |
-| `policy` | map | no | absent (no caps) | Token-mint policy, a map that rejects unknown keys. `self_mint` (bool; `false` refuses the self-serve path with 403, omitted leaves it available whenever an identity provider is configured); `binding_modes` (list of `time-bound`, `user-bound`, `both`; omitted allows all); `default_ttl` and `max_ttl` (duration strings; `default_ttl` must not exceed `max_ttl`, or boot fails); `mint_ceilings.<role>` with `max_ttl`, `allowed_pools` (omitted = all pools, `[]` = none) and `binding_modes` (must be a subset of the block-level list) as per-role upper bounds on a mint; `max_outstanding_tickets_per_key` (integer, at least 1, default 256) caps the unredeemed ephemeral secrets (`POST /v1/realtime/client_secrets`) one key holds on one node; a key over it is answered 429 with `Retry-After`, and other keys are unaffected. |
+| `policy` | map | no | absent (no caps) | Token-mint policy, a map that rejects unknown keys. `self_mint` (bool; `false` refuses the self-serve path with 403, omitted leaves it available whenever an identity provider is configured); `binding_modes` (list of `time-bound`, `user-bound`, `both`; omitted allows all); `max_ttl` (duration string); `mint_ceilings.<role>` with `max_ttl`, `allowed_pools` (omitted = all pools, `[]` = none) and `binding_modes` (must be a subset of the block-level list) as per-role upper bounds on a mint. A self-serve mint takes `key_ttl` (above). One key holds at most 256 unredeemed ephemeral secrets (`POST /v1/realtime/client_secrets`) on one node; a key over it is answered 429 with `Retry-After`, and other keys are unaffected. |
 
 **The `identity-providers:` definition map.** `name -> { module, settings?, max_admin_scope?, token?, browser_login? }`.
 
@@ -666,7 +666,7 @@ other limit's.
 
 ### `rate_card` and `per_request_fee`
 
-Host-owned rate cards are the cost source, including `plugin_rate_cards` for common measurements.
+Host-owned rate cards are the cost source.
 Every billable class a plane declares is the ledger (the four reserved LLM
 token tiers, plus any OPEN class a plane counts — a rerank's `search_units`, an A2A hop's `bytes`).
 Every count a provider reports is a ledger line under its class (owner ruling LEDGER-100): beside
@@ -709,6 +709,8 @@ Plugins report measurements, not prices. The host records each report under the 
 identity and computes cost from the ledger and applicable rate card. Unit names are plugin data:
 adding a new measured unit does not require a provider-specific pricing branch in core.
 A missing measurement is unknown; it must not be replaced with zero or a different unit.
+Counts a non-plane plugin (transport, auth, store, secret, hook, export) declares and reports are
+recorded under its configured instance and reported **unpriced**; no configuration key prices them.
 
 The rate numbers are **abstract cost units**: Busbar does pure integer math and never knows what
 currency they represent. Currency, symbols, and FX are display concerns owned by your dashboard.
@@ -727,45 +729,6 @@ configure 0 to make it free, or a rate in range
 
 — rather than booting and refusing on the first hit. Configure an explicit `0`, or a rate inside
 the representable range.
-
-#### Common plugin measurement rates (`plugin_rate_cards`)
-
-Every plugin kind may declare billable unit classes and report counts. Core prices those
-counts by the **actual host-bound configured instance namespace**, independently of the
-plugin's module name and of any plane-specific rate card:
-
-```yaml
-plugin_rate_cards:
-  hook:
-    request-check:
-      calls: "0.125"
-      bytes: 0
-  export:
-    request-log:
-      records: 2
-```
-
-The map keys are plugin kind (`plane`, `transport`, `auth`, `store`, `secret`, `hook`,
-`export`), configured namespace, then declared class. Values use the existing exact
-`UnitRate` grammar: integer micro-units or a quoted decimal with at most three places.
-Bare floating-point values, negative or overflowing rates, invalid kind/namespace names,
-and classes not declared by that bound instance are errors. Each instance may declare at
-most 64 classes. A namespace names the host binding, never an inferred provider or module.
-
-Missing cards and missing declared-class rates warn at startup. Counts remain available
-and explicitly **unpriced**, even if legacy plane pricing is disabled. Only an explicit
-`0` makes a common class free; legacy token-tier defaults do not apply here, including
-when a plugin declares a class named `input` or `output`.
-
-Request work retains its original principal and rate-card revision; autonomous background
-work uses the host's system identity. Lifecycle, bootstrap recovery and accounting's own
-Store writes are host maintenance, with reporting disabled to prevent recursive charging.
-Periodic background work begins after accounting recovery is ready.
-
-These rates use the existing transactional rate-card history and Store recovery. A change
-becomes active only after persistence succeeds, and earlier usage retains its earlier
-rates. `PUT /config/settings` accepts `plugin_rate_cards`; supplying the map replaces it
-whole, `{}` clears it, and omitting it preserves the previous overlay.
 
 #### Per-plane rate cards (`tools.rate_card`, `agents.rate_card`, `streams.rate_card`, `decisions.rate_card`)
 

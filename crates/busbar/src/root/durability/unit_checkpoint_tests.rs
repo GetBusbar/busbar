@@ -1308,8 +1308,7 @@ async fn measurement_root_loader_callback_preserves_early_and_admitted_attributi
         DispatchConfig::default(),
         busbar_kernel::host_services::caller_binding(),
     ));
-    let authority =
-        crate::root::measurements::local_authority(gov.clone(), Default::default()).unwrap();
+    let authority = crate::root::measurements::local_authority(gov.clone()).unwrap();
     assert!(dispatcher.set_measurement_authority(authority).is_ok());
     let plugin = dispatch::load_linked::<SecretKind>(
         &LinkedRow::of(measurement_secret_fixture::door).unwrap(),
