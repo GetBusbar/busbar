@@ -341,10 +341,12 @@ pub mod op {
     pub const DIRECTORY_APPLY: u32 = 42;
     /// `directory.delete`.
     pub const DIRECTORY_DELETE: u32 = 43;
+    /// `migrate.admit`: whether the boot can seal a store's recoverable 1.5.5 credentials.
+    pub const MIGRATE_ADMIT: u32 = 44;
 }
 
 /// How many services [`HostSlots`] holds.
-pub const SERVICES: u32 = 44;
+pub const SERVICES: u32 = 45;
 
 /// Whether a service may answer PENDING, and so is callable only inside a ticketed op. `false` for a service that always answers at once.
 #[must_use]
@@ -365,6 +367,7 @@ pub const fn may_pend(service: u32) -> bool {
             | op::UNIT_HAND_IN
             | op::UNIT_REFUSE
             | op::TICKET_TAKE
+            | op::MIGRATE_ADMIT
     ) && service < SERVICES
 }
 
@@ -1145,6 +1148,22 @@ pub struct NeedAdmitIn {
     pub need: u32,
     /// Alignment padding.
     pub _reserved: u32,
+}
+
+/// [`op::MIGRATE_ADMIT`]'s `in`: THE RECOVERABLE GATE (MIGRATE-ON-BOOT §3 step 2, §4). A store
+/// about to hand core `recoverable` 1.5.5 credential rows whose secret its own encoding marks
+/// recoverable (stored in the clear) asks whether this boot can seal them. Core answers from its own
+/// config alone: READY when an at-rest key resolves; REFUSED (CONFIG) otherwise, with core's text
+/// in `ServiceOut::error`, which the store returns from its `open` unchanged, having written
+/// nothing. Valid only for a store instance inside its `open` (its data step); any other caller is
+/// REFUSED. Never pends. A store with no such row never calls it.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct MigrateAdmitIn {
+    /// The head.
+    pub head: ServiceHead,
+    /// How many recoverable rows the store is about to hand core (never 0).
+    pub recoverable: u64,
 }
 
 /// [`op::DISK_APPEND`]'s `in`: append `bytes` to the local file the host maps the calling
@@ -1943,6 +1962,8 @@ pub struct HostSlots {
     pub directory_apply: Option<ServiceFn>,
     /// [`op::DIRECTORY_DELETE`], in [`super::directory::DirectoryDeleteIn`]. A tail addition.
     pub directory_delete: Option<ServiceFn>,
+    /// [`op::MIGRATE_ADMIT`], in [`MigrateAdmitIn`]. A tail addition (MIGRATE-ON-BOOT r34).
+    pub migrate_admit: Option<ServiceFn>,
 }
 
 /// The head of an `in` for `service`, whose `in` type is `in_size` bytes: the op is the slot's, and

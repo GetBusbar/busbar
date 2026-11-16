@@ -1,36 +1,20 @@
 ---
-title: "BUSBAR-3403: --migrate-config could not resolve its working directory"
+title: "BUSBAR-3403: The retired migration command could not resolve its working directory — RETIRED"
 description: "What Busbar error BUSBAR-3403 means, why it happens, and how to fix it."
 slug: docs/1.6/errors/BUSBAR-3403
 ---
 
 **Area:** Config (3xxx) · **Severity:** fatal · **Since:** 1.6.0
 
-## Message
-
-```text
-BUSBAR-3403: cannot resolve migration launch directory: <error>. See https://getbusbar.com/docs/1.6/errors/BUSBAR-3403
-```
+> **Retired.** Busbar no longer reports this code. The page stays so an old log line still resolves; the code is never reused.
 
 ## What it means
 
-The migration resolves relative paths (a providers file, a store path) against the directory busbar was launched from, as the old launcher did. The current directory could not be read (it was deleted or is not accessible), so nothing was migrated.
+RETIRED. Nothing emits this code: the retired migration command is gone in 1.6.0; the first boot of a 1.5.5 config migrates it in place and keeps a `config.yaml.1.5.5` backup beside it. The number is kept so a log line from a pre-release build still resolves to this page.
 
 ## How to fix it
 
-Run the migration from an existing, readable directory, ideally the one the old deployment was launched from.
-
-## Example
-
-```text
-cd /tmp/gone && rmdir /tmp/gone && busbar --migrate-config old.yaml
-```
-
-Busbar reports:
-
-```text
-BUSBAR-3403: cannot resolve migration launch directory: No such file or directory (os error 2). See https://getbusbar.com/docs/1.6/errors/BUSBAR-3403
-```
+Nothing emits this code. Start busbar on the 1.5.5 config.yaml; the boot migrates it. See docs/migration-1.6.md.
 
 ---
 

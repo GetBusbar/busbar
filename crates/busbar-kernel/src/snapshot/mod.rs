@@ -396,8 +396,7 @@ fn install(source: &'static source::Source, bucket: Duration) -> Option<&'static
         Err(e) => {
             diag_error!(
                 METRICS_RECORDER_INSTALL_FAILED,
-                "{}: {e}",
-                crate::config::declared_vocabulary::text("snapshot_recorder_failed")
+                "prometheus recorder install failed; /metrics will be empty: {e}"
             );
             None
         }

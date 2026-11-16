@@ -191,8 +191,9 @@ pub mod linked;
 pub mod listener;
 pub(crate) mod loader;
 pub(crate) mod measurements;
+/// The migrate-on-boot seam: step 1 (the stamp) and step 5 (the write and re-exec).
+pub(crate) mod migrate;
 pub mod migration_secrets;
-pub mod migration_table;
 // busbar:request-path
 #[cfg_attr(
     not(test),
@@ -230,7 +231,6 @@ pub mod observe;
 // The request-path modules' code that runs off the request path: once per configuration, generation
 // or process lifecycle, never per request.
 pub(crate) mod off_path;
-pub mod overlay_migrate;
 
 // busbar:request-path
 #[cfg_attr(
@@ -254,6 +254,7 @@ pub mod policy;
 pub mod principal_transition;
 pub mod registry;
 // busbar:request-path
+pub(crate) mod secret_custody;
 #[cfg_attr(
     not(test),
     deny(
