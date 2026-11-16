@@ -112,7 +112,7 @@ reason = "the JSON number reader sonic-rs uses. The decisions plane reads a numb
 version = "0.19"
 default-features = false
 repos = ["busbar-plane-llm"]
-reason = "the walker's selective reader (JSON-STACK J1, AGREED 216/217/222/223): the llm plane reads the few facts a request or answer needs without building a document tree. `python` and `num-bigint` off (229(3)); its optional `ahash` comes only with `python`, so it adds no randomness crate. Its graph meets busbar's lock only at num-traits 0.2 and smallvec 1, the lines busbar holds, so lock parity needs no [parity-lines] row. This row's `repos` is also the scope of the fleet harness's `rng_paths` gate (busbar-release `json_stack::rng_scope`)."
+reason = "the llm plane's selective reader (JSON-STACK r8 J1, J2, J4; DEP-3, AGREED 223): named only in busbar-plane-llm's `plane-llm/src/codec/json.rs`, the plane's one JSON door, which reads the few facts a request or answer needs without building a tree. Adopted only by J0, the `bench-json` CI bench (JSON-STACK r8 §3.8: jiter's median lower on every row on both size-l and size-arm); if J0 keeps sonic-rs, S2-JSON-LLM's core MR deletes this row. `python` and `num-bigint` off (229(3)); its optional `ahash` comes only with `python`, so it adds no randomness crate. Its graph meets busbar's lock only at num-traits 0.2 and smallvec 1, the lines busbar holds, so lock parity needs no [parity-lines] row. Core, dist/default and tools name no jiter; another plugin joins `repos` only with its own CI bench (DEP-2, DEP-3)."
 
 [plugin-deps.httparse]
 version = "1"
