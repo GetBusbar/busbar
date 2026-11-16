@@ -463,6 +463,7 @@ pub(crate) fn install_migration_rows() {
         busbar_migrations::config::migration_table::install(Box::leak(rows.into_boxed_slice()));
     });
 }
+
 #[path = "admin_application/admin_generation_etags.rs"]
 mod admin_application_admin_generation_etags;
 

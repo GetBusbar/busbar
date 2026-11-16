@@ -4,10 +4,7 @@
 //! Core's import target is core's format; the Store's physical format is the adapter's own.
 
 use super::{Error, TargetIdentity, FORMAT_OWNER};
-use busbar_contract::{
-    abi::sdk::store::v4::slot::PHYSICAL_VERSION,
-    persistence::{BackendInfo, DatasetId, Durability},
-};
+use busbar_contract::persistence::{BackendInfo, DatasetId, Durability, PHYSICAL_VERSION};
 
 fn opened(dataset: [u8; 16], physical_version: u32) -> BackendInfo {
     BackendInfo {
