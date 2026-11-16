@@ -181,7 +181,10 @@ fn a_close_that_took_its_conn_before_forget_closes_the_retired_line() {
         c.let_go(&held, &line, stream, true);
 
         assert!(!line.reusable(), "the last holder closes a retired line");
-        assert!(c.pools.lend(*shard, key).is_none(), "retirement is final");
+        assert!(
+            c.pools.take(*shard, key, false, false).lent().is_none(),
+            "retirement is final"
+        );
         closed(&ended).await;
     });
 }
@@ -445,7 +448,7 @@ fn idle_probe_loses_retired_membership(retire: impl FnOnce(&Connector)) {
         let probe_key = key.clone();
         let probe = std::thread::spawn(move || {
             let _rt = handle.enter();
-            lending.pools.lend(shard, &probe_key)
+            lending.pools.take(shard, &probe_key, false, false).lent()
         });
         entered
             .recv_timeout(Duration::from_secs(5))
@@ -463,7 +466,7 @@ fn idle_probe_loses_retired_membership(retire: impl FnOnce(&Connector)) {
             !was_lent,
             "a freshness probe cannot restore a retired entry"
         );
-        assert!(c.pools.lend(shard, &key).is_none());
+        assert!(c.pools.take(shard, &key, false, false).lent().is_none());
         closed(&ended).await;
     });
 }

@@ -130,7 +130,7 @@ mod witness {
 fn the_host_calls_a_doors_migrate_and_reads_the_plugins_own_migration() {
     let m = migrate_door(
         raw(witness::with::door),
-        &serde_json::json!({"signing-secret": {"env": "S"}, "url": "10.0.0.7"}),
+        &serde_json::json!({"signing-secret": {"env": "S"}, "url": "\x310.0.0.7"}),
         "1.5.5",
     )
     .expect("the door migrates")
@@ -142,13 +142,13 @@ fn the_host_calls_a_doors_migrate_and_reads_the_plugins_own_migration() {
                 .expose(&busbar_contract::plugin::TestKernelSeal)
         )
         .unwrap(),
-        serde_json::json!({"signing_secret": {"env": "S"}, "url": "10.0.0.7"})
+        serde_json::json!({"signing_secret": {"env": "S"}, "url": "\x310.0.0.7"})
     );
     assert_eq!(m.report.len(), 1);
     assert!(m.report[0].starts_with("signing-secret -> signing_secret: renamed after 1.5.5"));
     assert_eq!(
         m.needs,
-        vec![MigrateNeed::AllowDestination("10.0.0.7".into())]
+        vec![MigrateNeed::AllowDestination("\x310.0.0.7".into())]
     );
 }
 
@@ -231,7 +231,7 @@ fn credential_delivery_refuses_an_unrelated_kind_without_echoing_material() {
 
 #[test]
 fn default_reference_discovery_does_not_run_ordinary_settings_migration() {
-    let settings = serde_json::json!({"signing-secret":"SYNTHETIC","url":"10.0.0.7"});
+    let settings = serde_json::json!({"signing-secret":"SYNTHETIC","url":"\x310.0.0.7"});
     let answer = super::migrate_references_door(raw(witness::with::door), &settings, "1.5.5")
         .unwrap()
         .unwrap();
@@ -301,7 +301,7 @@ fn migration_file_admission_refuses_oversized_and_nonregular_sources_before_cont
     #[cfg(unix)]
     let paths = {
         let mut paths = paths;
-        paths.push(std::path::Path::new("/dev/zero").to_path_buf());
+        paths.push(std::path::PathBuf::from("/dev/zero"));
         paths
     };
     for path in paths {

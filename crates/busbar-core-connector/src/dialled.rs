@@ -731,8 +731,9 @@ impl Dialled {
         }
     }
 
-    pub(crate) fn begun(self, yielded: Yielded) -> Result<Self, ConnError> {
-        if let Err(error) = self.leg.take(&self.pairing, yielded, crate::framer::now()) {
+    /// The opening pieces cross at `now`, the dial's one clock reading.
+    pub(crate) fn begun(self, yielded: Yielded, now: Instant) -> Result<Self, ConnError> {
+        if let Err(error) = self.leg.take(&self.pairing, yielded, now) {
             return Err(self.fail(error));
         }
         if self.pairing.closed() {

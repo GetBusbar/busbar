@@ -338,6 +338,35 @@ pub(crate) enum AuditRecipeElement {
     _Members(BTreeMap<String, AuditRecipeScalar>),
 }
 
+/// `GET /operations/{key}`: one idempotent operation record.
+#[cfg(feature = "openapi-schema")]
+#[derive(Serialize, JsonSchema)]
+pub(crate) struct OperationView {
+    idempotency_key: String,
+    principal: String,
+    operation_id: String,
+    /// One of `applied`, `rejected` or `in_flight`.
+    state: OperationState,
+    status: Option<u16>,
+    request_sha256: String,
+    received_at: u64,
+    completed_at: Option<u64>,
+    config_generation: Option<u64>,
+    audit_seq: Option<u64>,
+    /// The stored response body; `null` while in flight.
+    response: Value,
+}
+
+/// Where an idempotent operation stands.
+#[cfg(feature = "openapi-schema")]
+#[derive(Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum OperationState {
+    _Applied,
+    _Rejected,
+    _InFlight,
+}
+
 /// `GET /audit/keys`: the public keys the chain is signed with.
 #[cfg(feature = "openapi-schema")]
 #[derive(Serialize, JsonSchema)]
@@ -766,6 +795,23 @@ fn doc_for(
             request: None,
             query: Vec::new(),
             errors: vec![unavailable_503("telemetry collection is disabled, unavailable, or could not produce a bounded snapshot")],
+        },
+
+        KernelVerb::GetWhoami => VerbDoc {
+            summary: "Who the admin chain says the caller is, and what the caller may do",
+            description: "The caller's principal, the credential behind it (`operator`, `key`, \
+                `identity_provider` or `open`), its scope, and every verb of the closed table it \
+                may call, computed with the gate's own predicate. Any identified admin credential \
+                may read its own identity, whatever verbs it holds. A read: it mutates nothing. \
+                `rate.read.limit` is `0`: reads are not metered."
+                .to_string(),
+            success: Success::Json(
+                schema_of(gen.subschema_for::<super::whoami::WhoamiView>()),
+                "The caller's identity and authority",
+            ),
+            request: None,
+            query: Vec::new(),
+            errors: Vec::new(),
         },
 
         KernelVerb::ChainBreak => VerbDoc {
@@ -1251,20 +1297,7 @@ fn doc_for(
                 operation and needs the `full` scope."
                 .to_string(),
             success: Success::Json(
-                json!({"type": "object", "required": ["idempotency_key", "principal",
-                    "operation_id", "state", "request_sha256", "received_at"],
-                    "properties": {
-                        "idempotency_key": {"type": "string"},
-                        "principal": {"type": "string"},
-                        "operation_id": {"type": "string"},
-                        "state": {"enum": ["applied", "rejected", "in_flight"]},
-                        "status": {"type": ["integer", "null"]},
-                        "request_sha256": {"type": "string"},
-                        "received_at": {"type": "integer"},
-                        "completed_at": {"type": ["integer", "null"]},
-                        "config_generation": {"type": ["integer", "null"]},
-                        "audit_seq": {"type": ["integer", "null"]},
-                        "response": {}}}),
+                schema_of(gen.subschema_for::<OperationView>()),
                 "The operation record",
             ),
             request: None,
@@ -1282,6 +1315,56 @@ fn doc_for(
                 unavailable_503("the Store could not read the operation"),
             ],
         },
+        KernelVerb::PutHooksNameAttachmentsTarget
+        | KernelVerb::DeleteHooksNameAttachmentsTarget => {
+            let attach = verb == KernelVerb::PutHooksNameAttachmentsTarget;
+            VerbDoc {
+                summary: if attach {
+                    "Attach a hook at one attach point"
+                } else {
+                    "Detach a hook from one attach point"
+                },
+                description: "`target` is `pools` (every pool), `pools.<pool>`, a plane section, or \
+                    `<section>.<instance>`, exactly as `HookView.attachments[].target` lists it. \
+                    Attaching places the hook at `position` (`last` or a zero-based place) in that \
+                    list; an attach that changes nothing, and a repeat, answer the same hook \
+                    without a new generation. A hook defined in the base config file is refused \
+                    (`base_defined`). Audited as `hook.attach` and `hook.detach`; config budget."
+                    .to_string(),
+                success: Success::Json(
+                    schema_of(gen.subschema_for::<crate::v1::contract::HookView>()),
+                    "The hook, with its attachments after the change",
+                ),
+                request: attach.then(|| {
+                    schema_of(req_gen.subschema_for::<crate::v1::contract::HookAttachRequest>())
+                }),
+                query: vec![
+                    json!({"name": "name", "in": "path", "required": true,
+                           "schema": {"type": "string"}}),
+                    json!({"name": "target", "in": "path", "required": true,
+                           "schema": {"type": "string"}}),
+                ],
+                errors: vec![
+                    (
+                        "400",
+                        format!("`invalid_request`: malformed body or target, a position past the end, or {BODY_UNREADABLE}"),
+                    ),
+                    gated_403(),
+                    (
+                        "404",
+                        "`not_found`: no such hook or pool, or (detach) the hook is not attached there"
+                            .to_string(),
+                    ),
+                    (
+                        "409",
+                        "`conflict`: `base_defined`, an attach point the configuration does not \
+                         have, or a higher-priority override of the list"
+                            .to_string(),
+                    ),
+                    unavailable_503("the Store could not commit the change"),
+                ],
+            }
+        }
         KernelVerb::GetRecords => records_doc(schema_of(
             gen.subschema_for::<crate::v1::records::RecordsPage>(),
         )),
@@ -1459,6 +1542,9 @@ pub(crate) fn operations(
             "x-busbar-since": SINCE,
             RESPONSES_KEY: by_status,
         });
+        if let Some(verb) = crate::admin_codec::verbs::name_at(http_method.as_str(), &path) {
+            op["x-busbar-verb"] = json!(verb);
+        }
         if !doc.query.is_empty() {
             op["parameters"] = Value::Array(doc.query);
         }

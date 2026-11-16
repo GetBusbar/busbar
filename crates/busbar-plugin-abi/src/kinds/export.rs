@@ -190,6 +190,15 @@ pub mod export {
         pub pending_capacity: u64,
     }
 
+    impl crate::records::Pod for Ack {}
+    impl crate::records::Pod for FamilyRec {}
+    impl crate::records::Pod for SampleRec {}
+    impl crate::records::Pod for ScopeRec {}
+    impl crate::records::Pod for RecorderRec {}
+    impl crate::records::Pod for AppendRec {}
+    impl crate::records::Pod for CustodyRec {}
+    impl crate::records::Pod for DeliveryRec {}
+
     pub mod tag {
         pub const ACK: u16 = 0x0100;
         pub const CONTENT_TYPE: u16 = 0x0101;

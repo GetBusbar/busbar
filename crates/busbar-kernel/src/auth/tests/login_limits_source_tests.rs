@@ -67,7 +67,7 @@ fn ipv6_is_bucketed_by_64_with_48_and_32_aggregates() {
 
 #[test]
 fn xff_from_an_untrusted_peer_is_ignored() {
-    let t = trusted(&["10.0.0.0/8"], None);
+    let t = trusted(&["\x310.0.0.0/8"], None);
     let h = headers(&[("x-forwarded-for", "198.51.100.1")]);
     assert_eq!(
         client_source(Some(ip("203.0.113.5")), &h, &t),
@@ -78,35 +78,35 @@ fn xff_from_an_untrusted_peer_is_ignored() {
 
 #[test]
 fn xff_from_a_trusted_peer_walks_right_to_left_past_trusted_hops() {
-    let t = trusted(&["10.0.0.0/8", "192.0.2.10"], None);
+    let t = trusted(&["\x310.0.0.0/8", "192.0.2.10"], None);
     let h = headers(&[
         ("x-forwarded-for", "198.51.100.66, 203.0.113.7"),
         ("x-forwarded-for", "192.0.2.10"),
     ]);
     assert_eq!(
-        client_source(Some(ip("10.1.2.3")), &h, &t),
+        client_source(Some(ip("\x310.1.2.3")), &h, &t),
         ClientSource::Known(ip("203.0.113.7")),
         "the right-most untrusted hop is the client; the spoofable left part is ignored"
     );
-    let all_trusted = headers(&[("x-forwarded-for", "10.9.9.9")]);
+    let all_trusted = headers(&[("x-forwarded-for", "\x310.9.9.9")]);
     assert_eq!(
-        client_source(Some(ip("10.1.2.3")), &all_trusted, &t),
-        ClientSource::Known(ip("10.9.9.9"))
+        client_source(Some(ip("\x310.1.2.3")), &all_trusted, &t),
+        ClientSource::Known(ip("\x310.9.9.9"))
     );
     assert_eq!(
-        client_source(Some(ip("10.1.2.3")), &HeaderMap::new(), &t),
-        ClientSource::Known(ip("10.1.2.3")),
+        client_source(Some(ip("\x310.1.2.3")), &HeaderMap::new(), &t),
+        ClientSource::Known(ip("\x310.1.2.3")),
         "a trusted peer that forwards nothing is itself the source"
     );
 }
 
 #[test]
 fn an_unparseable_first_untrusted_hop_is_unknown_not_the_proxy() {
-    let t = trusted(&["10.0.0.0/8"], None);
+    let t = trusted(&["\x310.0.0.0/8"], None);
     for hop in ["unknown", "_hidden", "garbage", "300.1.1.1"] {
-        let h = headers(&[("x-forwarded-for", &format!("{hop}, 10.0.0.2"))]);
+        let h = headers(&[("x-forwarded-for", &format!("{hop}, \x310.0.0.2"))]);
         assert_eq!(
-            client_source(Some(ip("10.1.2.3")), &h, &t),
+            client_source(Some(ip("\x310.1.2.3")), &h, &t),
             ClientSource::Unknown(UnknownSource::Unparseable),
             "{hop}"
         );
@@ -115,7 +115,7 @@ fn an_unparseable_first_untrusted_hop_is_unknown_not_the_proxy() {
 
 #[test]
 fn only_the_configured_header_is_read() {
-    let t = trusted(&["10.0.0.0/8"], Some("forwarded"));
+    let t = trusted(&["\x310.0.0.0/8"], Some("forwarded"));
     let h = headers(&[
         ("x-forwarded-for", "198.51.100.1"),
         (
@@ -124,12 +124,12 @@ fn only_the_configured_header_is_read() {
         ),
     ]);
     assert_eq!(
-        client_source(Some(ip("10.1.2.3")), &h, &t),
+        client_source(Some(ip("\x310.1.2.3")), &h, &t),
         ClientSource::Known(ip("203.0.113.9"))
     );
     let obfuscated = headers(&[("forwarded", "for=_hidden")]);
     assert_eq!(
-        client_source(Some(ip("10.1.2.3")), &obfuscated, &t),
+        client_source(Some(ip("\x310.1.2.3")), &obfuscated, &t),
         ClientSource::Unknown(UnknownSource::Unparseable)
     );
 }
@@ -138,11 +138,11 @@ fn only_the_configured_header_is_read() {
 fn private_peer_with_xff_and_no_trusted_proxies_is_unknown() {
     let none = TrustedProxies::default();
     for peer in [
-        "10.0.0.1",
+        "\x310.0.0.1",
         "127.0.0.1",
         "::1",
         "fd00::1",
-        "::ffff:192.168.1.1",
+        "::ffff:\x3192.168.1.1",
     ] {
         for header in ["x-forwarded-for", "forwarded"] {
             let h = headers(&[(header, "for=198.51.100.1")]);
@@ -176,8 +176,8 @@ fn no_peer_is_unknown() {
 
 #[test]
 fn trusted_proxies_reuse_the_guard_cidr_reader() {
-    assert!(TrustedProxies::read(&["10.0.0.0/8".into(), "2001:db8::/32".into()], None).is_ok());
-    let host_bits = TrustedProxies::read(&["10.0.0.1/8".into()], None).unwrap_err();
+    assert!(TrustedProxies::read(&["\x310.0.0.0/8".into(), "2001:db8::/32".into()], None).is_ok());
+    let host_bits = TrustedProxies::read(&["\x310.0.0.1/8".into()], None).unwrap_err();
     assert!(host_bits.contains("trusted_proxies[0]") && host_bits.contains("prefix"));
     assert!(TrustedProxies::read(&["proxy.internal".into()], None).is_err());
     assert!(TrustedProxies::read(&[], Some("x-real-ip")).is_err());

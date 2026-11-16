@@ -41,101 +41,35 @@ pub(crate) fn is_small_order(pk: &[u8; 32]) -> bool {
 }
 
 /// Whether `pk` is the canonical encoding of a point on edwards25519 (RFC 8032 §5.1.3): `y < p`,
-/// `(y^2 - 1) / (d y^2 + 1)` is a square mod p, and the sign bit is clear when `x = 0`. The
-/// arithmetic is AWS-LC's BIGNUM (variable time: public keys only); aws-lc-rs exposes no
-/// public-key check. Equivalent to ed25519-dalek's `VerifyingKey::from_bytes`.
-#[allow(unsafe_code)]
+/// `(y^2 - 1) / (d y^2 + 1)` is a square mod p, and the sign bit is clear when `x = 0`. curve25519-dalek
+/// decompresses (it reduces `y` mod p and takes `-0 = 0`), so the canonical round trip refuses what it
+/// would otherwise accept. Variable time is fine: public keys only. Input validation for pinned keys
+/// (QE); no signature is verified here.
+pub(crate) fn on_curve(pk: &[u8; 32]) -> bool {
+    curve25519_dalek::edwards::CompressedEdwardsY(*pk)
+        .decompress()
+        .is_some_and(|point| point.compress().0 == *pk)
+}
+
+/// Whether `pk` is acceptable as an Ed25519 public key encoding, by byte comparison alone (no
+/// arithmetic; UNSAFE-MIN Q9b): the masked little-endian `y` is below `p` (canonical), and the two
+/// points whose `x` is zero (`y` = 1 and `y` = p - 1) do not carry the sign bit, which would encode
+/// "negative zero". A `y` with no point on the curve is not refused here: such a key verifies nothing,
+/// so it fails closed at the first verify.
 pub(crate) fn decodes(pk: &[u8; 32]) -> bool {
-    use aws_lc_sys as lc;
-    // p = 2^255 - 19 and d = -121665/121666 mod p, big-endian.
-    const P: [u8; 32] = [
-        0x7f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
-        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
-        0xff, 0xed,
-    ];
-    const D: [u8; 32] = [
-        0x52, 0x03, 0x6c, 0xee, 0x2b, 0x6f, 0xfe, 0x73, 0x8c, 0xc7, 0x40, 0x79, 0x77, 0x79, 0xe8,
-        0x98, 0x00, 0x70, 0x0a, 0x4d, 0x41, 0x41, 0xd8, 0xab, 0x75, 0xeb, 0x4d, 0xca, 0x13, 0x59,
-        0x78, 0xa3,
-    ];
-    /// Owns every BIGNUM and the context; frees them on every path.
-    struct Bn {
-        ctx: *mut lc::BN_CTX,
-        nums: Vec<*mut lc::BIGNUM>,
-    }
-    impl Drop for Bn {
-        fn drop(&mut self) {
-            // SAFETY: each pointer was returned by BN_new/BN_bin2bn/BN_le2bn/BN_CTX_new (or is
-            // null, which both free functions accept) and is freed exactly once, here.
-            unsafe {
-                for n in self.nums.drain(..) {
-                    lc::BN_free(n);
-                }
-                lc::BN_CTX_free(self.ctx);
-            }
-        }
-    }
     let sign = pk[31] >> 7;
-    let mut y_le = *pk;
-    y_le[31] &= 0x7f;
-    lc::init();
-    // SAFETY: every pointer is checked for null before use and owned by `bn`, which frees it; the
-    // byte buffers are live locals of the stated lengths; BN_* calls keep no pointer past the call.
-    unsafe {
-        let mut bn = Bn {
-            ctx: lc::BN_CTX_new(),
-            nums: Vec::with_capacity(9),
-        };
-        let mut new = |p: *mut lc::BIGNUM| {
-            bn.nums.push(p);
-            p
-        };
-        let p = new(lc::BN_bin2bn(P.as_ptr(), P.len(), core::ptr::null_mut()));
-        let d = new(lc::BN_bin2bn(D.as_ptr(), D.len(), core::ptr::null_mut()));
-        let y = new(lc::BN_le2bn(
-            y_le.as_ptr(),
-            y_le.len(),
-            core::ptr::null_mut(),
-        ));
-        let y2 = new(lc::BN_new());
-        let u = new(lc::BN_new());
-        let v = new(lc::BN_new());
-        let r = new(lc::BN_new());
-        let e = new(lc::BN_new());
-        let t = new(lc::BN_new());
-        let ctx = bn.ctx;
-        if ctx.is_null() || bn.nums.iter().any(|n| n.is_null()) {
-            return false;
+    let mut y = *pk;
+    y[31] &= 0x7f;
+    // y < p, compared from the most significant byte down (P holds p little-endian).
+    let mut below = false;
+    for i in (0..32).rev() {
+        if y[i] != P[i] {
+            below = y[i] < P[i];
+            break;
         }
-        if lc::BN_cmp(y, p) >= 0 {
-            return false; // non-canonical y
-        }
-        // u = y^2 - 1, v = d y^2 + 1 (mod p).
-        if lc::BN_mod_mul(y2, y, y, p, ctx) != 1
-            || lc::BN_mod_mul(v, d, y2, p, ctx) != 1
-            || lc::BN_add_word(v, 1) != 1
-            || lc::BN_set_word(u, 1) != 1
-            || lc::BN_mod_sub(u, y2, u, p, ctx) != 1
-        {
-            return false;
-        }
-        if lc::BN_cmp(v, p) == 0 {
-            return false; // v = 0 mod p: no inverse (cannot happen for edwards25519's d)
-        }
-        if lc::BN_is_zero(u) == 1 {
-            // x = 0: valid only with the sign bit clear.
-            return sign == 0;
-        }
-        // r = u / v; a point exists iff r is a square: r^((p-1)/2) == 1.
-        if lc::BN_mod_inverse(r, v, p, ctx).is_null()
-            || lc::BN_mod_mul(r, r, u, p, ctx) != 1
-            || lc::BN_copy(e, p).is_null()
-            || lc::BN_sub_word(e, 1) != 1
-            || lc::BN_rshift1(e, e) != 1
-            || lc::BN_mod_exp(t, r, e, p, ctx) != 1
-        {
-            return false;
-        }
-        lc::BN_is_one(t) == 1
     }
+    if !below {
+        return false;
+    }
+    !(sign == 1 && (y == y_le(1) || y == P_MINUS_1))
 }

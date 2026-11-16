@@ -892,6 +892,18 @@ impl Planned {
         &self.dial
     }
 
+    /// The protocols this plan's connection offers, as its dial uses them: secured, the entry's
+    /// located offer, else the dial's own; in the clear, the located offer, whose single protocol
+    /// is the agreed one (WASTE-EGRESS rule 2).
+    #[must_use]
+    pub fn offer(&self) -> &[Vec<u8>] {
+        if self.located.secure && self.located.offer.is_empty() {
+            &self.dial.alpn
+        } else {
+            &self.located.offer
+        }
+    }
+
     /// This dial's first message and its head words, taken out (a reuse sends them on a pooled
     #[must_use]
     pub fn into_opening(mut self) -> (Option<Opening>, HeadWords) {
@@ -2145,11 +2157,13 @@ impl Connection {
         else {
             return Ok(true);
         };
-        let rest = t.head.split_off(end);
+        // The tunnel's head buffer leaves with the tunnel; bytes past the proxy's answer are the far
+        // end's first bytes, fed from that buffer in place (no copy of the tail).
+        let head = std::mem::take(&mut t.head);
         self.tunnel = None;
         self.connected()?;
-        if !rest.is_empty() {
-            self.feed(&rest, false, false)?;
+        if let Some(rest) = head.get(end..).filter(|rest| !rest.is_empty()) {
+            self.feed(rest, false, false)?;
         }
         Ok(true)
     }

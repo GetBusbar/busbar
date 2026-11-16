@@ -19,8 +19,10 @@
 # of these lints anywhere, reasoned or not. Fix the site; a ban that is wrong for a case is narrowed
 # here and in LINT-RULES.md together, with a written justification. busbar-bad-patterns
 # (busbar-release tools/bad-patterns, run by CI beside clippy) refuses every escape (BP06) and checks
-# what this list cannot express (allocating clone/From/Into, fresh per-call buffers, scans over state,
-# repeated clock reads).
+# what this list cannot express (allocating clone/From/Into by any spelling, fresh per-call buffers,
+# scans over state, repeated clock reads, also through same-crate helpers). LR-180 (partition) and
+# LR-181 (Vec::split_off) wait on two busbar-contract SDK design questions (publish retire,
+# completion_retirement acknowledge); see GetBusbar/busbar-release LINT-RULES.md.
 disallowed-macros = [
   { path = "serde_json::json", reason = "builds a Value tree per call; serialize a borrowed #[derive(Serialize)] struct into the op's reused buffer", allow-invalid = true },
   { path = "anyhow::anyhow", reason = "formats and boxes an error per call; return a typed error or a &'static str refusal", allow-invalid = true },
@@ -52,6 +54,10 @@ disallowed-methods = [
   { path = "alloc::borrow::Cow::to_mut", reason = "allocates when borrowed; write into the op's reused buffer" },
   { path = "core::iter::Iterator::collect", reason = "allocates a collection per call; iterate lazily, or extend the op's reused buffer (clear + extend)" },
   { path = "core::iter::FromIterator::from_iter", reason = "allocates a collection per call; iterate lazily, or extend the op's reused buffer" },
+  { path = "core::iter::Iterator::unzip", reason = "allocates two collections per call (collect by another spelling); iterate lazily, or extend the op's reused buffers" },
+  { path = "alloc::string::String::split_off", reason = "allocates a new String for the tail per call; borrow the slice, or write into the op's reused buffer" },
+  { path = "std::path::Path::to_path_buf", reason = "allocates a PathBuf per call (to_owned by another name); borrow the &Path" },
+  { path = "std::ffi::OsStr::to_os_string", reason = "allocates an OsString per call (to_owned by another name); borrow the &OsStr" },
   { path = "anyhow::Error::msg", reason = "boxes an error per call; return a typed error or a &'static str refusal", allow-invalid = true },
   { path = "serde_json::to_value", reason = "builds a Value tree per call; serialize the borrowed struct directly", allow-invalid = true },
   { path = "serde_json::from_value", reason = "walks a Value tree; deserialize the bytes straight into the target type", allow-invalid = true },

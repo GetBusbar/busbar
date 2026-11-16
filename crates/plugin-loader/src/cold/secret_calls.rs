@@ -7,7 +7,6 @@
 
 use std::fmt::{Arguments, Display};
 use std::sync::{Arc, PoisonError};
-use std::time::{Duration, Instant};
 
 use busbar_contract::abi::mechanism::call::{Blob, Outcome, BLOB_OCTETS, BLOB_SECRET};
 use busbar_contract::abi::mechanism::rendering::Unreadable;
@@ -20,7 +19,7 @@ use busbar_contract::secure::SecureVec;
 use crate::boot::Candidate;
 use crate::dispatch::kinds::secret::Secret;
 use crate::dispatch::lifecycle::blob;
-use crate::dispatch::{instant_at, now_ns, Plugin};
+use crate::dispatch::Plugin;
 use crate::secret_calls::{CheckerKey, SecretRows};
 
 /// Config transaction: a copy of the live dropped-in set, put back if the transaction publishes
@@ -168,12 +167,6 @@ pub(crate) fn secret_blobs<S: KernelSeal + ?Sized>(
 #[cold]
 pub(crate) fn lane_copies(name: &str, settings: &[u8]) -> (String, Vec<u8>) {
     (name.to_string(), settings.to_vec())
-}
-
-/// Config: what is left of a config-time disk-lane resolve's budget, which it waits out.
-#[cold]
-pub(crate) fn budget_left(deadline: Instant) -> Duration {
-    deadline.saturating_duration_since(instant_at(now_ns()))
 }
 
 /// Config: a secret module's settings did not encode.

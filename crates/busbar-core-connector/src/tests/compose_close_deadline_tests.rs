@@ -187,10 +187,7 @@ async fn connect_keeps_the_open_deadline(answer_connect: bool) {
         .await
         .expect("the caller's short bound is not replaced by CONNECT's ten seconds");
     assert_eq!(answer, Err(Failure::Timeout));
-    assert!(
-        crate::support::since(start) >= timeout,
-        "not before the caller's bound"
-    );
+    assert!(start.elapsed() >= timeout, "not before the caller's bound");
     tokio::time::timeout(Duration::from_secs(5), observed)
         .await
         .expect("the peer observed the tested protocol stage")
@@ -507,8 +504,7 @@ fn tls_close_notify_ignores_later_carrier_bytes_without_spinning() {
                 .spawn()
                 .unwrap(),
         );
-        // At most 1000 polls (about 10 s), counted rather than read off the clock.
-        let mut polls = 0_u32;
+        let due = Instant::now() + Duration::from_secs(10);
         loop {
             if let Some(status) = probe.child.as_mut().unwrap().try_wait().unwrap() {
                 assert!(status.success(), "isolated TLS control failed: {status}");
@@ -518,8 +514,10 @@ fn tls_close_notify_ignores_later_carrier_bytes_without_spinning() {
                 );
                 return;
             }
-            polls += 1;
-            assert!(polls < 1000, "TLS close_notify tail made no progress");
+            assert!(
+                Instant::now() < due,
+                "TLS close_notify tail made no progress"
+            );
             std::thread::sleep(Duration::from_millis(10));
         }
     }

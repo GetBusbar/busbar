@@ -70,16 +70,6 @@ fn make_trial_due(instance: &HookInstance) {
     *trial_at = Instant::now();
 }
 
-/// A fresh call's deadline, `BUDGET` from now: the call's one clock read.
-fn call_deadline() -> Instant {
-    Instant::now() + BUDGET
-}
-
-/// A fresh crossing's deadline on the dispatch clock, `BUDGET` from now: the crossing's one read.
-fn crossing_deadline_ns() -> u64 {
-    now_ns().saturating_add(u64::try_from(BUDGET.as_nanos()).unwrap())
-}
-
 fn fault_current(instance: &HookInstance, plugin: &Plugin<Hook>) {
     crate::dispatch::plugin::quarantine(plugin.inner.wake, "HD1 controlled serving fault");
     assert!(
@@ -105,7 +95,7 @@ async fn repeated_first_serving_faults_keep_growing_the_recovery_window_to_its_c
     .into_iter()
     .enumerate()
     {
-        let plugin = instance.inner.live(call_deadline()).await.unwrap();
+        let plugin = instance.inner.live(Instant::now() + BUDGET).await.unwrap();
         let before = plugin.inner.crossings.load(Ordering::SeqCst);
         let request = frame(2);
         let lent = Arc::new(request.try_lend().expect("the fresh request can be lent"));
@@ -119,7 +109,7 @@ async fn repeated_first_serving_faults_keep_growing_the_recovery_window_to_its_c
                 super::super::blank_out::<busbar_contract::abi::hook::DecideOut>(),
             ),
             DeadlineClass::Call,
-            crossing_deadline_ns(),
+            now_ns().saturating_add(u64::try_from(BUDGET.as_nanos()).unwrap()),
             Arc::clone(&lent) as crate::dispatch::Lent,
         );
         let done = tokio::time::timeout(BUDGET, &mut call)
@@ -190,7 +180,7 @@ async fn administrative_ready_preserves_backoff_and_a_serving_governance_rejecti
         2,
         "administrative calls did not rebind"
     );
-    let current = instance.inner.live(call_deadline()).await.unwrap();
+    let current = instance.inner.live(Instant::now() + BUDGET).await.unwrap();
     assert!(Arc::ptr_eq(&current, &recovered));
     fault_current(&instance, &current);
     assert_eq!(
@@ -200,7 +190,7 @@ async fn administrative_ready_preserves_backoff_and_a_serving_governance_rejecti
     );
 
     make_trial_due(&instance);
-    let serving = instance.inner.live(call_deadline()).await.unwrap();
+    let serving = instance.inner.live(Instant::now() + BUDGET).await.unwrap();
     assert_eq!(binds.load(Ordering::SeqCst), 3);
     let answer = instance.decide(frame(2), BUDGET).await;
     assert!(
@@ -209,7 +199,7 @@ async fn administrative_ready_preserves_backoff_and_a_serving_governance_rejecti
         "a valid governance rejection is a healthy serving reply: {answer:?}"
     );
     assert!(!instance.quarantined());
-    let current = instance.inner.live(call_deadline()).await.unwrap();
+    let current = instance.inner.live(Instant::now() + BUDGET).await.unwrap();
     assert!(Arc::ptr_eq(&current, &serving));
     fault_current(&instance, &current);
     assert_eq!(
