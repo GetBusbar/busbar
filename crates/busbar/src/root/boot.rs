@@ -87,21 +87,74 @@ fn authorize_native_image(bytes: &[u8], display: &str) -> Result<(), String> {
     }
 }
 
-/// Only the native prepared session may supply a checkpoint-bound recovery backend.
-/// A recovery target must already contain the confirmed current-format manifest.
-pub(crate) async fn admit_prepared_store(
-    prepared: &busbar_migrations::RecoveryPending,
+/// THE OLD ABI STORE'S OPEN (until #274 deletes that ABI): inspect the prepared native store and OPEN an empty or
+/// current dataset, then admit its format. 1.6.0 converts a 1.5.5 store only inside a MIN-3 store's own open, so
+/// any other inspected state is refused before the store is opened or written.
+pub(crate) async fn open_current_store(
+    prepared: &busbar_contract::persistence::lifecycle::axis::Prepared,
+    bounds: busbar_contract::persistence::lifecycle::Bounds,
+    shutdown: &tokio::sync::watch::Receiver<bool>,
 ) -> Result<busbar_kernel::persistence::startup::Startup, String> {
-    if let Some(recovery) = &prepared.recovery {
-        if recovery.upgrade != prepared.upgrade_id
-            || recovery.target != prepared.backend.info().dataset
-            || recovery.activation_receipt_digest == [0; 32]
-            || recovery.selector_digest == [0; 32]
-        {
-            return Err("native cold recovery binding does not match its prepared target".into());
+    use busbar_contract::persistence::lifecycle::{
+        Error, InspectionState, OpenBinding, Request, Response,
+    };
+    const RETRY: std::time::Duration = std::time::Duration::from_millis(250);
+    let request = Arc::new(Request::Inspect { bounds });
+    let binding = loop {
+        if *shutdown.borrow() {
+            return Err("shutdown requested during native Store inspection".into());
         }
-    }
-    admit_format(prepared.backend.clone(), prepared.recovery.is_none()).await
+        let inspected = match prepared.bootstrap(Arc::clone(&request)).await {
+            Ok(inspected) => inspected,
+            Err(Error::Pending | Error::Busy | Error::Unknown) => {
+                tokio::time::sleep(RETRY).await;
+                continue;
+            }
+            Err(error) => return Err(format!("Store inspection refused: {error:?}")),
+        };
+        let Response::Inspected(inspection) = &*inspected else {
+            return Err("Store inspection answered with something other than an inspection".into());
+        };
+        match inspection.state {
+            InspectionState::Empty => break OpenBinding::Empty,
+            InspectionState::Current => {
+                let source = inspection
+                    .source
+                    .clone()
+                    .ok_or("a current Store answered no source identity")?;
+                let marker = inspection
+                    .admission_marker
+                    .as_ref()
+                    .ok_or("a current Store answered no admission marker")?;
+                break OpenBinding::Current {
+                    source,
+                    admission_marker_digest: busbar_contract::crypto::sha256(
+                        marker.expose(&busbar_kernel::seal::lend()),
+                    ),
+                };
+            }
+            InspectionState::Busy => tokio::time::sleep(RETRY).await,
+            _ => {
+                return Err(
+                    "UNSUPPORTED: this store holds data this store plugin's old ABI build cannot open \
+                     as 1.6.0; install the plugin's 1.6.0 (MIN-3) build, whose own open upgrades it. \
+                     Nothing was written"
+                        .into(),
+                )
+            }
+        }
+    };
+    let backend = loop {
+        if *shutdown.borrow() {
+            return Err("shutdown requested during native Store open".into());
+        }
+        match prepared.open(binding.clone()).await {
+            Ok(backend) => break backend,
+            Err(Error::Pending | Error::Busy | Error::Unknown) => tokio::time::sleep(RETRY).await,
+            Err(error) => return Err(format!("Store open refused: {error:?}")),
+        }
+    };
+    admit_format(backend, true).await
 }
 
 pub(crate) async fn admit_format(
@@ -1279,21 +1332,6 @@ pub(crate) fn phase_one(
         busbar_kernel::config::Grammar::new(judged.sugars, owners_of(&judged.registry), report)
             .with_items(items),
     )
-}
-
-/// Phase 1 over the `plugins:` block of an interpolated deployment `text` (a retained or migrated
-/// document read outside the loader): an absent block admits the linked rows alone; a block that
-/// does not read as the current shape refuses.
-pub(crate) fn grammar_of_text(text: &str) -> Result<busbar_kernel::config::Grammar, String> {
-    use busbar_contract::yaml::ValueExt;
-    let doc = busbar_contract::yaml::from_str::<busbar_contract::yaml::Value>(text)
-        .map_err(|_| "the deployment document does not read as YAML".to_owned())?;
-    let plugins = match doc.get("plugins") {
-        None => PluginsCfg::default(),
-        Some(block) => busbar_contract::yaml::from_value::<PluginsCfg>(block.clone())
-            .map_err(|e| format!("plugins: {e}"))?,
-    };
-    phase_one(&busbar_kernel::config::grammar::PhaseOneIn::of(&plugins)).map_err(String::from)
 }
 
 /// The scan of `plugins`' directory under its trust policy, with `linked`, and the secret modules

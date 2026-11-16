@@ -455,7 +455,7 @@ pub fn read_config_documents<'a>(
 
     // A document the composition root holds (an unstamped boot's planned config.yaml) is read in
     // place of the file, which is then not opened (MIGRATE-ON-BOOT r42 §3 step 2).
-    let raw_config = match rules.held_document(ConfigDocument::Deployment, config_path) {
+    let raw_config = match rules.held_document(config_path) {
         Some(held) => held,
         None => busbar_contract::secure::SecureString::from(
             std::fs::read_to_string(config_path).map_err(|e| {
@@ -466,14 +466,9 @@ pub fn read_config_documents<'a>(
             })?,
         ),
     };
-    let normalized_config =
-        rules.normalize_document(ConfigDocument::Deployment, config_path, &raw_config)?;
-    let interpolated_config = config::interpolate_env_with(
-        normalized_config.as_deref().unwrap_or(&*raw_config),
-        env_mode,
-        &mut unset_env_vars,
-    )
-    .map_err(|e| format!("config.yaml: {e}"))?;
+    let interpolated_config =
+        config::interpolate_env_with(&raw_config, env_mode, &mut unset_env_vars)
+            .map_err(|e| format!("config.yaml: {e}"))?;
 
     if let Some(admission) = admission.as_deref_mut() {
         admission.check_config(&interpolated_config)?;
@@ -573,29 +568,19 @@ fn typed_rest(
     let providers_path = location.path.clone();
     // A held catalog (the planned `providers.busbar-1.6.yaml` step 5 creates) is read in place of
     // its file (MIGRATE-ON-BOOT r42 §3 step 2).
-    let source = match rules.held_document(ConfigDocument::Providers, &providers_path) {
+    let source = match rules.held_document(&providers_path) {
         Some(held) => config::providers::CatalogSource::Authored(String::from(&*held)),
         None => location.read()?,
     };
-    let normalized_providers = match &source {
-        config::providers::CatalogSource::Authored(raw) => {
-            rules.normalize_document(ConfigDocument::Providers, &providers_path, raw)?
-        }
-        config::providers::CatalogSource::AbsentDefault => {
-            tracing::info!(
-                path = %providers_path.display(),
-                "no providers file at the default location; running with an empty provider catalog"
-            );
-            rules.absent_document(ConfigDocument::Providers, &providers_path)?;
-            None
-        }
-    };
-    let interpolated_providers = config::interpolate_env_with(
-        normalized_providers.as_deref().unwrap_or(source.text()),
-        env_mode,
-        unset_env_vars,
-    )
-    .map_err(|e| format!("providers.yaml: {e}"))?;
+    if matches!(source, config::providers::CatalogSource::AbsentDefault) {
+        tracing::info!(
+            path = %providers_path.display(),
+            "no providers file at the default location; running with an empty provider catalog"
+        );
+    }
+    let interpolated_providers =
+        config::interpolate_env_with(source.text(), env_mode, unset_env_vars)
+            .map_err(|e| format!("providers.yaml: {e}"))?;
     if let Some(admission) = admission {
         admission.check_catalog(&interpolated_providers)?;
     }
@@ -998,52 +983,20 @@ pub(crate) fn plane_is_open_for_build(
     (fallback || written.contains(section)) && (fallback || !awaiting_restart.contains(&section))
 }
 
-/// An authored input document. Historical conversion belongs to the composition root's
-/// migration library; the kernel continues to parse only its current format.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ConfigDocument {
-    Deployment,
-    Providers,
-}
-
 pub trait RootRules: Send + Sync {
     fn check(&self, cfg: &config::RootCfg) -> Result<(), String>;
 
     /// The document this read runs in place of the file at `path`, held in memory by the
     /// composition root (MIGRATE-ON-BOOT r42 §3 step 2): an unstamped boot runs the *planned*
     /// document, which step 5 writes only once every instance has opened. `Some` replaces the read
-    /// of the file (it is not opened); the held text is then normalized, interpolated and typed
-    /// exactly as the file's bytes would be. `None`, every other read, reads the file.
+    /// of the file (it is not opened); the held text is then interpolated and typed exactly as the
+    /// file's bytes would be. `None`, every other read, reads the file. The gateway reads only
+    /// current bytes: conversion runs in the composition root's migrate seam, before the re-exec.
     fn held_document(
         &self,
-        _kind: ConfigDocument,
         _path: &std::path::Path,
     ) -> Option<busbar_contract::secure::SecureString> {
         None
-    }
-
-    /// Normalize authored bytes before environment expansion. Returning `None` preserves
-    /// the exact original document. Converted material remains in wiping custody and must
-    /// preserve authored secret references; this hook never publishes a configuration.
-    fn normalize_document(
-        &self,
-        _kind: ConfigDocument,
-        _path: &std::path::Path,
-        _raw: &str,
-    ) -> Result<Option<busbar_contract::secure::SecureString>, String> {
-        Ok(None)
-    }
-
-    /// The document's unnamed default file is absent and reads as its empty form
-    /// ([`config::providers::CatalogSource::AbsentDefault`]). There are no authored bytes to
-    /// normalize, so this replaces [`RootRules::normalize_document`] for that load; custody
-    /// records the absence as an unchanged document that is never published or created.
-    fn absent_document(
-        &self,
-        _kind: ConfigDocument,
-        _path: &std::path::Path,
-    ) -> Result<(), String> {
-        Ok(())
     }
 
     fn check_built(&self, _app: &App) -> Result<(), String> {
