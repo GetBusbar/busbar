@@ -1065,8 +1065,9 @@ pub async fn bootstrap_config_store(
     cfg: &config::RootCfg,
     plugins: &config::PluginsCfg,
 ) -> Result<busbar_contract::persistence::axis::OpenedBackend, String> {
-    let (registry, resolver) = bootstrap_store_inputs(cfg, plugins).await?;
-    open_config_store(cfg.store.as_ref(), &registry, &resolver).await
+    // Validation, fetch, admission and the bootstrap secrets run as before; the open itself is the registry's.
+    bootstrap_store_inputs(cfg, plugins).await?;
+    open_config_store(cfg).await
 }
 
 /// Inspect a configured Store before ordinary OPEN can initialize or select its dataset.
@@ -1323,20 +1324,63 @@ pub fn validate_bootstrap_archive(
     Ok(())
 }
 
+/// The configured store, opened through the MIN-3 registry (W2-SW-STORE; IF §11.2 `Registry::open_store`).
+/// The bag goes in operator form (secret references with their `module`): the registry's binder binds it, the
+/// store converts an older shape inside its own `open` and the registry keeps the settled bag for the boot's
+/// write-back (`Registry::take_settled`, step 5 / 5W). The instance name is the section key, `store`.
 async fn open_config_store(
-    store: Option<&config::StoreCfg>,
-    registry: &Arc<dyn busbar_contract::plugin_rows::PluginRows>,
-    resolver: &config::secret::SecretResolver,
+    cfg: &config::RootCfg,
 ) -> Result<busbar_contract::persistence::axis::OpenedBackend, String> {
-    let (door, label, settings) = config_store_inputs(store, registry, resolver)?;
-    let failed = |error: String| format!("store '{label}' plugin load failed: {error}");
-    let axis = crate::preflight::root_rows()
-        .store_axis
-        .ok_or_else(|| failed("no store axis is installed".into()))?;
-    axis()
-        .open(door, &label, settings.as_bytes())
+    let store = cfg.store.as_ref().ok_or_else(config::store_required)?;
+    let failed = |error: String| format!("store '{}' plugin load failed: {error}", store.module);
+    let opener = crate::preflight::store_opener()
+        .ok_or_else(|| failed("no store registry is installed".into()))?;
+    let config_json = store
+        .settings
+        .encode()
+        .map_err(|error| failed(error.to_string()))?
+        .into_exposed(&crate::seal::lend());
+    let limits = cfg
+        .min3
+        .limits
+        .get(&(Box::from(STORE_INSTANCE), Box::from(STORE_INSTANCE)))
+        .map_or_else(Default::default, |limits| {
+            busbar_plugin_abi::host_side::caller::InstanceLimits {
+                timeout_ms: limits.timeout_ms,
+                connect_timeout_ms: limits.connect_timeout_ms,
+                max_inflight: limits.max_inflight,
+                ..Default::default()
+            }
+        });
+    let spec = busbar_plugin_loader::instance::InstanceSpec {
+        identity: &store.module,
+        name: STORE_INSTANCE,
+        config_json: &config_json,
+        limits,
+        public_url: None,
+        caller_upstreams: &[],
+    };
+    opener
+        .open_store(&spec)
         .await
-        .map_err(failed)
+        .map(|handle| handle.backend)
+        .map_err(|error| failed(store_open_refusal(&error)))
+}
+
+/// The store's configured instance name: its config section key.
+const STORE_INSTANCE: &str = "store";
+
+/// Core's own words for a refused store open, with the code only (IF §12.16: the plugin's text is never
+/// interpolated into a core message).
+fn store_open_refusal(error: &busbar_plugin_loader::instance::OpenError) -> String {
+    use busbar_plugin_loader::instance::OpenError;
+    match error {
+        OpenError::Refused { refusal, .. } => format!("refused: {refusal}"),
+        OpenError::Config { code, .. } => format!("its settings were refused (code {code})"),
+        OpenError::Failed { code, .. } => format!("its open failed (code {code})"),
+        OpenError::Call(_) => "its open faulted".to_owned(),
+        OpenError::Unknown(what) => format!("unknown store open answer: {what}"),
+    }
 }
 
 fn config_store_inputs(
