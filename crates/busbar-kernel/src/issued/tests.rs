@@ -3,6 +3,59 @@
 
 use super::*;
 
+#[tokio::test]
+async fn issued_lookup_requires_exact_instance_kind_grant_and_current_live_credential() {
+    use busbar_contract::{redacted::Secret, services::CredentialRead};
+    use std::sync::{
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+        Arc,
+    };
+    struct Source {
+        live: AtomicBool,
+        reads: AtomicUsize,
+    }
+    impl CredentialRead for Source {
+        fn installed(&self) -> bool {
+            true
+        }
+        fn read(&self, kind: &str, id: &str) -> (Secret<String>, bool) {
+            self.reads.fetch_add(1, Ordering::SeqCst);
+            (
+                Secret::new("credential-canary".into()),
+                kind == "sigv4" && id == "known" && self.live.load(Ordering::SeqCst),
+            )
+        }
+    }
+    let source = Arc::new(Source {
+        live: AtomicBool::new(true),
+        reads: AtomicUsize::new(0),
+    });
+    let issued = CredentialIssued::new(
+        source.clone(),
+        BTreeMap::from([(
+            41,
+            std::collections::BTreeSet::from([Box::<str>::from("sigv4")]),
+        )]),
+    );
+    assert_eq!(
+        &*issued.lookup(41, "sigv4", "known").await,
+        b"credential-canary"
+    );
+    assert!(issued.lookup(42, "sigv4", "known").await.is_empty());
+    assert!(issued.lookup(41, "other", "known").await.is_empty());
+    assert!(issued.lookup(41, "sigv4", "unknown").await.is_empty());
+    source.live.store(false, Ordering::SeqCst);
+    assert!(
+        issued.lookup(41, "sigv4", "known").await.is_empty(),
+        "revocation is immediate, never cached"
+    );
+    assert_eq!(
+        source.reads.load(Ordering::SeqCst),
+        5,
+        "unknown and ungranted use the same reader path"
+    );
+}
+
 fn aws() -> IssuedShape {
     IssuedShape {
         id_prefix: "AKIA".into(),
