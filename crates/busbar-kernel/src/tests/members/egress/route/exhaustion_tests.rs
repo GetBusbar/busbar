@@ -1372,6 +1372,7 @@ struct Restrict(Vec<DestinationId>);
 impl busbar_kernel_egress::walk::Shape for Restrict {
     fn shape(
         &self,
+        _pool: &str,
         members: Vec<busbar_kernel_egress::pool::Member>,
         _primary: bool,
     ) -> Option<(Vec<busbar_kernel_egress::pool::Member>, Vec<DestinationId>)> {

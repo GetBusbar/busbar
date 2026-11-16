@@ -30,7 +30,7 @@ use busbar_contract::persistence::{
 use busbar_contract::Secret;
 
 /// The product's physical layout version (the store SDK's slot layout).
-const PHYSICAL_VERSION: u32 = busbar_contract::abi::sdk::store::v4::slot::PHYSICAL_VERSION;
+const PHYSICAL_VERSION: u32 = busbar_contract::persistence::PHYSICAL_VERSION;
 
 fn now() -> u64 {
     std::time::SystemTime::now()

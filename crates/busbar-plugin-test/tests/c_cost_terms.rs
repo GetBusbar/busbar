@@ -8,7 +8,7 @@
 //! the arm's body and un-ignores it in its own MR (red first, then green).
 
 #[test]
-#[ignore = "owner: W1-K8A; blocked (re-checked on dev 2026-11-16): the K8A tail (plane audit actions, Events::resight, serve_lines/recover_work/cost wiring; OUTSTANDING row 5) and K10 plane serving (row 3) are not on dev"]
+#[ignore = "re-checked 2026-11-16: the hook view carries available_concurrency (plane_driver/hooks/mod.rs:573) and the plane EXPECT reaches usage.rs:209 expected_units, but there is no C_COST_TERM nested record, CostTermRec or COST_UNPRICED anywhere in the tree (grep over busbar-kernel, busbar-plugin-abi, busbar-contract, busbar is empty), so the cost terms are not on the view. OUTSTANDING row 5 (K8A tail: EXPECT pricing into cost terms, IF §12.4)"]
 fn hook_views_carry_cost_terms() {
     todo!("owner: W1-K8A (C-COST-TERMS)")
 }

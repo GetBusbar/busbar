@@ -20,7 +20,7 @@ use busbar_plugin_abi::host_side::answer::Answer;
 use busbar_plugin_abi::host_side::caller::{BoxFut, Caller};
 use busbar_plugin_abi::host_side::driver::{Driver, Instance};
 use busbar_plugin_abi::host_side::needs::Needs;
-use busbar_plugin_abi::host_side::pool::{sync_bufs, PooledOut};
+use busbar_plugin_abi::host_side::pool::{sync_bufs, Pool, PooledOut};
 use busbar_plugin_abi::host_side::scrub::{fail_text, Scrub};
 use busbar_plugin_abi::records::{tag, FactRec, Full, RecErr, Records, Reply, Writer};
 use busbar_plugin_abi::types::{Bytes, Pair, Slice, Status, Str};
@@ -595,10 +595,9 @@ impl Encode for Nothing {
 /// The chain's request buffer with `e` written into it. Done synchronously, before any box is built, so no
 /// request view is held across an await.
 fn chain_req(max_out: usize, e: &impl Encode) -> Result<PooledOut, PortError> {
-    // W1-H1 gap: `impl Writer for PooledOut` lands with W1-H1 (pool.rs). With it this body is
-    // `let mut req = Pool::global().acquire(max_out); e.encode(&mut req).map_err(|_| over_max_out())?; Ok(req)`.
-    let _ = (max_out, e);
-    todo!("W1-H1: impl Writer for PooledOut")
+    let mut req = Pool::global().acquire(max_out);
+    e.encode(&mut req).map_err(|_| over_max_out())?;
+    Ok(req)
 }
 
 /// D_CRED_HEADER*: lowercase header names (core strips them upstream and keys the verdict cache on them).
@@ -874,6 +873,21 @@ impl KeyRefresh {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct Marker;
+    impl Encode for Marker {
+        fn encode<W: Writer>(&self, w: &mut W) -> Result<(), Full> {
+            w.put_text(tag::TEXT, "marker")
+        }
+    }
+
+    /// `chain_req` writes the encoder into a pooled buffer (it was a `todo!()` panic on the first auth call).
+    #[test]
+    fn chain_req_writes_the_encoded_records() {
+        let req = chain_req(4096, &Marker).expect("fits max_out");
+        assert!(req.bytes().windows(6).any(|w| w == b"marker"));
+        assert!(chain_req(4096, &Nothing).expect("empty").bytes().is_empty());
+    }
 
     fn recs(w: &Reply) -> Records<'_> {
         Records::new(w.as_bytes())

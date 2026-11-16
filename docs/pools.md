@@ -4,6 +4,13 @@ A **pool** is a named, weighted group of model lanes that share failover, circui
 
 Pools are optional: you can route directly to a single model. But the moment you want weighting, failover, cost-aware routing, or overflow, you reach for a pool.
 
+For a plane declaring a `member_granted` pool, core enforces the caller's per-member
+`allowed_<kind>s` grants from `role_bindings`. A scoped caller must address a member
+listed in that pool and granted to the caller; omitting the member or naming a member
+outside the pool is refused. A grant of the pool name does not grant its members.
+Budget downgrades, retries and fallback walks retain only authorized members of each
+pool. An ordinary pool continues to use its pool-name grant.
+
 <svg viewBox="0 0 760 360" role="img" aria-label="A client addresses pool chat. Smooth weighted round-robin (SWRR), the default policy, selects the top lane gpt-4o (weight 8); it fails before the first byte, so Busbar fails over to the next healthy lane claude-sonnet (weight 2); gemini-pro (weight 1) is skipped because its breaker is open. Each lane shows its per-(pool,lane) breaker cell: Closed, Closed, Open. A legend marks healthy and tripped lanes." style="width:100%;height:auto;max-width:760px;font-family:ui-sans-serif,system-ui,sans-serif;">
   <rect x="0" y="0" width="760" height="360" fill="#111a2e"/>
   <!-- client -->
