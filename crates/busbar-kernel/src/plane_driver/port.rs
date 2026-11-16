@@ -83,6 +83,24 @@ pub(crate) fn carrier_end_arg(carrier: u64) -> Vec<u8> {
     arg.as_bytes().to_vec()
 }
 
+/// One served MIN-3 plane instance: its driver and the audience its line session is bound to (the `canonical_uri`
+/// of its config block, `None` when it states none).
+#[derive(Clone)]
+pub struct PortSeat {
+    pub instance: String,
+    pub driver: Arc<PortDriver>,
+    pub audience: Option<String>,
+}
+
+impl std::fmt::Debug for PortSeat {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PortSeat")
+            .field("instance", &self.instance)
+            .field("audience", &self.audience)
+            .finish_non_exhaustive()
+    }
+}
+
 #[derive(Clone)]
 struct LineRoute {
     id: u32,

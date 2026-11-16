@@ -1242,6 +1242,8 @@ pub(crate) struct Served {
     pub(crate) nests: Option<NestRoutes>,
     /// In the order the planes were bound.
     pub(crate) planes: Vec<ServedPlane>,
+    /// The MIN-3 plane instances served through their ports (`PortDriver`), in the order they were opened.
+    pub(crate) ports: Vec<busbar_kernel::plane_driver::port::PortSeat>,
     /// The posting site the planes' money steps post an abandoned end to, and the units' facts are
     /// opened on while they run: the process's one node's.
     pub(crate) post: Option<Arc<crate::root::plane_node::NodeEndPost>>,
