@@ -18,10 +18,15 @@
 //! `spawn_blocking`. The [`Calls`] trait is the seam the tests fake: `PlaneSession` is an ffi handle, so a core
 //! test cannot build one.
 
-use busbar_plugin_abi::plane::{FROM_CORE, MSG_FIN, MSG_TEXT};
+use busbar_plugin_abi::plane::{
+    UsageRec, ATT_DECLINE, ATT_OK, ATT_RELAY, ATT_RETRY, AUDIT_APPLIED, AUDIT_DEGRADED,
+    AUDIT_REJECTED, FROM_CORE, FROM_UPSTREAM, MSG_FIN, MSG_TEXT,
+};
 use busbar_plugin_loader::ports::plane::{PlaneIn, PlaneOut, PlanePort, PlaneSession, TargetIn};
 use busbar_plugin_loader::ports::{FactRef, FactVal, PortError};
 
+use super::port_money::AuditRow;
+use super::usage::{SessionUsage, UsageInvalid};
 use super::{CallerEnd, HeadFields};
 
 /// The plane's calls on one session, as a driver sees them. The port implements it; a test implements it over a
@@ -150,6 +155,17 @@ pub enum Violation {
     ForwardOutOfPlace(Origin),
     /// A to-client item after the response's END.
     AfterEnd,
+    /// A USAGE the session may not keep (class, scale or source).
+    Usage(UsageInvalid),
+    /// An ATTEMPT in an answer that is not an `upstream` or `piece(FROM_UPSTREAM)` answer, or an ATT_DECLINE
+    /// anywhere but `upstream`.
+    AttemptOutOfPlace(Origin),
+    /// An ATTEMPT RETRY, HARD or DECLINE beside a to-client record.
+    AttemptWithResponse,
+    /// An ATTEMPT verdict that is not ATT_OK..=ATT_DECLINE.
+    BadAttempt,
+    /// An AUDIT with no known verdict or no action.
+    BadAudit,
 }
 
 /// Why a session call produced no usable answer.
@@ -191,6 +207,32 @@ pub struct Forward {
     pub wants: Vec<(u32, FactVal)>,
 }
 
+/// One USAGE the plane stated (IF §12.4): its running total for (class, source).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UsageItem {
+    pub class: Box<str>,
+    pub amount: u64,
+    pub scale: u32,
+    pub source: u32,
+}
+
+/// One EXPECT: this request's expected usage of a class, for candidate cost recipes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExpectItem {
+    pub class: Box<str>,
+    pub amount: u64,
+    pub scale: u32,
+}
+
+/// One ATTEMPT (IF §8.6): `reason` is operator-only text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AttemptItem {
+    pub verdict: u32,
+    pub class: u32,
+    pub retry_after_s: u64,
+    pub reason: Box<str>,
+}
+
 /// One answer, decoded. Applied in the order the plane wrote it.
 #[derive(Debug, Default)]
 pub struct Answer {
@@ -200,6 +242,13 @@ pub struct Answer {
     pub finish: bool,
     /// An item a later slice drives (intents, accounting, upstream exchanges, records).
     pub later: bool,
+    /// USAGE records in answer order (cumulative; the task keeps the last per class and source).
+    pub usage: Vec<UsageItem>,
+    pub expects: Vec<ExpectItem>,
+    /// The outcome of the current attempt, or ATT_DECLINE from `upstream`.
+    pub attempt: Option<AttemptItem>,
+    /// AUDIT rows in answer order.
+    pub audits: Vec<AuditRow>,
     pub violation: Option<Violation>,
     head: Option<(u16, HeadFields)>,
     trailers: Option<HeadFields>,
@@ -241,12 +290,26 @@ impl Once {
         if here.forward.is_some() {
             return Err(Violation::LateForward);
         }
+        if here.attempt_fails() {
+            return Err(Violation::AttemptWithResponse);
+        }
         self.responded = true;
         Ok(())
     }
 }
 
 impl Answer {
+    fn has_client(&self) -> bool {
+        !self.client.is_empty() || self.head.is_some() || self.trailers.is_some()
+    }
+
+    /// An ATTEMPT that fails the attempt (RETRY, HARD, DECLINE): no to-client record may accompany it.
+    fn attempt_fails(&self) -> bool {
+        self.attempt
+            .as_ref()
+            .is_some_and(|a| a.verdict >= ATT_RETRY && a.verdict != ATT_RELAY)
+    }
+
     fn flush_head(&mut self) {
         if let Some((status, fields)) = self.head.take() {
             self.client.push(ToClient::Head { status, fields });
@@ -343,6 +406,74 @@ impl Answer {
             PlaneOut::Fact(key, value) => self.facts.push((key, fact_val(value))),
             PlaneOut::Emit { carrier, bytes } => effects.emit(carrier, bytes),
             PlaneOut::Finish => self.finish = true,
+            PlaneOut::Usage {
+                class,
+                amount,
+                scale,
+                source,
+            } => self.usage.push(UsageItem {
+                class: class.into(),
+                amount,
+                scale,
+                source,
+            }),
+            PlaneOut::Expect {
+                class,
+                amount,
+                scale,
+            } => {
+                if !matches!(origin, Origin::Request | Origin::Piece(FROM_CORE)) {
+                    return Err(Violation::ForwardOutOfPlace(origin));
+                }
+                self.expects.push(ExpectItem {
+                    class: class.into(),
+                    amount,
+                    scale,
+                });
+            }
+            PlaneOut::Attempt {
+                verdict,
+                class,
+                retry_after_s,
+                reason,
+            } => {
+                if !(ATT_OK..=ATT_DECLINE).contains(&verdict) {
+                    return Err(Violation::BadAttempt);
+                }
+                let placed = match origin {
+                    Origin::Upstream => true,
+                    Origin::Piece(FROM_UPSTREAM) => verdict != ATT_DECLINE,
+                    _ => false,
+                };
+                if !placed {
+                    return Err(Violation::AttemptOutOfPlace(origin));
+                }
+                if verdict >= ATT_RETRY && verdict != ATT_RELAY && self.has_client() {
+                    return Err(Violation::AttemptWithResponse);
+                }
+                self.attempt = Some(AttemptItem {
+                    verdict,
+                    class,
+                    retry_after_s,
+                    reason: reason.into(),
+                });
+            }
+            PlaneOut::Audit {
+                verdict,
+                action,
+                resource,
+            } => {
+                if !matches!(verdict, AUDIT_APPLIED | AUDIT_REJECTED | AUDIT_DEGRADED)
+                    || action.is_empty()
+                {
+                    return Err(Violation::BadAudit);
+                }
+                self.audits.push(AuditRow {
+                    verdict,
+                    action: action.into(),
+                    resource: resource.into(),
+                });
+            }
             _ => self.later = true,
         }
         Ok(())
@@ -368,6 +499,7 @@ pub struct Task<'k, K: Calls + ?Sized> {
     calls: &'k K,
     session: Option<K::Session>,
     once: Once,
+    usage: SessionUsage,
 }
 
 impl<'k, K: Calls + ?Sized> Task<'k, K> {
@@ -389,6 +521,7 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
             calls,
             session: Some(session),
             once,
+            usage: SessionUsage::new(),
         };
         let answer = task.checked(answer)?;
         Ok((task, answer))
@@ -443,7 +576,29 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
         if let Some(v) = answer.violation {
             return Err(SessionError::Violation(v));
         }
+        self.keep_usage(&answer)?;
         Ok(answer.seal())
+    }
+
+    /// `upstream`: one attempt's encoding, or its ATT_DECLINE.
+    pub fn upstream(
+        &mut self,
+        target: &TargetIn<'_>,
+        effects: &dyn Effects,
+    ) -> Result<Answer, SessionError> {
+        let calls = self.calls;
+        let once = &mut self.once;
+        let session = self.session.as_mut().ok_or(SessionError::Over)?;
+        let mut answer = Answer::default();
+        let called = calls.upstream(session, target, &mut |out| {
+            answer.take(out, Origin::Upstream, once, effects);
+        });
+        self.settle(called, answer)
+    }
+
+    /// The last USAGE per (class, source) any answer of this session stated (IF §12.4).
+    pub fn usage(&self) -> &SessionUsage {
+        &self.usage
     }
 
     /// Whether the session is still open.
@@ -469,7 +624,25 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
             self.session = None;
             return Err(SessionError::Violation(v));
         }
+        if let Err(error) = self.keep_usage(&answer) {
+            self.session = None;
+            return Err(error);
+        }
         Ok(answer.seal())
+    }
+
+    fn keep_usage(&mut self, answer: &Answer) -> Result<(), SessionError> {
+        for u in &answer.usage {
+            let rec = UsageRec {
+                amount: u.amount,
+                scale: u.scale,
+                source: u.source,
+            };
+            self.usage
+                .answer(&u.class, rec)
+                .map_err(|why| SessionError::Violation(Violation::Usage(why)))?;
+        }
+        Ok(())
     }
 }
 
@@ -477,6 +650,10 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
 #[derive(Debug)]
 pub struct Local {
     pub client: Vec<ToClient>,
+    /// The AUDIT rows of both answers, in order.
+    pub audits: Vec<AuditRow>,
+    /// The last USAGE per (class, source) the session stated.
+    pub usage: SessionUsage,
 }
 
 /// A session the plane answers locally: `request`, then `end`. A FORWARD, or an item a later slice drives, is
@@ -492,12 +669,18 @@ pub fn run_local<K: Calls + ?Sized>(
         return Err(SessionError::NotDriven);
     }
     let mut client = first.client;
+    let mut audits = first.audits;
     let last = task.end(effects)?;
     if last.forward.is_some() || last.later {
         return Err(SessionError::NotDriven);
     }
     client.extend(last.client);
-    Ok(Local { client })
+    audits.extend(last.audits);
+    Ok(Local {
+        client,
+        audits,
+        usage: task.usage().clone(),
+    })
 }
 
 /// `render` (IF §8.8): the plane's rendering of a core decision, `RESPOND PAIR* BODY? (TRAILERS PAIR*)? END`.
@@ -520,7 +703,13 @@ pub fn render<K: Calls + ?Sized>(
         return Err(SessionError::Violation(v));
     }
     let answer = answer.seal();
-    if answer.forward.is_some() || answer.later || answer.finish {
+    if answer.forward.is_some()
+        || answer.later
+        || answer.finish
+        || !answer.usage.is_empty()
+        || !answer.expects.is_empty()
+        || answer.attempt.is_some()
+    {
         return Err(SessionError::NotDriven);
     }
     Ok(answer.client)

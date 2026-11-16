@@ -14,6 +14,7 @@ pub mod host;
 mod money;
 pub mod port;
 pub mod port_auth;
+pub mod port_money;
 pub mod port_session;
 pub(crate) use money::observation_budget_id;
 pub(crate) mod needs;

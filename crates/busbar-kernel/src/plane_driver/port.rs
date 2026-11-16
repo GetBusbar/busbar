@@ -25,7 +25,9 @@ use crate::host_services::KernelServices;
 use super::port_auth::{
     admit, effective_classes, refuse, subject_identity, Admitted, Credentials, NoTickets, Principal,
 };
+use super::port_money::write_audit;
 use super::port_session::{run_local, Effects, SessionError, ToClient};
+use super::{AuditSink, CoreAudit};
 use crate::refusal::{ClientRefusal, RefusalMap};
 
 /// How long the plane has to drop its per-carrier state at a carrier's end.
@@ -109,6 +111,7 @@ pub struct PortDriver {
     services: Arc<KernelServices>,
     caller: Caller,
     refusals: Arc<dyn RefusalMap>,
+    audit: Arc<dyn AuditSink>,
     line: Option<LineRoute>,
 }
 
@@ -139,8 +142,16 @@ impl PortDriver {
             services,
             caller,
             refusals,
+            audit: Arc::new(CoreAudit),
             line,
         })
+    }
+
+    /// The audit chain this driver writes a plane's AUDIT rows to (default: the kernel's own, [`CoreAudit`]).
+    #[must_use]
+    pub fn with_audit(mut self, audit: Arc<dyn AuditSink>) -> Self {
+        self.audit = audit;
+        self
     }
 
     /// Whether the plane declares a `ROUTE_LINE` route.
@@ -189,6 +200,8 @@ impl PortDriver {
         let route = self.line.clone().ok_or(LineRefused::NoLineRoute)?;
         let admission = admit_line(route.id, route.effective, from, &*self.refusals).await;
         let refusals = Arc::clone(&self.refusals);
+        let audit = Arc::clone(&self.audit);
+        let principal = Arc::clone(&from.principal);
         let port = Arc::clone(&self.port);
         let services = Arc::clone(&self.services);
         let owner = self.caller.incarnation().clone();
@@ -196,6 +209,8 @@ impl PortDriver {
             run_line(
                 &*port,
                 &*refusals,
+                &*audit,
+                &principal,
                 services.line_carriers(),
                 &owner,
                 &route,
@@ -257,6 +272,8 @@ pub(crate) fn refusal_of(
 fn run_line(
     port: &dyn PlanePort,
     refusals: &dyn RefusalMap,
+    audit: &dyn AuditSink,
+    principal: &str,
     carriers: &LineCarriers,
     owner: &Incarnation,
     route: &LineRoute,
@@ -291,7 +308,14 @@ fn run_line(
     let req = build(admitted.auth, &admitted.identity, admitted.ticket_record());
     // A session dropped without `end` is a cancel (§10.4); the plane answers locally on a line, so it ends.
     match run_local(port, &req, line, &effects) {
-        Ok(local) => line_of(local.client),
+        Ok(local) => {
+            for row in &local.audits {
+                if write_audit(audit, row, Some(principal)).is_err() {
+                    tracing::warn!(action = &*row.action, "a plane audit row was not accepted");
+                }
+            }
+            line_of(local.client)
+        }
         Err(SessionError::Port(error)) => {
             let refusal = refusal_of(route.id, &error, refusals);
             line_of(refuse(port, &req, &refusal, &effects))
