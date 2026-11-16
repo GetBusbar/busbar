@@ -21,7 +21,10 @@ use busbar_kernel::plugin_config::{Binder, ConfigBinder};
 /// A secret kind over the boot's own binder.
 fn secrets() -> BootSecrets {
     let binder: Arc<dyn ConfigBinder> = Arc::new(Binder::new(Arc::new(BootRefs)));
-    BootSecrets::new(binder)
+    BootSecrets::new(
+        binder,
+        Arc::new(busbar_plugin_loader::instance::SlotTable::new()),
+    )
 }
 
 /// One configured secret instance, as the kernel sees it through its port.
