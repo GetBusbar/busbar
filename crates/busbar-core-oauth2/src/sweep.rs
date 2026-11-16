@@ -72,7 +72,7 @@ impl Shared {
             }
 
             let swept = s
-                .update(&cell.b.id, |b, at| Ok(sweep_bucket(b, at, now)))
+                .update(&cell.b.id, now_s, |b, at| Ok(sweep_bucket(b, at, now)))
                 .await;
             match swept {
                 Ok(n) => removed += n,
@@ -155,16 +155,17 @@ impl Shared {
                 continue;
             }
 
-            let swept = self.cas_cell::<FamilyBar, u64>("family", &cell.b.id, |bar, _| {
-                Ok(match bar.times {
-                    Some(t) if now >= t.until => {
-                        bar.times = None;
-                        Swap::Retire(1, true)
-                    }
-                    Some(_) => Swap::Keep(0),
-                    None => Swap::Retire(0, false),
-                })
-            });
+            let swept =
+                self.cas_cell::<FamilyBar, u64>("family", &cell.b.id, secs_of(now), |bar, _| {
+                    Ok(match bar.times {
+                        Some(t) if now >= t.until => {
+                            bar.times = None;
+                            Swap::Retire(1, true)
+                        }
+                        Some(_) => Swap::Keep(0),
+                        None => Swap::Retire(0, false),
+                    })
+                });
             match swept.await {
                 Ok(n) => removed += n,
                 Err(e) => {
@@ -180,13 +181,14 @@ impl Shared {
             if cell.id.is_empty() || cell.b.is_some() {
                 continue;
             }
-            let retired = self.cas_cell::<Option<String>, ()>("uc", &cell.id, |held, _| {
-                Ok(if held.is_none() {
-                    Swap::Retire((), false)
-                } else {
-                    Swap::Keep(())
-                })
-            });
+            let retired =
+                self.cas_cell::<Option<String>, ()>("uc", &cell.id, now_secs(), |held, _| {
+                    Ok(if held.is_none() {
+                        Swap::Retire((), false)
+                    } else {
+                        Swap::Keep(())
+                    })
+                });
             if let Err(e) = retired.await {
                 tracing::warn!(error = %e, "oauth_as: a released user code was not retired this tick");
             }

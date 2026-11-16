@@ -438,8 +438,8 @@ impl Shared {
         &self,
         request: &mut Request,
         bucket: &Bucket,
+        now: u64,
     ) -> Result<(), StorageError> {
-        let now = now_secs();
         let mut indexes = BTreeMap::new();
         for (ix, keys) in [
             ("tok", bucket.tokens.keys().collect::<Vec<_>>()),
@@ -841,12 +841,13 @@ impl Shared {
         &self,
         kind_name: &str,
         id: &str,
+        now: u64,
         f: impl FnMut(&mut T, u64) -> Result<Swap<R>, StorageError>,
     ) -> Result<R, StorageError>
     where
         T: Serialize + DeserializeOwned + Default,
     {
-        self.cas_cell_guarded(kind_name, id, None, f)
+        self.cas_cell_guarded(kind_name, id, None, now, f)
             .await?
             .ok_or_else(|| StorageError::new("oauth_as store: unexpected family guard"))
     }
@@ -856,13 +857,13 @@ impl Shared {
         kind_name: &str,
         id: &str,
         family: Option<&str>,
+        now: u64,
         mut f: impl FnMut(&mut T, u64) -> Result<Swap<R>, StorageError>,
     ) -> Result<Option<R>, StorageError>
     where
         T: Serialize + DeserializeOwned + Default,
     {
         let schema = atomic_schema(kind_name);
-        let now = now_secs();
         for attempt in 0..SWAP_ATTEMPTS {
             let family_guard = if let Some(family) = family {
                 let family_id = digest(family);
@@ -935,7 +936,7 @@ impl Shared {
             if kind_name == "bucket" {
                 let body = encode(kind_name, &value)?;
                 let bucket = decode::<Bucket>(kind_name, &body)?;
-                self.bucket_indexes(request, &bucket).await?;
+                self.bucket_indexes(request, &bucket, now).await?;
             }
             match self.submit(candidate).await? {
                 Decision::Applied => return Ok(Some(answer)),
@@ -959,9 +960,10 @@ impl Shared {
     pub(crate) async fn update<R>(
         &self,
         client_id: &str,
+        now: u64,
         mut f: impl FnMut(&mut Bucket, u64) -> Result<Swap<R>, StorageError>,
     ) -> Result<R, StorageError> {
-        self.cas_cell("bucket", &digest(client_id), |b: &mut Bucket, at| {
+        self.cas_cell("bucket", &digest(client_id), now, |b: &mut Bucket, at| {
             if b.id != client_id {
                 b.id.clear();
                 b.id.push_str(client_id);
@@ -975,12 +977,14 @@ impl Shared {
         &self,
         client_id: &str,
         family: Option<&str>,
+        now: u64,
         mut f: impl FnMut(&mut Bucket, u64) -> Result<Swap<R>, StorageError>,
     ) -> Result<Option<R>, StorageError> {
         self.cas_cell_guarded(
             "bucket",
             &digest(client_id),
             family,
+            now,
             |b: &mut Bucket, at| {
                 if b.id != client_id {
                     b.id.clear();
@@ -992,12 +996,18 @@ impl Shared {
         .await
     }
 
-    async fn index(&self, ix: &str, key: &str, client_id: &str) -> Result<(), StorageError> {
+    async fn index(
+        &self,
+        ix: &str,
+        key: &str,
+        client_id: &str,
+        now: u64,
+    ) -> Result<(), StorageError> {
         let id = digest(key);
         let row = IndexRow {
             client: client_id,
             key: id.as_str(),
-            at: now_secs(),
+            at: now,
         };
         let name = format!("ix.{ix}");
         for _ in 0..SWAP_ATTEMPTS {
@@ -1040,16 +1050,20 @@ impl Shared {
         let Some(client) = self.client_of(ix, key).await? else {
             return Ok(None);
         };
-        self.update(&client, |b, _| {
+        self.update(&client, now_secs(), |b, _| {
             let taken = pick(b);
             Ok(Swap::when(taken.is_some(), taken))
         })
         .await
     }
 
-    async fn index_subject(&self, key: &str, client_id: &str) -> Result<(), StorageError> {
-        let now = now_secs();
-        self.cas_cell::<SubjectIndex, ()>(SUBJECT_INDEX, &digest(key), |ix, _| {
+    async fn index_subject(
+        &self,
+        key: &str,
+        client_id: &str,
+        now: u64,
+    ) -> Result<(), StorageError> {
+        self.cas_cell::<SubjectIndex, ()>(SUBJECT_INDEX, &digest(key), now, |ix, _| {
             if ix
                 .clients
                 .get(client_id)
@@ -1158,7 +1172,7 @@ impl Shared {
                             key: bucket_id.into_bytes(),
                             value: encode("bucket", &bucket)?,
                         });
-                        self.bucket_indexes(request_body, &bucket.b).await?;
+                        self.bucket_indexes(request_body, &bucket.b, now).await?;
                     }
                 } else {
                     request_body.predicates.push(Predicate {
@@ -1185,7 +1199,7 @@ impl Shared {
         normalized: &str,
         device_code: &str,
     ) -> Result<(), StorageError> {
-        self.cas_cell::<Option<String>, ()>("uc", &digest(normalized), |held, _| {
+        self.cas_cell::<Option<String>, ()>("uc", &digest(normalized), now_secs(), |held, _| {
             match held.as_deref() {
                 Some(owner) if owner != device_code => Err(StorageError::new(
                     "user code is already indexed for a different device_code",
@@ -1441,13 +1455,14 @@ impl SharedStorage {
         insert: impl Fn(&mut Bucket),
         remove: impl Fn(&mut Bucket) -> bool,
     ) -> Result<WriteOutcome, StorageError> {
+        let now = now_secs();
         let s = &self.shared;
         if let Some(f) = g.family {
-            s.index("fam", f, g.client).await?;
+            s.index("fam", f, g.client, now).await?;
         }
-        s.index(g.ix, g.key, g.client).await?;
+        s.index(g.ix, g.key, g.client, now).await?;
         let applied = s
-            .update_guarded(g.client, g.family, |b, _| {
+            .update_guarded(g.client, g.family, now, |b, _| {
                 if b.barred(g.subject, g.established) {
                     return Ok(Swap::Keep(false));
                 }
@@ -1460,7 +1475,7 @@ impl SharedStorage {
             return Ok(WriteOutcome::RefusedRevoked);
         }
         if s.family_barred(g.family).await? {
-            s.update(g.client, |b, _| Ok(Swap::when(remove(b), ())))
+            s.update(g.client, now, |b, _| Ok(Swap::when(remove(b), ())))
                 .await?;
             return Ok(WriteOutcome::RefusedRevoked);
         }
@@ -1481,7 +1496,7 @@ impl Storage for SharedStorage {
     async fn put_client(&self, client: Client) -> Result<(), StorageError> {
         let id = client.client_id.as_str();
         self.shared
-            .update(id, |b, _| {
+            .update(id, now_secs(), |b, _| {
                 b.client = Some(client.clone());
                 Ok(Swap::Write(()))
             })
@@ -1495,7 +1510,7 @@ impl Storage for SharedStorage {
     ) -> Result<bool, StorageError> {
         let id = updated.client_id.as_str();
         self.shared
-            .update(id, |b, _| {
+            .update(id, now_secs(), |b, _| {
                 if b.client.as_ref() != Some(expected) {
                     return Ok(Swap::Keep(false));
                 }
@@ -1518,7 +1533,7 @@ impl Storage for SharedStorage {
         }
         let existed = self
             .shared
-            .update(client_id.as_str(), |b, _| {
+            .update(client_id.as_str(), now_secs(), |b, _| {
                 let existed = b.client.take().is_some();
                 Times::merge(&mut b.client_barrier, window);
                 b.tokens.clear();
@@ -1534,12 +1549,13 @@ impl Storage for SharedStorage {
     }
 
     async fn put_device_grant(&self, grant: DeviceGrant) -> Result<(), StorageError> {
+        let now = now_secs();
         let s = &self.shared;
         let normalized = normalize_user_code(&grant.user_code);
         s.hold_user_code(&normalized, &grant.device_code).await?;
         let client = grant.client_id.as_str();
-        s.index("dev", &grant.device_code, client).await?;
-        s.update(client, |b, _| {
+        s.index("dev", &grant.device_code, client, now).await?;
+        s.update(client, now, |b, _| {
             b.devices.insert(grant.device_code.clone(), grant.clone());
             Ok(Swap::Write(()))
         })
@@ -1602,7 +1618,7 @@ impl Storage for SharedStorage {
             }
         }
         let swapped = s
-            .update(&client, |b, _| {
+            .update(&client, now_secs(), |b, _| {
                 if !is_expected(b) {
                     return Ok(Swap::Keep(false));
                 }
@@ -1618,10 +1634,11 @@ impl Storage for SharedStorage {
         &self,
         record: AuthorizationCodeRecord,
     ) -> Result<(), StorageError> {
+        let now = now_secs();
         let client = record.client_id.as_str();
-        self.shared.index("code", &record.code, client).await?;
+        self.shared.index("code", &record.code, client, now).await?;
         self.shared
-            .update(client, |b, _| {
+            .update(client, now, |b, _| {
                 b.codes.insert(record.code.clone(), record.clone());
                 Ok(Swap::Write(()))
             })
@@ -1637,7 +1654,7 @@ impl Storage for SharedStorage {
             return Ok(false);
         };
         self.shared
-            .update(&client, |b, _| {
+            .update(&client, now_secs(), |b, _| {
                 match b.codes.get(&updated.code) {
                     Some(current) if current.state == *expected => {}
                     _ => return Ok(Swap::Keep(false)),
@@ -1661,12 +1678,13 @@ impl Storage for SharedStorage {
         &self,
         record: PushedAuthorizationRequest,
     ) -> Result<WriteOutcome, StorageError> {
+        let now = now_secs();
         let client = record.client_id.as_str();
         self.shared
-            .index("par", &record.request_uri, client)
+            .index("par", &record.request_uri, client, now)
             .await?;
         self.shared
-            .update(client, |b, _| {
+            .update(client, now, |b, _| {
                 if b.barred(None, record.pushed_at) {
                     return Ok(Swap::Keep(WriteOutcome::RefusedRevoked));
                 }
@@ -1765,21 +1783,22 @@ impl Storage for SharedStorage {
         access: &IssuedToken,
         next: Option<&RefreshTokenRecord>,
     ) -> Result<bool, StorageError> {
+        let now = now_secs();
         let s = &self.shared;
         let client = expected.client_id.as_str();
         if s.family_barred(Some(&expected.family_id)).await? {
             return Ok(false);
         }
-        s.index("tok", &access.access_token, client).await?;
+        s.index("tok", &access.access_token, client, now).await?;
         if let Some(f) = &access.family_id {
-            s.index("fam", f, client).await?;
+            s.index("fam", f, client, now).await?;
         }
         if let Some(n) = next {
-            s.index("rt", &n.refresh_token, client).await?;
-            s.index("fam", &n.family_id, client).await?;
+            s.index("rt", &n.refresh_token, client, now).await?;
+            s.index("fam", &n.family_id, client, now).await?;
         }
         let rotated = s
-            .update_guarded(client, Some(&expected.family_id), |b, _| {
+            .update_guarded(client, Some(&expected.family_id), now, |b, _| {
                 if b.refresh.get(&expected.refresh_token) != Some(expected)
                     || b.barred(expected.subject.as_deref(), expected.grant_established_at)
                 {
@@ -1795,7 +1814,7 @@ impl Storage for SharedStorage {
             .await?
             .unwrap_or(false);
         if rotated && s.family_barred(Some(&expected.family_id)).await? {
-            s.update(client, |b, _| {
+            s.update(client, now, |b, _| {
                 b.tokens.remove(&access.access_token);
                 if let Some(n) = next {
                     b.refresh.remove(&n.refresh_token);
@@ -1832,11 +1851,12 @@ impl Storage for SharedStorage {
     }
 
     async fn put_consent(&self, record: ConsentRecord) -> Result<(), StorageError> {
+        let now = now_secs();
         let s = &self.shared;
         let client = record.client_id.as_str();
-        s.index("cons", &record.consent_id, client).await?;
-        s.index_subject(&record.subject, client).await?;
-        s.update(client, |b, _| {
+        s.index("cons", &record.consent_id, client, now).await?;
+        s.index_subject(&record.subject, client, now).await?;
+        s.update(client, now, |b, _| {
             b.consents
                 .insert(record.consent_id.to_string(), record.clone());
             Ok(Swap::Write(()))
@@ -1849,11 +1869,12 @@ impl Storage for SharedStorage {
         expected: Option<&ConsentRecord>,
         updated: ConsentRecord,
     ) -> Result<bool, StorageError> {
+        let now = now_secs();
         let s = &self.shared;
         let client = updated.client_id.as_str();
-        s.index("cons", &updated.consent_id, client).await?;
-        s.index_subject(&updated.subject, client).await?;
-        s.update(client, |b, _| {
+        s.index("cons", &updated.consent_id, client, now).await?;
+        s.index_subject(&updated.subject, client, now).await?;
+        s.update(client, now, |b, _| {
             let current = b
                 .consents
                 .values()
@@ -1929,7 +1950,7 @@ impl Storage for SharedStorage {
         };
         let removed = self
             .shared
-            .update(&client, |b, _| {
+            .update(&client, now_secs(), |b, _| {
                 let Some(peek) = b.consents.get(consent_id) else {
                     return Ok(Swap::Keep(0));
                 };
