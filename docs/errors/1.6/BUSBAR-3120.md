@@ -18,7 +18,7 @@ Busbar keeps keys, budgets, audit and configuration overlays in the store named 
 
 ## How to fix it
 
-Add `store: { module: <store plugin> }` (for example `sqlite` with a `db_path` setting). For what 1.5.5 did with no block (state kept in RAM, lost on restart), name the in-memory store.
+Add `store: { module: <store plugin> }` (naming a store module and its `settings:`; see that plugin's own documentation). For what 1.5.5 did with no block (state kept in RAM, lost on restart), name the compiled-in `memory` store.
 
 ## Example
 

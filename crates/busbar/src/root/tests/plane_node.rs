@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
 fn ledger_entry(report: &Report, at: Arrived) -> busbar_kernel_ledger::cost::LedgerEntry {
     report.usage.usage_units.iter().fold(
         busbar_kernel_ledger::cost::LedgerEntry::new(&report.lane, at.ms())

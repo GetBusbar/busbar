@@ -2,7 +2,8 @@
 
 `busbar-audit-verify` verifies captured audit API responses without starting the busbar server,
 loading plugins, contacting a node, or reading any signing secret. It uses the published
-[v2](audit-chain-digest-v2.md) and [v4](audit-chain-digest-v4.md) digest contracts, SHA-256 and strict
+[v2](audit-chain-digest-v2.md), [v4](audit-chain-digest-v4.md), [v5](audit-chain-digest-v5.md),
+[v6](audit-chain-digest-v6.md) and [v7](audit-chain-digest-v7.md) digest contracts, SHA-256 and strict
 Ed25519 verification. The recipe pages are embedded in the executable.
 
 ```sh
@@ -47,8 +48,11 @@ The API allows short responses, but this tool requires the exact requested windo
 empty requested window because there is no signed record to verify. Fetch the retained window up
 to the independently recorded head before using completeness mode.
 
-Unknown recipe versions, signature domains and algorithms are refused. V2 records may inherit
-their recipe from a v2 envelope, as in the original published API. V4 and mixed windows require
+Unknown recipe versions, signature domains and algorithms are refused. This includes the link-form line
+(`busbar.audit.link.v1`, [audit-link-v1.md](audit-link-v1.md)), the page stamp (`audit.stamp.v1`) and
+the break notice (`audit.break.v1`): this tool does not verify them, so a range containing a link line
+is refused as an unsupported recipe rather than reported verified. V2 records may inherit
+their recipe from a v2 envelope, as in the original published API. V4 to V7 and mixed windows require
 each record's recipe. Recipe numbers must be canonical decimal strings, preserving full u64
 precision; group counts must match array lengths. Unsigned records cannot pass signed verification.
 Only the fields defined by the published recipe are digested; unrelated JSON additions are not

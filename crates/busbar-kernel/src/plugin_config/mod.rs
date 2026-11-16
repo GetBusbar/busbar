@@ -37,4 +37,4 @@ pub struct Bindings {
 
 // ROOT-BOOT: the interface is the loader's (IF §12.7, round 35 R7b): `Registry::new` names it and the Need
 // handlers take it, so there is one `ConfigBinder`, and this module re-exports it with its types.
-pub use busbar_plugin_loader::binder::{BindError, ConfigBinder, DestDef, TrustAnchor};
+pub use busbar_ports::binder::{BindError, ConfigBinder, DestDef, TrustAnchor};

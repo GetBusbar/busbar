@@ -58,7 +58,7 @@ use busbar_plugin_loader::admit::Admitted;
 use busbar_plugin_loader::instance::{
     Ceilings, InstanceSpec, OpenError, OpenedPort, Registry, StoreSeal,
 };
-use busbar_plugin_loader::ports::store::StoreHandle;
+use busbar_ports::store::StoreHandle;
 
 use busbar_kernel::teller::Kernel;
 use busbar_kernel::upstreams::ConfiguredUpstreams;
@@ -428,14 +428,34 @@ pub(crate) fn signed_ingress() -> Option<Arc<Ingress>> {
 /// The MIN-3 images the plugins directory's scan holds, each with its signed manifest's `alias` (a plane instance is
 /// named by it, [`plane_instances`]). The scan verified each one; admission re-verifies the same bytes. An image that
 /// is not MIN-3 (a refusal at admit) stays on the old path, which judges it as before.
-#[cfg(target_os = "linux")]
 pub(crate) fn admit_images(plugins: &PluginsCfg) -> Result<Vec<(Admitted, String)>, String> {
+    let mut admitted = admit_linked_images(crate::LINKED.images)?;
+    admit_dropped_images(plugins, &mut admitted)?;
+    Ok(admitted)
+}
+
+fn admit_linked_images(
+    rows: &[super::linked::LinkedImage],
+) -> Result<Vec<(Admitted, String)>, String> {
+    rows.iter()
+        .map(|row| {
+            (row.admit)()
+                .map(|image| (image, row.alias.to_owned()))
+                .map_err(|refusal| refusal.to_string())
+        })
+        .collect()
+}
+
+#[cfg(target_os = "linux")]
+fn admit_dropped_images(
+    plugins: &PluginsCfg,
+    admitted: &mut Vec<(Admitted, String)>,
+) -> Result<(), String> {
     let Some(scanned) = super::boot::dropped_registry() else {
-        return Ok(Vec::new());
+        return Ok(());
     };
     let policy = super::boot::trust_policy(plugins, env!("CARGO_PKG_VERSION"))
         .map_err(|error| format!("plugins.trust is invalid: {error}"))?;
-    let mut admitted = Vec::new();
     for row in scanned.loadable() {
         if row.linked() {
             continue;
@@ -449,13 +469,16 @@ pub(crate) fn admit_images(plugins: &PluginsCfg) -> Result<Vec<(Admitted, String
             ),
         }
     }
-    Ok(admitted)
+    Ok(())
 }
 
 /// Only Linux loads plugin images.
 #[cfg(not(target_os = "linux"))]
-pub(crate) fn admit_images(_plugins: &PluginsCfg) -> Result<Vec<(Admitted, String)>, String> {
-    Ok(Vec::new())
+fn admit_dropped_images(
+    _plugins: &PluginsCfg,
+    _admitted: &mut Vec<(Admitted, String)>,
+) -> Result<(), String> {
+    Ok(())
 }
 
 /// One configured instance, owned until the plan borrows it.

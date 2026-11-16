@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
 //! The bounded types every other module is built out of. Every ceiling below is pinned by the
 
 use core::fmt;

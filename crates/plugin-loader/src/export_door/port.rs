@@ -28,8 +28,8 @@ use busbar_plugin_abi::fail::CallError;
 use busbar_plugin_abi::host_side::caller::{CallStack, InstanceLimits};
 use busbar_plugin_abi::kinds::export::export as x;
 
-use crate::ports::export::{Delivered, ExportPort, FamilyIn, SampleIn};
-use crate::ports::{CallCx, PortError};
+use busbar_ports::export::{Delivered, ExportPort, FamilyIn, SampleIn};
+use busbar_ports::{CallCx, PortError};
 
 /// Lines one instance holds queued before the kernel's next line is shed (the old door's bound).
 pub const MAX_QUEUED_LINES: usize = super::MAX_QUEUED_LINES;
@@ -43,8 +43,10 @@ pub const DELIVER_ATTEMPTS: u32 = super::DELIVER_ATTEMPTS;
 pub const DEFAULT_DELIVER_TIMEOUT: Duration = Duration::from_secs(30);
 /// The Retry-After clamp of `RetrySite::ExportDeliver` (§12.3).
 pub const RETRY_AFTER_CLAMP_S: u64 = 300;
-/// The first resend's wait; each further resend doubles it, up to [`RETRY_AFTER_CLAMP_S`].
-pub const RESEND_BASE: Duration = Duration::from_millis(50);
+/// The shared host schedule's first failure ceiling (IF §49 Q5).
+pub const RESEND_BASE: Duration = Duration::from_millis(250);
+/// Exponential backoff is capped independently of a backend's Retry-After hint.
+pub const RESEND_CAP: Duration = Duration::from_secs(60);
 
 /// The bytes an `Append` answer asks core to append: the delivered prefix as handed to the plugin (no copy), or
 /// the plugin's own rendered bytes (IF §12.21 `AppendBytes`).
@@ -182,14 +184,12 @@ impl Shared {
         }
     }
 
-    /// The wait before resend `attempt` (>= 2): the stated Retry-After, clamped, else the doubling base.
+    /// The shared backoff for the preceding failed attempt, never below Retry-After or the host floor.
     fn resend_wait(attempt: u32, retry_after_s: Option<u64>) -> Duration {
-        match retry_after_s {
-            Some(s) => Duration::from_secs(s.min(RETRY_AFTER_CLAMP_S)),
-            None => RESEND_BASE
-                .saturating_mul(1 << attempt.saturating_sub(2).min(12))
-                .min(Duration::from_secs(RETRY_AFTER_CLAMP_S)),
-        }
+        busbar_contract::retry::Backoff::new(RESEND_BASE, RESEND_CAP)
+            .delay(attempt.saturating_sub(1), busbar_contract::retry::unit())
+            .max(Duration::from_secs(retry_after_s.unwrap_or(0)))
+            .min(Duration::from_secs(RETRY_AFTER_CLAMP_S))
     }
 
     /// Delivers one line set until every line is accepted, refused or out of attempts.

@@ -87,7 +87,7 @@ const HELP_ENDPOINTS_HEAD: &str = "
 ENDPOINTS (once running, listen address from config.yaml `listen`):
 ";
 
-const HELP_TAIL: &str = "    GET  /stats  /healthz  /metrics
+const HELP_TAIL: &str = "    GET  /stats  /livez  /readyz  /healthz  /metrics
 
 Docs: https://getbusbar.com   ·   Source: https://github.com/GetBusbar/busbar\n";
 

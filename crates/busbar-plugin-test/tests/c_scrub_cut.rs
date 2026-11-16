@@ -87,8 +87,8 @@ fn planned(failed: bool, text: &str) -> String {
 #[test]
 fn the_store_adapters_port_error_log_line_and_audit_row_hold() {
     use busbar_plugin_loader::instance::OpenError;
-    use busbar_plugin_loader::ports::PortError;
     use busbar_plugin_test::fake_needs::FakeNeeds;
+    use busbar_ports::PortError;
 
     use crate::min3_store::{booted, inline, read_one, Capture, NOT_ANSWERED_OK};
 
@@ -151,7 +151,7 @@ fn the_store_adapters_port_error_log_line_and_audit_row_hold() {
 #[test]
 fn the_secret_adapters_port_error_log_line_and_audit_row_hold() {
     use busbar_plugin_loader::adapters::secret::port_failure;
-    use busbar_plugin_loader::ports::PortError;
+    use busbar_ports::PortError;
 
     let scrub = Scrub::new();
     scrub.register(1, &[SECRET.as_bytes()]);
@@ -175,8 +175,8 @@ fn the_auth_adapters_port_error_log_line_and_audit_row_hold() {
     use busbar_plugin_abi::auth::BAD_CREDENTIAL;
     use busbar_plugin_abi::types::Status;
     use busbar_plugin_loader::adapters::auth::{plugin_error, rejected};
-    use busbar_plugin_loader::ports::auth::Verdict;
-    use busbar_plugin_loader::ports::PortError;
+    use busbar_ports::auth::Verdict;
+    use busbar_ports::PortError;
 
     let scrub = Scrub::new();
     scrub.register(1, &[SECRET.as_bytes()]);
@@ -202,8 +202,8 @@ fn the_auth_adapters_port_error_log_line_and_audit_row_hold() {
 }
 
 /// The shown text of a plugin-error `PortError`.
-fn shown_text(e: &busbar_plugin_loader::ports::PortError) -> &str {
-    use busbar_plugin_loader::ports::PortError;
+fn shown_text(e: &busbar_ports::PortError) -> &str {
+    use busbar_ports::PortError;
     match e {
         PortError::Failed { text, .. } | PortError::Refused { text, .. } => &**text,
         other => panic!("not a plugin error: {other:?}"),
@@ -212,7 +212,7 @@ fn shown_text(e: &busbar_plugin_loader::ports::PortError) -> &str {
 
 /// Every encoding of the secret at byte 500 of a 560-byte text goes through `build(failed, text)`: the shown
 /// text is at most 512 bytes and holds no 4-byte run of the encoding, for REFUSED and FAILED alike.
-fn adapter_arm(build: impl Fn(bool, &str) -> busbar_plugin_loader::ports::PortError) {
+fn adapter_arm(build: impl Fn(bool, &str) -> busbar_ports::PortError) {
     for form in &needles(SECRET.as_bytes()) {
         let form = core::str::from_utf8(form).expect("ASCII");
         let text = format!("{}{form}{}", "a".repeat(500), "b".repeat(60));
@@ -267,8 +267,8 @@ fn the_export_adapters_port_error_log_line_and_audit_row_hold() {
 
     use busbar_plugin_abi::export::STREAM_LOGS;
     use busbar_plugin_abi::host_side::caller::CallStack;
-    use busbar_plugin_loader::ports::CallCx;
     use busbar_plugin_test::fake_needs::FakeNeeds;
+    use busbar_ports::CallCx;
 
     use crate::min3_store::{booted, json_str};
 

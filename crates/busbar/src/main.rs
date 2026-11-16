@@ -1262,10 +1262,9 @@ async fn run(
         let kernel = late_services
             .kernel()
             .unwrap_or_else(|| die("record bootstrap has no installed kernel"));
-        let instance = receipt.instance.clone();
         kernel
             .arm_record_bootstrap(receipt, &fingerprint, |schema, key, value| {
-                root::boot::bootstrap_witness(&instance, schema, key, value)
+                root::boot::bootstrap_witness(schema, key, value)
             })
             .await
             .unwrap_or_else(|error| die(format!("fresh record bootstrap refused: {error}")));
@@ -1299,10 +1298,9 @@ async fn run(
         .unwrap_or_else(|error| die(format!("cold record bootstrap failed: {error}")));
         let receipt =
             receipt.unwrap_or_else(|error| die(format!("cold record bootstrap refused: {error}")));
-        let instance = receipt.instance.clone();
         kernel
             .arm_record_bootstrap(receipt, &fingerprint, |schema, key, value| {
-                root::boot::bootstrap_witness(&instance, schema, key, value)
+                root::boot::bootstrap_witness(schema, key, value)
             })
             .await
             .unwrap_or_else(|error| die(format!("cold record bootstrap refused: {error}")));
@@ -1411,28 +1409,36 @@ async fn run(
 
     drop(served);
     let app_handle = Arc::new(busbar_kernel::state::AppHandle::new(app));
+    let probes = Arc::new(busbar_kernel::endpoints::ProbeState::new(
+        book.as_ref().map(|book| book.runtime_journal.clone()),
+    ));
     let admin_router = busbar_kernel::router::build_admin_router_on_with_dispatch_layer(
         &app_handle,
         req_body_max,
         response_headers_cfg.server_timing,
         root::listener::deferred_dispatch_layer,
-    );
-    let data_router = listener_plan.router(
-        &app_handle,
-        "listen".into(),
-        req_body_max,
-        0, // The framed actor applies one physical cap to data and operator requests.
-        response_headers_cfg.server_timing,
-    );
+    )
+    .layer(axum::Extension(probes.clone()));
+    let data_router = listener_plan
+        .router(
+            &app_handle,
+            "listen".into(),
+            req_body_max,
+            0, // The framed actor applies one physical cap to data and operator requests.
+            response_headers_cfg.server_timing,
+        )
+        .layer(axum::Extension(probes.clone()));
     let mut physical_routers = std::collections::HashMap::new();
     for bind in listener_plan.stream_binds() {
-        let router = listener_plan.router(
-            &app_handle,
-            bind.at.clone(),
-            req_body_max,
-            0, // The framed actor owns this listener's shared admission cap.
-            response_headers_cfg.server_timing,
-        );
+        let router = listener_plan
+            .router(
+                &app_handle,
+                bind.at.clone(),
+                req_body_max,
+                0, // The framed actor owns this listener's shared admission cap.
+                response_headers_cfg.server_timing,
+            )
+            .layer(axum::Extension(probes.clone()));
         physical_routers.insert(bind.at.clone(), router);
     }
     credential_handle.set(std::sync::Arc::clone(&app_handle));
@@ -1593,10 +1599,12 @@ async fn run(
     {
         let mut stop = control_work.shutdown_rx.clone();
         let shutdown = shutdown_tx.clone();
+        let probes = probes.clone();
         tokio::spawn(async move {
             if !*stop.borrow_and_update() {
                 let _ = stop.wait_for(|stopping| *stopping).await;
             }
+            probes.begin_stopping();
             let _ = shutdown.send(());
         });
     }
@@ -1606,8 +1614,10 @@ async fn run(
         let rx = shutdown_tx.subscribe();
         let shutdown_level = control_work.shutdown_tx.clone();
         let clock = Arc::clone(&drain_clock);
+        let probes = probes.clone();
         tokio::spawn(async move {
             recv_shutdown(rx).await;
+            probes.begin_stopping();
             clock.arm(tokio::time::Instant::now() + clock.budget());
             let _ = shutdown_level.send(true);
         });
@@ -1615,13 +1625,15 @@ async fn run(
 
     let line_shutdown = line_served.as_ref().map(|_| shutdown_tx.subscribe());
 
-    busbar_core_admin::restart::publish_shutdown(shutdown_tx.clone());
+    busbar_core_admin::restart::publish_shutdown(shutdown_tx.clone(), probes.clone());
     // The first signal starts the drain; a second one ends it at once (the deadline branch).
     {
         let shutdown_tx = shutdown_tx.clone();
         let clock = Arc::clone(&drain_clock);
+        let probes = probes.clone();
         tokio::spawn(async move {
             shutdown_signal().await;
+            probes.begin_stopping();
             let _ = shutdown_tx.send(());
             shutdown_signal().await;
             tracing::warn!("second shutdown signal: the drain deadline is now");
