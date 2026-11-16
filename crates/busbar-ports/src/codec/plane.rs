@@ -846,6 +846,29 @@ mod tests {
     }
 
     #[test]
+    fn trust_state_carries_catalog_even_without_items() {
+        let mut w = Reply::new();
+        encode_trust_answers(
+            &mut w,
+            &[TrustAnswer {
+                check: 9,
+                verdict: plane::DISTRUST_NONE,
+                catalog: Some([42; 32]),
+                items: &[],
+                named: "",
+            }],
+        )
+        .expect("fits");
+        let records = recs(w.as_bytes());
+        let (answer, tail) = records[0].pod_tail::<plane::TrustAns>().expect("answer");
+        assert_eq!(answer.check, 9);
+        let state = recs(tail);
+        assert_eq!(state.len(), 1);
+        assert_eq!(state[0].tag, tag::TR_CATALOG);
+        assert_eq!(state[0].body, [42; 32]);
+    }
+
+    #[test]
     fn a_catalog_is_one_cat_model_text_per_model() {
         let mut w = Reply::new();
         encode_catalog(&mut w, &["gpt-5", "claude-opus", ""]).expect("fits");
