@@ -24,25 +24,17 @@ never silent.
 
 | Env var | Default | Purpose |
 |---|---|---|
-| `BUSBAR_CONFIG` | `/etc/busbar/config.yaml` | Path to the deployment config. **The one bootstrap env var**: it locates config.yaml itself. Overridden by `-c`/`--config`. |
+| `BUSBAR_CONFIG` | `/etc/busbar/config.yaml` | Path to the deployment config. The bootstrap env var that locates config.yaml itself. Overridden by `-c`/`--config`. |
 | Provider key vars | n/a | Named by each provider's `api_key: { env: ... }` reference (e.g. `ANTHROPIC_KEY`). |
 | Token/secret vars | n/a | Anything referenced via `${VAR}` in either file (client tokens, admin token, …). |
 
-**Operational environment overrides are retired in 1.6.0.** The first 1.6.0 boot on a 1.5.5
-config copies the old provider, worker-count and upstream HTTP overrides into current config keys,
-so keep them set for that boot and remove them from the launcher afterwards; see
-[the upgrade guide](migration-1.6.md#retired-environment-variables).
-
-| Retired env var | Migration destination |
-|---|---|
-| `BUSBAR_CONFIG_OVERLAY` | One-time old file-overlay import into Store |
-| `BUSBAR_WORKER_THREADS` | `advanced.worker_threads` |
-| `BUSBAR_UPSTREAM_HTTP1_ONLY` | `advanced.upstream_http1_only` |
-| `BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE` | `advanced.upstream_h2_prior_knowledge` |
-| `BUSBAR_PROVIDERS` | `providers_file:` (or use the current `--providers <path>` flag) |
-
-`TOKIO_WORKER_THREADS` remains a supported fallback for `advanced.worker_threads`.
-`BUSBAR_CONFIG`, `RUST_LOG`, and explicit secret environment references are unchanged.
+`TOKIO_WORKER_THREADS` is a supported fallback for `advanced.worker_threads`. Provider selection, worker count and upstream HTTP behaviour are configured in config.yaml (`providers_file:` or `--providers`, `advanced.worker_threads`, `advanced.upstream_http1_only`, `advanced.upstream_h2_prior_knowledge`), not by environment variables; see [the upgrade guide](migration-1.6.md#retired-environment-variables) for the variables an older deployment may still set.
+`BUSBAR_CONFIG`, `RUST_LOG`, and explicit secret environment references are read. A few further
+variables are read for specific purposes and are not configuration inputs: `BUSBAR_DATA_DIR` (the
+data directory the plugin registry uses when plugins are enabled), `BUSBAR_RECORD_BOOTSTRAP_RECEIPT`
+(see [cold record bootstrap](operations/cold-record-bootstrap.md)) and `BUSBAR_INCREMENTAL_SCAN`
+(opts the admission gate into its incremental-scan tenant). `BUSBAR_TIMING` only has an effect in a
+binary built with the timing feature.
 
 ### Config mutability (`locked` + `overlay`)
 
@@ -94,7 +86,7 @@ config:
   Other plugin pins are recovered before the complete application's plugin validation.
 
 **Worker threads and scaling.** Busbar's request path is CPU-bound (parse, translate, serialize), so
-throughput scales with data-plane workers. Since 1.6.0, `advanced.worker_threads` is the **data-plane
+throughput scales with data-plane workers. `advanced.worker_threads` is the **data-plane
 worker count**, not a tokio pool size: on unix, each worker is a **pinned single-threaded runtime with
 its own `SO_REUSEPORT` listener** on the data port, and the kernel spreads accepted connections across
 them; the admin plane and background tasks run on a separate small control-runtime thread. `N: 1` on a
@@ -109,9 +101,7 @@ node) the default sizes to the node's full core count and oversubscribes the quo
 `advanced.worker_threads` to your CPU limit**; likewise to cap a shared box, set it to the cores you
 want Busbar to use. Scale up by default, tune down deliberately. The topology is directly observable:
 the workers show up as threads named `busbar-core-0` … `busbar-core-N-1`, and `ss -tlnp` / `netstat`
-shows N listen sockets on the one data port. *(Before 1.4.0 the default was capped at `min(cores, 4)`,
-which pinned throughput to ~4 cores regardless of box size, set the value explicitly on older
-binaries.)*
+shows N listen sockets on the one data port.
 
 Startup is fail-loud: an unset `${VAR}`, an unknown provider reference, an unknown
 protocol or auth mode, or an invalid `on_exhausted` action stops the process with a
@@ -119,15 +109,15 @@ diagnostic. A provider whose `api_key` reference does not resolve refuses boot
 (`BUSBAR-8020`), and refuses an admin apply/reload the same way; declare `api_key: none`
 for an upstream that takes no credential. `auth.chain: []` prints a loud open-relay warning.
 
-The HTTP client uses a 300s request timeout and pools up to 1024 idle keep-alive connections per upstream host.
+The HTTP client uses a 300s request timeout and pools up to 8192 idle keep-alive connections per upstream host (`limits.pool_max_idle_per_host`).
 
 ### Validating configuration (`busbar --validate`)
 
 `busbar --validate` runs the exact load → resolve → validate pipeline the gateway runs at boot,
-then exits, **without** starting the server. It binds no port, writes nothing to disk, spawns no
-tasks, and makes no network call, so it is safe to run anywhere, including in CI and against a config
+then exits, **without** starting the server. It binds no port, writes nothing to disk, starts no
+server tasks, and makes no network call to an upstream, so it is safe to run anywhere, including in CI and against a config
 edited on a live host before you reload it. It does read the files your `file:` secret references
-name, because since 1.5.3 it resolves those references rather than only checking their shape.
+name, because it resolves those references rather than only checking their shape. It also runs plugin preflight: every plugin manifest is checked (signature and trust, conflicts, ABI and version floors), and authorized native grammar and check callbacks may run.
 
 ```sh
 busbar --validate -c ./config.yaml --providers ./providers.yaml
@@ -147,15 +137,15 @@ the middle bullets before you wire this into CI.
 - **`env:` and `file:` secret REFERENCES are resolved, and one that cannot resolve fails the run.**
   A secret reference is the `{ env: VAR }` / `{ file: /path }` form on `providers.*.api_key`,
   `tls.cert` / `tls.key` / `tls.client_ca` (and the `admin_tls` equivalents), `auth.signing_key`, and
-  the `admin-tokens` token. Since 1.5.3 `--validate` reads each one and exits `1` naming the first
-  that fails, where it previously checked only the shape and exited `0`. So a CI job needs the same
+  the operator-credential token. `--validate` reads each one and exits `1` naming the first
+  that fails. So a CI job needs the same
   variables and files the deployment has, or a config whose references resolve in that environment.
   A reference served by a secret PLUGIN is not resolved here, since the plugin may not be loadable.
-  Boot agrees: since 1.6.0 an unresolvable provider `api_key` reference refuses boot
+  Boot agrees: an unresolvable provider `api_key` reference refuses boot
   (`BUSBAR-8020`), including on admin apply. It checks *structure* and secret resolution, never upstream
   reachability.
 - Honors `-c`/`--config`, `--providers`, `BUSBAR_CONFIG`, and `--ignore-overlay` exactly as boot does.
-  Because it reuses the boot path, a clean `--validate` means a clean boot.
+  Because it reuses the boot path, a passing `--validate` catches configuration and plugin-preflight problems before boot. It does not guarantee boot, plugin readiness or backend reachability.
 
 ### Inspecting the SSRF denylist (`busbar --print-metadata-blocklist`)
 
@@ -163,18 +153,16 @@ Provider `base_url` values are checked against a cloud-metadata denylist, so a c
 mistyped config cannot turn Busbar into a reader of your instance credentials. The list the running
 binary actually enforces is the built-in set plus whatever you added under
 `security.blocked_metadata_hosts`, which means it is not something you can read off the config file
-alone. This flag prints it, one entry per line, and exits `0`:
+alone. This flag prints it, one entry per line, and exits `0`, or exits `1` when boot would be refused for a reason that is not the config file itself:
 
 ```sh
-BUSBAR_CONFIG=./config.yaml busbar --print-metadata-blocklist
+busbar -c ./config.yaml --print-metadata-blocklist
 ```
 
 - The built-in set always prints, so the flag works before a deployment is wired up.
-- Your `security.blocked_metadata_hosts` entries are appended when `BUSBAR_CONFIG` points at a config
-  that reads and parses. If it does not, the flag prints the built-in set alone and says so on stderr
-  rather than handing you a silently incomplete list. Run Busbar normally to see the parse error.
+- Your `security.blocked_metadata_hosts` entries are appended when the config path (`-c`/`--config`, else `BUSBAR_CONFIG`) reads and parses. If it parses but is invalid, the flag prints the built-in set alone and says so on stderr. A file that cannot be read is skipped silently, so check the path first.
 - Every host printed here is refused for every outbound connection: there are no allow-overrides
-  (the 1.5.5 carve-outs are retired, BUSBAR-3136). See
+  (BUSBAR-3136). See
   [the configuration reference](configuration.md#security).
 
 ## Inbound TLS & mutual-TLS (mTLS)
@@ -194,15 +182,14 @@ tls:
 
 Each of `cert`, `key`, and `client_ca` is a **secret reference**, not a bare path: the
 `{ file: /path }` form above reads PEM bytes from disk, and `{ env: VAR }` reads them from an
-environment variable (or `{ module: <secret-plugin>, settings: {…} }` from a secret backend). The
-plaintext `cert_file`/`key_file`/`client_ca_file` path keys of earlier releases are gone in 1.5.0.
+environment variable (or `{ module: <secret-plugin>, settings: {…} }` from a secret backend). Bare
+path keys (`cert_file`, `key_file`, `client_ca_file`) are not accepted.
 
 **Certificate & key formats.** `cert` resolves to a PEM certificate chain with the leaf
 (server) certificate first, followed by any intermediates: exactly what most CAs
 ship as `fullchain.pem`. `key` resolves to the matching PEM private key in PKCS#8
 (`BEGIN PRIVATE KEY`), PKCS#1 (`BEGIN RSA PRIVATE KEY`), or SEC1
-(`BEGIN EC PRIVATE KEY`) encoding. Busbar offers **h2, http/1.1** over ALPN (1.6.0; 1.5.5
-offered http/1.1 only): an h2-capable client speaks HTTP/2, an http/1.1-only client is served as before.
+(`BEGIN EC PRIVATE KEY`) encoding. Busbar offers **h2, http/1.1** over ALPN: an h2-capable client speaks HTTP/2, an http/1.1-only client is served as before.
 
 **Fail-fast.** Any missing, unreadable, or unparseable cert/key/CA file stops the
 process at startup with a message naming the offending file: a misconfigured
@@ -253,32 +240,32 @@ there: simply omit the `tls` block.
 
 ### Connection-level hardening (slow-loris)
 
-When Busbar terminates TLS itself, the native listeners bound the request **header-read**
-phase (30 s) in addition to the TLS handshake, so a client that completes the handshake
+The native listeners, with or without a `tls` block, bound the request **header-read**
+phase (30 s) (and, with a `tls` block, the TLS handshake), so a client that completes the handshake
 and then trickles request headers one byte at a time cannot pin a connection open
 indefinitely. This applies to each of the N data-plane listeners alike. The bound applies
 only to reading the request headers: it never limits a streaming response, so long model
 completions are unaffected.
 
-The plain-HTTP listeners (no `tls` block) do **not** apply a header-read timeout. For an
-**edge-facing** deployment, either enable the `tls` block (recommended) or front Busbar
-with a reverse proxy / load balancer (nginx, Caddy, Envoy, an ALB), which terminates
-client connections and provides its own slow-client protection. A plain-HTTP Busbar
-directly exposed to untrusted networks is not recommended.
+The same 30 s header-read bound applies to the plain-HTTP listeners (no `tls` block). For an
+**edge-facing** deployment, still prefer the `tls` block, or front Busbar with a reverse proxy /
+load balancer (nginx, Caddy, Envoy, an ALB), which terminates client connections and provides its
+own slow-client protection. A plain-HTTP Busbar directly exposed to untrusted networks is not
+recommended.
 
 ## Health & readiness
 
 | Endpoint | Auth | Meaning |
 |---|---|---|
-| `GET /healthz` | open | `200 ok` if **any** lane is usable; `503` otherwise. Use for liveness/readiness probes. |
-| `GET /metrics` | virtual key | Prometheus exposition. OPT-IN: mounted only when an `export:` instance with `module: prometheus` is configured (with its required `settings.buffer_seconds`); otherwise the path 404s like any other. Requires a valid key with a non-empty `auth.chain`, open under `chain: []`. Restrict at the network layer if unauthenticated scraping is needed. |
+| `GET /healthz` | open | `200 ok` if **any** lane is usable. `503` when no lane is usable, when plugin dispatch is halted, or, with no LLM plane configured, when another configured plane is not open (`plane '<key>' configured but not open`). Use for readiness probes. |
+| `GET /metrics` | virtual key | Prometheus exposition. Data listener: OPT-IN, mounted only when an `export:` instance of the Prometheus-exposition kind is configured (with its required `settings.buffer_seconds`; see that export plugin's own documentation); otherwise the path 404s like any other. The admin listener serves its own `/metrics` regardless (see below). Requires a valid key with a non-empty `auth.chain`, open under `chain: []`. Restrict at the network layer if unauthenticated scraping is needed. |
 | `GET /stats` | virtual key | Per-lane health snapshot + pool membership, JSON. |
 
 `/stats` returns, per lane: `model`, `provider`, `max_concurrent`, `inflight`, `free_slots`, `available` (free permits for a bounded lane,
 or `"unbounded"`), `at_capacity` (`true` when a bounded lane is at its `max_concurrent`
 limit and is therefore shedding/spilling rather than queueing), `availability`,
 `recovery_hint_ms`, `breaker_state`, `ok`, `err`, `usable`, `dead`, `dead_reason`,
-`cooldown_remaining_s`, `streak`, and `budget`. It is the first place to look when a pool
+`client_fault`, `cooldown_remaining_s`, `streak`, and `budget`. It is the first place to look when a pool
 is degraded.
 
 `availability` renders the shared `classify` taxonomy, the same one routing dispatches on,
@@ -313,8 +300,8 @@ Three things are worth understanding before you scale out:
   spread its affinity too. If you depend on affinity, enable **sticky sessions** at the
   LB (e.g. by the affinity header / a cookie) so a session lands on the same instance.
 - **Governance state in `store: memory` is per-instance; enforcement is per-node either
-  way.** The `store:` block is required in 1.6.0 (the 1.6.0 upgrade inserts `store: {module: memory}`); `memory` is ephemeral RAM per instance. A cluster-shared
-  store (postgres/mysql/valkey) genuinely shares keys and the token ledger across N nodes (but
+  way.** The `store:` block is required in 1.6.0 (the first 1.6.0 boot of a 1.5.5 config inserts `store: {module: memory}`); `memory` is ephemeral RAM per instance. A cluster-shared
+  store plugin genuinely shares keys and the token ledger across N nodes (but
   NOT the durable audit log - see below), and each node's write-behind flush ships
   ADDITIVE per-(model, tier) token deltas so the store converges on the true fleet
   totals - but the budget hard
@@ -341,7 +328,7 @@ one instance and scale the box, not the count.
 
 ### First start with several replicas
 
-On an empty shared store (postgres, mysql or valkey), one replica performs the dataset's
+On an empty shared store, one replica performs the dataset's
 first start while the others wait. A waiting process binds **no listener**, so `/healthz`
 does not answer until it is admitted. It logs, on its first wait and every 10 s after:
 
@@ -379,18 +366,18 @@ upgrade and loses nothing.
 
 ## Metrics to watch
 
-All metrics are Prometheus counters/histograms exposed at `/metrics`, which is opt-in: with no `module: prometheus` instance under `export:` busbar records nothing and does not mount the endpoint. Its `settings.buffer_seconds` (required when you opt in) sets how many seconds of observations are retained. Quantiles cover that window, `_sum`/`_count` stay cumulative, and memory is bounded by the window rather than by uptime.
+All metrics are Prometheus counters/histograms exposed at `/metrics`, which is opt-in: the data-listener `/metrics` is mounted only when a metrics export instance (an `export:` entry of the Prometheus-exposition kind) is configured. The in-process registry itself is governed by `telemetry.enabled` (default `true`) whatever `export:` holds, and the admin listener always serves its own `GET /metrics` and `GET /metrics/hooks` (admin credential; Prometheus text, OpenMetrics or JSON by `Accept`; `503 telemetry_disabled` when `telemetry.enabled` is `false`). Observations are retained for `telemetry.retention_seconds` (default 300); an export instance's `settings.buffer_seconds` (required for that instance) can only raise that retention. Quantiles cover that window, `_sum`/`_count` stay cumulative, and memory is bounded by the window rather than by uptime.
 
 | Metric | Type | Labels | Watch for |
 |---|---|---|---|
-| `busbar_requests_total` | counter | `ingress_protocol`, `pool`, `outcome` | Model (LLM) plane only, unchanged from 1.5.4 (no `plane` label). `outcome` is `ok` / `client_error` / `exhausted` (503) / `error`. A rising `exhausted` means pools are running out of healthy members. |
+| `busbar_requests_total` | counter | `ingress_protocol`, `pool`, `outcome` | Model (LLM) plane only (no `plane` label). `outcome` is `ok` / `client_error` / `exhausted` (503) / `error`. A rising `exhausted` means pools are running out of healthy members. |
 | `busbar_plane_requests_total` | counter | `plane`, `ingress_protocol`, `pool`, `outcome` | Mounted planes: `plane` is `mcp` / `a2a`, so `sum by (plane) (rate(busbar_plane_requests_total[5m]))` splits the mounted-plane traffic. Same `outcome` vocabulary as `busbar_requests_total`. |
 | `busbar_upstream_attempts_total` | counter | `pool`, `lane` | Real upstream calls (re-counted per failover hop). |
 | `busbar_upstream_failures_total` | counter | `pool`, `lane`, `disposition` | `disposition` is `transient_upstream` / `attempt_timeout` / `hard_down` / `context_length`. Concentration on one lane points at a sick backend. |
 | `busbar_breaker_trips_total` | counter | `pool`, `lane` | Each hard-down/trip. Spikes = a backend going down. |
 | `busbar_failovers_total` | counter | `pool`, `reason` | `reason` is `timeout` / `connect` / `transient_upstream` / `attempt_timeout` / `hard_down` / `context_length`. |
 | `busbar_translations_total` | counter | `from`, `to` | Cross-protocol translation hops. |
-| `busbar_request_duration_seconds` | histogram | `ingress_protocol`, `pool` | Model (LLM) plane only, unchanged from 1.5.4. End-to-end latency. |
+| `busbar_request_duration_seconds` | histogram | `ingress_protocol`, `pool` | Model (LLM) plane only. End-to-end latency. |
 | `busbar_plane_request_duration_seconds` | histogram | `plane`, `ingress_protocol`, `pool` | Mounted planes (`mcp` / `a2a`). End-to-end latency for tool calls and agent tasks. |
 | `busbar_key_spend_cents` | gauge | `key` (+ mint labels) | Per-virtual-key derived spend (all-time attribution bucket), calculated from exact ledger quantities and dated rate history. The legacy metric name does not select a currency; cost units are operator-defined. |
 | `busbar_key_tokens_total` | gauge | `key` (+ mint labels) | Tokens consumed by each virtual key (all-time attribution bucket). |
@@ -410,7 +397,12 @@ All metrics are Prometheus counters/histograms exposed at `/metrics`, which is o
 | `busbar_webhook_logs_dropped_total` | counter | n/a | Request-log webhook deliveries shed because the in-flight delivery pool was saturated (a slow/unreachable webhook endpoint). A non-zero rate means request logs are being silently dropped, scale the endpoint or alert. |
 | `busbar_file_logs_dropped_total` | counter | n/a | Request-log file appends shed because that sink's in-flight append pool was saturated (a slow/stalled filesystem: full disk, hung NFS/EBS mount). A non-zero rate means request-log lines are being dropped, check the mount or alert. |
 | `busbar_billing_truncated_total` | counter | n/a | Same-protocol non-stream responses whose body exceeded the translate-body cap, so the terminal `usage` frame was missed and the request billed zero tokens (the client still got a full response). A non-zero rate signals an over-cap billing gap. |
-| `busbar_journal_quarantined_total` | counter | n/a | Journal segments whose damaged remainder boot recovery moved into a quarantine file because a record failed its checksum with valid records after it. Any non-zero value is an incident: acknowledged postings and holds are off the book. See [Journal corruption at boot](#journal-corruption-at-boot). A torn tail after a crash is not counted. |
+| `busbar_lane_request_duration_seconds` | histogram | `pool`, `target`, `model`, `instance` | Per-lane request latency. Only lanes within `telemetry.max_lane_series` get their own series. |
+| `busbar_unit_refusals_total` | counter | `reason`, `instance` | Units that did not complete, by closed unit reason and plane instance. |
+| `busbar_admission_denied_total` | counter | `gate` | Requests refused by an admission gate (for example `gate="inbound"` when the inbound concurrency cap is hit). |
+| `busbar_billing_tap_decode_fail_total` | counter | `protocol`, `reason` | A same-protocol 2xx body whose usage could not be read; billing follows the plane's usage policy. |
+| `busbar_tap_notifications_dropped_total` | counter | n/a | Hook tap notifications shed under load. |
+| `busbar_build_info` | gauge | `version` | Fixed at `1`; carries the running version. |
 
 `/metrics` requires a valid key with a non-empty `auth.chain`, it is treated as an
 information-disclosure surface and goes through the same auth check as other routes.
@@ -549,16 +541,16 @@ Configured per pool via `breaker.trip` (see
 ### Cooldown & backoff
 
 Cooldown grows exponentially with the consecutive failure streak, doubling from
-`base_cooldown_secs` up to `max_cooldown_secs`, with ±10% jitter once the streak is
-nonzero. A server `Retry-After` header is always honored as a **floor**: even if it
-exceeds `max_cooldown_secs`. Defaults (no `breaker:` block): base 15s, max 120s.
+`base_cooldown_secs` up to `max_cooldown_secs`, with ±10% jitter on every
+cooldown. A server `Retry-After` header is honored as a **floor**, even if it exceeds
+`max_cooldown_secs`, but is itself capped at `limits.max_honored_retry_after_secs` (default 86400). Defaults (no `breaker:` block): base 15s, max 120s.
 
 ### Hard-down vs transient
 
 - A **transient** fault (5xx/timeout/network/overload/rate-limit) drives the trip
   evaluation and, on trip, opens the breaker: recoverable via the half-open probe.
 - A **hard-down** fault (billing/quota or auth) opens the breaker immediately with a
-  long *sticky* cooldown (30 min) rather than waiting for a trip threshold, it does
+  long *sticky* cooldown (default 30 min, `limits.hard_down_cooldown_secs`) rather than waiting for a trip threshold, it does
   **not** set a permanent `dead` flag, so it is still recoverable: a successful active
   probe (or organic half-open probe) brings it back. An **auth** hard-down also relays the
   error to the caller; a **billing** hard-down fails the request over to another
@@ -649,12 +641,13 @@ and the client must retry.
 
 When all members are unusable, the pool's `on_exhausted` action decides:
 
-- `reject` / `status_503` (default): `503` with a `Retry-After` set to the soonest genuine
+- `reject` (default): `503` with a `Retry-After` set to the soonest genuine
   member cooldown, or to a small saturation floor when exhaustion is pure at-capacity
   (not the misleading `1`).
 - `least_bad`, serve the soonest-cooldown member that still has a free permit
   (skipping a saturated one), degraded and logged loudly.
 - `{ fallback_pool: <name> }`, route to another pool (loop-guarded).
+- `{ queue: { max_ms: <ms> } }`, wait up to `max_ms` for a freed permit, then reject.
 
 If `outcome="exhausted"` (503) is climbing in `busbar_requests_total`, check
 `/stats` for dead/tripped lanes and consider a `fallback_pool` or `least_bad` policy
@@ -664,7 +657,7 @@ for graceful degradation.
 
 Data-plane callers authenticate with **signed, expiring virtual keys** (the built-in `keys`
 verifier in `auth.chain`). Keys are managed over the admin API on the separate `admin_listen`,
-guarded by `auth.admin_auth` (the built-in `admin-tokens` operator credential, sent as
+guarded by `auth.admin_auth` (the operator credential of the configured auth module, sent as
 `Authorization: Bearer <admin_token>` or `X-Admin-Token: <admin_token>`, or an IdP role with
 `admin_scope`).
 
@@ -692,9 +685,7 @@ next sign-in and Refresh. To contain a leaked key or offboard a user:
   by a different sign-in provider.
 
 Each refused sign-in is in the admin audit log as `self_serve.mint` / `rejected` on
-`key:<id>#<reason>`, and logs `BUSBAR-4043` at debug. After upgrading from 1.5.5, review the
-self-serve keys you had disabled: a 1.5.5 login re-enabled them silently, and that cannot be
-detected afterwards.
+`key:<id>#<reason>`, and logs `BUSBAR-4043` at debug.
 
 ### Enforcement model
 
@@ -714,96 +705,11 @@ detected afterwards.
   reproduce an earlier history point. Card history lives in the configured Store: a new card
   activates only after the Store confirms it was saved, and boot refuses if it cannot confirm its card.
 - **Ledgers are in-memory under `store: memory`** (ephemeral; the `store:` block itself is required in 1.6.0); configure a durable store plugin
-  (`store: { module: sqlite|postgres|mysql|valkey, settings: {...} }`) to persist keys, usage, and
+  (`store: { module: <store-plugin>, settings: {...} }`) to persist keys, usage, and
   the denylist across restarts.
 
 > Limit windows are per-process, and the caps are enforced per node even over a shared store
 > (see the fleet caveat above).
-
-## Journal corruption at boot
-
-This applies only to a node that keeps its own journal on disk, which is a node started with
-`BUSBAR_DATA_DIR` set. The journal lives in that directory as numbered segment files
-(`0000000000000000.wal`, `0000000000000001.wal`, ...). A node with no data directory keeps no
-journal files and never sees this.
-
-At every boot busbar reads the newest segment back and checks every record against its own
-checksum. Two different things can stop that read early, and busbar treats them differently:
-
-- **A torn tail.** The process or the machine died in the middle of writing the last batch, so the
-  final record is incomplete and nothing after it checks out. That batch was never acknowledged.
-  busbar cuts the incomplete bytes off and carries on, silently. This is normal after a crash and
-  needs no action.
-- **Corruption in the middle of the log.** A record fails its checksum but there are whole, valid
-  records after it. A crash cannot produce that. Something changed bytes that were already
-  durable: a failing disk, a bad controller, a filesystem problem, or a person or process editing
-  the file. The records from the damaged one onward had been acknowledged.
-
-On corruption busbar **still boots**. It keeps every record before the damage and does these three
-things:
-
-1. **It moves the damaged remainder aside, byte for byte.** Everything from the end of the last
-   good record to the end of what was written is copied into a quarantine file next to the
-   segment, named `<segment>.quarantine-<unix_ms>`, for example
-   `/var/lib/busbar/0000000000000003.wal.quarantine-1758700000000`. The copy is written and
-   flushed to disk *before* the segment is shortened, so a crash between the two loses nothing.
-   After a crash like that, the next boot finds the same damage and makes a second copy with a
-   later timestamp. The first copy is left alone. Nothing is ever deleted. If the copy cannot be
-   written (the volume is full, for example), the segment is not shortened at all. The damaged
-   bytes stay where they are, the segment is closed to new writes, and new records go to the next
-   segment.
-2. **It logs an error**, at `ERROR` level, naming the segment file, the byte offset of the damage,
-   how many bytes were set aside and where they went:
-
-   ```
-   ERROR journal corruption in /var/lib/busbar/0000000000000003.wal at byte 1536: 2048 byte(s)
-         from byte 1536 holding 4 record identity(ies) are no longer on the book (the frame's own
-         bytes do not hash to the digest stored in it); quarantined to
-         /var/lib/busbar/0000000000000003.wal.quarantine-1758700000000
-   ```
-
-3. **It counts the event and records it durably.** The `busbar_journal_quarantined_total` counter
-   on `/metrics` goes up by one for each quarantine (it is only visible if you have opted in to
-   metrics). busbar also appends a `ChainBreak` record to the journal itself. The record names the
-   segment file, the byte offset, the byte count, the quarantine file and the time, so the event
-   stays on the node's own history after the log line has rotated away.
-
-### What it means
-
-The records in the quarantine file are **not on the book**. They are money postings and holds
-that this node had acknowledged, and the rebuilt book at boot no longer includes them. Usage,
-spend and ledger figures from this node read **lower than what was actually served** by the
-amount in those records. Anything that reads the book, such as usage views, budgets and
-reconciliation, sees the lower figure. busbar never hands the quarantined records' sequence
-numbers out again, so a store that already has copies of them is not confused by new records under
-the same identity.
-
-A store configured behind the node (the `store:` plugin) may already hold copies of some or all of
-the quarantined records, because on-disk journals ship to the store as they write.
-
-### What to do
-
-1. **Keep the quarantine file.** Do not delete, move or edit it, and do not edit the segment files.
-   Copy the whole data directory somewhere safe before doing anything else, including the
-   `*.quarantine-*` files.
-2. **Check the disk.** Mid-log corruption means the storage under the data directory changed bytes
-   it had already acknowledged. Check the kernel log and the device's health (SMART data, the cloud
-   volume's status, filesystem errors) before trusting the volume with more writes. If the device
-   is failing, move the node to healthy storage.
-3. **Recover the missing figures.** Either restore the data directory from a backup taken before the
-   corruption, or send support the quarantine file together with the `ERROR` line and the node's
-   version. The quarantine file holds the original bytes exactly, so the records that are still
-   intact in it can be read back. There is no command that puts quarantined records back
-   automatically.
-4. **Confirm the node is healthy:**
-   - after the next restart, the boot log has no new `journal corruption` error;
-   - `busbar_journal_quarantined_total` stays flat. It resets to zero on restart, so check it
-     over the time since the last boot;
-   - no new `*.quarantine-*` file has appeared in the data directory;
-   - the restart reconciliation reports no disagreement between the book and the journal (it logs
-     an `ERROR` for every disagreement it finds at boot).
-
-   A torn tail after a crash produces none of these signals. It is expected and needs no action.
 
 ## Running on 64-bit ARM — two builds, one release
 
@@ -879,16 +785,15 @@ remain explicitly refused.
 
 | Symptom | Where to look |
 |---|---|
-| `503` on every request | `/stats`, are all lanes `dead` or in cooldown? Check `dead_reason`. |
-| A lane stuck `dead` with `billing` reason | Upstream wallet/quota; the lane recovers on a successful probe once funded. Consider `health.mode: dead`. |
-| A lane stuck `dead` with `auth` reason | Wrong/expired credential behind the provider's `api_key` reference. |
-| A few `401`s from a Vertex AI or Azure (Entra ID) lane right after startup | The lane's first OAuth token is still minting. `jwt-bearer` / `oauth-client-credentials` lanes fetch an access token in the background at boot (and on every reload); for up to ~1s before it lands, the earliest calls return `401`. Clears itself within a second, no action needed. Static-key lanes (`bearer` / `api-key` / SigV4) never have this window. |
+| `503` on every request | `/stats`, are all lanes in cooldown or carrying a `dead_reason`? |
+| A lane tripped with a `billing` reason and a sticky cooldown | Upstream wallet/quota; the lane recovers on a successful probe once funded. Consider `health.mode: dead`. |
+| A lane tripped with an `auth` reason and a sticky cooldown | Wrong/expired credential behind the provider's `api_key` reference. |
+| A few `401`s from a lane with an OAuth-minted credential right after startup | The lane's first OAuth token is still minting. Lanes whose credential is minted by an OAuth flow fetch an access token in the background at boot (and on every reload); for up to ~1s before it lands, the earliest calls return `401`. Clears itself within a second, no action needed. Static-key lanes (`bearer` / `api-key` / SigV4) never have this window. |
 | `429` from Busbar itself | A group limit blocked. The body's `error.type` distinguishes the cause: `rate_limit_error` = requests/tokens/concurrent limit (the message names group + metric + window); `insufficient_quota` = a budget limit (Bedrock ingress signals over-budget as `400` instead). Check `GET /api/v1/admin/keys/{id}/usage`. |
 | `403` from Busbar | The virtual key's `allowed_pools` doesn't include the target. |
 | Startup panic: "unset environment variable" | A `${VAR}` (possibly in a comment) isn't exported. |
 | Startup panic: "not found in providers.yaml" | A `config.yaml` provider name isn't in the catalog. |
 | Cross-protocol responses missing fields | Check whether the target protocol represents the missing field. Cross-protocol responses are re-encoded, and fields without a target representation may be omitted or normalized. In the 1.6.0 development LLM plane, inspect the request diagnostics for dropped field paths. See [translation behavior and limits](https://getbusbar.com/docs/protocols/#what-lossless-means-here); use a compatible same-protocol backend when you need a provider-specific field. |
-| `journal corruption in ... quarantined to ...` error at boot | A journal segment in the data directory was damaged mid-log. The node booted without the damaged records. Keep the quarantine file and follow [Journal corruption at boot](#journal-corruption-at-boot). |
 | High `busbar_failovers_total` for one lane | That backend is flapping; inspect its `busbar_upstream_failures_total` `disposition`. |
 
 
@@ -897,6 +802,7 @@ remain explicitly refused.
 | Route | Listener | Access and purpose |
 | --- | --- | --- |
 | `/api/v1/admin/*` | Separate administration listener, default `127.0.0.1:8081` | Configured admin authentication; exposed binds require mTLS unless explicitly waived |
+| `/metrics`, `/metrics/hooks` | Administration listener (always); `/metrics` also on the data listener when a metrics export instance is configured | Admin listener: admin credential, `503 telemetry_disabled` when `telemetry.enabled` is false. Data listener: virtual key, see above |
 | `/healthz` | Data and administration listeners | HTTP authentication exempt; listener TLS/mTLS still applies. Readiness reports dispatch health and usable upstream lanes |
 
 An upstream outage can make `/healthz` return 503 while the process is healthy. Use it for readiness, not a restart-triggering liveness check. A TCP probe of the data listener is independent of upstream health but proves only that the socket accepts a connection; it does not detect every application deadlock. `busbar --validate` checks configuration and plugin preflight, not the running process.

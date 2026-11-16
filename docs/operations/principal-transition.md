@@ -1,6 +1,6 @@
 # Principal continuity when upgrading identity formats
 
-An auth plugin that declares a changed principal format, including OIDC-v2 and GitHub-v2, requires an explicit
+An auth plugin that declares a changed principal format requires an explicit
 Store-backed continuity receipt before ordinary serving starts. A retained 1.5.5 Store needs a
 cold operator transition. A genuinely new namespace needs a creation receipt. An empty key scan,
 an ephemeral Store, or a successful the first-boot migration is not creation evidence.
@@ -82,14 +82,14 @@ destination retires a dormant or unprovable grant. Such retirement does not esta
 continuity for retained SELF keys, budgets or subject holds: those still require principal bindings.
 Never silently discard an active grant because ownership evidence is unavailable.
 
-For example, a proved GitHub organization mapping can use this disposition (the digests must
+For example, a proved organization-role mapping can use this disposition (the digests must
 identify your actual historical evidence and artifact):
 
 ```json
 {
-  "provider": "work-github",
-  "old_role": "github:org/historical-org-name",
-  "new_role": "github-v2:aHR0cHM6Ly9hcGkuZ2l0aHViLmNvbQ:org:42",
+  "provider": "<provider-name>",
+  "old_role": "<role string the 1.5.5 provider asserted>",
+  "new_role": "<role string the new plugin asserts>",
   "historical_provenance_sha256": "<64 lowercase hexadecimal characters>",
   "old_product_sha256": "<64 lowercase hexadecimal characters>"
 }
@@ -104,32 +104,29 @@ pending fence, plan hash, quiescence requirements and retry rules as principal a
 A role-only deployment may supply empty `bindings` with nonempty `role_dispositions`.
 The host treats role names as opaque; operator evidence establishes their actual meaning.
 
-### GitHub historical ownership evidence is required
+### Historical ownership evidence is required
 
-Released 1.5.5 stored `github:<login>` subjects and asserted organization roles as
-`github:org/<slug>`. It did not retain the GitHub numeric user or organization ID needed to prove
-ownership after a rename or name reuse. Its role output did **not** assert username-shaped
-`github:<login>` or invented `github:id/...` grants. Converting those dormant configuration keys
-into new user grants would create authority and is not an upgrade. Explicitly retire them or
-resolve their intended policy separately; do not relabel them as proven historical grants.
+When a provider's 1.5.5 subjects and asserted roles were names (a login, a slug, an email address)
+that the provider can later reassign, and 1.5.5 did not retain the stable identifier needed to prove
+ownership after a rename or name reuse, the transition cannot infer the mapping. Converting dormant
+configuration keys into new user grants would create authority and is not an upgrade. Explicitly
+retire them or resolve their intended policy separately; do not relabel them as proven historical
+grants.
 
-For each retained subject, archived trusted provider/provisioning records must establish the
-historical login's **positive unsigned 64-bit user ID**, exact provider and API domain. For each
-organization grant, they must establish the historical slug's **positive unsigned 64-bit org ID**
-and the same domain. A successful lookup of today's login/slug is insufficient: that name may
-belong to a different account. A current OAuth login alone cannot recover missing historical ID
-proof. The transition does not manufacture it. Keep the namespace cold until missing evidence
-or a deliberate policy disposition is resolved.
+For each retained subject and each organization-style grant, archived trusted provider and
+provisioning records must establish the historical name's stable identifier, the exact provider and
+its identity domain. A successful lookup of today's name is insufficient: that name may belong to a
+different account. A current login alone cannot recover missing historical proof. The transition
+does not manufacture it. Keep the namespace cold until missing evidence or a deliberate policy
+disposition is resolved.
 
-The new principal/user role is
-`github-v2:<base64url-without-padding(canonical-API-base)>:user:<numeric-ID>`;
-organization roles use `:org:<numeric-ID>`. The domain is the plugin's canonical configured
-API URL (including a GHES API path), with normalized URL spelling and no trailing slash,
-credentials, query, fragment, whitespace or control characters. Bind the evidence to the exact
-inspected provider, admitted product/settings and identity-domain fingerprints. Obtain the new
-strings from the intended plugin's actual output and compare them to the archived IDs/domain;
-do not construct a destination merely from the old name. A rename retains the numeric identity;
-a different account acquiring the old login or slug receives none of its old grants or state.
+The new principal and role strings, their format and the identity domain they are bound to are
+defined by the auth plugin that declares the changed format; read them from that plugin's own
+documentation and from its actual output. Bind the evidence to the exact inspected provider,
+admitted product/settings and identity-domain fingerprints. Obtain the new strings from the
+intended plugin's actual output and compare them to the archived identifiers and domain; do not
+construct a destination merely from the old name. A rename retains the stable identity; a different
+account acquiring the old name receives none of its old grants or state.
 
 An unrelated retained SELF principal requires an explicit `unaffected` entry naming `principal`,
 `provider`, `requirement_sha256`, `keys_sha256`, `group_sha256` and `provenance_sha256`. Inspection
@@ -220,8 +217,8 @@ After completion, continuity follows the declared stable identity domain: tracke
 canonical plugin identity, principal format/declaration and declared domain values. Routine artifact
 or TTL/settings updates that preserve that domain use ordinary auth revalidation. An unrelated
 unmarked provider can be rotated/removed normally. Removing a tracked provider or marker,
-renaming it, substituting the canonical plugin, or changing OIDC issuer/audience/client domain
-values refuses ordinary startup. Pending transitions remain bound to exact artifacts/settings
+renaming it, substituting the canonical plugin, or changing the declared identity-domain
+values (for example an issuer, audience or client domain) refuses ordinary startup. Pending transitions remain bound to exact artifacts/settings
 and effective configuration.
 
 If new artifacts/settings provably leave every identity output unchanged, the operator-only cold

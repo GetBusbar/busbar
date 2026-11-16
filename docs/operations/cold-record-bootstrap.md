@@ -87,7 +87,7 @@ with an explicit selection of the one plugin instance whose records need initial
 ```sh
 busbar --config CONFIG --providers PROVIDERS \
   --principal-transition fresh.json --transition-action initialize-fresh-and-serve \
-  --fresh-record-bootstrap a2a
+  --fresh-record-bootstrap <plane-instance>
 ```
 
 `fresh.json` is the creation receipt documented in [principal-transition.md](principal-transition.md).
