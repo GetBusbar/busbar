@@ -14,7 +14,7 @@ use std::sync::{
 
 pub(super) fn trust_document(config: &PluginsCfg) -> serde_json::Value {
     let publishers: Vec<_> = config.trust.publishers.iter().map(|publisher| {
-        serde_json::json!({"name": publisher.name, "plugins": publisher.plugins, "keys": publisher.keys})
+        serde_json::json!({"name": publisher.name, "plugins": publisher.plugins, "keys": publisher.keys.iter().map(|key| serde_json::json!({"public_key": key.public_key, "revoked": key.revoked})).collect::<Vec<_>>()})
     }).collect();
     serde_json::json!({
         "publishers": publishers,
@@ -1956,7 +1956,11 @@ async fn every_admin_trust_moment_resolves_through_the_snapshots_builder() {
         .publishers
         .push(busbar_kernel::config::PluginPublisher {
             name: "acme".into(),
-            public_key: "not-an-ed25519-public-key".into(),
+            plugins: vec!["invalid-publisher-fixture".into()],
+            keys: vec![busbar_kernel::config::PluginPublisherKey {
+                public_key: "not-an-ed25519-public-key".into(),
+                revoked: false,
+            }],
         });
     let refusal = app
         .plugin_admission
@@ -2131,7 +2135,11 @@ async fn rollback_reads_the_target_and_merges_pins() {
     let publisher_key = plugins::key(67);
     let publisher = busbar_kernel::config::PluginPublisher {
         name: "acme".into(),
-        public_key: hex::encode(publisher_key.verifying_key().to_bytes()),
+        plugins: vec![manifest.name.clone()],
+        keys: vec![busbar_kernel::config::PluginPublisherKey {
+            public_key: hex::encode(publisher_key.verifying_key().to_bytes()),
+            revoked: false,
+        }],
     };
     app.plugins_cfg.trust.publishers.push(publisher);
     document["plugins"] = serde_json::json!({"enabled":true, "dir":directory, "trust":trust_document(&app.plugins_cfg)});

@@ -120,7 +120,21 @@ fn publisher_posture(name: &str, key: &SigningKey) -> busbar_kernel::config::Plu
     let mut cfg = busbar_kernel::config::PluginsCfg::default();
     cfg.trust.publishers = vec![busbar_kernel::config::PluginPublisher {
         name: name.into(),
-        public_key: hex::encode(key.verifying_key().to_bytes()),
+        plugins: [
+            "acme-store-x",
+            "acme-store-disk",
+            "acme-store-kv",
+            "other-store-kv",
+            "acme-store-s",
+            "acme-store-anchor",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect(),
+        keys: vec![busbar_kernel::config::PluginPublisherKey {
+            public_key: hex::encode(key.verifying_key().to_bytes()),
+            revoked: false,
+        }],
     }];
     cfg
 }
@@ -1804,7 +1818,7 @@ async fn a_bootstrap_archive_upload_and_rollback_refuse_a_changed_base_pin_befor
             "providers_file": providers,
             "store":{"module":"anchor","settings":{}},
             "plugins":{"enabled":true,"dir":dir,
-                "trust":{"publishers":[{"name":"acme","public_key":hex::encode(key.verifying_key().to_bytes())}]},
+                "trust":{"publishers":[{"name":"acme","plugins":["acme-store-anchor"],"keys":[{"public_key":hex::encode(key.verifying_key().to_bytes()),"revoked":false}]}]},
                 "fetch":[{"url":"https://plugins.invalid/anchor.tar.gz","sha256":hash}]}});
         std::fs::write(
             &config,
