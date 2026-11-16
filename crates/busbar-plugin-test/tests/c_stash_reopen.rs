@@ -8,7 +8,7 @@
 //! the arm's body and un-ignores it in its own MR (red first, then green).
 
 #[test]
-#[ignore = "owner: W1-L2"]
+#[ignore = "owner: W1-L2 (blocked: needs a fixture image that stashes a ChainBytes and a Registry reopen/reconfigure onto the same slot; no such fixture in busbar-plugin-test)"]
 fn a_stash_across_reopen_and_reconfigure_faults_stale_handle() {
     todo!("owner: W1-L2 (C-STASH-REOPEN)")
 }

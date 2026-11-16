@@ -8,7 +8,7 @@
 //! the arm's body and un-ignores it in its own MR (red first, then green).
 
 #[test]
-#[ignore = "owner: W1-K9"]
+#[ignore = "blocked: $style resolution is busbar-migrate styles.rs plus the busbar bin boot (kernel_application tests); no declaring-fixture boot path reachable from this crate; owner W1-K9"]
 fn deferred_styles_resolve_to_one_declaring_fixture() {
     todo!("owner: W1-K9 (C-OUTBOUND-STYLE)")
 }

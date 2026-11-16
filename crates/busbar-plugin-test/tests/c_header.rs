@@ -106,13 +106,13 @@ fn the_c_fixture_admits_and_runs_every_entry() {
 }
 
 #[test]
-#[ignore = "owner: W1-H1 (blocked: entry::guard, GetBusbar/busbar#272)"]
+#[ignore = "blocked: entry::guard absent, GetBusbar/busbar#272 (W1-H1)"]
 fn arena_outputs_never_overlap_and_are_zero_after_the_entry() {
     todo!("owner: W1-H1 (C-HEADER)")
 }
 
 #[test]
-#[ignore = "owner: W1-H1 (blocked: entry::guard, GetBusbar/busbar#272)"]
+#[ignore = "blocked: entry::guard absent, GetBusbar/busbar#272 (W1-H1)"]
 fn the_full_table_nested_arm() {
     todo!("owner: W1-H1 (C-HEADER)")
 }
