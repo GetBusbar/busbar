@@ -2100,6 +2100,30 @@
     "retired": false
   },
   {
+    "code": "BUSBAR-7110",
+    "number": 7110,
+    "class": "plane",
+    "slug": "plane-usage-undeclared",
+    "title": "A plane reported usage for a class it never declared (the usage is dropped)",
+    "severity": "actionable",
+    "summary": "A plane instance reported USAGE (or an expected or observed count) under a billable class its Statement does not declare (`D_USAGE_CLASS`). busbar drops the count: nothing is checkpointed or billed for it, and the unit's other classes are unaffected. Each drop is audited as `plane_usage_undeclared` (verdict `degraded`) under the request's principal, naming the unit and the class.",
+    "action": "Fix the plane to report only classes it declares, or declare the class in the plane's Statement and rebuild it. Until then the dropped usage is not billed.",
+    "since": "1.6.0",
+    "retired": false
+  },
+  {
+    "code": "BUSBAR-7111",
+    "number": 7111,
+    "class": "plane",
+    "slug": "plane-usage-rounded",
+    "title": "A plane reported usage with a scale past micro-units (the quantity is rounded)",
+    "severity": "benign_recurring",
+    "summary": "A plane instance reported USAGE with a scale above 6. The ledger counts in micro-units, so busbar rounded the quantity half-even to six decimal places before checkpointing or billing it. Each rounding is audited as `plane_usage_rounded` (verdict `degraded`) under the request's principal, naming the unit and the class.",
+    "action": "None needed for a plane that reports at most nine decimal places and tolerates micro-unit rounding. If the rounding matters, have the plane report in a coarser unit so the quantity fits six decimal places.",
+    "since": "1.6.0",
+    "retired": false
+  },
+  {
     "code": "BUSBAR-7140",
     "number": 7140,
     "class": "plane",

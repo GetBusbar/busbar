@@ -316,7 +316,7 @@ fn refusal_for(blocked: &LimitBlocked) -> Refusal {
     }
 }
 
-fn exhaustion_of(app: &App, key: &VirtualKey) -> ExhaustionMode {
+pub(crate) fn exhaustion_of(app: &App, key: &VirtualKey) -> ExhaustionMode {
     // Any limit up the key's group chain that cuts the stream governs. A chain visits each group at
     // most once before it repeats, so the registry's size bounds the walk: a cyclic chain ends there
     // with every group in it judged, exactly as stopping at the first repeat would.

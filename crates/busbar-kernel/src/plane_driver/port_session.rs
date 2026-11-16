@@ -10,9 +10,9 @@
 //! client response: FORWARD (with its wants and EXPECTs) is accepted in the `request` answer or in a
 //! `piece(FROM_CORE)` answer, once, and never after the response began or beside a to-client item. A second or
 //! late FORWARD is handled exactly as an adapter FAULT: the session ends (the handle is dropped, which cancels it)
-//! and the caller learns [`Violation`]. The loader has no entry that charges an image for a violation core finds
-//! itself; the violation is logged by the caller and counted in `plane_session_violations_total` (a gap recorded
-//! in PLANE-DRIVER.md).
+//! and the caller learns [`Violation`]; [`super::port_charge::charge`] hands it to the port's `charge` entry, which
+//! charges the image as the loader does for a break its own decode finds (the instance quarantined, `plugin_fault`
+//! audited).
 //!
 //! The calls are synchronous (a port's methods run the plugin on its worker); a driver runs a task inside
 //! `spawn_blocking`. The [`Calls`] trait is the seam the tests fake: `PlaneSession` is an ffi handle, so a core

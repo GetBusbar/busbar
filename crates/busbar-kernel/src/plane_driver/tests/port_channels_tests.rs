@@ -392,6 +392,7 @@ impl PlanePort for FakePort {
     fn admin_openapi(&self) -> Option<&str> {
         None
     }
+    fn charge(&self, _: busbar_plugin_abi::fail::FaultReason) {}
     fn request(
         &self,
         _: &PlaneIn<'_>,

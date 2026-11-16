@@ -28,7 +28,14 @@ use busbar_plugin_abi::plane::{
 use super::cancel::{CancelBill, Checkpoint, MoneySeam};
 use super::usage::{bill, scaled, Bill, Ending, Reported, SessionUsage};
 use super::AuditSink;
+use crate::diagnostics::{PLANE_USAGE_ROUNDED, PLANE_USAGE_UNDECLARED};
 use crate::teller::UnitCtx;
+
+/// The audit action of a USAGE class the plane never declared (diagnostic [`PLANE_USAGE_UNDECLARED`], §12.20).
+pub const ACTION_UNDECLARED: &str = "plane_usage_undeclared";
+
+/// The audit action of a USAGE quantity rounded past micro-units (diagnostic [`PLANE_USAGE_ROUNDED`]).
+pub const ACTION_ROUNDED: &str = "plane_usage_rounded";
 
 /// One AUDIT row (§12.20): `verdict` is AUDIT_APPLIED, AUDIT_REJECTED or AUDIT_DEGRADED (checked at decode).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -161,10 +168,25 @@ impl PortMoney {
     ) -> Counted {
         let counted = counts_of(values, &self.classes);
         for (action, classes) in [
-            ("plane_usage_class_undeclared", &counted.dropped),
-            ("plane_usage_rounded", &counted.rounded),
+            (ACTION_UNDECLARED, &counted.dropped),
+            (ACTION_ROUNDED, &counted.rounded),
         ] {
             for class in classes {
+                if action == ACTION_UNDECLARED {
+                    crate::diagnostics::diag_warn!(
+                        PLANE_USAGE_UNDECLARED,
+                        unit = ctx.key.get(),
+                        class = %class,
+                        "a plane reported usage for a class it never declared: dropped"
+                    );
+                } else {
+                    crate::diagnostics::diag_debug!(
+                        PLANE_USAGE_ROUNDED,
+                        unit = ctx.key.get(),
+                        class = %class,
+                        "a plane reported usage past micro-units: rounded half-even"
+                    );
+                }
                 let resource = format!("unit:{} class:{class}", ctx.key.get());
                 let anonymous = PrincipalId::anonymous();
                 self.audit.record(

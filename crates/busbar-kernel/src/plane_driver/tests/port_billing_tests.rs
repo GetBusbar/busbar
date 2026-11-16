@@ -97,9 +97,9 @@ fn an_admitted_request_opens_a_unit_on_the_money_and_its_settlement_closes_it_on
     assert_eq!(r.money.open_units(), 1);
     unit.money
         .ended(&unit.ctx, Ending::End, &five_tokens(), None);
-    r.billing.settle(&unit, 200);
+    r.billing.settle(unit.ctx.key, super::end_of(200, true));
     assert_eq!(r.money.open_units(), 0, "the settlement closed the unit");
-    r.billing.settle(&unit, 200);
+    r.billing.settle(unit.ctx.key, super::end_of(200, true));
     assert_eq!(r.money.open_units(), 0, "a second settlement is a no-op");
 }
 
@@ -109,7 +109,7 @@ fn a_cancelled_unit_is_closed_by_its_settlement_too() {
     let unit = r.billing.open(admit(&r, None)).unwrap();
     unit.money
         .ended(&unit.ctx, Ending::Failed, &SessionUsage::new(), None);
-    r.billing.settle(&unit, 502);
+    r.billing.settle(unit.ctx.key, super::end_of(502, true));
     assert_eq!(r.money.open_units(), 0);
 }
 

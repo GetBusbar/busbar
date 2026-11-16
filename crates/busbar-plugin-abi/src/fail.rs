@@ -292,4 +292,7 @@ pub enum FaultReason {
     BadInstance,
     /// A token from the wrong space (chain vs session, bit 63) or with a stale generation.
     BadToken,
+    /// A once rule the host found a session answer to break (a second or late FORWARD, an item out of place, a
+    /// USAGE it may not keep; §8.6): charged by the host, not found by the adapter's decode.
+    OnceRule,
 }

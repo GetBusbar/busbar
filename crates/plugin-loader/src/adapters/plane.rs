@@ -1285,6 +1285,10 @@ impl<N: Needs> PlanePort for PlaneAdapter<N> {
         self.describe.admin_openapi.as_deref()
     }
 
+    fn charge(&self, reason: FaultReason) {
+        let _ = self.proxy.instance().charge(reason);
+    }
+
     fn request(
         &self,
         req: &PlaneIn<'_>,

@@ -8,25 +8,31 @@
 //!
 //! Not mounted here, each owned by a later step (PLANE-BOOT-MOUNT.md): ROUTE_ADMIN (the admin router and its
 //! scope middleware), ROUTE_UPGRADE (the §12.27 upgrade sequence), ROUTE_CATALOG (the model list), and a streamed
-//! reply (the items are joined into one body). A request is not a billed unit on this path yet (`unit: None`: audit
-//! rows only) and a FORWARD has no walk (`upstream: None`: the session fails `NotDriven`) until the egress half of
-//! slice 5 lands.
+//! reply (the items are joined into one body). A request that carries a resolved key under a governed
+//! process is a billed unit ([`PortBilling`]: admitted through the key's budget chain, its usage, checkpoints and
+//! end posted through the money seam by the cancel table, settled when the answer is out); without a key or a
+//! governance book it is audit rows only. A FORWARD has no walk (`upstream: None`: the session fails `NotDriven`)
+//! until the egress half of slice 5 lands.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
+use crate::root::door_steps::exhaustion_of;
 use axum::body::Body;
 use axum::http::{header, HeaderMap, HeaderName, HeaderValue, StatusCode};
 use busbar_contract::abi::mechanism::route::{RouteAuth, RouteMethod};
 use busbar_contract::abi::transport::route::{
     METHOD_DELETE, METHOD_GET, METHOD_PATCH, METHOD_POST, METHOD_PUT,
 };
-use busbar_kernel::plane_driver::port::{HttpIn, PortSeat, ServeIn, Served};
+use busbar_kernel::governance::LimitBlocked;
+use busbar_kernel::plane_driver::port::{HttpIn, PortSeat, ServeIn, Served, Unit};
 use busbar_kernel::plane_driver::port_auth::{subject_identity, Credentials, Principal};
+use busbar_kernel::plane_driver::port_billing::{end_of, Admit, PortBilling};
 use busbar_kernel::plane_driver::port_routes::Mounted;
 use busbar_kernel::plane_driver::port_session::ToClient;
 use busbar_kernel::plane_driver::HeadFields;
 use busbar_kernel::plane_routes::{PlaneReqCtx, PlaneResponse, PlaneRouteFuture, PlaneRouteSpec};
+use busbar_kernel::state::{App, AppHandle};
 use busbar_plugin_abi::plane::AUTH_PRINCIPAL;
 
 /// The request ids this mount hands the planes: unique inside the process, never zero.
@@ -130,7 +136,99 @@ fn http_in(ctx: &PlaneReqCtx) -> HttpIn {
     }
 }
 
-async fn answer(seat: &PortSeat, route: &Mounted, ctx: PlaneReqCtx) -> PlaneResponse {
+/// The app generation the request was routed under: the data listener lends it as the request's engine.
+fn app_of(engine: Arc<dyn std::any::Any + Send + Sync>) -> Option<Arc<App>> {
+    match engine.downcast::<App>() {
+        Ok(app) => Some(app),
+        Err(engine) => Some(engine.downcast::<AppHandle>().ok()?.load()),
+    }
+}
+
+/// A request the governance book refused to admit: the status its limit maps to, the wait it names (if any).
+pub(crate) fn blocked_response(blocked: &LimitBlocked) -> PlaneResponse {
+    let (status, _, message, retry_after) = busbar_kernel::ingress::limit_refusal("", blocked);
+    let mut response = PlaneResponse::new(Body::from(message));
+    *response.status_mut() = status;
+    if let Some(seconds) = retry_after {
+        if let Ok(value) = HeaderValue::from_str(&seconds.to_string()) {
+            response.headers_mut().insert(header::RETRY_AFTER, value);
+        }
+    }
+    response
+}
+
+/// The request as a billed unit: admitted through its resolved key's budget chain and opened on the plane money.
+/// `None` = not billed (no billing installed, no governed key on the request, or no app generation to price
+/// under): the request runs with audit rows only.
+fn open_unit(
+    seat: &PortSeat,
+    billing: Option<&PortBilling>,
+    ctx: &PlaneReqCtx,
+) -> Result<Option<Unit>, LimitBlocked> {
+    let Some(billing) = billing else {
+        return Ok(None);
+    };
+    let Some(key) = ctx.gov.as_ref().and_then(|gov| gov.key.clone()) else {
+        return Ok(None);
+    };
+    let Some(app) = app_of(Arc::clone(&ctx.engine)) else {
+        return Ok(None);
+    };
+    let mode = exhaustion_of(&app, &key);
+    billing
+        .open(Admit {
+            instance: &seat.instance,
+            classes: seat.driver.usage_classes(),
+            key,
+            cost: Arc::clone(&app.cost),
+            mode,
+            arrived: busbar_kernel::store::now(),
+        })
+        .map(Some)
+}
+
+/// A unit's settlement, owed once whatever becomes of the request: dropped unfinished (a panic, a cancelled
+/// task) it settles as a gateway failure that ran nothing, so the unit never stays open and its hold never leaks.
+struct Settle {
+    billing: PortBilling,
+    key: busbar_contract::UnitKey,
+    done: bool,
+}
+
+impl Settle {
+    fn finish(mut self, status: u16, ran: bool) {
+        self.done = true;
+        self.billing
+            .settle(self.key, end_of(u32::from(status), ran));
+    }
+}
+
+impl Drop for Settle {
+    fn drop(&mut self) {
+        if !self.done {
+            self.billing.settle(self.key, end_of(502, false));
+        }
+    }
+}
+
+async fn answer(
+    seat: &PortSeat,
+    route: &Mounted,
+    billing: Option<&PortBilling>,
+    ctx: PlaneReqCtx,
+) -> PlaneResponse {
+    let unit = match open_unit(seat, billing, &ctx) {
+        Ok(unit) => unit,
+        Err(blocked) => return blocked_response(&blocked),
+    };
+    let settle = match (&unit, billing) {
+        (Some(unit), Some(billing)) => Some(Settle {
+            billing: billing.clone(),
+            key: unit.ctx.key,
+            done: false,
+        }),
+        _ => None,
+    };
     // The data chain's verdict, when the route sat behind it: the verified principal's id is its subject.
     let principal: Option<Arc<str>> = ctx
         .principal
@@ -155,28 +253,33 @@ async fn answer(seat: &PortSeat, route: &Mounted, ctx: PlaneReqCtx) -> PlaneResp
         audience: seat.audience.as_deref().unwrap_or_default(),
         now_s: busbar_kernel::store::now(),
         principal,
-        unit: None,
+        unit,
         upstream: None,
         intents: Arc::clone(&seat.intents),
     };
-    match seat.driver.serve(input).await {
-        Ok(Served::Refused(items)) => response_of(items),
-        Ok(Served::Ran(ran)) => response_of(ran.client),
+    let (response, ran) = match seat.driver.serve(input).await {
+        Ok(Served::Refused(items)) => (response_of(items), false),
+        Ok(Served::Ran(ran)) => (response_of(ran.client), true),
         Err(error) => {
             tracing::warn!(instance = %seat.instance, route = route.route, ?error, "a plane request failed");
-            failed(StatusCode::BAD_GATEWAY)
+            (failed(StatusCode::BAD_GATEWAY), false)
         }
+    };
+    if let Some(settle) = settle {
+        settle.finish(response.status().as_u16(), ran);
     }
+    response
 }
 
 /// One spec per (data route, verb) of every seat. A catalog route is not mounted (see the module docs).
-pub(crate) fn routes(seats: &[PortSeat]) -> Vec<PlaneRouteSpec> {
+pub(crate) fn routes(seats: &[PortSeat], billing: Option<&PortBilling>) -> Vec<PlaneRouteSpec> {
     let mut out = Vec::new();
     for seat in seats {
         for route in seat.driver.routes().data.iter().filter(|m| !m.catalog) {
             for method in methods_of(route.methods) {
                 let seat = seat.clone();
                 let mounted = route.clone();
+                let billing = billing.cloned();
                 out.push(PlaneRouteSpec {
                     path: route.pattern.to_string(),
                     method,
@@ -184,7 +287,16 @@ pub(crate) fn routes(seats: &[PortSeat]) -> Vec<PlaneRouteSpec> {
                     handler: Arc::new(move |ctx: PlaneReqCtx| -> PlaneRouteFuture {
                         let seat = seat.clone();
                         let mounted = mounted.clone();
-                        Box::pin(async move { answer(&seat, &mounted, ctx).await })
+                        let billing = billing.clone();
+                        // A session outlives its client's connection: it runs to its end, and its unit is
+                        // settled, on its own task.
+                        Box::pin(async move {
+                            tokio::spawn(async move {
+                                answer(&seat, &mounted, billing.as_ref(), ctx).await
+                            })
+                            .await
+                            .unwrap_or_else(|_| failed(StatusCode::BAD_GATEWAY))
+                        })
                     }),
                 });
             }

@@ -1943,6 +1943,28 @@ A request-log webhook delivery was in flight when the exporter's settings were r
 
 **What to do:** Expected around a reload of the named webhook exporter; if it recurs without reloads, check what is reloading the configuration.
 
+<a id="plane-usage-undeclared"></a>
+### BUSBAR-7110 — A plane reported usage for a class it never declared (the usage is dropped)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `plane-usage-undeclared`
+
+A plane instance reported USAGE (or an expected or observed count) under a billable class its Statement does not declare (`D_USAGE_CLASS`). busbar drops the count: nothing is checkpointed or billed for it, and the unit's other classes are unaffected. Each drop is audited as `plane_usage_undeclared` (verdict `degraded`) under the request's principal, naming the unit and the class.
+
+**What to do:** Fix the plane to report only classes it declares, or declare the class in the plane's Statement and rebuild it. Until then the dropped usage is not billed.
+
+<a id="plane-usage-rounded"></a>
+### BUSBAR-7111 — A plane reported usage with a scale past micro-units (the quantity is rounded)
+
+- **Severity:** benign_recurring
+- **Since:** 1.6.0
+- **Slug:** `plane-usage-rounded`
+
+A plane instance reported USAGE with a scale above 6. The ledger counts in micro-units, so busbar rounded the quantity half-even to six decimal places before checkpointing or billing it. Each rounding is audited as `plane_usage_rounded` (verdict `degraded`) under the request's principal, naming the unit and the class.
+
+**What to do:** None needed for a plane that reports at most nine decimal places and tolerates micro-unit rounding. If the rounding matters, have the plane report in a coarser unit so the quantity fits six decimal places.
+
 <a id="otlp-exporter-disabled"></a>
 ### BUSBAR-7140 — OTLP trace exporter disabled (target refused)
 
