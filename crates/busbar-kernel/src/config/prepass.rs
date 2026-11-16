@@ -370,7 +370,7 @@ pub fn deploy_from_deserializer<'de, D: Deserializer<'de>>(
     // untyped reader rejects duplicate keys, including duplicate instance definitions.
     let bound;
     let words = busbar_contract::secret_ref::context::UsedWords::default();
-    let (SplitDocument(mut deploy, sections), grammar) = if grammar.secret_sources.is_empty() {
+    let (SplitDocument(mut deploy, sections), grammar) = if !grammar.secret_binding_required() {
         (
             busbar_contract::secret_ref::context::deserialize_recording::<SplitDocument, _>(
                 de,
