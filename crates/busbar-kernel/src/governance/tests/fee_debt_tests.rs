@@ -331,3 +331,106 @@ async fn an_unpinnable_transfer_is_unresolved() {
     capture.finish(false, false);
     assert_eq!(observer.status(), FeeDebtStatus::Unresolved);
 }
+
+/// One actual observed native admission: the original charge reached real cells under the
+/// fixture's key chain and published its markers.
+async fn observed_admission() -> (Arc<super::super::GovState>, Arc<FeeDebtObserver>) {
+    use crate::config::groups::{GroupCfg, LimitCfg, LimitMetric};
+    let gov = governance().await;
+    let groups = std::collections::BTreeMap::from([(
+        "g".to_owned(),
+        GroupCfg {
+            enabled: true,
+            limits: vec![LimitCfg {
+                selected: None,
+                metric: LimitMetric::Concurrent,
+                amount: 8,
+                per: None,
+                scope: None,
+                on_exhaust: None,
+                downgrade_to: None,
+            }],
+            ..Default::default()
+        },
+    )]);
+    let cost = crate::cost::CostModel::resolve_parts(None, 5, &groups);
+    let key = busbar_contract::records::VirtualKey {
+        id: "fee-debt-observed".into(),
+        enabled: true,
+        group: Some("g".into()),
+        ..Default::default()
+    };
+    let plan = cost.plan_chain(&key).unwrap();
+    let observer = FeeDebtObserver::reserve(&gov, &source()).unwrap();
+    let grant = gov
+        .try_admit_observed(
+            &cost,
+            &key,
+            &format!("seat{}p", super::super::PLANE_LANE_SEP),
+            1_700_000_000,
+            Some(&plan),
+            &observer,
+        )
+        .unwrap();
+    // The grant's holds may go; the charged counts and markers stay in the cells.
+    drop(grant);
+    (gov, observer)
+}
+
+/// The observed extra fee-unit refund acts on exactly the legs the original charge reached and
+/// publishes its marker there; a later capture must cover it. A recreated cell is Unresolved.
+#[tokio::test]
+async fn observed_fee_unit_refunds_use_the_charged_legs() {
+    let (gov, observer) = observed_admission().await;
+    let (_, window, _) = observer.charged_leg(0).unwrap();
+    assert!(window.is_some(), "the charge marked its leg");
+    let pool = format!("seat{}p", super::super::PLANE_LANE_SEP);
+    gov.refund_fee_unit_observed(&pool, "extra", None, &observer);
+    assert_ne!(observer.status(), FeeDebtStatus::Unresolved);
+    let mut leg = 0;
+    while let Some((bucket, window, incarnation)) = observer.charged_leg(leg) {
+        let at_charge = FeeCapture::frozen(
+            &gov.fee_debt,
+            &bucket,
+            incarnation,
+            window.unwrap(),
+            1,
+            false,
+        );
+        associate(&gov, &observer, &at_charge);
+        at_charge.finish(true, false);
+        leg += 1;
+    }
+    assert_eq!(
+        observer.status(),
+        FeeDebtStatus::Pending,
+        "the refund marker is newer than the charge capture"
+    );
+
+    let (gov, observer) = observed_admission().await;
+    let (bucket, _, _) = observer.charged_leg(0).unwrap();
+    gov.budget.write(&bucket).remove(&*bucket);
+    gov.refund_fee_unit_observed(&pool, "extra", None, &observer);
+    assert_eq!(observer.status(), FeeDebtStatus::Unresolved);
+}
+
+/// Deleting a bucket whose original cell a live native observer still depends on reports the
+/// obligation unresolved instead of discarding the cell.
+#[tokio::test]
+async fn deletion_refuses_while_native_fee_obligations_live() {
+    let (gov, observer) = observed_admission().await;
+    let (bucket, _, _) = observer.charged_leg(0).unwrap();
+    let refused = gov
+        .settle_budget_flush_for_delete_async(&bucket)
+        .await
+        .unwrap_err();
+    assert!(refused.0.contains("native fee obligations"), "{refused:?}");
+    drop(observer);
+    assert!(
+        gov.budget
+            .write(&bucket)
+            .get(&*bucket)
+            .is_some_and(|cell| cell.fee_obligations == 0),
+        "dropping the observer releases its exact obligation"
+    );
+}
