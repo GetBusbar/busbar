@@ -188,7 +188,10 @@ impl AsPlane {
     where
         B: axum::body::HttpBody,
     {
-        self.prepare(&request, &browser).await;
+        // The staked key is read before the first await: the request body is not Sync, so no borrow
+        // of the request may live across a suspension point.
+        let staked = staked_key(&request);
+        self.prepare(staked, &browser).await;
         crate::consent::as_browser(browser, self.handle(request)).await
     }
 
@@ -331,14 +334,14 @@ impl AsPlane {
         outcome
     }
 
-    async fn prepare<B>(&self, request: &http::Request<B>, browser: &crate::consent::Browser) {
+    async fn prepare(&self, staked: Option<String>, browser: &crate::consent::Browser) {
         let store = self.carried.store();
         let id = &browser.session;
         let Ok(Some(subject)) = store.session_subject(id).await else {
             return;
         };
         self.sessions.hydrate(id, &subject);
-        let (Some(key), Some(handle)) = (staked_key(request), browser.handle.as_deref()) else {
+        let (Some(key), Some(handle)) = (staked, browser.handle.as_deref()) else {
             return;
         };
         let key = crate::consent::handled_key(&key, handle);
