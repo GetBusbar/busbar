@@ -1954,7 +1954,7 @@ dependencies = [
 [[package]]
 name = "h2"
 version = "0.4.18"
-source = "git+https://github.com/MattJackson/h2?rev=d6146a5c425e55653cdfebc5660e52d87430c588#d6146a5c425e55653cdfebc5660e52d87430c588"
+source = "git+https://github.com/MattJackson/h2?rev=6bdbf046878247aebe9138f37f32d2665b54bdd9#6bdbf046878247aebe9138f37f32d2665b54bdd9"
 dependencies = [
  "atomic-waker",
  "bytes",
@@ -2048,8 +2048,7 @@ dependencies = [
 [[package]]
 name = "http"
 version = "1.4.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8be7462df143984c4598a256ef469b251d7d7f9e271135073e78fc535414f3d0"
+source = "git+https://github.com/MattJackson/http?rev=25b3a147c65045c7b3c883754463206c928cf840#25b3a147c65045c7b3c883754463206c928cf840"
 dependencies = [
  "bytes",
  "itoa",
@@ -2102,8 +2101,7 @@ dependencies = [
 [[package]]
 name = "hyper"
 version = "1.11.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "27b501faa50e7a26c3d3560ca625132f4078a17771f4810baf70475ae48cbe43"
+source = "git+https://github.com/MattJackson/hyper?rev=5b1c5189a69c701c70221b04ff0f0a2fbcb4574c#5b1c5189a69c701c70221b04ff0f0a2fbcb4574c"
 dependencies = [
  "atomic-waker",
  "bytes",
@@ -2140,8 +2138,7 @@ dependencies = [
 [[package]]
 name = "hyper-util"
 version = "0.1.20"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "96547c2556ec9d12fb1578c4eaf448b04993e7fb79cbaad930a656880a6bdfa0"
+source = "git+https://github.com/MattJackson/hyper-util?rev=b4c554c133c7fc83ee55a9ce0271849f7387994d#b4c554c133c7fc83ee55a9ce0271849f7387994d"
 dependencies = [
  "base64 0.22.1",
  "bytes",
