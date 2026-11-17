@@ -1065,6 +1065,7 @@ impl AdmissionLease {
 pub struct AppHandle {
     current: arc_swap::ArcSwap<App>,
     publication: std::sync::Mutex<()>,
+    admission: std::sync::Mutex<()>,
     application: tokio::sync::Mutex<()>,
     async_appliers: std::sync::Mutex<Vec<Arc<AsyncApplier>>>,
 
@@ -1090,6 +1091,7 @@ impl AppHandle {
         Self {
             current: arc_swap::ArcSwap::new(app),
             publication: std::sync::Mutex::new(()),
+            admission: std::sync::Mutex::new(()),
             application: tokio::sync::Mutex::new(()),
             async_appliers: std::sync::Mutex::new(Vec::new()),
             #[cfg(debug_assertions)]
@@ -1163,6 +1165,13 @@ impl AppHandle {
         invocation: InvocationId,
         authorize: impl FnOnce(&App) -> Result<(), E>,
     ) -> Result<AdmissionLease, AdmissionRefusal<E>> {
+        let _admission = self
+            .admission
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if !Arc::ptr_eq(expected, &self.current.load_full()) {
+            return Err(AdmissionRefusal::StaleGeneration);
+        }
         authorize(expected).map_err(AdmissionRefusal::Policy)?;
         Ok(AdmissionLease {
             generation: Arc::clone(expected),
@@ -1247,6 +1256,12 @@ impl AppHandle {
         }
 
         let confirmed = confirm()?;
+        // Candidate work and callbacks above finish before the short admission boundary.
+        // Final policy either observes the prior App and retains it, or observes this swap.
+        let admission = self
+            .admission
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         let committed = match confirmed {
             Some(confirmed) => Some(confirmed.keep()),
             None => {
@@ -1264,6 +1279,7 @@ impl AppHandle {
         }
         self.current.store(next.clone());
         *published = true;
+        drop(admission);
         crate::export::plugin::queue_refresh(&next.exports, &next.export_defs, next.config_version);
         if let Some(committed) = committed {
             committed.notify();
