@@ -10,6 +10,112 @@ use busbar_contract::export_calls::Sample;
 use busbar_contract::json::{JsonContainerTrait as _, JsonValueTrait as _};
 use http_body_util::BodyExt;
 
+#[tokio::test]
+async fn real_encoded_frame_alias_retains_payload_credit_after_response_drop() {
+    use busbar_kernel::limits::process_admission::{AdmissionClass, ProcessAdmission};
+    for representation in [
+        Representation::Json,
+        Representation::Text(Format::Prometheus),
+    ] {
+        let process = ProcessAdmission::with_limits(1, 1024 * 1024, 1024);
+        let request = process.try_enter(AdmissionClass::Operator).unwrap();
+        let mut scratch = busbar_kernel::limits::output::CaptureScope::new(&request).unwrap();
+        if representation == Representation::Json {
+            scratch
+                .reserve_requested(json_scratch(&families()).unwrap())
+                .unwrap();
+        }
+        let response = encode_response(&families(), &request, representation).unwrap();
+        drop(scratch);
+        drop(request);
+        let used = process.used();
+        assert!(used.0 > 0, "an unpolled response owns its backing");
+        assert!(process.try_enter(AdmissionClass::Operator).is_err());
+        let mut body = response.into_body();
+        let frame = body.frame().await.unwrap().unwrap().into_data().unwrap();
+        let alias = frame.slice(0..1);
+        drop(frame);
+        drop(body);
+        assert_eq!(process.used(), used);
+        assert!(process.try_enter(AdmissionClass::Operator).is_err());
+        drop(alias);
+        assert_eq!(process.used(), (0, 0));
+        assert!(process.try_enter(AdmissionClass::Operator).is_ok());
+    }
+}
+
+#[test]
+fn real_encoder_refusal_drops_partial_body_without_partial_success() {
+    use busbar_kernel::limits::process_admission::{AdmissionClass, ProcessAdmission};
+    for representation in [
+        Representation::Json,
+        Representation::Text(Format::Prometheus),
+    ] {
+        let scratch_bytes = if representation == Representation::Json {
+            json_scratch(&families()).unwrap()
+        } else {
+            0
+        };
+        let process =
+            ProcessAdmission::with_limits(0, u32::try_from(scratch_bytes + 512).unwrap(), 0);
+        let request = process.try_enter(AdmissionClass::Operator).unwrap();
+        let mut scratch = busbar_kernel::limits::output::CaptureScope::new(&request).unwrap();
+        scratch.reserve_requested(scratch_bytes).unwrap();
+        assert!(matches!(
+            encode_response(&families(), &request, representation),
+            Err(OutputError::Capacity)
+        ));
+        assert_eq!(process.used(), (scratch_bytes, 0));
+        drop(scratch);
+        assert_eq!(process.used(), (0, 0));
+    }
+}
+
+#[test]
+fn json_escape_scratch_is_reserved_before_the_real_writer_runs() {
+    use busbar_kernel::limits::output::CaptureScope;
+    use busbar_kernel::limits::process_admission::{AdmissionClass, ProcessAdmission};
+    let mut value = families();
+    value[0].help = Some("\\\"\n".repeat(2048));
+    let needed = json_scratch(&value).unwrap();
+    let process = ProcessAdmission::with_limits(0, u32::try_from(needed - 1).unwrap(), 0);
+    let request = process.try_enter(AdmissionClass::Operator).unwrap();
+    let mut scope = CaptureScope::new(&request).unwrap();
+    assert_eq!(scope.reserve_requested(needed), Err(OutputError::Capacity));
+    assert_eq!(process.used(), (0, 0));
+}
+
+#[tokio::test]
+async fn capacity_refusal_preserves_existing_correlated_error_schema() {
+    let response = busbar_kernel::admin::gate::in_request_scope("r_0123456789abcdef", || {
+        output_refused(OutputError::Capacity)
+    });
+    let (status, headers, bytes) = body(response).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    let document = busbar_contract::json::parse_value(&bytes).unwrap();
+    assert_eq!(document["code"], "BUSBAR-8110");
+    assert_eq!(document["error"].as_object().unwrap().len(), 6);
+    assert_eq!(document["error"]["request_id"], "r_0123456789abcdef");
+    assert_eq!(headers["x-request-id"], "r_0123456789abcdef");
+    assert_eq!(bytes.len(), 189);
+}
+
+// Existing representation fixtures borrow caller-owned families. Use the real charged encoder;
+// source-capture allocation and route tests exercise the separate production projection owner.
+fn render(families: &[Family], representation: Representation) -> Response {
+    use busbar_kernel::limits::output::CaptureScope;
+    use busbar_kernel::limits::process_admission::{AdmissionClass, ProcessAdmission};
+    let process = ProcessAdmission::with_limits(0, 16 * 1024 * 1024, 0);
+    let request = process.try_enter(AdmissionClass::Operator).unwrap();
+    let mut scope = CaptureScope::new(&request).unwrap();
+    if representation == Representation::Json {
+        scope
+            .reserve_requested(json_scratch(families).unwrap())
+            .unwrap();
+    }
+    encode_response(families, &request, representation).unwrap()
+}
+
 fn accept(value: &str) -> HeaderMap {
     let mut h = HeaderMap::new();
     h.insert(header::ACCEPT, HeaderValue::from_str(value).unwrap());

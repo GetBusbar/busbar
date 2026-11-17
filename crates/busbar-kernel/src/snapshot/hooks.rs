@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+use super::source::output::Bound;
+use crate::limits::output::{CaptureScope, Captured, OutputError};
+use crate::limits::process_admission::RequestLease;
 use busbar_contract::export_calls::{Family, Sample};
 use busbar_contract::hook_wire::reply::HookMetric;
 use busbar_contract::secure::SecureString;
@@ -125,16 +128,53 @@ fn prune_absent<'a>(keep: impl Iterator<Item = &'a str>) {
     }
 }
 
-fn snapshot() -> Vec<(SecureString, Metrics)> {
+fn snapshot(scope: Option<&mut CaptureScope>) -> Result<Vec<(SecureString, Metrics)>, OutputError> {
     let guard = CACHE.read().unwrap_or_else(|e| e.into_inner());
-    guard
+    if let (Some(scope), Some(cache)) = (scope, guard.as_ref()) {
+        let mut bound = Bound::default();
+        bound.vector::<(SecureString, Metrics)>(cache.len())?;
+        for (name, cached) in cache {
+            bound.add(name.0.len())?;
+            bound.vector::<HookMetric>(cached.metrics.0.len())?;
+            for metric in &cached.metrics.0 {
+                for text in [
+                    Some(metric.name.as_str()),
+                    Some(metric.kind.as_str()),
+                    metric.help.as_deref(),
+                    metric.label.as_deref(),
+                    metric.unit.as_deref(),
+                    metric.viz.as_deref(),
+                ]
+                .into_iter()
+                .flatten()
+                {
+                    bound.add(text.len())?;
+                }
+                if let Some(labels) = &metric.labels {
+                    bound.tree::<String, String>(labels.len())?;
+                    for (key, value) in labels {
+                        bound.add(key.len())?;
+                        bound.add(value.len())?;
+                    }
+                }
+                for map in [&metric.quantiles, &metric.buckets].into_iter().flatten() {
+                    bound.tree::<String, f64>(map.len())?;
+                    for key in map.keys() {
+                        bound.add(key.len())?;
+                    }
+                }
+            }
+        }
+        bound.reserve(scope)?;
+    }
+    Ok(guard
         .as_ref()
         .map(|m| {
             m.iter()
                 .map(|(k, v)| (SecureString::from(k.0.as_str()), v.metrics.clone()))
                 .collect()
         })
-        .unwrap_or_default()
+        .unwrap_or_default())
 }
 
 async fn refresh(
@@ -156,7 +196,7 @@ async fn refresh(
     store(name, metrics, busbar_kernel::store::now());
 }
 
-pub(crate) fn families(app: &crate::state::App) -> Vec<Family> {
+fn maintain(app: &crate::state::App) {
     let now = busbar_kernel::store::now();
 
     prune_absent(app.hook_registry.keys().map(String::as_str));
@@ -175,12 +215,102 @@ pub(crate) fn families(app: &crate::state::App) -> Vec<Family> {
             app.hook_env.clone(),
         ));
     }
-    let snapshot = snapshot();
+}
+
+pub(crate) fn families(app: &crate::state::App) -> Vec<Family> {
+    maintain(app);
+    let snapshot = snapshot(None).expect("unbudgeted hook snapshot cannot refuse");
     fold_families(
         snapshot
             .iter()
             .map(|(name, metrics)| (name.as_str(), metrics.0.as_slice())),
     )
+}
+
+pub(crate) fn families_budgeted(
+    app: &crate::state::App,
+    request: &RequestLease,
+) -> Result<Captured<Vec<Family>>, OutputError> {
+    // Existing refresh/prune maintenance is explicitly outside the projection account.
+    maintain(app);
+    let mut scope = CaptureScope::new(request)?;
+    let snapshot = snapshot(Some(&mut scope))?;
+    reserve_fold(&snapshot, &mut scope)?;
+    let families = fold_families(
+        snapshot
+            .iter()
+            .map(|(name, metrics)| (name.as_str(), metrics.0.as_slice())),
+    );
+    drop(snapshot);
+    Ok(scope.finish(families))
+}
+
+fn reserve_fold(
+    snapshot: &[(SecureString, Metrics)],
+    scope: &mut CaptureScope,
+) -> Result<(), OutputError> {
+    let mut bound = Bound::default();
+    let metrics = snapshot.iter().try_fold(0usize, |count, (_, metrics)| {
+        count
+            .checked_add(metrics.0.len())
+            .ok_or(OutputError::Capacity)
+    })?;
+    // Group HashMap bucket/control/growth traffic. Each entry has one key and MetricGroup;
+    // 16 slots per potential entry conservatively covers load factor, control and old/new tables.
+    bound.repeated(
+        metrics.max(1),
+        16 * (std::mem::size_of::<&str>() + std::mem::size_of::<MetricGroup<'_>>() + 16),
+    )?;
+    bound.vector::<&str>(metrics)?;
+    bound.vector::<(&str, &HookMetric)>(metrics)?;
+    bound.vector::<Family>(metrics)?;
+    // Hook order Vec plus stable-sort temporary backing; neither changes sort semantics.
+    bound.vector::<(&str, &[HookMetric])>(snapshot.len())?;
+    bound.vector::<(&str, &[HookMetric])>(snapshot.len())?;
+    for (hook, values) in snapshot {
+        for metric in &values.0 {
+            let coordinates = metric
+                .buckets
+                .as_ref()
+                .map_or(0, |m| m.len())
+                .max(metric.quantiles.as_ref().map_or(0, |m| m.len()));
+            let samples = coordinates.checked_add(2).ok_or(OutputError::Capacity)?;
+            let labels = metric.labels.as_ref().map_or(0, |m| m.len());
+            let mut label_bytes = hook.len().checked_add(4).ok_or(OutputError::Capacity)?;
+            if let Some(map) = &metric.labels {
+                for (key, value) in map {
+                    label_bytes = label_bytes
+                        .checked_add(key.len())
+                        .and_then(|n| n.checked_add(value.len()))
+                        .ok_or(OutputError::Capacity)?;
+                }
+            }
+            let coordinate = [&metric.buckets, &metric.quantiles]
+                .into_iter()
+                .flatten()
+                .flat_map(|m| m.keys())
+                .map(String::len)
+                .max()
+                .unwrap_or(4);
+            bound.add(metric.name.len())?;
+            bound.add(metric.help.as_ref().map_or(0, String::len))?;
+            bound.vector::<Sample>(samples)?;
+            bound.vector::<(&String, &f64)>(coordinates)?;
+            bound.vector::<(&String, &f64)>(coordinates)?; // stable bucket sort scratch
+            for _ in 0..samples {
+                bound.add(metric.name.len())?;
+                bound.add(7)?; // longest generated sample suffix
+                bound.add(label_bytes)?;
+                bound.add(coordinate)?;
+                bound.add(8)?; // generated coordinate label name
+                bound.vector::<(String, String)>(
+                    labels.checked_add(2).ok_or(OutputError::Capacity)?,
+                )?;
+                bound.add(2048)?; // all finite f64 formatting allocation traffic
+            }
+        }
+    }
+    bound.reserve(scope)
 }
 
 type MetricGroup<'a> = (
