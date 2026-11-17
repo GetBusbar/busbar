@@ -2888,9 +2888,13 @@ pub(crate) async fn get_config_settings(State(handle): State<Arc<AppHandle>>) ->
 pub(crate) async fn put_config_settings(
     State(handle): State<Arc<AppHandle>>,
     axum::Extension(principal): axum::Extension<busbar_kernel::auth::AuthPrincipal>,
+    original: Option<axum::Extension<super::generation::OriginalConfigPrecondition>>,
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
 ) -> Response {
+    if super::instance_settings::is_request(&body) {
+        return super::instance_settings::put(handle, principal, original, headers, body).await;
+    }
     if super::config_document::is_document_request(&body) {
         return super::config_document::put(handle, principal, headers, body).await;
     }
@@ -4765,8 +4769,27 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
     body_raw!(
         "/config/settings",
         "put",
-        json!({"oneOf": [super::contract_metadata::root_settings_schema(), super::config_document::request_schema()]})
+        json!({"oneOf": [super::contract_metadata::root_settings_schema(), super::config_document::request_schema(), super::instance_settings::request_schema()]})
     );
+    if let Some(operation) = op!("/config/settings", "put") {
+        operation["x-busbar-instance-edit"] = json!({
+            "request_mode":"instance_edit",
+            "precondition":"one_strong_config_etag_on_new_dispatch",
+            "idempotency":"required_exact_method_path_query_body",
+            "discovery":"/kinds/{kind}/instances/{id}",
+            "effect":"configuration_publication_not_physical_activation"
+        });
+        if let Some(parameters) = operation
+            .get_mut("parameters")
+            .and_then(|p| p.as_array_mut())
+        {
+            for parameter in parameters {
+                if parameter["name"] == "If-Match" {
+                    parameter["description"] = json!("The current config-generation ETag. New instance_edit dispatch requires exactly one strong ETag even when global require_if_match is false; missing is 428, weak/wildcard/malformed is 400, stale is 409. Exact authenticated idempotent replay returns its retained outcome without a new effect. Other request modes retain their existing conditional-write policy.");
+                }
+            }
+        }
+    }
     body_raw!(
         PATH_GROUPS,
         "post",

@@ -101,7 +101,7 @@ pub(crate) struct Instance {
     pub(crate) kind: String,
     pub(crate) id: String,
     /// The module the operator configured it with: data, read for `plugin{}` and the image only.
-    module: Option<String>,
+    pub(super) module: Option<String>,
     /// Its configuration under the secret rule.
     pub(crate) config: Value,
     plane: Option<&'static PlaneDecl>,
@@ -252,7 +252,7 @@ fn digest_of(value: &Value) -> String {
 }
 
 /// The image an instance runs, by the SHA-256 of its admitted archive, else its version.
-fn image(app: &App, instance: &Instance) -> String {
+pub(super) fn image(app: &App, instance: &Instance) -> String {
     let Some(module) = instance.module.as_deref() else {
         return String::new();
     };
@@ -267,12 +267,13 @@ fn image(app: &App, instance: &Instance) -> String {
 /// built from.
 fn revision(app: &App, instance: &Instance) -> String {
     sha(format!(
-        "{}\n{}\n{}\n{}\n{}",
+        "{}\n{}\n{}\n{}\n{}\n{}",
         instance.category,
         instance.kind,
         instance.id,
         image(app, instance),
-        digest_of(&instance.config)
+        digest_of(&instance.config),
+        super::generation::config_etag(app)
     )
     .as_bytes())
 }
@@ -525,7 +526,7 @@ fn status_of(app: &App, instance: &Instance) -> Value {
 
 /// The instance's `D_SCHEMA`, as declared, with `x-sensitive: true` beside every
 /// `x-busbar-secret`.
-fn config_schema(app: &App, instance: &Instance) -> Value {
+pub(super) fn config_schema(app: &App, instance: &Instance) -> Value {
     let Some(module) = instance.module.as_deref() else {
         return Value::new_null();
     };
@@ -787,7 +788,9 @@ pub(crate) fn describe_of(app: &App, instance: &Instance) -> Value {
                 .collect::<Vec<_>>(),
         ),
     );
-    members.insert("actions", Value::from(Vec::<Value>::new()));
+    let (management, actions) = super::instance_settings::discovery(app, instance);
+    members.insert("management", management);
+    members.insert("actions", actions);
     Value::from(members)
 }
 
@@ -989,7 +992,11 @@ pub(crate) async fn describe(
     State(handle): State<Arc<AppHandle>>,
     Path((kind, id)): Path<(String, String)>,
 ) -> Response {
-    let app = super::response_snapshot(handle.load()).await;
+    // The action's config ETag and its source/schema must describe one publication. An App's
+    // durable-generation counter is shared across snapshots; retaining only its Arc is not a
+    // read fence. Use the existing config writer lock for this bounded metadata projection.
+    let _guard = busbar_kernel::config::transaction::effect_lock().await;
+    let app = handle.load();
     match find(inventory(&app), &kind, &id) {
         Ok(instance) => send(&describe_of(&app, &instance), None),
         Err(response) => *response,
@@ -1187,7 +1194,7 @@ pub(crate) mod doc {
     documented!(Describe, {
         "type": "object",
         "additionalProperties": false,
-        "required": ["id", "name", "plugin", "labels", "etag", "config", "config_schema", "state", "state_schema", "runtime", "health", "links", "views", "actions"],
+        "required": ["id", "name", "plugin", "labels", "etag", "config", "config_schema", "state", "state_schema", "runtime", "health", "links", "views", "actions", "management"],
         "properties": {
             "id": {"type": "string"},
             "name": {"type": "string"},
@@ -1202,7 +1209,8 @@ pub(crate) mod doc {
             "health": {"type": "array", "items": {"type": "object", "required": ["check", "status", "observed_at", "detail", "text", "plugin_diag"]}},
             "links": {"type": "array", "items": {"type": "object", "required": ["kind", "id"], "properties": {"kind": {"type": "string"}, "id": {"type": "string"}}}},
             "views": {"type": "array", "items": {"type": "object"}},
-            "actions": {"type": "array", "maxItems": 0}
+            "actions": {"type": "array", "maxItems": 1, "items": super::super::instance_settings::action_schema()},
+            "management": super::super::instance_settings::management_schema()
         }
     });
 
