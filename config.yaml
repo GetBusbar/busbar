@@ -60,13 +60,17 @@ admin_listen_insecure_transport: { accept: [plaintext], reason: "loopback-only a
 #
 # oauth_as:
 #   # RFC 8414 `issuer`: this authorization server's identity, and the base every endpoint is
-#   # derived from - `{issuer}/authorize`, `{issuer}/token`, `{issuer}/jwks`, `{issuer}/consent`,
-#   # and `/.well-known/oauth-authorization-server` with the issuer's PATH appended AFTER it
+#   # derived from - `{issuer}/authorize`, `{issuer}/token`, `{issuer}/jwks`, and
+#   # `/.well-known/oauth-authorization-server` with the issuer's PATH appended AFTER it
 #   # (RFC 8414 s3.1 puts the well-known segment first; RFC 9728 puts it last - the two documents
 #   # this deployment serves build their paths in opposite orders).
 #   # No trailing slash, no query, no fragment: all three are boot refusals, because RFC 9207 has
 #   # clients compare this value byte-for-byte.
 #   issuer: "https://gw.example.com"
+#   # The operator approval pages (`/oauth/device`, `/oauth/consent`) are NOT under the issuer:
+#   # they live on the admin listener, whose address busbar publishes, so `oauth_as:` requires a
+#   # loopback `admin_listen` (the default `127.0.0.1:8081`). Reach it with `ssh -L` or
+#   # `kubectl port-forward`.
 #
 #   # The ES256 signing key: base64 of a PKCS#8 v1 DER P-256 private key. Produce one with
 #   #   openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -outform DER | base64

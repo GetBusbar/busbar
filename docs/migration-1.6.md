@@ -530,6 +530,13 @@ Because 1.5.5's default admin listener is plaintext on loopback, a 1.5.5 configu
 relied on it refuses its first 1.6.0 boot until you either configure TLS for that listener
 or record the acceptance.
 
+`oauth_as:` serves its operator approval pages (`/oauth/device` and `/oauth/consent`) on the admin
+listener, never on `listen`, and publishes the admin listener's address for them. In 1.6.0 that
+address is derived only from a loopback `admin_listen` (`http(s)://127.0.0.1:8081`, `https` when
+`admin_tls` is set): reach it with `ssh -L 8081:127.0.0.1:8081` or `kubectl port-forward`. Any other
+`admin_listen` with `oauth_as:` refuses to start (BUSBAR-3129), and changing `admin_listen` or
+`admin_tls` while `oauth_as:` is on needs a restart.
+
 ### Authentication, keys and sign-in
 
 - **The admin token becomes a digest on the first boot.** The first 1.6.0 boot replaces the
