@@ -192,6 +192,7 @@ fn unit() -> UnitCheckpoint {
         .key("work")
         .expect("test meter class registered");
     let audit = super::super::RunningAudit {
+        selected_identity: None,
         incarnation: 7,
         principal: "checkpoint-principal".into(),
         op_class: "checkpoint.actual".into(),
