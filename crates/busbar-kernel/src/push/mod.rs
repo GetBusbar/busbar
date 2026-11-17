@@ -107,10 +107,10 @@ impl StorePushQueue {
         clock: fn() -> u64,
     ) -> Self {
         Self {
+            in_doubt: InDoubt::new(Arc::clone(&store)),
             store,
             clock,
             policy,
-            in_doubt: InDoubt::default(),
         }
     }
 
@@ -194,6 +194,7 @@ fn decode(key: Vec<u8>, raw: Secret<Vec<u8>>) -> Option<Row> {
 impl StorePushQueue {
     fn scoped(&self, who: &Caller<'_>) -> Result<ScopedStore, RecordsDenied> {
         ScopedStore::host_private(Arc::clone(&self.store), &label(who), [PUSHES.to_string()])
+            .and_then(|records| self.in_doubt.bind(records))
             .map_err(denied)
     }
 
@@ -210,7 +211,7 @@ impl StorePushQueue {
             return Err(RecordsDenied::TooLarge);
         }
         let records = self.scoped(who)?;
-        self.in_doubt.settle_one(&self.store).await;
+        self.in_doubt.settle_one().await;
         let now = (self.clock)();
         let ttl = if ttl_s == 0 { MAX_PUSH_TTL_S } else { ttl_s };
         let key = operation(&self.store)?;
@@ -261,7 +262,7 @@ impl StorePushQueue {
         sink: &dyn PushSink,
     ) -> Result<Round, RecordsDenied> {
         let records = self.scoped(who)?;
-        self.in_doubt.settle_one(&self.store).await;
+        self.in_doubt.settle_one().await;
         let now = (self.clock)();
         let mut round = Round::default();
         let mut handled = 0;
