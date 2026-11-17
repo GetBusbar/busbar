@@ -58,6 +58,9 @@ impl Pending {
     pub fn admitted(&self) -> Option<&AdmittedUnit> {
         self.admitted.get()
     }
+    pub(crate) fn routes(&self) -> Arc<RequestRoutes> {
+        self.routes.clone()
+    }
 
     pub(crate) fn admit(
         &self,
@@ -128,6 +131,9 @@ impl Books for Pending {
     fn ended(&self, ending: super::usage::Ending, usage: &super::usage::SessionUsage) {
         if let Some(books) = self.books() {
             books.ended(ending, usage);
+        }
+        if let Some(admitted) = self.admitted.get() {
+            admitted.request.context().retire();
         }
     }
     fn audit(&self, row: &super::port_money::AuditRow) {

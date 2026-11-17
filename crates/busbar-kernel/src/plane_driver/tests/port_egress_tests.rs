@@ -165,7 +165,8 @@ fn target_lookup_preserves_the_selected_member_qualification() {
     let rt = Runtime::new().unwrap();
     let tok = token();
     let cell = Mutex::new(Some(fake));
-    let make = |_: &Wants| cell.lock().unwrap().take().unwrap();
+    let make =
+        |_: &Wants, _: Option<&super::RequestPoolReceipt>| cell.lock().unwrap().take().unwrap();
     let targets = |pool: &str, name: &str| {
         (pool == "pool" && name == "seat\u{1f}model").then(MemberTarget::bare)
     };
@@ -193,7 +194,8 @@ fn the_same_member_in_two_pools_uses_each_pools_resolved_target() {
     let rt = Runtime::new().unwrap();
     let tok = token();
     let cell = Mutex::new(Some(fake));
-    let make = |_: &Wants| cell.lock().unwrap().take().unwrap();
+    let make =
+        |_: &Wants, _: Option<&super::RequestPoolReceipt>| cell.lock().unwrap().take().unwrap();
     let targets = |pool: &str, member: &str| {
         if member != "seat\u{1f}model" {
             return None;
@@ -231,7 +233,7 @@ fn a_pick_becomes_a_candidate_named_as_the_operator_and_stated_as_its_target() {
     let tok = token();
     let made = Cell::new(0);
     let cell = Mutex::new(Some(fake));
-    let make = |_: &Wants| {
+    let make = |_: &Wants, _: Option<&super::RequestPoolReceipt>| {
         made.set(made.get() + 1);
         cell.lock().unwrap().take().unwrap()
     };
@@ -258,7 +260,7 @@ fn the_far_end_is_built_from_the_wants_the_plane_forwarded_with() {
     let rt = Runtime::new().unwrap();
     let tok = token();
     let seen = Mutex::new(None);
-    let make = |w: &Wants| {
+    let make = |w: &Wants, _: Option<&super::RequestPoolReceipt>| {
         *seen.lock().unwrap() = Some(w.clone());
         Fake::default()
     };
@@ -282,7 +284,8 @@ fn a_member_the_plane_has_no_upstream_for_is_passed_over() {
     let rt = Runtime::new().unwrap();
     let tok = token();
     let cell = Mutex::new(Some(fake));
-    let make = |_: &Wants| cell.lock().unwrap().take().unwrap();
+    let make =
+        |_: &Wants, _: Option<&super::RequestPoolReceipt>| cell.lock().unwrap().take().unwrap();
     let handle = rt.handle().clone();
     let walk = EgressWalk::new(&make, &tok, &handle, &target_for);
     let got = walk.members().next(&Wants::default()).unwrap();
@@ -297,7 +300,8 @@ fn with_walk<R>(
     let rt = Runtime::new().unwrap();
     let tok = token();
     let cell = Mutex::new(Some(fake));
-    let make = |_: &Wants| cell.lock().unwrap().take().unwrap();
+    let make =
+        |_: &Wants, _: Option<&super::RequestPoolReceipt>| cell.lock().unwrap().take().unwrap();
     let handle = rt.handle().clone();
     let walk = EgressWalk::new(&make, &tok, &handle, &target_for);
     let mut members = walk.members();
@@ -314,7 +318,8 @@ fn judged_of(fake: Fake, run: impl FnOnce(&mut dyn Members)) -> Vec<u8> {
     let rt = Runtime::new().unwrap();
     let tok = token();
     let cell = Mutex::new(Some(picking(fake)));
-    let make = |_: &Wants| cell.lock().unwrap().take().unwrap();
+    let make =
+        |_: &Wants, _: Option<&super::RequestPoolReceipt>| cell.lock().unwrap().take().unwrap();
     let handle = rt.handle().clone();
     let walk = EgressWalk::new(&make, &tok, &handle, &target_for);
     let mut members = walk.members();
@@ -579,7 +584,8 @@ fn the_plane_s_wait_rides_with_its_verdict_into_the_breaker() {
     let rt = Runtime::new().unwrap();
     let tok = token();
     let cell = Mutex::new(Some(picking(fake)));
-    let make = |_: &Wants| cell.lock().unwrap().take().unwrap();
+    let make =
+        |_: &Wants, _: Option<&super::RequestPoolReceipt>| cell.lock().unwrap().take().unwrap();
     let handle = rt.handle().clone();
     let walk = EgressWalk::new(&make, &tok, &handle, &target_for);
     let mut members = walk.members();
@@ -620,7 +626,8 @@ fn an_exhausted_walk_keeps_the_wait_it_stated_for_the_client() {
     let rt = Runtime::new().unwrap();
     let tok = token();
     let cell = Mutex::new(Some(fake));
-    let make = |_: &Wants| cell.lock().unwrap().take().unwrap();
+    let make =
+        |_: &Wants, _: Option<&super::RequestPoolReceipt>| cell.lock().unwrap().take().unwrap();
     let handle = rt.handle().clone();
     let walk = EgressWalk::new(&make, &tok, &handle, &target_for);
     let mut members = walk.members();

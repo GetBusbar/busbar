@@ -851,6 +851,14 @@ impl Shape for EgressFarEnd<'_> {
         primary: bool,
     ) -> Option<(Vec<Member>, Vec<DestinationId>)> {
         let (mut members, mut order) = self.constrained(members, primary).ok()?;
+        if let Some(grants) = &self.route.native_member_grants {
+            members.retain(|m| {
+                grants
+                    .get(pool)
+                    .is_some_and(|allowed| allowed.iter().any(|name| name == &m.name))
+            });
+            order.retain(|id| members.iter().any(|m| m.destination == *id));
+        }
         if let Some(grants) = &self.route.member_grants {
             members.retain(|m| {
                 grants.get(pool).is_some_and(|allowed| {
@@ -2749,6 +2757,16 @@ impl FarEnd for EgressFarEnd<'_> {
             members: members
                 .iter()
                 .enumerate()
+                .filter(|(_, m)| {
+                    self.route
+                        .native_member_grants
+                        .as_ref()
+                        .is_none_or(|grants| {
+                            grants
+                                .get(&pool.name)
+                                .is_some_and(|allowed| allowed.iter().any(|name| name == &m.name))
+                        })
+                })
                 .filter(|(_, m)| {
                     self.route.member_grants.as_ref().is_none_or(|grants| {
                         grants.get(&pool.name).is_some_and(|allowed| {

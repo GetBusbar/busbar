@@ -47,6 +47,7 @@ use super::port_upstream::{
     Candidate, Chunk, Failure, Members, ProbeOutcome, SendFailed, TargetIdentity, UpChunks, UpOpen,
     UpReply, UpSend, Wants,
 };
+use super::request_admission::{AdmittedRequest, RequestPoolReceipt, RequestWalk};
 use super::route::{operator_name, FarEnd, OutboundRequest, Pick};
 use crate::teller::Kernel;
 
@@ -87,9 +88,10 @@ impl MemberTarget {
 pub type Targets = Arc<dyn Fn(&str, &str) -> Option<MemberTarget> + Send + Sync>;
 
 /// What one session needs of the egress side: the unit it bills to.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone)]
 pub struct SessionFacts {
     pub unit: busbar_contract::UnitKey,
+    pub pending: Option<crate::host_services::InvocationContext>,
 }
 
 /// The production seam of `PortDriver::serve`: runs one session's walk. `run` gets the members and the carrier of
@@ -100,18 +102,59 @@ pub trait PortUpstream: Send + Sync {
 
 /// One session's walk over a [`FarEnd`] built from the session's wants.
 struct Shared<'a, F: FarEnd> {
-    make: &'a dyn Fn(&Wants) -> F,
+    make: &'a dyn Fn(&Wants, Option<&RequestPoolReceipt>) -> F,
     far: OnceCell<F>,
+    request_walk: Option<RequestWalk>,
+    admitted: OnceCell<AdmittedRequest>,
+    selected: RefCell<Option<(Candidate, u32)>>,
     token: &'a Pass<Route>,
     handle: &'a Handle,
     targets: &'a (dyn Fn(&str, &str) -> Option<MemberTarget> + Send + Sync),
     /// Picks made so far (the walk's attempt number).
     picks: Cell<u32>,
+    preparations: Cell<u32>,
     /// The member (as the walk names it) and pool in hand.
     member: RefCell<String>,
     pool: RefCell<String>,
     /// The Retry-After the walk stated when it found no member left.
     exhausted_wait: Cell<Option<u32>>,
+}
+
+impl<F: FarEnd> Shared<'_, F> {
+    fn far(&self, wants: &Wants) -> Option<&F> {
+        if self.request_walk.is_some() && !self.admitted.get().is_some_and(AdmittedRequest::is_live)
+        {
+            return None;
+        }
+        Some(self.far.get_or_init(|| (self.make)(wants, None)))
+    }
+}
+
+/// Actual eligibility from this walk, consumed once by the selected money owner.
+pub(crate) struct SelectedWalkAttempt {
+    walk: RequestWalk,
+    target: Candidate,
+    preparation: u32,
+}
+impl SelectedWalkAttempt {
+    pub(crate) fn walk(&self) -> &RequestWalk {
+        &self.walk
+    }
+    pub(crate) fn target(&self) -> &Candidate {
+        &self.target
+    }
+    pub(crate) fn pool(&self) -> &str {
+        &self.target.pool
+    }
+    pub(crate) fn qualified_member(&self) -> &str {
+        &self.target.qualified_member
+    }
+    pub(crate) fn preparation(&self) -> u32 {
+        self.preparation
+    }
+    pub(crate) fn resource(&self) -> Option<&str> {
+        self.target.resource.as_deref()
+    }
 }
 
 /// A walk over any [`FarEnd`]: the [`Members`] and the [`UpSend`] of one session, sharing its far end.
@@ -122,7 +165,7 @@ pub struct EgressWalk<'a, F: FarEnd> {
 impl<'a, F: FarEnd> EgressWalk<'a, F> {
     /// `make` builds the far end from the session's wants, at the first pick.
     pub fn new(
-        make: &'a dyn Fn(&Wants) -> F,
+        make: &'a dyn Fn(&Wants, Option<&RequestPoolReceipt>) -> F,
         token: &'a Pass<Route>,
         handle: &'a Handle,
         targets: &'a (dyn Fn(&str, &str) -> Option<MemberTarget> + Send + Sync),
@@ -131,15 +174,27 @@ impl<'a, F: FarEnd> EgressWalk<'a, F> {
             shared: Shared {
                 make,
                 far: OnceCell::new(),
+                request_walk: None,
+                admitted: OnceCell::new(),
+                selected: RefCell::new(None),
                 token,
                 handle,
                 targets,
                 picks: Cell::new(0),
+                preparations: Cell::new(0),
                 member: RefCell::new(String::new()),
                 pool: RefCell::new(String::new()),
                 exhausted_wait: Cell::new(None),
             },
         }
+    }
+
+    pub(crate) fn pending(
+        mut self,
+        context: &crate::host_services::InvocationContext,
+    ) -> Result<Self, super::request_admission::AdmissionError> {
+        self.shared.request_walk = Some(RequestWalk::new(context)?);
+        Ok(self)
     }
 
     /// The far end, once the first pick built it.
@@ -165,6 +220,33 @@ pub struct WalkMembers<'s, 'a, F: FarEnd>(&'s Shared<'a, F>);
 /// [`UpSend`] over a [`FarEnd`].
 pub struct WalkSend<'s, 'a, F: FarEnd>(&'s Shared<'a, F>);
 
+impl<F: FarEnd> WalkSend<'_, '_, F> {
+    /// Consumes only the current eligible member of this exact admitted walk.
+    pub(crate) fn take_selected(
+        &mut self,
+        target: &Candidate,
+        preparation: u32,
+    ) -> Option<SelectedWalkAttempt> {
+        let shared = self.0;
+        let walk = shared.request_walk.as_ref()?;
+        let admitted = shared.admitted.get()?;
+        if !admitted.is_live() || !admitted.accepts_walk(walk) {
+            return None;
+        }
+        let mut selected = shared.selected.borrow_mut();
+        let (actual, ordinal) = selected.as_ref()?;
+        if actual != target || *ordinal != preparation {
+            return None;
+        }
+        let (target, preparation) = selected.take()?;
+        Some(SelectedWalkAttempt {
+            walk: walk.clone(),
+            target,
+            preparation,
+        })
+    }
+}
+
 /// The breaker's reading of the plane's verdict (the old `OnPieceOut::fault`).
 fn fault_of(failure: &Failure) -> u8 {
     if failure.verdict == ATT_HARD {
@@ -177,6 +259,45 @@ fn fault_of(failure: &Failure) -> u8 {
 }
 
 impl<F: FarEnd> Members for WalkMembers<'_, '_, F> {
+    fn request_walk(&self) -> Option<&RequestWalk> {
+        self.0.request_walk.as_ref()
+    }
+
+    fn select_request(&mut self, receipt: &RequestPoolReceipt, wants: &Wants) -> bool {
+        let Some(key) = receipt.walk_key() else {
+            return false;
+        };
+        if self.0.request_walk.is_none() || self.0.far.get().is_some() {
+            return false;
+        }
+        let far = (self.0.make)(wants, Some(receipt));
+        if far
+            .scope(self.0.token)
+            .as_ref()
+            .is_none_or(|scope| scope.pool != key)
+        {
+            return false;
+        }
+        self.0.far.set(far).is_ok()
+    }
+
+    fn admit_request(&mut self, request: &AdmittedRequest) -> bool {
+        let Some(walk) = self.0.request_walk.as_ref() else {
+            return false;
+        };
+        let Some(far) = self.0.far.get() else {
+            return false;
+        };
+        if !request.accepts_walk(walk)
+            || far
+                .scope(self.0.token)
+                .as_ref()
+                .is_none_or(|scope| Some(scope.pool.as_str()) != request.walk_key())
+        {
+            return false;
+        }
+        self.0.admitted.set(request.clone()).is_ok()
+    }
     fn hook_remaining(&self) -> Option<usize> {
         self.0.far.get()?.remaining(self.0.token)
     }
@@ -185,22 +306,24 @@ impl<F: FarEnd> Members for WalkMembers<'_, '_, F> {
     }
 
     fn hook_candidates(&mut self, wants: &Wants) -> Option<super::hooks::Candidates> {
-        let far = self.0.far.get_or_init(|| (self.0.make)(wants));
+        let far = self.0.far(wants)?;
         far.candidates(self.0.token)
     }
 
     fn hook_scope(&mut self, wants: &Wants) -> Option<super::RoutedScope> {
-        let far = self.0.far.get_or_init(|| (self.0.make)(wants));
+        let far = self.0.far(wants)?;
         far.scope(self.0.token)
     }
 
     fn hook_lane(&mut self, wants: &Wants, index: usize) -> Option<String> {
-        let far = self.0.far.get_or_init(|| (self.0.make)(wants));
+        let far = self.0.far(wants)?;
         far.candidate_lane(self.0.token, index)
     }
 
     fn hook_constrain(&mut self, wants: &Wants, constraint: super::hooks::Constraint) -> bool {
-        let far = self.0.far.get_or_init(|| (self.0.make)(wants));
+        let Some(far) = self.0.far(wants) else {
+            return false;
+        };
         if far.candidates(self.0.token).is_none() {
             return false;
         }
@@ -210,7 +333,8 @@ impl<F: FarEnd> Members for WalkMembers<'_, '_, F> {
 
     fn next(&mut self, wants: &Wants) -> Option<Candidate> {
         let s = self.0;
-        let far = s.far.get_or_init(|| (s.make)(wants));
+        s.selected.borrow_mut().take();
+        let far = s.far(wants)?;
         loop {
             let n = s.picks.get().saturating_add(1);
             s.picks.set(n);
@@ -223,7 +347,7 @@ impl<F: FarEnd> Members for WalkMembers<'_, '_, F> {
                         String::from_utf8_lossy(operator_name(name.as_bytes())).into_owned();
                     *s.member.borrow_mut() = name.clone();
                     *s.pool.borrow_mut() = pool.clone();
-                    return Some(Candidate {
+                    let candidate = Candidate {
                         pool: pool.into(),
                         qualified_member: name.into(),
                         identity: target.identity,
@@ -233,7 +357,11 @@ impl<F: FarEnd> Members for WalkMembers<'_, '_, F> {
                         base_path: target.base_path,
                         flags: target.flags,
                         params: target.params,
-                    });
+                    };
+                    let preparation = s.preparations.get().checked_add(1)?;
+                    s.preparations.set(preparation);
+                    *s.selected.borrow_mut() = Some((candidate.clone(), preparation));
+                    return Some(candidate);
                 }
                 Pick::Exhausted { retry_after, .. } => {
                     s.exhausted_wait.set(retry_after);
@@ -246,6 +374,7 @@ impl<F: FarEnd> Members for WalkMembers<'_, '_, F> {
     }
 
     fn declined(&mut self, _member: &Candidate) {
+        self.0.selected.borrow_mut().take();
         // Never dialled and nothing to charge: the next pick settles the attempt and frees its permit.
     }
 
@@ -404,6 +533,9 @@ impl<F: FarEnd> UpSend for WalkSend<'_, '_, F> {
         exchange: &UpExchange,
     ) -> Result<UpOpen<'a>, SendFailed> {
         let s = self.0;
+        if s.request_walk.is_some() && !s.admitted.get().is_some_and(AdmittedRequest::is_live) {
+            return Err(SendFailed);
+        }
         let far = s.far.get().ok_or(SendFailed)?;
         let request = request_of(
             &s.member.borrow(),
@@ -663,12 +795,28 @@ impl PortEgress {
 impl PortUpstream for PortEgress {
     fn walk(&self, facts: SessionFacts, run: &mut dyn FnMut(&mut dyn Members, &mut dyn UpSend)) {
         let token = Pass::<Route>::mint_bound(self.kernel.seal(), self.kernel.next_call());
-        let make = |wants: &Wants| {
-            self.egress
-                .unit(route_of(&self.pool, facts.unit, self.accept, wants))
+        let make = |wants: &Wants, receipt: Option<&RequestPoolReceipt>| {
+            let pool = receipt
+                .and_then(RequestPoolReceipt::walk_key)
+                .unwrap_or(&self.pool);
+            let mut route = route_of(pool, facts.unit, self.accept, wants);
+            if let Some(receipt) = receipt {
+                route.native_member_grants = Some(receipt.member_grants().clone());
+                route.authorization = facts
+                    .pending
+                    .as_ref()
+                    .map(|context| Arc::clone(context.generation().core().units()));
+            }
+            self.egress.unit(route)
         };
         let targets = &*self.targets;
-        let walk = EgressWalk::new(&make, &token, &self.handle, targets);
+        let mut walk = EgressWalk::new(&make, &token, &self.handle, targets);
+        if let Some(context) = &facts.pending {
+            let Ok(pending) = walk.pending(context) else {
+                return;
+            };
+            walk = pending;
+        }
         run(&mut walk.members(), &mut walk.sender());
     }
 }
