@@ -164,3 +164,33 @@ fn real_json_facade_escape_scratch_fits_the_preflight_credit() {
     drop(encoded);
     assert_eq!(process.used(), (0, 0));
 }
+#[test]
+fn pre_request_staging_retains_full_backing_through_last_slice() {
+    let process = ProcessAdmission::with_limits(2, 4096, 1024);
+    let source = process.connection_storage(AdmissionClass::Data);
+    let mut output = OutputBuffer::with_source(&source, 128).unwrap();
+    output.write_all(b"retained").unwrap();
+    let body = output.into_bytes().unwrap();
+    let tail = body.slice(6..);
+    drop(body);
+    drop(source);
+    assert_eq!(&tail[..], b"ed");
+    assert_eq!(process.used(), (128, 128));
+    assert!(process.try_enter(AdmissionClass::Data).is_ok());
+    drop(tail);
+    assert_eq!(process.used(), (0, 0));
+}
+
+#[test]
+fn connection_output_growth_cannot_allocate_with_only_delta_credit() {
+    let process = ProcessAdmission::with_limits(0, 300, 0);
+    let source = process.connection_storage(AdmissionClass::Data);
+    let mut output = OutputBuffer::with_source(&source, 128).unwrap();
+    output.write_all(&[7; 128]).unwrap();
+    assert!(output.write_all(&[8]).is_err());
+    assert_eq!(output.as_ref(), &[7; 128]);
+    assert_eq!(process.used(), (128, 128));
+    assert_eq!(output.failure(), Some(OutputError::Capacity));
+    assert!(output.into_bytes().is_err());
+    assert_eq!(process.used(), (0, 0));
+}
