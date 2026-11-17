@@ -144,7 +144,7 @@ fn a_need_from_a_lane_store_is_fault_need_not_allowed() {
         let mut needs = FakeNeeds::new();
         needs.secret("/secret", b"backend-password-1");
         let h = booted(plugin, needs);
-        let opened = h.open_store("needs", br#"{"secret":"vault:db"}"#);
+        let opened = h.open_store("needs", br#"{"secret":{"vault":"db"}}"#);
         match opened {
             Err(OpenError::Call(CallError::Fault(FaultReason::NeedNotAllowed(_))))
                 if lane_store => {}
