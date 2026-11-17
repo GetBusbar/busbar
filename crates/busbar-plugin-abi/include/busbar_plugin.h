@@ -45,7 +45,9 @@ enum { BB_LOG_ERROR = 1, BB_LOG_WARN = 2, BB_LOG_INFO = 3, BB_LOG_DEBUG = 4, BB_
 
 /* #408: native plane resource facts. These records grant no execution authority. */
 #define BB_PLANE_FB_RESOURCE_ADMISSION (1ull << 3)
+#define BB_PLANE_FB_CHANNEL_OPEN (1ull << 4)
 #define BB_PLANE_M_SELECT_RESOURCES (1ull << 9)
+#define BB_PLANE_M_CHANNEL (1ull << 10)
 #define BB_RESOURCE_INVENTORY 1u
 #define BB_RESOURCE_SELECT 2u
 #define BB_TAG_RESOURCE_ENTRY 0x0168u
@@ -91,6 +93,7 @@ typedef struct {
     bb_status (*probe)(const void *, const bb_host *, const bb_target *, bb_raw_out *);
     bb_status (*demux)(const void *, const bb_host *, bb_str, bb_bytes, bb_raw_out *);
     bb_status (*select_resources)(const void *, const bb_host *, uint32_t, const bb_plane_req *, bb_bytes, bb_raw_out *);
+    bb_status (*channel)(const void *, const bb_host *, uint64_t, const bb_target *, bb_raw_out *); /* slot 10, BB_PLANE_M_CHANNEL */
 } bb_plane_vt;
 
 /* §3: records. [bb_rec_head][body][zero pad to 8]. */
