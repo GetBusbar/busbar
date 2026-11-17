@@ -57,6 +57,7 @@ fn adding_an_instance_owned_route_preserves_existing_bars_and_exact_method_scope
     let prepared = crate::router::PreparedListener {
         router,
         core_routes,
+        physical: None,
         data: None,
         refusals: Vec::new(),
         refuse_by_path: None,

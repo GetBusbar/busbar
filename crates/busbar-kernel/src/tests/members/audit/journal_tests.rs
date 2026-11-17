@@ -206,6 +206,7 @@ fn v7_frames_whole_and_fractional_quantities() {
             let mut inputs = super::sign_tests::rich_inputs(index as u64 + 1);
             inputs.usage.lines[0].quantity = busbar_contract::Count::parse(count).unwrap();
             inputs.unit = UnitFacts {
+                billing: None,
                 wall_ms: 1_700_000_000_123 + index as u64,
                 attribution: busbar_kernel_audit::attribution("team-a", "default", "acme"),
                 boot_nonce: [0x5f; 16],

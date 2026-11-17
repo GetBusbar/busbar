@@ -89,20 +89,6 @@ impl RequestPoolReceipt {
 }
 
 impl AdmittedRequest {
-    /// Stable identity only, including after retirement. Consumers check liveness separately.
-    pub(crate) fn same_admission(&self, other: &Self) -> bool {
-        self.context.same_unit(&other.context)
-            && Arc::ptr_eq(&self.book, &other.book)
-            && Arc::ptr_eq(&self.open, &other.open)
-            && Arc::ptr_eq(&self.grant, &other.grant)
-            && Arc::ptr_eq(&self.money, &other.money)
-            && Arc::ptr_eq(&self.routes, &other.routes)
-            && match (self.registered_command(), other.registered_command()) {
-                (Some(a), Some(b)) => Arc::ptr_eq(a, b),
-                (None, None) => true,
-                _ => false,
-            }
-    }
     /// Exact selected definition; callers may not reconstruct it from plugin output or a current table.
     pub fn registered_command(&self) -> Option<&Arc<UpstreamDef>> {
         self.command.as_ref().map(|selected| &selected.definition)

@@ -1323,6 +1323,7 @@ async fn run_admin_chain(
                             ttl_secs: identity.cache_s().map(u64::from),
                         },
                         resolved: None,
+                        signed_authority: None,
                     };
                     carried.native = Some(prepared);
                     return (verdict, module_admin_scope_cap(app, name));
@@ -2915,7 +2916,7 @@ pub(crate) async fn auth_middleware(
                 return Err(unauthorized_response(
                     &app,
                     path,
-                    door(req.method()).as_ref(),
+                    door(&parts.method).as_ref(),
                 ));
             };
             let request = signed_request(&parts, &body_bytes);

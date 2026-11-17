@@ -644,6 +644,7 @@ dependencies = [
  "busbar-plane-streaming",
  "busbar-plugin-abi",
  "busbar-plugin-loader",
+ "busbar-plugin-test",
  "busbar-ports",
  "busbar-secret-env",
  "busbar-secret-file",
@@ -969,7 +970,7 @@ dependencies = [
 [[package]]
 name = "busbar-plane-llm"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-plane-llm?rev=6f3a36a9762c86fb8059d4fa6598beed6c793932#6f3a36a9762c86fb8059d4fa6598beed6c793932"
+source = "git+https://github.com/GetBusbar/busbar-plane-llm?rev=f9e6247ddce2fdecdf266d1ed9cc48062b354573#f9e6247ddce2fdecdf266d1ed9cc48062b354573"
 dependencies = [
  "base64 0.22.1",
  "busbar-contract",
@@ -1064,6 +1065,19 @@ dependencies = [
  "tokio",
  "tracing",
  "windows-sys 0.61.2",
+ "zeroize",
+]
+
+[[package]]
+name = "busbar-plugin-test"
+version = "1.6.0"
+dependencies = [
+ "busbar-contract",
+ "busbar-plugin-abi",
+ "busbar-plugin-loader",
+ "busbar-ports",
+ "tokio",
+ "tracing",
  "zeroize",
 ]
 

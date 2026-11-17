@@ -412,6 +412,7 @@ fn command_registration_retains_the_real_definition_without_a_url_walk() {
     };
     let definition = Arc::new(UpstreamDef {
         name: "command".into(),
+        resource: None,
         allow_private: false,
         url: None,
         command: Some(StdioCommand {

@@ -237,6 +237,7 @@ impl PendingData {
                                 ttl_secs: identity.cache_s().map(u64::from),
                             },
                             resolved: None,
+                            signed_authority: None,
                         },
                     )
                     .map_err(|_| DataRefused::Policy)?;
