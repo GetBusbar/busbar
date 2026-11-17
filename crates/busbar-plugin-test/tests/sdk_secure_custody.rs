@@ -140,6 +140,14 @@ mod fixture {
 
     pub const URL: &str = "https://custody.test/token";
     pub const DEST: &str = "custody.test:443";
+    pub static SCRATCH_DROPS: std::sync::atomic::AtomicUsize =
+        std::sync::atomic::AtomicUsize::new(0);
+    struct Scratch(SecureVec);
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            SCRATCH_DROPS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
     pub struct Probe;
 
     impl Open for Probe {
@@ -157,6 +165,7 @@ mod fixture {
         }
         fn describe(d: &mut Describe<'_>) {
             d.schema(r#"{"type":"object"}"#);
+            d.secret_path("/credential");
             d.item(
                 busbar_plugin_abi::secret::tag::D_REF_SCHEMA,
                 br#"{"type":"object"}"#,
@@ -171,6 +180,40 @@ mod fixture {
             _: &'static Host,
             reference: ChainBytes,
         ) -> Result<busbar_plugin_abi::records::Reply, Fail> {
+            if reference.with(|bytes| bytes == b"park") {
+                let scratch = Scratch(SecureVec::from(&b"owned-request"[..]));
+                let request = need::Fetch {
+                    method: "POST",
+                    url: URL,
+                    headers: &[],
+                    body: &scratch.0,
+                    max_body: 4096,
+                    trust: TrustHandle::NONE,
+                    cert: None,
+                    egress: egress::DEFAULT,
+                };
+                assert_eq!(need::fetch(&request).await?.status, 204);
+                let _ = need::fetch(&request).await?;
+                panic!("the cancellation test must not answer its parked FETCH");
+            }
+            #[cfg(target_os = "linux")]
+            if reference.with(|bytes| bytes.len() == PAYLOAD_LEN + 1) {
+                let credential = need::secret(SecretHandle(1)).await?;
+                let mut scratch = reference.with(SecureVec::from);
+                scratch.extend_from_slice(&credential);
+                let request = need::Fetch {
+                    method: "POST",
+                    url: URL,
+                    headers: &[("authorization", &credential)],
+                    body: &scratch,
+                    max_body: 4096,
+                    trust: TrustHandle::NONE,
+                    cert: None,
+                    egress: egress::DEFAULT,
+                };
+                let _ = need::fetch(&request).await?;
+                panic!("the cancellation test must not answer FETCH");
+            }
             #[cfg(target_os = "linux")]
             if reference.with(|bytes| bytes.len() == PAYLOAD_LEN) {
                 let mut scratch = reference.with(|bytes| SecureVec::from(bytes));
@@ -244,6 +287,180 @@ mod fixture {
         }
     }
     busbar_plugin_abi::plugin!(Secret, Probe, name: "fixture-sdk-custody");
+}
+
+#[test]
+fn safe_parked_fetch_checks_lifecycle_and_rejects_counterfeit_cancellation() {
+    use busbar_plugin_test::fake_needs::{FakeNeeds, FetchNeed};
+    use busbar_plugin_test::suites::harness::Harness;
+    use busbar_plugin_test::CallCx;
+    use std::future::{pending, poll_fn, Future};
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
+    use std::task::Poll;
+    use std::time::{Duration, Instant};
+
+    let cx = || CallCx {
+        request_id: 1,
+        deadline: Instant::now() + Duration::from_secs(10),
+        stack: Default::default(),
+    };
+    let host = |url: &str, denied: bool, inspect: fn(FetchNeed<'_>)| {
+        let mut needs = FakeNeeds::new();
+        needs.fetch("POST", fixture::URL, 204, &[], b"");
+        let visits = Arc::new(AtomicUsize::new(0));
+        let seen = Arc::clone(&visits);
+        let parked = needs.park_fetch("POST", url, move |request| {
+            seen.fetch_add(1, Ordering::SeqCst);
+            inspect(request);
+        });
+        if denied {
+            needs.deny("custody.test");
+        }
+        let h = Harness::admit(fixture::PLUGIN.plugin(), needs).expect("fixture admission");
+        let port = h.open_secret("parked", b"{}").expect("fixture open");
+        (h, port, parked, visits)
+    };
+    fn inspect(request: FetchNeed<'_>) {
+        assert!(request.method == "POST" && request.url == fixture::URL);
+        assert!(request.body == b"owned-request", "borrowed request differs");
+    }
+    let (h, port, gate, visits) = host(fixture::URL, false, inspect);
+    let before = fixture::SCRATCH_DROPS.load(Ordering::SeqCst);
+    assert!(!gate.entered() && !gate.cancelled());
+    assert_eq!(h.needs().released(), 0);
+    h.cancel_at_fetch(&gate, port.resolve(cx(), b"park"));
+    assert!(gate.entered() && gate.cancelled());
+    assert_eq!(visits.load(Ordering::SeqCst), 1);
+    assert_eq!(fixture::SCRATCH_DROPS.load(Ordering::SeqCst), before + 1);
+    assert_eq!(h.needs().released(), 1);
+    assert_eq!(
+        h.seen().len(),
+        2,
+        "ordinary response precedes parked response"
+    );
+    assert!(catch_unwind(AssertUnwindSafe(|| h.cancel_at_fetch(&gate, async {}))).is_err());
+
+    for ready in [false, true] {
+        let (h, _port, gate, _) = host(fixture::URL, false, inspect);
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            h.cancel_at_fetch(&gate, async {
+                if !ready {
+                    pending::<()>().await;
+                }
+            });
+        }));
+        assert!(result.is_err());
+        assert!(!gate.entered() && !gate.cancelled());
+        assert_eq!(h.needs().released(), 0);
+    }
+    for (url, denied) in [("https://other.test/token", false), (fixture::URL, true)] {
+        let (h, port, gate, visits) = host(url, denied, inspect);
+        let before = fixture::SCRATCH_DROPS.load(Ordering::SeqCst);
+        assert!(catch_unwind(AssertUnwindSafe(
+            || h.cancel_at_fetch(&gate, port.resolve(cx(), b"park"))
+        ))
+        .is_err());
+        assert!(!gate.entered());
+        assert_eq!(visits.load(Ordering::SeqCst), 0);
+        assert_eq!(fixture::SCRATCH_DROPS.load(Ordering::SeqCst), before + 1);
+        assert_eq!(h.needs().released(), 1);
+    }
+    let (h, port, gate, _) = host(fixture::URL, false, inspect);
+    let before = fixture::SCRATCH_DROPS.load(Ordering::SeqCst);
+    let mut owner = Box::pin(port.resolve(cx(), b"park"));
+    assert!(catch_unwind(AssertUnwindSafe(|| h.cancel_at_fetch(&gate, owner.as_mut()))).is_err());
+    assert!(gate.entered() && !gate.cancelled());
+    assert_eq!(fixture::SCRATCH_DROPS.load(Ordering::SeqCst), before);
+    assert_eq!(h.needs().released(), 0);
+    drop(owner);
+    assert!(gate.cancelled());
+    assert_eq!(fixture::SCRATCH_DROPS.load(Ordering::SeqCst), before + 1);
+    assert_eq!(h.needs().released(), 1);
+
+    let (h, port, gate, _) = host(fixture::URL, false, inspect);
+    let before = fixture::SCRATCH_DROPS.load(Ordering::SeqCst);
+    let counterfeit = async {
+        let mut owner = Box::pin(port.resolve(cx(), b"park"));
+        poll_fn(|cx| {
+            assert!(owner.as_mut().poll(cx).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+        drop(owner);
+        pending::<()>().await;
+    };
+    assert!(catch_unwind(AssertUnwindSafe(|| h.cancel_at_fetch(&gate, counterfeit))).is_err());
+    assert_eq!(fixture::SCRATCH_DROPS.load(Ordering::SeqCst), before + 1);
+    assert_eq!(h.needs().released(), 1);
+
+    let (h, port, gate, _) = host(fixture::URL, false, |_| panic!("inspector control"));
+    let before = fixture::SCRATCH_DROPS.load(Ordering::SeqCst);
+    assert!(catch_unwind(AssertUnwindSafe(
+        || h.cancel_at_fetch(&gate, port.resolve(cx(), b"park"))
+    ))
+    .is_err());
+    assert!(!gate.entered() && gate.cancelled());
+    assert_eq!(fixture::SCRATCH_DROPS.load(Ordering::SeqCst), before + 1);
+    assert_eq!(h.needs().released(), 1);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn safe_parked_fetch_wipes_request_and_secret_script_owners() {
+    use busbar_plugin_test::suites::harness::Harness;
+    use busbar_plugin_test::{CallCx, FakeNeeds};
+    use std::time::{Duration, Instant};
+    let proof = WipeProof::new_text();
+    let mut input = payload(&proof);
+    input.fill(b'a');
+    proof.write_canary(&mut input[OFFSET..OFFSET + CANARY_LEN]);
+    assert!(input.iter().all(u8::is_ascii_alphanumeric));
+    input.extend_from_slice(b"a");
+    let mut needs = FakeNeeds::new();
+    needs.secret("/credential", &input);
+    let parked = needs.park_fetch("POST", fixture::URL, |request| {
+        assert_eq!(request.body.len(), (PAYLOAD_LEN + 1) * 2);
+        assert!(request.body.iter().all(u8::is_ascii_alphanumeric));
+        assert!(request.headers.into_iter().all(|rec| rec.is_ok()));
+    });
+    let h = Harness::admit(fixture::PLUGIN.plugin(), needs).expect("fixture admission");
+    let port = h
+        .open_secret(
+            "custody",
+            br#"{"credential":{"module":"fixture","key":"credential"}}"#,
+        )
+        .expect("open");
+    h.cancel_at_fetch(
+        &parked,
+        port.resolve(
+            CallCx {
+                request_id: 1,
+                deadline: Instant::now() + Duration::from_secs(10),
+                stack: Default::default(),
+            },
+            &input,
+        ),
+    );
+    assert!(parked.entered() && parked.cancelled());
+    assert_eq!(h.needs().released(), 1);
+    drop(port);
+    drop(h);
+    drop(input);
+    drop(parked);
+    proof.assert_absent("safe cancelled FETCH and SECRET scripts");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn text_canary_control_detects_an_unwiped_owner() {
+    let proof = WipeProof::new_text();
+    let raw = payload(&proof).into_vec();
+    drop(raw);
+    assert!(proof.canary_copies("text canary unwiped control") > 0);
 }
 
 #[test]
