@@ -774,7 +774,7 @@ async fn r2_boot_a_plane_whose_start_errs_refuses_boot() {
             "providers": {},
             "models": {},
             "store": { "module": store.0 },
-            "auth": { "chain": [], "admin_auth": [] },
+            "auth": { "chain": [] },
         }),
         &crate::root::boot::axis_test_grammar(),
     )
@@ -931,7 +931,7 @@ async fn r2_boot_a_plane_whose_hydrate_errs_refuses_boot() {
             "providers": {},
             "models": {},
             "store": { "module": store.0 },
-            "auth": { "chain": [], "admin_auth": [] },
+            "auth": { "chain": [] },
         }),
         &crate::root::boot::axis_test_grammar(),
     )

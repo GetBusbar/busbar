@@ -286,6 +286,28 @@ Add it after stopping 1.5.5, which does not understand the new field. Store DSN 
 implementation-specific error codes belong to the selected kind's own documentation; do not
 assume a code emitted by one implementation applies to another.
 
+### Listeners without TLS
+
+1.5.5 served the data listener (`listen`) and the admin listener (`admin_listen`) in plaintext
+whenever `tls:` / `admin_tls:` was absent, with no acceptance and no audit. 1.6.0 refuses to boot
+a listener without TLS unless its plaintext is accepted explicitly (BUSBAR-3172). No address is
+exempt: the default loopback admin listener needs its acceptance too, so this affects almost every
+1.5.5 configuration. The upgrader does not write the acceptance for you; the refusal names each
+listener and its one-line remedy. Add TLS, or accept the plaintext deliberately in config.yaml:
+
+```yaml
+listen_insecure_transport: { accept: [plaintext], reason: "<deployment-specific justification>" }
+admin_listen_insecure_transport: { accept: [plaintext], reason: "<deployment-specific justification>" }
+```
+
+The reason is required (one printable line, at most 256 characters, not the `<why>` placeholder)
+and `plaintext` is the only word a listener accepts. A listener with TLS takes no acceptance:
+writing both is refused. The acceptance is file-only; the Store overlay cannot set it. A 1.5.5
+overlay `tls` folded by the upgrade satisfies the rule, and an overlay that sets TLS later makes a
+file acceptance inert (the boot warns that it can be removed). Each listener served in the clear
+prints an error banner at boot and writes a `config.insecure_transport_accepted` audit row with
+resource `listener:<setting>:accept=plaintext`.
+
 ## HTTP endpoints and spend refusals
 
 Configure clients to call a declared endpoint, including any explicitly configured prefix.
@@ -333,6 +355,13 @@ build. Update clients before accepting the upgrade.
 | `/identity-providers`, `/identity-providers/{name}` | `/kinds/auth/instances[/{name}]` |
 | Plane-specific `/tools…` and `/agents…` admin paths | The selected plane kind instance's advertised operations under `/kinds/{kind}/instances/{id}/ops/…` |
 | `POST /signing-key/rotate` (it reported the key id and changed nothing) | None. Rotating the signing key is an operator action: replace `auth.signing_key`, restart every node in lockstep, and re-mint every key |
+
+Send the admin credential as `Authorization: Bearer <token>`, the only admin scheme in 1.6.0; the
+`x-admin-token` header is removed.
+
+`admin_auth: []` is refused at boot; delete it and give the operator credential its settings,
+`settings: {sha256: "<digest>"}`, where `<digest>` is the SHA-256 of your admin token as 64
+lower-case hex characters (the boot refusal shows how to mint both).
 
 Start with `GET /kinds`, then `GET /kinds/{kind}/instances`, then the instance and its advertised
 views and operations. Do not infer a kind name or operation from an artifact filename.
@@ -504,6 +533,13 @@ the outbound `insecure_transport` setting under [transport security](#transport-
 Because 1.5.5's default admin listener is plaintext on loopback, a 1.5.5 configuration that
 relied on it refuses its first 1.6.0 boot until you either configure TLS for that listener
 or record the acceptance.
+
+`oauth_as:` serves its operator approval pages (`/oauth/device` and `/oauth/consent`) on the admin
+listener, never on `listen`, and publishes the admin listener's address for them. In 1.6.0 that
+address is derived only from a loopback `admin_listen` (`http(s)://127.0.0.1:8081`, `https` when
+`admin_tls` is set): reach it with `ssh -L 8081:127.0.0.1:8081` or `kubectl port-forward`. Any other
+`admin_listen` with `oauth_as:` refuses to start (BUSBAR-3129), and changing `admin_listen` or
+`admin_tls` while `oauth_as:` is on needs a restart.
 
 ### Authentication, keys and sign-in
 

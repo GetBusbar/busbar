@@ -19,6 +19,133 @@ const SEED: [u8; 32] = [0x26; 32];
 const DELEGATED: [u8; 32] = [0x62; 32];
 
 #[tokio::test]
+async fn bootstrap_thread_certifies_and_stages_the_exact_chain_position() {
+    use crate::root::durability::tests::{audit_inputs, audit_pass, token, NativeFixture};
+    use crate::root::durability::Durability;
+    use busbar_kernel_audit::notary_key::notary_key_from_journal_body;
+    let fixture = NativeFixture::new(41).await;
+    let book = Arc::new(Mutex::new(fixture.book().await));
+    Durability::seal_unit(&book, audit_inputs(1), audit_pass(), &token())
+        .await
+        .unwrap();
+    let rig = rig(true);
+    let live = LocalSigner::from_seed(&DELEGATED).unwrap();
+    let bootstrap = LocalSigner::from_seed(&SEED).unwrap();
+    let (node, seq, prev) = {
+        let book = book.lock().unwrap();
+        (
+            book.record.node(),
+            book.record.next_seq(),
+            Fingerprint::from_hex(book.record.head()).unwrap(),
+        )
+    };
+    let certificate = rig
+        .signers
+        .boot
+        .submit_certificate(node, seq, prev, live.public_key().clone())
+        .await
+        .unwrap();
+    let prepared =
+        busbar_kernel_audit::AuditChain::prepare_notary_key(node, seq, prev, certificate);
+    let (journal, record, run) = {
+        let mut book = book.lock().unwrap();
+        let (record, run) = book
+            .stage_notary_key(prepared, &audit_pass(), &token())
+            .unwrap();
+        (book.journal.clone(), record, run)
+    };
+    record.verify(bootstrap.public_key()).unwrap();
+    assert_eq!(run.records().len(), 1);
+    let row = &run.records()[0];
+    let journal_row = busbar_kernel_wal::JournalRecord::decode(&row.body).unwrap();
+    assert_eq!(journal_row.node_seq, row.node_seq);
+    assert_eq!(
+        notary_key_from_journal_body(&journal_row.body).unwrap(),
+        Some(record.clone())
+    );
+    journal.confirm(&run).await.unwrap();
+    // Confirmation of the original stage is idempotent; retries must not append certificates.
+    journal.confirm(&run).await.unwrap();
+    let reopened = fixture.book().await;
+    assert_eq!(reopened.record.next_seq(), seq + 1);
+    assert_eq!(reopened.record.head(), record.fingerprint.to_string());
+    assert_eq!(reopened.head.head().seq, seq);
+    assert_eq!(reopened.head.head().node_seq, run.records()[0].node_seq);
+    Durability::seal_unit(&book, audit_inputs(3), audit_pass(), &token())
+        .await
+        .unwrap();
+    let book = book.lock().unwrap();
+    assert_eq!(book.record.next_seq(), seq + 2);
+    assert_eq!(
+        book.audit_records().last().unwrap().prev_hash,
+        record.fingerprint.to_string()
+    );
+}
+
+#[tokio::test]
+async fn boot_jobs_confirm_restart_before_certifying_live_key() {
+    use crate::root::durability::boot_jobs::{BootPreparation, PendingBootJob};
+    use crate::root::durability::tests::{audit_inputs, audit_pass, token, NativeFixture};
+    use crate::root::durability::Durability;
+    let fixture = NativeFixture::new(41).await;
+    let book = Arc::new(Mutex::new(fixture.book().await));
+    Durability::seal_unit(&book, audit_inputs(1), audit_pass(), &token())
+        .await
+        .unwrap();
+    let live = LocalSigner::from_seed(&DELEGATED).unwrap();
+    let rig = rig(true);
+    let mut restart = live_page(1);
+    {
+        let held = book.lock().unwrap();
+        restart.node = held.record.node();
+        restart.sealer = restart.node;
+        restart.fingerprint = Fingerprint::from_hex(held.record.head()).unwrap();
+    }
+    restart.kind = StampKind::AfterRestart;
+    restart.key_cert = 0;
+    let jobs = vec![PendingBootJob::Restart(restart)];
+    let mut preparation = BootPreparation::new(
+        rig.signers.boot,
+        book.clone(),
+        jobs,
+        Some(live.public_key().clone()),
+    );
+    let key_cert = preparation.run().await.unwrap();
+    let journal = book.lock().unwrap().journal.clone();
+    let rows = journal
+        .read_records(busbar_kernel::persistence::journal::BufferBudget {
+            records: 100,
+            bytes: 64 * 1024,
+        })
+        .await
+        .unwrap();
+    let restart_at = rows
+        .iter()
+        .find(|row| {
+            busbar_kernel_audit::stamp_from_journal_body(&row.body)
+                .unwrap()
+                .is_some()
+        })
+        .unwrap()
+        .node_seq;
+    let certificate = rows
+        .iter()
+        .find(|row| {
+            busbar_kernel_audit::notary_key::notary_key_from_journal_body(&row.body)
+                .unwrap()
+                .is_some()
+        })
+        .unwrap();
+    assert_eq!(certificate.node_seq, key_cert);
+    assert!(restart_at < key_cert);
+    assert_eq!(
+        preparation.run().await.unwrap(),
+        key_cert,
+        "completed queue cannot append again"
+    );
+}
+
+#[tokio::test]
 #[should_panic(expected = "R24: an audit signature was requested on the request path")]
 async fn generic_checkpoint_handle_still_rejects_request_signing() {
     let rig = rig(true);

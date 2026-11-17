@@ -56,9 +56,11 @@ fn secrets_block_rejects_non_secret_kind() {
 }
 
 fn host_reference_input(reference: crate::config::SecretRef) -> crate::config::RootCfg {
+    // The operator is bound before the read, so the config takes the closed default admin chain.
+    crate::test_hooks::operator::bind();
     let deploy: crate::config::DeployCfg =
         busbar_contract::json::from_value(&busbar_contract::json::json!({
-            "providers": {}, "models": {}, "auth": {"chain": [], "admin_auth": []},
+            "providers": {}, "models": {}, "auth": {"chain": []},
             "store": {"module": "inert-store-metadata"},
         }))
         .expect("host policy input parses");

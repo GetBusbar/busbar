@@ -410,8 +410,8 @@ impl AdminService {
         })
     }
 
-    /// Keep native filesystem and archive work off the reactor while retaining
-    /// both the shared scan gate and the caller's config-transaction fence.
+    /// The catalog read (DES-359 r3 L9): on this pinned generation, under the shared scan gate
+    /// (which install and remove also take), off the reactor, and never under the effect lock.
     pub(crate) async fn list_plugins_current_async(
         &self,
         ptype: &str,
@@ -456,10 +456,11 @@ impl AdminService {
         }
     }
 
-    /// Called inside the config transaction: inventory and archive hashes share the mutation fence.
+    /// Called under the shared scan gate: inventory and archive hashes are one directory state,
+    /// proven by the fingerprint read before and after the scan.
     pub(crate) fn list_plugins_current(&self, ptype: &str) -> Result<Page<PluginView>, AdminError> {
         plugin_query(ptype)?;
-        let catalog = self.store_plugin_catalog();
+        let catalog = self.store_plugin_catalog()?;
         self.list_plugins_from_catalog(ptype, catalog)
     }
 
@@ -633,13 +634,13 @@ impl AdminService {
         Ok(Page::single(plugins))
     }
 
-    pub(super) fn store_plugin_catalog(&self) -> Vec<PluginView> {
+    pub(super) fn store_plugin_catalog(&self) -> Result<Vec<PluginView>, AdminError> {
         let mut out = linked_store_rows();
         let Ok(admission) = admission(&self.app) else {
-            return out;
+            return Ok(out);
         };
         if admission.policy_resolves(&self.app.plugins_cfg).is_err() {
-            return out;
+            return Ok(out);
         }
 
         let now = busbar_kernel::store::now();
@@ -688,22 +689,28 @@ impl AdminService {
             if let Some(entry) = catalog_cache().lock().unwrap().get(&self.app.plugins_dir) {
                 if entry.key == key {
                     out.extend(entry.rows.iter().cloned());
-                    return out;
+                    return Ok(out);
                 }
             }
 
-            let rows = Self::scan_store_plugin_rows(
-                &self.app.plugins_dir,
-                admission,
-                &self.app.plugins_cfg,
-            );
-
-            let after = plugins_dir_fingerprint(
-                &self.app.plugins_dir,
-                &|file| admission.is_tarball(file),
-                admission.max_tarball_bytes(),
-            );
-            if matches!(after, Ok(after) if after == before) {
+            let (rows, settled) = consistent_scan(
+                before,
+                || {
+                    plugins_dir_fingerprint(
+                        &self.app.plugins_dir,
+                        &|file| admission.is_tarball(file),
+                        admission.max_tarball_bytes(),
+                    )
+                },
+                || {
+                    Self::scan_store_plugin_rows(
+                        &self.app.plugins_dir,
+                        admission,
+                        &self.app.plugins_cfg,
+                    )
+                },
+            )?;
+            if settled == Some(before) {
                 let mut cache = catalog_cache().lock().unwrap();
                 let misses = cache
                     .get(&self.app.plugins_dir)
@@ -722,14 +729,14 @@ impl AdminService {
             }
 
             out.extend(rows);
-            out
+            Ok(out)
         } else {
             out.extend(Self::scan_store_plugin_rows(
                 &self.app.plugins_dir,
                 admission,
                 &self.app.plugins_cfg,
             ));
-            out
+            Ok(out)
         }
     }
 
@@ -932,7 +939,8 @@ impl AdminService {
     }
 
     /// Static inspection of the exact installed artifact named by a catalog URL. Caller holds
-    /// the config transaction throughout read, digest comparison, and admission inspection.
+    /// the shared scan gate throughout; the digest compared is of the bytes actually read, so a
+    /// swap or removal under the read answers 409 when the URL names its archive.
     pub(crate) fn installed_plugin_schema(
         &self,
         file: &str,
@@ -1014,7 +1022,7 @@ impl AdminService {
         &self,
     ) -> Result<crate::v1::contract::PluginReloadView, AdminError> {
         let plugins: Vec<PluginView> = self
-            .store_plugin_catalog()
+            .store_plugin_catalog()?
             .into_iter()
             .filter(|p| p.loader == "dynamic-library")
             .collect();
