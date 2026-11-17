@@ -329,6 +329,10 @@ async fn admin_fixture() -> (
     )
 }
 
+pub(crate) async fn physical_app() -> Arc<busbar_kernel::state::App> {
+    admin_fixture().await.1
+}
+
 fn admin_invocation(
     handle: &Arc<busbar_kernel::state::AppHandle>,
     app: &Arc<busbar_kernel::state::App>,
