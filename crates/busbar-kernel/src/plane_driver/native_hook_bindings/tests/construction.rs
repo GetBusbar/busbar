@@ -509,3 +509,101 @@ fn configured_strategy_disambiguates_by_admitted_identity_and_default_does_not_o
         .policy
         .is_none());
 }
+
+#[test]
+fn implicit_strategy_plan_deduplicates_pool_and_fallback_words_before_any_open() {
+    let mut guard = definition();
+    guard.on_error = "rank".into();
+    let hooks = [("guard".into(), guard)].into_iter().collect();
+    let configured = [("guard".into(), "guard-image".into())]
+        .into_iter()
+        .collect();
+    let words = [("rank-image".into(), vec![Box::from("rank")])]
+        .into_iter()
+        .collect();
+    let pool = crate::config::PoolCfg {
+        policy: crate::config::PoolPolicy::Named("rank".into()),
+        base_named: true,
+        gates: vec!["guard".into()],
+        ..Default::default()
+    };
+    let plan = implicit_strategies(
+        &hooks,
+        &["guard".into()],
+        &[&pool, &pool],
+        &configured,
+        &words,
+    )
+    .unwrap();
+    assert_eq!(
+        plan,
+        [("rank".into(), "rank-image".into())].into_iter().collect()
+    );
+}
+
+#[test]
+fn implicit_strategy_plan_checks_all_images_and_respects_named_instance_identity() {
+    let pool = crate::config::PoolCfg {
+        policy: crate::config::PoolPolicy::Named("rank".into()),
+        base_named: true,
+        ..Default::default()
+    };
+    let words = [
+        ("image-a".into(), vec![Box::from("rank")]),
+        ("image-b".into(), vec![Box::from("rank")]),
+    ]
+    .into_iter()
+    .collect();
+    assert!(implicit_strategies(
+        &HookRegistry::new(),
+        &[],
+        &[&pool],
+        &BTreeMap::new(),
+        &words
+    )
+    .unwrap_err()
+    .contains("several"));
+    let hooks = [("rank".into(), definition())].into_iter().collect();
+    let configured = [("rank".into(), "image-b".into())].into_iter().collect();
+    assert!(
+        implicit_strategies(&hooks, &[], &[&pool], &configured, &words)
+            .unwrap()
+            .is_empty()
+    );
+    let wrong = [("rank".into(), "unrelated-image".into())]
+        .into_iter()
+        .collect();
+    assert!(implicit_strategies(&hooks, &[], &[&pool], &wrong, &words)
+        .unwrap_err()
+        .contains("does not declare"));
+}
+
+#[test]
+fn inherited_default_suppresses_unused_strategy_but_keeps_its_live_fallback() {
+    let mut default = definition();
+    default.default = true;
+    default.on_error = "fallback-rank".into();
+    let hooks = [("default".into(), default)].into_iter().collect();
+    let configured = [("default".into(), "default-image".into())]
+        .into_iter()
+        .collect();
+    let words = [("fallback-image".into(), vec![Box::from("fallback-rank")])]
+        .into_iter()
+        .collect();
+    let mut pool = crate::config::PoolCfg {
+        policy: crate::config::PoolPolicy::Named("unused-unknown".into()),
+        ..Default::default()
+    };
+    assert_eq!(
+        implicit_strategies(&hooks, &[], &[&pool], &configured, &words).unwrap(),
+        [("fallback-rank".into(), "fallback-image".into())]
+            .into_iter()
+            .collect()
+    );
+    pool.base_named = true;
+    assert!(
+        implicit_strategies(&hooks, &[], &[&pool], &configured, &words)
+            .unwrap_err()
+            .contains("unused-unknown")
+    );
+}
