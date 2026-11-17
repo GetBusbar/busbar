@@ -568,3 +568,54 @@ async fn root_router_errand_reuses_completed_native_admission_without_second_ver
     assert_eq!(port.calls.load(Ordering::SeqCst), 1);
     assert_eq!(owners.0.load(Ordering::SeqCst), 1);
 }
+
+#[tokio::test]
+async fn native_identity_without_grants_stays_identified_and_cannot_claim() {
+    let (_, prior, owners, port) = admin_fixture().await;
+    let mut app = (*prior).clone();
+    app.role_bindings.clear();
+    let set = Arc::new(AuthSet {
+        instances: BTreeMap::from([("provider-42".into(), instance(42, port))]),
+        owners: Arc::new(AuthOwners {
+            issued: owners.clone(),
+            replay: owners.clone(),
+            cache: Arc::new(Verdicts::new(VerdictPolicy::DEFAULT)),
+        }),
+    });
+    let epoch = app.config_generation.load(Ordering::Acquire);
+    crate::root::min3_admin_auth::install(&mut app, set, epoch).unwrap();
+    let app = Arc::new(app);
+    let handle = Arc::new(busbar_kernel::state::AppHandle::new(app.clone()));
+    let verdict = busbar_kernel::auth::admin_verdict_for(
+        admin_invocation(&handle, &app, busbar_kernel::store::now()),
+        &axum::http::HeaderMap::new(),
+    )
+    .await;
+    assert!(matches!(
+        verdict.door,
+        busbar_kernel::auth::AdminDoor::Identified(_, _)
+    ));
+    assert!(!busbar_kernel::auth::admin_door_admits(
+        &verdict.door,
+        "GET",
+        "/api/v1/admin/audit"
+    ));
+    assert!(verdict.claim.unwrap().complete_admin().await.is_err());
+    assert_eq!(owners.0.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn missing_native_admin_coverage_refuses_candidate_construction() {
+    let (_, prior, owners, _) = admin_fixture().await;
+    let mut app = (*prior).clone();
+    let empty = Arc::new(AuthSet {
+        instances: BTreeMap::new(),
+        owners: Arc::new(AuthOwners {
+            issued: owners.clone(),
+            replay: owners,
+            cache: Arc::new(Verdicts::new(VerdictPolicy::DEFAULT)),
+        }),
+    });
+    let epoch = app.config_generation.load(Ordering::Acquire);
+    assert!(crate::root::min3_admin_auth::install(&mut app, empty, epoch).is_err());
+}
