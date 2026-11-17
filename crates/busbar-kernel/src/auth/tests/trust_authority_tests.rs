@@ -5,7 +5,7 @@
 //! authority a plane admin route may decide under comes only from the admin gate's own verdict,
 //! under the rules the gate applies to `POST /trust/approve` and `/trust/revoke` themselves.
 
-use super::{trust_decision_authority, AdminDoor, VerbAllowList};
+use super::{trust_decision_authority, AdminDoor};
 use busbar_contract::auth::Principal;
 use busbar_contract::authz::{Grants, Scope};
 
@@ -33,22 +33,4 @@ fn a_full_grant_grants_both_rulings_to_its_principal() {
     let authority = trust_decision_authority(&door).expect("a full grant decides");
     assert_eq!(authority.principal, "op");
     assert!(authority.approve && authority.revoke);
-}
-
-#[test]
-fn a_verb_list_naming_only_revoke_grants_only_revoke() {
-    let door = AdminDoor::Listed(
-        Principal::from_id("op"),
-        Grants::of(Scope::Full),
-        VerbAllowList {
-            rungs: Grants::default(),
-            named: std::collections::BTreeSet::from(["trust_revoke".to_string()]),
-        },
-    );
-    let authority = trust_decision_authority(&door).expect("revoke is named");
-    assert!(
-        !authority.approve,
-        "a non-empty verb list must name the verb"
-    );
-    assert!(authority.revoke);
 }

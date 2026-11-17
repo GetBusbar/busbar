@@ -29,7 +29,13 @@ async fn custody(backend: &Arc<Backend>) -> Arc<DemotionRecord> {
 
 /// A kernel whose decision record writes through `backend`, with `cp` sighted at `h1`.
 async fn kernel(record: Arc<DemotionRecord>) -> KernelServices {
-    let k = KernelServices::new().with_demotions(record, "");
+    // Production custody comes with the host pool its durable trust effects run on.
+    let k = KernelServices::new()
+        .with_pool(Arc::new(super::BlockingPool::new(
+            tokio::runtime::Handle::current(),
+            8,
+        )))
+        .with_demotions(record, "");
     k.admit(
         "inst",
         InstanceFacts {

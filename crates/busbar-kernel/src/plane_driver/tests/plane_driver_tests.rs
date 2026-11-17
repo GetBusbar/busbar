@@ -92,7 +92,14 @@ async fn approve(services: &KernelServices) {
 }
 
 async fn approved() -> KernelServices {
-    let services = KernelServices::new().with_test_custody().await;
+    // Trust custody with the host pool its durable effects run on, as production has (r3 §6).
+    let services = KernelServices::new()
+        .with_pool(Arc::new(crate::host_services::BlockingPool::new(
+            tokio::runtime::Handle::current(),
+            8,
+        )))
+        .with_test_custody()
+        .await;
     prepare_admission(&declaration(), &services, ("peers", &section("root-a", 32)))
         .unwrap()
         .commit()

@@ -604,8 +604,8 @@ fn trust_decide_is_the_one_decide_path_for_a_planes_own_verb() {
     let serves = |item| r.s.trust_serves(&me, "cp", Some(item), None).value;
     assert_eq!(
         run(|later| r.s.trust_decide(&me, ticket, tool, Some("d1"), true, later)).value,
-        svc::UNDECIDED_UNPINNED,
-        "nothing sighted yet"
+        svc::UNDECIDED_STALE,
+        "nothing sighted yet: a reviewed digest that is not the current sighting is stale (r3 §4.1)"
     );
     assert_eq!(
         run(|later| r.s.trust_sight_item(&me, "cp", "t", "d1", later)).value,
