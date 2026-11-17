@@ -149,15 +149,9 @@ async fn prepare(call: &Arc<Call>, point: u32, input: &Input<'_>) -> Result<Repl
                 context: &context,
             };
             let result = handle.block_on(async {
-                tokio::time::timeout_at(
-                    deadline.into(),
-                    crate::hook_child::SCOPE.scope(
-                        crate::hook_child::Scope::new(context.clone()),
-                        invoke(&call, point, &input, deadline),
-                    ),
-                )
-                .await
-                .map_err(|_| Failed::Port)?
+                tokio::time::timeout_at(deadline.into(), invoke(&call, point, &input, deadline))
+                    .await
+                    .map_err(|_| Failed::Port)?
             });
             let _ = sent.send(result);
         }))
