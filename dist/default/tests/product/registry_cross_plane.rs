@@ -768,16 +768,12 @@ async fn r2_boot_a_plane_whose_start_errs_refuses_boot() {
         door: None,
     };
     register_planes();
-    let store = crate::LINKED
-        .stores
-        .iter()
-        .find(|store| store.1)
-        .expect("the actual distribution links an ephemeral product store");
+    let store = crate::root::test_plugins::linked_store_module();
     let deploy = busbar_kernel::config::deploy_from_deserializer(
         serde_json::json!({
             "providers": {},
             "models": {},
-            "store": { "module": store.0 },
+            "store": { "module": store },
             "auth": { "chain": [], "admin_auth": [] },
         }),
         &crate::root::boot::axis_test_grammar(),
@@ -800,7 +796,7 @@ async fn r2_boot_a_plane_whose_start_errs_refuses_boot() {
     .await
     .expect("the production root builds the app and opens its real store through the ABI");
     limits.stage_boot();
-    let _book = crate::root::boot::book(&app, store.0)
+    let _book = crate::root::boot::book(&app, store)
         .await
         .expect("the configured Store binds the boot rate authority before activation");
     limits.keep().await.expect("the actual app's limits commit");
@@ -927,16 +923,12 @@ async fn r2_boot_a_plane_whose_hydrate_errs_refuses_boot() {
         door: None,
     };
     register_planes();
-    let store = crate::LINKED
-        .stores
-        .iter()
-        .find(|store| store.1)
-        .expect("the actual distribution links an ephemeral product store");
+    let store = crate::root::test_plugins::linked_store_module();
     let deploy = busbar_kernel::config::deploy_from_deserializer(
         serde_json::json!({
             "providers": {},
             "models": {},
-            "store": { "module": store.0 },
+            "store": { "module": store },
             "auth": { "chain": [], "admin_auth": [] },
         }),
         &crate::root::boot::axis_test_grammar(),
@@ -959,7 +951,7 @@ async fn r2_boot_a_plane_whose_hydrate_errs_refuses_boot() {
     .await
     .expect("the production root builds the app and opens its real store through the ABI");
     limits.stage_boot();
-    let _book = crate::root::boot::book(&app, store.0)
+    let _book = crate::root::boot::book(&app, store)
         .await
         .expect("the configured Store binds the boot rate authority before activation");
     limits.keep().await.expect("the actual app's limits commit");

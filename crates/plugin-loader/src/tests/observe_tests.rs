@@ -321,14 +321,6 @@ fn an_auth_envelope_reaches_the_host_observer() {
 }
 
 #[test]
-fn a_store_envelope_reaches_the_host_observer() {
-    observed_through_its_bind::<crate::dispatch::kinds::store_v4::StoreV4>(
-        crate::neutral_store::door,
-        busbar_contract::abi::mechanism::kind::STORE,
-    );
-}
-
-#[test]
 fn a_hook_envelope_reaches_the_host_observer() {
     observed_through_its_bind::<crate::dispatch::kinds::hook::Hook>(
         crate::hook_door_conformance_tests::hook_door_plugin::conforming::door,

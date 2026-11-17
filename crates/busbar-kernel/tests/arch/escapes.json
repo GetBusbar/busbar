@@ -51,7 +51,6 @@
     "crates/busbar/src/root/mod.rs": 1,
     "crates/busbar/src/root/tests/test_plugins.rs": 1,
     "crates/busbar/src/test_source_gen_tests.rs": 1,
-    "crates/plugin-loader/src/store_v4.rs": 1,
     "crates/plugin-loader/src/tests/auth_door_tests.rs": 1,
     "crates/plugin-loader/src/tests/dispatch_tests.rs": 1
   },

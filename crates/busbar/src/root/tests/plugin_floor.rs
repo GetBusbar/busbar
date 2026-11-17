@@ -574,7 +574,6 @@ fn first_party(name: &str, version: &str) -> Row {
             first_party: true,
         },
         ephemeral: false,
-        in_process: false,
         linked: false,
         needs_prompt: NeedLevel::No,
         needs_user: NeedLevel::No,

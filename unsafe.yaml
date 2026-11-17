@@ -252,7 +252,6 @@ interim:
   crates/plugin-loader/src/dispatch/kinds/hook.rs: { tokens: 13, by: "W2 / W3 (old dispatch and doors)" }
   crates/plugin-loader/src/dispatch/kinds/plane.rs: { tokens: 53, by: "W2 / W3 (old dispatch and doors)" }
   crates/plugin-loader/src/dispatch/kinds/secret.rs: { tokens: 4, by: "W2 / W3 (old dispatch and doors)" }
-  crates/plugin-loader/src/dispatch/kinds/store_v4.rs: { tokens: 10, by: "W2 / W3 (old dispatch and doors)" }
   crates/plugin-loader/src/dispatch/kinds/transport.rs: { tokens: 45, by: "W2 / W3 (old dispatch and doors)" }
   crates/plugin-loader/src/dispatch/lifecycle.rs: { tokens: 3, by: "W2 / W3 (old dispatch and doors)" }
   crates/plugin-loader/src/dispatch/load.rs: { tokens: 30, by: "W2 / W3 (old dispatch and doors)" }
@@ -278,8 +277,6 @@ interim:
   crates/plugin-loader/src/hook_door.rs: { tokens: 9, by: "W2 / W3 (old dispatch and doors)" }
   crates/plugin-loader/src/migration_secrets.rs: { tokens: 21, by: "PLATFORMS P6 (OQ-5, OQ-6)" }
   crates/plugin-loader/src/stage.rs: { tokens: 10, by: "W1-L1 / W1-L2" }
-  crates/plugin-loader/src/store_v4.rs: { tokens: 13, by: "W2 / W3 (old dispatch and doors)" }
-  crates/plugin-loader/src/store_v4/prepared.rs: { tokens: 5, by: "W2 / W3 (old dispatch and doors)" }
   crates/plugin-loader/src/tests/auth_axis_tests.rs: { tokens: 2, by: "W2 / W3 (old dispatch and doors)" }
   crates/plugin-loader/src/tests/auth_carriers_tests.rs: { tokens: 17, by: "W2 / W3 (old dispatch and doors)" }
   crates/plugin-loader/src/tests/auth_door_tests.rs: { tokens: 1, by: "W2 / W3 (old dispatch and doors)" }
@@ -298,7 +295,7 @@ interim:
   crates/plugin-loader/src/tests/dispatch_kind_plane_tests.rs: { tokens: 4, by: "W2 / W3 (old dispatch and doors)" }
   crates/plugin-loader/src/tests/dispatch_kind_secret_export_tests.rs: { tokens: 1, by: "W2 / W3 (old dispatch and doors)" }
   crates/plugin-loader/src/tests/dispatch_kind_transport_tests.rs: { tokens: 2, by: "W2 / W3 (old dispatch and doors)" }
-  crates/plugin-loader/src/tests/dispatch_tests.rs: { tokens: 64, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/src/tests/dispatch_tests.rs: { tokens: 60, by: "W2 / W3 (old dispatch and doors)" }
   crates/plugin-loader/src/tests/door_both_ways.rs: { tokens: 4, by: "W2 / W3 (old dispatch and doors)" }
   crates/plugin-loader/src/tests/envelope_array_tests.rs: { tokens: 3, by: "W2 / W3 (old dispatch and doors)" }
   crates/plugin-loader/src/tests/export_conformance_tests.rs: { tokens: 4, by: "W2 / W3 (old dispatch and doors)" }
@@ -311,14 +308,12 @@ interim:
   crates/plugin-loader/src/tests/host_services_tests.rs: { tokens: 111, by: "W2 / W3 (old dispatch and doors)" }
   crates/plugin-loader/src/tests/io_slots_tests.rs: { tokens: 6, by: "W2 / W3 (old dispatch and doors)" }
   crates/plugin-loader/src/tests/kind_boundary_loaded_tests.rs: { tokens: 3, by: "W2 / W3 (old dispatch and doors)" }
-  crates/plugin-loader/src/tests/lifecycle_worker_tests.rs: { tokens: 4, by: "W2 / W3 (old dispatch and doors)" }
   crates/plugin-loader/src/tests/needs_restated.rs: { tokens: 2, by: "W2 / W3 (old dispatch and doors)" }
   crates/plugin-loader/src/tests/neutral_kind_rename_tests.rs: { tokens: 3, by: "W2 / W3 (old dispatch and doors)" }
   crates/plugin-loader/src/tests/neutral_plane_identity_tests.rs: { tokens: 1, by: "W2 / W3 (old dispatch and doors)" }
   crates/plugin-loader/src/tests/open_reason_tests.rs: { tokens: 2, by: "W2 / W3 (old dispatch and doors)" }
   crates/plugin-loader/src/tests/ordinary_auth_short.rs: { tokens: 10, by: "W2 / W3 (old dispatch and doors)" }
   crates/plugin-loader/src/tests/ordinary_connector_bounds.rs: { tokens: 4, by: "W2 / W3 (old dispatch and doors)" }
-  crates/plugin-loader/src/tests/ordinary_declared_metadata.rs: { tokens: 16, by: "W2 / W3 (old dispatch and doors)" }
   crates/plugin-loader/src/tests/ordinary_load_negatives.rs: { tokens: 8, by: "W2 / W3 (old dispatch and doors)" }
   crates/plugin-loader/src/tests/ordinary_plane_ack_drive.rs: { tokens: 20, by: "W2 / W3 (old dispatch and doors)" }
   crates/plugin-loader/src/tests/ordinary_plane_fault_outputs.rs: { tokens: 6, by: "W2 / W3 (old dispatch and doors)" }
@@ -334,8 +329,6 @@ interim:
   crates/plugin-loader/src/tests/sdk_registration_tests.rs: { tokens: 18, by: "W2 / W3 (old dispatch and doors)" }
   crates/plugin-loader/src/tests/sign_tests.rs: { tokens: 6, by: "W2 / W3 (old dispatch and doors)" }
   crates/plugin-loader/src/tests/stage_tests.rs: { tokens: 6, by: "W2 / W3 (old dispatch and doors)" }
-  crates/plugin-loader/src/tests/store_prepared_tests.rs: { tokens: 3, by: "W2 / W3 (old dispatch and doors)" }
-  crates/plugin-loader/src/tests/store_v4_tests.rs: { tokens: 11, by: "W2 / W3 (old dispatch and doors)" }
   crates/plugin-loader/src/tests/transport_answer_lease_tests.rs: { tokens: 6, by: "W2 / W3 (old dispatch and doors)" }
   crates/plugin-loader/src/tests/transport_receive_tests.rs: { tokens: 7, by: "W2 / W3 (old dispatch and doors)" }
   crates/plugin-loader/tests/fixtures/dispatch_test_plugin.rs: { tokens: 28, by: "W2 / W3 (old dispatch and doors)" }
@@ -367,7 +360,6 @@ interim:
   tools/plugin-bench/src/plane.rs: { tokens: 4, by: "W3-D-CONTRACT (deleted)" }
   tools/plugin-bench/src/secret.rs: { tokens: 2, by: "W3-D-CONTRACT (deleted)" }
   tools/plugin-bench/src/stats.rs: { tokens: 7, by: "W3-D-CONTRACT (deleted)" }
-  tools/plugin-bench/src/store.rs: { tokens: 5, by: "W3-D-CONTRACT (deleted)" }
   tools/plugin-bench/src/transport.rs: { tokens: 3, by: "W3-D-CONTRACT (deleted)" }
 # E2: package roots that do not yet carry both #![forbid(unsafe_code)] and
 # #![doc(test(attr(forbid(unsafe_code))))]. Rows are never added.

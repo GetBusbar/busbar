@@ -27,7 +27,6 @@ mod plane;
 mod report;
 mod secret;
 pub mod stats;
-mod store;
 mod transport;
 
 use std::path::PathBuf;
@@ -49,7 +48,7 @@ use stats::{OpStats, Recorder};
 ///
 /// ```ignore
 /// // examples/bench.rs in a plugin repo
-/// busbar_plugin_bench::bench_main!(busbar_store_memory::door);
+/// busbar_plugin_bench::bench_main!(busbar_secret_env::door);
 /// ```
 #[macro_export]
 macro_rules! bench_main {
@@ -98,7 +97,6 @@ pub struct Config {
     pub only: Vec<String>,
     pub settings: Option<Vec<u8>>,
     pub body_sizes: Vec<usize>,
-    pub record_bytes: usize,
     pub deltas: usize,
 }
 
@@ -106,11 +104,11 @@ const USAGE: &str = "\
 busbar-plugin-bench: load ONE busbar plugin and hammer it (report only, never a gate)
 
 USAGE:
-  busbar-plugin-bench --kind <store|plane|secret|auth|hook|export|transport> [--plugin <path/to/libX.{so,dylib}>] [options]
+  busbar-plugin-bench --kind <plane|secret|auth|hook|export|transport> [--plugin <path/to/libX.{so,dylib}>] [options]
 
 OPTIONS:
   --plugin <path>        a dropped-in cdylib (default: the door linked into this binary)
-  --kind <kind>          store | plane | secret | auth | hook | export | transport
+  --kind <kind>          plane | secret | auth | hook | export | transport
   --ops <n>              calls per op (default 1000000, split over the threads)
   --threads <list>       thread counts to run, e.g. 1,4 (default 1,4)
   --budget-secs <s>      wall budget per scenario and thread count (default 10); a run that hits
@@ -119,7 +117,6 @@ OPTIONS:
   --json <path>          machine-readable output (default target/plugin-bench/<kind>.json)
   --settings <file>      the instance settings JSON (default: the kind's built-in fixture)
   --body-sizes <list>    plane request bodies in bytes (default 1024,8192,102400)
-  --record-bytes <n>     store record value bytes per commit (default 1024)
   --deltas <n>           plane SSE deltas per streamed answer (default 200)
 ";
 
@@ -133,7 +130,6 @@ fn parse(args: &[String]) -> Result<(Config, Option<PathBuf>), String> {
         only: Vec::new(),
         settings: None,
         body_sizes: vec![1024, 8192, 100 * 1024],
-        record_bytes: 1024,
         deltas: 200,
     };
     let mut plugin = None;
@@ -171,9 +167,6 @@ fn parse(args: &[String]) -> Result<(Config, Option<PathBuf>), String> {
                 cfg.settings = Some(std::fs::read(&p).map_err(|e| format!("{p}: {e}"))?);
             }
             "--body-sizes" => cfg.body_sizes = list(&val()?)?,
-            "--record-bytes" => {
-                cfg.record_bytes = val()?.parse().map_err(|_| "--record-bytes: not a number")?;
-            }
             "--deltas" => cfg.deltas = val()?.parse().map_err(|_| "--deltas: not a number")?,
             other => return Err(format!("unknown argument {other}")),
         }
@@ -252,7 +245,6 @@ pub(crate) struct Outcome {
 fn run_with(cfg: &Config, target: &Target) -> Result<bool, String> {
     let counting = alloc::installed();
     let specs = match cfg.kind.as_str() {
-        "store" => store::specs(cfg, target)?,
         "plane" => plane::specs(cfg, target)?,
         "secret" => secret::specs(cfg, target)?,
         "auth" => auth::specs(cfg, target)?,

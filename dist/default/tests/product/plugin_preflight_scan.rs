@@ -69,52 +69,6 @@ fn disabled_plugins_are_inert_even_when_present() {
 }
 
 #[test]
-fn the_built_in_stores_dropped_in_copy_is_admitted_once_and_a_rival_is_refused() {
-    crate::dist_root_install::install();
-    let (name, _, _, canonical) = busbar_kernel::preflight::root_rows()
-        .stores
-        .first()
-        .copied()
-        .expect("the build links a store");
-    let store = gov_with_store(name);
-    let linked = busbar_kernel::preflight::linked().expect("the linked rows register");
-    let registry =
-        busbar_plugin_loader::rows::registry_of(linked.as_ref()).expect("the loader built it");
-    let row = registry.resolve(name).expect("the linked store is a row");
-    let version = row.plugin_version().expect("the store states its version");
-    let statement = row.statement().expect("the store states itself");
-
-    let dir = tmp_plugin_dir("linked-store");
-    let mut m = plugin_manifest(canonical, name, "acme");
-    m.version = version.clone();
-    m.statement = Some(hex::encode(&statement));
-    std::fs::write(dir.join("copy.tar.gz"), unsigned_tarball(m, b"lib")).unwrap();
-    let mut cfg = plugins_cfg(&dir, true);
-    cfg.trust.allow_untrusted = true;
-    let scan = || preflight(Some(&store), &cfg);
-    let reg = scan().expect("the directory scans");
-    assert!(
-        reg.resolve(name).expect("resolves").linked,
-        "the linked row serves"
-    );
-    assert_eq!(reg.loadable().len(), 0, "the copy is no row of its own");
-    let scanned = busbar_plugin_loader::rows::registry_of(reg.as_ref()).expect("the loader's");
-    assert_eq!(scanned.linked_copies().len(), 1);
-
-    std::fs::remove_file(dir.join("copy.tar.gz")).unwrap();
-    let other = unsigned_tarball(plugin_manifest(name, "acme-ram", "acme"), b"lib");
-    std::fs::write(dir.join("ram.tar.gz"), other).unwrap();
-    let refused = scan().expect_err("two plugins claim the key");
-    assert!(
-        refused.contains("plugin claim conflict")
-            && refused.contains(&format!("'{name}'"))
-            && refused.contains("ram.tar.gz"),
-        "{refused}"
-    );
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-#[test]
 fn configured_store_with_untrusted_plugin_fails_boot_with_naming_error() {
     let dir = tmp_plugin_dir("untrusted-store");
     let tarball = unsigned_tarball(

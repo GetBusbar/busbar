@@ -128,7 +128,6 @@ macro_rules! fixture {
         }
     };
 }
-fixture!(store, crate::neutral_store::door);
 fixture!(secret, crate::neutral_secret::door);
 fixture!(auth, crate::neutral_auth::door);
 fixture!(
@@ -291,9 +290,8 @@ fn crosses<K: Kind>(door: DoorFn) {
     }
 }
 #[test]
-fn common_measurement_crosses_all_seven_kind_identities_and_copies_ffi_storage() {
+fn common_measurement_crosses_every_door_kind_identity_and_copies_ffi_storage() {
     use dispatch::kinds::*;
-    crosses::<store_v4::StoreV4>(store);
     crosses::<secret::Secret>(secret);
     crosses::<auth::Auth>(auth);
     crosses::<hook::Hook>(hook);

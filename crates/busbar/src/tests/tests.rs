@@ -500,12 +500,7 @@ async fn the_boot_path_keeps_its_journal_in_the_store_with_a_configured_director
 
     std::env::set_var("BUSBAR_DATA_DIR", &dir.0);
 
-    let store_module = crate::LINKED
-        .stores
-        .iter()
-        .find(|store| store.1)
-        .expect("the distribution links its real ephemeral product store")
-        .0;
+    let store_module = crate::root::test_plugins::linked_store_module();
     let deploy = busbar_kernel::config::deploy_from_deserializer(
         serde_json::json!({
             "providers": {},
@@ -563,10 +558,6 @@ async fn the_boot_path_keeps_its_journal_in_the_store_with_a_configured_director
          journal over"
     );
 }
-
-// Native Store admission requires every primitive before a CoreStore can exist.
-// The retired optional-slot case is covered at that boundary by plugin-loader's
-// dispatch_tests and store_v4_tests retired-table refusal witnesses.
 
 #[tokio::test]
 async fn the_boot_book_ships_its_records_to_the_configured_store() {
@@ -800,12 +791,7 @@ async fn one_seal_after_two_reloads() {
 
     let dir = BookDir::new("two-reloads");
     std::env::set_var("BUSBAR_DATA_DIR", &dir.0);
-    let store_module = crate::LINKED
-        .stores
-        .iter()
-        .find(|store| store.1)
-        .expect("the distribution links its real ephemeral product store")
-        .0;
+    let store_module = crate::root::test_plugins::linked_store_module();
     let deploy = busbar_kernel::config::deploy_from_deserializer(
         serde_json::json!({
             "providers": {},

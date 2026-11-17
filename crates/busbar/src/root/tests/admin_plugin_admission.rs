@@ -158,11 +158,7 @@ async fn serve_admission_with_inputs(
     busbar_kernel::preflight::install_linked_auth(crate::LINKED.auths);
     busbar_kernel::preflight::install_operator(crate::root::auth_bindings::operator_binding(None));
     crate::dist_root_install::install();
-    let module = busbar_kernel::preflight::root_rows()
-        .stores
-        .first()
-        .expect("the distribution links its product store")
-        .0;
+    let module = crate::root::test_plugins::linked_store_module();
     let settings: serde_json::Value = serde_json::from_str(
         &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
     )
@@ -362,11 +358,7 @@ fn file_of(row: &serde_json::Value) -> Option<String> {
 
 fn linked_store_key() -> &'static str {
     crate::dist_root_install::install();
-    busbar_kernel::preflight::root_rows()
-        .stores
-        .first()
-        .map(|s| s.0)
-        .expect("the build links a store")
+    crate::root::test_plugins::linked_store_module()
 }
 
 async fn install(

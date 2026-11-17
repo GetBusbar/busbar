@@ -183,19 +183,8 @@ fn a_former_name_another_linked_secret_answers_to_is_a_claim_conflict() {
 
 #[test]
 fn the_keyed_axes_read_their_former_words_by_registry_key() {
-    use busbar_kernel::preflight::{LinkedStore, LinkedStoreDoor, StoreRow};
-    let former = [
-        former_row("auth", "x-auth", renamed::door, &["x-auth-old"]),
-        former_row("store", "x-store", renamed::door, &["x-store-old"]),
-    ];
+    let former = [former_row("auth", "x-auth", renamed::door, &["x-auth-old"])];
     let words = |axis: &str, key: &str| crate::root::linked::words_of(&former, axis, key);
     assert_eq!(words("auth", "x-auth"), ["x-auth-old"]);
-    assert_eq!(words("store", "x-store"), ["x-store-old"]);
     assert!(words("store", "x-auth").is_empty());
-    assert!(words("auth", "x-store").is_empty());
-
-    let declared: LinkedStoreDoor = ("k", true, renamed::MACRO_DOOR, "c");
-    assert_eq!(StoreRow(declared).former_names(), ["test-renamed-old"]);
-    let bare: LinkedStore = ("k", true, renamed::door, "c");
-    assert!(StoreRow(bare).former_names().is_empty());
 }

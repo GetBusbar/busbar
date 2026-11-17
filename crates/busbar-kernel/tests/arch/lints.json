@@ -8,7 +8,6 @@
       "crates/busbar-contract/src/export_calls.rs": ["ExportAxis"],
       "crates/busbar-contract/src/framing_scope.rs": ["FramingScope"],
       "crates/busbar-contract/src/io_host.rs": ["IoHost"],
-      "crates/busbar-contract/src/persistence/axis.rs": ["PersistenceAxis"],
       "crates/busbar-contract/src/persistence/lifecycle/axis.rs": ["MigrationTarget", "PreparedStore"],
       "crates/busbar-contract/src/plane_calls.rs": ["AuthenticatedRouteInFlight", "PieceInFlight", "PlaneCalls", "ServeInFlight"],
       "crates/busbar-contract/src/plugin_rows.rs": ["PluginRows"],

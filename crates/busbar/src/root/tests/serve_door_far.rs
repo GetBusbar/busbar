@@ -263,12 +263,7 @@ impl Telemetry for Quiet {
 #[tokio::test]
 async fn the_planes_fault_reading_reaches_the_breaker_through_the_doors_far_end() {
     crate::dist_root_install::install();
-    let module = crate::LINKED
-        .stores
-        .iter()
-        .find(|row| row.1)
-        .expect("the assembled product links an ephemeral store")
-        .0;
+    let module = crate::root::test_plugins::linked_store_module();
     let deploy = busbar_kernel::config::deploy_from_deserializer(
         serde_json::json!({
             "providers": {}, "models": {}, "auth": {"chain": [], "admin_auth": []},

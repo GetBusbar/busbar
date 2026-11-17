@@ -172,14 +172,9 @@ impl LoadablePlugin {
         }
     }
 
-    pub fn in_process(&self) -> bool {
-        matches!(self.entry, Some(LinkedEntry::Store { .. }))
-    }
-
     pub fn door(&self) -> Option<busbar_contract::abi::sdk::door::RawDoorFn> {
         match self.entry {
             Some(LinkedEntry::Door(door)) => Some(door),
-            Some(LinkedEntry::Store { door }) => Some(crate::dispatch::load::raw(door)),
             _ => None,
         }
     }
@@ -236,13 +231,7 @@ pub const JSON_SECRET_REFUSED: &str = "it speaks the 1.5.5 JSON secret contract,
 
 pub const LINKED_FILE: &str = "(linked)";
 
-const LINKED_KINDS: &[&str] = &[
-    kind::STORE,
-    kind::SECRET,
-    kind::AUTH,
-    kind::HOOK,
-    kind::EXPORT,
-];
+const LINKED_KINDS: &[&str] = &[kind::SECRET, kind::AUTH, kind::HOOK, kind::EXPORT];
 
 pub struct LinkedPlugin {
     pub manifest: Manifest,
@@ -256,13 +245,6 @@ pub struct LinkedPlugin {
 /// A linked plugin's door.
 #[derive(Clone, Copy)]
 pub enum LinkedEntry {
-    /// The build's in-process STORE: its store v3 door, which boot opens it through
-    /// ([`PluginRegistry::store_door`]); the row is handed no configuration across a boundary
-    /// ([`LoadablePlugin::in_process`]).
-    Store {
-        /// The row's store v3 door.
-        door: busbar_contract::abi::mechanism::door::DoorFn,
-    },
     /// A compiled-in plugin on its kind's memory ABI: the logic crate's `plugin_door!` door function,
     /// the same door a dropped-in build exports as `busbar_plugin_door` (THE DESIGN: compiled-in =
     /// dropped-in). Loaded through [`crate::dispatch::load_linked`].
@@ -301,17 +283,6 @@ impl LinkedPlugin {
             ephemeral: false,
             keyed_by_alias: false,
         }
-    }
-
-    pub fn store_named(
-        name: &str,
-        alias: &str,
-        door: busbar_contract::abi::mechanism::door::DoorFn,
-        ephemeral: bool,
-    ) -> Self {
-        let abi = busbar_contract::abi::store::ABI_VERSION;
-        let entry = LinkedEntry::Store { door };
-        Self::built_in(name, &[alias], kind::STORE, abi, entry, ephemeral)
     }
 
     pub fn auth_door_named(
@@ -388,14 +359,6 @@ impl LinkedPlugin {
 
 #[cfg(test)]
 impl LinkedPlugin {
-    pub(crate) fn store(
-        name: &str,
-        door: busbar_contract::abi::mechanism::door::DoorFn,
-        ephemeral: bool,
-    ) -> Self {
-        Self::store_named(name, name, door, ephemeral)
-    }
-
     pub(crate) fn auth_door(
         name: &str,
         door: busbar_contract::abi::mechanism::door::DoorFn,
@@ -577,10 +540,7 @@ impl PluginRegistry {
                     )),
                 })
                 .map_err(|e| format!("linked plugin '{}': {e}", manifest.name))?;
-            let door = match entry {
-                LinkedEntry::Store { door } => crate::dispatch::load::raw(door),
-                LinkedEntry::Door(door) => door,
-            };
+            let LinkedEntry::Door(door) = entry;
             let mut configuration_statement = None;
             let settings_schema = match crate::dispatch::LinkedRow::of_raw(door) {
                 Ok(rendered) => {

@@ -69,12 +69,6 @@ fn table(
     );
     doors.extend(
         linked
-            .stores
-            .iter()
-            .map(|(key, _, door, canonical)| (*door, vec![*key, *canonical])),
-    );
-    doors.extend(
-        linked
             .auths
             .iter()
             .map(|(key, canonical, door)| (*door, vec![*key, *canonical])),

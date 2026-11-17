@@ -17,7 +17,6 @@ fn secret_metadata() -> busbar_contract::plugin_rows::Row {
             first_party: false,
         },
         ephemeral: false,
-        in_process: false,
         linked: false,
         needs_prompt: NeedLevel::No,
         needs_user: NeedLevel::No,

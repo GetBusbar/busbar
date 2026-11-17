@@ -40,7 +40,6 @@ crates/plugin-loader/src/auth_door.rs
 crates/plugin-loader/src/boot.rs
 crates/plugin-loader/src/cold/export_door.rs
 crates/plugin-loader/src/cold/hook_door.rs
-crates/plugin-loader/src/cold/store_v4.rs
 crates/plugin-loader/src/export_door.rs
 crates/plugin-loader/src/hook_door/port.rs
 crates/plugin-loader/src/integer_token.rs

@@ -6,7 +6,7 @@ use std::sync::Arc;
 use busbar_kernel::plane_driver::registry::PlaneDecl;
 use busbar_kernel::plane_driver::registry::PlaneDeclaration;
 use busbar_kernel::plane_driver::EngineHost;
-use busbar_kernel::preflight::{LinkedAuth, LinkedStore, RootInstall};
+use busbar_kernel::preflight::{LinkedAuth, RootInstall};
 
 pub type Compose = Box<dyn FnOnce(&dyn busbar_contract::secret::SecretResolve) + Send>;
 
@@ -34,8 +34,6 @@ pub struct Linked {
     pub compose: &'static [fn(&busbar_kernel::config::RootCfg) -> Option<Compose>],
 
     pub export_doors: &'static std::sync::LazyLock<Vec<LinkedDoorExport>>,
-
-    pub stores: &'static std::sync::LazyLock<Vec<LinkedStore>>,
 
     pub hook_doors: &'static [busbar_contract::abi::mechanism::door::DoorFn],
 
@@ -330,7 +328,6 @@ pub fn register_protocols(linked: &Linked) {
 pub fn register_stores(linked: &Linked) {
     match link_secrets(linked.secrets, linked.secret_declares, linked.former) {
         Ok(secrets) => busbar_kernel::preflight::install_linked_rows(RootInstall {
-            stores: linked.stores,
             linked_images: linked_images(),
             registry_build: Some(crate::root::boot::registry_rows),
             endpoint_locate: Some(crate::root::boot::locate_provider_destination),

@@ -34,7 +34,6 @@ macro_rules! renamed {
         }
     };
 }
-renamed!(store, crate::neutral_store::door);
 renamed!(secret, crate::neutral_secret::door);
 renamed!(auth, crate::neutral_auth::door);
 renamed!(
@@ -111,10 +110,8 @@ fn lifecycle_with_settings<K: Kind>(plugin: &Plugin<K>, settings: &[u8]) -> Vec<
 #[test]
 fn renaming_neutral_implementations_preserves_every_kind_capability_and_lifecycle() {
     use crate::dispatch::kinds::{
-        auth::Auth, export::Export, hook::Hook, plane::Plane, secret::Secret, store_v4::StoreV4,
-        transport::Transport,
+        auth::Auth, export::Export, hook::Hook, plane::Plane, secret::Secret, transport::Transport,
     };
-    compare::<StoreV4>(crate::neutral_store::door, store, lifecycle);
     compare::<Secret>(crate::neutral_secret::door, secret, lifecycle);
     compare::<Auth>(crate::neutral_auth::door, auth, lifecycle);
     compare::<Hook>(

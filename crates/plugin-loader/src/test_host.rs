@@ -66,8 +66,7 @@ use busbar_contract::conn::InstanceId;
 use busbar_contract::services::{CallerBinding, HostServices};
 
 use crate::dispatch::kinds::{
-    auth::Auth, export::Export, hook::Hook, plane::Plane, secret::Secret, store_v4::StoreV4,
-    transport::Transport,
+    auth::Auth, export::Export, hook::Hook, plane::Plane, secret::Secret, transport::Transport,
 };
 use crate::dispatch::plugin::str_bytes;
 use crate::dispatch::Done as Settled;
@@ -577,7 +576,7 @@ pub trait Openable: Kind + Sized + sealed::Sealed {
 macro_rules! openable {
     ($($k:ty),+) => {$( impl sealed::Sealed for $k {} impl Openable for $k {} )+};
 }
-openable!(Transport, StoreV4, Secret, Auth, Hook, Export);
+openable!(Transport, Secret, Auth, Hook, Export);
 impl sealed::Sealed for Plane {}
 impl Openable for Plane {
     fn open(plugin: &Plugin<Self>, settings: &[u8], secrets: &[&[u8]]) -> Result<(), String> {

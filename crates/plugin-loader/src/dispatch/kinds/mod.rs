@@ -6,5 +6,4 @@ pub mod export;
 pub mod hook;
 pub mod plane;
 pub mod secret;
-pub mod store_v4;
 pub mod transport;

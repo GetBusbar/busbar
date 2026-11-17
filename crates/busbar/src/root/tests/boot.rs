@@ -677,11 +677,7 @@ async fn the_admin_catalog_row_for_a_harness_signed_plugin(
     )
     .expect("the tarball is written");
     crate::dist_root_install::install();
-    let module = busbar_kernel::preflight::root_rows()
-        .stores
-        .first()
-        .expect("the distribution links its actual store")
-        .0;
+    let module = crate::root::test_plugins::linked_store_module();
     let settings: serde_json::Value = serde_json::from_str(
         &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
     )

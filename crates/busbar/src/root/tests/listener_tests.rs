@@ -238,12 +238,7 @@ async fn a_rejected_configs_limits_do_not_govern_later_connections() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     crate::dist_root_install::install();
-    let store_module = crate::LINKED
-        .stores
-        .iter()
-        .find(|store| store.1)
-        .expect("the distribution links its real ephemeral product store")
-        .0;
+    let store_module = crate::root::test_plugins::linked_store_module();
     let deploy = busbar_kernel::config::deploy_from_deserializer(
         serde_json::json!({
             "providers": {},
