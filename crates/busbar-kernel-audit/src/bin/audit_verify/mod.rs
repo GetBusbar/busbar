@@ -391,3 +391,6 @@ pub(super) fn verify(keys: &Value, range: &Value, head: Option<&Value>) -> Resul
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod stamp_tests;
