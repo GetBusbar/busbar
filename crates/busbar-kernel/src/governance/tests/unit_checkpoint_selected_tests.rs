@@ -437,6 +437,12 @@ async fn selected_memory_capacity_retains_all_facts_then_retries_once() {
         .is_none());
     drop(gov.pending_metering.drain().collect::<Vec<_>>());
     gov.flush_unit_checkpoints().await.unwrap();
+    assert!(gov.unresolved_unit_target(&snapshot.principal, 0));
+    assert!(gov
+        .take_selected_terminal_snapshot(snapshot.id)
+        .unwrap()
+        .is_some());
+    gov.flush_unit_checkpoints().await.unwrap();
     assert!(!gov.unresolved_unit_target(&snapshot.principal, 0));
     assert_eq!(
         gov.budget.read(&snapshot.principal)[&snapshot.principal].total_tokens(),
@@ -518,24 +524,55 @@ async fn selected_pending_fee_keeps_raw_custody_until_nonparticipating_observati
     running.ended = false;
     running.partitions.as_mut().unwrap().disposition = Disposition::Running;
     let prior = gov.stage_selected_checkpoint(running, None).unwrap();
-    assert!(matches!(
-        gov.finish_selected_checkpoint_with_fee(
-            snapshot.clone(),
-            Some(prior.revision),
-            Some(completion.clone())
-        ),
-        SelectedTransfer::RetainedPending(_)
-    ));
+    let accepted = match gov.finish_selected_checkpoint_with_fee(
+        snapshot.clone(),
+        Some(prior.revision),
+        Some(completion.clone()),
+    ) {
+        SelectedTransfer::RetainedPending(accepted) => accepted,
+        _ => panic!("pending fee must retain custody"),
+    };
+    let mut handle = gov.selected_terminal_completion(&accepted).unwrap();
+    assert!(gov.selected_terminal_completion(&accepted).is_err());
+    let other = governance().await;
+    assert!(handle.wait(&other).await.is_err());
+    let mut forged = (*accepted).clone();
+    forged.partitions.as_mut().unwrap().attempts[1].resource = "forged".into();
+    assert!(gov.selected_terminal_completion(&Arc::new(forged)).is_err());
+    drop(handle);
+    let mut handle = gov.selected_terminal_completion(&accepted).unwrap();
+    struct WakeCount(AtomicUsize);
+    impl std::task::Wake for WakeCount {
+        fn wake(self: Arc<Self>) {
+            self.0.fetch_add(1, Ordering::Relaxed);
+        }
+        fn wake_by_ref(self: &Arc<Self>) {
+            self.0.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+    let wakes = Arc::new(WakeCount(AtomicUsize::new(0)));
+    let waker = std::task::Waker::from(wakes.clone());
+    let mut context = std::task::Context::from_waker(&waker);
+    let mut waiting = Box::pin(handle.wait(&gov));
+    assert!(std::future::Future::poll(waiting.as_mut(), &mut context).is_pending());
+    drop(waiting);
+    drop(handle);
+    assert!(gov.unit_checkpoint_pending(&snapshot.id));
+    let mut handle = gov.selected_terminal_completion(&accepted).unwrap();
+    let mut waiting = Box::pin(handle.wait(&gov));
+    assert!(std::future::Future::poll(waiting.as_mut(), &mut context).is_pending());
     gov.flush_unit_checkpoints().await.unwrap();
     assert!(gov.unresolved_unit_target(&snapshot.principal, 0));
     assert!(gov.pending_metering.drain().next().is_none());
     completion.0.store(true, Ordering::Release);
     gov.flush_unit_checkpoints().await.unwrap();
     assert!(gov.unresolved_unit_target(&snapshot.principal, 0));
-    let final_snapshot = gov
-        .take_selected_terminal_snapshot(snapshot.id)
-        .unwrap()
-        .unwrap();
+    assert!(wakes.0.load(Ordering::Relaxed) > 0);
+    let final_snapshot = match std::future::Future::poll(waiting.as_mut(), &mut context) {
+        std::task::Poll::Ready(Ok(snapshot)) => snapshot,
+        _ => panic!("fee successor must wake the final reader"),
+    };
+    drop(waiting);
     assert!(matches!(
         final_snapshot.partitions.as_ref().unwrap().fee,
         CapturedFee::ResolvedOwner {
@@ -545,6 +582,11 @@ async fn selected_pending_fee_keeps_raw_custody_until_nonparticipating_observati
     ));
     gov.flush_unit_checkpoints().await.unwrap();
     assert!(!gov.unresolved_unit_target(&snapshot.principal, 0));
+    assert!(Arc::ptr_eq(
+        &final_snapshot,
+        &handle.wait(&gov).await.unwrap()
+    ));
+    assert!(handle.wait(&other).await.is_err());
     let rows: Vec<_> = gov.pending_metering.drain().collect();
     let (key, fee) = rows
         .iter()
