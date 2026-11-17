@@ -913,3 +913,251 @@ fn observer_records_one_drop_after_zero_ack_exhausts_attempts() {
     assert_eq!(door.delivered(), 0);
     assert_eq!(door.dropped(), 2);
 }
+
+// DES-454 r3.1 §4 (core #454): the export swap seam. The kernel's export lane keeps one door; a credential
+// rotation (and, reusing the seam, an export reload, #461) swaps the port and its disk lane under it together.
+
+fn binding(port: Arc<Double>, disk: Arc<Disk>) -> super::ExportBinding {
+    super::ExportBinding { port, disk }
+}
+
+fn gated(port: &Double) -> Sender<()> {
+    let (release, gate) = channel();
+    *port.gate.lock().unwrap() = Some(gate);
+    release
+}
+
+fn denied() -> PortError {
+    PortError::Refused {
+        code: busbar_plugin_abi::fail::refused::R_DENIED,
+        text: "the old credential was revoked".into(),
+        error: None,
+    }
+}
+
+fn no_drops(observer: &Observations) -> bool {
+    !observer.0.lock().unwrap().iter().any(|event| {
+        matches!(
+            event,
+            busbar_contract::export_calls::ExportObservation::Dropped { .. }
+        )
+    })
+}
+
+/// T5: the set in flight finishes on the old port; the queued lines and a racing `deliver` go to the successor,
+/// each line once, in order.
+#[test]
+fn a_swap_delivers_the_set_in_flight_and_the_queue_once_in_order() {
+    let (old, old_rx) = Double::new(&[x::STREAM_LOGS]);
+    let (new, new_rx) = Double::new(&[x::STREAM_LOGS]);
+    let release = gated(&old);
+    let door = open(Arc::clone(&old), Arc::new(Disk::default()));
+    send(&door, x::STREAM_LOGS, "a");
+    assert_eq!(next(&old_rx).lines, vec![b"a".to_vec()]);
+    send(&door, x::STREAM_LOGS, "b");
+    let held = door.binding();
+    let predecessor = door
+        .swap_binding(&held, binding(Arc::clone(&new), Arc::new(Disk::default())))
+        .map_err(|(why, _)| why)
+        .expect("the same shape swaps");
+    assert!(Arc::ptr_eq(&predecessor, &held));
+    send(&door, x::STREAM_LOGS, "c");
+    release.send(()).unwrap();
+    let mut seen = Vec::new();
+    while seen.len() < 2 {
+        seen.extend(next(&new_rx).lines);
+    }
+    assert_eq!(seen, vec![b"b".to_vec(), b"c".to_vec()]);
+    assert!(old_rx.recv_timeout(Duration::from_millis(200)).is_err());
+    assert_eq!((door.delivered(), door.dropped()), (3, 0));
+}
+
+/// T27 (owner Q5): a refusal from a binding the door no longer holds is not final. The next attempt goes to the
+/// successor at once with the same delivery id; the old port gets no further call and nothing is dropped.
+#[test]
+fn the_attempt_after_a_swap_goes_to_the_successor_with_the_same_delivery() {
+    let (old, old_rx) = Double::new(&[x::STREAM_LOGS]);
+    let (new, new_rx) = Double::new(&[x::STREAM_LOGS]);
+    old.answer(Err(denied()));
+    let release = gated(&old);
+    let (door, observer) = observed(Arc::clone(&old), Arc::new(Disk::default()));
+    door.start().unwrap();
+    send(&door, x::STREAM_LOGS, "a");
+    let first = next(&old_rx);
+    door.swap_binding(
+        &door.binding(),
+        binding(Arc::clone(&new), Arc::new(Disk::default())),
+    )
+    .map_err(|(why, _)| why)
+    .expect("swaps");
+    release.send(()).unwrap();
+    let retried = next(&new_rx);
+    assert_eq!(retried.delivery, first.delivery);
+    assert_eq!(retried.attempt, first.attempt + 1);
+    assert_eq!(retried.lines, first.lines);
+    assert!(old_rx.recv_timeout(Duration::from_millis(200)).is_err());
+    assert!(no_drops(&observer));
+    assert_eq!(door.delivered(), 1);
+}
+
+/// T6: after a swap, a scrape and a scope render are the successor's.
+#[test]
+fn scrape_and_render_scope_are_served_by_the_successor() {
+    let (old, _) = Double::new(&[x::STREAM_METRICS]);
+    let (new, _) = Double::new(&[x::STREAM_METRICS]);
+    let door = open(Arc::clone(&old), Arc::new(Disk::default()));
+    door.swap_binding(
+        &door.binding(),
+        binding(Arc::clone(&new), Arc::new(Disk::default())),
+    )
+    .map_err(|(why, _)| why)
+    .expect("swaps");
+    let fam = Family {
+        name: "up".into(),
+        help: None,
+        unit: None,
+        kind: busbar_contract::export_calls::kind_of("gauge").unwrap(),
+        samples: vec![Sample {
+            name: "up".into(),
+            labels: Vec::new(),
+            value: "1".into(),
+        }],
+    };
+    door.scrape(std::slice::from_ref(&fam)).expect("scrapes");
+    door.render_scope(x::SCOPE_METRICS, std::slice::from_ref(&fam))
+        .expect("renders");
+    assert!(old.rendered.lock().unwrap().is_empty());
+    assert_eq!(new.rendered.lock().unwrap().len(), 2);
+}
+
+/// T7: a successor of another shape is refused and handed back; the door keeps serving the old binding.
+#[test]
+fn a_successor_of_another_shape_is_refused_and_handed_back() {
+    let (old, old_rx) = Double::new(&[x::STREAM_LOGS]);
+    let door = open(Arc::clone(&old), Arc::new(Disk::default()));
+    let held = door.binding();
+    let (streams, _) = Double::new(&[x::STREAM_LOGS, x::STREAM_TRACES]);
+    let (mut ceiling, _) = Double::new(&[x::STREAM_LOGS]);
+    Arc::get_mut(&mut ceiling).unwrap().ceiling = Some(x::CUSTODY_DURABLE);
+    let (mut span, _) = Double::new(&[x::STREAM_LOGS]);
+    Arc::get_mut(&mut span).unwrap().span = true;
+    let (mut scopes, _) = Double::new(&[x::STREAM_LOGS]);
+    Arc::get_mut(&mut scopes).unwrap().scopes.clear();
+    for successor in [streams, ceiling, span, scopes] {
+        let refused = door
+            .swap_binding(
+                &held,
+                binding(Arc::clone(&successor), Arc::new(Disk::default())),
+            )
+            .err()
+            .expect("refused");
+        assert_eq!(refused.0, super::SwapRefused::ShapeChanged);
+        assert!(Arc::ptr_eq(
+            &refused.1.port,
+            &(successor as Arc<dyn ExportPort>)
+        ));
+    }
+    assert!(Arc::ptr_eq(&door.binding(), &held));
+    send(&door, x::STREAM_LOGS, "still-old");
+    assert_eq!(next(&old_rx).lines, vec![b"still-old".to_vec()]);
+}
+
+/// A stale or draining swap is refused: the cell is fenced on the binding read and on the door's stop.
+#[test]
+fn a_stale_or_draining_swap_is_refused() {
+    let (old, _) = Double::new(&[x::STREAM_LOGS]);
+    let (first, _) = Double::new(&[x::STREAM_LOGS]);
+    let (second, _) = Double::new(&[x::STREAM_LOGS]);
+    let door = open(old, Arc::new(Disk::default()));
+    let held = door.binding();
+    door.swap_binding(&held, binding(first, Arc::new(Disk::default())))
+        .map_err(|(why, _)| why)
+        .expect("swaps");
+    let stale = door
+        .swap_binding(
+            &held,
+            binding(Arc::clone(&second), Arc::new(Disk::default())),
+        )
+        .err()
+        .expect("stale");
+    assert_eq!(stale.0, super::SwapRefused::Superseded);
+    door.begin_drain(Instant::now() + WAIT);
+    let draining = door
+        .swap_binding(&door.binding(), binding(second, Arc::new(Disk::default())))
+        .err()
+        .expect("draining");
+    assert_eq!(draining.0, super::SwapRefused::Stopping);
+}
+
+/// T25: an `Append` export writes through the successor's disk lane after the swap, port and disk together,
+/// and keeps writing once the predecessor is gone.
+#[test]
+fn an_append_export_keeps_writing_after_a_swap_and_the_predecessor_closing() {
+    let (old, old_rx) = Double::new(&[x::STREAM_LOGS]);
+    let (new, new_rx) = Double::new(&[x::STREAM_LOGS]);
+    let old_disk = Arc::new(Disk::default());
+    let new_disk = Arc::new(Disk::default());
+    let append = || {
+        Ok(Delivered::Append {
+            dest: 0,
+            bytes: None,
+            accepted: 1,
+        })
+    };
+    old.answer(append());
+    new.answer(append());
+    new.answer(append());
+    let door = open(Arc::clone(&old), Arc::clone(&old_disk));
+    send(&door, x::STREAM_LOGS, "before");
+    next(&old_rx);
+    let predecessor = door
+        .swap_binding(&door.binding(), binding(new, Arc::clone(&new_disk)))
+        .map_err(|(why, _)| why)
+        .expect("swaps");
+    send(&door, x::STREAM_LOGS, "after");
+    next(&new_rx);
+    drop(predecessor);
+    drop(old);
+    send(&door, x::STREAM_LOGS, "closed");
+    next(&new_rx);
+    let deadline = Instant::now() + WAIT;
+    while new_disk.appended.lock().unwrap().len() < 2 && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(
+        *old_disk.appended.lock().unwrap(),
+        vec![(0, b"before\n".to_vec())]
+    );
+    assert_eq!(
+        *new_disk.appended.lock().unwrap(),
+        vec![(0, b"after\n".to_vec()), (0, b"closed\n".to_vec())]
+    );
+}
+
+/// T32 (door side): once the attempt running on the predecessor ends, the pump holds no clone of it, so the
+/// caller's copy is the last and its drop (the instance close) runs where the caller puts it, never on the pump.
+#[test]
+fn the_pump_releases_the_predecessor_once_its_attempt_ends() {
+    let (old, old_rx) = Double::new(&[x::STREAM_LOGS]);
+    let (new, new_rx) = Double::new(&[x::STREAM_LOGS]);
+    let release = gated(&old);
+    let door = open(old, Arc::new(Disk::default()));
+    send(&door, x::STREAM_LOGS, "a");
+    next(&old_rx);
+    let predecessor = door
+        .swap_binding(&door.binding(), binding(new, Arc::new(Disk::default())))
+        .map_err(|(why, _)| why)
+        .expect("swaps");
+    assert!(
+        Arc::strong_count(&predecessor) > 1,
+        "the pump's attempt holds it"
+    );
+    release.send(()).unwrap();
+    send(&door, x::STREAM_LOGS, "b");
+    next(&new_rx);
+    let deadline = Instant::now() + WAIT;
+    while Arc::strong_count(&predecessor) > 1 && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(Arc::strong_count(&predecessor), 1);
+}
