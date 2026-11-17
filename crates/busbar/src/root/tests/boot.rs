@@ -701,6 +701,7 @@ async fn the_admin_catalog_row_for_a_harness_signed_plugin(
     let crate::root::min3_boot::fixture::Fixture {
         backend: core,
         rules,
+        ..
     } = crate::root::min3_boot::fixture::open(&config, &Default::default(), rules.clone())
         .await
         .expect("the configured native target opens");

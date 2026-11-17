@@ -1956,46 +1956,6 @@ async fn build_app_native(
         diag_error!(OPEN_RELAY_NO_AUTH, "{banner}");
     }
 
-    // One instance per identity provider for this build, shared by every role that names it
-    // (WASTE-AUTH-SECRETS W1): the chain, admin_auth and the hosted login methods look it up.
-    // Carried across builds (W2): an instance whose inputs are unchanged and that reports
-    // `reusable()` is handed over from the prior App, not opened again.
-    let mut auth_instances = crate::auth::instances::AuthInstances::carrying(
-        prior.map(|p| Arc::clone(&p.auth_instances)),
-    );
-    let open_auth_axis = || crate::preflight::auth_axis(plugin_registry.clone());
-    let auth_mw = Arc::new(
-        AuthMiddleware::build_on(
-            &auth_cfg,
-            plugin_registry.as_ref(),
-            &secret_resolver,
-            &mut auth_instances,
-            &open_auth_axis,
-        )
-        .map_err(|e| format!("auth chain construction failed: {e}"))?,
-    );
-
-    let admin_modules = crate::auth::AdminAuthChain::build_on(
-        &auth_cfg,
-        plugin_registry.as_ref(),
-        &secret_resolver,
-        &mut auth_instances,
-        &open_auth_axis,
-    )
-    .map_err(|e| format!("admin auth chain construction failed: {e}"))?;
-
-    let login_methods = Arc::new(
-        crate::auth::login::LoginMethods::build_on(
-            &auth_cfg,
-            plugin_registry.as_ref(),
-            &secret_resolver,
-            &mut auth_instances,
-            &open_auth_axis,
-        )
-        .map_err(|e| format!("auth.methods (hosted login) construction failed: {e}"))?,
-    );
-    let auth_instances = auth_instances.sealed();
-
     let store: Arc<dyn busbar_kernel::store::LaneRuntime> = match prior {
         Some(p) => Arc::new(HealthState::new_with_limits_restored(
             lanes_data.clone(),
@@ -2009,11 +1969,6 @@ async fn build_app_native(
             cfg.limits.max_honored_retry_after_secs,
         )),
     };
-
-    let mut hook_env = hooks::HookEnv::new(plugin_registry.clone(), secret_resolver.clone())?;
-
-    hook_env.preresolve_hook_secrets(&cfg.hooks)?;
-    let hook_route_decls = hook_env.route_decls(&cfg.hooks)?;
 
     if let Some(store_cfg) = cfg.store.as_ref() {
         if let Err(e) = config::secret::resolve_settings(
@@ -2033,8 +1988,6 @@ async fn build_app_native(
             );
         }
     }
-
-    hook_env.preopen_gate_hooks(&cfg.hooks)?;
 
     let mut rotate_gov_credentials: Option<GovCredentialRotation> = None;
 
@@ -2153,9 +2106,14 @@ async fn build_app_native(
                 }
 
                 let key_count = gs.all_keys_async().await.map(|k| k.len()).unwrap_or(0);
-                if let Some(banner) =
-                    inert_durable_keys_banner(!ephemeral, key_count, auth_mw.keys_in_chain)
-                {
+                if let Some(banner) = inert_durable_keys_banner(
+                    !ephemeral,
+                    key_count,
+                    auth_cfg
+                        .chain
+                        .iter()
+                        .any(|entry| entry.module == config::KEYS_MODULE),
+                ) {
                     eprintln!("[error] {banner}");
                     diag_error!(DURABLE_KEYS_INERT, "{banner}");
                 }
@@ -2164,6 +2122,54 @@ async fn build_app_native(
             Err(e) => return Err(format!("governance init failed: {e}")),
         }
     };
+
+    // Construct serving consumers only after the complete Store governance owner exists.
+    // One instance per identity provider for this build, shared by every role that names it
+    // (WASTE-AUTH-SECRETS W1): the chain, admin_auth and the hosted login methods look it up.
+    // Carried across builds (W2): an instance whose inputs are unchanged and that reports
+    // `reusable()` is handed over from the prior App, not opened again.
+    let mut auth_instances = crate::auth::instances::AuthInstances::carrying(
+        prior.map(|p| Arc::clone(&p.auth_instances)),
+    );
+    let open_auth_axis = || crate::preflight::auth_axis(plugin_registry.clone());
+    let auth_mw = Arc::new(
+        AuthMiddleware::build_on(
+            &auth_cfg,
+            plugin_registry.as_ref(),
+            &secret_resolver,
+            &mut auth_instances,
+            &open_auth_axis,
+        )
+        .map_err(|e| format!("auth chain construction failed: {e}"))?,
+    );
+
+    let admin_modules = crate::auth::AdminAuthChain::build_on(
+        &auth_cfg,
+        plugin_registry.as_ref(),
+        &secret_resolver,
+        &mut auth_instances,
+        &open_auth_axis,
+    )
+    .map_err(|e| format!("admin auth chain construction failed: {e}"))?;
+
+    let login_methods = Arc::new(
+        crate::auth::login::LoginMethods::build_on(
+            &auth_cfg,
+            plugin_registry.as_ref(),
+            &secret_resolver,
+            &mut auth_instances,
+            &open_auth_axis,
+        )
+        .map_err(|e| format!("auth.methods (hosted login) construction failed: {e}"))?,
+    );
+    let auth_instances = auth_instances.sealed();
+
+    let mut hook_env = hooks::HookEnv::new(plugin_registry.clone(), secret_resolver.clone())?;
+
+    hook_env.preresolve_hook_secrets(&cfg.hooks)?;
+    let hook_route_decls = hook_env.route_decls(&cfg.hooks)?;
+
+    hook_env.preopen_gate_hooks(&cfg.hooks)?;
 
     if prior.is_none() {
         accepted_operator(&auth_cfg, &admin_modules.operator);

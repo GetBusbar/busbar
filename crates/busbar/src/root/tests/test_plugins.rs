@@ -208,7 +208,7 @@ pub(crate) async fn provision_fresh_application_store_with_backend(
     )
     .expect("retain the actual fixture creation evidence");
     let evidence_sha256 = sha256_hex(&evidence);
-    let crate::root::min3_boot::fixture::Fixture { backend, rules } =
+    let crate::root::min3_boot::fixture::Fixture { backend, rules, .. } =
         crate::root::min3_boot::fixture::open(
             cfg,
             plugins,

@@ -30,7 +30,9 @@ pub(crate) fn grammar(plugins: &PluginsCfg) -> Result<busbar_kernel::config::Gra
 }
 
 struct Owners {
-    _registry: Arc<MinRegistry>,
+    built: Built,
+    prefix: Arc<BootSecrets>,
+    planes: Vec<PlaneImage>,
     resolver: Arc<SecretResolver>,
     instances: crate::root::boot::inputs::BootInstances,
     images: crate::root::boot::images::BootImages,
@@ -39,6 +41,7 @@ struct Owners {
 pub(crate) struct Fixture {
     pub(crate) backend: busbar_contract::persistence::axis::OpenedBackend,
     pub(crate) rules: Arc<dyn RootRules>,
+    owners: Arc<Owners>,
 }
 
 pub(crate) struct Admitted {
@@ -48,10 +51,158 @@ pub(crate) struct Admitted {
 
 impl Fixture {
     pub(crate) async fn admit(self) -> Admitted {
-        Admitted {
-            core: crate::root::real_store::core_over(self.backend).await,
-            rules: self.rules,
+        self.admit_serving().await.0
+    }
+
+    /// Admit the exact backend once, retaining its native image and secret owners for serving.
+    pub(crate) async fn admit_serving(self) -> (Admitted, ServingFixture) {
+        let core = crate::root::real_store::core_over(self.backend).await;
+        let serving = ServingFixture {
+            owners: self.owners,
+            core: Arc::clone(&core),
+        };
+        (
+            Admitted {
+                core,
+                rules: self.rules,
+            },
+            serving,
+        )
+    }
+}
+
+pub(crate) struct ServingFixture {
+    owners: Arc<Owners>,
+    core: Arc<busbar_kernel::persistence::facade::CoreStore>,
+}
+
+pub(crate) struct PlaneFixture {
+    pub(crate) seat: PortSeat,
+    pub(crate) workers: crate::root::boot::workers::PreparedWorkers,
+    _owners: Arc<Owners>,
+    _prefix: Arc<BootSecrets>,
+}
+
+impl ServingFixture {
+    /// Open one actual admitted plane through the production S8 composer. The caller must build
+    /// its App over `admit_serving`'s core and pass complete services from root::serve::compose.
+    /// Workers remain dormant until the caller has published its routes and AppHandle.
+    pub(crate) async fn plane(
+        &self,
+        cfg: &RootCfg,
+        instance: &str,
+        app: &busbar_kernel::state::App,
+        services: Arc<KernelServices>,
+    ) -> Result<PlaneFixture, String> {
+        let store = app
+            .governance
+            .as_ref()
+            .ok_or("native fixture needs actual governance")?
+            .core_store_handle()
+            .map_err(|why| why.to_string())?;
+        if !Arc::ptr_eq(&store, &self.core) {
+            return Err("native fixture App uses a different Store attachment".into());
         }
+        self.owners.instances.check(cfg)?;
+        if !cfg.min3.provisioning.is_empty() {
+            return Err("native plane fixture needs the complete Auth provisioning plan".into());
+        }
+        let image = self
+            .owners
+            .planes
+            .iter()
+            .find(|image| {
+                (if image.alias.is_empty() {
+                    image.identity.as_str()
+                } else {
+                    image.alias.as_str()
+                }) == instance
+            })
+            .ok_or_else(|| format!("native fixture has no admitted plane {instance}"))?;
+        let built = &self.owners.built;
+        let prefix = Arc::clone(&self.owners.prefix);
+        let core = Arc::new(core_secrets_of(cfg, &prefix).await?);
+        let mut instances = plane_instances(
+            std::slice::from_ref(image),
+            &super::super::door_steps::raw_sections(cfg),
+        )?;
+        let declared = declared_planes(&built.registry, &mut instances)?;
+        let specs = specifications(&instances, cfg.public_url.as_deref(), false);
+        let records = Arc::new(StoreRecords::new(Arc::clone(&store)));
+        let provisioning = super::super::provisioning::prepare(
+            Arc::clone(&store),
+            Arc::new(LogEvents),
+            Vec::new(),
+        )
+        .await?;
+        let shared = Arc::new(Shared::new(
+            records,
+            Arc::new(StorePushQueue::new(
+                Arc::clone(&store),
+                Arc::new(RetryPolicyImpl::default()),
+            )),
+            store,
+            busbar_kernel::plane_driver::port_work::governed_binder(
+                app.governance.clone(),
+                app.role_bindings.clone(),
+            ),
+        ));
+        let steps = Steps {
+            registry: &built.registry,
+            instances: &specs,
+            services: Some(services),
+            seats: Mutex::default(),
+            shared: Arc::clone(&shared),
+            directory: provisioning.directory,
+            core,
+            secrets: Arc::clone(&prefix),
+            built,
+            seat: SeatShared {
+                upstreams: declared
+                    .into_iter()
+                    .map(|(name, split)| (name, Arc::new(split.definitions)))
+                    .collect(),
+                signals: Arc::clone(&shared.signals),
+                secrets: Arc::new(SpawnCustody(Arc::clone(&prefix))),
+                kernel: Arc::new(Kernel::new()),
+                table: ConnTable::installed(),
+            },
+            probes: Mutex::default(),
+        };
+        let (_, spec) = specs
+            .first()
+            .ok_or("native fixture lost its plane specification")?;
+        let prepared = built
+            .registry
+            .reserve(spec)
+            .map_err(|why| format!("{why:?}"))?;
+        steps
+            .open_plane(spec, prepared)
+            .await
+            .map_err(|why| format!("{why:?}"))?;
+        let seat = steps
+            .seats
+            .into_inner()
+            .unwrap_or_else(PoisonError::into_inner)
+            .pop()
+            .ok_or("native fixture opened no plane seat")?;
+        let mut workers = super::super::boot::workers::PreparedWorkers::new();
+        workers.push(provisioning.refresh.run());
+        for probe in steps
+            .probes
+            .into_inner()
+            .unwrap_or_else(PoisonError::into_inner)
+        {
+            workers.push(probe);
+        }
+        let ticking = seat.clone();
+        workers.push(async move { ticking.tick_task(shared.push.clone()).await });
+        Ok(PlaneFixture {
+            seat,
+            workers,
+            _owners: Arc::clone(&self.owners),
+            _prefix: prefix,
+        })
     }
 }
 
@@ -64,6 +215,20 @@ pub(crate) async fn open(
     let process = process()?;
     let images = super::super::boot::images::fixture(&process.resources, plugins)?;
     let protected = images.protect(cfg)?;
+    let planes = images
+        .aliases
+        .iter()
+        .filter(|(identity, _)| {
+            images
+                .images
+                .described(identity)
+                .is_some_and(|facts| facts.kind == KindCode::Plane)
+        })
+        .map(|(identity, alias)| PlaneImage {
+            identity: identity.clone(),
+            alias: alias.clone(),
+        })
+        .collect();
     let built = build(
         &process.resources,
         Guard::from_config(&cfg.destinations())?,
@@ -115,13 +280,17 @@ pub(crate) async fn open(
     };
     let backend =
         super::super::boot::store::bootstrap_config_store(cfg, plugins, &opener, &resolver).await?;
+    drop(steps);
     let owners = Arc::new(Owners {
-        _registry: Arc::clone(&built.registry),
+        built,
+        prefix,
+        planes,
         resolver,
         instances: crate::root::boot::inputs::BootInstances::capture(cfg),
         images: protected,
     });
     Ok(Fixture {
+        owners: Arc::clone(&owners),
         backend: Arc::new(Backend {
             inner: backend,
             _owners: Arc::clone(&owners),
