@@ -85,7 +85,7 @@ impl GovState {
                             && busbar_contract::records::RESERVED_UNITS.contains(&name))
                 },
             );
-        let key: MeterKey = (
+        let key: MeterIdentity = (
             snapshot.principal.clone(),
             metering_bucket(snapshot.arrived),
             model.into(),
@@ -97,7 +97,8 @@ impl GovState {
                 .entry_id
                 .map(|id| id.metering_version())
                 .unwrap_or_default(),
-        );
+        )
+            .into();
         let sent_at_ms = crate::store::now_ms();
         while !counts.is_zero() {
             let (delta, remaining) = metering_flush::metering_chunk(&key, &counts);
@@ -588,33 +589,41 @@ impl GovState {
 
 fn selected_meter_counts(
     projection: &super::unit_checkpoint::partitions::UsageProjection,
-) -> Vec<(MeterKey, MeterCounts)> {
+) -> Vec<(MeterIdentity, MeterCounts)> {
     let common = &projection.common;
-    let key = |lane: &str, provider: Option<&str>| {
-        (
-            common.principal.clone(),
-            metering_bucket(common.arrived),
-            lane.to_owned(),
-            provider.unwrap_or_default().to_owned(),
-            common.era.effective_from,
-            common.group.clone(),
-            common
-                .era
-                .entry_id
-                .map(|id| id.metering_version())
-                .unwrap_or_default(),
-        )
+    let key = |lane: &str,
+               provider: Option<&str>,
+               pricing: &busbar_contract::records::MeteringPricingV1| {
+        MeterIdentity {
+            common: (
+                common.principal.clone(),
+                metering_bucket(common.arrived),
+                lane.to_owned(),
+                provider.unwrap_or_default().to_owned(),
+                common.era.effective_from,
+                common.group.clone(),
+                common
+                    .era
+                    .entry_id
+                    .map(|id| id.metering_version())
+                    .unwrap_or_default(),
+            ),
+            role: Some(pricing.identity()),
+        }
     };
     let mut meters = Vec::new();
     for partition in &projection.partitions {
+        let pricing = busbar_contract::records::MeteringPricingV1::SelectedUsage;
         let usage_units = partition.billed_counts();
         if !usage_units.is_empty() {
             meters.push((
                 key(
                     &partition.identity.lane,
                     partition.identity.provider.as_deref(),
+                    &pricing,
                 ),
                 MeterCounts {
+                    pricing: Some(pricing),
                     usage_units,
                     ..MeterCounts::default()
                 },
@@ -622,11 +631,49 @@ fn selected_meter_counts(
         }
     }
     if let Some(request) = &projection.logical_request {
+        let pricing = busbar_contract::records::MeteringPricingV1::SelectedRequest;
         meters.push((
-            key(&request.lane, request.provider.as_deref()),
+            key(&request.lane, request.provider.as_deref(), &pricing),
             MeterCounts {
+                pricing: Some(pricing),
                 requests: 1,
                 ..MeterCounts::default()
+            },
+        ));
+    }
+    use super::unit_checkpoint::partitions::{CapturedFee, FeeResult};
+    let fee_pricing = match &projection.fee {
+        CapturedFee::NotOwner { .. } | CapturedFee::PendingOwner { .. } => None,
+        CapturedFee::ResolvedOwner { basis, result } => {
+            Some(busbar_contract::records::MeteringPricingV1::SelectedFee {
+                lane: basis.lane.clone(),
+                charged: u64::from(*result == FeeResult::Charged),
+                refunded: u64::from(*result == FeeResult::Refunded),
+                unknown: 0,
+            })
+        }
+        CapturedFee::RecoveredUnknown { basis } => {
+            Some(busbar_contract::records::MeteringPricingV1::SelectedFee {
+                lane: basis.lane.clone(),
+                charged: 0,
+                refunded: 0,
+                unknown: 1,
+            })
+        }
+    };
+    if let Some(pricing) = fee_pricing {
+        let mut identity = key(&projection.session_origin.lane, None, &pricing);
+        let era = projection.fee.basis().era;
+        identity.common.4 = era.effective_from;
+        identity.common.6 = era
+            .entry_id
+            .map(|id| id.metering_version())
+            .unwrap_or_default();
+        meters.push((
+            identity,
+            MeterCounts {
+                pricing: Some(pricing),
+                ..Default::default()
             },
         ));
     }

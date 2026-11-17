@@ -273,6 +273,7 @@ async fn one_recorded_usage_is_one_number_on_every_surface() {
         store
             .ledger()
             .add_metering(&busbar_contract::records::MeteringDelta {
+                pricing: None,
                 scale: 0,
                 usage_units: Default::default(),
                 key_id: KEY.into(),

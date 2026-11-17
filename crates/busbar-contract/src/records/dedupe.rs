@@ -189,6 +189,7 @@ impl Feed {
 
     fn metering(&mut self, d: &MeteringDelta) {
         let MeteringDelta {
+            pricing,
             scale,
             key_id,
             bucket,
@@ -227,6 +228,24 @@ impl Feed {
         for (unit, n) in usage_units {
             self.text(unit);
             self.i128(*n);
+        }
+        if let Some(pricing) = pricing {
+            self.text("busbar.selected-metering.v1");
+            let identity = pricing.identity();
+            self.text(identity.name());
+            self.u64(u64::from(identity.lane().is_some()));
+            self.text(identity.lane().unwrap_or_default());
+            if let super::MeteringPricingV1::SelectedFee {
+                charged,
+                refunded,
+                unknown,
+                ..
+            } = pricing
+            {
+                self.u64(*charged);
+                self.u64(*refunded);
+                self.u64(*unknown);
+            }
         }
     }
 

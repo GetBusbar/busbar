@@ -61,6 +61,7 @@ fn selected_value() -> json::Value {
         "attempt_classes": ["work"],
         "physical_classes": ["work"],
         "session_origin": { "instance": "plane", "lane": "plane\u{1f}", "provider": null },
+        "fee": { "state": "not_owner", "basis": { "lane": null, "era": { "effective_from": 42, "entry_id": null } } },
         "session": null,
         "attempts": [
             attempt(1, None, "declined", source_facts(None, None, None)),
@@ -226,6 +227,11 @@ async fn selected_memory_capacity_retains_all_facts_then_retries_once() {
     use crate::governance::{MeterCounts, MAX_PENDING_METERING_PER_SHARD};
     let gov = governance().await;
     let snapshot = decode(&selected_value());
+    let mut running = snapshot.clone();
+    running.ended = false;
+    running.partitions.as_mut().unwrap().disposition =
+        crate::governance::unit_checkpoint::partitions::Disposition::Running;
+    let accepted = gov.stage_selected_checkpoint(running, None).unwrap();
     {
         let mut shard = gov
             .pending_metering
@@ -242,13 +248,14 @@ async fn selected_memory_capacity_retains_all_facts_then_retries_once() {
                     0,
                     String::new(),
                     String::new(),
-                ),
+                )
+                    .into(),
                 MeterCounts::default(),
             );
         }
     }
     assert!(matches!(
-        gov.finish_selected_checkpoint(snapshot.clone(), None),
+        gov.finish_selected_checkpoint(snapshot.clone(), Some(accepted.revision)),
         SelectedTransfer::RetainedPending(_)
     ));
     assert!(gov
@@ -258,7 +265,7 @@ async fn selected_memory_capacity_retains_all_facts_then_retries_once() {
         .is_none());
     assert!(gov.unresolved_unit_target(&snapshot.principal, 0));
     assert!(matches!(
-        gov.finish_selected_checkpoint(snapshot.clone(), None),
+        gov.finish_selected_checkpoint(snapshot.clone(), Some(accepted.revision)),
         SelectedTransfer::RetainedPending(_)
     ));
     assert!(gov
@@ -324,4 +331,97 @@ async fn selected_refused_publication_retains_the_previous_revision_and_sources(
         .stage_selected_checkpoint((*accepted).clone(), Some(accepted.revision))
         .unwrap();
     assert_eq!(accepted, repeated);
+}
+
+#[tokio::test]
+async fn selected_pending_fee_keeps_raw_custody_until_nonparticipating_observation() {
+    use crate::governance::unit_checkpoint::{partitions::*, SelectedTransfer};
+    use busbar_contract::records::MeteringPricingV1;
+    struct Completion(std::sync::atomic::AtomicBool);
+    impl SelectedFeeCompletion for Completion {
+        fn observe(&self) -> Option<FeeResult> {
+            self.0.load(Ordering::Acquire).then_some(FeeResult::Charged)
+        }
+    }
+    let gov = governance().await;
+    let completion = Arc::new(Completion(std::sync::atomic::AtomicBool::new(false)));
+    let mut snapshot = decode(&selected_value());
+    snapshot.partitions.as_mut().unwrap().fee = CapturedFee::PendingOwner {
+        basis: FeeBasis {
+            lane: Some("plane\u{1f}original-pool".into()),
+            era: busbar_kernel_ledger::cost::RawRateEra::legacy(73),
+        },
+    };
+    let mut running = snapshot.clone();
+    running.ended = false;
+    running.partitions.as_mut().unwrap().disposition = Disposition::Running;
+    let prior = gov.stage_selected_checkpoint(running, None).unwrap();
+    assert!(matches!(
+        gov.finish_selected_checkpoint_with_fee(
+            snapshot.clone(),
+            Some(prior.revision),
+            Some(completion.clone())
+        ),
+        SelectedTransfer::RetainedPending(_)
+    ));
+    gov.flush_unit_checkpoints().await.unwrap();
+    assert!(gov.unresolved_unit_target(&snapshot.principal, 0));
+    assert!(gov.pending_metering.drain().next().is_none());
+    completion.0.store(true, Ordering::Release);
+    gov.flush_unit_checkpoints().await.unwrap();
+    assert!(gov.unresolved_unit_target(&snapshot.principal, 0));
+    let final_snapshot = gov
+        .take_selected_terminal_snapshot(snapshot.id)
+        .unwrap()
+        .unwrap();
+    assert!(matches!(
+        final_snapshot.partitions.as_ref().unwrap().fee,
+        CapturedFee::ResolvedOwner {
+            result: FeeResult::Charged,
+            ..
+        }
+    ));
+    gov.flush_unit_checkpoints().await.unwrap();
+    assert!(!gov.unresolved_unit_target(&snapshot.principal, 0));
+    let rows: Vec<_> = gov.pending_metering.drain().collect();
+    let (key, fee) = rows
+        .iter()
+        .find(|(_, counts)| matches!(counts.pricing, Some(MeteringPricingV1::SelectedFee { .. })))
+        .unwrap();
+    assert_eq!(key.common.4, 73);
+    assert_eq!(fee.requests, 0);
+    assert!(
+        matches!(&fee.pricing, Some(MeteringPricingV1::SelectedFee { lane: Some(lane), charged: 1, refunded: 0, unknown: 0 }) if lane == "plane\u{1f}original-pool")
+    );
+    assert!(matches!(
+        gov.finish_selected_checkpoint(snapshot, Some(prior.revision)),
+        SelectedTransfer::RejectedNotOwned { .. }
+    ));
+}
+
+#[tokio::test]
+async fn selected_unknown_fee_is_emitted_even_without_a_logical_request() {
+    use crate::governance::unit_checkpoint::partitions::*;
+    use busbar_contract::records::MeteringPricingV1;
+    let gov = governance().await;
+    let mut snapshot = decode(&selected_value());
+    snapshot.metered = false;
+    let parts = snapshot.partitions.as_mut().unwrap();
+    parts.disposition = Disposition::Failed;
+    parts.fee = CapturedFee::RecoveredUnknown {
+        basis: parts.fee.basis().clone(),
+    };
+    let rows = meter_events(&gov, &snapshot);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].requests, 0);
+    assert!(rows[0].usage_units.is_empty());
+    assert!(matches!(
+        rows[0].pricing,
+        Some(MeteringPricingV1::SelectedFee {
+            charged: 0,
+            refunded: 0,
+            unknown: 1,
+            ..
+        })
+    ));
 }
