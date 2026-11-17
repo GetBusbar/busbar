@@ -40,6 +40,64 @@ fn resolve_refuses_a_pair_the_table_does_not_declare() {
 }
 
 #[test]
+fn metrics_names_resolve_only_for_admin_authorization() {
+    use busbar_contract::authz::Scope;
+    use std::collections::BTreeSet;
+
+    let executable: BTreeSet<_> = admin_rows().map(|row| row.name).collect();
+    let grantable: BTreeSet<_> = crate::verb::TABLE
+        .iter()
+        .filter(|row| named_rung(row.name).is_some())
+        .map(|row| row.name)
+        .collect();
+    assert!(executable.is_subset(&grantable));
+    assert_eq!(
+        grantable
+            .difference(&executable)
+            .copied()
+            .collect::<BTreeSet<_>>(),
+        BTreeSet::from(["get_metrics", "get_metrics_hooks"]),
+        "authorization adds exactly the two administrative Named surfaces"
+    );
+    for (path, name) in [
+        ("/metrics", "get_metrics"),
+        ("/metrics/hooks", "get_metrics_hooks"),
+    ] {
+        assert_eq!(named_rung(name), Some(Scope::ReadOnly));
+        assert_eq!(name_at("GET", path), Some(name));
+        assert_eq!(name_at("GET", &format!("{path}?format=json")), Some(name));
+        assert_eq!(name_at("POST", path), None);
+        assert_eq!(
+            name_at("HEAD", path),
+            None,
+            "named HEAD authority is unchanged"
+        );
+        assert_eq!(name_at("GET", &format!("{path}/")), None);
+        assert_eq!(name_at("GET", &format!("{path}/other")), None);
+        assert!(
+            resolve("GET", path).is_none(),
+            "the handler is outside codec execution"
+        );
+        assert!(table().iter().all(|row| row.verb != name));
+    }
+    for row in crate::verb::TABLE.iter().filter(|row| {
+        row.class == crate::verb::Class::Named
+            && !matches!(
+                row.verb,
+                crate::verb::KernelVerb::GetMetrics | crate::verb::KernelVerb::GetMetricsHooks
+            )
+    }) {
+        assert_eq!(
+            named_rung(row.name),
+            None,
+            "{} must remain ungrantable",
+            row.name
+        );
+        assert_eq!(name_at(row.method, row.path), None);
+    }
+}
+
+#[test]
 fn matches_a_templated_path_and_captures_the_param() {
     let params = match_path("/api/v1/admin/keys/{id}", "/api/v1/admin/keys/abc123").unwrap();
     assert_eq!(params, vec![("id", "abc123")]);

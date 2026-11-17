@@ -36,6 +36,12 @@ fn isolated() -> bool {
 }
 
 async fn application() -> (Arc<busbar_kernel::state::App>, Scratch) {
+    application_with_native_keys(false).await
+}
+
+async fn application_with_native_keys(
+    native_keys: bool,
+) -> (Arc<busbar_kernel::state::App>, Scratch) {
     let (module, directory, settings) =
         crate::distribution::rig::actual_store("telemetry-admin-actual-store");
     assert!(
@@ -58,6 +64,9 @@ async fn application() -> (Arc<busbar_kernel::state::App>, Scratch) {
     document["identity-providers"][operator] = serde_json::json!({
         "module": operator, "token": { "file": operator_token },
     });
+    if native_keys {
+        document["auth"]["admin_auth"] = serde_json::json!([operator, "keys"]);
+    }
     let deploy = busbar_kernel::config::deploy_from_deserializer(
         document,
         &crate::root::boot::axis_test_grammar(),
@@ -106,6 +115,9 @@ async fn application() -> (Arc<busbar_kernel::state::App>, Scratch) {
         .expect("the actual Store hydrates");
     (app, Scratch(directory))
 }
+
+#[path = "metrics_authorization.rs"]
+mod metrics_authorization;
 
 #[tokio::test]
 async fn info_process_generation_is_available_without_metrics_and_changes_on_restart() {

@@ -47,6 +47,38 @@ fn admin_mint_refuses_mixed_grants() {
 }
 
 #[test]
+fn metrics_named_mint_preserves_scope_and_closed_vocabulary() {
+    for verbs in [
+        vec!["get_metrics"],
+        vec!["get_metrics_hooks"],
+        vec!["get_metrics", "get_metrics_hooks"],
+    ] {
+        let body = busbar_contract::json::to_string(&busbar_contract::json::json!({
+            "name": "metrics-reader", "admin": { "scope": "read-only", "verbs": verbs }
+        }))
+        .unwrap();
+        let grant = mint(&body)
+            .expect("the signed metrics operation is grantable")
+            .unwrap();
+        assert_eq!(grant.scope, "read-only");
+        assert_eq!(grant.verbs, verbs);
+    }
+    for row in crate::verb::TABLE.iter().filter(|row| {
+        row.class == crate::verb::Class::Named
+            && !matches!(
+                row.verb,
+                crate::verb::KernelVerb::GetMetrics | crate::verb::KernelVerb::GetMetricsHooks
+            )
+    }) {
+        let body = busbar_contract::json::to_string(&busbar_contract::json::json!({
+            "name": "not-admin", "admin": { "scope": "full", "verbs": [row.name] }
+        }))
+        .unwrap();
+        assert!(mint(&body).is_err(), "{} is not an admin grant", row.name);
+    }
+}
+
+#[test]
 fn whoami_matches_gate() {
     crate::ensure_seam();
     let principal = || Principal::from_id("key:vk_x");
