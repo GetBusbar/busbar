@@ -420,6 +420,98 @@ async fn installed_webhook_cancellation_counts_queued_and_inflight_and_retains_n
     receiver.finish().await;
 }
 
+#[tokio::test]
+async fn acknowledged_native_webhook_finishes_root_shutdown_and_retires_actual_writer() {
+    let mut receiver = Receiver::start(false).await;
+    let mut fixture = NativeExport::open(
+        "busbar_export_webhook_plugin",
+        serde_json::json!({"url": receiver.url}),
+    )
+    .await;
+    fixture.send(b"acknowledged", Box::new(()));
+    assert_eq!(receiver.next().await, b"acknowledged");
+    receiver.release.notify_waiters();
+    tokio::time::timeout(WAIT, async {
+        while fixture.door.delivered() != 1 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(fixture.finish_native(WAIT).await, 0);
+    assert!(fixture.observers.is_settled());
+    assert_eq!(fixture.door.dropped(), 0);
+    assert!(
+        fixture.write_probe().await.is_err(),
+        "finish retired this exact native writer"
+    );
+    receiver.finish().await;
+}
+
+#[tokio::test]
+async fn cancelled_native_webhook_root_finish_retains_writer_and_original_loss() {
+    let mut receiver = Receiver::start(false).await;
+    let mut fixture = NativeExport::open(
+        "busbar_export_webhook_plugin",
+        serde_json::json!({"url": receiver.url}),
+    )
+    .await;
+    fixture.send(b"in-flight", Box::new(()));
+    assert_eq!(receiver.next().await, b"in-flight");
+    fixture.send(b"queued", Box::new(()));
+    assert_eq!(fixture.finish_native(Duration::from_millis(100)).await, 75);
+    fixture
+        .write_probe()
+        .await
+        .expect("incomplete finish cannot retire the admitted native writer");
+    let stopped = fixture.quiesced().await;
+    assert_eq!(
+        (stopped.queued, stopped.in_flight, stopped.dropped),
+        (0, 0, 2)
+    );
+    assert_eq!(fixture.door.delivered(), 0);
+    assert_eq!(fixture.witness.attempts.load(Ordering::Acquire), 1);
+    // A deadline may leave the original at the observer or already in native custody. Resume
+    // the same owner, never manufacture another loss record or replace its receipt.
+    fixture.observers.stop_intake();
+    tokio::time::timeout(WAIT, async {
+        loop {
+            fixture.observers.step();
+            busbar_kernel::audit::auditlog::flush_pending()
+                .await
+                .unwrap();
+            fixture.observers.step();
+            if fixture.observers.is_settled() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    let rows = busbar_kernel::audit::auditlog::AUDIT_LOG.list_filtered(
+        0,
+        usize::MAX,
+        Some("export.loss"),
+        None,
+    );
+    let originals: Vec<_> = rows
+        .iter()
+        .filter(|row| row.instance.as_deref() == Some(fixture.name.as_str()))
+        .collect();
+    assert_eq!(
+        originals.len(),
+        1,
+        "root finish and resumed settlement confirm one original"
+    );
+    assert!(matches!(
+        originals[0].resource.as_str(),
+        "dropped.stopped.count_1" | "dropped.stopped.count_2"
+    ));
+    assert_eq!(fixture.observers.late_callbacks(), 0);
+    receiver.finish().await;
+}
+
 /// Observation-only forwarding boundary: every answer and cancellation is the installed image's.
 struct NativeWitness {
     port: Arc<dyn busbar_ports::export::ExportPort>,
