@@ -476,6 +476,56 @@ async fn native_data_selected_scope_denial_never_claims_replay() {
 }
 
 #[tokio::test]
+async fn native_data_without_node_audit_custody_refuses_before_money_or_effects() {
+    let f = fixture(true);
+    let (request, selected, cx, _owner) = arrival(&f, 1);
+    let binding = request.binding().clone();
+    let authorized = f
+        .route
+        .prepare(request, selected, cx)
+        .await
+        .unwrap()
+        .complete()
+        .await
+        .unwrap();
+    let allocation = NativeDataAllocation::register(authorized).unwrap();
+    let context = allocation.context().clone();
+    let gov = Arc::new(
+        crate::governance::GovState::new_with_core(crate::real_store::core().await, None, None)
+            .await
+            .unwrap(),
+    );
+    let money = Arc::new(PlaneMoney::new(gov, Arc::new(Post)));
+    let book = money.clone();
+    let commits = Arc::new(AtomicUsize::new(0));
+    let observed = commits.clone();
+    let pending = Arc::new(allocation.into_pending(move |receipt| {
+        observed.fetch_add(1, Ordering::SeqCst);
+        let admitted = book
+            .admit_existing(
+                receipt.begin().unwrap(),
+                Arc::from(Vec::<String>::new()),
+                FeeRefund::CallerStatus,
+                ExhaustionMode::FinishUnit,
+            )
+            .unwrap();
+        Ok(ordinary_unit(&book, admitted))
+    }));
+    let calls = PlaneCalls(AtomicUsize::new(0));
+    let mut task = begin_task(&calls, &pending);
+    let declaration = task.request_declaration().unwrap();
+    assert!(
+        pending.pending().admit(None, None, declaration).is_err(),
+        "original physical and money owners cannot replace Node audit custody"
+    );
+    assert_eq!(commits.load(Ordering::SeqCst), 0);
+    assert_eq!(money.open_units(), 0);
+    assert!(!context.effects_allowed());
+    assert!(binding.check_executing().is_err());
+    assert!(pending.execution().is_none());
+}
+
+#[tokio::test]
 async fn native_data_keeps_gate_closed_until_actual_money_and_physical_join() {
     let f = fixture(true);
     let (request, selected, cx, owner) = arrival(&f, 1);
