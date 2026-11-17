@@ -1134,7 +1134,7 @@ impl BootIdentity {
     }
 }
 
-/// One node of `/info.nodes`.
+/// One node lease row: a row of the `core/process` view `nodes`. Times are epoch seconds.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NodeRow {
     pub node_id: String,

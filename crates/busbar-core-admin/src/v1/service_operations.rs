@@ -47,58 +47,29 @@ impl AdminService {
 
     pub(crate) async fn info(&self) -> Result<InfoView, AdminError> {
         let live = busbar_kernel::persistence::boot_identity::live();
-        let nodes = match live {
-            Some(live) => live
-                .nodes()
-                .await
-                .map_err(|_| AdminError::Internal)?
-                .into_iter()
-                .map(|n| NodeView {
-                    node_id: n.node_id,
-                    started_at: n.started_at,
-                    last_seen_at: n.last_seen_at,
-                    state: n.state.into(),
-                    role: n.role.into(),
-                })
-                .collect(),
-            None => Vec::new(),
-        };
-
-        let auth_modules = auth_modules_compiled_in();
-        let hook_plugins = hook_plugins_compiled_in();
-
-        let view = self.app.engine_tables_view();
-        let providers: std::collections::BTreeSet<String> = (0..view.lane_count())
-            .filter_map(|i| view.lane_view(i).map(|l| l.provider.to_string()))
-            .collect();
-
+        let started_at_ms = super::started_at_ms();
+        let mut warnings = Vec::new();
+        if busbar_kernel::appbuild::booted_with_ignore_overlay() {
+            warnings.push(InfoWarning {
+                code: "overlay_ignored",
+                message: "booted with --ignore-overlay: the persisted config overlay was not \
+                          merged; a later reload or apply re-merges it",
+                since_ms: started_at_ms.unwrap_or(0),
+            });
+        }
         Ok(InfoView {
             version: env!("CARGO_PKG_VERSION"),
-            build: BuildInfo {
-                auth_modules,
-                hook_plugins,
-                weighted_floor: true,
-            },
-            uptime_seconds: PROCESS_START.get().map(|s| s.elapsed().as_secs()),
-            started_at: PROCESS_START_EPOCH.get().copied(),
-            process_boot_nonce: busbar_kernel::snapshot::process_generation()
+            deployment_id: live.map(|l| l.deployment_id().to_string()),
+            node_id: live.map(|l| l.node_id()),
+            incarnation: busbar_kernel::snapshot::process_generation()
                 .map(|(nonce, _)| nonce.to_string()),
-            topology: TopologyInfo {
-                pools: view.pools().len(),
-                models: view.model_indices().len(),
-                providers: providers.len(),
-            },
-            config_persistence: self.app.overlay_path.is_some(),
-            config_version: self.app.config_version,
-            kinds_revision: crate::v1::json::kinds::kinds_revision(&self.app),
+            started_at_ms,
             config_generation: self
                 .app
                 .config_generation
                 .load(std::sync::atomic::Ordering::Acquire),
-            overlay_ignored: busbar_kernel::appbuild::booted_with_ignore_overlay(),
-            deployment_id: live.map(|l| l.deployment_id().to_string()),
-            node_id: live.map(|l| l.node_id()),
-            nodes,
+            config_persistence: self.app.overlay_path.is_some(),
+            warnings,
         })
     }
 

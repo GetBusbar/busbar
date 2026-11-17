@@ -3560,7 +3560,7 @@ pub(crate) async fn hook_status(
 pub(crate) const V1_GET_PATHS: &[(&str, &str)] = &[
     (
         "/info",
-        "Version, compiled-in plugin proof, uptime, topology",
+        "Node identity: version, deployment, node, incarnation, warnings",
     ),
     (PATH_HOOKS, "Hook registry (definitions)"),
     (

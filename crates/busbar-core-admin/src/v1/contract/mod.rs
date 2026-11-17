@@ -214,51 +214,16 @@ impl From<busbar_kernel::config::transaction::TxnError> for AdminError {
     }
 }
 
-/// The compiled-in plugin catalog + topology + uptime returned by `GET /api/v1/admin/info`. Powers
-/// version negotiation for tooling AND the compliance-by-compilation proof: `auth_modules`/`hook_plugins` reflect
-/// the ACTUAL binary (feature-gated at compile time), not config, so `--no-default-features` shows a
-/// provably smaller surface. No LLM content, ever.
+/// `GET /api/v1/admin/info`: this node's identity and nothing else (ADMIN-API-1.6-ONE-MODEL §10.1).
+/// Every admin credential reads it, so it names no topology, no compiled-in plugin and no
+/// process-local counter: node lease rows are the `core/process` view `nodes`, counts come from
+/// `/kinds`, and the `/kinds` ETag is the discovery revision.
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
 pub struct InfoView {
-    /// busbar semantic version (`CARGO_PKG_VERSION`).
+    /// busbar semantic version (`CARGO_PKG_VERSION`). Informational: clients negotiate on
+    /// `/whoami.features` and discovery, never on this.
     pub version: &'static str,
-    pub build: BuildInfo,
-    /// Seconds since process start, or `None` if the start instant was never stamped.
-    pub uptime_seconds: Option<u64>,
-    /// Epoch seconds of process start, the BOOT EPOCH marker: `config_version` (and any
-    /// process-local counter) resets on restart, so a consumer that sees `started_at` change knows
-    /// to read a counter reset as "new epoch", never as "reverted".
-    pub started_at: Option<u64>,
-    /// Random 128-bit process generation, shared with the `/metrics` build_info series and available even when
-    /// metrics are disabled. Stable across configuration reloads; a new process generates a new
-    /// nonce. Null when OS randomness failed; clients must not fabricate a restart identity.
-    #[cfg_attr(
-        feature = "openapi-schema",
-        schemars(regex(pattern = "^[0-9a-f]{32}$"))
-    )]
-    pub process_boot_nonce: Option<String>,
-    pub topology: TopologyInfo,
-    /// Whether config-overlay persistence is enabled, i.e. the config is MUTABLE with a writable
-    /// `config.overlay` backend: `true` = API-applied config changes are durable across restarts;
-    /// `false` = the config is LOCKED (`config.locked: true`) and admin-API config mutations are
-    /// refused. Lets tooling tell an operator whether runtime changes are accepted and durable.
-    pub config_persistence: bool,
-    /// The durable config generation (ADMIN-API-1.6 6.1): advanced in the Store before every
-    /// publication, so it never repeats across restarts. The ETag of every config resource is
-    /// `"<deployment_id>.<config_generation>"`.
-    pub config_generation: u64,
-    /// Monotonic config version: `0` at boot, +1 per API config apply. Drift-detection: re-read and
-    /// compare to tell whether the running config changed. Process-local (resets on restart).
-    pub config_version: u64,
-    /// The `/kinds` ETag (ADMIN-API-1.6 §5.1): a digest over every (category, kind, instance,
-    /// image, instance config digest), kept once per generation. It moves whenever a kind or an
-    /// instance is added, removed or reconfigured.
-    pub kinds_revision: String,
-    /// Present and `true` when this process was booted with `--ignore-overlay`; a later
-    /// reload/apply re-merges the overlay.
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
-    pub overlay_ignored: bool,
     /// This deployment's identity (`dep_` + 32 hex, opaque): kept once in the Store, the same
     /// for every node and every restart. Absent only before the process has booted its Store.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -274,47 +239,42 @@ pub struct InfoView {
         schemars(regex(pattern = "^node_[0-9a-f]{16}$"))
     )]
     pub node_id: Option<String>,
-    /// Every node the Store holds a lease row for, so a client can prove it reads the whole
-    /// deployment.
-    pub nodes: Vec<NodeView>,
+    /// This process's incarnation, the join-id term (`{node_id}.{incarnation}.{unit_key}`): a
+    /// random 128-bit process generation, shared with the `/metrics` build_info series. Stable
+    /// across configuration reloads; a new process draws a new one. Null when OS randomness failed;
+    /// clients must not fabricate a restart identity.
+    #[cfg_attr(
+        feature = "openapi-schema",
+        schemars(regex(pattern = "^[0-9a-f]{32}$"))
+    )]
+    pub incarnation: Option<String>,
+    /// Epoch milliseconds of process start, or null if the start instant was never stamped. A
+    /// changed value means a new process.
+    pub started_at_ms: Option<u64>,
+    /// The durable config generation (ADMIN-API-1.6 6.1): advanced in the Store before every
+    /// publication, so it never repeats across restarts. The ETag of every config resource is
+    /// `"<deployment_id>.<config_generation>"`.
+    pub config_generation: u64,
+    /// Whether config-overlay persistence is enabled, i.e. the config is MUTABLE with a writable
+    /// `config.overlay` backend: `true` = API-applied config changes are durable across restarts;
+    /// `false` = the config is LOCKED (`config.locked: true`) and admin-API config mutations are
+    /// refused. Lets tooling tell an operator whether runtime changes are accepted and durable.
+    pub config_persistence: bool,
+    /// Conditions an operator should know about this process, oldest first; empty normally.
+    pub warnings: Vec<InfoWarning>,
 }
 
-/// One node of `InfoView.nodes`: a Store node lease row.
+/// One `InfoView.warnings` entry.
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
-pub struct NodeView {
-    pub node_id: String,
-    /// Epoch seconds the node started.
-    pub started_at: u64,
-    /// Epoch seconds of the node's last lease refresh.
-    pub last_seen_at: u64,
-    /// `live` (lease unexpired), `lost` (expired without release) or `stopped` (released).
-    pub state: String,
-    /// `writer` for the node this Store's current writer authority runs, otherwise `replica`.
-    pub role: String,
-}
-
-/// The compiled-in feature proof (`InfoView.build`).
-#[derive(Debug, Clone, Serialize)]
-#[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
-pub struct BuildInfo {
-    /// Auth modules baked into this binary (e.g. `["tokens"]`; empty under `--no-default-features`).
-    pub auth_modules: Vec<&'static str>,
-    /// Hook plugins baked into this binary — the served description's example is read off the
-    /// compiled-in list itself ([`hook_plugins_description`]).
-    #[cfg_attr(feature = "openapi-schema", schemars(description = hook_plugins_description()))]
-    pub hook_plugins: Vec<&'static str>,
-    /// The inline SWRR floor: ALWAYS `true` (compiled in unconditionally, non-removable).
-    pub weighted_floor: bool,
-}
-
-/// Pool/model/provider counts (`InfoView.topology`).
-#[derive(Debug, Clone, Serialize)]
-#[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
-pub struct TopologyInfo {
-    pub pools: usize,
-    pub models: usize,
-    pub providers: usize,
+pub struct InfoWarning {
+    /// What the warning is, an extensible set: `overlay_ignored` (booted with `--ignore-overlay`:
+    /// the persisted config overlay was not merged; a later reload or apply re-merges it).
+    pub code: &'static str,
+    /// Core-written English for an operator; never parsed.
+    pub message: &'static str,
+    /// Epoch milliseconds since the condition holds.
+    pub since_ms: u64,
 }
 
 /// A pool in the topology read (`GET /api/v1/admin/pools`). Summary shape today: name + the member
@@ -358,8 +318,7 @@ pub struct PoolMemberStatusView {
     /// Whether the lane can currently take dispatch (breaker closed / recovered). `false` while a
     /// tripped breaker cools down or the lane is dead.
     pub usable: bool,
-    /// Seconds until a tripped breaker's cooldown elapses; `0` when not cooling down. (`_seconds`
-    /// suffix: the one unit-suffix spelling across the surface, like `uptime_seconds`.)
+    /// Seconds until a tripped breaker's cooldown elapses; `0` when not cooling down.
     pub cooldown_remaining_seconds: u64,
     /// Free concurrency slots on this lane right now (lane-global; permits are shared across pools).
     pub available_concurrency: usize,
@@ -1226,14 +1185,6 @@ pub struct AdminAuthView {
     /// Whether the chain is the default one (`auth.admin_auth` absent): the operator credential
     /// when one is admitted, then `keys`.
     pub default: bool,
-}
-
-#[cfg(feature = "openapi-schema")]
-fn hook_plugins_description() -> String {
-    format!(
-        "Hook plugins baked into this binary (e.g. `{:?}`).",
-        crate::v1::service::hook_plugins_compiled_in()
-    )
 }
 
 /// Word-free (OPERATOR-FROM-ADMITTED-AUTH §3.9): the OpenAPI document is generated in a build with no
