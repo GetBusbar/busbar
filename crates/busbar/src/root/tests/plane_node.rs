@@ -246,6 +246,7 @@ async fn rig_with_billing(fixture: Fixture, billed: bool) -> Rig {
                 parent: None,
                 enabled: true,
                 limits: vec![busbar_kernel::config::groups::LimitCfg {
+                    selected: None,
                     metric: busbar_kernel::config::groups::LimitMetric::Budget,
                     amount: 100,
                     per: Some(busbar_kernel::config::groups::LimitWindow::Total),
@@ -3512,6 +3513,7 @@ fn the_lane(origin: &str) -> LaneSpec {
 
 fn budget_per_day(amount: u64) -> busbar_kernel::config::groups::LimitCfg {
     busbar_kernel::config::groups::LimitCfg {
+        selected: None,
         metric: busbar_kernel::config::groups::LimitMetric::Budget,
         amount,
         per: Some(busbar_kernel::config::groups::LimitWindow::Day),

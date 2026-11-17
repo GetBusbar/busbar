@@ -853,6 +853,7 @@ mod tests {
                     pub upstream: Str<'a>,
                     pub provider: Str<'a>,
                     pub params: Slice<'a, Pair<'a>>,
+                    pub admission: Bytes<'a>,
                 }
             }
             pods {}
@@ -888,6 +889,10 @@ mod tests {
             }
             sync fn demux(&self, h: &Host, path: Str<'_>, body: Bytes<'_>, out: &mut Out<'_>) -> Result<(), Fail> {
                 let _ = (h, path, body, out);
+                Err(crate::fail::Fail::unsupported())
+            }
+            sync fn select_resources(&self, h: &Host, mode: u32, req: &PlaneReq<'_>, body: Bytes<'_>, out: &mut Out<'_>) -> Result<(), Fail> {
+                let _ = (h, mode, req, body, out);
                 Err(crate::fail::Fail::unsupported())
             }
         }
@@ -1207,7 +1212,7 @@ mod tests {
             },
         );
 
-        fn lease() -> OutLease {
+        fn lease() -> OutLease<'static> {
             OutLease::new(vec![0; 4096], 1 << 20).expect("a free ACTIVE slot")
         }
 

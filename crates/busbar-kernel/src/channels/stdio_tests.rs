@@ -37,6 +37,7 @@ fn upstream(
     pin: ProgramPin,
 ) -> UpstreamDef {
     UpstreamDef {
+        resource: None,
         allow_private: false,
         name: "member".into(),
         url: None,
@@ -57,7 +58,10 @@ fn upstream(
 }
 
 fn req(carrier: u32, framing: u32, head: &[u8]) -> ChannelReq<'_> {
+    static UNIT: std::sync::LazyLock<super::budget::UnitBudget> =
+        std::sync::LazyLock::new(|| super::budget::ChannelBudget::new().instance().unit());
     ChannelReq {
+        budget: &UNIT,
         exchange: 1,
         carrier,
         flags: 0,

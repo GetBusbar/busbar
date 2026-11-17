@@ -131,6 +131,10 @@ fn exchange() -> UpExchange {
 
 fn candidate() -> Candidate {
     Candidate {
+        pool: "pool".into(),
+        qualified_member: "fixture-member".into(),
+        identity: crate::plane_driver::port_upstream::TargetIdentity::Registration,
+        resource: None,
         upstream: "a".into(),
         provider: "{}".into(),
         base_path: "".into(),
@@ -139,13 +143,106 @@ fn candidate() -> Candidate {
     }
 }
 
-fn target_for(name: &str) -> Option<MemberTarget> {
+fn target_for(_pool: &str, name: &str) -> Option<MemberTarget> {
     (name != "skip").then(|| MemberTarget {
+        identity: crate::plane_driver::port_upstream::TargetIdentity::Registration,
+        resource: None,
+        registered_upstream: None,
+        definition: None,
         provider: "{\"k\":1}".into(),
         base_path: "/v1".into(),
         flags: 2,
         params: vec![("region".into(), "eu".into())],
     })
+}
+
+#[test]
+fn target_definition_retains_the_actual_registration_allocation() {
+    use std::sync::Arc;
+
+    let definition = crate::upstreams::UpstreamDef::from_config(
+        "actual",
+        &serde_json::json!({"url": "https://example.com"}),
+        &crate::config::min3::UpstreamCfg::default(),
+        &|_| unreachable!("this registration has no custom trust anchor"),
+    )
+    .unwrap();
+    let actual = Arc::new(definition.clone());
+    let lookalike = Arc::new(definition);
+    let target = super::TargetDefinition::new(Arc::clone(&actual));
+    assert!(Arc::ptr_eq(target.as_arc(), &actual));
+    assert_eq!(target, target.clone());
+    assert_ne!(target, super::TargetDefinition::new(lookalike));
+}
+
+#[test]
+fn target_lookup_preserves_the_selected_member_qualification() {
+    let fake = Fake::default();
+    fake.picks
+        .lock()
+        .unwrap()
+        .push_back(member("seat\u{1f}model"));
+    let rt = Runtime::new().unwrap();
+    let tok = token();
+    let cell = Mutex::new(Some(fake));
+    let make =
+        |_: &Wants, _: Option<&super::RequestPoolReceipt>| cell.lock().unwrap().take().unwrap();
+    let targets = |pool: &str, name: &str| {
+        (pool == "pool" && name == "seat\u{1f}model").then(MemberTarget::bare)
+    };
+    let handle = rt.handle().clone();
+    let walk = EgressWalk::new(&make, &tok, &handle, &targets);
+    let got = walk.members().next(&Wants::default());
+    assert!(
+        got.is_some(),
+        "the exact configured member must reach its target record"
+    );
+    assert_eq!(&*got.unwrap().upstream, "model");
+}
+
+#[test]
+fn the_same_member_in_two_pools_uses_each_pools_resolved_target() {
+    let fake = Fake::default();
+    for pool in ["fast", "careful"] {
+        fake.picks.lock().unwrap().push_back(Pick::Member {
+            name: "seat\u{1f}model".into(),
+            pool: pool.into(),
+            passthrough: false,
+            provider: "configured".into(),
+        });
+    }
+    let rt = Runtime::new().unwrap();
+    let tok = token();
+    let cell = Mutex::new(Some(fake));
+    let make =
+        |_: &Wants, _: Option<&super::RequestPoolReceipt>| cell.lock().unwrap().take().unwrap();
+    let targets = |pool: &str, member: &str| {
+        if member != "seat\u{1f}model" {
+            return None;
+        }
+        let mut target = MemberTarget::bare();
+        target.identity = crate::plane_driver::port_upstream::TargetIdentity::Model {
+            dialect: format!("{pool}-dialect").into(),
+            model: format!("{pool}-wire").into(),
+        };
+        target.resource = Some(format!("{pool}-resource").into());
+        Some(target)
+    };
+    let handle = rt.handle().clone();
+    let walk = EgressWalk::new(&make, &tok, &handle, &targets);
+    for pool in ["fast", "careful"] {
+        let picked = walk.members().next(&Wants::default()).unwrap();
+        assert_eq!(&*picked.pool, pool);
+        assert_eq!(&*picked.qualified_member, "seat\u{1f}model");
+        assert_eq!(
+            picked.resource.as_deref(),
+            Some(format!("{pool}-resource").as_str())
+        );
+        picked.with_target(1, "caller-dialect", "alias", |target| {
+            assert_eq!(target.dialect, format!("{pool}-dialect"));
+            assert_eq!(target.model, format!("{pool}-wire"));
+        });
+    }
 }
 
 #[test]
@@ -156,7 +253,7 @@ fn a_pick_becomes_a_candidate_named_as_the_operator_and_stated_as_its_target() {
     let tok = token();
     let made = Cell::new(0);
     let cell = Mutex::new(Some(fake));
-    let make = |_: &Wants| {
+    let make = |_: &Wants, _: Option<&super::RequestPoolReceipt>| {
         made.set(made.get() + 1);
         cell.lock().unwrap().take().unwrap()
     };
@@ -183,7 +280,7 @@ fn the_far_end_is_built_from_the_wants_the_plane_forwarded_with() {
     let rt = Runtime::new().unwrap();
     let tok = token();
     let seen = Mutex::new(None);
-    let make = |w: &Wants| {
+    let make = |w: &Wants, _: Option<&super::RequestPoolReceipt>| {
         *seen.lock().unwrap() = Some(w.clone());
         Fake::default()
     };
@@ -207,7 +304,8 @@ fn a_member_the_plane_has_no_upstream_for_is_passed_over() {
     let rt = Runtime::new().unwrap();
     let tok = token();
     let cell = Mutex::new(Some(fake));
-    let make = |_: &Wants| cell.lock().unwrap().take().unwrap();
+    let make =
+        |_: &Wants, _: Option<&super::RequestPoolReceipt>| cell.lock().unwrap().take().unwrap();
     let handle = rt.handle().clone();
     let walk = EgressWalk::new(&make, &tok, &handle, &target_for);
     let got = walk.members().next(&Wants::default()).unwrap();
@@ -222,7 +320,8 @@ fn with_walk<R>(
     let rt = Runtime::new().unwrap();
     let tok = token();
     let cell = Mutex::new(Some(fake));
-    let make = |_: &Wants| cell.lock().unwrap().take().unwrap();
+    let make =
+        |_: &Wants, _: Option<&super::RequestPoolReceipt>| cell.lock().unwrap().take().unwrap();
     let handle = rt.handle().clone();
     let walk = EgressWalk::new(&make, &tok, &handle, &target_for);
     let mut members = walk.members();
@@ -239,7 +338,8 @@ fn judged_of(fake: Fake, run: impl FnOnce(&mut dyn Members)) -> Vec<u8> {
     let rt = Runtime::new().unwrap();
     let tok = token();
     let cell = Mutex::new(Some(picking(fake)));
-    let make = |_: &Wants| cell.lock().unwrap().take().unwrap();
+    let make =
+        |_: &Wants, _: Option<&super::RequestPoolReceipt>| cell.lock().unwrap().take().unwrap();
     let handle = rt.handle().clone();
     let walk = EgressWalk::new(&make, &tok, &handle, &target_for);
     let mut members = walk.members();
@@ -504,7 +604,8 @@ fn the_plane_s_wait_rides_with_its_verdict_into_the_breaker() {
     let rt = Runtime::new().unwrap();
     let tok = token();
     let cell = Mutex::new(Some(picking(fake)));
-    let make = |_: &Wants| cell.lock().unwrap().take().unwrap();
+    let make =
+        |_: &Wants, _: Option<&super::RequestPoolReceipt>| cell.lock().unwrap().take().unwrap();
     let handle = rt.handle().clone();
     let walk = EgressWalk::new(&make, &tok, &handle, &target_for);
     let mut members = walk.members();
@@ -545,7 +646,8 @@ fn an_exhausted_walk_keeps_the_wait_it_stated_for_the_client() {
     let rt = Runtime::new().unwrap();
     let tok = token();
     let cell = Mutex::new(Some(fake));
-    let make = |_: &Wants| cell.lock().unwrap().take().unwrap();
+    let make =
+        |_: &Wants, _: Option<&super::RequestPoolReceipt>| cell.lock().unwrap().take().unwrap();
     let handle = rt.handle().clone();
     let walk = EgressWalk::new(&make, &tok, &handle, &target_for);
     let mut members = walk.members();

@@ -858,10 +858,40 @@ diagnostics! {
         "The oldest audit line no stamp covers yet is older than the alert threshold (ten times audit.seal_every, at least one second). The notary is backing off a failing signer or store, or it has stopped. Lines are durable and linked; a crash now leaves a longer unstamped tail for the next process on this host to seal or report.",
         "Look for BUSBAR-2049 just before this line and act on its reason. The gauge audit_unstamped_age_ms shows the current age.";
 
+    AUDIT_SEALED_AFTER_RESTART = 2054, Audit, BenignRecurring, "audit-sealed-after-restart", "1.6.0", false,
+        "An unstamped audit tail was sealed after a restart",
+        "A busbar process stopped before its audit notary stamped its last lines. On restart, the node itself (same holder) or the next process on the same host walked the links from the last valid stamp to the tail, found them intact and no longer than any crash leaves, and signed one after_restart page over exactly those lines with the deployment key. The verify tool reports such pages under restart_sealed, apart from live pages, with the sealer node and the down interval.",
+        "None: this is the designed outcome of a crash. Look for the crash itself (exit code, kill, host restart) if it was not expected.";
+
+    AUDIT_CHAIN_BROKEN_AT_BOOT = 2055, Audit, Actionable, "audit-chain-broken-at-boot", "1.6.0", false,
+        "An audit chain is broken after its last valid stamp; the tail is recorded, never sealed",
+        "On restart the walk from a node's last valid audit stamp to its tail failed: a line does not link or hash (link, sequence, digest), a body does not decode (decode), a stamp failed its own check (stamp), a legacy line carries no signature (unsigned), the tail has no stamp of this node on this host (unanchored), it follows a clean-shutdown page (after_final), it is longer than any crash leaves (span), the walk ran out of budget (budget), or a fenced node has no seal row (unsealed_fenced). A signed break notice records the node, the last good line and the unsealed range; no stamp vouches for those lines. Boot continues.",
+        "Treat the named lines as unauthenticated until explained: compare the store with a backup or the export of earlier audit pages. The fields node, last_good, unsealed_from, unsealed_to and reason locate the damage.";
+
+    AUDIT_PREDECESSOR_REFUSED = 2056, Audit, Actionable, "audit-predecessor-refused", "1.6.0", false,
+        "A crashed predecessor on this host was not sealed",
+        "The start-up predecessor sealer found a node on this host that it may not seal: the process has no host name (host_unknown), the node's host or archive row does not match its id reservation (assignment), its last stamp names another host (foreign_host), its liveness at this process's start cannot be shown (sibling_unknown), its seal row does not verify (seal_row_invalid), its records use a recipe this build cannot read (recipe_unsupported), or a step failed for good (permanent). No seal outcome was written for it; any completed writer fence remains in force, and its tail stays reported as unauthenticated, and the next process on the host retries it.",
+        "For host_unknown, set HOSTNAME to a value unique to the machine. For assignment or seal_row_invalid, treat the store as tampered until explained. For the rest, check the store and start the next process on the host.";
+
+    AUDIT_PREDECESSOR_SEAL_FAILED = 2057, Audit, Actionable, "audit-predecessor-seal-failed", "1.6.0", false,
+        "Sealing a crashed predecessor is failing and is retried",
+        "A step of sealing a crashed predecessor's audit tail (fence, tail read, sign or seal write) failed or did not answer within one second. The step is retried on a capped backoff of up to one second, and a write is never dropped mid-flight. An Info line follows once the node is sealed.",
+        "Check the store's health and the audit signing key. If the process stops first, the next process on the host seals the node.";
+
     TERMINAL_AUDIT_STAGE_FAILED = 2051, Audit, Actionable, "terminal-audit-stage-failed", "1.6.0", false,
         "A request terminal audit original could not be staged",
         "The journal refused the terminal audit original before native confirmation. The request fails instead of reporting success without its audit evidence; an already streaming response terminates with an error. The journal and audit chain positions do not advance for the refused original. The counter busbar_audit_stage_failures_total counts these failures.",
         "Check store availability and journal custody pressure. A closed journal can also indicate shutdown. Do not assume an upstream operation was undone when its terminal audit failed.";
+
+    EXPORT_LOSS_OBSERVED = 2052, Audit, Actionable, "export-loss-observed", "1.6.0", false,
+        "An exporter first observed lost delivery or failed evidence",
+        "The exporter retained its first delivery-loss, capture-refusal or audit-integrity failure for transfer to native audit custody. This warning is emitted once per logical instance. Later observations still update their distinct counters. Held ciphertext is not lost delivery.",
+        "Check the exporter destination, admission and audit availability. Inspect the export counters for current counts. This warning does not mean that native audit has confirmed the first-loss record.";
+
+    EXPORT_LOSS_UNCONFIRMED = 2053, Audit, Actionable, "export-loss-unconfirmed", "1.6.0", false,
+        "Exporter loss evidence remains unconfirmed or a producer reported after quiescence",
+        "The observer could not yet confirm its retained first-loss evidence, or an exporter called it after shutdown observation intake closed. The original remains retained; an accepted native audit original is never replaced by a retry. Shutdown cannot report successful observation settlement while evidence or a late callback is unresolved.",
+        "Restore native audit availability and allow settlement within the existing shutdown budget. A callback after producer quiescence indicates a runtime lifecycle defect. Preserve stderr and the incomplete-shutdown report.";
 
     PLANE_AUDITLOG_WRITE_FAILED = 2044, Audit, Actionable, "plane-auditlog-write-failed", "1.6.0", false,
         "Admin audit record could not be written through the durable journal seam (evidence lost)",
@@ -2091,3 +2121,18 @@ macro_rules! diag_debug {
     };
 }
 pub use crate::{diag_debug, diag_error, diag_warn};
+
+/// The reserved observer path is visible to the normal stderr layer but excluded from every
+/// export projection, including events attached to an otherwise exportable parent span.
+pub const EXPORT_LOSS_TARGET: &str = "busbar::export::loss";
+
+/// Bounded caller-selected first/retry notification. Deliberately bypasses `emit` and its
+/// actionable diagnostic audit event: the observer already owns its one native original.
+pub fn export_loss(first: bool, instance: &str) {
+    let diagnostic = if first {
+        EXPORT_LOSS_OBSERVED
+    } else {
+        EXPORT_LOSS_UNCONFIRMED
+    };
+    tracing::warn!(target: EXPORT_LOSS_TARGET, diag = %diagnostic.banner(), instance, "export observation requires attention");
+}

@@ -15,6 +15,7 @@ use busbar_contract::conn::{ConnError, ConnId, Conns, Piece, PollConns, Ticket};
 use busbar_contract::json::{json, JsonValueTrait as _};
 use busbar_contract::transport::trust::Anchors;
 use busbar_contract::transport::ConnFacts;
+use busbar_kernel::channels::budget::{ChannelBudget, Claim, UnitBudget};
 use busbar_kernel::channels::carrier::Wires;
 use busbar_kernel::channels::ChannelReq;
 use busbar_kernel::upstreams::{ProgramPin, StdioCommand, UpstreamTls};
@@ -243,11 +244,315 @@ fn upstreams() -> Arc<ConfiguredUpstreams> {
 fn shared(table: Option<ConnTable>) -> SeatShared {
     SeatShared {
         upstreams: BTreeMap::from([("mcp".to_owned(), upstreams())]),
+        catalogs: BTreeMap::new(),
+        channel_budgets: BTreeMap::from([("mcp".to_owned(), ChannelBudget::new().instance())]),
         signals: SignalRegistry::new(),
         secrets: Arc::new(Fixed),
         kernel: Arc::new(Kernel::new()),
         table,
     }
+}
+
+/// Keyless catalog fixtures must never exercise an inbound owner or mint a credential.
+struct UnusedAuth;
+
+impl busbar_kernel::issued::IssuedCredentials for UnusedAuth {
+    fn lookup<'a>(
+        &'a self,
+        _: u64,
+        _: &'a str,
+        _: &'a str,
+    ) -> BoxFut<'a, busbar_contract::secure::SecureVec> {
+        panic!("keyless catalog attempted issued lookup")
+    }
+}
+
+impl busbar_kernel::plane_grants::ReplayGuard for UnusedAuth {
+    fn claim<'a>(
+        &'a self,
+        _: &'a busbar_plugin_abi::host_side::caller::Caller<'_>,
+        _: &'a [u8],
+        _: u64,
+    ) -> BoxFut<'a, Result<bool, RecordsDenied>> {
+        panic!("keyless catalog attempted replay admission")
+    }
+    fn claim_until<'a>(
+        &'a self,
+        _: &'a busbar_plugin_abi::host_side::caller::Caller<'_>,
+        _: &'a [u8],
+        _: u64,
+    ) -> BoxFut<'a, Result<bool, RecordsDenied>> {
+        panic!("keyless catalog attempted replay admission")
+    }
+}
+
+async fn catalog() -> (CatalogSeat, String, String) {
+    catalog_with_registration_collision(false).await
+}
+
+async fn catalog_with_registration_collision(collision: bool) -> (CatalogSeat, String, String) {
+    use super::super::{min3_auth, min3_outbound_auth, min3_provider_catalog};
+    use busbar_kernel::config::{self, Grammar};
+    use busbar_kernel::plane_driver::provider_catalog::ProviderPlane;
+    let grammar = Grammar::empty();
+    let mut deploy = config::deploy_from_yaml_str(
+        "providers:\n  p: {api_key: none}\nmodels:\n  m: {provider: p, upstream_model: wire-model, max_concurrent: 1, attempt_timeout_ms: 321}\npools:\n  fast:\n    members: [{model: m, weight: 7}]\n    breaker: {base_cooldown_secs: 37}\n    failover: {timeout_secs: 17, max_hops: 2, exclusions: [m]}\n    on_exhausted: {fallback_pool: slow}\n  slow:\n    members: [m]\n    on_exhausted: {queue: {max_ms: 100}}\n",
+        &grammar,
+    ).unwrap();
+    if collision {
+        let pool = deploy.pools.pools["fast"].clone();
+        deploy.pools.pools.insert("mcp".into(), pool);
+    }
+    let defs = config::providers::catalog_from_str(
+        "p: {protocol: wire, base_url: 'https://provider.example/api', path: /invoke}",
+        &grammar,
+    )
+    .unwrap();
+    let mut resolved = config::resolve_with_provider_planes(
+        &deploy,
+        &defs,
+        &[ProviderPlane {
+            instance: "mcp".into(),
+            image: "admitted-kind-fixture".into(),
+            dialects: ["wire".to_owned()].into(),
+            schema: r#"{"type":"object","properties":{},"additionalProperties":false}"#.into(),
+        }],
+    )
+    .unwrap();
+    let plan = resolved.catalogs.remove("mcp").unwrap();
+    let fast = plan.select("fast").unwrap().to_owned();
+    let slow = plan.select("slow").unwrap().to_owned();
+    let allocations = plan
+        .targets()
+        .keys()
+        .enumerate()
+        .map(|(i, pair)| {
+            (
+                pair.clone(),
+                min3_provider_catalog::Allocation {
+                    destination: busbar_contract::dest::DestinationId::new(100 + i as u64),
+                    need: NeedId(100 + i as u32),
+                    upstream: format!("catalog-{i}").into(),
+                },
+            )
+        })
+        .collect();
+    let definitions = upstreams();
+    let registration = SeatPool::of("mcp", &definitions).unwrap();
+    let bindings = busbar_kernel::auth_bindings::ProviderBindings::default();
+    let mut staged = min3_provider_catalog::prepare(
+        &resolved.config,
+        &plan,
+        &allocations,
+        &registration,
+        &definitions,
+        &bindings,
+        &BTreeMap::new(),
+    )
+    .unwrap();
+    let faults = crate::root::store_double::NativeFaults::open().await;
+    let store = crate::root::real_store::core_over(faults).await;
+    let (_directory, holds, _refresh) = busbar_kernel::directory::KernelDirectory::prepare(
+        store,
+        Arc::new(busbar_kernel::directory::LogEvents),
+        Vec::new(),
+    )
+    .await
+    .unwrap();
+    let auth = min3_auth::AuthSet::new(
+        Vec::new(),
+        &holds,
+        min3_auth::AuthOwners {
+            issued: Arc::new(UnusedAuth),
+            replay: Arc::new(UnusedAuth),
+            cache: Arc::new(busbar_kernel::auth::verdicts::Verdicts::new(
+                busbar_kernel::auth::verdicts::VerdictPolicy::DEFAULT,
+            )),
+        },
+        Duration::from_secs(30),
+    )
+    .unwrap();
+    let cache = Arc::new(busbar_kernel::custody::CredCache::new(
+        busbar_kernel::custody::CredPolicy::DEFAULT,
+        |_, _| panic!("keyless catalog attempted credential retry"),
+        |_, _| panic!("keyless catalog attempted credential mint"),
+    ));
+    let prepared = min3_outbound_auth::prepare(
+        &bindings,
+        staged.take_auth_rows(),
+        &auth,
+        &BTreeMap::new(),
+        cache,
+    )
+    .unwrap();
+    (
+        CatalogSeat {
+            sealed: staged.seal(&prepared).unwrap(),
+            pools: plan.pools().clone(),
+            plan: Arc::new(plan),
+        },
+        fast,
+        slow,
+    )
+}
+
+#[tokio::test]
+async fn catalog_seat_uses_sealed_routes_policies_targets_and_shared_capacity() {
+    let (catalog, fast, slow) = catalog().await;
+    let mut pool = SeatPool::of("mcp", &upstreams()).unwrap();
+    extend_catalog("mcp", &mut pool, &catalog).unwrap();
+    let fast_pool = &pool.pools[&fast];
+    assert_eq!(fast_pool.members[0].weight, 7);
+    assert_eq!(fast_pool.members[0].attempt_timeout_ms, Some(321));
+    assert_eq!(fast_pool.failover.timeout_secs, 17);
+    assert_eq!(fast_pool.failover.max_hops, 2);
+    assert_eq!(fast_pool.failover.exclusions, ["mcp\u{1f}m"]);
+    assert_eq!(
+        fast_pool.on_exhausted,
+        busbar_kernel_egress::OnExhausted::FallbackPool(slow.clone())
+    );
+    assert_eq!(
+        pool.pools[&slow].on_exhausted,
+        busbar_kernel_egress::OnExhausted::Queue { max_ms: 100 }
+    );
+    let table = Arc::new(Table::default());
+    let egress = egress_of(
+        "mcp",
+        seat_owner(7),
+        &ConnTable {
+            declared: table.clone(),
+            conns: table.clone(),
+        },
+        &pool,
+        Some(&catalog),
+    )
+    .unwrap();
+    let held = egress
+        .capacity
+        .try_acquire(fast_pool.members[0].destination)
+        .unwrap();
+    assert!(egress
+        .capacity
+        .try_acquire(pool.pools[&slow].members[0].destination)
+        .is_none());
+    assert!(catalog
+        .sealed
+        .capacity
+        .values()
+        .all(|slots| slots.available_permits() == 0));
+    drop(held);
+    assert!(egress
+        .capacity
+        .try_acquire(pool.pools[&slow].members[0].destination)
+        .is_some());
+    let probes = probe_targets(&pool);
+    for (pair, association) in &catalog.sealed.associations {
+        assert!(probes.iter().any(|probe| probe.pool == pair.0
+            && probe.qualified_member == pair.1
+            && probe.destination == association.destination));
+        assert!(Arc::ptr_eq(
+            &association.definition,
+            &catalog
+                .sealed
+                .model_upstreams
+                .get(&association.definition.name)
+                .unwrap()
+        ));
+        let target = (catalog.sealed.targets)(&pair.0, &pair.1).unwrap();
+        assert!(
+            matches!(target.identity, busbar_kernel::plane_driver::port_upstream::TargetIdentity::Model {dialect, model} if &*dialect == "wire" && &*model == "wire-model")
+        );
+    }
+    assert_eq!(table.declared.lock().unwrap().len(), pool.members.len());
+    assert_eq!(table.anchored.lock().unwrap().len(), pool.members.len());
+}
+
+#[tokio::test]
+async fn catalog_composition_keeps_model_definitions_out_of_channel_registrations() {
+    let (catalog, _, _) = catalog().await;
+    let model_names: Vec<_> = catalog
+        .sealed
+        .members
+        .iter()
+        .map(|member| member.upstream.clone())
+        .collect();
+    let table = Arc::new(Table::default());
+    let mut shared = shared(Some(ConnTable {
+        declared: table.clone(),
+        conns: table.clone(),
+    }));
+    shared.catalogs.insert("mcp".into(), Arc::new(catalog));
+    let wiring = compose(
+        &shared,
+        "mcp",
+        Accept::default(),
+        &who(7),
+        Arc::new(Quiet),
+        Handle::current(),
+    )
+    .unwrap();
+    let session = wiring.carrier.session();
+    session.map.point("alpha");
+    assert!(session.map.of(0).is_some());
+    for name in model_names {
+        session.map.point(&name);
+        assert!(
+            session.map.of(0).is_none(),
+            "model destination became a CHANNEL registration"
+        );
+    }
+    assert_eq!(table.declared.lock().unwrap().len(), 5);
+}
+
+#[tokio::test]
+async fn seat_request_inventory_retains_the_actual_candidate_catalog() {
+    let (catalog, _, _) = catalog().await;
+    let plan = Arc::clone(&catalog.plan);
+    let mut shared = shared(None);
+    shared.catalogs.insert("mcp".into(), Arc::new(catalog));
+    let wiring = compose(
+        &shared,
+        "mcp",
+        Accept::default(),
+        &who(7),
+        Arc::new(Quiet),
+        Handle::current(),
+    )
+    .unwrap();
+    drop(shared);
+    let routes = Arc::clone(&wiring.request_routes);
+    drop(wiring);
+    assert_eq!(
+        Arc::strong_count(&plan),
+        2,
+        "request inventory retains the exact candidate plan"
+    );
+    drop(routes);
+    assert_eq!(Arc::strong_count(&plan), 1);
+}
+
+#[tokio::test]
+async fn catalog_selector_cannot_alias_the_registration_request_domain() {
+    let (catalog, _, _) = catalog_with_registration_collision(true).await;
+    let table = Arc::new(Table::default());
+    let mut shared = shared(Some(ConnTable {
+        declared: table.clone(),
+        conns: table.clone(),
+    }));
+    shared.catalogs.insert("mcp".into(), Arc::new(catalog));
+    assert!(compose(
+        &shared,
+        "mcp",
+        Accept::default(),
+        &who(7),
+        Arc::new(Quiet),
+        Handle::current()
+    )
+    .is_err());
+    assert!(
+        table.declared.lock().unwrap().is_empty(),
+        "ambiguous request scope refuses before connection declarations"
+    );
 }
 
 fn who(instance: u64) -> Namespace {
@@ -402,6 +707,7 @@ async fn a_seat_with_no_connection_table_still_gets_its_carrier_and_walks_nothin
 
 fn stdio(argv: &[&str]) -> UpstreamDef {
     UpstreamDef {
+        resource: None,
         allow_private: false,
         name: "files".into(),
         url: None,
@@ -421,8 +727,9 @@ fn stdio(argv: &[&str]) -> UpstreamDef {
     }
 }
 
-fn channel() -> ChannelReq<'static> {
+fn channel(budget: &UnitBudget) -> ChannelReq<'_> {
     ChannelReq {
+        budget,
         exchange: 1,
         carrier: CARRIER_STDIO,
         flags: 0,
@@ -433,12 +740,164 @@ fn channel() -> ChannelReq<'static> {
     }
 }
 
+#[tokio::test]
+async fn a_seat_without_its_retained_channel_account_refuses_before_declaring_routes() {
+    let table = Arc::new(Table::default());
+    let mut shared = shared(Some(ConnTable {
+        declared: table.clone(),
+        conns: table.clone(),
+    }));
+    shared.channel_budgets.clear();
+    assert!(compose(
+        &shared,
+        "mcp",
+        Accept::default(),
+        &who(7),
+        Arc::new(Quiet),
+        Handle::current()
+    )
+    .is_err());
+    assert!(table.declared.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn the_seat_exposes_the_same_instance_account_to_original_unit_admission() {
+    let shared = shared(None);
+    let wiring = compose(
+        &shared,
+        "mcp",
+        Accept::default(),
+        &who(7),
+        Arc::new(Quiet),
+        Handle::current(),
+    )
+    .unwrap();
+    let budget = &shared.channel_budgets["mcp"];
+    let held: Vec<_> = (0..32)
+        .map(|_| {
+            budget
+                .unit()
+                .reserve(
+                    Claim {
+                        leases: 8,
+                        ..Claim::default()
+                    },
+                    None,
+                )
+                .unwrap()
+        })
+        .collect();
+    let original_unit = wiring.channel_budget.unit();
+    assert!(original_unit
+        .reserve(
+            Claim {
+                leases: 1,
+                ..Claim::default()
+            },
+            None
+        )
+        .is_err());
+    drop(held);
+    assert!(original_unit
+        .reserve(
+            Claim {
+                leases: 1,
+                ..Claim::default()
+            },
+            None
+        )
+        .is_ok());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn channel_drivers_across_generations_share_the_retained_instance_account() {
+    use busbar_kernel::channels::UpstreamChannels;
+    let shared = shared(None);
+    let budget = &shared.channel_budgets["mcp"];
+    let namespace = who(7);
+    let first = channels_of(&shared, budget.clone(), &namespace, Arc::new(Quiet), None);
+    let second = channels_of(&shared, budget.clone(), &namespace, Arc::new(Quiet), None);
+    // This is capacity from the same actual instance, held across both generation drivers.
+    let held: Vec<_> = (0..32)
+        .map(|_| {
+            budget
+                .unit()
+                .reserve(
+                    Claim {
+                        leases: 8,
+                        ..Claim::default()
+                    },
+                    None,
+                )
+                .unwrap()
+        })
+        .collect();
+    let unit = budget.unit();
+    let upstream = stdio(&["/bin/cat"]);
+    assert!(first
+        .attach(&namespace.caller(), &upstream, channel(&unit))
+        .await
+        .is_err());
+    assert!(second
+        .attach(&namespace.caller(), &upstream, channel(&unit))
+        .await
+        .is_err());
+    drop(held);
+    let one = first
+        .attach(&namespace.caller(), &upstream, channel(&unit))
+        .await
+        .unwrap();
+    let held: Vec<_> = (0..31)
+        .map(|_| {
+            budget
+                .unit()
+                .reserve(
+                    Claim {
+                        leases: 8,
+                        ..Claim::default()
+                    },
+                    None,
+                )
+                .unwrap()
+        })
+        .collect();
+    let remaining = budget
+        .unit()
+        .reserve(
+            Claim {
+                leases: 7,
+                ..Claim::default()
+            },
+            None,
+        )
+        .unwrap();
+    assert!(second
+        .attach(&namespace.caller(), &upstream, channel(&unit))
+        .await
+        .is_err());
+    drop(one);
+    let two = second
+        .attach(&namespace.caller(), &upstream, channel(&unit))
+        .await
+        .unwrap();
+    drop((two, remaining, held));
+    let foreign = ChannelBudget::new().instance().unit();
+    assert!(second
+        .attach(&namespace.caller(), &upstream, channel(&foreign))
+        .await
+        .is_err());
+}
+
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_contained_stdio_channel_opens_and_carries_bytes_both_ways() {
     let wires = ProcessWires::new(Arc::new(Fixed), None).spawning(Arc::new(ContainedSpawn));
     let up = stdio(&["/bin/cat"]);
-    let req = channel();
+    let process = ChannelBudget::new();
+    let instance = process.instance();
+    let unit = instance.unit();
+    let req = channel(&unit);
     let wire = wires.open(&up, &req).await.expect("the child starts");
     let mut write = wire.write.expect("a stdio wire takes writes");
     let mut read = wire.read;
@@ -469,7 +928,10 @@ async fn a_stdio_child_s_whole_process_tree_stops_with_its_generation() {
     let wires = ProcessWires::new(Arc::new(Fixed), None).spawning(Arc::new(ContainedSpawn));
     // The child forks a grandchild and reports its pid; `exec` keeps the child itself alive on its stdin.
     let up = stdio(&["/bin/sh", "-c", "/bin/sleep 300 & echo $!; exec /bin/cat"]);
-    let req = channel();
+    let process = ChannelBudget::new();
+    let instance = process.instance();
+    let unit = instance.unit();
+    let req = channel(&unit);
     let wire = wires.open(&up, &req).await.expect("the child starts");
     let mut line = String::new();
     let mut reader = BufReader::new(wire.read);

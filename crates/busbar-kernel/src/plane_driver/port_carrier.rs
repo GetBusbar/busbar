@@ -126,6 +126,13 @@ impl<'a> Mapped<'a> {
 }
 
 impl Members for Mapped<'_> {
+    fn hook_remaining(&self) -> Option<usize> {
+        self.inner.hook_remaining()
+    }
+    fn hook_failure(&self) -> Option<&str> {
+        self.inner.hook_failure()
+    }
+
     fn next(&mut self, wants: &Wants) -> Option<Candidate> {
         let picked = self.inner.next(wants)?;
         self.map.point(&picked.upstream);
@@ -184,6 +191,13 @@ impl PortCarrier {
     /// One request's carrier: its own exchange map and the host its CHANNEL intents attach through.
     #[must_use]
     pub fn session(&self) -> CarrierSession {
+        self.session_with_budget(None)
+    }
+
+    pub fn session_with_budget(
+        &self,
+        budget: Option<crate::channels::budget::UnitBudget>,
+    ) -> CarrierSession {
         let map = Arc::new(ExchangeUpstreams::new(Arc::clone(&self.upstreams)));
         let of = Arc::clone(&map);
         let host = UpstreamHost::new(
@@ -191,7 +205,8 @@ impl PortCarrier {
             self.who.clone(),
             Box::new(move |exchange| of.of(exchange)),
             self.rt.clone(),
-        );
+        )
+        .with_budget(budget);
         CarrierSession {
             host,
             map,
@@ -416,6 +431,7 @@ impl CarrierSession {
                 }
             };
             Self::apply(task, answer, ran, resolver, effects, books)?;
+            effects.observed_usage(task.usage());
             if !hand_out(effects, &mut ran.client) {
                 if ran.detach.is_none() {
                     return Ok(());

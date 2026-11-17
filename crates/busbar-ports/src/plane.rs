@@ -37,6 +37,8 @@ pub enum PlaneOut<'o> {
         carrier: u32,
         outbound: u32,
     },
+    /// Factual echo of the host-selected descriptor; never an execution admission.
+    ResourceEcho(busbar_plugin_abi::resource_admission::DescriptorEcho<'o>),
     UpMethod(&'o str),
     UpPath(&'o str),
     UpScope(&'o str),
@@ -61,6 +63,11 @@ pub enum PlaneOut<'o> {
     },
     Fact(u32, FactRef<'o>),
     Conversation(&'o [u8]),
+    /// Selected exchange-zero correlation; host authority is retained separately.
+    SelectedResource(busbar_plugin_abi::fallback_usage::SelectedResource<'o>),
+    PreparedEstimates(busbar_plugin_abi::fallback_usage::PreparedEstimates<'o>),
+    AttemptUsage(busbar_plugin_abi::fallback_usage::AttemptUsage<'o>),
+    AttemptUsageEnd(busbar_plugin_abi::fallback_usage::AttemptEnd),
     Usage {
         class: &'o str,
         amount: u64,
@@ -259,6 +266,8 @@ pub struct TargetIn<'a> {
     pub upstream: &'a str,
     pub provider: &'a str,
     pub params: &'a [Pair<'a>],
+    /// Opaque host-prepared records. Empty carries no resource authority.
+    pub admission: &'a [u8],
 }
 
 /// One TRUST answer core encodes for P_TRUST (§12.14). `named` = TRUST_VERIFY's SIGNED_ALGORITHM/SIGNED_CRITICAL
@@ -288,6 +297,8 @@ pub struct RouteInfo {
     pub auth: u32,
     pub pattern: Box<str>,
     pub cred_header: Option<Box<str>>,
+    /// Complete declared generic scope kinds; empty means this route does not opt in.
+    pub resource_kinds: Vec<Box<str>>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -323,8 +334,35 @@ pub struct WorkAnswer<'a> {
 
 pub trait PlanePort: Send + Sync + 'static {
     fn routes(&self) -> &[RouteInfo];
+    /// Declared kinds for this route; empty means no native resource-admission producer.
+    fn resource_kinds(&self, route: u32) -> &[Box<str>] {
+        self.routes()
+            .iter()
+            .find(|r| r.route == route)
+            .map_or(&[], |r| r.resource_kinds.as_slice())
+    }
+    /// Pure inventory/selection records, validated before return. Unsupported by default;
+    /// callers must never use a failure to fall back to weaker authorization.
+    fn resource_facts(
+        &self,
+        _mode: u32,
+        _req: &PlaneIn<'_>,
+        _body: &[u8],
+        _byte_limit: usize,
+    ) -> Result<Vec<u8>, PortError> {
+        Err(PortError::Refused {
+            code: busbar_plugin_abi::fail::refused::R_UNSUPPORTED,
+            text: "resource admission is unavailable".into(),
+            error: None,
+        })
+    }
+
     fn dialects(&self) -> &[Box<str>];
     fn usage_classes(&self) -> &[UsageClass];
+    /// Frozen D_ATTEMPT_CLASS subset. An opted-in image cannot use the legacy empty default.
+    fn attempt_classes(&self) -> &[Box<str>] {
+        &[]
+    }
     fn facts(&self) -> u64;
     /// D_TICK_S, if declared.
     fn tick_s(&self) -> Option<u64>;
@@ -360,6 +398,26 @@ pub trait PlanePort: Send + Sync + 'static {
         bytes: &[u8],
         sink: &mut dyn FnMut(PlaneOut<'_>),
     ) -> Result<(), PortError>;
+    /// Calls piece once using charged caller-owned output, returning its fully validated record length.
+    /// The caller must establish admission and live lease authority before entry, classify the complete
+    /// answer, and acquire any required general capacity before applying effects. No sink runs here.
+    /// Foreign/test ports must opt into this contract; the default never falls back to pooled `piece`.
+    fn piece_fixed(
+        &self,
+        s: &mut PlaneSession,
+        from: u32,
+        exchange: u32,
+        flags: u32,
+        bytes: &[u8],
+        out: &mut [u8],
+    ) -> Result<usize, PortError> {
+        let _ = (s, from, exchange, flags, bytes, out);
+        Err(PortError::Refused {
+            code: busbar_plugin_abi::fail::refused::R_UNSUPPORTED,
+            text: "".into(),
+            error: None,
+        })
+    }
     fn rewrite(
         &self,
         s: &mut PlaneSession,

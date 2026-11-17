@@ -103,7 +103,9 @@ pub mod journal;
 pub mod link;
 // The page stamps and break notices (SEALING-FIX §3.1): built and signed by the notary and the
 // Bootstrap signer threads, never per request.
+pub mod restart;
 pub mod stamp;
+pub use restart::{span_ms, walk_tail, BackwardWalk, BreakAt, TailItem, WalkContext, WalkOutcome};
 // The audit signing capabilities (SEALING-FIX §5.3): consumed once at boot, used on the signer
 // threads only.
 pub mod grant;
@@ -172,7 +174,7 @@ pub use link::{line_fingerprint, line_hasher, Fingerprint, LineAt, Linked, Prepa
 pub use recipe::{
     digest_over, digest_record, visit_fields, DigestField, DigestValue, FieldSink, Recipe,
     DIGEST_RECIPE, DIGEST_RECIPE_V2, DIGEST_RECIPE_V4, DIGEST_RECIPE_V6, DIGEST_RECIPE_V7,
-    LINK_RECIPE,
+    LINK_RECIPE, LINK_RECIPE_V2,
 };
 pub use record::{
     attribution, Attempt, AttemptOutcome, Audit, AuditBreak, AuditBreakKind, AuditChain,

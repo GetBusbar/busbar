@@ -155,6 +155,7 @@ impl Demuxer for PortDemuxer {
 /// The production [`ChannelHost`]: [`UpstreamChannels`] under the plane instance's binding. `upstream_of` names
 /// the configured upstream an exchange was sent to (the walk's choice); an exchange it does not know cannot attach.
 pub struct UpstreamHost {
+    budget: Option<crate::channels::budget::UnitBudget>,
     channels: Arc<dyn UpstreamChannels>,
     who: Namespace,
     upstream_of: Box<dyn Fn(u32) -> Option<Arc<UpstreamDef>> + Send + Sync>,
@@ -170,11 +171,16 @@ impl UpstreamHost {
         rt: Handle,
     ) -> Self {
         Self {
+            budget: None,
             channels,
             who,
             upstream_of,
             rt,
         }
+    }
+    pub fn with_budget(mut self, budget: Option<crate::channels::budget::UnitBudget>) -> Self {
+        self.budget = budget;
+        self
     }
 }
 
@@ -183,6 +189,7 @@ impl ChannelHost for UpstreamHost {
         let upstream = (self.upstream_of)(attach.exchange).ok_or(RecordsDenied::Invalid)?;
         let who = self.who.caller();
         let req = ChannelReq {
+            budget: self.budget.as_ref().ok_or(RecordsDenied::Invalid)?,
             exchange: attach.exchange,
             carrier: attach.carrier,
             flags: attach.flags,

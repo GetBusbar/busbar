@@ -46,6 +46,11 @@ pub mod cli;
 pub(crate) mod cold;
 pub mod connector;
 pub mod credentials;
+pub(crate) mod export_observer;
+pub(crate) mod min3_admin_auth;
+pub(crate) mod min3_auth;
+pub(crate) mod min3_outbound_auth;
+pub(crate) mod native_refusals;
 pub(crate) mod provisioning;
 pub(crate) mod provisioning_mount;
 // busbar:request-path
@@ -201,6 +206,11 @@ pub(crate) mod migrate;
 pub(crate) mod migrate_records;
 /// The boot's MIN-3 registry: Need handlers, image admission, the boot walk (ROOT-BOOT).
 pub(crate) mod min3_boot;
+pub(crate) mod min3_candidate_secrets;
+pub(crate) mod min3_framers;
+pub(crate) mod min3_provider_catalog;
+pub(crate) mod min3_provider_plan;
+pub(crate) mod min3_selected_policy;
 /// K9: each MIN-3 plane seat's egress walk and channel carrier, composed at boot from the configured upstreams.
 pub(crate) mod plane_seats;
 /// The HTTP mount of the MIN-3 plane instances: their data routes onto `PortDriver::serve`.

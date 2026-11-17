@@ -17,6 +17,12 @@ use crate::cost::CostModel;
 use crate::governance::{AdmitGrant, GovState};
 use crate::teller::{Ended, UnitCtx};
 
+mod native_admission;
+pub(super) mod native_attempt;
+pub use native_admission::NativeAdmissionError;
+mod native_fee;
+mod selected_view;
+pub use selected_view::UsageView;
 mod observations;
 pub(crate) use observations::budget_id as observation_budget_id;
 pub use observations::{ObservationPolicy, ObservationRuntimeError};
@@ -118,6 +124,27 @@ pub struct ParentMoney {
     money: Arc<UnitMoney>,
     grant: Arc<AdmitGrant>,
     account: Arc<FeeAccount>,
+}
+
+impl ParentMoney {
+    /// The frozen monetary generation a child inherits, independently of its destination route.
+    pub fn cost(&self) -> &Arc<CostModel> {
+        &self.money.cost
+    }
+
+    pub(in crate::plane_driver) fn matches_child_money(
+        &self,
+        money: &UnitMoney,
+        grant: &Arc<AdmitGrant>,
+    ) -> bool {
+        Arc::ptr_eq(&self.money.key, &money.key)
+            && Arc::ptr_eq(&self.money.cost, &money.cost)
+            && Arc::ptr_eq(&self.grant, grant)
+            && self.money.pool == money.pool
+            && self.money.arrived == money.arrived
+            && self.money.charge == money.charge
+            && self.money.mode == money.mode
+    }
 }
 
 /// One actual admission reserved for a later child. Its financial participation is linear:
@@ -280,6 +307,7 @@ struct FeeState {
     children: usize,
     parent_refund: Option<bool>,
     child_incurred: bool,
+    completed: Option<crate::governance::unit_checkpoint::partitions::FeeResult>,
 }
 
 struct FeeAccount {
@@ -296,7 +324,8 @@ struct FeeParticipation {
 
 impl Drop for FeeParticipation {
     fn drop(&mut self) {
-        let refund = {
+        use crate::governance::unit_checkpoint::partitions::FeeResult;
+        let result = {
             let mut state = locked(&self.account.state);
             if self.owner {
                 state.parent_refund = Some(self.refundable);
@@ -304,9 +333,15 @@ impl Drop for FeeParticipation {
                 state.children -= 1;
                 state.child_incurred |= !self.refundable;
             }
-            state.children == 0 && state.parent_refund == Some(true) && !state.child_incurred
+            (state.children == 0 && state.parent_refund.is_some()).then(|| {
+                if state.parent_refund == Some(true) && !state.child_incurred {
+                    FeeResult::Refunded
+                } else {
+                    FeeResult::Charged
+                }
+            })
         };
-        if refund {
+        if result == Some(FeeResult::Refunded) {
             let m = &self.account.money;
             self.account.gov.refund_charge(&m.charge);
             if let FeeRefund::PlaneFeeUnits(fees) = &m.fee {
@@ -326,10 +361,15 @@ impl Drop for FeeParticipation {
                 }
             }
         }
+        // Counts alone are not completion: publish only after the existing refund mutations.
+        if let Some(result) = result {
+            locked(&self.account.state).completed = Some(result);
+        }
     }
 }
 
 struct Open {
+    native: Option<native_attempt::NativeMoney>,
     spend_ceiling_micros: Option<u64>,
     observation: Option<Arc<crate::persistence::observations::BoundScope>>,
     observation_started: bool,
@@ -369,6 +409,7 @@ impl Open {
         checkpoint_audit: Option<Vec<u8>>,
     ) -> Self {
         Self {
+            native: None,
             spend_ceiling_micros: None,
             observation: None,
             observation_started: false,
@@ -652,6 +693,7 @@ impl PlaneMoney {
                 children: 0,
                 parent_refund: None,
                 child_incurred: false,
+                completed: None,
             }),
         });
         let open = Open::new(
@@ -878,9 +920,23 @@ impl PlaneMoney {
         classes: Arc<[String]>,
         fee: FeeRefund,
     ) -> Result<(), ReasonCode> {
+        self.install_child_with(parent, child, lane, classes, fee, |_, _, _| Ok(()))
+    }
+
+    /// The same checked parent/child transaction, with activation before the child is visible.
+    fn install_child_with<R, E: From<ReasonCode>>(
+        &self,
+        parent: &ParentMoney,
+        child: UnitKey,
+        lane: String,
+        classes: Arc<[String]>,
+        fee: FeeRefund,
+        activate: impl FnOnce(Arc<UnitMoney>, Arc<AdmitGrant>, Arc<()>) -> Result<R, E>,
+    ) -> Result<R, E> {
         if parent.parent == child {
-            return Err(ReasonCode::Unpriced);
+            return Err(ReasonCode::Unpriced.into());
         }
+        let checkpoint_audit = self.post.checkpoint_facts(child);
         let make_child = |open: &Open| -> Result<Open, ReasonCode> {
             if !Arc::ptr_eq(&open.identity, &parent.identity)
                 || open.finished
@@ -899,27 +955,53 @@ impl PlaneMoney {
             money.classes = classes;
             money.fee = fee;
             let account = open.fee.account.clone();
-            locked(&account.state).children += 1;
+            {
+                let mut state = locked(&account.state);
+                state.children = state.children.checked_add(1).ok_or(ReasonCode::Unpriced)?;
+            }
             Ok(Open::new(
                 Arc::new(money),
                 Some(parent.grant.clone()),
                 FeeParticipation {
                     account,
                     owner: false,
-                    refundable: false,
+                    // No child effects are admitted until activation succeeds. A failed
+                    // insertion must not mark an otherwise refundable parent fee incurred.
+                    refundable: true,
                 },
-                self.post.checkpoint_facts(child),
+                checkpoint_audit,
             ))
+        };
+        let mut removed = None;
+        let install = |children: &mut Shard, open: Open| {
+            let money = open.money.clone();
+            let grant = open.grant.as_ref().expect("parent-backed child").clone();
+            let identity = open.identity.clone();
+            children.insert(child, open);
+            match activate(money, grant, identity) {
+                Ok(receipt) => {
+                    children
+                        .get_mut(&child)
+                        .expect("new locked child")
+                        .fee
+                        .refundable = false;
+                    Ok(receipt)
+                }
+                Err(error) => {
+                    removed = children.remove(&child);
+                    Err(error)
+                }
+            }
         };
         let parent_shard = (parent.parent.get() % SHARDS as u64) as usize;
         let child_shard = (child.get() % SHARDS as u64) as usize;
-        if parent_shard == child_shard {
+        let result = if parent_shard == child_shard {
             let mut all = self.shard(child);
             if all.contains_key(&child) {
-                return Err(ReasonCode::Unpriced);
+                return Err(ReasonCode::Unpriced.into());
             }
             let open = make_child(all.get(&parent.parent).ok_or(ReasonCode::Unpriced)?)?;
-            all.insert(child, open);
+            install(&mut all, open)
         } else {
             let (mut first, mut second) = if parent_shard < child_shard {
                 (self.shard(parent.parent), self.shard(child))
@@ -932,12 +1014,14 @@ impl PlaneMoney {
                 (&mut second, &mut first)
             };
             if children.contains_key(&child) {
-                return Err(ReasonCode::Unpriced);
+                return Err(ReasonCode::Unpriced.into());
             }
             let open = make_child(parents.get(&parent.parent).ok_or(ReasonCode::Unpriced)?)?;
-            children.insert(child, open);
-        }
-        Ok(())
+            install(children, open)
+        };
+        // Dropping a child can finalize/refund the parent account. Never do it under shards.
+        drop(removed);
+        result
     }
 
     pub fn settle_end(&self, key: UnitKey, caller_status: u32) {
@@ -952,11 +1036,6 @@ impl PlaneMoney {
     }
 
     pub fn settle_end_as(&self, key: UnitKey, end: UnitEnd) {
-        let UnitEnd {
-            caller_status,
-            refused_unspent,
-            ..
-        } = end;
         let removed = {
             busbar_contract::stage_probe::tick(
                 busbar_contract::stage_probe::Derive::MoneyShardLock,
@@ -964,9 +1043,49 @@ impl PlaneMoney {
             let mut all = self.shard(key);
             all.remove(&key)
         };
-        let Some(mut open) = removed else {
+        let Some(open) = removed else {
             return;
         };
+        self.settle_removed(key, open, end);
+    }
+
+    /// Terminal cleanup checks and removes the exact admitted Open in the same critical section.
+    /// Retiring its invocation cannot prevent cleanup, and reusing a numeric unit cannot redirect it.
+    pub fn settle_admitted(
+        &self,
+        request: &super::request_admission::AdmittedRequest,
+        end: UnitEnd,
+    ) -> Result<bool, NativeAdmissionError> {
+        let removed = {
+            let mut all = self.shard(request.unit());
+            let Some(open) = all.get(&request.unit()) else {
+                return Ok(false);
+            };
+            let Some(grant) = &open.grant else {
+                return Err(NativeAdmissionError::NotLive);
+            };
+            if !request.matches_money_identity(&self.book, &open.identity, grant)
+                || !request.matches_governance(&self.gov)
+            {
+                return Err(NativeAdmissionError::NotLive);
+            }
+            if open.native.is_some() {
+                return Err(NativeAdmissionError::SelectedTerminalRequired);
+            }
+            all.remove(&request.unit())
+        };
+        if let Some(open) = removed {
+            self.settle_removed(request.unit(), open, end);
+        }
+        Ok(true)
+    }
+
+    fn settle_removed(&self, key: UnitKey, mut open: Open, end: UnitEnd) {
+        let UnitEnd {
+            caller_status,
+            refused_unspent,
+            ..
+        } = end;
         // A REFUSED, UNSPENT UNIT IS NOT COUNTED: no units reported (nor a cancel bill ledgered).
         if refused_unspent && !open.ledgered && open.last.iter().all(|u| u.amount == 0) {
             self.gov.release_request(&open.money.charge);
@@ -983,19 +1102,24 @@ impl PlaneMoney {
     }
 
     #[must_use]
-    pub fn last_counts(&self, key: UnitKey) -> Vec<UnitCount> {
-        busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::MoneyShardLock);
-        self.shard(key)
-            .get(&key)
-            .map(|o| o.last.clone())
-            .unwrap_or_default()
+    pub fn last_counts(&self, key: UnitKey) -> Option<Vec<(u32, Count)>> {
+        self.usage_fold(key)?
+            .by_class()
+            .map(|(class, count)| count.map(|count| (class, count)))
+            .collect()
     }
 
     /// The unit's last reported usage, folded once per revision (SP-M1): the meter gate's input.
     #[must_use]
     pub fn usage_fold(&self, key: UnitKey) -> Option<Arc<UsageFold>> {
         busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::MoneyShardLock);
-        self.shard(key).get_mut(&key).map(Open::usage_fold)
+        self.shard(key).get_mut(&key).and_then(|open| {
+            if let Some(native) = &open.native {
+                UsageFold::selected(native.checkpoint(), &open.money.classes).map(Arc::new)
+            } else {
+                Some(open.usage_fold())
+            }
+        })
     }
 
     /// The unit's serving lane with its usage fold, under one shard lock: the late accrual's
@@ -1003,9 +1127,13 @@ impl PlaneMoney {
     #[must_use]
     pub fn usage(&self, key: UnitKey) -> Option<(String, Arc<UsageFold>)> {
         busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::MoneyShardLock);
-        self.shard(key)
-            .get_mut(&key)
-            .map(|open| (open.money.lane.clone(), open.usage_fold()))
+        self.shard(key).get_mut(&key).and_then(|open| {
+            if open.native.is_some() {
+                None
+            } else {
+                Some((open.money.lane.clone(), open.usage_fold()))
+            }
+        })
     }
 
     /// [`PlaneMoney::usage`] with the unit's sealed attribution (ADMIN-API-1.6 §3.2): its key's
@@ -1014,7 +1142,10 @@ impl PlaneMoney {
     #[must_use]
     pub fn attributed_usage(&self, key: UnitKey) -> Option<(String, String, Arc<UsageFold>)> {
         busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::MoneyShardLock);
-        self.shard(key).get_mut(&key).map(|open| {
+        self.shard(key).get_mut(&key).and_then(|open| {
+            if open.native.is_some() {
+                return None;
+            }
             let m = &open.money;
             let (_, pool) = busbar_kernel_ledger::cost::split_plane_lane(&m.pool);
             let attribution = busbar_kernel_audit::attribution(
@@ -1022,14 +1153,25 @@ impl PlaneMoney {
                 pool,
                 open.provider.as_deref().unwrap_or_default(),
             );
-            (m.lane.clone(), attribution, open.usage_fold())
+            Some((m.lane.clone(), attribution, open.usage_fold()))
         })
     }
 
     #[must_use]
     pub fn serving(&self, key: UnitKey) -> Option<String> {
         busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::MoneyShardLock);
-        self.shard(key).get(&key).map(|o| o.money.lane.clone())
+        self.shard(key).get(&key).and_then(|open| {
+            if let Some(native) = &open.native {
+                let parts = native.checkpoint().partitions.as_ref()?;
+                let target = parts.final_target?;
+                return parts
+                    .attempts
+                    .iter()
+                    .find(|attempt| attempt.preparation == target)
+                    .map(|attempt| attempt.usage.lane.clone());
+            }
+            Some(open.money.lane.clone())
+        })
     }
 
     #[must_use]
@@ -1048,6 +1190,9 @@ impl PlaneMoney {
         counts: &[(u32, busbar_contract::Count)],
         metered: bool,
     ) -> Option<crate::governance::unit_checkpoint::UnitCheckpoint> {
+        if open.native.is_some() {
+            return None;
+        }
         use crate::governance::unit_checkpoint::{UnitCheckpoint, UnitTarget};
         let m = &open.money;
         let mut units = BTreeMap::<String, busbar_contract::Count>::new();
@@ -1095,6 +1240,7 @@ impl PlaneMoney {
             terminal: None,
             measurement: None,
             unread: None,
+            partitions: None,
             audit: self
                 .post
                 .checkpoint_facts(key)

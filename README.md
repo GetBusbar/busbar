@@ -289,6 +289,8 @@ spec:
   template:
     metadata: { labels: { app: busbar } }
     spec:
+      # Default 5s propagation + 20s drain + 6s exit handover + 9s operator margin.
+      terminationGracePeriodSeconds: 40
       containers:
         - name: busbar
           image: getbusbar/busbar@sha256:<index digest>   # the release's signed digest: docs/verify.md

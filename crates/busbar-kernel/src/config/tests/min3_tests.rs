@@ -6,6 +6,147 @@ use busbar_contract::json::JsonValueTrait as _;
 use busbar_plugin_abi::host_side::caller::Accept;
 
 #[test]
+fn outbound_credential_policy_uses_adopted_defaults_and_retains_overrides() {
+    assert_eq!(
+        parse_min3(&deploy("providers: {}\nmodels: {}\n"))
+            .unwrap()
+            .outbound,
+        crate::custody::CredPolicy::DEFAULT
+    );
+    let cfg = deploy("providers: {}\nmodels: {}\nauth: {outbound: {refresh_ahead_s: 0, min_mint_interval_s: 60, mint_deadline_s: 120, max_keys_per_instance: 17, max_hold_s: 604800}}\n");
+    let policy = parse_min3(&cfg).unwrap().outbound;
+    assert_eq!(policy.refresh_ahead_s, 0);
+    assert_eq!(policy.min_mint_interval_s, 60);
+    assert_eq!(policy.mint_deadline_s, 120);
+    assert_eq!(policy.max_keys_per_instance, 17);
+    assert_eq!(policy.max_hold_s, 604800);
+    let mut errors = Vec::new();
+    let auth = crate::config::resolve_auth(
+        cfg.auth.as_ref().unwrap(),
+        &cfg.identity_providers,
+        &mut errors,
+    );
+    assert!(errors.is_empty());
+    let authored = serde_json::to_value(auth.authoring(&crate::seal::acquire())).unwrap();
+    assert_eq!(
+        authored["outbound"],
+        serde_json::json!({"refresh_ahead_s":0,"min_mint_interval_s":60,"mint_deadline_s":120,"max_keys_per_instance":17,"max_hold_s":604800})
+    );
+    let partial = parse_min3(&deploy(
+        "providers: {}\nmodels: {}\nauth: {outbound: {max_keys_per_instance: 2}}\n",
+    ))
+    .unwrap();
+    assert_eq!(
+        partial.outbound.refresh_ahead_s,
+        crate::custody::CredPolicy::DEFAULT.refresh_ahead_s
+    );
+}
+
+#[test]
+fn outbound_credential_policy_refuses_invalid_types_and_adopted_bounds() {
+    for value in [
+        "null",
+        "[]",
+        "{refresh_ahead_s: -1}",
+        "{mint_deadline_s: 1.5}",
+        "{max_hold_s: null}",
+        "{unknown: 1}",
+        "{max_keys_per_instance: 4294967296}",
+    ] {
+        let yaml = format!("providers: {{}}\nmodels: {{}}\nauth: {{outbound: {value}}}\n");
+        assert!(
+            crate::config::deploy_from_yaml_str(&yaml, &crate::config::Grammar::empty()).is_err(),
+            "{value}"
+        );
+    }
+    for (key, value) in [
+        ("refresh_ahead_s", 3601),
+        ("min_mint_interval_s", 0),
+        ("min_mint_interval_s", 61),
+        ("mint_deadline_s", 0),
+        ("mint_deadline_s", 121),
+        ("max_keys_per_instance", 0),
+        ("max_hold_s", 59),
+        ("max_hold_s", 604801),
+    ] {
+        let yaml =
+            format!("providers: {{}}\nmodels: {{}}\nauth: {{outbound: {{{key}: {value}}}}}\n");
+        let errors = parse_min3(&deploy(&yaml))
+            .err()
+            .expect("invalid range refused");
+        assert!(errors
+            .iter()
+            .any(|why| why.contains(&format!("auth.outbound.{key}"))));
+    }
+}
+
+#[test]
+fn unknown_key_refresh_policy_keeps_adopted_default_and_minimum() {
+    assert_eq!(
+        parse_min3(&deploy("providers: {}\nmodels: {}\n"))
+            .unwrap()
+            .unknown_key_refresh_s,
+        30
+    );
+    for (written, expected) in [(0, 5), (4, 5), (5, 5), (17, 17)] {
+        let cfg = deploy(&format!(
+            "providers: {{}}\nmodels: {{}}\nauth: {{unknown_key_refresh_s: {written}}}\n"
+        ));
+        assert_eq!(parse_min3(&cfg).unwrap().unknown_key_refresh_s, expected);
+    }
+    for value in ["null", "-1", "1.5", "[]"] {
+        let yaml =
+            format!("providers: {{}}\nmodels: {{}}\nauth: {{unknown_key_refresh_s: {value}}}\n");
+        assert!(
+            crate::config::deploy_from_yaml_str(&yaml, &crate::config::Grammar::empty()).is_err()
+        );
+    }
+}
+
+#[test]
+fn issued_kind_grants_are_explicit_per_configured_provider() {
+    let cfg = deploy("providers: {}\nmodels: {}\nidentity-providers:\n  none: {module: verifier}\n  empty: {module: verifier, issued_kinds: []}\n  allowed: {module: verifier, issued_kinds: [signed]}\n");
+    let parsed = parse_min3(&cfg).unwrap();
+    assert!(!parsed.issued_kinds.contains_key("none"));
+    assert!(parsed.issued_kinds.get("empty").unwrap().is_empty());
+    assert_eq!(
+        parsed
+            .issued_kinds
+            .get("allowed")
+            .unwrap()
+            .iter()
+            .map(AsRef::as_ref)
+            .collect::<Vec<&str>>(),
+        ["signed"]
+    );
+    let authored =
+        serde_json::to_value(cfg.identity_providers["allowed"].authoring(&crate::seal::acquire()))
+            .unwrap();
+    assert_eq!(authored["issued_kinds"], serde_json::json!(["signed"]));
+    assert!(authored["settings"].get("issued_kinds").is_none());
+}
+
+#[test]
+fn issued_kind_grants_reject_null_nontext_blank_and_duplicates() {
+    for value in ["null", "signed", "[null]", "[1]", "{}"] {
+        let yaml = format!("providers: {{}}\nmodels: {{}}\nidentity-providers:\n  verifier: {{module: verifier, issued_kinds: {value}}}\n");
+        assert!(
+            crate::config::deploy_from_yaml_str(&yaml, &crate::config::Grammar::empty()).is_err(),
+            "{value}"
+        );
+    }
+    for value in ["['']", "['  ']", "[signed, signed]"] {
+        let yaml = format!("providers: {{}}\nmodels: {{}}\nidentity-providers:\n  verifier: {{module: verifier, issued_kinds: {value}}}\n");
+        let errors = parse_min3(&deploy(&yaml))
+            .err()
+            .expect("invalid grant refused");
+        assert!(errors
+            .iter()
+            .any(|why| why.contains("identity-providers.verifier.issued_kinds")));
+    }
+}
+
+#[test]
 fn verdict_cache_policy_uses_adopted_defaults_and_explicit_overrides() {
     let defaults = parse_min3(&deploy("providers: {}\nmodels: {}\n")).unwrap();
     assert_eq!(

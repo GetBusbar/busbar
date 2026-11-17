@@ -3,6 +3,73 @@
 
 use super::*;
 
+#[tokio::test]
+async fn signed_occurrence_survives_the_actual_admission_verdict_round_trip() {
+    use crate::governance::signing::{TokenSigner, DEFAULT_KID};
+    use crate::governance::{GovState, NewKeySpec};
+    let gov = GovState::new_with_core(
+        crate::real_store::core().await,
+        None,
+        Some(TokenSigner::from_secret_bytes(&[23; 32], DEFAULT_KID)),
+    )
+    .await
+    .unwrap();
+    let (_, token) = gov
+        .mint_signed_async(
+            NewKeySpec {
+                name: "inbound-proof".into(),
+                ..Default::default()
+            },
+            2000,
+            1000,
+        )
+        .await
+        .unwrap();
+    let crate::auth::ChainVerdict::Identified {
+        module,
+        principal,
+        resolved,
+        signed_authority,
+    } = crate::auth::keys_arm_verdict(
+        Some(&gov),
+        Some(token.expose(&crate::seal::lend())),
+        1000,
+        None,
+    )
+    else {
+        panic!("real signed verifier must identify");
+    };
+    let original = signed_authority.clone().unwrap();
+    let (admitted, _) = admitted_identity(
+        module,
+        VerifiedIdentity {
+            subject: principal.id,
+            ..Default::default()
+        },
+        resolved,
+        signed_authority,
+    );
+    let crate::auth::ChainVerdict::Identified {
+        signed_authority: Some(returned),
+        ..
+    } = admission_verdict(Some(&admitted))
+    else {
+        panic!("inbound admission lost the signed occurrence");
+    };
+    assert_eq!(
+        returned, original,
+        "transport must retain the same occurrence, not reverify"
+    );
+    let records = crate::host_units::UnitRecords::default();
+    let caller = busbar_contract::services::Caller::for_test(
+        Arc::from("seat"),
+        busbar_contract::abi::mechanism::KindCode::Plane,
+    );
+    assert!(records.pre_admitted_signed_for(91, &caller, returned, 0));
+    assert!(!records.pre_admitted_signed_for(92, &caller, original, 0));
+    assert!(records.get(92).is_none());
+}
+
 #[test]
 fn consumed_query_credentials_are_stripped_without_interpreting_the_opaque_target() {
     let head = Head {
@@ -367,7 +434,7 @@ fn host_admission_keeps_credential_separate_from_the_principal_and_wire_answer()
         credential: Some(Secret::new(secret.to_owned())),
         ..Default::default()
     };
-    let (admitted, credential) = admitted_identity("provider".into(), identity, None);
+    let (admitted, credential) = admitted_identity("provider".into(), identity, None, None);
     assert!(admitted.identity.credential.is_none());
     assert_eq!(
         credential.as_ref().unwrap().expose(&crate::seal::lend()),
@@ -378,6 +445,7 @@ fn host_admission_keeps_credential_separate_from_the_principal_and_wire_answer()
         module,
         principal,
         resolved,
+        ..
     } = admission_verdict(Some(&admitted))
     else {
         panic!("identity remains identified");
