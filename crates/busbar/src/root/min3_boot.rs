@@ -16,7 +16,11 @@ use super::boot::walk::{deployment_bytes, BootSteps, DeploymentRead};
 use busbar_contract::secret_ref::{SecretRef, Sugars};
 use busbar_contract::secure::SecureVec;
 use busbar_core_connector::guard::Guard;
-use busbar_core_connector::need::{HostNeeds, NeedLimits};
+use busbar_core_connector::need::judge::Judge;
+use busbar_core_connector::need::network::{
+    BootstrapConnector, NetworkInputs, ServingConnector, SharedResolver,
+};
+use busbar_core_connector::need::{ConnectorIo, HostNeeds, NeedLimits};
 use busbar_kernel::channels::signals::SignalRegistry;
 use busbar_kernel::channels::SessionSignals;
 use busbar_kernel::config::{PluginsCfg, RootCfg};
@@ -599,13 +603,55 @@ struct Built {
     sugars: Sugars,
     secrets: Arc<BootSecrets>,
     binder: Arc<dyn ConfigBinder>,
-    guard: Guard,
+    network: NetworkOwner,
+}
+
+/// The stage's one retained native network owner (#298 option B, SECURITY-297-298-r3): the file-era
+/// owner for S5/S6 bootstrap Needs, a separate owner for the effective configuration's serving Needs.
+/// Every Need of a stage shares its frozen guard, resolver, trust and proxy choice.
+enum NetworkOwner {
+    Bootstrap(BootstrapConnector),
+    Serving(ServingConnector),
+}
+
+impl NetworkOwner {
+    fn io(&self) -> ConnectorIo {
+        match self {
+            Self::Bootstrap(owner) => owner.io(),
+            Self::Serving(owner) => owner.io(),
+        }
+    }
+
+    fn judge(&self) -> Judge<SharedResolver> {
+        match self {
+            Self::Bootstrap(owner) => owner.judge(),
+            Self::Serving(owner) => owner.judge(),
+        }
+    }
+}
+
+/// The complete network inputs of one stage, read before any native instance opens: `guard` frozen,
+/// the system resolver, `advanced.tls` validated into its trust store, the process proxy choice and
+/// `advanced.proxy_resolution`.
+fn network_inputs(cfg: &RootCfg, guard: &Guard) -> Result<NetworkInputs, String> {
+    Ok(NetworkInputs {
+        runtime: tokio::runtime::Handle::try_current()
+            .map_err(|_| "native networking is built on the boot runtime".to_owned())?,
+        guard: guard.freeze(),
+        resolver: Arc::new(busbar_core_connector::guard::SystemResolver),
+        trust: super::connector::trust_store_of(&cfg.outbound_tls)
+            .map_err(|errors| errors.join("\n"))?,
+        proxy: busbar_core_connector::proxy::from_env()?,
+        resolution: cfg.proxy_resolution,
+        observations: Arc::default(),
+    })
 }
 
 impl Built {
     fn bootstrap_needs_for(&self, prefix: Arc<BootSecrets>) -> Arc<BootstrapNeeds> {
-        Arc::new(HostNeeds::production(
-            self.guard.clone(),
+        Arc::new(HostNeeds::new(
+            self.network.io(),
+            self.network.judge(),
             BootCustody(prefix),
             BootstrapRecords,
             BootstrapDirectory,
@@ -620,8 +666,9 @@ impl Built {
         records: Records,
         directory: Directory,
     ) -> Arc<Needs> {
-        Arc::new(HostNeeds::production(
-            self.guard.clone(),
+        Arc::new(HostNeeds::new(
+            self.network.io(),
+            self.network.judge(),
             BootCustody(prefix),
             records,
             directory,
@@ -644,13 +691,14 @@ fn build(
     let secrets = BootSecrets::empty(Arc::clone(&binder), Arc::clone(process.slots()));
     let registry = Registry::new(images, Arc::clone(&binder), Arc::clone(process.ids()));
 
+    let network = NetworkOwner::Bootstrap(BootstrapConnector::new(network_inputs(cfg, &guard)?));
     let registry = Arc::new(registry);
     Ok(Built {
         registry,
         sugars,
         secrets,
         binder,
-        guard,
+        network,
     })
 }
 
@@ -1435,7 +1483,7 @@ pub(crate) fn prepare_serving(
         sugars,
         secrets: Arc::clone(&prefix),
         binder,
-        guard,
+        network: NetworkOwner::Serving(ServingConnector::new(network_inputs(cfg, &guard)?)),
     };
     let hook_plan = hooks::Plan::capture(cfg, &instances)?;
     Ok(ServingReady {
