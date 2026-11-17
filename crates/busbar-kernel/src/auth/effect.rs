@@ -89,10 +89,7 @@ impl Context {
         let Some((lease, prepared)) = execution.native() else {
             return Ok(());
         };
-        let (path, query) = self.target.split_once('?').unwrap_or((&self.target, ""));
-        if !prepared
-            .request()
-            .view(|req| req.method == self.method && req.path == path && req.query == query)
+        if prepared.request().method() != self.method || prepared.request().target() != self.target
         {
             return Err(TxnError::Forbidden);
         }
