@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
 //! Native lifetime custody attached to the exact published App.
 //!
 //! Physical slots retain request dispatchers, but the complete owner also retains the
