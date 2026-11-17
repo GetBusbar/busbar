@@ -71,6 +71,9 @@ impl<'a> Environment<'a> {
                 .routes()
                 .data
                 .iter()
+                .chain(driver.routes().upgrade.iter())
+                .chain(driver.routes().line.iter())
+                .chain(driver.routes().recovery.iter())
                 .map(|route| route.route)
                 .collect(),
         };
