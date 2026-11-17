@@ -442,3 +442,271 @@ fn signed_page_fields_cannot_be_rewritten() {
     body["records"][0]["linked_ms"] = json::json!("01700000000000");
     assert!(verify(&keys(), &body, None).is_err());
 }
+
+/// The per-boot notary key the certified tests delegate to.
+fn delegate() -> busbar_contract::crypto::LocalSigner {
+    busbar_contract::crypto::LocalSigner::from_seed(&[9; 32]).unwrap()
+}
+
+/// The deployment Bootstrap key as a seam signer (the same seed as [`signer`]).
+fn bootstrap() -> busbar_contract::crypto::LocalSigner {
+    busbar_contract::crypto::LocalSigner::from_seed(&[42; 32]).unwrap()
+}
+
+/// Unit lines `from .. from + count` of node 21, linked after `prev` (hex; empty at genesis).
+fn units_after(prev: &str, from: u64, count: u64) -> Vec<Value> {
+    let order = fields(V7).unwrap();
+    let mut previous = prev.to_owned();
+    (from..from + count)
+        .map(|seq| {
+            let mut line = json::json!({"recipe": LINK_RECIPE,
+                "linked_ms": "1700000000000", "seq": seq.to_string(), "prev_hash": previous,
+                "lines": [], "hooks": [], "children": [], "attempts": []});
+            for &(name, kind) in order.iter().skip(2) {
+                if !name.contains("[]") {
+                    line[name] = json::json!(match kind {
+                        Kind::Text => "",
+                        Kind::Number => "0",
+                        Kind::Bytes32 => unreachable!("v7 has no raw fingerprint field"),
+                    });
+                }
+            }
+            line["node"] = json::json!("21");
+            line["rate_card_key_present"] = json::json!("0");
+            let mut digest = Digest::new(Framing::LengthPrefixed);
+            for &(name, kind) in order.iter().skip(2) {
+                if !name.contains("[]") {
+                    feed(&mut digest, &line[name], kind).unwrap();
+                }
+            }
+            digest.num(1700000000000).num(seq);
+            digest
+                .raw(&32u64.to_be_bytes())
+                .raw(&Fingerprint::from_hex(&previous).unwrap().0);
+            previous = digest.finish();
+            line["hash"] = json::json!(previous);
+            line
+        })
+        .collect()
+}
+
+/// A `notary_key.v2` line of node 21 at chain `seq` after `prev`, certifying [`delegate`], signed
+/// by `by`.
+fn certificate(
+    seq: u64,
+    prev: &str,
+    by: &busbar_contract::crypto::LocalSigner,
+) -> busbar_kernel_audit::NotaryKeyRecord {
+    use busbar_contract::crypto::Signer;
+    let delegate = delegate();
+    let public = delegate.public_key();
+    let prev_link = Fingerprint::from_hex(prev).unwrap();
+    let mut certificate = busbar_kernel_audit::NotaryKeyCertificate {
+        key_id: public.key_id.to_string(),
+        sig_alg: public.alg.as_str().to_owned(),
+        public_key: public.bytes.to_vec(),
+        signed_by: by.public_key().key_id.to_string(),
+        signature: Vec::new(),
+    };
+    by.sign(
+        &certificate.preimage(21, seq, prev_link),
+        &mut certificate.signature,
+    )
+    .unwrap();
+    let mut record = busbar_kernel_audit::NotaryKeyRecord {
+        node: 21,
+        seq,
+        linked_ms: 1700000000000,
+        prev_link,
+        fingerprint: Fingerprint::ZERO,
+        certificate,
+    };
+    record.fingerprint = record.recompute_fingerprint();
+    record
+}
+
+fn certificate_json(at: u64, record: &busbar_kernel_audit::NotaryKeyRecord) -> Value {
+    json::parse_value(busbar_kernel_audit::expose::notary_key_json(at, record).as_bytes()).unwrap()
+}
+
+/// A stamp over `from ..= to` ending at the line whose hash is `fingerprint`, read at WAL
+/// position `at`, naming certificate `key_cert`, signed by [`delegate`] (by the notary grant for
+/// `live` and `final`; directly for any other kind, which no grant would sign).
+fn delegated_page(
+    fingerprint: &Value,
+    from: u64,
+    to: u64,
+    kind: StampKind,
+    key_cert: u64,
+    at: u64,
+) -> Value {
+    use busbar_contract::crypto::Signer;
+    let mut stamp = Stamp {
+        node: 21,
+        from,
+        to,
+        fingerprint: Fingerprint::from_hex(fingerprint.as_str().unwrap()).unwrap(),
+        kind,
+        sealer: 21,
+        host: "host-a".into(),
+        every: 1,
+        stamped_ms: 1700000000001,
+        down_from_ms: 0,
+        down_to_ms: 0,
+        crypto: String::new(),
+        sig_alg: String::new(),
+        key_id: String::new(),
+        key_cert,
+        signature: Vec::new(),
+    };
+    if matches!(kind, StampKind::Live | StampKind::Final) {
+        let (notary, _) = signer()
+            .into_grants(LiveSigner::Delegated(Box::new(delegate())))
+            .unwrap();
+        stamp = Notary::new(notary).sign_stamp(stamp).unwrap();
+    } else {
+        let delegate = delegate();
+        stamp.crypto = busbar_contract::crypto::BACKEND.to_owned();
+        stamp.sig_alg = delegate.public_key().alg.as_str().to_owned();
+        stamp.key_id = delegate.public_key().key_id.to_string();
+        delegate
+            .sign(&stamp.preimage(), &mut stamp.signature)
+            .unwrap();
+    }
+    json::parse_value(busbar_kernel_audit::expose::stamp_json(Some(at), &stamp).as_bytes()).unwrap()
+}
+
+/// Node 21's chain: a certificate line at seq 1 (WAL 1), then unit lines 2, 3 and 4. The range
+/// is [2, 3] with line 4 as cover, and one live page over 1..=4 under the certified key (WAL 5).
+fn certified() -> (busbar_kernel_audit::NotaryKeyRecord, Vec<Value>, Value) {
+    let cert = certificate(1, "", &bootstrap());
+    let units = units_after(&cert.fingerprint.to_string(), 2, 3);
+    let body = json::json!({"recipe": LINK_RECIPE, "signature_domain": STAMP_DOMAIN,
+        "algorithm": SIGNATURE_ALGORITHM, "from": 2, "to": 3,
+        "records": &units[..2], "cover": &units[2..],
+        "stamps": [delegated_page(&units[2]["hash"], 1, 4, StampKind::Live, 1, 5)],
+        "certs": [certificate_json(1, &cert)], "anchor": null, "seal_row": null});
+    (cert, units, body)
+}
+
+/// §3.7 rule 3 (decision 159): a `live` page signed by the per-boot notary key that the
+/// Bootstrap key certified at the `notary_key` line its `key_cert` names authenticates its page.
+#[test]
+fn a_live_stamp_under_a_certified_notary_key_authenticates_its_page() {
+    let (_, _, body) = certified();
+    let report = verify(&keys(), &body, None).unwrap();
+    assert_eq!(report["pages"], 1);
+    assert_eq!(report["authenticated_records"], 2);
+    assert_eq!(report["all_requested_records_authenticated"], true);
+    assert!(report["unauthenticated_tail"].is_null());
+    assert_eq!(report["result"], "signed-consistent-window");
+}
+
+/// §3.7 rule 3's key map: which key may sign which kind, and for how long a notary key stays
+/// current. Every case fails verify ("stamp key not certified" or a bad signature).
+#[test]
+fn notary_key_authority_follows_the_key_map() {
+    let (cert, units, body) = certified();
+    let last = &units[2]["hash"];
+    let refused = |body: &Value, why: &str| {
+        assert!(verify(&keys(), body, None).is_err(), "{why}");
+    };
+
+    let mut restart = body.clone();
+    restart["stamps"] = json::json!([delegated_page(last, 1, 4, StampKind::AfterRestart, 1, 5)]);
+    refused(&restart, "an after_restart page is Bootstrap-only");
+
+    let mut forged = body.clone();
+    let other = busbar_contract::crypto::LocalSigner::from_seed(&[43; 32]).unwrap();
+    forged["certs"] = json::json!([certificate_json(1, &certificate(1, "", &other))]);
+    refused(&forged, "a certificate not signed by the Bootstrap key");
+
+    let mut missing = body.clone();
+    missing["certs"] = json::json!([]);
+    refused(&missing, "no certificate at key_cert");
+
+    let mut superseded = body.clone();
+    superseded["certs"] = json::json!([certificate_json(1, &cert), certificate_json(3, &cert)]);
+    refused(&superseded, "a later certificate supersedes the key");
+
+    let mut after_final = body.clone();
+    after_final["stamps"] = json::json!([
+        delegated_page(&units[1]["hash"], 1, 3, StampKind::Final, 1, 5),
+        delegated_page(last, 4, 4, StampKind::Live, 1, 6),
+    ]);
+    refused(&after_final, "a final page ends the key");
+    let mut two_live = body.clone();
+    two_live["stamps"] = json::json!([
+        delegated_page(&units[1]["hash"], 1, 3, StampKind::Live, 1, 5),
+        delegated_page(last, 4, 4, StampKind::Live, 1, 6),
+    ]);
+    assert_eq!(
+        verify(&keys(), &two_live, None).unwrap()["authenticated_records"],
+        2,
+        "two live pages under one current key"
+    );
+
+    let mut before = body.clone();
+    before["certs"] = json::json!([certificate_json(6, &cert)]);
+    before["stamps"] = json::json!([delegated_page(last, 1, 4, StampKind::Live, 6, 5)]);
+    refused(&before, "a stamp read before its certificate");
+
+    let mut relocated = cert.clone();
+    relocated.node = 22;
+    relocated.fingerprint = relocated.recompute_fingerprint();
+    let mut moved = body.clone();
+    moved["certs"] = json::json!([certificate_json(1, &relocated)]);
+    refused(&moved, "a certificate relabelled to another node");
+
+    let mut break_by_delegate = body.clone();
+    let mut notice_value = notice(2, 2);
+    notice_value["key_id"] = json::json!(delegate().public_key().key_id.to_string());
+    break_by_delegate["stamps"] = json::json!([notice_value]);
+    refused(&break_by_delegate, "a break notice is Bootstrap-only");
+}
+
+/// §3.7 rule 1: a certificate line among the walked lines is digested by its own recipe and
+/// linked like any line; a page over it authenticates it.
+#[test]
+fn a_certificate_line_in_the_walk_is_digested_and_linked() {
+    let (cert, units, mut body) = certified();
+    body["from"] = json::json!(1);
+    body["records"] = json::json!([
+        certificate_json(1, &cert),
+        units[0].clone(),
+        units[1].clone()
+    ]);
+    let report = verify(&keys(), &body, None).unwrap();
+    assert_eq!(report["authenticated_records"], 3);
+    body["records"][0]["linked_ms"] = json::json!("1700000000001");
+    assert!(verify(&keys(), &body, None).is_err());
+}
+
+/// §3.7 rule 4: a seal row must decode, name its node, and its stamp or break must pass rules 3
+/// and 4; a valid restart page in it authenticates like a journal stamp.
+#[test]
+fn the_seal_row_is_checked_like_the_journal_evidence() {
+    let lines = lines();
+    let mut body = range(&lines, vec![]);
+    body["seal_row"] = json::json!({"outcome": "undecodable"});
+    assert!(verify(&keys(), &body, None).is_err(), "undecodable");
+
+    body["seal_row"] = json::json!({"sealer": 22, "outcome": "clean", "through": 3});
+    let report = verify(&keys(), &body, None).unwrap();
+    assert!(
+        report["result"].is_null(),
+        "a clean row authenticates nothing"
+    );
+
+    let mut restart = page_kind(&lines, 1, 3, StampKind::AfterRestart);
+    body["seal_row"] = json::json!({"sealer": 22, "outcome": "stamp", "stamp": restart.clone()});
+    let report = verify(&keys(), &body, None).unwrap();
+    assert_eq!(report["authenticated_records"], 2);
+    assert_eq!(report["restart_sealed"][0]["sealer"], 22);
+
+    body["seal_row"] = json::json!({"sealer": 23, "outcome": "stamp", "stamp": restart.clone()});
+    assert!(verify(&keys(), &body, None).is_err(), "the row's sealer");
+    restart["host"] = json::json!("rewritten");
+    body["seal_row"] = json::json!({"sealer": 22, "outcome": "stamp", "stamp": restart});
+    assert!(verify(&keys(), &body, None).is_err(), "the row's signature");
+}
