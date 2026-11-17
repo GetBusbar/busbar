@@ -1856,10 +1856,8 @@ impl ListenerPlan {
             claim_doors: Arc::default(),
             planes: None,
             plane_sections: None,
-            plane_keys: None,
             offers,
             framers,
-            refusals: Mutex::default(),
             nests: Arc::default(),
             plugin_mounts: None,
         }
@@ -1961,10 +1959,8 @@ impl ListenerPlan {
             claim_doors: Arc::new(served.claim_doors.clone()),
             planes: None,
             plane_sections: None,
-            plane_keys: None,
             offers: self.offers.clone(),
             framers: self.framers.clone(),
-            refusals: Mutex::default(),
             nests: Arc::clone(&self.nests),
             plugin_mounts: None,
         };
@@ -2032,13 +2028,6 @@ impl ListenerPlan {
                 root_only: true,
             });
         }
-        mounted.plane_keys = Some(
-            served
-                .planes
-                .iter()
-                .map(|plane| (plane.instance.clone(), plane.live.plugin.name().to_string()))
-                .collect(),
-        );
         mounted.plane_sections = Some(
             served
                 .planes
@@ -2790,94 +2779,6 @@ impl ListenerPlan {
             .collect();
         tail
     }
-
-    pub(crate) fn policy(self: &Arc<Self>, at: String) -> crate::root::inbound::ListenerPolicy {
-        let plan = Arc::clone(self);
-        Arc::new(move |source| {
-            let guests = plan
-                .lists(&source.app)?
-                .into_iter()
-                .find(|(name, _)| *name == at)
-                .map(|(_, guests)| guests)
-                .ok_or_else(|| format!("listener {at} is unavailable"))?;
-            let auths = plan.auths(&source.app, &guests)?;
-            let owned_guests = guests.clone();
-            let keys = plan.plane_keys.as_ref().cloned().unwrap_or_default();
-            let legacy_fallback = at == "listen";
-            let neutral_refuse: Option<busbar_kernel::inbound::NeutralRefuse> = plan.prepared(&source.app, &at)
-                .and_then(|prepared| prepared.data())
-                .and_then(|data| data.downcast::<DataRoutes>().ok())
-                .map(|routes| Arc::new(move |app: &Arc<busbar_kernel::state::App>, refusal: &busbar_kernel::plane_routes::KernelRefusal<'_>| routes.refuse_line(app, refusal)) as busbar_kernel::inbound::NeutralRefuse);
-            let audit_kind = plan
-                .prepared(&source.app, &at)
-                .and_then(|prepared| prepared.data())
-                .and_then(|data| data.downcast::<DataRoutes>().ok())
-                .map(|routes| {
-                    Arc::new(move |line| routes.inbound_audit_kind(line))
-                        as Arc<dyn Fn(u32) -> OpClassId + Send + Sync>
-                });
-            let scope = busbar_kernel::inbound::ListenerScope {
-                audit_kind,
-                neutral_refuse,
-                legacy_fallback,
-                refuse: plan
-                    .prepared(&source.app, &at)
-                    .and_then(|prepared| prepared.refusal_renderer()),
-                admission: Arc::new(move |app, head| {
-                    use busbar_kernel::guest::{Claimant, Matched};
-                    let fields: Vec<_> = head
-                        .fields
-                        .iter()
-                        .map(|(name, value)| (name.as_str(), value.as_slice()))
-                        .collect();
-                    let Matched::Line(line) =
-                        owned_guests.matched(&head.method, &head.target, &fields)
-                    else {
-                        return None;
-                    };
-                    match &line.claimant {
-                        Claimant::Plane(owner) => keys
-                            .get(owner)
-                            .and_then(|key| app.planes.admission_of(key))
-                            .cloned(),
-                        Claimant::Need(..) => None,
-                        _ if legacy_fallback => app.planes.admission_for(&head.target).cloned(),
-                        _ => None,
-                    }
-                }),
-            };
-            Ok(busbar_kernel::inbound::Listener {
-                ids: Vec::new(),
-                guests,
-                auths,
-                body_limit: source
-                    .app
-                    .limits
-                    .as_ref()
-                    .map_or(source.body_limit, |limits| {
-                        limits.request_body_max_bytes as u64
-                    }),
-                app: Arc::clone(&source.app),
-                door_refusals: plan
-                    .prepared(&source.app, &at)
-                    .map(|prepared| prepared.refusals.clone())
-                    .unwrap_or_else(|| {
-                        plan.refusals
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner)
-                            .get(&at)
-                            .cloned()
-                            .unwrap_or_default()
-                    }),
-                signed_ingress: if legacy_fallback {
-                    source.signed_ingress.clone()
-                } else {
-                    Arc::new(|_, _| false)
-                },
-                scope: Some(scope),
-            })
-        })
-    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -2995,13 +2896,7 @@ type StoreTickets = (
 );
 
 pub(crate) struct TransportRow {
-    pub(crate) claims: Vec<&'static str>,
-
     pub(crate) upgrades: Vec<&'static str>,
-
-    pub(crate) under: Option<&'static str>,
-
-    pub(crate) offered: busbar_contract::abi::auth::AuthPoints,
 }
 
 pub(crate) fn transport_rows(
@@ -3009,41 +2904,12 @@ pub(crate) fn transport_rows(
     dropped: &[crate::root::registry::DroppedDoor],
 ) -> Vec<TransportRow> {
     let linked = transports.iter().map(|t| TransportRow {
-        claims: (t.claims)(),
         upgrades: (t.upgrades)(),
-        under: (t.composes_over)().first().copied(),
-        offered: (t.offered)(),
     });
     let dropped = dropped.iter().map(|d| TransportRow {
-        claims: d.claims.clone(),
         upgrades: d.upgrades.clone(),
-        under: d.composes_over.first().copied(),
-        offered: d.offered,
     });
     linked.chain(dropped).collect()
-}
-
-#[must_use]
-pub(crate) fn transport_offers(
-    transports: &[crate::root::linked::LinkedTransport],
-    dropped: &[crate::root::registry::DroppedDoor],
-) -> Vec<TransportOffer> {
-    let rows = transport_rows(transports, dropped);
-    let own: Vec<TransportOffer> = rows
-        .iter()
-        .flat_map(|r| r.claims.iter().map(move |c| (*c, r.offered)))
-        .collect();
-    let tail = rows
-        .iter()
-        .flat_map(|r| {
-            let under = r.under.map(|l| offered_by(&own, l));
-            r.claims.iter().map(move |c| match under {
-                Some(under) if r.upgrades.contains(c) => (*c, under),
-                _ => (*c, r.offered),
-            })
-        })
-        .collect();
-    tail
 }
 
 pub(crate) fn offered_by(

@@ -597,15 +597,6 @@ impl Rules {
         }
     }
 
-    /// Construct the rules retained by a completed serving generation. No candidate can
-    /// install listener state into rules already retained by a different generation.
-    pub(crate) fn with_listeners(&self, listeners: Arc<crate::root::serve::ListenerPlan>) -> Self {
-        let mut next = self.copy_rules();
-        next.listeners = Some(listeners);
-        next.native_listeners = None;
-        next
-    }
-
     pub(crate) fn with_native_listeners(
         &self,
         listeners: Arc<crate::root::min3_listener_plan::NativeListenerPlan>,

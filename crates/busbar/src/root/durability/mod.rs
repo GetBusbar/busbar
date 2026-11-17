@@ -29,7 +29,9 @@ mod unit_checkpoint;
 mod unit_checkpoint_audit;
 mod usage_recovery;
 pub(crate) use unit_checkpoint::unit_checkpoint_sink;
-pub(crate) use unit_checkpoint_audit::{RunningAudit, SelectedAuditIdentity};
+#[cfg(test)]
+pub(crate) use unit_checkpoint_audit::RunningAudit;
+pub(crate) use unit_checkpoint_audit::SelectedAuditIdentity;
 pub(crate) use usage_recovery::usage_recovery_sink;
 
 mod store_identity;

@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use foldhash::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock, PoisonError, Weak};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 use busbar_contract::abi::auth::{FIELD_QUERY, FIELD_SENSITIVE};
 use busbar_contract::auth_calls::StripPlace;
@@ -162,44 +160,25 @@ impl AuthHandleHost for LoaderSide {
         true
     }
 
+    // No legacy listener registration exists: native listeners admit through PhysicalListener
+    // and never mint a framing id (NATIVE-LISTENER-BINDING-r1). A legacy framing is refused.
     fn framing_started(
         &self,
-        owner: u64,
-        listener: u64,
-        framing: u64,
+        _owner: u64,
+        _listener: u64,
+        _framing: u64,
     ) -> Result<Option<StreamPolicy>, &'static str> {
-        let registration = registered(owner, listener).ok_or(kin::NO_LIST)?;
-        let policy = registration.policy().ok_or(kin::NO_LIST)?;
-        self.0
-            .framing_started(owner, listener, framing, policy.policy.generation)?;
-        Ok(Some(policy))
+        Err(kin::NO_LIST)
     }
 
     fn stream_open(
         &self,
-        owner: u64,
-        listener: u64,
-        framing: u64,
-        stream: u64,
+        _owner: u64,
+        _listener: u64,
+        _framing: u64,
+        _stream: u64,
     ) -> Result<StreamPolicy, &'static str> {
-        let registration = registered(owner, listener).ok_or(kin::NO_LIST)?;
-        loop {
-            let policy = registration.policy().ok_or(kin::NO_LIST)?;
-            match self
-                .0
-                .grant_stream(owner, framing, stream, policy.policy.generation)
-            {
-                Ok(()) => return Ok(policy),
-                Err(kin::NO_LIST)
-                    if published()
-                        .load_full()
-                        .is_some_and(|now| now.generation != policy.policy.generation) =>
-                {
-                    continue;
-                }
-                Err(error) => return Err(error),
-            }
-        }
+        Err(kin::NO_LIST)
     }
 
     fn stream_ended(&self, owner: u64, framing: u64, stream: u64) {
@@ -281,163 +260,6 @@ pub(crate) struct Published {
 pub(crate) fn published() -> &'static arc_swap::ArcSwapOption<Published> {
     static ONE: OnceLock<arc_swap::ArcSwapOption<Published>> = OnceLock::new();
     ONE.get_or_init(arc_swap::ArcSwapOption::empty)
-}
-
-pub(crate) type ListenerPolicy =
-    Arc<dyn Fn(&kin::Listener) -> Result<kin::Listener, String> + Send + Sync>;
-
-pub(in crate::root) struct ListenerRegistration {
-    owner: u64,
-    id: u64,
-    select: Option<ListenerPolicy>,
-    rows: Mutex<Option<StreamPolicy>>,
-    installed: AtomicU64,
-}
-
-impl ListenerRegistration {
-    pub(in crate::root) fn new(owner: u64, id: u64) -> Arc<Self> {
-        Self::with_policy(owner, id, None)
-    }
-
-    pub(in crate::root) fn with_policy(
-        owner: u64,
-        id: u64,
-        select: Option<ListenerPolicy>,
-    ) -> Arc<Self> {
-        let registration = Arc::new(Self {
-            owner,
-            id,
-            select,
-            rows: Mutex::new(None),
-            installed: AtomicU64::new(0),
-        });
-        registrations()
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert((owner, id), Arc::downgrade(&registration));
-        registration
-    }
-
-    fn selected(&self, snapshot: &Published) -> Result<kin::Listener, String> {
-        match &self.select {
-            Some(select) => {
-                let listener = select(&snapshot.listener)?;
-                if !Arc::ptr_eq(&listener.app, &snapshot.listener.app) {
-                    return Err("listener policy changed its published application".into());
-                }
-                Ok(listener)
-            }
-            None => Ok(snapshot.listener.clone()),
-        }
-    }
-
-    #[cfg(test)]
-    pub(in crate::root) fn validate(&self) -> Result<(), String> {
-        let snapshot = published()
-            .load_full()
-            .ok_or_else(|| "listener policy has not been published".to_owned())?;
-        self.selected(&snapshot).map(|_| ())
-    }
-
-    pub(in crate::root) fn guests(&self) -> Option<Arc<busbar_core_connector::framer::GuestLines>> {
-        self.policy().map(|policy| {
-            Arc::new(busbar_core_connector::framer::GuestLines::published(
-                policy.policy,
-            ))
-        })
-    }
-
-    fn policy(&self) -> Option<StreamPolicy> {
-        loop {
-            let snapshot = published().load_full()?;
-            let cached = self
-                .rows
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .as_ref()
-                .filter(|policy| policy.policy.generation == snapshot.generation)
-                .cloned();
-            let selected = if cached.is_none()
-                || self.installed.load(Ordering::Acquire) < snapshot.generation
-            {
-                Some(self.selected(&snapshot).ok()?)
-            } else {
-                None
-            };
-            let candidate = match cached {
-                Some(policy) => policy,
-                None => crate::root::cold::listener_stream_policy(
-                    self.owner,
-                    self.id,
-                    snapshot.generation,
-                    selected.as_ref()?,
-                )?,
-            };
-            let current_generation = published().load_full().map(|now| now.generation);
-            if current_generation != Some(snapshot.generation) {
-                continue;
-            }
-            let policy = {
-                let mut cache = self.rows.lock().unwrap_or_else(PoisonError::into_inner);
-                if cache
-                    .as_ref()
-                    .is_some_and(|policy| policy.policy.generation > snapshot.generation)
-                {
-                    continue;
-                }
-                if let Some(existing) = cache
-                    .as_ref()
-                    .filter(|policy| policy.policy.generation == snapshot.generation)
-                {
-                    existing.clone()
-                } else {
-                    *cache = Some(candidate.clone());
-                    candidate
-                }
-            };
-            if self.installed.load(Ordering::Acquire) < snapshot.generation {
-                let mut listener = selected?;
-                listener.ids = crate::root::cold::installed_line_ids(&policy);
-                host()
-                    .install_at(self.owner, self.id, snapshot.generation, listener)
-                    .ok()?;
-                self.installed
-                    .fetch_max(snapshot.generation, Ordering::Release);
-            }
-            if let Some(current) = published().load_full() {
-                if current.generation != snapshot.generation {
-                    host().retire_before(current.generation);
-                    continue;
-                }
-            }
-            return Some(policy);
-        }
-    }
-}
-
-type ListenerRegistrations = Mutex<HashMap<(u64, u64), Weak<ListenerRegistration>>>;
-
-fn registrations() -> &'static ListenerRegistrations {
-    static ONE: OnceLock<ListenerRegistrations> = OnceLock::new();
-    ONE.get_or_init(Mutex::default)
-}
-
-fn registered(owner: u64, listener: u64) -> Option<Arc<ListenerRegistration>> {
-    registrations()
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .get(&(owner, listener))
-        .and_then(Weak::upgrade)
-}
-
-impl Drop for ListenerRegistration {
-    fn drop(&mut self) {
-        registrations()
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .remove(&(self.owner, self.id));
-        host().forget_listener(self.owner, self.id);
-    }
 }
 
 pub use crate::root::off_path::inbound::publish;

@@ -634,30 +634,6 @@ impl RouterDispatch {
 
 pub(crate) const ADMIN_TOKEN_HEADER: &str = "x-admin-token";
 
-pub(crate) fn presented_credential(headers: &axum::http::HeaderMap) -> Option<String> {
-    let authorization = headers
-        .get(axum::http::header::AUTHORIZATION)
-        .and_then(|value| value.to_str().ok())
-        .map(|value| {
-            let trimmed = value.trim_start();
-            match trimmed.split_once(' ') {
-                Some((scheme, rest)) if scheme.eq_ignore_ascii_case("bearer") => {
-                    rest.trim_start().to_string()
-                }
-                _ => trimmed.to_string(),
-            }
-        })
-        .filter(|credential| !credential.is_empty());
-
-    authorization.or_else(|| {
-        headers
-            .get(ADMIN_TOKEN_HEADER)
-            .and_then(|value| value.to_str().ok())
-            .map(str::to_string)
-            .filter(|credential| !credential.is_empty())
-    })
-}
-
 pub(crate) fn header_pairs(headers: &axum::http::HeaderMap) -> Vec<(String, String)> {
     headers
         .iter()

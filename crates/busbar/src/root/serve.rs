@@ -1745,10 +1745,8 @@ pub(crate) struct ListenerPlan {
     pub(crate) claim_doors: Arc<serve_datagram::ClaimDoors>,
     pub(crate) planes: Option<Vec<ListenerPlaneLine>>,
     pub(crate) plane_sections: Option<foldhash::HashMap<String, (&'static str, bool)>>,
-    pub(crate) plane_keys: Option<foldhash::HashMap<String, String>>,
     pub(crate) offers: Vec<TransportOffer>,
     pub(crate) framers: foldhash::HashMap<String, (u64, bool)>,
-    pub(crate) refusals: Mutex<foldhash::HashMap<String, Vec<PlaneRefusalSpec>>>,
     pub(crate) nests: NestRoutes,
     pub(crate) plugin_mounts: Option<Vec<(String, RouteMethod, bool)>>,
 }
@@ -2093,15 +2091,6 @@ impl DataRoutes {
             .map_or("", |c| c.carrier.as_str());
         let whole = self.open_datagram_on(framer, carrier, door, arrival).await;
         stated((whole.status, whole.fields), Body::from(whole.body))
-    }
-
-    async fn open_datagram_neutral(
-        self: Arc<Self>,
-        (framer, carrier): (Arc<dyn busbar_core_connector::framer::FramerDoor>, String),
-        door: SessionDoor,
-        arrival: Arrival,
-    ) -> neutral::Whole {
-        self.open_datagram_on(framer, &carrier, door, arrival).await
     }
 
     async fn open_datagram_on(

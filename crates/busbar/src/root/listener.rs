@@ -26,7 +26,10 @@ pub(crate) fn total_body_deadline() -> Duration {
 use std::pin::Pin;
 
 use axum::Router;
-use busbar_core_connector::listen::{Admits, Admitted};
+#[cfg(any(test, not(unix)))]
+use busbar_core_connector::listen::Admits;
+use busbar_core_connector::listen::Admitted;
+use bytes::Buf;
 use http_body::Body;
 #[cfg(any(test, not(unix)))]
 use tokio::net::TcpListener;

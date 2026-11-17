@@ -1465,56 +1465,6 @@ fn a_restore_that_names_no_backup_is_refused_rather_than_defaulted() {
 }
 
 #[test]
-fn either_carrier_reaches_the_loop_as_the_credential_itself() {
-    let presented = |name: &str, value: &str| -> Option<String> {
-        let mut headers = axum::http::HeaderMap::new();
-        headers.insert(
-            axum::http::HeaderName::from_bytes(name.as_bytes()).expect("a header name"),
-            axum::http::HeaderValue::from_str(value).expect("a header value"),
-        );
-        presented_credential(&headers)
-    };
-    let secret = "shadow-oracle-admin";
-
-    for value in [
-        format!("Bearer {secret}"),
-        format!("bearer {secret}"),
-        format!("BEARER {secret}"),
-        format!("Bearer  {secret}"),
-        format!("  Bearer {secret}"),
-    ] {
-        assert_eq!(
-            presented("authorization", &value).as_deref(),
-            Some(secret),
-            "{value:?} did not arrive as the secret"
-        );
-    }
-    assert_eq!(
-        presented(ADMIN_TOKEN_HEADER, secret).as_deref(),
-        Some(secret),
-        "the second carrier is a carrier"
-    );
-
-    assert_eq!(
-        presented("authorization", "Bearer Bearer token").as_deref(),
-        Some("Bearer token")
-    );
-
-    assert_eq!(
-        presented("authorization", "Basic abc123").as_deref(),
-        Some("Basic abc123")
-    );
-
-    assert_eq!(presented("authorization", "Bearer ").as_deref(), None);
-    assert_eq!(presented(ADMIN_TOKEN_HEADER, "").as_deref(), None);
-    assert_eq!(
-        presented_credential(&axum::http::HeaderMap::new()),
-        None,
-        "a request with no carrier at all presents nothing"
-    );
-}
-
-#[test]
 fn exactly_two_verbs_land_on_the_store() {
     let landing: Vec<KernelVerb> = NEW_VERBS
         .iter()

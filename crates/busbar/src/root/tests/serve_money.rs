@@ -2384,9 +2384,6 @@ async fn a_root_reservation_rejects_a_different_full_key_and_an_exited_loaded_ge
     assert_source_request_retained(&g, &source).await;
 }
 
-#[path = "serve_neutral_tests.rs"]
-mod neutral_ingress_tests;
-
 #[path = "serve_nested_neutral.rs"]
 mod nested_neutral_tests;
 

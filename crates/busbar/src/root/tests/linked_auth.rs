@@ -862,7 +862,7 @@ async fn through_the_loop(
             crate::root::units_admin::TestAdminRequest {
                 method: method.to_string(),
                 path: path.to_string(),
-                credential: crate::root::units_admin::presented_credential(&map),
+                credential: fixture_credential(&map),
                 headers,
                 body: Vec::new(),
                 at: 1_700_000_000,
@@ -1263,4 +1263,29 @@ fn env_ref(var: &str) -> SecretRef {
         .get("env")
         .expect("the linked env source declares the `env:` sugar")
         .reference(var)
+}
+
+/// The fixture request's presented credential: an `authorization` value (a `Bearer` scheme
+/// stripped) or else the `x-admin-token` value; empty values present nothing.
+fn fixture_credential(headers: &axum::http::HeaderMap) -> Option<String> {
+    let authorization = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .map(|value| {
+            let trimmed = value.trim_start();
+            match trimmed.split_once(' ') {
+                Some((scheme, rest)) if scheme.eq_ignore_ascii_case("bearer") => {
+                    rest.trim_start().to_string()
+                }
+                _ => trimmed.to_string(),
+            }
+        })
+        .filter(|credential| !credential.is_empty());
+    authorization.or_else(|| {
+        headers
+            .get(crate::root::units_admin::ADMIN_TOKEN_HEADER)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string)
+            .filter(|credential| !credential.is_empty())
+    })
 }
