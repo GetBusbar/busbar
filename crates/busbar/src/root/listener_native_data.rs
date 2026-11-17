@@ -44,6 +44,39 @@ pub(super) struct DataSettlement {
 }
 
 impl DataSettlement {
+    /// Registration never exposed a response feed. The caller first drops the unpublished
+    /// body so its blocked producer can stop, then retains this join through actual retirement.
+    pub(super) async fn registration_failed(mut self) -> Result<(), InputError> {
+        let failed = if let Some(work) = self.work.take() {
+            match work.await {
+                Ok(ran) => {
+                    self.ran = ran;
+                    false
+                }
+                Err(_) => {
+                    self.ran = false;
+                    true
+                }
+            }
+        } else {
+            false
+        };
+        let admitted = self.authority.admitted().ok_or(InputError::Invalid)?;
+        if admitted.selected.is_some() {
+            return Err(InputError::Invalid);
+        }
+        let mut end = end_of(502, self.ran);
+        end.cut = true;
+        self.billing
+            .settle_admitted(&admitted.request, end)
+            .map_err(|_| InputError::Invalid)?;
+        if failed {
+            Err(InputError::Invalid)
+        } else {
+            Ok(())
+        }
+    }
+
     pub(super) async fn finish(
         mut self,
         delivery: &RegisteredDelivery,
