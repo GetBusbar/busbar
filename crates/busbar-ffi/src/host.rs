@@ -32,6 +32,10 @@ use crate::vt::{
     Plain, Starts, VtEntry,
 };
 
+#[cfg(all(test, not(loom)))]
+#[path = "tests/fixed_loan_tests.rs"]
+mod fixed_loan_tests;
+
 // ---- answers ----
 
 /// A record head (IF §3): tag, reserved, body length; the body is padded to 8.
