@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Pre-release config keys that were never in a release and are gone: `plugins.logs.*`,
-//! `models.<m>.protocol` and `hooks.<h>.child_dispatch`. A config that sets one is refused as an
-//! unknown key, both read from config.yaml and composed from an admin `PUT /config/settings`
-//! `document_patch`. A 1.5.5-shaped config (no removed key; `hooks.<h>.signals` kept) still parses.
+//! Pre-release config keys that were never in a release and are gone: `plugins.logs.*` and
+//! `hooks.<h>.child_dispatch`. A config that sets one is refused as an unknown key, both read from
+//! config.yaml and composed from an admin `PUT /config/settings` `document_patch`. A 1.5.5-shaped
+//! config (no removed key; `hooks.<h>.signals` kept) still parses. `models.<m>.protocol` is not
+//! removed: it is the adopted member dialect override (ABI-MIN3-INTERFACE r34 §8.6 item 2, §16.135).
 
 use std::path::PathBuf;
 
@@ -40,9 +41,13 @@ fn plugins_logs_is_refused_as_an_unknown_key() {
 }
 
 #[test]
-fn models_protocol_is_refused_as_an_unknown_key() {
-    let err = refused("models:\n  m: { provider: p, protocol: openai }\n");
-    assert!(err.contains("unknown field `protocol`"), "{err}");
+fn models_protocol_is_the_adopted_dialect_override() {
+    let deploy = deploy_from_yaml_str(
+        "models:\n  m: { provider: p, protocol: openai }\n",
+        &Grammar::empty(),
+    )
+    .expect("models.<m>.protocol is the member dialect override (IF r34 §8.6 item 2)");
+    assert_eq!(deploy.models["m"].protocol.as_deref(), Some("openai"));
 }
 
 #[test]
@@ -101,12 +106,10 @@ fn the_settings_door_refuses_a_patch_that_sets_a_removed_key() {
     });
     for (tag, set, key) in [
         ("logs-level", "/plugins/logs", "logs"),
-        ("model-protocol", "/models/m/protocol", "protocol"),
         ("child", "/hooks/h/child_dispatch", "child_dispatch"),
     ] {
         let value = match key {
             "logs" => serde_json::json!({"level": "debug"}),
-            "protocol" => serde_json::json!("openai"),
             _ => grant.clone(),
         };
         let err = composed(tag, serde_json::json!({"set": {set: value}}))
