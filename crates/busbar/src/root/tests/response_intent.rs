@@ -133,6 +133,44 @@ async fn connection_and_stream_identity_are_not_reused() {
 }
 
 #[tokio::test]
+async fn node_stamp_uses_the_bound_book_and_actual_writer_authority() {
+    let (fixture, service, _) = rig().await;
+    let node = crate::root::plane_node::Node::new();
+    node.bind_book(Arc::new(std::sync::Mutex::new(fixture.book().await)));
+    node.bind_response_intents(fixture.core.clone(), service)
+        .unwrap();
+    let stamp = node.response_intent_stamp(&fixture.journal).unwrap();
+    assert_eq!(
+        stamp.lease_epoch,
+        fixture.core.authority().unwrap().writer_epoch
+    );
+    let later = node.response_intent_stamp(&fixture.journal).unwrap();
+    assert!(later.mono > stamp.mono);
+
+    let foreign = NativeFixture::new(72).await;
+    assert!(node.response_intent_stamp(&foreign.journal).is_err());
+}
+
+#[tokio::test]
+async fn node_refuses_foreign_core_and_mismatched_book_incarnation() {
+    let (fixture, service, _) = rig().await;
+    let foreign = NativeFixture::new(72).await;
+    let node = crate::root::plane_node::Node::new();
+    node.bind_book(Arc::new(std::sync::Mutex::new(fixture.book().await)));
+    assert!(node
+        .bind_response_intents(foreign.core, service.clone())
+        .is_err());
+
+    let mut different_book = fixture.book().await;
+    different_book.incarnation = different_book.incarnation.checked_add(1).unwrap();
+    let different_node = crate::root::plane_node::Node::new();
+    different_node.bind_book(Arc::new(std::sync::Mutex::new(different_book)));
+    assert!(different_node
+        .bind_response_intents(fixture.core, service)
+        .is_err());
+}
+
+#[tokio::test]
 async fn only_fixed_response_purpose_can_sign_from_request_scope() {
     let (_, service, mut ledger) = rig().await;
     let connection = service.connection().unwrap();
