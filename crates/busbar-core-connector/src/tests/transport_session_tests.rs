@@ -184,6 +184,78 @@ fn send_to() -> TransportOut<'static> {
     }
 }
 
+#[test]
+fn native_callback_payloads_are_redacted_and_wiped_on_release() {
+    const SECRET: &[u8] = b"native-request-credential-72819";
+    let before = busbar_contract::secure::wipe_counts().1;
+    let mut answers = Answers::new(None, Instant::now());
+    let acts = answer(
+        &mut answers,
+        Called::Ingest,
+        vec![
+            TransportOut::Write(SECRET),
+            TransportOut::StreamHead {
+                stream: 1,
+                end_stream: false,
+                head: Records::new(SECRET),
+            },
+            TransportOut::StreamBody {
+                stream: 1,
+                flags: 0,
+                bytes: SECRET,
+            },
+            TransportOut::StreamTrailers {
+                stream: 1,
+                pairs: Records::new(SECRET),
+            },
+        ],
+    )
+    .expect("callback ownership");
+    let shown = format!("{acts:?}");
+    assert!(
+        !shown.contains(&format!("{SECRET:?}")),
+        "native payload Debug leaked bytes"
+    );
+    drop(acts);
+    assert_eq!(
+        busbar_contract::secure::wipe_counts().1 - before,
+        4,
+        "all four callback buffers wipe"
+    );
+}
+
+#[test]
+fn malformed_native_output_wipes_already_copied_payloads() {
+    let before = busbar_contract::secure::wipe_counts().1;
+    let mut answers = Answers::new(None, Instant::now());
+    assert_eq!(
+        answer(
+            &mut answers,
+            Called::Ingest,
+            vec![
+                TransportOut::Write(b"credential"),
+                TransportOut::StreamFull(1)
+            ]
+        ),
+        Err(GRAMMAR),
+    );
+    assert_eq!(
+        busbar_contract::secure::wipe_counts().1 - before,
+        1,
+        "discarded partial output wipes"
+    );
+}
+
+#[test]
+fn dropping_a_queued_native_piece_wipes_its_body() {
+    let before = busbar_contract::secure::wipe_counts().1;
+    let queued = piece(E_BODY, b"queued-response-credential");
+    let shown = format!("{queued:?}");
+    assert!(!shown.contains(&format!("{:?}", b"queued-response-credential".as_slice())));
+    drop(queued);
+    assert_eq!(busbar_contract::secure::wipe_counts().1 - before, 1);
+}
+
 // ---- the answer grammar charged to C1 (§11.3) ----
 
 #[test]
