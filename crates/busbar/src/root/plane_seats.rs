@@ -39,6 +39,7 @@ use busbar_contract::conn::{
     ConnId, DeclaredConns, InstanceId, NeedId, OpenDesc, PieceKind, PollConns,
 };
 use busbar_contract::secret_ref::SecretRef;
+use busbar_contract::services::Caller;
 use busbar_contract::transport::wire::WireStatusClass;
 use busbar_core_connector::child_job::ContainedChild;
 use busbar_kernel::channels::budget::InstanceBudget;
@@ -758,6 +759,7 @@ fn channels_of(
     shared: &SeatShared,
     budget: InstanceBudget,
     who: &Namespace,
+    caller: Caller,
     port: Arc<dyn PlanePort>,
     held: Option<Arc<dyn HeldHttp>>,
 ) -> ChannelDriver {
@@ -765,6 +767,7 @@ fn channels_of(
         ProcessWires::new(Arc::clone(&shared.secrets), held).spawning(Arc::new(ContainedSpawn));
     ChannelDriver::new(
         who.instance,
+        caller,
         budget,
         Arc::new(wires),
         Arc::new(PortDemuxer::new(port)),
@@ -786,6 +789,7 @@ pub(crate) fn compose(
     instance: &str,
     accept: Accept,
     who: &Namespace,
+    caller: Caller,
     port: Arc<dyn PlanePort>,
     rt: Handle,
 ) -> Result<SeatWiring, String> {
@@ -808,6 +812,7 @@ pub(crate) fn compose(
             catalog.map(|catalog| Arc::clone(&catalog.plan)),
             Some(Arc::clone(&registration)),
         )
+        .and_then(|routes| routes.with_registrations(Arc::clone(upstreams)))
         .map_err(|_| format!("plane {instance}: inconsistent request routing inventory"))?,
     );
     let mut pool = SeatPool {
@@ -864,7 +869,7 @@ pub(crate) fn compose(
         }
         None => (None, None, None),
     };
-    let channels = channels_of(shared, channel_budget.clone(), who, port, held);
+    let channels = channels_of(shared, channel_budget.clone(), who, caller, port, held);
     let clock: Arc<dyn Fn() -> u64 + Send + Sync> =
         Arc::new(busbar_plugin_abi::host_side::host_vt::vt::mono);
     let carrier = PortCarrier::new(
