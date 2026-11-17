@@ -1493,6 +1493,13 @@ async fn run(
     let probes = Arc::new(busbar_kernel::endpoints::ProbeState::new(
         book.as_ref().map(|book| book.runtime_journal.clone()),
     ));
+    let admin_router = busbar_kernel::router::build_admin_router_on_with_dispatch_layer(
+        &app_handle,
+        req_body_max,
+        response_headers_cfg.server_timing,
+        root::listener::deferred_dispatch_layer,
+    )
+    .layer(axum::Extension(probes.clone()));
     let _ = door_live_handle.set(std::sync::Arc::downgrade(&app_handle));
 
     let _ = root::inbound::install(root::doors::dispatcher());
@@ -1720,6 +1727,7 @@ async fn run(
                         // Shutdown may shorten the existing output deadline, never restart it.
                         drain_grace: busbar_kernel::detached::DETACHED_DRAIN_GRACE,
                     },
+                    (bind.at == "admin_listen").then(|| admin_router.clone()),
                 )
                 .unwrap_or_else(|error| die(format!("native listener {}: {error:?}", bind.at))),
             );
