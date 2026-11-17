@@ -53,6 +53,7 @@ pub(super) struct Pending {
     recovered: bool,
     /// The unit's live audit line, carried from the root's seal (SHUTDOWN-HANG F1a). RAM only.
     audit: Option<Carried>,
+    memory_selected: bool,
 }
 
 /// One entry's custody facts at a non-retired exit (SHUTDOWN-HANG §5).
@@ -94,7 +95,18 @@ impl Pending {
             persisted,
             recovered,
             audit: None,
+            memory_selected: false,
         }
+    }
+
+    pub(super) fn selected(snapshot: UnitCheckpoint, durable: bool, pending_hot: bool) -> Self {
+        let mut entry = Self::new(snapshot, None, pending_hot);
+        entry.memory_selected = !durable;
+        entry
+    }
+
+    pub(super) fn is_memory_selected(&self) -> bool {
+        self.memory_selected
     }
 
     pub(super) fn snapshot(&self) -> &UnitCheckpoint {
@@ -382,10 +394,22 @@ impl PendingGuard<'_> {
     /// A running entry whose revision is persisted needs no store call and is skipped.
     pub(super) fn flush_order(&self) -> Vec<Id> {
         crate::off_path::governance::runtime::unit_checkpoint_book_flush_order(
-            self.inner.entries.iter(),
+            self.inner
+                .entries
+                .iter()
+                .filter(|(_, entry)| !entry.memory_selected),
             |e: &Pending| e.snapshot.ended,
             |e: &Pending| !e.snapshot.ended && e.persisted != Some(e.snapshot.revision),
         )
+    }
+
+    pub(super) fn memory_order(&self) -> Vec<Id> {
+        self.inner
+            .entries
+            .iter()
+            .filter(|(_, entry)| entry.memory_selected && entry.snapshot.ended)
+            .map(|(id, _)| *id)
+            .collect()
     }
 
     /// Every entry's custody facts at exit: id, ended, persisted revision, staged revision,

@@ -570,6 +570,7 @@ fn unit(revision: u64) -> UnitCheckpoint {
         audit: Some(b"{}".to_vec()),
         measurement: None,
         unread: None,
+        partitions: None,
     }
 }
 fn selected_revision(backend: &Mem) -> Option<u64> {

@@ -1550,6 +1550,39 @@ impl Default for PendingMetering {
 }
 
 impl PendingMetering {
+    /// All rows of one selected unit, staged before any mutation. Selected attribution never
+    /// enters the overflow sentinel; the caller retains the whole terminal on refusal.
+    fn try_accrue_selected(
+        &self,
+        principal: &str,
+        additions: &[(MeterKey, MeterCounts)],
+    ) -> Result<std::sync::MutexGuard<'_, HashMap<MeterKey, MeterCounts>>, CountError> {
+        let mut map = self
+            .shard_for(principal)
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let mut staged = std::collections::BTreeMap::<MeterKey, MeterCounts>::new();
+        for (key, add) in additions {
+            if key.0 != principal {
+                return Err(CountError::Malformed);
+            }
+            let value = staged
+                .entry(key.clone())
+                .or_insert_with(|| map.get(key).cloned().unwrap_or_default());
+            value.try_merge(add)?;
+        }
+        let added = staged.keys().filter(|key| !map.contains_key(*key)).count();
+        if map
+            .len()
+            .checked_add(added)
+            .is_none_or(|count| count > MAX_PENDING_METERING_PER_SHARD)
+        {
+            return Err(CountError::OutOfRange);
+        }
+        map.extend(staged);
+        Ok(map)
+    }
+
     pub fn new() -> Self {
         Self {
             shards: Box::new(std::array::from_fn(|_| {
