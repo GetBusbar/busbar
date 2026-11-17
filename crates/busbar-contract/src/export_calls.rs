@@ -406,3 +406,74 @@ pub struct ExportLossFacts {
     /// Whether the event records delivery loss, capture refusal or integrity failure.
     pub kind: ExportLossKind,
 }
+
+/// A checked positive custody acknowledgement; NONE and unknown wire values are not levels.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExportCustodyLevel {
+    /// The destination accepted the prefix into its custody.
+    Accepted,
+    /// The destination durably retained the prefix.
+    Durable,
+    /// The destination indexed the prefix.
+    Indexed,
+}
+
+impl ExportCustodyLevel {
+    /// Validate an existing export wire custody level; zero and unknown levels are refused.
+    #[must_use]
+    pub const fn from_wire(level: u32) -> Option<Self> {
+        use crate::abi::export::{CUSTODY_ACCEPTED, CUSTODY_DURABLE, CUSTODY_INDEXED};
+        match level {
+            CUSTODY_ACCEPTED => Some(Self::Accepted),
+            CUSTODY_DURABLE => Some(Self::Durable),
+            CUSTODY_INDEXED => Some(Self::Indexed),
+            _ => None,
+        }
+    }
+
+    /// Stable metric label for this checked positive custody level.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Accepted => "accepted",
+            Self::Durable => "durable",
+            Self::Indexed => "indexed",
+        }
+    }
+}
+
+/// Host-owned observation vocabulary. Instance identity is bound by the constructor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExportObservation {
+    /// Bytes already in custody were terminally discarded.
+    Dropped {
+        /// Closed host-owned terminal-loss reason.
+        reason: ExportDropReason,
+        /// Number of discarded lines; zero is ignored.
+        lines: u64,
+    },
+    /// The destination acknowledged an accepted prefix.
+    Custody {
+        /// Existing stream vocabulary.
+        stream: crate::export_stream::ExportStream,
+        /// Checked positive acknowledgement level.
+        level: ExportCustodyLevel,
+        /// Accepted prefix length; zero is ignored.
+        lines: u64,
+    },
+    /// The sole capture-refusal reason is admission_rejected, counted per occurrence.
+    CaptureRefused,
+    /// One audit-integrity failure, independent of whether queued bytes deliver.
+    IntegrityFailed,
+    /// Absolute retained ciphertext line count while its key is unavailable; never a loss.
+    Held {
+        /// Absolute current retained lines, including zero to clear the gauge.
+        lines: u64,
+    },
+}
+
+/// One logical instance's observer, shared with every generation and capture producer.
+pub trait ExportObserver: Send + Sync + 'static {
+    /// Record bounded typed facts against this constructor-bound logical instance.
+    fn observe(&self, observation: ExportObservation);
+}

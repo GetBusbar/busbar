@@ -863,6 +863,16 @@ diagnostics! {
         "The journal refused the terminal audit original before native confirmation. The request fails instead of reporting success without its audit evidence; an already streaming response terminates with an error. The journal and audit chain positions do not advance for the refused original. The counter busbar_audit_stage_failures_total counts these failures.",
         "Check store availability and journal custody pressure. A closed journal can also indicate shutdown. Do not assume an upstream operation was undone when its terminal audit failed.";
 
+    EXPORT_LOSS_OBSERVED = 2052, Audit, Actionable, "export-loss-observed", "1.6.0", false,
+        "An exporter first observed lost delivery or failed evidence",
+        "The exporter retained its first delivery-loss, capture-refusal or audit-integrity failure for transfer to native audit custody. This warning is emitted once per logical instance. Later observations still update their distinct counters. Held ciphertext is not lost delivery.",
+        "Check the exporter destination, admission and audit availability. Inspect the export counters for current counts. This warning does not mean that native audit has confirmed the first-loss record.";
+
+    EXPORT_LOSS_UNCONFIRMED = 2053, Audit, Actionable, "export-loss-unconfirmed", "1.6.0", false,
+        "Exporter loss evidence remains unconfirmed or a producer reported after quiescence",
+        "The observer could not yet confirm its retained first-loss evidence, or an exporter called it after shutdown observation intake closed. The original remains retained; an accepted native audit original is never replaced by a retry. Shutdown cannot report successful observation settlement while evidence or a late callback is unresolved.",
+        "Restore native audit availability and allow settlement within the existing shutdown budget. A callback after producer quiescence indicates a runtime lifecycle defect. Preserve stderr and the incomplete-shutdown report.";
+
     PLANE_AUDITLOG_WRITE_FAILED = 2044, Audit, Actionable, "plane-auditlog-write-failed", "1.6.0", false,
         "Admin audit record could not be written through the durable journal seam (evidence lost)",
         "The admin audit record could NOT be written through the durable journal seam, so this mutation is being served but its evidence is being lost on that path. The chain position is unchanged, so the chain stays contiguous — what is missing is this one record, not the ones after it. This can recur per mutation during a store outage, so it warns on the transition into the failing state and holds subsequent occurrences at debug.",
@@ -2091,3 +2101,18 @@ macro_rules! diag_debug {
     };
 }
 pub use crate::{diag_debug, diag_error, diag_warn};
+
+/// The reserved observer path is visible to the normal stderr layer but excluded from every
+/// export projection, including events attached to an otherwise exportable parent span.
+pub const EXPORT_LOSS_TARGET: &str = "busbar::export::loss";
+
+/// Bounded caller-selected first/retry notification. Deliberately bypasses `emit` and its
+/// actionable diagnostic audit event: the observer already owns its one native original.
+pub fn export_loss(first: bool, instance: &str) {
+    let diagnostic = if first {
+        EXPORT_LOSS_OBSERVED
+    } else {
+        EXPORT_LOSS_UNCONFIRMED
+    };
+    tracing::warn!(target: EXPORT_LOSS_TARGET, diag = %diagnostic.banner(), instance, "export observation requires attention");
+}
