@@ -13,6 +13,7 @@ use busbar_contract::config::dialect_styles::{self as styles, Row, Settings};
 use busbar_contract::config::outbound_owner;
 use busbar_ports::codec::plane::{DialectAuthOwned, PresentationOwned};
 
+pub mod native;
 mod outbound;
 mod upstream;
 
@@ -364,3 +365,6 @@ pub fn bind_providers(plan: &ProviderPlan<'_>) -> Result<ProviderBindings, Vec<S
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+pub(crate) mod native_tests;
