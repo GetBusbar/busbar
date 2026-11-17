@@ -94,6 +94,7 @@ struct Live;
 
 #[derive(Default)]
 struct Plane {
+    usage_facts: u64,
     resource_scoped: bool,
     request: Vec<It>,
     upstream: Mutex<VecDeque<Vec<It>>>,
@@ -113,6 +114,10 @@ fn nope() -> PortError {
 
 impl Calls for Plane {
     type Session = Live;
+
+    fn usage_metadata(&self) -> (u64, &[busbar_ports::plane::UsageClass], &[Box<str>]) {
+        (self.usage_facts, &[], &[])
+    }
 
     fn resource_scoped(&self, _: u32) -> bool {
         self.resource_scoped
@@ -382,6 +387,15 @@ fn a_resource_scoped_route_cannot_execute_without_completed_admission() {
 
 #[test]
 fn pending_money_refusal_holds_emits_even_without_hooks() {
+    pending_money_refusal(0);
+}
+
+#[test]
+fn selected_declaration_never_uses_the_ordinary_money_callback() {
+    pending_money_refusal(busbar_plugin_abi::plane::FB_PREPARED_ESTIMATES);
+}
+
+fn pending_money_refusal(usage_facts: u64) {
     use crate::host_services::{
         InvocationContext, KernelServices, Nest, NestDone, NestRoute, ServingGeneration,
     };
@@ -454,6 +468,7 @@ fn pending_money_refusal_holds_emits_even_without_hooks() {
         }
     }
     let plane = Plane {
+        usage_facts,
         request: vec![It::Emit, It::Respond(200), It::End],
         ..Plane::default()
     };
@@ -476,11 +491,16 @@ fn pending_money_refusal_holds_emits_even_without_hooks() {
             carrier: None,
         },
     );
-    assert!(
-        matches!(result, Err(SessionError::AdmissionRefused(_))),
-        "{result:?}"
-    );
-    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    if usage_facts == 0 {
+        assert!(
+            matches!(result, Err(SessionError::AdmissionRefused(_))),
+            "{result:?}"
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    } else {
+        assert!(matches!(result, Err(SessionError::NotDriven)), "{result:?}");
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
     assert!(!pending.context().effects_allowed());
 }
 
