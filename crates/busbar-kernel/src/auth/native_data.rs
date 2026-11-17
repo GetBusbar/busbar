@@ -594,6 +594,12 @@ impl NativeDataPending {
     pub fn execution(&self) -> Option<&DataExecutionAdmission> {
         self.execution.get()
     }
+
+    /// Lend the same accepted monetary owner for the registered response's terminal join.
+    pub fn admitted(&self) -> Option<&AdmittedUnit> {
+        self.execution.get()?;
+        self.pending.admitted()
+    }
 }
 
 /// Actual DATA + physical + exact-context + monetary completion. No public constructor.
