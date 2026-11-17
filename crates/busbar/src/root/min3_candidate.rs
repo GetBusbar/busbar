@@ -56,8 +56,15 @@ fn install(
     if native.config_version != app.config_version {
         return Err("native generation belongs to another configuration".into());
     }
-    if services.kernel().is_none() {
-        return Err("native generation requires actual serving services".into());
+    let kernel = services
+        .kernel()
+        .ok_or("native generation requires actual serving services")?;
+    if native
+        .seats
+        .iter()
+        .any(|seat| !Arc::ptr_eq(seat.driver.core(), &kernel))
+    {
+        return Err("native generation services differ from its admitted plane services".into());
     }
     let mut config = app
         .config_projection
