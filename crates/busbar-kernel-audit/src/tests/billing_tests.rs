@@ -248,6 +248,7 @@ fn declared_class_grammar_and_bounds_refuse_whole_records() {
         .insert("vendor:tokens".into(), quantity);
     let mut line = record(PartitionedBillingV1::new(value).unwrap());
     line.controls.hold_ref = Some("x".repeat(BILLING_RECORD_BYTES));
+    line.hash = digest_record(&line);
     assert!(journal_body(&line).is_err());
     line.controls.hold_ref = None;
     line.unit.records.user = Some("x".repeat(4097));

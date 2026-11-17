@@ -816,6 +816,8 @@ pub(crate) fn record_valid(record: &super::AuditRecord) -> bool {
                 && record.signature.is_none()
                 && record.key_id.is_none()
                 && crate::link::Fingerprint::from_hex(&record.prev_hash).is_some()
+                && record.hash.len() == 64
+                && crate::link::Fingerprint::from_hex(&record.hash).is_some()
                 && record.unit.records.labels.len() <= super::LABEL_SLOTS
                 && record
                     .unit
