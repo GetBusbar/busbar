@@ -27,7 +27,11 @@ impl ReplayGuard for Owners {
         _: &'a [u8],
         _: u64,
     ) -> BoxFut<'a, Result<bool, RecordsDenied>> {
-        panic!("eager chain fixture must use its original relative replay policy")
+        let first = self.0.fetch_add(1, Ordering::SeqCst) == 0;
+        Box::pin(async move {
+            tokio::task::yield_now().await;
+            Ok(first)
+        })
     }
     fn claim<'a>(
         &'a self,
@@ -43,6 +47,7 @@ impl ReplayGuard for Owners {
 struct Port {
     calls: AtomicUsize,
     not_mine: bool,
+    native: bool,
 }
 fn unsupported<'a, T: Send + 'a>() -> BoxFut<'a, Result<T, PortError>> {
     Box::pin(async {
@@ -62,6 +67,36 @@ impl AuthPort for Port {
         None
     }
     fn verify<'a>(&'a self, _: CallCx, req: &AuthIn<'_>, _: Option<&[u8]>) -> Verify<'a> {
+        if self.native {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            let accepted = req.body == b"admin-body";
+            let mut records = Reply::new();
+            records.put_text(tag::ID_SUBJECT, "client").unwrap();
+            records.put_text(tag::ID_GROUP, "reader").unwrap();
+            records
+                .put_pod_tail(
+                    busbar_plugin_abi::auth::tag::REPLAY,
+                    &U64Rec { value: 60 },
+                    b"nonce",
+                )
+                .unwrap();
+            let VerifyOk::Identity(identity) =
+                decode_verify_ok(Records::new(records.as_bytes())).unwrap()
+            else {
+                panic!("identity")
+            };
+            return Verify::Io(Box::pin(async move {
+                tokio::task::yield_now().await;
+                Ok(if accepted {
+                    VerifyAnswer::Identity(identity)
+                } else {
+                    VerifyAnswer::Refused {
+                        code: busbar_plugin_abi::auth::BAD_CREDENTIAL,
+                        text: "body".into(),
+                    }
+                })
+            }));
+        }
         assert_eq!(req.path, "/resource");
         assert_eq!(req.body, b"body");
         assert_eq!(req.peer, "peer");
@@ -136,10 +171,12 @@ async fn retained_native_chain_snapshots_request_and_rejects_before_replay() {
     let first = Arc::new(Port {
         calls: AtomicUsize::new(0),
         not_mine: true,
+        native: false,
     });
     let second = Arc::new(Port {
         calls: AtomicUsize::new(0),
         not_mine: false,
+        native: false,
     });
     let owners = Arc::new(Owners(AtomicUsize::new(0)));
     let chain = NativeChain {
@@ -190,6 +227,7 @@ async fn prepared_native_chain_retains_original_request_without_spending_replay(
     let port = Arc::new(Port {
         calls: AtomicUsize::new(0),
         not_mine: false,
+        native: false,
     });
     let owners = Arc::new(Owners(AtomicUsize::new(0)));
     let chain = Arc::new(NativeChain {
@@ -237,4 +275,178 @@ async fn prepared_native_chain_retains_original_request_without_spending_replay(
     );
     assert_eq!(port.calls.load(Ordering::SeqCst), 1);
     assert_eq!(owners.0.load(Ordering::SeqCst), 0);
+}
+
+async fn admin_fixture() -> (
+    Arc<busbar_kernel::state::AppHandle>,
+    Arc<busbar_kernel::state::App>,
+    Arc<Owners>,
+    Arc<Port>,
+) {
+    let original = crate::root::inbound_tests::app(false).await.0;
+    let mut app = (*original).clone();
+    app.admin_chain = vec!["provider-42".into()];
+    app.auth_scope_caps
+        .insert("provider-42".into(), "full".into());
+    app.role_bindings = busbar_kernel::config::RoleBindings::from([(
+        "provider-42".into(),
+        BTreeMap::from([(
+            "reader".into(),
+            busbar_kernel::config::RoleBindingCfg {
+                allowed_pools: None,
+                group: None,
+                admin_scope: Some("full".into()),
+                verbs: None,
+                plane_grants: Default::default(),
+            },
+        )]),
+    )]);
+    let owners = Arc::new(Owners(AtomicUsize::new(0)));
+    let port = Arc::new(Port {
+        calls: AtomicUsize::new(0),
+        not_mine: false,
+        native: true,
+    });
+    let set = Arc::new(AuthSet {
+        instances: BTreeMap::from([("provider-42".into(), instance(42, port.clone()))]),
+        owners: Arc::new(AuthOwners {
+            issued: owners.clone(),
+            replay: owners.clone(),
+            cache: Arc::new(Verdicts::new(VerdictPolicy::DEFAULT)),
+        }),
+    });
+    let epoch = app.config_generation.load(Ordering::Acquire);
+    crate::root::min3_admin_auth::install(&mut app, set, epoch).unwrap();
+    let app = Arc::new(app);
+    (
+        Arc::new(busbar_kernel::state::AppHandle::new(app.clone())),
+        app,
+        owners,
+        port,
+    )
+}
+
+fn admin_invocation(
+    handle: &Arc<busbar_kernel::state::AppHandle>,
+    app: &Arc<busbar_kernel::state::App>,
+    at: u64,
+) -> busbar_kernel::auth::native_admin::Invocation {
+    use busbar_kernel::auth::{
+        admin_call_context,
+        native_admin::{http_request, Invocation},
+    };
+    let id = busbar_kernel::state::InvocationId::from_request_id(
+        std::num::NonZeroU64::new(app.next_request_id()).unwrap(),
+    );
+    Invocation {
+        handle: handle.clone(),
+        selected: app.clone(),
+        id,
+        cx: admin_call_context(id),
+        request: Arc::new(http_request(
+            "GET",
+            "/api/v1/admin/audit",
+            &axum::http::HeaderMap::new(),
+            b"admin-body",
+            at,
+        )),
+    }
+}
+
+#[tokio::test]
+async fn native_admin_probe_is_non_authoritative_and_final_claim_is_one_shot() {
+    use busbar_kernel::auth::{admin_verdict, admin_verdict_for, AdminDoor};
+    let (handle, app, owners, port) = admin_fixture().await;
+    let headers = axum::http::HeaderMap::new();
+    assert!(matches!(
+        admin_verdict(&app, "GET", "/api/v1/admin/audit", &headers).door,
+        AdminDoor::Unavailable(_)
+    ));
+    assert_eq!(owners.0.load(Ordering::SeqCst), 0);
+    let verdict = admin_verdict_for(
+        admin_invocation(&handle, &app, busbar_kernel::store::now()),
+        &headers,
+    )
+    .await;
+    assert!(busbar_kernel::auth::admin_door_admits(
+        &verdict.door,
+        "GET",
+        "/api/v1/admin/audit"
+    ));
+    let pending = verdict.claim.unwrap();
+    assert!(
+        !pending.win().await,
+        "bool-only callers cannot discard native lease custody"
+    );
+    assert_eq!(owners.0.load(Ordering::SeqCst), 0);
+    let execution = pending.complete_admin().await.unwrap();
+    assert!(Arc::ptr_eq(
+        execution.native().unwrap().0.generation(),
+        &app
+    ));
+    assert!(pending.complete_admin().await.is_err());
+    assert_eq!(owners.0.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        port.calls.load(Ordering::SeqCst),
+        2,
+        "completion did not verify again"
+    );
+}
+
+#[tokio::test]
+async fn native_admin_publication_before_lease_and_expired_window_claim_nothing() {
+    use busbar_kernel::auth::admin_verdict_for;
+    let (handle, app, owners, _) = admin_fixture().await;
+    let headers = axum::http::HeaderMap::new();
+    let expired = admin_verdict_for(
+        admin_invocation(
+            &handle,
+            &app,
+            busbar_kernel::store::now().saturating_sub(61),
+        ),
+        &headers,
+    )
+    .await
+    .claim
+    .unwrap();
+    assert!(expired.complete_admin().await.is_err());
+    let pending = admin_verdict_for(
+        admin_invocation(&handle, &app, busbar_kernel::store::now()),
+        &headers,
+    )
+    .await
+    .claim
+    .unwrap();
+    handle.swap(Arc::new((*app).clone())).await;
+    assert!(pending.complete_admin().await.is_err());
+    assert_eq!(owners.0.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn native_admin_lease_survives_publication_during_replay_and_pins_actual_effect() {
+    use busbar_kernel::auth::{
+        admin_verdict_for,
+        effect::{Context, PinnedEffect},
+    };
+    let (handle, app, owners, port) = admin_fixture().await;
+    let headers = axum::http::HeaderMap::new();
+    let verdict = admin_verdict_for(
+        admin_invocation(&handle, &app, busbar_kernel::store::now()),
+        &headers,
+    )
+    .await;
+    let mut context = Context::new("GET", "/api/v1/admin/audit", headers, &verdict.door);
+    let pending = verdict.claim.unwrap();
+    let mut completion = std::pin::pin!(pending.complete_admin());
+    let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+    assert!(std::future::Future::poll(completion.as_mut(), &mut cx).is_pending());
+    assert_eq!(owners.0.load(Ordering::SeqCst), 1);
+    handle.swap(Arc::new((*app).clone())).await;
+    let execution = Arc::new(completion.await.unwrap());
+    context.attach_execution(execution).unwrap();
+    let effect = PinnedEffect::admit(&handle, Some(context)).await.unwrap();
+    assert!(Arc::ptr_eq(effect.app(), &app));
+    let _completion = effect.start(&handle).await.unwrap();
+    assert_eq!(port.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(owners.0.load(Ordering::SeqCst), 1);
 }

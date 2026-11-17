@@ -35,6 +35,7 @@ impl Drop for Completion {
 
 #[derive(Clone)]
 pub struct Context {
+    pub(crate) native: Option<Arc<super::native_admin::ExecutionAdmission>>,
     pub(crate) method: String,
     pub(crate) target: String,
     pub(crate) headers: HeaderMap,
@@ -79,7 +80,48 @@ impl Context {
         crate::off_path::auth::keys::effect::context(method, target, headers, admitted)
     }
 
+    /// Bind successful native custody to this same method, target and projected principal. A
+    /// context cannot borrow another invocation's authority merely because it knows its subject.
+    pub fn attach_execution(
+        &mut self,
+        execution: Arc<super::native_admin::ExecutionAdmission>,
+    ) -> Result<(), ()> {
+        let Some((lease, prepared)) = execution.native() else {
+            return Ok(());
+        };
+        let (path, query) = self.target.split_once('?').unwrap_or((&self.target, ""));
+        if !prepared
+            .request()
+            .view(|req| req.method == self.method && req.path == path && req.query == query)
+        {
+            return Err(());
+        }
+        let door = execution.door_for(lease.generation()).ok_or(())?;
+        if actor(&door) != self.actor.as_deref()
+            || crate::off_path::auth::keys::effect::roles(&door) != self.roles
+            || !super::admin_door_admits(&door, &self.method, &self.target)
+        {
+            return Err(());
+        }
+        self.native = Some(execution);
+        Ok(())
+    }
+
+    fn retained_generation(&self) -> Option<&Arc<App>> {
+        self.native
+            .as_ref()?
+            .native()
+            .map(|(lease, _)| lease.generation())
+    }
+
     pub async fn revalidate(&self, app: &App) -> Result<Authority, TxnError> {
+        if let Some(execution) = &self.native {
+            let generation = self.retained_generation().ok_or(TxnError::Forbidden)?;
+            let door = execution.door_for(generation).ok_or(TxnError::Forbidden)?;
+            return Ok(Authority {
+                full_operator: full_operator(&door),
+            });
+        }
         let completed = COMPLETED_EFFECTS.load(Ordering::SeqCst);
         let (door, _) =
             super::judge_admin_door(app, &self.method, &self.target, &self.headers, false, false)
@@ -98,6 +140,17 @@ impl Context {
     }
 
     pub(crate) fn survives(&self, app: &App) -> bool {
+        if let Some(execution) = &self.native {
+            let Some(prior) = self.retained_generation() else {
+                return false;
+            };
+            // Lockout checking is about the candidate's future authority, not the admitted
+            // operation. Changed verifier configuration cannot reuse an old verified identity.
+            return prior.identity_providers == app.identity_providers
+                && execution.door_for(app).is_some_and(|door| {
+                    actor(&door) == self.actor.as_deref() && full_operator(&door)
+                });
+        }
         let door = super::probe_admin_door(app, &self.method, &self.target, &self.headers, false);
         actor(&door) == self.actor.as_deref() && full_operator(&door)
     }
@@ -124,7 +177,11 @@ impl PinnedEffect {
         context: Option<Context>,
     ) -> Result<Self, TxnError> {
         let effect = Self {
-            app: handle.load(),
+            app: context
+                .as_ref()
+                .and_then(Context::retained_generation)
+                .cloned()
+                .unwrap_or_else(|| handle.load()),
             context,
         };
         effect.revalidate(handle).await?;
@@ -141,6 +198,10 @@ impl PinnedEffect {
     }
 
     pub async fn revalidate(&self, handle: &Arc<AppHandle>) -> Result<(), TxnError> {
+        if let Some(context) = self.context.as_ref().filter(|ctx| ctx.native.is_some()) {
+            context.revalidate(&self.app).await?;
+            return Ok(());
+        }
         let completed = COMPLETED_EFFECTS.load(Ordering::SeqCst);
         if !Arc::ptr_eq(&self.app, &handle.load()) {
             return Err(TxnError::Forbidden);

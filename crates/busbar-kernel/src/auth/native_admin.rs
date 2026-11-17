@@ -66,6 +66,7 @@ pub enum PreparedAnswer {
 /// Host-only immutable verification state. Neither identity projection nor STRIP certifies that
 /// every declared credential field was verified; field provenance needs its own attestation.
 pub trait PreparedIdentity: Send + Sync {
+    fn provider(&self) -> &str;
     fn credential_headers(&self) -> &[Box<str>];
     fn identity(&self) -> &Identity;
     fn request(&self) -> &Request;
@@ -143,5 +144,24 @@ impl ExecutionAdmission {
         self.native
             .as_ref()
             .map(|(lease, prepared)| (lease, prepared.as_ref()))
+    }
+
+    pub(super) fn door_for(&self, app: &App) -> Option<super::AdminDoor> {
+        let (_, prepared) = self.native()?;
+        let identity = prepared.identity();
+        Some(super::admin_door_of(
+            app,
+            super::ChainVerdict::Identified {
+                module: prepared.provider().to_owned(),
+                principal: super::Principal {
+                    id: identity.subject().to_owned(),
+                    name: None,
+                    roles: identity.groups().map(str::to_owned).collect(),
+                    ttl_secs: identity.cache_s().map(u64::from),
+                },
+                resolved: None,
+            },
+            super::module_admin_scope_cap(app, prepared.provider()),
+        ))
     }
 }

@@ -271,6 +271,9 @@ struct Prepared {
 }
 
 impl PreparedIdentity for Prepared {
+    fn provider(&self) -> &str {
+        &self.instance.opened.who.name
+    }
     fn credential_headers(&self) -> &[Box<str>] {
         self.instance.opened.port.cred_headers()
     }
