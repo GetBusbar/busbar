@@ -286,14 +286,6 @@ pub trait ExportAxis: Send + Sync {
         instances: &[(String, &crate::plugin_settings::ResolvedSettings)],
     ) -> Option<Vec<String>>;
 
-    /// OPEN one instance of `module` with `settings`, under the host's instance `label` (unique per
-    fn open(
-        &self,
-        module: &str,
-        label: &str,
-        settings: &PreparedExport,
-    ) -> Result<std::sync::Arc<dyn ExportCalls>, String>;
-
     /// Whether `module` names a row this build LINKS (as opposed to one dropped in).
     fn linked(&self, module: &str) -> bool;
 

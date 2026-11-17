@@ -159,6 +159,90 @@ async fn the_fence_writes_its_mark_in_the_same_compare_and_set() {
     assert_eq!(store.fence_candidates().len(), before);
 }
 
+/// A lost fence reply must replay the complete atomic intent, including shared control
+/// cleanup and the predecessor mark. A new process then seals from those durable rows.
+#[tokio::test]
+async fn fence_mark_and_writer_cleanup_survive_exact_replay_and_restart() {
+    use super::expired_writers_tests::{CLOSED, OPEN};
+    use busbar_contract::Secret;
+
+    let store = Store::new();
+    let fence = PredecessorFence::new(attach(&store, OWN).await, HOST).unwrap();
+    let dead = writer_id();
+    dead_node(&store, dead, 77, 40_000, false);
+    store.now.store(100, Ordering::SeqCst);
+    store.lose_fence_reply.store(true, Ordering::SeqCst);
+    assert!(matches!(
+        fence.retire_predecessor(EPOCH, dead, seen(dead, 77)).await,
+        Ok(PredecessorRetire::Pending)
+    ));
+    assert_eq!(
+        fence.retained(),
+        1,
+        "Unknown retains the exact fence intent"
+    );
+    let first = store.fence_candidates().pop().expect("fence crossed");
+    let mut expected = control::writer_put(dead, Some(OPEN), CLOSED).unwrap();
+    expected.push(Mutation::Put {
+        address: node_address(&fenced_key(EPOCH, dead)),
+        value: Secret::new(
+            FenceMark {
+                lease_expires_ms: 40_000,
+                sealed: Vec::new(),
+            }
+            .bytes(),
+        ),
+    });
+    let mut expected_body = first.candidate().clone();
+    expected_body.mutations = expected;
+    let expected = busbar_contract::persistence::PreparedCandidate::new(expected_body).unwrap();
+    assert_eq!(
+        first.fingerprint(),
+        expected.fingerprint(),
+        "one atomic candidate preserves every shared epoch/slot effect and the mark"
+    );
+    control::admit(&first).expect("the combined candidate obeys the control contract");
+    fenced(&fence, dead, 77).await;
+    let sent = store.fence_candidates();
+    assert_eq!(sent.len(), 2, "the unknown attempt was replayed once");
+    assert_eq!(sent[1].candidate().id, first.candidate().id);
+    assert_eq!(sent[1].fingerprint(), first.fingerprint());
+    assert_eq!(sent[1].fingerprint(), expected.fingerprint());
+    assert_eq!(store.fence_applies(dead), 1);
+    assert_eq!(fence.retained(), 0);
+    drop(fence);
+
+    let restarted = PredecessorFence::new(attach(&store, OWN).await, HOST).unwrap();
+    fenced(&restarted, dead, 77).await;
+    assert_eq!(store.fence_candidates().len(), 2, "restart never refences");
+    let state = restarted.seal_state(77, EPOCH, dead).await.unwrap();
+    assert_eq!(store.control(dead), Some(CLOSED));
+    assert_eq!(
+        state.mark,
+        Some(FenceMark {
+            lease_expires_ms: 40_000,
+            sealed: Vec::new(),
+        })
+    );
+    let row = SealRow {
+        sealer: 88,
+        outcome: SealOutcome::Clean { through: 12 },
+    };
+    assert!(restarted
+        .seal_node(77, EPOCH, dead, &row, &state, true)
+        .await
+        .unwrap());
+    drop(restarted);
+
+    let after = PredecessorFence::new(attach(&store, OWN).await, HOST).unwrap();
+    let state = after.seal_state(77, EPOCH, dead).await.unwrap();
+    assert_eq!(
+        SealRow::parse(state.row.as_deref().expect("durable seal")).unwrap(),
+        row
+    );
+    assert_eq!(state.mark.unwrap().sealed, vec![77]);
+}
+
 /// Test 4(d) and G11: exactly one seal row per node. The winner's compare-and-set adds the node to
 /// the mark; a second successor holding the state it read before loses and writes nothing.
 #[tokio::test]
