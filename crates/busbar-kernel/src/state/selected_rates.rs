@@ -71,6 +71,7 @@ impl SelectedRateAdmission {
             .admission
             .lock()
             .unwrap_or_else(|error| error.into_inner());
+        let now = crate::store::now();
         let current = self.handle.current.load_full();
         let prepared = reservation.cancel();
         let Some(policy) = &current.selected_policy else {
@@ -114,6 +115,7 @@ impl SelectedRateAdmission {
             .admission
             .lock()
             .unwrap_or_else(|error| error.into_inner());
+        let now = crate::store::now();
         let current = self.handle.current.load_full();
         let policy = current
             .selected_policy
@@ -151,6 +153,7 @@ impl SelectedRateAdmission {
             .admission
             .lock()
             .unwrap_or_else(|error| error.into_inner());
+        let now = crate::store::now();
         let current = self.handle.current.load_full();
         let Some(policy) = &current.selected_policy else {
             return Err(SelectedRateRejected::Policy {
