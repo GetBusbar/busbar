@@ -9,6 +9,7 @@ use crate::persistence::{
     facade::{CoreStore, PendingId},
     history::{self, History},
     host_records::{self, HostRecords},
+    record_ops::HeldOp,
 };
 use busbar_contract::{
     host_records::conditional,
@@ -69,11 +70,16 @@ impl AsyncRecords {
     ) -> Result<host_records::Page, host_records::Error> {
         self.owner()?.scan(schema, prefix, after).await
     }
+    /// A class-M receipt identity for one request on these records (DES-264).
+    pub(crate) async fn record_op(&self) -> Result<HeldOp, host_records::Error> {
+        Ok(self.store.record_op().await?)
+    }
     pub(crate) async fn conditional(
         &self,
+        held: &HeldOp,
         request: &conditional::Request,
     ) -> Result<host_records::Outcome, host_records::Error> {
-        self.owner()?.conditional(request).await
+        self.owner()?.conditional(held, request).await
     }
     pub(crate) async fn retry(
         &self,

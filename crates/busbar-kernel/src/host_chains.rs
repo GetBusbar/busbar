@@ -211,7 +211,7 @@ impl ChainBook {
         &self,
         rows: &crate::host_records_async::AsyncRecords,
         input: OrdinaryChain<'_>,
-        operation: [u8; 16],
+        held: &crate::persistence::record_ops::HeldOp,
     ) -> Result<(Request, ConditionalPosition), &'static str> {
         let OrdinaryChain {
             instance,
@@ -265,7 +265,7 @@ impl ChainBook {
         };
         let mut request = Request {
             version: busbar_contract::host_records::conditional::VERSION,
-            op_id: busbar_contract::records::OpId(operation),
+            op_id: held.op_id(),
             predicates: vec![],
             mutations: vec![],
         };
