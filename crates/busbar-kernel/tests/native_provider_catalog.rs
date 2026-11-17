@@ -376,3 +376,27 @@ fn declared_nested_optional_nulls_unset_without_dropping_required_nulls() {
     );
     assert!(refused(CATALOG, &required, &planes).contains("/capabilities/0/models"));
 }
+
+#[test]
+fn auth_binding_form_retains_catalog_style_deployment_instance_and_explicit_unset() {
+    use busbar_kernel::plane_driver::provider_catalog::ProviderAuthSelection;
+    let planes = [plane("chat", &["wire-a", "wire-b"], SCHEMA)];
+    let catalog = CATALOG.replace(
+        "  protocol: wire-a",
+        "  auth: catalogue-style\n  protocol: wire-a",
+    );
+    let inherited = resolved(&catalog, DEPLOY, &planes);
+    assert!(inherited.catalogs["chat"].targets().values().all(|target| matches!(&target.auth_selection, ProviderAuthSelection::Style(name) if name == "catalogue-style")));
+    let explicit = DEPLOY.replace(
+        "    api_key:",
+        "    auth: actual-auth-instance\n    api_key:",
+    );
+    let explicit = resolved(&catalog, &explicit, &planes);
+    assert!(explicit.catalogs["chat"].targets().values().all(|target| matches!(&target.auth_selection, ProviderAuthSelection::Instance(name) if name == "actual-auth-instance")));
+    let unset = DEPLOY.replace("    api_key:", "    auth: null\n    api_key:");
+    let unset = resolved(&catalog, &unset, &planes);
+    assert!(unset.catalogs["chat"]
+        .targets()
+        .values()
+        .all(|target| matches!(&target.auth_selection, ProviderAuthSelection::Implicit)));
+}
