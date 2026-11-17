@@ -38,11 +38,55 @@ pub type TrustConfig = crate::sign::TrustPolicy;
 /// The largest image admit reads (step 1).
 pub const MAX_IMAGE_BYTES: u64 = 256 << 20;
 
-/// An admitted image: its verified stamp, the image that keeps it mapped, and its header.
+/// Who vouches for an admitted image (DES-NATIVE-FIRST-PARTY r3 §2.2): compiled into this build, or exactly
+/// what `sign::evaluate_with_verification` returned over a dropped image's bytes in this admission.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Signer {
+    /// Compiled into this build (`admit_linked` / `admit_header`).
+    Linked,
+    /// Dropped in: this admission's verdict and the proof behind it.
+    Dropped {
+        verdict: crate::sign::Verdict,
+        proof: busbar_artifact_metadata::rows::Verification,
+    },
+}
+
+impl Signer {
+    /// Linked, or verified against an embedded release key (AGREED:156 diagnostics and reserved `busbar_*`
+    /// metrics). Never taken from the self-declared publisher text.
+    #[must_use]
+    pub fn first_party(&self) -> bool {
+        match self {
+            Signer::Linked => true,
+            Signer::Dropped {
+                verdict: crate::sign::Verdict::Trusted { first_party, .. },
+                ..
+            } => *first_party,
+            Signer::Dropped { .. } => false,
+        }
+    }
+
+    /// Linked, or any verified `Trusted` verdict (busbar or an operator-trusted publisher). Never `Allowed`.
+    #[must_use]
+    pub fn trusted(&self) -> bool {
+        matches!(
+            self,
+            Signer::Linked
+                | Signer::Dropped {
+                    verdict: crate::sign::Verdict::Trusted { .. },
+                    ..
+                }
+        )
+    }
+}
+
+/// An admitted image: its verified stamp, the image that keeps it mapped, its header, and who vouched for it.
 #[derive(Clone)]
 pub struct Admitted {
     pub stamp: Stamp,
     pub image: Arc<Image>,
+    /// This admission's signer (§2.1): never cached with the mapped image.
+    signer: Signer,
     /// The header inside `image` (busbar-ffi's checked address of an immutable `'static` header: a
     /// `LinkedPlugin`, or the header of a dropped-in image whose library is never unloaded, I13).
     plugin: Header,
@@ -52,6 +96,24 @@ impl Admitted {
     /// The header, for the registry's describe/open and every instance built over this image.
     pub fn plugin(&self) -> Header {
         self.plugin
+    }
+
+    /// Who vouched for this image in this admission.
+    #[must_use]
+    pub fn signer(&self) -> &Signer {
+        &self.signer
+    }
+
+    /// Linked, or verified against an embedded release key.
+    #[must_use]
+    pub fn first_party(&self) -> bool {
+        self.signer.first_party()
+    }
+
+    /// Linked, or any verified `Trusted` verdict; never `Allowed`.
+    #[must_use]
+    pub fn trusted(&self) -> bool {
+        self.signer.trusted()
     }
 
     /// The verified stamp name (the plugin identity).
@@ -475,6 +537,7 @@ fn admit_with(
             stamp: v.stamp,
             image: Arc::clone(&r.image),
             plugin: r.plugin,
+            signer: Signer::Linked,
         });
     }
     let (opened, staged) = open_checked(&v)?;
@@ -499,6 +562,7 @@ fn admit_with(
         stamp: v.stamp,
         image,
         plugin,
+        signer: Signer::Linked,
     })
 }
 
@@ -727,6 +791,7 @@ fn admit_header_with(
         stamp,
         image: Arc::new(Image::Linked),
         plugin: header,
+        signer: Signer::Linked,
     })
 }
 
