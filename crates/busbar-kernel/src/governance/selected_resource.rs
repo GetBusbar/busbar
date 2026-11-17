@@ -833,6 +833,14 @@ impl RateReservation {
         &self.prepared
     }
 
+    /// Releases the unsent hold before returning the original preparation for no-send
+    /// finalization or a permitted retry within the same prepared partition.
+    pub(crate) fn cancel(self) -> PreparedRateAttempt {
+        let Self { hold, prepared } = self;
+        drop(hold);
+        prepared
+    }
+
     pub(crate) fn try_commit(self) -> Result<CommittedRate, RateRejected> {
         let Self { mut hold, prepared } = self;
         match hold.commit() {
