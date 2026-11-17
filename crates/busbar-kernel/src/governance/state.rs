@@ -247,6 +247,7 @@ impl GovState {
             ticket_operations: tickets::TicketOperations::default(),
             budget_flushes: std::sync::Mutex::new(std::collections::BTreeMap::new()),
             budget_flush_runner: BudgetFlushRunner::default(),
+            fee_debt: super::fee_debt::FeeDebtProducer::default(),
             deleting_budget_buckets: std::sync::Mutex::new(std::collections::BTreeSet::new()),
             pending_metering: PendingMetering::new(),
             unit_checkpoints,
