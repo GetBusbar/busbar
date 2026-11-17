@@ -299,6 +299,9 @@ pub struct Custody<H: CustodyHost> {
     /// The source-level cache (§12.2 step 4): leased values only, keyed by SHA-256 over the canonical reference,
     /// shared between instances and `resolve_ref`. A hit here is still a per-instance miss (step 5 runs).
     sources: Mutex<HashMap<[u8; 32], Held>>,
+    /// DES-454 §4.2: a rotation successor's seed overlay, by instance id. Its misses take a seeded source's
+    /// value from here instead of fetching it; every other instance never sees it.
+    seeds: Mutex<HashMap<u64, Arc<RoundValues>>>,
     #[cfg(feature = "conformance")]
     probe: ArcSwapOption<Probe>,
 }
@@ -353,20 +356,34 @@ impl<H: CustodyHost> Custody<H> {
             instances: ArcSwap::from_pointee(HashMap::default()),
             grow: Mutex::new(()),
             sources: Mutex::new(HashMap::default()),
+            seeds: Mutex::new(HashMap::default()),
             #[cfg(feature = "conformance")]
             probe: ArcSwapOption::empty(),
         }
     }
 
     /// Unbind or close: the instance's entries go (a value an in-flight leader publishes afterwards lands in an
-    /// entry nothing can reach). Its scrub set closes with its slot.
+    /// entry nothing can reach). Its scrub set closes with its slot, and its seed overlay goes with it.
     pub fn drop_instance(&self, instance: u64) {
+        lock(&self.seeds).remove(&instance);
         let _grow = lock(&self.grow);
         let current = self.instances.load_full();
         if current.contains_key(&instance) {
             let mut next = (*current).clone();
             next.remove(&instance);
             self.instances.store(Arc::new(next));
+        }
+    }
+
+    /// Every in-flight leader of `instance` is superseded: each entry gets a fresh cell under its lock, so the
+    /// next miss leads anew and a leader of the old cell neither registers nor publishes (§3.1).
+    fn supersede(&self, instance: u64) {
+        let instances = self.instances.load();
+        let Some(handles) = instances.get(&instance) else {
+            return;
+        };
+        for entry in handles.map.load().values() {
+            *lock(&entry.cell) = Arc::new(tokio::sync::OnceCell::new());
         }
     }
 
@@ -439,16 +456,22 @@ impl<H: CustodyHost> Custody<H> {
             }
             Arc::clone(&*cell)
         };
-        let held = cell.get_or_try_init(|| self.lead(who, key, &entry)).await?;
+        let held = cell
+            .get_or_try_init(|| self.lead(who, key, &entry, &cell))
+            .await?;
         Ok(Arc::clone(&held.value))
     }
 
     /// The leader of one miss, in the normative order: resolve; `register` returns; publish; bump `generation`.
+    /// DES-454 §3.1: register and publish run under the entry's cell lock, and only while `cell` is still the
+    /// entry's cell. A superseded leader (a seed or a renewal replaced its cell) does neither and answers its
+    /// own waiters only, so a stale value never shifts a newer one out of the scrub set.
     async fn lead(
         &self,
         who: &Caller<'_>,
         key: CustodyKey,
         entry: &Entry,
+        cell: &Arc<tokio::sync::OnceCell<Arc<Held>>>,
     ) -> Result<Arc<Held>, CustodyDenied> {
         let Some(binding) = self.host.binding(key) else {
             self.host
@@ -462,7 +485,8 @@ impl<H: CustodyHost> Custody<H> {
             request_id: who.chain,
             stack,
         };
-        let resolved = self.resolved(cx, &binding).await?;
+        let seeded = lock(&self.seeds).get(&key.instance).cloned();
+        let resolved = self.resolved(cx, &binding, seeded.as_deref()).await?;
         let mut values: Vec<&[u8]> = Vec::with_capacity(1 + resolved.fills.len());
         values.push(resolved.value.as_slice());
         values.extend(resolved.fills.iter().map(|fill| fill.as_slice()));
@@ -482,30 +506,47 @@ impl<H: CustodyHost> Custody<H> {
             }
             (probe.park)(key).await;
         }
-        scrub.register(key.handle, &values);
-        publish(entry, &held);
+        {
+            let current = lock(&entry.cell);
+            if !Arc::ptr_eq(&*current, cell) {
+                return Ok(held);
+            }
+            scrub.register(key.handle, &values);
+            publish(entry, &held);
+        }
         self.host.audit(who, key.handle, CustodyEvent::Resolved);
         Ok(held)
     }
 
-    async fn resolved(&self, cx: CallCx, binding: &SecretRef) -> Result<Resolved, CustodyDenied> {
+    async fn resolved(
+        &self,
+        cx: CallCx,
+        binding: &SecretRef,
+        seeded: Option<&RoundValues>,
+    ) -> Result<Resolved, CustodyDenied> {
         match binding {
             SecretRef::None => Err(CustodyDenied::NotFound),
             SecretRef::Source(source) => {
-                let held = self.fetch(cx, source).await?;
+                let held = self.fetch(cx, source, seeded).await?;
                 Ok(Resolved {
                     value: held.value,
                     fills: Vec::new(),
                     until: held.until,
                 })
             }
-            SecretRef::Template(_) => self.render(cx, binding).await,
+            SecretRef::Template(_) => self.render(cx, binding, seeded).await,
         }
     }
 
-    /// Step 3 for one source reference: the cycle check, then the source-level cache, then the secret instance.
-    /// The plugin sees the reference's `settings` only, never its `module` (I2).
-    async fn fetch(&self, cx: CallCx, source: &SourceReference) -> Result<Held, CustodyDenied> {
+    /// Step 3 for one source reference: the cycle check, then the seed overlay (DES-454 §4.2), then the
+    /// source-level cache, then the secret instance. The plugin sees the reference's `settings` only, never its
+    /// `module` (I2).
+    async fn fetch(
+        &self,
+        cx: CallCx,
+        source: &SourceReference,
+        seeded: Option<&RoundValues>,
+    ) -> Result<Held, CustodyDenied> {
         let target = self
             .host
             .source(&source.module)
@@ -519,6 +560,9 @@ impl<H: CustodyHost> Custody<H> {
             .map_err(|_| CustodyDenied::Denied)?;
         let reference = encoded.expose(&crate::seal::lend());
         let id = source_id(source).ok_or(CustodyDenied::Denied)?;
+        if let Some(held) = seeded.and_then(|round| round.0.get(&id)) {
+            return Ok(held.clone());
+        }
         let now = self.host.now();
         let cached = lock(&self.sources)
             .get(&id)
@@ -541,7 +585,12 @@ impl<H: CustodyHost> Custody<H> {
     /// A template: its fills from one resolve each, in `resolve_template_typed`'s order (origin/dev
     /// secret_ref.rs), then the rendered text. The fills stay beside the rendered value until step 5 registers
     /// them all (round 17).
-    async fn render(&self, cx: CallCx, template: &SecretRef) -> Result<Resolved, CustodyDenied> {
+    async fn render(
+        &self,
+        cx: CallCx,
+        template: &SecretRef,
+        seeded: Option<&RoundValues>,
+    ) -> Result<Resolved, CustodyDenied> {
         let wanted = {
             let wanted = RefCell::new(Vec::new());
             let asked = |fill: &SecretRef| -> Result<Secret<String>, CustodyDenied> {
@@ -558,7 +607,7 @@ impl<H: CustodyHost> Custody<H> {
         let mut fills = Vec::with_capacity(wanted.len());
         let mut until = None;
         for source in &wanted {
-            let held = self.fetch(cx, source).await?;
+            let held = self.fetch(cx, source, seeded).await?;
             until = earliest(until, held.until);
             fills.push(held.value);
         }
@@ -622,7 +671,7 @@ impl<H: CustodyHost> SecretCustody for Custody<H> {
         r: &'a SecretRef,
     ) -> BoxFut<'a, Result<Leased, CustodyDenied>> {
         Box::pin(async move {
-            let resolved = self.resolved(cx, r).await?;
+            let resolved = self.resolved(cx, r, None).await?;
             Ok(Leased {
                 value: SecureVec::from(resolved.value.as_slice()),
                 until: resolved.until,
@@ -630,12 +679,24 @@ impl<H: CustodyHost> SecretCustody for Custody<H> {
         })
     }
 
-    fn seed(&self, _instance: u64, _values: RoundValues) {}
+    fn seed(&self, instance: u64, values: RoundValues) {
+        lock(&self.seeds).insert(instance, Arc::new(values));
+        self.supersede(instance);
+    }
 
-    fn unseed(&self, _instance: u64) {}
+    fn unseed(&self, instance: u64) {
+        lock(&self.seeds).remove(&instance);
+    }
 
-    fn held(&self, _instance: u64, _handle: u32) -> Option<HeldView> {
-        None
+    fn held(&self, instance: u64, handle: u32) -> Option<HeldView> {
+        let instances = self.instances.load();
+        let handles = instances.get(&instance)?.map.load();
+        let published = handles.get(&handle)?.published.load();
+        let held = Option::as_ref(&published)?;
+        Some(HeldView {
+            digest: held.digest,
+            until: held.until,
+        })
     }
 }
 
