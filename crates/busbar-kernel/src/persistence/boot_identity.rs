@@ -329,15 +329,7 @@ impl WriterRetirements {
                     expected: native::ExpectedValue::Exact(lease),
                 },
             ],
-            mutations: vec![native::Mutation::Put {
-                address: control_address,
-                value: Secret::new(
-                    permanently_closed
-                        .encode()
-                        .ok_or("invalid permanent fence")?
-                        .to_vec(),
-                ),
-            }],
+            mutations: body.mutations.clone(),
             time: Some(native::TimeGuard {
                 not_before: Some(closable_ms.div_ceil(1000)),
                 before: None,

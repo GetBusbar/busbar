@@ -8,10 +8,9 @@
 //! same contract behind [`PersistenceBackend`], in memory, keeping that product's observable rules:
 //! a dataset with a fresh identity per backend, declared durable (Local) because it stands in for
 //! the durable product store those tests ran against; reads and commits judged against the
-//! dataset and their time guard; the execution fence (dataset root and writer records in
-//! [`control::NAMESPACE`]) checked before anything else on every commit but the proven-empty
-//! initialization; control records only conditionally replaced, never deleted; generation records
-//! adapter-owned; one generation step per mutated namespace per commit; scans that refuse empty
+//! dataset and their time guard; the generic fences supplied by core checked after slot replay;
+//! control mutations admitted by core before submission; generation records adapter-owned;
+//! one generation step per mutated namespace per commit; scans that refuse empty
 //! limits, report a changed namespace as [`Failure::StaleScan`] unless the scan allows change, and
 //! refuse a first row larger than the page; and the slot-row commit rule (STORE-TRANSACTIONS §2.5):
 //! one row per (writer, slot) holding the last evaluated sequence, STALE below it, its recorded
@@ -127,7 +126,7 @@ impl MemoryBackend {
         prepared: &PreparedCandidate,
         key: CommitKey,
     ) -> Result<Decision, Failure> {
-        let seal = busbar_kernel::seal::lend();
+        control::admit(prepared)?;
         let candidate = prepared.candidate();
         self.dataset(candidate.id.dataset)?;
         let mut state = self.state();
@@ -164,37 +163,13 @@ impl MemoryBackend {
                 );
             }
         };
-        let get = |state: &State, namespace: [u8; 16], key: &[u8]| {
-            state
-                .rows
-                .get(&Address {
-                    namespace,
-                    key: key.to_vec(),
-                })
-                .map(|value| value.expose(&seal).clone())
-        };
-        let fresh = state.rows.is_empty()
-            && state.slots.is_empty()
-            && control::initialization(prepared, self.info.dataset);
-        if !fresh {
-            let Some(root) = get(&state, control::NAMESPACE.0, control::DATASET_KEY) else {
-                return Ok(Decision::Fenced);
+        for fence in control::fences(prepared) {
+            let found = state.value(&fence.address);
+            let matches = match &fence.expected {
+                ExpectedValue::Absent => found.is_none(),
+                ExpectedValue::Exact(expected) => found.as_ref() == Some(expected),
             };
-            let root = control::Dataset::decode(&root).ok_or(Failure::Corrupt)?;
-            if root.id != self.info.dataset {
-                return Err(Failure::Corrupt);
-            }
-            let Some(writer) = get(
-                &state,
-                control::NAMESPACE.0,
-                &control::writer_key(candidate.id.writer),
-            ) else {
-                return Ok(Decision::Fenced);
-            };
-            let writer = control::Writer::decode(&writer).ok_or(Failure::Corrupt)?;
-            if root.writer_epoch != candidate.id.writer_epoch
-                || !writer.admits(candidate.id.execution_epoch)
-            {
+            if !matches {
                 return Ok(Decision::Fenced);
             }
         }
@@ -216,44 +191,6 @@ impl MemoryBackend {
                 return Ok(Decision::ConditionConflict);
             }
         }
-        for mutation in &candidate.mutations {
-            let (namespace, key, value) = match mutation {
-                Mutation::Put { address, value } => {
-                    (address.namespace, Some(&address.key), Some(value))
-                }
-                Mutation::Delete(at) => (at.namespace, Some(&at.key), None),
-                Mutation::DeleteRange { namespace, .. } => (namespace.0, None, None),
-            };
-            if namespace == control::GENERATION_NAMESPACE.0 {
-                return Err(Failure::Refused);
-            }
-            if namespace == control::NAMESPACE.0 && !fresh {
-                let key = key.ok_or(Failure::Refused)?;
-                let value = value.ok_or(Failure::Refused)?;
-                let known = control::Key::decode(key).ok_or(Failure::Refused)?;
-                let old = get(&state, namespace, key);
-                let explicit = candidate.predicates.iter().any(|predicate| {
-                    predicate.address.namespace == namespace
-                        && predicate.address.key == *key
-                        && match (&predicate.expected, &old) {
-                            (ExpectedValue::Absent, None) => true,
-                            (ExpectedValue::Exact(expected), Some(old)) => {
-                                expected.expose(&seal) == old
-                            }
-                            _ => false,
-                        }
-                });
-                if !explicit {
-                    return Err(Failure::Refused);
-                }
-                control::replacement(
-                    known,
-                    self.info.dataset,
-                    old.as_deref(),
-                    value.expose(&seal),
-                )?;
-            }
-        }
         let mut changed = BTreeSet::new();
         for mutation in &candidate.mutations {
             match mutation {
@@ -271,6 +208,12 @@ impl MemoryBackend {
                     exact_key_length,
                 } => {
                     changed.insert(namespace.0);
+                    if *namespace == control::SLOT_NS {
+                        let writer: [u8; 16] =
+                            prefix.as_slice().try_into().map_err(|_| Failure::Refused)?;
+                        state.slots.remove(&writer);
+                        continue;
+                    }
                     state.rows.retain(|at, _| {
                         !(at.namespace == namespace.0
                             && at.key.starts_with(prefix)
@@ -284,21 +227,6 @@ impl MemoryBackend {
             *generation = generation.checked_add(1).ok_or(Failure::Refused)?;
         }
         record(&mut state, Verdict::Applied);
-        // A Put of a closed control Writer row deletes every slot row of that writer.
-        for mutation in &candidate.mutations {
-            if let Mutation::Put { address, value } = mutation {
-                if address.namespace != control::NAMESPACE.0 {
-                    continue;
-                }
-                if let Some(control::Key::Writer(closed)) = control::Key::decode(&address.key) {
-                    if control::Writer::decode(value.expose(&seal))
-                        .is_some_and(|w| w.retired_through == w.admitted_through)
-                    {
-                        state.slots.remove(&closed);
-                    }
-                }
-            }
-        }
         // Stores answer with empty bytes; the host attempt rebuilds the candidate's own result.
         Ok(Decision::Applied(Secret::default()))
     }

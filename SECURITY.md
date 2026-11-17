@@ -43,8 +43,11 @@ against systems operated by our users or other parties.
 ## Scope
 
 Busbar holds provider credentials centrally and acts as the front door to upstream
-LLM providers. The [threat model](THREAT_MODEL.md) documents the trust boundaries,
-assets, and the threats we design against (with pointers to each mitigation in code).
+services through configured plane plugins. The [threat model](THREAT_MODEL.md) documents the trust
+boundaries, assets, implementation limits and requirements still awaiting release qualification.
+1.6.0 is in active development; source and tests are not evidence that a final deployment or
+published artifact has passed qualification. The [security posture](docs/security/1.6.0-security-posture.md)
+records the source baseline for its implementation claims.
 Issues of particular interest include:
 
 - Credential leakage (logs, error bodies, `/stats`, responses relayed to clients, the store).
@@ -56,8 +59,11 @@ Issues of particular interest include:
 - AWS SigV4 outbound-signing correctness (signed-vs-sent divergence).
 - Admin-plane isolation (reaching the control plane from the data port).
 - Request smuggling / routing confusion between pools, models, or providers.
-- Loading a plugin the trust policy should refuse: an unsigned or unallowlisted plugin, a tampered
-  tarball, an older build below its version floor, or bytes other than the ones verified.
+- Loading a plugin the trust policy should refuse: unsigned or unknown-publisher code without the
+  explicit `plugins.trust.allow_untrusted` opt-in, an invalid known-publisher signature, a revoked
+  key, an out-of-scope plugin name, a tampered tarball, an older build below its version floor, or
+  bytes other than the ones verified. Trusted publisher admission must not require a separate
+  third-party switch or grant additional runtime permissions.
 - A plugin reaching, through the plugin ABI, kernel state or another plane's state it was not
   granted.
 - A plugin obtaining, through the ABI, a credential it was not configured with, or a host path that
@@ -70,11 +76,14 @@ Issues of particular interest include:
 - The circuit breaker mis-attributing a client fault as an upstream fault (or vice
   versa) in a way that drains a pool or leaks state across requests.
 - Tampering with an audit chain in a way that is not detected on verification.
+- Reporting unverified or unsealed audit data as verified, reporting ephemeral Store state as
+  crash-durable, or bypassing a configured TLS requirement or its scoped acceptance policy.
 
 Out of scope: deliberately insecure operator configuration that is gated behind an
 explicit flag and a boot warning (for example running the admin plane network-exposed
-without mutual TLS), and findings that require privileged access to the host or the
-backing store the operator already controls.
+without mutual TLS). Bypassing the scope of an opt-in, suppressing its required evidence, or
+misrepresenting untrusted code as verified remains in scope. Findings that require privileged
+access to the host or the backing store the operator already controls are out of scope.
 
 ## Supported versions
 
