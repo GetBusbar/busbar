@@ -1061,6 +1061,62 @@ async fn held_history_cursor_bounds_reads_without_a_lifetime_reuse_cap() {
         store.held_reads.load(Ordering::SeqCst) <= 1,
         "lookup must not traverse retired generations"
     );
+    let framed = format!("{}:{}:{}", key.0.len(), key.0, key.1);
+    let head = format!(
+        "held-head:{}",
+        busbar_contract::redacted::sha256_hex(framed.as_bytes())
+    );
+    scoped
+        .delete("busbar.admin-idempotency", head.as_bytes())
+        .await
+        .unwrap();
+    store.held_reads.store(0, Ordering::SeqCst);
+    assert!(
+        durable::lookup(&scoped, &key, now).await.is_err(),
+        "a pre-index history beyond the read budget is unavailable, not absent"
+    );
+    assert_eq!(store.held_reads.load(Ordering::SeqCst), 64);
+    assert!(
+        scoped
+            .get("busbar.admin-idempotency", head.as_bytes())
+            .await
+            .unwrap()
+            .is_none(),
+        "lookup never publishes an index"
+    );
+    store.held_reads.store(0, Ordering::SeqCst);
+    assert!(matches!(
+        durable::claim_held(&scoped, &key, now).await,
+        Err(durable::Refused::Unavailable(_))
+    ));
+    assert_eq!(store.held_reads.load(Ordering::SeqCst), 64);
+    let checkpoint = scoped
+        .get("busbar.admin-idempotency", head.as_bytes())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        checkpoint.expose(&busbar_kernel::seal::lend()),
+        &[1, 0, 0, 0, 64]
+    );
+    assert_eq!(
+        durable::claim_held(&scoped, &key, now).await,
+        Err(durable::Refused::Retained(vec![3; 49])),
+        "bounded progress cannot skip the unresolved current generation"
+    );
+    scoped
+        .put(
+            "busbar.admin-idempotency",
+            head.as_bytes(),
+            busbar_contract::Secret::new(vec![255]),
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        durable::claim_held(&scoped, &key, now).await,
+        Err(durable::Refused::Unavailable(_))
+    ));
+    assert!(durable::lookup(&scoped, &key, now).await.is_err());
     println!("custody assertions completed");
 }
 
