@@ -22,6 +22,9 @@ use crate::plane_driver::port_auth::refuse;
 use crate::plane_driver::usage::UsageInvalid;
 use crate::plane_driver::{CallerEnd, HeadFields};
 
+#[path = "selected_policy_runtime_tests.rs"]
+mod current_policy;
+
 /// One scripted sink item.
 #[derive(Clone)]
 enum It {
