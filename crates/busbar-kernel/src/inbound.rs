@@ -24,6 +24,7 @@ use crate::state::App;
 mod derived;
 mod handin;
 pub mod native;
+pub mod request_snapshot;
 mod tables;
 #[cfg(test)]
 use crate::off_path::inbound::checked_line_ids;
