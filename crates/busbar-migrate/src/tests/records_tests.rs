@@ -950,3 +950,218 @@ fn the_summary_row_round_trips() {
     assert_eq!(decoded.tags[1], [0, 0, 0, 0]);
     assert!(Summary::decode(&cells::value(&plugin[..5])).is_err());
 }
+
+/// #319 r4 §7.3: a store whose native pages stop short of the asked count (a byte or item bound)
+/// before the namespace ends, and which records whether any applied commit published a Current
+/// manifest at format `intermediate`.
+struct Capped<'a> {
+    mem: &'a Mem,
+    cap: u32,
+    intermediate: Option<u32>,
+    published_intermediate: Counter<bool>,
+}
+
+impl<'a> Capped<'a> {
+    fn new(mem: &'a Mem, cap: u32) -> Self {
+        Self {
+            mem,
+            cap,
+            intermediate: None,
+            published_intermediate: Counter::new(false),
+        }
+    }
+}
+
+impl RecordStore for Capped<'_> {
+    fn scan(
+        &self,
+        ns: NamespaceId,
+        after: &[u8],
+        limit: u32,
+    ) -> Result<Vec<(Vec<u8>, SecureVec)>, StoreFail> {
+        self.mem.scan(ns, after, limit.min(self.cap))
+    }
+
+    fn commit(&self, c: Candidate) -> Result<Committed, StoreFail> {
+        let publishes = self.intermediate.is_some_and(|format| {
+            c.put.iter().any(|(ns, key, value)| {
+                *ns == MANIFEST_NS
+                    && key.as_slice() == b"active"
+                    && value.as_ref() == manifest_bytes(format, 0).as_slice()
+            })
+        });
+        let result = self.mem.commit(c)?;
+        if result == Committed::Applied && publishes {
+            self.published_intermediate.set(true);
+        }
+        Ok(result)
+    }
+
+    fn register(&self) -> Result<(), StoreFail> {
+        self.mem.register()
+    }
+}
+
+fn evolve_through(
+    store: &dyn RecordStore,
+    mem: &Mem,
+    steps: &[RecordStep],
+    current: u32,
+) -> Result<Option<u64>, Refusal> {
+    let bytes = manifest_of(mem);
+    evolve_with(
+        store,
+        steps,
+        current,
+        &Manifest {
+            ns: MANIFEST_NS,
+            key: b"active",
+            bytes: &bytes,
+            format: u32::from_le_bytes(bytes[8..12].try_into().unwrap()),
+            migrating_to: u32::from_le_bytes(bytes[72..76].try_into().unwrap()),
+            encode: &manifest_bytes,
+        },
+    )
+}
+
+fn data_values(mem: &Mem) -> Vec<Vec<u8>> {
+    mem.rows
+        .borrow()
+        .iter()
+        .filter(|((ns, _), _)| *ns == DATA_NS.0)
+        .map(|(_, v)| v.clone())
+        .collect()
+}
+
+/// #319 r4 §7.3: a short native page is not exhaustion. Nine rows behind a store that answers
+/// two per page are all converted before the manifest reads Current, and the audit counts nine.
+#[test]
+fn record_format_short_page_cannot_publish_current_with_unconverted_rows() {
+    let mem = evolve_store(9, 1, 0);
+    let store = Capped::new(&mem, 2);
+    assert_eq!(evolve_through(&store, &mem, FIXTURE, 2), Ok(Some(9)));
+    assert_eq!(manifest_of(&mem), manifest_bytes(2, 0));
+    assert!(data_values(&mem).iter().all(|v| v.as_slice() == b"2:v"));
+    assert_eq!(
+        *mem.audit.borrow(),
+        vec![Audit::RecordsEvolved {
+            from: 1,
+            to: 2,
+            rows: 9
+        }]
+    );
+}
+
+fn to_three(_: NamespaceId, _: &[u8], value: &[u8]) -> Result<SecureVec, Refusal> {
+    let old = value
+        .strip_prefix(b"2:")
+        .ok_or_else(|| Refusal::Verify("step 2 requires format-2 input".to_owned()))?;
+    let mut out = b"3:".to_vec();
+    out.extend_from_slice(old);
+    Ok(SecureVec::from(out))
+}
+
+const CHAIN: &[RecordStep] = &[
+    RecordStep {
+        from: 1,
+        namespaces: &[DATA_NS],
+        convert: to_two,
+    },
+    RecordStep {
+        from: 2,
+        namespaces: &[DATA_NS],
+        convert: to_three,
+    },
+];
+
+/// #319 r4 §7.3: a 1 → 2 → 3 chain never publishes a Current format-2 manifest (a format-2 binary
+/// would admit ordinary serving mid-chain); the dataset stays closed until format 3, tail 0.
+#[test]
+fn record_format_chain_never_publishes_intermediate_current() {
+    let mem = evolve_store(3, 1, 0);
+    let mut store = Capped::new(&mem, PAGE);
+    store.intermediate = Some(2);
+    assert_eq!(evolve_through(&store, &mem, CHAIN, 3), Ok(Some(6)));
+    assert!(
+        !store.published_intermediate.get(),
+        "a Current format-2 manifest admits a format-2 runtime during a target-3 migration"
+    );
+    assert_eq!(manifest_of(&mem), manifest_bytes(3, 0));
+    assert!(data_values(&mem).iter().all(|v| v.as_slice() == b"3:v"));
+    assert_eq!(
+        *mem.audit.borrow(),
+        vec![
+            Audit::RecordsEvolved {
+                from: 1,
+                to: 2,
+                rows: 3
+            },
+            Audit::RecordsEvolved {
+                from: 2,
+                to: 3,
+                rows: 3
+            },
+        ]
+    );
+}
+
+/// #319 r4 §7.3: payload drains through ordinary pages, then a separate zero-payload commit
+/// publishes Current. A fault in that completion leaves every row converted under the nonzero
+/// tail; the next run publishes once, with one audit, converting nothing twice.
+#[test]
+fn the_final_publication_is_an_empty_commit_after_the_payload() {
+    // 9,000 rows: opening, three pages, then the completion (commit 5).
+    let mem = evolve_store(9000, 1, 0);
+    mem.crash_at.set(Some(5));
+    assert!(evolve_once(&mem, FIXTURE, 2).is_err());
+    assert_eq!(manifest_of(&mem), manifest_bytes(1, 2));
+    assert!(data_values(&mem).iter().all(|v| v.as_slice() == b"2:v"));
+    assert!(mem.audit.borrow().is_empty());
+    mem.crash_at.set(None);
+    assert_eq!(evolve_once(&mem, FIXTURE, 2), Ok(Some(9000)));
+    assert_eq!(manifest_of(&mem), manifest_bytes(2, 0));
+    assert!(data_values(&mem).iter().all(|v| v.as_slice() == b"2:v"));
+    assert_eq!(
+        *mem.audit.borrow(),
+        vec![Audit::RecordsEvolved {
+            from: 1,
+            to: 2,
+            rows: 9000
+        }]
+    );
+}
+
+/// #319 r4 §7.3: the cursor is the versioned five-cell value. The prototype three-cell cursor, or
+/// any unknown version, is VERIFY before any write.
+#[test]
+fn a_prototype_or_unknown_cursor_is_verify_before_any_write() {
+    let prototype = cells::value(&[Cell::Int(0), Cell::Blob(b""), Cell::Int(0)]);
+    let unknown = cells::value(&[
+        Cell::Int(2),
+        Cell::Int(0),
+        Cell::Int(0),
+        Cell::Blob(b""),
+        Cell::Blob(&[0; 8]),
+    ]);
+    for cursor in [prototype, unknown] {
+        let mem = evolve_store(3, 1, 2);
+        mem.put(MANIFEST_NS, CURSOR_KEY.to_vec(), cursor);
+        assert_eq!(evolve_once(&mem, FIXTURE, 2).unwrap_err().word(), "VERIFY");
+        assert_eq!(mem.commits.get(), 0);
+        assert!(data_values(&mem).iter().all(|v| v.as_slice() == b"v"));
+    }
+}
+
+/// #319 r4 §7.3 (and the same seam for R0): the closure pre-check reads IMPORT to its explicit
+/// end, not to the first page shorter than asked.
+#[test]
+fn a_short_import_page_is_not_the_end_of_import() {
+    let rows: Vec<_> = (1..=5)
+        .map(|seq| audit_row(seq, if seq == 1 { "" } else { "h" }, "h"))
+        .collect();
+    let mem = store_with(&rows, [0; 8]);
+    let store = Capped::new(&mem, 2);
+    let report = run(&store, &NONE).unwrap().unwrap();
+    assert_eq!(report.rows[usize::from(table::AUDIT)], 5);
+    assert!(mem.import().is_empty(), "IMPORT drained");
+}
