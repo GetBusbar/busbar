@@ -79,9 +79,14 @@ impl Effects for LineEffects<'_> {
 struct ServeEffects<'a> {
     lines: LineEffects<'a>,
     client: Option<Arc<dyn ClientSink>>,
+    invocation: Option<crate::host_services::InvocationContext>,
 }
 
 impl Effects for ServeEffects<'_> {
+    fn invocation(&self) -> Option<&crate::host_services::InvocationContext> {
+        self.invocation.as_ref()
+    }
+
     fn emit(&self, carrier: u64, bytes: &[u8]) {
         self.lines.emit(carrier, bytes);
     }
@@ -194,6 +199,7 @@ pub struct PortDriver {
     tickets: Arc<dyn TicketDoor>,
     /// The declared usage classes (D_USAGE_CLASS) in the Statement's order: a unit count's class indexes them.
     usage: Arc<[String]>,
+    hooks: Option<Arc<dyn super::port_hooks::Binder>>,
 }
 
 impl PortDriver {
@@ -221,7 +227,32 @@ impl PortDriver {
             routes,
             tickets: Arc::new(NoTickets),
             usage,
+            hooks: None,
         })
+    }
+
+    /// The exact instance owner admitted by root; callers must never mint a lookalike.
+    pub fn caller(&self) -> &Caller {
+        &self.caller
+    }
+
+    /// Bind execution to this driver's core and exact registered instance/unit.
+    pub fn invocation(
+        &self,
+        generation: Arc<crate::host_services::ServingGeneration>,
+        unit: u64,
+    ) -> Result<crate::host_services::InvocationContext, &'static str> {
+        if !Arc::ptr_eq(&self.services, generation.core()) {
+            return Err("the native seat belongs to a different core generation");
+        }
+        crate::host_services::InvocationContext::new(generation, self.caller.clone(), unit)
+    }
+
+    /// Consume a complete immutable hook binding before this driver is published in a seat.
+    #[must_use]
+    pub fn with_hooks(mut self, hooks: Arc<dyn super::port_hooks::Binder>) -> Self {
+        self.hooks = Some(hooks);
+        self
     }
 
     /// The instance's declared usage classes, in the order a unit count's class indexes them.
@@ -280,6 +311,19 @@ impl PortDriver {
     /// # Errors
     /// [`ServeError`]; a refusal is not an error, it is [`Served::Refused`].
     pub async fn serve(&self, input: ServeIn<'_>) -> Result<Served, ServeError> {
+        if let Some(context) = &input.invocation {
+            if !Arc::ptr_eq(&self.services, context.generation().core())
+                || !context.accepts(&self.caller)
+                || input
+                    .unit
+                    .as_ref()
+                    .is_none_or(|unit| unit.ctx.key.get() != context.unit())
+            {
+                return Err(ServeError::Invocation(
+                    "the invocation does not own this native unit",
+                ));
+            }
+        }
         let route = self
             .routes
             .data
@@ -308,6 +352,7 @@ impl PortDriver {
             carrier,
             intents,
             models,
+            invocation,
             ..
         } = input;
         let port = Arc::clone(&self.port);
@@ -332,6 +377,7 @@ impl PortDriver {
                 carrier,
                 &*intents,
                 &models,
+                invocation,
             )
         })
         .await
@@ -481,6 +527,7 @@ impl Seated {
                 owner: &self.owner,
             },
             client: None,
+            invocation: None,
         }
     }
 }
@@ -682,6 +729,8 @@ pub struct Unit {
 
 /// What the route layer hands [`PortDriver::serve`] beside the request.
 pub struct ServeIn<'a> {
+    /// Checked root dispatch authority for the exact selected seat, unit and serving generation.
+    pub invocation: Option<crate::host_services::InvocationContext>,
     /// The mounted route's id (`PortRoutes`).
     pub route: u32,
     pub http: HttpIn,
@@ -717,6 +766,7 @@ pub enum Served {
 /// Why a request got no answer.
 #[derive(Debug)]
 pub enum ServeError {
+    Invocation(&'static str),
     /// The id names no data or upgrade route of this instance.
     NoRoute,
     Session(SessionError),
@@ -742,10 +792,12 @@ fn serve_blocking(
     carrier: Option<Arc<PortCarrier>>,
     intents: &dyn IntentHost,
     models: &[String],
+    invocation: Option<crate::host_services::InvocationContext>,
 ) -> Result<Served, ServeError> {
     let effects = ServeEffects {
         lines: LineEffects { carriers, owner },
         client,
+        invocation,
     };
     let headers: Vec<Pair<'_>> = http
         .headers

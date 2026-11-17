@@ -209,8 +209,8 @@ pub mod need {
     use core::pin::Pin;
     use core::task::{Context, Poll};
 
+    use crate::secure::SecureVec;
     use zerocopy::{FromBytes, IntoBytes};
-    use zeroize::{Zeroize, Zeroizing};
 
     use super::{
         DirFacts, NeedRec, NeedResRec, SecretHandle, TrustHandle, dir, need_flag, need_status, op,
@@ -278,8 +278,8 @@ pub mod need {
     }
     pub struct Fetched {
         pub status: u16,
-        pub headers: Vec<(String, Vec<u8>)>,
-        pub body: Vec<u8>,
+        pub headers: Vec<(String, SecureVec)>,
+        pub body: SecureVec,
     }
     #[derive(Clone, Copy)]
     pub enum Record<'a> {
@@ -403,7 +403,7 @@ pub mod need {
         )
     }
     /// Ok(empty) = EOF.
-    pub fn read(c: &Conn, max: u32) -> NeedFut<'_, Vec<u8>> {
+    pub fn read(c: &Conn, max: u32) -> NeedFut<'_, SecureVec> {
         NeedFut::new(
             Req::Read {
                 conn: c.id,
@@ -415,7 +415,7 @@ pub mod need {
     }
     /// Appends to `buf` (reuse it across reads: no allocation once it has capacity). Ok(true) = EOF.
     /// When `buf` lacks capacity, abi grows it by allocate, copy, zero the old block, free (I11), never `reserve`.
-    pub fn read_into<'a>(c: &'a Conn, max: u32, buf: &'a mut Vec<u8>) -> NeedFut<'a, bool> {
+    pub fn read_into<'a>(c: &'a Conn, max: u32, buf: &'a mut SecureVec) -> NeedFut<'a, bool> {
         NeedFut::new(
             Req::ReadInto {
                 conn: c.id,
@@ -439,7 +439,7 @@ pub mod need {
     pub fn fetch<'a>(req: &'a Fetch<'a>) -> NeedFut<'a, Fetched> {
         NeedFut::new(Req::Fetch(req), fetched)
     }
-    pub fn secret(handle: SecretHandle) -> NeedFut<'static, Zeroizing<Vec<u8>>> {
+    pub fn secret(handle: SecretHandle) -> NeedFut<'static, SecureVec> {
         NeedFut::new(Req::Secret(handle), secret_value)
     }
     pub fn record(op: Record<'_>) -> NeedFut<'_, RecordOut> {
@@ -522,9 +522,9 @@ pub mod need {
     pub enum Done {
         Opened(Opened),
         Unit,
-        Read(Vec<u8>),
+        Read(SecureVec),
         Fetched(Fetched),
-        Secret(Zeroizing<Vec<u8>>),
+        Secret(SecureVec),
         Record(RecordOut),
     }
     impl<'a> Batch<'a> {
@@ -601,7 +601,7 @@ pub mod need {
             conn: u64,
             chain: u64,
             max: u32,
-            buf: &'a mut Vec<u8>,
+            buf: &'a mut SecureVec,
         },
         Close {
             conn: u64,
@@ -1410,8 +1410,8 @@ pub mod need {
         })
     }
 
-    fn read_bytes(req: &mut Req<'_>, results: &mut Results<'_>) -> Result<Vec<u8>, NeedErr> {
-        results.next(req.op()).map(|res| res.data0.to_vec())
+    fn read_bytes(req: &mut Req<'_>, results: &mut Results<'_>) -> Result<SecureVec, NeedErr> {
+        results.next(req.op()).map(|res| SecureVec::from(res.data0))
     }
 
     fn read_appended(req: &mut Req<'_>, results: &mut Results<'_>) -> Result<bool, NeedErr> {
@@ -1419,21 +1419,8 @@ pub mod need {
         let Req::ReadInto { buf, .. } = req else {
             bad()
         };
-        append_wiping(buf, res.data0);
+        buf.extend_from_slice(res.data0);
         Ok(res.b == 1)
-    }
-
-    /// Appends `data`; when `buf` lacks capacity, a fresh block is allocated, the bytes copied, and the old
-    /// block zeroed before it is freed (I11), never `reserve`.
-    fn append_wiping(buf: &mut Vec<u8>, data: &[u8]) {
-        let want = buf.len().saturating_add(data.len());
-        if want > buf.capacity() {
-            let mut grown = Vec::with_capacity(want.max(buf.capacity().saturating_mul(2)));
-            grown.extend_from_slice(&buf[..]);
-            let mut old = core::mem::replace(buf, grown);
-            old.zeroize();
-        }
-        buf.extend_from_slice(data);
     }
 
     fn fetched_answer(results: &mut Results<'_>) -> Result<Fetched, NeedErr> {
@@ -1443,8 +1430,10 @@ pub mod need {
         };
         Ok(Fetched {
             status,
-            headers: text_pairs(res.data1),
-            body: res.data0.to_vec(),
+            headers: pairs(res.data1)
+                .map(|(name, value)| (text(name), SecureVec::from(value)))
+                .collect(),
+            body: SecureVec::from(res.data0),
         })
     }
 
@@ -1453,13 +1442,8 @@ pub mod need {
         fetched_answer(results)
     }
 
-    fn secret_value(
-        req: &mut Req<'_>,
-        results: &mut Results<'_>,
-    ) -> Result<Zeroizing<Vec<u8>>, NeedErr> {
-        results
-            .next(req.op())
-            .map(|res| Zeroizing::new(res.data0.to_vec()))
+    fn secret_value(req: &mut Req<'_>, results: &mut Results<'_>) -> Result<SecureVec, NeedErr> {
+        results.next(req.op()).map(|res| SecureVec::from(res.data0))
     }
 
     fn record_out(record: Record<'_>, results: &mut Results<'_>) -> Result<RecordOut, NeedErr> {
@@ -1559,11 +1543,11 @@ pub mod need {
             Req::Write { .. } => results.next(op::WRITE).map(|_| Done::Unit),
             Req::Read { .. } => results
                 .next(op::READ)
-                .map(|res| Done::Read(res.data0.to_vec())),
+                .map(|res| Done::Read(SecureVec::from(res.data0))),
             Req::Fetch(_) => fetched_answer(results).map(Done::Fetched),
             Req::Secret(_) => results
                 .next(op::SECRET)
-                .map(|res| Done::Secret(Zeroizing::new(res.data0.to_vec()))),
+                .map(|res| Done::Secret(SecureVec::from(res.data0))),
             Req::Record(record) => record_out(*record, results).map(Done::Record),
             _ => bad(),
         }
@@ -1830,10 +1814,10 @@ pub mod need {
 
         #[test]
         fn read_into_grows_by_copy_and_reports_eof() {
-            let mut buf = Vec::with_capacity(2);
+            let mut buf = SecureVec::with_capacity(2).expect("allocation");
             buf.extend_from_slice(b"ab");
-            append_wiping(&mut buf, b"cdef");
-            assert_eq!(buf, b"abcdef");
+            buf.extend_from_slice(b"cdef");
+            assert_eq!(buf.as_slice(), b"abcdef");
             let mut w = Reply::new();
             result(&mut w, op::READ, 0, 1, 1, b"g", b"");
             let mut req = Req::ReadInto {
@@ -1846,7 +1830,7 @@ pub mod need {
                 read_appended(&mut req, &mut Results::at(w.as_bytes(), 0, 9)),
                 Ok(true)
             );
-            assert_eq!(buf, b"abcdefg");
+            assert_eq!(buf.as_slice(), b"abcdefg");
         }
 
         #[test]

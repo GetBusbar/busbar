@@ -6,8 +6,6 @@
 //! scope projection a snapshot is built with. It runs once per configuration generation or
 //! listener preparation, never per request; the handlers it mounts stay in `crate::router`.
 
-use axum::Router;
-
 use crate::router::{
     method_not_allowed_handler, mount_plane_route, mount_plane_session, private_not_found,
     unchanged_dispatch_layer, PreparedListener,
@@ -24,10 +22,7 @@ pub(crate) fn base_data_router_scoped(
     doors: Vec<busbar_kernel::plane_routes::PlaneRouteSpec>,
     sessions: Vec<busbar_kernel::plane_routes::PlaneSessionSpec>,
     root_surface: bool,
-) -> (
-    Router<std::sync::Arc<state::AppHandle>>,
-    crate::core_routes::CoreRouteTable,
-) {
+) -> crate::core_routes::CoreRouter {
     use busbar_contract::abi::mechanism::route::{RouteAuth, RouteMethod};
 
     let router = if root_surface {
@@ -113,16 +108,14 @@ pub(crate) fn base_data_router_scoped(
 
     let router =
         router.map_router(|r| crate::plugin_routes::mount_plugin_routes(r, plugin_routes, false));
-    router
-        .map_router(|r| {
-            let r = if root_surface {
-                r.fallback(ingress::protocol_dispatch)
-            } else {
-                r.fallback(private_not_found)
-            };
-            r.method_not_allowed_fallback(method_not_allowed_handler)
-        })
-        .into_parts()
+    router.map_router(|r| {
+        let r = if root_surface {
+            r.fallback(ingress::protocol_dispatch)
+        } else {
+            r.fallback(private_not_found)
+        };
+        r.method_not_allowed_fallback(method_not_allowed_handler)
+    })
 }
 
 fn unclaimed_verbs(claimed: axum::routing::MethodFilter) -> Option<axum::routing::MethodFilter> {
@@ -192,6 +185,7 @@ impl PreparedListener {
                 sessions,
                 root_surface,
             )
+            .into_parts()
         }))
         .map_err(|_| "candidate physical routes cannot be mounted together".to_string())?;
         let core_routes = core_routes.with_door_refusals(refusals.clone());

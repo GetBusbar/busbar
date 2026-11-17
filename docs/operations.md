@@ -669,7 +669,7 @@ The limit/group model those keys charge through is owned by
 **[Configuration → Virtual keys and enforcement](/docs/configuration/#virtual-keys-and-enforcement)**.
 This guide stays on the operational picture. In brief: `POST /api/v1/admin/keys` mints a key and
 returns the signed token **once**; a key is pure auth (every limit lives on the bound `group`), it
-EXPIRES (default 90 days, so re-mint or rotate before then), and `DELETE` puts its subject on the
+EXPIRES (default 90 days, so mint a replacement before then; rotation does not renew its lifetime), and `DELETE` puts its subject on the
 durable revocation denylist immediately.
 
 ### Containing a self-serve key

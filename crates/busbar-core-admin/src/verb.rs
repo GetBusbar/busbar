@@ -42,7 +42,7 @@ pub enum Class {
     Ledger,
     /// One of the 1.6.0 audit-chain reads, and `/records`, the per-unit projection of the chain.
     Audit,
-    /// A named non-admin surface.
+    /// A named surface mounted outside the admin codec, including administrative metrics.
     Named,
 }
 
@@ -372,8 +372,21 @@ pub fn row_of(verb: KernelVerb) -> Option<&'static VerbRow> {
     TABLE.iter().find(|r| r.verb == verb)
 }
 
+/// Operations executed by the admin codec; authorization also includes external handlers.
 pub fn admin_rows() -> impl Iterator<Item = &'static VerbRow> {
     TABLE.iter().filter(|r| r.class != Class::Named)
+}
+
+/// The admin authorization vocabulary, including handlers mounted outside the codec.
+/// Other Named surfaces remain public or data-plane operations, never admin grants.
+pub fn admin_grant_rows() -> impl Iterator<Item = &'static VerbRow> {
+    TABLE.iter().filter(|row| {
+        row.class != Class::Named
+            || matches!(
+                row.verb,
+                KernelVerb::GetMetrics | KernelVerb::GetMetricsHooks
+            )
+    })
 }
 
 #[must_use]

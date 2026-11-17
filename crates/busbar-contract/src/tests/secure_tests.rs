@@ -14,12 +14,15 @@ fn holds(hay: &[u8], needle: &[u8]) -> bool {
 }
 
 fn moved_so_far() -> usize {
-    MOVED.with(std::cell::Cell::get)
+    moved_bytes()
 }
 
 /// Every byte outside `[head, end)` is zero.
 fn outside_live_is_zero(s: &SecureVec) -> bool {
-    s.v[..s.head].iter().all(|b| *b == 0) && s.v[s.end..].iter().all(|b| *b == 0)
+    s.allocation()[..s.live_range().start]
+        .iter()
+        .all(|b| *b == 0)
+        && s.allocation()[s.live_range().end..].iter().all(|b| *b == 0)
 }
 
 /// RED against a front-memmove `consume`: consuming moves nothing, it advances the view.

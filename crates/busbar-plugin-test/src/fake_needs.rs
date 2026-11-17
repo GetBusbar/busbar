@@ -11,6 +11,9 @@
 //! conn ids and pooled-conn ids are minted per instance from 1 and never repeat (C-POOL-STATE (a), round 19).
 //! Every OPEN and FETCH is recorded, so a suite can hold them against the ENDPOINTs a plugin's `check` declared
 //! (TRANSPORT-SECURITY-POLICY §2, [`FakeNeeds::undeclared`]).
+//! RECORD COMMIT evaluates predicates and publishes mutations under that same lock, scoped by plugin and
+//! instance. It supports TTL=0 only; timed COMMIT writes fail Invalid. This in-memory fixture proves host
+//! interactions, not native Store durability or crash recovery. Existing Put/Claim TTL behavior is unchanged.
 
 use core::future::{ready, Future};
 use std::collections::{BTreeMap, VecDeque};
@@ -20,6 +23,35 @@ use busbar_plugin_abi::host_side::caller::Caller;
 use busbar_plugin_abi::host_side::needs::{
     ConnId, DirNeed, FetchNeed, NeedErr, NeedOut, Needs, OpenNeed, RecordNeed, TlsMode,
 };
+
+mod records;
+
+/// Host-side record errors, exposed for fixture scripts without an internal loader dependency.
+pub use busbar_plugin_abi::host_side::needs::NeedErr as RecordError;
+
+/// One scripted RECORD call. Unscripted calls use the in-memory state normally.
+#[derive(Clone, Debug)]
+pub enum RecordStep {
+    /// Use normal state for this call (useful before a later scripted failure).
+    Pass,
+    /// Fail before any access or mutation.
+    Error(RecordError),
+    /// Simulate another writer in this caller's namespace immediately before the next COMMIT.
+    /// Its write remains even when the submitted CAS conflicts. Non-COMMIT calls are Invalid.
+    BeforeCommit { key: Vec<u8>, value: Vec<u8> },
+    /// Apply a successful COMMIT, then lose its acknowledgement. A conflicting commit still
+    /// returns Conflict; a non-COMMIT call is Invalid. The next read observes committed state.
+    CommitThenError(RecordError),
+}
+
+/// Every RECORD invocation, including failed calls, in execution order. Values stay in `records()`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RecordCall {
+    pub plugin: String,
+    pub instance: String,
+    /// `get`, `put`, `claim`, `del`, `list`, or `commit`.
+    pub op: &'static str,
+}
 use busbar_plugin_abi::host_side::scrub::Scrub;
 
 /// One step of a scripted conn.
@@ -164,6 +196,8 @@ struct State {
     next_conn: BTreeMap<u64, u64>,
     next_pooled: BTreeMap<u64, u64>,
     records: BTreeMap<(String, String, Vec<u8>), Vec<u8>>,
+    record_steps: VecDeque<RecordStep>,
+    record_calls: Vec<RecordCall>,
     seen: Vec<Seen>,
     released: u64,
 }
@@ -207,6 +241,25 @@ fn host_of(dest: &str) -> &str {
 impl FakeNeeds {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Seed opaque bytes in exactly one plugin/instance namespace. Use `records()` from a
+    /// previous harness to restore a snapshot into a fresh fixture; nothing is persisted to disk.
+    /// This is test setup, so it does not count as a plugin RECORD call.
+    pub fn seed_record(&self, plugin: &str, instance: &str, key: &[u8], value: &[u8]) {
+        self.lock().records.insert(
+            (plugin.to_owned(), instance.to_owned(), key.to_vec()),
+            value.to_vec(),
+        );
+    }
+
+    /// Queue the next RECORD call's behavior, including after a harness has opened.
+    pub fn script_record(&self, step: RecordStep) {
+        self.lock().record_steps.push_back(step);
+    }
+
+    pub fn record_calls(&self) -> Vec<RecordCall> {
+        self.lock().record_calls.clone()
     }
 
     fn state(&mut self) -> &mut State {
@@ -454,6 +507,35 @@ impl State {
         res: &mut NeedOut<'_>,
     ) -> Result<(), NeedErr> {
         let at = |key: &[u8]| (cx.plugin.to_owned(), cx.name.to_owned(), key.to_vec());
+        self.record_calls.push(RecordCall {
+            plugin: cx.plugin.to_owned(),
+            instance: cx.name.to_owned(),
+            op: match &n {
+                RecordNeed::Get(_) => "get",
+                RecordNeed::Put(..) => "put",
+                RecordNeed::Claim(..) => "claim",
+                RecordNeed::Del(_) => "del",
+                RecordNeed::List(..) => "list",
+                RecordNeed::Commit(_) => "commit",
+            },
+        });
+        let mut after_commit = None;
+        match self.record_steps.pop_front().unwrap_or(RecordStep::Pass) {
+            RecordStep::Pass => {}
+            RecordStep::Error(error) => return Err(error),
+            RecordStep::BeforeCommit { key, value } => {
+                if !matches!(&n, RecordNeed::Commit(_)) {
+                    return Err(NeedErr::Invalid);
+                }
+                self.records.insert(at(&key), value);
+            }
+            RecordStep::CommitThenError(error) => {
+                if !matches!(&n, RecordNeed::Commit(_)) {
+                    return Err(NeedErr::Invalid);
+                }
+                after_commit = Some(error);
+            }
+        }
         match n {
             RecordNeed::Get(key) => match self.records.get(&at(key)) {
                 Some(value) => {
@@ -490,8 +572,15 @@ impl State {
                 }
                 res.set(listed, 0);
             }
-            // C-COMMIT runs over the kernel's own plugin records (§12.5, W1-K5), not over this double.
-            RecordNeed::Commit(_) => return Err(NeedErr::Invalid),
+            RecordNeed::Commit(records) => {
+                let outcome = self.commit_records(cx, records)?;
+                if outcome.0 == u64::from(busbar_plugin_abi::records::commit::APPLIED) {
+                    if let Some(error) = after_commit {
+                        return Err(error);
+                    }
+                }
+                res.set(outcome.0, outcome.1);
+            }
         }
         Ok(())
     }

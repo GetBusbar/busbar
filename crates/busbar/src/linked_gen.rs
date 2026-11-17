@@ -129,6 +129,7 @@ pub fn ident(krate: &str) -> String {
 /// The axes whose `linked_axis_<axis>` cfg a build declares (the composition root's sources gate
 /// on them) and sets when an enabled row names the axis.
 pub const CFG_AXES: &[&str] = &[
+    MIN3_AXIS,
     PLANE_DOOR_AXIS,
     DOOR_AXIS,
     EXPORT_DOOR_AXIS,

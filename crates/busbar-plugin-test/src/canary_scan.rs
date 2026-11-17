@@ -31,7 +31,7 @@
 //! The canary is 32 random bytes placed at offset 32 of a payload far below jemalloc's small-size
 //! limit; a match is any 16-byte window of it, so a partly overwritten secret still counts. The
 //! patterns are held XOR-masked and compared masked, so the scan never builds the plaintext, and
-//! hits inside the scan's own read buffer are not counted. Staging buffers are [`Zeroizing`] and
+//! hits inside the scan's own read buffer are not counted. Staging buffers are [`SecureVec`] and
 //! are dropped before [`WipeProof::assert_absent`].
 //!
 //! Linux only (A23): elsewhere [`WipeProof::assert_absent`] checks nothing and the wipe counters and
@@ -40,15 +40,15 @@
 //! ```ignore
 //! let proof = WipeProof::new();
 //! {
-//!     let secret = proof.payload();          // Zeroizing<Vec<u8>> holding the canary
+//!     let secret = proof.payload();          // SecureVec holding the canary
 //!     code_under_test(&secret);
 //! }                                           // dropped before the scan
 //! proof.assert_absent("code_under_test wipes its copies");
 //! ```
 
+use busbar_contract::secure::SecureVec;
 use std::collections::hash_map::RandomState;
 use std::hash::{BuildHasher, Hasher};
-use zeroize::Zeroizing;
 
 /// Bytes in a canary.
 pub const CANARY_LEN: usize = 32;
@@ -104,9 +104,9 @@ impl Pattern {
         }
     }
 
-    /// A payload in a [`Zeroizing`] staging buffer.
-    fn payload(&self) -> Zeroizing<Vec<u8>> {
-        let mut out = Zeroizing::new(vec![0_u8; PAYLOAD_LEN]);
+    /// A payload in a [`SecureVec`] staging buffer.
+    fn payload(&self) -> SecureVec {
+        let mut out = SecureVec::zeroed(PAYLOAD_LEN);
         self.fill(&mut out);
         out
     }
@@ -188,9 +188,9 @@ impl WipeProof {
     }
 
     /// A staging buffer holding the canary (a [`PAYLOAD_LEN`]-byte payload, the canary at
-    /// [`OFFSET`]). It is [`Zeroizing`]: drop it before [`Self::assert_absent`].
+    /// [`OFFSET`]). It is [`SecureVec`]: drop it before [`Self::assert_absent`].
     #[must_use]
-    pub fn payload(&self) -> Zeroizing<Vec<u8>> {
+    pub fn payload(&self) -> SecureVec {
         self.canary.payload()
     }
 

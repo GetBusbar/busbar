@@ -368,6 +368,7 @@ dependencies = [
  "axum-core",
  "base64 0.22.1",
  "busbar-crypto",
+ "busbar-secure",
  "bytes",
  "ciborium",
  "foldhash",
@@ -664,6 +665,7 @@ dependencies = [
  "base64 0.22.1",
  "busbar-crypto",
  "busbar-ffi",
+ "busbar-secure",
  "crossbeam-queue",
  "hex",
  "hyper",
@@ -749,6 +751,13 @@ version = "1.6.0"
 dependencies = [
  "busbar-contract",
  "busbar-plugin-abi",
+ "zeroize",
+]
+
+[[package]]
+name = "busbar-secure"
+version = "1.6.0"
+dependencies = [
  "zeroize",
 ]
 

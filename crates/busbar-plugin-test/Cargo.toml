@@ -64,8 +64,16 @@ name = "r131_core_7"
 path = "tests/r131_core_7.rs"
 
 [[test]]
+name = "sdk_secure_custody"
+path = "tests/sdk_secure_custody.rs"
+
+[[test]]
 name = "sdk_surface"
 path = "tests/sdk_surface.rs"
+
+[[test]]
+name = "auth_record_host"
+path = "tests/auth_record_host.rs"
 
 [[test]]
 name = "store_no_growth_case"

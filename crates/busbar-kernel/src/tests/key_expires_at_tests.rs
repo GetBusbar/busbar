@@ -112,6 +112,59 @@ async fn a_key_row_expires_at_its_own_second() {
     );
 }
 
+#[tokio::test]
+async fn rotation_reports_and_signs_the_effective_expiry_without_renewing_the_key() {
+    use crate::governance::signing::TokenVerifier;
+
+    let signer = TokenSigner::from_secret_bytes(&[5u8; 32], DEFAULT_KID);
+    let verifier = TokenVerifier::single(DEFAULT_KID, signer.verifying_key());
+    for (row_expiry, requested_expiry, effective_expiry) in [
+        (Some(NOW + 60), NOW + 3_600, NOW + 60),
+        (Some(NOW + 3_600), NOW + 60, NOW + 60),
+        (None, NOW + 3_600, NOW + 3_600),
+        (Some(NOW - 1), NOW + 3_600, NOW - 1),
+    ] {
+        let (gov, store) = gov_and_store().await;
+        let (mut row, original) = gov
+            .mint_signed_async(NewKeySpec::default(), TOKEN_EXP, NOW)
+            .await
+            .unwrap();
+        row.expires_at = row_expiry;
+        store.identity().put_key(&row).await.unwrap();
+        gov.refresh_async().await.unwrap();
+
+        let rotated = gov
+            .rotate_key_outcome_async(&row.id, requested_expiry)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            rotated.exp, effective_expiry,
+            "the response expiry is usable"
+        );
+        let token = rotated.token.expose(&crate::seal::lend());
+        let claims = verifier.verify(token, effective_expiry - 1, None).unwrap();
+        assert_eq!(claims.exp, effective_expiry, "the signed expiry agrees");
+        assert!(verifier.verify(token, effective_expiry, None).is_err());
+        assert_eq!(rotated.key.expires_at, row_expiry);
+        let stored = store.identity().get_key(&row.id).await.unwrap().unwrap();
+        assert_eq!(
+            stored.expires_at, row_expiry,
+            "rotation never renews the row"
+        );
+        assert_ne!(stored.generation_hash, row.generation_hash);
+        assert_eq!(stored.rotation_count, row.rotation_count + 1);
+        assert!(gov
+            .verify_token(original.expose(&crate::seal::lend()), NOW, None)
+            .is_none());
+        assert_eq!(
+            gov.verify_token(token, NOW, None).is_some(),
+            effective_expiry > NOW
+        );
+        assert!(gov.verify_token(token, effective_expiry, None).is_none());
+    }
+}
+
 async fn key_id_of(_gov: &GovState, store: &crate::persistence::facade::CoreStore) -> String {
     let keys = store.identity().list_keys().await.expect("store read");
     assert_eq!(keys.len(), 1, "exactly the one minted key");
