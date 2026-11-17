@@ -1261,6 +1261,10 @@ async fn exhausted_terminal_storage_refuses_before_session_attachment() {
     let _one = PUBLISHING.lock().await;
     let mut g = governed("session-terminal-storage", false).await;
     let budget = ProcessAdmission::with_limits(0, 32, 8);
+    g.post
+        .node()
+        .expect("fixture Node")
+        .rebind_terminal_storage(&budget);
     let routes = session_custody_routes(&mut g, false);
     let mut request = session_custody_request(&g, "/open");
     request.request = budget.try_enter(AdmissionClass::Data).unwrap();
