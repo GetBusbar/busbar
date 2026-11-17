@@ -11,6 +11,9 @@ pub use busbar_kernel::topology::{worker_stripe, worker_stripes};
 pub use busbar_kernel::plane_driver::slots::runtime_slot_key;
 
 pub mod activation;
+mod selected_rates;
+pub use selected_rates::SelectedRateAdmission;
+pub(crate) use selected_rates::SelectedRateRejected;
 
 pub type ContainerGateMap = HashMap<String, Vec<(u16, crate::hooks::ResolvedPolicy)>>;
 
