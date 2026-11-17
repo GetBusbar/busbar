@@ -1054,6 +1054,16 @@ pub(crate) struct ServingReady {
     _bootstrap_registry: Arc<MinRegistry>,
 }
 
+impl ServingReady {
+    /// Reserve the complete candidate before any export pump receives a producer handle.
+    pub(crate) fn export_names(&self) -> impl Iterator<Item = String> + '_ {
+        self.instances
+            .iter()
+            .filter(|instance| instance.kind == KindCode::Export)
+            .map(|instance| instance.name.clone())
+    }
+}
+
 impl BootstrapReady {
     pub(crate) fn converting(&self) -> bool {
         self.converting
@@ -1353,6 +1363,7 @@ pub(crate) async fn finish(
     services: Option<Arc<KernelServices>>,
     work_binder: Arc<WorkBinder>,
     hooks: Option<hooks::Environment<'_>>,
+    export_observers: &super::export_observer::ExportReservation,
 ) -> Result<
     (
         Startup,
@@ -1466,6 +1477,9 @@ pub(crate) async fn finish(
                 Arc::clone(port),
                 disk,
                 &instance.limits,
+                export_observers
+                    .observer(&instance.name)
+                    .ok_or("opened export has no reserved observation owner")?,
             );
             export_doors.push((instance.name.clone(), door));
         }

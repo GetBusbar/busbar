@@ -579,6 +579,7 @@ async fn run(
     let plugin_process = std::sync::Arc::new(
         busbar_plugin_loader::process::ProcessResources::new().unwrap_or_else(|error| die(error)),
     );
+    let export_observers = root::export_observer::ExportObservers::new();
     root::observe::install(catalogue);
     // Until the listener's own handler owns signals, SIGTERM/SIGINT exit through `root::exit`, so
     // an armed first-start owner hands over (FIRST-START-TAKEOVER §2.7).
@@ -751,10 +752,13 @@ async fn run(
             let conversion = root::min3_boot::prepare_serving(
                 bootstrap_ready, &plugin_process, conversion_images, &base_cfg, boot_guard,
             ).unwrap_or_else(|error| die(error));
+            let observation_reservation = export_observers.reserve(conversion.export_names())
+                .unwrap_or_else(|error| die(error));
             let _ = root::min3_boot::finish(
                 conversion, process_io.handle(), store_admission, None,
                 busbar_kernel::plane_driver::port_work::governed_binder(None, Default::default()),
                 None,
+                &observation_reservation,
             )
                 .await.unwrap_or_else(|error| die(error));
             die("unstamped conversion returned without its required restart");
@@ -1329,6 +1333,9 @@ async fn run(
             .unwrap_or_else(|error| die(format!("cold record bootstrap refused: {error}")));
     }
 
+    let observation_reservation = export_observers
+        .reserve(serving_ready.export_names())
+        .unwrap_or_else(|error| die(error));
     let (store_admission, mut generation_workers, exports, native) = root::min3_boot::finish(
         serving_ready,
         process_io.handle(),
@@ -1342,6 +1349,7 @@ async fn run(
             root::min3_boot::hooks::Environment::new(&native_config, &app)
                 .unwrap_or_else(|error| die(error)),
         ),
+        &observation_reservation,
     )
     .await
     .unwrap_or_else(|error| die(error));
@@ -1468,6 +1476,11 @@ async fn run(
 
     drop(served);
     let app_handle = Arc::new(busbar_kernel::state::AppHandle::new(app));
+    // Publication owns every reserved observer through producer shutdown. Failed construction
+    // above drops the uncommitted reservation and returns its unused capacity.
+    let _export_generation = observation_reservation.commit();
+    // Reload carries this exact owner, including captures accepted by a retiring App.
+    let export_captures = Arc::clone(&app_handle.load().exports);
     services.prepare_workers(&mut generation_workers);
     let probes = Arc::new(busbar_kernel::endpoints::ProbeState::new(
         book.as_ref().map(|book| book.runtime_journal.clone()),
@@ -1525,6 +1538,7 @@ async fn run(
     recovery_served.spawn_ticks();
     export::plugin::start(&app_handle.load().exports)
         .unwrap_or_else(|e| die_list("config errors", [e]));
+    let export_observer_retry = root::shutdown::ExportRetry::start(Arc::clone(&export_observers));
     exports.start().unwrap_or_else(|error| die(error));
     let on_host = LINKED.on_host;
     let boot_host =
@@ -1885,6 +1899,9 @@ async fn run(
         work_recovery,
         generation_workers,
         exports,
+        export_observers,
+        export_observer_retry,
+        export_captures,
         control_drain: Box::pin(control_work.drain()),
         node_lease: node_lease_task,
         flusher: budget_flusher,
