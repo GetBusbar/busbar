@@ -569,8 +569,10 @@ async fn native_data_keeps_gate_closed_until_actual_money_and_physical_join() {
             .core()
             .units()
             .take_ticket(context.unit()),
-        Some(None)
+        None,
+        "descriptor execution cannot authorize generic ticket access"
     );
+    assert_generic_effects_refused(&f, &context);
     assert!(pending.execution().unwrap().money().is_live());
     assert!(
         pending
@@ -895,4 +897,76 @@ fn begin_task<'a>(
         .unwrap()
         .unwrap();
     task
+}
+
+fn assert_generic_effects_refused(f: &Fixture, context: &InvocationContext) {
+    use busbar_contract::abi::host::service::{OUTBOUND_BIND, OUTBOUND_PUBLISH, OUTBOUND_REVOKE};
+    use busbar_contract::abi::mechanism::call::Outcome;
+    use busbar_contract::services::{HostServices, OutboundAuthorization, Ran};
+    assert!(context
+        .nest(
+            &f.route.caller,
+            crate::host_services::NestAsk {
+                verb: "POST".into(),
+                target: "/other".into(),
+                body: vec![]
+            },
+            Box::new(|_| panic!("DATA cannot nest"))
+        )
+        .is_err());
+    assert!(context
+        .offload_hook(Box::new(|| panic!("DATA cannot run hooks")))
+        .is_err());
+    let core = context.generation().core();
+    let call = |unit, action, revision| {
+        let publish = action == OUTBOUND_PUBLISH;
+        let result = core.outbound_authorize(
+            &f.route.caller,
+            Some(unit),
+            OutboundAuthorization {
+                action,
+                need: 0,
+                member: "m0",
+                resource: "https://example.invalid/private",
+                connection: "public-account",
+                expected_revision: revision,
+                expires_at_unix: if publish { u64::MAX } else { 0 },
+                field_name: if publish { "authorization" } else { "" },
+                credential: if publish { b"Bearer fixture" } else { b"" },
+            },
+            Box::new(|_| panic!("synchronous custody")),
+        );
+        match result {
+            Ran::Now(result) => result,
+            Ran::Later => panic!("synchronous custody"),
+        }
+    };
+    assert_eq!(
+        call(context.unit(), OUTBOUND_PUBLISH, 0).outcome,
+        Outcome::Refused
+    );
+    // An independently admitted ordinary unit with the same owner can enroll revision 1.
+    // This proves the refused DATA request created no custody row.
+    let ordinary = 999;
+    core.units().admitted_for(
+        ordinary,
+        &f.route.caller,
+        crate::host_units::UnitRecord {
+            principal: context.principal().cloned(),
+            depth: 0,
+        },
+    );
+    let published = call(ordinary, OUTBOUND_PUBLISH, 0);
+    assert_eq!(published.outcome, Outcome::Ready);
+    assert_eq!(published.value, 1);
+    assert_eq!(
+        call(context.unit(), OUTBOUND_REVOKE, 1).outcome,
+        Outcome::Refused
+    );
+    assert_eq!(
+        call(ordinary, OUTBOUND_BIND, 1).outcome,
+        Outcome::Ready,
+        "refused DATA revocation cannot alter the existing custody row"
+    );
+    core.units().ended(ordinary);
 }
