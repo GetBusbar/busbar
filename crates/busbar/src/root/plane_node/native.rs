@@ -12,7 +12,7 @@ use busbar_kernel::auth::native_data::{NativeDataAllocation, NativeDataPending};
 use busbar_kernel::inbound::native::StreamOwner;
 use busbar_kernel::limits::process_admission::AdmissionClass;
 use busbar_kernel::plane_driver::port::Unit;
-use busbar_kernel::plane_driver::port_billing::PortBilling;
+use busbar_kernel::plane_driver::port_billing::{NativeOrdinaryTerminalSlot, PortBilling};
 use busbar_kernel::teller::native_data_audit::NativeAuditOwner;
 
 use super::{Node, NodeEndPost, RetainedState, RetainedUnit};
@@ -28,6 +28,9 @@ pub(super) struct NativeUnit {
     original_receipt: Option<OriginalLineReceipt>,
     // Dedicated original-notary retention credit; never substitutes for book backing.
     receipt_credit: Option<StorageCredit>,
+    // The original funded ordinary slot; its Open transfers only through this Node owner.
+    ordinary: Arc<NativeOrdinaryTerminalSlot>,
+    billing: PortBilling,
 }
 
 /// A loan to one installed original. It neither owns Node nor creates a second entry.
@@ -106,7 +109,10 @@ impl Node {
         post: Arc<NodeEndPost>,
         billing: &PortBilling,
         classes: Arc<[String]>,
-    ) -> Result<(NativeNodeHandle, Unit), (InputError, Option<NativeNodeHandle>)> {
+    ) -> Result<
+        (NativeNodeHandle, Unit, Arc<NativeOrdinaryTerminalSlot>),
+        (InputError, Option<NativeNodeHandle>),
+    > {
         let failure = |error| (error, None);
         let ready = self
             .book
@@ -134,6 +140,12 @@ impl Node {
             .storage()
             .try_reserve(ready.retention_bytes())
             .map_err(|_| failure(InputError::Capacity))?;
+        // Funded from the original request before the monetary gate; refusal precedes admission.
+        let ordinary = NativeOrdinaryTerminalSlot::reserve(
+            allocation.context(),
+            &owner.binding().request().storage(),
+        )
+        .map_err(|_| failure(InputError::Capacity))?;
         let class = owner.binding().request().class();
         let key = owner.context().key;
         let call = owner.context().call;
@@ -165,6 +177,8 @@ impl Node {
                     staged: None,
                     original_receipt: None,
                     receipt_credit: Some(receipt_credit),
+                    ordinary: ordinary.clone(),
+                    billing: billing.clone(),
                 }),
             },
         )
@@ -203,7 +217,7 @@ impl Node {
             self.ticket_custody
                 .bind_source(native.owner.context(), slot);
         }
-        Ok((handle, unit))
+        Ok((handle, unit, ordinary))
     }
 }
 

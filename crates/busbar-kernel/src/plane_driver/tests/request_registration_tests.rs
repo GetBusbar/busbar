@@ -222,9 +222,19 @@ async fn native_ordinary_startup_rollback_retains_the_original_open() {
             .unwrap(),
     );
     let money = Arc::new(PlaneMoney::new(gov, Arc::new(Posted)));
+    let process = crate::limits::process_admission::ProcessAdmission::new(0);
+    let lease = process
+        .try_enter(crate::limits::process_admission::AdmissionClass::Data)
+        .unwrap();
+    let slot = crate::plane_driver::port_billing::NativeOrdinaryTerminalSlot::reserve(
+        &ctx,
+        &lease.storage(),
+    )
+    .unwrap();
     let admitted = money
-        .admit_existing(
+        .admit_existing_ordinary(
             receipt.begin().unwrap(),
+            &slot,
             Arc::from([]),
             super::super::super::money::FeeRefund::CallerStatus,
             ExhaustionMode::FinishUnit,

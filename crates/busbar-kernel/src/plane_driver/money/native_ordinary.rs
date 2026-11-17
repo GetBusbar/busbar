@@ -3,9 +3,7 @@
 
 //! The original funded ordinary terminal slot survives startup rollback and caller loss.
 
-use super::{
-    locked, FeeAccount, FeeRefund, NativeAdmissionError, PlaneMoney, UnitEnd, UnitMoney, UsageFold,
-};
+use super::{locked, FeeAccount, NativeAdmissionError, PlaneMoney, UnitEnd, UnitMoney, UsageFold};
 use crate::governance::unit_checkpoint::{OrdinaryTerminalCompletion, OrdinaryTerminalReservation};
 use crate::plane_driver::request_admission::{AdmittedRequest, CommittingRequest};
 use busbar_contract::storage::StorageCredit;
@@ -19,7 +17,6 @@ pub struct NativeOrdinaryTerminalSlot {
 }
 
 pub(super) struct OrdinaryState {
-    pub(super) admitting: bool,
     pub(super) request: Option<AdmittedRequest>,
     pub(super) intent: Option<UnitEnd>,
     reservation: OrdinaryTerminalReservation,
@@ -35,19 +32,18 @@ struct OrdinaryTerminalOwner {
 }
 
 impl NativeOrdinaryTerminalSlot {
-    pub(crate) fn reserve(
-        allocation: &crate::auth::native_data::NativeDataAllocation,
+    pub fn reserve(
+        context: &crate::host_services::InvocationContext,
+        source: &busbar_contract::storage::StorageSource,
     ) -> Result<Arc<Self>, NativeAdmissionError> {
-        let source = allocation.request().storage();
         let credit = source
             .try_reserve(Layout::new::<Self>().size())
             .map_err(|_| NativeAdmissionError::Declaration)?;
         let reservation =
-            OrdinaryTerminalReservation::reserve(&source).map_err(NativeAdmissionError::Custody)?;
+            OrdinaryTerminalReservation::reserve(source).map_err(NativeAdmissionError::Custody)?;
         Ok(Arc::new(Self {
-            context: allocation.context().clone(),
+            context: context.clone(),
             state: Mutex::new(OrdinaryState {
-                admitting: false,
                 request: None,
                 intent: None,
                 reservation,
@@ -55,6 +51,11 @@ impl NativeOrdinaryTerminalSlot {
             }),
             _credit: credit,
         }))
+    }
+
+    /// The exact admitted request this slot owns, for the Node's terminal callers.
+    pub fn admitted(&self) -> Option<AdmittedRequest> {
+        locked(&self.state).request.clone()
     }
 
     pub(super) fn accepts(&self, request: &CommittingRequest) -> bool {
@@ -180,5 +181,11 @@ impl PlaneMoney {
         }
         drop(removed);
         Ok(true)
+    }
+}
+
+impl OrdinaryState {
+    pub(super) fn has_terminal(&self) -> bool {
+        self.terminal.is_some()
     }
 }

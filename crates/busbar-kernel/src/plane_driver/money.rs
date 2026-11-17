@@ -1047,7 +1047,10 @@ impl PlaneMoney {
                 busbar_contract::stage_probe::Derive::MoneyShardLock,
             );
             let mut all = self.shard(key);
-            if all.get(&key).is_some_and(|open| open.native.is_some()) {
+            if all
+                .get(&key)
+                .is_some_and(|open| open.native.is_some() || open.ordinary_terminal.is_some())
+            {
                 return;
             }
             all.remove(&key)
@@ -1080,6 +1083,11 @@ impl PlaneMoney {
             }
             if open.native.is_some() {
                 return Err(NativeAdmissionError::SelectedTerminalRequired);
+            }
+            // A funded native ordinary Open transfers only through its original slot; the
+            // boolean removal is not a terminal receipt.
+            if open.ordinary_terminal.is_some() {
+                return Err(NativeAdmissionError::NotLive);
             }
             all.remove(&request.unit())
         };
