@@ -7,14 +7,11 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-use busbar_contract::MeterClassId;
-
-use super::UnitMoney;
 use crate::governance::unit_checkpoint::partitions::{AttemptPartition, Finality, Transport};
 use crate::governance::unit_checkpoint::UnitCheckpoint;
-use crate::governance::AdmitGrant;
-use crate::invocation::InvocationContext;
-use crate::plane_driver::port_session::UpExchange;
+use crate::plane_driver::port_egress::SelectedWalkAttempt;
+use crate::plane_driver::port_session::PreparedExchange;
+use crate::plane_driver::request_admission::AdmittedRequest;
 
 /// The book-accepted complete checkpoint is the runtime's single factual source as well.
 /// Live selection/rate authority is separate and is never reconstructed from these facts.
@@ -47,37 +44,43 @@ use busbar_ports::codec::fallback_usage::{
 /// check the live invocation, original Open identity and selected member before minting it.
 /// Until that producer is integrated this input cannot activate selected-attempt dispatch.
 pub(crate) struct PreparedRateAttempt {
-    money: Arc<UnitMoney>,
-    instance: Box<str>,
-    resource: Option<Box<str>>,
-    physical_classes: Box<[MeterClassId]>,
-    // Retain actual ownership, not copied identifiers. None of these fields contributes a
-    // second fee participation or admission; the grant is the original Open's shared grant.
-    _invocation: InvocationContext,
-    _book: Arc<()>,
-    _open_identity: Arc<()>,
-    _grant: Arc<AdmitGrant>,
-    _exchange: UpExchange,
+    request: AdmittedRequest,
+    selected: SelectedWalkAttempt,
+    physical_classes: Box<[Box<str>]>,
+    // Retain the whole validated preparation: its exchange cannot be paired with another
+    // target/ordinal or a separately copied estimate/echo view.
+    _prepared: PreparedExchange,
 }
 
 impl PreparedRateAttempt {
     /// The authenticated request payer captured by the original monetary admission.
     pub(crate) fn key_id(&self) -> &str {
-        &self.money.key.id
+        &self.request.key().id
     }
 
     pub(crate) fn instance(&self) -> &str {
-        &self.instance
+        self.request.context().instance()
     }
 
     /// Absent only when the selected-policy resolver produces no resource rule rows.
     pub(crate) fn resource(&self) -> Option<&str> {
-        self.resource.as_deref()
+        self.selected.resource()
     }
 
     /// The frozen, validated physical class set; aggregates must not overlap its classes.
-    pub(crate) fn physical_classes(&self) -> &[MeterClassId] {
+    pub(crate) fn physical_classes(&self) -> &[Box<str>] {
         &self.physical_classes
+    }
+
+    /// Original verified payer/credential restrictions, route domain and live money authority.
+    /// Current-policy resolution must not rebuild these facts from a key id.
+    pub(crate) fn receipt(&self) -> &AdmittedRequest {
+        &self.request
+    }
+
+    /// Actual take-once selected member, bound to the same walk as the admitted request.
+    pub(crate) fn selection(&self) -> &SelectedWalkAttempt {
+        &self.selected
     }
 }
 
