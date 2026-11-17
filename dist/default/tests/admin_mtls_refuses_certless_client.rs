@@ -60,7 +60,7 @@ fn log(dir: &Path) -> String {
     std::fs::read_to_string(dir.join("out.log")).unwrap_or_default()
 }
 
-/// A reqwest TLS config trusting `ca_pem`, with an optional client identity (`leaf`, `key` PEM),
+/// A TLS client config trusting `ca_pem`, with an optional client identity (`leaf`, `key` PEM),
 /// built through the crypto facade.
 fn preconfigured_tls(ca_pem: &str, identity: Option<(&str, &str)>) -> rustls::ClientConfig {
     use rustls::pki_types::{pem::PemObject as _, CertificateDer, PrivateKeyDer};
@@ -85,12 +85,15 @@ fn preconfigured_tls(ca_pem: &str, identity: Option<(&str, &str)>) -> rustls::Cl
     (*config).clone()
 }
 
-fn client(server_ca_pem: &str, identity: Option<(&str, &str)>) -> reqwest::Client {
-    reqwest::Client::builder()
-        .use_preconfigured_tls(preconfigured_tls(server_ca_pem, identity))
-        .timeout(Duration::from_secs(10))
-        .build()
-        .unwrap()
+fn client(
+    server_ca_pem: &str,
+    identity: Option<(&str, &str)>,
+) -> busbar_core_connector::test_support::https::Client {
+    busbar_core_connector::test_support::https::Client::new(preconfigured_tls(
+        server_ca_pem,
+        identity,
+    ))
+    .timeout(Duration::from_secs(10))
 }
 
 #[test]

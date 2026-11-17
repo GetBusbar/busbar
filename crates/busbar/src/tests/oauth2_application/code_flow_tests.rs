@@ -86,10 +86,7 @@ pub(super) async fn verified_claims(app: &busbar_kernel::state::App, access: &st
 async fn the_authorization_code_flow_mints_and_exchanges_a_code() {
     let (origin, app) = serve().await;
     let client_id = register_client(&origin).await;
-    let client = super::client_builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .expect("client");
+    let client = super::client();
 
     let mut jar = Jar::new(true);
 
@@ -206,10 +203,7 @@ async fn the_authorization_code_flow_mints_and_exchanges_a_code() {
 }
 
 async fn mint_access_token(origin: &str, client_id: &str) -> String {
-    let client = super::client_builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .expect("client");
+    let client = super::client();
     let mut jar = Jar::new(true);
 
     let authorize = format!(
@@ -313,10 +307,7 @@ async fn shown_and_granted(
     client_id: &str,
     scope_param: &str,
 ) -> (String, String) {
-    let client = super::client_builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .expect("client");
+    let client = super::client();
     let mut jar = Jar::new(true);
     let authorize = format!(
         "{origin}/authorize?response_type=code&client_id={}\
@@ -391,10 +382,7 @@ async fn the_consent_screen_names_a_requested_scope_and_an_empty_grant() {
 }
 
 async fn public_client_code(origin: &str, client_id: &str) -> String {
-    let client = super::client_builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .unwrap();
+    let client = super::client();
     let mut jar = Jar::new(true);
     let authorize = format!(
         "{origin}/authorize?response_type=code&client_id={client_id}&redirect_uri={}&scope={SCOPE}&code_challenge={CHALLENGE}&code_challenge_method=S256",

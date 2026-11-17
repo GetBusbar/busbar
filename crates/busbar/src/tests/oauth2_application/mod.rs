@@ -10,6 +10,7 @@ use busbar_core_oauth2::config::OauthAsCfg;
 use busbar_kernel::state::App;
 
 use crate::root::test_plugins as plugins;
+use busbar_core_connector::test_support::https::{Client, Response};
 
 mod admin_listener_tests;
 mod browser;
@@ -24,7 +25,7 @@ mod mount_tests;
 mod registration_tests;
 
 /// The JSON body of `response`, read as a tree (lexemes kept, last duplicate key wins).
-async fn read_json(response: reqwest::Response) -> busbar_contract::json::Value {
+async fn read_json(response: Response) -> busbar_contract::json::Value {
     busbar_contract::json::parse_value(&response.bytes().await.expect("the response body reads"))
         .expect("the response body is JSON")
 }
@@ -52,7 +53,7 @@ fn tls_identity() -> (Arc<rustls::ServerConfig>, &'static str) {
     (Arc::clone(&IDENTITY.0), &IDENTITY.1)
 }
 
-/// A reqwest TLS config trusting the OAuth test CA, built through the crypto facade.
+/// A TLS client config trusting the OAuth test CA, built through the crypto facade.
 fn client_tls(ca_pem: &str) -> rustls::ClientConfig {
     use rustls::pki_types::{pem::PemObject as _, CertificateDer};
     let mut roots = rustls::RootCertStore::empty();
@@ -68,12 +69,9 @@ fn client_tls(ca_pem: &str) -> rustls::ClientConfig {
     (*config).clone()
 }
 
-fn client_builder() -> reqwest::ClientBuilder {
-    reqwest::Client::builder().use_preconfigured_tls(client_tls(tls_identity().1))
-}
-
-fn client() -> reqwest::Client {
-    client_builder().build().expect("the OAuth TLS client")
+/// The OAuth suites' client: `https` with [`client_tls`], `http` in the clear, no redirect followed.
+fn client() -> Client {
+    Client::new(client_tls(tls_identity().1))
 }
 
 async fn serve_tls(listener: tokio::net::TcpListener, router: axum::Router) {

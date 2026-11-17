@@ -1999,12 +1999,8 @@ fn tls_responder_proves_its_actual_ca_and_spki_and_refuses_wrong_anchors() {
             },
         )
         .unwrap();
-        reqwest::Client::builder()
-            .use_preconfigured_tls(config)
-            .tls_info(true)
+        busbar_core_connector::test_support::https::Client::new(config)
             .timeout(Duration::from_secs(5))
-            .build()
-            .unwrap()
     };
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -2018,18 +2014,13 @@ fn tls_responder_proves_its_actual_ca_and_spki_and_refuses_wrong_anchors() {
             .await
             .unwrap();
         assert_eq!(response.status().as_u16(), 200);
-        let leaf = response
-            .extensions()
-            .get::<reqwest::tls::TlsInfo>()
-            .unwrap()
-            .peer_certificate()
-            .unwrap();
+        let leaf = response.peer_certificate().unwrap();
         assert_eq!(
             busbar_core_connector::tls::client::peer_key_pin(leaf).as_deref(),
             Some(pin)
         );
         assert_eq!(
-            response.json::<Value>().await.unwrap(),
+            serde_json::from_str::<Value>(&response.text().await.unwrap()).unwrap(),
             json!({"jsonrpc":"2.0","id":7,"result":{"kept":true}})
         );
         assert!(client(other.ca_pem.as_deref().unwrap(), digest)
