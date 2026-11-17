@@ -230,6 +230,8 @@ pub enum Violation {
 /// Why a session call produced no usable answer.
 #[derive(Debug)]
 pub enum SessionError {
+    /// A core-owned running-unit refusal, rendered through the actual route's mapping.
+    CoreRefused(u32),
     /// The original request's one monetary admission refused before effects.
     AdmissionRefused(crate::refusal::ClientRefusal),
     /// Enforcement cannot discover its scope without first performing an effect.
@@ -412,6 +414,9 @@ impl AttemptUsageItem {
 
 /// Effects the plane's answer has outside the client, applied at once, in sink order.
 pub trait Effects {
+    fn admission_owner(&self) -> Option<&Arc<super::port_admission::Pending>> {
+        None
+    }
     fn data(&self) -> Option<&Arc<crate::auth::native_data::NativeDataPending>> {
         None
     }
@@ -487,6 +492,9 @@ impl<'a> Buffered<'a> {
 }
 
 impl Effects for Buffered<'_> {
+    fn admission_owner(&self) -> Option<&Arc<super::port_admission::Pending>> {
+        self.inner.admission_owner()
+    }
     fn data(&self) -> Option<&Arc<crate::auth::native_data::NativeDataPending>> {
         self.inner.data()
     }
@@ -1162,6 +1170,7 @@ fn fact_val(value: FactRef<'_>) -> FactVal {
 /// One plane session under core's hand.
 pub struct Task<'k, K: Calls + ?Sized> {
     active_attempt: Option<super::NativeAttempt>,
+    pending: Option<Arc<super::port_admission::Pending>>,
     data: Option<Arc<crate::auth::native_data::NativeDataPending>>,
     declaration: Arc<FrozenUsage>,
     session_classes: std::collections::BTreeSet<String>,
@@ -1236,6 +1245,7 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
             .map_err(SessionError::Port)?;
         let mut task = Self {
             active_attempt: None,
+            pending: effects.admission_owner().cloned(),
             data,
             declaration,
             session_classes: std::collections::BTreeSet::new(),
@@ -1271,6 +1281,7 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
             .map_err(SessionError::Port)?;
         let mut task = Self {
             active_attempt: None,
+            pending: None,
             data: None,
             declaration,
             session_classes: std::collections::BTreeSet::new(),
@@ -1342,6 +1353,15 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
         {
             return Err(SessionError::NotDriven);
         }
+        if admitted.selected.is_some()
+            && self
+                .pending
+                .as_ref()
+                .is_none_or(|owner| !std::ptr::eq(owner.as_ref(), pending))
+        {
+            return Err(SessionError::NotDriven);
+        }
+        self.selected_session_usage(&self.usage)?;
         pending.accept_admission()?;
         self.admitted = Some((admitted.request.clone(), pending.routes()));
         Ok(())
@@ -1552,6 +1572,23 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
         let usage = self
             .validated_usage(&answer)
             .inspect_err(|_| self.session = None)?;
+        if self
+            .pending
+            .as_ref()
+            .and_then(|pending| pending.admitted())
+            .is_some_and(|unit| unit.selected.is_some())
+            && usage.last().iter().any(|report| {
+                !self
+                    .declaration
+                    .classes
+                    .iter()
+                    .any(|class| class.class == report.class)
+                    || super::usage::scaled(report.amount, report.scale).is_none()
+            })
+        {
+            self.session = None;
+            return Err(SessionError::Violation(Violation::BadRecords));
+        }
         if !answer.attempt_usage.is_empty() || answer.attempt_end.is_some() {
             let Some(attempt) = self.active_attempt.as_mut() else {
                 self.session = None;
@@ -1599,6 +1636,32 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
                 }
             }
         }
+        let session_rounded = self.selected_session_usage(&usage)?;
+        if session_rounded {
+            for class in usage
+                .last()
+                .iter()
+                .filter(|usage| {
+                    super::usage::scaled(usage.amount, usage.scale)
+                        .is_some_and(|(_, rounded)| rounded)
+                })
+                .map(|usage| &usage.class)
+                .collect::<std::collections::BTreeSet<_>>()
+            {
+                answer.audits.push(AuditRow {
+                    verdict: AUDIT_DEGRADED,
+                    action: super::port_money::ACTION_ROUNDED.into(),
+                    resource: format!(
+                        "unit:{} class:{class}",
+                        self.invocation
+                            .as_ref()
+                            .expect("selected task has invocation")
+                            .unit()
+                    )
+                    .into(),
+                });
+            }
+        }
         self.usage = usage;
         self.session_classes = session_classes;
         Ok(answer.seal())
@@ -1617,6 +1680,32 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
                 .map_err(|why| SessionError::Violation(Violation::Usage(why)))?;
         }
         Ok(usage)
+    }
+
+    fn selected_session_usage(&self, usage: &SessionUsage) -> Result<bool, SessionError> {
+        let Some(money) = self
+            .pending
+            .as_ref()
+            .and_then(|pending| pending.admitted())
+            .and_then(|admitted| admitted.selected.as_ref())
+        else {
+            return Ok(false);
+        };
+        let rounded = money
+            .observe_session(&self.request_declaration()?, usage)
+            .map_err(|error| match error {
+                super::NativeAttemptError::Usage(_) => {
+                    SessionError::Violation(Violation::BadRecords)
+                }
+                _ => SessionError::NotDriven,
+            })?;
+        match money.checkpoint().map_err(|_| SessionError::NotDriven)? {
+            super::Checkpoint::Continue => Ok(rounded),
+            super::Checkpoint::Cut => Err(SessionError::CoreRefused(
+                busbar_plugin_abi::fail::refused::R_BUDGET,
+            )),
+            super::Checkpoint::Unpriced => Err(SessionError::NotDriven),
+        }
     }
 }
 

@@ -19,7 +19,7 @@ pub(super) struct FrozenUsage {
     route: Option<u32>,
     origin: Option<crate::plane_driver::route_identity::OriginalPlaneRoute>,
     facts: u64,
-    classes: Vec<UsageClass>,
+    pub(super) classes: Vec<UsageClass>,
     attempt_classes: Vec<Box<str>>,
 }
 
