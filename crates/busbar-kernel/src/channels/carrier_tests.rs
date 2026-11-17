@@ -526,7 +526,8 @@ async fn generation_end_joins_a_blocked_writer_before_notifying_attachments() {
     let mut a = attach(&f, &up, req(&f.budget, 1, "k", 0)).await.unwrap();
     a.ready(b"");
     let mut child = f.remotes.recv().await.unwrap();
-    let bytes = vec![b'x'; super::frame::MAX_MESSAGE];
+    // Exceeds the wire's 64 KiB capacity while staying within general (non-protected) output.
+    let bytes = vec![b'x'; 1 << 20];
     a.send(&bytes, false).await.unwrap();
     let mut first = [0; 1];
     child.stdin.read_exact(&mut first).await.unwrap();
