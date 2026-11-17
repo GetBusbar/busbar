@@ -26,7 +26,7 @@ fn native_head_preserves_empty_query_duplicates_and_charges_before_copy() {
     assert_eq!(decoded.head.fields[1].1, b"second");
     let held = decoded.credit.len();
     assert!(held >= 2 * std::mem::size_of::<(String, Vec<u8>)>());
-    assert_eq!(budget.used(), (held as u32, held as u32));
+    assert_eq!(budget.used(), (held, held));
     drop(decoded);
     assert_eq!(budget.used(), (0, 0));
     let (small, request) = request_budget(1);
