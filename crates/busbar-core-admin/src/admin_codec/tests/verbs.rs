@@ -4,7 +4,7 @@
 //! Tests for `verbs.rs`. Lifted out of the implementation file so its line count
 
 use super::*;
-use busbar_contract::json::JsonValueTrait as _;
+use busbar_contract::json::{JsonContainerTrait as _, JsonValueTrait as _};
 
 /// The root's view of a row and this module's own view of it are the same row. If they ever
 #[test]
