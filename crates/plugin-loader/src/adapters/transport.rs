@@ -801,6 +801,64 @@ mod tests {
         Ok(seen)
     }
 
+    fn provenance_record(stream: u64, value: u32, reserved: u32, tail: &[u8]) -> Vec<u8> {
+        let mut bytes = Vec::from(stream.to_le_bytes());
+        bytes.extend_from_slice(&value.to_le_bytes());
+        bytes.extend_from_slice(&reserved.to_le_bytes());
+        bytes.extend_from_slice(tail);
+        bytes
+    }
+
+    #[test]
+    fn attributed_output_reaches_sink_in_protocol_order() {
+        let out = answer(|w| {
+            w.put(0x0119, &provenance_record(0, 1, 0, b"control"))?;
+            w.put(0x0119, &provenance_record(7, 2, 0, b"payload"))?;
+            w.put(0x011a, &provenance_record(7, 2, 0, b""))?;
+            w.put(0x011b, &provenance_record(9, 8, 0, b""))?;
+            w.put(0x011c, &7u64.to_le_bytes())
+        });
+        assert_eq!(
+            run(&out, Call::Ingest).expect("valid protocol attribution"),
+            [
+                "wire 0 Control control",
+                "wire 7 Payload payload",
+                "wire-end 7 Shutdown",
+                "abort 9 8",
+                "quiescent 7"
+            ]
+        );
+    }
+
+    #[test]
+    fn malformed_provenance_rejects_the_whole_answer_before_any_callback() {
+        for (tag, bad) in [
+            (0x0119, provenance_record(0, 2, 0, b"body")),
+            (0x0119, provenance_record(1, 3, 0, b"body")),
+            (0x0119, provenance_record(1, 2, 0, b"")),
+            (0x0119, provenance_record(1, 2, 1, b"body")),
+            (0x011a, provenance_record(0, 1, 0, b"")),
+            (0x011a, provenance_record(1, 3, 0, b"")),
+            (0x011a, provenance_record(1, 1, 1, b"")),
+            (0x011a, provenance_record(1, 1, 0, b"tail")),
+            (0x011b, provenance_record(0, 1, 0, b"")),
+            (0x011b, provenance_record(1, 1, 1, b"")),
+            (0x011c, Vec::from(0u64.to_le_bytes())),
+        ] {
+            let out = answer(|w| {
+                w.put(tag::WRITE, b"must not escape")?;
+                w.put(tag, &bad)
+            });
+            let mut calls = 0;
+            let error = decode(Records::new(out.as_bytes()), Call::Ingest, &mut |_| {
+                calls += 1
+            })
+            .expect_err("invalid attribution");
+            assert!(matches!(error, Bad::Rec(_)), "record grammar: {error:?}");
+            assert_eq!(calls, 0, "no valid prefix may escape");
+        }
+    }
+
     fn head_with_status(status: u32) -> Reply {
         answer(|w| {
             w.put_pod(
