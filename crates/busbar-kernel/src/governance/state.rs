@@ -237,6 +237,7 @@ impl GovState {
                 admin_token.map(|t| busbar_contract::redacted::sha256_hex(t.as_bytes())),
             ),
             budget: Sharded::new(),
+            selected_rates: Arc::new(super::selected_resource::SelectedRates::new()),
             recovery_book: recovery::RecoveryBook::default(),
             correction_claims: claims::AsyncClaimSet::new(),
             corrections: std::sync::Mutex::default(),

@@ -17,6 +17,7 @@ pub mod recovery;
 use exact_debt::{BudgetFlushFlight, BudgetFlushRunner, ExactUsageDelta};
 mod metering_flush;
 pub(crate) mod raw_recovery;
+pub(crate) mod selected_resource;
 pub mod unit_checkpoint;
 mod unit_checkpoint_counts;
 pub use crate::off_path::governance::unit_checkpoint_store;
@@ -746,6 +747,8 @@ pub struct GovState {
     admin_token_hash: RwLock<Option<String>>,
 
     budget: Sharded<BudgetCell>,
+
+    selected_rates: Arc<selected_resource::SelectedRates>,
 
     recovery_book: recovery::RecoveryBook,
 
