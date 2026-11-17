@@ -234,6 +234,7 @@ fn a_native_child_does_not_take_a_second_concurrency_hold() {
         "g".into(),
         GroupCfg {
             limits: vec![LimitCfg {
+                selected: None,
                 metric: LimitMetric::Concurrent,
                 amount: 1,
                 per: None,

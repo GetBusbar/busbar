@@ -16,6 +16,7 @@ pub enum NativeAdmissionError {
     Phase(AdmissionError),
     Parent(ReasonCode),
     Declaration,
+    SelectedTerminalRequired,
     Custody(busbar_contract::records::RecordStoreError),
 }
 
@@ -80,8 +81,12 @@ impl PlaneMoney {
         if !request.is_live()
             || !request.context().same_unit(declaration.context())
             || !declaration.context().is_live()
+            || request.context().generation().routing_generation() != Some(routing_generation)
         {
             return Err(NativeAdmissionError::NotLive);
+        }
+        if !request.accepts_governance(&self.gov) {
+            return Err(NativeAdmissionError::Phase(AdmissionError::Principal));
         }
         if !declaration.selected() || attempt_limit.get() as usize > MAX_PREPARATIONS {
             return Err(NativeAdmissionError::Declaration);
@@ -193,6 +198,9 @@ impl PlaneMoney {
         if !request.is_live() {
             return Err(NativeAdmissionError::NotLive);
         }
+        if !request.accepts_governance(&self.gov) {
+            return Err(NativeAdmissionError::Phase(AdmissionError::Principal));
+        }
         let unit = request.unit();
         let lane = format!("{}{PLANE_LANE_SEP}", request.context().instance());
         self.install_child_with(
@@ -227,6 +235,9 @@ impl PlaneMoney {
     ) -> Result<AdmittedRequest, NativeAdmissionError> {
         if !request.is_live() {
             return Err(NativeAdmissionError::NotLive);
+        }
+        if !request.accepts_governance(&self.gov) {
+            return Err(NativeAdmissionError::Phase(AdmissionError::Principal));
         }
         let plan = request
             .cost()

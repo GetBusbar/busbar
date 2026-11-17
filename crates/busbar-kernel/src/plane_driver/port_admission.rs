@@ -18,6 +18,7 @@ use crate::refusal::ClientRefusal;
 pub struct AdmittedUnit {
     pub request: AdmittedRequest,
     pub unit: Unit,
+    pub selected: Option<super::NativeRequestMoney>,
 }
 
 enum Commit {
@@ -41,6 +42,8 @@ pub struct Pending {
     commit: Mutex<Option<Commit>>,
     admitted: OnceLock<AdmittedUnit>,
     journal: Option<Arc<dyn super::HookJournal>>,
+    channel_budget: Option<crate::channels::budget::UnitBudget>,
+    route: Option<super::route_identity::OriginalPlaneRoute>,
 }
 
 impl Pending {
@@ -57,6 +60,8 @@ impl Pending {
             commit: Mutex::new(Some(Commit::Ordinary(Box::new(commit)))),
             admitted: OnceLock::new(),
             journal,
+            channel_budget: None,
+            route: None,
         }
     }
 
@@ -76,11 +81,27 @@ impl Pending {
             commit: Mutex::new(Some(Commit::Selected(Box::new(commit)))),
             admitted: OnceLock::new(),
             journal,
+            channel_budget: None,
+            route: None,
         }
     }
 
     pub fn context(&self) -> &InvocationContext {
         &self.context
+    }
+    pub fn with_channel_budget(mut self, budget: crate::channels::budget::UnitBudget) -> Self {
+        self.channel_budget = Some(budget);
+        self
+    }
+    pub fn channel_budget(&self) -> Option<&crate::channels::budget::UnitBudget> {
+        self.channel_budget.as_ref()
+    }
+    pub fn with_route(mut self, route: super::route_identity::OriginalPlaneRoute) -> Self {
+        self.route = Some(route);
+        self
+    }
+    pub fn original_route(&self) -> Option<&super::route_identity::OriginalPlaneRoute> {
+        self.route.as_ref()
     }
     pub fn journal(&self) -> Option<Arc<dyn super::HookJournal>> {
         self.journal.clone()
@@ -107,6 +128,10 @@ impl Pending {
             .unwrap()
             .take()
             .ok_or(SessionError::NotDriven)?;
+        let selected_required = declaration.selected();
+        if selected_required && declaration.original_route().is_none() {
+            return Err(SessionError::NotDriven);
+        }
         if declaration.selected() && matches!(&commit, Commit::Ordinary(_)) {
             return Err(SessionError::NotDriven);
         }
@@ -141,6 +166,15 @@ impl Pending {
         if !admitted.request.context().same_unit(&self.context)
             || admitted.unit.ctx.key != admitted.request.unit()
             || !admitted.request.is_live()
+            || (selected_required && admitted.selected.is_none())
+            || admitted.selected.as_ref().is_some_and(|money| {
+                !money
+                    .request()
+                    .context()
+                    .same_unit(admitted.request.context())
+                    || !money.request().is_live()
+                    || money.request().unit() != admitted.request.unit()
+            })
         {
             return Err(SessionError::NotDriven);
         }

@@ -16,17 +16,25 @@ use crate::plane_driver::port_upstream::Candidate;
 
 #[derive(Debug)]
 pub(super) struct FrozenUsage {
+    route: Option<u32>,
+    origin: Option<crate::plane_driver::route_identity::OriginalPlaneRoute>,
     facts: u64,
     classes: Vec<UsageClass>,
     attempt_classes: Vec<Box<str>>,
 }
 
 impl FrozenUsage {
-    pub(super) fn of(calls: &(impl Calls + ?Sized)) -> Result<Arc<Self>, SessionError> {
+    pub(super) fn of(
+        calls: &(impl Calls + ?Sized),
+        route: Option<u32>,
+        origin: Option<crate::plane_driver::route_identity::OriginalPlaneRoute>,
+    ) -> Result<Arc<Self>, SessionError> {
         let (facts, classes, attempt_classes) = calls.usage_metadata();
         Declaration::new(facts, classes, attempt_classes)
             .map_err(|_| SessionError::Violation(Violation::BadRecords))?;
         Ok(Arc::new(Self {
+            route,
+            origin,
             facts,
             classes: classes.to_vec(),
             attempt_classes: attempt_classes.to_vec(),
@@ -177,6 +185,16 @@ pub struct RequestDeclaration {
 }
 
 impl RequestDeclaration {
+    pub fn original_route(
+        &self,
+    ) -> Option<&crate::plane_driver::route_identity::OriginalPlaneRoute> {
+        self.declaration.origin.as_ref()
+    }
+    pub fn route(&self) -> u32 {
+        self.declaration
+            .route
+            .expect("a request declaration comes from request(), never probe()")
+    }
     pub fn context(&self) -> &crate::host_services::InvocationContext {
         &self.context
     }
@@ -195,6 +213,16 @@ impl RequestDeclaration {
 }
 
 impl PreparedExchange {
+    pub(crate) fn original_route(
+        &self,
+    ) -> Option<&crate::plane_driver::route_identity::OriginalPlaneRoute> {
+        self.declaration.origin.as_ref()
+    }
+    pub(crate) fn route(&self) -> u32 {
+        self.declaration
+            .route
+            .expect("a preparation comes from a request task")
+    }
     pub(crate) fn target(&self) -> &Candidate {
         &self.target
     }
@@ -216,6 +244,7 @@ impl PreparedExchange {
 
 impl<K: Calls + ?Sized> Task<'_, K> {
     pub(crate) fn request_declaration(&self) -> Result<RequestDeclaration, SessionError> {
+        self.declaration.route.ok_or(SessionError::NotDriven)?;
         Ok(RequestDeclaration {
             context: self.invocation.clone().ok_or(SessionError::NotDriven)?,
             declaration: Arc::clone(&self.declaration),
@@ -232,6 +261,7 @@ impl<K: Calls + ?Sized> Task<'_, K> {
         admission: &[u8],
         effects: &dyn Effects,
     ) -> Result<Option<PreparedExchange>, SessionError> {
+        self.declaration.route.ok_or(SessionError::NotDriven)?;
         let selected = wire::selected_from_admission(admission)
             .map_err(|_| SessionError::Violation(Violation::BadRecords))?;
         if selected.is_some_and(|selected| {

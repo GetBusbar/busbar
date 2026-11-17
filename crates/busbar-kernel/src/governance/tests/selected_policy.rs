@@ -46,6 +46,10 @@ fn amount_reload_preserves_activation_but_reintroduction_has_new_coverage() {
 #[test]
 fn publication_rejects_wrong_predecessor_revision_and_clock_regression() {
     let first = compiled(&groups(2), None).activate(None, 1, 10).unwrap();
+    let unrelated = compiled(&groups(2), None).activate(None, 1, 10).unwrap();
+    assert!(compiled(&groups(3), Some(&first))
+        .activate(Some(&unrelated), 2, 11)
+        .is_err());
     assert!(compiled(&groups(3), Some(&first))
         .activate(None, 2, 11)
         .is_err());
@@ -55,6 +59,32 @@ fn publication_rejects_wrong_predecessor_revision_and_clock_regression() {
     assert!(compiled(&groups(3), Some(&first))
         .activate(Some(&first), 2, 9)
         .is_err());
+}
+
+#[test]
+fn rule_rename_metric_change_and_resource_move_start_new_coverage() {
+    let first = compiled(&groups(2), None).activate(None, 1, 10).unwrap();
+    for (id, metric, resource) in [
+        ("renamed", "requests", "r"),
+        ("rpm", "tokens", "r"),
+        ("rpm", "requests", "other"),
+    ] {
+        let changed: BTreeMap<String, GroupCfg> = busbar_contract::yaml::from_str(&format!("team:\n  limits:\n    - {{id: {id}, upstream_resource: p/{resource}, {metric}: 2, per: minute, per_key: true, enforcement: process}}" )).unwrap();
+        let cost = Arc::new(CostModel::resolve_parts(None, 0, &changed));
+        let changed = SelectedPolicy::compile(
+            &changed,
+            cost,
+            &[target(Some(resource), true)],
+            Some(&first),
+        )
+        .unwrap()
+        .activate(Some(&first), 2, 11)
+        .unwrap();
+        assert!(changed.groups["team"][0].activated_minute.is_none());
+        assert_eq!(changed.activated_minute(), 11);
+    }
+    assert_eq!(first.groups["team"][0].id.as_ref(), "rpm");
+    assert_eq!(first.activated_minute(), 10);
 }
 
 #[test]

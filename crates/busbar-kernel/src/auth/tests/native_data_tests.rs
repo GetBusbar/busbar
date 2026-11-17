@@ -540,6 +540,7 @@ async fn native_data_keeps_gate_closed_until_actual_money_and_physical_join() {
             kernel_verb_only: false,
         };
         Ok(AdmittedUnit {
+            selected: None,
             request: admitted,
             unit: crate::plane_driver::port::Unit {
                 ctx,

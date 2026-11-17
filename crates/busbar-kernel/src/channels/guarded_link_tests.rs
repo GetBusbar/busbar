@@ -193,3 +193,60 @@ async fn every_framing_writes_directly_with_the_existing_wire_encoding() {
         assert_eq!(actual, super::frame::frame(framing, bytes));
     }
 }
+
+#[tokio::test]
+async fn detach_discards_a_queued_write_that_has_not_started() {
+    use tokio::io::AsyncReadExt;
+    let process = ChannelBudget::new();
+    let instance = process.instance();
+    let unit = instance.unit();
+    let budget = instance.link();
+    let (link, mut queue) = Link::new(false, Framing::Ndjson, budget.clone());
+    assert!(link.attach(1));
+    link.send_owned(
+        1,
+        GuardedWrite::new(&unit, &budget, Framing::Ndjson, b"canceled", false).unwrap(),
+    )
+    .unwrap();
+    link.detach(1, false);
+    let (mut writer, mut reader) = tokio::io::duplex(32);
+    queue
+        .recv()
+        .await
+        .unwrap()
+        .write(&mut writer)
+        .await
+        .unwrap();
+    drop(writer);
+    let mut bytes = Vec::new();
+    reader.read_to_end(&mut bytes).await.unwrap();
+    assert!(bytes.is_empty());
+    assert_eq!(process.used(), Claim::default());
+}
+
+#[tokio::test]
+async fn detach_does_not_release_or_replay_an_already_started_write() {
+    use tokio::io::AsyncReadExt;
+    let process = ChannelBudget::new();
+    let instance = process.instance();
+    let unit = instance.unit();
+    let budget = instance.link();
+    let (link, mut queue) = Link::new(false, Framing::Ndjson, budget.clone());
+    assert!(link.attach(1));
+    link.send_owned(
+        1,
+        GuardedWrite::new(&unit, &budget, Framing::Ndjson, b"started", false).unwrap(),
+    )
+    .unwrap();
+    let message = queue.recv().await.unwrap();
+    let (mut writer, mut reader) = tokio::io::duplex(1);
+    let run = tokio::spawn(async move { message.write(&mut writer).await });
+    let mut bytes = [0; 8];
+    reader.read_exact(&mut bytes[..1]).await.unwrap();
+    link.detach(1, false);
+    assert_eq!(unit.used().messages, 1);
+    reader.read_exact(&mut bytes[1..]).await.unwrap();
+    run.await.unwrap().unwrap();
+    assert_eq!(&bytes, b"started\n");
+    assert_eq!(process.used(), Claim::default());
+}
