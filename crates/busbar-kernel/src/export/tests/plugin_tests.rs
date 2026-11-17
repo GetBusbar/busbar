@@ -461,6 +461,7 @@ struct AnsweringSink {
     stated: Option<(bool, u64, String)>,
     sheds: std::sync::atomic::AtomicU64,
     observations: std::sync::Mutex<Vec<ExportLossKind>>,
+    observed: tokio::sync::Notify,
 }
 
 impl ExportCalls for AnsweringSink {
@@ -493,6 +494,7 @@ impl ExportCalls for AnsweringSink {
     }
     fn shed(&self, kind: ExportLossKind) {
         self.observations.lock().unwrap().push(kind);
+        self.observed.notify_one();
         self.sheds
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
@@ -550,6 +552,7 @@ fn double(answer: Delivered, stated: Option<(bool, u64, String)>) -> Arc<Answeri
         stated,
         sheds: std::sync::atomic::AtomicU64::new(0),
         observations: std::sync::Mutex::new(Vec::new()),
+        observed: tokio::sync::Notify::new(),
     })
 }
 
@@ -1151,4 +1154,50 @@ fn scrape_status_crossings_are_once_per_refresh() {
         .count();
     assert_eq!(due, 1, "ten scrapes in 10 s cross STATUS once");
     assert!(status_due(&at, start + STATUS_REFRESH));
+}
+
+#[tokio::test]
+async fn failed_export_read_amendment_reports_integrity_without_line_loss() {
+    let sink = double(Delivered::Queued, None);
+    // An unbound native amendment owner refuses the transfer; queued delivery is independent.
+    let journal = Arc::new(crate::audit::amend::NodeAmendments::new());
+    Handed {
+        amendments: Some(journal),
+        runtime: Some(tokio::runtime::Handle::current()),
+        reads: vec![(
+            Arc::from("export.integrity"),
+            crate::export::projection::Members::default(),
+        )],
+        sinks: vec![sink.clone()],
+        permits: Vec::new(),
+    }
+    .record("export-integrity-refusal");
+    tokio::time::timeout(std::time::Duration::from_secs(1), sink.observed.notified())
+        .await
+        .unwrap();
+    assert_eq!(
+        *sink.observations.lock().unwrap(),
+        vec![ExportLossKind::IntegrityFailed]
+    );
+    assert_eq!(
+        sink.answer,
+        Delivered::Queued,
+        "integrity failure does not invent delivery loss"
+    );
+}
+
+#[tokio::test]
+async fn saturated_capture_reports_refusal_before_rendering_any_line() {
+    let sink = double(Delivered::Queued, Some((true, 1, String::new())));
+    let (s, _) = opened("capture-full", sink.clone()).await;
+    start_one(&s);
+    let _permit = s.admission.gate.try_enter().unwrap();
+    deliver_event(&s, ExportStream::Logs, "capture-full", &mut |_, _| {
+        panic!("admission precedes rendering")
+    });
+    assert_eq!(
+        *sink.observations.lock().unwrap(),
+        vec![ExportLossKind::CaptureRefused]
+    );
+    assert_eq!(reads_under(&s, "capture-full"), 0);
 }
