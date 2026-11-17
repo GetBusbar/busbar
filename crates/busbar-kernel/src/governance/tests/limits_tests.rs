@@ -1186,6 +1186,7 @@ async fn metered(g: &GovState, key_id: &str, model: &str, n: u64, now: u64) {
         .unwrap()
         .ledger()
         .add_metering(&busbar_contract::records::MeteringDelta {
+            pricing: None,
             scale: 0,
             key_id: key_id.to_string(),
             bucket: crate::governance::metering_bucket(now),

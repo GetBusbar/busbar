@@ -1139,7 +1139,7 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
             return Err(SessionError::NotDriven);
         }
         let buffered = Buffered::new(effects);
-        let declaration = FrozenUsage::of(calls)?;
+        let declaration = FrozenUsage::of(calls, Some(req.route))?;
         let invocation = effects.invocation().cloned();
         let mut once = Once::default();
         let mut answer = Answer::default();
@@ -1172,7 +1172,7 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
         effects: &dyn Effects,
     ) -> Result<(Self, Answer), SessionError> {
         let buffered = Buffered::new(effects);
-        let declaration = FrozenUsage::of(calls)?;
+        let declaration = FrozenUsage::of(calls, None)?;
         let invocation = effects.invocation().cloned();
         let mut once = Once::default();
         let mut answer = Answer::default();

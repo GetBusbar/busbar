@@ -245,6 +245,12 @@ impl PortDriver {
         })
     }
 
+    pub(crate) fn has_hooks(&self, route: u32) -> bool {
+        self.hooks
+            .as_ref()
+            .is_some_and(|binder| binder.active(route))
+    }
+
     /// The exact instance owner admitted by root; callers must never mint a lookalike.
     pub fn caller(&self) -> &Caller {
         &self.caller
@@ -1077,7 +1083,15 @@ fn drive_blocking(
         None => Resolver::new(intents, None),
     }
     .with_route(route);
-    let session = carrier.map(|carrier| carrier.session());
+    let session = carrier.map(|carrier| {
+        carrier.session_with_budget(
+            effects
+                .admission
+                .as_ref()
+                .and_then(|pending| pending.channel_budget())
+                .cloned(),
+        )
+    });
     let resolver = match &session {
         Some(session) => resolver.with_channels(&session.host),
         None => resolver,
@@ -1126,10 +1140,7 @@ fn drive_blocking(
                             })
                         })
                         .unwrap_or(busbar_contract::UnitKey::new(0)),
-                    pending: effects
-                        .admission
-                        .as_ref()
-                        .map(|pending| pending.context().clone()),
+                    pending: effects.admission.clone(),
                 };
                 let mut ran = None;
                 upstream.walk(facts, &mut |members, send| {

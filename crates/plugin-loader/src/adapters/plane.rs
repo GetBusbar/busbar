@@ -349,7 +349,9 @@ pub fn decode_answer(
         recs,
         &mut |_: PlaneOut<'_>| {},
     )?;
-    if call == Call::Upstream {
+    if call == Call::Upstream
+        && declaration.facts() & (p::FB_ATTEMPT_USAGE | p::FB_PREPARED_ESTIMATES) != 0
+    {
         declaration
             .validate_preparation(selected, recs)
             .map_err(fault)?;
@@ -1487,6 +1489,11 @@ impl<N: Needs> PlanePort for PlaneAdapter<N> {
             });
         }
         let max_out = self.live()?.min(byte_limit);
+        let max_out = if mode == p::RESOURCE_SELECT {
+            max_out.min(resources::MAX_SELECTION_BYTES)
+        } else {
+            max_out
+        };
         let req = plane_req(req);
         sync_bufs(max_out, |_, out| {
             let answer = self
@@ -1543,10 +1550,14 @@ impl<N: Needs> PlanePort for PlaneAdapter<N> {
     ) -> Result<(), PortError> {
         let max_out = self.live()?;
         let view = target(tgt);
-        let selected = attempt_wire::selected_from_admission(tgt.admission)
-            .map_err(|r| PortError::Call(CallError::Fault(fault(r))))?;
         let enabled =
             self.proxy.instance().facts & (p::FB_ATTEMPT_USAGE | p::FB_PREPARED_ESTIMATES) != 0;
+        let selected = if enabled {
+            attempt_wire::selected_from_admission(tgt.admission)
+                .map_err(|r| PortError::Call(CallError::Fault(fault(r))))?
+        } else {
+            None
+        };
         if (enabled && selected.is_none())
             || selected.is_some_and(|selected| selected.attempt != tgt.attempt)
         {

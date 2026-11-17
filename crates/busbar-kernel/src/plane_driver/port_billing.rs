@@ -72,6 +72,25 @@ impl std::fmt::Debug for PortBilling {
 }
 
 impl PortBilling {
+    pub fn admit_existing_selected(
+        &self,
+        request: CommittingRequest,
+        declaration: super::port_session::RequestDeclaration,
+        generation: Generation,
+        attempt_limit: std::num::NonZeroU32,
+        fee: FeeRefund,
+        mode: ExhaustionMode,
+    ) -> Result<super::NativeRequestMoney, NativeAdmissionError> {
+        self.money.admit_existing_selected(
+            request,
+            declaration,
+            generation,
+            attempt_limit,
+            fee,
+            mode,
+        )
+    }
+
     #[must_use]
     pub fn new(
         money: Arc<PlaneMoney>,
