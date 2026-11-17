@@ -1109,6 +1109,8 @@ async fn run(
     let admin_tls_cfg = cfg.admin_tls.clone();
     let req_body_max = cfg.limits.request_body_max_bytes;
     let max_inbound = cfg.limits.max_inbound_concurrent;
+    let request_admission =
+        busbar_kernel::limits::process_admission::ProcessAdmission::new(max_inbound);
 
     root::registry::check_or_exit(LINKED.claims);
 
@@ -1730,6 +1732,7 @@ async fn run(
             served,
             app_handle.clone(),
             || root::kernel::ROOT_CARD.pin(),
+            Arc::clone(&request_admission),
             stop,
         )));
     } else {
