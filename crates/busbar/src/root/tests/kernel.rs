@@ -684,6 +684,9 @@ async fn actual_card_store_and_root_rate_apply_gate_the_real_app_generation_comm
     let pinned = ROOT_CARD.pin().unwrap();
     for (fee, fail_activation) in [(FIRST_FEE, false), (SECOND_FEE, true)] {
         let before = handle.load();
+        let before_generation = before
+            .config_generation
+            .load(std::sync::atomic::Ordering::Acquire);
         let before_limits = busbar_kernel::config::limits::installed();
         let before_era = CardRepricer.era_at(busbar_kernel::store::now_ms());
         let before_own = ROOT_CARD.card_store().unwrap().own();
@@ -711,6 +714,13 @@ async fn actual_card_store_and_root_rate_apply_gate_the_real_app_generation_comm
         let candidate = store.pending().unwrap();
         assert!(Arc::ptr_eq(&handle.load(), &before));
         assert_eq!(handle.load().config_version, before.config_version);
+        assert_eq!(
+            before
+                .config_generation
+                .load(std::sync::atomic::Ordering::Acquire),
+            before_generation,
+            "a refused candidate must not invalidate the still-published auth generation"
+        );
         assert_eq!(store.own(), before_own);
         assert_eq!(
             CardRepricer.era_at(busbar_kernel::store::now_ms()),

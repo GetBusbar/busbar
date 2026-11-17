@@ -1120,29 +1120,28 @@ impl AppHandle {
         self.current.load()
     }
 
-    /// ADMIN-API-1.6 6.1: before a publication, advance the durable generation and set it on the
-    /// shared cell. A failed put refuses the publication. Without a boot identity (no Store: tests,
-    /// ephemeral) the generation is process-local and still monotonic.
-    async fn advance_generation(&self) -> Result<(), String> {
+    /// Reserve the durable generation without invalidating the still-published generation.
+    /// Only successful publication updates the shared fence; failed activation may leave a gap
+    /// in durable numbering, but cannot revoke the currently serving auth policy.
+    async fn reserve_generation(&self) -> Result<u64, String> {
         let cell = self.load().config_generation.clone();
         let prior = cell.load(std::sync::atomic::Ordering::Acquire);
         match crate::persistence::boot_identity::live() {
-            Some(live) => {
-                let generation = live.advance_generation(prior).await.map_err(|why| {
-                    format!("{}: {why}", crate::config::transaction::GENERATION_REFUSED)
-                })?;
-                cell.store(generation, std::sync::atomic::Ordering::Release);
-            }
-            None => {
-                cell.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-            }
+            Some(live) => live.advance_generation(prior).await.map_err(|why| {
+                format!("{}: {why}", crate::config::transaction::GENERATION_REFUSED)
+            }),
+            None => prior.checked_add(1).ok_or_else(|| {
+                format!(
+                    "{}: generation exhausted",
+                    crate::config::transaction::GENERATION_REFUSED
+                )
+            }),
         }
-        Ok(())
     }
 
     pub async fn swap(&self, next: Arc<App>) {
         let _application = self.application.lock().await;
-        self.swap_with_commit(next.clone(), None, || Ok(None), &mut false)
+        self.swap_with_commit(next.clone(), None, None, || Ok(None), &mut false)
             .expect("a swap with no price preparation cannot refuse publication");
         self.finish_apply(&next).await;
     }
@@ -1151,6 +1150,7 @@ impl AppHandle {
         &self,
         next: Arc<App>,
         expected: Option<&Arc<App>>,
+        generation: Option<u64>,
         confirm: impl FnOnce() -> Result<Option<crate::appbuild::ConfirmedLimits>, String>,
         published: &mut bool,
     ) -> Result<(), String> {
@@ -1201,6 +1201,13 @@ impl AppHandle {
             }
         };
         next.plane_refresh.begin();
+        if let Some(generation) = generation {
+            prior
+                .config_generation
+                .store(generation, std::sync::atomic::Ordering::Release);
+            next.config_generation
+                .store(generation, std::sync::atomic::Ordering::Release);
+        }
         self.current.store(next.clone());
         *published = true;
         crate::export::plugin::queue_refresh(&next.exports, &next.export_defs, next.config_version);
@@ -1233,8 +1240,14 @@ impl AppHandle {
         let _application = self.application.lock().await;
         persist()?;
         let mut publication = UnpublishedOverlay::new(self.load().overlay_path.clone());
-        self.advance_generation().await?;
-        self.swap_with_commit(next.clone(), None, || Ok(None), &mut publication.published)?;
+        let generation = self.reserve_generation().await?;
+        self.swap_with_commit(
+            next.clone(),
+            None,
+            Some(generation),
+            || Ok(None),
+            &mut publication.published,
+        )?;
         self.finish_apply(&next).await;
         Ok(())
     }
@@ -1282,11 +1295,12 @@ impl AppHandle {
                 "App generation changed during rate preparation; reload before retrying".into(),
             );
         }
-        self.advance_generation().await?;
+        let generation = self.reserve_generation().await?;
         let confirmed = prepared.confirm_activation().await?;
         self.swap_with_commit(
             next.clone(),
             Some(&expected),
+            Some(generation),
             || Ok(Some(confirmed)),
             &mut publication.published,
         )?;
