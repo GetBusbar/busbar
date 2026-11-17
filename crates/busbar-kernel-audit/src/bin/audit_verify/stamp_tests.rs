@@ -243,7 +243,12 @@ fn linked_records_keep_the_optional_records_tail_in_the_fingerprint() {
             feed(&mut digest, &line[name], kind).unwrap();
         }
     }
-    digest.num(1).text("alice").num(1).text("team").text("support");
+    digest
+        .num(1)
+        .text("alice")
+        .num(1)
+        .text("team")
+        .text("support");
     digest.num(1700000000000).num(1);
     digest.raw(&32u64.to_be_bytes()).raw(&[0; 32]);
     line["hash"] = json::json!(digest.finish());
@@ -251,7 +256,10 @@ fn linked_records_keep_the_optional_records_tail_in_the_fingerprint() {
     body["to"] = json::json!(1);
     body["records"] = json::json!(&lines[..1]);
     body["cover"] = json::json!([]);
-    assert_eq!(verify(&keys(), &body, None).unwrap()["authenticated_records"], 1);
+    assert_eq!(
+        verify(&keys(), &body, None).unwrap()["authenticated_records"],
+        1
+    );
     body["records"][0]["labels"][0]["value"] = json::json!("changed");
     assert!(verify(&keys(), &body, None).is_err());
 }
@@ -271,7 +279,10 @@ fn malformed_stamp_fields_and_delegated_authority_are_refused() {
     ] {
         let mut stamp = page(&lines, 1, 3);
         stamp[name] = value;
-        assert!(verify(&keys(), &range(&lines, vec![stamp]), None).is_err(), "{name}");
+        assert!(
+            verify(&keys(), &range(&lines, vec![stamp]), None).is_err(),
+            "{name}"
+        );
     }
     let mut set = AuditKeySet::new();
     for seed in [42, 43] {
@@ -288,5 +299,37 @@ fn a_cover_only_page_cannot_authenticate_the_requested_window() {
     let mut body = range(&lines, vec![page(&lines, 3, 3)]);
     body["from"] = json::json!(2);
     body["records"] = json::json!(&lines[1..2]);
+    assert!(verify(&keys(), &body, None).is_err());
+}
+
+#[test]
+fn a_mixed_window_preserves_the_legacy_line_signature() {
+    let mut lines = lines();
+    lines[0]["recipe"] = json::json!(DIGEST_RECIPE_V7);
+    let hash = record_digest(&lines[0], DIGEST_RECIPE_V7).unwrap();
+    lines[0]["hash"] = json::json!(hash);
+    lines[0]["signature"] = json::json!(signer().sign_digest(&hash));
+    lines[0]["key_id"] = json::json!(signer().key_id());
+    for index in 1..3 {
+        lines[index]["prev_hash"] = lines[index - 1]["hash"].clone();
+        let mut digest = Digest::new(Framing::LengthPrefixed);
+        for &(name, kind) in fields(V7).unwrap().iter().skip(2) {
+            if !name.contains("[]") {
+                feed(&mut digest, &lines[index][name], kind).unwrap();
+            }
+        }
+        digest.num(1700000000000).num(index as u64 + 1);
+        digest.raw(&32u64.to_be_bytes()).raw(
+            &Fingerprint::from_hex(text(&lines[index], "prev_hash").unwrap())
+                .unwrap()
+                .0,
+        );
+        lines[index]["hash"] = json::json!(digest.finish());
+    }
+    let mut body = range(&lines, vec![page(&lines, 2, 3)]);
+    let report = verify(&keys(), &body, None).unwrap();
+    assert_eq!(report["authenticated_records"], 2);
+    assert_eq!(report["legacy_signed_lines"], 1);
+    body["records"][0]["signature"] = json::json!("00".repeat(64));
     assert!(verify(&keys(), &body, None).is_err());
 }
