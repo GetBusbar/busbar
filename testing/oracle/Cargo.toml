@@ -230,6 +230,8 @@ busbar-contract = { path = "../../crates/busbar-contract" }
 busbar-crypto-backend = { path = "../../crates/busbar-crypto-backend" }
 
 [patch.crates-io]
+# Adopted funded TLS output/ticket storage and actual wire provenance.
+rustls = { git = "https://github.com/MattJackson/rustls", rev = "a33d40bc1e034c617f566a7e2d70fef8422f43ba" }
 aws-lc-sys = { git = "https://github.com/MattJackson/aws-lc-sys", rev = "3469edb189e0cc2fab40e88f551713a828a5d867" }
 jobserver = { git = "https://github.com/MattJackson/jobserver-rs", rev = "fbe3efc1acc11add04854cc093f97876e439e129" }
 dunce = { git = "https://github.com/MattJackson/dunce", rev = "bb4757b8dffd9bdc619ce1fda1a147bd53e7b29d" }

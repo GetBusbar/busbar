@@ -222,6 +222,8 @@ allow-git = [
     "https://github.com/MattJackson/http",
     "https://github.com/MattJackson/hyper",
     "https://github.com/MattJackson/hyper-util",
+    # Adopted TLS output/ticket storage r2; immutable revision in consuming locks.
+    "https://github.com/MattJackson/rustls",
     # tungstenite 893a21f1f98011a2665840231330c473836c9a0a (1014 fix plus streaming diagnostic formatting).
     "https://github.com/MattJackson/tungstenite-rs",
     "https://github.com/MattJackson/jobserver-rs",
