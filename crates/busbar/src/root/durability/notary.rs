@@ -33,8 +33,8 @@ use super::signer::{Live, SignFailure, SignerHandle, SIGN_DEADLINE};
 pub(crate) mod original;
 use busbar_contract::storage::StorageCredit;
 use original::{
-    OriginalNotaryReady, OriginalPageReceipt, OriginalPageReceiver, OriginalPageTarget,
-    PageDelivery, PageFunding,
+    OriginalNotaryReady, OriginalPageCursor, OriginalPageReceipt, OriginalPageReceiver,
+    OriginalPageTarget, PageDelivery, PageFunding,
 };
 
 /// The longest backoff after a refused store or a failing signer.
@@ -214,12 +214,24 @@ struct Page {
     to_node_seq: u64,
     first_ms: Option<u64>,
     original: Option<OriginalPageTarget>,
+    upper: Option<u64>,
 }
 
 struct Funding {
     page: Page,
-    cursor: Option<u64>,
+    cursor: Option<OriginalPageCursor>,
     credit: Option<StorageCredit>,
+}
+
+impl Funding {
+    fn retry(page: Page, credit: Option<StorageCredit>) -> Self {
+        let cursor = page.upper.map(OriginalPageCursor::start);
+        Self {
+            page,
+            cursor,
+            credit,
+        }
+    }
 }
 
 /// The one outstanding sign.
@@ -240,7 +252,7 @@ struct Inflight {
     retry_at: Instant,
     credit: Option<StorageCredit>,
     receipt: Option<OriginalPageReceipt>,
-    cursor: Option<u64>,
+    cursor: Option<OriginalPageCursor>,
 }
 
 struct Notary {
@@ -514,11 +526,7 @@ impl Notary {
         }
         if self.signing.as_ref().is_some_and(|s| now >= s.deadline) {
             if let Some(gone) = self.signing.take() {
-                self.funding = Some(Funding {
-                    page: gone.page,
-                    cursor: None,
-                    credit: gone.credit,
-                });
+                self.funding = Some(Funding::retry(gone.page, gone.credit));
             }
             self.sign_failed(SignFailure::Deadline, now);
         }
@@ -633,13 +641,17 @@ impl Notary {
         let Some(receipt) = &inflight.receipt else {
             return true;
         };
+        if inflight.cursor.is_none() || inflight.page.upper.is_none() {
+            self.halt("original page delivery lost its captured scan horizon".into());
+            return false;
+        }
         let Some(receiver) = self.feed.original.receiver() else {
             self.halt("original page receiver is unavailable".into());
             return false;
         };
         match receiver.deliver_original_page(receipt, inflight.cursor) {
             PageDelivery::Complete => true,
-            PageDelivery::Pending(next) if inflight.cursor.is_none_or(|last| next > last) => {
+            PageDelivery::Pending(next) if next.advances(inflight.cursor, inflight.page.upper) => {
                 inflight.cursor = Some(next);
                 false
             }
@@ -685,6 +697,7 @@ impl Notary {
                         to_node_seq: head.node_seq,
                         first_ms: self.tail_first_ms.take(),
                         original,
+                        upper: None,
                     },
                     cursor: None,
                     credit: None,
@@ -705,22 +718,48 @@ impl Notary {
                 return;
             };
             match receiver.fund_original_page(target, bytes, funding.cursor) {
-                PageFunding::Reserved(credit) if credit.len() >= bytes => Some(credit),
-                PageFunding::Empty => None,
-                PageFunding::Pending(next) if funding.cursor.is_none_or(|last| next > last) => {
+                PageFunding::Reserved(credit, upper)
+                    if credit.len() >= bytes
+                        && funding.page.upper.is_none_or(|held| held == upper) =>
+                {
+                    funding.page.upper = Some(upper);
+                    Some(credit)
+                }
+                PageFunding::Empty(upper)
+                    if funding.page.upper.is_none_or(|held| held == upper) =>
+                {
+                    funding.page.upper = Some(upper);
+                    None
+                }
+                PageFunding::Pending(next) if next.advances(funding.cursor, funding.page.upper) => {
+                    funding.page.upper = Some(next.upper);
                     funding.cursor = Some(next);
                     self.funding = Some(funding);
                     return;
                 }
-                PageFunding::Reserved(credit) => {
-                    funding.credit = Some(credit);
+                PageFunding::Refused(cursor) => {
+                    if let Some(cursor) = cursor {
+                        if !cursor.preserves(funding.cursor, funding.page.upper) {
+                            self.funding = Some(funding);
+                            self.halt("original funding refusal changed its scan horizon".into());
+                            return;
+                        }
+                        funding.page.upper = Some(cursor.upper);
+                        funding.cursor = Some(cursor);
+                    }
                     self.funding = Some(funding);
-                    self.halt("original page reservation is smaller than its bound".into());
+                    self.halt("original page storage refused".into());
                     return;
                 }
-                PageFunding::Pending(_) | PageFunding::Refused => {
+                PageFunding::Reserved(credit, _) => {
+                    funding.credit = Some(credit);
                     self.funding = Some(funding);
-                    self.halt("original page storage refused or scan failed to progress".into());
+                    self.halt("original page reservation or scan horizon differs".into());
+                    return;
+                }
+                PageFunding::Pending(_) | PageFunding::Empty(_) => {
+                    self.funding = Some(funding);
+                    self.halt("original funding scan changed horizon or failed to progress".into());
                     return;
                 }
             }
@@ -759,11 +798,7 @@ impl Notary {
                 });
             }
             Err(failure) => {
-                self.funding = Some(Funding {
-                    page,
-                    cursor: None,
-                    credit,
-                });
+                self.funding = Some(Funding::retry(page, credit));
                 self.sign_failed(failure, now);
             }
         }
@@ -778,11 +813,7 @@ impl Notary {
         let stamp = match answer {
             Ok(stamp) => stamp,
             Err(failure) => {
-                self.funding = Some(Funding {
-                    page: signing.page,
-                    cursor: None,
-                    credit: signing.credit,
-                });
+                self.funding = Some(Funding::retry(signing.page, signing.credit));
                 self.sign_failed(failure, now);
                 return;
             }
@@ -796,11 +827,7 @@ impl Notary {
                 || stamp.sig_alg != busbar_kernel_audit::SIGNATURE_ALGORITHM
                 || !self.feed.original.verify(target, &stamp)
             {
-                self.funding = Some(Funding {
-                    page: signing.page,
-                    cursor: None,
-                    credit: signing.credit,
-                });
+                self.funding = Some(Funding::retry(signing.page, signing.credit));
                 self.halt("the original notary reply differs from its submitted page".into());
                 return;
             }
@@ -809,11 +836,7 @@ impl Notary {
         let entry = match stamp_body(&stamp) {
             Ok(body) => Entry::new(RecordClass::Transaction, body).at(stamp.stamped_ms / 1000, 0),
             Err(_) => {
-                self.funding = Some(Funding {
-                    page: signing.page,
-                    cursor: None,
-                    credit: signing.credit,
-                });
+                self.funding = Some(Funding::retry(signing.page, signing.credit));
                 self.halt("a stamp body exceeds the journal field bound".into());
                 return;
             }
@@ -823,6 +846,7 @@ impl Notary {
                 self.committed_through = signing.page.to;
                 // The next request confirm carries it; only if none does within a tick does
                 // step 3 drive it alone (§3.3 step 5, r17).
+                let cursor = signing.page.upper.map(OriginalPageCursor::start);
                 self.inflight = Some(Inflight {
                     run,
                     page: signing.page,
@@ -831,22 +855,14 @@ impl Notary {
                     retry_at: now + self.every,
                     credit: signing.credit,
                     receipt: None,
-                    cursor: None,
+                    cursor,
                 });
             }
             Err(RuntimeError::Closed) if self.stopping => {
-                self.funding = Some(Funding {
-                    page: signing.page,
-                    cursor: None,
-                    credit: signing.credit,
-                });
+                self.funding = Some(Funding::retry(signing.page, signing.credit));
             }
             Err(refused) => {
-                self.funding = Some(Funding {
-                    page: signing.page,
-                    cursor: None,
-                    credit: signing.credit,
-                });
+                self.funding = Some(Funding::retry(signing.page, signing.credit));
                 if let Some(failed) = self.journal.failed() {
                     self.halt(format!("journal failed: {failed:?}"));
                 } else if refused == RuntimeError::Closed {
