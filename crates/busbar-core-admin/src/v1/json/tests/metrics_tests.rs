@@ -19,7 +19,14 @@ async fn real_encoded_frame_alias_retains_payload_credit_after_response_drop() {
     ] {
         let process = ProcessAdmission::with_limits(1, 1024 * 1024, 1024);
         let request = process.try_enter(AdmissionClass::Operator).unwrap();
+        let mut scratch = busbar_kernel::limits::output::CaptureScope::new(&request).unwrap();
+        if representation == Representation::Json {
+            scratch
+                .reserve_requested(json_scratch(&families()).unwrap())
+                .unwrap();
+        }
         let response = encode_response(&families(), &request, representation).unwrap();
+        drop(scratch);
         drop(request);
         let used = process.used();
         assert!(used.0 > 0, "an unpolled response owns its backing");
@@ -44,12 +51,22 @@ fn real_encoder_refusal_drops_partial_body_without_partial_success() {
         Representation::Json,
         Representation::Text(Format::Prometheus),
     ] {
-        let process = ProcessAdmission::with_limits(0, 512, 0);
+        let scratch_bytes = if representation == Representation::Json {
+            json_scratch(&families()).unwrap()
+        } else {
+            0
+        };
+        let process =
+            ProcessAdmission::with_limits(0, u32::try_from(scratch_bytes + 512).unwrap(), 0);
         let request = process.try_enter(AdmissionClass::Operator).unwrap();
+        let mut scratch = busbar_kernel::limits::output::CaptureScope::new(&request).unwrap();
+        scratch.reserve_requested(scratch_bytes).unwrap();
         assert!(matches!(
             encode_response(&families(), &request, representation),
             Err(OutputError::Capacity)
         ));
+        assert_eq!(process.used(), (scratch_bytes, 0));
+        drop(scratch);
         assert_eq!(process.used(), (0, 0));
     }
 }

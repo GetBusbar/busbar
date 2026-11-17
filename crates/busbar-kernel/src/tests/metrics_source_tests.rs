@@ -83,6 +83,39 @@ fn first_denial_in_the_visited_counter_shard_is_reported_only_after_capture() {
     worker.join().unwrap();
 }
 
+#[cfg(not(target_env = "msvc"))]
+#[test]
+fn real_family_builder_allocation_traffic_fits_reserved_projection_credit() {
+    use crate::limits::process_admission::{AdmissionClass, ProcessAdmission};
+    let process = ProcessAdmission::with_limits(0, 1024 * 1024, 0);
+    let request = process.try_enter(AdmissionClass::Operator).unwrap();
+    let key = Key::from_parts(
+        "allocation_probe",
+        [metrics::Label::new("pool", "long-label".repeat(100))],
+    );
+    let mut scope = CaptureScope::new(&request).unwrap();
+    let mut building = Building::new();
+    crate::ThreadAllocated::reset();
+    output::series(&mut scope, &key, 9).unwrap();
+    put(
+        &mut building,
+        SCRAPE_KIND_SUMMARY,
+        &key,
+        (0..9)
+            .map(|i| ("_count", Some(i.to_string()), f64::MAX.to_string()))
+            .collect(),
+    );
+    let allocated = crate::ThreadAllocated::bytes();
+    assert!(allocated > 0);
+    assert!(
+        allocated <= u64::try_from(process.used().0).unwrap(),
+        "{allocated} bytes exceeded the pre-reserved requested-storage bound"
+    );
+    drop(building);
+    drop(scope);
+    assert_eq!(process.used(), (0, 0));
+}
+
 fn ordered_families(families: &[Family]) -> Vec<Family> {
     let mut ordered = families.to_vec();
     ordered.sort_by(|a, b| a.kind.cmp(&b.kind).then_with(|| a.name.cmp(&b.name)));

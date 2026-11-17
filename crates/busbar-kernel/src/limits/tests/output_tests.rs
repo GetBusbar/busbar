@@ -27,7 +27,7 @@ fn nonempty_body_alias_keeps_capacity_and_request_count() {
     let request = process.try_enter(AdmissionClass::Data).unwrap();
     let mut output = OutputBuffer::with_capacity(&request, 128).unwrap();
     output.write_all(b"retained").unwrap();
-    let body = output.into_bytes();
+    let body = output.into_bytes().unwrap();
     let alias = body.slice(1..3);
     drop(request);
     drop(body);
@@ -50,7 +50,7 @@ fn explicit_growth_reserves_old_and_new_backing_before_copy() {
     assert_eq!(output.as_ref(), &[9; 128]);
     assert_eq!(process.used(), (128, 128));
     assert_eq!(output.failure(), Some(OutputError::Capacity));
-    drop(output);
+    assert!(output.into_bytes().is_err());
     assert_eq!(process.used(), (0, 0));
 }
 
