@@ -1235,6 +1235,18 @@ mod tests {
             Status::OK
         }
     }
+    /// `channel` (slot 10): answers REFUSED so a test can tell it apart from `upstream` (slot 1, OK).
+    impl Session1<TargetRef, 10> for Fx {
+        fn on(
+            _p: &(),
+            _h: &'static Host,
+            _s: &mut Sess,
+            _a1: Arg<'_, TargetRef>,
+            _out: &mut Out<'_>,
+        ) -> Status {
+            Status::REFUSED
+        }
+    }
 
     // ---- the transport table ----
 
@@ -1545,6 +1557,22 @@ mod tests {
     /// lookup is one Acquire load and a compare); a session opener (`request`, `probe`, `begin`) makes one
     /// CAS on the session table's free list and its end (`end`, or the handle's drop) one; the handle holds
     /// the instance's `Arc` (strong count +1 from open to end). Steady state: the free list holds a slot.
+    /// The appended plane `channel` entry (slot 10, M_CHANNEL) is a session method on a target,
+    /// built from the image's own slot-10 shim: it reaches that shim, not `upstream`'s (slot 1),
+    /// and makes no slot-table RMW.
+    #[test]
+    fn plane_channel_is_the_appended_session_entry_at_slot_ten() {
+        let plane = open_fixture::<kind::Plane>(&PLANE);
+        let mut session = open_probe(&plane);
+        let upstream = session.call1(|vt| &vt.upstream, Arg::view(&TARGET), &mut lease());
+        assert_eq!(upstream, Status::OK);
+        let rmw = counting::rmw();
+        let channel = session.call1(|vt| &vt.channel, Arg::view(&TARGET), &mut lease());
+        assert_eq!(channel, Status::REFUSED);
+        assert_eq!(counting::rmw(), rmw, "no RMW per channel call");
+        assert_eq!(session.end(|vt| &vt.end, &mut lease()), Status::OK);
+    }
+
     #[test]
     fn session_methods_make_no_slot_rmw_and_open_and_end_one_cas_each() {
         let plane = open_fixture::<kind::Plane>(&PLANE);
