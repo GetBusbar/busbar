@@ -191,7 +191,7 @@ async fn same_task_declaration_is_installed_before_effects_open() {
 #[tokio::test]
 async fn another_tasks_context_cannot_open_selected_money() {
     let (money, _, context, _lease, request) = selected_fixture(72, true).await;
-    let (other, _other_lease) = context_with_key(73, context.principal().unwrap());
+    let (other, _other_lease) = context_with_key(73, context.principal().unwrap().clone());
     assert!(money
         .admit_existing_selected(
             request,

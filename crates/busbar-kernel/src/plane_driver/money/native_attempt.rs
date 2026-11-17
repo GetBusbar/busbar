@@ -10,23 +10,48 @@ use std::sync::Arc;
 use crate::governance::unit_checkpoint::partitions::{AttemptPartition, Finality, Transport};
 use crate::governance::unit_checkpoint::UnitCheckpoint;
 use crate::plane_driver::port_egress::SelectedWalkAttempt;
-use crate::plane_driver::port_session::PreparedExchange;
+use crate::plane_driver::port_session::{PreparedExchange, RequestDeclaration};
 use crate::plane_driver::request_admission::AdmittedRequest;
 
 /// The book-accepted complete checkpoint is the runtime's single factual source as well.
 /// Live selection/rate authority is separate and is never reconstructed from these facts.
 pub(super) struct NativeMoney {
     accepted: Arc<UnitCheckpoint>,
+    declaration: Option<RequestDeclaration>,
 }
 
 impl NativeMoney {
-    /// Only the host money owner installs a snapshot returned by stage_selected_checkpoint.
+    /// Factual reader fixtures carry no live task/selection authority.
+    #[cfg(test)]
     pub(super) fn from_accepted(accepted: Arc<UnitCheckpoint>) -> Self {
-        Self { accepted }
+        Self {
+            accepted,
+            declaration: None,
+        }
+    }
+
+    pub(super) fn admitted(accepted: Arc<UnitCheckpoint>, declaration: RequestDeclaration) -> Self {
+        Self {
+            accepted,
+            declaration: Some(declaration),
+        }
     }
 
     pub(super) fn checkpoint(&self) -> &Arc<UnitCheckpoint> {
         &self.accepted
+    }
+}
+
+/// The original money service and admitted request, issued only after selected initial custody.
+/// Runtime keeps this with the same allocation; there is no numeric-unit lookup constructor.
+pub struct NativeRequestMoney {
+    pub(super) money: Arc<super::PlaneMoney>,
+    pub(super) request: AdmittedRequest,
+}
+
+impl NativeRequestMoney {
+    pub fn request(&self) -> &AdmittedRequest {
+        &self.request
     }
 }
 use busbar_plugin_abi::records::RecErr;
