@@ -1441,7 +1441,7 @@ impl DataRoutes {
                 let runtime =
                     tokio::runtime::Handle::try_current().map_err(|error| error.to_string())?;
                 Some(Arc::new(
-                    busbar_kernel::host_services::ServingGeneration::new(
+                    busbar_kernel::host_services::ServingGeneration::try_new(
                         kernel,
                         Arc::new(DoorNests {
                             routes: Arc::clone(&snapshot),
@@ -1449,7 +1449,8 @@ impl DataRoutes {
                             runtime,
                             detached: busbar_kernel::detached::worker_detached(),
                         }),
-                    ),
+                    )
+                    .map_err(|_| "native routing generation counter exhausted".to_owned())?,
                 ))
             }
             None => None,
@@ -1465,13 +1466,16 @@ impl DataRoutes {
     pub(crate) fn native_unit(
         self: &Arc<Self>,
         seat: &busbar_kernel::plane_driver::port::PortSeat,
-        unit: &busbar_kernel::plane_driver::port::Unit,
+        unit: &mut busbar_kernel::plane_driver::port::Unit,
         ctx: &PlaneReqCtx,
     ) -> Result<NativeUnit, &'static str> {
         let generation = self
             .generation
             .as_ref()
             .ok_or("native route has no complete generation")?;
+        unit.ctx.generation = generation
+            .routing_generation()
+            .ok_or("native route has no allocated routing generation")?;
         let app = Arc::clone(&ctx.engine)
             .downcast::<busbar_kernel::state::App>()
             .map_err(|_| "native invocation needs its selected App snapshot")?;

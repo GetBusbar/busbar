@@ -557,7 +557,7 @@ async fn answer(
         }
         None => Seen::Anonymous,
     };
-    let unit = allocate_unit(seat, billing, &ctx);
+    let mut unit = allocate_unit(seat, billing, &ctx);
     let settle = match (&unit, billing) {
         (Some(unit), Some(billing)) => Some(Settle {
             billing: billing.clone(),
@@ -566,7 +566,7 @@ async fn answer(
         }),
         _ => None,
     };
-    let invocation = match (&unit, generation) {
+    let invocation = match (&mut unit, generation) {
         (Some(unit), Some(generation)) => match generation.native_unit(seat, unit, &ctx) {
             Ok(invocation) => Some(invocation),
             Err(why) => {

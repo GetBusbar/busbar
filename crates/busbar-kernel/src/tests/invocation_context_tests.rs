@@ -139,9 +139,9 @@ fn pending_nested_dispatch_keeps_its_original_generation_until_reply() {
 fn native_generation_metadata_stays_with_its_retained_snapshot() {
     let core = Arc::new(KernelServices::new());
     let first = ServingGeneration::try_new(core.clone(), Arc::new(HeldRoute::default())).unwrap();
-    let retained = first.routing_generation();
+    let retained = first.routing_generation().unwrap();
     let next = ServingGeneration::try_new(core, Arc::new(HeldRoute::default())).unwrap();
     assert_ne!(retained, crate::registry::Generation::FIRST);
-    assert!(next.routing_generation() > retained);
-    assert_eq!(first.routing_generation(), retained);
+    assert!(next.routing_generation().unwrap() > retained);
+    assert_eq!(first.routing_generation(), Some(retained));
 }
