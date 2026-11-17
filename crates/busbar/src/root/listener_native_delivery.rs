@@ -31,7 +31,6 @@ pub(super) enum ResponseAuthority {
     Data(Arc<NativeDataPending>),
     Admin(Arc<PhysicalAdminExecution>),
     Public(Arc<PhysicalPublicExecution>),
-    PreUnitRefusal(Arc<RequestBinding>),
 }
 impl ResponseAuthority {
     fn binding(&self) -> &Arc<RequestBinding> {
@@ -39,7 +38,6 @@ impl ResponseAuthority {
             Self::Data(owner) => owner.binding(),
             Self::Admin(owner) => owner.binding(),
             Self::Public(owner) => owner.binding(),
-            Self::PreUnitRefusal(binding) => binding,
         }
     }
     fn admission(&self) -> Result<Option<AdmittedRequest>, InputError> {
@@ -48,7 +46,7 @@ impl ResponseAuthority {
                 .execution()
                 .map(|execution| Some(execution.money().clone()))
                 .ok_or(InputError::Delivery(ResponseStop::Integrity)),
-            Self::Admin(_) | Self::Public(_) | Self::PreUnitRefusal(_) => Ok(None),
+            Self::Admin(_) | Self::Public(_) => Ok(None),
         }
     }
 }

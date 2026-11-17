@@ -85,7 +85,13 @@ pub(super) async fn prepare(
                         ResponseAuthority::Admin(owner.clone())
                     }
                     Some(_) => return Err(InputError::Invalid),
-                    None => ResponseAuthority::PreUnitRefusal(binding.clone()),
+                    // A raw request binding is not output authority. A denied walk needs its
+                    // own consumed physical refusal owner before it can register a response.
+                    None => {
+                        return Err(InputError::Delivery(
+                            busbar_contract::response_delivery::ResponseStop::Integrity,
+                        ))
+                    }
                 };
                 (response, authority, None)
             }

@@ -4,6 +4,42 @@
 use super::*;
 use axum::http::HeaderMap;
 
+#[cfg(feature = "openapi-schema")]
+#[test]
+fn settings_openapi_declares_the_actual_instance_edit_idempotency_header() {
+    let doc = crate::v1::json::openapi_doc();
+    let operation = &doc["paths"]["/api/v1/admin/config/settings"]["put"];
+    let headers: Vec<_> = operation["parameters"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|parameter| parameter["in"] == "header" && parameter["name"] == "Idempotency-Key")
+        .collect();
+    assert_eq!(headers.len(), 1);
+    let header = headers[0];
+    assert_eq!(
+        header["required"], false,
+        "other settings modes retain optional replay"
+    );
+    assert_eq!(header["schema"]["minLength"], 1);
+    assert_eq!(header["schema"]["maxLength"], 128);
+    assert_eq!(header["schema"]["pattern"], "^[A-Za-z0-9._:-]+$");
+    assert!(header["description"]
+        .as_str()
+        .unwrap()
+        .contains("instance_edit"));
+    assert_eq!(
+        operation["x-busbar-instance-edit"]["idempotency"],
+        "required_exact_method_path_query_body"
+    );
+    for valid in ["a", "Aa09._:-", &"a".repeat(128)] {
+        assert!(valid_idempotency_key(valid));
+    }
+    for invalid in ["", "two words", "slash/value", "é", &"a".repeat(129)] {
+        assert!(!valid_idempotency_key(invalid));
+    }
+}
+
 #[test]
 fn original_precondition_clone_retains_first_backing_and_all_duplicate_counts() {
     let mut headers = HeaderMap::new();
