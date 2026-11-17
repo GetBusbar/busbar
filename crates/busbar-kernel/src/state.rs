@@ -1081,6 +1081,9 @@ pub struct AppHandle {
     appliers: std::sync::Mutex<Vec<SharedApplier>>,
 
     door_refuser: std::sync::OnceLock<busbar_kernel::plane_routes::PlaneRefuseByPathFn>,
+    /// The read-only trust handle over the serving kernel (TRUST-ADMIN-PRODUCER-DESIGN r3 §2.1):
+    /// what the `core/trust` reads borrow. Set once, by value, before the handle is shared.
+    trust: Option<busbar_kernel::trust::TrustReadout>,
 }
 
 pub type ApplyFuture = std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'static>>;
@@ -1102,7 +1105,21 @@ impl AppHandle {
             attach: std::sync::OnceLock::new(),
             appliers: std::sync::Mutex::new(Vec::new()),
             door_refuser: std::sync::OnceLock::new(),
+            trust: None,
         }
+    }
+
+    /// This handle with the serving kernel's read-only trust handle (r3 §2.2).
+    #[must_use]
+    pub fn with_trust(mut self, trust: Option<busbar_kernel::trust::TrustReadout>) -> Self {
+        self.trust = trust;
+        self
+    }
+
+    /// The serving kernel's read-only trust handle; `None` = no native trust custody.
+    #[must_use]
+    pub fn trust(&self) -> Option<&busbar_kernel::trust::TrustReadout> {
+        self.trust.as_ref()
     }
 
     pub fn bind_door_refuser(&self, refuser: busbar_kernel::plane_routes::PlaneRefuseByPathFn) {
