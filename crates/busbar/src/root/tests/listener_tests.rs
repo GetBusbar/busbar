@@ -1497,3 +1497,72 @@ fn the_root_accept_backoff_sequence_is_5ms_doubling_to_a_250ms_cap() {
     want.resize(64, 250);
     assert_eq!(delays, want);
 }
+
+#[tokio::test(start_paused = true)]
+async fn lingering_shutdown_and_drain_share_one_total_deadline() {
+    use std::pin::Pin;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    use std::task::{Context, Poll};
+
+    struct SlowShutdown {
+        ready: Pin<Box<tokio::time::Sleep>>,
+        dropped: Arc<AtomicBool>,
+    }
+    impl Drop for SlowShutdown {
+        fn drop(&mut self) {
+            self.dropped.store(true, Ordering::SeqCst);
+        }
+    }
+    impl tokio::io::AsyncRead for SlowShutdown {
+        fn poll_read(
+            self: Pin<&mut Self>,
+            _: &mut Context<'_>,
+            _: &mut tokio::io::ReadBuf<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            Poll::Pending
+        }
+    }
+    impl tokio::io::AsyncWrite for SlowShutdown {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            _: &mut Context<'_>,
+            bytes: &[u8],
+        ) -> Poll<std::io::Result<usize>> {
+            Poll::Ready(Ok(bytes.len()))
+        }
+        fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+        fn poll_shutdown(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            use std::future::Future as _;
+            self.ready.as_mut().poll(cx).map(|()| Ok(()))
+        }
+    }
+
+    // Cover a shutdown which never finishes within the budget, and a shutdown which consumes
+    // almost all of it. The latter must not receive a fresh read-drain budget afterwards.
+    for shutdown in [Duration::from_secs(60), Duration::from_secs(29)] {
+        let dropped = Arc::new(AtomicBool::new(false));
+        drop(super::Lingering(Some(SlowShutdown {
+            ready: Box::pin(tokio::time::sleep(shutdown)),
+            dropped: dropped.clone(),
+        })));
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_secs(29)).await;
+        tokio::task::yield_now().await;
+        assert!(
+            !dropped.load(Ordering::SeqCst),
+            "still inside the total budget"
+        );
+        tokio::time::advance(Duration::from_secs(1)).await;
+        tokio::task::yield_now().await;
+        assert!(
+            dropped.load(Ordering::SeqCst),
+            "shutdown and read-drain must release IO within one 30-second budget"
+        );
+    }
+}
