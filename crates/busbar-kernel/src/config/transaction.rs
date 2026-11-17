@@ -91,8 +91,10 @@ pub enum TxnError {
 /// The refusal text the generation step starts with; `swap_error` maps it to [`TxnError::Unavailable`].
 pub const GENERATION_REFUSED: &str = "config generation was not kept";
 
+pub(crate) const PUBLICATION_CLOSED: &str = "config publication is closed for shutdown";
+
 fn swap_error<E: From<TxnError>>(message: String) -> E {
-    if message.starts_with(GENERATION_REFUSED) {
+    if message.starts_with(GENERATION_REFUSED) || message.starts_with(PUBLICATION_CLOSED) {
         E::from(TxnError::Unavailable(message))
     } else {
         E::from(TxnError::Validation(message))
@@ -592,6 +594,9 @@ pub async fn admit_effect(
     context: Option<&crate::auth::effect::Context>,
 ) -> Result<EffectGuard, TxnError> {
     let guard = effect_lock().await;
+    if !handle.config_admission_open() {
+        return Err(TxnError::Unavailable(PUBLICATION_CLOSED.into()));
+    }
     let authority = match context {
         Some(context) => Some(context.revalidate(&handle.load()).await?),
         None => None, // Internal kernel work has no administrative caller.
