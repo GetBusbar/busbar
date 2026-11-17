@@ -2174,10 +2174,10 @@ impl ListenerPlan {
             .as_ref()
             .and_then(|served| served.native.as_ref())
             .is_some_and(|native| {
-                !native.provisioning.is_empty() && native.config_version != app.config_version
+                !native.auth.is_empty() && native.config_version != app.config_version
             })
         {
-            return Err("provisioning: candidate needs freshly prepared auth and route owners; restart required".into());
+            return Err("identity-providers: candidate needs freshly prepared auth and route owners; restart required".into());
         }
         for route in app.plugin_routes.descriptors() {
             if !route.dispatch_available
