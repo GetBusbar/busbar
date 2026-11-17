@@ -670,6 +670,8 @@ async fn run(
     .unwrap_or_else(|error| die(error.0));
     // The boot's images are the serving set: their secret grammar is the native secret axis.
     file_images.publish_secrets();
+    // ... and their hook facts are what config validation reads of hooks (WP3 hook step).
+    file_images.publish_hooks();
     let loaded = raw
         .typed(&file_images.grammar)
         .unwrap_or_else(|error| die(error));
