@@ -131,6 +131,59 @@ pub(crate) struct NativeAttempt {
 }
 
 impl NativeAttempt {
+    /// The actual connector returned this committed exchange's upstream response head.
+    pub(crate) fn answered(&mut self) -> Result<(), NativeAttemptError> {
+        self.host_response(false)
+    }
+
+    /// The host accepted this exchange as the final response, after retry classification.
+    /// Its preparation identity is carried by this guard and cannot be supplied by the plugin.
+    pub(crate) fn served(&mut self) -> Result<(), NativeAttemptError> {
+        self.host_response(true)
+    }
+
+    fn host_response(&self, served: bool) -> Result<(), NativeAttemptError> {
+        let preparation = self
+            .rate
+            .as_ref()
+            .ok_or(NativeAttemptError::Unavailable)?
+            .prepared()
+            .selection()
+            .preparation();
+        let mut all = self.service.money.shard(self.service.request.unit());
+        let open = all
+            .get_mut(&self.service.request.unit())
+            .ok_or(NativeAttemptError::Unavailable)?;
+        self.service.check_open_identity(open)?;
+        let native = open
+            .native
+            .as_mut()
+            .ok_or(NativeAttemptError::Unavailable)?;
+        let mut snapshot = native.checkpoint().as_ref().clone();
+        let parts = snapshot
+            .partitions
+            .as_mut()
+            .ok_or(NativeAttemptError::Binding)?;
+        if !parts.attempts.last().is_some_and(|attempt| {
+            attempt.preparation == preparation && attempt.transport == Transport::Committed
+        }) {
+            return Err(NativeAttemptError::Binding);
+        }
+        if served {
+            if !parts.far_end_answered
+                || parts
+                    .final_target
+                    .is_some_and(|previous| previous != preparation)
+            {
+                return Err(NativeAttemptError::Binding);
+            }
+            parts.final_target = Some(preparation);
+        } else {
+            parts.far_end_answered = true;
+        }
+        native.publish_incurred(&self.service.money.gov, snapshot)
+    }
+
     pub(crate) fn checkpoint(
         &self,
     ) -> Result<crate::plane_driver::cancel::Checkpoint, NativeAttemptError> {
