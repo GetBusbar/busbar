@@ -226,3 +226,18 @@ fn accepted_fractional_usage_preserves_existing_half_even_rounding_signal() {
     );
     assert!(staged.rounded);
 }
+
+#[test]
+fn preparation_gaps_are_valid_but_live_or_exhausted_predecessors_are_not() {
+    let mut prior = attempt();
+    assert!(!super::preparation_follows(7, &[prior.clone()], 4));
+    prior.finality = Finality::Partial;
+    assert!(super::preparation_follows(7, &[prior.clone()], 5));
+    assert!(!super::preparation_follows(7, &[prior.clone()], 3));
+    assert!(!super::preparation_follows(7, &[prior.clone()], 8));
+    prior.transport = Transport::NoSend;
+    prior.dispatch = None;
+    prior.finality = Finality::Unknown;
+    assert!(super::preparation_follows(7, &[prior], 7));
+    assert!(!super::preparation_follows(7, &[], 0));
+}
