@@ -114,9 +114,15 @@ pub(crate) async fn send(
     form: Option<&[(&str, &str)]>,
 ) -> (reqwest::StatusCode, reqwest::header::HeaderMap, String) {
     let path = path_of(url);
+    let post = method == reqwest::Method::POST;
     let mut req = client.request(method, url);
     if let Some(cookie) = jar.header_for(&path) {
         req = req.header(reqwest::header::COOKIE, cookie);
+    }
+    if post {
+        // A browser names the document's origin on every POST; a form posted from a page goes
+        // back to the origin that served it.
+        req = req.header(reqwest::header::ORIGIN, origin_of(url));
     }
     if let Some(form) = form {
         req = req.form(form);
@@ -146,6 +152,28 @@ pub(crate) fn path_of(url: &str) -> String {
         .split_once('?')
         .map_or(with_query, |(p, _)| p)
         .to_string()
+}
+
+/// `scheme://host[:port]` of an absolute URL.
+pub(crate) fn origin_of(url: &str) -> String {
+    let (scheme, rest) = url.split_once("://").unwrap_or(("http", url));
+    let authority = rest.split(['/', '?']).next().unwrap_or_default();
+    format!("{scheme}://{authority}")
+}
+
+/// The `Path` attribute of one `Set-Cookie` value, if it names one.
+pub(crate) fn cookie_path(set_cookie: &str) -> Option<String> {
+    set_cookie.split(';').skip(1).find_map(|attr| {
+        let (k, v) = attr.split_once('=')?;
+        k.trim()
+            .eq_ignore_ascii_case("path")
+            .then(|| v.trim().to_string())
+    })
+}
+
+/// Whether a cookie scoped to `cookie_path` is sent to `request_path` (RFC 6265 s5.1.4).
+pub(crate) fn sent_to(request_path: &str, cookie_path: &str) -> bool {
+    path_matches(request_path, cookie_path)
 }
 
 pub(crate) fn query_param(url: &str, name: &str) -> Option<String> {
@@ -204,4 +232,40 @@ pub(crate) fn percent_decode(s: &str) -> String {
         }
     }
     String::from_utf8(out).expect("the server produced UTF-8")
+}
+
+/// The CSRF token an operator form carries.
+pub(crate) fn csrf_of(page: &str) -> String {
+    let after = page
+        .split("name=\"csrf_token\" value=\"")
+        .nth(1)
+        .expect("the operator form carries a CSRF token");
+    after.split('"').next().unwrap_or_default().to_string()
+}
+
+/// Answer the consent screen `page`, served at `consent` on the admin origin, as the operator's
+/// browser does: the form's fields, posted back to the page's origin.
+pub(crate) async fn answer_consent(
+    client: &reqwest::Client,
+    jar: &mut Jar,
+    consent: &str,
+    page: &str,
+    answer: &str,
+) -> (reqwest::StatusCode, reqwest::header::HeaderMap, String) {
+    let return_to = percent_decode(&query_param(consent, "return").expect("the pending request"));
+    let reference = query_param(consent, "ref").expect("the starting browser");
+    let token = csrf_of(page);
+    send(
+        client,
+        jar,
+        reqwest::Method::POST,
+        &format!("{}/oauth/consent", origin_of(consent)),
+        Some(&[
+            ("return", return_to.as_str()),
+            ("ref", reference.as_str()),
+            ("csrf_token", token.as_str()),
+            ("answer", answer),
+        ]),
+    )
+    .await
 }

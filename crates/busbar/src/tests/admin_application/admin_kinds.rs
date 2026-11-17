@@ -49,7 +49,7 @@ impl Served {
         let mut request = self
             .client
             .request(method, self.url(path))
-            .header("x-admin-token", ADMIN_TOKEN);
+            .header("authorization", format!("Bearer {}", ADMIN_TOKEN));
         if let Some(body) = body {
             request = request
                 .header("content-type", "application/json")

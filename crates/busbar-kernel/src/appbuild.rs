@@ -2367,6 +2367,7 @@ async fn build_app_native(
                     protected_resources,
                     prior.and_then(state::App::oauth_as_any).cloned(),
                     store,
+                    checked.admin_origin.clone(),
                 )
                 .await?,
             )

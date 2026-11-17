@@ -3,7 +3,7 @@
 
 use super::{
     application_with_document,
-    browser::{location, percent_decode, query_param, send, Jar},
+    browser::{answer_consent, location, query_param, send, Jar},
 };
 use busbar_contract::json::JsonValueTrait as _;
 use busbar_core_oauth2::config::OauthAsCfg;
@@ -18,10 +18,20 @@ pub(super) async fn serve(
     scopes: &[&str],
     guarded: bool,
 ) -> (String, Arc<busbar_kernel::state::App>) {
+    let (origin, _admin, app) = serve_at(scopes, guarded).await;
+    (origin, app)
+}
+
+/// The deployment on its two listeners: `(data origin, admin origin, app)`.
+pub(super) async fn serve_at(
+    scopes: &[&str],
+    guarded: bool,
+) -> (String, String, Arc<busbar_kernel::state::App>) {
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind");
+    let (admin_listener, admin_listen) = super::bind_admin().await;
     let origin = format!("http://{}", listener.local_addr().expect("address"));
     let oauth = OauthAsCfg {
         issuer: origin.clone(),
@@ -32,6 +42,7 @@ pub(super) async fn serve(
         "providers": {}, "models": {},
         "oauth_as": oauth.authoring(&busbar_kernel::seal::acquire()),
         "auth": {"chain":[],"admin_auth":[]},
+        "admin_listen": admin_listen,
         "advanced": {},
     });
     if guarded {
@@ -51,14 +62,11 @@ pub(super) async fn serve(
         });
     }
     let app = application_with_document(document).await;
-    let router = busbar_kernel::build_router(Arc::clone(&app));
-    tokio::spawn(async move {
-        axum::serve(listener, router).await.expect("serve");
-    });
-    (origin, app)
+    super::serve_split(Arc::clone(&app), listener, admin_listener, false);
+    (origin, format!("http://{admin_listen}"), app)
 }
 
-async fn register_client(origin: &str, redirect: &str, scopes: &str) -> String {
+pub(super) async fn register_client(origin: &str, redirect: &str, scopes: &str) -> String {
     let response = reqwest::Client::new()
         .post(format!("{origin}/register"))
         .json(&busbar_contract::json::json!({
@@ -101,23 +109,14 @@ async fn a_multi_scope_or_default_scope_request_is_approved_on_its_first_consent
             "{scope:?}: authorize must redirect to consent: {body}"
         );
         let consent = location(&headers, &origin);
-        let (status, _headers, body) =
+        let (status, _headers, page) =
             send(&client, &mut jar, reqwest::Method::GET, &consent, None).await;
         assert_eq!(
             status, 200,
-            "{scope:?}: the consent screen must render: {body}"
+            "{scope:?}: the consent screen must render: {page}"
         );
-        let return_to = percent_decode(
-            &query_param(&consent, "return").expect("the screen carries the pending request"),
-        );
-        let (status, headers, body) = send(
-            &client,
-            &mut jar,
-            reqwest::Method::POST,
-            &format!("{origin}/consent"),
-            Some(&[("return", return_to.as_str()), ("answer", "approve")]),
-        )
-        .await;
+        let (status, headers, body) =
+            answer_consent(&client, &mut jar, &consent, &page, "approve").await;
         assert_eq!(
             status, 302,
             "{scope:?}: an approval must redirect back: {body}"
@@ -255,12 +254,15 @@ async fn a_return_target_a_browser_reads_as_off_site_is_refused_on_approve_and_d
     let (status, _, body) = send(&client, &mut jar, reqwest::Method::GET, &consent, None).await;
     assert_eq!(
         status, 200,
-        "the consent screen renders and opens a session: {body}"
+        "the consent screen renders and opens its form: {body}"
     );
     assert!(
-        jar.header_for("/consent").is_some(),
-        "the session cookie is live"
+        jar.header_for("/oauth/consent").is_some(),
+        "the form cookie is live"
     );
+    let admin = super::browser::origin_of(&consent);
+    let reference = query_param(&consent, "ref").expect("the starting browser");
+    let token = super::browser::csrf_of(&body);
 
     for answer in ["approve", "deny"] {
         for bypass in ["/\t/evil.example", "/\n/evil.example", "/\\evil.example"] {
@@ -268,8 +270,13 @@ async fn a_return_target_a_browser_reads_as_off_site_is_refused_on_approve_and_d
                 &client,
                 &mut jar,
                 reqwest::Method::POST,
-                &format!("{origin}/consent"),
-                Some(&[("return", bypass), ("answer", answer)]),
+                &format!("{admin}/oauth/consent"),
+                Some(&[
+                    ("return", bypass),
+                    ("ref", reference.as_str()),
+                    ("csrf_token", token.as_str()),
+                    ("answer", answer),
+                ]),
             )
             .await;
             assert_eq!(
@@ -287,7 +294,7 @@ async fn a_return_target_a_browser_reads_as_off_site_is_refused_on_approve_and_d
         &client,
         &mut jar,
         reqwest::Method::GET,
-        &format!("{origin}/consent?return=%2F%09%2Fevil.example"),
+        &format!("{admin}/oauth/consent?return=%2F%09%2Fevil.example&ref={reference}"),
         None,
     )
     .await;

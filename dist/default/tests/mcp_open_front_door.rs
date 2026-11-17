@@ -73,13 +73,18 @@ store: {{module: memory}}
     path
 }
 
-const AUTH_OPEN: &str = r#"auth:
-  admin_auth: []
-"#;
+// No `auth.chain` at all; the admin API takes the closed default chain (1.6 refuses
+// `admin_auth: []`, ADMIN-API-1.6-ONE-MODEL §8.1.1).
+const AUTH_OPEN: &str = "auth: {}\n";
 
-const AUTH_CLOSED: &str = r#"auth:
+// The key mint path is the operator credential with its 1.6 settings: the SHA-256 of the
+// `BUSBAR_ADMIN_TOKEN` the process is given.
+const AUTH_CLOSED: &str = r#"identity-providers:
+  admin-tokens:
+    module: admin-tokens
+    settings: { sha256: d321b271cf1b9bdf54eb40c5011b7168a5e8ccb42cb18a60bbc0697fed3e6d84 }
+auth:
   chain: [keys]
-  admin_auth: []
   signing_key: { env: BUSBAR_SIGNING_KEY }
 "#;
 

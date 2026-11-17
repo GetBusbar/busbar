@@ -44,7 +44,7 @@ fn make_root_cfg(
         upstream_credentials: crate::auth::UpstreamCreds::Own,
         hooks: HashMap::new(),
         // No operator row is bound in these tests, so the default chain would be refused
-        // (OPERATOR-FROM-ADMITTED-AUTH R19); the fixtures name the open dev posture explicitly.
+        // (OPERATOR-FROM-ADMITTED-AUTH R19); with no `auth:` block no rule judges the empty chain.
         admin_auth: Vec::new(),
         groups: std::collections::BTreeMap::new(),
         rate_card: None,

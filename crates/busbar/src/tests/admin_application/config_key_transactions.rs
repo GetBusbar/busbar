@@ -35,11 +35,13 @@ async fn slow_store_read_does_not_stall_the_executor() {
         settings.is_object(),
         "the actual store settings are an object"
     );
+    let operator = crate::root::test_plugins::bind_operator();
     let mut document = serde_json::json!({
         "providers": {},
         "models": {},
         "groups": {"team": {}},
-        "auth": { "chain": [], "admin_auth": [] },
+        "identity-providers": {(operator): {"module": operator, "settings": {"sha256": crate::root::test_plugins::operator_sha256()}}},
+        "auth": { "chain": [], "admin_auth": [operator] },
         "store": { "module": module, "settings": settings },
         "advanced": {  },
     });
@@ -156,11 +158,13 @@ async fn cap_is_read_from_the_post_lock_snapshot() {
         settings.is_object(),
         "the actual store settings are an object"
     );
+    let operator = crate::root::test_plugins::bind_operator();
     let mut document = serde_json::json!({
         "providers": {},
         "models": {},
         "groups": {"team": {}},
-        "auth": { "chain": [], "admin_auth": [] },
+        "identity-providers": {(operator): {"module": operator, "settings": {"sha256": crate::root::test_plugins::operator_sha256()}}},
+        "auth": { "chain": [], "admin_auth": [operator] },
         "store": { "module": module, "settings": settings },
         "advanced": {  },
     });
@@ -327,11 +331,13 @@ async fn concurrent_mints_never_bind_a_deleted_group() {
             settings.is_object(),
             "the actual store settings are an object"
         );
+        let operator = crate::root::test_plugins::bind_operator();
         let mut document = serde_json::json!({
             "providers": {},
             "models": {},
             "groups": {"team": {}},
-            "auth": { "chain": [], "admin_auth": [] },
+            "identity-providers": {(operator): {"module": operator, "settings": {"sha256": crate::root::test_plugins::operator_sha256()}}},
+            "auth": { "chain": [], "admin_auth": [operator] },
             "store": { "module": module, "settings": settings },
             "advanced": {  },
         });
@@ -416,11 +422,13 @@ async fn concurrent_mints_never_bind_a_deleted_group() {
             settings.is_object(),
             "the actual store settings are an object"
         );
+        let operator = crate::root::test_plugins::bind_operator();
         let mut document = serde_json::json!({
             "providers": {},
             "models": {},
             "groups": {"team": {}},
-            "auth": { "chain": [], "admin_auth": [] },
+            "identity-providers": {(operator): {"module": operator, "settings": {"sha256": crate::root::test_plugins::operator_sha256()}}},
+            "auth": { "chain": [], "admin_auth": [operator] },
             "store": { "module": module, "settings": settings },
             "advanced": {  },
         });
@@ -552,11 +560,13 @@ async fn concurrent_rebinds_never_bind_a_deleted_group() {
         settings.is_object(),
         "the actual store settings are an object"
     );
+    let operator = crate::root::test_plugins::bind_operator();
     let mut document = serde_json::json!({
         "providers": {},
         "models": {},
         "groups": {"team": {}, "other": {}},
-        "auth": { "chain": [], "admin_auth": [] },
+        "identity-providers": {(operator): {"module": operator, "settings": {"sha256": crate::root::test_plugins::operator_sha256()}}},
+        "auth": { "chain": [], "admin_auth": [operator] },
         "store": { "module": module, "settings": settings },
         "advanced": {  },
     });
@@ -631,7 +641,7 @@ async fn concurrent_rebinds_never_bind_a_deleted_group() {
     let mut rebinding = Vec::new();
     for id in ids {
         rebinding.push(tokio::spawn(async move {
-            reqwest::Client::new()
+            crate::root::test_plugins::operator_client()
                 .put(format!("http://{addr}/api/v1/admin/keys/{id}"))
                 .json(&json::json!({"group": "team"}))
                 .send()
@@ -664,7 +674,7 @@ async fn mint(addr: std::net::SocketAddr, name: &str, group: Option<&str>) -> St
         Some(g) => json::json!({"name": name, "group": g}),
         None => json::json!({"name": name}),
     };
-    reqwest::Client::new()
+    crate::root::test_plugins::operator_client()
         .post(format!("http://{addr}/api/v1/admin/keys"))
         .json(&body)
         .send()
@@ -673,7 +683,7 @@ async fn mint(addr: std::net::SocketAddr, name: &str, group: Option<&str>) -> St
         .status()
 }
 async fn delete_team(addr: std::net::SocketAddr) -> StatusCode {
-    reqwest::Client::new()
+    crate::root::test_plugins::operator_client()
         .delete(format!("http://{addr}/api/v1/admin/groups/team"))
         .send()
         .await

@@ -64,8 +64,12 @@ impl<'a> StoreJournal<'a> {
         {
             return Err(Error::Authority);
         }
-        replay.observed = base.head;
-        replay.records_seal = base.records_seal;
+        // A replay base newer than `base` (an Ephemeral cut, SEALING-FIX §3.9) is written only by
+        // this journal's owner, trusted as `H@0` is: continue from it, never from cut rows.
+        if base.head.count > replay.floor {
+            replay.observed = base.head;
+            replay.records_seal = base.records_seal;
+        }
         Ok(replay)
     }
 
@@ -87,28 +91,48 @@ impl<'a> StoreJournal<'a> {
         {
             return Err(Error::Authority);
         }
-        let mut replay = Replay {
-            journal: self,
-            target: VerifiedHead {
-                dataset: current.dataset,
-                node: current.node,
-                head: current.head,
-                selected: current.selected.clone(),
-                owner: current.owner.clone(),
-                records_seal: current.records_seal,
-            },
-            observed: prior.head,
-            failed: false,
-            // The live owner appends contiguous originals only.
-            historical: false,
-            records_seal: prior.records_seal,
-            ahead: Default::default(),
-        };
-        while replay.next().await?.is_some() {}
-        if replay.finish()?.records_seal != current.records_seal {
-            return Err(Error::Corrupt);
+        let (mut from, mut seal) = (prior.head, prior.records_seal);
+        let mut restarts = 0u32;
+        loop {
+            let replay = Replay {
+                journal: self,
+                target: VerifiedHead {
+                    dataset: current.dataset,
+                    node: current.node,
+                    head: current.head,
+                    selected: current.selected.clone(),
+                    owner: current.owner.clone(),
+                    records_seal: current.records_seal,
+                },
+                observed: from,
+                failed: false,
+                // The live owner appends contiguous originals only.
+                historical: false,
+                records_seal: seal,
+                ahead: Default::default(),
+                floor: from.count,
+                kept: Vec::new(),
+                base_tail: None,
+            };
+            match replay.to_end().await {
+                Ok(proof) if proof.records_seal == current.records_seal => return Ok(()),
+                Ok(_) => return Err(Error::Corrupt),
+                // A cut moved the base past `from` while the tail was read (SEALING-FIX §3.9): the
+                // base is written only by this owner and trusted as `H@0` is, so the tail is
+                // re-read from it.
+                Err(Error::Rebased) if restarts < super::base::WALK_RESTART_LIMIT => {
+                    restarts += 1;
+                    super::base::count_walk_restart();
+                    let base = self.base().await?.ok_or(Error::Corrupt)?;
+                    if base.head.count > current.head.count {
+                        return Err(Error::Corrupt);
+                    }
+                    (from, seal) = (base.head, base.records_seal);
+                }
+                Err(Error::Rebased) => return Err(Error::Busy),
+                Err(error) => return Err(error),
+            }
         }
-        Ok(())
     }
 
     pub(super) fn selected_predicates(&self, proof: &VerifiedHead) -> Result<Vec<Predicate>> {
@@ -266,12 +290,18 @@ impl<'a> StoreJournal<'a> {
     }
 
     async fn original_at(&self, ordinal: u64) -> Result<(JournalRecord, Secret<Vec<u8>>)> {
-        let value = self
+        let Some(value) = self
             .read(vec![self.address(b'R', ordinal)])
             .await?
             .pop()
             .flatten()
-            .ok_or(Error::Corrupt)?;
+        else {
+            // A row at or below the replay base was cut (SEALING-FIX §3.9), never corrupt.
+            return Err(match self.missing(ordinal).await {
+                Error::Rebased => Error::Truncated,
+                other => other,
+            });
+        };
         let bytes = value.expose(&crate::seal::lend());
         if bytes.len() > self.store.limits().scan_bytes {
             return Err(Error::Budget);
@@ -279,16 +309,19 @@ impl<'a> StoreJournal<'a> {
         Ok((decode_record(self.node, bytes)?, value))
     }
 
+    /// `floor` is the replay base's count: rows at or below it were cut (only on an Ephemeral
+    /// store, which never holds a bridge), so the search starts above it.
     pub(super) async fn bridge_covers(
         &self,
         proof: &VerifiedHead,
+        floor: u64,
         previous: Head,
         current: &JournalRecord,
     ) -> Result<bool> {
         if current.node_seq <= previous.sequence {
             return Ok(false);
         }
-        for ordinal in 1..=proof.head.count {
+        for ordinal in floor.saturating_add(1)..=proof.head.count {
             let (record, _) = self.original_at(ordinal).await?;
             if record.class != RecordClass::ChainBreak {
                 continue;
@@ -307,7 +340,7 @@ impl<'a> StoreJournal<'a> {
             if !(named_after || bridge.after.is_none()) || bridge.before.1 > previous.sequence {
                 continue;
             }
-            for anchor_ordinal in 1..=previous.count {
+            for anchor_ordinal in floor.saturating_add(1)..=previous.count {
                 let (anchor, _) = self.original_at(anchor_ordinal).await?;
                 if anchor.identity() == bridge.before && anchor.hash == current.prev_hash {
                     return Ok(true);
@@ -326,7 +359,31 @@ impl<'a> StoreJournal<'a> {
         if sequence == 0 || sequence > proof.head.sequence {
             return Err(Error::Invalid);
         }
+        let mut restarts = 0u32;
+        loop {
+            match self.locate_once(proof, sequence).await {
+                Err(Error::Rebased) if restarts < super::base::WALK_RESTART_LIMIT => {
+                    restarts += 1;
+                    super::base::count_walk_restart();
+                }
+                Err(Error::Rebased) => return Err(Error::Busy),
+                done => return done,
+            }
+        }
+    }
+
+    /// One pass of [`Self::locate_verified_record`], from the replay base (SEALING-FIX §3.9): a
+    /// sequence at or below the base is `Truncated`.
+    async fn locate_once(&self, proof: &VerifiedHead, sequence: u64) -> Result<(u64, Record)> {
         super::count_replay();
+        let base = self.base().await?;
+        let (observed, records_seal) = match &base {
+            Some(base) if base.head.count > proof.head.count || sequence <= base.head.sequence => {
+                return Err(Error::Truncated)
+            }
+            Some(base) => (base.head, base.records_seal),
+            None => (Head::default(), [0; 32]),
+        };
         // The proof fixes one immutable prefix, not the journal's future tip.
         // Replaying a later selected head here would mistake a valid concurrent
         // append for changed original evidence. Read exactly the proven prefix;
@@ -341,14 +398,17 @@ impl<'a> StoreJournal<'a> {
                 owner: proof.owner.clone(),
                 records_seal: proof.records_seal,
             },
-            observed: Head::default(),
+            observed,
             failed: false,
             historical: true,
-            records_seal: [0; 32],
+            records_seal,
             ahead: Default::default(),
+            floor: observed.count,
+            kept: Vec::new(),
+            base_tail: base.as_ref().map(Base::tail),
         };
         let mut found = None;
-        let mut ordinal = 0u64;
+        let mut ordinal = observed.count;
         while let Some(record) = replay.next().await? {
             ordinal = ordinal.checked_add(1).ok_or(Error::Overflow)?;
             if record.node_seq == sequence {

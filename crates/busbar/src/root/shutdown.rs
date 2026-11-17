@@ -834,6 +834,8 @@ pub(crate) async fn finish(post: PostServe<'_>, drain: &ShutdownDrain) -> i32 {
         .and_then(|book| book.audit.as_ref())
         .and_then(|audit| audit.take_notary())
     {
+        let progress = std::sync::Arc::clone(task.progress());
+        let cut_retained = &progress.journal_cut_retained;
         match drain
             .bounded(Phase::Seal, DrainHandle::adopt(task.stop()), Cut::Seal)
             .await
@@ -849,10 +851,23 @@ pub(crate) async fn finish(post: PostServe<'_>, drain: &ShutdownDrain) -> i32 {
                 if let Some(why) = end.halted {
                     eprintln!("busbar: shutdown audit_notary=halted:{why}");
                 }
+                // SEALING-FIX §3.9: a retained cut keeps its store attempt, so [6] refuses
+                // retirement with `PendingWork` (exit 75); an Ephemeral store loses nothing.
+                if let Some(cut) = end.journal_cut.label() {
+                    eprintln!("busbar: shutdown journal_cut={cut}");
+                }
+                if end.final_staged == Some(false) {
+                    eprintln!("busbar: shutdown audit_final=signer_failed");
+                }
             }
             // Lines are durable and linked; the next process on the host seals the tail.
             Joined::Done(Err(_)) => eprintln!("busbar: shutdown audit_notary=panicked"),
-            Joined::Detached(_) => eprintln!("busbar: shutdown audit_notary=detached"),
+            Joined::Detached(_) => {
+                eprintln!("busbar: shutdown audit_notary=detached");
+                if cut_retained.load(std::sync::atomic::Ordering::Relaxed) {
+                    eprintln!("busbar: shutdown journal_cut=retained");
+                }
+            }
         }
     }
     if let Some((task, fence)) = predecessor {
