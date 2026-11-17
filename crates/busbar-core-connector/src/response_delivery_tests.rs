@@ -170,6 +170,28 @@ fn failed_response_retires_after_cancelled_input_is_joined_without_faking_eof() 
 }
 
 #[test]
+fn idle_wait_retains_binding_until_actual_failed_input_retirement() {
+    let mut ledger = ledger(2, 1);
+    let response = ledger.admit(key(1)).unwrap();
+    ledger.stop(1, ResponseStop::Cancelled).unwrap();
+    ledger.quiescent(1).unwrap();
+    ledger.settle_stopped(1).unwrap();
+    assert_eq!(ledger.next_control(), Some(DeliveryControl::Settled { stream: 1 }));
+    ledger.settled_ack(1).unwrap();
+    let waker = futures::task::noop_waker();
+    let mut cx = Context::from_waker(&waker);
+    assert!(ledger.poll_idle(&mut cx).is_pending());
+    assert!(ledger.has_responses());
+    response.input.retired();
+    assert!(ledger.poll_idle(&mut cx).is_ready());
+    assert!(!ledger.has_responses());
+    assert_eq!(response.watch.snapshot().terminal, Some(DeliveryTerminal::Failed(ResponseStop::Cancelled)));
+    assert!(ledger.admit(key(2)).is_err(), "external handles still retain real slot debt");
+    drop(response);
+    ledger.admit(key(2)).unwrap();
+}
+
+#[test]
 fn dropped_prepared_answer_does_not_consume_offset_or_capacity() {
     let mut ledger = ledger(1, 1);
     ledger.admit(key(1)).unwrap();
