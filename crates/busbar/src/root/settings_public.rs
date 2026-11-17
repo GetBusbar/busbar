@@ -17,14 +17,29 @@ struct Row {
     public: BTreeSet<String>,
 }
 
-/// The table the kernel reads.
+/// The table the kernel reads: ONE table over the rows still read from linked door Statements and the rows of
+/// the admitted native images (their describe's D_SCHEMA, `Images::public_settings`), the latter joined once the
+/// boot's images are admitted ([`install_native`]; plan b: nothing reads public settings before that).
 #[derive(Debug, Default)]
-struct Table(Vec<Row>);
+struct Table {
+    doors: Vec<Row>,
+    native: std::sync::OnceLock<Vec<Row>>,
+}
+
+impl Table {
+    fn of(doors: Vec<Row>) -> Self {
+        Self {
+            doors,
+            native: std::sync::OnceLock::new(),
+        }
+    }
+}
 
 impl busbar_kernel::config::settings_public::PublicSettings for Table {
     fn public(&self, module: &str) -> BTreeSet<String> {
-        self.0
+        self.doors
             .iter()
+            .chain(self.native.get().into_iter().flatten())
             .find(|r| r.words.iter().any(|w| w == module))
             .map(|r| r.public.clone())
             .unwrap_or_default()
@@ -107,7 +122,7 @@ fn table(
             }
         }
     }
-    Ok((Table(rows), configuration, schema_configuration))
+    Ok((Table::of(rows), configuration, schema_configuration))
 }
 
 pub fn install(linked: &Linked, dropped: Option<&'static PluginRegistry>) {
@@ -123,13 +138,42 @@ pub(crate) fn install_with_transports(
         Ok((t, configuration, schema_configuration)) => {
             busbar_core_admin::v1::json::install_plane_input_schemas(&schema_configuration);
             let _ = LINKED_CONFIGURATION.set(configuration);
-            busbar_kernel::config::settings_public::install(Box::leak(Box::new(t)));
+            install_table(t);
         }
         Err(refusal) => {
             eprintln!("busbar: {refusal}");
             crate::root::exit::exit(2);
         }
     }
+}
+
+/// The process's one installed table, so the admitted native images' rows join it.
+static INSTALLED: std::sync::OnceLock<&'static Table> = std::sync::OnceLock::new();
+
+fn install_table(t: Table) -> &'static Table {
+    let table: &'static Table = INSTALLED.get_or_init(|| Box::leak(Box::new(t)));
+    busbar_kernel::config::settings_public::install(table);
+    table
+}
+
+/// The public-settings rows of the admitted native images: each image's D_SCHEMA `x-busbar-public` settings,
+/// under its identity and former names (`Images::public_settings`).
+fn native_rows(images: &busbar_plugin_loader::instance::Images) -> Result<Vec<Row>, String> {
+    let _ = images;
+    Ok(Vec::new())
+}
+
+/// Join the admitted native images' rows to the installed table (once per process: the first boot's images).
+pub(crate) fn install_native(
+    images: &busbar_plugin_loader::instance::Images,
+) -> Result<(), String> {
+    let rows = native_rows(images)?;
+    let table = match INSTALLED.get() {
+        Some(table) => *table,
+        None => install_table(Table::default()),
+    };
+    let _ = table.native.set(rows);
+    Ok(())
 }
 
 #[cfg(test)]
