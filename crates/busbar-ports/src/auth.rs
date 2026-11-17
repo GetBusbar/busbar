@@ -35,13 +35,22 @@ pub struct AuthIn<'a> {
 /// The verified answer, kept as its record bytes: one allocation (the Arc) per uncached verify, none on a
 /// verdict-cache hit (this is the cache value; round 23: the kernel `VerdictCache`, §12.28, rules 1-6). `identity_records()` is passed unchanged as
 /// `PlaneIn::identity` and into hook views (generic ID_* tags, so no re-encode).
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct Identity {
-    recs: Arc<[u8]>,
+    recs: Arc<SecureVec>,
     id_len: u32,
     cache_s: Option<u32>,
     expires_at_s: Option<u64>,
-    replay: Option<(Box<[u8]>, u64)>,
+    replay: Option<(Arc<SecureVec>, u64)>,
+}
+
+impl core::fmt::Debug for Identity {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Identity")
+            .field("identity_bytes", &self.id_len)
+            .field("has_replay", &self.replay.is_some())
+            .finish_non_exhaustive()
+    }
 }
 
 impl Identity {
@@ -106,7 +115,7 @@ impl Identity {
         debug_assert!(written.is_ok(), "a ticket identity fits a Reply");
         let id_len = u32::try_from(w.len()).unwrap_or(0);
         Identity {
-            recs: Arc::from(w.as_bytes()),
+            recs: Arc::new(SecureVec::from(w.as_bytes())),
             id_len,
             cache_s: None,
             expires_at_s: None,
@@ -144,7 +153,7 @@ pub fn decode_verify_ok(records: Records<'_>) -> Result<VerifyOk, RecErr> {
     let mut wanted: Option<&str> = None;
     let mut cache_s: Option<u32> = None;
     let mut expires_at_s: Option<u64> = None;
-    let mut replay: Option<(Box<[u8]>, u64)> = None;
+    let mut replay: Option<(Arc<SecureVec>, u64)> = None;
     let mut any = false;
     let full = |_: Full| RecErr::Size;
     for rec in records {
@@ -194,7 +203,7 @@ pub fn decode_verify_ok(records: Records<'_>) -> Result<VerifyOk, RecErr> {
                     return Err(RecErr::Size);
                 }
                 let ttl_s = head.value.clamp(*REPLAY_TTL_S.start(), *REPLAY_TTL_S.end());
-                replay = Some((Box::from(key), ttl_s));
+                replay = Some((Arc::new(SecureVec::from(key)), ttl_s));
             }
             other => return Err(RecErr::Unknown(other)),
         }
@@ -208,7 +217,7 @@ pub fn decode_verify_ok(records: Records<'_>) -> Result<VerifyOk, RecErr> {
     }
     let id_len = u32::try_from(id_len.unwrap_or(w.len())).map_err(|_| RecErr::Size)?;
     Ok(VerifyOk::Identity(Identity {
-        recs: Arc::from(w.as_bytes()),
+        recs: Arc::new(SecureVec::from(w.as_bytes())),
         id_len,
         cache_s,
         expires_at_s,
