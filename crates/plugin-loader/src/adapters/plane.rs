@@ -1607,7 +1607,13 @@ impl<N: Needs> PlanePort for PlaneAdapter<N> {
             .map_err(PortError::Call)?;
         // Same whole-answer validation and failure translation as pooled piece. No effect escapes
         // until the caller classifies the validated fixed backing and admits its complete answer.
-        self.finish(Call::Piece(from), &answer, &mut |_| {}, None, Some(exchange))?;
+        self.finish(
+            Call::Piece(from),
+            &answer,
+            &mut |_| {},
+            None,
+            Some(exchange),
+        )?;
         Ok(len)
     }
 
@@ -2286,6 +2292,72 @@ mod tests {
         assert_eq!((retry_after_s, backend_status), (Some(30), Some(503)));
         let e = port_error(&scrub, false, 4, "no", (None, None), None);
         assert!(matches!(e, PortError::Refused { code: 4, .. }));
+    }
+
+    #[test]
+    fn selected_channel_requires_one_complete_channel_and_only_facts() {
+        let channel = |out: &mut Reply| {
+            let mut key = Reply::new();
+            key.put_text(g::TEXT, "member").unwrap();
+            out.put_pod_tail(
+                t::CHANNEL,
+                &p::ChanRec {
+                    exchange: 7,
+                    flags: 0,
+                    carrier: p::CARRIER_STDIO,
+                    framing: p::CH_FRAME_NDJSON,
+                },
+                key.as_bytes(),
+            )
+            .unwrap();
+        };
+        let mut valid = Reply::new();
+        channel(&mut valid);
+        assert!(run(Call::Channel, &valid).is_ok());
+        assert!(run(Call::Upstream, &valid).is_err());
+        assert!(run(Call::Channel, &Reply::new()).is_err());
+        for extra in [
+            t::CHANNEL,
+            t::EX_MSG,
+            g::METRIC,
+            t::UP_BODY,
+            t::ATTEMPT,
+            t::STORE,
+        ] {
+            let mut answer = Reply::new();
+            channel(&mut answer);
+            if extra == t::CHANNEL {
+                channel(&mut answer);
+            } else {
+                answer.put(extra, b"").unwrap();
+            }
+            let mut delivered = 0;
+            assert!(decode_answer(
+                Call::Channel,
+                true,
+                Declaration::legacy(),
+                None,
+                None,
+                Records::new(answer.as_bytes()),
+                &mut |_| delivered += 1
+            )
+            .is_err());
+            assert_eq!(delivered, 0, "whole-answer validation precedes publication");
+        }
+        let mut malformed = Reply::new();
+        malformed
+            .put_pod_tail(
+                t::CHANNEL,
+                &p::ChanRec {
+                    exchange: 7,
+                    flags: 0,
+                    carrier: p::CARRIER_STDIO,
+                    framing: p::CH_FRAME_NDJSON,
+                },
+                b"member",
+            )
+            .unwrap();
+        assert!(run(Call::Channel, &malformed).is_err());
     }
 
     #[test]
