@@ -103,7 +103,7 @@ async fn application(core: Arc<CoreStore>) -> Arc<busbar_kernel::state::App> {
         &json::json!({
             "providers": {},
             "models": {},
-            "auth": { "chain": [], "admin_auth": [] },
+            "auth": { "chain": [] },
             "store": { "module": module, "settings": settings },
             "advanced": {  },
         }),

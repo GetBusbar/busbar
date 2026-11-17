@@ -186,7 +186,7 @@ async fn projection_boundary_app(
     crate::dist_root_install::install();
     crate::root::test_plane_registry::register();
     let deploy = busbar_kernel::config::deploy_from_yaml_str(
-        "store: {module: memory}\nauth: {chain: [], admin_auth: []}\nproviders: {}\nmodels: {}\n",
+        "store: {module: memory}\nauth: {chain: []}\nproviders: {}\nmodels: {}\n",
         &crate::root::boot::axis_test_grammar(),
     )
     .expect("the listener deployment parses");

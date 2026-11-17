@@ -65,7 +65,7 @@ async fn a_built_generations_limits_are_in_force_only_once_it_is_live() {
         serde_json::json!({
             "providers": {},
             "models": {},
-            "auth": { "chain": [], "admin_auth": [] },
+            "auth": { "chain": [] },
             "store": { "module": module.clone(), "settings": settings },
             "advanced": {  },
         }),

@@ -249,7 +249,7 @@ async fn a_rejected_configs_limits_do_not_govern_later_connections() {
             "providers": {},
             "models": {},
             "store": { "module": store_module },
-            "auth": { "chain": [], "admin_auth": [] },
+            "auth": { "chain": [] },
         }),
         &crate::root::boot::axis_test_grammar(),
     )

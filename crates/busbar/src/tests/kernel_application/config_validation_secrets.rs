@@ -9,6 +9,8 @@ use crate::root::test_plugins as plugins;
 #[test]
 fn unreferenced_identity_provider_token_is_not_resolved_by_actual_validate() {
     crate::dist_root_install::install();
+    // Bind the linked operator: the config takes the closed default admin chain.
+    busbar_kernel::preflight::install_operator(crate::root::auth_bindings::operator_binding(None));
     let path = crate::root::test_plugins::application_store_library();
     let statement = busbar_plugin_loader::dispatch::rendering_of_library(&path)
         .expect("the actual store statement reads")
@@ -37,7 +39,7 @@ fn unreferenced_identity_provider_token_is_not_resolved_by_actual_validate() {
         "identity-providers": {
             "oracle-keys": { "module": "keys", "token": { "env": "BUSBAR_TEST_NEVER_SET_ORACLE_UNUSED_TOKEN" } }
         },
-        "auth": { "chain": [], "admin_auth": [] },
+        "auth": { "chain": [] },
         "store": { "module": module, "settings": settings },
     });
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);

@@ -37,7 +37,7 @@ async fn oversized_request_413_is_reshaped_on_the_live_stack() {
         serde_json::json!({
             "providers": {},
             "models": {},
-            "auth": { "chain": [], "admin_auth": [] },
+            "auth": { "chain": [] },
             "store": { "module": module, "settings": settings },
             "advanced": {  },
         }),

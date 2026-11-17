@@ -42,7 +42,7 @@ async fn the_actual_builder_wires_the_snapshot_ownership_fields() {
             "public_url": "https://assembly.example",
             "providers": {},
             "models": {},
-            "auth": { "chain": [], "admin_auth": [] },
+            "auth": { "chain": [] },
             "store": { "module": module, "settings": settings },
             "advanced": {  },
         }),

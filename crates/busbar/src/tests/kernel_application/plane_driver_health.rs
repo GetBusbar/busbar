@@ -39,7 +39,7 @@ async fn lane_less_app(opening: Option<bool>) -> Arc<kernel::state::App> {
         serde_json::json!({
             "providers": {},
             "models": {},
-            "auth": { "chain": [], "admin_auth": [] },
+            "auth": { "chain": [] },
             "store": { "module": module, "settings": settings },
             "advanced": {  },
         }),

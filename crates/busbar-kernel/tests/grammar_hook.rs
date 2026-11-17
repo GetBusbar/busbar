@@ -52,7 +52,7 @@ fn scratch(tag: &str, body: &str) -> std::path::PathBuf {
     let config = dir.join("config.yaml");
     std::fs::write(
         &config,
-        format!("providers: {{}}\nmodels: {{}}\nauth:\n  admin_auth: []\n  signing_key: {{{WORD}: signing}}\n{body}"),
+        format!("providers: {{}}\nmodels: {{}}\nauth:\n  signing_key: {{{WORD}: signing}}\n{body}"),
     )
     .expect("config");
     config

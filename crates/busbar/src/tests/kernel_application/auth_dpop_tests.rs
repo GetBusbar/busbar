@@ -65,7 +65,7 @@ async fn no_authorization_server(tag: &str) -> Arc<busbar_kernel::state::App> {
             "corp": { "module": oidc_module, "settings": common::credentials::settings(AUDIENCE) }
         },
         "auth": {
-            "chain": ["corp"], "admin_auth": [], "signing_key": { "file": signing },
+            "chain": ["corp"], "signing_key": { "file": signing },
             "key_ttl": "1h",
             "role_bindings": { "corp": { "eng": { "group": "team" } } }
         },

@@ -44,7 +44,7 @@ async fn actual_ticket_preflight_preserves_unspent_custody_and_invalid_prefix_re
         serde_json::json!({
             "providers": {},
             "models": {},
-            "auth": { "chain": ["keys"], "admin_auth": [], "signing_key": { "file": signing } },
+            "auth": { "chain": ["keys"], "signing_key": { "file": signing } },
             "store": { "module": module, "settings": settings },
             "advanced": {  },
         }),

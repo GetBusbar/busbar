@@ -36,7 +36,7 @@ async fn a_door_route_installed_at_construction_is_answered_ahead_of_the_fallbac
         serde_json::json!({
             "providers": {},
             "models": {},
-            "auth": { "chain": [], "admin_auth": [] },
+            "auth": { "chain": [] },
             "store": { "module": module, "settings": settings },
             "advanced": {  },
         }),

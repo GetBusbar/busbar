@@ -45,7 +45,7 @@ async fn actual_inbound_keys_preserve_resolution_revocation_rotation_and_carrier
         serde_json::json!({
             "providers": {},
             "models": {},
-            "auth": { "chain": ["keys"], "admin_auth": [], "signing_key": { "file": signing } },
+            "auth": { "chain": ["keys"], "signing_key": { "file": signing } },
             "store": { "module": module, "settings": settings },
             "advanced": {  },
         }),

@@ -269,7 +269,7 @@ async fn governed_full(
     let deploy = busbar_kernel::config::deploy_from_deserializer(
         serde_json::json!({
             "providers": {}, "models": {},
-            "auth": {"chain": if keys_chain { vec!["keys"] } else { vec![] }, "admin_auth": [],
+            "auth": {"chain": if keys_chain { vec!["keys"] } else { vec![] },
                 "signing_key": {"file": signing_file}},
             "store": {"module": store_module, "settings": settings},
             "advanced": {}
