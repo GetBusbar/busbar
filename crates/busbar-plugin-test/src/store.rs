@@ -86,7 +86,7 @@ impl StoreHarness {
     pub fn open(&self, case: &StoreCase) -> Result<StoreHandle, OpenError> {
         self.open_for(case, OpenPurpose::Canonical)
     }
-    /// Open an unstamped case with its explicit limits. CONFIG is required, including for unchanged bags.
+    /// Open an unstamped case with its explicit limits. No CONFIG answer means unchanged: core settles the bag (#432).
     pub fn open_converting(&self, case: &StoreCase) -> Result<StoreHandle, OpenError> {
         self.open_for(case, OpenPurpose::ConvertUnstamped)
     }

@@ -75,7 +75,8 @@ pub fn generate() -> String {
     });
     layout!("bb_plane_vt" = busbar_ffi::vt::plane::Vt {
         request=request, upstream=upstream, piece=piece, end=end, rewrite=rewrite,
-        render=render, admin=admin, probe=probe, demux=demux, select_resources=select_resources
+        render=render, admin=admin, probe=probe, demux=demux, select_resources=select_resources,
+        channel=channel
     });
     eq(
         "BB_PLANE_FB_RESOURCE_ADMISSION",
@@ -85,6 +86,8 @@ pub fn generate() -> String {
         "BB_PLANE_M_SELECT_RESOURCES",
         abi::plane::M_SELECT_RESOURCES,
     );
+    eq("BB_PLANE_FB_CHANNEL_OPEN", abi::plane::FB_CHANNEL_OPEN);
+    eq("BB_PLANE_M_CHANNEL", abi::plane::M_CHANNEL);
     eq(
         "BB_RESOURCE_INVENTORY",
         abi::plane::RESOURCE_INVENTORY.into(),

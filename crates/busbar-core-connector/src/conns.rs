@@ -33,6 +33,7 @@ pub(crate) mod program;
 pub mod proxy;
 pub mod proxy_route;
 pub mod publication;
+pub mod raw_progress;
 pub mod registry;
 pub(crate) mod seal;
 pub mod secure_vec;

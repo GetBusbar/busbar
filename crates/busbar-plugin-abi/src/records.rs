@@ -404,7 +404,7 @@ const REPLY_CAP: usize = 16 << 20;
 const REPLY_MIN: usize = 256;
 
 /// The bytes one record takes: head, `len` body bytes, zero padding to the next multiple of 8.
-const fn record_size(len: usize) -> Option<usize> {
+pub const fn record_size(len: usize) -> Option<usize> {
     match HEAD.checked_add(len) {
         Some(n) => match n.checked_add(ALIGN - 1) {
             Some(n) => Some(n & !(ALIGN - 1)),
@@ -937,6 +937,95 @@ impl Writer for Out<'_> {
         f: impl FnOnce(&mut Nested<'_>) -> Result<(), Full>,
     ) -> Result<(), Full> {
         put_nested_in(self, tag, f)
+    }
+}
+
+/// Canonical record encoding into caller-owned, already funded storage. This writer allocates
+/// nothing and never grows. The caller retains the backing's custody and wipes it on abandonment;
+/// only the prefix returned by `as_bytes` is a complete published record sequence.
+pub struct Fixed<'a> {
+    bytes: &'a mut [u8],
+    len: usize,
+}
+impl<'a> Fixed<'a> {
+    pub fn new(bytes: &'a mut [u8]) -> Self {
+        Self { bytes, len: 0 }
+    }
+    pub fn len(&self) -> usize {
+        self.len
+    }
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+    pub fn capacity(&self) -> usize {
+        self.bytes.len()
+    }
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.bytes[..self.len]
+    }
+}
+impl RawWrite for Fixed<'_> {
+    fn written(&self) -> usize {
+        self.len
+    }
+    fn room(&mut self, need: usize) -> Result<(), Full> {
+        self.len
+            .checked_add(need)
+            .filter(|end| *end <= self.bytes.len())
+            .map(|_| ())
+            .ok_or(Full)
+    }
+    fn append(&mut self, bytes: &[u8]) {
+        let end = self.len + bytes.len();
+        self.bytes[self.len..end].copy_from_slice(bytes);
+        self.len = end;
+    }
+    fn patch(&mut self, at: usize, bytes: &[u8]) {
+        self.bytes[at..at + bytes.len()].copy_from_slice(bytes);
+    }
+    fn truncate(&mut self, len: usize) {
+        self.bytes[len..self.len].zeroize();
+        self.len = len;
+    }
+}
+impl Writer for Fixed<'_> {
+    fn put(&mut self, tag: u16, body: &[u8]) -> Result<(), Full> {
+        put_parts(self, tag, &[body])
+    }
+    fn put_u32s(
+        &mut self,
+        tag: u16,
+        fill: impl FnOnce(&mut U32s<'_>) -> Result<(), Full>,
+    ) -> Result<(), Full> {
+        put_u32s_in(self, tag, fill)
+    }
+    fn put_pod<T: Pod>(&mut self, tag: u16, value: &T) -> Result<(), Full> {
+        put_parts(self, tag, &[value.as_bytes()])
+    }
+    fn put_pod_tail<T: Pod>(&mut self, tag: u16, value: &T, tail: &[u8]) -> Result<(), Full> {
+        put_parts(self, tag, &[value.as_bytes(), tail])
+    }
+    fn put_text(&mut self, tag: u16, value: &str) -> Result<(), Full> {
+        put_parts(self, tag, &[value.as_bytes()])
+    }
+    fn put_pair(&mut self, tag: u16, name: &str, value: &[u8]) -> Result<(), Full> {
+        put_pair_in(self, tag, name, value)
+    }
+    fn put_fact(&mut self, key: u32, value: u64) -> Result<(), Full> {
+        put_fact_in(self, key, value)
+    }
+    fn put_fact_text(&mut self, key: u32, value: &str) -> Result<(), Full> {
+        put_fact_text_in(self, key, value)
+    }
+    fn put_metric(&mut self, id: u32, op: u32, value: f64, labels: &[&str]) -> Result<(), Full> {
+        put_metric_in(self, id, op, value, labels)
+    }
+    fn put_nested(
+        &mut self,
+        tag: u16,
+        fill: impl FnOnce(&mut Nested<'_>) -> Result<(), Full>,
+    ) -> Result<(), Full> {
+        put_nested_in(self, tag, fill)
     }
 }
 

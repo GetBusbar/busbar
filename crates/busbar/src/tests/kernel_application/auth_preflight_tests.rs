@@ -20,18 +20,12 @@ fn missing_auth_plugin_is_loud_boot_failure() {
     let dir = plugins::scratch("auth-plugin-missing");
 
     let artifact = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&artifact)
-        .expect("the actual Store statement reads")
-        .expect("the actual Store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual Store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
+    let module = crate::root::test_plugins::native_image(&artifact).name;
+    let manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &artifact,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    manifest.statement = Some(hex::encode(statement));
     let archive = plugins::signed(
         &crate::dist_root_install::release_key(),
         manifest,

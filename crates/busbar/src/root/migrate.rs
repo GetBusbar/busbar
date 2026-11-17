@@ -207,6 +207,33 @@ pub(crate) async fn finish(
     finish_settled(Vec::new(), core).await
 }
 
+/// LEGACY-KEYFILE-MARKER r2 §3: the held plan's side-table marks, by auth instance name: the pointers
+/// whose slot carries its 1.5.5 value on this one converting open. Never a value. A stamped boot has none.
+///
+/// # Errors
+/// CONFIG when a mark names an instance path other than `auth.<name>`.
+pub(crate) fn legacy_marks() -> Result<Vec<(String, Vec<String>)>, String> {
+    let Some(plan) = PENDING.get() else {
+        return Ok(Vec::new());
+    };
+    let mut by_name: std::collections::BTreeMap<String, Vec<String>> = Default::default();
+    for mark in plan.legacy_marks() {
+        let [kind, name] = mark.instance.as_slice() else {
+            return Err("CONFIG: a 1.5.5 credential mark names no instance".to_owned());
+        };
+        if kind != "auth" {
+            return Err(format!(
+                "CONFIG: a 1.5.5 credential mark names `{kind}`, which has no marked settlement"
+            ));
+        }
+        by_name
+            .entry(name.clone())
+            .or_default()
+            .push(mark.pointer.clone());
+    }
+    Ok(by_name.into_iter().collect())
+}
+
 /// Whether this boot runs a stamped config.yaml (or none): no plan is held. Step 4's final records
 /// commit then carries MIGRATION_COMPLETED, else RECORDS_MIGRATED (§3 4b).
 pub(crate) fn stamped() -> bool {
@@ -379,6 +406,19 @@ pub(crate) fn admit_for_host(n: u64) -> Result<(), String> {
         .cloned()
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")));
     admit_answer(n, busbar_kernel::appbuild::bootstrap_at_rest(), &dir)
+}
+
+/// The native Store-open operation's exact core-owned refusal, using its retained resolution verdict.
+pub(crate) fn native_admission_refusal(n: u64, verdict: Result<bool, String>) -> String {
+    let dir = CONFIG_DIR
+        .get()
+        .cloned()
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")));
+    admit_answer(n, Some(verdict), &dir)
+        .err()
+        .unwrap_or_else(|| {
+            "CONFIG: Store recovery admission refused; nothing was written".to_owned()
+        })
 }
 
 /// The gate's verdict for `n` rows, from the bootstrap's at-rest verdict `keys` (`None` = no

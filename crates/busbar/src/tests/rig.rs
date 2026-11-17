@@ -107,18 +107,12 @@ pub(super) fn run_isolated(child_var: &str, witness: &str, isolation: Isolation)
 pub(super) fn actual_store(tag: &str) -> (String, std::path::PathBuf, serde_json::Value) {
     crate::dist_root_install::install();
     let store_library = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&store_library)
-        .expect("the actual Store statement reads")
-        .expect("the actual Store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the Store statement is valid")
-        .name;
-    let mut manifest = crate::root::test_plugins::manifest(
+    let module = crate::root::test_plugins::native_image(&store_library).name;
+    let manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &store_library,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    manifest.statement = Some(hex::encode(statement));
     let directory = crate::root::test_plugins::scratch(tag);
     let archive = crate::root::test_plugins::signed(
         &crate::dist_root_install::release_key(),

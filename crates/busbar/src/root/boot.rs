@@ -586,25 +586,6 @@ pub(crate) fn configured_root_binds(
     Ok(binds)
 }
 
-pub(crate) fn candidate_listener_needs(
-    app: &busbar_kernel::state::App,
-    sections: &std::collections::BTreeMap<&'static str, busbar_contract::yaml::Value>,
-    root: Vec<InboundBind>,
-) -> Option<Result<ListenerNeeds, String>> {
-    let registry = super::loader::rows::registry_of(app.hook_env.registry.as_ref())?;
-    Some(
-        listener_candidates_from(&crate::LINKED, Some(registry)).and_then(|candidates| {
-            listener_projection(
-                candidates,
-                &app.hook_registry,
-                &app.export_defs,
-                sections,
-                root,
-            )
-        }),
-    )
-}
-
 fn listener_projection(
     candidates: Vec<Candidate>,
     hooks: &std::collections::HashMap<String, busbar_kernel::config::HookCfg>,
@@ -1792,17 +1773,11 @@ pub(crate) fn open_dropped_transports(
                             .ok_or_else(|| format!("`{}` states no transport tail", plugin.name()))?;
                         #[cfg(test)]
                         let key = facts.claims.first().copied().unwrap_or_default();
-                        let claims = facts.claims;
-                        let composes_over = facts.composes_over;
-                        let offered = facts.offered;
                         let upgrades = facts.upgrades;
                         let door = crate::root::doors::served(plugin, settings)?;
                         Ok(crate::root::registry::DroppedDoor {
                             #[cfg(test)]
                             key,
-                            claims,
-                            composes_over,
-                            offered,
                             upgrades,
                             door,
                         })
@@ -2097,13 +2072,26 @@ impl BookPreparation {
             now,
         )
         .await?;
-        // SEALING-FIX §3.3, §5.3: the key's signing power goes to the two signer threads; the book
-        // keeps only the public half. The notary starts from the resumed head, read before any
-        // recovery line is appended, once serving begins (`main`).
+        // Preserve the genuinely verified Bootstrap public half before transferring signing
+        // authority. The exact live Notary key selects it; no active-key/cardinality fallback.
+        let notary = busbar_kernel_audit::Notary::new(bound.notary);
+        let trusted_bootstrap_key = bound
+            .verification_keys
+            .get(notary.key_id())
+            .cloned()
+            .ok_or("the live Notary has no verified Bootstrap public key")?;
+        // Signer threads may serve boot recovery; the live notary baseline is bound only
+        // after all recovery appends below and before NodeBook can be published.
+        let audit_verification_keys = Arc::new(bound.verification_keys);
+        super::durability::response_intent::verify_history(
+            self.durability.as_ref().unwrap(),
+            audit_verification_keys.as_ref(),
+        )
+        .map_err(|error| format!("response intent history: {error}"))?;
         let (audit, checkpoint) = {
             let durability = self.durability.as_ref().unwrap();
             let (services, checkpoint) = super::durability::audit_services::AuditServices::spawn(
-                busbar_kernel_audit::Notary::new(bound.notary),
+                notary,
                 busbar_kernel_audit::BootstrapSigner::new(bound.bootstrap),
                 durability.record.node(),
                 durability.journal.clone(),
@@ -2197,16 +2185,44 @@ impl BookPreparation {
         }
         super::durability::bind_amendments(shared, &app.amendments).await?;
         super::measurements::install(app)?;
+        {
+            let recovered = shared.lock().unwrap_or_else(|poison| poison.into_inner());
+            audit
+                .bind_original_bootstrap(&recovered, trusted_bootstrap_key)
+                .map_err(|error| format!("original audit binding: {error}"))?;
+        }
         let token = self.token.take().unwrap();
         let verb_store = super::durability::node_verb_store(shared.clone(), token, store);
-        self.phase = BookPhase::Ready;
-        Ok(super::durability::NodeBook {
+        let mut book = super::durability::NodeBook {
+            audit_verification_keys,
+            response_intents: None,
             durability: self.shared.take().unwrap(),
             runtime_journal: self.journal.take().unwrap(),
             node_lease: self.node_lease.take(),
             verb_store,
-            audit: Some(audit),
-        })
+            audit: Some(Arc::clone(&audit)),
+        };
+        if !book.runtime_journal.is_bound_to(&self.core) {
+            return Err("response intent journal belongs to another Store attachment".into());
+        }
+        let incarnation = book
+            .durability
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .incarnation;
+        book.response_intents = Some(
+            super::durability::response_intent::ResponseIntentService::new(
+                Arc::clone(&book.runtime_journal),
+                incarnation,
+                book.audit_verification_keys.as_ref().clone(),
+                audit
+                    .take_response_intent_handle()
+                    .ok_or("response intent signer was already transferred")?,
+            )
+            .map_err(|error| error.to_string())?,
+        );
+        self.phase = BookPhase::Ready;
+        Ok(book)
     }
 }
 async fn bind_boot_keyset(

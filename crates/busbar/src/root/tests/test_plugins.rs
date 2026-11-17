@@ -339,6 +339,44 @@ pub(crate) fn trusted_config_with_key(
     config
 }
 
+/// A native MIN-3 image's stamped identity and its header's ordered `former_names`.
+pub struct NativeImage {
+    pub name: String,
+    pub version: String,
+    pub former: Vec<String>,
+}
+
+/// The identity of the native image at `path` (the application Store is a MIN-3 image: its stamp,
+/// not a door Statement, names it).
+pub fn native_image(path: &Path) -> NativeImage {
+    let bytes =
+        busbar_plugin_loader::pack_native::read_image(path).expect("the native image reads");
+    let (name, version, former) = busbar_plugin_loader::pack_native::identity(&bytes)
+        .expect("the image is a native MIN-3 image");
+    NativeImage {
+        name,
+        version,
+        former,
+    }
+}
+
+/// A `kind` manifest for the native image at `path`, completed from its stamp and header as
+/// `busbar pack` completes it: its alias is the header's first former name.
+pub fn native_manifest(kind: &str, path: &Path, publisher: &str) -> Manifest {
+    let bytes =
+        busbar_plugin_loader::pack_native::read_image(path).expect("the native image reads");
+    let image = native_image(path);
+    let mut m = manifest(kind, &image.name, publisher);
+    m.version = image.version;
+    m.alias = image
+        .former
+        .first()
+        .cloned()
+        .expect("a native image states its alias among its former_names");
+    busbar_plugin_loader::pack_native::complete(&bytes, m, None)
+        .expect("the native manifest completes from its stamp and header")
+}
+
 pub fn manifest(kind: &str, name: &str, publisher: &str) -> Manifest {
     Manifest {
         name: name.into(),
@@ -560,6 +598,14 @@ pub fn transport_cdylib_under(keys: &[&str]) -> Option<(Vec<u8>, &'static str)> 
         }
         Some((std::fs::read(&p).ok()?, key))
     })
+}
+
+/// The loader's `native_schema_bomb` example: a MIN-3 store whose describe answers a recursion-bomb D_SCHEMA.
+pub fn native_schema_bomb_path() -> Option<PathBuf> {
+    let file = plugin_library_filename("native_schema_bomb");
+    libraries()
+        .into_iter()
+        .find(|p| p.file_name().is_some_and(|n| n == file.as_str()))
 }
 
 pub fn neutral_frame_door_bytes() -> Option<Vec<u8>> {

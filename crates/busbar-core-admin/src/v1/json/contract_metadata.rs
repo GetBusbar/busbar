@@ -208,6 +208,10 @@ pub(super) fn complete(paths: &mut Map<String, Value>, schemas: &mut Map<String,
             {
                 for response in responses.values_mut() {
                     response["headers"]["Cache-Control"] = json!({"description":"Administrative responses, including credential issuance and replay, must not be stored.","schema":{"type":"string","const":"no-store"}});
+                    // ADMIN-API-1.6-ONE-MODEL section 7: the correlation every answer carries.
+                    response["headers"]["X-Request-Id"] = json!({"description":"The request id the engine minted for this request; equals request_id in an error body and on the request's audit rows. A client X-Request-Id never replaces it.","schema":{"type":"string"}});
+                    response["headers"]["X-Client-Request-Id"] = json!({"description":"The client's own X-Request-Id, echoed when it was 1 to 128 of [A-Za-z0-9._:-] (kept on the request's audit rows as client_request_id); absent otherwise.","schema":{"type":"string","pattern":"^[A-Za-z0-9._:-]{1,128}$"}});
+                    response["headers"]["traceparent"] = json!({"description":"W3C Trace Context: present when the request carried a valid traceparent; the same trace id and flags, naming the admin span.","schema":{"type":"string","pattern":"^00-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$"}});
                 }
             }
         }

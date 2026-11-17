@@ -38,99 +38,119 @@ impl Framing {
     }
 }
 
-/// A message grew past [`MAX_MESSAGE`] before it ended.
+/// A message exceeded its bound or its original account could not fund framing storage.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Overlong;
 
-/// Splits a byte stream into messages.
-#[derive(Debug)]
+/// Splits a byte stream while retaining the original general storage owner through every frame.
 pub struct Framer {
     framing: Framing,
-    /// Bytes of the line in progress.
-    line: Vec<u8>,
-    /// SSE: the event in progress.
-    name: Vec<u8>,
-    data: Vec<u8>,
+    source: busbar_contract::storage::StorageSource,
+    line: crate::limits::output::OutputBuffer,
+    name: crate::limits::output::OutputBuffer,
+    data: crate::limits::output::OutputBuffer,
     has_data: bool,
 }
 
 impl Framer {
-    #[must_use]
-    pub fn new(framing: Framing) -> Self {
-        Self {
+    pub fn new(
+        framing: Framing,
+        source: busbar_contract::storage::StorageSource,
+    ) -> Result<Self, Overlong> {
+        use crate::limits::output::OutputBuffer;
+        Ok(Self {
             framing,
-            line: Vec::new(),
-            name: Vec::new(),
-            data: Vec::new(),
+            line: OutputBuffer::with_source(&source, 0).map_err(|_| Overlong)?,
+            name: OutputBuffer::with_source(&source, 0).map_err(|_| Overlong)?,
+            data: OutputBuffer::with_source(&source, 0).map_err(|_| Overlong)?,
+            source,
             has_data: false,
-        }
+        })
     }
 
-    /// The messages `bytes` completes, in order.
-    ///
-    /// # Errors
-    /// A message is longer than [`MAX_MESSAGE`].
-    pub fn push(&mut self, bytes: &[u8]) -> Result<Vec<Box<[u8]>>, Overlong> {
+    /// Consume at most one completed message. The caller retains the charged read backing while
+    /// delivering it; there is no uncharged intermediate vector of completed frame descriptors.
+    pub fn feed(&mut self, bytes: &mut &[u8]) -> Result<Option<bytes::Bytes>, Overlong> {
+        use crate::limits::output::OutputBuffer;
+        if self.framing == Framing::None {
+            if bytes.len() > MAX_MESSAGE {
+                return Err(Overlong);
+            }
+            if bytes.is_empty() {
+                return Ok(None);
+            }
+            let mut out =
+                OutputBuffer::with_source(&self.source, bytes.len()).map_err(|_| Overlong)?;
+            out.write_bytes(bytes).map_err(|_| Overlong)?;
+            *bytes = &[];
+            return out.into_bytes().map(Some).map_err(|_| Overlong);
+        }
+        while !bytes.is_empty() {
+            let end = bytes
+                .iter()
+                .position(|byte| *byte == b'\n')
+                .unwrap_or(bytes.len());
+            if self
+                .line
+                .as_ref()
+                .len()
+                .checked_add(end)
+                .is_none_or(|len| len > MAX_MESSAGE)
+            {
+                return Err(Overlong);
+            }
+            self.line.write_bytes(&bytes[..end]).map_err(|_| Overlong)?;
+            *bytes = &bytes[end..];
+            if bytes.is_empty() {
+                return Ok(None);
+            }
+            *bytes = &bytes[1..];
+            let fresh = OutputBuffer::with_source(&self.source, 0).map_err(|_| Overlong)?;
+            let mut line = std::mem::replace(&mut self.line, fresh);
+            if line.as_ref().last() == Some(&b'\r') {
+                line.truncate(line.as_ref().len() - 1);
+            }
+            if self.framing == Framing::Ndjson {
+                if !line.as_ref().iter().all(u8::is_ascii_whitespace) {
+                    return line.into_bytes().map(Some).map_err(|_| Overlong);
+                }
+            } else if let Some(message) = self.sse_line(line.as_ref())? {
+                return Ok(Some(message));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Test convenience over the same streaming parser; production never collects uncharged frames.
+    #[cfg(test)]
+    pub fn push(&mut self, mut bytes: &[u8]) -> Result<Vec<bytes::Bytes>, Overlong> {
         let mut out = Vec::new();
-        match self.framing {
-            Framing::None => {
-                if bytes.len() > MAX_MESSAGE {
-                    return Err(Overlong);
-                }
-                if !bytes.is_empty() {
-                    out.push(bytes.into());
-                }
-            }
-            Framing::Ndjson | Framing::Sse => {
-                for &byte in bytes {
-                    if byte != b'\n' {
-                        self.line.push(byte);
-                        if self.line.len() > MAX_MESSAGE {
-                            return Err(Overlong);
-                        }
-                        continue;
-                    }
-                    let mut line = std::mem::take(&mut self.line);
-                    if line.last() == Some(&b'\r') {
-                        line.pop();
-                    }
-                    match self.framing {
-                        Framing::Ndjson => {
-                            if !line.iter().all(u8::is_ascii_whitespace) {
-                                out.push(line.into());
-                            }
-                        }
-                        _ => {
-                            if let Some(message) = self.sse_line(&line)? {
-                                out.push(message);
-                            }
-                        }
-                    }
-                }
-            }
+        while let Some(message) = self.feed(&mut bytes)? {
+            out.push(message);
         }
         Ok(out)
     }
 
-    /// The stream ended: the last NDJSON line that had no terminator is a message; an event that was not ended by a
-    /// blank line is not.
-    #[must_use]
-    pub fn finish(&mut self) -> Option<Box<[u8]>> {
-        let line = std::mem::take(&mut self.line);
-        match self.framing {
-            Framing::Ndjson if !line.iter().all(u8::is_ascii_whitespace) => Some(line.into()),
-            _ => None,
+    /// An unterminated NDJSON line is a final message; an incomplete SSE event is not.
+    pub fn finish(&mut self) -> Result<Option<bytes::Bytes>, Overlong> {
+        use crate::limits::output::OutputBuffer;
+        let fresh = OutputBuffer::with_source(&self.source, 0).map_err(|_| Overlong)?;
+        let line = std::mem::replace(&mut self.line, fresh);
+        if self.framing == Framing::Ndjson && !line.as_ref().iter().all(u8::is_ascii_whitespace) {
+            line.into_bytes().map(Some).map_err(|_| Overlong)
+        } else {
+            Ok(None)
         }
     }
 
-    fn sse_line(&mut self, line: &[u8]) -> Result<Option<Box<[u8]>>, Overlong> {
+    fn sse_line(&mut self, line: &[u8]) -> Result<Option<bytes::Bytes>, Overlong> {
         if line.is_empty() {
-            return Ok(self.dispatch());
+            return self.dispatch();
         }
         if line[0] == b':' {
             return Ok(None);
         }
-        let (field, value) = match line.iter().position(|b| *b == b':') {
+        let (field, value) = match line.iter().position(|byte| *byte == b':') {
             Some(at) => {
                 let value = &line[at + 1..];
                 (&line[..at], value.strip_prefix(b" ").unwrap_or(value))
@@ -139,39 +159,66 @@ impl Framer {
         };
         match field {
             b"data" => {
-                if self.has_data {
-                    self.data.push(b'\n');
-                }
-                self.has_data = true;
-                self.data.extend_from_slice(value);
-                if self.data.len() > MAX_MESSAGE {
+                let needed = self
+                    .data
+                    .as_ref()
+                    .len()
+                    .checked_add(usize::from(self.has_data))
+                    .and_then(|len| len.checked_add(value.len()))
+                    .ok_or(Overlong)?;
+                if needed > MAX_MESSAGE {
                     return Err(Overlong);
                 }
+                if self.has_data {
+                    self.data.write_bytes(b"\n").map_err(|_| Overlong)?;
+                }
+                self.has_data = true;
+                self.data.write_bytes(value).map_err(|_| Overlong)?;
             }
             b"event" => {
                 self.name.clear();
-                self.name.extend_from_slice(value);
+                self.name.write_bytes(value).map_err(|_| Overlong)?;
             }
             _ => {}
         }
         Ok(None)
     }
 
-    fn dispatch(&mut self) -> Option<Box<[u8]>> {
-        let name = std::mem::take(&mut self.name);
-        let data = std::mem::take(&mut self.data);
-        let had = std::mem::take(&mut self.has_data);
-        if !had {
-            return None;
+    fn dispatch(&mut self) -> Result<Option<bytes::Bytes>, Overlong> {
+        use crate::limits::output::OutputBuffer;
+        let name = std::mem::replace(
+            &mut self.name,
+            OutputBuffer::with_source(&self.source, 0).map_err(|_| Overlong)?,
+        );
+        let data = std::mem::replace(
+            &mut self.data,
+            OutputBuffer::with_source(&self.source, 0).map_err(|_| Overlong)?,
+        );
+        if !std::mem::take(&mut self.has_data) {
+            return Ok(None);
         }
-        if name.is_empty() || name == b"message" {
-            return Some(data.into());
+        if name.as_ref().is_empty() || name.as_ref() == b"message" {
+            return data.into_bytes().map(Some).map_err(|_| Overlong);
         }
-        let mut message = b"event: ".to_vec();
-        message.extend_from_slice(&name);
-        message.extend_from_slice(b"\ndata: ");
-        message.extend_from_slice(&data);
-        Some(message.into())
+        let len = name
+            .as_ref()
+            .len()
+            .checked_add(data.as_ref().len())
+            .and_then(|len| len.checked_add(14))
+            .ok_or(Overlong)?;
+        if len > MAX_MESSAGE {
+            return Err(Overlong);
+        }
+        let mut message = OutputBuffer::with_source(&self.source, len).map_err(|_| Overlong)?;
+        for bytes in [
+            b"event: ".as_slice(),
+            name.as_ref(),
+            b"\ndata: ".as_slice(),
+            data.as_ref(),
+        ] {
+            message.write_bytes(bytes).map_err(|_| Overlong)?;
+        }
+        message.into_bytes().map(Some).map_err(|_| Overlong)
     }
 }
 

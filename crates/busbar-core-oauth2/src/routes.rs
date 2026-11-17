@@ -302,8 +302,10 @@ pub(super) fn session_cookies(identity: &crate::config::AsIdentity, id: &str) ->
 
 pub(crate) async fn consent_submit(
     busbar_kernel::state::CurrentApp(app): busbar_kernel::state::CurrentApp,
-    headers: axum::http::HeaderMap,
-    axum::extract::Form(form): axum::extract::Form<ConsentForm>,
+    busbar_kernel::inbound::http_projection::ProjectedForm {
+        headers,
+        value: form,
+    }: busbar_kernel::inbound::http_projection::ProjectedForm<ConsentForm>,
 ) -> Response {
     let Some(plane) = as_plane(&app) else {
         return not_found();

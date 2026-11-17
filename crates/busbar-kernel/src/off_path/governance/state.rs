@@ -225,12 +225,14 @@ pub(crate) fn state_sweep_budget_shard(
     map.retain(|id, c| {
         if c.window_start != 0 {
             return c.correction.is_some()
+                || c.fee_obligations != 0
                 || c.dirty
                 || c.flushing != 0
                 || c.window_start.saturating_add(max_window) > now;
         }
 
         c.correction.is_some()
+            || c.fee_obligations != 0
             || cost.bucket_enforces_a_cap(id)
             || c.dirty
             || c.flushing != 0

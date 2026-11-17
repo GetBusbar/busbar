@@ -46,13 +46,6 @@ impl PluginRows for PluginRegistry {
         skipped_rows(self)
     }
 
-    fn store_door(
-        &self,
-        name_or_alias: &str,
-    ) -> Result<busbar_contract::persistence::axis::StoreDoor, String> {
-        PluginRegistry::store_door(self, name_or_alias)
-    }
-
     fn secret_refusal(&self, name_or_alias: &str) -> String {
         PluginRegistry::secret_refusal(self, name_or_alias)
     }

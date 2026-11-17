@@ -396,7 +396,7 @@ fn mount_one_admin_spec(
             axum::Extension<busbar_kernel::host_services::TrustDecisionAuthority>,
         >,
               axum::extract::RawQuery(query): axum::extract::RawQuery,
-              headers: axum::http::HeaderMap,
+              headers: busbar_kernel::inbound::http_projection::AdminHeaders,
               body: axum::body::Bytes| {
             let handler = handler.clone();
             async move {
@@ -694,6 +694,7 @@ fn with_config_etag(mut resp: Response, version: u64) -> Response {
 
 mod config_document;
 mod config_tree;
+mod instance_settings;
 pub(crate) mod kinds;
 mod plane_input_schemas;
 pub mod trust_inventory;
@@ -704,6 +705,8 @@ mod config_forms;
 #[cfg(feature = "openapi-schema")]
 mod contract_metadata;
 pub mod cursor;
+#[cfg(feature = "openapi-schema")]
+mod evolution;
 pub(crate) mod generation;
 mod hook_attachments;
 pub(crate) use hook_attachments::attachments_of;

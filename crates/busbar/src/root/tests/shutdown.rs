@@ -304,6 +304,7 @@ impl Fixture {
             .key("work")
             .expect("test meter class registered");
         let audit = crate::root::durability::RunningAudit {
+            selected_identity: None,
             incarnation: 7,
             principal: self.seen.key.id.clone(),
             op_class: "shutdown.drain".into(),

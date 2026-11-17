@@ -12,10 +12,7 @@ use busbar_contract::abi::mechanism::rendering::{read, Read, ReadNeed};
 use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::plugin::Kind;
 
-use crate::dispatch::kinds::{
-    auth::Auth, export::Export, hook::Hook, plane::Plane, store_v4::StoreV4 as Store,
-    transport::Transport,
-};
+use crate::dispatch::kinds::plane::Plane;
 use crate::dispatch::{
     load_dropped_bytes, load_linked, Adopter, Bind, ConnTable, EnvelopeSink, LinkedRow, Plugin,
     PluginLogConfig,
@@ -592,30 +589,25 @@ pub fn load_planes(
     max_inflight_cap: u32,
     conns: ConnTable,
 ) -> Result<Vec<(String, Plugin<Plane>)>, String> {
-    let selected: Vec<Selected> = doors
+    doors
         .iter()
-        .enumerate()
-        .map(|(candidate, c)| Selected {
-            candidate,
-            instance: c.name.clone(),
-        })
-        .collect();
-    let loaded = load(&LoadRequest {
-        candidates: doors,
-        selected: &selected,
-        logs,
-        metrics,
-        dispatcher,
-        max_inflight_cap,
-        conns,
-        opening: None,
-    })?;
-    loaded
-        .bound
-        .into_iter()
-        .map(|(instance, bound)| match bound {
-            Bound::Plane(p) => Ok((instance, p)),
-            _ => Err(format!("{instance}: a plane door states another kind")),
+        .map(|c| {
+            let instance = c.name.clone();
+            if c.kind != KindCode::Plane {
+                return Err(format!("{instance}: a plane door states another kind"));
+            }
+            let sink = logs
+                .sink(&instance, c.kind, metrics.clone())
+                .map_err(|e| format!("{instance}: {e}"))?;
+            let bind = Bind {
+                instance: Arc::from(instance.as_str()),
+                max_inflight_cap,
+                sink: Arc::new(sink),
+                dispatcher: dispatcher.clone(),
+                conns: conns.clone(),
+            };
+            let plane = open_candidate::<Plane>(c, bind).map_err(|e| format!("{instance}: {e}"))?;
+            Ok((instance, plane))
         })
         .collect()
 }
@@ -771,167 +763,6 @@ pub fn inbound(
     Ok(out)
 }
 
-/// One bound instance, of its kind.
-#[derive(Debug)]
-#[allow(missing_docs)]
-pub enum Bound {
-    Store(Plugin<Store>),
-    Auth(Plugin<Auth>),
-    Hook(Plugin<Hook>),
-    Export(Plugin<Export>),
-    Plane(Plugin<Plane>),
-    Transport(Plugin<Transport>),
-}
-
-pub struct LoadRequest<'a> {
-    pub candidates: &'a [Candidate],
-
-    pub selected: &'a [Selected],
-
-    pub logs: &'a PluginLogConfig,
-
-    pub metrics: Arc<dyn EnvelopeSink>,
-
-    pub dispatcher: Adopter,
-
-    pub max_inflight_cap: u32,
-
-    pub conns: ConnTable,
-
-    pub opening: Option<Opening<'a>>,
-}
-
-/// THE AUTH OPEN AND READY at the one load: every bound
-/// auth instance is opened with its settings block from `doc`, then its `ready` is awaited on
-/// `dispatcher` (the one that adopts it) before the load answers, so before any listener binds. An
-/// instance that will not open or will not be ready refuses the boot with the plugin's own text,
-/// as 1.5.5 refused a boot whose discovery failed.
-#[derive(Clone, Copy)]
-pub struct Opening<'a> {
-    /// The plan's document, where each instance's settings block lives.
-    pub doc: &'a serde_json::Value,
-    /// The dispatcher every instance is adopted by ([`LoadRequest::dispatcher`] is its adopter).
-    pub dispatcher: &'a crate::dispatch::Dispatcher,
-    /// The secret kind's resolver: each settings key the Statement names in `secret_refs` is
-    /// resolved through it, in that order, into `OpenIn::secrets`, and stripped from the settings
-    /// `open` is handed.
-    pub secrets: &'a dyn busbar_contract::secret::SecretResolve,
-    /// Source shorthand admitted from the loaded source declarations.
-    pub sources: &'a busbar_contract::secret_ref::Sugars,
-    /// The config-time proof the boot that loads holds (THE DESIGN §11.11 R4): every declared
-    /// secret resolves through it, so a source that reads the disk answers on the host's lane.
-    pub scope: &'a busbar_contract::config_time::ConfigScope,
-}
-
-/// What [`load`] bound: `(instance, bound)`, in selection order.
-#[derive(Debug, Default)]
-pub struct Loaded {
-    /// The bound instances.
-    pub bound: Vec<(String, Bound)>,
-}
-
-pub fn load(req: &LoadRequest<'_>) -> Result<Loaded, String> {
-    let mut loaded = Loaded::default();
-    for s in req.selected {
-        let c = req
-            .candidates
-            .get(s.candidate)
-            .ok_or_else(|| format!("{}: no such candidate", s.instance))?;
-        let sink = req
-            .logs
-            .sink(&s.instance, c.kind, req.metrics.clone())
-            .map_err(|e| format!("{}: {e}", s.instance))?;
-        let bind = Bind {
-            instance: Arc::from(s.instance.as_str()),
-            max_inflight_cap: req.max_inflight_cap,
-            sink: Arc::new(sink),
-            dispatcher: req.dispatcher.clone(),
-            conns: req.conns.clone(),
-        };
-        let bound = bind_one(c, bind).map_err(|e| format!("{}: {e}", s.instance))?;
-        if let (Some(opening), Bound::Auth(plugin)) = (req.opening, &bound) {
-            open_ready(plugin, opening, c, &s.instance)
-                .map_err(|e| format!("{}: {e}", s.instance))?;
-        }
-        loaded.bound.push((s.instance.clone(), bound));
-    }
-    Ok(loaded)
-}
-
-fn open_ready<K: crate::dispatch::Kind>(
-    plugin: &Plugin<K>,
-    opening: Opening<'_>,
-    c: &Candidate,
-    instance: &str,
-) -> Result<(), String> {
-    use busbar_contract::abi::mechanism::call::{Blob, Outcome, BLOB_JSON};
-    use busbar_contract::abi::mechanism::lifecycle::{slot, OpenIn, OpenOut};
-    use busbar_contract::abi::sdk::door::{blank_in, blank_out};
-
-    let keys = read(&c.stated).map(|r| r.secret_refs).map_err(|e| {
-        format!(
-            "the Statement rendering does not read back at byte {}",
-            e.at
-        )
-    })?;
-    let (block, base) = instance_settings(opening.doc, K::CODE, instance)
-        .map(|(value, base)| {
-            (
-                busbar_contract::plugin_settings::ResolvedSettings::from(value.clone()),
-                base,
-            )
-        })
-        .unwrap_or_else(|| (Default::default(), "settings".to_owned()));
-    let (remaining, held) = busbar_contract::auth_calls::prepare_references(
-        &block,
-        &keys,
-        opening.sources,
-        &c.name,
-        &base,
-        opening.secrets,
-        opening.scope,
-    )?;
-    let settings = remaining.encode().map_err(|error| error.to_string())?;
-    let seal = opening
-        .dispatcher
-        .seal()
-        .ok_or("auth opening requires the host settings seal")?;
-    let blobs: Vec<_> = held
-        .iter()
-        .map(|secret| {
-            let bytes = secret.expose(seal);
-            Blob {
-                ptr: bytes.as_ptr(),
-                len: bytes.len(),
-                fmt: busbar_contract::abi::mechanism::call::BLOB_OCTETS,
-                flags: busbar_contract::abi::mechanism::call::BLOB_SECRET,
-            }
-        })
-        .collect();
-    let settings = settings.expose(seal);
-    let mut i: OpenIn = blank_in();
-    i.settings = Blob {
-        ptr: settings.as_ptr(),
-        len: settings.len(),
-        fmt: BLOB_JSON,
-        flags: 0,
-    };
-    i.secrets = blobs.as_ptr();
-    i.secrets_len = blobs.len();
-    i.generation = 1;
-    let mut f = crate::dispatch::Frame::new(i, blank_out::<OpenOut>());
-    let opened = plugin.call(slot::OPEN, &mut f);
-    let lease = crate::dispatch::lifecycle::AnswerLease::new(plugin, opened.lease);
-
-    drop(blobs);
-    drop(held);
-    if opened.outcome != Outcome::Ready {
-        return Err(opened.open_failure(plugin.name()));
-    }
-    drop(lease);
-    plugin.ready(opening.dispatcher, crate::dispatch::ready::READY_DEADLINE)
-}
-
 /// Open a candidate through its compiled-in row or its dropped library bytes.
 pub fn open_candidate<K: crate::dispatch::Kind>(
     c: &Candidate,
@@ -941,26 +772,6 @@ pub fn open_candidate<K: crate::dispatch::Kind>(
         Origin::Linked(row) => load_linked::<K>(row, bind),
         Origin::Dropped { file, bytes } => load_dropped_bytes::<K>(bytes, file, &c.stated, bind),
     }
-}
-
-fn bind_one(c: &Candidate, bind: Bind) -> Result<Bound, String> {
-    fn one<K: crate::dispatch::Kind>(c: &Candidate, bind: Bind) -> Result<Plugin<K>, String> {
-        open_candidate::<K>(c, bind).map_err(|e| e.to_string())
-    }
-    Ok(match c.kind {
-        KindCode::Store => Bound::Store(one(c, bind)?),
-        KindCode::Secret => {
-            return Err(format!(
-                "{}: the door secret kind is retired; a secret plugin is a native (MIN-3) image",
-                c.name
-            ))
-        }
-        KindCode::Auth => Bound::Auth(one(c, bind)?),
-        KindCode::Hook => Bound::Hook(one(c, bind)?),
-        KindCode::Export => Bound::Export(one(c, bind)?),
-        KindCode::Plane => Bound::Plane(one(c, bind)?),
-        KindCode::Transport => Bound::Transport(one(c, bind)?),
-    })
 }
 
 /// The settings one plugin's schema declares public, and every word a `module:` may name it by.

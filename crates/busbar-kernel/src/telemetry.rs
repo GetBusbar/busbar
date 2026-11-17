@@ -460,12 +460,6 @@ pub(crate) fn phase_duration_slot(
     })
 }
 
-static PHASE_DROPPED: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];
-
-pub(crate) fn request_phase_dropped() -> [u64; 2] {
-    std::array::from_fn(|i| PHASE_DROPPED[i].load(Ordering::Relaxed))
-}
-
 fn record_phase_duration(
     slots: Option<[HistogramSlot; OUTCOMES.len()]>,
     outcome: &str,
@@ -478,18 +472,12 @@ fn record_phase_duration(
             .map(|i| slots[i])
     });
     match slot {
-        Some(slot) if slot.is_valid() => slot.record(seconds),
+        Some(slot) if slot.is_valid() || slot.phase_refusal().is_some() => slot.record(seconds),
         Some(_) => {
-            let _ = PHASE_DROPPED[0].try_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
-                Some(n.saturating_add(1))
-            });
-            metrics::counter!(REQUEST_PHASE_DROPPED, "reason" => "histogram_capacity").increment(1)
+            crate::snapshot::request_store::refused(4);
         }
         None => {
-            let _ = PHASE_DROPPED[1].try_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
-                Some(n.saturating_add(1))
-            });
-            metrics::counter!(REQUEST_PHASE_DROPPED, "reason" => "unregistered_labels").increment(1)
+            crate::snapshot::request_store::refused(5);
         }
     }
 }
@@ -643,18 +631,40 @@ impl HistogramSlot {
     pub const INVALID: HistogramSlot = HistogramSlot(u32::MAX);
 
     pub fn is_valid(self) -> bool {
-        self.0 != u32::MAX
+        (self.0 as usize) < HIST_SLOTS
     }
 
     pub fn record(self, value: f64) {
+        if let Some(reason) = self.phase_refusal() {
+            crate::snapshot::request_store::refused(reason);
+            return;
+        }
+        if let Some(target) = crate::snapshot::request_store::bank_target(self.0 as usize) {
+            target.record(value);
+            return;
+        }
         self.record_inner(value, crate::snapshot::retaining());
     }
 
+    fn phase_refusal(self) -> Option<usize> {
+        match self.0 {
+            n if n == u32::MAX - 1 => Some(5),
+            n if n == u32::MAX - 2 => Some(2),
+            _ => None,
+        }
+    }
+
     pub fn record_inner(self, value: f64, retaining: bool) {
-        if !self.is_valid() {
+        if !self.is_valid() && self.phase_refusal().is_none() {
             return;
         }
         if !retaining {
+            return;
+        }
+        if self.phase_refusal().is_some()
+            || crate::snapshot::request_store::bank_target(self.0 as usize).is_some()
+        {
+            self.record(value);
             return;
         }
         let idx = self.0 as usize;
@@ -785,6 +795,14 @@ pub fn counter_slot(name: &'static str, labels: &[(&'static str, &str)]) -> Coun
 }
 
 pub fn histogram_slot(name: &'static str, labels: &[(&'static str, &str)]) -> HistogramSlot {
+    if name == REQUEST_PHASE_DURATION {
+        return match crate::snapshot::request_store::intern_bank(labels) {
+            Ok(id) => HistogramSlot(id),
+            Err(5) => HistogramSlot(u32::MAX - 1),
+            Err(2) => HistogramSlot(u32::MAX - 2),
+            Err(_) => HistogramSlot::INVALID,
+        };
+    }
     match registry().hists.intern(name, labels, HIST_SLOTS) {
         Some(id) => HistogramSlot(id),
         None => HistogramSlot::INVALID,

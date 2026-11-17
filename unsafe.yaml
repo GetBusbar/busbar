@@ -285,7 +285,7 @@ interim:
   crates/plugin-loader/src/tests/auth_generation_tests.rs: { tokens: 2, by: "W2 / W3 (old dispatch and doors)" }
   crates/plugin-loader/src/tests/auth_header_boundary_tests.rs: { tokens: 6, by: "W2 / W3 (old dispatch and doors)" }
   crates/plugin-loader/src/tests/auth_instance_carriers_old_api_tests.rs: { tokens: 5, by: "W2 / W3 (old dispatch and doors)" }
-  crates/plugin-loader/src/tests/boot_tests.rs: { tokens: 19, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/src/tests/boot_tests.rs: { tokens: 11, by: "W2 / W3 (old dispatch and doors)" }
   crates/plugin-loader/src/tests/confined_kind_ops_tests.rs: { tokens: 2, by: "W2 / W3 (old dispatch and doors)" }
   crates/plugin-loader/src/tests/conformance_auth_unjudged_tests.rs: { tokens: 5, by: "W2 / W3 (old dispatch and doors)" }
   crates/plugin-loader/src/tests/conformance_export_unjudged_tests.rs: { tokens: 7, by: "W2 / W3 (old dispatch and doors)" }

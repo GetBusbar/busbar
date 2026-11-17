@@ -40,6 +40,7 @@ fn door_of(key: VirtualKey) -> AdminDoor {
             module: crate::config::KEYS_MODULE.to_string(),
             principal,
             resolved: Some(std::sync::Arc::new(key)),
+            signed_authority: None,
         },
         None,
         verb_rung,
