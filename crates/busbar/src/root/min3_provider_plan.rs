@@ -5,6 +5,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use busbar_contract::json::{self, JsonValueMutTrait as _, JsonValueTrait as _, Value};
 use busbar_kernel::auth_bindings::{
     self, CredentialFrom, OperatorAuth, ProviderBindings, ProviderView,
 };
@@ -15,7 +16,6 @@ use busbar_kernel::plane_driver::provider_catalog::{
 };
 use busbar_kernel::upstreams::ConfiguredUpstreams;
 use busbar_plugin_abi::types::KindCode;
-use serde_json::Value;
 
 use super::boot::images::FileImages;
 use super::min3_boot::Configured;
@@ -133,8 +133,7 @@ pub(crate) fn capture(
             .encode()
             .map_err(|_| "auth settings cannot be encoded")?
             .into_exposed(&seal);
-        let config =
-            serde_json::from_slice(&encoded).map_err(|_| "auth settings are not valid JSON")?;
+        let config = json::parse_value(&encoded).map_err(|_| "auth settings are not valid JSON")?;
         operators.push(Operator {
             name: name.clone(),
             identity,
@@ -152,7 +151,7 @@ pub(crate) fn capture(
                 .config
                 .get("settings")
                 .and_then(Value::as_object)
-                .map(|settings| settings.keys().map(String::as_str).collect())
+                .map(|settings| settings.iter().map(|(key, _)| key).collect())
                 .unwrap_or_default(),
         })
         .collect();
@@ -165,7 +164,7 @@ pub(crate) fn capture(
         let protocol = provider
             .table
             .get("protocol")
-            .and_then(Value::as_str)
+            .and_then(|protocol| protocol.as_str())
             .ok_or("catalog provider protocol is missing")?;
         providers.push(ProviderView {
             name,
@@ -211,7 +210,7 @@ pub(crate) fn capture(
             identity: one.identity,
             limits: busbar_kernel::appbuild::instance_limits(cfg, "identity-providers", &one.name),
             name: one.name,
-            config: serde_json::to_vec(&one.config).map_err(|_| "auth config cannot be encoded")?,
+            config: json::to_vec(&one.config).map_err(|_| "auth config cannot be encoded")?,
         });
     }
     for implicit in &bindings.implicit {
@@ -272,16 +271,14 @@ fn fill_config(config: &mut Value, fills: &auth_bindings::Fills) -> Result<(), S
     let config = config
         .as_object_mut()
         .ok_or("outbound auth config must be an object")?;
-    let settings = config
-        .entry("settings")
-        .or_insert_with(|| Value::Object(Default::default()));
+    let settings = config.entry("settings").or_insert_with(Value::new_object);
     let settings = settings
         .as_object_mut()
         .ok_or("outbound auth settings must be an object")?;
     for (key, value) in fills {
         settings
             .entry(*key)
-            .or_insert_with(|| Value::String(value.clone()));
+            .or_insert_with(|| Value::from(value.as_str()));
     }
     Ok(())
 }
@@ -292,7 +289,7 @@ mod tests {
 
     #[test]
     fn fills_preserve_operator_values_and_credential_reference() {
-        let mut config = serde_json::json!({"style":"bearer","credential":{"file":"key"},"settings":{"audience":"authored"}});
+        let mut config = json::json!({"style":"bearer","credential":{"file":"key"},"settings":{"audience":"authored"}});
         fill_config(
             &mut config,
             &[
@@ -303,12 +300,12 @@ mod tests {
         .unwrap();
         assert_eq!(config["settings"]["audience"], "authored");
         assert_eq!(config["settings"]["scope"], "scope-a");
-        assert_eq!(config["credential"], serde_json::json!({"file":"key"}));
+        assert_eq!(config["credential"], json::json!({"file":"key"}));
     }
 
     #[test]
     fn fills_refuse_non_object_settings_without_echoing_values() {
-        let mut config = serde_json::json!({"settings":"private-value"});
+        let mut config = json::json!({"settings":"private-value"});
         let error = fill_config(&mut config, &[("scope", "private-fill".into())]).unwrap_err();
         assert!(!error.contains("private"));
     }
