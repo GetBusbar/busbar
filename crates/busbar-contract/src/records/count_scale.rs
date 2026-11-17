@@ -133,6 +133,21 @@ macro_rules! metering {
             /// Normalize quantity columns and open counts atomically; request counters are unscaled.
             pub fn normalize_scale6(&mut self) -> Result<(), CountError> {
                 let mut row = self.clone();
+                if let Some(pricing) = &row.pricing {
+                    pricing.validate_counts(
+                        row.requests,
+                        row.billable_requests,
+                        [
+                            row.tokens_input,
+                            row.tokens_output,
+                            row.tokens_cache_read,
+                            row.tokens_cache_write,
+                        ]
+                        .into_iter()
+                        .chain(row.usage_units.values().copied())
+                        .any(|n| n != 0),
+                    )?;
+                }
                 row.tokens_input = nonnegative(row.tokens_input, row.scale)?;
                 row.tokens_output = nonnegative(row.tokens_output, row.scale)?;
                 row.tokens_cache_read = nonnegative(row.tokens_cache_read, row.scale)?;
@@ -157,6 +172,11 @@ impl MeteringRow {
         let mut delta = delta.clone();
         row.normalize_scale6()?;
         delta.normalize_scale6()?;
+        row.pricing = match (&row.pricing, &delta.pricing) {
+            (None, None) => None,
+            (Some(before), Some(add)) => Some(before.checked_add(add)?),
+            _ => return Err(CountError::Malformed),
+        };
         let add = |a: i128, b: i128| {
             nonnegative(a.checked_add(b).ok_or(CountError::Overflow)?, COUNT_SCALE)
         };
@@ -168,10 +188,21 @@ impl MeteringRow {
             let count = row.usage_units.entry(class).or_default();
             *count = add(*count, amount)?;
         }
-        row.requests = row.requests.saturating_add(delta.requests);
-        row.billable_requests = row
-            .billable_requests
-            .saturating_add(delta.billable_requests);
+        if row.pricing.is_some() {
+            row.requests = row
+                .requests
+                .checked_add(delta.requests)
+                .ok_or(CountError::Overflow)?;
+            row.billable_requests = row
+                .billable_requests
+                .checked_add(delta.billable_requests)
+                .ok_or(CountError::Overflow)?;
+        } else {
+            row.requests = row.requests.saturating_add(delta.requests);
+            row.billable_requests = row
+                .billable_requests
+                .saturating_add(delta.billable_requests);
+        }
         *self = row;
         Ok(())
     }

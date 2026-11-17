@@ -35,6 +35,8 @@ pub(crate) struct UsageCustody {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct MeteringCustody {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    selected_version: Option<u8>,
     delta: MeteringDelta,
     #[serde(default)]
     age_unknown: bool,
@@ -96,6 +98,17 @@ fn usage_fingerprint(custody: &UsageCustody) -> RecordStoreResult<[u8; 32]> {
             &custody.chunk_plain,
             &custody.chunk_dated,
         ),
+    )
+}
+
+fn metering_fingerprint(delta: &MeteringDelta) -> RecordStoreResult<[u8; 32]> {
+    fingerprint(
+        if delta.pricing.is_some() {
+            b"busbar.metering-recovery.body.v2\0"
+        } else {
+            b"busbar.metering-recovery.body.v1\0"
+        },
+        delta,
     )
 }
 
@@ -202,6 +215,7 @@ impl GovState {
         delta: &MeteringDelta,
     ) -> RecordStoreResult<RecoveryChild> {
         let custody = MeteringCustody {
+            selected_version: delta.pricing.as_ref().map(|_| 1),
             delta: delta.clone(),
             age_unknown: false,
             origin: None,
@@ -211,7 +225,7 @@ impl GovState {
         Ok(RecoveryChild {
             operation_id,
             kind: RecoveryKind::Metering,
-            body_fingerprint: fingerprint(b"busbar.metering-recovery.body.v1\0", delta)?,
+            body_fingerprint: metering_fingerprint(delta)?,
             first_sent_at_ms: Some(first_sent_at_ms),
             payload: encode(&custody)?,
         })
@@ -345,9 +359,14 @@ impl GovState {
             }
             RecoveryKind::Metering => {
                 let custody: MeteringCustody = decode(&event.payload)?;
-                if fingerprint(b"busbar.metering-recovery.body.v1\0", &custody.delta)?
-                    != event.body_fingerprint
-                {
+                if custody.selected_version != custody.delta.pricing.as_ref().map(|_| 1) {
+                    return Err(invalid(
+                        "selected metering recovery version differs from payload",
+                    ));
+                }
+                let mut checked = custody.delta.clone();
+                checked.normalize_scale6().map_err(invalid)?;
+                if metering_fingerprint(&custody.delta)? != event.body_fingerprint {
                     return Err(invalid("metering original fingerprint differs"));
                 }
             }
@@ -729,6 +748,7 @@ impl GovState {
                 let mut custody: MeteringCustody = decode(&event.payload).map_err(map)?;
                 if !verdict.landed {
                     let child_custody = MeteringCustody {
+                        selected_version: custody.selected_version,
                         age_unknown: false,
                         origin: None,
                         handoffs: Vec::new(),

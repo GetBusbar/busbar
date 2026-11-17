@@ -74,6 +74,12 @@ impl<'de> Visitor<'de> for Shape {
     fn visit_u64<E: de::Error>(self, _: u64) -> Result<(), E> {
         Ok(())
     }
+    fn visit_i128<E: de::Error>(self, _: i128) -> Result<(), E> {
+        Ok(())
+    }
+    fn visit_u128<E: de::Error>(self, _: u128) -> Result<(), E> {
+        Ok(())
+    }
     fn visit_f64<E: de::Error>(self, _: f64) -> Result<(), E> {
         Ok(())
     }

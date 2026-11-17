@@ -253,6 +253,7 @@ fn rows_of(native: &Native) -> Result<Vec<(Address, SecureVec)>, StoreFail> {
                 .parse()
                 .map_err(|_| fail("metering row", "a bucket that is not a whole number"))?;
             let metering = MeteringRow {
+                pricing: None,
                 scale: busbar_contract::COUNT_SCALE,
                 key_id: row.key_id.clone(),
                 model: row.model.clone(),

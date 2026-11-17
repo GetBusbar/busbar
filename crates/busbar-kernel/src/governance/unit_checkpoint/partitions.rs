@@ -21,7 +21,9 @@ pub const MAX_TERMINAL_EVENTS: usize = 1024;
 pub const MAX_CHECKPOINT_BYTES: usize = 16 * 1024 * 1024;
 
 mod decode;
+mod fee;
 pub(crate) use decode::check_encoded;
+pub use fee::{CapturedFee, FeeBasis, FeeResult, SelectedFeeCompletion};
 
 fn invalid(message: &str) -> RecordStoreError {
     RecordStoreError(message.to_owned())
@@ -38,6 +40,7 @@ pub struct PartitionedUsageV1 {
     pub attempt_classes: BTreeSet<String>,
     pub physical_classes: BTreeSet<String>,
     pub session_origin: SessionOrigin,
+    pub fee: CapturedFee,
     pub session: Option<UsagePartition>,
     pub attempts: Vec<AttemptPartition>,
     pub far_end_answered: bool,
@@ -201,6 +204,8 @@ pub struct UsageProjection {
     pub partitions: Vec<ProjectedPartition>,
     pub logical_request: Option<LogicalMeter>,
     pub disposition: Disposition,
+    pub fee: CapturedFee,
+    pub session_origin: SessionOrigin,
 }
 
 /// A borrowed complete snapshot: readers cannot override its disposition or common context.
@@ -289,6 +294,12 @@ impl UsageProjection {
 }
 
 impl ValidatedSelectedCheckpoint<'_> {
+    pub fn usage(&self) -> &PartitionedUsageV1 {
+        self.usage
+    }
+    pub fn snapshot(&self) -> &UnitCheckpoint {
+        self.snapshot
+    }
     pub fn project(&self) -> RecordStoreResult<UsageProjection> {
         let snapshot = self.snapshot;
         let usage = self.usage;
@@ -398,6 +409,8 @@ impl ValidatedSelectedCheckpoint<'_> {
             partitions,
             logical_request,
             disposition: usage.disposition.clone(),
+            fee: usage.fee.clone(),
+            session_origin: usage.session_origin.clone(),
         };
         projection.billed_by_lane()?;
         Ok(projection)
@@ -443,10 +456,9 @@ fn validate_classes(
                 .flatten()
                 .any(|n| n.is_negative())
             || (physical.contains(class)
-                && [facts.reported, facts.floor]
-                    .into_iter()
-                    .flatten()
-                    .any(|n| n > facts.rate_high_water))
+                && facts
+                    .selected()
+                    .is_some_and(|quantity| quantity.count > facts.rate_high_water))
         {
             return Err(invalid(
                 "selected usage class, quantity or high water is invalid",
@@ -479,7 +491,7 @@ impl PartitionedUsageV1 {
         let class = 64 + 48 + 32;
         let raw = (attempts + 1) * (text * 5 + classes * (class + 4 * 48));
         let budget = targets * (attempts + 1) * (text + classes * class) * 16;
-        let metering = (attempts + 2) * (text * 5 + classes * class) * 4;
+        let metering = (attempts + 3) * (text * 5 + classes * class) * 4;
         let overhead =
             MAX_AUDIT_BYTES * 4 + targets * (text * 2 + 128) + MAX_TERMINAL_EVENTS * 1024;
         let bytes = raw
@@ -513,6 +525,8 @@ impl PartitionedUsageV1 {
             || !in_instance(&self.session_origin.lane, &self.session_origin.instance)
             || !self.session_origin.lane.ends_with('\u{1f}')
             || self.session_origin.provider.is_some()
+            || !optional_identity(self.fee.basis().lane.as_deref())
+            || (self.fee.pending() && snapshot.terminal.is_some())
             || snapshot.targets.len() > MAX_TARGETS
             || snapshot.targets.iter().any(|target| {
                 !identity(&target.bucket) || !optional_identity(target.group.as_deref())
@@ -615,6 +629,7 @@ impl PartitionedUsageV1 {
 
     /// Restore only captured facts; a process-local rate cell or live dispatch is never recreated.
     pub(super) fn recover_running(&mut self) {
+        self.fee.recover();
         if self.disposition == Disposition::Running {
             self.disposition = Disposition::RecoveredRunning;
             for attempt in &mut self.attempts {
@@ -637,6 +652,10 @@ pub fn validate_successor(
             "a selected checkpoint cannot change representation",
         ));
     };
+    let mut comparable_old = old.clone();
+    if old.fee.pending() && before.terminal.is_none() && new.fee.follows(&old.fee) {
+        comparable_old.fee = new.fee.clone();
+    }
     if before.id != after.id
         || before.unit != after.unit
         || before.principal != after.principal
@@ -652,11 +671,12 @@ pub fn validate_successor(
         || old.attempt_classes != new.attempt_classes
         || old.physical_classes != new.physical_classes
         || old.session_origin != new.session_origin
+        || !new.fee.follows(&old.fee)
         || (old.far_end_answered && !new.far_end_answered)
         || (old.caller_bytes_committed && !new.caller_bytes_committed)
         || (old.final_target.is_some() && old.final_target != new.final_target)
         || (before.ended
-            && (old != new
+            && (&comparable_old != new
                 || before.metered != after.metered
                 || before.audit != after.audit
                 || before.unread != after.unread
@@ -718,7 +738,7 @@ impl std::io::Write for ByteBound {
     }
 }
 
-pub(super) fn check_size(snapshot: &UnitCheckpoint) -> RecordStoreResult<()> {
+pub(crate) fn check_size(snapshot: &UnitCheckpoint) -> RecordStoreResult<()> {
     busbar_contract::json::to_writer(ByteBound(0), snapshot)
         .map_err(|_| invalid("selected checkpoint exceeds its encoded byte bound"))
 }

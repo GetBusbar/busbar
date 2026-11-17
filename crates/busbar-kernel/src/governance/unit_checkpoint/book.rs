@@ -54,6 +54,8 @@ pub(super) struct Pending {
     /// The unit's live audit line, carried from the root's seal (SHUTDOWN-HANG F1a). RAM only.
     audit: Option<Carried>,
     memory_selected: bool,
+    fee_completion: Option<Arc<dyn super::partitions::SelectedFeeCompletion>>,
+    awaiting_terminal_reader: bool,
 }
 
 /// One entry's custody facts at a non-retired exit (SHUTDOWN-HANG §5).
@@ -96,6 +98,8 @@ impl Pending {
             recovered,
             audit: None,
             memory_selected: false,
+            fee_completion: None,
+            awaiting_terminal_reader: false,
         }
     }
 
@@ -107,6 +111,20 @@ impl Pending {
 
     pub(super) fn is_memory_selected(&self) -> bool {
         self.memory_selected
+    }
+
+    pub(super) fn with_fee_completion(
+        mut self,
+        completion: Option<Arc<dyn super::partitions::SelectedFeeCompletion>>,
+    ) -> Self {
+        self.fee_completion = completion;
+        self.awaiting_terminal_reader = true;
+        self
+    }
+
+    pub(super) fn require_terminal_reader(mut self) -> Self {
+        self.awaiting_terminal_reader = true;
+        self
     }
 
     pub(super) fn snapshot(&self) -> &UnitCheckpoint {
@@ -446,6 +464,45 @@ pub(super) struct PendingEdit<'a> {
 }
 
 impl PendingEdit<'_> {
+    pub(super) fn awaiting_terminal_reader(&self) -> bool {
+        self.entry.awaiting_terminal_reader
+    }
+    pub(super) fn terminal_reader_accepted(&mut self) {
+        self.entry.awaiting_terminal_reader = false;
+    }
+    pub(super) fn is_memory_selected(&self) -> bool {
+        self.entry.memory_selected
+    }
+    pub(super) fn resolve_fee(&mut self) -> Result<bool, super::RecordStoreError> {
+        let Some(parts) = self.entry.snapshot.partitions.as_ref() else {
+            return Ok(true);
+        };
+        if !parts.fee.pending() {
+            return Ok(true);
+        }
+        let Some(result) = self
+            .entry
+            .fee_completion
+            .as_ref()
+            .and_then(|observer| observer.observe())
+        else {
+            return Ok(false);
+        };
+        let mut snapshot = self.entry.snapshot.clone();
+        snapshot.revision = snapshot
+            .revision
+            .checked_add(1)
+            .ok_or_else(|| super::error("selected fee revision exhausted"))?;
+        let parts = snapshot.partitions.as_mut().expect("selected fee owner");
+        parts.fee = super::partitions::CapturedFee::ResolvedOwner {
+            basis: parts.fee.basis().clone(),
+            result,
+        };
+        super::partitions::validate_successor(&self.entry.snapshot, &snapshot)?;
+        self.replace_snapshot(snapshot);
+        self.entry.fee_completion = None;
+        Ok(true)
+    }
     pub(super) fn snapshot(&self) -> &UnitCheckpoint {
         &self.entry.snapshot
     }

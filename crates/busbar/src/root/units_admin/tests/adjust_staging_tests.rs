@@ -188,6 +188,7 @@ impl Fixture {
         store
             .ledger()
             .add_metering(&MeteringDelta {
+                pricing: None,
                 scale: 0,
                 key_id: key.id.clone(),
                 bucket: busbar_kernel::governance::metering_bucket(now),

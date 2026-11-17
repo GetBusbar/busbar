@@ -431,6 +431,7 @@ async fn test_metering_accumulates_split_per_key_model_and_bucket() {
     let day = metering_bucket(1_700_000_123);
     assert_eq!(day % METERING_BUCKET_SECS, 0);
     let d = |model: &str, input: u64, output: u64| MeteringDelta {
+        pricing: None,
         scale: 0,
         usage_units: Default::default(),
         key_id: "vk_a".into(),
@@ -454,6 +455,7 @@ async fn test_metering_accumulates_split_per_key_model_and_bucket() {
 
     s.ledger()
         .add_metering(&MeteringDelta {
+            pricing: None,
             scale: 0,
             bucket: day + METERING_BUCKET_SECS,
             ..d("gpt-x", 999, 999)
