@@ -575,7 +575,7 @@ impl AdmittedRequest {
 struct ReplayAdmission {
     pending: crate::auth::PendingClaim,
     won: tokio::sync::OnceCell<bool>,
-    execution: std::sync::OnceLock<crate::auth::native_admin::ExecutionAdmission>,
+    execution: std::sync::OnceLock<Arc<crate::auth::native_admin::ExecutionAdmission>>,
 }
 
 /// Host-only upgrade authority derived from one admitted request's sealed route.
@@ -659,6 +659,11 @@ impl RequestAdmission {
     /// The admin walk claims only after scope/approval; every projection shares one result.
     pub async fn claim_admin_replay(&self) -> bool {
         self.claim_replay().await
+    }
+
+    /// Successful native execution custody stays attached to this one admitted request.
+    pub fn admin_execution(&self) -> Option<Arc<crate::auth::native_admin::ExecutionAdmission>> {
+        self.inner.replay.as_ref()?.execution.get().cloned()
     }
 
     /// Transfer terminal audit ownership to the teller exactly once.
@@ -860,7 +865,7 @@ async fn claim_request_replay(
         replay.won.get_or_init(|| async {
             match replay.pending.complete_admin().await {
                 Ok(execution) => {
-                    let _ = replay.execution.set(execution);
+                    let _ = replay.execution.set(Arc::new(execution));
                     true
                 }
                 Err(()) => false,

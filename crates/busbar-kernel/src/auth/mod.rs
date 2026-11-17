@@ -2494,6 +2494,9 @@ pub(crate) async fn auth_middleware(
                 );
                 return Err(admin_unauthorized_response());
             }
+            if let Some(execution) = admission.admin_execution() {
+                req.extensions_mut().insert(execution);
+            }
             (verdict.door, Vec::new(), admission.admin_who())
         } else {
             // Snapshot the full bounded body before native verification, then reconstruct the
@@ -2559,7 +2562,7 @@ pub(crate) async fn auth_middleware(
             }
             (verdict.door, strips, projected)
         };
-        let effect_context = effect::Context::new(
+        let mut effect_context = effect::Context::new(
             req.method().as_str(),
             target,
             inbound_headers
@@ -2567,6 +2570,14 @@ pub(crate) async fn auth_middleware(
                 .unwrap_or_else(|| req.headers().clone()),
             &door,
         );
+        if let Some(execution) = req
+            .extensions()
+            .get::<std::sync::Arc<native_admin::ExecutionAdmission>>()
+        {
+            effect_context
+                .attach_execution(execution.clone())
+                .map_err(|()| admin_unauthorized_response())?;
+        }
         let authorized = admin_door_admits(&door, req.method().as_str(), path);
         if path == crate::admin::gate::WHOAMI_PATH
             || (req.method() == axum::http::Method::POST && path == crate::admin::gate::KEYS_PATH)

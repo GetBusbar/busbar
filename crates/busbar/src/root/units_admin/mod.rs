@@ -1565,7 +1565,7 @@ pub(crate) struct AdminWalk {
     /// The replay claim the door's identity asks for, UNWON until every step that may still refuse
     /// the request has passed ([`claim`]).
     claim: Option<busbar_kernel::auth::PendingClaim>,
-    execution: Option<busbar_kernel::auth::native_admin::ExecutionAdmission>,
+    execution: Option<Arc<busbar_kernel::auth::native_admin::ExecutionAdmission>>,
     answer: Option<AdminAnswer>,
 }
 
@@ -1854,19 +1854,32 @@ pub(crate) async fn authenticate(
 
 pub(crate) async fn claim(walk: &mut AdminWalk) -> Result<(), ReasonCode> {
     if let Some(admission) = &walk.admission {
-        return admission
-            .claim_admin_replay()
-            .await
-            .then_some(())
-            .ok_or(ReasonCode::Unauthenticated);
+        if !admission.claim_admin_replay().await {
+            return Err(ReasonCode::Unauthenticated);
+        }
+        if let Some(execution) = admission.admin_execution() {
+            if let Some(context) = &mut walk.effect_context {
+                context
+                    .attach_execution(execution.clone())
+                    .map_err(|()| ReasonCode::Unauthenticated)?;
+            }
+            walk.execution = Some(execution);
+        }
+        return Ok(());
     }
     if let Some(pending) = walk.claim.take() {
-        walk.execution = Some(
+        let execution = Arc::new(
             pending
                 .complete_admin()
                 .await
                 .map_err(|()| ReasonCode::Unauthenticated)?,
         );
+        if let Some(context) = &mut walk.effect_context {
+            context
+                .attach_execution(execution.clone())
+                .map_err(|()| ReasonCode::Unauthenticated)?;
+        }
+        walk.execution = Some(execution);
     }
     Ok(())
 }
