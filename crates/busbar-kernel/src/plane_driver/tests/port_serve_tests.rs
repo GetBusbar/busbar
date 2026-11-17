@@ -277,6 +277,7 @@ fn candidate() -> Candidate {
         pool: "pool".into(),
         qualified_member: "fixture-member".into(),
         identity: crate::plane_driver::port_upstream::TargetIdentity::Registration,
+        resource: None,
         upstream: "m1".into(),
         provider: "{}".into(),
         base_path: "/v1".into(),

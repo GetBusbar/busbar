@@ -88,6 +88,8 @@ pub struct Candidate {
     pub pool: Box<str>,
     pub qualified_member: Box<str>,
     pub identity: TargetIdentity,
+    /// Frozen configured rate-resource label; descriptive data, never admission authority.
+    pub resource: Option<Box<str>>,
     /// The configured upstream (member) name.
     pub upstream: Box<str>,
     /// The plane-owned provider keys as one canonical JSON object (`{}` when none).

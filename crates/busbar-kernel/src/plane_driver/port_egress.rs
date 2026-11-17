@@ -55,6 +55,8 @@ use crate::teller::Kernel;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MemberTarget {
     pub identity: TargetIdentity,
+    /// Optional operator-configured rate resource from this exact target record.
+    pub resource: Option<Box<str>>,
     /// Exact admitted registration name. Provider models have no registration authority.
     pub registered_upstream: Option<Box<str>>,
     /// The plane-owned provider keys as one canonical JSON object.
@@ -70,6 +72,7 @@ impl MemberTarget {
     pub fn bare() -> Self {
         Self {
             identity: TargetIdentity::Registration,
+            resource: None,
             registered_upstream: None,
             provider: "{}".into(),
             base_path: "".into(),
@@ -224,6 +227,7 @@ impl<F: FarEnd> Members for WalkMembers<'_, '_, F> {
                         pool: pool.into(),
                         qualified_member: name.into(),
                         identity: target.identity,
+                        resource: target.resource,
                         upstream: operator.into(),
                         provider: target.provider,
                         base_path: target.base_path,
@@ -602,9 +606,10 @@ pub fn upstream_targets(
             return None;
         }
         let name = member.strip_prefix(&prefix)?;
-        upstreams.get(name)?;
+        let upstream = upstreams.get(name)?;
         let mut target = MemberTarget::bare();
         target.registered_upstream = Some(name.into());
+        target.resource = upstream.resource.clone();
         Some(target)
     })
 }
@@ -740,6 +745,7 @@ impl ProbeFar for EgressProbes {
             pool: selected.pool.clone().into(),
             qualified_member: selected.qualified_member.clone().into(),
             identity: target.identity,
+            resource: target.resource,
             upstream: selected.name().into(),
             provider: target.provider,
             base_path: target.base_path,

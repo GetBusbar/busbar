@@ -30,6 +30,7 @@ fn caller() -> Caller {
 
 fn upstream() -> Arc<UpstreamDef> {
     Arc::new(UpstreamDef {
+        resource: None,
         name: "shared".into(),
         allow_private: false,
         url: Some("https://example.invalid/".into()),

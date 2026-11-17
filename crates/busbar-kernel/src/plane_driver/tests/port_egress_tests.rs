@@ -134,6 +134,7 @@ fn candidate() -> Candidate {
         pool: "pool".into(),
         qualified_member: "fixture-member".into(),
         identity: crate::plane_driver::port_upstream::TargetIdentity::Registration,
+        resource: None,
         upstream: "a".into(),
         provider: "{}".into(),
         base_path: "".into(),
@@ -145,6 +146,7 @@ fn candidate() -> Candidate {
 fn target_for(_pool: &str, name: &str) -> Option<MemberTarget> {
     (name != "skip").then(|| MemberTarget {
         identity: crate::plane_driver::port_upstream::TargetIdentity::Registration,
+        resource: None,
         registered_upstream: None,
         provider: "{\"k\":1}".into(),
         base_path: "/v1".into(),
@@ -201,6 +203,7 @@ fn the_same_member_in_two_pools_uses_each_pools_resolved_target() {
             dialect: format!("{pool}-dialect").into(),
             model: format!("{pool}-wire").into(),
         };
+        target.resource = Some(format!("{pool}-resource").into());
         Some(target)
     };
     let handle = rt.handle().clone();
@@ -209,6 +212,10 @@ fn the_same_member_in_two_pools_uses_each_pools_resolved_target() {
         let picked = walk.members().next(&Wants::default()).unwrap();
         assert_eq!(&*picked.pool, pool);
         assert_eq!(&*picked.qualified_member, "seat\u{1f}model");
+        assert_eq!(
+            picked.resource.as_deref(),
+            Some(format!("{pool}-resource").as_str())
+        );
         picked.with_target(1, "caller-dialect", "alias", |target| {
             assert_eq!(target.dialect, format!("{pool}-dialect"));
             assert_eq!(target.model, format!("{pool}-wire"));
