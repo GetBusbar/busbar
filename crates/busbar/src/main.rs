@@ -746,7 +746,7 @@ async fn run(
             let conversion = root::min3_boot::prepare_serving(
                 bootstrap_ready, &plugin_process, conversion_images, &base_cfg,
                 &Default::default(), boot_guard,
-            ).unwrap_or_else(|error| die(error));
+            ).await.unwrap_or_else(|error| die(error));
             let observation_reservation = export_observers.reserve(conversion.export_names())
                 .unwrap_or_else(|error| die(error));
             let _ = root::min3_boot::finish(
@@ -1184,6 +1184,7 @@ async fn run(
         &provider_catalogs,
         root::connector::dest_judge(&cfg).guard().clone(),
     )
+    .await
     .unwrap_or_else(|error| die(error));
     let preparation = root::boot_app::Preparation {
         secret_resolver: serving_ready.resolver(),
@@ -1678,8 +1679,11 @@ async fn run(
             ),
         ))
     });
-    let work_recovery =
-        recovery_served.spawn_work_recovery(app_handle.clone(), shutdown_tx.subscribe());
+    let work_recovery = recovery_served.spawn_work_recovery(
+        app_handle.clone(),
+        Arc::clone(&request_admission),
+        shutdown_tx.subscribe(),
+    );
     drop(recovery_served);
 
     busbar_kernel::boot::start_planes(&app_handle).unwrap_or_else(|e| die(e));
@@ -1766,6 +1770,7 @@ async fn run(
                 admin = Some(Box::pin(serve_listener(
                     listener,
                     native,
+                    root::plane_node::node(),
                     native_alpn,
                     bind.tls.clone(),
                     Arc::clone(&tls_secret_resolver),
@@ -1802,6 +1807,7 @@ async fn run(
                             serve_listener(
                                 listener,
                                 native,
+                                root::plane_node::node(),
                                 native_alpn,
                                 tls,
                                 resolver,
@@ -2119,6 +2125,7 @@ fn serve_thread_per_core(
                     serve_listener(
                         listener,
                         native,
+                        root::plane_node::node(),
                         alpn,
                         tls,
                         resolver,
@@ -2146,6 +2153,7 @@ fn serve_thread_per_core(
 async fn serve_listener(
     listener: impl busbar_core_connector::listen::Admits,
     native: Arc<root::listener_native::NativeListener>,
+    node: Arc<root::plane_node::Node>,
     alpn: Vec<Box<str>>,
     tls_cfg: Option<busbar_kernel::config::sections::TlsCfg>,
     secret_resolver: Arc<busbar_kernel::config::secret::SecretResolver>,
@@ -2184,15 +2192,9 @@ async fn serve_listener(
             Some(security)
         }
     };
-    let result = root::listener_native::serve_admitted(
-        listener,
-        native,
-        security,
-        root::plane_node::node(),
-        shutdown,
-        balancer,
-    )
-    .await;
+    let result =
+        root::listener_native::serve_admitted(listener, native, security, node, shutdown, balancer)
+            .await;
     if let Err(e) = result {
         die(format!("server error on '{label}': {e}"));
     }
