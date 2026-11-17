@@ -16,6 +16,10 @@ use crate::cost::CostModel;
 use crate::governance::{AdmitGrant, GovState, PLANE_LANE_SEP};
 use crate::host_services::InvocationContext;
 
+#[path = "request_registration.rs"]
+mod registration;
+use registration::SelectedCommand;
+
 const REGISTERED: u8 = 0;
 const RESOLVING: u8 = 1;
 const READY: u8 = 2;
@@ -75,6 +79,7 @@ pub struct RequestRoutes {
     scope_kind: Option<Arc<str>>,
     catalog: Option<Arc<CatalogPlan>>,
     registration: Option<Arc<SeatPool>>,
+    registrations: Option<Arc<crate::upstreams::ConfiguredUpstreams>>,
 }
 impl RequestRoutes {
     pub fn new(
@@ -103,6 +108,7 @@ impl RequestRoutes {
             scope_kind,
             catalog,
             registration,
+            registrations: None,
         })
     }
 
@@ -287,6 +293,7 @@ impl RequestAllocation {
             pool,
             domain,
             walk,
+            command: None,
             armed: true,
         })
     }
@@ -310,6 +317,7 @@ pub struct RequestPoolReceipt {
     pool: String,
     domain: RequestDomain,
     walk: Option<(RequestWalk, String)>,
+    command: Option<SelectedCommand>,
     armed: bool,
 }
 impl RequestPoolReceipt {
@@ -444,6 +452,7 @@ impl CommittingRequest {
             grants: self.route.grants.clone(),
             domain: self.route.domain.clone(),
             walk: self.route.walk.clone(),
+            command: self.route.command.clone(),
             money,
             grant,
             governance,
@@ -468,6 +477,7 @@ pub struct AdmittedRequest {
     grants: Arc<BTreeMap<String, Vec<String>>>,
     domain: RequestDomain,
     walk: Option<(RequestWalk, String)>,
+    command: Option<SelectedCommand>,
     money: Arc<UnitMoney>,
     grant: Arc<AdmitGrant>,
     governance: Arc<GovState>,
@@ -562,3 +572,8 @@ mod tests;
 #[cfg(test)]
 #[path = "tests/request_credential_tests.rs"]
 mod credential_tests;
+#[cfg(test)]
+#[path = "tests/request_registration_support.rs"]
+mod registration_support;
+#[cfg(test)]
+pub(crate) use registration_support::CommandAdmissionFixture;
