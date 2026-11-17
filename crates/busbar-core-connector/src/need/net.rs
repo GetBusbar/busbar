@@ -13,7 +13,7 @@
 
 use std::future::poll_fn;
 use std::io::{self, Read, Write};
-use std::net::{IpAddr, Shutdown, SocketAddr};
+use std::net::{Shutdown, SocketAddr};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
@@ -35,14 +35,9 @@ use crate::socket::{self, Sock};
 pub struct Net {
     sock: Registered<Sock>,
     logical_dest: Box<str>,
+    instance: u64,
     epoch: u64,
     prefix: busbar_contract::secure::SecureVec,
-}
-
-impl Net {
-    fn peer_ip(&self) -> Option<IpAddr> {
-        socket::peer_ip(&self.sock.socket())
-    }
 }
 
 impl AsyncRead for Net {
@@ -178,6 +173,7 @@ fn io_err(e: &io::Error) -> NeedErr {
 
 /// One connect, begun and settled on the reactor.
 async fn connect_one(
+    instance: u64,
     runtime: &tokio::runtime::Handle,
     dest: &str,
     epoch: u64,
@@ -188,6 +184,7 @@ async fn connect_one(
     Ok(Net {
         sock,
         logical_dest: dest.into(),
+        instance,
         epoch,
         prefix: Default::default(),
     })
@@ -198,6 +195,7 @@ async fn connect_one(
 /// the budget of the ones behind it. Trying the next address of the judged answer is not a retry
 /// of anything the plugin sent.
 pub(super) async fn connect(
+    instance: u64,
     runtime: &tokio::runtime::Handle,
     dest: &str,
     epoch: u64,
@@ -211,6 +209,7 @@ pub(super) async fn connect(
             runtime,
             timeout,
             connect_one(
+                instance,
                 runtime,
                 dest,
                 epoch,
@@ -243,7 +242,13 @@ pub(super) async fn connect(
         match timeout_on(
             runtime,
             share,
-            connect_one(runtime, dest, epoch, socket::connect(*addr).map(Sock::Tcp)),
+            connect_one(
+                instance,
+                runtime,
+                dest,
+                epoch,
+                socket::connect(*addr).map(Sock::Tcp),
+            ),
         )
         .await
         {
@@ -255,13 +260,14 @@ pub(super) async fn connect(
     Err(failed)
 }
 
-/// The name a handshake checks: the SNI when there is one, else the peer's address.
-fn server_name(sni: &str, peer: Option<IpAddr>) -> Result<ServerName<'static>, NeedErr> {
-    if !sni.is_empty() {
-        return ServerName::try_from(sni.to_owned()).map_err(|_| NeedErr::Invalid);
-    }
-    peer.map(|ip| ServerName::IpAddress(ip.into()))
-        .ok_or(NeedErr::Invalid)
+/// The original logical origin (or its accepted SNI), never the connected proxy's IP.
+fn server_name(sni: &str, dest: &str) -> Result<ServerName<'static>, NeedErr> {
+    let name = if sni.is_empty() {
+        crate::tls::store::host_only(dest)
+    } else {
+        sni.to_owned()
+    };
+    ServerName::try_from(name).map_err(|_| NeedErr::Invalid)
 }
 
 /// The TLS handshake over `net`, and what it negotiated.
@@ -310,6 +316,7 @@ impl ConnectorIo {
     /// Connect one previously admitted route. OPEN and FETCH share this exact path.
     pub(super) async fn connect_route(
         &self,
+        instance: u64,
         dest: &str,
         route: &super::judge::Route,
         unix: Option<&str>,
@@ -317,7 +324,16 @@ impl ConnectorIo {
     ) -> Result<Net, NeedErr> {
         let epoch = self.state.configs.epoch();
         let operation = async {
-            let mut net = connect(self.runtime(), dest, epoch, &route.addrs, unix, timeout).await?;
+            let mut net = connect(
+                instance,
+                self.runtime(),
+                dest,
+                epoch,
+                &route.addrs,
+                unix,
+                timeout,
+            )
+            .await?;
             if let Some(tunnel) = &route.tunnel {
                 use tokio::io::{AsyncReadExt, AsyncWriteExt};
                 let request = busbar_contract::secure::SecureVec::from(
@@ -361,8 +377,9 @@ impl ConnectorIo {
         offered: &[Vec<u8>],
         timeout: Duration,
     ) -> Result<Dialled<Stream>, NeedErr> {
-        let name = server_name(plan.sni, net.peer_ip())?;
+        let name = server_name(plan.sni, &net.logical_dest)?;
         let host = net.logical_dest.clone();
+        let instance = net.instance;
         let result = async {
             let config = self.configs().get(&host, plan, offered)?;
             handshake(net, config, name).await
@@ -371,9 +388,12 @@ impl ConnectorIo {
             .await
             .map_err(|_| NeedErr::Timeout)?;
         if matches!(result, Err(NeedErr::Tls)) {
-            self.state
-                .observations
-                .record(&host, None, None, super::observations::Outcome::Tls);
+            self.state.observations.record(
+                &host,
+                Some(instance),
+                None,
+                super::observations::Outcome::Tls,
+            );
         }
         result
     }
@@ -395,7 +415,7 @@ impl NeedIo for ConnectorIo {
     async fn dial(&self, d: Dial<'_>) -> Result<Dialled<Stream>, NeedErr> {
         let end = Instant::now() + d.timeout;
         let net = self
-            .connect_route(d.dest, &d.route, d.unix, d.timeout)
+            .connect_route(d.instance, d.dest, &d.route, d.unix, d.timeout)
             .await?;
         let Some(plan) = d.tls else {
             return Ok(Dialled {

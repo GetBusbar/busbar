@@ -140,6 +140,7 @@ impl Reply for Got {
 
 fn req<'a>(method: &'a str, url: &'a str, body: &'a [u8]) -> FetchReq<'a> {
     FetchReq {
+        instance: 7,
         need: FetchNeed {
             method,
             url,
@@ -307,4 +308,66 @@ async fn an_exchange_that_outlasts_its_deadline_is_a_timeout() {
     r.timeout = Duration::from_millis(100);
     let mut got = Got::default();
     assert_eq!(run(r, &judge, &mut got).await, Err(NeedErr::Timeout));
+}
+
+struct ProxyAdmission {
+    at: SocketAddr,
+}
+impl Admission for ProxyAdmission {
+    fn dial<'a>(
+        &'a self,
+        host: &'a str,
+        port: u16,
+        _secured: bool,
+    ) -> BoxFut<'a, Result<super::super::judge::Route, NeedErr>> {
+        Box::pin(async move {
+            assert_eq!((host, port), ("secret.example", 80));
+            Ok(super::super::judge::Route {
+                addrs: vec![self.at],
+                tunnel: Some(super::super::judge::Tunnel {
+                    hop: Arc::new(crate::proxy::ProxyHop::new(
+                        self.at.ip().to_string(),
+                        self.at.port(),
+                        Some("Basic proxy-only".into()),
+                    )),
+                    target: "secret.example:80".into(),
+                }),
+            })
+        })
+    }
+}
+
+#[tokio::test]
+async fn native_fetch_uses_shared_proxy_connect_and_never_forwards_proxy_credentials() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let at = listener.local_addr().unwrap();
+    let peer = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let connect = read_request(&mut stream).await;
+        assert!(connect.starts_with("CONNECT secret.example:80 HTTP/1.1\r\n"));
+        assert!(connect.contains("Proxy-Authorization: Basic proxy-only"));
+        stream
+            .write_all(b"HTTP/1.1 200 Connected\r\n\r\n")
+            .await
+            .unwrap();
+        let origin = read_request(&mut stream).await;
+        assert!(origin.starts_with("GET /secret HTTP/1.1\r\n"));
+        assert!(!origin.to_ascii_lowercase().contains("proxy-authorization"));
+        stream
+            .write_all(&response("200 OK", &[], b"resolved-value"))
+            .await
+            .unwrap();
+    });
+    let mut got = Got::default();
+    fetch(
+        &super::super::net::test_io(),
+        req("GET", "http://secret.example/secret", &[]),
+        &ProxyAdmission { at },
+        &mut got,
+    )
+    .await
+    .unwrap();
+    assert_eq!(got.status, 200);
+    assert_eq!(got.body, b"resolved-value");
+    peer.await.unwrap();
 }

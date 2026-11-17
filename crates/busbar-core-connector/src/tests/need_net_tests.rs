@@ -29,6 +29,7 @@ async fn listener() -> (TcpListener, SocketAddr) {
 
 fn plain(addrs: &[SocketAddr]) -> Dial<'_> {
     Dial {
+        instance: 7,
         dest: "upstream.test:443",
         route: super::super::judge::Route {
             addrs: addrs.to_vec(),
@@ -230,6 +231,7 @@ async fn a_tls_dial_trusts_the_anchor_the_need_binds_and_negotiates_its_alpn() {
     let addrs = [addr];
     let mut d = io
         .dial(Dial {
+            instance: 7,
             dest: "upstream.test:443",
             route: super::super::judge::Route {
                 addrs: addrs.to_vec(),
@@ -257,6 +259,7 @@ async fn a_tls_dial_without_the_anchor_does_not_trust_a_private_ca() {
     let addrs = [addr];
     let got = io
         .dial(Dial {
+            instance: 7,
             dest: "upstream.test:443",
             route: super::super::judge::Route {
                 addrs: addrs.to_vec(),
@@ -279,6 +282,7 @@ async fn a_tls_dial_is_verified_against_the_name_it_asked_for() {
     let addrs = [addr];
     let got = io
         .dial(Dial {
+            instance: 7,
             dest: "upstream.test:443",
             route: super::super::judge::Route {
                 addrs: addrs.to_vec(),
@@ -301,6 +305,7 @@ async fn only_a_held_accept_waives_verification() {
     let addrs = [addr];
     let mut d = io
         .dial(Dial {
+            instance: 7,
             dest: "upstream.test:443",
             route: super::super::judge::Route {
                 addrs: addrs.to_vec(),
@@ -327,6 +332,7 @@ async fn a_peer_that_does_not_speak_tls_is_a_tls_failure() {
     let addrs = [addr];
     let got = io
         .dial(Dial {
+            instance: 7,
             dest: "upstream.test:443",
             route: super::super::judge::Route {
                 addrs: addrs.to_vec(),
@@ -372,6 +378,7 @@ async fn a_conn_that_is_already_tls_cannot_be_upgraded_again() {
     let addrs = [addr];
     let secured = io
         .dial(Dial {
+            instance: 7,
             dest: "upstream.test:443",
             route: super::super::judge::Route {
                 addrs: addrs.to_vec(),
@@ -452,4 +459,195 @@ fn ordered_alpn_protocol_boundaries_never_alias_in_native_cache() {
         .unwrap();
     assert!(!Arc::ptr_eq(&first, &second));
     assert_eq!(second.alpn_protocols, [b"a".to_vec(), b"bc".to_vec()]);
+}
+
+fn operator_io(ca: &[u8]) -> ConnectorIo {
+    use base64::Engine as _;
+    let pem = format!(
+        "-----BEGIN CERTIFICATE-----\n{}\n-----END CERTIFICATE-----\n",
+        base64::engine::general_purpose::STANDARD.encode(ca)
+    );
+    let cfg = busbar_contract::yaml::from_str(&format!(
+        "roots: none\ndestinations:\n  - match: upstream.test\n    trust_anchors: [{pem:?}]\n"
+    ))
+    .expect("TLS config");
+    let trust = Arc::new(
+        crate::tls::store::TrustStore::build(&cfg, std::time::SystemTime::now(), &|_| None)
+            .expect("operator CA"),
+    );
+    super::super::network::BootstrapConnector::new(super::super::network::NetworkInputs {
+        runtime: tokio::runtime::Handle::current(),
+        guard: crate::guard::Guard::default().freeze(),
+        resolver: Arc::new(crate::guard::SystemResolver),
+        trust,
+        proxy: None,
+        resolution: busbar_kernel::config::tls::ProxyResolution::Local,
+        observations: Arc::default(),
+    })
+    .io()
+}
+
+#[tokio::test]
+async fn configured_operator_trust_carries_native_open_write_read_by_logical_host() {
+    let (ca, acceptor) = tls_server(&["separate-sni.test"]);
+    let (l, addr) = listener().await;
+    let (unmatched_listener, unmatched_addr) = listener().await;
+    serve_tls_echo(unmatched_listener, acceptor.clone());
+    serve_tls_echo(l, acceptor);
+    let io = operator_io(&ca);
+    let addrs = [addr];
+    let mut dial = plain(&addrs);
+    dial.tls = Some(plan("separate-sni.test", None, false));
+    let mut held = io
+        .dial(dial)
+        .await
+        .expect("configured operator CA without instance roots");
+    assert_eq!(io.write(&mut held.conn, b"store", BUDGET).await.unwrap(), 5);
+    let mut bytes = [0; 5];
+    let mut read = 0;
+    while read < bytes.len() {
+        let n = io
+            .read(&mut held.conn, &mut bytes[read..], BUDGET)
+            .await
+            .unwrap();
+        assert_ne!(n, 0, "TLS peer ended before the command echo");
+        read += n;
+    }
+    assert_eq!(&bytes, b"store");
+    let unmatched_addrs = [unmatched_addr];
+    let mut unmatched = plain(&unmatched_addrs);
+    unmatched.dest = "unconfigured.test:443";
+    unmatched.tls = Some(plan("separate-sni.test", None, false));
+    assert_eq!(
+        io.dial(unmatched).await.err(),
+        Some(NeedErr::Tls),
+        "offered SNI never selects the logical host's policy"
+    );
+    let observed = io.state.observations.drain();
+    assert!(observed
+        .facts
+        .iter()
+        .any(|fact| fact.owner == Some(7)
+            && fact.outcome == super::super::observations::Outcome::Tls));
+}
+
+#[tokio::test]
+async fn native_proxy_open_preserves_tunnel_prefix_and_confines_credentials() {
+    let (listener, addr) = listener().await;
+    let task = tokio::spawn(async move {
+        let (mut peer, _) = listener.accept().await.unwrap();
+        let mut head = Vec::new();
+        let mut byte = [0];
+        while !head.ends_with(b"\r\n\r\n") {
+            peer.read_exact(&mut byte).await.unwrap();
+            head.push(byte[0]);
+        }
+        assert!(head.starts_with(b"CONNECT 93.184.216.34:1234 HTTP/1.1\r\n"));
+        assert!(String::from_utf8(head)
+            .unwrap()
+            .contains("Proxy-Authorization: Basic proxy-only"));
+        peer.write_all(b"HTTP/1.1 200 Connected\r\n\r\ngreeting")
+            .await
+            .unwrap();
+        let mut request = [0; 4];
+        peer.read_exact(&mut request).await.unwrap();
+        assert_eq!(
+            &request, b"ping",
+            "proxy credential is not written into origin protocol"
+        );
+        peer.write_all(&request).await.unwrap();
+    });
+    let io = test_io();
+    let route = super::super::judge::Route {
+        addrs: vec![addr],
+        tunnel: Some(super::super::judge::Tunnel {
+            hop: Arc::new(crate::proxy::ProxyHop::new(
+                addr.ip().to_string(),
+                addr.port(),
+                Some("Basic proxy-only".into()),
+            )),
+            target: "93.184.216.34:1234".into(),
+        }),
+    };
+    let mut held = io
+        .dial(Dial {
+            instance: 7,
+            dest: "origin.example:1234",
+            route,
+            unix: None,
+            tls: None,
+            timeout: BUDGET,
+        })
+        .await
+        .unwrap();
+    let mut greeting = [0; 8];
+    let mut read = 0;
+    while read < greeting.len() {
+        read += io
+            .read(&mut held.conn, &mut greeting[read..], BUDGET)
+            .await
+            .unwrap();
+    }
+    assert_eq!(&greeting, b"greeting");
+    io.write(&mut held.conn, b"ping", BUDGET).await.unwrap();
+    let mut reply = [0; 4];
+    let mut read = 0;
+    while read < reply.len() {
+        read += io
+            .read(&mut held.conn, &mut reply[read..], BUDGET)
+            .await
+            .unwrap();
+    }
+    assert_eq!(&reply, b"ping");
+    task.await.unwrap();
+}
+
+#[tokio::test]
+async fn proxied_ip_literal_verifies_the_origin_address_without_sni() {
+    let (ca, acceptor) = tls_server(&["93.184.216.34"]);
+    let (listener, addr) = listener().await;
+    let task = tokio::spawn(async move {
+        let (mut peer, _) = listener.accept().await.unwrap();
+        let mut head = Vec::new();
+        let mut byte = [0];
+        while !head.ends_with(b"\r\n\r\n") {
+            peer.read_exact(&mut byte).await.unwrap();
+            head.push(byte[0]);
+        }
+        peer.write_all(b"HTTP/1.1 200 Connected\r\n\r\n")
+            .await
+            .unwrap();
+        let mut tls = acceptor
+            .accept(peer)
+            .await
+            .expect("origin certificate through proxy");
+        let mut command = [0; 5];
+        tls.read_exact(&mut command).await.unwrap();
+        assert_eq!(&command, b"hello");
+    });
+    let io = test_io();
+    let route = super::super::judge::Route {
+        addrs: vec![addr],
+        tunnel: Some(super::super::judge::Tunnel {
+            hop: Arc::new(crate::proxy::ProxyHop::new(
+                addr.ip().to_string(),
+                addr.port(),
+                None,
+            )),
+            target: "93.184.216.34:443".into(),
+        }),
+    };
+    let mut held = io
+        .dial(Dial {
+            instance: 7,
+            dest: "93.184.216.34:443",
+            route,
+            unix: None,
+            tls: Some(plan("", Some(anchor(ca)), false)),
+            timeout: BUDGET,
+        })
+        .await
+        .expect("verification uses logical origin IP, not the proxy socket peer");
+    io.write(&mut held.conn, b"hello", BUDGET).await.unwrap();
+    task.await.unwrap();
 }
