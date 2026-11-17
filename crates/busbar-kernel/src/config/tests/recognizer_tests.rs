@@ -113,3 +113,14 @@ fn a_section_hook_reference_is_judged_against_the_top_level_hooks() {
         "{errors:?}"
     );
 }
+
+#[test]
+fn the_instance_name_parses_where_its_old_dev_key_is_refused() {
+    // The Section items are the admitted planes' instance names (images::with_http_instances),
+    // so a plane that declared `tools:` in 1.6.0-dev now answers to `mcp:` alone.
+    read(&format!("mcp:\n  a: 1\n{BASE}"), &["mcp"]).expect("the instance name parses");
+    let error = read(&format!("tools:\n  a: 1\n{BASE}"), &["mcp"])
+        .expect_err("the old dev key is refused")
+        .to_string();
+    assert!(error.contains("plane sections are: mcp"), "{error}");
+}

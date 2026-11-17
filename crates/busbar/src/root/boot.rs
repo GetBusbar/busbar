@@ -1351,7 +1351,7 @@ fn row_styles(row: &crate::root::loader::LoadablePlugin) -> Vec<String> {
 /// declaring sections, and the dropped-in file, `None` for a linked one), its linked auth rows'
 /// outbound styles, and the start registry the dropped-in images and auth rows are read from.
 pub(crate) struct Registered<'a> {
-    pub(crate) planes: Vec<(String, Vec<String>, Option<String>)>,
+    pub(crate) planes: Vec<(String, Option<String>)>,
     pub(crate) linked_styles: Vec<(String, Vec<String>)>,
     pub(crate) start: Option<&'a PluginRegistry>,
 }
@@ -1367,7 +1367,7 @@ fn registered() -> Option<Registered<'static>> {
                 Origin::Linked(_) => None,
                 Origin::Dropped { file, .. } => Some(file.clone()),
             };
-            (c.name.clone(), c.verbs.clone(), file)
+            (c.name.clone(), file)
         })
         .collect();
     let linked_styles = crate::LINKED
@@ -1437,13 +1437,21 @@ pub(crate) fn classify_against(
             }
         };
     let mut known = std::collections::BTreeSet::new();
-    for (name, sections, file) in &registered.planes {
+    for (name, file) in &registered.planes {
         known.insert(name.clone());
         let (image, standing) = match file {
             None => ("linked".to_owned(), Standing::Counts),
             Some(file) => judged("plane", name, file),
         };
-        push(ItemKind::Section, sections.clone(), name, &image, &standing);
+        // Named by identity here; the read's recognizer renames it to its instance name
+        // (`images::with_http_instances`, from the loader's `plane_sections`).
+        push(
+            ItemKind::Section,
+            vec![name.clone()],
+            name,
+            &image,
+            &standing,
+        );
     }
     for (module, styles) in &registered.linked_styles {
         push(
@@ -1485,11 +1493,10 @@ pub(crate) fn classify_against(
                 &image,
                 &Standing::Unregistered,
             );
-        } else if let Ok(Some(candidate)) = row.candidate() {
-            let sections = candidate.verbs;
+        } else if let Ok(Some(_)) = row.candidate() {
             push(
                 ItemKind::Section,
-                sections,
+                vec![row.manifest.name.clone()],
                 &row.manifest.name,
                 &image,
                 &Standing::Unregistered,

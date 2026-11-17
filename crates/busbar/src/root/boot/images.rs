@@ -278,5 +278,48 @@ fn with_http_instances(
         })
         .map(str::to_owned)
         .collect::<Vec<_>>();
+    // The recognizer's strict-parse Section items are the planes' instance names. The start-time
+    // judgement named each plane by identity; rename it, and list any admitted plane the start
+    // judgement did not (a read before start registered its planes).
+    use busbar_kernel::config::grammar::{Item, ItemKind, Standing};
+    let by_identity: BTreeMap<String, String> = sections
+        .names()
+        .filter_map(|name| {
+            sections
+                .identity_of_section(name)
+                .map(|identity| (identity.to_owned(), name.to_owned()))
+        })
+        .collect();
+    let mut grammar = grammar;
+    for item in &mut grammar.items {
+        if item.kind == ItemKind::Section {
+            if let Some(name) = by_identity.get(&item.module) {
+                item.name.clone_from(name);
+            }
+        }
+    }
+    for (identity, name) in &by_identity {
+        if grammar
+            .items
+            .iter()
+            .any(|item| item.kind == ItemKind::Section && &item.name == name)
+        {
+            continue;
+        }
+        let image = proofs
+            .get(identity)
+            .and_then(|proof| proof.digest)
+            .map_or_else(
+                || "linked".to_owned(),
+                |digest| digest.iter().map(|byte| format!("{byte:02x}")).collect(),
+            );
+        grammar.items.push(Item {
+            kind: ItemKind::Section,
+            name: name.clone(),
+            module: identity.clone(),
+            image,
+            standing: Standing::Counts,
+        });
+    }
     Ok(grammar.with_http_instances(serving))
 }

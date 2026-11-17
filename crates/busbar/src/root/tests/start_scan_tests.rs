@@ -260,18 +260,14 @@ fn plane_replaced_in_place_is_reported_restart_to_apply() {
         start.skipped().len()
     );
     let registered = crate::root::boot::Registered {
-        planes: vec![(
-            MODULE.to_owned(),
-            vec!["fixture-plane".to_owned()],
-            Some(FILE.to_owned()),
-        )],
+        planes: vec![(MODULE.to_owned(), Some(FILE.to_owned()))],
         linked_styles: Vec::new(),
         start: Some(&start),
     };
     let section = |items: Vec<busbar_kernel::config::grammar::Item>| {
         items
             .into_iter()
-            .find(|item| item.kind == ItemKind::Section && item.name == "fixture-plane")
+            .find(|item| item.kind == ItemKind::Section && item.name == MODULE)
             .expect("the registered plane's section is judged")
     };
 
@@ -292,10 +288,7 @@ fn plane_replaced_in_place_is_reported_restart_to_apply() {
     assert_eq!(item.standing, Standing::Replaced, "{item:?}");
     assert_eq!(item.image, same.image, "it counts under the running image");
     let grammar = busbar_kernel::config::Grammar::empty().with_items(vec![item]);
-    assert_eq!(
-        grammar.item_refusal(ItemKind::Section, "fixture-plane"),
-        None
-    );
+    assert_eq!(grammar.item_refusal(ItemKind::Section, MODULE), None);
     assert_eq!(grammar.replaced().count(), 1, "listed restart-to-apply");
 
     std::fs::remove_file(dir.join(FILE)).unwrap();
@@ -311,7 +304,7 @@ fn plane_replaced_in_place_is_reported_restart_to_apply() {
     );
     let refusal = busbar_kernel::config::Grammar::empty()
         .with_items(vec![item])
-        .item_refusal(ItemKind::Section, "fixture-plane")
+        .item_refusal(ItemKind::Section, MODULE)
         .expect("a removed running plane's section is refused when used");
     assert!(
         refusal.contains("which this read's plugins: block does not admit"),
