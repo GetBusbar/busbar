@@ -363,6 +363,37 @@ fn owned_selected_preparation_retains_complete_actual_estimates() {
 }
 
 #[test]
+fn selected_sender_has_no_borrowed_legacy_fallback() {
+    use crate::plane_driver::port_egress::OwnedPreparation;
+    use crate::plane_driver::port_upstream::{Candidate, SendFailed, TargetIdentity, UpReply, UpSend};
+    struct Legacy;
+    impl UpSend for Legacy {
+        fn send(&mut self, _: &Candidate, _: &super::UpExchange) -> Result<UpReply, SendFailed> {
+            panic!("an owned selected preparation must never fall back to legacy send")
+        }
+    }
+    let script = Script {
+        upstream_items: Mutex::new(VecDeque::from([vec![It::UpMethod, It::UpEnd]])),
+        ..Script::default()
+    };
+    let effects = Emitted::default();
+    let (mut task, _) = Task::begin(&script, &req(), b"", &effects).unwrap();
+    let candidate = Candidate {
+        pool: "pool".into(),
+        qualified_member: "seat\u{1f}member".into(),
+        identity: TargetIdentity::Registration,
+        resource: None,
+        upstream: "member".into(),
+        provider: "{}".into(),
+        base_path: "".into(),
+        flags: 0,
+        params: vec![],
+    };
+    let prepared = task.prepare_selected(&candidate, 1, "dialect", "model", &effects).unwrap().unwrap();
+    assert!(Legacy.open_selected(OwnedPreparation::new(prepared, None)).is_err());
+}
+
+#[test]
 fn later_forward_rejects_prior_attempt_owned_session_usage() {
     let script = Script {
         facts: busbar_plugin_abi::plane::FB_ATTEMPT_USAGE,
