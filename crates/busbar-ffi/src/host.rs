@@ -1176,6 +1176,19 @@ mod tests {
         }
     }
 
+    impl Call3<u32, PlaneRef, B, 9> for Fx {
+        fn call(
+            _p: &(),
+            _h: &'static Host,
+            _a1: Arg<'_, u32>,
+            _a2: Arg<'_, PlaneRef>,
+            _a3: Arg<'_, B>,
+            _out: &mut Out<'_>,
+        ) -> Status {
+            Status::OK
+        }
+    }
+
     // ---- the transport table ----
 
     impl Opener1<ConnRef, 0> for Fx {
@@ -1271,6 +1284,7 @@ mod tests {
         upstream: Str::EMPTY,
         provider: Str::EMPTY,
         params: Slice::EMPTY,
+        admission: Bytes::EMPTY,
     };
     const REQUEST: PlaneReq<'static> = PlaneReq {
         route: 0,

@@ -432,7 +432,7 @@ pub(crate) async fn read_grammar(
     blocked_metadata_hosts: Vec<String>,
     fetch: busbar_kernel::config::grammar::Fetch,
     operation: &'static str,
-) -> Result<busbar_kernel::config::Grammar, AdminError> {
+) -> Result<Arc<busbar_kernel::config::grammar::PreparedConfigRead>, AdminError> {
     let joined = |join_err: tokio::task::JoinError| {
         diag_error!(
             ADMIN_STORE_TASK_JOIN_FAILED,
@@ -467,15 +467,16 @@ pub(crate) fn phase_one(
     fetch: busbar_kernel::config::grammar::Fetch,
     operation: &'static str,
     rules: &dyn busbar_kernel::appbuild::RootRules,
-) -> Result<busbar_kernel::config::Grammar, AdminError> {
+) -> Result<Arc<busbar_kernel::config::grammar::PreparedConfigRead>, AdminError> {
     let pins = std::collections::BTreeMap::new();
-    busbar_kernel::config::grammar::grammar_for(&busbar_kernel::config::grammar::PhaseOneIn {
+    busbar_kernel::config::grammar::prepare_read_for(&busbar_kernel::config::grammar::PhaseOneIn {
         plugins,
         dir: Path::new(&plugins.dir),
         pins: &pins,
         fetch,
     }, rules)
-    .map(busbar_kernel::config::Grammar::trimmed)
+    .map(busbar_kernel::config::grammar::PreparedConfigRead::trimmed)
+    .map(Arc::new)
     .map_err(|refusal| {
         tracing::warn!(operation, refusal = %refusal, "the plugins: block's modules cannot be judged");
         AdminError::Validation(format!(
@@ -526,12 +527,12 @@ pub(crate) async fn read_disk_generation(
         operation,
     )
     .await?;
-    read.typed(
+    read.typed_prepared(
         config_path,
         current.providers_override.as_deref(),
         env,
         &*current.root_rules,
-        &grammar,
+        grammar,
     )
     .map_err(AdminError::Validation)
 }

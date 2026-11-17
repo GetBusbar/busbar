@@ -8,7 +8,7 @@ use super::{core_field_paths, core_secret_paths, declared, Upstreams};
 fn consumed_core_prefixes_exclude_plugin_lift_authority() {
     let config = json!({"a/b": {"s": {"auth": {"bearer": "literal"}, "custom": "literal"}}});
     let paths = core_field_paths(&config, &["/a~1b/*"]).unwrap();
-    assert_eq!(paths.len(), 6);
+    assert_eq!(paths.len(), 7);
     for key in [
         "url",
         "command",
@@ -16,6 +16,7 @@ fn consumed_core_prefixes_exclude_plugin_lift_authority() {
         "auth",
         "upstream_credentials",
         "allow_private",
+        "resource",
     ] {
         assert!(paths.contains(&format!("/a~1b/s/{key}")));
     }
@@ -90,6 +91,50 @@ fn binding_resolution_updates_only_the_instances_own_caller_list() {
 
 fn anchor(_: &str) -> Result<Arc<TrustAnchor>, String> {
     Err("fixture has no trust anchor".into())
+}
+
+#[test]
+fn selected_resource_is_core_owned_through_split_normalization_and_migration() {
+    for resource in [None, Some(Value::from(())), Some(json!("a/b"))] {
+        let mut authored = json!({"servers":{"s":{"url":"https://a.test","label":"old"}}});
+        if let Some(value) = &resource {
+            authored["servers"]["s"]["resource"] = value.clone();
+        }
+        let split = declared("p", &authored, &["/servers/*"], &anchor).unwrap();
+        assert!(split.visible_bag["servers"]["s"].get("resource").is_none());
+        let restored = split
+            .reattach(&json!({"servers":{"s":{"label":"new"}}}))
+            .unwrap();
+        assert_eq!(restored["servers"]["s"].get("resource"), resource.as_ref());
+        assert!(core_field_paths(&authored, &["/servers/*"])
+            .unwrap()
+            .contains("/servers/s/resource"));
+        assert!(!core_secret_paths(&authored, &["/servers/*"])
+            .unwrap()
+            .contains("/servers/s/resource"));
+        for injected in [Value::from(()), json!("replacement")] {
+            assert!(split
+                .reattach(&json!({"servers":{"s":{"resource":injected}}}))
+                .is_err());
+        }
+    }
+}
+
+#[test]
+fn selected_resource_registration_text_is_bounded_before_plane_normalization() {
+    for value in [
+        json!(""),
+        json!("bad\nresource"),
+        json!("é".repeat(65)),
+        json!("x".repeat(129)),
+        json!(1),
+        json!({}),
+    ] {
+        let authored = json!({"servers":{"s":{"url":"https://a.test","resource":value}}});
+        assert!(declared("p", &authored, &["/servers/*"], &anchor).is_err());
+    }
+    let authored = json!({"servers":{"s":{"url":"https://a.test","resource":"é".repeat(64)}}});
+    assert!(declared("p", &authored, &["/servers/*"], &anchor).is_ok());
 }
 
 #[test]

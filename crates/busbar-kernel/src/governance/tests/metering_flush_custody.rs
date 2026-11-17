@@ -103,6 +103,7 @@ fn metering_changes(prepared: &PreparedCandidate) -> Vec<MeteringDelta> {
                 })
                 .collect();
             Some(MeteringDelta {
+                pricing: None,
                 scale: after.scale,
                 key_id: after.key_id.clone(),
                 bucket: u64::from_be_bytes((*bucket).try_into().unwrap()),

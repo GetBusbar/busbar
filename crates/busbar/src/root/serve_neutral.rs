@@ -47,6 +47,7 @@ impl From<Rendered> for Whole {
 /// The request a selected line serves: its admitted context and body, its transport scheme, and
 /// the slot and caller it answers through.
 struct AdmittedRequest<C> {
+    request: busbar_kernel::limits::process_admission::RequestLease,
     context: AdmittedContext,
     body: Bytes,
     scheme: u8,
@@ -181,6 +182,7 @@ impl DataRoutes {
         claim: u32,
         context: AdmittedContext,
         body: Bytes,
+        request: busbar_kernel::limits::process_admission::RequestLease,
     ) -> (SessionDoor, Arrival) {
         let AdmittedContext {
             app,
@@ -224,6 +226,7 @@ impl DataRoutes {
                 .get(claim as usize)
                 .is_some_and(|claim| claim.flags & CLAIM_OPEN != 0);
         let door = SessionDoor {
+            request,
             admission: None,
             plane,
             app,
@@ -273,11 +276,16 @@ impl DataRoutes {
 
     /// The same teller driver, money seam, hooks and NodeEndPost as the compatibility adapter.
     /// The admitted line selects the handler; no URL or method is parsed as HTTP here.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the admitted request and its original input ownership move into one serving operation"
+    )]
     pub(crate) async fn serve_admitted<C: Output>(
         self: Arc<Self>,
         admission: &RequestAdmission,
         context: AdmittedContext,
         body: Bytes,
+        request: busbar_kernel::limits::process_admission::RequestLease,
         scheme: u8,
         slot: FramedSession,
         caller: Arc<C>,
@@ -305,6 +313,7 @@ impl DataRoutes {
             admission,
             (plane, claim),
             AdmittedRequest {
+                request,
                 context,
                 body,
                 scheme,
@@ -326,6 +335,7 @@ impl DataRoutes {
         request: AdmittedRequest<C>,
     ) -> Option<SessionPipe> {
         let AdmittedRequest {
+            request,
             context,
             body,
             scheme,
@@ -373,7 +383,7 @@ impl DataRoutes {
             }
             return None;
         }
-        let (mut door, mut arrival) = self.neutral_arrival(plane, claim, context, body);
+        let (mut door, mut arrival) = self.neutral_arrival(plane, claim, context, body, request);
         door.admission = Some(admission.clone());
         if admission.selected_line().upgrade.is_some() {
             if !slot.admit().await {
@@ -441,7 +451,15 @@ impl DataRoutes {
                 match FramedStream::open_neutral(framer, &carrier, &target, &fields, scheme) {
                     Ok(mut stream) => match stream.ingest(&arrival.body, true) {
                         Ok(messages) => {
-                            arrival.body = Bytes::from(messages.concat());
+                            arrival.body = match gathered_input(messages, &door.request) {
+                                Ok(body) => body,
+                                Err(_) => {
+                                    if let Some(rendered) = self.capacity_refusal(admission) {
+                                        render(&*caller, rendered).await;
+                                    }
+                                    return None;
+                                }
+                            };
                             let framed = FramedOutput::new(
                                 Arc::clone(&caller),
                                 stream,
@@ -496,6 +514,7 @@ impl DataRoutes {
         caller: &C,
     ) -> Option<Rendered> {
         let SessionDoor {
+            request,
             admission,
             plane,
             app,
@@ -515,6 +534,7 @@ impl DataRoutes {
             arrival,
             None,
             admission.as_ref(),
+            &request,
         )
         .await
     }

@@ -177,6 +177,14 @@ impl StoreRecords {
                 return Err(RecordsDenied::Unavailable);
             }
             let now = self.now();
+            if let Some(failed) = ops
+                .iter()
+                .position(|op| matches!(op.kind, Kind::PutUntil(_, until) if now >= until))
+            {
+                return Ok(CommitOutcome::Conflict {
+                    failed: u32::try_from(failed).unwrap_or(u32::MAX),
+                });
+            }
             let request = {
                 let seal = crate::seal::lend();
                 for (i, (op, at)) in ops.iter().zip(&slot).enumerate() {
@@ -189,7 +197,7 @@ impl StoreRecords {
                         Kind::Absent => value.is_none(),
                         Kind::Present => value.is_some(),
                         Kind::Equals(expected) => value == Some(expected),
-                        Kind::Put(..) | Kind::Del => true,
+                        Kind::Put(..) | Kind::PutUntil(..) | Kind::Del => true,
                     };
                     if !holds {
                         return Ok(CommitOutcome::Conflict {
@@ -219,6 +227,11 @@ impl StoreRecords {
                                 key: op.key.clone(),
                                 value: envelope(expiry(now, ttl_s), value),
                             }),
+                            Kind::PutUntil(value, until) => Some(Mutation::Put {
+                                schema: RECORDS.to_string(),
+                                key: op.key.clone(),
+                                value: envelope(until, value),
+                            }),
                             Kind::Del => Some(Mutation::Delete {
                                 schema: RECORDS.to_string(),
                                 key: op.key.clone(),
@@ -228,6 +241,13 @@ impl StoreRecords {
                         .collect(),
                 }
             };
+            // Preparing the immutable conditional request must not renew a deferred window.
+            if ops
+                .iter()
+                .any(|op| matches!(op.kind, Kind::PutUntil(_, until) if self.now() >= until))
+            {
+                return Ok(CommitOutcome::Conflict { failed: 0 });
+            }
             if self
                 .decided(&records, records.conditional_native(&request).await)
                 .await?
@@ -304,6 +324,33 @@ impl StoreRecords {
             },
             Op {
                 kind: Kind::Put(value, ttl_s),
+                key: at,
+            },
+        ];
+        Ok(self.run(who, &ops).await? == CommitOutcome::Applied)
+    }
+
+    async fn claim_until_one(
+        &self,
+        who: &Caller<'_>,
+        scope: Scope,
+        key: &[u8],
+        value: &[u8],
+        expires_at_s: u64,
+    ) -> Result<bool, RecordsDenied> {
+        sized(key, value)?;
+        if expires_at_s.saturating_sub(self.now()) > MAX_TTL_S {
+            return Err(RecordsDenied::Invalid);
+        }
+        self.collect_one().await;
+        let at = scoped_key(scope, key);
+        let ops = [
+            Op {
+                kind: Kind::Absent,
+                key: at.clone(),
+            },
+            Op {
+                kind: Kind::PutUntil(value, expires_at_s),
                 key: at,
             },
         ];
@@ -418,6 +465,16 @@ impl StoreRecords {
 }
 
 impl PluginRecords for StoreRecords {
+    fn claim_until(
+        &self,
+        who: &Caller<'_>,
+        scope: Scope,
+        key: &[u8],
+        value: &[u8],
+        expires_at_s: u64,
+    ) -> impl Future<Output = Result<bool, RecordsDenied>> + Send {
+        self.claim_until_one(who, scope, key, value, expires_at_s)
+    }
     fn get(
         &self,
         who: &Caller<'_>,
@@ -514,6 +571,7 @@ enum Kind<'a> {
     Present,
     Equals(&'a [u8]),
     Put(&'a [u8], u64),
+    PutUntil(&'a [u8], u64),
     Del,
 }
 
@@ -544,7 +602,7 @@ fn resolve<'a>(scope: Scope, ops: &[CommitOp<'a>]) -> Result<Vec<Op<'a>>, Record
             CommitOp::Del { key, caller } => (Kind::Del, key, caller),
         };
         let value = match kind {
-            Kind::Equals(value) | Kind::Put(value, _) => value,
+            Kind::Equals(value) | Kind::Put(value, _) | Kind::PutUntil(value, _) => value,
             Kind::Absent | Kind::Present | Kind::Del => &[],
         };
         sized(key, value)?;

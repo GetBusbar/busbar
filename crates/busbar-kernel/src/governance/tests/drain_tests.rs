@@ -205,6 +205,7 @@ async fn a_refusal_after_the_hold_leaks_no_live_count() {
         .await
         .expect("native Store constructs");
     let limit = |metric: LimitMetric, amount: u64, per: Option<LimitWindow>| LimitCfg {
+        selected: None,
         metric,
         amount,
         per,
