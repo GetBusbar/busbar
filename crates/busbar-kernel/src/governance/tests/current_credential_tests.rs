@@ -181,3 +181,96 @@ async fn altered_signature_cannot_mint_retained_authority() {
     );
     assert!(gov.verify_token_authority(&changed, START, None).is_none());
 }
+
+#[tokio::test]
+async fn absent_signed_generation_cannot_survive_binding_rotation() {
+    let (gov, token) = fixture().await;
+    let initial = gov.verify_token(&token, START, None).expect("initial row");
+    let mut legacy = initial.as_ref().clone();
+    legacy.generation_hash.clear();
+    replace(&gov, legacy);
+    let token = signer(9).mint(&initial.id, END, None);
+    let proof = gov
+        .verify_token_authority(&token, START, None)
+        .expect("ungenerated binding");
+    assert!(proof.current_key(&gov, START, None).is_some());
+    let mut rotated = initial.as_ref().clone();
+    rotated.generation_hash = super::binding_marker(&initial.id, "rotation");
+    replace(&gov, rotated);
+    assert!(proof.current_key(&gov, START, None).is_none());
+}
+
+struct CountReads {
+    inner: Arc<dyn busbar_contract::persistence::PersistenceBackend>,
+    reads: std::sync::atomic::AtomicUsize,
+}
+
+impl busbar_contract::persistence::PersistenceBackend for CountReads {
+    fn info(&self) -> busbar_contract::persistence::BackendInfo {
+        self.inner.info()
+    }
+    fn read(
+        &self,
+        request: Arc<busbar_contract::persistence::Read>,
+    ) -> busbar_contract::persistence::Call<'_, busbar_contract::persistence::ReadResult> {
+        self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.inner.read(request)
+    }
+    fn scan(
+        &self,
+        request: Arc<busbar_contract::persistence::Scan>,
+    ) -> busbar_contract::persistence::Call<'_, busbar_contract::persistence::Page> {
+        self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.inner.scan(request)
+    }
+    fn commit(
+        &self,
+        candidate: busbar_contract::persistence::PreparedCandidate,
+        key: busbar_contract::persistence::CommitKey,
+    ) -> busbar_contract::persistence::Call<'_, busbar_contract::persistence::Decision> {
+        self.inner.commit(candidate, key)
+    }
+    fn clock(
+        &self,
+        dataset: busbar_contract::persistence::DatasetId,
+    ) -> busbar_contract::persistence::Call<'_, busbar_contract::persistence::ClockObservation>
+    {
+        self.inner.clock(dataset)
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn current_read_never_schedules_stale_revocation_refresh() {
+    use std::sync::atomic::Ordering;
+    let backend = Arc::new(CountReads {
+        inner: crate::real_store::native_backend().await,
+        reads: std::sync::atomic::AtomicUsize::new(0),
+    });
+    let core = crate::real_store::core_over(backend.clone()).await;
+    let gov = GovState::new_with_core(core, None, Some(signer(9)))
+        .await
+        .expect("gov");
+    let now = crate::store::now();
+    let later = now + super::REVOCATION_SYNC_TTL_SECS * 2;
+    let (_, token) = gov
+        .mint_signed_async(NewKeySpec::default(), later + 100, now)
+        .await
+        .expect("mint");
+    let proof = gov
+        .verify_token_authority(token.expose(&crate::seal::lend()), now, None)
+        .expect("proof");
+    let before = backend.reads.load(Ordering::SeqCst);
+    assert!(proof.current_key(&gov, later, None).is_some());
+    tokio::task::yield_now().await;
+    assert_eq!(
+        backend.reads.load(Ordering::SeqCst),
+        before,
+        "current read must not launch stale refresh under admission"
+    );
+    gov.prepare_current_credentials(later);
+    tokio::task::yield_now().await;
+    assert!(
+        backend.reads.load(Ordering::SeqCst) > before,
+        "the same stale refresh is scheduled by the explicit outside-gate operation"
+    );
+}
