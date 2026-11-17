@@ -1120,18 +1120,19 @@ where
 
 /// S6 owners. No serving instance has opened when this value is returned.
 pub(crate) struct BootstrapReady {
+    candidate_secrets: super::min3_candidate_secrets::BootstrapSecrets,
     channel_accounts: Arc<ChannelAccounts>,
     built: Built,
     instances: Vec<Configured>,
     bootstrap: super::boot::walk::Bootstrap<Option<OpenedPort>>,
     pub(crate) core: Arc<CoreSecrets>,
-    prefix: Arc<BootSecrets>,
     converting: bool,
     normalization_source: Option<(std::path::PathBuf, busbar_contract::secure::SecureString)>,
 }
 
 /// S4b's effective registry and its retained bootstrap leases, before serving opens.
 pub(crate) struct ServingReady {
+    candidate_secrets: super::min3_candidate_secrets::CandidateSecrets,
     images: Arc<super::boot::images::FileImages>,
     channel_accounts: Arc<ChannelAccounts>,
     hook_plan: hooks::Plan,
@@ -1157,6 +1158,10 @@ pub(crate) struct ServingReady {
 }
 
 impl ServingReady {
+    pub(crate) fn resolver(&self) -> Arc<busbar_kernel::config::secret::SecretResolver> {
+        Arc::clone(self.candidate_secrets.resolver())
+    }
+
     /// Reserve the complete candidate before any export pump receives a producer handle.
     pub(crate) fn export_names(&self) -> impl Iterator<Item = String> + '_ {
         self.instances
@@ -1170,20 +1175,17 @@ impl BootstrapReady {
     pub(crate) fn converting(&self) -> bool {
         self.converting
     }
-    pub(crate) fn resolver(
-        &self,
-        reactor: tokio::runtime::Handle,
-    ) -> Arc<busbar_kernel::config::secret::SecretResolver> {
-        self.prefix.resolver(reactor, self.built.sugars.clone())
-    }
 }
 
 pub(crate) async fn prepare_bootstrap(
+    runtime: tokio::runtime::Handle,
     process: &busbar_plugin_loader::process::ProcessResources,
     file_images: super::boot::images::FileImages,
     cfg: &RootCfg,
     guard: Guard,
 ) -> Result<Option<(BootstrapReady, Startup)>, String> {
+    let protected_images = Arc::new(file_images.protect(cfg)?);
+    let protected_instances = Arc::new(super::boot::inputs::BootInstances::capture(cfg));
     let images = file_images.images;
     let transport_images: Vec<String> = images
         .identities()
@@ -1264,12 +1266,17 @@ pub(crate) async fn prepare_bootstrap(
     let core = Arc::new(core_secrets_of(cfg, &prefix).await?);
     Ok(Some((
         BootstrapReady {
+            candidate_secrets: super::min3_candidate_secrets::BootstrapSecrets::new(
+                Arc::clone(&prefix),
+                protected_images,
+                protected_instances,
+                runtime,
+            ),
             channel_accounts: Arc::new(ChannelAccounts::new()),
             built,
             instances,
             bootstrap,
             core,
-            prefix,
             converting,
             normalization_source,
         },
@@ -1317,12 +1324,12 @@ pub(crate) fn prepare_serving(
     let effective_images = Arc::new(effective_images);
     let mut provider_plan = super::min3_provider_plan::capture(&effective_images, cfg, catalogs)?;
     let BootstrapReady {
+        candidate_secrets: bootstrap_secrets,
         channel_accounts,
         built: bootstrap_built,
         instances: before,
         bootstrap,
         core,
-        prefix,
         converting,
         normalization_source,
     } = ready;
@@ -1347,14 +1354,16 @@ pub(crate) fn prepare_serving(
         })
         .map(|(identity, alias)| PlaneImage { identity, alias })
         .collect();
-    let sugars = cfg.grammar().map_err(|error| error.0)?.sugars.clone();
-    let binder = super::min3_candidate_secrets::new_binder(cfg.grammar().map_err(|error| error.0)?);
-    let prefix = prefix.with_binder(Arc::clone(&binder));
-    let registry = Arc::new(Registry::new(
-        images,
-        Arc::clone(&binder),
-        Arc::clone(process.ids()),
-    ));
+    let candidate_secrets = super::min3_candidate_secrets::CandidateSecrets::prepare(
+        &bootstrap_secrets,
+        &effective_images,
+        cfg,
+        process,
+    )?;
+    let sugars = candidate_secrets.sugars().clone();
+    let binder = Arc::clone(candidate_secrets.binder());
+    let prefix = Arc::clone(candidate_secrets.prefix());
+    let registry = Arc::clone(candidate_secrets.registry());
     let mut instances = configured(cfg, &planes)?;
     let authored_auth: std::collections::BTreeSet<_> = instances
         .iter()
@@ -1516,6 +1525,7 @@ pub(crate) fn prepare_serving(
     };
     let hook_plan = hooks::Plan::capture(cfg, &instances)?;
     Ok(ServingReady {
+        candidate_secrets,
         images: effective_images,
         channel_accounts,
         hook_plan,
@@ -1552,7 +1562,6 @@ impl<'a> ServingEnvironment<'a> {
 
 pub(crate) async fn finish(
     ready: ServingReady,
-    reactor: tokio::runtime::Handle,
     startup: Startup,
     services: Option<Arc<KernelServices>>,
     work_binder: Arc<WorkBinder>,
@@ -1568,6 +1577,7 @@ pub(crate) async fn finish(
     String,
 > {
     let ServingReady {
+        candidate_secrets,
         images,
         channel_accounts,
         hook_plan,
@@ -1784,7 +1794,16 @@ pub(crate) async fn finish(
         drop(specs);
         return Err(super::migrate::restart(
             written,
-            (opened, admission, core, built, shared, _bootstrap_registry),
+            (
+                opened,
+                admission,
+                core,
+                built,
+                shared,
+                _bootstrap_registry,
+                candidate_secrets,
+                images,
+            ),
             drop,
             super::migrate::reexec,
         ));
@@ -1954,7 +1973,7 @@ pub(crate) async fn finish(
     let ticking = seats.clone();
     let booted = Arc::new(Booted {
         _channel_accounts: channel_accounts,
-        resolver: secrets.resolver(reactor, built.sugars.clone()),
+        resolver: Arc::clone(candidate_secrets.resolver()),
         registry: built.registry,
         _bootstrap_registry,
         _transports: transports,
