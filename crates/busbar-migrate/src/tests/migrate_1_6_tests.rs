@@ -321,3 +321,52 @@ fn the_shipped_clean_config_migrates_and_drops_its_empty_carve_outs() {
     let lines = carve_out_lines(&report);
     assert_eq!(lines.len(), 1, "{report:?}");
 }
+
+/// RED before §C (#457): a 1.5.5 `route_policy: true` refuses the upgrade with the remedy, since
+/// 1.6.0 names no routing policy or member in a response header; nothing is rewritten.
+#[test]
+fn route_policy_true_is_refused_with_remedy() {
+    for on in ["true", "${ROUTE_HEADERS}"] {
+        let source =
+            format!("advanced:\n  response_headers: {{server_timing: true, route_policy: {on}}}\n");
+        let resolved = value(&source.replace("${ROUTE_HEADERS}", "true"));
+        let mut after = value(&source);
+        let mut report = Vec::new();
+        let refusal = run(
+            after.as_mapping_mut().expect("a mapping"),
+            &resolved,
+            &facts(),
+            &mut report,
+        )
+        .expect_err("route_policy: true refuses");
+        let Refusal::Config(text) = refusal else {
+            panic!("a config refusal");
+        };
+        assert!(
+            text.starts_with("`advanced.response_headers.route_policy` was removed in 1.6.0")
+                && text.contains("GET /api/v1/admin/records")
+                && text.ends_with("Delete the key."),
+            "{text}"
+        );
+    }
+}
+
+/// RED before §C (#457): `route_policy: false` (no header, the 1.5.5 default) is dropped and
+/// reported; `server_timing` is kept.
+#[test]
+fn route_policy_false_migrates_away_and_is_reported() {
+    let (after, report) = passes(
+        "advanced:\n  response_headers: {server_timing: true, route_policy: false}\n",
+        &facts(),
+    )
+    .unwrap();
+    let headers = after.at("advanced").at("response_headers");
+    assert!(headers.get("route_policy").is_none(), "{report:?}");
+    assert_eq!(headers.at("server_timing").as_bool(), Some(true));
+    assert!(
+        report
+            .iter()
+            .any(|line| line.starts_with("advanced.response_headers.route_policy: false removed")),
+        "{report:?}"
+    );
+}
