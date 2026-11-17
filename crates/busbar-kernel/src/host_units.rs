@@ -213,7 +213,29 @@ impl UnitRecords {
         )
     }
     pub fn ended(&self, unit: u64) {
-        if let Some(entry) = self.lock(unit).remove(&unit) {
+        let removed = self.lock(unit).remove(&unit);
+        if let Some(entry) = removed {
+            if let Some(phase) = entry.admission_phase {
+                phase.end();
+            }
+        }
+    }
+
+    /// Retire only the captured allocation, never a later record reusing its numeric key.
+    pub(crate) fn ended_if_record(&self, unit: u64, record: &Arc<UnitRecord>) {
+        let removed = {
+            let mut units = self.lock(unit);
+            if units
+                .get(&unit)
+                .and_then(|entry| entry.record.as_ref())
+                .is_some_and(|current| Arc::ptr_eq(current, record))
+            {
+                units.remove(&unit)
+            } else {
+                None
+            }
+        };
+        if let Some(entry) = removed {
             if let Some(phase) = entry.admission_phase {
                 phase.end();
             }

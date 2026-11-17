@@ -87,7 +87,7 @@ impl RequestRoutes {
             || catalog.as_ref().is_some_and(|p| p.instance != instance)
             || registration
                 .as_ref()
-                .is_some_and(|r| r.pool.is_empty() || !r.pools.contains_key(&r.pool))
+                .is_some_and(|r| r.pool != instance || !r.pools.contains_key(&r.pool))
         {
             return Err(AdmissionError::Route);
         }

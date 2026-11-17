@@ -154,6 +154,14 @@ impl InvocationContext {
         self.accepts(&self.caller)
     }
 
+    /// Release this exact registered allocation; a later unit reusing its number is untouched.
+    pub fn retire(&self) {
+        self.generation
+            .core
+            .units()
+            .ended_if_record(self.unit, &self.record);
+    }
+
     /// Required before effectful host services; pre-admission keeps only read prerequisites.
     pub fn effects_allowed(&self) -> bool {
         self.is_live() && self.phase.effects_allowed()
