@@ -96,7 +96,7 @@ impl<'a> Environment<'a> {
     /// A pool attachment cannot disappear because no native seat walks that configured pool.
     pub(super) fn check_pools(&self, instances: &[Configured]) -> Result<(), String> {
         for (name, pool) in &self.cfg.pools {
-            if (!pool.gates.is_empty() || pool.base_named || pool.policy.native_name().is_some())
+            if (!pool.gates.is_empty() || pool.policy.native_name().is_some())
                 && !instances
                     .iter()
                     .any(|one| one.kind == KindCode::Plane && one.name == *name)

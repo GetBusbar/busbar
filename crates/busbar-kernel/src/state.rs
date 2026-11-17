@@ -362,7 +362,7 @@ pub struct App {
     /// advanced by compare-and-set to `max(stored, prior) + 1` before every publication, so it never
     /// repeats across restarts (unlike `config_version`). One cell is shared by every snapshot of a handle.
     pub config_generation: Arc<std::sync::atomic::AtomicU64>,
-    /// `auth.policy.require_if_match`: a guarded config mutation without `If-Match` is 428.
+    /// `auth.require_if_match`: a guarded config mutation without `If-Match` is 428.
     pub require_if_match: bool,
     /// Anti-sprawl cap on keys BOUND TO ONE GROUP.
     /// Because a `user:<sub>` leaf IS the principal, this is effectively "max keys per principal".
@@ -1038,9 +1038,34 @@ impl InvocationId {
     }
 }
 
+/// Final admission is either for the currently published generation or fails before replay.
+#[derive(Debug, PartialEq, Eq)]
+pub enum AdmissionRefusal<E> {
+    StaleGeneration,
+    Policy(E),
+}
+
+/// A single invocation's retained generation after final synchronous authorization. The
+/// replay owner must retain this non-Clone value through replay and successful execution.
+pub struct AdmissionLease {
+    generation: Arc<App>,
+    invocation: InvocationId,
+}
+
+impl AdmissionLease {
+    pub fn generation(&self) -> &Arc<App> {
+        &self.generation
+    }
+
+    pub fn invocation(&self) -> InvocationId {
+        self.invocation
+    }
+}
+
 pub struct AppHandle {
     current: arc_swap::ArcSwap<App>,
     publication: std::sync::Mutex<()>,
+    admission: std::sync::Mutex<()>,
     application: tokio::sync::Mutex<()>,
     async_appliers: std::sync::Mutex<Vec<Arc<AsyncApplier>>>,
 
@@ -1066,6 +1091,7 @@ impl AppHandle {
         Self {
             current: arc_swap::ArcSwap::new(app),
             publication: std::sync::Mutex::new(()),
+            admission: std::sync::Mutex::new(()),
             application: tokio::sync::Mutex::new(()),
             async_appliers: std::sync::Mutex::new(Vec::new()),
             #[cfg(debug_assertions)]
@@ -1129,6 +1155,28 @@ impl AppHandle {
 
     pub fn load(&self) -> Arc<App> {
         self.current.load_full()
+    }
+
+    /// `authorize` checks the exact frozen request against this App. It must not perform I/O,
+    /// call a plugin or consume replay. A successful replay owner retains the returned lease.
+    pub fn admit_current<E>(
+        &self,
+        expected: &Arc<App>,
+        invocation: InvocationId,
+        authorize: impl FnOnce(&App) -> Result<(), E>,
+    ) -> Result<AdmissionLease, AdmissionRefusal<E>> {
+        let _admission = self
+            .admission
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if !Arc::ptr_eq(expected, &self.current.load_full()) {
+            return Err(AdmissionRefusal::StaleGeneration);
+        }
+        authorize(expected).map_err(AdmissionRefusal::Policy)?;
+        Ok(AdmissionLease {
+            generation: Arc::clone(expected),
+            invocation,
+        })
     }
 
     pub fn snapshot(&self) -> arc_swap::Guard<Arc<App>> {
@@ -1208,6 +1256,12 @@ impl AppHandle {
         }
 
         let confirmed = confirm()?;
+        // Candidate work and callbacks above finish before the short admission boundary.
+        // Final policy either observes the prior App and retains it, or observes this swap.
+        let admission = self
+            .admission
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         let committed = match confirmed {
             Some(confirmed) => Some(confirmed.keep()),
             None => {
@@ -1225,6 +1279,7 @@ impl AppHandle {
         }
         self.current.store(next.clone());
         *published = true;
+        drop(admission);
         crate::export::plugin::queue_refresh(&next.exports, &next.export_defs, next.config_version);
         if let Some(committed) = committed {
             committed.notify();
