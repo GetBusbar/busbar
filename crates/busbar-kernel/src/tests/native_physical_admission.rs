@@ -16,6 +16,10 @@ fn unsupported<T>() -> Result<T, PortError> {
     })
 }
 impl TransportPort for Transport {
+    fn listener_slots(&self) -> &[Box<str>] {
+        static SLOTS: OnceLock<[Box<str>; 1]> = OnceLock::new();
+        SLOTS.get_or_init(|| ["listen".into()])
+    }
     fn alpn(&self, _: u32) -> &[Box<str>] {
         &[]
     }
