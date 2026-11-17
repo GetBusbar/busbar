@@ -1482,7 +1482,9 @@ async fn run(
         .then(|| std::mem::take(&mut served));
 
     drop(served);
-    let app_handle = Arc::new(busbar_kernel::state::AppHandle::new(app));
+    let (admin_trust_decide, admin_trust_read) = root::serve::admin_trust(&services);
+    let app_handle =
+        Arc::new(busbar_kernel::state::AppHandle::new(app).with_trust(admin_trust_read));
     // Publication owns every reserved observer through producer shutdown. Failed construction
     // above drops the uncommitted reservation and returns its unused capacity.
     let _export_generation = observation_reservation.commit();
@@ -1655,7 +1657,7 @@ async fn run(
                 .unwrap_or_else(|error| die(error)),
             book,
             None,
-            &services,
+            admin_trust_decide,
             root::adapters::BreakerPolicy::new(),
         )
         .unwrap_or_else(|error| die(format!("admin persistence admission refused: {error:?}"))),
