@@ -3232,3 +3232,40 @@ fn plugin_trust_has_one_explicit_unverified_optin_and_scoped_keys() {
         );
     }
 }
+
+#[test]
+fn shutdown_deregister_delay_is_a_bounded_document_duration() {
+    let default: AdvancedCfg = busbar_contract::yaml::from_str("{}").unwrap();
+    let view = busbar_contract::json::to_value(&default).unwrap();
+    assert_eq!(view["shutdown"]["deregister_delay"], "5s");
+    for (written, expected) in [("0s", "0s"), ("5s", "5s"), ("300s", "300s"), ("5m", "300s")] {
+        let value: AdvancedCfg =
+            busbar_contract::yaml::from_str(&format!("shutdown:\n  deregister_delay: {written}\n"))
+                .unwrap();
+        let view = busbar_contract::json::to_value(&value).unwrap();
+        assert_eq!(view["shutdown"]["deregister_delay"], expected);
+    }
+    for written in [
+        "301s",
+        "6m",
+        "-1s",
+        "0.5s",
+        "never",
+        "999999999999999999999999s",
+        "5",
+        "null",
+    ] {
+        let error = busbar_contract::yaml::from_str::<AdvancedCfg>(&format!(
+            "shutdown:\n  deregister_delay: {written}\n"
+        ))
+        .unwrap_err();
+        assert!(error.to_string().contains("deregister_delay"), "{error}");
+    }
+    assert!(
+        busbar_contract::yaml::from_str::<crate::config::patch::AdvancedPatch>(
+            "shutdown:\n  deregister_delay: 0s\n"
+        )
+        .is_err(),
+        "the new field is document-editable, not a settings patch"
+    );
+}
