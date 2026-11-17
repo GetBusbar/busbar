@@ -68,7 +68,48 @@ fn captured_targets_compile_with_the_late_cost_generation_and_actual_capability(
         .unwrap()
         .activate(None, 1, 10)
         .unwrap();
-    assert!(Arc::ptr_eq(policy.cost_generation(), &cost));
+    assert_eq!(policy.cost_generation(), cost.generation());
     let wrong_cost = Arc::new(CostModel::resolve_parts(None, 0, &BTreeMap::new()));
     assert!(captured(true).compile(wrong_cost, Some(&policy)).is_err());
+}
+
+#[test]
+fn token_support_requires_declared_physical_classes_with_attempt_accounting() {
+    let described = |unit, facts, attempt| {
+        let mut frame = Reply::new();
+        frame
+            .put_pod_tail(
+                p::tag::D_USAGE_CLASS,
+                &p::UsageClassRec {
+                    unit,
+                    _r: 0,
+                    expected_units: f64::NAN,
+                },
+                b"custom.physical",
+            )
+            .unwrap();
+        if attempt {
+            frame
+                .put(p::tag::D_ATTEMPT_CLASS, b"custom.physical")
+                .unwrap();
+        }
+        busbar_plugin_loader::instance::Described {
+            kind: KindCode::Plane,
+            methods: p::M_UPSTREAM,
+            facts,
+            items: Records::new(frame.as_bytes())
+                .map(|rec| {
+                    let rec = rec.unwrap();
+                    (rec.tag, rec.body.to_vec())
+                })
+                .collect(),
+            schema: None,
+            metrics: Vec::new(),
+            error_codes_refused: None,
+        }
+    };
+    assert!(supports_tokens(&described(p::UNIT_TOKENS, p::FB_ATTEMPT_USAGE, true)).unwrap());
+    assert!(!supports_tokens(&described(p::UNIT_COUNT, p::FB_ATTEMPT_USAGE, true)).unwrap());
+    assert!(!supports_tokens(&described(p::UNIT_TOKENS, p::FB_PREPARED_ESTIMATES, false)).unwrap());
+    assert!(supports_tokens(&described(p::UNIT_TOKENS, p::FB_ATTEMPT_USAGE, false)).is_err());
 }
