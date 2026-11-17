@@ -179,18 +179,18 @@ async fn retained_native_chain_snapshots_request_and_rejects_before_replay() {
         native: false,
     });
     let owners = Arc::new(Owners(AtomicUsize::new(0)));
-    let chain = NativeChain {
-        instances: vec![
+    let chain = NativeChain::operator(
+        vec![
             instance(41, Arc::clone(&first)),
             instance(42, Arc::clone(&second)),
         ],
-        policy: ChainPolicy::new(7, Vec::new()),
-        owners: Arc::new(AuthOwners {
+        ChainPolicy::new(7, Vec::new()),
+        Arc::new(AuthOwners {
             issued: owners.clone(),
             replay: owners.clone(),
             cache: Arc::new(Verdicts::new(VerdictPolicy::DEFAULT)),
         }),
-    };
+    );
     let cx = CallCx {
         deadline: std::time::Instant::now() + Duration::from_secs(30),
         request_id: 1,
@@ -230,15 +230,15 @@ async fn prepared_native_chain_retains_original_request_without_spending_replay(
         native: false,
     });
     let owners = Arc::new(Owners(AtomicUsize::new(0)));
-    let chain = Arc::new(NativeChain {
-        instances: vec![instance(42, port.clone())],
-        policy: ChainPolicy::new(7, Vec::new()),
-        owners: Arc::new(AuthOwners {
+    let chain = Arc::new(NativeChain::operator(
+        vec![instance(42, port.clone())],
+        ChainPolicy::new(7, Vec::new()),
+        Arc::new(AuthOwners {
             issued: owners.clone(),
             replay: owners.clone(),
             cache: Arc::new(Verdicts::new(VerdictPolicy::DEFAULT)),
         }),
-    });
+    ));
     let request = Request::new(&AuthIn {
         method: "POST",
         path: "/resource",
