@@ -285,14 +285,22 @@ impl busbar_kernel::plane_grants::ReplayGuard for UnusedAuth {
 }
 
 async fn catalog() -> (CatalogSeat, String, String) {
+    catalog_with_registration_collision(false).await
+}
+
+async fn catalog_with_registration_collision(collision: bool) -> (CatalogSeat, String, String) {
     use super::super::{min3_auth, min3_outbound_auth, min3_provider_catalog};
     use busbar_kernel::config::{self, Grammar};
     use busbar_kernel::plane_driver::provider_catalog::ProviderPlane;
     let grammar = Grammar::empty();
-    let deploy = config::deploy_from_yaml_str(
+    let mut deploy = config::deploy_from_yaml_str(
         "providers:\n  p: {api_key: none}\nmodels:\n  m: {provider: p, upstream_model: wire-model, max_concurrent: 1, attempt_timeout_ms: 321}\npools:\n  fast:\n    members: [{model: m, weight: 7}]\n    breaker: {base_cooldown_secs: 37}\n    failover: {timeout_secs: 17, max_hops: 2, exclusions: [m]}\n    on_exhausted: {fallback_pool: slow}\n  slow:\n    members: [m]\n    on_exhausted: {queue: {max_ms: 100}}\n",
         &grammar,
     ).unwrap();
+    if collision {
+        let pool = deploy.pools.pools["fast"].clone();
+        deploy.pools.pools.insert("mcp".into(), pool);
+    }
     let defs = config::providers::catalog_from_str(
         "p: {protocol: wire, base_url: 'https://provider.example/api', path: /invoke}",
         &grammar,
@@ -492,6 +500,57 @@ async fn catalog_composition_keeps_model_definitions_out_of_channel_registration
         );
     }
     assert_eq!(table.declared.lock().unwrap().len(), 5);
+}
+
+#[tokio::test]
+async fn seat_request_inventory_retains_the_actual_candidate_catalog() {
+    let (catalog, _, _) = catalog().await;
+    let plan = Arc::clone(&catalog.plan);
+    let mut shared = shared(None);
+    shared.catalogs.insert("mcp".into(), Arc::new(catalog));
+    let wiring = compose(
+        &shared,
+        "mcp",
+        Accept::default(),
+        &who(7),
+        Arc::new(Quiet),
+        Handle::current(),
+    )
+    .unwrap();
+    drop(shared);
+    let routes = Arc::clone(&wiring.request_routes);
+    drop(wiring);
+    assert_eq!(
+        Arc::strong_count(&plan),
+        2,
+        "request inventory retains the exact candidate plan"
+    );
+    drop(routes);
+    assert_eq!(Arc::strong_count(&plan), 1);
+}
+
+#[tokio::test]
+async fn catalog_selector_cannot_alias_the_registration_request_domain() {
+    let (catalog, _, _) = catalog_with_registration_collision(true).await;
+    let table = Arc::new(Table::default());
+    let mut shared = shared(Some(ConnTable {
+        declared: table.clone(),
+        conns: table.clone(),
+    }));
+    shared.catalogs.insert("mcp".into(), Arc::new(catalog));
+    assert!(compose(
+        &shared,
+        "mcp",
+        Accept::default(),
+        &who(7),
+        Arc::new(Quiet),
+        Handle::current()
+    )
+    .is_err());
+    assert!(
+        table.declared.lock().unwrap().is_empty(),
+        "ambiguous request scope refuses before connection declarations"
+    );
 }
 
 fn who(instance: u64) -> Namespace {
