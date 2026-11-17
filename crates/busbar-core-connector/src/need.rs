@@ -45,6 +45,7 @@ pub mod exchange;
 pub mod judge;
 pub mod key;
 pub mod net;
+pub mod observations;
 pub mod policy;
 pub mod table;
 pub mod tlsconf;
