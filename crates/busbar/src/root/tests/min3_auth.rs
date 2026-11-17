@@ -1016,3 +1016,98 @@ async fn physical_admin_join_refuses_reset_or_expired_completed_proof() {
         assert_eq!(f.owners.0.load(Ordering::SeqCst), 1);
     }
 }
+
+async fn physical_admin_router(f: &AdminPhysicalFixture) -> axum::Router {
+    use crate::root::units_admin::{AdminBinding, RefusingDispatch};
+    let door = crate::root::units_admin::bound::live_admin_door(f.handle.clone());
+    let mut units =
+        crate::root::kernel::ProductionUnits::admin_only(Arc::new(RefusingDispatch), door.clone())
+            .await;
+    let inner = busbar_kernel::router::build_admin_router_on(&f.handle, 1024, false);
+    crate::root::units_admin::mount(
+        inner,
+        crate::root::kernel::new_kernel(),
+        1024,
+        move |dispatch| {
+            units.admin = AdminBinding::new(dispatch, door);
+            units
+        },
+    )
+}
+
+fn physical_admin_http(
+    f: &mut AdminPhysicalFixture,
+) -> (
+    axum::http::Request<axum::body::Body>,
+    busbar_kernel::inbound::native::AdminPhysicalRequest,
+) {
+    let carrier = f.pending.take().unwrap().into_admin().unwrap();
+    let snapshot = f.binding.snapshot().unwrap();
+    let request = axum::http::Request::builder()
+        .method(snapshot.method())
+        .uri(snapshot.target())
+        .extension(carrier.clone())
+        .extension(snapshot.request().clone())
+        .extension(snapshot.clone())
+        .body(axum::body::Body::from(snapshot.body_bytes()))
+        .unwrap();
+    (request, carrier)
+}
+
+#[tokio::test]
+async fn physical_admin_root_router_retains_exact_owner_through_response_body_drop() {
+    use busbar_kernel::inbound::native::PhysicalAdminExecution;
+    use tower::ServiceExt;
+    let mut f = admin_physical_fixture().await;
+    let router = physical_admin_router(&f).await;
+    let (request, carrier) = physical_admin_http(&mut f);
+    let response = router.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), 200);
+    assert!(
+        carrier.take().is_err(),
+        "root consumed original completion right"
+    );
+    let physical = response
+        .extensions()
+        .get::<Arc<PhysicalAdminExecution>>()
+        .unwrap()
+        .clone();
+    assert!(Arc::ptr_eq(physical.binding(), &f.binding));
+    assert!(physical.check_executing().is_ok());
+    assert_eq!(f.port.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(f.owners.0.load(Ordering::SeqCst), 1);
+    let weak = Arc::downgrade(&physical);
+    let (parts, body) = response.into_parts();
+    drop((parts, physical));
+    assert!(
+        weak.upgrade().is_some(),
+        "body owns same physical execution after headers retire"
+    );
+    assert!(f.binding.check_executing().is_ok());
+    drop(body);
+    assert!(weak.upgrade().is_none());
+    assert!(f.binding.check_executing().is_err());
+}
+
+#[tokio::test]
+async fn physical_admin_root_consumes_carrier_before_await_and_reset_prevents_execution() {
+    use tower::ServiceExt;
+    let mut f = admin_physical_fixture().await;
+    let router = physical_admin_router(&f).await;
+    let (request, carrier) = physical_admin_http(&mut f);
+    let mut response = std::pin::pin!(router.oneshot(request));
+    let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+    assert!(std::future::Future::poll(response.as_mut(), &mut cx).is_pending());
+    assert!(
+        carrier.take().is_err(),
+        "right taken before body/auth/task suspension"
+    );
+    assert!(f.connection.cancel(&f.stream));
+    let answer = response.await.unwrap();
+    assert_ne!(answer.status(), 200);
+    assert!(answer
+        .extensions()
+        .get::<Arc<busbar_kernel::inbound::native::PhysicalAdminExecution>>()
+        .is_none());
+    assert!(f.binding.check_executing().is_err());
+}
