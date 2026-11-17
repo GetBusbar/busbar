@@ -497,8 +497,16 @@ async fn configured_operator_trust_carries_native_open_write_read_by_logical_hos
         .expect("configured operator CA without instance roots");
     assert_eq!(io.write(&mut held.conn, b"store", BUDGET).await.unwrap(), 5);
     let mut bytes = [0; 5];
-    let n = io.read(&mut held.conn, &mut bytes, BUDGET).await.unwrap();
-    assert_eq!(&bytes[..n], b"store");
+    let mut read = 0;
+    while read < bytes.len() {
+        let n = io
+            .read(&mut held.conn, &mut bytes[read..], BUDGET)
+            .await
+            .unwrap();
+        assert_ne!(n, 0, "TLS peer ended before the command echo");
+        read += n;
+    }
+    assert_eq!(&bytes, b"store");
     let unmatched_addrs = [unmatched_addr];
     let mut unmatched = plain(&unmatched_addrs);
     unmatched.dest = "unconfigured.test:443";

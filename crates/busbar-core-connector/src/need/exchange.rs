@@ -195,25 +195,34 @@ async fn exchange<P: Reply>(
     let headers = request_headers(req.need.headers)?;
 
     // The one judgement of this exchange's one connection, before a byte is sent.
-    let route = admission.dial(host, port, https).await?;
-    let net = io
-        .connect_route(&authority, &route, None, req.timeout)
-        .await?;
-    let (stream, h2) = if https {
-        let plan = TlsPlan {
-            sni: host,
-            alpn: "",
-            trust: req.trust.clone(),
-            cert: req.cert.clone(),
-            waive: req.waive,
+    let connect_budget = req
+        .timeout
+        .min(super::dial_policy(req.class).connect_timeout);
+    let (stream, h2) = crate::io::timeout_on(io.runtime(), connect_budget, async {
+        let route = admission.dial(host, port, https).await?;
+        let net = io
+            .connect_route(&authority, &route, None, req.timeout)
+            .await?;
+        let pair = if https {
+            let plan = TlsPlan {
+                sni: host,
+                alpn: "",
+                trust: req.trust.clone(),
+                cert: req.cert.clone(),
+                waive: req.waive,
+            };
+            let offered = [b"h2".to_vec(), b"http/1.1".to_vec()];
+            let dialled = io.secure(net, &plan, &offered, req.timeout).await?;
+            let h2 = &*dialled.alpn == "h2";
+            (dialled.conn, h2)
+        } else {
+            (Stream::Plain(net), false)
         };
-        let offered = [b"h2".to_vec(), b"http/1.1".to_vec()];
-        let dialled = io.secure(net, &plan, &offered, req.timeout).await?;
-        let h2 = &*dialled.alpn == "h2";
-        (dialled.conn, h2)
-    } else {
-        (Stream::Plain(net), false)
-    };
+
+        Ok::<_, NeedErr>(pair)
+    })
+    .await
+    .map_err(|_| NeedErr::Timeout)??;
 
     let mut target = url.path().to_owned();
     if let Some(query) = url.query() {

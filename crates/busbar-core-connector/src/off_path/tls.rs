@@ -648,14 +648,17 @@ impl TrustStore {
                 Ok((chain, Arc::new(key)))
             })
             .transpose()?;
-        let mut identity = instance_identity.as_ref();
-        for operator in entries.iter().filter_map(|entry| entry.identity.as_ref()) {
-            if identity.is_some_and(|(chain, key)| {
-                chain != &operator.0 || key.secret_der() != operator.1.secret_der()
-            }) {
-                return Err(TrustRefusal::Build("conflicting client identities".into()));
+        let mut identity = entries.iter().find_map(|entry| entry.identity.as_ref());
+        if need.is_some() {
+            identity = instance_identity.as_ref();
+            for operator in entries.iter().filter_map(|entry| entry.identity.as_ref()) {
+                if identity.is_some_and(|(chain, key)| {
+                    chain != &operator.0 || key.secret_der() != operator.1.secret_der()
+                }) {
+                    return Err(TrustRefusal::Build("conflicting client identities".into()));
+                }
+                identity = Some(operator);
             }
-            identity = Some(operator);
         }
         if waived && identity.is_some() {
             return Err(TrustRefusal::Build(
