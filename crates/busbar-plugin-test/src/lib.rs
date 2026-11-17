@@ -51,6 +51,9 @@ pub use busbar_plugin_loader::test_host::{
     both, rendering, Answer, Called, Done, Host, Image, Life, Loaded, Opened, Opening, Pending,
     Refused, Submitted, TimedOut,
 };
+/// The existing login vocabulary used with [`suites::harness::Harness::open_auth`].
+pub use busbar_ports::auth::{LoginAnswer, LoginIn};
+pub use busbar_ports::{CallCx, PortError};
 pub use envelopes::{DiagRecord, Envelopes, MetricRecord};
 pub use fake_needs::{ConnScript, FakeNeeds};
 pub use services::Services;
