@@ -56,6 +56,7 @@ use busbar_kernel::plane_driver::port_intents::Namespace;
 use busbar_kernel::plane_driver::port_probes::PortProbes;
 use busbar_kernel::plane_driver::port_session::Effects;
 use busbar_kernel::plane_driver::provider_catalog::{CatalogPlan, CatalogPool, RouteKind};
+use busbar_kernel::plane_driver::request_admission::RequestRoutes;
 use busbar_kernel::plane_driver::route_input::HealthModeInput;
 use busbar_kernel::plugin_records::RecordsDenied;
 use busbar_kernel::probe::{run_probers, ProbeCfg, ProbeMember, ProbeSchedule};
@@ -127,6 +128,8 @@ pub(crate) struct SeatShared {
 
 /// What one seat runs over.
 pub(crate) struct SeatWiring {
+    /// The exact registration and catalog inventory used for this generation's request admission.
+    pub(crate) request_routes: Arc<RequestRoutes>,
     /// `None` = no connection table: a FORWARD fails `NotDriven`.
     pub(crate) upstream: Option<Arc<dyn PortUpstream>>,
     pub(crate) carrier: Arc<PortCarrier>,
@@ -758,14 +761,31 @@ pub(crate) fn compose(
     let upstreams = shared.upstreams.get(instance).ok_or_else(|| {
         format!("plane {instance}: no declared registration table was built for this generation")
     })?;
-    let mut pool = SeatPool::of(instance, upstreams)?;
+    let registration = Arc::new(SeatPool::of(instance, upstreams)?);
+    let catalog = shared.catalogs.get(instance);
+    // No kind is inferred from instance/image vocabulary. Member-granted descriptors remain
+    // refused by candidate preparation until their explicit descriptor producer is connected.
+    let request_routes = Arc::new(
+        RequestRoutes::new(
+            instance,
+            None,
+            catalog.map(|catalog| Arc::clone(&catalog.plan)),
+            Some(Arc::clone(&registration)),
+        )
+        .map_err(|_| format!("plane {instance}: inconsistent request routing inventory"))?,
+    );
+    let mut pool = SeatPool {
+        pool: registration.pool.clone(),
+        pools: registration.pools.clone(),
+        routes: registration.routes.clone(),
+        members: registration.members.clone(),
+    };
     // Held HTTP channels receive only the registration domain, before model destinations join egress.
     let registration_needs = pool
         .members
         .iter()
         .map(|member| (member.upstream.clone(), member.need))
         .collect();
-    let catalog = shared.catalogs.get(instance);
     if let Some(catalog) = catalog {
         extend_catalog(instance, &mut pool, catalog)?;
     }
@@ -828,6 +848,7 @@ pub(crate) fn compose(
         rt,
     );
     Ok(SeatWiring {
+        request_routes,
         upstream,
         carrier: Arc::new(carrier),
         probes,
