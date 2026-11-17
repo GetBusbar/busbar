@@ -36,11 +36,16 @@ pub(crate) use busbar_kernel::governance::drain::{Cut, DrainClock};
 use crate::root::durability::NodeBook;
 use crate::root::serve::{drain_records, Services, RECORD_DRAIN};
 
+#[path = "export_shutdown.rs"]
+mod export_settlement;
+pub(crate) use export_settlement::ExportRetry;
+
 /// Obtained only by a successful semantic drain and consumed by retirement.
 /// Retaining the actual owners binds the final check to the drained generation.
 pub(crate) struct Drained {
     governance: Option<Arc<GovState>>,
     runtime: Option<Arc<RuntimeJournal>>,
+    export_observers: Arc<super::export_observer::ExportObservers>,
 }
 
 /// The phase a bounded wait belongs to, for the progress line and the detach count.
@@ -380,6 +385,9 @@ pub(crate) struct PostServe<'a> {
     pub(crate) work_recovery: JoinHandle<()>,
     pub(crate) generation_workers: super::boot::workers::RunningWorkers,
     pub(crate) exports: super::exports::ports::Exports,
+    pub(crate) export_captures: Arc<busbar_kernel::export::plugin::Exports>,
+    pub(crate) export_observers: Arc<super::export_observer::ExportObservers>,
+    pub(crate) export_observer_retry: ExportRetry,
     /// The control runtime's detached-task drain.
     pub(crate) control_drain: Pin<Box<dyn Future<Output = ()> + 'a>>,
     pub(crate) node_lease: Option<crate::root::boot::NodeLeaseTask>,
@@ -421,6 +429,9 @@ pub(crate) async fn finish(post: PostServe<'_>, drain: &ShutdownDrain) -> i32 {
         work_recovery,
         generation_workers,
         exports,
+        export_captures,
+        export_observers,
+        export_observer_retry,
         control_drain,
         node_lease,
         flusher,
@@ -438,18 +449,23 @@ pub(crate) async fn finish(post: PostServe<'_>, drain: &ShutdownDrain) -> i32 {
         fence: predecessor.as_ref().map(|(_, fence)| Arc::clone(fence)),
     });
     let mut failures: Vec<String> = Vec::new();
+    let mut capture_quiescent = true;
 
     // Serving: before the first broadcast these are ordinary awaits of the serve futures.
     let mut line_code = 0;
     if let Some(lines) = lines {
         match drain.wait_requests(lines).await {
             Outcome::Done(code) => line_code = code,
-            _ => failures.push("line serving did not end by the request cut".into()),
+            _ => {
+                capture_quiescent = false;
+                failures.push("line serving did not end by the request cut".into());
+            }
         }
     }
     if let Some(admin) = admin {
         let served = drain.wait_requests(admin).await;
         if !matches!(served, Outcome::Done(())) {
+            capture_quiescent = false;
             failures.push("admin listener did not drain by the request cut".into());
         }
     }
@@ -464,9 +480,13 @@ pub(crate) async fn finish(post: PostServe<'_>, drain: &ShutdownDrain) -> i32 {
     match drain.wait_requests(generation_workers.stop()).await {
         Outcome::Done(Ok(())) => {}
         Outcome::Done(Err(error)) => {
+            capture_quiescent = false;
             failures.push(format!("generation workers did not stop: {error}"))
         }
-        _ => failures.push("generation workers did not stop by the request cut".into()),
+        _ => {
+            capture_quiescent = false;
+            failures.push("generation workers did not stop by the request cut".into());
+        }
     }
     let mut detached_joins: Vec<DrainHandle<Result<(), JoinError>>> = Vec::new();
     let threads = DrainHandle::spawn(tokio::task::spawn_blocking(move || {
@@ -477,16 +497,25 @@ pub(crate) async fn finish(post: PostServe<'_>, drain: &ShutdownDrain) -> i32 {
     let recovery = DrainHandle::adopt(work_recovery);
     let controlled = drain.wait_requests(control_drain).await;
     if !matches!(controlled, Outcome::Done(())) {
+        capture_quiescent = false;
         failures.push("control tasks did not drain by the request cut".into());
     }
     match drain.bounded_requests(threads).await {
-        Joined::Done(_) => {}
+        Joined::Done(Ok(Ok(()))) => {}
+        Joined::Done(_) => {
+            capture_quiescent = false;
+            failures.push("request thread join driver did not complete".into());
+        }
         Joined::Detached(handle) => detached_joins.push(handle),
     }
     match drain.bounded_requests(recovery).await {
         Joined::Done(Ok(())) => {}
-        Joined::Done(Err(error)) => failures.push(format!("work recovery did not stop: {error}")),
+        Joined::Done(Err(error)) => {
+            capture_quiescent = false;
+            failures.push(format!("work recovery did not stop: {error}"));
+        }
         Joined::Detached(_) => {
+            capture_quiescent = false;
             failures.push("work recovery did not stop by the request cut".into())
         }
     }
@@ -516,8 +545,14 @@ pub(crate) async fn finish(post: PostServe<'_>, drain: &ShutdownDrain) -> i32 {
         )
         .await;
     match cleanup {
-        Outcome::Done(failed) => failures.extend(failed),
-        _ => failures.push("plane cleanup did not finish by the request cut".into()),
+        Outcome::Done(failed) => {
+            capture_quiescent &= failed.is_empty();
+            failures.extend(failed);
+        }
+        _ => {
+            capture_quiescent = false;
+            failures.push("plane cleanup did not finish by the request cut".into());
+        }
     }
     drain.note_open_joins(detached_joins.len());
     drain.clock().set_requests_done();
@@ -558,6 +593,7 @@ pub(crate) async fn finish(post: PostServe<'_>, drain: &ShutdownDrain) -> i32 {
         )
         .await;
     let settled = matches!(settle, Outcome::Done(()));
+    capture_quiescent &= settled;
     if !settled {
         failures.push("requests or governed units still running at the settle cut".into());
     }
@@ -679,12 +715,32 @@ pub(crate) async fn finish(post: PostServe<'_>, drain: &ShutdownDrain) -> i32 {
         }
     }
 
+    // Fence the actual generation's capture intake, then join every accepted read amendment.
+    // A cancelled notification wait leaves the capture task and its native write owned.
+    export_captures.close_capture();
+    match drain
+        .wait(Phase::Audit, export_captures.drain_capture(), Cut::Deadline)
+        .await
+    {
+        Outcome::Done(report) => {
+            if report.interrupted {
+                failures.push("export capture amendment work was interrupted".into());
+            }
+        }
+        _ => {
+            capture_quiescent = false;
+            failures
+                .push("export capture producers did not quiesce by the shutdown deadline".into());
+        }
+    }
+
     // Stop export intake and observe its concrete workers before closing native audit staging.
     // Reuse the original shutdown deadline; no exporter receives a fresh budget.
     let export_deadline = drain
         .until(Cut::Deadline)
         .unwrap_or_else(Instant::now)
         .into_std();
+    let mut pumps_quiescent = false;
     match drain
         .bounded(
             Phase::Audit,
@@ -696,6 +752,9 @@ pub(crate) async fn finish(post: PostServe<'_>, drain: &ShutdownDrain) -> i32 {
         .await
     {
         Joined::Done(Ok(reports)) => {
+            pumps_quiescent = reports.iter().all(|(_, report)| {
+                report.worker_stopped && report.queued == 0 && report.in_flight == 0
+            });
             for (name, report) in reports {
                 if !report.clean() {
                     failures.push(format!("export.{name} did not drain cleanly: {report:?}"));
@@ -706,6 +765,58 @@ pub(crate) async fn finish(post: PostServe<'_>, drain: &ShutdownDrain) -> i32 {
         Joined::Detached(_) => {
             failures.push("export workers did not quiesce by the shutdown deadline".into())
         }
+    }
+
+    // A failed join is not evidence that its capture callbacks stopped. Preserve intake and
+    // the native journal owner for such producers; never seal underneath a detached pump.
+    if !capture_quiescent || !pumps_quiescent {
+        failures.extend(export_settlement::failures(&export_observers));
+        return incomplete(drain, gov, &late, "export_producers", &failures);
+    }
+    export_observers.stop_intake();
+    let mut observations_confirmed = false;
+    match drain
+        .bounded(
+            Phase::Audit,
+            DrainHandle::spawn(settle_export_observations(
+                Arc::clone(&export_observers),
+                Arc::clone(drain.clock()),
+            )),
+            Cut::Deadline,
+        )
+        .await
+    {
+        Joined::Done(Ok(Ok(()))) => observations_confirmed = true,
+        Joined::Done(Ok(Err(error))) => failures.push(error),
+        Joined::Done(Err(error)) => {
+            failures.push(format!(
+                "export observation settlement driver failed: {error}"
+            ));
+        }
+        Joined::Detached(_) => {
+            failures.push("export loss receipts remain unresolved at the shutdown deadline".into());
+        }
+    }
+    let mut retry_stopped = false;
+    match drain
+        .bounded(
+            Phase::Audit,
+            DrainHandle::adopt(export_observer_retry.stop()),
+            Cut::Deadline,
+        )
+        .await
+    {
+        Joined::Done(Ok(())) => retry_stopped = true,
+        Joined::Done(Err(error)) => {
+            failures.push(format!("export observation retry worker failed: {error}"));
+        }
+        Joined::Detached(_) => {
+            failures.push("export observation retry worker did not stop by the deadline".into());
+        }
+    }
+    if !observations_confirmed || !retry_stopped || !export_observers.is_settled() {
+        failures.extend(export_settlement::failures(&export_observers));
+        return incomplete(drain, gov, &late, "export_observations", &failures);
     }
 
     // [5] Close staging, flush the journal, drain the admin audit queue, then the checks.
@@ -786,6 +897,9 @@ pub(crate) async fn finish(post: PostServe<'_>, drain: &ShutdownDrain) -> i32 {
     if gov.is_some_and(|gov| gov.has_unsettled_persistence()) {
         failures.push("governance still owns unsettled persistence".into());
     }
+    if !export_observers.is_settled() {
+        failures.extend(export_settlement::failures(&export_observers));
+    }
     if drain.clock().expired() {
         return incomplete(drain, gov, &late, "deadline", &failures);
     }
@@ -798,6 +912,7 @@ pub(crate) async fn finish(post: PostServe<'_>, drain: &ShutdownDrain) -> i32 {
     let drained = Drained {
         governance: governance.clone(),
         runtime,
+        export_observers,
     };
     match drain
         .bounded(
@@ -1039,6 +1154,44 @@ impl PacedHalt {
     }
 }
 
+/// Runs as a drain-owned task: an in-flight native write is detached, never cancelled, at
+/// the caller's cut. Checking that same clock between attempts prevents a new retry budget.
+async fn settle_export_observations(
+    observers: Arc<super::export_observer::ExportObservers>,
+    clock: Arc<DrainClock>,
+) -> Result<(), String> {
+    let deadline = clock
+        .armed_at()
+        .ok_or("export settlement requires the armed shutdown clock")?;
+    let mut last_error = None;
+    loop {
+        if clock.expired() || tokio::time::Instant::now() >= deadline {
+            return Err(last_error.unwrap_or_else(|| {
+                "export observation settlement reached the shutdown deadline".into()
+            }));
+        }
+        observers.step();
+        if observers.late_callbacks() != 0 {
+            return Err("export producer callback arrived after intake closure".into());
+        }
+        if observers.is_settled() {
+            return Ok(());
+        }
+        if let Err(error) = busbar_kernel::audit::auditlog::flush_pending().await {
+            last_error = Some(format!("export loss audit remains unresolved: {error}"));
+        }
+        observers.step();
+        if observers.is_settled() {
+            // Confirmation after the shared cut cannot establish a timely clean shutdown.
+            if clock.expired() || tokio::time::Instant::now() >= deadline {
+                return Err("export loss confirmation arrived after the shutdown deadline".into());
+            }
+            return Ok(());
+        }
+        tokio::time::sleep(busbar_kernel::governance::DRAIN_PASS_IDLE).await;
+    }
+}
+
 async fn drain_audit_queue() -> Result<(), String> {
     if !busbar_kernel::audit::auditlog::has_unsettled_audit() {
         return Ok(());
@@ -1061,6 +1214,9 @@ async fn retire_storage(
     drained: Drained,
 ) -> Result<(), String> {
     use busbar_kernel::persistence::startup::Progress;
+    if !drained.export_observers.is_settled() {
+        return Err("export observers changed after their final drain".into());
+    }
     let core = startup
         .store()
         .ok_or("Store was not admitted for retirement")?;
@@ -1097,6 +1253,9 @@ async fn retire_storage(
     if busbar_kernel::audit::auditlog::has_unsettled_audit() {
         return Err("administrative audit acquired originals after its final drain".into());
     }
+    if !drained.export_observers.is_settled() {
+        return Err("export producer callback arrived before writer retirement".into());
+    }
     startup
         .begin_retirement()
         .map_err(|error| format!("Store writer retirement refused: {error:?}"))?;
@@ -1120,3 +1279,7 @@ mod tests;
 #[cfg(test)]
 #[path = "tests/shutdown_drain.rs"]
 mod drain_tests;
+
+#[cfg(test)]
+#[path = "tests/export_shutdown.rs"]
+mod export_tests;
