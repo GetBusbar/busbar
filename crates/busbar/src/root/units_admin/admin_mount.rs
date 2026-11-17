@@ -608,11 +608,11 @@ pub(crate) fn mount(
             async move {
                 use tower::ServiceExt;
 
-                let path = req.uri().path().to_string();
+                let path = req.uri().path();
                 let claimed = path.starts_with(busbar_contract::surface::ADMIN_PREFIX);
 
                 let declared =
-                    busbar_core_admin::admin_codec::verbs::resolve(req.method().as_str(), &path)
+                    busbar_core_admin::admin_codec::verbs::resolve(req.method().as_str(), path)
                         .is_some_and(|resolved| served_here(&resolved));
                 if !claimed || !declared {
                     return inner.oneshot(req).await.unwrap_or_else(|e| match e {});
