@@ -347,4 +347,158 @@ mod tests {
         assert!(weak.upgrade().is_none());
         assert!(reserved.prior.upgrade().is_none());
     }
+    fn selected_groups(
+        amount: u64,
+    ) -> std::collections::BTreeMap<String, crate::config::groups::GroupCfg> {
+        busbar_contract::yaml::from_str(&format!(
+            "team:\n  limits:\n    - {{id: rpm, upstream_resource: p/r, requests: {amount}, per: minute, per_key: true, enforcement: process}}"
+        )).unwrap()
+    }
+
+    fn selected_target() -> crate::governance::selected_policy::SelectedTargetConfig<'static> {
+        use crate::governance::selected_policy::{SelectedTargetConfig, SelectedTargetKind};
+        SelectedTargetConfig {
+            instance: "p",
+            kind: SelectedTargetKind::Model,
+            pool: "pool",
+            member: "p\u{1f}member",
+            resource: Some("r"),
+            attempt_accounting: true,
+        }
+    }
+
+    async fn selected_handle() -> Arc<AppHandle> {
+        let mut app = crate::inbound::native::tests::app();
+        let app = Arc::get_mut(&mut app).unwrap();
+        let groups = selected_groups(2);
+        app.cost = Arc::new(crate::cost::CostModel::resolve_parts(None, 0, &groups));
+        app.governance = Some(Arc::new(
+            crate::governance::GovState::new_with_core(crate::real_store::core().await, None, None)
+                .await
+                .unwrap(),
+        ));
+        crate::governance::selected_policy::SelectedPolicy::compile(
+            &groups,
+            Arc::clone(&app.cost),
+            &[selected_target()],
+            None,
+        )
+        .unwrap()
+        .install_initial(app)
+        .unwrap();
+        let snapshot = Arc::new(app.clone());
+        Arc::new(AppHandle::new(snapshot))
+    }
+
+    async fn prepare_selected(prior: &Arc<App>, amount: u64) -> App {
+        let mut next = (**prior).clone();
+        next.publication_generation = reserve(Some(prior)).await.unwrap();
+        next.selected_predecessor = prior.selected_policy.clone();
+        let groups = selected_groups(amount);
+        next.cost = Arc::new(crate::cost::CostModel::resolve_parts(None, 0, &groups));
+        let pending = crate::governance::selected_policy::SelectedPolicy::compile(
+            &groups,
+            Arc::clone(&next.cost),
+            &[selected_target()],
+            next.selected_predecessor(),
+        )
+        .unwrap();
+        next.prepare_selected_policy(pending).unwrap();
+        next
+    }
+
+    #[tokio::test]
+    async fn selected_publication_stamps_actual_predecessor_and_callbacks_observe_final_app() {
+        let handle = selected_handle().await;
+        let prior = handle.load();
+        let old = prior.selected_policy.as_ref().unwrap().clone();
+        let governor = prior.governance.as_ref().unwrap().selected_rates().clone();
+        let observed = Arc::new(AtomicUsize::new(0));
+        let callback_count = observed.clone();
+        let weak = Arc::downgrade(&handle);
+        handle.on_apply_async(Box::new(move |published| {
+            let weak = weak.clone();
+            let count = callback_count.clone();
+            Box::pin(async move {
+                assert!(Arc::ptr_eq(&published, &weak.upgrade().unwrap().load()));
+                assert_eq!(published.selected_policy.as_ref().unwrap().revision(), 2);
+                assert!(published.selected_predecessor().is_none());
+                count.fetch_add(1, Ordering::AcqRel);
+            })
+        }));
+        let result: Result<(), TxnError> = config_transaction(&handle, |txn| {
+            let prior = txn.app().clone();
+            Ok(Outcome::asynchronous(async move {
+                let next = prepare_selected(&prior, 7).await;
+                assert!(next.selected_policy.is_none());
+                Ok(Outcome::commit_async(Arc::new(next), async { Ok(()) }, ()))
+            }))
+        })
+        .await;
+        result.unwrap();
+        let current = handle.load();
+        let policy = current.selected_policy.as_ref().unwrap();
+        assert_eq!(policy.revision(), old.revision() + 1);
+        assert!(policy.activated_minute() >= old.activated_minute());
+        assert!(policy.matches_cost(&current.cost));
+        assert!(Arc::ptr_eq(
+            &governor,
+            current.governance.as_ref().unwrap().selected_rates()
+        ));
+        assert!(Arc::ptr_eq(prior.selected_policy.as_ref().unwrap(), &old));
+        assert_eq!(observed.load(Ordering::Acquire), 1);
+    }
+
+    #[tokio::test]
+    async fn selected_failed_persistence_keeps_original_policy_and_shared_governor() {
+        let handle = selected_handle().await;
+        let prior = handle.load();
+        let policy = prior.selected_policy.as_ref().unwrap().clone();
+        let governor = prior.governance.as_ref().unwrap().selected_rates().clone();
+        let result: Result<(), TxnError> = config_transaction(&handle, |txn| {
+            let prior = txn.app().clone();
+            Ok(Outcome::asynchronous(async move {
+                let next = prepare_selected(&prior, 9).await;
+                Ok(Outcome::commit_async(
+                    Arc::new(next),
+                    async { Err("desired state refused".into()) },
+                    (),
+                ))
+            }))
+        })
+        .await;
+        assert!(result.is_err());
+        let current = handle.load();
+        assert!(Arc::ptr_eq(&prior, &current));
+        assert!(Arc::ptr_eq(
+            &policy,
+            current.selected_policy.as_ref().unwrap()
+        ));
+        assert!(Arc::ptr_eq(
+            &governor,
+            current.governance.as_ref().unwrap().selected_rates()
+        ));
+    }
+
+    #[tokio::test]
+    async fn copied_policy_with_changed_cost_refuses_before_persistence() {
+        let handle = selected_handle().await;
+        let prior = handle.load();
+        let mut next = (*prior).clone();
+        next.cost = Arc::new(crate::cost::CostModel::resolve_parts(
+            None,
+            0,
+            &selected_groups(8),
+        ));
+        let persisted = AtomicUsize::new(0);
+        assert!(handle
+            .commit_and_swap(Arc::new(next), || {
+                persisted.fetch_add(1, Ordering::AcqRel);
+                Ok(())
+            })
+            .await
+            .is_err());
+        assert_eq!(persisted.load(Ordering::Acquire), 0);
+        assert!(Arc::ptr_eq(&prior, &handle.load()));
+    }
 }

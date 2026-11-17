@@ -396,6 +396,11 @@ pub struct App {
     /// Current immutable selected-resource rules. Native candidate publication installs this
     /// alongside its CostModel; absence never authorizes a selected attempt.
     pub selected_policy: Option<Arc<crate::governance::selected_policy::SelectedPolicy>>,
+    pub(crate) selected_predecessor:
+        Option<Arc<crate::governance::selected_policy::SelectedPolicy>>,
+    pending_selected_policy: Option<
+        Arc<std::sync::Mutex<Option<crate::governance::selected_policy::PendingSelectedPolicy>>>,
+    >,
     /// The directory the signed plugin tarballs live in (`plugins.dir`, default `plugins`). Carried
     /// on the snapshot so the Admin API plugin catalog (`GET /api/v1/admin/plugins?type=store`) and
     /// the install/remove/reload endpoints operate on the SAME directory the boot store-load
@@ -650,6 +655,65 @@ fn snapshot_fields(
 }
 
 impl App {
+    /// Actual predecessor captured by appbuild; never an earlier App or policy history.
+    pub fn selected_predecessor(
+        &self,
+    ) -> Option<&crate::governance::selected_policy::SelectedPolicy> {
+        self.selected_predecessor.as_deref()
+    }
+
+    pub fn prepare_selected_policy(
+        &mut self,
+        pending: crate::governance::selected_policy::PendingSelectedPolicy,
+    ) -> Result<(), String> {
+        if self.prepared_generation().is_none()
+            || self.pending_selected_policy.is_some()
+            || !pending.matches_candidate(&self.cost, self.selected_predecessor())
+        {
+            return Err("selected policy does not belong to this reserved candidate".into());
+        }
+        self.selected_policy = None;
+        self.pending_selected_policy = Some(Arc::new(std::sync::Mutex::new(Some(pending))));
+        Ok(())
+    }
+
+    fn check_selected_preparation(&self, prior: &App) -> Result<(), String> {
+        match &self.pending_selected_policy {
+            Some(pending) => {
+                let pending = pending
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if pending.as_ref().is_none_or(|pending| {
+                    !pending.matches_candidate(&self.cost, prior.selected_policy.as_deref())
+                }) {
+                    return Err("selected policy candidate has a stale predecessor or cost".into());
+                }
+                let same_governance = match (&self.governance, &prior.governance) {
+                    (Some(next), Some(current)) => Arc::ptr_eq(next, current),
+                    _ => false,
+                };
+                if !same_governance {
+                    return Err(
+                        "selected policy candidate requires the original shared governor".into(),
+                    );
+                }
+            }
+            None if self.selected_predecessor.is_some() => {
+                return Err("selected policy candidate has no prepared replacement".into());
+            }
+            None => {
+                if self
+                    .selected_policy
+                    .as_ref()
+                    .is_some_and(|policy| !policy.matches_cost(&self.cost))
+                {
+                    return Err("selected policy no longer matches the candidate cost model".into());
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// The durable epoch reserved for this unpublished candidate by its retained transaction.
     /// A boot has no transaction reservation and uses its separately confirmed initial identity.
     pub fn prepared_generation(&self) -> Option<u64> {
@@ -827,6 +891,8 @@ impl App {
             secret_resolver,
             cost,
             selected_policy: None,
+            selected_predecessor: None,
+            pending_selected_policy: None,
             plugins_dir,
             plugins_cfg,
             plugin_admission,
@@ -1226,7 +1292,8 @@ impl AppHandle {
 
     pub async fn swap(&self, next: Arc<App>) {
         let _application = self.application.lock().await;
-        self.swap_with_commit(next.clone(), None, None, || Ok(None), &mut false)
+        let next = self
+            .swap_with_commit(next, None, None, || Ok(None), &mut false)
             .expect("a swap with no price preparation cannot refuse publication");
         self.finish_apply(&next).await;
     }
@@ -1238,7 +1305,7 @@ impl AppHandle {
         generation: Option<u64>,
         confirm: impl FnOnce() -> Result<Option<crate::appbuild::ConfirmedLimits>, String>,
         published: &mut bool,
-    ) -> Result<(), String> {
+    ) -> Result<Arc<App>, String> {
         let _publication = self
             .publication
             .lock()
@@ -1268,6 +1335,7 @@ impl AppHandle {
         };
 
         let prior = self.load();
+        next.check_selected_preparation(&prior)?;
         if let Some(held) = next
             .publication_generation
             .as_ref()
@@ -1288,12 +1356,47 @@ impl AppHandle {
         }
 
         let confirmed = confirm()?;
+        // Copy App fields before the admission gate. Root dispatchers own no App, so the
+        // final Arc below retains the identical complete native owners without a history.
+        let selected_candidate = next
+            .pending_selected_policy
+            .as_ref()
+            .map(|_| (*next).clone());
         // Candidate work and callbacks above finish before the short admission boundary.
         // Final policy either observes the prior App and retains it, or observes this swap.
         let admission = self
             .admission
             .lock()
             .unwrap_or_else(|error| error.into_inner());
+        let next = if let Some(mut candidate) = selected_candidate {
+            let governance = prior
+                .governance
+                .as_ref()
+                .ok_or("selected policy publication has no shared governor")?;
+            let minute = governance
+                .selected_rates()
+                .activation_minute()
+                .map_err(|_| "selected policy activation clock is unavailable")?;
+            let previous = prior.selected_policy.as_deref();
+            let revision = previous
+                .map_or(Some(1), |policy| policy.revision().checked_add(1))
+                .ok_or("selected policy revision exhausted")?;
+            candidate.check_selected_preparation(&prior)?;
+            let pending = candidate
+                .pending_selected_policy
+                .take()
+                .ok_or("selected policy preparation is absent")?
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take()
+                .ok_or("selected policy preparation was already consumed")?;
+            candidate.selected_policy =
+                Some(Arc::new(pending.activate(previous, revision, minute)?));
+            candidate.selected_predecessor = None;
+            Arc::new(candidate)
+        } else {
+            next
+        };
         let committed = match confirmed {
             Some(confirmed) => Some(confirmed.keep()),
             None => {
@@ -1338,10 +1441,11 @@ impl AppHandle {
         for applier in appliers {
             applier(&next);
         }
-        Ok(())
+        Ok(next)
     }
 
     pub(crate) fn check_candidate_generation(&self, next: &App) -> Result<(), String> {
+        next.check_selected_preparation(&self.load())?;
         if let Some(held) = next
             .publication_generation
             .as_ref()
@@ -1376,8 +1480,8 @@ impl AppHandle {
         persist()?;
         let mut publication = UnpublishedOverlay::new(self.load().overlay_path.clone());
         let generation = self.candidate_generation(&next).await?;
-        self.swap_with_commit(
-            next.clone(),
+        let next = self.swap_with_commit(
+            next,
             None,
             Some(generation),
             || Ok(None),
@@ -1433,8 +1537,8 @@ impl AppHandle {
         }
         let generation = self.candidate_generation(&next).await?;
         let confirmed = prepared.confirm_activation().await?;
-        self.swap_with_commit(
-            next.clone(),
+        let next = self.swap_with_commit(
+            next,
             Some(&expected),
             Some(generation),
             || Ok(Some(confirmed)),
