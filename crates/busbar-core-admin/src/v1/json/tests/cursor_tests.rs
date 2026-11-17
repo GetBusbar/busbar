@@ -138,3 +138,34 @@ fn filter_digest_follows_the_filters() {
     assert_eq!(a, b, "limit is not a filter");
     assert_ne!(a, c);
 }
+
+#[test]
+fn every_current_operation_and_filter_binding_round_trips() {
+    for op in [
+        "groups",
+        "kinds.auth",
+        "view.core.routing.pools",
+        "view.auth.id.with.dots.state",
+    ] {
+        for filter in ["", "0123456789abcdef"] {
+            let first = window(&q(&[("limit", "1")]), op, filter, 200).ok().unwrap();
+            let page = keyset(all(), &first, op, filter, |item| item.clone(), false);
+            let cursor = page.next_cursor.unwrap();
+            let next = window(&q(&[("cursor", &cursor)]), op, filter, 200)
+                .ok()
+                .expect("a cursor issued by this list must be accepted by the same list");
+            assert_eq!(next.after.as_deref(), Some("a"), "{op} {filter:?}");
+            assert_eq!(
+                names(&keyset(
+                    all(),
+                    &next,
+                    op,
+                    filter,
+                    |item| item.clone(),
+                    false
+                )),
+                vec!["b", "c", "d", "e"]
+            );
+        }
+    }
+}

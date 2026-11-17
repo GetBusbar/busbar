@@ -1,0 +1,16 @@
+[package]
+name = "busbar-count"
+version = "1.6.0"
+publish = false
+edition = "2021"
+rust-version = "1.97"
+description = "Exact decimal counts and their shared JSON span grammar."
+license = "Apache-2.0"
+
+[dependencies]
+serde = { workspace = true }
+# Preserve the shared JSON number's finite-float conversion and decimal spelling.
+sonic-rs = { workspace = true }
+
+[lints]
+workspace = true

@@ -125,6 +125,7 @@ pub struct InvocationContext {
     unit: u64,
     record: Arc<crate::host_units::UnitRecord>,
     phase: Arc<crate::plane_driver::request_admission::AdmissionPhase>,
+    signed_authority: Option<Arc<crate::governance::current_credential::VerifiedKeyAuthority>>,
 }
 
 impl InvocationContext {
@@ -151,6 +152,10 @@ impl InvocationContext {
             .units()
             .invocation_data_gate(unit, &caller, &record)
             .ok_or(NEST_NO_UNIT)?;
+        let signed_authority = generation
+            .core
+            .units()
+            .invocation_signed_authority(unit, &caller, &record);
         Ok(Self {
             data_gate,
 
@@ -159,6 +164,7 @@ impl InvocationContext {
             unit,
             record,
             phase,
+            signed_authority,
         })
     }
 
@@ -174,6 +180,12 @@ impl InvocationContext {
     /// unit lookup cannot replace the principal used by hooks, budgets or nested authorization.
     pub fn principal(&self) -> Option<&Arc<busbar_contract::records::VirtualKey>> {
         self.record.principal.as_ref()
+    }
+
+    pub(crate) fn signed_authority(
+        &self,
+    ) -> Option<&Arc<crate::governance::current_credential::VerifiedKeyAuthority>> {
+        self.signed_authority.as_ref()
     }
 
     pub fn instance(&self) -> &str {

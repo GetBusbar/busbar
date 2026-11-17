@@ -223,6 +223,7 @@ impl PersistenceBackend for Backend {
     ) -> Call<'_, Decision> {
         self.state.lock().unwrap().sent.push(prepared.clone());
         Box::pin(async move {
+            control::admit(&prepared)?;
             if self.hang.load(Ordering::SeqCst) {
                 std::future::pending::<()>().await;
             }
@@ -325,7 +326,22 @@ impl PersistenceBackend for Backend {
                     Mutation::Delete(address) => {
                         state.rows.remove(address);
                     }
-                    Mutation::DeleteRange { .. } => panic!("journal never uses range deletion"),
+                    Mutation::DeleteRange {
+                        namespace,
+                        prefix,
+                        exact_key_length,
+                    } => {
+                        assert_eq!(*namespace, control::SLOT_NS);
+                        assert_eq!(*exact_key_length, 20);
+                        let writer: [u8; 16] = prefix.as_slice().try_into().unwrap();
+                        let State { receipts, sent, .. } = &mut *state;
+                        receipts.retain(|operation, _| {
+                            !sent.iter().any(|prepared| {
+                                let id = prepared.candidate().id;
+                                id.writer == writer && id.operation == *operation
+                            })
+                        });
+                    }
                 }
             }
             state

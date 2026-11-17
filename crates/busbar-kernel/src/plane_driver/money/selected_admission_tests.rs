@@ -247,3 +247,42 @@ async fn another_snapshots_generation_cannot_label_selected_custody() {
     assert!(!context.effects_allowed());
     assert_eq!(money.open_units(), 0);
 }
+
+#[tokio::test]
+async fn retired_receipt_settles_only_its_original_money_open_once() {
+    let (money, gov, context, _lease, request) = selected_fixture(77, true).await;
+    let cost = request.cost().clone();
+    let key = request.key().clone();
+    let admitted = money
+        .admit_existing(
+            request,
+            Arc::from([]),
+            FeeRefund::CallerStatus,
+            ExhaustionMode::FinishUnit,
+        )
+        .unwrap();
+    let (other, _, _, _other_lease, other_request) = selected_fixture(77, true).await;
+    let _other_admitted = other
+        .admit_existing(
+            other_request,
+            Arc::from([]),
+            FeeRefund::CallerStatus,
+            ExhaustionMode::FinishUnit,
+        )
+        .unwrap();
+    let end = crate::plane_driver::UnitEnd {
+        caller_status: 500,
+        cut: false,
+        refused_unspent: true,
+    };
+    context.retire();
+    assert!(other.settle_admitted(&admitted, end).is_err());
+    assert_eq!(other.open_units(), 1);
+    assert!(money.settle_admitted(&admitted, end).unwrap());
+    assert!(!money.settle_admitted(&admitted, end).unwrap());
+    let usage = gov
+        .derived_bucket_usage_async(&cost, &key.id, crate::governance::WINDOW_TOTAL, true, 100)
+        .await
+        .unwrap();
+    assert_eq!((usage.requests, usage.spend_cents), (0, 0));
+}
