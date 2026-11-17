@@ -387,6 +387,9 @@ pub struct App {
     /// every apply/reload while `governance` (the token ledger) survives the swap - which is what
     /// makes a rate-card correction reprice every past and future derived figure on the next read.
     pub cost: std::sync::Arc<crate::cost::CostModel>,
+    /// Current immutable selected-resource rules. Native candidate publication installs this
+    /// alongside its CostModel; absence never authorizes a selected attempt.
+    pub selected_policy: Option<Arc<crate::governance::selected_policy::SelectedPolicy>>,
     /// The directory the signed plugin tarballs live in (`plugins.dir`, default `plugins`). Carried
     /// on the snapshot so the Admin API plugin catalog (`GET /api/v1/admin/plugins?type=store`) and
     /// the install/remove/reload endpoints operate on the SAME directory the boot store-load
@@ -807,6 +810,7 @@ impl App {
             governance,
             secret_resolver,
             cost,
+            selected_policy: None,
             plugins_dir,
             plugins_cfg,
             plugin_admission,

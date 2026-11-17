@@ -16,6 +16,9 @@ use crate::cost::CostModel;
 use crate::governance::{AdmitGrant, GovState, PLANE_LANE_SEP};
 use crate::host_services::InvocationContext;
 
+#[path = "request_current.rs"]
+mod current;
+
 const REGISTERED: u8 = 0;
 const RESOLVING: u8 = 1;
 const READY: u8 = 2;
@@ -540,8 +543,16 @@ impl AdmittedRequest {
         open: &Arc<()>,
         grant: &Arc<AdmitGrant>,
     ) -> bool {
-        self.is_live()
-            && Arc::ptr_eq(&self.book, book)
+        self.is_live() && self.matches_money_identity(book, open, grant)
+    }
+    /// Terminal cleanup only: retirement closes effects but does not erase the original Open.
+    pub(in crate::plane_driver) fn matches_money_identity(
+        &self,
+        book: &Arc<()>,
+        open: &Arc<()>,
+        grant: &Arc<AdmitGrant>,
+    ) -> bool {
+        Arc::ptr_eq(&self.book, book)
             && Arc::ptr_eq(&self.open, open)
             && Arc::ptr_eq(&self.grant, grant)
     }
@@ -554,3 +565,7 @@ mod tests;
 #[cfg(test)]
 #[path = "tests/request_credential_tests.rs"]
 mod credential_tests;
+
+#[cfg(test)]
+#[path = "tests/request_current_tests.rs"]
+mod current_tests;

@@ -21,12 +21,16 @@ pub(crate) enum NativeAttemptError {
     Unavailable,
     Binding,
     Custody(busbar_contract::records::RecordStoreError),
+    Usage(RecErr),
+    Rate(crate::governance::selected_resource::RateObservationError),
 }
 
 /// The book-accepted complete checkpoint is the runtime's single factual source as well.
 /// Live selection/rate authority is separate and is never reconstructed from these facts.
 pub(super) struct NativeMoney {
     accepted: Arc<UnitCheckpoint>,
+    /// Incurred facts remain owned here if publishing their successor was refused.
+    unpublished: Option<Arc<UnitCheckpoint>>,
     declaration: Option<RequestDeclaration>,
 }
 
@@ -36,6 +40,7 @@ impl NativeMoney {
     pub(super) fn from_accepted(accepted: Arc<UnitCheckpoint>) -> Self {
         Self {
             accepted,
+            unpublished: None,
             declaration: None,
         }
     }
@@ -43,12 +48,31 @@ impl NativeMoney {
     pub(super) fn admitted(accepted: Arc<UnitCheckpoint>, declaration: RequestDeclaration) -> Self {
         Self {
             accepted,
+            unpublished: None,
             declaration: Some(declaration),
         }
     }
 
     pub(super) fn checkpoint(&self) -> &Arc<UnitCheckpoint> {
-        &self.accepted
+        self.unpublished.as_ref().unwrap_or(&self.accepted)
+    }
+
+    fn publish_incurred(
+        &mut self,
+        gov: &crate::governance::GovState,
+        snapshot: UnitCheckpoint,
+    ) -> Result<(), NativeAttemptError> {
+        match gov.stage_selected_checkpoint(snapshot.clone(), Some(self.accepted.revision)) {
+            Ok(accepted) => {
+                self.accepted = accepted;
+                self.unpublished = None;
+                Ok(())
+            }
+            Err(error) => {
+                self.unpublished = Some(Arc::new(snapshot));
+                Err(NativeAttemptError::Custody(error))
+            }
+        }
     }
 }
 
@@ -87,6 +111,9 @@ impl NativeRequestMoney {
             .native
             .as_mut()
             .ok_or(NativeAttemptError::Unavailable)?;
+        if native.unpublished.is_some() {
+            return Err(NativeAttemptError::Unavailable);
+        }
         if !native
             .declaration
             .as_ref()
@@ -200,10 +227,18 @@ impl NativeRequestMoney {
     }
 
     fn check_open(&self, open: &super::Open) -> Result<(), NativeAttemptError> {
+        self.check_open_identity(open)?;
+        if !self.request.is_live() {
+            return Err(NativeAttemptError::Unavailable);
+        }
+        Ok(())
+    }
+
+    fn check_open_identity(&self, open: &super::Open) -> Result<(), NativeAttemptError> {
         if open.finished
             || open.ledgered
             || open.abandoned
-            || !self.request.matches_money(
+            || !self.request.matches_money_identity(
                 &self.money.book,
                 &open.identity,
                 open.grant.as_ref().ok_or(NativeAttemptError::Unavailable)?,
@@ -215,6 +250,12 @@ impl NativeRequestMoney {
         Ok(())
     }
 }
+
+#[path = "native_live.rs"]
+mod live;
+#[cfg(test)]
+use live::effective_tokens;
+pub(crate) use live::NativeAttempt;
 
 fn preparation_follows(limit: u32, attempts: &[AttemptPartition], preparation: u32) -> bool {
     preparation != 0
@@ -274,6 +315,16 @@ impl PreparedRateAttempt {
     /// Actual take-once selected member, bound to the same walk as the admitted request.
     pub(crate) fn selection(&self) -> &SelectedWalkAttempt {
         &self.selected
+    }
+
+    pub(crate) fn route(&self) -> u32 {
+        self._prepared.route()
+    }
+
+    pub(crate) fn original_route(
+        &self,
+    ) -> Option<&crate::plane_driver::route_identity::OriginalPlaneRoute> {
+        self._prepared.original_route()
     }
 }
 

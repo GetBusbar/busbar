@@ -72,6 +72,14 @@ impl std::fmt::Debug for PortBilling {
 }
 
 impl PortBilling {
+    pub fn settle_admitted(
+        &self,
+        request: &AdmittedRequest,
+        end: UnitEnd,
+    ) -> Result<bool, NativeAdmissionError> {
+        self.money.settle_admitted(request, end)
+    }
+
     pub fn admit_existing_selected(
         &self,
         request: CommittingRequest,

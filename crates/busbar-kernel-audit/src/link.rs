@@ -194,6 +194,11 @@ impl AuditChain {
     /// is the caller's (the root copies its boot incarnation in).
     #[must_use]
     pub fn prepare(inputs: AuditInputs, node: u64) -> Prepared {
+        let recipe = if inputs.unit.billing.is_some() {
+            Recipe::V9
+        } else {
+            Recipe::V8
+        };
         let record = AuditRecord {
             subject: inputs.subject,
             what: inputs.what,
@@ -212,7 +217,7 @@ impl AuditChain {
             linked_ms: 0,
             seq: 0,
             prev_hash: String::new(),
-            recipe: Recipe::V8,
+            recipe,
             hash: String::new(),
             signature: None,
             key_id: None,
@@ -243,9 +248,11 @@ impl AuditChain {
         // The legacy-signing chain of test builds (SEALING-FIX §3.2): its fixtures keep a per-line
         // signature. No production chain holds a key.
         #[cfg(any(test, feature = "test-support"))]
-        if let Some(signer) = &self.signer {
-            record.key_id = Some(signer.key_id_shared());
-            record.signature = Some(signer.sign_digest(&record.hash));
+        if record.recipe != Recipe::V9 {
+            if let Some(signer) = &self.signer {
+                record.key_id = Some(signer.key_id_shared());
+                record.signature = Some(signer.sign_digest(&record.hash));
+            }
         }
         Linked { record, fp }
     }

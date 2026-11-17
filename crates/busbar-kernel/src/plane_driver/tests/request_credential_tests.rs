@@ -22,7 +22,7 @@ impl super::super::EndPost for Posted {
     fn post(&self, _: &crate::teller::UnitCtx, _: crate::teller::Ended) {}
 }
 
-async fn fixture() -> (Arc<GovState>, String) {
+pub(super) async fn fixture() -> (Arc<GovState>, String) {
     let gov = Arc::new(
         GovState::new_with_core(
             crate::real_store::core().await,
@@ -46,7 +46,7 @@ async fn fixture() -> (Arc<GovState>, String) {
     (gov, token.expose(&crate::seal::lend()).to_owned())
 }
 
-fn verified(gov: &GovState, token: &str) -> SignedRequestAuthority {
+pub(super) fn verified(gov: &GovState, token: &str) -> SignedRequestAuthority {
     match crate::auth::keys_arm_verdict(Some(gov), Some(token), 1000, None) {
         ChainVerdict::Identified {
             signed_authority: Some(authority),
@@ -56,7 +56,7 @@ fn verified(gov: &GovState, token: &str) -> SignedRequestAuthority {
     }
 }
 
-fn context(
+pub(super) fn context(
     unit: u64,
     authority: SignedRequestAuthority,
 ) -> (InvocationContext, NativeInvocationAdmission) {
@@ -116,6 +116,9 @@ async fn signed_verifier_receipt_binds_once_to_the_original_record_before_money(
     assert!(proof.current_key(&gov, 1001, None).is_some());
     ctx.retire();
     assert!(admitted.signed_authority().is_none());
+    assert!(admitted.matches_money_identity(&admitted.book, &admitted.open, &admitted.grant));
+    assert!(!admitted.matches_money_identity(&admitted.book, &Arc::new(()), &admitted.grant));
+    assert!(!admitted.matches_money(&admitted.book, &admitted.open, &admitted.grant));
 }
 
 #[tokio::test]
