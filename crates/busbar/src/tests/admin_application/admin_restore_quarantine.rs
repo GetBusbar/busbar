@@ -5,7 +5,6 @@
 //! restore quarantine serves admin reads and the allow-listed writes, refuses every other admin
 //! write with the typed `restore_quarantine` refusal, answers `/readyz` with its reasons, and
 //! refuses the data plane while `/livez` still answers.
-//! (The shared `rig::actual_root` takes its deployment document as a `serde_json` value.)
 
 use busbar_contract::json::{self, JsonValueTrait as _};
 
@@ -16,25 +15,31 @@ async fn a_quarantined_node_serves_reads_and_the_allow_list_and_refuses_the_rest
     isolated!(CHILD, WITNESS);
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let (module, directory, settings) =
-        crate::distribution::rig::actual_store("admin-restore-quarantine-actual-store");
+        crate::distribution::rig::actual_store_facade("admin-restore-quarantine-actual-store");
     let signing_key = directory.join("signing-key");
     let operator_token = directory.join("operator-token");
     std::fs::write(&signing_key, hex::encode([9u8; 32])).expect("write the test signing input");
     std::fs::write(&operator_token, "admintok").expect("write the test operator input");
     let operator = busbar_kernel::config::operator_provider();
-    let mut document = serde_json::json!({
-        "providers": {},
-        "models": {},
-        "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
-        "store": { "module": module, "settings": settings },
-        "advanced": {  },
-        "identity-providers": {},
-    });
-    document["identity-providers"][operator] = serde_json::json!({
-        "module": operator, "token": { "file": operator_token },
-    });
+    // Built as JSON text through the facade (DEP-3): every string is quoted by the facade itself.
+    let quoted = |text: &str| json::to_string(text).expect("a string quotes");
+    let document = json::parse_value(
+        format!(
+            r#"{{"providers":{{}},"models":{{}},"advanced":{{}},
+               "auth":{{"chain":[],"admin_auth":[{op}],"signing_key":{{"file":{signing}}}}},
+               "store":{{"module":{module},"settings":{settings}}},
+               "identity-providers":{{{op}:{{"module":{op},"token":{{"file":{token}}}}}}}}}"#,
+            op = quoted(operator),
+            signing = quoted(&signing_key.to_string_lossy()),
+            module = quoted(&module),
+            settings = settings,
+            token = quoted(&operator_token.to_string_lossy()),
+        )
+        .as_bytes(),
+    )
+    .expect("the deployment document parses");
     let (addr, handle, _book) =
-        crate::distribution::rig::actual_root(document, &directory, &module).await;
+        crate::distribution::rig::actual_root_facade(&document, &directory, &module).await;
 
     // This process was launched with --restore-quarantine.
     let gate = busbar_kernel::persistence::restore::gate();
