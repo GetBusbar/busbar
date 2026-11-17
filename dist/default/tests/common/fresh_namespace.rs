@@ -221,7 +221,8 @@ pub async fn admit_in_process(directory: &Path) -> Owner {
         ));
     let stores = NativeStores::new(admitted, binder).expect("one registry over the Store image");
     let config =
-        serde_json::to_vec(&super::plugins::application_store_settings(directory)).unwrap();
+        busbar_contract::json::to_vec(&super::plugins::application_store_settings(directory))
+            .unwrap();
     let spec = busbar_plugin_loader::instance::InstanceSpec {
         purpose: busbar_plugin_loader::instance::OpenPurpose::Canonical,
         identity: &identity,

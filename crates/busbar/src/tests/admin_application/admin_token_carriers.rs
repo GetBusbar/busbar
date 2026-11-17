@@ -24,7 +24,7 @@ async fn test_admin_blank_header_token_rejected() {
     std::fs::write(&signing_key, hex::encode([7u8; 32])).expect("write the test signing input");
     std::fs::write(&operator_token, "admintok").expect("write the test operator input");
     let operator = busbar_kernel::config::operator_provider();
-    let mut document = serde_json::json!({
+    let mut document = json::json!({
         "providers": {},
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
@@ -32,7 +32,7 @@ async fn test_admin_blank_header_token_rejected() {
         "advanced": {  },
         "identity-providers": {},
     });
-    document["identity-providers"][operator] = serde_json::json!({
+    document["identity-providers"][operator] = json::json!({
         "module": operator, "token": { "file": operator_token },
     });
     let (addr, handle, _book) =
@@ -99,7 +99,7 @@ async fn test_admin_token_both_carriers_or_fold_no_short_circuit() {
     std::fs::write(&signing_key, hex::encode([7u8; 32])).expect("write the test signing input");
     std::fs::write(&operator_token, "admintok").expect("write the test operator input");
     let operator = busbar_kernel::config::operator_provider();
-    let mut document = serde_json::json!({
+    let mut document = json::json!({
         "providers": {},
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
@@ -107,7 +107,7 @@ async fn test_admin_token_both_carriers_or_fold_no_short_circuit() {
         "advanced": {  },
         "identity-providers": {},
     });
-    document["identity-providers"][operator] = serde_json::json!({
+    document["identity-providers"][operator] = json::json!({
         "module": operator, "token": { "file": operator_token },
     });
     let (addr, handle, _book) =
@@ -180,7 +180,7 @@ async fn test_admin_token_not_acceptable_via_vendor_carriers() {
     std::fs::write(&signing_key, hex::encode([7u8; 32])).expect("write the test signing input");
     std::fs::write(&operator_token, "admintok").expect("write the test operator input");
     let operator = busbar_kernel::config::operator_provider();
-    let mut document = serde_json::json!({
+    let mut document = json::json!({
         "providers": {},
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
@@ -188,7 +188,7 @@ async fn test_admin_token_not_acceptable_via_vendor_carriers() {
         "advanced": {  },
         "identity-providers": {},
     });
-    document["identity-providers"][operator] = serde_json::json!({
+    document["identity-providers"][operator] = json::json!({
         "module": operator, "token": { "file": operator_token },
     });
     let (addr, handle, _book) =

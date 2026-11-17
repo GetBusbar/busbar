@@ -132,8 +132,7 @@ async fn install_answers_the_admissions_refusals_in_their_classes() {
     );
     std::fs::write(directory.join("store.tar.gz"), &archive)
         .expect("stage the actual store archive");
-    let settings: serde_json::Value =
-        crate::root::test_plugins::application_store_settings(&directory);
+    let settings = crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual store settings are an object"
@@ -249,8 +248,7 @@ async fn install_catalog_remove_roundtrip() {
     );
     std::fs::write(directory.join("store.tar.gz"), &archive)
         .expect("stage the actual store archive");
-    let settings: serde_json::Value =
-        crate::root::test_plugins::application_store_settings(&directory);
+    let settings = crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual store settings are an object"
@@ -416,8 +414,7 @@ async fn remove_filesystem_failure_is_internal_error() {
     );
     std::fs::write(directory.join("store.tar.gz"), &archive)
         .expect("stage the actual store archive");
-    let settings: serde_json::Value =
-        crate::root::test_plugins::application_store_settings(&directory);
+    let settings = crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual store settings are an object"
@@ -544,8 +541,7 @@ async fn catalog_repeat_gets_reuse_the_cached_scan() {
     );
     std::fs::write(directory.join("store.tar.gz"), &archive)
         .expect("stage the actual store archive");
-    let settings: serde_json::Value =
-        crate::root::test_plugins::application_store_settings(&directory);
+    let settings = crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual store settings are an object"
@@ -717,8 +713,7 @@ async fn catalog_unreadable_dir_does_not_serve_stale_cache() {
     );
     std::fs::write(directory.join("store.tar.gz"), &archive)
         .expect("stage the actual store archive");
-    let settings: serde_json::Value =
-        crate::root::test_plugins::application_store_settings(&directory);
+    let settings = crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual store settings are an object"
@@ -865,8 +860,7 @@ async fn list_plugins_store_single_flights_concurrent_misses() {
     );
     std::fs::write(directory.join("store.tar.gz"), &archive)
         .expect("stage the actual store archive");
-    let settings: serde_json::Value =
-        crate::root::test_plugins::application_store_settings(&directory);
+    let settings = crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual store settings are an object"
@@ -998,8 +992,7 @@ async fn store_plugin_catalog_async_survives_a_spawn_blocking_panic() {
     );
     std::fs::write(directory.join("store.tar.gz"), &archive)
         .expect("stage the actual store archive");
-    let settings: serde_json::Value =
-        crate::root::test_plugins::application_store_settings(&directory);
+    let settings = crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual store settings are an object"
@@ -1133,8 +1126,7 @@ async fn list_plugins_store_scan_does_not_park_the_reactor() {
     );
     std::fs::write(directory.join("store.tar.gz"), &archive)
         .expect("stage the actual store archive");
-    let settings: serde_json::Value =
-        crate::root::test_plugins::application_store_settings(&directory);
+    let settings = crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual store settings are an object"
@@ -1279,8 +1271,7 @@ async fn store_plugin_catalog_async_times_out_when_gate_is_held() {
     );
     std::fs::write(directory.join("store.tar.gz"), &archive)
         .expect("stage the actual store archive");
-    let settings: serde_json::Value =
-        crate::root::test_plugins::application_store_settings(&directory);
+    let settings = crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual store settings are an object"
@@ -1441,8 +1432,7 @@ async fn the_store_catalog_heads_with_the_linked_store_rows() {
     );
     std::fs::write(directory.join("store.tar.gz"), &archive)
         .expect("stage the actual store archive");
-    let settings: serde_json::Value =
-        crate::root::test_plugins::application_store_settings(&directory);
+    let settings = crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual store settings are an object"
@@ -1562,8 +1552,7 @@ async fn validate_config_pins_the_scan_to_the_running_plugins_dir() {
     );
     std::fs::write(directory.join("store.tar.gz"), &archive)
         .expect("stage the actual store archive");
-    let settings: serde_json::Value =
-        crate::root::test_plugins::application_store_settings(&directory);
+    let settings = crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual store settings are an object"
@@ -1673,8 +1662,7 @@ async fn validate_config_waits_on_the_plugin_scan_gate_and_runs_off_the_reactor(
     );
     std::fs::write(directory.join("store.tar.gz"), &archive)
         .expect("stage the actual store archive");
-    let settings: serde_json::Value =
-        crate::root::test_plugins::application_store_settings(&directory);
+    let settings = crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual store settings are an object"
@@ -1825,8 +1813,7 @@ async fn every_admin_trust_moment_resolves_through_the_snapshots_builder() {
     );
     std::fs::write(directory.join("store.tar.gz"), &archive)
         .expect("stage the actual store archive");
-    let settings: serde_json::Value =
-        crate::root::test_plugins::application_store_settings(&directory);
+    let settings = crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual store settings are an object"
@@ -2009,8 +1996,7 @@ async fn rollback_reads_the_target_and_merges_pins() {
     );
     std::fs::write(directory.join("store.tar.gz"), &archive)
         .expect("stage the actual store archive");
-    let settings: serde_json::Value =
-        crate::root::test_plugins::application_store_settings(&directory);
+    let settings = crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual store settings are an object"
@@ -2206,8 +2192,7 @@ async fn install_filesystem_failures_are_internal_errors() {
     );
     std::fs::write(directory.join("store.tar.gz"), &archive)
         .expect("stage the actual store archive");
-    let settings: serde_json::Value =
-        crate::root::test_plugins::application_store_settings(&directory);
+    let settings = crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual store settings are an object"

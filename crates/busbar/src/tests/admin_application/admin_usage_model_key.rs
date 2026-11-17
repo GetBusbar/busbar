@@ -86,7 +86,7 @@ async fn test_admin_v1_usage_meters_by_model_and_key() {
     std::fs::write(&signing_key, hex::encode([9u8; 32])).expect("write the test signing input");
     std::fs::write(&operator_token, "admintok").expect("write the test operator input");
     let operator = busbar_kernel::config::operator_provider();
-    let mut document = serde_json::json!({
+    let mut document = json::json!({
         "providers": {},
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
@@ -94,19 +94,18 @@ async fn test_admin_v1_usage_meters_by_model_and_key() {
         "advanced": {  },
         "identity-providers": {},
     });
-    document["identity-providers"][operator] = serde_json::json!({
+    document["identity-providers"][operator] = json::json!({
         "module": operator, "token": { "file": operator_token },
     });
-    document["rate_card"] =
-        serde_json::to_value(&rate_card).expect("serialize the original token rates");
-    document["per_request_fee"] = serde_json::json!(1);
+    document["rate_card"] = json::to_value(&rate_card).expect("serialize the original token rates");
+    document["per_request_fee"] = json::json!(1);
     let provider_defs = super::admin_usage_history::complete_usage_fixture(
         &mut document,
         &directory,
         &[("model-1", "vendor-a"), ("model-2", "acme")],
     );
     let deploy = busbar_kernel::config::deploy_from_deserializer(
-        document,
+        &document,
         &crate::root::boot::axis_test_grammar(),
     )
     .expect("the actual admin deployment parses");

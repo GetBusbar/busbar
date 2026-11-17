@@ -69,8 +69,7 @@ async fn actual_operator_and_signing_file_reload_preserves_governance_and_fails_
         ),
     )
     .unwrap();
-    let settings: serde_json::Value =
-        crate::root::test_plugins::application_store_settings(&directory);
+    let settings = crate::root::test_plugins::application_store_settings(&directory);
     let token_path = directory.join("admin-token");
     let signing_path = directory.join("signing-key");
     std::fs::write(&token_path, "tok-v1").unwrap();

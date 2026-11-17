@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+use busbar_contract::json::JsonValueTrait as _;
 use std::sync::{Arc, Mutex};
 
 use crate::root::test_plugins as plugins;

@@ -120,8 +120,7 @@ async fn app(cost: CostModel) -> busbar_kernel::state::App {
         plugins::signed(&crate::dist_root_install::release_key(), manifest, &library),
     )
     .unwrap();
-    let settings: serde_json::Value =
-        crate::root::test_plugins::application_store_settings(&directory);
+    let settings = crate::root::test_plugins::application_store_settings(&directory);
     assert!(settings.is_object());
     let deploy = busbar_kernel::config::deploy_from_deserializer(
         serde_json::json!({

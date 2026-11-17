@@ -215,19 +215,19 @@ async fn drive_unpriced_usage_reads() -> Vec<(String, u16, json::Value)> {
         std::fs::write(directory.join("admin.token"), "admintok")
             .expect("write the operator credential");
         let settings = crate::root::test_plugins::application_store_settings(&directory);
-        let mut document = serde_json::json!({});
-        document["providers"] = serde_json::json!({});
-        document["models"] = serde_json::json!({});
-        document["store"] = serde_json::json!({"module": facts.name, "settings": settings});
+        let mut document = json::json!({});
+        document["providers"] = json::json!({});
+        document["models"] = json::json!({});
+        document["store"] = json::json!({"module": facts.name, "settings": settings});
         document["plugins"] =
             super::plugins::config_document(&super::plugins::trusted_config(&directory));
-        document["auth"] = serde_json::json!({"chain": [], "admin_auth": ["admin-tokens"]});
-        document["identity-providers"] = serde_json::json!({"admin-tokens": {
+        document["auth"] = json::json!({"chain": [], "admin_auth": ["admin-tokens"]});
+        document["identity-providers"] = json::json!({"admin-tokens": {
             "module": "admin-tokens", "token": {"file": directory.join("admin.token")}
         }});
-        document["advanced"] = serde_json::json!({});
+        document["advanced"] = json::json!({});
         let deploy = busbar_kernel::config::deploy_from_deserializer(
-            document,
+            &document,
             &crate::root::boot::axis_test_grammar(),
         )
         .expect("the actual admin deployment parses");
@@ -384,19 +384,19 @@ async fn config_apply_accepts_a_plane_section_and_moves_that_planes_own_fee() {
         std::fs::write(directory.join("admin.token"), "admintok")
             .expect("write the operator credential");
         let settings = crate::root::test_plugins::application_store_settings(&directory);
-        let mut document = serde_json::json!({});
-        document["providers"] = serde_json::json!({});
-        document["models"] = serde_json::json!({});
-        document["store"] = serde_json::json!({"module": facts.name, "settings": settings});
+        let mut document = json::json!({});
+        document["providers"] = json::json!({});
+        document["models"] = json::json!({});
+        document["store"] = json::json!({"module": facts.name, "settings": settings});
         document["plugins"] =
             super::plugins::config_document(&super::plugins::trusted_config(&directory));
-        document["auth"] = serde_json::json!({"chain": [], "admin_auth": ["admin-tokens"]});
-        document["identity-providers"] = serde_json::json!({"admin-tokens": {
+        document["auth"] = json::json!({"chain": [], "admin_auth": ["admin-tokens"]});
+        document["identity-providers"] = json::json!({"admin-tokens": {
             "module": "admin-tokens", "token": {"file": directory.join("admin.token")}
         }});
-        document["advanced"] = serde_json::json!({});
+        document["advanced"] = json::json!({});
         let deploy = busbar_kernel::config::deploy_from_deserializer(
-            document,
+            &document,
             &crate::root::boot::axis_test_grammar(),
         )
         .expect("the actual admin deployment parses");
@@ -528,19 +528,19 @@ async fn test_admin_v1_openapi_is_identity_json_for_every_client() {
         std::fs::write(directory.join("admin.token"), "admintok")
             .expect("write the operator credential");
         let settings = crate::root::test_plugins::application_store_settings(&directory);
-        let mut document = serde_json::json!({});
-        document["providers"] = serde_json::json!({});
-        document["models"] = serde_json::json!({});
-        document["store"] = serde_json::json!({"module": facts.name, "settings": settings});
+        let mut document = json::json!({});
+        document["providers"] = json::json!({});
+        document["models"] = json::json!({});
+        document["store"] = json::json!({"module": facts.name, "settings": settings});
         document["plugins"] =
             super::plugins::config_document(&super::plugins::trusted_config(&directory));
-        document["auth"] = serde_json::json!({"chain": [], "admin_auth": ["admin-tokens"]});
-        document["identity-providers"] = serde_json::json!({"admin-tokens": {
+        document["auth"] = json::json!({"chain": [], "admin_auth": ["admin-tokens"]});
+        document["identity-providers"] = json::json!({"admin-tokens": {
             "module": "admin-tokens", "token": {"file": directory.join("admin.token")}
         }});
-        document["advanced"] = serde_json::json!({});
+        document["advanced"] = json::json!({});
         let deploy = busbar_kernel::config::deploy_from_deserializer(
-            document,
+            &document,
             &crate::root::boot::axis_test_grammar(),
         )
         .expect("the actual admin deployment parses");
@@ -725,19 +725,19 @@ async fn drive_key_cap_and_delegation_errors() {
         std::fs::write(directory.join("admin.token"), "admintok")
             .expect("write the operator credential");
         let settings = crate::root::test_plugins::application_store_settings(&directory);
-        let mut document = serde_json::json!({"groups": groups});
-        document["providers"] = serde_json::json!({});
-        document["models"] = serde_json::json!({});
-        document["store"] = serde_json::json!({"module": facts.name, "settings": settings});
+        let mut document = json::json!({"groups": groups});
+        document["providers"] = json::json!({});
+        document["models"] = json::json!({});
+        document["store"] = json::json!({"module": facts.name, "settings": settings});
         document["plugins"] =
             super::plugins::config_document(&super::plugins::trusted_config(&directory));
-        document["auth"] = serde_json::json!({"chain": [], "admin_auth": ["admin-tokens"]});
-        document["identity-providers"] = serde_json::json!({"admin-tokens": {
+        document["auth"] = json::json!({"chain": [], "admin_auth": ["admin-tokens"]});
+        document["identity-providers"] = json::json!({"admin-tokens": {
             "module": "admin-tokens", "token": {"file": directory.join("admin.token")}
         }});
-        document["advanced"] = serde_json::json!({});
+        document["advanced"] = json::json!({});
         let deploy = busbar_kernel::config::deploy_from_deserializer(
-            document,
+            &document,
             &crate::root::boot::axis_test_grammar(),
         )
         .expect("the actual admin deployment parses");
@@ -949,28 +949,28 @@ async fn test_admin_v1_overlay_reset_unknown_section_keeps_1_5_5_sentence_shape(
         std::fs::write(directory.join("admin.token"), "admintok")
             .expect("write the operator credential");
         let settings = crate::root::test_plugins::application_store_settings(&directory);
-        let mut document = serde_json::json!({});
-        document["providers"] = serde_json::json!({});
-        document["models"] = serde_json::json!({});
+        let mut document = json::json!({});
+        document["providers"] = json::json!({});
+        document["models"] = json::json!({});
 
-        document["tools"] = serde_json::json!({"base-tools": {
+        document["tools"] = json::json!({"base-tools": {
             "url": "https://tools.internal/fs",
             "pin": {"mechanism": "cert_spki", "key": "sha256/BASE="}
         }});
-        document["agents"] = serde_json::json!({"base-agent": {
+        document["agents"] = json::json!({"base-agent": {
             "url": "https://agents.example/planner",
             "pin": {"mechanism": "unpinned"}
         }});
-        document["store"] = serde_json::json!({"module": facts.name, "settings": settings});
+        document["store"] = json::json!({"module": facts.name, "settings": settings});
         document["plugins"] =
             super::plugins::config_document(&super::plugins::trusted_config(&directory));
-        document["auth"] = serde_json::json!({"chain": [], "admin_auth": ["admin-tokens"]});
-        document["identity-providers"] = serde_json::json!({"admin-tokens": {
+        document["auth"] = json::json!({"chain": [], "admin_auth": ["admin-tokens"]});
+        document["identity-providers"] = json::json!({"admin-tokens": {
             "module": "admin-tokens", "token": {"file": directory.join("admin.token")}
         }});
-        document["advanced"] = serde_json::json!({});
+        document["advanced"] = json::json!({});
         let deploy = busbar_kernel::config::deploy_from_deserializer(
-            document,
+            &document,
             &crate::root::boot::axis_test_grammar(),
         )
         .expect("the actual admin deployment parses");
@@ -1070,19 +1070,19 @@ async fn serve_keys_fixture(
                 std::fs::write(directory.join("admin.token"), "admintok")
                     .expect("write the operator credential");
                 let settings = crate::root::test_plugins::application_store_settings(&directory);
-                let mut document = serde_json::json!({});
-                document["providers"] = serde_json::json!({});
-                document["models"] = serde_json::json!({});
-                document["store"] = serde_json::json!({"module": facts.name, "settings": settings});
+                let mut document = json::json!({});
+                document["providers"] = json::json!({});
+                document["models"] = json::json!({});
+                document["store"] = json::json!({"module": facts.name, "settings": settings});
                 document["plugins"] =
                     super::plugins::config_document(&super::plugins::trusted_config(&directory));
-                document["auth"] = serde_json::json!({"chain": [], "admin_auth": ["admin-tokens"]});
-                document["identity-providers"] = serde_json::json!({"admin-tokens": {
+                document["auth"] = json::json!({"chain": [], "admin_auth": ["admin-tokens"]});
+                document["identity-providers"] = json::json!({"admin-tokens": {
                     "module": "admin-tokens", "token": {"file": directory.join("admin.token")}
                 }});
-                document["advanced"] = serde_json::json!({});
+                document["advanced"] = json::json!({});
                 let deploy = busbar_kernel::config::deploy_from_deserializer(
-                    document,
+                    &document,
                     &crate::root::boot::axis_test_grammar(),
                 )
                 .expect("the actual admin deployment parses");
@@ -1152,19 +1152,19 @@ async fn serve_keys_fixture(
                 std::fs::write(directory.join("admin.token"), "admintok")
                     .expect("write the operator credential");
                 let settings = crate::root::test_plugins::application_store_settings(&directory);
-                let mut document = serde_json::json!({});
-                document["providers"] = serde_json::json!({});
-                document["models"] = serde_json::json!({});
-                document["store"] = serde_json::json!({"module": facts.name, "settings": settings});
+                let mut document = json::json!({});
+                document["providers"] = json::json!({});
+                document["models"] = json::json!({});
+                document["store"] = json::json!({"module": facts.name, "settings": settings});
                 document["plugins"] =
                     super::plugins::config_document(&super::plugins::trusted_config(&directory));
-                document["auth"] = serde_json::json!({"chain": [], "admin_auth": ["admin-tokens"]});
-                document["identity-providers"] = serde_json::json!({"admin-tokens": {
+                document["auth"] = json::json!({"chain": [], "admin_auth": ["admin-tokens"]});
+                document["identity-providers"] = json::json!({"admin-tokens": {
                     "module": "admin-tokens", "token": {"file": directory.join("admin.token")}
                 }});
-                document["advanced"] = serde_json::json!({});
+                document["advanced"] = json::json!({});
                 let deploy = busbar_kernel::config::deploy_from_deserializer(
-                    document,
+                    &document,
                     &crate::root::boot::axis_test_grammar(),
                 )
                 .expect("the actual admin deployment parses");
@@ -1229,19 +1229,19 @@ async fn serve_keys_fixture(
             std::fs::write(directory.join("admin.token"), "admintok")
                 .expect("write the operator credential");
             let settings = crate::root::test_plugins::application_store_settings(&directory);
-            let mut document = serde_json::json!({});
-            document["providers"] = serde_json::json!({});
-            document["models"] = serde_json::json!({});
-            document["store"] = serde_json::json!({"module": facts.name, "settings": settings});
+            let mut document = json::json!({});
+            document["providers"] = json::json!({});
+            document["models"] = json::json!({});
+            document["store"] = json::json!({"module": facts.name, "settings": settings});
             document["plugins"] =
                 super::plugins::config_document(&super::plugins::trusted_config(&directory));
-            document["auth"] = serde_json::json!({"chain": [], "admin_auth": []});
-            document["identity-providers"] = serde_json::json!({"admin-tokens": {
+            document["auth"] = json::json!({"chain": [], "admin_auth": []});
+            document["identity-providers"] = json::json!({"admin-tokens": {
                 "module": "admin-tokens", "token": {"file": directory.join("admin.token")}
             }});
-            document["advanced"] = serde_json::json!({});
+            document["advanced"] = json::json!({});
             let deploy = busbar_kernel::config::deploy_from_deserializer(
-                document,
+                &document,
                 &crate::root::boot::axis_test_grammar(),
             )
             .expect("the actual admin deployment parses");
@@ -1853,25 +1853,25 @@ async fn admin_error_fixture() -> (std::net::SocketAddr, tokio::task::JoinHandle
             true,
         );
         let settings = crate::root::test_plugins::application_store_settings(&directory);
-        let mut document = serde_json::json!({"groups": {"team": {"enabled": true, "limits": []}}, "hooks": {"basehook": {"kind":"gate","module":"hooks-ranking","settings":{"policy":"cheapest"},"timeout_ms":25,"on_error":"reject"}}});
-        document["providers"] = serde_json::json!({});
-        document["models"] = serde_json::json!({});
-        document["store"] = serde_json::json!({"module": facts.name, "settings": settings});
+        let mut document = json::json!({"groups": {"team": {"enabled": true, "limits": []}}, "hooks": {"basehook": {"kind":"gate","module":"hooks-ranking","settings":{"policy":"cheapest"},"timeout_ms":25,"on_error":"reject"}}});
+        document["providers"] = json::json!({});
+        document["models"] = json::json!({});
+        document["store"] = json::json!({"module": facts.name, "settings": settings});
         document["plugins"] =
             super::plugins::config_document(&super::plugins::trusted_config(&directory));
         document["auth"] =
-            serde_json::json!({"chain": [], "admin_auth": ["test-scope-module", "admin-tokens"]});
-        document["identity-providers"] = serde_json::json!({"admin-tokens": {
+            json::json!({"chain": [], "admin_auth": ["test-scope-module", "admin-tokens"]});
+        document["identity-providers"] = json::json!({"admin-tokens": {
             "module": "admin-tokens", "token": {"file": directory.join("admin.token")}
         }});
-        document["identity-providers"]["test-scope-module"] = serde_json::json!({
+        document["identity-providers"]["test-scope-module"] = json::json!({
             "module": oidc_module,
             "settings": crate::test_common::credentials::settings("admin-lockout-witness"),
             "max_admin_scope": "full",
         });
-        document["advanced"] = serde_json::json!({});
+        document["advanced"] = json::json!({});
         let deploy = busbar_kernel::config::deploy_from_deserializer(
-            document,
+            &document,
             &crate::root::boot::axis_test_grammar(),
         )
         .expect("the actual admin deployment parses");
@@ -2778,19 +2778,19 @@ async fn drive_plugin_reload_errors() {
         std::fs::write(directory.join("admin.token"), "admintok")
             .expect("write the operator credential");
         let settings = crate::root::test_plugins::application_store_settings(&directory);
-        let mut document = serde_json::json!({});
-        document["providers"] = serde_json::json!({});
-        document["models"] = serde_json::json!({});
-        document["store"] = serde_json::json!({"module": facts.name, "settings": settings});
+        let mut document = json::json!({});
+        document["providers"] = json::json!({});
+        document["models"] = json::json!({});
+        document["store"] = json::json!({"module": facts.name, "settings": settings});
         document["plugins"] =
             super::plugins::config_document(&super::plugins::trusted_config(&directory));
-        document["auth"] = serde_json::json!({"chain": [], "admin_auth": ["admin-tokens"]});
-        document["identity-providers"] = serde_json::json!({"admin-tokens": {
+        document["auth"] = json::json!({"chain": [], "admin_auth": ["admin-tokens"]});
+        document["identity-providers"] = json::json!({"admin-tokens": {
             "module": "admin-tokens", "token": {"file": directory.join("admin.token")}
         }});
-        document["advanced"] = serde_json::json!({});
+        document["advanced"] = json::json!({});
         let deploy = busbar_kernel::config::deploy_from_deserializer(
-            document,
+            &document,
             &crate::root::boot::axis_test_grammar(),
         )
         .expect("the actual admin deployment parses");
@@ -2901,19 +2901,19 @@ async fn drive_plugin_rollback_errors() {
         std::fs::write(directory.join("admin.token"), "admintok")
             .expect("write the operator credential");
         let settings = crate::root::test_plugins::application_store_settings(&directory);
-        let mut document = serde_json::json!({});
-        document["providers"] = serde_json::json!({});
-        document["models"] = serde_json::json!({});
-        document["store"] = serde_json::json!({"module": facts.name, "settings": settings});
+        let mut document = json::json!({});
+        document["providers"] = json::json!({});
+        document["models"] = json::json!({});
+        document["store"] = json::json!({"module": facts.name, "settings": settings});
         document["plugins"] =
             super::plugins::config_document(&super::plugins::trusted_config(&directory));
-        document["auth"] = serde_json::json!({"chain": [], "admin_auth": ["admin-tokens"]});
-        document["identity-providers"] = serde_json::json!({"admin-tokens": {
+        document["auth"] = json::json!({"chain": [], "admin_auth": ["admin-tokens"]});
+        document["identity-providers"] = json::json!({"admin-tokens": {
             "module": "admin-tokens", "token": {"file": directory.join("admin.token")}
         }});
-        document["advanced"] = serde_json::json!({});
+        document["advanced"] = json::json!({});
         let deploy = busbar_kernel::config::deploy_from_deserializer(
-            document,
+            &document,
             &crate::root::boot::axis_test_grammar(),
         )
         .expect("the actual admin deployment parses");
@@ -3142,19 +3142,19 @@ async fn drive_plugin_inspect_errors() {
         std::fs::write(directory.join("admin.token"), "admintok")
             .expect("write the operator credential");
         let settings = crate::root::test_plugins::application_store_settings(&directory);
-        let mut document = serde_json::json!({});
-        document["providers"] = serde_json::json!({});
-        document["models"] = serde_json::json!({});
-        document["store"] = serde_json::json!({"module": facts.name, "settings": settings});
+        let mut document = json::json!({});
+        document["providers"] = json::json!({});
+        document["models"] = json::json!({});
+        document["store"] = json::json!({"module": facts.name, "settings": settings});
         document["plugins"] =
             super::plugins::config_document(&super::plugins::trusted_config(&directory));
-        document["auth"] = serde_json::json!({"chain": [], "admin_auth": ["admin-tokens"]});
-        document["identity-providers"] = serde_json::json!({"admin-tokens": {
+        document["auth"] = json::json!({"chain": [], "admin_auth": ["admin-tokens"]});
+        document["identity-providers"] = json::json!({"admin-tokens": {
             "module": "admin-tokens", "token": {"file": directory.join("admin.token")}
         }});
-        document["advanced"] = serde_json::json!({});
+        document["advanced"] = json::json!({});
         let deploy = busbar_kernel::config::deploy_from_deserializer(
-            document,
+            &document,
             &crate::root::boot::axis_test_grammar(),
         )
         .expect("the actual admin deployment parses");
@@ -3566,7 +3566,7 @@ async fn named_map_app_opts(
     use busbar_contract::yaml::{self, prelude::*};
     let mut disk: Value = yaml::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
     *disk.at_mut("store") =
-        yaml::to_value(&serde_json::json!({"module": facts.name, "settings": settings})).unwrap();
+        yaml::to_value(&json::json!({"module": facts.name, "settings": settings})).unwrap();
     *disk.at_mut("plugins") = yaml::to_value(&super::plugins::config_document(
         &super::plugins::trusted_config(&plugin_dir),
     ))
@@ -4235,28 +4235,28 @@ async fn drive_named_map_errors() {
             std::fs::write(directory.join("admin.token"), "admintok")
                 .expect("write the operator credential");
             let settings = crate::root::test_plugins::application_store_settings(&directory);
-            let mut document = serde_json::json!({});
-            document["providers"] = serde_json::json!({});
-            document["models"] = serde_json::json!({});
+            let mut document = json::json!({});
+            document["providers"] = json::json!({});
+            document["models"] = json::json!({});
 
-            document["tools"] = serde_json::json!({"base-tools": {
+            document["tools"] = json::json!({"base-tools": {
                 "url": "https://tools.internal/fs",
                 "pin": {"mechanism": "cert_spki", "key": "sha256/BASE="}
             }});
-            document["agents"] = serde_json::json!({"base-agent": {
+            document["agents"] = json::json!({"base-agent": {
                 "url": "https://agents.example/planner",
                 "pin": {"mechanism": "unpinned"}
             }});
-            document["store"] = serde_json::json!({"module": facts.name, "settings": settings});
+            document["store"] = json::json!({"module": facts.name, "settings": settings});
             document["plugins"] =
                 super::plugins::config_document(&super::plugins::trusted_config(&directory));
-            document["auth"] = serde_json::json!({"chain": [], "admin_auth": ["admin-tokens"]});
-            document["identity-providers"] = serde_json::json!({"admin-tokens": {
+            document["auth"] = json::json!({"chain": [], "admin_auth": ["admin-tokens"]});
+            document["identity-providers"] = json::json!({"admin-tokens": {
                 "module": "admin-tokens", "token": {"file": directory.join("admin.token")}
             }});
-            document["advanced"] = serde_json::json!({});
+            document["advanced"] = json::json!({});
             let deploy = busbar_kernel::config::deploy_from_deserializer(
-                document,
+                &document,
                 &crate::root::boot::axis_test_grammar(),
             )
             .expect("the actual admin deployment parses");

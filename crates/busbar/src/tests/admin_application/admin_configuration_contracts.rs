@@ -28,7 +28,7 @@ async fn test_admin_v1_mutation_rate_limit_config_class() {
     let plugin_document = crate::root::test_plugins::config_document(
         &crate::root::test_plugins::trusted_config(&directory),
     );
-    let mut document = serde_json::json!({
+    let mut document = json::json!({
         "providers": {},
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
@@ -37,7 +37,7 @@ async fn test_admin_v1_mutation_rate_limit_config_class() {
         "advanced": {  },
         "identity-providers": {},
     });
-    document["identity-providers"][operator] = serde_json::json!({
+    document["identity-providers"][operator] = json::json!({
         "module": operator, "token": { "file": operator_token },
     });
     let (addr, handle, _book) =
@@ -97,7 +97,7 @@ async fn test_admin_v1_put_auth_refuses_clearing_a_protected_chain() {
     let plugin_document = crate::root::test_plugins::config_document(
         &crate::root::test_plugins::trusted_config(&directory),
     );
-    let mut document = serde_json::json!({
+    let mut document = json::json!({
         "providers": {},
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
@@ -106,7 +106,7 @@ async fn test_admin_v1_put_auth_refuses_clearing_a_protected_chain() {
         "advanced": {  },
         "identity-providers": {},
     });
-    document["identity-providers"][operator] = serde_json::json!({
+    document["identity-providers"][operator] = json::json!({
         "module": operator, "token": { "file": operator_token },
     });
     let (addr, handle, _book) =
@@ -165,7 +165,7 @@ async fn test_admin_v1_config_validate_dry_run() {
     let plugin_document = crate::root::test_plugins::config_document(
         &crate::root::test_plugins::trusted_config(&directory),
     );
-    let mut document = serde_json::json!({
+    let mut document = json::json!({
         "providers": {},
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
@@ -174,7 +174,7 @@ async fn test_admin_v1_config_validate_dry_run() {
         "advanced": {  },
         "identity-providers": {},
     });
-    document["identity-providers"][operator] = serde_json::json!({
+    document["identity-providers"][operator] = json::json!({
         "module": operator, "token": { "file": operator_token },
     });
     let (addr, handle, _book) =
@@ -194,7 +194,7 @@ async fn test_admin_v1_config_validate_dry_run() {
     let body = json::parse_value(&bad.bytes().await.unwrap()).unwrap();
     assert_eq!(body["error"]["code"], "invalid_request");
 
-    let proposed = serde_json::json!({
+    let proposed = json::json!({
         "config": {
             "providers": { "acme": { "api_key": { "env": "ACME_KEY" } } },
             "store": {"module": module, "settings": settings},
@@ -223,7 +223,7 @@ async fn test_admin_v1_config_validate_dry_run() {
         "the dangling provider is named in an error: {errors:?}"
     );
 
-    let proposed = serde_json::json!({
+    let proposed = json::json!({
         "config": {
             "secrets": { "acme-vault": { "settings": {} } },
             "providers": {},
@@ -282,7 +282,7 @@ async fn test_admin_v1_config_validate_accepts_1_6_0_additive_top_level_keys() {
     let plugin_document = crate::root::test_plugins::config_document(
         &crate::root::test_plugins::trusted_config(&directory),
     );
-    let mut document = serde_json::json!({
+    let mut document = json::json!({
         "providers": {},
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
@@ -291,7 +291,7 @@ async fn test_admin_v1_config_validate_accepts_1_6_0_additive_top_level_keys() {
         "advanced": {  },
         "identity-providers": {},
     });
-    document["identity-providers"][operator] = serde_json::json!({
+    document["identity-providers"][operator] = json::json!({
         "module": operator, "token": { "file": operator_token },
     });
     let (addr, handle, _book) =
@@ -299,7 +299,7 @@ async fn test_admin_v1_config_validate_accepts_1_6_0_additive_top_level_keys() {
     let client = reqwest::Client::new();
     let url = format!("http://{addr}/api/v1/admin/config/validate");
 
-    let proposed = serde_json::json!({
+    let proposed = json::json!({
         "config": {
             "oauth_as": null,
             "providers": {},
@@ -353,7 +353,7 @@ async fn test_admin_v1_config_apply_accepts_the_boot_shape_and_refuses_an_unknow
     let plugin_document = crate::root::test_plugins::config_document(
         &crate::root::test_plugins::trusted_config(&directory),
     );
-    let mut document = serde_json::json!({
+    let mut document = json::json!({
         "providers": {},
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
@@ -362,11 +362,11 @@ async fn test_admin_v1_config_apply_accepts_the_boot_shape_and_refuses_an_unknow
         "advanced": {  },
         "identity-providers": {},
     });
-    document["identity-providers"][operator] = serde_json::json!({
+    document["identity-providers"][operator] = json::json!({
         "module": operator, "token": { "file": operator_token },
     });
     let deploy = busbar_kernel::config::deploy_from_deserializer(
-        document,
+        &document,
         &crate::root::boot::axis_test_grammar(),
     )
     .expect("the actual admin deployment parses");
@@ -413,16 +413,16 @@ async fn test_admin_v1_config_apply_accepts_the_boot_shape_and_refuses_an_unknow
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
     let client = reqwest::Client::new();
     let url = format!("http://{addr}/api/v1/admin/config/apply");
-    let apply = |config: serde_json::Value| {
+    let apply = |config: json::Value| {
         client
             .post(&url)
             .header("x-admin-token", "admintok")
             .header("content-type", "application/json")
-            .body(serde_json::json!({"config": config, "providers": {}}).to_string())
+            .body(json::json!({"config": config, "providers": {}}).to_string())
             .send()
     };
 
-    let lifted = apply(serde_json::json!({
+    let lifted = apply(json::json!({
         "oauth_as": null,
         "providers": {},
         "store": {"module": module, "settings": settings},
@@ -435,7 +435,7 @@ async fn test_admin_v1_config_apply_accepts_the_boot_shape_and_refuses_an_unknow
     let body = lifted.text().await.unwrap();
     assert_eq!(status, 200, "a key the boot pre-pass lifts applies: {body}");
 
-    let unknown = apply(serde_json::json!({
+    let unknown = apply(json::json!({
         "not_a_config_key": true,
         "providers": {},
         "store": {"module": module, "settings": settings},
@@ -475,7 +475,7 @@ async fn test_admin_v1_overlay_reset_unknown_section_400() {
     let plugin_document = crate::root::test_plugins::config_document(
         &crate::root::test_plugins::trusted_config(&directory),
     );
-    let mut document = serde_json::json!({
+    let mut document = json::json!({
         "providers": {},
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
@@ -484,7 +484,7 @@ async fn test_admin_v1_overlay_reset_unknown_section_400() {
         "advanced": {  },
         "identity-providers": {},
     });
-    document["identity-providers"][operator] = serde_json::json!({
+    document["identity-providers"][operator] = json::json!({
         "module": operator, "token": { "file": operator_token },
     });
     let (addr, handle, _book) =

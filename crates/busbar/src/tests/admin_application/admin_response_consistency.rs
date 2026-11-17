@@ -24,7 +24,7 @@ async fn admin_responses_are_private_and_snapshot_consistent() {
     std::fs::write(&signing_key, hex::encode([7u8; 32])).expect("write the test signing input");
     std::fs::write(&operator_token, "admintok").expect("write the test operator input");
     let operator = busbar_kernel::config::operator_provider();
-    let mut document = serde_json::json!({
+    let mut document = json::json!({
         "providers": {},
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
@@ -32,7 +32,7 @@ async fn admin_responses_are_private_and_snapshot_consistent() {
         "advanced": {  },
         "identity-providers": {},
     });
-    document["identity-providers"][operator] = serde_json::json!({
+    document["identity-providers"][operator] = json::json!({
         "module": operator, "token": { "file": operator_token },
     });
     let upstream_key = directory.join("provider-key");
@@ -49,13 +49,13 @@ async fn admin_responses_are_private_and_snapshot_consistent() {
         }))
         .expect("the actual provider definition parses"),
     )]);
-    document["providers"] = serde_json::json!({
+    document["providers"] = json::json!({
         "test-provider": { "api_key": { "file": upstream_key } },
     });
-    document["models"] = serde_json::json!({ "test-model": { "provider": "test-provider" } });
-    document["pools"] = serde_json::json!({ "pa": { "members": [{ "model": "test-model" }] } });
+    document["models"] = json::json!({ "test-model": { "provider": "test-provider" } });
+    document["pools"] = json::json!({ "pa": { "members": [{ "model": "test-model" }] } });
     let deploy = busbar_kernel::config::deploy_from_deserializer(
-        document,
+        &document,
         &crate::root::boot::axis_test_grammar(),
     )
     .expect("the actual admin deployment parses");
@@ -117,7 +117,7 @@ async fn admin_responses_are_private_and_snapshot_consistent() {
                             later.overlay_path.as_deref(),
                             busbar_kernel::config::named_map::NamedMapSection::Export,
                             "pending-entry",
-                            Some(&serde_json::json!({"module":"pending-after", "settings":[]})),
+                            Some(&json::json!({"module":"pending-after", "settings":[]})),
                         )
                         .await
                         .unwrap();
@@ -323,7 +323,7 @@ async fn admin_responses_are_private_and_snapshot_consistent() {
             current.overlay_path.as_deref(),
             section,
             "pending-entry",
-            Some(&serde_json::json!({"module":"pending-before", "settings":[]})),
+            Some(&json::json!({"module":"pending-before", "settings":[]})),
         )
         .await
         .unwrap();

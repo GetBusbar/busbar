@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 use crate::root::test_plugins as plugins;
+use busbar_contract::json::JsonValueTrait as _;
 use std::sync::Arc;
 #[tokio::test]
 async fn boot_builds_a_pool_of_nine_unbounded_lanes_without_overflowing_its_banner() {
@@ -20,8 +21,7 @@ async fn boot_builds_a_pool_of_nine_unbounded_lanes_without_overflowing_its_bann
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
     std::fs::write(directory.join("store.tar.gz"), archive)
         .expect("stage the actual store archive");
-    let settings: serde_json::Value =
-        crate::root::test_plugins::application_store_settings(&directory);
+    let settings = crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual store settings are an object"

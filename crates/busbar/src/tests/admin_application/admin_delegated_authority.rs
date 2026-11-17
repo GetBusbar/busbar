@@ -39,7 +39,7 @@ async fn test_admin_v1_idempotency_key_is_principal_scoped() {
     std::fs::write(&signing_key, hex::encode([9u8; 32])).expect("write the test signing input");
     std::fs::write(&operator_token, "admintok").expect("write the test operator input");
     let operator = busbar_kernel::config::operator_provider();
-    let mut document = serde_json::json!({
+    let mut document = json::json!({
         "providers": {},
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
@@ -47,20 +47,20 @@ async fn test_admin_v1_idempotency_key_is_principal_scoped() {
         "advanced": {  },
         "identity-providers": {},
     });
-    document["identity-providers"][operator] = serde_json::json!({
+    document["identity-providers"][operator] = json::json!({
         "module": operator, "token": { "file": operator_token },
     });
-    document["identity-providers"]["test-scope-module"] = serde_json::json!({
+    document["identity-providers"]["test-scope-module"] = json::json!({
         "module": oidc_module,
         "settings": common::credentials::settings(AUDIENCE),
         "max_admin_scope": "full",
     });
-    document["auth"]["admin_auth"] = serde_json::json!(["test-scope-module", operator]);
-    document["auth"]["role_bindings"] = serde_json::json!({
+    document["auth"]["admin_auth"] = json::json!(["test-scope-module", operator]);
+    document["auth"]["role_bindings"] = json::json!({
         "test-scope-module": { "admins": { "admin_scope": "full" } },
     });
     let deploy = busbar_kernel::config::deploy_from_deserializer(
-        document,
+        &document,
         &crate::root::boot::axis_test_grammar(),
     )
     .expect("the actual admin deployment parses");
@@ -166,7 +166,7 @@ async fn test_admin_v1_put_auth_dry_run_guard() {
     std::fs::write(&signing_key, hex::encode([9u8; 32])).expect("write the test signing input");
     std::fs::write(&operator_token, "admintok").expect("write the test operator input");
     let operator = busbar_kernel::config::operator_provider();
-    let mut document = serde_json::json!({
+    let mut document = json::json!({
         "providers": {},
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
@@ -174,21 +174,21 @@ async fn test_admin_v1_put_auth_dry_run_guard() {
         "advanced": {  },
         "identity-providers": {},
     });
-    document["identity-providers"][operator] = serde_json::json!({
+    document["identity-providers"][operator] = json::json!({
         "module": operator, "token": { "file": operator_token },
     });
-    document["identity-providers"]["test-scope-module"] = serde_json::json!({
+    document["identity-providers"]["test-scope-module"] = json::json!({
         "module": oidc_module,
         "settings": common::credentials::settings(AUDIENCE),
         "max_admin_scope": "full",
     });
-    document["auth"]["admin_auth"] = serde_json::json!(["test-scope-module", operator]);
-    document["auth"]["role_bindings"] = serde_json::json!({
+    document["auth"]["admin_auth"] = json::json!(["test-scope-module", operator]);
+    document["auth"]["role_bindings"] = json::json!({
         "test-scope-module": { "admins": { "admin_scope": "full" } },
     });
     document["plugins"] = crate::root::test_plugins::trusted_config_document(&directory);
     let deploy = busbar_kernel::config::deploy_from_deserializer(
-        document,
+        &document,
         &crate::root::boot::axis_test_grammar(),
     )
     .expect("the actual admin deployment parses");
@@ -359,7 +359,7 @@ async fn test_admin_v1_put_auth_accepts_a_renamed_operator_provider() {
     std::fs::write(&signing_key, hex::encode([9u8; 32])).expect("write the test signing input");
     std::fs::write(&operator_token, "admintok").expect("write the test operator input");
     let operator = busbar_kernel::config::operator_provider();
-    let mut document = serde_json::json!({
+    let mut document = json::json!({
         "providers": {},
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
@@ -367,10 +367,10 @@ async fn test_admin_v1_put_auth_accepts_a_renamed_operator_provider() {
         "advanced": {  },
         "identity-providers": {},
     });
-    document["identity-providers"][operator] = serde_json::json!({
+    document["identity-providers"][operator] = json::json!({
         "module": operator, "token": { "file": operator_token },
     });
-    document["identity-providers"]["ops"] = serde_json::json!({
+    document["identity-providers"]["ops"] = json::json!({
         "module": operator, "token": { "file": operator_token },
     });
     let (addr, handle, _book) =
@@ -447,7 +447,7 @@ async fn test_admin_v1_equal_subjects_from_distinct_issuers_cannot_replay_secret
     std::fs::write(&signing_key, hex::encode([9u8; 32])).expect("write the test signing input");
     std::fs::write(&operator_token, "admintok").expect("write the test operator input");
     let operator = busbar_kernel::config::operator_provider();
-    let mut document = serde_json::json!({
+    let mut document = json::json!({
         "providers": {},
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
@@ -455,27 +455,26 @@ async fn test_admin_v1_equal_subjects_from_distinct_issuers_cannot_replay_secret
         "advanced": {  },
         "identity-providers": {},
     });
-    document["identity-providers"][operator] = serde_json::json!({
+    document["identity-providers"][operator] = json::json!({
         "module": operator, "token": { "file": operator_token },
     });
-    document["identity-providers"]["test-scope-module"] = serde_json::json!({
+    document["identity-providers"]["test-scope-module"] = json::json!({
         "module": oidc_module,
         "settings": common::credentials::settings(AUDIENCE),
         "max_admin_scope": "full",
     });
     let mut settings_b = common::credentials::settings(AUDIENCE);
     settings_b.insert("issuer".into(), serde_json::json!(issuer_b));
-    document["identity-providers"]["second-issuer"] = serde_json::json!({
+    document["identity-providers"]["second-issuer"] = json::json!({
         "module": oidc_module, "settings": settings_b, "max_admin_scope": "full",
     });
-    document["auth"]["admin_auth"] =
-        serde_json::json!(["test-scope-module", "second-issuer", operator]);
-    document["auth"]["role_bindings"] = serde_json::json!({
+    document["auth"]["admin_auth"] = json::json!(["test-scope-module", "second-issuer", operator]);
+    document["auth"]["role_bindings"] = json::json!({
         "test-scope-module": { "admins": { "admin_scope": "full" } },
         "second-issuer": { "admins": { "admin_scope": "full" } },
     });
     let deploy = busbar_kernel::config::deploy_from_deserializer(
-        document,
+        &document,
         &crate::root::boot::axis_test_grammar(),
     )
     .expect("the actual admin deployment parses");
@@ -611,7 +610,7 @@ async fn test_admin_v1_distinct_issuer_connectors_obey_verbs_and_revoke_independ
     std::fs::write(&signing_key, hex::encode([9u8; 32])).expect("write the test signing input");
     std::fs::write(&operator_token, "admintok").expect("write the test operator input");
     let operator = busbar_kernel::config::operator_provider();
-    let mut document = serde_json::json!({
+    let mut document = json::json!({
         "providers": {},
         "models": {},
         "auth": { "chain": ["test-scope-module"], "admin_auth": [operator], "signing_key": { "file": signing_key } },
@@ -619,27 +618,26 @@ async fn test_admin_v1_distinct_issuer_connectors_obey_verbs_and_revoke_independ
         "advanced": {  },
         "identity-providers": {},
     });
-    document["identity-providers"][operator] = serde_json::json!({
+    document["identity-providers"][operator] = json::json!({
         "module": operator, "token": { "file": operator_token },
     });
-    document["identity-providers"]["test-scope-module"] = serde_json::json!({
+    document["identity-providers"]["test-scope-module"] = json::json!({
         "module": oidc_module,
         "settings": common::credentials::settings(AUDIENCE),
         "max_admin_scope": "full",
     });
     let mut settings_b = common::credentials::settings(AUDIENCE);
     settings_b.insert("issuer".into(), serde_json::json!(issuer_b));
-    document["identity-providers"]["second-issuer"] = serde_json::json!({
+    document["identity-providers"]["second-issuer"] = json::json!({
         "module": oidc_module, "settings": settings_b, "max_admin_scope": "full",
     });
-    document["auth"]["admin_auth"] =
-        serde_json::json!(["test-scope-module", "second-issuer", operator]);
-    document["auth"]["role_bindings"] = serde_json::json!({
+    document["auth"]["admin_auth"] = json::json!(["test-scope-module", "second-issuer", operator]);
+    document["auth"]["role_bindings"] = json::json!({
         "test-scope-module": { "admins": { "verbs": ["get_info"] } },
         "second-issuer": { "admins": { "verbs": ["get_info"] } },
     });
     let deploy = busbar_kernel::config::deploy_from_deserializer(
-        document,
+        &document,
         &crate::root::boot::axis_test_grammar(),
     )
     .expect("the actual admin deployment parses");

@@ -29,7 +29,7 @@ async fn test_admin_v1_config_settings_reset_refuses_when_overlay_is_corrupt() {
     std::fs::write(&signing_key, hex::encode([9u8; 32])).expect("write the test signing input");
     std::fs::write(&operator_token, "admintok").expect("write the test operator input");
     let operator = busbar_kernel::config::operator_provider();
-    let mut document = serde_json::json!({
+    let mut document = json::json!({
         "providers": {},
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
@@ -40,16 +40,16 @@ async fn test_admin_v1_config_settings_reset_refuses_when_overlay_is_corrupt() {
     document["plugins"] = crate::root::test_plugins::config_document(
         &crate::root::test_plugins::trusted_config(&directory),
     );
-    document["identity-providers"][operator] = serde_json::json!({
+    document["identity-providers"][operator] = json::json!({
         "module": operator, "token": { "file": operator_token },
     });
     let dir = directory.clone();
     let config_path = dir.join("config.json");
     let providers_path = dir.join("providers.json");
-    std::fs::write(&config_path, serde_json::to_vec_pretty(&document).unwrap()).unwrap();
+    std::fs::write(&config_path, json::to_vec_pretty(&document).unwrap()).unwrap();
     std::fs::write(&providers_path, b"{}").unwrap();
     let deploy = busbar_kernel::config::deploy_from_deserializer(
-        document,
+        &document,
         &crate::root::boot::axis_test_grammar(),
     )
     .expect("the actual admin deployment parses");
@@ -189,7 +189,7 @@ async fn test_admin_v1_config_settings_reset_refuses_when_overlay_is_too_new() {
     std::fs::write(&signing_key, hex::encode([9u8; 32])).expect("write the test signing input");
     std::fs::write(&operator_token, "admintok").expect("write the test operator input");
     let operator = busbar_kernel::config::operator_provider();
-    let mut document = serde_json::json!({
+    let mut document = json::json!({
         "providers": {},
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
@@ -200,16 +200,16 @@ async fn test_admin_v1_config_settings_reset_refuses_when_overlay_is_too_new() {
     document["plugins"] = crate::root::test_plugins::config_document(
         &crate::root::test_plugins::trusted_config(&directory),
     );
-    document["identity-providers"][operator] = serde_json::json!({
+    document["identity-providers"][operator] = json::json!({
         "module": operator, "token": { "file": operator_token },
     });
     let dir = directory.clone();
     let config_path = dir.join("config.json");
     let providers_path = dir.join("providers.json");
-    std::fs::write(&config_path, serde_json::to_vec_pretty(&document).unwrap()).unwrap();
+    std::fs::write(&config_path, json::to_vec_pretty(&document).unwrap()).unwrap();
     std::fs::write(&providers_path, b"{}").unwrap();
     let deploy = busbar_kernel::config::deploy_from_deserializer(
-        document,
+        &document,
         &crate::root::boot::axis_test_grammar(),
     )
     .expect("the actual admin deployment parses");

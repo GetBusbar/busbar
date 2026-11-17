@@ -104,6 +104,7 @@ async fn the_audit_naming_is_derived_from_the_plane() {
     use busbar_kernel::audit::auditlog::AUDIT_LOG as AUDIT;
 
     use crate::root::test_plugins as plugins;
+    use busbar_contract::json::JsonValueTrait as _;
     use std::sync::Arc;
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();

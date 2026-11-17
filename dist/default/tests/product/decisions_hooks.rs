@@ -3,6 +3,7 @@
 
 //! Decisions hook cells through the shipped root, signed Store and dropped webrequest products.
 
+use busbar_contract::json::JsonValueTrait as _;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

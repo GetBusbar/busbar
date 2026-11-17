@@ -3,6 +3,7 @@
 use crate::root::test_plugins as plugins;
 use axum::http::StatusCode;
 use busbar_contract::json;
+use busbar_contract::json::JsonValueTrait as _;
 use busbar_contract::persistence::*;
 use busbar_contract::records::*;
 use busbar_kernel::governance::at_rest::{self, AtRestKeys};
@@ -87,13 +88,12 @@ async fn unchanged_admin_reload_retries_at_rest_maintenance_after_store_recovery
         let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
         std::fs::write(directory.join("store.tar.gz"), archive)
             .expect("stage the actual store archive");
-        let settings: serde_json::Value =
-            crate::root::test_plugins::application_store_settings(&directory);
+        let settings = crate::root::test_plugins::application_store_settings(&directory);
         assert!(
             settings.is_object(),
             "the actual store settings are an object"
         );
-        let document = serde_json::json!({
+        let document = json::json!({
             "providers": {},
             "models": {},
             "auth": { "chain": [], "admin_auth": [] },
@@ -101,7 +101,7 @@ async fn unchanged_admin_reload_retries_at_rest_maintenance_after_store_recovery
             "advanced": {  },
         });
         let deploy = busbar_kernel::config::deploy_from_deserializer(
-            document.clone(),
+            &document,
             &crate::root::boot::axis_test_grammar(),
         )
         .expect("the product deployment parses");
@@ -160,7 +160,7 @@ async fn unchanged_admin_reload_retries_at_rest_maintenance_after_store_recovery
         std::fs::write(&signing_path, [4_u8; 32]).unwrap();
         let mut disk = document.clone();
         disk["plugins"] = plugins::config_document(&app.plugins_cfg);
-        disk["auth"]["signing_key"] = serde_json::json!({"file": signing_path});
+        disk["auth"]["signing_key"] = json::json!({"file": signing_path});
         std::fs::write(
             &config_path,
             busbar_contract::yaml::to_string(&disk).unwrap(),

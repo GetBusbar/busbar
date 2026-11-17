@@ -86,7 +86,7 @@ async fn serve(name: &str, require_if_match: bool) -> Served {
     std::fs::write(&signing_key, hex::encode([5u8; 32])).unwrap();
     std::fs::write(&operator_token, "admintok").unwrap();
     let operator = busbar_kernel::config::operator_provider();
-    let mut document = serde_json::json!({
+    let mut document = json::json!({
         "providers": {}, "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key },
                   "require_if_match": require_if_match },
@@ -98,15 +98,15 @@ async fn serve(name: &str, require_if_match: bool) -> Served {
     document["plugins"] = crate::root::test_plugins::config_document(
         &crate::root::test_plugins::trusted_config(&directory),
     );
-    document["identity-providers"][operator] = serde_json::json!({
+    document["identity-providers"][operator] = json::json!({
         "module": operator, "token": { "file": operator_token },
     });
     let config_path = directory.join("config.json");
     let providers_path = directory.join("providers.json");
-    std::fs::write(&config_path, serde_json::to_vec_pretty(&document).unwrap()).unwrap();
+    std::fs::write(&config_path, json::to_vec_pretty(&document).unwrap()).unwrap();
     std::fs::write(&providers_path, b"{}").unwrap();
     let deploy = busbar_kernel::config::deploy_from_deserializer(
-        document,
+        &document,
         &crate::root::boot::axis_test_grammar(),
     )
     .unwrap();

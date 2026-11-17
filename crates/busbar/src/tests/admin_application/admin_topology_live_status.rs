@@ -75,7 +75,7 @@ async fn test_admin_v1_topology_reads_pools_models_providers() {
     std::fs::write(&signing_key, hex::encode([9u8; 32])).expect("write the test signing input");
     std::fs::write(&operator_token, "admintok").expect("write the test operator input");
     let operator = busbar_kernel::config::operator_provider();
-    let mut document = serde_json::json!({
+    let mut document = json::json!({
         "providers": {},
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
@@ -83,7 +83,7 @@ async fn test_admin_v1_topology_reads_pools_models_providers() {
         "advanced": {  },
         "identity-providers": {},
     });
-    document["identity-providers"][operator] = serde_json::json!({
+    document["identity-providers"][operator] = json::json!({
         "module": operator, "token": { "file": operator_token },
     });
     let upstream_key = directory.join("provider-key");
@@ -100,7 +100,7 @@ async fn test_admin_v1_topology_reads_pools_models_providers() {
         }))
         .expect("the actual provider definition parses"),
     );
-    document["providers"]["prov-x"] = serde_json::json!({ "api_key": { "file": upstream_key } });
+    document["providers"]["prov-x"] = json::json!({ "api_key": { "file": upstream_key } });
     definitions.insert(
         "prov-y".to_string(),
         json::from_value::<busbar_kernel::config::ProviderDef>(&json::json!({
@@ -108,12 +108,12 @@ async fn test_admin_v1_topology_reads_pools_models_providers() {
         }))
         .expect("the actual provider definition parses"),
     );
-    document["providers"]["prov-y"] = serde_json::json!({ "api_key": { "file": upstream_key } });
+    document["providers"]["prov-y"] = json::json!({ "api_key": { "file": upstream_key } });
     document["models"] =
-        serde_json::json!({"model-a": {"provider": "prov-x"}, "model-b": {"provider": "prov-y"}});
-    document["pools"] = serde_json::json!({"mypool": {"members": [{"model": "model-a", "weight": 3}, {"model": "model-b", "weight": 1}]}});
+        json::json!({"model-a": {"provider": "prov-x"}, "model-b": {"provider": "prov-y"}});
+    document["pools"] = json::json!({"mypool": {"members": [{"model": "model-a", "weight": 3}, {"model": "model-b", "weight": 1}]}});
     let deploy = busbar_kernel::config::deploy_from_deserializer(
-        document,
+        &document,
         &crate::root::boot::axis_test_grammar(),
     )
     .expect("the actual admin deployment parses");
@@ -208,7 +208,7 @@ async fn test_admin_v1_pool_detail_live_status() {
     std::fs::write(&signing_key, hex::encode([9u8; 32])).expect("write the test signing input");
     std::fs::write(&operator_token, "admintok").expect("write the test operator input");
     let operator = busbar_kernel::config::operator_provider();
-    let mut document = serde_json::json!({
+    let mut document = json::json!({
         "providers": {},
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
@@ -216,7 +216,7 @@ async fn test_admin_v1_pool_detail_live_status() {
         "advanced": {  },
         "identity-providers": {},
     });
-    document["identity-providers"][operator] = serde_json::json!({
+    document["identity-providers"][operator] = json::json!({
         "module": operator, "token": { "file": operator_token },
     });
     let upstream_key = directory.join("provider-key");
@@ -233,11 +233,11 @@ async fn test_admin_v1_pool_detail_live_status() {
         }))
         .expect("the actual provider definition parses"),
     );
-    document["providers"]["p"] = serde_json::json!({ "api_key": { "file": upstream_key } });
-    document["models"] = serde_json::json!({"m1": {"provider": "p"}});
-    document["pools"] = serde_json::json!({"mypool": {"members": [{"model": "m1", "weight": 5}]}});
+    document["providers"]["p"] = json::json!({ "api_key": { "file": upstream_key } });
+    document["models"] = json::json!({"m1": {"provider": "p"}});
+    document["pools"] = json::json!({"mypool": {"members": [{"model": "m1", "weight": 5}]}});
     let deploy = busbar_kernel::config::deploy_from_deserializer(
-        document,
+        &document,
         &crate::root::boot::axis_test_grammar(),
     )
     .expect("the actual admin deployment parses");
@@ -339,7 +339,7 @@ async fn test_admin_v1_pool_detail_reports_the_per_pool_breaker_cell() {
     std::fs::write(&signing_key, hex::encode([9u8; 32])).expect("write the test signing input");
     std::fs::write(&operator_token, "admintok").expect("write the test operator input");
     let operator = busbar_kernel::config::operator_provider();
-    let mut document = serde_json::json!({
+    let mut document = json::json!({
         "providers": {},
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
@@ -347,7 +347,7 @@ async fn test_admin_v1_pool_detail_reports_the_per_pool_breaker_cell() {
         "advanced": {  },
         "identity-providers": {},
     });
-    document["identity-providers"][operator] = serde_json::json!({
+    document["identity-providers"][operator] = json::json!({
         "module": operator, "token": { "file": operator_token },
     });
     let upstream_key = directory.join("provider-key");
@@ -364,11 +364,11 @@ async fn test_admin_v1_pool_detail_reports_the_per_pool_breaker_cell() {
         }))
         .expect("the actual provider definition parses"),
     );
-    document["providers"]["p"] = serde_json::json!({ "api_key": { "file": upstream_key } });
-    document["models"] = serde_json::json!({"m1": {"provider": "p"}});
-    document["pools"] = serde_json::json!({"fast": {"members": [{"model": "m1", "weight": 1}]}, "cheap": {"members": [{"model": "m1", "weight": 1}]}});
+    document["providers"]["p"] = json::json!({ "api_key": { "file": upstream_key } });
+    document["models"] = json::json!({"m1": {"provider": "p"}});
+    document["pools"] = json::json!({"fast": {"members": [{"model": "m1", "weight": 1}]}, "cheap": {"members": [{"model": "m1", "weight": 1}]}});
     let deploy = busbar_kernel::config::deploy_from_deserializer(
-        document,
+        &document,
         &crate::root::boot::axis_test_grammar(),
     )
     .expect("the actual admin deployment parses");

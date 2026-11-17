@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+use busbar_contract::json::JsonValueTrait as _;
 use busbar_contract::{json, persistence::*, Secret};
 use busbar_core_admin::v1::contract::AdminError;
 use busbar_kernel::config::transaction::config_transaction;
@@ -89,13 +90,12 @@ async fn apply_refuses_unrecoverable_store_overlay_before_replacing_security_sta
         let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
         std::fs::write(directory.join("store.tar.gz"), archive)
             .expect("stage the actual store archive");
-        let settings: serde_json::Value =
-            crate::root::test_plugins::application_store_settings(&directory);
+        let settings = crate::root::test_plugins::application_store_settings(&directory);
         assert!(
             settings.is_object(),
             "the actual store settings are an object"
         );
-        let mut document = serde_json::json!({
+        let mut document = json::json!({
             "providers": {},
             "models": {},
             "groups": {"security_team": {}},
@@ -105,7 +105,7 @@ async fn apply_refuses_unrecoverable_store_overlay_before_replacing_security_sta
         });
         document["plugins"] = plugins::config_document(&plugins::trusted_config(&directory));
         let deploy = busbar_kernel::config::deploy_from_deserializer(
-            document.clone(),
+            &document,
             &crate::root::boot::axis_test_grammar(),
         )
         .expect("the product deployment parses");
@@ -196,8 +196,7 @@ async fn apply_refuses_unrecoverable_store_overlay_before_replacing_security_sta
                 let raw = calls.get(schema, b"head").await.unwrap().unwrap();
                 let mut head = json::parse_value(raw.expose(&busbar_kernel::seal::lend())).unwrap();
                 let generation: [u8; 16] = json::from_value(&head["generation"]).unwrap();
-                let bytes =
-                    serde_json::to_vec(&doc.authoring(&busbar_kernel::seal::acquire())).unwrap();
+                let bytes = json::to_vec(&doc.authoring(&busbar_kernel::seal::acquire())).unwrap();
                 assert!(bytes.len() <= busbar_contract::MAX_RECORD_BYTES);
                 let mut chunk = b"chunk:".to_vec();
                 chunk.extend_from_slice(&generation);
@@ -222,7 +221,7 @@ async fn apply_refuses_unrecoverable_store_overlay_before_replacing_security_sta
         }
         let response = client
             .post(format!("http://{addr}/api/v1/admin/config/apply"))
-            .json(&serde_json::json!({"config": document}))
+            .json(&json::json!({"config": document}))
             .send()
             .await
             .unwrap();
@@ -255,13 +254,12 @@ async fn reload_refuses_a_store_read_failure_and_preserves_the_running_generatio
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
     std::fs::write(directory.join("store.tar.gz"), archive)
         .expect("stage the actual store archive");
-    let settings: serde_json::Value =
-        crate::root::test_plugins::application_store_settings(&directory);
+    let settings = crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual store settings are an object"
     );
-    let mut document = serde_json::json!({
+    let mut document = json::json!({
         "providers": {},
         "models": {},
         "groups": {"persisted_team": {}},
@@ -271,7 +269,7 @@ async fn reload_refuses_a_store_read_failure_and_preserves_the_running_generatio
     });
     document["plugins"] = plugins::config_document(&plugins::trusted_config(&directory));
     let deploy = busbar_kernel::config::deploy_from_deserializer(
-        document.clone(),
+        &document,
         &crate::root::boot::axis_test_grammar(),
     )
     .expect("the product deployment parses");
@@ -428,13 +426,12 @@ async fn group_creation_refuses_store_failure_and_unknown_commit() {
         let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
         std::fs::write(directory.join("store.tar.gz"), archive)
             .expect("stage the actual store archive");
-        let settings: serde_json::Value =
-            crate::root::test_plugins::application_store_settings(&directory);
+        let settings = crate::root::test_plugins::application_store_settings(&directory);
         assert!(
             settings.is_object(),
             "the actual store settings are an object"
         );
-        let mut document = serde_json::json!({
+        let mut document = json::json!({
             "providers": {},
             "models": {},
             "auth": { "chain": [], "admin_auth": [] },
@@ -443,7 +440,7 @@ async fn group_creation_refuses_store_failure_and_unknown_commit() {
         });
         document["plugins"] = plugins::config_document(&plugins::trusted_config(&directory));
         let deploy = busbar_kernel::config::deploy_from_deserializer(
-            document.clone(),
+            &document,
             &crate::root::boot::axis_test_grammar(),
         )
         .expect("the product deployment parses");
@@ -548,13 +545,12 @@ async fn settings_preserves_a_large_store_overlay_across_reload() {
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
     std::fs::write(directory.join("store.tar.gz"), archive)
         .expect("stage the actual store archive");
-    let settings: serde_json::Value =
-        crate::root::test_plugins::application_store_settings(&directory);
+    let settings = crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual store settings are an object"
     );
-    let mut document = serde_json::json!({
+    let mut document = json::json!({
         "providers": {},
         "models": {},
         "auth": { "chain": [], "admin_auth": [] },
@@ -563,7 +559,7 @@ async fn settings_preserves_a_large_store_overlay_across_reload() {
     });
     document["plugins"] = plugins::config_document(&plugins::trusted_config(&directory));
     let deploy = busbar_kernel::config::deploy_from_deserializer(
-        document.clone(),
+        &document,
         &crate::root::boot::axis_test_grammar(),
     )
     .expect("the product deployment parses");
@@ -702,13 +698,12 @@ async fn unknown_settings_receipt_requires_successful_reload_before_new_mutation
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
     std::fs::write(directory.join("store.tar.gz"), archive)
         .expect("stage the actual store archive");
-    let settings: serde_json::Value =
-        crate::root::test_plugins::application_store_settings(&directory);
+    let settings = crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual store settings are an object"
     );
-    let mut document = serde_json::json!({
+    let mut document = json::json!({
         "providers": {},
         "models": {},
         "auth": { "chain": [], "admin_auth": [] },
@@ -717,7 +712,7 @@ async fn unknown_settings_receipt_requires_successful_reload_before_new_mutation
     });
     document["plugins"] = plugins::config_document(&plugins::trusted_config(&directory));
     let deploy = busbar_kernel::config::deploy_from_deserializer(
-        document.clone(),
+        &document,
         &crate::root::boot::axis_test_grammar(),
     )
     .expect("the product deployment parses");
@@ -824,7 +819,7 @@ async fn unknown_settings_receipt_requires_successful_reload_before_new_mutation
     assert_eq!(candidates[0].fingerprint(), candidates[1].fingerprint());
 
     let mut invalid = document.clone();
-    invalid["groups"] = serde_json::json!({"broken": {"parent": "missing"}});
+    invalid["groups"] = json::json!({"broken": {"parent": "missing"}});
     std::fs::write(
         &config_path,
         busbar_contract::yaml::to_string(&invalid).unwrap(),
@@ -936,13 +931,12 @@ async fn an_unknown_store_overlay_commit_never_swaps_or_claims_success() {
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
     std::fs::write(directory.join("store.tar.gz"), archive)
         .expect("stage the actual store archive");
-    let settings: serde_json::Value =
-        crate::root::test_plugins::application_store_settings(&directory);
+    let settings = crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual store settings are an object"
     );
-    let mut document = serde_json::json!({
+    let mut document = json::json!({
         "providers": {},
         "models": {},
         "auth": { "chain": [], "admin_auth": [] },
@@ -951,7 +945,7 @@ async fn an_unknown_store_overlay_commit_never_swaps_or_claims_success() {
     });
     document["plugins"] = plugins::config_document(&plugins::trusted_config(&directory));
     let deploy = busbar_kernel::config::deploy_from_deserializer(
-        document.clone(),
+        &document,
         &crate::root::boot::axis_test_grammar(),
     )
     .expect("the product deployment parses");
@@ -1075,13 +1069,12 @@ async fn a_cancelled_store_overlay_persist_finishes_before_releasing_the_domain(
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
     std::fs::write(directory.join("store.tar.gz"), archive)
         .expect("stage the actual store archive");
-    let settings: serde_json::Value =
-        crate::root::test_plugins::application_store_settings(&directory);
+    let settings = crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual store settings are an object"
     );
-    let mut document = serde_json::json!({
+    let mut document = json::json!({
         "providers": {},
         "models": {},
         "auth": { "chain": [], "admin_auth": [] },
@@ -1090,7 +1083,7 @@ async fn a_cancelled_store_overlay_persist_finishes_before_releasing_the_domain(
     });
     document["plugins"] = plugins::config_document(&plugins::trusted_config(&directory));
     let deploy = busbar_kernel::config::deploy_from_deserializer(
-        document.clone(),
+        &document,
         &crate::root::boot::axis_test_grammar(),
     )
     .expect("the product deployment parses");

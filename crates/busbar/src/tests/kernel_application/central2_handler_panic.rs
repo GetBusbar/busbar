@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 use crate::root::test_plugins as plugins;
 use busbar_contract::json;
+use busbar_contract::json::JsonValueTrait as _;
 use std::sync::Arc;
 #[tokio::test]
 async fn a_panicking_handler_fails_only_its_own_request() {
@@ -32,8 +33,7 @@ async fn a_panicking_handler_fails_only_its_own_request() {
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
     std::fs::write(directory.join("store.tar.gz"), archive)
         .expect("stage the actual store archive");
-    let settings: serde_json::Value =
-        crate::root::test_plugins::application_store_settings(&directory);
+    let settings = crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual store settings are an object"
