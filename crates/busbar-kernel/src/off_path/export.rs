@@ -511,6 +511,7 @@ pub(crate) fn probe(
     name: &str,
     module: &str,
     settings: &busbar_contract::plugin_settings::Settings,
+    read: Option<&(dyn std::any::Any + Send + Sync)>,
 ) -> Option<Probed> {
     let axis = axis()?;
     let (streams, problems, recorder) = match sink_settings(axis, module, settings) {
@@ -522,17 +523,19 @@ pub(crate) fn probe(
         }
     };
     let streams = streams.map(|b| declared_streams(&b));
-    Some((streams, problems, honoured(module, recorder)))
+    Some((streams, problems, honoured(module, recorder, read)))
 }
 
 /// The host recorder backs busbar's own `/metrics`, so only a FIRST-PARTY row (linked, or dropped in
 /// signed by the release key) may request it. A third party's recorder declaration is not honoured:
-/// its instance is an ordinary `metrics` subscriber and never the scrape sink (#65).
+/// its instance is an ordinary `metrics` subscriber and never the scrape sink (#65). Judged under `read`, the
+/// generation the question is about (DES-NATIVE-FIRST-PARTY r3 §3.1).
 fn honoured(
     module: &str,
     recorder: Option<busbar_contract::export_calls::RecorderRequirements>,
+    read: Option<&(dyn std::any::Any + Send + Sync)>,
 ) -> Option<busbar_contract::export_calls::RecorderRequirements> {
-    recorder.filter(|_| axis().is_some_and(|axis| axis.first_party(module)))
+    recorder.filter(|_| axis().is_some_and(|axis| axis.first_party(module, read)))
 }
 
 pub(crate) fn sink_settings(
@@ -701,10 +704,14 @@ impl Admission {
     }
 }
 
+/// Whether `name`'s export differs from the opened sink in a way only a restart applies. `read` is the
+/// **candidate's** prepared read (DES-NATIVE-FIRST-PARTY r3 §3.1); the recorder judged under it is compared with
+/// the grant the open sink holds (§3.2), so narrowed trust or a retired key is reported, never silent.
 pub fn requires_restart(
     exports: &Exports,
     name: &str,
     def: Option<&crate::config::ExportDefCfg>,
+    read: Option<&(dyn std::any::Any + Send + Sync)>,
 ) -> bool {
     let sink = exports.sinks.iter().find(|sink| sink.name == name);
     let boot = sink.map(|sink| (&*sink.module, sink.projection, sink.sink.streams()));
@@ -712,11 +719,8 @@ pub fn requires_restart(
         return true;
     }
     match (sink, def) {
-        (Some(sink), Some(def)) => match probe(name, def.module.trim(), &def.settings) {
-            Some((_, errors, recorder)) => {
-                !errors.is_empty()
-                    || recorder != honoured(&sink.module, sink.sink.recorder_requirements())
-            }
+        (Some(sink), Some(def)) => match probe(name, def.module.trim(), &def.settings, read) {
+            Some((_, errors, recorder)) => !errors.is_empty() || recorder != sink.granted,
             None => true,
         },
         _ => false,
@@ -804,7 +808,7 @@ fn open_with(
         );
         let expected_recorder = if p.scrape { cfg.recorder } else { None };
         let opened_recorder = if projection.wants_stream(ExportStream::Metrics) {
-            honoured(module, sink.recorder_requirements())
+            honoured(module, sink.recorder_requirements(), cfg.read.get())
         } else {
             None
         };
@@ -825,6 +829,8 @@ fn open_with(
             span_record,
             sink,
             scrape: p.scrape,
+            // The grant that just passed the expected-recorder check (§3.2): what a later candidate is compared with.
+            granted: opened_recorder,
             projection,
             admission,
             started: std::sync::atomic::AtomicBool::new(false),
@@ -848,14 +854,19 @@ pub(crate) fn instance_opened<T>(name: &str, opened: Result<T, String>) -> Resul
 pub(crate) struct Refreshes {
     running: bool,
     version: Option<u64>,
-    next: Option<(crate::config::ExportDefs, u64)>,
+    next: Option<(crate::config::ExportDefs, u64, crate::config::ExportRead)>,
 }
 
-pub(crate) fn queue_refresh(exports: &Exports, defs: &crate::config::ExportDefs, generation: u64) {
+pub(crate) fn queue_refresh(
+    exports: &Exports,
+    defs: &crate::config::ExportDefs,
+    generation: u64,
+    read: crate::config::ExportRead,
+) {
     let mut queued = exports.refreshes.lock().unwrap_or_else(|p| p.into_inner());
     if queued.version.is_none_or(|version| generation > version) {
         queued.version = Some(generation);
-        queued.next = Some((defs.clone(), generation));
+        queued.next = Some((defs.clone(), generation, read));
     }
 }
 
@@ -876,14 +887,19 @@ pub(crate) fn refresh_pending(exports: &Exports) {
             }
             next
         };
-        let Some((defs, generation)) = next else {
+        let Some((defs, generation, read)) = next else {
             return;
         };
-        refresh(exports, &defs, generation);
+        refresh(exports, &defs, generation, read.get());
     }
 }
 
-fn refresh(exports: &Exports, defs: &crate::config::ExportDefs, generation: u64) {
+fn refresh(
+    exports: &Exports,
+    defs: &crate::config::ExportDefs,
+    generation: u64,
+    read: Option<&(dyn std::any::Any + Send + Sync)>,
+) {
     let Some(axis) = axis() else {
         return;
     };
@@ -894,7 +910,7 @@ fn refresh(exports: &Exports, defs: &crate::config::ExportDefs, generation: u64)
         .chain(defs.keys().map(String::as_str))
         .collect();
     for name in names {
-        if requires_restart(exports, name, defs.get(name)) {
+        if requires_restart(exports, name, defs.get(name), read) {
             tracing::warn!(
                 instance = %name,
                 "export instance membership, module, projection or recorder requirements differ from boot; restart is required for push delivery"
@@ -908,7 +924,7 @@ fn refresh(exports: &Exports, defs: &crate::config::ExportDefs, generation: u64)
         else {
             continue;
         };
-        if requires_restart(exports, &sink.name, Some(def)) {
+        if requires_restart(exports, &sink.name, Some(def), read) {
             continue;
         }
         let refreshed = sink_settings(axis, &sink.module, &def.settings)

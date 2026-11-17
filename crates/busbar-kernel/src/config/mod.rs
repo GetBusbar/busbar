@@ -1394,6 +1394,31 @@ pub struct ExportCfg {
     /// ([`crate::export::plugin::register_module`]) — a plugin sink, compiled in or dropped in — in
     /// config order. Opened once at boot ([`crate::export::plugin::open_prepared`]).
     pub plugins: Vec<PluginExportSettings>,
+    /// The prepared read this configuration was admitted under: every recorder-honour question at open is
+    /// judged under it (DES-NATIVE-FIRST-PARTY r3 §3.1).
+    pub read: ExportRead,
+}
+
+/// The generation context an export configuration was admitted under (the root's prepared-read context).
+#[derive(Clone, Default)]
+pub struct ExportRead(pub Option<std::sync::Arc<dyn std::any::Any + Send + Sync>>);
+
+impl ExportRead {
+    /// The context, for an axis question.
+    #[must_use]
+    pub fn get(&self) -> Option<&(dyn std::any::Any + Send + Sync)> {
+        self.0.as_deref()
+    }
+}
+
+impl std::fmt::Debug for ExportRead {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(if self.0.is_some() {
+            "ExportRead(..)"
+        } else {
+            "ExportRead(None)"
+        })
+    }
 }
 
 /// One `export:` instance served by a module on the export axis: its name, its definition as the
@@ -1431,7 +1456,20 @@ impl From<&ExportCfg> for busbar_kernel::config::limits::ExportLimits {
 }
 
 pub fn resolve_export(defs: &ExportDefs, errors: &mut Vec<String>) -> ExportCfg {
-    let mut out = ExportCfg::default();
+    resolve_export_in(defs, errors, ExportRead::default())
+}
+
+/// [`resolve_export`] judged under `read`, the prepared read of the generation being built
+/// (DES-NATIVE-FIRST-PARTY r3 §3.1): a recorder declaration is honoured from that generation's images.
+pub fn resolve_export_in(
+    defs: &ExportDefs,
+    errors: &mut Vec<String>,
+    read: ExportRead,
+) -> ExportCfg {
+    let mut out = ExportCfg {
+        read,
+        ..ExportCfg::default()
+    };
 
     let mut seen_once: Vec<&str> = Vec::new();
     let mut refused: Vec<&str> = Vec::new();
@@ -1439,7 +1477,7 @@ pub fn resolve_export(defs: &ExportDefs, errors: &mut Vec<String>) -> ExportCfg 
     for (name, def) in defs {
         let module = def.module.trim();
 
-        let axis = crate::export::plugin::probe(name, module, &def.settings);
+        let axis = crate::export::plugin::probe(name, module, &def.settings, out.read.get());
         let declared = axis.as_ref().and_then(|(streams, _, _)| streams.as_deref());
         let projection = crate::export::projection::resolve_projection(
             name,
@@ -1602,7 +1640,11 @@ pub fn resolve_with_provider_planes(
         }
     }
 
-    let export = resolve_export(&deploy.export, &mut errors);
+    let export = resolve_export_in(
+        &deploy.export,
+        &mut errors,
+        ExportRead(deploy.grammar.read_context()),
+    );
 
     let mut resolved_providers = ResolvedProviders::default();
 

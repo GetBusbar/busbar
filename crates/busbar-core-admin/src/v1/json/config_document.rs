@@ -356,7 +356,12 @@ pub(super) async fn apply(
                 for name in exports {
                     let def = next.export_defs.get(&name);
                     if def != snapshot.export_defs.get(&name)
-                        && busbar_kernel::export::plugin::requires_restart(&next.exports, &name, def)
+                        && busbar_kernel::export::plugin::requires_restart(
+                            &next.exports,
+                            &name,
+                            def,
+                            next.grammar.read_context().as_deref(),
+                        )
                     {
                         own.push(format!("export.{name}"));
                     }
@@ -371,7 +376,12 @@ pub(super) async fn apply(
             let exports: std::collections::BTreeSet<_> = next.export_defs.keys()
                 .chain(snapshot.export_defs.keys()).cloned().collect();
             for name in exports {
-                if busbar_kernel::export::plugin::requires_restart(&next.exports, &name, next.export_defs.get(&name)) {
+                if busbar_kernel::export::plugin::requires_restart(
+                    &next.exports,
+                    &name,
+                    next.export_defs.get(&name),
+                    next.grammar.read_context().as_deref(),
+                ) {
                     next.config_pending_restart.push(format!("export.{name}"));
                 }
             }

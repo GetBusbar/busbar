@@ -286,11 +286,15 @@ pub trait ExportAxis: Send + Sync {
         instances: &[(String, &crate::plugin_settings::ResolvedSettings)],
     ) -> Option<Vec<String>>;
 
-    /// Whether `module` names a row this build LINKS (as opposed to one dropped in).
-    fn linked(&self, module: &str) -> bool;
+    /// Whether `module` names a row this build LINKS (as opposed to one dropped in), judged under `read`: the
+    /// prepared-read context of the generation the question is about (DES-NATIVE-FIRST-PARTY r3 §3.1). `None`
+    /// when the caller judges no generation's images.
+    fn linked(&self, module: &str, read: Option<&(dyn core::any::Any + Send + Sync)>) -> bool;
 
-    /// Whether `module` names a FIRST-PARTY row: linked, or dropped in signed by the release key.
-    fn first_party(&self, module: &str) -> bool;
+    /// Whether `module` names a FIRST-PARTY row: linked, or dropped in signed by the release key, judged under
+    /// `read` (as [`Self::linked`]). The answer for a word that generation's images resolve comes from those
+    /// images' signer alone.
+    fn first_party(&self, module: &str, read: Option<&(dyn core::any::Any + Send + Sync)>) -> bool;
 
     /// Whether `module`'s row states the `one_instance` mark
     fn one_instance(&self, module: &str) -> bool {

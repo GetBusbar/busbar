@@ -59,6 +59,7 @@ fn only_a_wholly_withheld_opened_public_surface_retires_its_listener_need() {
     use busbar_contract::abi::mechanism::route::{RouteAuth, RouteMethod};
     let run = |paths: &[&str], public: &[&str], persistent: &[&str], scrape: bool, opened: bool| {
         let cfg = ExportCfg {
+            read: Default::default(),
             plugins: vec![crate::config::PluginExportSettings {
                 name: "tp".into(),
                 def: def("observer"),
@@ -68,6 +69,7 @@ fn only_a_wholly_withheld_opened_public_surface_retires_its_listener_need() {
             ..ExportCfg::default()
         };
         let sink = PluginSink {
+            granted: None,
             name: "tp".into(),
             module: "observer".into(),
             sink: Arc::new(ListenerSentinel {
@@ -157,6 +159,7 @@ fn replacement_export_cannot_lend_its_grant_to_the_old_named_instance() {
     for old_module in ["third-party", "trusted-observer"] {
         let called = Arc::new(std::sync::Mutex::new(Vec::new()));
         let sink = |name: &str, module: &str, scrape, label| PluginSink {
+            granted: None,
             name: name.into(),
             module: module.into(),
             sink: Arc::new(ListenerSentinel {
@@ -180,6 +183,7 @@ fn replacement_export_cannot_lend_its_grant_to_the_old_named_instance() {
             reads: None,
         };
         let cfg = ExportCfg {
+            read: Default::default(),
             plugins: vec![crate::config::PluginExportSettings {
                 name: "reused-name".into(),
                 def: def("trusted-observer"),
@@ -265,6 +269,7 @@ fn declared_listener_policy_preserves_boot_routes_but_removes_config_routes() {
         ["/observations", "/observations/process"],
     ] {
         let sink = PluginSink {
+            granted: None,
             name: "observer".into(),
             module: "neutral-observer".into(),
             sink: Arc::new(ListenerPolicySink {
@@ -287,6 +292,7 @@ fn declared_listener_policy_preserves_boot_routes_but_removes_config_routes() {
             reads: None,
         };
         let mut cfg = ExportCfg {
+            read: Default::default(),
             plugins: vec![crate::config::PluginExportSettings {
                 name: "observer".into(),
                 def: def("neutral-observer"),
@@ -316,6 +322,7 @@ fn declared_listener_policy_preserves_boot_routes_but_removes_config_routes() {
             crate::plugin_routes::build_route_table(route_decls_from(&cfg, &[])).unwrap();
         assert!(ungranted.paths().is_empty());
         let ungranted_boot = [PluginSink {
+            granted: None,
             scrape: false,
             ..boot.into_iter().next().unwrap()
         }];
@@ -353,6 +360,7 @@ fn a_module_on_the_axis_resolves_and_an_unregistered_one_is_refused_as_before() 
         )
         .expect("admitted probe data lowers to an instance");
         let cfg = crate::config::ExportCfg {
+            read: Default::default(),
             plugins: vec![configured],
             ..Default::default()
         };
@@ -374,6 +382,7 @@ fn a_module_on_the_axis_resolves_and_an_unregistered_one_is_refused_as_before() 
         &mut errors,
     );
     let cfg = crate::config::ExportCfg {
+        read: Default::default(),
         plugins: configured.into_iter().collect(),
         ..Default::default()
     };
@@ -532,6 +541,7 @@ async fn opened(
         .unwrap();
     (
         PluginSink {
+            granted: None,
             name: module.to_string(),
             module: module.into(),
             admission: Admission::of(module, double.admission()),
@@ -676,10 +686,10 @@ impl ExportAxis for DeclaringAxis {
     ) -> Option<Vec<String>> {
         None
     }
-    fn linked(&self, _: &str) -> bool {
+    fn linked(&self, _: &str, _: Option<&(dyn std::any::Any + Send + Sync)>) -> bool {
         true
     }
-    fn first_party(&self, _: &str) -> bool {
+    fn first_party(&self, _: &str, _: Option<&(dyn std::any::Any + Send + Sync)>) -> bool {
         true
     }
     fn secret_refs(&self, module: &str) -> Vec<String> {
@@ -1100,6 +1110,7 @@ async fn export_three_sinks_one_commit_per_event() {
         .unwrap();
     let sinks: Vec<PluginSink> = (0..3)
         .map(|n| PluginSink {
+            granted: None,
             name: format!("w2-sink-{n}"),
             module: format!("w2-sink-{n}").into(),
             sink: double(Delivered::Queued, None),

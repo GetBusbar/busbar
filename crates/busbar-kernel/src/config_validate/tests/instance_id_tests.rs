@@ -44,10 +44,10 @@ impl busbar_contract::export_calls::ExportAxis for AcceptsEveryExporter {
     ) -> Option<Vec<String>> {
         Some(Vec::new())
     }
-    fn linked(&self, _: &str) -> bool {
+    fn linked(&self, _: &str, _: Option<&(dyn std::any::Any + Send + Sync)>) -> bool {
         true
     }
-    fn first_party(&self, _: &str) -> bool {
+    fn first_party(&self, _: &str, _: Option<&(dyn std::any::Any + Send + Sync)>) -> bool {
         true
     }
 }
