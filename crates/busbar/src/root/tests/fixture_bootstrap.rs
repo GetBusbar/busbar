@@ -29,6 +29,23 @@ pub(crate) fn grammar(plugins: &PluginsCfg) -> Result<busbar_kernel::config::Gra
     super::super::boot::images::fixture(&process()?.resources, plugins).map(|images| images.grammar)
 }
 
+/// Describe an actual admitted image before typing its deployment. Tests use these same
+/// signed-image facts for rate vocabulary and settings; no legacy declaration substitutes.
+pub(crate) fn described(
+    plugins: &PluginsCfg,
+    module: &str,
+) -> Result<busbar_plugin_loader::instance::Described, String> {
+    let admitted = super::super::boot::images::fixture(&process()?.resources, plugins)?;
+    let identity = admitted
+        .images
+        .identity_of(module)
+        .ok_or_else(|| format!("fixture image `{module}` was not admitted"))?;
+    admitted
+        .images
+        .described(&identity)
+        .ok_or_else(|| format!("fixture image `{identity}` has no admitted describe"))
+}
+
 struct Owners {
     built: Built,
     prefix: Arc<BootSecrets>,
