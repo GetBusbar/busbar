@@ -123,7 +123,18 @@ pub fn run_chain<'a>(
     cx: CallCx,
     req: &AuthIn<'_>,
 ) -> impl std::future::Future<Output = ChainEnd> + Send + 'a {
-    let req = Request::new(req);
+    run_owned_chain(services, cache, chain, cx, Request::new(req))
+}
+
+/// The same walk for a consumer retaining its own ports and callers. Snapshot before constructing
+/// the future so borrowed ABI request views never cross a suspension point.
+pub fn run_owned_chain<'a>(
+    services: &'a AuthServices<'a>,
+    cache: &'a dyn VerdictCache,
+    chain: &'a [ChainInstance<'a>],
+    cx: CallCx,
+    req: Request,
+) -> impl std::future::Future<Output = ChainEnd> + Send + 'a {
     async move {
         for instance in chain {
             match verify_owned(services, cache, *instance, cx, &req).await {
@@ -333,7 +344,7 @@ async fn finish(
 
 /// A request snapshot owns every carrier before any await. ABI Pair views are rebuilt only for
 /// synchronous port entry and policy checks, and never cross a suspension point.
-struct Request {
+pub struct Request {
     method: String,
     path: String,
     query: String,
@@ -345,7 +356,7 @@ struct Request {
     now_s: u64,
 }
 impl Request {
-    fn new(req: &AuthIn<'_>) -> Self {
+    pub fn new(req: &AuthIn<'_>) -> Self {
         let copy = |bytes: &[u8]| {
             let mut out = SecureVec::new();
             out.extend_from_slice(bytes);
