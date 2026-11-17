@@ -5,6 +5,57 @@ use super::*;
 use axum::http::HeaderMap;
 
 #[test]
+fn original_precondition_clone_retains_first_backing_and_all_duplicate_counts() {
+    let mut headers = HeaderMap::new();
+    let value = HeaderValue::from_str(&format!("\"{}\"", "original".repeat(32))).unwrap();
+    let pointer = value.as_bytes().as_ptr();
+    headers.append(header::IF_MATCH, value);
+    for count in 1..=12 {
+        let retained = OriginalConfigPrecondition::capture(&headers).clone();
+        assert_eq!(retained.count, count);
+        assert_eq!(
+            retained.first.as_ref().unwrap().as_bytes().as_ptr(),
+            pointer
+        );
+        if count == 1 {
+            assert!(retained.require_strong().is_ok());
+        } else {
+            assert_eq!(
+                retained.require_strong().unwrap_err().status(),
+                StatusCode::BAD_REQUEST
+            );
+        }
+        headers.append(header::IF_MATCH, HeaderValue::from_static("\"another\""));
+    }
+}
+
+#[test]
+fn conditional_read_keeps_first_field_and_existing_weak_comparison() {
+    for (field, expected) in [
+        ("*", true),
+        (" \"tag\" ", true),
+        ("W/\"tag\"", true),
+        ("\"other\", W/\"tag\"", true),
+        ("\"other\"", false),
+        ("", false),
+    ] {
+        let mut headers = HeaderMap::new();
+        headers.append(header::IF_NONE_MATCH, HeaderValue::from_str(field).unwrap());
+        headers.append(header::IF_NONE_MATCH, HeaderValue::from_static("*"));
+        let first = headers.get(header::IF_NONE_MATCH).cloned();
+        drop(headers);
+        assert_eq!(
+            if_none_match(first.as_ref(), "W/\"tag\""),
+            expected,
+            "{field}"
+        );
+    }
+    assert!(!if_none_match(None, "\"tag\""));
+    let invalid = HeaderValue::from_bytes(b"\xff").unwrap();
+    assert!(!if_none_match(Some(&invalid), "\"tag\""));
+}
+
+#[test]
 fn original_precondition_keeps_multiplicity_and_bytes_before_translation() {
     let mut headers = HeaderMap::new();
     assert_eq!(
