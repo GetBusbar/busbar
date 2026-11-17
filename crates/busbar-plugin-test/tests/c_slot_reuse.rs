@@ -16,23 +16,21 @@ use crate::bridge_fixture::{self as fx, Status};
 #[test]
 fn a_freed_slot_is_reused_without_crossing_tokens() {
     let slots: Slots<&'static str> = Slots::new();
-    let Some((index, generation)) = slots.insert("first") else {
+    let Some(first) = slots.insert("first") else {
         panic!("insert");
     };
-    assert_eq!(slots.remove(index, generation), Some("first"));
-    let Some((again, newer)) = slots.insert("second") else {
+    let (index, generation) = first.identity().expect("live");
+    assert_eq!(first.take(), Some("first"));
+    let Some(mut second) = slots.insert("second") else {
         panic!("insert");
     };
+    let (again, newer) = second.identity().expect("live");
     assert_eq!(again, index, "the freed slot is reused");
     assert_ne!(newer, generation);
     assert_ne!(pack(false, again, newer), pack(false, index, generation));
-    assert_eq!(
-        slots.remove(index, generation),
-        None,
-        "the old token misses"
-    );
+    assert_eq!(second.take_if(generation), None, "the old token misses");
     assert_eq!(slots.count_live(), 1);
-    assert_eq!(slots.remove(again, newer), Some("second"));
+    assert_eq!(second.take(), Some("second"));
 
     let instance = fx::instance();
     let mut first = fx::parked(&instance, b"secret");

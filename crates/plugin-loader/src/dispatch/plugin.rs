@@ -1507,10 +1507,9 @@ impl Instance {
     }
 
     fn instance_free(&self, s: u32) -> bool {
-        (self.kind == KindCode::Secret && s == busbar_contract::abi::secret::slot::CHECK)
-            || (self.kind == KindCode::Transport
-                && s == busbar_contract::abi::transport::slot::LOCATE
-                && !self.is_open())
+        self.kind == KindCode::Transport
+            && s == busbar_contract::abi::transport::slot::LOCATE
+            && !self.is_open()
     }
 
     pub(crate) fn refuse(&self, s: u32, in_size: usize, out_size: usize) -> Option<Outcome> {

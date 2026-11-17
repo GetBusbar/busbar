@@ -30,6 +30,11 @@ path = "src/test_source_gen_tests.rs"
 name = "shutdown_waits"
 path = "tests/shutdown_waits.rs"
 
+# SEALING-FIX r20 §9 test 31: the release graph never enables busbar-kernel-audit/test-support.
+[[test]]
+name = "release_build_has_no_test_support"
+path = "tests/release_build_has_no_test_support.rs"
+
 [dependencies]
 busbar-ports = { path = "../busbar-ports" }
 async-trait = { workspace = true }
@@ -76,7 +81,8 @@ tikv-jemallocator = { workspace = true }
 close_fds = { workspace = true }
 
 [features]
-test-harness = []
+# The harness build (never shipped): HARNESS-SIGN's first-party key hook and `--store-kit`.
+test-harness = ["busbar-kernel/store-kit"]
 
 [build-dependencies]
 serde_json = { workspace = true }

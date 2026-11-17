@@ -26,7 +26,7 @@ impl Source {
     fn load(&self, section: &str) -> LoadedConfig {
         std::fs::write(
             &self.0,
-            format!("auth:\n  admin_auth: []\n{section}:\n  same:\n    module: fixture-module\n"),
+            format!("{section}:\n  same:\n    module: fixture-module\n"),
         )
         .unwrap();
         load_config_from_disk(&self.0, None, true, EnvSubst::Strict).unwrap()
@@ -103,7 +103,7 @@ fn composed_base_names_survive_overlay_replay_without_capturing_api_resources() 
     let source = Source::new("composed");
     std::fs::write(
         &source.0,
-        "auth:\n  admin_auth: []\nhooks:\n  file:\n    module: fixture-hook\n    kind: gate\ngroups:\n  file: {}\n",
+        "hooks:\n  file:\n    module: fixture-hook\n    kind: gate\ngroups:\n  file: {}\n",
     )
     .unwrap();
     let patch = DocumentPatch::from_value(serde_json::json!({

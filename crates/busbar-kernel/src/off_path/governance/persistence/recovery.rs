@@ -14,7 +14,8 @@ use crate::{
         facade::CoreStore,
         journal::{
             runtime::{Carried, LiveChange, RuntimeError, RuntimeJournal, StagedRun},
-            ForeignJournal, OwnHistory, Replay, RowChange, Selection, VerifiedHead, WriteResult,
+            Error as JournalError, ForeignJournal, OwnHistory, Pin, Replay, RowChange, Selection,
+            VerifiedHead, WriteResult,
         },
         partition,
     },
@@ -480,13 +481,12 @@ enum NodeJournal<'a> {
 }
 impl<'a> NodeJournal<'a> {
     /// The historical verifier; this node's own continues from `base` when given.
-    async fn replay(&self, base: Option<&VerifiedHead>) -> Result<Replay<'_, 'a>, RecoveryError> {
+    async fn replay(&self, base: Option<&VerifiedHead>) -> Result<Replay<'_, 'a>, JournalError> {
         match (self, base) {
             (Self::Own(own), Some(base)) => own.replay_after(base).await,
             (Self::Own(own), None) => own.replay().await,
             (Self::Foreign(foreign), _) => foreign.proof().await,
         }
-        .map_err(unavailable)
     }
     async fn record(&self, proof: &VerifiedHead, sequence: u64) -> Result<Record, RecoveryError> {
         match self {
@@ -631,19 +631,46 @@ impl<'a> History<'a> {
         }
         let journal = self.journal_of(node)?;
         let local = matches!(journal, NodeJournal::Own(_));
-        let mut cursor = journal
-            .replay(self.base.as_deref().filter(|_| local))
-            .await?;
         // Keep staging private until the entire prefix and its seal are valid.
         // Taking the old cache also bounds the total retained allocation while
         // proving another node; a failed proof simply discards cached frames.
         let mut staged = std::mem::take(&mut self.records);
+        let mut base = self.base.clone().filter(|_| local);
+        let mut restarts = 0;
+        let proof = loop {
+            match self
+                .walk_from(&journal, base.as_deref(), local, &mut staged)
+                .await
+            {
+                Err(JournalError::Rebased)
+                    if restarts < crate::persistence::journal::WALK_RESTART_LIMIT =>
+                {
+                    restarts += 1;
+                    crate::persistence::journal::count_walk_restart();
+                    staged = HistoryRecords::default();
+                    base = None;
+                }
+                Err(JournalError::Rebased) => return Err(unavailable(JournalError::Busy)),
+                done => break Arc::new(done.map_err(unavailable)?),
+            }
+        };
+        self.records = staged;
+        self.proofs.insert(node, proof.clone());
+        Ok(proof)
+    }
+
+    async fn walk_from(
+        &self,
+        journal: &NodeJournal<'_>,
+        base: Option<&VerifiedHead>,
+        local: bool,
+        staged: &mut HistoryRecords,
+    ) -> Result<VerifiedHead, JournalError> {
+        let mut cursor = journal.replay(base).await?;
         let limits = self.store.limits();
         let mut ordinal = cursor.position();
-        while let Some(record) = cursor.next().await.map_err(unavailable)? {
-            ordinal = ordinal
-                .checked_add(1)
-                .ok_or_else(|| invalid("journal ordinal overflow"))?;
+        while let Some(record) = cursor.next().await? {
+            ordinal = ordinal.checked_add(1).ok_or(JournalError::Overflow)?;
             // The live journal also carries audit, usage and checkpoint frames;
             // only its recovery frames are ever looked up, so only they are
             // kept, and the bounded cache holds the newest of them.
@@ -651,10 +678,7 @@ impl<'a> History<'a> {
                 staged.insert(ordinal, record, limits.scan_items, limits.scan_bytes);
             }
         }
-        let proof = Arc::new(cursor.finish().map_err(unavailable)?);
-        self.records = staged;
-        self.proofs.insert(node, proof.clone());
-        Ok(proof)
+        cursor.finish()
     }
     async fn candidate(&mut self, at: &Head) -> Result<Candidate, RecoveryError> {
         // (SHUTDOWN-HANG F1) An own original this process appended (or the boot replay verified)
@@ -793,7 +817,7 @@ impl<'a> History<'a> {
 
 /// How a verification treats this node's own selected journal head.
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Pin {
+enum HeadPin {
     /// Prove and confirm this node's ownership. Every write path and owned
     /// check uses it. A pinned History requires the exact head; a History
     /// beside the live owner requires a prefix of its admitted head.
@@ -865,6 +889,8 @@ struct DriverState {
     carried: BTreeMap<u64, ([u8; 32], usize)>,
     /// The carried sequences of each operation, dropped by `release(op)`.
     carried_by_op: BTreeMap<[u8; 16], Vec<u64>>,
+    /// A row stays pinned until its last unsettled operation releases its carried evidence.
+    pins: BTreeMap<u64, Pin>,
 }
 impl DriverState {
     fn carry(&mut self, operation: [u8; 16], carried: Carried) {
@@ -983,10 +1009,12 @@ impl StoreRecovery {
     }
     fn carry(&self, operation: [u8; 16], carried: Option<Carried>) {
         if let Some(carried) = carried {
-            self.state
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .carry(operation, carried);
+            let pin = self.journal.pin(carried.seq);
+            let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+            if let Some(pin) = pin {
+                state.pins.entry(carried.seq).or_insert(pin);
+            }
+            state.carry(operation, carried);
         }
     }
     /// Drop every sequence carried for `operation` (F1 `RecoverySink::release`).
@@ -998,6 +1026,7 @@ impl StoreRecovery {
                     *owners -= 1;
                     if *owners == 0 {
                         state.carried.remove(&seq);
+                        state.pins.remove(&seq);
                     }
                 }
             }
@@ -1126,25 +1155,25 @@ impl StoreRecovery {
     /// complete ancestry and ownership, beside its own live journal.
     async fn verify_written_checkpoint(&self, event: &RecoveryEvent) -> Result<(), RecoveryError> {
         let mut history = self.continuing();
-        self.verify_checkpoint_with_history(event, true, Pin::Strict, &mut history)
+        self.verify_checkpoint_with_history(event, true, HeadPin::Strict, &mut history)
             .await?;
         self.keep_verified(&history);
         Ok(())
     }
     async fn verify_origin_at(&self, event: &RecoveryEvent) -> Result<(), RecoveryError> {
         let mut history = self.history();
-        self.verify_origin_with_history(event, Pin::Strict, &mut history)
+        self.verify_origin_with_history(event, HeadPin::Strict, &mut history)
             .await
     }
     async fn verify_origin_with_history(
         &self,
         event: &RecoveryEvent,
-        pin: Pin,
+        pin: HeadPin,
         history: &mut History<'_>,
     ) -> Result<(), RecoveryError> {
         let local = match pin {
-            Pin::Strict => Some(self.owned_with_history(history).await?),
-            Pin::Live => None,
+            HeadPin::Strict => Some(self.owned_with_history(history).await?),
+            HeadPin::Live => None,
         };
         let current = head(&self.store, &event.operation_id).await?;
         let initial = match &current {
@@ -1207,14 +1236,14 @@ impl StoreRecovery {
         owned: bool,
     ) -> Result<(), RecoveryError> {
         let mut history = self.history();
-        self.verify_checkpoint_with_history(event, owned, Pin::Strict, &mut history)
+        self.verify_checkpoint_with_history(event, owned, HeadPin::Strict, &mut history)
             .await
     }
     async fn verify_checkpoint_with_history(
         &self,
         event: &RecoveryEvent,
         owned: bool,
-        pin: Pin,
+        pin: HeadPin,
         history: &mut History<'_>,
     ) -> Result<(), RecoveryError> {
         let (tip, raw) = head(&self.store, &event.operation_id)
@@ -1242,7 +1271,7 @@ impl StoreRecovery {
         }
         self.verify_origin_with_history(event, pin, history).await?;
         history.finish().await?;
-        if pin == Pin::Strict {
+        if pin == HeadPin::Strict {
             // Beside the live owner, `owned_with_history` already proved this
             // proof extends to the owner's live head, original by original,
             // and checked that exact live head's H and O rows and admission in
@@ -1294,6 +1323,9 @@ impl StoreRecovery {
         if selection.selected.state != RecoveryState::Settled {
             let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
             for carried in history.own_seen.drain(..) {
+                if let Some(pin) = self.journal.pin(carried.seq) {
+                    state.pins.entry(carried.seq).or_insert(pin);
+                }
                 state.carry(*operation, carried);
             }
         }
@@ -1622,13 +1654,13 @@ impl StoreRecovery {
             None
         };
         if selected.as_ref().is_some_and(|s| s.selected == *event) {
-            self.verify_checkpoint_with_history(event, true, Pin::Strict, &mut history)
+            self.verify_checkpoint_with_history(event, true, HeadPin::Strict, &mut history)
                 .await?;
             self.keep_verified(&history);
             return Ok(None);
         }
         event.follows(selected.as_ref().map(|s| &s.selected))?;
-        self.verify_origin_with_history(event, Pin::Strict, &mut history)
+        self.verify_origin_with_history(event, HeadPin::Strict, &mut history)
             .await?;
         self.owned_with_history(&mut history).await?;
         self.keep_verified(&history);
@@ -2602,7 +2634,7 @@ impl RecoverySink for StoreRecovery {
                 self.verify_checkpoint_with_history(
                     &selection.selected,
                     false,
-                    Pin::Live,
+                    HeadPin::Live,
                     &mut history,
                 )
                 .await?;

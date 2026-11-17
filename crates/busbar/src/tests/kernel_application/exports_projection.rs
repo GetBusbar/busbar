@@ -10,7 +10,6 @@ listen: "0.0.0.0:8080"
 auth:
   chain: [keys]
   signing_key: { env: BUSBAR_SIGNING_KEY }
-  admin_auth: []
   role_bindings:
     keys:
       platform:

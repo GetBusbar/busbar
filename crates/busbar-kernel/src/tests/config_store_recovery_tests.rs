@@ -193,7 +193,7 @@ fn bootstrap_dependency_closure_uses_declared_reference_paths_and_canonical_iden
     let deploy = crate::config::deploy_from_deserializer(
         &json::json!({
             "providers": {}, "models": {},
-            "auth": {"chain": [], "admin_auth": []},
+            "auth": {"chain": []},
             "store": {"module": "store-alias", "settings": {
                 "token": {"module": "secret-alias", "settings": {}},
                 "data": {"literal": {"module": "unrelated", "settings": {}}}
@@ -283,7 +283,7 @@ fn core_secret_modules_names_each_of_cores_own_references_once_and_not_the_store
     let deploy = crate::config::deploy_from_deserializer(
         &json::json!({
             "providers": {}, "models": {},
-            "auth": {"chain": [], "admin_auth": [], "signing_key": {"module": "secret-a", "settings": {}}},
+            "auth": {"chain": [], "signing_key": {"module": "secret-a", "settings": {}}},
             "store": {"module": "store-x", "settings": {
                 "token": {"module": "secret-store", "settings": {}}
             }}

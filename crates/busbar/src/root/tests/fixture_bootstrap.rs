@@ -258,10 +258,7 @@ impl ServingFixture {
         let built = &self.owners.built;
         let prefix = Arc::clone(&self.owners.prefix);
         let core = Arc::new(core_secrets_of(cfg, &prefix).await?);
-        let mut instances = plane_instances(
-            std::slice::from_ref(image),
-            &super::super::door_steps::raw_sections(cfg),
-        )?;
+        let mut instances = plane_instances(std::slice::from_ref(image), &cfg.instance_sections())?;
         let declared = declared_planes(&built.registry, &mut instances)?;
         let specs = specifications(&instances, cfg.public_url.as_deref(), false);
         let records = Arc::new(StoreRecords::new(Arc::clone(&store)));
@@ -670,7 +667,7 @@ async fn admitted_initial_store_build_retains_its_resolver_and_runtime_requires_
     busbar_kernel::preflight::install_operator(crate::root::auth_bindings::operator_binding(None));
     let plugins = crate::root::test_plugins::trusted_config(&directory);
     let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
-        "providers": {}, "models": {}, "auth": {"chain": [], "admin_auth": []},
+        "providers": {}, "models": {}, "auth": {"chain": []},
         "store": {"module": module, "settings": crate::root::test_plugins::application_store_settings(&directory)},
     }), &crate::root::boot::axis_test_grammar()).expect("actual Store deployment parses");
     let cfg = busbar_kernel::config::resolve(&deploy, &Default::default())

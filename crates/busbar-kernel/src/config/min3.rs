@@ -551,12 +551,19 @@ fn parse_insecure_transport(deploy: &DeployCfg) -> Result<InsecureTransportMap, 
     }
 }
 
-/// One `insecure_transport` object as written (`path` = the instance's path in the file): the keys and the
-/// `accept` words are judged here so each refusal names its key, then [`InsecureTransportDoc::resolve`] judges
-/// the list and the reason.
+/// One `insecure_transport` object as written (`path` = the instance's path in the file).
 fn insecure_transport_of(path: &str, value: &YamlValue) -> Result<InsecureTransport, String> {
-    let refuse =
-        |key: &str, why: &str| format!("BUSBAR-3163: {path}.insecure_transport{key} {why}");
+    insecure_transport_at(&format!("{path}.insecure_transport"), value)
+}
+
+/// One acceptance object as written at `at`, its full key (`<path>.insecure_transport`, or a root listener's
+/// `listen_insecure_transport`): the keys and the `accept` words are judged here so each refusal names its key,
+/// then [`InsecureTransportDoc::resolve_at`] judges the list and the reason.
+pub(crate) fn insecure_transport_at(
+    at: &str,
+    value: &YamlValue,
+) -> Result<InsecureTransport, String> {
+    let refuse = |key: &str, why: &str| format!("BUSBAR-3163: {at}{key} {why}");
     let Some(pairs) = value.as_mapping() else {
         return Err(refuse(
             "",
@@ -569,7 +576,7 @@ fn insecure_transport_of(path: &str, value: &YamlValue) -> Result<InsecureTransp
             Some(other) => {
                 return Err(refuse(
                     &format!(".{other}"),
-                    "is not a key of insecure_transport: the keys are accept and reason",
+                    "is not a key of an acceptance: the keys are accept and reason",
                 ))
             }
             None => {
@@ -608,7 +615,7 @@ fn insecure_transport_of(path: &str, value: &YamlValue) -> Result<InsecureTransp
     }
     let doc = busbar_contract::yaml::from_value::<InsecureTransportDoc>(value.clone())
         .map_err(|e| refuse("", &format!("does not parse: {e}")))?;
-    doc.resolve(path)
+    doc.resolve_at(at)
 }
 
 /// Parses every auth instance's core-owned provisioning policy. Image capabilities and
@@ -691,6 +698,11 @@ impl InsecureTransportDoc {
     /// `reason` is present, 1..=256 printable characters, no newline and not the `<why ...>` placeholder core
     /// prints in BUSBAR-3160/3161. Every refusal is BUSBAR-3163 naming `<path>.insecure_transport.<key>`.
     pub fn resolve(self, path: &str) -> Result<InsecureTransport, String> {
+        self.resolve_at(&format!("{path}.insecure_transport"))
+    }
+
+    /// [`Self::resolve`] for an acceptance written at `at`, its full key; every refusal names `<at>.<key>`.
+    pub fn resolve_at(self, at: &str) -> Result<InsecureTransport, String> {
         use busbar_plugin_abi::host_side::caller::Accept;
         let words = match self.accept {
             AcceptDoc::One(w) => vec![w],
@@ -698,7 +710,7 @@ impl InsecureTransportDoc {
         };
         if words.is_empty() {
             return Err(format!(
-                "BUSBAR-3163: {path}.insecure_transport.accept is an empty list: name plaintext, unverified_tls or both"
+                "BUSBAR-3163: {at}.accept is an empty list: name plaintext, unverified_tls or both"
             ));
         }
         let mut bits = 0u8;
@@ -709,7 +721,7 @@ impl InsecureTransportDoc {
             };
             if bits & bit != 0 {
                 return Err(format!(
-                    "BUSBAR-3163: {path}.insecure_transport.accept repeats a value: each of plaintext and unverified_tls is named once"
+                    "BUSBAR-3163: {at}.accept repeats a value: each of plaintext and unverified_tls is named once"
                 ));
             }
             bits |= bit;
@@ -727,9 +739,7 @@ impl InsecureTransportDoc {
             None
         };
         if let Some(why) = bad {
-            return Err(format!(
-                "BUSBAR-3163: {path}.insecure_transport.reason {why}"
-            ));
+            return Err(format!("BUSBAR-3163: {at}.reason {why}"));
         }
         Ok(InsecureTransport {
             accept: Accept(bits),

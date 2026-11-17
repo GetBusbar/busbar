@@ -42,8 +42,17 @@ fn deployment(tag: &str, body: &str) -> (PathBuf, PathBuf) {
 /// Run `test` as the child over `config`: the serve boot, or `--validate`. Returns whether it
 /// exited successfully and everything it printed.
 fn start(test: &str, config: &Path, validate: bool) -> (bool, String) {
+    let output = child_command(test, config, validate).output().unwrap();
+    let logs = String::from_utf8_lossy(&output.stdout).into_owned()
+        + &String::from_utf8_lossy(&output.stderr);
+    (output.status.success(), logs)
+}
+
+/// The child process that runs `test`'s start over `config`: the serve boot, or `--validate`.
+fn child_command(test: &str, config: &Path, validate: bool) -> std::process::Command {
     let dir = config.parent().unwrap();
-    let output = std::process::Command::new(std::env::current_exe().unwrap())
+    let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+    command
         .args([
             "--exact",
             &format!("root::boot::start_scan_tests::{test}"),
@@ -54,12 +63,43 @@ fn start(test: &str, config: &Path, validate: bool) -> (bool, String) {
         .env(VALIDATE, if validate { "1" } else { "0" })
         .env("BUSBAR_CONFIG", config)
         .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
-        .env("BUSBAR_DATA_DIR", dir.join("state"))
-        .output()
+        .env("BUSBAR_DATA_DIR", dir.join("state"));
+    command
+}
+
+/// [`start`] for a start that may serve instead of exiting: `None` when the child is still running
+/// at `limit` (it booted and serves; it is killed), else whether it exited successfully and
+/// everything it printed.
+fn start_within(
+    test: &str,
+    config: &Path,
+    validate: bool,
+    limit: std::time::Duration,
+) -> Option<(bool, String)> {
+    let log_path = config
+        .parent()
+        .unwrap()
+        .join(format!("{test}-validate-{validate}.log"));
+    let log = std::fs::File::create(&log_path).unwrap();
+    let mut child = child_command(test, config, validate)
+        .stdout(log.try_clone().unwrap())
+        .stderr(log)
+        .spawn()
         .unwrap();
-    let logs = String::from_utf8_lossy(&output.stdout).into_owned()
-        + &String::from_utf8_lossy(&output.stderr);
-    (output.status.success(), logs)
+    let deadline = std::time::Instant::now() + limit;
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break Some(status);
+        }
+        if std::time::Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            break None;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
+    let logs = std::fs::read_to_string(&log_path).unwrap_or_default();
+    status.map(|status| (status.success(), logs))
 }
 
 /// An unsigned manifest-only archive of `kind`, named `name`: the scan skips it as unsigned.
@@ -199,6 +239,45 @@ fn core_text_names_no_secret_word() {
     }
 }
 
+/// ADMIN-API-1.6-ONE-MODEL r3.1 §8.1.1: `auth.admin_auth: []`, the 1.5.5 open admin posture, is
+/// removed. Boot and `--validate` both refuse it with the design's remedy, in the migrate-on-boot
+/// refusal format (`CONFIG:` first, the upgrade line last); neither serves an open admin API.
+#[test]
+fn admin_auth_empty_refuses_boot_with_remedy() {
+    child();
+    let (config, _) = deployment("start-scan-open-admin", "auth:\n  admin_auth: []\n");
+    let remedy = format!(
+        "CONFIG: auth.admin_auth: [] (the open admin posture) is removed in 1.6.0; the admin API \
+         always needs a credential. Delete the auth.admin_auth line to use the default chain \
+         [<operator>, keys], where <operator> is the name of your identity-providers entry for \
+         the first-party operator credential plugin (module: admin-tokens). Give that entry \
+         `settings: {{sha256: \"<digest>\"}}`, where <digest> is the SHA-256 of your admin token \
+         as 64 lower-case hex characters. To mint a token and its digest: `token=$(openssl rand \
+         -base64 32); printf %s \"$token\" | openssl dgst -sha256 -r | cut -d' ' -f1`. Keep the \
+         token as a secret and send it as `Authorization: Bearer` followed by the token. Or list \
+         the admin providers you use in auth.admin_auth.\n{}",
+        busbar_contract::upgrade::UPGRADE_FIRST
+    );
+    for validate in [true, false] {
+        let Some((ok, logs)) = start_within(
+            "admin_auth_empty_refuses_boot_with_remedy",
+            &config,
+            validate,
+            std::time::Duration::from_secs(120),
+        ) else {
+            panic!("admin_auth: [] must refuse the start, not serve (validate: {validate})");
+        };
+        assert!(
+            !ok,
+            "admin_auth: [] must refuse (validate: {validate}): {logs}"
+        );
+        assert!(
+            logs.contains(&remedy),
+            "the refusal carries the design's remedy word for word (validate: {validate}): {logs}"
+        );
+    }
+}
+
 /// GA5: a historical (1.5.5) `plugins:` block is the startup upgrade's to convert. Process start
 /// defers it to the reader, which reports it itself: the start never refuses it.
 #[test]
@@ -260,18 +339,14 @@ fn plane_replaced_in_place_is_reported_restart_to_apply() {
         start.skipped().len()
     );
     let registered = crate::root::boot::Registered {
-        planes: vec![(
-            MODULE.to_owned(),
-            vec!["fixture-plane".to_owned()],
-            Some(FILE.to_owned()),
-        )],
+        planes: vec![(MODULE.to_owned(), Some(FILE.to_owned()))],
         linked_styles: Vec::new(),
         start: Some(&start),
     };
     let section = |items: Vec<busbar_kernel::config::grammar::Item>| {
         items
             .into_iter()
-            .find(|item| item.kind == ItemKind::Section && item.name == "fixture-plane")
+            .find(|item| item.kind == ItemKind::Section && item.name == MODULE)
             .expect("the registered plane's section is judged")
     };
 
@@ -292,10 +367,7 @@ fn plane_replaced_in_place_is_reported_restart_to_apply() {
     assert_eq!(item.standing, Standing::Replaced, "{item:?}");
     assert_eq!(item.image, same.image, "it counts under the running image");
     let grammar = busbar_kernel::config::Grammar::empty().with_items(vec![item]);
-    assert_eq!(
-        grammar.item_refusal(ItemKind::Section, "fixture-plane"),
-        None
-    );
+    assert_eq!(grammar.item_refusal(ItemKind::Section, MODULE), None);
     assert_eq!(grammar.replaced().count(), 1, "listed restart-to-apply");
 
     std::fs::remove_file(dir.join(FILE)).unwrap();
@@ -311,11 +383,92 @@ fn plane_replaced_in_place_is_reported_restart_to_apply() {
     );
     let refusal = busbar_kernel::config::Grammar::empty()
         .with_items(vec![item])
-        .item_refusal(ItemKind::Section, "fixture-plane")
+        .item_refusal(ItemKind::Section, MODULE)
         .expect("a removed running plane's section is refused when used");
     assert!(
         refusal.contains("which this read's plugins: block does not admit"),
         "{refusal}"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// A plane with a manifest alias parses under the alias, at start and at a reload after its
+/// archive is gone: the running registry's recorded instance name is kept, never the identity.
+#[test]
+fn a_plane_with_a_manifest_alias_parses_under_the_alias_at_start_and_at_reload() {
+    use busbar_kernel::config::grammar::{ItemKind, Standing};
+    use busbar_kernel::config::{deploy_from_yaml_str, Grammar};
+    use std::collections::BTreeMap;
+    const FILE: &str = "aliased-plane.tar.gz";
+    const MODULE: &str = "aliased-plane-module";
+    const ALIAS: &str = "fx";
+    let dir = test_plugins::scratch("grammar-plane-alias");
+    let mut manifest = test_plugins::manifest("plane", MODULE, "busbar");
+    manifest.alias = ALIAS.into();
+    std::fs::write(
+        dir.join(FILE),
+        test_plugins::signed(&test_plugins::key(0x5b), manifest, b"the running image"),
+    )
+    .unwrap();
+    let start = scanned(&dir);
+    assert_eq!(start.loadable().len(), 1, "{:?}", start.skipped());
+    let registered = crate::root::boot::Registered {
+        planes: vec![(MODULE.to_owned(), Some(FILE.to_owned()))],
+        linked_styles: Vec::new(),
+        start: Some(&start),
+    };
+    let read = |registry: &crate::root::loader::PluginRegistry, admitted: bool| {
+        let by_identity: BTreeMap<String, String> = admitted
+            .then(|| (MODULE.to_owned(), ALIAS.to_owned()))
+            .into_iter()
+            .collect();
+        crate::root::boot::images::name_sections(
+            Grammar::empty().with_items(crate::root::boot::classify_against(
+                &registered,
+                registry,
+                None,
+            )),
+            &by_identity,
+            |_| None,
+        )
+    };
+    let parse = |grammar: &Grammar, key: &str| {
+        deploy_from_yaml_str(
+            &format!("{key}:\n  a: 1\nproviders: {{}}\nmodels: {{}}\npools: {{}}\n"),
+            grammar,
+        )
+    };
+
+    let at_start = read(&start, true);
+    let item = at_start
+        .items
+        .iter()
+        .find(|item| item.kind == ItemKind::Section)
+        .expect("the plane's section is listed");
+    assert_eq!(
+        (item.name.as_str(), &item.standing),
+        (ALIAS, &Standing::Counts)
+    );
+    parse(&at_start, ALIAS).expect("the alias parses at start");
+    assert!(
+        parse(&at_start, MODULE).is_err(),
+        "the bare identity is not its name"
+    );
+
+    std::fs::remove_file(dir.join(FILE)).unwrap();
+    let removed = scanned(&dir);
+    let at_reload = read(&removed, false);
+    let item = at_reload
+        .items
+        .iter()
+        .find(|item| item.kind == ItemKind::Section)
+        .expect("the running plane is still listed");
+    assert_eq!(item.name, ALIAS, "the recorded instance name is kept");
+    parse(&at_reload, ALIAS).expect("the alias still parses at reload");
+    assert!(parse(&at_reload, MODULE).is_err());
+    assert!(
+        at_reload.item_refusal(ItemKind::Section, ALIAS).is_some(),
+        "its archive is gone, so using it is refused with the cause"
     );
     let _ = std::fs::remove_dir_all(dir);
 }

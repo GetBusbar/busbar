@@ -296,8 +296,6 @@ fn validate_worker_threads_config(wt: Option<usize>) -> Result<Option<usize>, St
 
 include!(concat!(env!("OUT_DIR"), "/linked.rs"));
 
-include!(concat!(env!("OUT_DIR"), "/linked_hook_names.rs"));
-
 fn register_protocols() {
     root::linked::register_protocols(&LINKED);
 }
@@ -306,6 +304,12 @@ fn register_planes() {
     root::linked::register_stores(&LINKED);
     busbar_kernel::preflight::install_linked_auth(LINKED.auths);
 
+    // WP3 step 2: the native image prepare (verify, manifest read, describe; no instance opens) runs before
+    // the start scan, so --validate, --list-plugins and the start grammar read the native secret words.
+    if let Err(refusal) = root::boot::images::publish_start() {
+        eprintln!("busbar: {refusal}");
+        root::exit::exit(2);
+    }
     let scan = root::boot::start_scan();
     let dropped = root::boot::install_start(scan, &LINKED);
     busbar_kernel::preflight::install_operator(root::auth_bindings::operator_binding(dropped));
@@ -578,9 +582,8 @@ async fn run(
     trace_publisher: Option<busbar_kernel::export::traces::TracePublisher>,
 ) {
     let process_io = root::boot::process::ProcessIo::new().unwrap_or_else(|error| die(error));
-    let plugin_process = std::sync::Arc::new(
-        busbar_plugin_loader::process::ProcessResources::new().unwrap_or_else(|error| die(error)),
-    );
+    // The start stage made the process's one ProcessResources (a process installs its plugin sinks once).
+    let plugin_process = root::boot::images::process().unwrap_or_else(|error| die(error));
     root::admission::install_process(&plugin_process);
     let export_observers = root::export_observer::ExportObservers::new();
     root::observe::install(catalogue);
@@ -665,6 +668,10 @@ async fn run(
         &config::grammar::PhaseOneIn::of(&file_plugins),
     )
     .unwrap_or_else(|error| die(error.0));
+    // The boot's images are the serving set: their secret grammar is the native secret axis.
+    file_images.publish_secrets();
+    // ... and their hook facts are what config validation reads of hooks (WP3 hook step).
+    file_images.publish_hooks();
     let loaded = raw
         .typed(&file_images.grammar)
         .unwrap_or_else(|error| die(error));
@@ -1442,22 +1449,6 @@ async fn run(
         ),
         deploy.public_url.as_deref(),
         &door_reach,
-        Some({
-            let (live, boot) = (
-                std::sync::Arc::clone(&door_live_handle),
-                std::sync::Arc::downgrade(&app),
-            );
-            std::sync::Arc::new(move || {
-                let app = match live.get() {
-                    Some(handle) => handle
-                        .upgrade()
-                        .expect("the serving application owner has retired")
-                        .load(),
-                    None => boot.upgrade().expect("the boot application is still owned"),
-                };
-                busbar_kernel::plane_driver::engine_host(&app)
-            })
-        }),
         &app.serve_tables,
         &|_| Ok(listener_plan.binds().to_vec()),
     )
@@ -1731,8 +1722,23 @@ async fn run(
         control_work.shutdown_rx.clone(),
     );
     // SEALING-FIX §3.3: the audit notary, after `Ready`, on this control runtime.
-    if let Some(audit) = book.as_ref().and_then(|book| book.audit.as_ref()) {
-        audit.start_notary(audit_seal_every, Arc::clone(&drain_clock));
+    if let Some((book, audit)) = book
+        .as_ref()
+        .and_then(|book| book.audit.as_ref().map(|audit| (book, audit)))
+    {
+        // SEALING-FIX §3.9 floor (b): an Ephemeral journal's cut never passes the oldest audit
+        // line a checkpoint in custody names. Weak: governance owns the book's sinks.
+        let floor = governance.as_ref().map(|gov| {
+            let gov = Arc::downgrade(gov);
+            Arc::new(move || gov.upgrade().and_then(|gov| gov.oldest_unit_audit_seq()))
+                as root::durability::notary::FloorHints
+        });
+        audit.start_notary(
+            audit_seal_every,
+            Arc::clone(&drain_clock),
+            floor,
+            Arc::clone(&book.durability),
+        );
     }
 
     let mut threads: Vec<std::thread::JoinHandle<()>> = Vec::new();
@@ -1884,10 +1890,11 @@ async fn run(
     root::exit::exit(code);
 }
 
-/// The start-up predecessor task (SHUTDOWN-HANG F5), after `Ready`, in the background and never
-/// on the request path: it closes writers whose lease expired at least one TTL ago, on any host,
-/// and records those that never retired. `stop` (the first shutdown broadcast) ends it at a step
-/// boundary; the drain joins it and settles its fence in the seal phase.
+/// The start-up predecessor task, after `Ready`, in the background and never on the request path:
+/// it seals the crash tails of this host's dead predecessors (SEALING-FIX §3.6.2), then closes
+/// writers whose lease expired at least one TTL ago, on any host, and records those that never
+/// retired (SHUTDOWN-HANG F5). `stop` (the first shutdown broadcast) ends it at a step boundary;
+/// the drain joins it and settles its fence in the seal phase.
 fn spawn_predecessor_task(
     gov: Option<&Arc<busbar_kernel::governance::GovState>>,
     book: Option<&root::durability::NodeBook>,

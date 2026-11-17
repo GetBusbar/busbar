@@ -153,7 +153,7 @@ impl LoginStates for StoreLoginStates {
             self.in_doubt.settle_one().await;
             let raw = records.get(SCHEMA, key.as_bytes()).await.ok()??;
             let request = Request {
-                op_id: operation(&self.store).ok()?,
+                op: operation(&self.store).await.ok()?,
                 predicates: vec![Predicate {
                     schema: SCHEMA.to_string(),
                     key: key.as_bytes().to_vec(),
