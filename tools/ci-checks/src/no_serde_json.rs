@@ -7,9 +7,11 @@
 //! there depends on it. A third-party crate may still pull serde_json in; cargo-deny's `wrappers`
 //! row governs that, not this check.
 //!
-//! The old ABI that wave 3 deletes still names it. Those paths are listed, with the wave-3 task that
-//! deletes or rewrites each, in `ci/serde-json-w3.allow`. The list only shrinks: an entry under
-//! which no file names serde_json any more is itself a finding, so the line goes with the code.
+//! The check is a ratchet. `ci/serde-json-w3.allow` lists exactly the paths that still name it, each
+//! tagged with the slice that removes it (`W3-D-<task>`: wave 3 deletes it; `D`: the #162 exit
+//! converts it). A use outside the list is a finding, so no new use lands; an entry without a slice tag
+//! is a finding; and the list only shrinks: an entry under which no file names serde_json any more is
+//! itself a finding, so the line goes with the code.
 //!
 //! The scan reads tokens, not text: a comment, a doc comment or a string literal that spells
 //! `serde_json` (a test fixture's `$serde_json::private::Number` key) is not a use. A file that does
@@ -35,6 +37,12 @@ pub(crate) fn no_serde_json(root: &Path) -> Outcome {
     let allow_text = std::fs::read_to_string(root.join(ALLOW_FILE))
         .map_err(|error| format!("{ALLOW_FILE}: {error}"))?;
     let allow = allow_entries(&allow_text);
+    let mut findings: Vec<String> = untagged(&allow_text)
+        .into_iter()
+        .map(|entry| {
+            format!("{ALLOW_FILE}: `{entry}` names no slice; end the line with `# W3-D-<task>` or `# D`")
+        })
+        .collect();
     let mut files = Vec::new();
     for dir in ROOTS {
         let dir = root.join(dir);
@@ -42,7 +50,6 @@ pub(crate) fn no_serde_json(root: &Path) -> Outcome {
             first_party_files(&dir, &mut files)?;
         }
     }
-    let mut findings = Vec::new();
     let mut used = vec![false; allow.len()];
     for file in files {
         let path = rel(root, &file);
@@ -81,6 +88,23 @@ pub(crate) fn allow_entries(text: &str) -> Vec<String> {
         .map(|line| line.split('#').next().unwrap_or_default().trim())
         .filter(|line| !line.is_empty())
         .map(str::to_owned)
+        .collect()
+}
+
+/// The allowlist entries whose line names no removing slice: its comment must start with `D` or
+/// `W3-D-<task>`.
+pub(crate) fn untagged(text: &str) -> Vec<String> {
+    text.lines()
+        .filter_map(|line| {
+            let (entry, comment) = line.split_once('#').unwrap_or((line, ""));
+            let entry = entry.trim();
+            let slice = comment.split_whitespace().next().unwrap_or_default();
+            let tagged = slice == "D"
+                || slice
+                    .strip_prefix("W3-D-")
+                    .is_some_and(|task| !task.is_empty());
+            (!entry.is_empty() && !tagged).then(|| entry.to_owned())
+        })
         .collect()
 }
 

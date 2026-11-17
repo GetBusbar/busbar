@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::super::repo_root;
-use super::{allow_entries, covers, manifest_uses, no_serde_json, rust_uses};
+use super::{allow_entries, covers, manifest_uses, no_serde_json, rust_uses, untagged};
 
 /// The real tree (#162, DEP-3): outside the wave-3 allowlist no first-party file names serde_json,
 /// and every allowlist line still covers a file that does.
@@ -57,4 +57,15 @@ fn allowlist_entries_cover_files_and_directories() {
     assert!(!covers(&entries[0], "crates/a/src/abix.rs"));
     assert!(covers(&entries[1], "crates/b/src/x.rs"));
     assert!(!covers(&entries[1], "crates/b/src/x.rs.bak"));
+}
+
+/// The ratchet: every allowlist line names the slice that removes its path.
+#[test]
+fn an_allowlist_entry_without_a_removing_slice_is_found() {
+    let text = "# header\ncrates/a/src/abi/   # W3-D-CONTRACT\ncrates/b/x.rs # D\ncrates/c/y.rs\n\
+                crates/d/z.rs # wave 3\ncrates/e/w.rs # W3-D-\n\n";
+    assert_eq!(
+        untagged(text),
+        ["crates/c/y.rs", "crates/d/z.rs", "crates/e/w.rs"]
+    );
 }
