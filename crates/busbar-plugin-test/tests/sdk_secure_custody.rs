@@ -69,6 +69,18 @@ fn failed_and_panicking_read_loans_preserve_the_live_prefix() {
 
 #[cfg(target_os = "linux")]
 fn payload(proof: &WipeProof) -> SecureVec {
+    let allocator = std::env::var("_RJEM_MALLOC_CONF").expect("Q24 allocator configuration");
+    for setting in ["dirty_decay_ms:-1", "muzzy_decay_ms:-1"] {
+        let key = setting.split(':').next().expect("setting key");
+        assert_eq!(
+            allocator
+                .split(',')
+                .rev()
+                .find(|part| part.split(':').next() == Some(key)),
+            Some(setting),
+            "Q24 requires freed pages to stay mapped"
+        );
+    }
     let mut bytes = SecureVec::zeroed(PAYLOAD_LEN);
     proof.write_canary(&mut bytes[OFFSET..OFFSET + CANARY_LEN]);
     bytes
@@ -157,9 +169,34 @@ mod fixture {
         async fn resolve(
             &self,
             _: &'static Host,
-            _: ChainBytes,
+            reference: ChainBytes,
         ) -> Result<busbar_plugin_abi::records::Reply, Fail> {
+            #[cfg(target_os = "linux")]
+            if reference.with(|bytes| bytes.len() == PAYLOAD_LEN) {
+                let mut scratch = reference.with(|bytes| SecureVec::from(bytes));
+                scratch.extend_from_slice(&[0; 1024]);
+                let request = need::Fetch {
+                    method: "POST",
+                    url: URL,
+                    headers: &[],
+                    body: &scratch,
+                    max_body: 4096,
+                    trust: TrustHandle::NONE,
+                    cert: None,
+                    egress: egress::DEFAULT,
+                };
+                let _ = need::fetch(&request).await?;
+                panic!("the cancellation test must not answer FETCH");
+            }
+
+            if reference.with(|bytes| bytes == b"batch") {
+                let mut batch = need::Batch::new();
+                batch.secret(SecretHandle(1)).secret(SecretHandle(2));
+                let _ = batch.run().await?;
+                panic!("the malformed second result must fail decoding");
+            }
             let secret: SecureVec = need::secret(SecretHandle(1)).await?;
+
             let request = need::Fetch {
                 method: "POST",
                 url: URL,
@@ -187,7 +224,7 @@ mod fixture {
             let mut batch = need::Batch::new();
             batch.secret(SecretHandle(1)).secret(SecretHandle(99));
             let mut answers = batch.run().await?;
-            assert!(matches!(answers.pop(), Some(Err(need::NeedErr::Absent))));
+            assert!(matches!(answers.pop(), Some(Err(need::NeedErr::Denied))));
             let Some(Ok(need::Done::Secret(batched))) = answers.pop() else {
                 panic!("successful batch item was lost beside an error")
             };
@@ -235,4 +272,151 @@ fn safe_host_decodes_owned_results_and_preserves_batch_partial_success() {
         .block_on(port.resolve(cx, b"{}"))
         .expect("resolve custody probe");
     assert_eq!(answer.value.as_slice(), b"token");
+}
+
+#[test]
+fn secure_byte_wipe_counters_track_growth_and_drop() {
+    let before = busbar_contract::secure::wipe_counts();
+    let mut bytes = SecureVec::with_capacity(8).expect("allocation");
+    bytes.extend_from_slice(b"password");
+    bytes.extend_from_slice(&[1; 1024]);
+    let grown = busbar_contract::secure::wipe_counts();
+    assert_eq!(grown.0 - before.0, 1, "one old block was wiped on growth");
+    assert_eq!(grown.1, before.1, "the byte owner is still live");
+    drop(bytes);
+    let dropped = busbar_contract::secure::wipe_counts();
+    assert_eq!(dropped.1 - before.1, 1, "the final block was wiped on drop");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn custody_memory_probe_detects_an_unwiped_raw_transfer() {
+    let proof = WipeProof::new();
+    let raw = payload(&proof).into_vec();
+    // Negative control only: no production consumer may transfer to this non-wiping owner.
+    drop(raw);
+    assert!(proof.canary_copies("unwiped raw transfer") > 0);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn failed_read_loan_wipes_the_entire_written_extent() {
+    for tail in [Tail::Wipe, Tail::Trusted] {
+        let proof = WipeProof::new();
+        let mut bytes = SecureVec::new();
+        let result = bytes.read_into(PAYLOAD_LEN, tail, |loan| {
+            proof.write_canary(&mut loan[OFFSET..OFFSET + CANARY_LEN]);
+            Err(std::io::ErrorKind::Interrupted.into())
+        });
+        assert!(result.expect("allocation").is_err());
+        drop(bytes);
+        proof.assert_absent("failed SDK read loan");
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn cancelling_pending_fetch_drops_its_owned_request_scratch() {
+    use busbar_ffi::host::{ChainBufs, OpenAnswer, OutLease, Started};
+    use busbar_ffi::image::Admitted;
+    use busbar_ffi::{Arg, Status};
+    use busbar_plugin_abi::host_side::HOST;
+    use busbar_plugin_abi::need::{op, NeedRec};
+    use busbar_plugin_abi::records::{tag, Records};
+
+    let proof = WipeProof::new();
+    let mut lease = OutLease::new(vec![0; 64 * 1024], 64 * 1024).expect("lease");
+    let image = Admitted::linked(&fixture::PLUGIN).expect("fixture image");
+    let instance =
+        match image.open::<busbar_plugin_abi::secret::Marker>(&HOST, b"{}".to_vec(), 0, &mut lease)
+        {
+            OpenAnswer::Done(Status::OK, Some(instance)) => instance,
+            _ => panic!("fixture did not open"),
+        };
+    let mut arguments = ChainBufs::new();
+    // This existing host chain owner wipes every argument on drop; no FakeNeeds script keeps a copy.
+    let index = arguments.push(payload(&proof).into_vec());
+    let chain = match instance.start1(
+        |vt| &vt.resolve,
+        arguments,
+        move |arguments| Arg::bytes(arguments.get(index)),
+        &mut lease,
+    ) {
+        Started::Need(chain) => chain,
+        _ => panic!("FETCH must park before it receives a result"),
+    };
+    lease.with_answer(|bytes| {
+        let record = Records::new(bytes)
+            .map(|record| record.expect("record"))
+            .find(|record| record.tag == tag::NEED)
+            .expect("FETCH Need");
+        let (need, _) = record.pod_tail::<NeedRec>().expect("Need header");
+        assert_eq!(need.op, op::FETCH);
+    });
+    drop(chain);
+    drop(instance);
+    drop(lease);
+    proof.assert_absent("cancelled FETCH request scratch and host loans");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn malformed_later_batch_result_drops_completed_secret_owners() {
+    use busbar_ffi::host::{ChainBufs, OpenAnswer, OutLease, Resumed, Started};
+    use busbar_ffi::image::Admitted;
+    use busbar_ffi::{Arg, Status};
+    use busbar_plugin_abi::host_side::HOST;
+    use busbar_plugin_abi::need::{op, NeedResRec};
+    use busbar_plugin_abi::records::{tag, Reply, Writer};
+
+    let proof = WipeProof::new();
+    let mut lease = OutLease::new(vec![0; 64 * 1024], 64 * 1024).expect("lease");
+    let image = Admitted::linked(&fixture::PLUGIN).expect("fixture image");
+    let instance =
+        match image.open::<busbar_plugin_abi::secret::Marker>(&HOST, b"{}".to_vec(), 0, &mut lease)
+        {
+            OpenAnswer::Done(Status::OK, Some(instance)) => instance,
+            _ => panic!("fixture did not open"),
+        };
+    let mut arguments = ChainBufs::new();
+    let index = arguments.push(b"batch".to_vec());
+    let mut chain = match instance.start1(
+        |vt| &vt.resolve,
+        arguments,
+        move |arguments| Arg::bytes(arguments.get(index)),
+        &mut lease,
+    ) {
+        Started::Need(chain) => chain,
+        _ => panic!("batch must park"),
+    };
+    let mut results = Reply::new();
+    let value = payload(&proof);
+    let first = NeedResRec {
+        op: op::SECRET,
+        status: 0,
+        a: 0,
+        b: 0,
+        lens: [PAYLOAD_LEN as u32, 0],
+        _r: 0,
+    };
+    results
+        .put_pod_tail(tag::NEED_RES, &first, &value)
+        .expect("first result");
+    let wrong = NeedResRec {
+        op: op::READ,
+        lens: [0, 0],
+        ..first
+    };
+    results
+        .put_pod_tail(tag::NEED_RES, &wrong, &[])
+        .expect("wrong second result");
+    drop(value);
+    // resume immediately places this final-sized copy in its existing wiping ChainBufs owner.
+    let answer = chain.resume(results.as_bytes().to_vec(), &mut lease);
+    assert!(matches!(answer, Resumed::Done(Status::FAULT, None)));
+    drop(chain);
+    drop(results);
+    drop(instance);
+    drop(lease);
+    proof.assert_absent("completed batch secret dropped on later decoding fault");
 }
