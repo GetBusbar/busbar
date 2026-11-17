@@ -276,6 +276,13 @@ impl Writer for PooledOut {
     fn put(&mut self, tag: u16, body: &[u8]) -> Result<(), Full> {
         put_parts(self, tag, &[body])
     }
+    fn put_u32s(
+        &mut self,
+        tag: u16,
+        fill: impl FnOnce(&mut crate::records::U32s<'_>) -> Result<(), Full>,
+    ) -> Result<(), Full> {
+        crate::records::put_u32s_in(self, tag, fill)
+    }
     fn put_pod<T: Pod>(&mut self, tag: u16, v: &T) -> Result<(), Full> {
         put_parts(self, tag, &[v.as_bytes()])
     }
