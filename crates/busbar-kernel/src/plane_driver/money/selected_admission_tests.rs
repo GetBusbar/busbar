@@ -471,3 +471,41 @@ async fn selected_callback_rollback_transfers_fee_finality_before_releasing_open
         "retry retains final Arc"
     );
 }
+
+#[tokio::test]
+async fn selected_work_end_survives_late_cancel_and_legacy_settlement_cannot_remove_it() {
+    use crate::plane_driver::usage::Ending;
+    let (money, _, context, _lease, request) = selected_fixture(100, true).await;
+    let selected = money
+        .admit_existing_selected(
+            request,
+            declaration(&context),
+            context.generation().routing_generation().unwrap(),
+            NonZeroU32::new(1).unwrap(),
+            FeeRefund::CallerStatus,
+            ExhaustionMode::FinishUnit,
+        )
+        .unwrap();
+    selected.work_ended(Ending::End).unwrap();
+    selected
+        .work_ended(Ending::Cancel {
+            cause: busbar_contract::caps::ReasonCode::ClientGone,
+            far_end_answered: false,
+            streamed: true,
+        })
+        .unwrap();
+    money.settle_end_as(
+        selected.request().unit(),
+        crate::plane_driver::UnitEnd {
+            caller_status: 500,
+            cut: true,
+            refused_unspent: false,
+        },
+    );
+    assert_eq!(
+        money.open_units(),
+        1,
+        "selected finality requires its actual delivery join"
+    );
+    assert_eq!(selected.work_ending().unwrap(), Some(Ending::End));
+}
