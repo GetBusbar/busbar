@@ -1050,7 +1050,12 @@ async fn run(
         );
     }
 
-    tracing::info!(version = env!("CARGO_PKG_VERSION"), "busbar starting");
+    tracing::info!(
+        version = env!("CARGO_PKG_VERSION"),
+        crypto_backend = busbar_contract::crypto::BACKEND,
+        crypto_module = busbar_contract::crypto::module_version(),
+        "busbar starting"
+    );
 
     if config_locked {
         tracing::info!(
