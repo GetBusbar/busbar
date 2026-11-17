@@ -1176,6 +1176,7 @@ async fn run(
     };
 
     let _boot_store_binding = boot_store;
+    let native_bootstrap_sources = bootstrap_ready.sources();
     let serving_ready = root::min3_boot::prepare_serving(
         bootstrap_ready,
         &plugin_process,
@@ -1437,7 +1438,22 @@ async fn run(
     )
     .await
     .unwrap_or_else(|error| die(error));
-    let root_rules = Arc::new(root_rules.with_native_listeners(Arc::clone(&listener_plan)));
+    let native_candidates = root::min3_candidate::Factory::new(
+        Arc::clone(&plugin_process),
+        native_bootstrap_sources,
+        store_admission
+            .store()
+            .unwrap_or_else(|| die("native candidate factory has no admitted Store")),
+        &native,
+        Arc::clone(&listener_plan),
+        root::plane_node::node(),
+        Arc::clone(&export_observers),
+    );
+    let root_rules = Arc::new(
+        root_rules
+            .with_native_listeners(Arc::clone(&listener_plan))
+            .with_native_candidate(native_candidates),
+    );
     let mut app = Arc::unwrap_or_clone(app);
     app.root_rules = root_rules.clone();
     let owners = root::min3_physical::SlotOwners {

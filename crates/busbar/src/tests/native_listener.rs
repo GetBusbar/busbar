@@ -103,13 +103,15 @@ pub(super) async fn assert_real_http() {
         )
         .expect("the public fixture has no configured auth instances"),
     );
+    let epoch = app
+        .config_generation
+        .load(std::sync::atomic::Ordering::Acquire);
+    root::min3_admin_auth::install(&mut app, Arc::clone(&auth), epoch)
+        .expect("install this candidate's actual native admin authority");
     let served = root::serve::Served {
         tables: app.serve_tables.clone(),
         ..Default::default()
     };
-    let epoch = app
-        .config_generation
-        .load(std::sync::atomic::Ordering::Acquire);
     let owners = root::min3_physical::SlotOwners {
         auth,
         epoch,
