@@ -15,6 +15,7 @@
 // point each; see `boot.rs`.
 
 #![deny(unsafe_code)]
+#![recursion_limit = "256"]
 
 extern crate self as busbar_kernel;
 
