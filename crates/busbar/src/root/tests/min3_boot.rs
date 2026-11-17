@@ -461,6 +461,7 @@ fn actual_plane_settlement_has_its_core_owned_block_and_described_lift_authority
     let raw = busbar_plugin_loader::instance::Settled {
         config_json: SecureVec::from(&br#"{"token":"literal","display":"public"}"#[..]),
         core_cfg: Vec::new(),
+        answered: true,
     };
     let answer = settlement::answer(7, &instance, &described, raw).unwrap();
     assert_eq!(answer.index, 7);
@@ -507,6 +508,7 @@ fn plugin_secret_paths_cannot_authorize_consumed_core_nonsecret_fields() {
     let raw = busbar_plugin_loader::instance::Settled {
         config_json: SecureVec::from(&br#"{"members":{"x":{"url":"https://public","opaque":"plugin-secret","auth":{"bearer":"core-secret"}}}}"#[..]),
         core_cfg: Vec::new(),
+        answered: true,
     };
     let answer = settlement::answer(7, &instance, &described, raw).unwrap();
     assert_eq!(
