@@ -378,6 +378,103 @@ secrets:
     );
 }
 
+/// A deployment read under a grammar that admits one plane instance per name, so each name is that
+/// plane's top-level section (WP1-GAP-plane-sections r3).
+fn plane_deploy(yaml: &str, instances: &[&str]) -> crate::config::DeployCfg {
+    use crate::config::grammar::{Item, ItemKind, Standing};
+    let grammar = crate::config::Grammar::new(Default::default(), Default::default(), Vec::new())
+        .with_items(
+            instances
+                .iter()
+                .map(|name| Item {
+                    kind: ItemKind::Section,
+                    name: (*name).to_owned(),
+                    module: format!("plane-{name}"),
+                    image: "linked".to_owned(),
+                    standing: Standing::Counts,
+                })
+                .collect(),
+        );
+    crate::config::deploy_from_yaml_str(yaml, &grammar)
+        .unwrap_or_else(|e| panic!("the config parses: {e}"))
+}
+
+/// AGREED 2026-11-16 ~19:05Z, TRANSPORT-SECURITY-POLICY §4 (#297): a plane instance takes
+/// `insecure_transport` from its own section, parsed like every other kind. It is core's key: it
+/// lands in the instance's `InstanceLimits.accept` and never reaches the plane's bag.
+#[test]
+fn a_plane_sections_insecure_transport_is_the_instance_s_accept_and_never_its_bag() {
+    let deploy = plane_deploy(
+        r#"
+providers: {}
+models: {}
+mcp:
+  docs: { url: "http://127.0.0.1:9000/mcp" }
+  insecure_transport: { accept: plaintext, reason: "loopback test upstream" }
+a2a:
+  peer: { url: "https://agent.example/a2a" }
+"#,
+        &["mcp", "a2a"],
+    );
+    let bag = deploy
+        .instance_sections
+        .get("mcp")
+        .expect("the mcp section");
+    assert!(
+        bag.get("insecure_transport").is_none(),
+        "insecure_transport is lifted off before the plane sees its section: {bag:?}"
+    );
+    assert!(bag.get("docs").is_some(), "the plane keeps its own entries");
+    let cfg = crate::config::resolve(&deploy, &std::collections::HashMap::new()).expect("resolves");
+    assert_eq!(
+        crate::appbuild::instance_limits(&cfg, "mcp", "mcp").accept,
+        Accept(Accept::PLAINTEXT)
+    );
+    assert_eq!(
+        cfg.min3
+            .insecure_transport
+            .get(&(Box::from("mcp"), Box::from("mcp")))
+            .map(|t| &*t.reason),
+        Some("loopback test upstream")
+    );
+    assert_eq!(
+        crate::appbuild::instance_limits(&cfg, "a2a", "a2a").accept,
+        Accept::default(),
+        "a plane section without the key: verified TLS only"
+    );
+    assert!(cfg.instance_sections()["mcp"]
+        .get("insecure_transport")
+        .is_none());
+}
+
+/// Policy §4: a plane section's `insecure_transport` is judged by the one grammar every kind uses;
+/// each refusal is BUSBAR-3163 naming `<section>.insecure_transport[.<key>]`.
+#[test]
+fn a_plane_sections_insecure_transport_refusals_are_busbar_3163_naming_the_section() {
+    let refused = parse_min3(&plane_deploy(
+        r#"
+providers: {}
+models: {}
+mcp:
+  insecure_transport: { accept: yes, reason: "loopback test upstream" }
+a2a:
+  insecure_transport: { accept: plaintext }
+"#,
+        &["mcp", "a2a"],
+    ))
+    .err()
+    .expect("refused");
+    for want in [
+        "BUSBAR-3163: mcp.insecure_transport.accept",
+        "BUSBAR-3163: a2a.insecure_transport.reason",
+    ] {
+        assert!(
+            refused.iter().any(|r| r.starts_with(want)),
+            "{want}: {refused:?}"
+        );
+    }
+}
+
 const UPSTREAMS: &str = r#"
 providers: {}
 models: {}
