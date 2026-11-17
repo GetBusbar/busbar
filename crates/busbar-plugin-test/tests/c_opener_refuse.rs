@@ -480,6 +480,125 @@ mod fixed_piece {
     use busbar_ports::plane::PlanePort;
     use std::sync::Arc;
 
+    #[tokio::test]
+    async fn actual_native_reply_crosses_the_real_saturated_channel_writer() {
+        use busbar_contract::secure::SecureVec;
+        use busbar_kernel::channels::budget::{ChannelBudget, Claim, REPLY_BYTES, UNIT_BYTES};
+        use busbar_kernel::channels::frame::{Framing, MAX_MESSAGE};
+        use busbar_kernel::channels::link::Link;
+        use busbar_kernel::channels::protected::{ReplyStorage, OUTPUT_BYTES};
+        use busbar_kernel::channels::Attachment;
+        use busbar_plugin_loader::adapters::plane::protected_reply::{classify, Classification};
+        use tokio::io::AsyncReadExt;
+        use tokio::sync::mpsc;
+
+        let (adapter, mut session) = opened_limit(OUTPUT_BYTES);
+        let instance = ChannelBudget::new().instance();
+        let unit = instance.unit();
+        let link_budget = instance.link();
+        let (link, mut queue) = Link::new(false, Framing::Ndjson, link_budget);
+        let (_tx, rx) = mpsc::channel(1);
+        let mut attachment =
+            Attachment::linked(link, unit.clone(), 1, 1, true, Box::new([]), rx).unwrap();
+
+        // Input is already owned and charged INSIDE the saturated general capacity before entry.
+        let input_charge = unit
+            .reserve(
+                Claim {
+                    bytes: MAX_MESSAGE,
+                    ..Claim::default()
+                },
+                None,
+            )
+            .unwrap();
+        let mut input = SecureVec::zeroed(MAX_MESSAGE);
+        input.fill(b'x');
+        let general = unit
+            .reserve(
+                Claim {
+                    bytes: UNIT_BYTES - REPLY_BYTES - MAX_MESSAGE,
+                    ..Claim::default()
+                },
+                None,
+            )
+            .unwrap();
+        let mut inspection = ReplyStorage::new(&unit).unwrap();
+        let len = adapter
+            .piece_fixed(
+                &mut session,
+                plane::FROM_CORE,
+                7,
+                0,
+                input.as_slice(),
+                inspection.output_mut(),
+            )
+            .unwrap();
+        assert_eq!(fixture::pieces(), 1);
+        assert_eq!(len, OUTPUT_BYTES);
+        match classify(
+            plane::FROM_CORE,
+            true,
+            &inspection.output()[..len],
+            MAX_MESSAGE,
+        )
+        .unwrap()
+        {
+            Classification::Reply {
+                exchange, payload, ..
+            } => {
+                assert_eq!(exchange, 7);
+                assert_eq!(payload, input.as_slice());
+            }
+            _ => panic!("one protected native reply"),
+        }
+        let message = inspection
+            .into_write(24..OUTPUT_BYTES, attachment.link_budget())
+            .unwrap();
+        attachment.send_owned(message).unwrap();
+        assert!(
+            ReplyStorage::new(&unit).is_err(),
+            "queued writer still owns protected bytes"
+        );
+
+        let message = queue.recv().await.unwrap();
+        let (mut writer, mut reader) = tokio::io::duplex(1);
+        let run = tokio::spawn(async move { message.write(&mut writer).await });
+        let mut first = [0; 1];
+        reader.read_exact(&mut first).await.unwrap();
+        assert_eq!(first, [b'x']);
+        drop(attachment);
+        assert!(
+            ReplyStorage::new(&unit).is_err(),
+            "started write survives its lease's cancellation"
+        );
+        let mut total = 1;
+        let mut scratch = [0; 8192];
+        while total < MAX_MESSAGE + 1 {
+            let n = reader.read(&mut scratch).await.unwrap();
+            assert!(n > 0);
+            for (at, byte) in scratch[..n].iter().enumerate() {
+                assert_eq!(
+                    *byte,
+                    if total + at == MAX_MESSAGE {
+                        b'\n'
+                    } else {
+                        b'x'
+                    }
+                );
+            }
+            total += n;
+        }
+        run.await.unwrap().unwrap();
+        assert_eq!(
+            fixture::pieces(),
+            0,
+            "no callback replay while the writer was blocked"
+        );
+        drop(ReplyStorage::new(&unit).unwrap());
+        drop(input);
+        drop((input_charge, general));
+    }
+
     fn opened() -> (PlaneAdapter<FakeNeeds>, plane::SessionHandle) {
         let inst = fixture::hosted::<plane::Marker>(&fixture::plane_fx::PLUGIN, plane::ALL);
         let proxy = plane::Proxy::bind(inst).unwrap();
