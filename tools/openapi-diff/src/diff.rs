@@ -40,8 +40,8 @@ pub(crate) fn breaking_changes(base: &json::Value, head: &json::Value) -> Vec<St
 }
 
 struct Walk<'a> {
-    base: &json::Value,
-    head: &json::Value,
+    base: &'a json::Value,
+    head: &'a json::Value,
     seen: BTreeSet<(String, String, bool)>,
     out: Vec<String>,
 }
