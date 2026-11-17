@@ -3,9 +3,18 @@
 
 use super::*;
 use busbar_contract::response_delivery::CarrierFault;
+use busbar_contract::storage::StorageSource;
+use busbar_kernel::limits::process_admission::{
+    AdmissionClass, ProcessAdmission, BODY_BYTES, OPERATOR_BODY_BYTES,
+};
+
+fn source() -> StorageSource {
+    ProcessAdmission::new(0).connection_storage(AdmissionClass::Data)
+}
 
 fn ledger(spans: usize, responses: usize) -> DeliveryLedger {
     DeliveryLedger::new(
+        &source(),
         NonZeroUsize::new(spans).unwrap(),
         NonZeroUsize::new(responses).unwrap(),
     ).unwrap()
@@ -292,4 +301,64 @@ fn metadata_quote_refuses_overflow_before_any_allocation() {
     let huge = NonZeroUsize::new(usize::MAX).unwrap();
     assert_eq!(DeliveryLedger::required_storage(huge, one), Err(ResponseStop::Capacity));
     assert_eq!(DeliveryLedger::required_storage(one, huge), Err(ResponseStop::Capacity));
+}
+
+#[test]
+fn ledger_backing_competes_in_the_real_process_account_until_storage_drop() {
+    let source = source();
+    let spans = NonZeroUsize::new(2).unwrap();
+    let responses = NonZeroUsize::new(1).unwrap();
+    let quote = DeliveryLedger::required_storage(spans, responses).unwrap();
+    let data_capacity = (BODY_BYTES - OPERATOR_BODY_BYTES) as usize;
+    let mut ledger = DeliveryLedger::new(&source, spans, responses).unwrap();
+    let response = ledger.admit(key(1)).unwrap();
+    ledger.adopt_batch(&[part(1, WireClass::Payload, 1)]).unwrap();
+    ledger.observe(progress(1, 1, 1)).unwrap();
+    let rest = source.try_reserve(data_capacity - quote).unwrap();
+    assert!(source.try_reserve(1).is_err(), "consuming spans retains array capacity");
+    drop(ledger);
+    let reclaimed = source.try_reserve(quote).unwrap();
+    assert!(response.watch.snapshot().first_payload_written);
+    assert!(response.watch.snapshot().terminal.is_none(), "owner drop is not a receipt");
+    // Fixed read/control cells use the named control-layout exclusion, not array-byte credit.
+    drop((reclaimed, rest, response));
+    source.try_reserve(data_capacity).unwrap();
+}
+
+#[test]
+fn unfunded_ledger_refuses_atomically_before_request_exposure() {
+    let source = source();
+    let one = NonZeroUsize::new(1).unwrap();
+    let data_capacity = (BODY_BYTES - OPERATOR_BODY_BYTES) as usize;
+    let occupied = source.try_reserve(data_capacity).unwrap();
+    assert!(matches!(DeliveryLedger::new(&source, one, one), Err(ResponseStop::Capacity)));
+    drop(occupied);
+    let ledger = DeliveryLedger::new(&source, one, one).unwrap();
+    drop(ledger);
+    source.try_reserve(data_capacity).unwrap();
+}
+
+#[test]
+fn anonymous_security_keeps_the_exact_storage_origin_and_progress_reader() {
+    use busbar_contract::response_delivery::CarrierProgressReader;
+    use busbar_contract::transport::wire::{ConnectionIo, SecuredIo};
+
+    struct TestReader;
+    impl CarrierProgressReader for TestReader {
+        fn snapshot(&self) -> CarrierProgress { progress(0, 0, 0) }
+    }
+    let source = source();
+    let reader: Arc<dyn CarrierProgressReader> = Arc::new(TestReader);
+    let secured = SecuredIo::anonymous(ConnectionIo {
+        io: Box::new(futures::io::Cursor::new(Vec::<u8>::new())),
+        progress: Arc::clone(&reader),
+        storage: source.clone(),
+    });
+    assert!(Arc::ptr_eq(&reader, &secured.progress));
+    assert!(secured.peer_certificate.is_empty());
+    let mut original = source.try_reserve(1).unwrap();
+    original.try_merge(secured.storage.try_reserve(1).unwrap()).unwrap();
+    assert_eq!(original.len(), 2);
+    assert!(original.try_merge(ProcessAdmission::new(0)
+        .connection_storage(AdmissionClass::Data).try_reserve(1).unwrap()).is_err());
 }
