@@ -2704,7 +2704,7 @@ dependencies = [
 [[package]]
 name = "sonic-number"
 version = "0.1.3"
-source = "git+https://github.com/MattJackson/sonic-rs?rev=10b80cdcbfb07c0edc6535df28f7b248dc4f5223#10b80cdcbfb07c0edc6535df28f7b248dc4f5223"
+source = "git+https://github.com/MattJackson/sonic-rs?rev=f28e8916d67f17931708430348341254a113b0c8#f28e8916d67f17931708430348341254a113b0c8"
 dependencies = [
  "cfg-if",
 ]
@@ -2712,7 +2712,7 @@ dependencies = [
 [[package]]
 name = "sonic-rs"
 version = "0.5.11"
-source = "git+https://github.com/MattJackson/sonic-rs?rev=10b80cdcbfb07c0edc6535df28f7b248dc4f5223#10b80cdcbfb07c0edc6535df28f7b248dc4f5223"
+source = "git+https://github.com/MattJackson/sonic-rs?rev=f28e8916d67f17931708430348341254a113b0c8#f28e8916d67f17931708430348341254a113b0c8"
 dependencies = [
  "ahash",
  "bumpalo",
@@ -2732,7 +2732,7 @@ dependencies = [
 [[package]]
 name = "sonic-simd"
 version = "0.1.4"
-source = "git+https://github.com/MattJackson/sonic-rs?rev=10b80cdcbfb07c0edc6535df28f7b248dc4f5223#10b80cdcbfb07c0edc6535df28f7b248dc4f5223"
+source = "git+https://github.com/MattJackson/sonic-rs?rev=f28e8916d67f17931708430348341254a113b0c8#f28e8916d67f17931708430348341254a113b0c8"
 dependencies = [
  "cfg-if",
 ]
