@@ -13,6 +13,35 @@ const OFFER_MAX: usize = 8;
 /// An ALPN protocol id is 1..=255 bytes (RFC 7301 §3.1).
 const ALPN_MAX: usize = 255;
 
+/// Validate and own the native initial-listener declarations before an instance can be selected.
+/// Other descriptor items are not interpreted here; slots are exact, case-sensitive configuration names.
+pub fn decode_listener_slots<'a>(
+    facts: u64,
+    items: impl IntoIterator<Item = (u16, &'a [u8])>,
+) -> Result<Box<[Box<str>]>, RecErr> {
+    let mut slots: Vec<Box<str>> = Vec::new();
+    for (item, bytes) in items {
+        if item != tag::D_LISTENER_SLOT {
+            continue;
+        }
+        let slot = core::str::from_utf8(bytes).map_err(|_| RecErr::Utf8)?;
+        if slots.len() == 64
+            || slot.is_empty()
+            || slot.len() > 128
+            || !slot
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'))
+            || slots.iter().any(|prior| prior.as_ref() == slot)
+            || facts & busbar_plugin_abi::transport::FB_SERVER == 0
+            || facts & busbar_plugin_abi::transport::FB_DATAGRAM != 0
+        {
+            return Err(RecErr::Size);
+        }
+        slots.push(slot.into());
+    }
+    Ok(slots.into())
+}
+
 pub fn encode_path(w: &mut impl Writer, path: u32, flags: u32, addr: &str) -> Result<(), Full> {
     w.put_pod_tail(tag::EVENT_PATH, &PathRec { path, flags }, addr.as_bytes())
 }

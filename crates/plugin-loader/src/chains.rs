@@ -282,6 +282,19 @@ pub(crate) fn decode_described(
         ));
     }
     crate::upstream_paths::validate(kind, &items)?;
+    if kind == KindCode::Transport {
+        busbar_ports::codec::transport::decode_listener_slots(
+            facts.unwrap_or(0),
+            items.iter().map(|(tag, body)| (*tag, body.as_slice())),
+        )
+        .map_err(|_| {
+            invalid(
+                "describe.listener_slots",
+                "invalid initial stream-listener declarations",
+                "at most 64 distinct 1..=128-byte ASCII slots on a server stream transport",
+            )
+        })?;
+    }
     Ok(Described {
         kind,
         methods,

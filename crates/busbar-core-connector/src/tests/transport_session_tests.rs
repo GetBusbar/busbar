@@ -1023,6 +1023,9 @@ fn not_called() -> PortError {
 }
 
 impl TransportPort for Offers {
+    fn listener_slots(&self) -> &[Box<str>] {
+        &[]
+    }
     fn alpn(&self, role: u32) -> &[Box<str>] {
         match role {
             wire::ROLE_SERVER => &self.server,

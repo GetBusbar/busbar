@@ -50,6 +50,7 @@ pub struct TransportAdapter {
     facts: u64,
     /// The image's D_PROTOCOL names (the UPGRADE targets it serves), from describe.
     protocols: Box<[Box<str>]>,
+    listener_slots: Box<[Box<str>]>,
     offers: Offers,
 }
 
@@ -61,6 +62,7 @@ impl TransportAdapter {
         proxy: Proxy,
         errors: &'static ErrorBook,
         protocols: Box<[Box<str>]>,
+        listener_slots: Box<[Box<str>]>,
     ) -> Result<Self, PortError> {
         let (facts, max_out) = {
             let inst = proxy.instance();
@@ -73,6 +75,7 @@ impl TransportAdapter {
             max_out,
             facts,
             protocols,
+            listener_slots,
             offers: Offers::default(),
         };
         for role in declared_roles(facts) {
@@ -159,6 +162,10 @@ impl TransportPort for TransportAdapter {
 
     fn protocols(&self) -> &[Box<str>] {
         &self.protocols
+    }
+
+    fn listener_slots(&self) -> &[Box<str>] {
+        &self.listener_slots
     }
 
     fn facts(&self) -> u64 {

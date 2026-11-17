@@ -173,6 +173,13 @@ crate::kind! {
             /// describe: D_PROTOCOL (text protocol name for UPGRADE targets, e.g. "websocket", "grpc").
             /// Round 9: 0x0180 (round 8's D_ALPN) is retired; the ALPN offer is per instance and per side (`offer`).
             D_PROTOCOL = 0x0181;
+            /// An existing core configuration slot this instance can serve as an initial stream listener.
+            /// Repeatable text: at most 64 distinct, case-sensitive 1..=128-byte ASCII alphanumeric, `_` or
+            /// `-` names. Requires FB_SERVER and forbids FB_DATAGRAM. Unknown slots remain inert; declaring a
+            /// slot creates no listener or network permission. Core requires exactly one supplier per needed
+            /// slot, uses that instance's server ALPN and retains the generation through every connection.
+            /// D_PROTOCOL remains upgrade-only; neither ALPN nor image identity selects an initial supplier.
+            D_LISTENER_SLOT = 0x0182;
         }
         consts {
             REQUIRED: u64 = 0b1;
@@ -497,7 +504,7 @@ mod tests {
     use crate::types::{Bytes, KindCode, Str};
 
     /// Every transport tag, in table order.
-    const TAGS: [u16; 26] = [
+    const TAGS: [u16; 27] = [
         tag::WRITE,
         tag::CLOSE,
         tag::WAKE_AT,
@@ -524,14 +531,16 @@ mod tests {
         tag::EVENT_PATH,
         tag::EVENT_KEYING,
         tag::D_PROTOCOL,
+        tag::D_LISTENER_SLOT,
     ];
 
-    /// The call records are 0x0100..=0x0118 in table order; the one describe item is D_PROTOCOL 0x0181, and
+    /// The call records are 0x0100..=0x0118 in table order; describe items keep their allocated numbers, and
     /// round 8's D_ALPN (0x0180) stays retired.
     #[test]
     fn the_tags_keep_their_numbers_and_d_alpn_stays_retired() {
         assert!(TAGS[..25].iter().copied().eq(0x0100..=0x0118));
         assert_eq!(tag::D_PROTOCOL, 0x0181);
+        assert_eq!(tag::D_LISTENER_SLOT, 0x0182);
         assert!(!TAGS.contains(&0x0180));
     }
 
