@@ -819,6 +819,7 @@ fn native_data_chain_rejects_empty_and_repeated_real_reservations() {
 // Real Admin verification/replay joins the actual physical state machine. The reused transport
 // port is an inert table fixture: this does not claim decoder or socket-path qualification.
 struct AdminPhysicalFixture {
+    budget: Arc<busbar_kernel::limits::process_admission::ProcessAdmission>,
     handle: Arc<busbar_kernel::state::AppHandle>,
     app: Arc<busbar_kernel::state::App>,
     owners: Arc<Owners>,
@@ -934,6 +935,7 @@ async fn admin_physical_fixture_at(native: bool, path: &str) -> AdminPhysicalFix
     let binding = request.binding().clone();
     let pending = Some(request.begin_completion().unwrap());
     AdminPhysicalFixture {
+        budget,
         handle,
         app,
         owners,
@@ -1159,16 +1161,10 @@ async fn physical_admin_effect_keeps_owner_and_rechecks_reset_before_mutation() 
         &axum::http::HeaderMap::new(),
     )
     .await;
-    let mut context = Context::new(
-        "GET",
-        "/api/v1/admin/audit",
-        axum::http::HeaderMap::new(),
-        &verdict.door,
-    );
     let proof = Arc::new(verdict.claim.unwrap().complete_admin().await.unwrap());
     let physical = Arc::new(f.pending.take().unwrap().complete_admin(proof).unwrap());
     let weak = Arc::downgrade(&physical);
-    context.attach_physical(physical.clone()).unwrap();
+    let context = Context::from_physical(physical.clone()).unwrap();
     drop(physical);
     let effect = PinnedEffect::admit(&f.handle, Some(context)).await.unwrap();
     assert!(weak.upgrade().is_some());
@@ -1178,6 +1174,40 @@ async fn physical_admin_effect_keeps_owner_and_rechecks_reset_before_mutation() 
     assert_eq!(f.owners.0.load(Ordering::SeqCst), 1);
     drop(effect);
     assert!(weak.upgrade().is_none());
+}
+
+#[tokio::test]
+async fn native_effect_clones_share_original_snapshot_until_the_last_owner() {
+    use busbar_kernel::auth::effect::Context;
+    let mut f = admin_physical_fixture().await;
+    let proof = complete_physical_admin_auth(&f).await;
+    let physical = Arc::new(f.pending.take().unwrap().complete_admin(proof).unwrap());
+    let snapshot = f.binding.snapshot().unwrap();
+    let weak = Arc::downgrade(&snapshot);
+    let context = Context::from_physical(physical).unwrap();
+    assert!(Arc::ptr_eq(context.request_snapshot().unwrap(), &snapshot));
+    let budget = f.budget.clone();
+    let before = budget.used();
+    let clones: Vec<_> = (0..32).map(|_| context.clone()).collect();
+    assert_eq!(
+        budget.used(),
+        before,
+        "effect clones retain existing metadata credit"
+    );
+    for clone in &clones {
+        assert!(Arc::ptr_eq(clone.request_snapshot().unwrap(), &snapshot));
+    }
+    drop(snapshot);
+    drop(f);
+    drop(context);
+    assert!(
+        weak.upgrade().is_some(),
+        "detached effects retain the original snapshot"
+    );
+    assert!(budget.used().0 > 0);
+    drop(clones);
+    assert!(weak.upgrade().is_none());
+    assert_eq!(budget.used(), (0, 0));
 }
 
 #[tokio::test]
