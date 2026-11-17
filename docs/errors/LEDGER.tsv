@@ -297,3 +297,7 @@ BUSBAR-2055	audit-chain-broken-at-boot	1.6.0
 BUSBAR-2056	audit-predecessor-refused	1.6.0
 BUSBAR-2057	audit-predecessor-seal-failed	1.6.0
 BUSBAR-3171	config-reserved-key	1.6.0
+BUSBAR-3141	config-plaintext-not-admitted	1.6.0
+BUSBAR-3160	config-plaintext-endpoint-refused	1.6.0
+BUSBAR-3162	config-insecure-transport-accepted	1.6.0
+BUSBAR-3163	config-insecure-transport-invalid	1.6.0
