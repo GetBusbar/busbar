@@ -18,7 +18,7 @@ struct Framer {
     facts: u64,
 }
 
-fn framer(protocols: &[&str]) -> Arc<dyn TransportPort> {
+pub(crate) fn framer(protocols: &[&str]) -> Arc<dyn TransportPort> {
     Arc::new(Framer {
         protocols: protocols.iter().map(|p| Box::from(*p)).collect(),
         slots: Box::default(),
