@@ -5,6 +5,33 @@ use super::*;
 use busbar_contract::yaml::ValueExt;
 
 #[test]
+fn require_if_match_belongs_directly_to_auth_and_survives_resolution() {
+    for (yaml, expected) in [
+        ("{}", None),
+        ("require_if_match: true", Some(true)),
+        ("require_if_match: false", Some(false)),
+        ("require_if_match: null", None),
+    ] {
+        let auth: AuthDeployCfg = busbar_contract::yaml::from_str(yaml).unwrap();
+        assert_eq!(auth.require_if_match, expected, "{yaml}");
+        let mut errors = Vec::new();
+        let resolved = resolve_auth(&auth, &IdentityProviders::new(), &mut errors);
+        assert_eq!(resolved.require_if_match, expected, "{yaml}");
+    }
+    for yaml in [
+        "policy: {require_if_match: true}",
+        "require_if_match: true\npolicy: {require_if_match: false}",
+        "require_if_match: 1",
+        "require_if_match: 'true'",
+    ] {
+        assert!(
+            busbar_contract::yaml::from_str::<AuthDeployCfg>(yaml).is_err(),
+            "{yaml}"
+        );
+    }
+}
+
+#[test]
 fn new_pool_strategy_is_structured_and_does_not_rebind_a_bare_hook() {
     let named: PoolCfg = busbar_contract::yaml::from_str("hooks: [operator-order]").unwrap();
     assert_eq!(named.policy, PoolPolicy::Weighted);
