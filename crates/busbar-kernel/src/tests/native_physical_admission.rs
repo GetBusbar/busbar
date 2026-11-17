@@ -188,9 +188,19 @@ fn prepared(
     port: Arc<dyn TransportPort>,
     path: &str,
 ) -> Arc<PreparedListener> {
+    prepared_with_auth(app, slot, port, path, RouteAuth::None)
+}
+
+fn prepared_with_auth(
+    app: &App,
+    slot: &str,
+    port: Arc<dyn TransportPort>,
+    path: &str,
+    auth: RouteAuth,
+) -> Arc<PreparedListener> {
     let line = line(path);
     let guests = GuestList::seal(vec![line.clone()]).unwrap();
-    let routes = vec![RouteBinding::core(line, RouteAuth::None).unwrap()];
+    let routes = vec![RouteBinding::core(line, auth).unwrap()];
     let plan = PhysicalPlan::new(slot.into(), port, guests, routes).unwrap();
     Arc::new(
         PreparedListener::new(
@@ -215,15 +225,19 @@ struct Fixture {
     budget: Arc<crate::limits::process_admission::ProcessAdmission>,
 }
 fn fixture() -> Fixture {
+    fixture_for(AdmissionClass::Data, RouteAuth::None)
+}
+
+fn fixture_for(class: AdmissionClass, auth: RouteAuth) -> Fixture {
     let app = app();
     let port: Arc<dyn TransportPort> = Arc::new(Transport);
-    let prepared = prepared(&app, "listen", port.clone(), "/one");
+    let prepared = prepared_with_auth(&app, "listen", port.clone(), "/one", auth);
     let selected = prepared.clone();
     let listener = PhysicalListener::new(
         Arc::new(AppHandle::new(app.clone())),
         "listen".into(),
         port,
-        AdmissionClass::Data,
+        class,
         Arc::new(move |_, slot| (slot == "listen").then(|| selected.clone())),
     )
     .unwrap();
@@ -235,18 +249,47 @@ fn fixture() -> Fixture {
     }
 }
 pub(crate) fn accepted() -> AcceptedConnection {
-    AcceptedConnection {
-        peer: "192.0.2.1".into(),
-        local: "192.0.2.2".into(),
-        alpn: "h2".into(),
-        peer_certificate: SecureVec::new(),
-    }
+    accepted_with_certificate(&[])
+}
+fn accepted_with_certificate(certificate: &[u8]) -> AcceptedConnection {
+    let source = crate::limits::process_admission::ProcessAdmission::new(1)
+        .connection_storage(AdmissionClass::Data);
+    AcceptedConnection::capture(&source, "192.0.2.1", "192.0.2.2", "h2", certificate).unwrap()
+}
+
+#[test]
+fn accepted_metadata_credit_follows_the_last_real_request_binding() {
+    let f = fixture();
+    let budget = crate::limits::process_admission::ProcessAdmission::with_limits(1, 64, 8);
+    let source = budget.connection_storage(AdmissionClass::Data);
+    let facts = AcceptedConnection::capture(&source, "p", "l", "h", b"cert").unwrap();
+    assert_eq!(budget.used(), (7, 7));
+    assert!(
+        budget.try_enter(AdmissionClass::Data).is_ok(),
+        "connection storage takes no request count"
+    );
+    let conn = f.listener.connect(facts);
+    let (request, owner) = arrive(&f, &conn, 1);
+    let binding = request.binding().clone();
+    drop((request, owner, conn));
+    assert_eq!(binding.connection().peer_certificate(), b"cert");
+    assert_eq!(budget.used(), (7, 7));
+    drop(binding);
+    assert_eq!(budget.used(), (0, 0));
+}
+
+#[test]
+fn accepted_metadata_denial_precedes_copy_and_leaves_no_credit() {
+    let budget = crate::limits::process_admission::ProcessAdmission::with_limits(1, 8, 2);
+    let source = budget.connection_storage(AdmissionClass::Data);
+    assert!(AcceptedConnection::capture(&source, "p", "l", "h", b"cert").is_err());
+    assert_eq!(budget.used(), (0, 0));
 }
 fn arrive(f: &Fixture, conn: &PhysicalConnection, stream: u64) -> (PhysicalRequest, StreamOwner) {
     conn.head(
         stream,
         head("/one"),
-        f.budget.try_enter(AdmissionClass::Data).unwrap(),
+        f.budget.try_enter(f.listener.class).unwrap(),
         None,
     )
     .unwrap()
@@ -291,7 +334,7 @@ fn native_physical_head_captures_actual_snapshot_route_and_budget() {
     assert!(Arc::ptr_eq(binding.prepared(), &f.prepared));
     assert_eq!(binding.head().target, "/one");
     assert_eq!(binding.route().line().route.path, "/one");
-    assert_eq!(binding.connection().peer.as_ref(), "192.0.2.1");
+    assert_eq!(binding.connection().peer(), "192.0.2.1");
     assert_eq!(binding.request().class(), AdmissionClass::Data);
     assert_eq!(f.budget.used(), (8, 8));
 }
@@ -467,6 +510,48 @@ fn native_physical_body_rejects_unfunded_spare_capacity() {
 }
 
 #[test]
+fn native_physical_head_charges_unused_descriptor_backing() {
+    let mut f = fixture();
+    f.budget = crate::limits::process_admission::ProcessAdmission::with_limits(3, 256, 128);
+    let conn = f.listener.connect(accepted());
+    let mut original = head("/one");
+    original.fields = Vec::with_capacity(8);
+    assert!(matches!(
+        conn.head(
+            1,
+            original,
+            f.budget.try_enter(AdmissionClass::Data).unwrap(),
+            None
+        ),
+        Err(ArrivalRefusal::Capacity)
+    ));
+    assert_eq!(f.budget.used(), (0, 0));
+    // A refused head has not occupied the stream or retained the request permit.
+    let (request, _owner) = arrive(&f, &conn, 1);
+    assert!(request.binding().check_live().is_ok());
+}
+
+#[test]
+fn native_physical_head_charges_spare_string_backing() {
+    let mut f = fixture();
+    f.budget = crate::limits::process_admission::ProcessAdmission::with_limits(3, 256, 128);
+    let conn = f.listener.connect(accepted());
+    let mut original = head("/one");
+    original.authority = String::with_capacity(256);
+    original.authority.push_str("a");
+    assert!(matches!(
+        conn.head(
+            1,
+            original,
+            f.budget.try_enter(AdmissionClass::Data).unwrap(),
+            None
+        ),
+        Err(ArrivalRefusal::Capacity)
+    ));
+    assert_eq!(f.budget.used(), (0, 0));
+}
+
+#[test]
 fn native_physical_incomplete_body_cannot_enter_completion() {
     let f = fixture();
     let conn = f.listener.connect(accepted());
@@ -496,9 +581,8 @@ fn native_physical_response_owner_retains_request_count_after_input_drop() {
 #[test]
 fn native_physical_snapshot_captures_original_fields_once() {
     let mut f = fixture();
-    f.budget = crate::limits::process_admission::ProcessAdmission::with_limits(3, 4096, 4096);
-    let mut facts = accepted();
-    facts.peer_certificate = SecureVec::from(&b"certificate"[..]);
+    f.budget = crate::limits::process_admission::ProcessAdmission::with_limits(3, 4096, 128);
+    let facts = accepted_with_certificate(b"certificate");
     let conn = f.listener.connect(facts);
     let mut original = head("/one");
     original.query = Some(String::new());
@@ -547,7 +631,7 @@ fn native_physical_snapshot_captures_original_fields_once() {
 #[test]
 fn native_physical_snapshot_requires_complete_input_and_preserves_absent_query() {
     let mut f = fixture();
-    f.budget = crate::limits::process_admission::ProcessAdmission::with_limits(3, 4096, 4096);
+    f.budget = crate::limits::process_admission::ProcessAdmission::with_limits(3, 4096, 128);
     let conn = f.listener.connect(accepted());
     let (request, _owner) = arrive(&f, &conn, 1);
     assert!(matches!(
@@ -559,4 +643,113 @@ fn native_physical_snapshot_requires_complete_input_and_preserves_absent_query()
     let snapshot = request.binding().snapshot().unwrap();
     assert!(!snapshot.query_present());
     assert_eq!(snapshot.query(), "");
+}
+
+#[test]
+fn native_physical_admin_carrier_requires_operator_and_admin_route() {
+    for (class, auth) in [
+        (AdmissionClass::Data, RouteAuth::Admin),
+        (AdmissionClass::Operator, RouteAuth::None),
+    ] {
+        let f = fixture_for(class, auth);
+        let conn = f.listener.connect(accepted());
+        let (request, _owner) = arrive(&f, &conn, 1);
+        let credit = request.binding().request().try_reserve(0).unwrap();
+        let completing = request
+            .finish_input(SecureVec::new(), credit)
+            .unwrap()
+            .begin_completion()
+            .unwrap();
+        assert!(matches!(
+            completing.into_admin(),
+            Err(ArrivalRefusal::Class)
+        ));
+    }
+}
+
+#[test]
+fn native_physical_admin_carrier_clone_shares_one_pending_right() {
+    let f = fixture_for(AdmissionClass::Operator, RouteAuth::Admin);
+    let conn = f.listener.connect(accepted());
+    let (request, _owner) = arrive(&f, &conn, 1);
+    let credit = request.binding().request().try_reserve(0).unwrap();
+    let carrier = request
+        .finish_input(SecureVec::new(), credit)
+        .unwrap()
+        .begin_completion()
+        .unwrap()
+        .into_admin()
+        .unwrap();
+    let clone = carrier.clone();
+    let binding = carrier.binding().clone();
+    let completing = clone.take().unwrap();
+    assert!(matches!(carrier.take(), Err(ArrivalRefusal::ForeignInput)));
+    drop((carrier, clone));
+    assert!(binding.check_live().is_ok());
+    drop(completing);
+    assert_eq!(binding.check_live(), Err(ArrivalRefusal::Cancelled));
+}
+
+fn complete_input(request: PhysicalRequest) -> CompletingPhysicalRequest {
+    let credit = request.binding().request().try_reserve(0).unwrap();
+    request
+        .finish_input(SecureVec::new(), credit)
+        .unwrap()
+        .begin_completion()
+        .unwrap()
+}
+
+#[test]
+fn native_physical_public_completion_requires_exact_public_core_class() {
+    for auth in [RouteAuth::Key, RouteAuth::Admin] {
+        let f = fixture_for(AdmissionClass::Data, auth);
+        let conn = f.listener.connect(accepted());
+        let (request, _owner) = arrive(&f, &conn, 1);
+        assert!(matches!(
+            complete_input(request).complete_public(),
+            Err(ArrivalRefusal::Class)
+        ));
+    }
+}
+
+#[tokio::test]
+async fn native_physical_public_completion_obeys_actual_publication_gate() {
+    let f = fixture();
+    let conn = f.listener.connect(accepted());
+    let (request, _owner) = arrive(&f, &conn, 1);
+    let pending = complete_input(request);
+    f.listener.handle.swap(Arc::new((*f.app).clone())).await;
+    assert!(matches!(
+        pending.complete_public(),
+        Err(ArrivalRefusal::Binding(_))
+    ));
+}
+
+#[tokio::test]
+async fn native_physical_public_owner_retains_admitted_generation_and_cancels_on_drop() {
+    let f = fixture();
+    let conn = f.listener.connect(accepted());
+    let (request, _owner) = arrive(&f, &conn, 1);
+    let binding = request.binding().clone();
+    let execution = complete_input(request).complete_public().unwrap();
+    assert!(Arc::ptr_eq(execution.binding(), &binding));
+    assert!(Arc::ptr_eq(execution.lease().generation(), &f.app));
+    assert_eq!(execution.lease().invocation(), binding.invocation());
+    f.listener.handle.swap(Arc::new((*f.app).clone())).await;
+    assert!(binding.check_executing().is_ok());
+    drop(execution);
+    assert_eq!(binding.check_executing(), Err(ArrivalRefusal::Cancelled));
+}
+
+#[test]
+fn native_physical_public_completion_cannot_follow_reset() {
+    let f = fixture();
+    let conn = f.listener.connect(accepted());
+    let (request, owner) = arrive(&f, &conn, 1);
+    let pending = complete_input(request);
+    conn.cancel(&owner);
+    assert!(matches!(
+        pending.complete_public(),
+        Err(ArrivalRefusal::Cancelled)
+    ));
 }

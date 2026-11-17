@@ -239,7 +239,7 @@ async fn prepared_native_chain_retains_original_request_without_spending_replay(
             cache: Arc::new(Verdicts::new(VerdictPolicy::DEFAULT)),
         }),
     ));
-    let request = Request::new(&AuthIn {
+    let request = charged_test_request(&AuthIn {
         method: "POST",
         path: "/resource",
         query: "a=b",
@@ -261,10 +261,13 @@ async fn prepared_native_chain_retains_original_request_without_spending_replay(
         panic!("prepared identity")
     };
     assert_eq!(prepared.identity().subject(), "client");
-    prepared.request().view(|req| {
-        assert_eq!(req.body, b"body");
-        assert_eq!(req.query, "a=b");
-    });
+    prepared
+        .request()
+        .with_auth_input(|req| {
+            assert_eq!(req.body, b"body");
+            assert_eq!(req.query, "a=b");
+        })
+        .unwrap();
     assert!(
         prepared.authorize(2).is_err(),
         "preparation has not granted route authority"
@@ -331,10 +334,7 @@ fn admin_invocation(
     app: &Arc<busbar_kernel::state::App>,
     at: u64,
 ) -> busbar_kernel::auth::native_admin::Invocation {
-    use busbar_kernel::auth::{
-        admin_call_context,
-        native_admin::{http_request, Invocation},
-    };
+    use busbar_kernel::auth::{admin_call_context, native_admin::Invocation};
     let id = busbar_kernel::state::InvocationId::from_request_id(
         std::num::NonZeroU64::new(app.next_request_id()).unwrap(),
     );
@@ -343,13 +343,17 @@ fn admin_invocation(
         selected: app.clone(),
         id,
         cx: admin_call_context(id),
-        request: Arc::new(http_request(
-            "GET",
-            "/api/v1/admin/audit",
-            &axum::http::HeaderMap::new(),
-            b"admin-body",
-            at,
-        )),
+        request: charged_test_request(&busbar_ports::auth::AuthIn {
+            method: "GET",
+            path: "/api/v1/admin/audit",
+            query: "",
+            authority: "",
+            headers: &[],
+            peer: "",
+            tls_peer_cert: &[],
+            body: b"admin-body",
+            now_s: at,
+        }),
     }
 }
 
@@ -363,11 +367,9 @@ async fn native_admin_probe_is_non_authoritative_and_final_claim_is_one_shot() {
         AdminDoor::Unavailable(_)
     ));
     assert_eq!(owners.0.load(Ordering::SeqCst), 0);
-    let verdict = admin_verdict_for(
-        admin_invocation(&handle, &app, busbar_kernel::store::now()),
-        &headers,
-    )
-    .await;
+    let invocation = admin_invocation(&handle, &app, busbar_kernel::store::now());
+    let original_context = invocation.cx;
+    let verdict = admin_verdict_for(invocation, &headers).await;
     assert!(busbar_kernel::auth::admin_door_admits(
         &verdict.door,
         "GET",
@@ -380,6 +382,10 @@ async fn native_admin_probe_is_non_authoritative_and_final_claim_is_one_shot() {
     );
     assert_eq!(owners.0.load(Ordering::SeqCst), 0);
     let execution = pending.complete_admin().await.unwrap();
+    let (origin, context) = execution.native_origin().unwrap();
+    assert!(Arc::ptr_eq(origin, &handle));
+    assert_eq!(context.request_id, original_context.request_id);
+    assert_eq!(context.deadline, original_context.deadline);
     assert!(Arc::ptr_eq(
         execution.native().unwrap().0.generation(),
         &app
@@ -388,8 +394,8 @@ async fn native_admin_probe_is_non_authoritative_and_final_claim_is_one_shot() {
     assert_eq!(owners.0.load(Ordering::SeqCst), 1);
     assert_eq!(
         port.calls.load(Ordering::SeqCst),
-        2,
-        "completion did not verify again"
+        1,
+        "header-only probe and completion did not verify"
     );
 }
 
@@ -538,17 +544,10 @@ async fn root_router_errand_reuses_completed_native_admission_without_second_ver
         &tokio::runtime::Handle::current(),
         Arc::new(busbar_core_admin::keys::KeyReplayCache::new()),
     );
-    let request = AdminRequest {
-        method: "GET".into(),
-        path: "/api/v1/admin/audit".into(),
-        credential: None,
-        headers: vec![],
-        body: b"admin-body".to_vec(),
-        at: busbar_kernel::store::now(),
-        unit,
-    };
+    let request =
+        AdminRequest::from_snapshot(Arc::clone(execution.native().unwrap().1.request()), unit);
     let resolved =
-        busbar_core_admin::admin_codec::verbs::resolve(&request.method, &request.path).unwrap();
+        busbar_core_admin::admin_codec::verbs::resolve(request.method(), request.path()).unwrap();
     let verb = crate::root::units_admin::kernel_verb(&resolved).unwrap();
     let answer = dispatch
         .execute_authorized(verb, &request, None, Some(&execution))
@@ -556,8 +555,22 @@ async fn root_router_errand_reuses_completed_native_admission_without_second_ver
     assert_eq!(answer.status, 200);
     assert_eq!(port.calls.load(Ordering::SeqCst), 1);
     assert_eq!(owners.0.load(Ordering::SeqCst), 1);
+    let mut foreign = request.clone();
+    foreign.edit_for_test(|_| {});
+    assert!(foreign
+        .snapshot()
+        .request()
+        .same_request(request.snapshot().request()));
+    assert_eq!(foreign.body(), request.body());
+    assert_eq!(
+        dispatch
+            .execute_authorized(verb, &foreign, None, Some(&execution))
+            .await
+            .status,
+        401
+    );
     let mut changed = request.clone();
-    changed.body = b"different body".to_vec();
+    changed.edit_for_test(|draft| draft.body = b"different body".to_vec());
     assert_eq!(
         dispatch
             .execute_authorized(verb, &changed, None, Some(&execution))
@@ -565,6 +578,78 @@ async fn root_router_errand_reuses_completed_native_admission_without_second_ver
             .status,
         401
     );
+    assert_eq!(port.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(owners.0.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn native_admin_http_requires_original_snapshot_and_same_lease_before_verifying() {
+    use busbar_kernel::limits::process_admission::{AdmissionClass, ProcessAdmission};
+    use tower::ServiceExt;
+    let (handle, app, owners, port) = admin_fixture().await;
+    let router = busbar_kernel::router::build_admin_router_on(&handle, 1024, false);
+    let snapshot = admin_invocation(&handle, &app, busbar_kernel::store::now()).request;
+    for (snapshot_present, foreign_lease, target, body, expected) in [
+        (
+            false,
+            false,
+            "/api/v1/admin/audit",
+            b"admin-body".as_slice(),
+            503,
+        ),
+        (
+            true,
+            true,
+            "/api/v1/admin/audit",
+            b"admin-body".as_slice(),
+            401,
+        ),
+        (
+            true,
+            false,
+            "/api/v1/admin/audit?",
+            b"admin-body".as_slice(),
+            401,
+        ),
+        (
+            true,
+            false,
+            "/api/v1/admin/audit",
+            b"changed-body".as_slice(),
+            401,
+        ),
+    ] {
+        let mut request = axum::http::Request::builder()
+            .method("GET")
+            .uri(target)
+            .body(axum::body::Body::from(body))
+            .unwrap();
+        if snapshot_present {
+            request.extensions_mut().insert(snapshot.clone());
+        }
+        let lease = if foreign_lease {
+            ProcessAdmission::new(2)
+                .try_enter(AdmissionClass::Operator)
+                .unwrap()
+        } else {
+            snapshot.request().clone()
+        };
+        request.extensions_mut().insert(lease);
+        assert_eq!(
+            router.clone().oneshot(request).await.unwrap().status(),
+            expected
+        );
+        assert_eq!(port.calls.load(Ordering::SeqCst), 0);
+        assert_eq!(owners.0.load(Ordering::SeqCst), 0);
+    }
+    let request = axum::http::Request::builder()
+        .method("GET")
+        .uri(snapshot.target())
+        .extension(snapshot.request().clone())
+        .extension(snapshot.clone())
+        .body(axum::body::Body::from(snapshot.body_bytes()))
+        .unwrap();
+    assert_eq!(router.oneshot(request).await.unwrap().status(), 200);
     assert_eq!(port.calls.load(Ordering::SeqCst), 1);
     assert_eq!(owners.0.load(Ordering::SeqCst), 1);
 }
@@ -638,7 +723,7 @@ async fn shared_kernel_chain_preserves_admin_preparation_and_single_claim() {
             cache: Arc::new(Verdicts::new(VerdictPolicy::DEFAULT)),
         }),
     ));
-    let request = Request::new(&AuthIn {
+    let request = charged_test_request(&AuthIn {
         method: "POST",
         path: "/resource",
         query: "a=b",
@@ -665,6 +750,31 @@ async fn shared_kernel_chain_preserves_admin_preparation_and_single_claim() {
     assert_eq!(owners.0.load(Ordering::SeqCst), 1);
 }
 
+fn charged_test_request(
+    view: &busbar_ports::auth::AuthIn<'_>,
+) -> Arc<busbar_kernel::inbound::request_snapshot::ChargedRequestSnapshot> {
+    use busbar_kernel::inbound::request_snapshot::{ChargedRequestSnapshot, SnapshotInput};
+    use busbar_kernel::limits::process_admission::{AdmissionClass, ProcessAdmission};
+    let process = ProcessAdmission::new(2);
+    let request = process.try_enter(AdmissionClass::Operator).unwrap();
+    ChargedRequestSnapshot::capture(
+        SnapshotInput {
+            method: view.method,
+            path: view.path,
+            query: view.query,
+            query_present: !view.query.is_empty(),
+            authority: view.authority,
+            headers: view.headers.iter().map(|p| (p.name.get(), p.value.get())),
+            peer: view.peer,
+            tls_peer_cert: view.tls_peer_cert,
+            body: view.body,
+            now_s: view.now_s,
+        },
+        &request,
+    )
+    .unwrap()
+}
+
 #[test]
 fn native_data_chain_rejects_empty_and_repeated_real_reservations() {
     let port = Arc::new(Port {
@@ -686,4 +796,223 @@ fn native_data_chain_rejects_empty_and_repeated_real_reservations() {
     assert_eq!(data.epoch(), 7);
     assert!(data.matches_names(&["provider-42".into()]));
     assert!(!data.matches_names(&["another-provider".into()]));
+}
+
+// Real Admin verification/replay joins the actual physical state machine. The reused transport
+// port is an inert table fixture: this does not claim decoder or socket-path qualification.
+struct AdminPhysicalFixture {
+    handle: Arc<busbar_kernel::state::AppHandle>,
+    app: Arc<busbar_kernel::state::App>,
+    owners: Arc<Owners>,
+    port: Arc<Port>,
+    connection: busbar_kernel::inbound::native::PhysicalConnection,
+    stream: busbar_kernel::inbound::native::StreamOwner,
+    pending: Option<busbar_kernel::inbound::native::CompletingPhysicalRequest>,
+    binding: Arc<busbar_kernel::inbound::native::RequestBinding>,
+}
+
+async fn admin_physical_fixture() -> AdminPhysicalFixture {
+    use busbar_contract::abi::mechanism::route::RouteAuth;
+    use busbar_contract::abi::transport::route::{METHOD_GET, PATH_EXACT};
+    use busbar_kernel::guest::{Claimant, GuestList, Line, LineAuth, Route};
+    use busbar_kernel::inbound::native::{
+        AcceptedConnection, PhysicalListener, PhysicalPlan, RouteBinding,
+    };
+    use busbar_kernel::limits::process_admission::{AdmissionClass, ProcessAdmission};
+    let (handle, app, owners, port) = admin_fixture().await;
+    let transport = crate::root::min3_transports::tests::framer(&["http"]);
+    let line = Line {
+        route: Route {
+            methods: METHOD_GET,
+            path_form: PATH_EXACT,
+            path: "/api/v1/admin/audit".into(),
+            fields: Vec::new(),
+            rung: 0,
+        },
+        claimant: Claimant::Clean("core".into()),
+        dialect: 0,
+        auth: LineAuth::None,
+        upgrade: None,
+        offered: busbar_contract::abi::auth::AuthPoints::EMPTY,
+    };
+    let guests = GuestList::seal(vec![line.clone()]).unwrap();
+    let plan = PhysicalPlan::new(
+        "operator".into(),
+        transport.clone(),
+        guests,
+        vec![RouteBinding::core(line, RouteAuth::Admin).unwrap()],
+    )
+    .unwrap();
+    let prepared = Arc::new(
+        busbar_kernel::router::PreparedListener::new(
+            &app,
+            &busbar_kernel::plugin_routes::PluginRouteTable::empty(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            None,
+            false,
+        )
+        .unwrap()
+        .with_physical(plan)
+        .unwrap(),
+    );
+    let listener = PhysicalListener::new(
+        handle.clone(),
+        "operator".into(),
+        transport,
+        AdmissionClass::Operator,
+        Arc::new(move |_, slot| (slot == "operator").then(|| prepared.clone())),
+    )
+    .unwrap();
+    let budget = ProcessAdmission::new(4);
+    let connection = listener.connect(
+        AcceptedConnection::capture(
+            &budget.connection_storage(AdmissionClass::Operator),
+            "192.0.2.1",
+            "192.0.2.2",
+            "http/1.1",
+            &[],
+        )
+        .unwrap(),
+    );
+    let lease = budget.try_enter(AdmissionClass::Operator).unwrap();
+    let credit = lease.try_reserve(b"admin-body".len()).unwrap();
+    let mut body = SecureVec::with_capacity(credit.len()).unwrap();
+    body.extend(b"admin-body").unwrap();
+    let (request, stream) = connection
+        .head(
+            1,
+            busbar_kernel::inbound::Head {
+                method: "GET".into(),
+                target: "/api/v1/admin/audit".into(),
+                ..Default::default()
+            },
+            lease,
+            None,
+        )
+        .unwrap();
+    let request = request.finish_input(body, credit).unwrap();
+    let binding = request.binding().clone();
+    let pending = Some(request.begin_completion().unwrap());
+    AdminPhysicalFixture {
+        handle,
+        app,
+        owners,
+        port,
+        connection,
+        stream,
+        pending,
+        binding,
+    }
+}
+
+fn physical_admin_invocation(
+    f: &AdminPhysicalFixture,
+) -> busbar_kernel::auth::native_admin::Invocation {
+    let id = f.binding.invocation();
+    busbar_kernel::auth::native_admin::Invocation {
+        handle: f.handle.clone(),
+        selected: f.app.clone(),
+        id,
+        cx: busbar_kernel::auth::admin_call_context(id),
+        request: f.binding.snapshot().unwrap(),
+    }
+}
+
+async fn complete_physical_admin_auth(
+    invocation: busbar_kernel::auth::native_admin::Invocation,
+) -> Arc<busbar_kernel::auth::native_admin::ExecutionAdmission> {
+    let verdict =
+        busbar_kernel::auth::admin_verdict_for(invocation, &axum::http::HeaderMap::new()).await;
+    Arc::new(verdict.claim.unwrap().complete_admin().await.unwrap())
+}
+
+#[tokio::test]
+async fn physical_admin_join_rejects_foreign_origin_id_and_equal_content_snapshot() {
+    use busbar_kernel::inbound::request_snapshot::{ChargedRequestSnapshot, SnapshotInput};
+    for changed in ["handle", "id", "snapshot"] {
+        let mut f = admin_physical_fixture().await;
+        let mut invocation = physical_admin_invocation(&f);
+        match changed {
+            "handle" => {
+                invocation.handle = Arc::new(busbar_kernel::state::AppHandle::new(f.app.clone()))
+            }
+            "id" => {
+                invocation.id = busbar_kernel::state::InvocationId::from_request_id(
+                    std::num::NonZeroU64::new(f.app.next_request_id()).unwrap(),
+                );
+                invocation.cx.request_id = invocation.id.request_id().get();
+            }
+            "snapshot" => {
+                let s = &invocation.request;
+                invocation.request = ChargedRequestSnapshot::capture(
+                    SnapshotInput {
+                        method: s.method(),
+                        path: s.path(),
+                        query: s.query(),
+                        query_present: s.query_present(),
+                        authority: s.authority(),
+                        headers: s.headers(),
+                        peer: s.peer(),
+                        tls_peer_cert: s.tls_peer_cert(),
+                        body: s.body(),
+                        now_s: s.now_s(),
+                    },
+                    s.request(),
+                )
+                .unwrap();
+            }
+            _ => unreachable!(),
+        }
+        let proof = complete_physical_admin_auth(invocation).await;
+        assert!(
+            f.pending.take().unwrap().complete_admin(proof).is_err(),
+            "{changed}"
+        );
+        assert!(f.binding.check_executing().is_err());
+        assert_eq!(f.port.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(f.owners.0.load(Ordering::SeqCst), 1);
+    }
+}
+
+#[tokio::test]
+async fn physical_admin_join_consumes_carrier_once_and_retains_live_execution() {
+    let mut f = admin_physical_fixture().await;
+    let carrier = f.pending.take().unwrap().into_admin().unwrap();
+    let clone = carrier.clone();
+    let pending = carrier.take().unwrap();
+    assert!(clone.take().is_err());
+    let proof = complete_physical_admin_auth(physical_admin_invocation(&f)).await;
+    let execution = pending.complete_admin(proof.clone()).unwrap();
+    assert!(Arc::ptr_eq(execution.admission(), &proof));
+    assert!(Arc::ptr_eq(execution.binding(), &f.binding));
+    assert!(execution.check_executing().is_ok());
+    assert_eq!(f.port.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(f.owners.0.load(Ordering::SeqCst), 1);
+    drop(execution);
+    assert!(f.binding.check_executing().is_err());
+    assert!(clone.take().is_err());
+}
+
+#[tokio::test]
+async fn physical_admin_join_refuses_reset_or_expired_completed_proof() {
+    for reset in [true, false] {
+        let mut f = admin_physical_fixture().await;
+        let mut invocation = physical_admin_invocation(&f);
+        if !reset {
+            invocation.cx.deadline = std::time::Instant::now() + Duration::from_secs(5);
+        }
+        let deadline = invocation.cx.deadline;
+        let proof = complete_physical_admin_auth(invocation).await;
+        if reset {
+            assert!(f.connection.cancel(&f.stream));
+        } else {
+            tokio::time::sleep_until(deadline.into()).await;
+        }
+        assert!(f.pending.take().unwrap().complete_admin(proof).is_err());
+        assert!(f.binding.check_executing().is_err());
+        assert_eq!(f.port.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(f.owners.0.load(Ordering::SeqCst), 1);
+    }
 }

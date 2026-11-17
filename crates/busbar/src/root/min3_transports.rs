@@ -163,4 +163,4 @@ pub(super) fn table(served: Vec<ServedTransport>) -> Result<Vec<ServedTransport>
 
 #[cfg(test)]
 #[path = "tests/min3_transports.rs"]
-mod tests;
+pub(crate) mod tests;

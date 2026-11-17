@@ -209,6 +209,7 @@ async fn client(
     let addr = socket.local_addr().unwrap();
     let server = tokio::spawn(async move {
         super::serve_admitted(
+            super::test_storage(),
             super::SocketAdmits::new(socket),
             router,
             None,
