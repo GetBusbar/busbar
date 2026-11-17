@@ -707,8 +707,11 @@ impl Drop for Lib {
         let staged = self.1.take();
         if let Some(lib) = self.0.take() {
             reap(Box::new(move || {
-                crate::stage::dlclose_on_worker(lib);
-                drop(staged);
+                if let Some(staged) = staged {
+                    crate::stage::close_library_with_backing(lib, staged);
+                } else {
+                    crate::stage::dlclose_on_worker(lib);
+                }
             }));
         }
     }

@@ -309,8 +309,7 @@ pub fn validate_migrated_library(
         Ok(door) => validate_migrated_door(door, settings),
         Err(_) => Err("current migration plugin has no door".into()),
     };
-    crate::stage::dlclose_on_worker(lib);
-    drop(staged);
+    crate::stage::close_library_with_backing(lib, staged);
     result
 }
 
@@ -351,8 +350,7 @@ fn settings_migration_library(
         Ok(door) => settings_migration(door, settings, from, references),
         Err(e) => Err(crate::cold::dispatch::load::migration_no_door(display, &e)),
     };
-    crate::stage::dlclose_on_worker(lib);
-    drop(staged);
+    crate::stage::close_library_with_backing(lib, staged);
     answered
 }
 
@@ -417,7 +415,6 @@ pub fn migrate_credential_library(
         Ok(door) => migrate_credential_door(door, credential, from, seal),
         Err(_) => Err("credential owner has no migration door".into()),
     };
-    crate::stage::dlclose_on_worker(lib);
-    drop(staged);
+    crate::stage::close_library_with_backing(lib, staged);
     result
 }
