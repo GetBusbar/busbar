@@ -59,17 +59,19 @@ fn fullrange_numeric_wire_roundtrips_through_json_values() {
         i128::MAX,
     ] {
         let original = ledger(amount);
-        let bytes = serde_json::to_vec(&original).unwrap();
+        let bytes = busbar_contract::json::to_vec(&original).unwrap();
         assert!(String::from_utf8(bytes.clone())
             .unwrap()
             .contains(&format!("\"input\":{amount}")));
         assert_eq!(
-            serde_json::from_slice::<UsageLedger>(&bytes).unwrap(),
+            busbar_contract::json::parse::<UsageLedger>(&bytes).unwrap(),
             original
         );
         assert_eq!(
-            serde_json::from_value::<UsageLedger>(serde_json::to_value(&original).unwrap())
-                .unwrap(),
+            busbar_contract::json::from_value::<UsageLedger>(
+                &busbar_contract::json::to_value(&original).unwrap()
+            )
+            .unwrap(),
             original
         );
         assert_eq!(
@@ -78,19 +80,25 @@ fn fullrange_numeric_wire_roundtrips_through_json_values() {
         );
         let row = metering(amount);
         assert_eq!(
-            serde_json::from_value::<MeteringRow>(serde_json::to_value(&row).unwrap()).unwrap(),
+            busbar_contract::json::from_value::<MeteringRow>(
+                &busbar_contract::json::to_value(&row).unwrap()
+            )
+            .unwrap(),
             row
         );
     }
     for amount in [i128::MIN, i128::MAX] {
         let original = delta(amount);
-        let bytes = serde_json::to_vec(&original).unwrap();
+        let bytes = busbar_contract::json::to_vec(&original).unwrap();
         assert_eq!(
-            serde_json::from_slice::<UsageDelta>(&bytes).unwrap(),
+            busbar_contract::json::parse::<UsageDelta>(&bytes).unwrap(),
             original
         );
         assert_eq!(
-            serde_json::from_value::<UsageDelta>(serde_json::to_value(&original).unwrap()).unwrap(),
+            busbar_contract::json::from_value::<UsageDelta>(
+                &busbar_contract::json::to_value(&original).unwrap()
+            )
+            .unwrap(),
             original
         );
     }
@@ -144,9 +152,9 @@ fn fullrange_legacy_conversion_and_negative_raw_counts_refuse_atomically() {
 #[test]
 fn fullrange_metering_add_checks_all_columns_and_open_counts() {
     let make_delta = |amount| {
-        let mut wire = serde_json::to_value(metering(amount)).unwrap();
+        let mut wire = busbar_contract::json::to_value(&metering(amount)).unwrap();
         wire["bucket"] = 0.into();
-        serde_json::from_value::<MeteringDelta>(wire).unwrap()
+        busbar_contract::json::from_value::<MeteringDelta>(&wire).unwrap()
     };
     let mut row = metering(i128::MAX - 1);
     row.checked_add_delta(&make_delta(1)).unwrap();
@@ -206,5 +214,5 @@ fn fullrange_correction_fingerprint_and_numeric_encoding_are_lossless() {
         .usage_units
         .insert("input".into(), -1);
     assert!(changed.encode().is_err());
-    assert!(Request::decode(&serde_json::to_vec(&changed).unwrap()).is_err());
+    assert!(Request::decode(&busbar_contract::json::to_vec(&changed).unwrap()).is_err());
 }

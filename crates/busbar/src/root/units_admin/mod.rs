@@ -109,10 +109,6 @@ impl AdminRequest {
                 }
             })
             .filter(|credential| !credential.is_empty())
-            .or_else(|| {
-                self.header(ADMIN_TOKEN_HEADER)
-                    .filter(|credential| !credential.is_empty())
-            })
     }
     pub(crate) fn http_headers(&self) -> Result<axum::http::HeaderMap, AdminHeadersInvalid> {
         if self.binding.is_some() {
@@ -193,13 +189,14 @@ impl AdminRequest {
     ) -> Self {
         use busbar_kernel::inbound::request_snapshot::{ChargedRequestSnapshot, SnapshotInput};
         if let Some(credential) = &input.credential {
-            if !input.headers.iter().any(|(name, _)| {
-                name.eq_ignore_ascii_case("authorization")
-                    || name.eq_ignore_ascii_case(ADMIN_TOKEN_HEADER)
-            }) {
+            if !input
+                .headers
+                .iter()
+                .any(|(name, _)| name.eq_ignore_ascii_case("authorization"))
+            {
                 input
                     .headers
-                    .push((ADMIN_TOKEN_HEADER.to_owned(), credential.clone()));
+                    .push(("authorization".to_owned(), format!("Bearer {credential}")));
             }
         }
         let (path, query) = input.path.split_once('?').unwrap_or((&input.path, ""));
@@ -240,10 +237,9 @@ impl AdminRequest {
         let before = input.credential.clone();
         edit(&mut input);
         if input.credential != before {
-            input.headers.retain(|(name, _)| {
-                !name.eq_ignore_ascii_case("authorization")
-                    && !name.eq_ignore_ascii_case(ADMIN_TOKEN_HEADER)
-            });
+            input
+                .headers
+                .retain(|(name, _)| !name.eq_ignore_ascii_case("authorization"));
         }
         *self = Self::capture_test(input, self.snapshot.request());
     }

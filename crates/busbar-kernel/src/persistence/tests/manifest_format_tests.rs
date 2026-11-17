@@ -14,6 +14,7 @@ fn manifest(format: [u32; 4], tail: u32) -> Vec<u8> {
             writer: [2; 16],
             execution_epoch: 1,
         },
+        format: RECORD_FORMAT,
     }
     .encode()
     .to_vec();
@@ -31,8 +32,10 @@ fn the_manifest_is_classified_by_its_format_and_tail() {
     let current = RECORD_FORMAT;
     assert_eq!(current, 1);
     assert_eq!(classify(&manifest([1; 4], 0), none), Format::Current);
-    // 1.6.0 ships no step: a newer format or tail is NEWER, before any write.
-    assert_eq!(classify(&manifest([2; 4], 0), none), Format::Newer);
+    // 1.6.0 ships no step: a newer format or tail is NEWER, before any write. Format 2 is the
+    // restored form of format 1 (DES-331 §B10.4), so the first newer format is 3.
+    assert_eq!(classify(&manifest([2; 4], 0), none), Format::Current);
+    assert_eq!(classify(&manifest([3; 4], 0), none), Format::Newer);
     assert_eq!(classify(&manifest([1; 4], 2), none), Format::Newer);
     // An older format: Older with a step, UNSUPPORTED without.
     assert_eq!(classify(&manifest([0; 4], 0), none), Format::Unsupported);
@@ -56,8 +59,9 @@ fn the_manifest_is_classified_by_its_format_and_tail() {
 #[test]
 fn decode_still_admits_only_a_current_manifest() {
     assert!(Manifest::decode(&manifest([1; 4], 0)).is_ok());
+    assert!(Manifest::decode(&manifest([2; 4], 0)).is_ok());
     for bytes in [
-        manifest([2; 4], 0),
+        manifest([3; 4], 0),
         manifest([1; 4], 2),
         manifest([0; 4], 0),
     ] {

@@ -62,7 +62,6 @@ struct UnitEntry {
     admission_phase: Option<Arc<crate::plane_driver::request_admission::AdmissionPhase>>,
     invocation_owner: Option<busbar_contract::services::Incarnation>,
     child_ancestry: Vec<Arc<str>>,
-    children: HashMap<String, Arc<crate::hook_child::Memo>>,
     prepared: Option<crate::host_outbound::Prepared>,
     outbound: Option<crate::host_outbound::Bound>,
     record: Option<Arc<UnitRecord>>,
@@ -301,24 +300,6 @@ impl UnitRecords {
             .get(&unit)
             .map(|e| e.child_ancestry.clone())
             .unwrap_or_default()
-    }
-    pub(crate) fn hook_child(
-        &self,
-        unit: u64,
-        name: &str,
-        create: impl FnOnce() -> Arc<crate::hook_child::Memo>,
-    ) -> Option<Arc<crate::hook_child::Memo>> {
-        let mut shard = self.lock(unit);
-        let entry = shard
-            .get_mut(&unit)
-            .filter(|e| e.record.is_some() && e.generic_effects_allowed())?;
-        Some(
-            entry
-                .children
-                .entry(name.to_owned())
-                .or_insert_with(create)
-                .clone(),
-        )
     }
     pub fn ended(&self, unit: u64) {
         let removed = self.lock(unit).remove(&unit);

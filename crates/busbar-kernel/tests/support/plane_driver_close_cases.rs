@@ -473,18 +473,19 @@ async fn every_exit_closes_an_arrived_unit_exactly_once() {
 
 #[tokio::test]
 async fn idle_maintenance_pays_a_dropped_units_close_without_another_arrival() {
-    let (plane, driver) = screened(1, false);
-    let driver = Arc::new(driver);
+    // The unit stalls on a far end that never answers; dropping it there owes its close.
+    let r = rig(Way::Double, BufferCaps::default(), cases::Book::default());
+    let (plane, driver) = (r.plane, Arc::new(r.driver));
     let services = services();
     services.register_plane_cleanup(Arc::downgrade(&driver));
     let cadence = Arc::clone(&services);
     let maintenance = tokio::spawn(async move { cadence.flushes().await });
     let (steps, far, caller) = (
         common::TestUnits::passing(),
-        cases::Far::new(&["ok"], cases::CHUNKS),
+        cases::Far::new(&["hang"], cases::CHUNKS),
         cases::Caller::default(),
     );
-    let units = driver.unit(&steps, &far, &caller, cases::arrival("/v1", b"hi"), 0);
+    let units = driver.unit(&steps, &far, &caller, cases::arrival("/call", b"x"), 0);
     assert!(
         tokio::time::timeout(Duration::from_millis(30), drive_as(&units, 811))
             .await
@@ -516,20 +517,21 @@ async fn cleanup_drain_retains_a_pending_close_and_uses_the_callers_waker() {
             self.0.fetch_add(1, Ordering::SeqCst);
         }
     }
-    let (plane, driver) = screened(1, false);
+    // The unit stalls on a far end that never answers; dropping it there owes its close.
+    let r = rig(Way::Double, BufferCaps::default(), cases::Book::default());
+    let (plane, driver) = (r.plane, Arc::new(r.driver));
     plane
         .sessions
         .delay_cancel_reply
         .store(true, Ordering::SeqCst);
-    let driver = Arc::new(driver);
     let services = services();
     services.register_plane_cleanup(Arc::downgrade(&driver));
     let (steps, far, caller) = (
         common::TestUnits::passing(),
-        cases::Far::new(&["ok"], cases::CHUNKS),
+        cases::Far::new(&["hang"], cases::CHUNKS),
         cases::Caller::default(),
     );
-    let units = driver.unit(&steps, &far, &caller, cases::arrival("/v1", b"hi"), 0);
+    let units = driver.unit(&steps, &far, &caller, cases::arrival("/call", b"x"), 0);
     assert!(
         tokio::time::timeout(Duration::from_millis(30), drive_as(&units, 812))
             .await

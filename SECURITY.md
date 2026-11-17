@@ -89,14 +89,19 @@ access to the host or the backing store the operator already controls are out of
 
 Busbar follows a `dev` &rarr; `qa` &rarr; `main` release flow (see [RELEASE.md](RELEASE.md)).
 Releases are cut from `main` under a signed version tag. Security fixes are always
-developed on `dev` first and flow forward through the normal release process, and, for
-higher-severity issues, are backported per the policy below.
+developed on `dev` first and flow forward through the normal release process, and they
+reach every supported line per the policy below.
 
 | Version line | Supported |
 |---|---|
-| Latest minor line (current `main` + its most recent tag) | Yes |
-| Previous minor line | Yes, for Critical / High backports (see below) |
-| Older lines | No; upgrade to a supported line |
+| A minor line `x.y` | Security fixes until the later of 12 months after `x.y.0` or 6 months after the next `x.y.0` |
+| A line past that date | End of life; upgrade to a supported line |
+
+Supported today, with dates taken from the release tags:
+
+- **1.6.x**: from its release.
+- **1.5.x** (`v1.5.0`, 2026-08-01): until the later of 2027-08-01 and 6 months after `v1.6.0`.
+- **1.4.x** (`v1.4.0`, 2026-07-19): until 2027-07-19.
 
 Pin to a tag for production use, and verify your download with the recipes at
 <https://getbusbar.com/security/>.
@@ -107,15 +112,12 @@ We turn a security bug into a durable fix rather than a one-off patch. The polic
 
 1. **Fix on `dev` first, always**, with a regression test and, where the class allows, a
    new or tightened CI gate, so the fix retires the class and not just the instance.
-2. **Severity-driven backport window.** A **Critical** or **High** fix is cherry-picked to
-   the **latest two minor release lines** (for example, from `1.6.x` back to `1.5.x`) on a
-   `security/<line>` branch that runs the same `qa` gate before a patch tag. Medium and Low
-   issues ride the next normal release.
+2. **Every supported line.** A fix reaches every supported line (above). How a fix is cut
+   for an older line is set out in [RELEASE.md](RELEASE.md).
 
 Every backport carries a GitHub Security Advisory with a requested **CVE** and a `Security`
 entry in the [CHANGELOG](CHANGELOG.md), so an operator pinned to a tag can see exactly what
-a patch tag fixes. Two lines, rather than more, is the honest commitment for our team size,
-and it is a commitment rather than an aspiration.
+a patch tag fixes.
 
 ## Roadmap
 
