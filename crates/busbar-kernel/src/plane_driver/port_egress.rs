@@ -106,7 +106,7 @@ struct Shared<'a, F: FarEnd> {
     far: OnceCell<F>,
     request_walk: Option<RequestWalk>,
     admitted: OnceCell<AdmittedRequest>,
-    selected: RefCell<Option<(Candidate, u32)>>,
+    selected: RefCell<Option<(Candidate, u32, Box<str>)>>,
     token: &'a Pass<Route>,
     handle: &'a Handle,
     targets: &'a (dyn Fn(&str, &str) -> Option<MemberTarget> + Send + Sync),
@@ -135,6 +135,7 @@ pub(crate) struct SelectedWalkAttempt {
     walk: RequestWalk,
     target: Candidate,
     preparation: u32,
+    provider: Box<str>,
 }
 impl SelectedWalkAttempt {
     pub(crate) fn walk(&self) -> &RequestWalk {
@@ -154,6 +155,9 @@ impl SelectedWalkAttempt {
     }
     pub(crate) fn resource(&self) -> Option<&str> {
         self.target.resource.as_deref()
+    }
+    pub(crate) fn provider(&self) -> &str {
+        &self.provider
     }
 }
 
@@ -234,15 +238,16 @@ impl<F: FarEnd> WalkSend<'_, '_, F> {
             return None;
         }
         let mut selected = shared.selected.borrow_mut();
-        let (actual, ordinal) = selected.as_ref()?;
+        let (actual, ordinal, _) = selected.as_ref()?;
         if actual != target || *ordinal != preparation {
             return None;
         }
-        let (target, preparation) = selected.take()?;
+        let (target, preparation, provider) = selected.take()?;
         Some(SelectedWalkAttempt {
             walk: walk.clone(),
             target,
             preparation,
+            provider,
         })
     }
 }
@@ -339,7 +344,12 @@ impl<F: FarEnd> Members for WalkMembers<'_, '_, F> {
             let n = s.picks.get().saturating_add(1);
             s.picks.set(n);
             match s.handle.block_on(far.member(s.token, n)) {
-                Pick::Member { name, pool, .. } => {
+                Pick::Member {
+                    name,
+                    pool,
+                    provider,
+                    ..
+                } => {
                     let Some(target) = (s.targets)(&pool, &name) else {
                         continue;
                     };
@@ -360,7 +370,8 @@ impl<F: FarEnd> Members for WalkMembers<'_, '_, F> {
                     };
                     let preparation = s.preparations.get().checked_add(1)?;
                     s.preparations.set(preparation);
-                    *s.selected.borrow_mut() = Some((candidate.clone(), preparation));
+                    *s.selected.borrow_mut() =
+                        Some((candidate.clone(), preparation, provider.into()));
                     return Some(candidate);
                 }
                 Pick::Exhausted { retry_after, .. } => {
