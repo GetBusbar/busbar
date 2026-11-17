@@ -2807,6 +2807,15 @@ pub(crate) async fn auth_middleware(
             let rel = path
                 .strip_prefix(crate::admin::gate::ADMIN_PREFIX)
                 .unwrap_or(path);
+            // DES-331 §B5.2: a quarantined process admits reads and the allow-listed writes only.
+            let restore = crate::persistence::restore::gate();
+            if restore.quarantined()
+                && !crate::persistence::restore::admits_in_quarantine(method.as_str(), rel)
+            {
+                return Err(crate::admin::gate::restore_quarantine_response(
+                    restore.booted_epoch(),
+                ));
+            }
             let class = crate::ratelimit::classify_mutation(rel);
             let actor = principal.id.as_str();
             if let crate::ratelimit::RateCheck::Denied { first_in_window } =
