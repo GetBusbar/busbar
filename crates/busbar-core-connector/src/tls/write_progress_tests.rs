@@ -118,15 +118,15 @@ type PeerFixture = (
 );
 
 async fn established() -> Fixture {
-    established_with_limit(4).await
+    established_with_limit().await
 }
 
-async fn established_with_limit(records: usize) -> Fixture {
-    let (stream, reader, script, _peer) = established_with_peer(records).await;
+async fn established_with_limit() -> Fixture {
+    let (stream, reader, script, _peer) = established_with_peer().await;
     (stream, reader, script)
 }
 
-async fn established_with_peer(records: usize) -> PeerFixture {
+async fn established_with_peer() -> PeerFixture {
     let rcgen::CertifiedKey { cert, signing_key } =
         rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
     let certificate = cert.der().clone();
@@ -134,9 +134,11 @@ async fn established_with_peer(records: usize) -> PeerFixture {
     roots.add(certificate.clone()).unwrap();
     let key = rustls_pki_types::PrivatePkcs8KeyDer::from(signing_key.serialize_der()).into();
     let server_config = tls::server_config(|builder| {
-        builder
-            .with_no_client_auth()
-            .with_single_cert(vec![certificate], key)
+        crate::off_path::tls::select_server_output(
+            builder
+                .with_no_client_auth()
+                .with_single_cert(vec![certificate], key)?,
+        )
     })
     .unwrap();
     let client_config = tls::client_config(|builder| {
@@ -145,6 +147,10 @@ async fn established_with_peer(records: usize) -> PeerFixture {
     .unwrap();
     let (client_io, server_io) = tokio::io::duplex(65536);
     let script = Arc::new(Mutex::new(Script::default()));
+    let plan = tls::write_progress::server_plan(&server_config).unwrap();
+    let credit = super::tests::storage()
+        .try_reserve(plan.requested_bytes())
+        .unwrap();
     let acceptor = tokio_rustls::TlsAcceptor::from(server_config);
     let connector = tokio_rustls::TlsConnector::from(client_config);
     let (client, server) = tokio::join!(
@@ -152,15 +158,15 @@ async fn established_with_peer(records: usize) -> PeerFixture {
             rustls_pki_types::ServerName::try_from("localhost").unwrap(),
             client_io
         ),
-        acceptor.accept(ScriptIo {
+        super::write_progress::handshake(credit, || acceptor.accept(ScriptIo {
             io: server_io,
             script: script.clone()
-        }),
+        })),
     );
     let peer = client.unwrap().into_inner().0;
     let mut server = server.unwrap();
-    server.flush().await.unwrap();
-    let (tracked, reader) = TrackedTls::new(server, records).unwrap();
+    server.stream_mut().flush().await.unwrap();
+    let (tracked, reader) = TrackedTls::new(server, plan).unwrap();
     script.lock().unwrap().enabled = true;
     (tracked, reader, script, peer)
 }
@@ -266,14 +272,16 @@ async fn completed_ciphertext_is_not_a_successful_failed_flush() {
 async fn zero_raw_write_never_strands_full_descriptor_capacity_as_pending() {
     for already_buffered in [false, true] {
         for vectored in [false, true] {
-            let (mut stream, reader, script) = established_with_limit(1).await;
+            let (mut stream, reader, script) = established_with_limit().await;
             let mut cx = Context::from_waker(futures::task::noop_waker_ref());
             if already_buffered {
-                arm(&script, [Step::Pending]);
-                assert!(matches!(
-                    Pin::new(&mut stream).poll_write(&mut cx, b"first"),
-                    Poll::Ready(Ok(5))
-                ));
+                for _ in 0..64 {
+                    arm(&script, [Step::Pending]);
+                    assert!(matches!(
+                        Pin::new(&mut stream).poll_write(&mut cx, b"first"),
+                        Poll::Ready(Ok(5))
+                    ));
+                }
             }
             arm(&script, [Step::Bytes(0)]);
             let result = if vectored {
@@ -288,7 +296,7 @@ async fn zero_raw_write_never_strands_full_descriptor_capacity_as_pending() {
             let progress = reader.snapshot();
             assert_eq!(
                 progress.accepted_plaintext,
-                if already_buffered { 5 } else { 4 }
+                if already_buffered { 64 * 5 } else { 4 }
             );
             assert_eq!(progress.written_plaintext, 0);
             assert_eq!(progress.complete_records_plaintext, 0);
@@ -299,7 +307,7 @@ async fn zero_raw_write_never_strands_full_descriptor_capacity_as_pending() {
 
 #[tokio::test]
 async fn fatal_record_read_keeps_positive_last_gasp_output_before_error() {
-    let (mut stream, reader, script, mut peer) = established_with_peer(4).await;
+    let (mut stream, reader, script, mut peer) = established_with_peer().await;
     let mut cx = Context::from_waker(futures::task::noop_waker_ref());
     arm(&script, [Step::Pending]);
     assert!(matches!(

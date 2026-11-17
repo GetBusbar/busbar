@@ -109,7 +109,13 @@ async fn prepare_plaintext_is_identity_and_passes_bytes_unchanged() {
     let (mut a, b) = tokio::io::duplex(64);
     let raw: Box<dyn busbar_contract::transport::wire::RawIo> =
         Box::new(TokioAsyncReadCompatExt::compat(b));
-    let mut wrapped = security.wrap(raw).await.expect("identity wrap never fails");
+    let mut wrapped = security
+        .wrap(crate::raw_progress::test_io(
+            raw,
+            crate::tls::tests::storage(),
+        ))
+        .await
+        .expect("identity wrap never fails");
 
     a.write_all(b"hello, plaintext").await.unwrap();
     a.shutdown().await.unwrap();
@@ -220,7 +226,10 @@ async fn tls_wrap_completes_a_real_handshake_and_carries_bytes() {
         let raw: Box<dyn busbar_contract::transport::wire::RawIo> =
             Box::new(TokioAsyncReadCompatExt::compat(server_io));
         let mut wrapped = security
-            .wrap(raw)
+            .wrap(crate::raw_progress::test_io(
+                raw,
+                crate::tls::tests::storage(),
+            ))
             .await
             .expect("server handshake must succeed");
         let mut buf = [0u8; 5];
@@ -417,7 +426,10 @@ async fn the_tls_wrap_serves_a_client_whose_certificate_chains_to_the_client_ca(
         let raw: Box<dyn busbar_contract::transport::wire::RawIo> =
             Box::new(TokioAsyncReadCompatExt::compat(server_io));
         let mut wrapped = security
-            .wrap(raw)
+            .wrap(crate::raw_progress::test_io(
+                raw,
+                crate::tls::tests::storage(),
+            ))
             .await
             .expect("a client whose certificate chains to the client CA is served");
         assert_eq!(wrapped.peer_certificate.as_ref(), expected_peer.as_slice());
@@ -638,7 +650,12 @@ async fn wrap_and_read(
     let server_task = tokio::spawn(async move {
         let raw: Box<dyn busbar_contract::transport::wire::RawIo> =
             Box::new(TokioAsyncReadCompatExt::compat(server_io));
-        let mut wrapped = security.wrap(raw).await?;
+        let mut wrapped = security
+            .wrap(crate::raw_progress::test_io(
+                raw,
+                crate::tls::tests::storage(),
+            ))
+            .await?;
         let mut got = vec![0u8; want];
         futures::io::AsyncReadExt::read_exact(&mut wrapped, &mut got).await?;
         Ok::<_, std::io::Error>(got)
@@ -850,4 +867,10 @@ fn a_bad_key_or_client_ca_names_its_source_and_never_settings_or_bytes() {
         assert!(!err.contains(MARKER), "{field}: raw bytes echoed: {err}");
         assert!(!err.contains(&b64), "{field}: encoded bytes echoed: {err}");
     }
+}
+
+// A real process account supplies the fixture's pre-request connection source.
+pub(super) fn storage() -> busbar_contract::storage::StorageSource {
+    use busbar_kernel::limits::process_admission::{AdmissionClass, ProcessAdmission};
+    ProcessAdmission::new(0).connection_storage(AdmissionClass::Data)
 }
