@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
@@ -58,6 +58,7 @@ struct Store {
     fail_list: AtomicBool,
     refuse_write: AtomicBool,
     refuse_replay: AtomicBool,
+    held_reads: AtomicUsize,
 }
 
 impl Store {
@@ -76,6 +77,7 @@ impl Store {
             fail_list: AtomicBool::new(false),
             refuse_write: AtomicBool::new(false),
             refuse_replay: AtomicBool::new(false),
+            held_reads: AtomicUsize::new(0),
         })
     }
 }
@@ -89,6 +91,20 @@ impl PersistenceBackend for Store {
     }
     fn read(&self, request: Arc<Read>) -> Call<'_, ReadResult> {
         Box::pin(async move {
+            self.held_reads.fetch_add(
+                request
+                    .addresses
+                    .iter()
+                    .filter(|address| {
+                        address.key.first() == Some(&b'R')
+                            && address
+                                .key
+                                .windows(b"held:".len())
+                                .any(|part| part == b"held:")
+                    })
+                    .count(),
+                Ordering::SeqCst,
+            );
             if request.addresses.iter().any(identity_key) && self.fail_read.load(Ordering::SeqCst) {
                 return Err(Failure::Unavailable);
             }
@@ -969,7 +985,6 @@ async fn unknown_effect_receipt_refusal_prevents_handler_dispatch() {
     if isolated() {
         return;
     }
-    use std::sync::atomic::AtomicUsize;
     use tower::ServiceExt as _;
 
     let (store, handle, _router, _book) = app().await;
@@ -1002,6 +1017,85 @@ async fn unknown_effect_receipt_refusal_prevents_handler_dispatch() {
     let retry = router.oneshot(request()).await.unwrap();
     assert_eq!(retry.status(), StatusCode::CONFLICT);
     assert_eq!(effects.load(Ordering::SeqCst), 0);
+    println!("custody assertions completed");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn held_history_cursor_bounds_reads_without_a_lifetime_reuse_cap() {
+    if isolated() {
+        return;
+    }
+    use busbar_core_admin::idempotency::durable::{self, Settled};
+
+    let (store, handle, _router, _book) = app().await;
+    let scoped = durable::scoped_store(
+        handle
+            .load()
+            .governance
+            .as_ref()
+            .unwrap()
+            .core_store_handle()
+            .unwrap(),
+    )
+    .unwrap();
+    let now = busbar_kernel::store::now();
+    let key = ("cursor-owner".into(), "op:reuse".into());
+    for _ in 0..70 {
+        let claim = durable::claim_held(&scoped, &key, now).await.unwrap();
+        durable::settle(&scoped, &claim, now, &Settled::Released)
+            .await
+            .unwrap();
+    }
+    store.held_reads.store(0, Ordering::SeqCst);
+    let current = durable::claim_held(&scoped, &key, now).await.unwrap();
+    assert!(
+        store.held_reads.load(Ordering::SeqCst) <= 2,
+        "admission must start at its retained current-generation cursor"
+    );
+    durable::settle(&scoped, &current, now, &Settled::Retained(vec![3; 49]))
+        .await
+        .unwrap();
+    store.held_reads.store(0, Ordering::SeqCst);
+    assert!(durable::lookup(&scoped, &key, now).await.unwrap().is_some());
+    assert!(
+        store.held_reads.load(Ordering::SeqCst) <= 1,
+        "lookup must not traverse retired generations"
+    );
+    println!("custody assertions completed");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn cursor_persistence_refusal_cannot_admit_a_successor() {
+    if isolated() {
+        return;
+    }
+    use busbar_core_admin::idempotency::durable::{self, Refused, Settled};
+
+    let (store, handle, _router, _book) = app().await;
+    let scoped = durable::scoped_store(
+        handle
+            .load()
+            .governance
+            .as_ref()
+            .unwrap()
+            .core_store_handle()
+            .unwrap(),
+    )
+    .unwrap();
+    let now = busbar_kernel::store::now();
+    let key = ("cursor-owner".into(), "op:refused-cursor".into());
+    let first = durable::claim_held(&scoped, &key, now).await.unwrap();
+    durable::settle(&scoped, &first, now, &Settled::Released)
+        .await
+        .unwrap();
+    store.refuse_replay.store(true, Ordering::SeqCst);
+    assert!(
+        matches!(
+            durable::claim_held(&scoped, &key, now).await,
+            Err(Refused::Unavailable(_))
+        ),
+        "an unconfirmed cursor publication must not return an effect capability"
+    );
     println!("custody assertions completed");
 }
 
