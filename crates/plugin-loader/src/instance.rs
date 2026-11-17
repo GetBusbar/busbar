@@ -2538,7 +2538,7 @@ mod needs_tests;
 /// ceiling liveness check, the answer parse and `decode_described` (D_SCHEMA held to core's validator) and the
 /// kind items. `cross` is the only difference: `Admitted::describe` or `Opened::describe`.
 pub(crate) fn describe_with(
-    slots: &SlotTable,
+    slots: &Arc<SlotTable>,
     max_out: usize,
     identity: &str,
     kind: KindCode,
