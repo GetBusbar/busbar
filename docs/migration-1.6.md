@@ -358,7 +358,9 @@ build. Update clients before accepting the upgrade.
 Send the admin credential as `Authorization: Bearer <token>`, the only admin scheme in 1.6.0; the
 `x-admin-token` header is removed.
 
-`admin_auth: []` is refused at boot; delete it and configure the operator token.
+`admin_auth: []` is refused at boot; delete it and give the operator credential its settings,
+`settings: {sha256: "<digest>"}`, where `<digest>` is the SHA-256 of your admin token as 64
+lower-case hex characters (the boot refusal shows how to mint both).
 
 Start with `GET /kinds`, then `GET /kinds/{kind}/instances`, then the instance and its advertised
 views and operations. Do not infer a kind name or operation from an artifact filename.
