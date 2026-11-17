@@ -65,3 +65,27 @@ pub fn guard<R>(
 ) -> Option<R> {
     crate::host_side::driver::step(slot, entry, out, call)
 }
+
+#[cfg(test)]
+mod pure_tests {
+    use super::*;
+
+    #[test]
+    fn pure_selection_suppresses_host_services_and_restores_after_unwind() {
+        assert!(!pure());
+        let result = std::panic::catch_unwind(|| {
+            let _outer = Pure::enter();
+            assert!(pure());
+            {
+                let _inner = Pure::enter();
+                assert_eq!(crate::host_side::host_vt::vt::now(), 0);
+                assert_eq!(crate::host_side::host_vt::vt::mono(), 0);
+                assert_eq!(crate::host_side::host_vt::vt::log_level(), 0);
+            }
+            assert!(pure());
+            panic!("selector unwind");
+        });
+        assert!(result.is_err());
+        assert!(!pure());
+    }
+}
