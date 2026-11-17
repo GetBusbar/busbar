@@ -237,21 +237,6 @@ impl InvocationContext {
         Ok(())
     }
 
-    /// Hook child operations carry the same checked parent and generation.
-    pub(crate) fn dispatch_hook_child(
-        &self,
-        nest: Nest,
-        done: NestDone,
-    ) -> Result<(), &'static str> {
-        if self.data_gate.is_some() || nest.parent != self.unit || !self.effects_allowed() {
-            return Err(NEST_NO_UNIT);
-        }
-        self.generation
-            .core
-            .dispatch_child(self.clone(), &self.generation.route, nest, done);
-        Ok(())
-    }
-
     pub fn accepts(&self, caller: &Caller) -> bool {
         self.caller.incarnation() == caller.incarnation()
             && self.generation.core.invocation_admitted(caller)

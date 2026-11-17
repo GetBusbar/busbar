@@ -2558,7 +2558,8 @@ async fn a_lost_opening_reply_resolves_by_its_owner_witness() {
         converting.migration().unwrap().manifest_bytes().to_vec(),
         Manifest {
             dataset: DatasetId([1; 16]),
-            registrar
+            registrar,
+            format: RECORD_FORMAT,
         }
         .encode_at(0, 1)
         .to_vec()
@@ -2702,4 +2703,34 @@ async fn a_backend_refusal_is_reported_as_resizable() {
         Access::new(store).commit(old_write()).await,
         Ok(Outcome::Refused)
     );
+}
+
+/// A manifest's 80 bytes at `format`, no step under way, for dataset `[1; 16]` and registrar
+/// `[2; 16]` at writer and execution epoch 1.
+fn manifest_at(format: u32) -> [u8; 80] {
+    let mut bytes = [0u8; 80];
+    bytes[..8].copy_from_slice(b"BSCFMT1\0");
+    for at in [8, 12, 16, 20] {
+        bytes[at..at + 4].copy_from_slice(&format.to_le_bytes());
+    }
+    bytes[24..40].fill(1);
+    bytes[40..48].copy_from_slice(&1u64.to_le_bytes());
+    bytes[48..64].fill(2);
+    bytes[64..72].copy_from_slice(&1u64.to_le_bytes());
+    bytes
+}
+
+/// DES-331 r3.3 §B10.4: a dataset that entered a restore carries manifest format 2, which is
+/// format 1 plus the restore row. This build admits it as current and writes it back unchanged
+/// (so a writer transition's exact manifest predicate still matches); format 3 stays `Newer`.
+#[test]
+fn a_restored_format_two_manifest_is_current_and_round_trips() {
+    assert_eq!(classify(&manifest_at(1), |_| false), Format::Current);
+    assert_eq!(classify(&manifest_at(2), |_| false), Format::Current);
+    assert_eq!(classify(&manifest_at(3), |_| false), Format::Newer);
+    for format in [1, 2] {
+        let bytes = manifest_at(format);
+        let manifest = Manifest::decode(&bytes).expect("a current manifest decodes");
+        assert_eq!(manifest.encode(), bytes);
+    }
 }

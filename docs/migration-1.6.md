@@ -404,6 +404,10 @@ instance IDs. Resolve a reported collision and update clients that select by ins
 | `kinds_revision` | The `/kinds` ETag |
 | `overlay_ignored` | A `warnings[]` entry with `code: "overlay_ignored"` |
 
+`/info` gains `crypto` (`{validated_mode, validation}`). The crypto backend's name and module version,
+which `/healthz` showed as `crypto_module`, are the `core/process` instance's `state.crypto`
+(`{backend, module, api, validated_mode, validation}`, `/kinds/core/instances/process`).
+
 ## Usage and rate cards
 
 Review prices explicitly. Migration removes root `cache_write_utok: 0`, the 1.5.5 spelling of
@@ -619,6 +623,13 @@ address is derived only from a loopback `admin_listen` (`http(s)://127.0.0.1:808
   upstream answered with one whole body.
 - **An explicit operator-acknowledged open relay stays available** as an audited opt-in for pools
   that claim it; it is never the default.
+- **A2A `ListTasks` is answered by Busbar from the caller's own task records**, never relayed
+  to the agent, whose own list names every caller's tasks. It lists only tasks the caller
+  created through Busbar on the agent named, as `{id, status: {state}}` without context,
+  history or artifacts (read a task with `GetTask`). A non-empty `contextId`, a set
+  `statusTimestampAfter` and `includeArtifacts: true` are refused with `INVALID_PARAMS`. A
+  caller holding more than 256 tasks across all agents is refused (`UNSUPPORTED_OPERATION`)
+  rather than given a truncated list. See [`ListTasks`](/docs/a2a/#listtasks).
 - **Plane trust approvals are keyed by plane instance name** and their digests are written
   `sha256:<hex>`. A 1.5.5 A2A `fingerprint` in another form reads as drift until you approve the
   agent again.

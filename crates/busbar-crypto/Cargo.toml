@@ -16,7 +16,7 @@ license = "Apache-2.0"
 # build patches its own crate of the same name in. The rev's crates/busbar-crypto-backend tree must equal
 # this commit's (tests/backend_pin.rs): a plugin pinned to this commit builds exactly that backend. A
 # backend change therefore takes two commits: the change, then the bump of this rev to a commit carrying it.
-busbar-crypto-backend = { git = "https://github.com/GetBusbar/busbar", rev = "e95b3fc0e283e3aa5826b71ae95947bb05545feb" }
+busbar-crypto-backend = { git = "https://github.com/GetBusbar/busbar", rev = "d3d97f9fdce2f1140acfed817a41ff3c6f3eb9aa" }
 zeroize = { version = "1", default-features = false }
 # The listener-ticket key-failure warning (tls::ListenerTickets).
 tracing = { version = "0.1", default-features = false, features = ["std"], optional = true }
@@ -28,12 +28,18 @@ dimpl = { version = "=0.7.4", default-features = false, optional = true }
 [features]
 # TLS configs, verifiers and the ticketer, built only through this crate (no public provider).
 tls = ["dep:rustls", "dep:rustls-pki-types", "dep:dimpl", "dep:tracing", "busbar-crypto-backend/tls"]
-# Test certificates; dev-dependencies only.
-test-support = ["tls", "busbar-crypto-backend/test-support"]
+# The backend conformance suite (src/conformance.rs), for a private backend's CI: it forces neither
+# `tls` nor the backend's `test-support` (DES-3 sign-off on the crypto-seam design).
+conformance = []
+# Test certificates and the suite; dev-dependencies only.
+test-support = ["tls", "conformance", "busbar-crypto-backend/test-support"]
 
 [dev-dependencies]
 # The suite runs against the facade as every crate sees it (busbar_contract::crypto, test-support on).
 busbar-contract = { path = "../busbar-contract", features = ["test-support"] }
+# tests/contract_pin.rs hashes contract.rs by item kind (DES crypto-seam r3 §4.2).
+syn = { version = "2", default-features = false, features = ["full", "parsing", "printing"] }
+quote = { version = "1", default-features = false }
 
 [lints]
 workspace = true
