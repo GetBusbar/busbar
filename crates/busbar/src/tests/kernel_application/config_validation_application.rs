@@ -4474,8 +4474,10 @@ fn a_config_without_an_auth_block_refuses_rather_than_booting_an_open_relay() {
         errors.iter().any(|error| error.contains(&code)
             && error.contains("no `auth:` block")
             && error.contains("chain: [keys]")
-            && error.contains("auth: { chain: [] }")),
-        "the refusal is coded and names the authenticated fix and the explicit opt-out: {errors:?}"
+            && error.contains("add `auth: { chain: [] }` explicitly to run an open relay")
+            && error.contains("or configure a chain")),
+        "the refusal is coded and gives the one-line remedy: the explicit, audited open relay or a \
+         configured chain: {errors:?}"
     );
 
     cfg.auth = Some(config::AuthCfg::default_none());

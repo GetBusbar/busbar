@@ -43,10 +43,6 @@ fn a_conflicting_catalog_refuses_before_store_migration() {
     );
 }
 
-/// A 1.5.5 config that writes its `auth:` block, so the upgrade adds only what a catalog test
-/// observes (a config with none gains the open posture 1.5.5 implied, #358).
-const KEYED: &str = "listen: x\nauth: {chain: [keys]}\nstore: {module: sqlite}\n";
-
 /// Plan and write `config` in `scratch` with `facts`, recording the catalog the parse was handed.
 fn upgrade(scratch: &Scratch, config: &str, facts: &Facts) -> (Vec<String>, Option<String>) {
     let path = scratch.config(config);
@@ -67,7 +63,7 @@ fn a_catalog_key_1_5_5_ignored_is_dropped_into_a_new_catalog() {
     let scratch = Scratch::new();
     let source = scratch.file("providers.yaml", CATALOG);
     std::fs::set_permissions(&source, std::fs::Permissions::from_mode(0o600)).unwrap();
-    let (report, handed) = upgrade(&scratch, KEYED, &facts());
+    let (report, handed) = upgrade(&scratch, "listen: x\nstore: {module: sqlite}\n", &facts());
     assert_eq!(
         handed.as_deref(),
         Some(CATALOG_1_6),
@@ -87,8 +83,8 @@ fn a_catalog_key_1_5_5_ignored_is_dropped_into_a_new_catalog() {
     );
     assert_eq!(
         std::fs::read_to_string(scratch.dir().join("config.yaml")).unwrap(),
-        "config_version: 1\nlisten: x\nproviders_file: providers.busbar-1.6.yaml\nauth: {chain: \
-         [keys]}\nstore: {module: sqlite}\n"
+        "config_version: 1\nlisten: x\nproviders_file: providers.busbar-1.6.yaml\nstore: {module: \
+         sqlite}\n"
     );
     assert_eq!(
         report
@@ -104,7 +100,7 @@ fn a_catalog_key_1_5_5_ignored_is_dropped_into_a_new_catalog() {
 fn an_unchanged_catalog_plans_no_file() {
     let scratch = Scratch::new();
     scratch.file("providers.yaml", CATALOG_1_6);
-    let (report, handed) = upgrade(&scratch, KEYED, &facts());
+    let (report, handed) = upgrade(&scratch, "listen: x\nstore: {module: sqlite}\n", &facts());
     assert_eq!(handed, None);
     // 1b always reports the overlay it looked for (package 2); the chain itself changed nothing.
     assert!(
@@ -114,7 +110,7 @@ fn an_unchanged_catalog_plans_no_file() {
     assert!(!scratch.dir().join("providers.busbar-1.6.yaml").exists());
     assert_eq!(
         std::fs::read_to_string(scratch.dir().join("config.yaml")).unwrap(),
-        "config_version: 1\nlisten: x\nauth: {chain: [keys]}\nstore: {module: sqlite}\n"
+        "config_version: 1\nlisten: x\nstore: {module: sqlite}\n"
     );
 }
 
@@ -127,14 +123,14 @@ fn providers_file_selects_the_catalog_and_is_pointed_at_the_new_one() {
     scratch.file("catalog/up.yaml", CATALOG);
     let (_, handed) = upgrade(
         &scratch,
-        "providers_file: catalog/up.yaml # the fleet's\nauth: {chain: [keys]}\nstore: {module: sqlite}\n",
+        "providers_file: catalog/up.yaml # the fleet's\nstore: {module: sqlite}\n",
         &facts(),
     );
     assert_eq!(handed.as_deref(), Some(CATALOG_1_6));
     assert_eq!(
         std::fs::read_to_string(scratch.dir().join("config.yaml")).unwrap(),
-        "config_version: 1\nproviders_file: providers.busbar-1.6.yaml # the fleet's\nauth: \
-         {chain: [keys]}\nstore: {module: sqlite}\n"
+        "config_version: 1\nproviders_file: providers.busbar-1.6.yaml # the fleet's\nstore: \
+         {module: sqlite}\n"
     );
     assert_eq!(
         std::fs::read_to_string(scratch.dir().join("catalog/up.yaml")).unwrap(),

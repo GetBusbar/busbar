@@ -302,8 +302,7 @@ fn overlay_groups_and_tombstones_give_1_5_5s_set() {
     let plan = fold(&scratch, base, overlay).unwrap();
     assert_tree(
         plan.planned(),
-        "config_version: 1\nauth: {chain: []}\ngroups:\n  base: {}\n  new:\n    enabled: false\nstore:\n  \
-         module: memory\n",
+        "config_version: 1\ngroups:\n  base: {}\n  new:\n    enabled: false\nstore:\n  module: memory\n",
     );
     let scratch = Scratch::new();
     let plan = fold(
@@ -314,7 +313,7 @@ fn overlay_groups_and_tombstones_give_1_5_5s_set() {
     .unwrap();
     assert_tree(
         plan.planned(),
-        "config_version: 1\nlisten: x\nauth: {chain: []}\nstore:\n  module: memory\n",
+        "config_version: 1\nlisten: x\nstore:\n  module: memory\n",
     );
 }
 

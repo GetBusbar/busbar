@@ -28,10 +28,9 @@ fn upgrade(config: &str, facts: &Facts) -> (String, Vec<String>) {
 
 /// (a) goldens and (j): each 1.5.5 fixture is rewritten once to its golden, byte for byte through
 /// the patch writer. The store-less default install gains `store: {module: memory}`, the block
-/// 1.5.5 implied (AGREED QM2), and `auth: { chain: [] }`, the open relay it ran (#358); the fleet
-/// config loses its overlay selector, its zero cache-write rate and its hostless metadata entry,
-/// gains the open unit at 0 and the ungoverned binding, and keeps every comment, quote and blank
-/// line, its store module word as written.
+/// 1.5.5 implied (AGREED QM2); the fleet config loses its overlay selector, its zero cache-write
+/// rate and its hostless metadata entry, gains the open unit at 0 and the ungoverned binding, and
+/// keeps every comment, quote and blank line, its store module word as written.
 #[test]
 fn the_1_5_5_goldens_are_rewritten_byte_for_byte() {
     let fleet = Facts {
@@ -60,26 +59,25 @@ fn the_1_5_5_goldens_are_rewritten_byte_for_byte() {
 
 /// (j): the store-less shapes 1.5.5 ran on its built-in store each get the explicit block, one
 /// report line, and nothing else changes: no block, a null block, and a block naming no module
-/// (its keys kept; the store's own migrate drops what it does not read). Each names its `auth:`
-/// block, so the open posture 1.5.5 implied (#358, below) is not written here.
+/// (its keys kept; the store's own migrate drops what it does not read).
 #[test]
 fn a_store_less_1_5_5_config_names_the_store_1_5_5_implied() {
     for (source, golden) in [
         (
-            "listen: x\nauth: {chain: [keys]}\n",
-            "config_version: 1\nlisten: x\nauth: {chain: [keys]}\nstore:\n  module: memory\n",
+            "listen: x\n",
+            "config_version: 1\nlisten: x\nstore:\n  module: memory\n",
         ),
         (
-            "listen: x\nauth: {chain: [keys]}\nstore:\n",
-            "config_version: 1\nlisten: x\nauth: {chain: [keys]}\nstore:\n  module: memory\n",
+            "listen: x\nstore:\n",
+            "config_version: 1\nlisten: x\nstore:\n  module: memory\n",
         ),
         (
-            "listen: x\nauth: {chain: [keys]}\nstore: {token: x}\n",
-            "config_version: 1\nlisten: x\nauth: {chain: [keys]}\nstore: {module: memory, token: x}\n",
+            "listen: x\nstore: {token: x}\n",
+            "config_version: 1\nlisten: x\nstore: {module: memory, token: x}\n",
         ),
         (
-            "listen: x\nauth: {chain: [keys]}\nstore: {module: ~, token: x}\n",
-            "config_version: 1\nlisten: x\nauth: {chain: [keys]}\nstore: {module: memory, token: x}\n",
+            "listen: x\nstore: {module: ~, token: x}\n",
+            "config_version: 1\nlisten: x\nstore: {module: memory, token: x}\n",
         ),
     ] {
         let (written, report) = upgrade(source, &facts());
@@ -94,14 +92,8 @@ fn a_store_less_1_5_5_config_names_the_store_1_5_5_implied() {
         );
     }
     // A config that names its store keeps it, whatever the word.
-    let (written, report) = upgrade(
-        "auth: {chain: [keys]}\nstore:\n  module: postgres\n",
-        &facts(),
-    );
-    assert_eq!(
-        written,
-        "config_version: 1\nauth: {chain: [keys]}\nstore:\n  module: postgres\n"
-    );
+    let (written, report) = upgrade("store:\n  module: postgres\n", &facts());
+    assert_eq!(written, "config_version: 1\nstore:\n  module: postgres\n");
     // 1b always reports the overlay it looked for (package 2); the chain itself changed nothing.
     assert!(
         report.iter().all(|line| line.starts_with("overlay: ")),
@@ -109,36 +101,35 @@ fn a_store_less_1_5_5_config_names_the_store_1_5_5_implied() {
     );
 }
 
-/// #358 (PRD-4 with PRD-5): 1.5.5 ran a config with no `auth:` block, or a null one, as an open
-/// relay; 1.6.0 refuses that omission (BUSBAR-8014). The upgrade writes the posture 1.5.5 ran,
-/// `auth: { chain: [] }`, the explicit open-relay acknowledgement 1.6.0 boots bannered, with one
-/// report line naming the open relay and the authenticated fix. A config that writes its own
-/// `auth:` block, open or not, keeps it as written and gets no line.
+/// #358 (PRD-5; owner ruling L1, "Refuse, give remedy… no auto-write"): 1.5.5 ran a config with no
+/// `auth:` block, or a null one, as an open relay, and 1.6.0 refuses to boot it (BUSBAR-8014). The
+/// upgrade never writes an open relay for the operator: it leaves the block unwritten and reports
+/// one BUSBAR-8014 action item carrying the boot refusal's remedy. A config that writes its own
+/// `auth:` block, open or not, gets no item.
 #[test]
-fn a_1_5_5_config_with_no_auth_block_gains_the_explicit_open_posture() {
-    for (source, golden) in [
-        (
-            "listen: x\nstore: {module: sqlite}\n",
-            "config_version: 1\nlisten: x\nauth:\n  chain: []\nstore: {module: sqlite}\n",
-        ),
-        (
-            "listen: x\nauth:\nstore: {module: sqlite}\n",
-            "config_version: 1\nlisten: x\nauth:\n  chain: []\nstore: {module: sqlite}\n",
-        ),
+fn a_1_5_5_config_with_no_auth_block_is_reported_and_left_unwritten() {
+    let code = busbar_kernel::diagnostics::OPEN_RELAY_NO_AUTH
+        .banner()
+        .to_string();
+    for source in [
+        "listen: x\nstore: {module: sqlite}\n",
+        "listen: x\nauth:\nstore: {module: sqlite}\n",
     ] {
         let (written, report) = upgrade(source, &facts());
-        assert_eq!(written, golden, "{source:?}");
-        let lines: Vec<&String> = report
-            .iter()
-            .filter(|line| line.starts_with("auth: "))
-            .collect();
-        assert_eq!(lines.len(), 1, "{report:?}");
+        assert_eq!(
+            written,
+            format!("config_version: 1\n{source}"),
+            "no open relay is written: {source:?}"
+        );
+        let items: Vec<&String> = report.iter().filter(|line| line.contains(&code)).collect();
+        assert_eq!(items.len(), 1, "{report:?}");
         assert!(
-            lines[0].contains("auth: { chain: [] }")
-                && lines[0].contains("open relay")
-                && lines[0].contains("chain: [keys]"),
-            "the line names the written posture, the open relay and the authenticated fix: {}",
-            lines[0]
+            items[0].contains("no `auth:` block")
+                && items[0].contains("add `auth: { chain: [] }` explicitly to run an open relay")
+                && items[0].contains("or configure a chain")
+                && items[0].contains("chain: [keys]"),
+            "the item gives the boot refusal's remedy: {}",
+            items[0]
         );
     }
     for source in [
@@ -152,7 +143,7 @@ fn a_1_5_5_config_with_no_auth_block_gains_the_explicit_open_posture() {
             "{source:?}"
         );
         assert!(
-            !report.iter().any(|line| line.starts_with("auth: ")),
+            !report.iter().any(|line| line.contains(&code)),
             "{report:?}"
         );
     }
@@ -170,7 +161,7 @@ fn module_words_are_left_as_written() {
         "redis",
     ] {
         let source = format!(
-            "auth: {{chain: [keys]}}\nstore: {{module: {module}}}\nsecrets:\n  vault: {{module: busbar-hashicorp-vault, settings: {{address: x}}}}\n"
+            "store: {{module: {module}}}\nsecrets:\n  vault: {{module: busbar-hashicorp-vault, settings: {{address: x}}}}\n"
         );
         let seen = RefCell::new(None);
         let check = |text: &str, _: Option<&str>| -> Result<(), String> {
@@ -198,7 +189,7 @@ fn the_deleted_passes_inputs_reach_the_strict_parse_unchanged() {
         "pools:\n  fast:\n    deadline_secs: 5\n",
         "pools:\n  fast:\n    hooks:\n      - audit: {at: route}\n",
     ] {
-        let source = format!("{shape}auth: {{chain: [keys]}}\nstore: {{module: sqlite}}\n");
+        let source = format!("{shape}store: {{module: sqlite}}\n");
         let seen = RefCell::new(None);
         let check = |text: &str, _: Option<&str>| -> Result<(), String> {
             *seen.borrow_mut() = Some(text.to_owned());
@@ -254,7 +245,7 @@ fn the_deleted_passes_inputs_reach_the_strict_parse_unchanged() {
 #[test]
 fn the_open_units_are_the_boots_facts_and_the_boots_parse_judges_them() {
     let source =
-        "auth: {chain: [keys]}\nrate_card:\n  claude: {input_utok: 3, output_utok: 15}\nstore: {module: sqlite}\n";
+        "rate_card:\n  claude: {input_utok: 3, output_utok: 15}\nstore: {module: sqlite}\n";
     let with = |units: &[&str]| Facts {
         open_units: units.iter().map(|unit| (*unit).to_owned()).collect(),
         ..facts()
@@ -262,8 +253,8 @@ fn the_open_units_are_the_boots_facts_and_the_boots_parse_judges_them() {
     let (written, report) = upgrade(source, &with(&["web_search"]));
     assert_eq!(
         written,
-        "config_version: 1\nauth: {chain: [keys]}\nrate_card:\n  claude: {input_utok: 3, output_utok: 15, \
-         units: {web_search: 0}}\nstore: {module: sqlite}\n"
+        "config_version: 1\nrate_card:\n  claude: {input_utok: 3, output_utok: 15, units: \
+         {web_search: 0}}\nstore: {module: sqlite}\n"
     );
     assert_eq!(
         report
