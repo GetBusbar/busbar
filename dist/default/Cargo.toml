@@ -1076,13 +1076,13 @@ zeroize = "1"
 [patch.'https://github.com/GetBusbar/busbar']
 busbar-plugin-abi = { path = "../../crates/busbar-plugin-abi" }
 busbar-contract = { path = "../../crates/busbar-contract" }
-busbar-crypto-backend = { path = "../../crates/busbar-crypto-backend" }
 
 # Published MIN-3 planes name the GitLab source identity. Resolve their SDK and JSON facade
 # to this same core tree; URL aliases otherwise produce a second SDK/FFI type universe.
-[patch.'https://github.com/GetBusbar/busbar']
+[patch.'https://github.com/GetBusbar/busbar.git']
 busbar-contract = { path = "../../crates/busbar-contract" }
 busbar-plugin-abi = { path = "../../crates/busbar-plugin-abi" }
+busbar-crypto-backend = { path = "../../crates/busbar-crypto-backend" }
 
 # Exact release-line fixes submitted upstream: h2 sensitive indexed fields and WebSocket 1014.
 [patch.crates-io]

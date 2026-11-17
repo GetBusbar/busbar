@@ -429,6 +429,7 @@ dependencies = [
  "axum-core",
  "base64 0.22.1",
  "busbar-crypto",
+ "busbar-secure",
  "bytes",
  "ciborium",
  "foldhash 0.2.0",
@@ -981,6 +982,7 @@ dependencies = [
  "base64 0.22.1",
  "busbar-crypto",
  "busbar-ffi",
+ "busbar-secure",
  "crossbeam-queue",
  "hex",
  "percent-encoding",
@@ -1043,6 +1045,13 @@ dependencies = [
  "libc",
  "serde",
  "serde_json",
+ "zeroize",
+]
+
+[[package]]
+name = "busbar-secure"
+version = "1.6.0"
+dependencies = [
  "zeroize",
 ]
 
@@ -3566,7 +3575,7 @@ version = "2.1.1"
 source = "git+https://github.com/MattJackson/serde-saphyr?rev=a94d2da01a448d348b5d14945e29192e511b8452#a94d2da01a448d348b5d14945e29192e511b8452"
 dependencies = [
  "annotate-snippets",
- "base64 0.23.1",
+ "base64 0.22.1",
  "encoding_rs_io",
  "granit-parser",
  "nohash-hasher",

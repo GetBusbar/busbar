@@ -227,6 +227,8 @@ members = ["."]
 # Dependency patches are effective only at the consuming workspace root: the root workspace's, verbatim.
 [patch.'https://github.com/GetBusbar/busbar']
 busbar-contract = { path = "../../crates/busbar-contract" }
+
+[patch.'https://github.com/GetBusbar/busbar.git']
 busbar-crypto-backend = { path = "../../crates/busbar-crypto-backend" }
 
 [patch.crates-io]
