@@ -4,15 +4,16 @@
 //! Slots: the one token table, shared by chains and sessions; the instance the shims build; and the
 //! chain box (IF §6.5, §6.4 steps 1-9; UNSAFE-MIN §2.2, §2.6).
 //!
-//! `unsafe` here: the value write of `insert`, `get_mut` (def and body), the value take of `remove`,
+//! `unsafe` here: the value write of `insert_raw`, the `get_mut_raw` value borrow, the `remove_raw` take,
 //! `Sync for Slots`, `tie` (the one lifetime erasure of a chain future that borrows its instance) and
 //! `drop_inst` (def, the in-place drop and the free; the C-CLOSE-PARKED test calls it).
 
 #![allow(unsafe_code)]
 
-use core::cell::UnsafeCell;
+use core::cell::{Cell, UnsafeCell};
 use core::ffi::c_void;
 use core::future::Future;
+use core::marker::PhantomData;
 use core::pin::Pin;
 use core::task::{Context, Poll, Waker};
 use std::sync::OnceLock;
@@ -29,10 +30,9 @@ use counting::{AtomicU32, AtomicU64};
 
 use crate::raw::{ChainId, CurrentGuard, TOKEN_SESSION, Token};
 
-/// Pages: page `p` holds `32 << p` slots, allocated on first use; 27 pages cover every `u32` index.
+/// Pages: page `p` holds `32 << p` slots, allocated on first use.
 const PAGES: usize = 27;
 /// Number of indices covered by the pages; the terminal counter value is not an index.
-#[cfg(test)]
 const SLOT_CAPACITY: u32 = (32 * ((1u64 << PAGES) - 1)) as u32;
 /// The largest slot generation; `next` wraps it to 1, so a generation is never 0.
 const GEN_MAX: u32 = 0x7FFF_FFFF;
@@ -74,9 +74,10 @@ pub struct Slots<T> {
 }
 
 // SAFETY: every access to a slot's value is either by the thread that popped the slot off the free list
-// (`insert`, which owns it exclusively until its Release store of `state`), or by an entry for that
-// slot's live token, which I6 makes exclusive (`get_mut`, `remove`; the host holds `&mut` to the token's
-// handle for the whole entry); a stale token never matches `state` and never touches the value. So
+// (`insert_raw`, which owns it exclusively until its Release store of `state`), or through an exclusive
+// table borrow, a unique OwnedSlot, or an I6-exclusive foreign entry. The crate-private raw methods
+// never hand out authority to safe external callers; OwnedSlot's value borrow cannot outlive its
+// exclusive handle borrow. A stale token never matches `state` and never touches the value. So
 // sharing the table across threads hands each value to one thread at a time, which `T: Send` permits.
 unsafe impl<T: Send> Sync for Slots<T> {}
 
@@ -173,12 +174,84 @@ impl<T: Send> Slots<T> {
     }
 
     fn claim_fresh(&self) -> Option<u32> {
-        let index = self.fresh.fetch_add(1, Ordering::Relaxed);
-        (index != u32::MAX).then_some(index)
+        self.fresh
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |index| {
+                (index < SLOT_CAPACITY).then(|| index + 1)
+            })
+            .ok()
     }
 
-    /// Insert `v`; returns (index, generation). None: the table is exhausted (FAULT `Exhausted`).
-    pub fn insert(&self, v: T) -> Option<(u32, u32)> {
+    /// Insert a value and return its sole mutation authority. Dropping the handle retires its slot;
+    /// forgetting it leaves the value occupied until exclusive table access or table destruction.
+    pub fn insert(&self, v: T) -> Option<OwnedSlot<'_, T>> {
+        self.insert_raw(v).map(|identity| OwnedSlot {
+            table: self,
+            identity: Some(identity),
+            not_sync: PhantomData,
+        })
+    }
+
+    /// Read a numeric identity while exclusively borrowing the entire table.
+    /// An existing usable handle prevents acquiring this borrow.
+    pub fn get_mut(&mut self, index: u32, generation: u32) -> Option<&mut T> {
+        self.get_mut_raw(index, generation)
+    }
+
+    /// Retire a numeric identity while exclusively borrowing the entire table.
+    /// Saved numbers cannot authorize mutation through a shared table.
+    ///
+    /// ```compile_fail,E0596
+    /// use busbar_ffi::Slots;
+    /// let slots = Slots::<String>::new();
+    /// let shared = &slots;
+    /// shared.remove(0, 1); // E0596: a shared reference is not removal authority.
+    /// ```
+    /// ```no_run
+    /// use busbar_ffi::Slots;
+    /// let mut slots = Slots::<String>::new();
+    /// let exclusive = &mut slots;
+    /// exclusive.remove(0, 1);
+    /// ```
+    ///
+    /// #406's pre-fix reproducer: two scoped threads removing one copied live identity from a shared
+    /// `Arc<Slots>`. Its removal expression no longer typechecks.
+    ///
+    /// ```compile_fail,E0596
+    /// use busbar_ffi::Slots;
+    /// use std::sync::Arc;
+    /// let slots = Arc::new(Slots::<String>::new());
+    /// let owned = slots.insert("first".into()).unwrap();
+    /// let (index, generation) = owned.identity().unwrap();
+    /// core::mem::forget(owned);
+    /// std::thread::scope(|scope| {
+    ///     for _ in 0..2 {
+    ///         let slots = Arc::clone(&slots);
+    ///         scope.spawn(move || drop(slots.remove(index, generation))); // E0596
+    ///     }
+    /// });
+    /// ```
+    /// ```no_run
+    /// use busbar_ffi::Slots;
+    /// use std::sync::Arc;
+    /// let slots = Arc::new(Slots::<String>::new());
+    /// let owned = slots.insert("first".into()).unwrap();
+    /// let (index, generation) = owned.identity().unwrap();
+    /// core::mem::forget(owned);
+    /// std::thread::scope(|scope| {
+    ///     for _ in 0..2 {
+    ///         let slots = Arc::clone(&slots);
+    ///         scope.spawn(move || drop(slots.count_live()));
+    ///     }
+    /// });
+    /// let _ = (index, generation);
+    /// ```
+    pub fn remove(&mut self, index: u32, generation: u32) -> Option<T> {
+        self.remove_raw(index, generation)
+    }
+
+    /// FFI-crate primitive: publish a new identity without creating an OwnedSlot. The caller transfers
+    /// it to one host handle, or retains sole authority itself. Never manufacture two owners.
+    pub(crate) fn insert_raw(&self, v: T) -> Option<(u32, u32)> {
         let index = match self.pop() {
             Some(index) => index,
             None => self.claim_fresh()?,
@@ -195,38 +268,35 @@ impl<T: Send> Slots<T> {
     /// The live value of `(index, generation)`, or None for a free slot, another generation or an
     /// unknown index (one Acquire load and a compare; the value is not touched then).
     ///
-    /// # Safety
-    /// No other reference to this slot's value may be live while the result is: the caller is the one
-    /// entry for this token (I6, which the host enforces with `&mut` handles).
-    /// Exclude `remove` and any other lookup for this identity until the returned borrow ends; a
-    /// matching generation is a freshness check, not a lock. The production callers are the session
-    /// and resume shims, whose host handle supplies exclusivity and retains the owning instance.
-    /// This function does not transfer ownership: end/cancel/completion or instance teardown drops
-    /// the value later. `UnsafeCell` permits per-slot access through a shared table, which a plain
-    /// shared Rust reference cannot express without the caller's exclusion proof.
-    #[allow(clippy::mut_from_ref)] // `&mut` to a slot's value under the I6 contract above
-    pub unsafe fn get_mut(&self, index: u32, generation: u32) -> Option<&mut T> {
+    /// FFI-crate caller invariant: no other reference/access/removal of this slot may overlap the
+    /// result. Callers hold an exclusive table borrow, a unique OwnedSlot, or the shim's I6 authority.
+    /// Public outputs shorten the result to that exclusive borrow; the raw method is never reexported.
+    /// A matching generation is a freshness check, not a lock. This does not transfer ownership:
+    /// end/cancel/completion, handle retirement or instance teardown drops the value later.
+    #[allow(clippy::mut_from_ref)] // value exclusion is established by the private caller matrix above
+    pub(crate) fn get_mut_raw(&self, index: u32, generation: u32) -> Option<&mut T> {
         let slot = self.slot(index)?;
         if slot.state.load(Ordering::Acquire) != (generation << 1) | 1 {
             return None;
         }
         // SAFETY: the state matched, so the value was written before its Release store and is live; the
-        // caller guarantees no other reference to it exists (I6).
+        // private caller holds unique slot authority or exclusive table access until the borrow ends.
         let value = unsafe { &mut *slot.value.get() };
         value.as_mut()
     }
 
     /// On a match, take the value and store the next generation with occupied clear (Release) before the
     /// free-list push; on a mismatch return None and write nothing.
-    pub fn remove(&self, index: u32, generation: u32) -> Option<T> {
+    /// FFI-crate caller invariant: unique table/slot authority or I6 excludes every matching entry
+    /// and live value borrow. A stale-only test caller must prove the identity cannot become live.
+    /// Metadata publication finishes before returning T, so a user destructor cannot repeat it.
+    pub(crate) fn remove_raw(&self, index: u32, generation: u32) -> Option<T> {
         let slot = self.slot(index)?;
         if slot.state.load(Ordering::Acquire) != (generation << 1) | 1 {
             return None;
         }
-        #[cfg(all(test, miri, not(loom)))]
-        tests::after_remove_match();
-        // SAFETY: the state matched, so this is the live token's entry, and I6 makes it the only one: no
-        // other reference to the value exists. A stale entry would not have matched.
+        // SAFETY: the state matched and the private caller's authority makes it the only live entry;
+        // no other reference/access to the value overlaps this take. A stale entry would not match.
         let value = unsafe { (*slot.value.get()).take() };
         slot.state
             .store(next_generation(generation) << 1, Ordering::Release);
@@ -266,6 +336,146 @@ impl<T: Send> Slots<T> {
 impl<T: Send> Default for Slots<T> {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Unique authority over one occupant, tied to its originating table. It is Send for Send values,
+/// but never Sync: sharing a handle cannot expose a Send-only value. Numeric identity is observation,
+/// not ownership. No public constructor or Clone/Copy implementation can duplicate this authority.
+///
+/// ```compile_fail,E0382
+/// use busbar_ffi::Slots;
+/// let slots = Slots::new();
+/// let owned = slots.insert(7).unwrap();
+/// let moved = owned;
+/// owned.take(); // E0382: authority moved to `moved`.
+/// ```
+/// ```no_run
+/// use busbar_ffi::Slots;
+/// let slots = Slots::new();
+/// let owned = slots.insert(7).unwrap();
+/// let moved = owned;
+/// moved.take();
+/// ```
+/// ```compile_fail,E0277
+/// use busbar_ffi::Slots;
+/// fn require_sync<T: Sync>(_: &T) {}
+/// let slots = Slots::new();
+/// let owned = slots.insert(7).unwrap();
+/// require_sync(&owned); // E0277: OwnedSlot cannot be shared between threads.
+/// ```
+/// ```no_run
+/// use busbar_ffi::Slots;
+/// fn require_send<T: Send>(_: T) {}
+/// let slots = Slots::new();
+/// let owned = slots.insert(7).unwrap();
+/// require_send(owned);
+/// ```
+/// ```compile_fail,E0451
+/// use busbar_ffi::{OwnedSlot, Slots};
+/// use core::marker::PhantomData;
+/// let slots = Slots::<u32>::new();
+/// let forged = OwnedSlot { table: &slots, identity: Some((0, 1)), not_sync: PhantomData };
+/// ```
+/// ```no_run
+/// use busbar_ffi::{OwnedSlot, Slots};
+/// use core::marker::PhantomData;
+/// let slots = Slots::<u32>::new();
+/// let owned: OwnedSlot<'_, u32> = slots.insert(7).unwrap();
+/// let marker: PhantomData<u32> = PhantomData;
+/// ```
+pub struct OwnedSlot<'t, T: Send> {
+    table: &'t Slots<T>,
+    identity: Option<(u32, u32)>,
+    not_sync: PhantomData<Cell<T>>,
+}
+
+impl<T: Send> OwnedSlot<'_, T> {
+    /// Observed numeric identity; None after a successful take_if. It never restores authority.
+    pub fn identity(&self) -> Option<(u32, u32)> {
+        self.identity
+    }
+
+    /// Borrow the occupant only for this exclusive handle borrow.
+    ///
+    /// ```compile_fail,E0499
+    /// use busbar_ffi::Slots;
+    /// let slots = Slots::new();
+    /// let mut owned = slots.insert(7).unwrap();
+    /// let value = owned.get_mut().unwrap();
+    /// owned.get_mut(); // E0499: the first borrow is still used below.
+    /// *value = 8;
+    /// ```
+    /// ```no_run
+    /// use busbar_ffi::Slots;
+    /// let slots = Slots::new();
+    /// let mut owned = slots.insert(7).unwrap();
+    /// let value = owned.get_mut().unwrap();
+    /// *value = 8;
+    /// owned.get_mut();
+    /// ```
+    /// ```compile_fail,E0505
+    /// use busbar_ffi::Slots;
+    /// let slots = Slots::new();
+    /// let mut owned = slots.insert(7).unwrap();
+    /// let value = owned.get_mut().unwrap();
+    /// core::mem::forget(owned); // E0505: cannot forget authority while its borrow remains usable.
+    /// *value = 8;
+    /// ```
+    /// ```no_run
+    /// use busbar_ffi::Slots;
+    /// let slots = Slots::new();
+    /// let mut owned = slots.insert(7).unwrap();
+    /// let value = owned.get_mut().unwrap();
+    /// *value = 8;
+    /// core::mem::forget(owned);
+    /// ```
+    /// ```compile_fail,E0505
+    /// use busbar_ffi::Slots;
+    /// let slots = Slots::new();
+    /// let mut owned = slots.insert(7).unwrap();
+    /// drop(slots); // E0505: the table cannot die before its handle.
+    /// owned.get_mut();
+    /// ```
+    /// ```no_run
+    /// use busbar_ffi::Slots;
+    /// let slots = Slots::new();
+    /// let mut owned = slots.insert(7).unwrap();
+    /// owned.get_mut();
+    /// drop(owned);
+    /// drop(slots);
+    /// ```
+    pub fn get_mut(&mut self) -> Option<&mut T> {
+        let (_, generation) = self.identity?;
+        self.get_if(generation)
+    }
+
+    /// Probe this handle's own index through the production generation check. A miss leaves it live.
+    pub fn get_if(&mut self, generation: u32) -> Option<&mut T> {
+        let (index, _) = self.identity?;
+        self.table.get_mut_raw(index, generation)
+    }
+
+    /// Retire this handle's own index only if the production generation check matches.
+    pub fn take_if(&mut self, generation: u32) -> Option<T> {
+        let (index, _) = self.identity?;
+        let value = self.table.remove_raw(index, generation)?;
+        self.identity = None;
+        Some(value)
+    }
+
+    /// Consume authority and return the occupant. Slot publication precedes any user destructor.
+    pub fn take(mut self) -> Option<T> {
+        let (index, generation) = self.identity.take()?;
+        self.table.remove_raw(index, generation)
+    }
+}
+
+impl<T: Send> Drop for OwnedSlot<'_, T> {
+    fn drop(&mut self) {
+        if let Some((index, generation)) = self.identity.take() {
+            drop(self.table.remove_raw(index, generation));
+        }
     }
 }
 
@@ -447,9 +657,17 @@ pub(crate) mod counting {
         pub(crate) fn store(&self, v: u32, order: Ordering) {
             self.0.store(v, order);
         }
-        pub(crate) fn fetch_add(&self, v: u32, order: Ordering) -> u32 {
-            landed();
-            self.0.fetch_add(v, order)
+        pub(crate) fn fetch_update(
+            &self,
+            set_order: Ordering,
+            fetch_order: Ordering,
+            f: impl FnMut(u32) -> Option<u32>,
+        ) -> Result<u32, u32> {
+            let result = self.0.fetch_update(set_order, fetch_order, f);
+            if result.is_ok() {
+                landed();
+            }
+            result
         }
     }
 
@@ -485,67 +703,11 @@ mod tests {
     use crate::raw::{Arg, Bytes};
     use std::sync::atomic::AtomicBool;
 
-    #[cfg(miri)]
-    std::thread_local! {
-        static REMOVE_MATCH: core::cell::RefCell<Option<std::sync::Arc<std::sync::Barrier>>> =
-            const { core::cell::RefCell::new(None) };
-    }
-
-    #[cfg(miri)]
-    pub(super) fn after_remove_match() {
-        REMOVE_MATCH.with_borrow(|barrier| {
-            if let Some(barrier) = barrier {
-                barrier.wait();
-            }
-        });
-    }
-
-    /// #406: only the isolated Miri job runs this intentionally invalid pre-fix interleaving.
-    #[cfg(miri)]
-    #[test]
-    fn competing_live_removals_never_duplicate_free_publication() {
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        use std::sync::{Arc, Barrier};
-        struct Counted(String, Arc<AtomicUsize>);
-        impl Drop for Counted {
-            fn drop(&mut self) {
-                self.1.fetch_add(1, Ordering::SeqCst);
-            }
-        }
-        let drops = Arc::new(AtomicUsize::new(0));
-        let slots = Arc::new(Slots::new());
-        let (index, generation) = slots
-            .insert(Counted("first".into(), Arc::clone(&drops)))
-            .expect("insert");
-        let barrier = Arc::new(Barrier::new(2));
-        std::thread::scope(|scope| {
-            for _ in 0..2 {
-                let (slots, barrier) = (Arc::clone(&slots), Arc::clone(&barrier));
-                scope.spawn(move || {
-                    REMOVE_MATCH.set(Some(barrier));
-                    let removed = slots.remove(index, generation);
-                    REMOVE_MATCH.set(None);
-                    drop(removed);
-                });
-            }
-        });
-        assert_eq!(drops.load(Ordering::SeqCst), 1);
-        let first = slots
-            .insert(Counted("second".into(), Arc::clone(&drops)))
-            .expect("insert");
-        let second = slots
-            .insert(Counted("third".into(), Arc::clone(&drops)))
-            .expect("insert");
-        assert_ne!(first.0, second.0, "each free index is published once");
-        assert_eq!(slots.remove(first.0, first.1).expect("second").0, "second");
-        assert_eq!(slots.remove(second.0, second.1).expect("third").0, "third");
-        assert_eq!(drops.load(Ordering::SeqCst), 3);
-    }
-
     #[test]
     fn fresh_exhaustion_is_terminal_and_free_slots_remain_reusable() {
         let slots = Slots::new();
-        let (index, generation) = slots.insert("original").expect("insert");
+        let original = slots.insert("original").expect("insert");
+        let (index, generation) = original.identity().expect("live");
         slots.fresh.store(SLOT_CAPACITY - 1, Ordering::Relaxed);
         assert_eq!(slots.claim_fresh(), Some(SLOT_CAPACITY - 1));
         for _ in 0..3 {
@@ -553,12 +715,124 @@ mod tests {
             assert_eq!(slots.fresh.load(Ordering::Relaxed), SLOT_CAPACITY);
         }
         assert_eq!(slots.count_live(), 1);
-        assert_eq!(slots.remove(index, generation), Some("original"));
-        let (reused, next) = slots.insert("reused").expect("free-list reuse");
+        assert_eq!(original.take(), Some("original"));
+        let reused_slot = slots.insert("reused").expect("free-list reuse");
+        let (reused, next) = reused_slot.identity().expect("live");
         assert_eq!(reused, index);
         assert_ne!(next, generation);
         assert_eq!(slots.fresh.load(Ordering::Relaxed), SLOT_CAPACITY);
-        assert_eq!(slots.remove(reused, next), Some("reused"));
+        assert_eq!(reused_slot.take(), Some("reused"));
+    }
+
+    #[test]
+    fn unique_handles_move_send_only_values_between_threads() {
+        let slots = Slots::new();
+        let mut first = slots.insert(Cell::new(1u32)).expect("insert");
+        let mut second = slots.insert(Cell::new(2u32)).expect("insert");
+        assert_ne!(first.identity().unwrap().0, second.identity().unwrap().0);
+        std::thread::scope(|scope| {
+            let worker = scope.spawn(move || {
+                first.get_mut().expect("live").set(11);
+                first.take().expect("take").get()
+            });
+            second.get_mut().expect("live").set(22);
+            assert_eq!(worker.join().expect("worker"), 11);
+            assert_eq!(second.take().expect("take").get(), 22);
+        });
+        assert_eq!(slots.count_live(), 0);
+
+        static GLOBAL: Slots<Cell<u32>> = Slots::new();
+        let mut owned = GLOBAL.insert(Cell::new(3)).expect("static insert");
+        std::thread::scope(|scope| {
+            scope.spawn(move || owned.get_mut().expect("static live").set(4));
+        });
+        assert_eq!(
+            GLOBAL.count_live(),
+            0,
+            "thread drops its unique static handle"
+        );
+    }
+
+    struct Counted<'a> {
+        value: u32,
+        panic_on_drop: bool,
+        drops: &'a std::sync::atomic::AtomicUsize,
+    }
+
+    impl Drop for Counted<'_> {
+        fn drop(&mut self) {
+            self.drops.fetch_add(1, Ordering::SeqCst);
+            assert!(!self.panic_on_drop, "deliberate occupant destructor panic");
+        }
+    }
+
+    #[test]
+    fn take_drop_and_forgotten_handles_retire_exactly_once() {
+        let drops = std::sync::atomic::AtomicUsize::new(0);
+        let slots = Slots::new();
+        let make = |value| Counted {
+            value,
+            panic_on_drop: false,
+            drops: &drops,
+        };
+        let mut first = slots.insert(make(1)).expect("insert");
+        let (_, generation) = first.identity().expect("live");
+        let taken = first.take_if(generation).expect("matching take");
+        assert_eq!(first.identity(), None);
+        drop(first);
+        assert_eq!(drops.load(Ordering::SeqCst), 0, "take transfers the value");
+        drop(taken);
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+
+        let forgotten = slots.insert(make(2)).expect("insert");
+        let forgotten_index = forgotten.identity().expect("live").0;
+        core::mem::forget(forgotten);
+        let third = slots.insert(make(3)).expect("insert");
+        assert_ne!(third.identity().expect("live").0, forgotten_index);
+        assert_eq!(slots.count_live(), 2, "forgotten occupant stays live");
+        drop(third);
+        assert_eq!(slots.count_live(), 1);
+        assert_eq!(drops.load(Ordering::SeqCst), 2);
+        drop(slots);
+        assert_eq!(
+            drops.load(Ordering::SeqCst),
+            3,
+            "table teardown owns the forgotten value"
+        );
+    }
+
+    #[test]
+    fn a_panicking_destructor_does_not_publish_a_free_slot_twice() {
+        let drops = std::sync::atomic::AtomicUsize::new(0);
+        let slots = Slots::new();
+        let first = slots
+            .insert(Counted {
+                value: 1,
+                panic_on_drop: true,
+                drops: &drops,
+            })
+            .expect("insert");
+        let retired_index = first.identity().expect("live").0;
+        assert!(std::panic::catch_unwind(core::panic::AssertUnwindSafe(|| drop(first))).is_err());
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+        assert_eq!(slots.count_live(), 0);
+        let make = |value| Counted {
+            value,
+            panic_on_drop: false,
+            drops: &drops,
+        };
+        let second = slots.insert(make(2)).expect("insert");
+        let third = slots.insert(make(3)).expect("insert");
+        assert_eq!(second.identity().expect("live").0, retired_index);
+        assert_ne!(
+            second.identity().unwrap().0,
+            third.identity().unwrap().0,
+            "no duplicate free-list publication or self-loop"
+        );
+        assert_eq!(second.take().expect("second").value, 2);
+        assert_eq!(third.take().expect("third").value, 3);
+        assert_eq!(drops.load(Ordering::SeqCst), 3);
+        assert_eq!(slots.count_live(), 0);
     }
 
     #[test]
@@ -577,19 +851,21 @@ mod tests {
     /// C-SLOT-STALE through the safe API (Miri): a stale remove never touches the slot's new occupant.
     #[test]
     fn a_stale_token_never_reaches_the_new_occupant() {
-        let slots: Slots<String> = Slots::new();
-        let Some((index, generation)) = slots.insert("first".to_string()) else {
+        let mut slots: Slots<String> = Slots::new();
+        let Some(first) = slots.insert("first".to_string()) else {
             panic!("insert");
         };
-        assert_eq!(slots.remove(index, generation).as_deref(), Some("first"));
-        let Some((again, newer)) = slots.insert("second".to_string()) else {
+        let (index, generation) = first.identity().expect("live");
+        assert_eq!(first.take().as_deref(), Some("first"));
+        let Some(mut second) = slots.insert("second".to_string()) else {
             panic!("insert");
         };
+        let (again, newer) = second.identity().expect("live");
         assert_eq!(again, index, "the free list hands the slot back");
         assert_ne!(newer, generation, "with the next generation");
-        assert_eq!(slots.remove(index, generation), None, "stale: a no-op");
+        assert_eq!(second.take_if(generation), None, "stale: a no-op");
         assert_eq!(slots.count_live(), 1);
-        assert_eq!(slots.remove(again, newer).as_deref(), Some("second"));
+        assert_eq!(second.take().as_deref(), Some("second"));
         assert_eq!(slots.remove(again, newer), None, "removed once");
         assert_eq!(slots.remove(4_000, 1), None, "an unknown index");
         assert_eq!(slots.count_live(), 0);
@@ -606,8 +882,8 @@ mod tests {
             held.push(at);
         }
         assert_eq!(slots.count_live(), 100);
-        for (v, (index, generation)) in held.into_iter().enumerate() {
-            assert_eq!(slots.remove(index, generation), Some(v as u64));
+        for (v, owned) in held.into_iter().enumerate() {
+            assert_eq!(owned.take(), Some(v as u64));
         }
     }
 
@@ -634,11 +910,12 @@ mod tests {
 
         let first = chain_box(SERIAL);
         let first_id = *first.id();
-        let Some((index, generation)) = table.insert(first) else {
+        let Some(first) = table.insert(first) else {
             panic!("insert");
         };
+        let (index, generation) = first.identity().expect("live");
         assert_eq!(generation, 1, "a fresh slot's first generation");
-        let Some(first) = table.remove(index, generation) else {
+        let Some(first) = first.take() else {
             panic!("remove");
         };
         assert_eq!(*first.id(), first_id);
@@ -653,9 +930,10 @@ mod tests {
         for want in [GEN_MAX - 1, GEN_MAX, 1] {
             let next = chain_box(SERIAL);
             let id = *next.id();
-            let Some((at, generation)) = table.insert(next) else {
+            let Some(mut next) = table.insert(next) else {
                 panic!("insert");
             };
+            let (at, generation) = next.identity().expect("live");
             assert_eq!(at, index, "the free list hands the same slot back");
             assert_eq!(generation, want, "2^31-2, 2^31-1, then the wrap to 1");
             let token = pack(false, at, generation);
@@ -669,12 +947,12 @@ mod tests {
                 let (_, _, stale) = unpack(*old);
                 if stale != generation {
                     assert!(
-                        table.remove(at, stale).is_none(),
+                        next.take_if(stale).is_none(),
                         "an older generation never reaches the occupant"
                     );
                 }
             }
-            let Some(taken) = table.remove(at, generation) else {
+            let Some(taken) = next.take() else {
                 panic!("remove");
             };
             assert_eq!(*taken.id(), id);
@@ -738,8 +1016,8 @@ mod tests {
             free_last / LINE < pages_first / LINE || free_first / LINE > pages_last / LINE,
             "free_head shares no 128-byte line with pages"
         );
-        for (index, generation) in held {
-            assert!(table.remove(index, generation).is_some());
+        for owned in held {
+            assert!(owned.take().is_some());
         }
         pages
     }
@@ -770,25 +1048,28 @@ mod tests {
     fn an_insert_and_a_remove_make_one_rmw_each_and_a_miss_none() {
         let table: Slots<u64> = Slots::new();
         let rmw = counting::rmw();
-        let Some((index, generation)) = table.insert(1) else {
+        let Some(first) = table.insert(1) else {
             panic!("insert");
         };
+        let (index, generation) = first.identity().expect("live");
         assert_eq!(counting::rmw() - rmw, 1, "a fresh index: one fetch_add");
         let rmw = counting::rmw();
-        assert_eq!(table.remove(index, generation), Some(1));
+        assert_eq!(first.take(), Some(1));
         assert_eq!(counting::rmw() - rmw, 1, "a remove: one push CAS");
         let rmw = counting::rmw();
-        let Some((again, newer)) = table.insert(2) else {
+        let Some(mut second) = table.insert(2) else {
             panic!("insert");
         };
+        let (again, _) = second.identity().expect("live");
         assert_eq!(again, index);
         assert_eq!(counting::rmw() - rmw, 1, "from the free list: one pop CAS");
         let rmw = counting::rmw();
-        assert_eq!(table.remove(index, generation), None, "stale");
-        assert_eq!(table.remove(4_000, 1), None, "unknown");
+        assert_eq!(second.take_if(generation), None, "stale");
+        // The only insertions used index zero: this unknown index cannot hold a live value.
+        assert_eq!(table.remove_raw(4_000, 1), None, "unknown");
         assert_eq!(table.count_live(), 1);
         assert_eq!(counting::rmw(), rmw, "a miss and a scan: none");
-        assert_eq!(table.remove(again, newer), Some(2));
+        assert_eq!(second.take(), Some(2));
         assert_eq!(counting::rmw() - rmw, 1);
     }
 
@@ -838,9 +1119,60 @@ mod tests {
         };
         let mut cb = ChainBox::new(tie(fut), id, ());
         assert!(ChainRef::new(&mut cb).poll().is_pending());
-        assert!(inst.chains().insert(cb).is_some());
+        assert!(inst.chains().insert_raw(cb).is_some());
         // SAFETY: `raw` came from `into_instance` and is not used again.
         unsafe { drop_inst::<I>(raw) };
         assert!(SAW_ALIVE.load(std::sync::atomic::Ordering::SeqCst));
+    }
+}
+
+/// C-SLOT-STALE uses the actual private primitives. Only the retired generation is shared between
+/// threads; one insertion can advance it once, so the stale remover never acquires a live occupant.
+#[cfg(all(test, loom))]
+mod loom_tests {
+    use super::Slots;
+    use loom::sync::Arc;
+    use loom::thread;
+
+    #[test]
+    fn a_stale_remove_never_reaches_a_new_occupant() {
+        loom::model(|| {
+            let mut slots = Arc::new(Slots::<u32>::new());
+            let (index, generation) = slots.insert_raw(1).expect("insert");
+            assert_eq!(slots.remove_raw(index, generation), Some(1));
+            let fresh = {
+                let slots = Arc::clone(&slots);
+                thread::spawn(move || slots.insert_raw(2).expect("insert"))
+            };
+            let stale = {
+                let slots = Arc::clone(&slots);
+                thread::spawn(move || slots.remove_raw(index, generation))
+            };
+            assert_eq!(
+                stale.join().expect("stale"),
+                None,
+                "a stale remove is a no-op"
+            );
+            let (again, newer) = fresh.join().expect("fresh");
+            assert_ne!((again, newer), (index, generation));
+            let exclusive = Arc::get_mut(&mut slots).expect("both worker clones were joined");
+            assert_eq!(exclusive.get_mut(again, newer).copied(), Some(2));
+            assert!(exclusive.get_mut(index, generation).is_none());
+        });
+    }
+
+    #[test]
+    fn concurrent_inserts_take_distinct_slots() {
+        loom::model(|| {
+            let slots = Arc::new(Slots::<u32>::new());
+            let first = {
+                let slots = Arc::clone(&slots);
+                thread::spawn(move || slots.insert_raw(1).expect("insert"))
+            };
+            let second = slots.insert_raw(2).expect("insert");
+            let first = first.join().expect("first");
+            assert_ne!(first.0, second.0, "two live values never share a slot");
+            assert_eq!(slots.count_live(), 2);
+        });
     }
 }

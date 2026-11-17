@@ -9,8 +9,9 @@
 //! are safe fns. Adapters never see the instance, a slot table or a `RawOut`: sync methods get the plugin,
 //! session methods the plugin and their own session, async starts the plugin for the chain's borrow.
 //!
-//! `unsafe` here: `enter` (def and body); per shim its def and its `enter` block; plus the slot
-//! `get_mut` of the session shims and of `resume`, and the `drop_inst` block of `close`.
+//! `unsafe` here: `enter` (def and body); per shim its def and its `enter` block; plus
+//! the `drop_inst` block of `close`. Slot access uses crate-private primitives under each entry's I6
+//! contract; they do not expose numeric mutation authority to external safe callers.
 //!
 //! # Entry safety contract
 //!
@@ -259,7 +260,7 @@ fn drive_new<M: Image>(
     }));
     match step {
         Ok(Step::Ready(status)) => status,
-        Ok(Step::Need) => match table.insert(cb) {
+        Ok(Step::Need) => match table.insert_raw(cb) {
             Some((index, generation)) => M::parked(pack(false, index, generation), out),
             None => Status::FAULT,
         },
@@ -373,7 +374,7 @@ pub(crate) unsafe extern "C" fn opener1<M: Opener1<A1, S>, A1: RawArg, const S: 
     let mut out = Out::new(out, h);
     contain(
         || match <M as Opener1<A1, S>>::begin(i.plugin(), h, a1, &mut out) {
-            Ok(session) => match i.sessions().insert(session) {
+            Ok(session) => match i.sessions().insert_raw(session) {
                 Some((index, generation)) => M::opened(pack(true, index, generation), &mut out),
                 None => Status::FAULT,
             },
@@ -405,7 +406,7 @@ pub(crate) unsafe extern "C" fn opener2<
     let mut out = Out::new(out, h);
     contain(
         || match <M as Opener2<A1, A2, S>>::begin(i.plugin(), h, a1, a2, &mut out) {
-            Ok(session) => match i.sessions().insert(session) {
+            Ok(session) => match i.sessions().insert_raw(session) {
                 Some((index, generation)) => M::opened(pack(true, index, generation), &mut out),
                 None => Status::FAULT,
             },
@@ -434,7 +435,7 @@ pub(crate) unsafe extern "C" fn end0<M: End0<S>, const S: usize>(
         return Status::FAULT;
     }
     let mut out = Out::new(out, h);
-    contain(|| match i.sessions().remove(index, generation) {
+    contain(|| match i.sessions().remove_raw(index, generation) {
         Some(s) => <M as End0<S>>::end(i.plugin(), h, s, &mut out),
         None => Status::FAULT,
     })
@@ -462,9 +463,9 @@ pub(crate) unsafe extern "C" fn session0<M: Session0<S>, const S: usize>(
         if !session {
             return Status::FAULT;
         }
-        // SAFETY: I6: the host makes this entry for the token while holding `&mut` to its session
+        // I6: the host makes this entry for the token while holding `&mut` to its session
         // handle, so no other entry reaches this slot's value now, and adapters cannot reach the table.
-        let Some(s) = (unsafe { i.sessions().get_mut(index, generation) }) else {
+        let Some(s) = i.sessions().get_mut_raw(index, generation) else {
             return Status::FAULT;
         };
         <M as Session0<S>>::on(i.plugin(), h, s, &mut out)
@@ -492,9 +493,9 @@ pub(crate) unsafe extern "C" fn session1<M: Session1<A1, S>, A1: RawArg, const S
         if !session {
             return Status::FAULT;
         }
-        // SAFETY: I6: the host makes this entry for the token while holding `&mut` to its session
+        // I6: the host makes this entry for the token while holding `&mut` to its session
         // handle, so no other entry reaches this slot's value now, and adapters cannot reach the table.
-        let Some(s) = (unsafe { i.sessions().get_mut(index, generation) }) else {
+        let Some(s) = i.sessions().get_mut_raw(index, generation) else {
             return Status::FAULT;
         };
         <M as Session1<A1, S>>::on(i.plugin(), h, s, a1, &mut out)
@@ -528,9 +529,9 @@ pub(crate) unsafe extern "C" fn session2<
         if !session {
             return Status::FAULT;
         }
-        // SAFETY: I6: the host makes this entry for the token while holding `&mut` to its session
+        // I6: the host makes this entry for the token while holding `&mut` to its session
         // handle, so no other entry reaches this slot's value now, and adapters cannot reach the table.
-        let Some(s) = (unsafe { i.sessions().get_mut(index, generation) }) else {
+        let Some(s) = i.sessions().get_mut_raw(index, generation) else {
             return Status::FAULT;
         };
         <M as Session2<A1, A2, S>>::on(i.plugin(), h, s, a1, a2, &mut out)
@@ -566,9 +567,9 @@ pub(crate) unsafe extern "C" fn session3<
         if !session {
             return Status::FAULT;
         }
-        // SAFETY: I6: the host makes this entry for the token while holding `&mut` to its session
+        // I6: the host makes this entry for the token while holding `&mut` to its session
         // handle, so no other entry reaches this slot's value now, and adapters cannot reach the table.
-        let Some(s) = (unsafe { i.sessions().get_mut(index, generation) }) else {
+        let Some(s) = i.sessions().get_mut_raw(index, generation) else {
             return Status::FAULT;
         };
         <M as Session3<A1, A2, A3, S>>::on(i.plugin(), h, s, a1, a2, a3, &mut out)
@@ -607,9 +608,9 @@ pub(crate) unsafe extern "C" fn session4<
         if !session {
             return Status::FAULT;
         }
-        // SAFETY: I6: the host makes this entry for the token while holding `&mut` to its session
+        // I6: the host makes this entry for the token while holding `&mut` to its session
         // handle, so no other entry reaches this slot's value now, and adapters cannot reach the table.
-        let Some(s) = (unsafe { i.sessions().get_mut(index, generation) }) else {
+        let Some(s) = i.sessions().get_mut_raw(index, generation) else {
             return Status::FAULT;
         };
         <M as Session4<A1, A2, A3, A4, S>>::on(i.plugin(), h, s, a1, a2, a3, a4, &mut out)
@@ -785,9 +786,9 @@ pub(crate) unsafe extern "C" fn resume<M: Image>(
     }
     let mut out = Out::new(out, h);
     contain(|| {
-        // SAFETY: I6: the host resumes a chain token only from the one `Chain` that owns it, holding
+        // I6: the host resumes a chain token only from the one `Chain` that owns it, holding
         // `&mut` to it, so no other entry reaches this slot's value now.
-        let Some(cb) = (unsafe { chains.get_mut(index, generation) }) else {
+        let Some(cb) = chains.get_mut_raw(index, generation) else {
             return Status::FAULT;
         };
         let results = <Bytes<'static> as ToChain>::chain(results, cb.id());
@@ -797,11 +798,11 @@ pub(crate) unsafe extern "C" fn resume<M: Image>(
         match step {
             Ok(Step::Need) => M::parked(tok.get(), &mut out),
             Ok(Step::Ready(status)) => {
-                drop(chains.remove(index, generation));
+                drop(chains.remove_raw(index, generation));
                 status
             }
             Ok(Step::Fault) | Err(_) => {
-                drop(chains.remove(index, generation));
+                drop(chains.remove_raw(index, generation));
                 Status::FAULT
             }
         }
@@ -819,10 +820,10 @@ pub(crate) unsafe extern "C" fn cancel<M: Image>(inst: *const c_void, tok: Token
     let (session, index, generation) = unpack(tok);
     contain(|| {
         match (i, session) {
-            (None, false) => drop(M::global().remove(index, generation)),
+            (None, false) => drop(M::global().remove_raw(index, generation)),
             (None, true) => {}
-            (Some(i), false) => drop(i.chains().remove(index, generation)),
-            (Some(i), true) => drop(i.sessions().remove(index, generation)),
+            (Some(i), false) => drop(i.chains().remove_raw(index, generation)),
+            (Some(i), true) => drop(i.sessions().remove_raw(index, generation)),
         }
         Status::OK
     })
