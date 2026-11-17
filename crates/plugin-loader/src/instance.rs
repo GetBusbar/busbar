@@ -2573,5 +2573,9 @@ mod endpoint_decode_tests {
 #[path = "tests/transport_endpoint_tests.rs"]
 mod transport_endpoint_tests;
 
+/// Native metadata readers for the composition root (LIFECYCLE-A-PLAN WP1).
+mod facts;
+pub use facts::PublicSettings;
+
 #[cfg(test)]
 mod needs_tests;
