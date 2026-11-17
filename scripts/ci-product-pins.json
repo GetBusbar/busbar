@@ -4,13 +4,13 @@
     {
       "repo": "busbar-auth-admin-tokens",
       "url": "https://github.com/GetBusbar/busbar-auth-admin-tokens",
-      "commit": "7729b46bff0f0120af84d3327d6e03e2f2664971",
+      "commit": "e12a8df9fa704a2869af5e72c30a187976fa74c6",
       "package": "busbar-auth-admin-tokens-plugin",
       "kind": "auth",
       "alias": "admin-tokens",
       "image": "libbusbar_auth_admin_tokens_plugin.so",
       "declares": "auth-admin-tokens/declares.json",
-      "lock_sha256": "b2ac9987abb823e755995c5627a694f9f53c67614e799456bf95508aa8f7e6fc"
+      "lock_sha256": "4e0f538a537371795dac1734a8068e198161edd73a522b3c1189f6da873c7d5a"
     },
     {
       "repo": "busbar-auth-header",

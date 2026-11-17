@@ -123,10 +123,12 @@ async fn app(cost: CostModel) -> busbar_kernel::state::App {
     let settings: serde_json::Value =
         crate::root::test_plugins::application_store_settings(&directory);
     assert!(settings.is_object());
+    let operator = crate::root::test_plugins::bind_operator();
     let deploy = busbar_kernel::config::deploy_from_deserializer(
         serde_json::json!({
             "providers": {}, "models": {},
-            "auth": {"chain": [], "admin_auth": []},
+            "identity-providers": {(operator): {"module": operator, "settings": {"sha256": crate::root::test_plugins::operator_sha256()}}},
+            "auth": {"chain": [], "admin_auth": [operator]},
             "store": {"module": module, "settings": settings},
             "advanced": {},
         }),
@@ -224,7 +226,9 @@ async fn read(app: busbar_kernel::state::App, bucket: Option<u64>) -> UsageRead 
     let query = bucket
         .map(|bucket| format!("?window={bucket}"))
         .unwrap_or_default();
-    let response = reqwest::get(format!("http://{addr}/api/v1/admin/usage{query}"))
+    let response = crate::root::test_plugins::operator_client()
+        .get(format!("http://{addr}/api/v1/admin/usage{query}"))
+        .send()
         .await
         .unwrap();
     assert_eq!(response.status().as_u16(), 200);

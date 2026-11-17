@@ -47,6 +47,12 @@ pub(crate) fn make_root_cfg(
         tls: None,
         admin_listen: busbar_kernel::config::DEFAULT_ADMIN_LISTEN_ADDR.to_string(),
         admin_tls: None,
+        // #359 SEC-L1: both root listeners serve plaintext here, so the fixtures write the explicit acceptance.
+        listener_acceptances: busbar_kernel::config::listener_acceptance::ListenerAcceptances {
+            listen: Some(fixture_plaintext()),
+            admin_listen: Some(fixture_plaintext()),
+            inert: Vec::new(),
+        },
         // #358: the open posture is written explicitly; omission is refused.
         auth: Some(config::AuthCfg::default_none()),
 
@@ -205,9 +211,21 @@ fn make_auth_chain(
         auth.signing_key = Some(
             crate::distribution::config_validation_application::source_fill("BUSBAR_SIGNING_KEY"),
         );
-        auth.admin_auth = vec![];
+        auth.admin_auth = operator_mint_path();
     }
     auth
+}
+
+/// The usable mint path of a keys chain: the linked operator credential, bound, with its 1.6
+/// settings `{sha256: ..}` (`admin_auth: []` is refused at boot, ADMIN-API-1.6-ONE-MODEL §8.1.1).
+fn operator_mint_path() -> Vec<config::AuthChainEntry> {
+    busbar_kernel::preflight::install_operator(crate::root::auth_bindings::operator_binding(None));
+    let mut operator = config::AuthChainEntry::bare(config::operator_provider());
+    operator.settings = serde_json::from_value(serde_json::json!({
+        "sha256": busbar_kernel::test_hooks::operator::SETTINGS_SHA256
+    }))
+    .expect("the operator settings object");
+    vec![operator]
 }
 
 fn make_breaker(
@@ -1263,7 +1281,7 @@ fn test_keys_chain_without_signing_key_is_boot_error() {
     auth.chain = vec![busbar_kernel::config::AuthChainEntry::bare(
         busbar_kernel::config::KEYS_MODULE,
     )];
-    auth.admin_auth = vec![];
+    auth.admin_auth = operator_mint_path();
     assert!(
         auth.signing_key.is_none(),
         "the RED case sets no signing_key"
@@ -1280,7 +1298,7 @@ fn test_keys_chain_without_signing_key_is_boot_error() {
     auth_ok.chain = vec![busbar_kernel::config::AuthChainEntry::bare(
         busbar_kernel::config::KEYS_MODULE,
     )];
-    auth_ok.admin_auth = vec![];
+    auth_ok.admin_auth = operator_mint_path();
     auth_ok.signing_key =
         Some(crate::distribution::config_validation_application::source_fill("BUSBAR_SIGNING_KEY"));
     cfg.auth = Some(auth_ok);
@@ -3815,13 +3833,22 @@ fn resolve_yaml(yaml: &str) -> Result<RootCfg, Vec<String>> {
 
 #[test]
 fn test_validate_runs_on_resolved_root_cfg_clean_config() {
-    let yaml = r#"
+    // The mint path is the bound operator credential with its 1.6 settings, on the closed default
+    // admin chain (`admin_auth: []` is refused at boot, ADMIN-API-1.6-ONE-MODEL §8.1.1).
+    crate::dist_root_install::install();
+    busbar_kernel::preflight::install_operator(crate::root::auth_bindings::operator_binding(None));
+    let operator = format!(
+        "identity-providers:\n  {op}:\n    module: {op}\n    settings: {{ sha256: {sha} }}\n",
+        op = config::operator_provider(),
+        sha = busbar_kernel::test_hooks::operator::SETTINGS_SHA256,
+    );
+    let yaml = operator
+        + r#"
 listen: "0.0.0.0:8080"
 auth:
   chain:
     - keys
   signing_key: { env: BUSBAR_SIGNING_KEY }
-  admin_auth: []
   role_bindings:
     keys:
       platform:
@@ -3849,7 +3876,7 @@ store:
 advanced:
   rate_sweep_interval: 256
 "#;
-    let mut cfg = resolve_yaml(yaml).expect("the clean config must resolve");
+    let mut cfg = resolve_yaml(&yaml).expect("the clean config must resolve");
     cfg.rate_card = cfg.rate_card.map(rate_card_for_actual_plane);
     assert!(
         validate(&cfg).is_ok(),
@@ -4428,6 +4455,167 @@ fn boot_narration_is_once_and_admission_outside_boot_still_narrates() {
     // (a''') the one boot narration advises once.
     let ((), lines) = heterogeneous_warnings(|| advise(&cfg));
     assert_eq!(lines, 1, "the boot narration advises once");
+}
+
+/// The explicit plaintext acceptance the root-listener fixtures write (#359 SEC-L1).
+fn fixture_plaintext() -> busbar_kernel::config::min3::InsecureTransport {
+    use busbar_plugin_abi::host_side::caller::Accept;
+    busbar_kernel::config::min3::InsecureTransport {
+        accept: Accept(Accept::PLAINTEXT),
+        reason: "test fixture listener".into(),
+    }
+}
+
+/// A configuration read from `tail` (YAML) as an operator's config.yaml, resolved (#359 SEC-L1 fixtures).
+fn listener_doc(tail: &str) -> Result<RootCfg, Vec<String>> {
+    let text =
+        format!("providers: {{}}\nmodels: {{}}\nauth: {{ chain: [], admin_auth: [] }}\n{tail}");
+    let deploy =
+        busbar_kernel::config::deploy_from_yaml_str(&text, &crate::root::boot::axis_test_grammar())
+            .map_err(|e| vec![e.to_string()])?;
+    busbar_kernel::config::resolve(&deploy, &Default::default())
+}
+
+/// Every refusal of `tail`: its read, its resolve and the validation pass.
+fn listener_refusals(tail: &str) -> Vec<String> {
+    match listener_doc(tail) {
+        Ok(cfg) => validate(&cfg).err().unwrap_or_default(),
+        Err(errors) => errors,
+    }
+}
+
+const LISTENER_TLS: &str = "{ cert: { module: source, settings: { id: cert } }, key: { module: source, settings: { id: key } } }";
+
+/// #359 SEC-L1 (owner ruling L1 "Refuse, give remedy"): a root listener without TLS refuses to boot unless its
+/// explicit, audited acceptance is written beside it. No address is exempt (the default loopback admin
+/// listener included), the refusal is coded and carries the one-line remedy, and only `plaintext` with a real
+/// reason is an acceptance.
+#[test]
+fn a_root_listener_without_tls_refuses_unless_its_plaintext_acceptance_is_written() {
+    let refused = |errors: &[String], key: &str| {
+        let setting = key.trim_end_matches("_insecure_transport");
+        errors.iter().any(|error| {
+            error.contains("BUSBAR-3172")
+                && error.contains(&format!("`{setting}` "))
+                && error.contains(&format!("{key}: {{ accept: [plaintext], reason:"))
+        })
+    };
+
+    // Neither TLS nor an acceptance: both listeners refuse, loopback admin included, each with its remedy.
+    let errors = listener_refusals("");
+    assert!(
+        refused(&errors, "listen_insecure_transport"),
+        "a plaintext data listener refuses with its remedy: {errors:?}"
+    );
+    assert!(
+        refused(&errors, "admin_listen_insecure_transport"),
+        "the default loopback admin listener has no exemption: {errors:?}"
+    );
+    let errors = listener_refusals("admin_listen: 0.0.0.0:9090\nadmin_require_mtls: false\n");
+    assert!(
+        refused(&errors, "admin_listen_insecure_transport"),
+        "a token-only exposed admin listener still needs its plaintext acceptance: {errors:?}"
+    );
+
+    // Both acceptances written with a real reason: no listener refusal.
+    let accepted = "listen_insecure_transport: { accept: [plaintext], reason: \"lab bench, CHG-7\" }\n\
+                    admin_listen_insecure_transport: { accept: plaintext, reason: \"loopback only\" }\n";
+    let errors = listener_refusals(accepted);
+    assert!(
+        !errors
+            .iter()
+            .any(|error| error.contains("BUSBAR-3172") || error.contains("BUSBAR-3163")),
+        "explicit acceptances boot: {errors:?}"
+    );
+
+    // TLS on one listener, the acceptance on the other.
+    let errors = listener_refusals(&format!(
+        "tls: {LISTENER_TLS}\nadmin_listen_insecure_transport: {{ accept: [plaintext], reason: \"local admin\" }}\n"
+    ));
+    assert!(
+        !errors.iter().any(|error| error.contains("BUSBAR-3172")),
+        "a listener with TLS needs no acceptance: {errors:?}"
+    );
+
+    // A malformed acceptance is refused by name: no reason, the placeholder reason, unverified_tls.
+    for (tail, key) in [
+        (
+            "listen_insecure_transport: { accept: [plaintext] }\n",
+            "listen_insecure_transport.reason",
+        ),
+        (
+            "listen_insecure_transport: { accept: [plaintext], reason: \"<why>\" }\n",
+            "listen_insecure_transport.reason",
+        ),
+        (
+            "admin_listen_insecure_transport: { accept: [unverified_tls], reason: \"r\" }\n",
+            "admin_listen_insecure_transport.accept",
+        ),
+    ] {
+        let errors = listener_refusals(tail);
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("BUSBAR-3163") && error.contains(key)),
+            "{tail}: refused naming {key}: {errors:?}"
+        );
+    }
+
+    // TLS and an acceptance written together in the file contradict each other.
+    let errors = listener_refusals(&format!(
+        "tls: {LISTENER_TLS}\nlisten_insecure_transport: {{ accept: [plaintext], reason: \"r\" }}\n"
+    ));
+    assert!(
+        errors.iter().any(|error| error.contains("BUSBAR-3172")
+            && error.contains("`listen_insecure_transport` is written beside `tls`")),
+        "TLS beside an acceptance is refused as contradictory: {errors:?}"
+    );
+}
+
+/// #359 SEC-L1: the acceptance is file-only. An overlay body that carries it is refused, and an overlay that
+/// SETS TLS wins: the file's acceptance is inert (named for the boot's removable warning), never a refusal.
+#[test]
+fn a_listener_acceptance_is_file_only_and_an_overlay_tls_makes_it_inert() {
+    let overlay = busbar_contract::yaml::from_str::<busbar_kernel::config::overlay::RootSettings>(
+        "listen_insecure_transport: { accept: [plaintext], reason: \"r\" }\n",
+    );
+    assert!(
+        overlay.is_err(),
+        "an overlay body carrying the acceptance is refused"
+    );
+
+    let text = format!(
+        "providers: {{}}\nmodels: {{}}\nauth: {{ chain: [], admin_auth: [] }}\n\
+         listen_insecure_transport: {{ accept: [plaintext], reason: \"until the cert lands\" }}\n\
+         admin_listen_insecure_transport: {{ accept: [plaintext], reason: \"loopback only\" }}\n"
+    );
+    let grammar = crate::root::boot::axis_test_grammar();
+    let mut deploy =
+        busbar_kernel::config::deploy_from_yaml_str(&text, &grammar).expect("the file reads");
+    let with_tls = busbar_kernel::config::deploy_from_yaml_str(
+        &format!("providers: {{}}\nmodels: {{}}\ntls: {LISTENER_TLS}\n"),
+        &grammar,
+    )
+    .expect("a TLS document reads");
+    busbar_kernel::config::overlay::RootSettings {
+        tls: with_tls.tls.clone(),
+        ..Default::default()
+    }
+    .apply_to_deploy(&mut deploy);
+    let cfg = busbar_kernel::config::resolve(&deploy, &Default::default())
+        .expect("an overlay TLS over a file acceptance resolves");
+    assert_eq!(
+        cfg.listener_acceptances.inert,
+        ["listen_insecure_transport"],
+        "the superseded file acceptance is named for the removable warning"
+    );
+    assert!(cfg.listener_acceptances.listen.is_none());
+    assert!(cfg.listener_acceptances.admin_listen.is_some());
+    let errors = validate(&cfg).err().unwrap_or_default();
+    assert!(
+        !errors.iter().any(|error| error.contains("BUSBAR-3172")),
+        "an overlay TLS is never a boot refusal: {errors:?}"
+    );
 }
 
 /// #358 (PRD-5: refuse rather than default open): a configuration with no `auth:` block is refused

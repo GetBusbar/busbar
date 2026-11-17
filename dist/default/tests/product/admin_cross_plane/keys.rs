@@ -312,7 +312,7 @@ async fn drive_unpriced_usage_reads() -> Vec<(String, u16, json::Value)> {
     ] {
         let resp = client
             .get(format!("http://{addr}{path}"))
-            .header("x-admin-token", "admintok")
+            .header("authorization", "Bearer admintok")
             .send()
             .await
             .unwrap();
@@ -593,7 +593,7 @@ async fn test_admin_v1_openapi_is_identity_json_for_every_client() {
         Some("gzip;q=0"),
         Some("br, gzip, deflate"),
     ] {
-        let mut req = client.get(&url).header("x-admin-token", "admintok");
+        let mut req = client.get(&url).header("authorization", "Bearer admintok");
         if let Some(a) = accept {
             req = req.header("accept-encoding", a);
         }
@@ -793,7 +793,7 @@ async fn drive_key_cap_and_delegation_errors() {
         async move {
             let r = c
                 .post(&u)
-                .header("x-admin-token", "admintok")
+                .header("authorization", "Bearer admintok")
                 .json(&json::json!({"name": name, "group": group}))
                 .send()
                 .await
@@ -807,7 +807,7 @@ async fn drive_key_cap_and_delegation_errors() {
         let (c, u) = (client.clone(), keys_url.clone());
         async move {
             c.patch(format!("{u}/{id}"))
-                .header("x-admin-token", "admintok")
+                .header("authorization", "Bearer admintok")
                 .json(&body)
                 .send()
                 .await
@@ -868,7 +868,7 @@ async fn drive_key_cap_and_delegation_errors() {
 
     let r = client
         .post(&keys_url)
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .json(&json::json!({"name": "unbound-by-operator"}))
         .send()
         .await
@@ -885,7 +885,7 @@ async fn drive_key_cap_and_delegation_errors() {
             let r = c
                 .get(format!("http://{a}/api/v1/admin/audit"))
                 .query(&[("action", "key.patch"), ("resource", resource.as_str())])
-                .header("x-admin-token", "admintok")
+                .header("authorization", "Bearer admintok")
                 .send()
                 .await
                 .unwrap();
@@ -1021,7 +1021,7 @@ async fn test_admin_v1_overlay_reset_unknown_section_keeps_1_5_5_sentence_shape(
 
     let r = reqwest::Client::new()
         .delete(format!("http://{addr}/api/v1/admin/overlay/limits"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap();
@@ -1235,7 +1235,7 @@ async fn serve_keys_fixture(
             document["store"] = serde_json::json!({"module": facts.name, "settings": settings});
             document["plugins"] =
                 super::plugins::config_document(&super::plugins::trusted_config(&directory));
-            document["auth"] = serde_json::json!({"chain": [], "admin_auth": []});
+            document["auth"] = serde_json::json!({"chain": [], "admin_auth": ["admin-tokens"]});
             document["identity-providers"] = serde_json::json!({"admin-tokens": {
                 "module": "admin-tokens", "token": {"file": directory.join("admin.token")}
             }});
@@ -1675,7 +1675,7 @@ async fn drive_keys_error_surface() {
                         reqwest::Method::from_bytes(case.method.as_bytes()).unwrap(),
                         format!("http://{addr}/api/v1/admin{path}"),
                     )
-                    .header("x-admin-token", "admintok");
+                    .header("authorization", "Bearer admintok");
                 for (k, v) in case.headers {
                     req = req.header(*k, *v);
                 }
@@ -1938,7 +1938,7 @@ async fn admin_error_fixture() -> (std::net::SocketAddr, tokio::task::JoinHandle
     ] {
         let created = client
             .post(format!("http://{addr}/api/v1/admin{rel}"))
-            .header("x-admin-token", "admintok")
+            .header("authorization", "Bearer admintok")
             .header("content-type", "application/json")
             .body(body)
             .send()
@@ -2703,7 +2703,7 @@ async fn drive_admin_error_surface() {
                     reqwest::Method::from_bytes(method.as_bytes()).unwrap(),
                     format!("http://{addr}/api/v1/admin{rel}"),
                 )
-                .header("x-admin-token", "admintok");
+                .header("authorization", "Bearer admintok");
             if let Some(tag) = if_match {
                 req = req.header("if-match", *tag);
             }
@@ -2840,7 +2840,7 @@ async fn drive_plugin_reload_errors() {
 
     let r = client
         .post(format!("http://{addr}/api/v1/admin/plugins/reload"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap();
@@ -2963,7 +2963,7 @@ async fn drive_plugin_rollback_errors() {
     let rollback = |body: String| {
         client
             .post(format!("http://{addr}/api/v1/admin/plugins/rollback"))
-            .header("x-admin-token", "admintok")
+            .header("authorization", "Bearer admintok")
             .header("content-type", "application/json")
             .body(body)
             .send()
@@ -3086,7 +3086,7 @@ async fn drive_plugin_rollback_errors() {
                 reqwest::Method::from_bytes(method.as_bytes()).unwrap(),
                 format!("http://{addr}/api/v1/admin{rel}"),
             )
-            .header("x-admin-token", "admintok");
+            .header("authorization", "Bearer admintok");
         if let Some(b) = body {
             req = req.header("content-type", "application/json").body(b);
         }
@@ -3204,7 +3204,7 @@ async fn drive_plugin_inspect_errors() {
 
     let r = client
         .post(format!("http://{addr}/api/v1/admin/plugins/inspect"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .header("content-type", "application/json")
         .body(r#"{"file":"witness-1.0.0.tar.gz","tarball_b64":"not-base64!!"}"#.to_string())
         .send()
@@ -3788,7 +3788,7 @@ async fn drive_door_verb_errors() {
     let send = |method: reqwest::Method, path: &str| {
         client
             .request(method, format!("http://{addr}/api/v1/admin{path}"))
-            .header("x-admin-token", "admintok")
+            .header("authorization", "Bearer admintok")
             .send()
     };
     for (method, path) in [
@@ -3842,7 +3842,7 @@ async fn a_door_admin_route_is_served_only_by_the_generation_lent_its_table() {
                 "http://{}/api/v1/admin/tools/base-tools/changes",
                 fixture.2
             ))
-            .header("x-admin-token", "admintok")
+            .header("authorization", "Bearer admintok")
             .send()
             .await
             .unwrap();
@@ -3859,7 +3859,7 @@ async fn a_door_admin_route_is_served_only_by_the_generation_lent_its_table() {
                 "http://{}/api/v1/admin/tools/base-tools/changes",
                 fixture.2
             ))
-            .header("x-admin-token", "admintok")
+            .header("authorization", "Bearer admintok")
             .send()
             .await
             .unwrap();
@@ -3907,7 +3907,7 @@ async fn drive_agent_door_verb_errors() {
     let send = |path: &str, body: &str| {
         client
             .post(format!("http://{addr}/api/v1/admin{path}"))
-            .header("x-admin-token", "admintok")
+            .header("authorization", "Bearer admintok")
             .header("content-type", "application/json")
             .body(body.to_string())
             .send()
@@ -4184,7 +4184,7 @@ async fn drive_named_map_errors() {
                     reqwest::Method::from_bytes(method.as_bytes()).unwrap(),
                     format!("http://{addr}/api/v1/admin{rel}"),
                 )
-                .header("x-admin-token", "admintok");
+                .header("authorization", "Bearer admintok");
             if let Some(tag) = if_match {
                 req = req.header("if-match", *tag);
             }
@@ -4326,7 +4326,7 @@ async fn drive_named_map_errors() {
                         reqwest::Method::from_bytes(method.as_bytes()).unwrap(),
                         format!("http://{addr}/api/v1/admin{rel}"),
                     )
-                    .header("x-admin-token", "admintok");
+                    .header("authorization", "Bearer admintok");
                 if let Some(b) = body {
                     req = req.header("content-type", "application/json").body(b);
                 }

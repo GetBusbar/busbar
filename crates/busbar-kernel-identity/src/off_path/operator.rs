@@ -273,9 +273,28 @@ pub fn no_default_admin_chain() -> String {
     config_text(format_args!(
         "auth.admin_auth is not set and no admitted first-party auth plugin states the operator \
          credential, so there is no admin credential. Install the first-party operator credential \
-         plugin and give it `settings` in identity-providers, or set auth.admin_auth explicitly \
-         (`admin_auth: []` is the open dev posture)."
+         plugin and give it `settings` in identity-providers, or list the admin providers you use \
+         in auth.admin_auth."
     ))
+}
+
+/// `auth.admin_auth: []`, the 1.5.5 open admin posture, which 1.6.0 removes
+/// (ADMIN-API-1.6-ONE-MODEL §8.1.1): boot and `busbar --validate` refuse it with this remedy, in the
+/// migrate-on-boot refusal format (`CONFIG:` first, the upgrade line last). It is never migrated:
+/// that would invent a credential or keep the admin API open.
+pub fn open_admin_posture_removed() -> String {
+    format!(
+        "CONFIG: auth.admin_auth: [] (the open admin posture) is removed in 1.6.0; the admin API \
+         always needs a credential. Delete the auth.admin_auth line to use the default chain \
+         [<operator>, keys], where <operator> is the name of your identity-providers entry for \
+         the first-party operator credential plugin (module: admin-tokens). Give that entry \
+         `settings: {{sha256: \"<digest>\"}}`, where <digest> is the SHA-256 of your admin token \
+         as 64 lower-case hex characters. To mint a token and its digest: `token=$(openssl rand \
+         -base64 32); printf %s \"$token\" | openssl dgst -sha256 -r | cut -d' ' -f1`. Keep the \
+         token as a secret and send it as `Authorization: Bearer` followed by the token. Or list \
+         the admin providers you use in auth.admin_auth.\n{}",
+        busbar_contract::upgrade::UPGRADE_FIRST
+    )
 }
 
 /// A `token:` on the chain entry backed by `module`, which is not the operator credential's.

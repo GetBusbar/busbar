@@ -158,6 +158,12 @@ impl std::fmt::Debug for Notary {
 }
 
 impl Notary {
+    /// The public live key, for building its Bootstrap certificate before live signing starts.
+    #[must_use]
+    pub fn public_key(&self) -> &busbar_contract::crypto::PublicKey {
+        self.signer.public_key()
+    }
+
     /// The capability its grant names.
     #[must_use]
     pub fn new(grant: NotaryGrant) -> Self {
@@ -198,6 +204,41 @@ impl std::fmt::Debug for BootstrapSigner {
 }
 
 impl BootstrapSigner {
+    /// The bound public key; this lends no signing capability.
+    #[must_use]
+    pub fn public_key(&self) -> &busbar_contract::crypto::PublicKey {
+        self.signer.public_key()
+    }
+
+    /// Certify a live key for exactly this node, chain position and predecessor. Blocking;
+    /// only the Bootstrap signer thread holds this capability in production.
+    pub fn sign_notary_key(
+        &self,
+        node: u64,
+        seq: u64,
+        prev_link: crate::Fingerprint,
+        public: &busbar_contract::crypto::PublicKey,
+    ) -> Result<crate::notary_key::NotaryKeyCertificate, SignError> {
+        if node == 0 || seq == 0 {
+            return Err(SignError::Crypto(busbar_contract::crypto::Error::Invalid(
+                "notary certificate position",
+            )));
+        }
+        let mut certificate = crate::notary_key::NotaryKeyCertificate {
+            key_id: public.key_id.to_string(),
+            sig_alg: public.alg.as_str().into(),
+            public_key: public.bytes.to_vec(),
+            signed_by: self.signer.public_key().key_id.to_string(),
+            signature: Vec::new(),
+        };
+        certificate.key()?;
+        self.signer.sign(
+            &certificate.preimage(node, seq, prev_link),
+            &mut certificate.signature,
+        )?;
+        Ok(certificate)
+    }
+
     /// The capability its grant names.
     #[must_use]
     pub fn new(grant: BootstrapGrant) -> Self {

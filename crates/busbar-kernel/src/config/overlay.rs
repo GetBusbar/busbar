@@ -204,12 +204,22 @@ impl RootSettings {
         }
         if tls.is_some() {
             deploy.tls.clone_from(tls);
+            // #359 SEC-L1: an overlay TLS wins; the file's plaintext acceptance is inert (warned, not refused).
+            crate::config::listener_acceptance::supersede(
+                deploy,
+                &crate::config::listener_acceptance::DATA,
+            );
         }
         if let Some(v) = admin_listen {
             deploy.admin_listen.clone_from(v);
         }
         if admin_tls.is_some() {
             deploy.admin_tls.clone_from(admin_tls);
+            // #359 SEC-L1: an overlay TLS wins; the file's plaintext acceptance is inert (warned, not refused).
+            crate::config::listener_acceptance::supersede(
+                deploy,
+                &crate::config::listener_acceptance::ADMIN,
+            );
         }
         if let Some(v) = admin_require_mtls {
             deploy.admin_require_mtls = *v;

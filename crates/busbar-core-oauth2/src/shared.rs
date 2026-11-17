@@ -95,16 +95,16 @@ pub(crate) fn failed(what: &str, f: impl std::fmt::Debug) -> StorageError {
     super::cold::store_failed(what, f)
 }
 
-fn decode_failed(what: &str, e: &serde_json::Error) -> StorageError {
+fn decode_failed(what: &str, e: &busbar_contract::json::Error) -> StorageError {
     super::cold::store_decode_failed(what, e)
 }
 
 pub(crate) fn encode<T: Serialize>(what: &str, value: &T) -> Result<Vec<u8>, StorageError> {
-    serde_json::to_vec(value).map_err(|e| decode_failed(what, &e))
+    busbar_contract::json::to_vec(value).map_err(|e| decode_failed(what, &e))
 }
 
 pub(crate) fn decode<T: DeserializeOwned>(what: &str, body: &[u8]) -> Result<T, StorageError> {
-    serde_json::from_slice(body).map_err(|e| decode_failed(what, &e))
+    busbar_contract::json::parse(body).map_err(|e| decode_failed(what, &e))
 }
 
 fn user_code(d: &DeviceGrant) -> (String, String) {

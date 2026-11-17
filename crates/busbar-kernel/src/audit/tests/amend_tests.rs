@@ -32,7 +32,7 @@ async fn bind_counter(journal: &NodeAmendments) {
 async fn an_access_on_one_nodes_journal_is_not_read_by_another_nodes() {
     let (a, b) = (NodeAmendments::new(), NodeAmendments::new());
     bind_counter(&a).await;
-    hook_read(&a, "p2-404-hook", Some("key-a"), "openai", false)
+    hook_reads(&a, &["p2-404-hook"], Some("key-a"), "openai", false)
         .await
         .unwrap();
     assert_eq!(
@@ -57,10 +57,10 @@ async fn an_access_on_one_nodes_journal_is_not_read_by_another_nodes() {
 async fn a_bound_sink_takes_the_held_tail_then_every_new_amendment() {
     let journal = NodeAmendments::new();
     bind_counter(&journal).await;
-    hook_read(&journal, "h", None, "openai", false)
+    hook_reads(&journal, &["h"], None, "openai", false)
         .await
         .unwrap();
-    hook_read(&journal, "h", None, "openai", false)
+    hook_reads(&journal, &["h"], None, "openai", false)
         .await
         .unwrap();
     let first = journal.recent()[0].seq;
@@ -107,12 +107,12 @@ async fn refused_original_stage_leaves_no_amendment_chain_hole() {
         .bind(Some(std::sync::Arc::new(Refuse)), 0, &token)
         .await
         .unwrap();
-    assert!(hook_read(&journal, "h", None, "openai", false)
+    assert!(hook_reads(&journal, &["h"], None, "openai", false)
         .await
         .is_err());
     assert!(journal.recent().is_empty());
     bind_counter(&journal).await;
-    hook_read(&journal, "h", None, "openai", false)
+    hook_reads(&journal, &["h"], None, "openai", false)
         .await
         .unwrap();
     assert_eq!(journal.recent()[0].seq, 1);

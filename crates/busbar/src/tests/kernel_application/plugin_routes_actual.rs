@@ -196,7 +196,7 @@ async fn actual_export_dispatch_resolves_the_live_table_on_the_same_listener() {
     assert_eq!(
         client
             .get(format!("http://{address}{path}"))
-            .header("x-admin-token", "actual-route-operator")
+            .header("authorization", "Bearer actual-route-operator")
             .send()
             .await
             .unwrap()
@@ -207,7 +207,7 @@ async fn actual_export_dispatch_resolves_the_live_table_on_the_same_listener() {
     );
     let admin_crossing = client
         .get(format!("http://{admin_address}{path}"))
-        .header("x-admin-token", "actual-route-operator")
+        .header("authorization", "Bearer actual-route-operator")
         .send()
         .await
         .unwrap();

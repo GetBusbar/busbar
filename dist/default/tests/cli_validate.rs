@@ -850,7 +850,7 @@ fn validate_ok_when_keys_chain_has_signing_key_and_writes_no_file() {
     let dir = fixture_dir("sk-ok");
     write_configs(
         &dir,
-        "auth:\n  chain:\n    - keys\n  signing_key: { env: BUSBAR_SIGNING_KEY }\n  admin_auth: []\n",
+        "auth:\n  chain:\n    - keys\n  signing_key: { env: BUSBAR_SIGNING_KEY }\nidentity-providers:\n  admin-tokens: { module: admin-tokens, settings: { sha256: \"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\" } }\n",
     );
     let (code, stdout, stderr) = run_busbar(&dir, &["--validate"]);
     assert_eq!(
@@ -886,7 +886,7 @@ fn generate_signing_key_emits_a_usable_referenced_key() {
     write_configs(
         &dir,
         &format!(
-            "auth:\n  chain:\n    - keys\n  signing_key: {{ file: '{}' }}\n  admin_auth: []\n",
+            "auth:\n  chain:\n    - keys\n  signing_key: {{ file: '{}' }}\nidentity-providers:\n  admin-tokens: {{ module: admin-tokens, settings: {{ sha256: \"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\" }} }}\n",
             keyfile.display()
         ),
     );

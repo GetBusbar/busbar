@@ -157,7 +157,7 @@ async fn filtered_credential_flush_uses_actual_admin_and_data_caches() {
     let flush = |token: String, body: json::Value| {
         client
             .post(format!("http://{addr}/api/v1/admin/auth/cache/flush"))
-            .header("x-admin-token", token)
+            .header("authorization", format!("Bearer {}", token))
             .json(&body)
             .send()
     };

@@ -16,6 +16,10 @@
 # config.yaml REPLACES this file entirely (standard Docker bind-mount override).
 
 listen: "0.0.0.0:8080"
+# Quickstart only: both listeners serve plaintext, which 1.6 requires you to accept explicitly
+# (BUSBAR-3172). Add `tls:` / `admin_tls:` and remove these for anything beyond a trial.
+listen_insecure_transport: { accept: [plaintext], reason: "docker quickstart default; mount a config with tls for production" }
+admin_listen_insecure_transport: { accept: [plaintext], reason: "docker quickstart default; admin bound to loopback in the container" }
 
 # 1.5.3: an identity provider is DEFINED once here and REFERENCED by bare name from the chains.
 identity-providers:

@@ -1233,7 +1233,7 @@ fn a_declared_admin_route_reaches_serve_and_an_undeclared_one_is_refused() {
     let deploy = busbar_kernel::config::deploy_from_deserializer(
         serde_json::json!({
             "store": {"module": module},
-            "auth": {"chain": [], "admin_auth": []},
+            "auth": {"chain": []},
             "providers": {},
             "models": {},
         }),
