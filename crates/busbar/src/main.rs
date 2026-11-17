@@ -756,6 +756,7 @@ async fn run(
             let _ = root::min3_boot::finish(
                 conversion, process_io.handle(), store_admission, None,
                 busbar_kernel::plane_driver::port_work::governed_binder(None, Default::default()),
+                None,
             )
                 .await.unwrap_or_else(|error| die(error));
             die("unstamped conversion returned without its required restart");
@@ -1180,6 +1181,7 @@ async fn run(
         root::connector::dest_judge(&cfg).guard().clone(),
     )
     .unwrap_or_else(|error| die(error));
+    let native_config = cfg.clone();
     let preparation = root::boot_app::Preparation {
         secret_resolver,
         startup: store_admission,
@@ -1334,6 +1336,10 @@ async fn run(
         busbar_kernel::plane_driver::port_work::governed_binder(
             app.governance.clone(),
             app.role_bindings.clone(),
+        ),
+        Some(
+            root::min3_boot::hooks::Environment::new(&native_config, &app)
+                .unwrap_or_else(|error| die(error)),
         ),
     )
     .await
