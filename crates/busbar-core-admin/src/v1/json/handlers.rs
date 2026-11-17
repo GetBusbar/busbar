@@ -4828,6 +4828,26 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
     super::kinds::doc::trust_components(&mut gen);
     let mut schemas = gen.definitions().clone();
     schemas.insert(
+        super::kinds::CORE_STATE_DURABILITY.to_string(),
+        json!({
+            "type": "object",
+            "description": "The core/durability instance's state.",
+            "required": ["store"],
+            "properties": {
+                "store": {
+                    "type": "object",
+                    "required": ["persistence"],
+                    "properties": {
+                        "persistence": {
+                            "type": "boolean",
+                            "description": "Whether configuration changes made through the admin API are kept in the Store and survive a restart; false when the configuration is locked and those changes are refused."
+                        }
+                    }
+                }
+            }
+        }),
+    );
+    schemas.insert(
         "ConfigSettingsMutationView".to_string(),
         json!({"oneOf": [
             {"$ref": "#/components/schemas/ConfigSettingsView"},

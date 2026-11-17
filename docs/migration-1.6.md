@@ -388,6 +388,7 @@ instance IDs. Resolve a reported collision and update clients that select by ins
 | `process_boot_nonce` | `incarnation` (same value) |
 | `started_at`, `uptime_seconds` | `started_at_ms` |
 | `config_version` | `config_generation` |
+| `config_persistence` | The `core/durability` instance's `state.store.persistence` (`/kinds/core/instances/durability`) |
 | `kinds_revision` | The `/kinds` ETag |
 | `overlay_ignored` | A `warnings[]` entry with `code: "overlay_ignored"` |
 
