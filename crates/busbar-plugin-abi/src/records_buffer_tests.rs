@@ -43,7 +43,7 @@ fn fixed_record_quote_checks_overflow_and_exact_padding() {
     let mut bytes = [0; 16];
     let mut fixed = Fixed::new(&mut bytes);
     fixed
-        .put_pod(tag::H_STATUS, &U32Rec { value: 200 })
+        .put_pod(tag::H_STATUS, &U32Rec { value: 200, _r: 0 })
         .unwrap();
     assert_eq!(fixed.len(), 16);
     assert!(fixed.put_text(tag::TEXT, "").is_err());
