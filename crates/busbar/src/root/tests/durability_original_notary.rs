@@ -407,3 +407,59 @@ async fn running_notary_keeps_actual_signed_run_through_unknown_ack_and_delivery
     .await
     .unwrap();
 }
+
+#[tokio::test]
+async fn original_bootstrap_binding_rejects_foreign_owners_and_starts_after_recovery() {
+    use crate::root::durability::audit_services::AuditServices;
+    use busbar_kernel_audit::BootstrapSigner;
+    use std::time::Duration;
+
+    let fixture = NativeFixture::new(7).await;
+    let book = Arc::new(Mutex::new(fixture.book().await));
+    let feed = book.lock().unwrap().head.clone();
+    let key = AuditSigningKey::from_seed(&[41; 32]);
+    let public = AuditVerifyingKey::from_hex(&key.public_key_hex()).unwrap();
+    let (live, boot) = key.into_grants(LiveSigner::SameAsBootstrap).unwrap();
+    let (services, checkpoint) = AuditServices::spawn(
+        Notary::new(live),
+        BootstrapSigner::new(boot),
+        7,
+        fixture.journal.clone(),
+        feed.clone(),
+        book.lock().unwrap().notary_start(),
+    )
+    .unwrap();
+    // The services existed before recovery's final canonical publication.
+    Durability::seal_unit(&book, inputs(1), audit_pass(), &token())
+        .await
+        .unwrap();
+    let foreign = NativeFixture::new(7).await;
+    let foreign_book = foreign.book().await;
+    assert!(services
+        .bind_original_bootstrap(&foreign_book, public.clone())
+        .is_err());
+    let wrong = AuditSigningKey::from_seed(&[42; 32]);
+    let wrong = AuditVerifyingKey::from_hex(&wrong.public_key_hex()).unwrap();
+    assert!(services
+        .bind_original_bootstrap(&book.lock().unwrap(), wrong)
+        .is_err());
+    services
+        .bind_original_bootstrap(&book.lock().unwrap(), public.clone())
+        .unwrap();
+    assert!(services
+        .bind_original_bootstrap(&book.lock().unwrap(), public)
+        .is_err());
+    assert!(feed.original.page(1, feed.head()).is_none());
+    let clock = busbar_kernel::governance::drain::DrainClock::new(Duration::from_secs(5));
+    assert!(services.start_notary(10, clock));
+    assert!(
+        feed.original_ready().is_none(),
+        "no Node receiver was registered"
+    );
+    let end = services.take_notary().unwrap().stop().await.unwrap();
+    assert_eq!(end.committed_through, 1);
+    assert_eq!(end.stamped_through, 1);
+    assert_eq!(end.final_staged, None);
+    assert_eq!(fixture.journal.read_records(BUDGET).await.unwrap().len(), 1);
+    drop(checkpoint);
+}
