@@ -1863,6 +1863,7 @@ async fn build_app_native(
     let transition_requirements =
         governance::principal_transition::requirements(&cfg, plugin_registry.as_ref())?;
 
+    let publication_generation = config::generation::reserve(prior).await?;
     let preparation = rules.prepare_candidate(&cfg, &plugins_cfg).await?;
     let prepared_resolver = preparation
         .as_ref()
@@ -2747,6 +2748,7 @@ async fn build_app_native(
     if let Some(prior) = prior {
         app.config_generation = Arc::clone(&prior.config_generation);
     }
+    app.publication_generation = publication_generation;
     app.configured_view = Some(configured_view);
     app.operator_file_defs = operator_file_defs;
     app.grammar = grammar;
