@@ -6,13 +6,15 @@ slug: docs/1.6/errors/BUSBAR-3135
 
 **Area:** Config (3xxx) · **Severity:** fatal · **Since:** 1.6.0
 
+> **Retired.** Busbar no longer reports this code. The page stays so an old log line still resolves; the code is never reused.
+
 ## What it means
 
-A plane registration (an MCP server under `tools:`, an A2A agent under `agents:`) sets `allow_private`. 1.6.0 has one private-address policy for every outbound connection, `advanced.block_private_addresses` with `advanced.allow_destinations`; a per-registration switch that lifted it for one plugin is retired. The configuration is refused, naming the registration, rather than read with the switch ignored or applied.
+RETIRED. Nothing emits this code. A plane registration (an MCP server, an A2A agent) may set `allow_private`: core reads it as a boolean at the registration its plane declares and grants private reach to that registration's selected route alone, never to another registration, a provider, a request-supplied URL or a callback. A value that is not a boolean, or `allow_private` on a stdio registration, is refused naming the registration. `advanced.allow_destinations` was removed.
 
 ## How to fix it
 
-Delete `allow_private` and add the host (or its address) to `advanced.allow_destinations`. A cloud-metadata address stays refused whatever is listed.
+Nothing emits this code. Set `allow_private: true` only on the registration that must reach a private target; cloud metadata and the gateway's own listeners stay refused whatever is written.
 
 ---
 

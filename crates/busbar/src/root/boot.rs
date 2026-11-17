@@ -231,8 +231,21 @@ static PLUGIN_FLOOR: std::sync::OnceLock<PluginFloorAuthority> = std::sync::Once
 pub(crate) async fn bind_plugin_floor(
     core: Arc<busbar_kernel::persistence::facade::CoreStore>,
 ) -> Result<(), String> {
-    let owner = busbar_kernel::persistence::plugin_floor::PluginFloor::new(core)?;
-    let host = super::durability::host_identity();
+    let owner = busbar_kernel::persistence::plugin_floor::PluginFloor::new(core.clone())?;
+    // The floor is scoped to the deployment, not the host: a rollout's fresh pod name must find
+    // the floor its predecessors raised, and rows must not pile up per pod name (UPG-7).
+    let host = busbar_kernel::persistence::boot_identity::BootIdentity::new(core)?
+        .keep_deployment_id()
+        .await?;
+    // Migrate-on-boot (PRD-4/ARC-5): floors an earlier 1.6 build kept under host names move into
+    // the deployment slot, folding several hosts into the highest floor.
+    let carried = owner.adopt_host_floors(&host).await?;
+    if carried > 0 {
+        tracing::info!(
+            carried,
+            "carried host-keyed plugin floors into the deployment floor"
+        );
+    }
     let release_keys = owner.release_keys_floor(&host).await?;
     PLUGIN_FLOOR
         .set(PluginFloorAuthority {

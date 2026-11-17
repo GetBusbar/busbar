@@ -81,12 +81,6 @@ fn read_entry(
         approved: BTreeMap::new(),
     };
     let map = entry.as_mapping();
-    if map
-        .and_then(|m| m.get_key(RETIRED_PRIVATE_REACH_KEY))
-        .is_some_and(|v| !v.is_null())
-    {
-        return Err(private_reach_retired(at, RETIRED_PRIVATE_REACH_KEY));
-    }
     for decl in keys {
         let value = map
             .and_then(|m| m.get_key(decl.key))
@@ -102,12 +96,6 @@ fn read_entry(
             TrustRole::RecoveryBackoff => {
                 out.policy.recovery_backoff_ms = duration_ms(at, decl, value, strict)?;
             }
-
-            TrustRole::PrivateReach => {
-                if value.is_some() {
-                    return Err(private_reach_retired(at, decl.key));
-                }
-            }
             TrustRole::ItemApprovals => out.approved = item_approvals(decl, value),
         }
     }
@@ -118,28 +106,10 @@ fn read_entry(
     Ok(out)
 }
 
-/// The key 1.5.5 and the 1.6 betas wrote a registration's private reach under (`tools.<server>`,
-/// `agents.<agent>`): refused BY NAME in every plane registration, whatever its plane declares, so
-/// the coded refusal (BUSBAR-3135) survives the planes dropping the retired trust role.
-const RETIRED_PRIVATE_REACH_KEY: &str = "allow_private";
-
-/// THE RETIRED PER-REGISTRATION PRIVATE REACH (`abi::plane::TRUST_PRIVATE_REACH`). Every outbound
-/// connection is governed by one policy, `advanced.block_private_addresses` with
-/// `advanced.allow_destinations`; a registration that still writes the key a plane declares for it is
-/// refused, whatever its value, naming the registration and the one setting that replaced it.
-#[must_use]
-fn private_reach_retired(at: &str, key: &str) -> String {
-    let code = crate::diagnostics::CONFIG_PRIVATE_REACH_RETIRED.banner();
-    format!(
-        "{at}: `{key}:` is retired ({code}). One setting governs every outbound connection: list \
-         this registration's host (or its address) in `advanced.allow_destinations` and remove \
-         `{key}:`. A cloud-metadata address stays refused whatever is listed."
-    )
-}
-
-/// Whether a registration holds a private reach: never, since the key is retired
-/// (`private_reach_retired`); a registration writing it is refused before it is served. The one
-/// policy, `advanced.allow_destinations`, decides every private destination.
+/// Whether the legacy plane-door path (`registration_anchors`) grants a registration private reach:
+/// never. A registration's `allow_private` is core's own boolean at its declared registration
+/// (UPSTREAMS-DECLARED r3 §2.4), read by the upstream split (`crate::upstreams`) and carried only
+/// on that selected member's route (`MemberRoute.anchors.private_reach`); it is not a trust fact.
 #[must_use]
 pub fn private_reach(_entry: &busbar_contract::yaml::Value, _keys: &[TrustKeyDecl]) -> bool {
     false
