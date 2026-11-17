@@ -1838,3 +1838,7 @@ mod declares_reader_tests;
 #[cfg(test)]
 #[path = "tests/release_seal_tests.rs"]
 mod release_seal_tests;
+
+#[cfg(test)]
+#[path = "tests/native_pack_sign_tests.rs"]
+mod native_pack_sign_tests;
