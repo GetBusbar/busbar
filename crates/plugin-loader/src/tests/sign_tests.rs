@@ -3,6 +3,7 @@
 
 use super::*;
 use busbar_contract::json;
+use busbar_contract::json::JsonValueMutTrait as _;
 
 fn test_key(seed: u8) -> SigningKey {
     SigningKey::from_bytes(&[seed; 32])
