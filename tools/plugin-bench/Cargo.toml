@@ -18,7 +18,6 @@ path = "src/main.rs"
 [dependencies]
 busbar-contract = { path = "../../crates/busbar-contract" }
 busbar-plugin-loader = { path = "../../crates/plugin-loader", features = ["test-support"] }
-serde_json = { version = "1", features = ["arbitrary_precision"] }
 tokio = { version = "1", features = ["rt", "time"] }
 
 # The harness plays the kernel for the export door, so it needs the contract's test seal. That
@@ -33,3 +32,31 @@ libc = "0.2"
 
 [profile.release]
 debug = "line-tables-only"
+
+# Patches apply only at the consuming workspace root, and this tool is its own workspace: the same
+# rows as core's root Cargo.toml (keep them equal), so its graph resolves the forked crates core uses.
+[patch.'https://github.com/GetBusbar/busbar']
+busbar-contract = { path = "../../crates/busbar-contract" }
+# The one crypto backend: busbar-crypto names it by this URL; a private build patches its own in.
+busbar-crypto-backend = { path = "../../crates/busbar-crypto-backend" }
+
+# Pinned dependency fixes: h2 sensitive fields, WebSocket 1014 and bounded frame diagnostics.
+[patch.crates-io]
+# Dependency patches are effective only at the consuming workspace root.
+aws-lc-sys = { git = "https://github.com/MattJackson/aws-lc-sys", rev = "3469edb189e0cc2fab40e88f551713a828a5d867" }
+jobserver = { git = "https://github.com/MattJackson/jobserver-rs", rev = "fbe3efc1acc11add04854cc093f97876e439e129" }
+dunce = { git = "https://github.com/MattJackson/dunce", rev = "bb4757b8dffd9bdc619ce1fda1a147bd53e7b29d" }
+fs_extra = { git = "https://github.com/MattJackson/fs_extra", rev = "70f47864db8ae763979f47cde6785449cd790dad" }
+h2 = { git = "https://github.com/MattJackson/h2", rev = "d6146a5c425e55653cdfebc5660e52d87430c588" }
+tungstenite = { git = "https://github.com/MattJackson/tungstenite-rs", rev = "893a21f1f98011a2665840231330c473836c9a0a" }
+# YAML: serde-saphyr and granit-parser carry busbar's opt-in serde_yaml-compatibility options
+# (null_scalars_as_text, lowercase_radix_prefixes_only, bom_inside_document_as_content), offered
+# upstream; forks of the exact published versions plus those commits.
+serde-saphyr = { git = "https://github.com/MattJackson/serde-saphyr", rev = "a94d2da01a448d348b5d14945e29192e511b8452" }
+granit-parser = { git = "https://github.com/MattJackson/granit-parser", rev = "d31e9292a0be49de7d3a85ee07555bb9d0afce20" }
+# JSON (SERDE-NUMBERS r17 P0-P3): sonic-rs 0.5.11 plus exact numbers through foreign deserializers
+# (serde buffering, YAML) and an authenticated Value hand-off, offered upstream (cloudwego/sonic-rs).
+sonic-rs = { git = "https://github.com/MattJackson/sonic-rs", rev = "1241c129cef83686109f820825206f56ff470f67" }
+# Canonical JSON: olpc-cjson 0.1.4 with serde_json optional and a sonic-rs Formatter, offered upstream
+# (awslabs/tough). busbar's workspace row turns its default (serde_json) off and takes the sonic-rs formatter.
+olpc-cjson = { git = "https://github.com/MattJackson/olpc-cjson", rev = "0a96a65b1122a2bbb93fd36cae3b36dd2b045c7e" }
