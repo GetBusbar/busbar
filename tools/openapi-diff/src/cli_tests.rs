@@ -5,7 +5,8 @@
 
 use crate::run;
 
-const OLD: &str = r#"{"paths":{"/a":{"get":{"operationId":"GetA","responses":{"200":{"description":"ok"}}}}}}"#;
+const OLD: &str =
+    r#"{"paths":{"/a":{"get":{"operationId":"GetA","responses":{"200":{"description":"ok"}}}}}}"#;
 const ADDITIVE: &str = r#"{"paths":{"/a":{"get":{"operationId":"GetA","responses":{"200":{"description":"ok"},"429":{"description":"slow"}}}},"/b":{"get":{"operationId":"GetB","responses":{"200":{"description":"ok"}}}}}}"#;
 const BREAKING: &str = r#"{"paths":{}}"#;
 
@@ -39,7 +40,10 @@ fn words(items: &[&str]) -> Vec<String> {
 #[test]
 fn an_additive_head_exits_zero() {
     let files = Files::new("additive");
-    let (base, head) = (files.write("base.json", OLD), files.write("head.json", ADDITIVE));
+    let (base, head) = (
+        files.write("base.json", OLD),
+        files.write("head.json", ADDITIVE),
+    );
     let (code, lines) = run(&words(&["--base", &base, "--head", &head]));
     assert_eq!((code, lines), (0, Vec::new()));
 }
@@ -47,10 +51,18 @@ fn an_additive_head_exits_zero() {
 #[test]
 fn a_breaking_head_exits_one_with_its_findings() {
     let files = Files::new("breaking");
-    let (base, head) = (files.write("base.json", OLD), files.write("head.json", BREAKING));
+    let (base, head) = (
+        files.write("base.json", OLD),
+        files.write("head.json", BREAKING),
+    );
     let (code, lines) = run(&words(&["--base", &base, "--head", &head]));
     assert_eq!(code, 1);
-    assert!(lines.iter().any(|line| line.contains("/a") && line.contains("removed")), "{lines:?}");
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.contains("/a") && line.contains("removed")),
+        "{lines:?}"
+    );
 }
 
 #[test]
@@ -64,7 +76,10 @@ fn advisory_turns_breaking_into_exit_three_and_leaves_additive_at_zero() {
     let (code, lines) = run(&words(&["--base", &base, "--head", &head, "--advisory"]));
     assert_eq!(code, 3);
     assert!(!lines.is_empty());
-    assert_eq!(run(&words(&["--advisory", "--base", &base, "--head", &good])).0, 0);
+    assert_eq!(
+        run(&words(&["--advisory", "--base", &base, "--head", &good])).0,
+        0
+    );
 }
 
 #[test]
@@ -73,8 +88,25 @@ fn usage_and_read_errors_exit_two() {
     let base = files.write("base.json", OLD);
     assert_eq!(run(&words(&[])).0, 2, "no arguments");
     assert_eq!(run(&words(&["--base", &base])).0, 2, "no head");
-    assert_eq!(run(&words(&["--base", &base, "--head", &base, "--nope"])).0, 2, "unknown word");
-    assert_eq!(run(&words(&["--base", &base, "--head", "/nonexistent/openapi.json"])).0, 2);
+    assert_eq!(
+        run(&words(&["--base", &base, "--head", &base, "--nope"])).0,
+        2,
+        "unknown word"
+    );
+    assert_eq!(
+        run(&words(&[
+            "--base",
+            &base,
+            "--head",
+            "/nonexistent/openapi.json"
+        ]))
+        .0,
+        2
+    );
     let junk = files.write("junk.json", "not json");
-    assert_eq!(run(&words(&["--base", &base, "--head", &junk])).0, 2, "unparseable");
+    assert_eq!(
+        run(&words(&["--base", &base, "--head", &junk])).0,
+        2,
+        "unparseable"
+    );
 }

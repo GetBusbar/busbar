@@ -16,7 +16,7 @@ fn changes(old: &str, new: &str) -> Vec<String> {
     breaking_changes(&doc(old), &doc(new))
 }
 
-const BASE: &str = r#"{"paths":{"/a":{"get":{"operationId":"GetA","x-busbar-required-scope":"read-only",
+const BASE: &str = r##"{"paths":{"/a":{"get":{"operationId":"GetA","x-busbar-required-scope":"read-only",
 "parameters":[{"name":"limit","in":"query","required":false,"schema":{"type":"integer"}}],
 "responses":{"200":{"description":"ok","content":{"application/json":{"schema":{"$ref":"#/components/schemas/A"}}}},
 "401":{"description":"no"}}},
@@ -25,7 +25,7 @@ const BASE: &str = r#"{"paths":{"/a":{"get":{"operationId":"GetA","x-busbar-requ
 "responses":{"200":{"description":"ok"}}}}},
 "components":{"schemas":{
 "A":{"type":"object","required":["id"],"properties":{"id":{"type":"string"},"kind":{"type":"string","enum":["x","y"]}}},
-"In":{"type":"object","required":["name"],"properties":{"name":{"type":"string"},"note":{"type":"string"}}}}}}"#;
+"In":{"type":"object","required":["name"],"properties":{"name":{"type":"string"},"note":{"type":"string"}}}}}}"##;
 
 #[test]
 fn a_document_differs_from_itself_by_nothing() {
@@ -34,16 +34,29 @@ fn a_document_differs_from_itself_by_nothing() {
 
 #[test]
 fn a_removed_operation_is_found() {
-    let new = BASE.replace(r#""post":{"operationId":"PostA""#, r#""x-gone":{"operationId":"PostA""#);
+    let new = BASE.replace(
+        r#""post":{"operationId":"PostA""#,
+        r#""x-gone":{"operationId":"PostA""#,
+    );
     let found = changes(BASE, &new);
-    assert!(found.iter().any(|c| c.contains("post /a") && c.contains("removed")), "{found:?}");
+    assert!(
+        found
+            .iter()
+            .any(|c| c.contains("post /a") && c.contains("removed")),
+        "{found:?}"
+    );
 }
 
 #[test]
 fn a_removed_path_is_found() {
     let new = BASE.replace(r#""/a":"#, r#""/b":"#);
     let found = changes(BASE, &new);
-    assert!(found.iter().any(|c| c.contains("/a") && c.contains("removed")), "{found:?}");
+    assert!(
+        found
+            .iter()
+            .any(|c| c.contains("/a") && c.contains("removed")),
+        "{found:?}"
+    );
 }
 
 #[test]
@@ -55,12 +68,21 @@ fn a_changed_operation_id_is_found() {
 #[test]
 fn a_removed_response_status_is_found() {
     let found = changes(BASE, &BASE.replace(r#","401":{"description":"no"}"#, ""));
-    assert!(found.iter().any(|c| c.contains("401") && c.contains("removed")), "{found:?}");
+    assert!(
+        found
+            .iter()
+            .any(|c| c.contains("401") && c.contains("removed")),
+        "{found:?}"
+    );
 }
 
 #[test]
 fn a_raised_required_scope_is_found() {
-    let new = BASE.replacen(r#""x-busbar-required-scope":"read-only""#, r#""x-busbar-required-scope":"full""#, 1);
+    let new = BASE.replacen(
+        r#""x-busbar-required-scope":"read-only""#,
+        r#""x-busbar-required-scope":"full""#,
+        1,
+    );
     let found = changes(BASE, &new);
     assert!(found.iter().any(|c| c.contains("scope")), "{found:?}");
 }
@@ -69,41 +91,74 @@ fn a_raised_required_scope_is_found() {
 fn a_newly_required_request_property_is_found() {
     let new = BASE.replace(r#""required":["name"]"#, r#""required":["name","note"]"#);
     let found = changes(BASE, &new);
-    assert!(found.iter().any(|c| c.contains("note") && c.contains("required")), "{found:?}");
+    assert!(
+        found
+            .iter()
+            .any(|c| c.contains("note") && c.contains("required")),
+        "{found:?}"
+    );
 }
 
 #[test]
 fn a_removed_response_property_is_found() {
     let new = BASE.replace(r#","kind":{"type":"string","enum":["x","y"]}"#, "");
     let found = changes(BASE, &new);
-    assert!(found.iter().any(|c| c.contains("kind") && c.contains("removed")), "{found:?}");
+    assert!(
+        found
+            .iter()
+            .any(|c| c.contains("kind") && c.contains("removed")),
+        "{found:?}"
+    );
 }
 
 #[test]
 fn a_removed_enum_value_is_found() {
     let found = changes(BASE, &BASE.replace(r#"["x","y"]"#, r#"["x"]"#));
-    assert!(found.iter().any(|c| c.contains("enum") && c.contains("\"y\"")), "{found:?}");
+    assert!(
+        found
+            .iter()
+            .any(|c| c.contains("enum") && c.contains("\"y\"")),
+        "{found:?}"
+    );
 }
 
 #[test]
 fn a_narrowed_type_is_found() {
-    let new = BASE.replace(r#""name":{"type":"string"}"#, r#""name":{"type":"integer"}"#);
+    let new = BASE.replace(
+        r#""name":{"type":"string"}"#,
+        r#""name":{"type":"integer"}"#,
+    );
     let found = changes(BASE, &new);
-    assert!(found.iter().any(|c| c.contains("name") && c.contains("type")), "{found:?}");
+    assert!(
+        found
+            .iter()
+            .any(|c| c.contains("name") && c.contains("type")),
+        "{found:?}"
+    );
 }
 
 #[test]
 fn a_new_required_parameter_is_found() {
     let new = BASE.replace(r#""required":false"#, r#""required":true"#);
     let found = changes(BASE, &new);
-    assert!(found.iter().any(|c| c.contains("limit") && c.contains("required")), "{found:?}");
+    assert!(
+        found
+            .iter()
+            .any(|c| c.contains("limit") && c.contains("required")),
+        "{found:?}"
+    );
 }
 
 #[test]
 fn a_removed_parameter_is_found() {
     let new = BASE.replace(r#""parameters":[{"name":"limit","in":"query","required":false,"schema":{"type":"integer"}}],"#, "");
     let found = changes(BASE, &new);
-    assert!(found.iter().any(|c| c.contains("limit") && c.contains("removed")), "{found:?}");
+    assert!(
+        found
+            .iter()
+            .any(|c| c.contains("limit") && c.contains("removed")),
+        "{found:?}"
+    );
 }
 
 #[test]
@@ -119,8 +174,8 @@ fn additive_changes_pass() {
 
 #[test]
 fn a_recursive_schema_terminates() {
-    let recursive = r#"{"paths":{"/t":{"get":{"operationId":"T","responses":{"200":{"description":"ok","content":{"application/json":{"schema":{"$ref":"#/components/schemas/N"}}}}}}}},
-"components":{"schemas":{"N":{"type":"object","properties":{"next":{"$ref":"#/components/schemas/N"},"v":{"type":"string"}}}}}}"#;
+    let recursive = r##"{"paths":{"/t":{"get":{"operationId":"T","responses":{"200":{"description":"ok","content":{"application/json":{"schema":{"$ref":"#/components/schemas/N"}}}}}}}},
+"components":{"schemas":{"N":{"type":"object","properties":{"next":{"$ref":"#/components/schemas/N"},"v":{"type":"string"}}}}}}"##;
     assert_eq!(changes(recursive, recursive), Vec::<String>::new());
     let narrowed = recursive.replace(r#""v":{"type":"string"}"#, r#""v":{"type":"integer"}"#);
     assert!(!changes(recursive, &narrowed).is_empty());
@@ -128,7 +183,8 @@ fn a_recursive_schema_terminates() {
 
 #[test]
 fn the_committed_admin_document_differs_from_itself_by_nothing() {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../crates/busbar-core-admin/src/v1/json/openapi.json");
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../crates/busbar-core-admin/src/v1/json/openapi.json");
     let text = std::fs::read(&path).expect("the committed document");
     let document = json::parse_value(&text).expect("it parses");
     assert_eq!(breaking_changes(&document, &document), Vec::<String>::new());

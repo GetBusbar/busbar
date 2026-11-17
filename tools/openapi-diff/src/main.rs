@@ -19,9 +19,9 @@ use busbar_contract::json;
 mod diff;
 
 #[cfg(test)]
-mod diff_tests;
-#[cfg(test)]
 mod cli_tests;
+#[cfg(test)]
+mod diff_tests;
 
 /// The command line's three words.
 struct Options {
@@ -57,7 +57,14 @@ fn read(path: &str) -> Result<json::Value, String> {
 pub(crate) fn run(args: &[String]) -> (u8, Vec<String>) {
     let options = match parse(args) {
         Ok(options) => options,
-        Err(message) => return (2, vec![format!("{message}\nusage: openapi-diff --base <old> --head <new> [--advisory]")]),
+        Err(message) => {
+            return (
+                2,
+                vec![format!(
+                    "{message}\nusage: openapi-diff --base <old> --head <new> [--advisory]"
+                )],
+            )
+        }
     };
     let (base, head) = match (read(&options.base), read(&options.head)) {
         (Ok(base), Ok(head)) => (base, head),

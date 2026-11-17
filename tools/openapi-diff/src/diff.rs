@@ -40,8 +40,8 @@ pub(crate) fn breaking_changes(base: &json::Value, head: &json::Value) -> Vec<St
 }
 
 struct Walk<'a> {
-    base: &'a json::Value,
-    head: &'a json::Value,
+    base: &json::Value,
+    head: &json::Value,
     seen: BTreeSet<(String, String, bool)>,
     out: Vec<String>,
 }
@@ -91,7 +91,7 @@ impl<'a> Walk<'a> {
         }
     }
 
-    fn operation(&mut self, at: &str, old: &'a json::Value, new: &'a json::Value) {
+    fn operation(&mut self, at: &str, old: &json::Value, new: &json::Value) {
         if let (Some(was), Some(now)) = (
             old.get("operationId").and_then(|v| v.as_str()),
             new.get("operationId").and_then(|v| v.as_str()),
@@ -115,11 +115,17 @@ impl<'a> Walk<'a> {
         self.responses(at, old, new);
     }
 
-    fn parameters(&mut self, at: &str, old: &'a json::Value, new: &'a json::Value) {
+    fn parameters(&mut self, at: &str, old: &json::Value, new: &json::Value) {
         let key = |p: &json::Value| {
             (
-                p.get("in").and_then(|v| v.as_str()).unwrap_or("").to_owned(),
-                p.get("name").and_then(|v| v.as_str()).unwrap_or("").to_owned(),
+                p.get("in")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_owned(),
+                p.get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_owned(),
             )
         };
         let required = |p: &json::Value| p.get("required").and_then(|v| v.as_bool()) == Some(true);
@@ -135,8 +141,13 @@ impl<'a> Walk<'a> {
             .unwrap_or_default();
         for was in &olds {
             let (place, name) = key(was);
-            match news.iter().find(|now| key(now) == (place.clone(), name.clone())) {
-                None => self.out.push(format!("{at}: parameter {name} ({place}) removed")),
+            match news
+                .iter()
+                .find(|now| key(now) == (place.clone(), name.clone()))
+            {
+                None => self
+                    .out
+                    .push(format!("{at}: parameter {name} ({place}) removed")),
                 Some(now) => {
                     if required(now) && !required(was) {
                         self.out
@@ -150,14 +161,18 @@ impl<'a> Walk<'a> {
         }
         for now in &news {
             let (place, name) = key(now);
-            if required(now) && !olds.iter().any(|was| key(was) == (place.clone(), name.clone())) {
+            if required(now)
+                && !olds
+                    .iter()
+                    .any(|was| key(was) == (place.clone(), name.clone()))
+            {
                 self.out
                     .push(format!("{at}: new parameter {name} is required"));
             }
         }
     }
 
-    fn request_body(&mut self, at: &str, old: &'a json::Value, new: &'a json::Value) {
+    fn request_body(&mut self, at: &str, old: &json::Value, new: &json::Value) {
         let (Some(was), Some(now)) = (old.get("requestBody"), new.get("requestBody")) else {
             return;
         };
@@ -168,7 +183,7 @@ impl<'a> Walk<'a> {
         self.content(&format!("{at}: request body"), was, now, Direction::Request);
     }
 
-    fn responses(&mut self, at: &str, old: &'a json::Value, new: &'a json::Value) {
+    fn responses(&mut self, at: &str, old: &json::Value, new: &json::Value) {
         let Some(old) = old.get("responses").and_then(|v| v.as_object()) else {
             return;
         };
@@ -176,13 +191,18 @@ impl<'a> Walk<'a> {
             match new.get("responses").and_then(|r| r.get(status)) {
                 None => self.out.push(format!("{at}: response {status} removed")),
                 Some(now) => {
-                    self.content(&format!("{at}: response {status}"), was, now, Direction::Response);
+                    self.content(
+                        &format!("{at}: response {status}"),
+                        was,
+                        now,
+                        Direction::Response,
+                    );
                 }
             }
         }
     }
 
-    fn content(&mut self, at: &str, old: &'a json::Value, new: &'a json::Value, dir: Direction) {
+    fn content(&mut self, at: &str, old: &json::Value, new: &json::Value, dir: Direction) {
         let Some(media) = old.get("content").and_then(|v| v.as_object()) else {
             return;
         };
@@ -199,7 +219,10 @@ impl<'a> Walk<'a> {
     }
 
     /// The named schema a `$ref` points at, or the node itself.
-    fn resolve(doc: &'a json::Value, node: &'a json::Value) -> (&'a json::Value, Option<String>) {
+    fn resolve<'v>(
+        doc: &'v json::Value,
+        node: &'v json::Value,
+    ) -> (&'v json::Value, Option<String>) {
         match node.get("$ref").and_then(|v| v.as_str()) {
             Some(reference) => match reference.strip_prefix(SCHEMA_REF) {
                 Some(name) => (
@@ -215,7 +238,7 @@ impl<'a> Walk<'a> {
         }
     }
 
-    fn schema(&mut self, at: &str, old: &'a json::Value, new: &'a json::Value, dir: Direction) {
+    fn schema(&mut self, at: &str, old: &json::Value, new: &json::Value, dir: Direction) {
         let (base, head) = (self.base, self.head);
         let ((old, old_name), (new, new_name)) =
             (Self::resolve(base, old), Self::resolve(head, new));
@@ -232,7 +255,10 @@ impl<'a> Walk<'a> {
                 now.iter().cloned().collect::<Vec<_>>().join("|")
             ));
         }
-        if let (Some(was), Some(now)) = (old.get("enum").and_then(|v| v.as_array()), new.get("enum").and_then(|v| v.as_array())) {
+        if let (Some(was), Some(now)) = (
+            old.get("enum").and_then(|v| v.as_array()),
+            new.get("enum").and_then(|v| v.as_array()),
+        ) {
             for value in was {
                 if !now.into_iter().any(|candidate| candidate == value) {
                     self.out
