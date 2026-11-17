@@ -293,6 +293,14 @@ impl AdmissionGate {
     }
 }
 
+/// A non-retired exit with completed spend not in durable custody (`unpersisted` or `in_doubt`
+/// non-empty at the cut): the money-loss signal. docs/operations.md "Exit statuses" binds to it.
+pub const EXIT_SPEND_UNSAVED: i32 = 70;
+
+/// A non-retired exit whose spend is all in durable custody; open streams were cut and the writer
+/// was not retired. Safe to restart. docs/operations.md "Exit statuses" binds to it.
+pub const EXIT_SPEND_SAVED_STREAMS_CUT: i32 = 75;
+
 /// One item of spend custody at exit, listed on stderr as evidence (never an import).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CustodyItem {
@@ -300,7 +308,8 @@ pub struct CustodyItem {
     pub detail: String,
 }
 
-/// §5's three lists. 70 iff `unpersisted` or `in_doubt` is non-empty; otherwise 75.
+/// §5's three lists. [`EXIT_SPEND_UNSAVED`] iff `unpersisted` or `in_doubt` is non-empty; otherwise
+/// [`EXIT_SPEND_SAVED_STREAMS_CUT`].
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SpendCustody {
     pub unpersisted: Vec<CustodyItem>,
@@ -319,9 +328,9 @@ impl SpendCustody {
     #[must_use]
     pub fn exit_code(&self) -> i32 {
         if self.spend_unsaved() {
-            70
+            EXIT_SPEND_UNSAVED
         } else {
-            75
+            EXIT_SPEND_SAVED_STREAMS_CUT
         }
     }
 }
