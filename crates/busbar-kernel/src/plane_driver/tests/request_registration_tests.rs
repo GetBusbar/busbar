@@ -496,3 +496,22 @@ async fn forced_teardown_cannot_confirm_an_ordinary_receipt() {
         0
     );
 }
+
+/// FEE-DEBT r1 source-first regression: after the hot refund and the ordinary checkpoint's
+/// actual R acknowledgement, the original fee-budget Store operation has not been
+/// acknowledged (no budget flush ran). The native fee join must remain unresolved;
+/// FeeState.completed alone only proves the hot mutations finished.
+#[tokio::test]
+async fn native_fee_join_waits_for_the_original_fee_store_operation() {
+    let rig = ordinary_rig(55).await;
+    rig.slot
+        .request_terminal(&rig.admitted, ended(502))
+        .unwrap();
+    assert!(rig.money.drive_ordinary_terminal(&rig.slot).unwrap());
+    rig.gov.flush_unit_checkpoints().await.unwrap();
+    assert!(rig.slot.checkpoint_confirmed(&rig.money).unwrap());
+    assert!(
+        !rig.slot.fee_join_complete(),
+        "the fee join completed before the original fee-budget Store operation was Applied"
+    );
+}

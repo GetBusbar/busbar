@@ -218,3 +218,15 @@ impl NativeOrdinaryTerminalSlot {
             .map(|owner| Arc::clone(&owner.money.classes))
     }
 }
+
+impl NativeOrdinaryTerminalSlot {
+    /// Whether the original fee debt has joined. RED SCAFFOLD: naively reads the hot
+    /// FeeAccount completion, which proves only that refund mutations finished.
+    pub fn fee_join_complete(&self) -> bool {
+        let state = locked(&self.state);
+        state
+            .terminal
+            .as_ref()
+            .is_some_and(|owner| locked(&owner.fee.state).completed.is_some())
+    }
+}

@@ -632,6 +632,7 @@ impl Node {
                     .ordinary_checkpoint_confirmed(&native.ordinary)
                     .unwrap_or(false)
                     && ORIGINAL_FEE_APPLIED_PRODUCER
+                    && native.ordinary.fee_join_complete()
             } else {
                 true
             };
