@@ -1686,3 +1686,37 @@ async fn listener_mount_candidates_do_not_publish_into_the_shared_topology() {
         "constructing one candidate must not fill another generation's listener slots"
     );
 }
+
+#[tokio::test]
+async fn cloned_candidate_rebuilds_handlers_without_mutating_the_retained_generation() {
+    use busbar_kernel::appbuild::RootRules as _;
+    let initial = topology();
+    let topology_plan = plan(initial.clone());
+    let mut boot = Arc::unwrap_or_clone(
+        projection_boundary_app(initial, vec![labeled_route("retained")], 1).await,
+    );
+    let plan = Arc::new(
+        topology_plan
+            .mount_planes(&super::Served::default(), &boot, &[])
+            .unwrap(),
+    );
+    let rules = Arc::new(crate::root::door_steps::Rules::default().with_listeners(plan.clone()));
+    boot.root_rules = rules.clone();
+    rules.check_built(&mut boot).unwrap();
+    let boot = Arc::new(boot);
+    let handle = Arc::new(busbar_kernel::state::AppHandle::new(boot.clone()));
+    let router = plan.router(&handle, PRIVATE_LISTENER.into(), TEST_BODY_LIMIT, 0, false);
+    let mut next = (*boot).clone();
+    next.config_version = 2;
+    next.plugin_routes = Arc::new(build_route_table(vec![labeled_route("replacement")]).unwrap());
+    rules.check_built(&mut next).unwrap();
+    handle.swap(Arc::new(next)).await;
+    assert_eq!(
+        physical_answer(&router, None).await.1.as_ref(),
+        b"replacement"
+    );
+    assert_eq!(
+        physical_answer(&router, Some(boot)).await.1.as_ref(),
+        b"retained"
+    );
+}
