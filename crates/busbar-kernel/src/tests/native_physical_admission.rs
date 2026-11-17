@@ -477,3 +477,71 @@ fn native_physical_response_owner_retains_request_count_after_input_drop() {
     let third = f.budget.try_enter(AdmissionClass::Data).unwrap();
     drop((second, third));
 }
+
+#[test]
+fn native_physical_snapshot_captures_original_fields_once() {
+    let mut f = fixture();
+    f.budget = crate::limits::process_admission::ProcessAdmission::with_limits(3, 4096, 4096);
+    let mut facts = accepted();
+    facts.peer_certificate = SecureVec::from(&b"certificate"[..]);
+    let conn = f.listener.connect(facts);
+    let mut original = head("/one");
+    original.query = Some(String::new());
+    original.authority = "example.test".into();
+    original.fields = vec![
+        ("x-order".into(), b"first".to_vec()),
+        ("x-order".into(), b"second".to_vec()),
+    ];
+    let (request, _owner) = conn
+        .head(
+            1,
+            original,
+            f.budget.try_enter(AdmissionClass::Data).unwrap(),
+            None,
+        )
+        .unwrap();
+    let credit = request.binding().request().try_reserve(4).unwrap();
+    let request = request
+        .finish_input(SecureVec::from(&b"body"[..]), credit)
+        .unwrap();
+    let snapshot = request.binding().snapshot().unwrap();
+    let used = f.budget.used();
+    let again = request.binding().snapshot().unwrap();
+    assert!(Arc::ptr_eq(&snapshot, &again));
+    assert_eq!(f.budget.used(), used);
+    assert!(snapshot.request().same_request(request.binding().request()));
+    assert_eq!(snapshot.method(), "POST");
+    assert_eq!(snapshot.path(), "/one");
+    assert_eq!(snapshot.query(), "");
+    assert!(snapshot.query_present());
+    assert_eq!(snapshot.authority(), "example.test");
+    assert_eq!(snapshot.peer(), "192.0.2.1");
+    assert_eq!(snapshot.tls_peer_cert(), b"certificate");
+    assert_eq!(snapshot.body(), b"body");
+    assert_eq!(
+        snapshot.headers().collect::<Vec<_>>(),
+        vec![("x-order", &b"first"[..]), ("x-order", &b"second"[..])]
+    );
+    drop(request);
+    assert_eq!(snapshot.body(), b"body");
+    assert!(f.budget.used().0 > 0);
+    drop((snapshot, again));
+    assert_eq!(f.budget.used(), (0, 0));
+}
+
+#[test]
+fn native_physical_snapshot_requires_complete_input_and_preserves_absent_query() {
+    let mut f = fixture();
+    f.budget = crate::limits::process_admission::ProcessAdmission::with_limits(3, 4096, 4096);
+    let conn = f.listener.connect(accepted());
+    let (request, _owner) = arrive(&f, &conn, 1);
+    assert!(matches!(
+        request.binding().snapshot(),
+        Err(super::super::request_snapshot::SnapshotError::Invalid)
+    ));
+    let credit = request.binding().request().try_reserve(0).unwrap();
+    let request = request.finish_input(SecureVec::new(), credit).unwrap();
+    let snapshot = request.binding().snapshot().unwrap();
+    assert!(!snapshot.query_present());
+    assert_eq!(snapshot.query(), "");
+}
