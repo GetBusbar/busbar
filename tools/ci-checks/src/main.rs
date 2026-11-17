@@ -804,3 +804,6 @@ mod known_red_tests;
 
 #[cfg(test)]
 mod record_op_source_tests;
+
+#[cfg(test)]
+mod release_targets_tests;
