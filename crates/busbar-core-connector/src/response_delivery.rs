@@ -44,6 +44,9 @@ struct State {
     producer_ended: bool,
     reader_eof: bool,
     input_retired: bool,
+    pending_producer_end: bool,
+    pending_reader_eof: bool,
+    pending_input_retired: bool,
     quiescent: bool,
     settled_pending: bool,
     settled_sent: bool,
@@ -94,6 +97,30 @@ impl DeliveryCancel {
             state.release_pending = false;
         }
         drop(state);
+        self.0.owner_wake.wake();
+    }
+}
+
+/// The actual root input observers' scoped endpoint; it cannot publish a delivery receipt.
+#[derive(Clone)]
+pub struct DeliveryInput(Arc<Cell>);
+
+impl DeliveryInput {
+    /// Record the real ordered response-producing end, independently of transport feed disposal.
+    pub fn producer_ended(&self) {
+        lock(&self.0.state).pending_producer_end = true;
+        self.0.owner_wake.wake();
+    }
+
+    /// Record EOF actually observed by the registered reader, never inferred from Body Drop.
+    pub fn reader_eof(&self) {
+        lock(&self.0.state).pending_reader_eof = true;
+        self.0.owner_wake.wake();
+    }
+
+    /// Record that cancelled input producers/readers have been joined; this is not successful EOF.
+    pub fn retired(&self) {
+        lock(&self.0.state).pending_input_retired = true;
         self.0.owner_wake.wake();
     }
 }
@@ -150,6 +177,8 @@ pub struct ResponseHandles {
     pub release: ReleasePublisher,
     /// A request to stop, independent of output-owner settlement.
     pub cancel: DeliveryCancel,
+    /// Only actual root producer/reader observers publish these local input facts.
+    pub input: DeliveryInput,
 }
 
 /// Native controls taken from reserved cells before normal feeds and timers.
@@ -332,6 +361,9 @@ impl DeliveryLedger {
                 producer_ended: false,
                 reader_eof: false,
                 input_retired: false,
+                pending_producer_end: false,
+                pending_reader_eof: false,
+                pending_input_retired: false,
                 quiescent: false,
                 settled_pending: false,
                 settled_sent: false,
@@ -352,7 +384,8 @@ impl DeliveryLedger {
         Ok(ResponseHandles {
             watch: DeliveryWatch(Arc::clone(&cell)),
             release: ReleasePublisher(Arc::clone(&cell)),
-            cancel: DeliveryCancel(cell),
+            cancel: DeliveryCancel(Arc::clone(&cell)),
+            input: DeliveryInput(cell),
         })
     }
 
@@ -376,6 +409,7 @@ impl DeliveryLedger {
 
     /// Take one coalesced control; cancellation wins over an unconsumed release.
     pub(crate) fn next_control(&mut self) -> Option<DeliveryControl> {
+        self.drain_input();
         for entry in &mut self.entries {
             let mut state = lock(&entry.cell.state);
             let stream = entry.cell.key.stream;
@@ -399,6 +433,27 @@ impl DeliveryLedger {
             }
         }
         None
+    }
+
+    fn drain_input(&mut self) {
+        for index in 0..self.entries.len() {
+            let cell = &self.entries[index].cell;
+            let stream = cell.key.stream;
+            let mut state = lock(&cell.state);
+            let ended = std::mem::take(&mut state.pending_producer_end);
+            let eof = std::mem::take(&mut state.pending_reader_eof);
+            let retired = std::mem::take(&mut state.pending_input_retired);
+            drop(state);
+            if ended {
+                let _ = self.producer_ended(stream);
+            }
+            if eof {
+                let _ = self.reader_eof(stream);
+            }
+            if retired {
+                let _ = self.input_retired(stream);
+            }
+        }
     }
 
     /// Validate an entire bounded answer before adopting metadata or permitting any of its I/O.

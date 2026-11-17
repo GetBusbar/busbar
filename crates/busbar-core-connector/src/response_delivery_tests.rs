@@ -242,3 +242,30 @@ fn abort_and_quiescence_keep_queued_spans_until_actual_retirement() {
     assert!(response.watch.snapshot().first_payload_written);
     assert_eq!(response.watch.snapshot().terminal, Some(DeliveryTerminal::Failed(ResponseStop::Protocol)));
 }
+
+#[test]
+fn input_observers_wake_the_owner_but_cannot_publish_terminal_receipts() {
+    struct Wakeups(AtomicUsize);
+    impl futures::task::ArcWake for Wakeups {
+        fn wake_by_ref(arc_self: &Arc<Self>) {
+            arc_self.0.fetch_add(1, Ordering::AcqRel);
+        }
+    }
+    let mut ledger = ledger(1, 1);
+    let response = ledger.admit(key(1)).unwrap();
+    release(&mut ledger, &response, 1);
+    ledger.adopt_batch(&[WireEvent::End {
+        stream: 1, requirement: CompletionRequirement::Flush,
+    }]).unwrap();
+    ledger.complete_flush(0).unwrap();
+    let wakeups = Arc::new(Wakeups(AtomicUsize::new(0)));
+    let waker = futures::task::waker_ref(&wakeups);
+    let mut cx = Context::from_waker(&waker);
+    assert!(ledger.poll_control(&mut cx).is_pending());
+    response.input.producer_ended();
+    response.input.reader_eof();
+    assert!(wakeups.0.load(Ordering::Acquire) > 0);
+    assert!(response.watch.snapshot().terminal.is_none());
+    assert_eq!(ledger.poll_control(&mut cx), Poll::Ready(DeliveryControl::Settled { stream: 1 }));
+    assert_eq!(response.watch.snapshot().terminal, Some(DeliveryTerminal::Complete));
+}
