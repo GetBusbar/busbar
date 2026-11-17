@@ -1569,6 +1569,52 @@ mod tests {
     use super::*;
     use busbar_plugin_abi::records::{Reply, Writer};
 
+    #[test]
+    fn resource_echo_is_unique_upstream_only_and_checked_before_delivery() {
+        use busbar_plugin_abi::resource_admission::{write_echo, DescriptorEcho};
+        let mut out = Reply::new();
+        let echo = DescriptorEcho {
+            invocation: 1,
+            generation: 7,
+            route: 3,
+            descriptor: 9,
+            instance: "plane/test",
+        };
+        write_echo(&mut out, echo).unwrap();
+        out.put(g::H_METHOD, b"POST").unwrap();
+        out.put(g::H_PATH, b"/generate").unwrap();
+        out.put(t::UP_BODY, b"{}").unwrap();
+        let mut delivered = false;
+        decode_answer(
+            Call::Upstream,
+            false,
+            Records::new(out.as_bytes()),
+            &mut |item| {
+                if let PlaneOut::ResourceEcho(got) = item {
+                    assert_eq!(got, echo);
+                    delivered = true;
+                }
+            },
+        )
+        .unwrap();
+        assert!(delivered);
+        assert!(decode_answer(
+            Call::Request,
+            false,
+            Records::new(out.as_bytes()),
+            &mut |_| panic!("partial delivery")
+        )
+        .is_err());
+        write_echo(&mut out, echo).unwrap();
+        assert!(decode_answer(
+            Call::Upstream,
+            false,
+            Records::new(out.as_bytes()),
+            &mut |_| panic!("partial delivery")
+        )
+        .is_err());
+    }
+
     fn route(r: &mut Reply, route: u32, methods: u32, flags: u32, auth: u32, pattern: &str) {
         let rec = p::RouteRec {
             route,
