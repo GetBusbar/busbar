@@ -7,7 +7,9 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use super::port_hooks::Call;
-use crate::config::{HookCfg, HookRegistry, PoolCfg};
+use crate::config::hooks::HookRegistry;
+#[cfg(test)]
+use crate::config::HookCfg;
 use busbar_ports::hook::HookPort;
 
 /// One S8-opened instance; `image` keys the frozen admitted word catalog.
