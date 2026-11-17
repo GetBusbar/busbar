@@ -2,12 +2,16 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE SHUTDOWN DRAIN (SHUTDOWN-HANG F4). One owner, [`ShutdownDrain`], holds the budget from the
-//! first shutdown broadcast and bounds every wait on the way out; nothing in flight is ever
+//! transition to Draining and bounds every wait on the way out; nothing in flight is ever
 //! aborted (an overrun detaches it and the process exits through `process::exit`, as after
 //! SIGKILL). Money is persisted from the first broadcast, beside the request drain, until just
 //! before the seal phase. The exit is 0 when the writer retired, otherwise 75 (spend saved,
 //! streams cut) or 70 (spend unsaved) by one classification of custody at that moment, with the
 //! evidence on stderr; never 1 from the drain itself.
+//!
+//! Operator intent first marks readiness false and allows the boot-captured deregistration
+//! interval. The same owner keeps its full fixed drain budget for the subsequent transition;
+//! Safety skips the interval and Force also expires the clock permanently.
 //!
 //! Phases, in order: [1] requests (cut C1), [S] settle (C2), [3] plane records and the admin
 //! audit queue (C3), [2] the money driver's join (C3), [4] the seal phase (C3; SEALING-FIX adds
@@ -143,6 +147,132 @@ impl<T> Future for DrainHandle<T> {
     }
 }
 
+/// Persistence supplies the safety input. Worker/listener stops are published only at Draining.
+pub(crate) struct ShutdownSignals {
+    pub(crate) safety: tokio::sync::watch::Receiver<bool>,
+    pub(crate) workers: tokio::sync::watch::Sender<bool>,
+    pub(crate) support: tokio::sync::watch::Sender<bool>,
+    pub(crate) listeners: tokio::sync::broadcast::Sender<()>,
+}
+
+impl ShutdownDrain {
+    /// Start the sole pre-drain coordinator. Native writer renewal still follows retirement.
+    pub(crate) fn start_deregister(
+        &self,
+        delay: Duration,
+        probes: Arc<busbar_kernel::endpoints::ProbeState>,
+        signals: ShutdownSignals,
+    ) -> busbar_kernel::governance::drain::ShutdownRequest {
+        self.start_deregister_with(
+            delay,
+            probes,
+            signals,
+            busbar_kernel::refresh::begin_stopping,
+        )
+    }
+
+    fn start_deregister_with(
+        &self,
+        delay: Duration,
+        probes: Arc<busbar_kernel::endpoints::ProbeState>,
+        signals: ShutdownSignals,
+        stop_refresh: impl FnOnce() + Send + 'static,
+    ) -> busbar_kernel::governance::drain::ShutdownRequest {
+        assert!(
+            !self.coordinating.swap(true, Ordering::AcqRel),
+            "one shutdown coordinator per drain"
+        );
+        assert!(
+            delay <= Duration::from_secs(300),
+            "validated deregistration delay"
+        );
+        let request = self.request.clone();
+        let task_request = request.clone();
+        let clock = Arc::clone(&self.clock);
+        tokio::spawn(async move {
+            use busbar_kernel::governance::drain::ShutdownIntent;
+            let ShutdownSignals {
+                mut safety,
+                workers,
+                support,
+                listeners,
+            } = signals;
+            let mut intent = task_request.subscribe();
+            let mut deregister_at = None;
+            loop {
+                if *safety.borrow_and_update() {
+                    task_request.request(ShutdownIntent::Safety);
+                }
+                let level = *intent.borrow_and_update();
+                if level != ShutdownIntent::Serving {
+                    probes.begin_stopping();
+                }
+                match level {
+                    ShutdownIntent::Force => {
+                        clock.expire_now();
+                        break;
+                    }
+                    ShutdownIntent::Safety => break,
+                    ShutdownIntent::Operator => {
+                        let at = *deregister_at.get_or_insert_with(|| Instant::now() + delay);
+                        if Instant::now() >= at {
+                            break;
+                        }
+                    }
+                    ShutdownIntent::Serving => {}
+                }
+                let delay_elapsed = async {
+                    if let Some(at) = deregister_at {
+                        tokio::time::sleep_until(at).await;
+                    } else {
+                        std::future::pending::<()>().await;
+                    }
+                };
+                tokio::select! {
+                    biased;
+                    changed = safety.changed() => {
+                        if changed.is_err() { task_request.request(ShutdownIntent::Safety); }
+                    }
+                    _ = intent.changed() => {}
+                    () = delay_elapsed => {}
+                }
+            }
+            // This synchronous transition alone owns stopping refresh, arming, and publication.
+            // Stop reading safety before publishing workers: even a shared legacy sender cannot
+            // feed this output back into the earlier operator propagation interval.
+            drop(safety);
+            stop_refresh();
+            clock.arm(Instant::now() + clock.budget());
+            support.send_replace(true);
+            workers.send_replace(true);
+            let _ = listeners.send(());
+            let mut expired = clock.expired_rx();
+            loop {
+                if *intent.borrow_and_update() == ShutdownIntent::Force {
+                    clock.expire_now();
+                    return;
+                }
+                if clock.expired() {
+                    return;
+                }
+                tokio::select! {
+                    biased;
+                    _ = intent.changed() => {}
+                    _ = expired.wait_for(|expired| *expired) => return,
+                }
+            }
+        });
+        request
+    }
+
+    pub(crate) fn request_shutdown(
+        &self,
+        intent: busbar_kernel::governance::drain::ShutdownIntent,
+    ) {
+        self.request.request(intent);
+    }
+}
+
 /// The progress line's period (SHUTDOWN-HANG F4 "Progress": once per second and on every phase
 /// change).
 const PROGRESS_EVERY: Duration = Duration::from_secs(1);
@@ -228,6 +358,8 @@ impl Progress {
 
 /// The drain owner: the clock and the counts the exit reports.
 pub(crate) struct ShutdownDrain {
+    request: busbar_kernel::governance::drain::ShutdownRequest,
+    coordinating: AtomicBool,
     clock: Arc<DrainClock>,
     progress: Arc<Progress>,
 }
@@ -235,6 +367,8 @@ pub(crate) struct ShutdownDrain {
 impl ShutdownDrain {
     pub(crate) fn new(clock: Arc<DrainClock>) -> Self {
         Self {
+            request: Default::default(),
+            coordinating: AtomicBool::new(false),
             progress: Arc::new(Progress {
                 clock: Arc::clone(&clock),
                 phase: AtomicU8::new(0),
@@ -397,7 +531,6 @@ pub(crate) struct PostServe<'a> {
     pub(crate) late: Arc<Services>,
     pub(crate) book: Option<NodeBook>,
     pub(crate) startup: busbar_kernel::persistence::startup::Startup,
-    pub(crate) shutdown_tx: tokio::sync::broadcast::Sender<()>,
     /// The start-up predecessor task (F5) and its fence owner, joined and settled in [4].
     pub(crate) predecessor: Option<(JoinHandle<()>, Arc<PredecessorFence>)>,
 }
@@ -439,7 +572,6 @@ pub(crate) async fn finish(post: PostServe<'_>, drain: &ShutdownDrain) -> i32 {
         late,
         book,
         startup,
-        shutdown_tx,
         predecessor,
     } = post;
     drain.report_to(ProgressSources {
@@ -461,6 +593,7 @@ pub(crate) async fn finish(post: PostServe<'_>, drain: &ShutdownDrain) -> i32 {
                 failures.push("line serving did not end by the request cut".into());
             }
         }
+        drain.request_shutdown(busbar_kernel::governance::drain::ShutdownIntent::Safety);
     }
     if let Some(admin) = admin {
         let served = drain.wait_requests(admin).await;
@@ -470,8 +603,8 @@ pub(crate) async fn finish(post: PostServe<'_>, drain: &ShutdownDrain) -> i32 {
         }
     }
     busbar_kernel::audit::events::engine_event(busbar_kernel::audit::events::node_drain());
-    let _ = shutdown_tx.send(());
-    drain.clock().arm(Instant::now() + drain.clock().budget());
+    drain.request_shutdown(busbar_kernel::governance::drain::ShutdownIntent::Safety);
+    let _ = drain.wait_requests(drain.clock().armed()).await;
     drain.start_progress();
     let gov = governance.as_ref();
 
@@ -1182,6 +1315,9 @@ async fn settle_export_observations(
             return Err("export producer callback arrived after intake closure".into());
         }
         if observers.is_settled() {
+            if clock.expired() || tokio::time::Instant::now() >= deadline {
+                return Err("export observation pass completed after the shutdown deadline".into());
+            }
             return Ok(());
         }
         if let Err(error) = busbar_kernel::audit::auditlog::flush_pending().await {
@@ -1290,3 +1426,7 @@ mod drain_tests;
 #[cfg(test)]
 #[path = "tests/export_shutdown.rs"]
 mod export_tests;
+
+#[cfg(test)]
+#[path = "tests/shutdown_deregister.rs"]
+mod deregister_tests;

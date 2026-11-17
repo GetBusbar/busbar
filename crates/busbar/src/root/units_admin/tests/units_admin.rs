@@ -4,6 +4,80 @@
 use super::*;
 use busbar_contract::json::{self, JsonValueTrait};
 
+#[test]
+fn cloned_admin_carrier_keeps_original_empty_request_and_exact_query_presence() {
+    use busbar_kernel::inbound::request_snapshot::{ChargedRequestSnapshot, SnapshotInput};
+    use busbar_kernel::limits::process_admission::{AdmissionClass, ProcessAdmission};
+
+    let process = ProcessAdmission::new(2);
+    let lease = process.try_enter(AdmissionClass::Data).unwrap();
+    let fields = [
+        ("x-original", b"\xff".as_slice()),
+        ("x-original", b"second"),
+    ];
+    let snapshot = ChargedRequestSnapshot::capture(
+        SnapshotInput {
+            method: "GET",
+            path: "/api/v1/admin/audit",
+            query: "",
+            query_present: true,
+            authority: "node.example",
+            headers: fields.iter().copied(),
+            peer: "192.0.2.1:42",
+            tls_peer_cert: b"certificate",
+            body: &[],
+            now_s: 42,
+        },
+        &lease,
+    )
+    .unwrap();
+    let request = AdminRequest::from_snapshot(snapshot.clone(), 7);
+    let retained = request.clone();
+    assert!(Arc::ptr_eq(request.snapshot(), retained.snapshot()));
+    assert!(retained.snapshot().request().same_request(&lease));
+    assert_eq!(retained.path(), "/api/v1/admin/audit?");
+    assert_eq!(retained.headers().collect::<Vec<_>>(), fields);
+    assert_eq!(retained.snapshot().peer(), "192.0.2.1:42");
+    assert_eq!(retained.snapshot().tls_peer_cert(), b"certificate");
+    drop((request, snapshot, lease));
+    assert!(process.try_enter(AdmissionClass::Data).is_err());
+    drop(retained);
+    assert!(process.try_enter(AdmissionClass::Data).is_ok());
+}
+
+#[test]
+fn admin_http_body_projection_retains_same_snapshot_without_copying() {
+    use busbar_kernel::inbound::request_snapshot::{ChargedRequestSnapshot, SnapshotInput};
+    use busbar_kernel::limits::process_admission::{AdmissionClass, ProcessAdmission};
+
+    let process = ProcessAdmission::new(2);
+    let lease = process.try_enter(AdmissionClass::Data).unwrap();
+    let snapshot = ChargedRequestSnapshot::capture(
+        SnapshotInput {
+            method: "POST",
+            path: "/api/v1/admin/config/apply",
+            query: "",
+            query_present: false,
+            authority: "node",
+            headers: std::iter::empty(),
+            peer: "",
+            tls_peer_cert: &[],
+            body: b"original body",
+            now_s: 1,
+        },
+        &lease,
+    )
+    .unwrap();
+    let request = AdminRequest::from_snapshot(snapshot, 8);
+    let projected = request.snapshot().body_bytes();
+    assert_eq!(projected.as_ptr(), request.body().as_ptr());
+    drop((request, lease));
+    assert!(process.try_enter(AdmissionClass::Data).is_err());
+    assert_eq!(projected.as_ref(), b"original body");
+    drop(projected);
+    assert!(process.try_enter(AdmissionClass::Data).is_ok());
+}
+
 fn a_fresh_unit() -> u64 {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
     NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)

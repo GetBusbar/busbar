@@ -639,6 +639,7 @@ pub fn resolve_auth(
 
     AuthCfg {
         verdict_cache: auth.verdict_cache,
+        outbound: auth.outbound,
         unknown_key_refresh_s: auth.unknown_key_refresh_s,
         require_if_match: auth.require_if_match,
         signing_key: auth.signing_key.clone(),
@@ -2316,3 +2317,6 @@ impl std::fmt::Debug for FetchTarget {
             .finish()
     }
 }
+
+mod shutdown;
+pub use shutdown::AdvancedShutdownCfg;

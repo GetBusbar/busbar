@@ -6,6 +6,81 @@ use busbar_contract::json::JsonValueTrait as _;
 use busbar_plugin_abi::host_side::caller::Accept;
 
 #[test]
+fn outbound_credential_policy_uses_adopted_defaults_and_retains_overrides() {
+    assert_eq!(
+        parse_min3(&deploy("providers: {}\nmodels: {}\n"))
+            .unwrap()
+            .outbound,
+        crate::custody::CredPolicy::DEFAULT
+    );
+    let cfg = deploy("providers: {}\nmodels: {}\nauth: {outbound: {refresh_ahead_s: 0, min_mint_interval_s: 60, mint_deadline_s: 120, max_keys_per_instance: 17, max_hold_s: 604800}}\n");
+    let policy = parse_min3(&cfg).unwrap().outbound;
+    assert_eq!(policy.refresh_ahead_s, 0);
+    assert_eq!(policy.min_mint_interval_s, 60);
+    assert_eq!(policy.mint_deadline_s, 120);
+    assert_eq!(policy.max_keys_per_instance, 17);
+    assert_eq!(policy.max_hold_s, 604800);
+    let mut errors = Vec::new();
+    let auth = crate::config::resolve_auth(
+        cfg.auth.as_ref().unwrap(),
+        &cfg.identity_providers,
+        &mut errors,
+    );
+    assert!(errors.is_empty());
+    let authored = serde_json::to_value(auth.authoring(&crate::seal::acquire())).unwrap();
+    assert_eq!(
+        authored["outbound"],
+        serde_json::json!({"refresh_ahead_s":0,"min_mint_interval_s":60,"mint_deadline_s":120,"max_keys_per_instance":17,"max_hold_s":604800})
+    );
+    let partial = parse_min3(&deploy(
+        "providers: {}\nmodels: {}\nauth: {outbound: {max_keys_per_instance: 2}}\n",
+    ))
+    .unwrap();
+    assert_eq!(
+        partial.outbound.refresh_ahead_s,
+        crate::custody::CredPolicy::DEFAULT.refresh_ahead_s
+    );
+}
+
+#[test]
+fn outbound_credential_policy_refuses_invalid_types_and_adopted_bounds() {
+    for value in [
+        "null",
+        "[]",
+        "{refresh_ahead_s: -1}",
+        "{mint_deadline_s: 1.5}",
+        "{max_hold_s: null}",
+        "{unknown: 1}",
+        "{max_keys_per_instance: 4294967296}",
+    ] {
+        let yaml = format!("providers: {{}}\nmodels: {{}}\nauth: {{outbound: {value}}}\n");
+        assert!(
+            crate::config::deploy_from_yaml_str(&yaml, &crate::config::Grammar::empty()).is_err(),
+            "{value}"
+        );
+    }
+    for (key, value) in [
+        ("refresh_ahead_s", 3601),
+        ("min_mint_interval_s", 0),
+        ("min_mint_interval_s", 61),
+        ("mint_deadline_s", 0),
+        ("mint_deadline_s", 121),
+        ("max_keys_per_instance", 0),
+        ("max_hold_s", 59),
+        ("max_hold_s", 604801),
+    ] {
+        let yaml =
+            format!("providers: {{}}\nmodels: {{}}\nauth: {{outbound: {{{key}: {value}}}}}\n");
+        let errors = parse_min3(&deploy(&yaml))
+            .err()
+            .expect("invalid range refused");
+        assert!(errors
+            .iter()
+            .any(|why| why.contains(&format!("auth.outbound.{key}"))));
+    }
+}
+
+#[test]
 fn unknown_key_refresh_policy_keeps_adopted_default_and_minimum() {
     assert_eq!(
         parse_min3(&deploy("providers: {}\nmodels: {}\n"))

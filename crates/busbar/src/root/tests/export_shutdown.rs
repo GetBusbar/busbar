@@ -17,6 +17,7 @@ async fn clean_shutdown_closes_the_actual_observer_before_retirement() {
         "intake is still open while serving"
     );
     let drain = ShutdownDrain::new(DrainClock::new(Duration::from_secs(5)));
+    super::tests::coordinate_test(&drain, &shutdown_tx);
 
     assert_eq!(finish(post, &drain).await, 0);
     assert!(observers.is_settled());
@@ -36,6 +37,7 @@ async fn late_observation_refuses_retirement_and_preserves_native_intake() {
         .unwrap()
         .observe(ExportObservation::Held { lines: 1 });
     let drain = ShutdownDrain::new(DrainClock::new(Duration::from_secs(5)));
+    super::tests::coordinate_test(&drain, &shutdown_tx);
 
     assert_eq!(finish(post, &drain).await, 75);
     assert_eq!(observers.late_callbacks(), 1);
@@ -62,6 +64,7 @@ async fn observation_during_lease_release_still_refuses_writer_retirement() {
     let observers = Arc::clone(&post.export_observers);
     let generation = observers.reserve(["retiring".into()]).unwrap().commit();
     let drain = ShutdownDrain::new(DrainClock::new(Duration::from_secs(5)));
+    super::tests::coordinate_test(&drain, &shutdown_tx);
     let finished = async {
         assert_eq!(finish(post, &drain).await, 75);
     };
