@@ -13,6 +13,67 @@ fn refusal(yaml: &str) -> String {
 }
 
 #[test]
+fn selected_limit_roundtrip_keeps_complete_scope_and_maximum_amount() {
+    for metric in ["requests", "tokens"] {
+        let source = format!("{{id: Rule, upstream_resource: plane/a/b, per_key: true, enforcement: process, {metric}: 18446744073709551615, per: minute}}");
+        let row: LimitCfg = busbar_contract::yaml::from_str(&source).unwrap();
+        assert_eq!(row.amount, u64::MAX);
+        assert!(row.scope.is_none());
+        let encoded = busbar_contract::yaml::to_string(&row).unwrap();
+        for word in ["Rule", "plane/a/b", "per_key", "enforcement", "process"] {
+            assert!(encoded.contains(word), "missing {word}: {encoded}");
+        }
+        assert_eq!(
+            busbar_contract::yaml::from_str::<LimitCfg>(&encoded).unwrap(),
+            row
+        );
+    }
+}
+
+#[test]
+fn selected_limit_scope_cannot_fall_back_to_ordinary_limit() {
+    for suffix in [
+        "",
+        ", per_key: false, enforcement: process",
+        ", per_key: true",
+        ", per_key: true, enforcement: hard",
+        ", per_key: true, enforcement: global",
+        ", per_key: true, enforcement: process, pool: p",
+        ", per_key: true, enforcement: process, on_exhaust: block",
+        ", per_key: true, enforcement: process, downgrade_to: p",
+    ] {
+        let source =
+            format!("{{id: r, upstream_resource: plane/r, requests: 1, per: minute{suffix}}}");
+        assert!(
+            busbar_contract::yaml::from_str::<LimitCfg>(&source).is_err(),
+            "{source}"
+        );
+    }
+    for source in [
+        "{id: r, requests: 1, per: minute}",
+        "{upstream_resource: plane/r, per_key: true, enforcement: process, requests: 1, per: minute}",
+        "{id: r, upstream_resource: plane/r, per_key: true, enforcement: process, budget: 1, per: minute}",
+        "{id: r, upstream_resource: plane/r, per_key: true, enforcement: process, concurrent: 1}",
+        "{id: r, upstream_resource: plane/r, per_key: true, enforcement: process, tokens: 1, per: hour}",
+        "{id: r, upstream_resource: plane/r, per_key: true, enforcement: process, requests: -1, per: minute}",
+        "{id: r, id: s, upstream_resource: plane/r, per_key: true, enforcement: process, requests: 1, per: minute}",
+    ] {
+        assert!(busbar_contract::yaml::from_str::<LimitCfg>(source).is_err(), "{source}");
+    }
+}
+
+#[test]
+fn selected_rule_ids_are_unique_across_metrics_in_each_group() {
+    let groups = busbar_contract::yaml::from_str("team:\n  limits:\n    - {id: same, upstream_resource: p/r, per_key: true, enforcement: process, requests: 1, per: minute}\n    - {id: same, upstream_resource: p/r, per_key: true, enforcement: process, tokens: 2, per: minute}").unwrap();
+    let mut errors = Vec::new();
+    validate_groups(&groups, &|_| true, &mut errors);
+    assert!(
+        errors.iter().any(|error| error.contains("same")),
+        "{errors:?}"
+    );
+}
+
+#[test]
 fn the_unknown_field_list_is_1_5_5s() {
     let got = refusal("{ requests: 1, per: day, bogus: 1 }");
     assert!(
