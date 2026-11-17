@@ -156,6 +156,25 @@ fn target_for(_pool: &str, name: &str) -> Option<MemberTarget> {
 }
 
 #[test]
+fn target_definition_retains_the_actual_registration_allocation() {
+    use std::sync::Arc;
+
+    let definition = crate::upstreams::UpstreamDef::from_config(
+        "actual",
+        &serde_json::json!({"url": "https://example.com"}),
+        &crate::config::min3::UpstreamCfg::default(),
+        &|_| unreachable!("this registration has no custom trust anchor"),
+    )
+    .unwrap();
+    let actual = Arc::new(definition.clone());
+    let lookalike = Arc::new(definition);
+    let target = super::TargetDefinition::new(Arc::clone(&actual));
+    assert!(Arc::ptr_eq(target.as_arc(), &actual));
+    assert_eq!(target, target.clone());
+    assert_ne!(target, super::TargetDefinition::new(lookalike));
+}
+
+#[test]
 fn target_lookup_preserves_the_selected_member_qualification() {
     let fake = Fake::default();
     fake.picks
