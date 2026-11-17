@@ -31,6 +31,7 @@ pub mod lifecycle;
 pub mod observations;
 pub(crate) mod partition;
 pub mod recovery_api;
+pub mod restore;
 pub(crate) mod scan;
 pub mod scoped;
 mod slot_seal;
