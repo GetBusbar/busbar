@@ -85,6 +85,12 @@ name = "neutral_frame_door"
 path = "tests/fixtures/neutral_frame_door.rs"
 crate-type = ["cdylib"]
 
+# The native pack proof uses an actual exported MIN-3 image, built with the other examples.
+[[example]]
+name = "native_pack_fixture"
+path = "tests/fixtures/native_pack_fixture.rs"
+crate-type = ["cdylib"]
+
 [dependencies]
 busbar-ports = { path = "../busbar-ports" }
 arc-swap = { workspace = true }
