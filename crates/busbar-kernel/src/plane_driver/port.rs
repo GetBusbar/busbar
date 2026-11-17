@@ -901,3 +901,7 @@ fn drive_blocking(
 #[cfg(test)]
 #[path = "tests/port_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/port_input_custody.rs"]
+mod input_custody_tests;
