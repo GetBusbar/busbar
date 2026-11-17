@@ -540,3 +540,46 @@ async fn terminal_admission_equality_retains_exact_owner_after_retirement() {
     assert!(selected.request().same_admission(&clone));
     assert!(!selected.request().same_admission(other.request()));
 }
+
+#[tokio::test]
+async fn selected_startup_rollback_preserves_original_fee_marker_after_initial_answer() {
+    use crate::governance::unit_checkpoint::partitions::{CapturedFee, Disposition, FeeResult};
+    use crate::plane_driver::usage::SessionUsage;
+    let (money, _, context, _lease, request) = selected_fixture(102, true).await;
+    let descriptor = declaration(&context);
+    let selected = money
+        .admit_existing_selected(
+            request,
+            descriptor.clone(),
+            context.generation().routing_generation().unwrap(),
+            NonZeroU32::new(1).unwrap(),
+            FeeRefund::PlaneFeeUnits(Arc::from([1])),
+            ExhaustionMode::FinishUnit,
+        )
+        .unwrap();
+    let guard = money.admission_rollback(selected.request()).unwrap();
+    let mut terminal = selected.terminal_receipt().unwrap();
+    let mut usage = SessionUsage::new();
+    usage
+        .answer(
+            "calls.custom",
+            busbar_plugin_abi::plane::UsageRec {
+                amount: 1,
+                scale: 0,
+                source: busbar_plugin_abi::plane::SRC_REPORTED,
+            },
+        )
+        .unwrap();
+    selected.observe_session(&descriptor, &usage).unwrap();
+    drop(guard);
+    assert_eq!(money.open_units(), 0);
+    let snapshot = terminal.wait().await.unwrap();
+    let parts = snapshot.partitions.as_ref().unwrap();
+    assert_eq!(parts.disposition, Disposition::Failed);
+    assert!(
+        parts.session.is_none(),
+        "fee marker never becomes quantity usage"
+    );
+    assert!(matches!(parts.fee, CapturedFee::ResolvedOwner { result: FeeResult::Charged, .. }),
+        "the original fee-unit policy decides its original fee, independently of quantity disposition");
+}
