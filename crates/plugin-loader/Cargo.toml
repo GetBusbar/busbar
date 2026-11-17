@@ -10,7 +10,7 @@ license = "Apache-2.0"
 [features]
 # Dev-only conformance retirement barrier and the standalone test harness (path loaders,
 # probes, door helpers); never enabled by shipped defaults.
-test-support = []
+test-support = ["busbar-artifact-verifier/test-support"]
 # Tooling only: `jsonschema` must never reach the engine's graph. Build the CLI with `--features pack`.
 pack = ["dep:jsonschema"]
 
@@ -92,6 +92,8 @@ path = "tests/fixtures/native_pack_fixture.rs"
 crate-type = ["cdylib"]
 
 [dependencies]
+busbar-artifact-verifier = { path = "../busbar-artifact-verifier" }
+busbar-artifact-metadata = { path = "../busbar-artifact-metadata" }
 busbar-ports = { path = "../busbar-ports" }
 arc-swap = { workspace = true }
 foldhash = { workspace = true }
@@ -120,6 +122,7 @@ flate2 = { workspace = true }
 jsonschema = { workspace = true, optional = true }
 
 [dev-dependencies]
+busbar-artifact-verifier = { path = "../busbar-artifact-verifier", features = ["test-support"] }
 base64 = { workspace = true }
 tracing-core = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "io-util"] }

@@ -301,6 +301,12 @@ pub(crate) fn no_licence(root: &Path) -> Outcome {
             files.push(path);
         }
     }
+    for name in ["scan", "refusal"] {
+        let path = root.join(format!("crates/busbar-artifact-verifier/src/{name}.rs"));
+        if path.is_file() {
+            files.push(path);
+        }
+    }
     let ci = root.join("ci");
     if ci.is_dir() {
         rust_files(&ci, &mut files)?;

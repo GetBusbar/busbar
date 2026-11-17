@@ -8,8 +8,7 @@
 use crate::abi::mechanism::call::AbiStr;
 use crate::abi::mechanism::check::{fault, listed, named, Fault, Rule};
 
-/// Maximum immutable declarations and cumulative counts per invocation.
-pub const MAX_MEASUREMENT_CLASSES: usize = 64;
+pub use busbar_artifact_metadata::measurement::MAX_MEASUREMENT_CLASSES;
 
 /// Immutable disjoint raw class and unit family, carried in the signed Statement.
 #[repr(C)]
@@ -173,14 +172,7 @@ pub unsafe fn check_declarations(classes: &[BillableClass]) -> Result<(), Fault>
     Ok(())
 }
 
-pub(crate) fn valid_name(bytes: &[u8]) -> bool {
-    !bytes.is_empty()
-        && bytes.len() <= 256
-        && bytes[0].is_ascii_alphanumeric()
-        && bytes
-            .iter()
-            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.' | b'/'))
-}
+pub(crate) use busbar_artifact_metadata::measurement::valid_name;
 
 /// Check count bounds, exact storage range, sources and distinct declared indexes.
 pub fn check_counts(counts: &[UnitCount], declared_classes: usize) -> Result<(), Fault> {
