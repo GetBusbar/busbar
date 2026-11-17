@@ -171,6 +171,7 @@ fn a_forward_on_a_seat_composed_from_its_upstreams_reaches_the_upstream() {
     let mut status = None;
     walk.walk(
         SessionFacts {
+            pending: None,
             unit: busbar_contract::UnitKey::new(9),
         },
         &mut |members: &mut dyn Members, send: &mut dyn UpSend| {

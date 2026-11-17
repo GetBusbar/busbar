@@ -17,7 +17,10 @@ use crate::cost::CostModel;
 use crate::governance::{AdmitGrant, GovState};
 use crate::teller::{Ended, UnitCtx};
 
+mod native_admission;
 pub(super) mod native_attempt;
+pub use native_admission::NativeAdmissionError;
+mod native_fee;
 mod observations;
 pub(crate) use observations::budget_id as observation_budget_id;
 pub use observations::{ObservationPolicy, ObservationRuntimeError};
@@ -119,6 +122,27 @@ pub struct ParentMoney {
     money: Arc<UnitMoney>,
     grant: Arc<AdmitGrant>,
     account: Arc<FeeAccount>,
+}
+
+impl ParentMoney {
+    /// The frozen monetary generation a child inherits, independently of its destination route.
+    pub fn cost(&self) -> &Arc<CostModel> {
+        &self.money.cost
+    }
+
+    pub(in crate::plane_driver) fn matches_child_money(
+        &self,
+        money: &UnitMoney,
+        grant: &Arc<AdmitGrant>,
+    ) -> bool {
+        Arc::ptr_eq(&self.money.key, &money.key)
+            && Arc::ptr_eq(&self.money.cost, &money.cost)
+            && Arc::ptr_eq(&self.grant, grant)
+            && self.money.pool == money.pool
+            && self.money.arrived == money.arrived
+            && self.money.charge == money.charge
+            && self.money.mode == money.mode
+    }
 }
 
 /// One actual admission reserved for a later child. Its financial participation is linear:
@@ -281,6 +305,7 @@ struct FeeState {
     children: usize,
     parent_refund: Option<bool>,
     child_incurred: bool,
+    completed: Option<crate::governance::unit_checkpoint::partitions::FeeResult>,
 }
 
 struct FeeAccount {
@@ -297,7 +322,8 @@ struct FeeParticipation {
 
 impl Drop for FeeParticipation {
     fn drop(&mut self) {
-        let refund = {
+        use crate::governance::unit_checkpoint::partitions::FeeResult;
+        let result = {
             let mut state = locked(&self.account.state);
             if self.owner {
                 state.parent_refund = Some(self.refundable);
@@ -305,9 +331,15 @@ impl Drop for FeeParticipation {
                 state.children -= 1;
                 state.child_incurred |= !self.refundable;
             }
-            state.children == 0 && state.parent_refund == Some(true) && !state.child_incurred
+            (state.children == 0 && state.parent_refund.is_some()).then(|| {
+                if state.parent_refund == Some(true) && !state.child_incurred {
+                    FeeResult::Refunded
+                } else {
+                    FeeResult::Charged
+                }
+            })
         };
-        if refund {
+        if result == Some(FeeResult::Refunded) {
             let m = &self.account.money;
             self.account.gov.refund_charge(&m.charge);
             if let FeeRefund::PlaneFeeUnits(fees) = &m.fee {
@@ -326,6 +358,10 @@ impl Drop for FeeParticipation {
                     );
                 }
             }
+        }
+        // Counts alone are not completion: publish only after the existing refund mutations.
+        if let Some(result) = result {
+            locked(&self.account.state).completed = Some(result);
         }
     }
 }
@@ -653,6 +689,7 @@ impl PlaneMoney {
                 children: 0,
                 parent_refund: None,
                 child_incurred: false,
+                completed: None,
             }),
         });
         let open = Open::new(

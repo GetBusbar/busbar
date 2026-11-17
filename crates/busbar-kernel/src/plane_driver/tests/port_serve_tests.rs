@@ -380,6 +380,110 @@ fn a_resource_scoped_route_cannot_execute_without_completed_admission() {
     assert!(books.0.lock().unwrap().is_empty());
 }
 
+#[test]
+fn pending_money_refusal_holds_emits_even_without_hooks() {
+    use crate::host_services::{
+        InvocationContext, KernelServices, Nest, NestDone, NestRoute, ServingGeneration,
+    };
+    use crate::plane_driver::port_admission::Pending;
+    use crate::plane_driver::request_admission::{RequestAllocation, RequestDomain, RequestRoutes};
+    use crate::refusal::RefusalMap;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    struct NoChildren;
+    impl NestRoute for NoChildren {
+        fn nest(&self, _: InvocationContext, _: Nest, _: NestDone) {
+            panic!("no child before admission");
+        }
+    }
+    let core = Arc::new(KernelServices::new());
+    let caller = busbar_contract::services::Caller::for_test(
+        Arc::from("seat"),
+        busbar_contract::abi::mechanism::KindCode::Plane,
+    );
+    let _lease = core.admit_native_invocation(&caller).unwrap();
+    assert!(core.units().pre_admitted_for(
+        41,
+        &caller,
+        crate::host_units::UnitRecord {
+            principal: Some(Arc::new(busbar_contract::records::VirtualKey {
+                id: "payer".into(),
+                enabled: true,
+                ..Default::default()
+            })),
+            depth: 0,
+        }
+    ));
+    let context = InvocationContext::new(
+        Arc::new(ServingGeneration::new(core, Arc::new(NoChildren))),
+        caller,
+        41,
+    )
+    .unwrap();
+    let allocation = RequestAllocation::new(
+        context,
+        Arc::new(crate::cost::CostModel::resolve_parts(
+            None,
+            0,
+            &Default::default(),
+        )),
+        100,
+    )
+    .unwrap();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let count = calls.clone();
+    let pending = Pending::new(
+        allocation,
+        Arc::new(RequestRoutes::new("seat", None, None, None).unwrap()),
+        None,
+        move |receipt| {
+            assert_eq!(receipt.domain(), &RequestDomain::Local);
+            count.fetch_add(1, Ordering::SeqCst);
+            Err(CoreRefusals::new().for_core(0, busbar_plugin_abi::fail::refused::R_POLICY))
+        },
+    );
+    struct Waiting<'a>(&'a Pending);
+    impl Effects for Waiting<'_> {
+        fn admission(&self) -> Option<&Pending> {
+            Some(self.0)
+        }
+        fn invocation(&self) -> Option<&InvocationContext> {
+            Some(self.0.context())
+        }
+        fn emit(&self, _: u64, _: &[u8]) {
+            panic!("money refusal must not release emitted bytes");
+        }
+    }
+    let plane = Plane {
+        request: vec![It::Emit, It::Respond(200), It::End],
+        ..Plane::default()
+    };
+    let store = Store;
+    let resolver = Resolver::new(&store, None);
+    let refusals = CoreRefusals::new();
+    let effects = Waiting(&pending);
+    let result = run_session(
+        &plane,
+        &req(),
+        b"{}",
+        Drive {
+            resolver: &resolver,
+            members: None,
+            send: None,
+            dialect: "test",
+            refusals: &refusals,
+            effects: &effects,
+            books: &pending,
+            carrier: None,
+        },
+    );
+    assert!(
+        matches!(result, Err(SessionError::AdmissionRefused(_))),
+        "{result:?}"
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert!(!pending.context().effects_allowed());
+}
+
 fn statuses(client: &[ToClient]) -> Vec<String> {
     client
         .iter()

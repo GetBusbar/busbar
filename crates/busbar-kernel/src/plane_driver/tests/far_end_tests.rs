@@ -999,6 +999,48 @@ async fn member_grants_confine_candidates_and_dispatch_per_pool() {
 }
 
 #[tokio::test]
+async fn native_member_grants_match_qualified_identity_and_deny_absent_pools() {
+    let mut r = rig(
+        &[
+            ("a.test", Script::Answer(200, None, vec![b"denied"])),
+            ("b.test", Script::Answer(200, None, vec![b"allowed"])),
+        ],
+        OnExhausted::Status503,
+        None,
+    );
+    let pool = r.egress.pools.get_mut(POOL).unwrap();
+    pool.members[0].name = "other\u{1f}m1".into();
+    pool.members[1].name = "plane\u{1f}m1".into();
+    let t = token();
+    let far = r.egress.unit(UnitRoute {
+        native_member_grants: Some(std::collections::BTreeMap::from([(
+            POOL.into(),
+            vec!["plane\u{1f}m1".into()],
+        )])),
+        ..route()
+    });
+    let candidates = far.candidates(&t).unwrap();
+    assert_eq!(candidates.members.len(), 1);
+    assert_eq!(candidates.members[0].idx, 1);
+    assert!(
+        matches!(far.member(&t, 1).await, Pick::Member { name, .. } if name == "plane\u{1f}m1")
+    );
+    assert!(far.send(&t, request()).await);
+    drain(&far, &t).await;
+    assert!(matches!(far.member(&t, 2).await, Pick::Exhausted { .. }));
+    assert_eq!(r.table.opened.lock().unwrap().len(), 1);
+    let denied = r.egress.unit(UnitRoute {
+        native_member_grants: Some(std::collections::BTreeMap::from([(
+            "absent".into(),
+            vec!["plane\u{1f}m1".into()],
+        )])),
+        ..route()
+    });
+    assert!(denied.candidates(&t).unwrap().members.is_empty());
+    assert!(matches!(denied.member(&t, 1).await, Pick::Exhausted { .. }));
+}
+
+#[tokio::test]
 async fn one_attempt_end_to_end() {
     let r = rig(
         &[("a.test", Script::Answer(200, None, vec![b"hel", b"lo"]))],

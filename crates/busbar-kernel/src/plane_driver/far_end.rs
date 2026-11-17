@@ -258,6 +258,8 @@ pub struct Egress {
 /// What one unit's walk is told at its start.
 #[derive(Debug, Clone)]
 pub struct UnitRoute {
+    /// Native receipt grants retain full member identity, including the instance prefix.
+    pub native_member_grants: Option<std::collections::BTreeMap<String, Vec<String>>>,
     /// Core-owned member grants, keyed by the actual pool being walked.
     /// A present map denies pools absent from it, including on fallback and retry.
     pub member_grants: Option<std::collections::BTreeMap<String, Vec<String>>>,
@@ -321,6 +323,7 @@ pub(super) fn dial_admitted(
 impl Default for UnitRoute {
     fn default() -> Self {
         UnitRoute {
+            native_member_grants: None,
             member_grants: None,
             allowed_member: None,
             connection_required: false,
@@ -848,6 +851,14 @@ impl Shape for EgressFarEnd<'_> {
         primary: bool,
     ) -> Option<(Vec<Member>, Vec<DestinationId>)> {
         let (mut members, mut order) = self.constrained(members, primary).ok()?;
+        if let Some(grants) = &self.route.native_member_grants {
+            members.retain(|m| {
+                grants
+                    .get(pool)
+                    .is_some_and(|allowed| allowed.iter().any(|name| name == &m.name))
+            });
+            order.retain(|id| members.iter().any(|m| m.destination == *id));
+        }
         if let Some(grants) = &self.route.member_grants {
             members.retain(|m| {
                 grants.get(pool).is_some_and(|allowed| {
@@ -2751,6 +2762,16 @@ impl FarEnd for EgressFarEnd<'_> {
             members: members
                 .iter()
                 .enumerate()
+                .filter(|(_, m)| {
+                    self.route
+                        .native_member_grants
+                        .as_ref()
+                        .is_none_or(|grants| {
+                            grants
+                                .get(&pool.name)
+                                .is_some_and(|allowed| allowed.iter().any(|name| name == &m.name))
+                        })
+                })
                 .filter(|(_, m)| {
                     self.route.member_grants.as_ref().is_none_or(|grants| {
                         grants.get(&pool.name).is_some_and(|allowed| {
