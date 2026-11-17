@@ -286,6 +286,98 @@ pub struct Bindings {
     amendments: Arc<NodeAmendments>,
 }
 
+/// Owned policy inputs captured before the candidate RootCfg is consumed by App construction.
+/// Opened ports and candidate services are supplied only at the later binding step.
+pub struct Inputs {
+    section: String,
+    pool: Option<String>,
+    plan: WalkPlan,
+    hooks: HookRegistry,
+    groups: BTreeMap<String, crate::config::groups::GroupCfg>,
+}
+
+impl Inputs {
+    pub fn capture(cfg: &RootCfg, section: String, pool: Option<String>) -> Result<Self, String> {
+        if section.is_empty() || pool.as_ref().is_some_and(String::is_empty) {
+            return Err(
+                "native hook seat requires nonempty configured section and pool names".into(),
+            );
+        }
+        let section_cfg = cfg
+            .plane_defs
+            .get(section.as_str())
+            .map(|s| s.container_gates());
+        if let Some(section_cfg) = &section_cfg {
+            if let Some((container, hooks)) =
+                section_cfg.containers.iter().find(|(_, h)| !h.is_empty())
+            {
+                return Err(format!(
+                    "native seat `{}` cannot bind container `{container}` hook attachment `{}`: no configured container authority",
+                    section, hooks.join(", ")
+                ));
+            }
+        }
+        let section_names = section_cfg
+            .as_ref()
+            .map_or(&[][..], |s| s.section_hooks.as_slice());
+        let walks = pool
+            .as_ref()
+            .map(|pool| WalkBinding::Registration {
+                pool: pool.clone(),
+                config: cfg.pools.get(pool).cloned().unwrap_or_default(),
+            })
+            .into_iter()
+            .collect();
+        Ok(Self {
+            section,
+            pool,
+            plan: WalkPlan::new(cfg.global_hooks.clone(), section_names.to_vec(), walks)?,
+            hooks: cfg.hooks.clone(),
+            groups: cfg.groups.clone(),
+        })
+    }
+
+    pub fn bind(
+        &self,
+        routes: Vec<u32>,
+        opened: &BTreeMap<String, OpenedHook>,
+        words: &BTreeMap<String, Vec<Box<str>>>,
+        governance: Arc<GovState>,
+        cost: Arc<CostModel>,
+        amendments: Arc<NodeAmendments>,
+    ) -> Result<Bindings, String> {
+        let tables = self
+            .plan
+            .bind(&self.hooks, opened, words)
+            .map_err(|why| format!("native seat `{}`: {why}", self.section))?;
+        if tables.active() && routes.is_empty() {
+            return Err(format!(
+                "native seat `{}` has hook attachments but no admitted routes",
+                self.section
+            ));
+        }
+        if routes.iter().copied().collect::<BTreeSet<_>>().len() != routes.len() {
+            return Err(format!(
+                "native seat `{}` has duplicate admitted route ids",
+                self.section
+            ));
+        }
+        Ok(Bindings {
+            billing_pool: format!("{}{}", self.section, crate::governance::PLANE_LANE_SEP),
+            scope: SeatScope {
+                section: self.section.clone(),
+                routes,
+                pool: self.pool.clone(),
+            },
+            tables,
+            groups: self.groups.clone(),
+            governance,
+            cost,
+            amendments,
+        })
+    }
+}
+
 impl Bindings {
     pub fn build(
         cfg: &RootCfg,
@@ -296,60 +388,14 @@ impl Bindings {
         cost: Arc<CostModel>,
         amendments: Arc<NodeAmendments>,
     ) -> Result<Self, String> {
-        if scope.section.is_empty() || scope.pool.as_ref().is_some_and(String::is_empty) {
-            return Err(
-                "native hook seat requires nonempty configured section and pool names".into(),
-            );
-        }
-        let section = cfg
-            .plane_defs
-            .get(scope.section.as_str())
-            .map(|s| s.container_gates());
-        if let Some(section) = &section {
-            if let Some((container, hooks)) = section.containers.iter().find(|(_, h)| !h.is_empty())
-            {
-                return Err(format!(
-                    "native seat `{}` cannot bind container `{container}` hook attachment `{}`: no configured container authority",
-                    scope.section, hooks.join(", ")
-                ));
-            }
-        }
-        let section_names = section
-            .as_ref()
-            .map_or(&[][..], |s| s.section_hooks.as_slice());
-        let walks = scope
-            .pool
-            .as_ref()
-            .map(|pool| WalkBinding::Registration {
-                pool: pool.clone(),
-                config: cfg.pools.get(pool).cloned().unwrap_or_default(),
-            })
-            .into_iter()
-            .collect();
-        let tables = WalkPlan::new(cfg.global_hooks.clone(), section_names.to_vec(), walks)?
-            .bind(&cfg.hooks, opened, words)
-            .map_err(|why| format!("native seat `{}`: {why}", scope.section))?;
-        if tables.active() && scope.routes.is_empty() {
-            return Err(format!(
-                "native seat `{}` has hook attachments but no admitted routes",
-                scope.section
-            ));
-        }
-        if scope.routes.iter().copied().collect::<BTreeSet<_>>().len() != scope.routes.len() {
-            return Err(format!(
-                "native seat `{}` has duplicate admitted route ids",
-                scope.section
-            ));
-        }
-        Ok(Self {
-            billing_pool: format!("{}{}", scope.section, crate::governance::PLANE_LANE_SEP),
-            scope,
-            tables,
-            groups: cfg.groups.clone(),
+        Inputs::capture(cfg, scope.section, scope.pool)?.bind(
+            scope.routes,
+            opened,
+            words,
             governance,
             cost,
             amendments,
-        })
+        )
     }
 
     pub fn has_hooks(&self) -> bool {
