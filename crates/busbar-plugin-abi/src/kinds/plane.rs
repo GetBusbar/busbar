@@ -58,11 +58,11 @@ crate::kind! {
             pub base_path: crate::types::Str<'a>,
             pub upstream: crate::types::Str<'a>,
             pub provider: crate::types::Str<'a>,
-            /// The `path` parameter is the raw UTF-8 full static request-path override, including
-            /// its configured query. The plane applies it before wire encoding, query precedence
-            /// and signing. `base_path` remains the separate configured path_base.
+            // The `path` parameter is the raw UTF-8 full static request-path override, including
+            // its configured query. The plane applies it before wire encoding, query precedence
+            // and signing. `base_path` remains the separate configured path_base.
             pub params: crate::types::Slice<'a, crate::types::Pair<'a>>,
-            /// Host-prepared admission records; an empty block conveys no resource authority.
+            // Host-prepared admission records; an empty block conveys no resource authority.
             pub admission: crate::types::Bytes<'a>,
         }
         }
