@@ -828,16 +828,6 @@ impl Audit for AuditChain {
         inputs: AuditInputs,
         token: &busbar_contract::caps::Pass<busbar_contract::caps::Audit>,
     ) -> AuditRecord {
-        // A legacy-signing chain (test builds only, SEALING-FIX §3.2 "The legacy builder") keeps
-        // the per-line signed v7 record its fixtures were written against: the journal, the
-        // published v7 recipe and the per-line signature all read that record unchanged (§9
-        // "Existing tests"). A production chain holds no key and always links.
-        #[cfg(any(test, feature = "test-support"))]
-        if self.signer.is_some() {
-            let Ok((record, ())) =
-                self.seal_for_journal(inputs, token, |_| Ok::<(), std::convert::Infallible>(()));
-            return record;
-        }
         let linked_ms = inputs.wall.saturating_mul(1000);
         let prepared = AuditChain::prepare(inputs, self.node);
         let linked = self.link(prepared, linked_ms, token);
