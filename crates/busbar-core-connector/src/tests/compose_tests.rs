@@ -56,6 +56,7 @@ async fn silent() -> String {
 
 fn dial(target: &str) -> Dial {
     Dial {
+        plaintext_accepted: false,
         target: target.to_owned(),
         tls: None,
         alpn: Vec::new(),

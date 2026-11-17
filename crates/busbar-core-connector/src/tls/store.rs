@@ -250,12 +250,6 @@ impl TrustStore {
     }
 }
 
-/// The host of `target` (`host`, `host:port`, `[v6]:port`, a URL), without port or brackets.
-#[must_use]
-pub fn host_only(target: &str) -> String {
-    crate::off_path::tls::host_only(target)
-}
-
 /// `name` lowercased into `buf`, or `None` when no entry can hold it (longer than a host name).
 fn lowered<'b>(buf: &'b mut [u8; NAME_MAX], name: &str) -> Option<&'b str> {
     let dst = buf.get_mut(..name.len())?;

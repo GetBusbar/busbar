@@ -307,6 +307,7 @@ fn start_need(c: &Connector, need: NeedId, url: &str) -> ConnId {
             within: &[],
             member: "",
             unit: 0,
+            plaintext_accepted: false,
         },
     )
     .expect("the open")
@@ -661,6 +662,7 @@ async fn the_http1_only_key_offers_http1_alone() {
                 within: &[],
                 member: "",
                 unit: 0,
+                plaintext_accepted: false,
             },
         )
         .expect("the open");

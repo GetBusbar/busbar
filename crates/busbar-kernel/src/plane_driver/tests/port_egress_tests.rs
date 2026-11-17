@@ -20,7 +20,7 @@ use busbar_plugin_abi::plane::{
 use tokio::runtime::Runtime;
 
 use super::{request_of, route_of, EgressWalk, MemberTarget, WalkMembers, WalkSend};
-use crate::plane_driver::far_end::dial_admitted;
+use crate::plane_driver::far_end::{dial_admitted, UnitRoute};
 use crate::plane_driver::port_session::UpExchange;
 use crate::plane_driver::port_upstream::{
     Candidate, Chunk, Failure, Members, SendFailed, UpSend, Wants,
@@ -541,15 +541,22 @@ fn a_whole_send_joins_the_body_and_drops_the_trailers() {
 
 // ---- every dial is judged ------------------------------------------------------------------------------
 
+/// #297 model A: a unit with no owning registration holds the empty acceptance, so it dials verified
+/// TLS only; there is no unjudged legacy route and no loopback exemption.
 #[test]
-fn a_unit_with_no_acceptance_is_judged_by_the_connector_alone() {
-    assert!(dial_admitted(None, "http://10.0.0.5:8000/v1"));
-    assert!(dial_admitted(None, "https://api.example.com/v1"));
+fn a_unit_with_no_owning_registration_dials_verified_tls_only() {
+    let unowned = UnitRoute::default().accept;
+    assert_eq!(unowned, Accept::default());
+    assert!(!dial_admitted(unowned, "http://10.0.0.5:8000/v1"));
+    assert!(!dial_admitted(unowned, "http://127.0.0.1:8000/v1"));
+    assert!(!dial_admitted(unowned, "http://localhost:8000/v1"));
+    assert!(!dial_admitted(unowned, "http://[::1]:8000/v1"));
+    assert!(dial_admitted(unowned, "https://api.example.com/v1"));
 }
 
 #[test]
 fn verified_tls_is_the_default_and_plaintext_is_refused_without_its_acceptance() {
-    let verified = Some(Accept::default());
+    let verified = Accept::default();
     assert!(dial_admitted(verified, "https://api.example.com/v1"));
     assert!(dial_admitted(verified, "HTTPS://api.example.com/v1"));
     assert!(dial_admitted(verified, "wss://api.example.com/ws"));
@@ -561,10 +568,10 @@ fn verified_tls_is_the_default_and_plaintext_is_refused_without_its_acceptance()
 
 #[test]
 fn plaintext_is_admitted_only_by_the_plaintext_acceptance() {
-    let plain = Some(Accept(Accept::PLAINTEXT));
+    let plain = Accept(Accept::PLAINTEXT);
     assert!(dial_admitted(plain, "http://localhost:8000/v1"));
     assert!(dial_admitted(plain, "https://api.example.com/v1"));
-    let unverified = Some(Accept(Accept::UNVERIFIED_TLS));
+    let unverified = Accept(Accept::UNVERIFIED_TLS);
     assert!(
         !dial_admitted(unverified, "http://localhost:8000/v1"),
         "accepting unverified TLS does not accept plaintext"
@@ -587,13 +594,13 @@ fn the_route_a_session_walks_under_states_the_wants_and_the_acceptance() {
     assert!(route.wants_stream);
     assert_eq!(route.allowed_member.as_deref(), Some("pinned"));
     assert!(route.affinity.is_some());
-    assert_eq!(route.accept, Some(Accept(Accept::PLAINTEXT)));
+    assert_eq!(route.accept, Accept(Accept::PLAINTEXT));
     let plain = route_of("pool", key, Accept::default(), &Wants::default());
     assert_eq!(plain.affinity, None);
     assert_eq!(plain.allowed_member, None);
     assert_eq!(
         plain.accept,
-        Some(Accept::default()),
+        Accept::default(),
         "judged even with no acceptance"
     );
 }

@@ -99,6 +99,11 @@ pub struct Dial {
     /// The destination's sealed trust anchors (the transport pin): the far end's key pin the
     /// handshake is held to and the client identity it presents; `None` = none sealed.
     pub anchors: Option<Arc<crate::tls::client::Sealed>>,
+    /// The opener's core-held acceptance admits plaintext to `target`
+    /// ([`busbar_contract::conn::OpenDesc::plaintext_accepted`]): a dial not secured from its first
+    /// byte is admitted and is not held to a cleartext window. `false` = only an exact
+    /// `advanced.tls.destinations` plaintext entry admits one; no loopback address or name does.
+    pub plaintext_accepted: bool,
 }
 
 /// A message's head words, method and target; empty = none.
@@ -872,6 +877,12 @@ impl Planned {
     #[must_use]
     pub fn secure(&self) -> bool {
         self.located.secure
+    }
+
+    /// Whether the opener's core-held acceptance admits plaintext to this dial ([`Dial::plaintext_accepted`]).
+    #[must_use]
+    pub fn plaintext_accepted(&self) -> bool {
+        self.dial.plaintext_accepted
     }
 
     /// Whether a framer rides the dial (an application protocol over the stream), not a carrier

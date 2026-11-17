@@ -276,6 +276,11 @@ async fn attempt(conns: Arc<dyn PollConns>, port: u16) -> ((Option<u32>, Vec<u8>
     let t = pass::<Route>();
     let far = egress.unit(UnitRoute {
         pool: POOL.into(),
+        // The far end is a plaintext loopback server: its plane instance carries
+        // `insecure_transport.accept: plaintext` (SEC-2, #297 model A; loopback is not exempt).
+        accept: busbar_plugin_abi::host_side::caller::Accept(
+            busbar_plugin_abi::host_side::caller::Accept::PLAINTEXT,
+        ),
         ..UnitRoute::default()
     });
     let scope = Scope::open();

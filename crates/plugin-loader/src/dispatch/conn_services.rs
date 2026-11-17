@@ -2113,6 +2113,7 @@ fn open_with(
         within,
         member,
         unit,
+        plaintext_accepted: false,
     };
     if let Some(prepared) = prepared {
         let request = Submission {
@@ -2191,6 +2192,7 @@ fn submit(request: Box<Submission>) -> Conn {
         head_target: &request.head.target,
         timeout_ms: request.head.timeout_ms,
         unit: request.unit,
+        plaintext_accepted: false,
     };
     let secure = request.require_secure || prepared.require_secure.load(Ordering::Acquire);
     let answer = table.commit_request(*owner, prepared.conn, &desc, secure);

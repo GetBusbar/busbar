@@ -50,6 +50,7 @@ async fn gather(c: &mut Connection, want: usize) -> Vec<u8> {
 
 fn dial(target: &str, first: Vec<u8>) -> Dial {
     Dial {
+        plaintext_accepted: false,
         target: target.to_owned(),
         tls: None,
         alpn: Vec::new(),

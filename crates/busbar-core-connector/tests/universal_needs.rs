@@ -142,6 +142,7 @@ fn the_connector_drives_the_dropped_in_http_door_against_a_real_server() {
             door,
             &support::via(),
             Dial {
+                plaintext_accepted: false,
                 target: format!("{scheme}://{far}/v1/probe"),
                 tls: None,
                 alpn: Vec::new(),
@@ -206,6 +207,7 @@ fn a_bodied_request_goes_out_through_the_dropped_in_http_door_with_its_length() 
             door,
             &support::via(),
             Dial {
+                plaintext_accepted: false,
                 target: format!("{scheme}://{far}/v1/probe"),
                 tls: None,
                 alpn: Vec::new(),
@@ -278,6 +280,7 @@ fn the_connector_drives_a_dropped_in_socket_framer_against_a_real_far_end() {
             door,
             &support::via(),
             Dial {
+                plaintext_accepted: false,
                 target: far,
                 tls: None,
                 alpn: Vec::new(),
@@ -561,6 +564,7 @@ fn a_dropped_framers_sealed_opening_keeps_its_exact_wire_bytes_through_tls() {
             door.clone(),
             support::via(),
             Dial {
+                plaintext_accepted: false,
                 target: format!("{scheme}://{far}/v1/wire-custody"),
                 tls: Some(Arc::new(
                     busbar_core_connector::tls::client::build_client_config(&trust).unwrap(),

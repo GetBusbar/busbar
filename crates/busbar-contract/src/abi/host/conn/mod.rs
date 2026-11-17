@@ -515,6 +515,7 @@ unsafe extern "C" fn host_open(
                     member: "",
 
                     unit: 0,
+                    plaintext_accepted: false,
                 },
             )?;
             set(out_conn, conn.0)
