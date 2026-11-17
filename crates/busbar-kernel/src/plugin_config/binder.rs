@@ -10,8 +10,9 @@
 //! every other reference in document order; trust and dest handles likewise in their own declared order.
 
 use busbar_ports::binder::RefSource;
+use busbar_ports::binder::{NetworkEndpoint, NetworkLease, NetworkPermit};
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
 use busbar_contract::json::SchemaCheck;
 use busbar_contract::secret_ref::{context, SecretRef, Sugars};
@@ -23,9 +24,6 @@ use super::{pem, pointer, BindError, BoxFut, ConfigBinder, DestDef, TrustAnchor}
 /// The most secret plus trust handles one instance binds (IF §12.7 C-REF-PATH); it also bounds the instance's
 /// scrub set (§12.16). More is [`BindError::TooMany`].
 pub const MAX_BINDINGS: usize = 1_024;
-/// The most `unix_paths` one instance's operator config yields (IF §12.1 rule (5)). More is
-/// [`BindError::TooMany`].
-pub const MAX_UNIX_PATHS: usize = 16;
 /// host_disk.rs `MAX_KEEP`: the most rotated files a file-sink destination keeps.
 const MAX_KEEP: u32 = crate::host_disk::MAX_KEEP;
 const DEFAULT_ROTATE_MB: u64 = 64;
@@ -44,6 +42,8 @@ pub struct Binder {
 /// One instance's bindings (the frozen [`super::Bindings`] fields, trust shared as `Arc`) and the operator's
 /// original text of each, for `unbind_refs`.
 struct Entry {
+    network_lease: NetworkLease,
+    network: OnceLock<Box<[NetworkEndpoint]>>,
     secrets: Vec<SecretRef>,
     secret_text: Vec<Value>,
     trust: Vec<Arc<TrustAnchor>>,
@@ -53,7 +53,6 @@ struct Entry {
     refs: Vec<RefEntry>,
     /// The D_REF_PATH patterns of the describe the instance was bound under.
     ref_paths: Vec<Box<str>>,
-    unix_paths: Vec<Box<str>>,
 }
 
 /// One `Bindings.refs` entry.
@@ -118,9 +117,9 @@ impl Binder {
         let mut at = String::new();
         scan(&doc, &mut at, &declared, &sugars, any, &mut anywhere)?;
 
-        let unix_paths = unix_paths(&doc)?;
-
         let mut entry = Entry {
+            network_lease: NetworkLease::new(instance),
+            network: OnceLock::new(),
             secrets: Vec::new(),
             secret_text: Vec::new(),
             trust: Vec::new(),
@@ -129,7 +128,6 @@ impl Binder {
             dest_text: Vec::new(),
             refs: Vec::new(),
             ref_paths: paths.reference.iter().map(|p| Box::from(*p)).collect(),
-            unix_paths,
         };
 
         for at in &secret_at {
@@ -472,48 +470,6 @@ fn dest_def(node: &Value) -> Option<DestDef> {
     })
 }
 
-/// Round 24 (IF §12.1 rule (5)): every string leaf that is an absolute path; for a leaf that parses as a URI,
-/// its path when the authority is empty or absent, and the percent-decoded value of each query parameter that
-/// is an absolute path. At most [`MAX_UNIX_PATHS`], deduplicated.
-fn unix_paths(doc: &Value) -> Result<Vec<Box<str>>, BindError> {
-    let mut out: Vec<Box<str>> = Vec::new();
-    let mut push = |path: &str| -> Result<(), BindError> {
-        if !is_absolute(path) || out.iter().any(|p| &**p == path) {
-            return Ok(());
-        }
-        if out.len() == MAX_UNIX_PATHS {
-            return Err(BindError::TooMany);
-        }
-        out.push(path.into());
-        Ok(())
-    };
-    let mut stack = vec![doc];
-    while let Some(node) = stack.pop() {
-        match node {
-            Value::String(s) => {
-                if is_absolute(s) {
-                    push(s)?;
-                } else if let Ok(url) = url::Url::parse(s) {
-                    if url.host_str().is_none_or(str::is_empty) {
-                        push(url.path())?;
-                    }
-                    for (_, value) in url.query_pairs() {
-                        push(&value)?;
-                    }
-                }
-            }
-            Value::Array(items) => stack.extend(items.iter().rev()),
-            Value::Object(map) => stack.extend(map.values().rev()),
-            _ => {}
-        }
-    }
-    Ok(out)
-}
-
-fn is_absolute(path: &str) -> bool {
-    path.len() > 1 && path.starts_with('/') && !path.starts_with("//") && !path.contains('\0')
-}
-
 /// Every marker back to its original text, and every resolved D_REF_PATH value back to its reference.
 fn restore(node: &mut Value, at: &mut String, entry: &Entry) -> Result<(), BindError> {
     let mark = at.len();
@@ -592,6 +548,49 @@ fn restore(node: &mut Value, at: &mut String, entry: &Entry) -> Result<(), BindE
 }
 
 impl ConfigBinder for Binder {
+    fn freeze_network(
+        &self,
+        instance: u64,
+        endpoints: &[NetworkEndpoint],
+    ) -> Result<(), BindError> {
+        let bad = || BindError::BadNetwork;
+        let entry = self.entry(instance).ok_or_else(bad)?;
+        if endpoints.len() > 16 {
+            return Err(BindError::TooMany);
+        }
+        let frozen = NetworkEndpoint::canonical_set(endpoints).ok_or_else(bad)?;
+        entry.network.set(frozen).map_err(|_| bad())
+    }
+
+    fn admit_network(&self, instance: u64, endpoint: &NetworkEndpoint) -> Option<NetworkPermit> {
+        use busbar_plugin_abi::need::egress;
+        let entry = self.entry(instance)?;
+        if !entry.network_lease.live() {
+            return None;
+        }
+        let frozen = entry.network.get()?;
+        let canonical = NetworkEndpoint::new(endpoint.op, endpoint.flags, &endpoint.dest)?;
+        let class = canonical.flags >> 16;
+        if matches!(
+            class,
+            egress::OPERATOR_INFRASTRUCTURE | egress::LOOPBACK_ALLOWED
+        ) {
+            let (index, checked) = frozen.iter().enumerate().find(|(_, e)| **e == canonical)?;
+            Some(NetworkPermit {
+                lease: entry.network_lease.clone(),
+                instance,
+                registration: u32::try_from(index + 1).ok()?,
+                endpoint: checked.clone(),
+            })
+        } else {
+            Some(NetworkPermit {
+                lease: entry.network_lease.clone(),
+                instance,
+                registration: 0,
+                endpoint: canonical,
+            })
+        }
+    }
     fn bind(
         &self,
         instance: u64,
@@ -680,10 +679,14 @@ impl ConfigBinder for Binder {
     }
 
     fn unbind(&self, instance: u64) {
-        self.instances
+        if let Some(entry) = self
+            .instances
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(&instance);
+            .remove(&instance)
+        {
+            entry.network_lease.retire();
+        }
     }
 
     fn bind_any(
@@ -725,14 +728,6 @@ impl ConfigBinder for Binder {
         let entry = self.entry(instance)?;
         let i = usize::try_from(handle).ok()?.checked_sub(1)?;
         entry.trust.get(i).cloned()
-    }
-
-    fn unix_path(&self, instance: u64, path: &str) -> bool {
-        self.instances
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(&instance)
-            .is_some_and(|e| e.unix_paths.iter().any(|p| p.as_bytes() == path.as_bytes()))
     }
 
     fn dest(&self, instance: u64, handle: u32) -> Option<Arc<DestDef>> {

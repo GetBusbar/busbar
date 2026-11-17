@@ -125,6 +125,8 @@ use busbar_plugin_abi::records::{
 use busbar_plugin_abi::types::{KindCode, Status};
 
 use crate::answer::{open_error, port_error};
+#[path = "check_host.rs"]
+mod check_host;
 use crate::instance::{
     BootPhase, CoreCfg, Described, ErrorBook, InstanceSpec, MetricInfo, OpenError, OpenPurpose,
     Registry, Settled, SlotLease,
@@ -493,11 +495,27 @@ impl Drop for Unbind {
 /// What an `Instance` keeps alive for its life (`InstanceParts::tether`): its binding first, its slot lease last.
 struct Tether {
     _unbind: Unbind,
+    _network: Box<dyn Send + Sync>,
     _lease: SlotLease,
+}
+
+struct RetireNeeds<N: Needs> {
+    needs: Arc<N>,
+    binder: Arc<dyn ConfigBinder>,
+    instance: u64,
+}
+impl<N: Needs> Drop for RetireNeeds<N> {
+    fn drop(&mut self) {
+        self.binder.unbind(self.instance);
+        self.needs.retire(self.instance);
+    }
 }
 
 fn bind_error(name: &str, e: BindError) -> OpenError {
     let text = match e {
+        BindError::BadNetwork => {
+            format!("{name}: CHECK network authority is missing, repeated or contradictory")
+        }
         BindError::NotAReference { pointer } => {
             format!("{name}: {pointer} is not a secret reference")
         }
@@ -576,6 +594,32 @@ pub(crate) struct Opened {
 }
 
 impl Registry {
+    fn freeze_check_answer(
+        &self,
+        s: &InstanceSpec<'_>,
+        id: u64,
+        answer: &[u8],
+    ) -> Result<Vec<crate::instance::DeclaredEndpoint>, OpenError> {
+        let declared = self.judge_check_answer(s, answer)?;
+        let endpoints: Vec<_> = declared
+            .iter()
+            .map(|e| {
+                busbar_ports::binder::NetworkEndpoint::new(e.op, e.flags, &e.dest).ok_or_else(
+                    || {
+                        plan_error(format!(
+                            "{}: CHECK declared an invalid network endpoint",
+                            s.name
+                        ))
+                    },
+                )
+            })
+            .collect::<Result<_, _>>()?;
+        self.binder
+            .freeze_network(id, &endpoints)
+            .map_err(|e| bind_error(s.name, e))?;
+        Ok(declared)
+    }
+
     /// Cold: the admitted image `s.identity` names, the config bound and its references resolved (§11.2 `open`:
     /// `bind`, `resolve_refs`, the core values at D_PUBLIC_URL_PATH and D_CALLER_UPSTREAMS_PATH). The D_SCHEMA
     /// check is the plugin's own `open`/`check` (the engine graph carries no JSON Schema validator).
@@ -726,8 +770,9 @@ impl Registry {
         let mut drv = Driver::new(needs, caller)
             .for_open()
             .with_max_steps(self.ceilings.max_steps);
-        if K::CODE == KindCode::Store
-            && p.described.facts & busbar_plugin_abi::store::F_BLOCKING_FILE != 0
+        if flags & busbar_plugin_abi::plugin::OPEN_DRY_RUN != 0
+            || (K::CODE == KindCode::Store
+                && p.described.facts & busbar_plugin_abi::store::F_BLOCKING_FILE != 0)
         {
             drv = drv.with_row(NeedRow::EMPTY);
         }
@@ -740,9 +785,20 @@ impl Registry {
                 ))
             })?;
         drv.run::<K, _>(ENTRY_OPEN, max_out, req, move |req, out| {
-            header
-                .open::<K>(host, req.bytes().to_vec(), flags, out)
-                .into()
+            if flags & busbar_plugin_abi::plugin::OPEN_DRY_RUN != 0 {
+                let (answer, attempted) = check_host::run(|host| {
+                    header.open::<K>(host, req.bytes().to_vec(), flags, out)
+                });
+                if attempted {
+                    drop(answer);
+                    return busbar_plugin_abi::host_side::driver::First::Done(Status::FAULT, None);
+                }
+                answer.into()
+            } else {
+                header
+                    .open::<K>(host, req.bytes().to_vec(), flags, out)
+                    .into()
+            }
         })
         .await
         .map_err(OpenError::Call)
@@ -777,6 +833,43 @@ impl Registry {
         let p = self
             .prepare_with_id(s, kind, id, lease.slot(), refs)
             .await?;
+        let retirement = RetireNeeds {
+            needs: Arc::clone(needs),
+            binder: Arc::clone(&self.binder),
+            instance: id,
+        };
+        let checked = self
+            .run_open::<K, DeniedNeeds>(
+                s,
+                &p,
+                &lease,
+                busbar_plugin_abi::plugin::OPEN_DRY_RUN,
+                &DeniedNeeds,
+            )
+            .await?;
+        if !lease.is_live() {
+            return Err(OpenError::Call(CallError::Quarantined));
+        }
+        let check_answer = checked.answer.answer();
+        if checked.instance.is_some() {
+            return Err(plan_error(format!(
+                "{}: CHECK returned a live instance",
+                s.name
+            )));
+        }
+        if check_answer.status != Status::OK {
+            let latch = AtomicBool::new(false);
+            return Err(
+                match port_error(&lease.record().scrub, p.errors, &latch, &check_answer) {
+                    Some(e) => open_error(e),
+                    None => OpenError::Call(CallError::Fault(FaultReason::BadStatus(
+                        check_answer.status.0,
+                    ))),
+                },
+            );
+        }
+        self.freeze_check_answer(s, id, check_answer.records().rest())?;
+        drop(checked);
         let finished = self.run_open::<K, N>(s, &p, &lease, 0, &**needs).await?;
         let Finished { answer, instance } = finished;
         let (status, scrub, errors) = (
@@ -821,6 +914,7 @@ impl Registry {
             facts: described.facts,
             scrub: Arc::clone(&scrub),
             tether: Box::new(Tether {
+                _network: Box::new(retirement),
                 _unbind: unbind,
                 _lease: lease,
             }),
@@ -916,7 +1010,7 @@ impl Registry {
         }
         let answer = finished.answer.answer();
         if answer.status == Status::OK {
-            return self.judge_check_answer(s, answer.records().rest());
+            return self.freeze_check_answer(s, p.id, answer.records().rest());
         }
         let latch = AtomicBool::new(false);
         Err(
