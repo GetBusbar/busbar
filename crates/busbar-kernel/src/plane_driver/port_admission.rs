@@ -19,6 +19,26 @@ pub struct AdmittedUnit {
     pub request: AdmittedRequest,
     pub unit: Unit,
     pub selected: Option<super::NativeRequestMoney>,
+    rollback: Mutex<Option<super::AdmissionRollback>>,
+}
+
+impl AdmittedUnit {
+    /// Keep exact money rollback armed until the same Task has accepted all admission proofs.
+    pub fn ordinary(
+        request: AdmittedRequest,
+        unit: Unit,
+        rollback: super::AdmissionRollback,
+    ) -> Result<Self, super::NativeAdmissionError> {
+        if unit.ctx.key != request.unit() || !rollback.accepts(&request) {
+            return Err(super::NativeAdmissionError::Declaration);
+        }
+        Ok(Self {
+            request,
+            unit,
+            selected: None,
+            rollback: Mutex::new(Some(rollback)),
+        })
+    }
 }
 
 enum Commit {
@@ -108,6 +128,18 @@ impl Pending {
     }
     pub fn admitted(&self) -> Option<&AdmittedUnit> {
         self.admitted.get()
+    }
+    pub(crate) fn accept_admission(&self) -> Result<(), SessionError> {
+        let admitted = self.admitted.get().ok_or(SessionError::NotDriven)?;
+        let mut held = admitted.rollback.lock().unwrap();
+        let rollback = held.as_ref().ok_or(SessionError::NotDriven)?;
+        if !admitted.request.is_live() || !rollback.accepts(&admitted.request) {
+            return Err(SessionError::NotDriven);
+        }
+        held.take()
+            .expect("checked original rollback owner")
+            .commit();
+        Ok(())
     }
     pub(crate) fn routes(&self) -> Arc<RequestRoutes> {
         self.routes.clone()

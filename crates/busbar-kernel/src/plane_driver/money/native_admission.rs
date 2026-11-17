@@ -34,6 +34,25 @@ pub struct AdmissionRollback {
 }
 
 impl AdmissionRollback {
+    pub fn accepts(&self, request: &AdmittedRequest) -> bool {
+        let Some(held) = &self.request else {
+            return false;
+        };
+        if held.unit() != request.unit() {
+            return false;
+        }
+        let all = self.money.shard(held.unit());
+        let Some(open) = all.get(&held.unit()) else {
+            return false;
+        };
+        let Some(grant) = &open.grant else {
+            return false;
+        };
+        held.matches_money_identity(&self.money.book, &open.identity, grant)
+            && request.matches_money_identity(&self.money.book, &open.identity, grant)
+            && request.matches_governance(&self.money.gov)
+    }
+
     /// Transfer ongoing settlement responsibility to the existing retained response owner.
     pub fn commit(mut self) {
         self.request.take();

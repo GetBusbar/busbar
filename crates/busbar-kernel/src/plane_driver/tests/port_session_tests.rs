@@ -313,6 +313,56 @@ fn complete_preparation_requires_every_declared_class_before_any_effect() {
 }
 
 #[test]
+fn owned_selected_preparation_retains_complete_actual_estimates() {
+    use busbar_plugin_abi::fallback_usage::EstimateValue;
+    let script = Script {
+        facts: busbar_plugin_abi::plane::FB_PREPARED_ESTIMATES,
+        classes: vec![busbar_ports::plane::UsageClass {
+            class: "tokens".into(),
+            unit: busbar_plugin_abi::plane::UNIT_TOKENS,
+            expected_units: None,
+        }],
+        upstream_items: Mutex::new(VecDeque::from([vec![
+            It::SelectedResource,
+            It::Prepared(&[("tokens", EstimateValue::Unknown)]),
+            It::UpMethod,
+            It::UpEnd,
+        ]])),
+        ..Script::default()
+    };
+    let candidate = crate::plane_driver::port_upstream::Candidate {
+        pool: "actual-pool".into(),
+        qualified_member: "seat\u{1f}actual-model".into(),
+        identity: crate::plane_driver::port_upstream::TargetIdentity::Model {
+            dialect: "actual-dialect".into(),
+            model: "actual-wire-model".into(),
+        },
+        resource: Some("configured".into()),
+        upstream: "actual-model".into(),
+        provider: "{}".into(),
+        base_path: "".into(),
+        flags: 0,
+        params: vec![],
+    };
+    let effects = Emitted::default();
+    let (mut task, _) = Task::begin(&script, &req(), b"", &effects).unwrap();
+    let prepared = task
+        .prepare_selected(&candidate, 1, "request-dialect", "request-model", &effects)
+        .unwrap()
+        .unwrap();
+    assert_eq!(prepared.target(), &candidate);
+    assert_eq!(prepared.attempt(), 1);
+    assert_eq!(prepared.route(), req().route);
+    assert_eq!(prepared.exchange().method.as_deref(), Some("POST"));
+    assert!(prepared.exchange().end);
+    assert_eq!(
+        prepared.estimates(),
+        Some(&[(Box::<str>::from("tokens"), EstimateValue::Unknown)][..])
+    );
+    assert!(effects.0.lock().unwrap().is_empty());
+}
+
+#[test]
 fn later_forward_rejects_prior_attempt_owned_session_usage() {
     let script = Script {
         facts: busbar_plugin_abi::plane::FB_ATTEMPT_USAGE,
