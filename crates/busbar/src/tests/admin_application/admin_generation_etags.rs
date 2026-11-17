@@ -443,6 +443,100 @@ fn unknown_effect_request(body: &'static str) -> axum::http::Request<axum::body:
         .unwrap()
 }
 
+struct GenerationMovesDuringCollection {
+    generation: Arc<std::sync::atomic::AtomicU64>,
+    sent: bool,
+}
+
+impl http_body::Body for GenerationMovesDuringCollection {
+    type Data = axum::body::Bytes;
+    type Error = std::convert::Infallible;
+
+    fn poll_frame(
+        mut self: std::pin::Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>> {
+        if self.sent {
+            return std::task::Poll::Ready(None);
+        }
+        self.sent = true;
+        self.generation
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        std::task::Poll::Ready(Some(Ok(http_body::Frame::data(
+            axum::body::Bytes::from_static(b"original response"),
+        ))))
+    }
+}
+
+#[tokio::test]
+async fn response_collection_cannot_change_the_generation_bound_to_its_etag() {
+    isolated!(CHILD, WITNESS, witness = "generation");
+    use std::sync::atomic::Ordering;
+    use tower::ServiceExt as _;
+    let s = serve("response-generation-capture", false).await;
+    let generation = s.app.config_generation.clone();
+    let original_generation = generation.load(Ordering::SeqCst);
+    let handler_generation = generation.clone();
+    let effect = axum::Router::new().route(
+        "/api/v1/admin/config/settings",
+        axum::routing::put(move || {
+            let generation = handler_generation.clone();
+            async move {
+                axum::body::Body::new(GenerationMovesDuringCollection {
+                    generation,
+                    sent: false,
+                })
+            }
+        }),
+    );
+    let router = busbar_core_admin::test_support::with_idempotency(effect, s.app.clone());
+    let request = || {
+        axum::http::Request::builder()
+            .method("PUT")
+            .uri("/api/v1/admin/config/settings")
+            .header("idempotency-key", "collection-generation")
+            .body(axum::body::Body::empty())
+            .unwrap()
+    };
+    let first = router.clone().oneshot(request()).await.unwrap();
+    assert_eq!(first.status(), axum::http::StatusCode::OK);
+    let etag = first.headers()["etag"].clone();
+    assert!(etag
+        .to_str()
+        .unwrap()
+        .ends_with(&format!(".{original_generation}\"")));
+    let bytes = axum::body::to_bytes(first.into_body(), 1024).await.unwrap();
+    assert_eq!(generation.load(Ordering::SeqCst), original_generation + 1);
+    let replay = router.clone().oneshot(request()).await.unwrap();
+    assert_eq!(replay.headers()["etag"], etag);
+    assert_eq!(
+        axum::body::to_bytes(replay.into_body(), 1024)
+            .await
+            .unwrap(),
+        bytes
+    );
+    assert_eq!(generation.load(Ordering::SeqCst), original_generation + 1);
+    let operation = router
+        .oneshot(
+            axum::http::Request::builder()
+                .uri("/api/v1/admin/operations/collection-generation")
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(operation.status(), axum::http::StatusCode::OK);
+    let operation: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(operation.into_body(), 8192)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(operation["config_generation"], original_generation);
+    s.finish();
+    println!("{WITNESS}");
+}
+
 fn unknown_effect_query_request(
     query: &str,
     body: &'static str,
