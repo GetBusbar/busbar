@@ -450,3 +450,75 @@ async fn native_admin_lease_survives_publication_during_replay_and_pins_actual_e
     assert_eq!(port.calls.load(Ordering::SeqCst), 1);
     assert_eq!(owners.0.load(Ordering::SeqCst), 1);
 }
+
+#[tokio::test]
+async fn cancellation_before_verify_and_after_claim_cannot_create_execution() {
+    use busbar_kernel::auth::admin_verdict_for;
+    let (handle, app, owners, _) = admin_fixture().await;
+    let headers = axum::http::HeaderMap::new();
+    let invocation = admin_invocation(&handle, &app, busbar_kernel::store::now());
+    let held = Arc::downgrade(&invocation.request);
+    {
+        let mut verify = std::pin::pin!(admin_verdict_for(invocation, &headers));
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        assert!(std::future::Future::poll(verify.as_mut(), &mut cx).is_pending());
+    }
+    assert!(
+        held.upgrade().is_none(),
+        "cancelled preparation releases original request custody"
+    );
+    assert_eq!(owners.0.load(Ordering::SeqCst), 0);
+    let pending = admin_verdict_for(
+        admin_invocation(&handle, &app, busbar_kernel::store::now()),
+        &headers,
+    )
+    .await
+    .claim
+    .unwrap();
+    {
+        let mut complete = std::pin::pin!(pending.complete_admin());
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        assert!(std::future::Future::poll(complete.as_mut(), &mut cx).is_pending());
+    }
+    assert!(pending.complete_admin().await.is_err());
+    assert_eq!(
+        owners.0.load(Ordering::SeqCst),
+        1,
+        "cancellation cannot start a second claim"
+    );
+}
+
+#[tokio::test]
+async fn independent_native_admin_requests_compete_at_final_replay() {
+    use busbar_kernel::auth::admin_verdict_for;
+    let (handle, app, owners, _) = admin_fixture().await;
+    let headers = axum::http::HeaderMap::new();
+    let a = admin_verdict_for(
+        admin_invocation(&handle, &app, busbar_kernel::store::now()),
+        &headers,
+    )
+    .await
+    .claim
+    .unwrap();
+    let b = admin_verdict_for(
+        admin_invocation(&handle, &app, busbar_kernel::store::now()),
+        &headers,
+    )
+    .await
+    .claim
+    .unwrap();
+    let (a, b) = tokio::join!(a.complete_admin(), b.complete_admin());
+    assert_ne!(a.is_ok(), b.is_ok());
+    assert_eq!(owners.0.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn expired_invocation_deadline_refuses_before_replay_submission() {
+    let (handle, app, owners, _) = admin_fixture().await;
+    let mut invocation = admin_invocation(&handle, &app, busbar_kernel::store::now());
+    invocation.cx.deadline = std::time::Instant::now();
+    let verdict =
+        busbar_kernel::auth::admin_verdict_for(invocation, &axum::http::HeaderMap::new()).await;
+    assert!(verdict.claim.unwrap().complete_admin().await.is_err());
+    assert_eq!(owners.0.load(Ordering::SeqCst), 0);
+}
