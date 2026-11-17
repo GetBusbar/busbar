@@ -85,6 +85,7 @@ pub(crate) struct PlaneFixture {
     directory: Directory,
     hook_specs: Vec<Configured>,
     public_url: Option<String>,
+    _invocations: Vec<busbar_kernel::host_services::NativeInvocationAdmission>,
 }
 
 pub(crate) struct HookFixture {
@@ -214,6 +215,7 @@ impl ServingFixture {
             instances: &specs,
             services: Some(services),
             seats: Mutex::default(),
+            invocations: Mutex::default(),
             shared: Arc::clone(&shared),
             directory: provisioning.directory,
             core,
@@ -258,6 +260,10 @@ impl ServingFixture {
             workers.push(probe);
         }
         let ticking = seat.clone();
+        let invocations = steps
+            .invocations
+            .into_inner()
+            .unwrap_or_else(PoisonError::into_inner);
         workers.push(async move { ticking.tick_task(shared.push.clone()).await });
         let seal = busbar_kernel::seal::lend();
         let hook_specs = cfg
@@ -286,6 +292,7 @@ impl ServingFixture {
             directory,
             hook_specs,
             public_url: cfg.public_url.clone(),
+            _invocations: invocations,
         })
     }
 }

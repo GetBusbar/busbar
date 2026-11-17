@@ -5,6 +5,58 @@
 use super::{Caller, KernelServices, Nest, NestAsk, NestDone, NestRoute, NEST_NO_UNIT};
 use std::sync::Arc;
 
+/// The lifetime of one actually opened native plane's execution admission. This confers no
+/// legacy service declarations; the native port's Needs and intent owners retain those policies.
+/// Root keeps the lease with the opened port in its complete serving generation.
+pub struct NativeInvocationAdmission {
+    core: Arc<KernelServices>,
+    caller: Caller,
+}
+
+impl Drop for NativeInvocationAdmission {
+    fn drop(&mut self) {
+        self.core
+            .native_invocations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(self.caller.incarnation());
+    }
+}
+
+impl KernelServices {
+    /// Called by root after the native plane opened and its driver accepted its route declaration.
+    /// The sealed Caller is the very same handle retained by that driver, never another issuance
+    /// of the same namespace. A failed/retired candidate drops the returned lease.
+    pub fn admit_native_invocation(
+        self: &Arc<Self>,
+        caller: &Caller,
+    ) -> Result<NativeInvocationAdmission, &'static str> {
+        if caller.kind() != busbar_contract::abi::mechanism::KindCode::Plane {
+            return Err("native invocation owner is not a plane");
+        }
+        if !self
+            .native_invocations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(caller.incarnation().clone())
+        {
+            return Err("native invocation owner already admitted");
+        }
+        Ok(NativeInvocationAdmission {
+            core: Arc::clone(self),
+            caller: caller.clone(),
+        })
+    }
+
+    fn invocation_admitted(&self, caller: &Caller) -> bool {
+        self.native_invocations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains(caller.incarnation())
+            || self.facts(caller).is_some()
+    }
+}
+
 /// Root constructs this only after its immutable dispatch snapshot is complete.
 /// The route owns that snapshot; instances in it retain only core services.
 /// Core persistence cannot be installed after a service has been shared.
@@ -57,7 +109,7 @@ impl InvocationContext {
         caller: Caller,
         unit: u64,
     ) -> Result<Self, &'static str> {
-        if generation.core.facts(&caller).is_none() {
+        if !generation.core.invocation_admitted(&caller) {
             return Err(super::NOT_ADMITTED);
         }
         let record = generation
@@ -98,7 +150,7 @@ impl InvocationContext {
 
     pub fn accepts(&self, caller: &Caller) -> bool {
         self.caller.incarnation() == caller.incarnation()
-            && self.generation.core.facts(caller).is_some()
+            && self.generation.core.invocation_admitted(caller)
             && self
                 .generation
                 .core

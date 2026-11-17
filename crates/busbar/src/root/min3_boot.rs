@@ -202,6 +202,7 @@ pub(crate) struct Booted {
     pub(crate) registry: Arc<MinRegistry>,
     _bootstrap_registry: Arc<MinRegistry>,
     _transports: Vec<transports::ServedTransport>,
+    _native_invocations: Vec<busbar_kernel::host_services::NativeInvocationAdmission>,
     _opened: Vec<(
         u32,
         busbar_plugin_loader::instance::BootPhase,
@@ -731,6 +732,7 @@ struct Steps<'r> {
     instances: &'r [(KindCode, InstanceSpec<'r>)],
     services: Option<Arc<KernelServices>>,
     seats: Mutex<Vec<PortSeat>>,
+    invocations: Mutex<Vec<busbar_kernel::host_services::NativeInvocationAdmission>>,
     shared: Arc<Shared>,
     directory: Directory,
     /// `auth.signing_key`: the reference the ticket host key is derived from (IF §12.11).
@@ -824,13 +826,16 @@ impl Steps<'_> {
             .await?;
         let driver = PortDriver::new(
             port,
-            services,
-            caller,
+            Arc::clone(&services),
+            caller.clone(),
             Arc::new(busbar_kernel::refusal::CoreRefusals::new()),
             // The operator's `routes.<id>.auth` choice arrives with the K7 config (slice 9 leaves it unset).
             &|_| None,
         )
         .map_err(|error| OpenError::Unknown(format!("plane route declaration refused: {error}")))?;
+        let invocation = services
+            .admit_native_invocation(&caller)
+            .map_err(|why| OpenError::Unknown(why.into()))?;
         // Tickets: the host key is resolved here (the secret instances are open, step 2a), so the gate and the
         // MINT store are built whole, with the key, before the seat exists.
         let tickets = ticket_store(&self.shared.records, self.core.signing_key.as_ref());
@@ -896,6 +901,10 @@ impl Steps<'_> {
                 upstream: wiring.upstream,
                 carrier: Some(wiring.carrier),
             });
+        self.invocations
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(invocation);
         Ok(())
     }
 }
@@ -1381,6 +1390,7 @@ pub(crate) async fn finish(
         instances: &specs,
         services,
         seats: Mutex::default(),
+        invocations: Mutex::default(),
         shared: Arc::clone(&shared),
         directory: Arc::clone(&directory),
         core: Arc::clone(&core_secrets),
@@ -1568,12 +1578,17 @@ pub(crate) async fn finish(
         .probes
         .into_inner()
         .unwrap_or_else(PoisonError::into_inner);
+    let invocations = steps
+        .invocations
+        .into_inner()
+        .unwrap_or_else(PoisonError::into_inner);
     let ticking = seats.clone();
     let booted = Arc::new(Booted {
         resolver: secrets.resolver(reactor, built.sugars.clone()),
         registry: built.registry,
         _bootstrap_registry,
         _transports: transports,
+        _native_invocations: invocations,
         _opened: walked.opened,
         instances: serving_instances,
         directory,
