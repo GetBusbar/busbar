@@ -346,15 +346,22 @@ fn app_of(engine: &Arc<dyn std::any::Any + Send + Sync>) -> Option<Arc<App>> {
 
 /// The principal `bearer` names under the data auth chain, for a route the chain did not gate. No credential, or a
 /// chain with nothing configured, is anonymous.
-async fn chain_principal(ctx: &PlaneReqCtx, bearer: Option<&str>) -> (Seen, Option<GovCtx>) {
+async fn chain_principal(
+    ctx: &PlaneReqCtx,
+    bearer: Option<&str>,
+) -> (
+    Seen,
+    Option<GovCtx>,
+    Option<busbar_kernel::auth::SignedRequestAuthority>,
+) {
     let Some(token) = bearer else {
-        return (Seen::Anonymous, None);
+        return (Seen::Anonymous, None, None);
     };
     let Some(app) = app_of(&ctx.engine) else {
-        return (Seen::Rejected, None);
+        return (Seen::Rejected, None, None);
     };
     if app.auth.is_open() {
-        return (Seen::Anonymous, None);
+        return (Seen::Anonymous, None, None);
     }
     let target = ctx
         .uri
@@ -369,9 +376,19 @@ async fn chain_principal(ctx: &PlaneReqCtx, bearer: Option<&str>) -> (Seen, Opti
         None,
     )
     .await;
+    let signed = match &verdict {
+        busbar_kernel::auth::ChainVerdict::Identified {
+            signed_authority, ..
+        } => signed_authority.clone(),
+        _ => None,
+    };
     match busbar_kernel::auth::resolve_data_plane_identity(&app, verdict) {
-        Ok((principal, gov)) => (seen_of(Ok((principal, GovCtx::default()))), Some(gov)),
-        Err(why) => (seen_of(Err(why)), None),
+        Ok((principal, gov)) => (
+            seen_of(Ok((principal, GovCtx::default()))),
+            Some(gov),
+            signed,
+        ),
+        Err(why) => (seen_of(Err(why)), None, None),
     }
 }
 
@@ -551,13 +568,27 @@ async fn answer(
     let seen = match ctx.principal.as_ref().and_then(|p| p.0.as_ref()) {
         Some(p) => Seen::Verified(Arc::from(p.id.as_str())),
         None if resolves_credential(route.effective) => {
-            let (seen, gov) = chain_principal(&ctx, bearer.as_deref()).await;
+            let (seen, gov, signed_authority) = chain_principal(&ctx, bearer.as_deref()).await;
             ctx.gov = gov;
+            ctx.signed_authority = signed_authority;
             seen
         }
         None => Seen::Anonymous,
     };
+    // The occurrence proof owns its original key. An unrelated resolved key may not
+    // select the payer before the atomic one-shot registration below.
+    if let Some(authority) = &ctx.signed_authority {
+        if !ctx
+            .gov
+            .as_ref()
+            .and_then(|gov| gov.key.as_ref())
+            .is_some_and(|key| Arc::ptr_eq(key, authority.original_key()))
+        {
+            return failed(StatusCode::UNAUTHORIZED);
+        }
+    }
     let mut unit = allocate_unit(seat, billing, &ctx);
+
     let settle = match (&unit, billing) {
         (Some(unit), Some(billing)) => Some(Settle {
             billing: billing.clone(),

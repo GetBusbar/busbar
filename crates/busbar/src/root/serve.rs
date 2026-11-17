@@ -1491,14 +1491,28 @@ impl DataRoutes {
         if self.frames_lock().contains_key(&id) || generation.core().units().get(id).is_some() {
             return Err("native unit is already registered");
         }
-        if !generation.core().units().pre_admitted_for(
-            id,
-            seat.driver.caller(),
-            busbar_kernel::host_units::UnitRecord {
-                principal: Some(key),
-                depth: 0,
-            },
-        ) {
+        let registered = match &ctx.signed_authority {
+            Some(authority) => {
+                if !Arc::ptr_eq(&key, authority.original_key()) {
+                    return Err("native signed allocation has a different original key");
+                }
+                generation.core().units().pre_admitted_signed_for(
+                    id,
+                    seat.driver.caller(),
+                    authority.clone(),
+                    0,
+                )
+            }
+            None => generation.core().units().pre_admitted_for(
+                id,
+                seat.driver.caller(),
+                busbar_kernel::host_units::UnitRecord {
+                    principal: Some(key),
+                    depth: 0,
+                },
+            ),
+        };
+        if !registered {
             return Err("native allocation could not be registered");
         }
         let context = match seat.driver.invocation(Arc::clone(generation), id) {
