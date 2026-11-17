@@ -141,14 +141,8 @@ impl PortDemuxer {
 }
 
 impl Demuxer for PortDemuxer {
-    fn demux(&self, key: &str, message: &[u8]) -> Option<Demuxed> {
-        match demux(&*self.0, key, message) {
-            Ok(found) => found,
-            Err(error) => {
-                tracing::warn!(?error, "a plane demux failed");
-                None
-            }
-        }
+    fn demux(&self, key: &str, message: &[u8]) -> Result<Option<Demuxed>, PortError> {
+        demux(&*self.0, key, message)
     }
 }
 
