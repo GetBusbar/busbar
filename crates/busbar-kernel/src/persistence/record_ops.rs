@@ -17,7 +17,7 @@
 //! bytes and the owner row as `Exact` predicates. Close and sweep are separate candidates.
 //!
 //! Principal-transition receipts are class D ([`DerivedOp`]): re-derived from a persisted plan,
-//! never minted here.
+//! kept under their own partition label so no generation's range delete can reach them.
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -51,6 +51,9 @@ pub(crate) const RECEIPT_KEY_LENGTH: u64 = 41;
 
 /// Draws of a fresh gen8 before an open gives up (each redraw is a proven collision).
 const OPEN_DRAWS: usize = 8;
+
+/// The partition label of class-D receipts, apart from every generation's `[gen8]`.
+const DERIVED_LABEL: &[u8] = b"d";
 
 /// Generations whose last hold dropped, waiting for their sweep.
 #[derive(Debug, Default)]
@@ -165,11 +168,13 @@ impl Op {
         }
     }
 
-    /// The receipt's partition: the generation's for class M; class D by its op's first 8 bytes.
+    /// The receipt's partition: the generation's for class M, the class-D label otherwise.
     pub(crate) fn receipt_namespace(&self) -> NamespaceId {
         match self {
             Self::Held(held) => receipts_namespace(held.gen8()),
-            Self::Derived(derived) => partition::namespace(RECORD_OPERATIONS, &[&derived.0[..8]]),
+            Self::Derived(derived) => {
+                partition::namespace(RECORD_OPERATIONS, &[DERIVED_LABEL, &derived.0[..8]])
+            }
         }
     }
 }
