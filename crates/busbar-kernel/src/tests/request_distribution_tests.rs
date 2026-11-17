@@ -3,6 +3,37 @@
 
 use super::*;
 
+#[test]
+fn exact_owned_request_result_outlives_workspace_without_losing_output_credit() {
+    use crate::limits::process_admission::{AdmissionClass, ProcessAdmission};
+    let source = make_source();
+    let sample = source.register_histogram(
+        &outcome_key("ok"),
+        &Metadata::new("output", metrics::Level::INFO, None),
+    );
+    sample.record(0.002);
+    let process = ProcessAdmission::with_limits(0, 1024 * 1024, 0);
+    let request = process.try_enter(AdmissionClass::Operator).unwrap();
+    let first = source
+        .request_snapshot_budgeted(32, &request)
+        .unwrap()
+        .unwrap();
+    let used = process.used();
+    assert!(used.0 > 0);
+    sample.record(0.003);
+    let second = source
+        .request_snapshot_budgeted(32, &request)
+        .unwrap()
+        .unwrap();
+    assert_eq!(first.value().identities[0].count, 1);
+    assert_eq!(second.value().identities[0].count, 2);
+    assert!(process.used().0 > used.0);
+    drop(second);
+    assert_eq!(process.used(), used);
+    drop(first);
+    assert_eq!(process.used(), (0, 0));
+}
+
 fn key() -> Key {
     Key::from_parts(
         crate::telemetry::REQUEST_PHASE_DURATION,

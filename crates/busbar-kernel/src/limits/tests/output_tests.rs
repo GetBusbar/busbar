@@ -131,3 +131,36 @@ async fn cancelling_capture_future_drops_retained_projection() {
     assert_eq!(process.used(), (0, 0));
     assert!(process.try_enter(AdmissionClass::Data).is_ok());
 }
+
+#[cfg(not(target_env = "msvc"))]
+#[test]
+fn real_json_facade_escape_scratch_fits_the_preflight_credit() {
+    #[derive(serde::Serialize)]
+    struct Document<'a> {
+        text: &'a str,
+    }
+    let text = "\\\"\n".repeat(4096);
+    let scratch = 6 * (6 * text.len() + 35) + 4096;
+    let process = ProcessAdmission::with_limits(0, 2 * 1024 * 1024, 0);
+    let request = process.try_enter(AdmissionClass::Operator).unwrap();
+    let mut scope = CaptureScope::new(&request).unwrap();
+    scope.reserve_requested(scratch).unwrap();
+    let mut body = OutputBuffer::with_capacity(&request, 6 * text.len() + 64).unwrap();
+    crate::ThreadAllocated::reset();
+    busbar_contract::json::to_writer(&mut body, &Document { text: &text }).unwrap();
+    let allocated = crate::ThreadAllocated::bytes();
+    assert!(
+        allocated > 0,
+        "the real facade owns an escape buffer before forwarding"
+    );
+    assert!(allocated <= u64::try_from(scratch).unwrap());
+    let encoded = body.into_bytes().unwrap();
+    assert!(encoded.len() > text.len());
+    drop(scope);
+    assert!(
+        process.used().0 > 0,
+        "the body has independent backing credit"
+    );
+    drop(encoded);
+    assert_eq!(process.used(), (0, 0));
+}
