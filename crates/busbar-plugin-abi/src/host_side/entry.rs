@@ -225,6 +225,20 @@ mod migration_tests {
         assert!(HOST.migrate_admit(0).is_ok());
         assert_eq!(permit.first_refused(), Some(u64::MAX));
     }
+
+    #[test]
+    fn pure_selection_cannot_inherit_store_open_migration_authority() {
+        let permit = Arc::new(StoreMigrationAdmission::new(true));
+        let _owner = Owning::set(7);
+        let _scope = MigrationScope::set(Some(permit));
+        {
+            let pure = Pure::enter();
+            assert!(HOST.migrate_admit(0).is_err());
+            assert!(HOST.migrate_admit(9).is_err());
+            assert!(pure.violated());
+        }
+        assert!(HOST.migrate_admit(9).is_ok());
+    }
 }
 
 #[cfg(test)]
