@@ -2312,14 +2312,15 @@ fn seal_root_only(walk: &AdminWalk, resolved: &ResolvedVerb, applied: bool) {
     }
 }
 
+/// The audit outcome of an adjustment, read from the action body's host-written `effect`
+/// (ADMIN-API-1.6-ONE-MODEL §10.2: the outcome is in the body, not in a header).
 fn adjustment_audit_outcome(answer: Option<&AdminAnswer>, applied: bool) -> &'static str {
-    let effect = answer.and_then(|answer| {
-        answer
-            .headers
-            .iter()
-            .find(|(name, _)| name == "x-busbar-adjust-effect")
-            .map(|(_, value)| value.as_str())
-    });
+    use busbar_contract::json::JsonValueTrait as _;
+    let body = answer.and_then(|answer| busbar_contract::json::parse_value(&answer.body).ok());
+    let effect = body
+        .as_ref()
+        .and_then(|body| body.get("effect"))
+        .and_then(|effect| effect.as_str());
     match effect {
         Some("unknown") => busbar_kernel::audit_ring::OUTCOME_DEGRADED,
         Some("applied") => busbar_kernel::audit_ring::OUTCOME_APPLIED,
