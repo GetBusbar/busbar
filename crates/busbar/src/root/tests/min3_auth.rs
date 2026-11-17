@@ -532,20 +532,27 @@ async fn expired_invocation_deadline_refuses_before_replay_submission() {
 #[tokio::test]
 async fn root_router_errand_reuses_completed_native_admission_without_second_verification() {
     use crate::root::units_admin::{AdminDispatch, AdminRequest, RouterDispatch};
-    let (handle, app, owners, port) = admin_fixture().await;
+    let mut f = admin_physical_fixture().await;
+    let (handle, owners, port) = (&f.handle, &f.owners, &f.port);
     let headers = axum::http::HeaderMap::new();
-    let invocation = admin_invocation(&handle, &app, busbar_kernel::store::now());
-    let unit = invocation.id.request_id().get();
+    let invocation = physical_admin_invocation(&f);
     let verdict = busbar_kernel::auth::admin_verdict_for(invocation, &headers).await;
     let execution = Arc::new(verdict.claim.unwrap().complete_admin().await.unwrap());
-    let inner = busbar_kernel::router::build_admin_router_on(&handle, 1024, false);
+    let physical = Arc::new(
+        f.pending
+            .take()
+            .unwrap()
+            .complete_admin(execution.clone())
+            .unwrap(),
+    );
+    let inner = busbar_kernel::router::build_admin_router_on(handle, 1024, false);
     let dispatch = RouterDispatch::new(
         inner,
         &tokio::runtime::Handle::current(),
         Arc::new(busbar_core_admin::keys::KeyReplayCache::new()),
     );
-    let request =
-        AdminRequest::from_snapshot(Arc::clone(execution.native().unwrap().1.request()), unit);
+    let mut request = AdminRequest::from_binding(f.binding.clone()).unwrap();
+    request.attach_physical(physical).unwrap();
     let resolved =
         busbar_core_admin::admin_codec::verbs::resolve(request.method(), request.path()).unwrap();
     let verb = crate::root::units_admin::kernel_verb(&resolved).unwrap();
@@ -586,9 +593,6 @@ async fn root_router_errand_reuses_completed_native_admission_without_second_ver
 async fn native_admin_http_requires_original_snapshot_and_same_lease_before_verifying() {
     use busbar_kernel::limits::process_admission::{AdmissionClass, ProcessAdmission};
     use tower::ServiceExt;
-    let (handle, app, owners, port) = admin_fixture().await;
-    let router = busbar_kernel::router::build_admin_router_on(&handle, 1024, false);
-    let snapshot = admin_invocation(&handle, &app, busbar_kernel::store::now()).request;
     for (snapshot_present, foreign_lease, target, body, expected) in [
         (
             false,
@@ -619,11 +623,16 @@ async fn native_admin_http_requires_original_snapshot_and_same_lease_before_veri
             401,
         ),
     ] {
+        let mut f = admin_physical_fixture().await;
+        let router = busbar_kernel::router::build_admin_router_on(&f.handle, 1024, false);
+        let snapshot = f.binding.snapshot().unwrap();
+        let carrier = f.pending.take().unwrap().into_admin().unwrap();
         let mut request = axum::http::Request::builder()
             .method("GET")
             .uri(target)
             .body(axum::body::Body::from(body))
             .unwrap();
+        request.extensions_mut().insert(carrier);
         if snapshot_present {
             request.extensions_mut().insert(snapshot.clone());
         }
@@ -639,19 +648,24 @@ async fn native_admin_http_requires_original_snapshot_and_same_lease_before_veri
             router.clone().oneshot(request).await.unwrap().status(),
             expected
         );
-        assert_eq!(port.calls.load(Ordering::SeqCst), 0);
-        assert_eq!(owners.0.load(Ordering::SeqCst), 0);
+        assert_eq!(f.port.calls.load(Ordering::SeqCst), 0);
+        assert_eq!(f.owners.0.load(Ordering::SeqCst), 0);
     }
+    let mut f = admin_physical_fixture().await;
+    let router = busbar_kernel::router::build_admin_router_on(&f.handle, 1024, false);
+    let snapshot = f.binding.snapshot().unwrap();
+    let carrier = f.pending.take().unwrap().into_admin().unwrap();
     let request = axum::http::Request::builder()
         .method("GET")
         .uri(snapshot.target())
+        .extension(carrier)
         .extension(snapshot.request().clone())
         .extension(snapshot.clone())
         .body(axum::body::Body::from(snapshot.body_bytes()))
         .unwrap();
     assert_eq!(router.oneshot(request).await.unwrap().status(), 200);
-    assert_eq!(port.calls.load(Ordering::SeqCst), 1);
-    assert_eq!(owners.0.load(Ordering::SeqCst), 1);
+    assert_eq!(f.port.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(f.owners.0.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test]
@@ -812,6 +826,10 @@ struct AdminPhysicalFixture {
 }
 
 async fn admin_physical_fixture() -> AdminPhysicalFixture {
+    admin_physical_fixture_with_native(true).await
+}
+
+async fn admin_physical_fixture_with_native(native: bool) -> AdminPhysicalFixture {
     use busbar_contract::abi::mechanism::route::RouteAuth;
     use busbar_contract::abi::transport::route::{METHOD_GET, PATH_EXACT};
     use busbar_kernel::guest::{Claimant, GuestList, Line, LineAuth, Route};
@@ -820,6 +838,18 @@ async fn admin_physical_fixture() -> AdminPhysicalFixture {
     };
     use busbar_kernel::limits::process_admission::{AdmissionClass, ProcessAdmission};
     let (handle, app, owners, port) = admin_fixture().await;
+    let (handle, app) = if native {
+        (handle, app)
+    } else {
+        let mut legacy = (*app).clone();
+        legacy.native_admin = None;
+        legacy.admin_chain.clear();
+        let app = Arc::new(legacy);
+        (
+            Arc::new(busbar_kernel::state::AppHandle::new(app.clone())),
+            app,
+        )
+    };
     let transport = crate::root::min3_transports::tests::framer(&["http"]);
     let line = Line {
         route: Route {
@@ -1015,4 +1045,143 @@ async fn physical_admin_join_refuses_reset_or_expired_completed_proof() {
         assert_eq!(f.port.calls.load(Ordering::SeqCst), 1);
         assert_eq!(f.owners.0.load(Ordering::SeqCst), 1);
     }
+}
+
+async fn physical_admin_router(f: &AdminPhysicalFixture) -> axum::Router {
+    use crate::root::units_admin::{AdminBinding, RefusingDispatch};
+    let door = crate::root::units_admin::bound::live_admin_door(f.handle.clone());
+    let mut units =
+        crate::root::kernel::ProductionUnits::admin_only(Arc::new(RefusingDispatch), door.clone())
+            .await;
+    let inner = busbar_kernel::router::build_admin_router_on(&f.handle, 1024, false);
+    crate::root::units_admin::mount(
+        inner,
+        crate::root::kernel::new_kernel(),
+        1024,
+        move |dispatch| {
+            units.admin = AdminBinding::new(dispatch, door);
+            units
+        },
+    )
+}
+
+fn physical_admin_http(
+    f: &mut AdminPhysicalFixture,
+) -> (
+    axum::http::Request<axum::body::Body>,
+    busbar_kernel::inbound::native::AdminPhysicalRequest,
+) {
+    let carrier = f.pending.take().unwrap().into_admin().unwrap();
+    let snapshot = f.binding.snapshot().unwrap();
+    let request = axum::http::Request::builder()
+        .method(snapshot.method())
+        .uri(snapshot.target())
+        .extension(carrier.clone())
+        .extension(snapshot.request().clone())
+        .extension(snapshot.clone())
+        .body(axum::body::Body::from(snapshot.body_bytes()))
+        .unwrap();
+    (request, carrier)
+}
+
+#[tokio::test]
+async fn physical_admin_root_router_retains_exact_owner_through_response_body_drop() {
+    use busbar_kernel::inbound::native::PhysicalAdminExecution;
+    use tower::ServiceExt;
+    let mut f = admin_physical_fixture().await;
+    let router = physical_admin_router(&f).await;
+    let (request, carrier) = physical_admin_http(&mut f);
+    let response = router.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), 200);
+    assert!(
+        carrier.take().is_err(),
+        "root consumed original completion right"
+    );
+    let physical = response
+        .extensions()
+        .get::<Arc<PhysicalAdminExecution>>()
+        .unwrap()
+        .clone();
+    assert!(Arc::ptr_eq(physical.binding(), &f.binding));
+    assert!(physical.check_executing().is_ok());
+    assert_eq!(f.port.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(f.owners.0.load(Ordering::SeqCst), 1);
+    let weak = Arc::downgrade(&physical);
+    let (parts, body) = response.into_parts();
+    drop((parts, physical));
+    assert!(
+        weak.upgrade().is_some(),
+        "body owns same physical execution after headers retire"
+    );
+    assert!(f.binding.check_executing().is_ok());
+    drop(body);
+    assert!(weak.upgrade().is_none());
+    assert!(f.binding.check_executing().is_err());
+}
+
+#[tokio::test]
+async fn physical_admin_root_consumes_carrier_before_await_and_reset_prevents_execution() {
+    use tower::ServiceExt;
+    let mut f = admin_physical_fixture().await;
+    let router = physical_admin_router(&f).await;
+    let (request, carrier) = physical_admin_http(&mut f);
+    let mut response = std::pin::pin!(router.oneshot(request));
+    let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+    assert!(std::future::Future::poll(response.as_mut(), &mut cx).is_pending());
+    assert!(
+        carrier.take().is_err(),
+        "right taken before body/auth/task suspension"
+    );
+    assert!(f.connection.cancel(&f.stream));
+    let answer = response.await.unwrap();
+    assert_ne!(answer.status(), 200);
+    assert!(answer
+        .extensions()
+        .get::<Arc<busbar_kernel::inbound::native::PhysicalAdminExecution>>()
+        .is_none());
+    assert!(f.binding.check_executing().is_err());
+}
+
+#[tokio::test]
+async fn physical_admin_effect_keeps_owner_and_rechecks_reset_before_mutation() {
+    use busbar_kernel::auth::effect::{Context, PinnedEffect};
+    let mut f = admin_physical_fixture().await;
+    let verdict = busbar_kernel::auth::admin_verdict_for(
+        physical_admin_invocation(&f),
+        &axum::http::HeaderMap::new(),
+    )
+    .await;
+    let mut context = Context::new(
+        "GET",
+        "/api/v1/admin/audit",
+        axum::http::HeaderMap::new(),
+        &verdict.door,
+    );
+    let proof = Arc::new(verdict.claim.unwrap().complete_admin().await.unwrap());
+    let physical = Arc::new(f.pending.take().unwrap().complete_admin(proof).unwrap());
+    let weak = Arc::downgrade(&physical);
+    context.attach_physical(physical.clone()).unwrap();
+    drop(physical);
+    let effect = PinnedEffect::admit(&f.handle, Some(context)).await.unwrap();
+    assert!(weak.upgrade().is_some());
+    assert!(f.connection.cancel(&f.stream));
+    assert!(effect.start(&f.handle).await.is_err());
+    assert_eq!(f.port.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(f.owners.0.load(Ordering::SeqCst), 1);
+    drop(effect);
+    assert!(weak.upgrade().is_none());
+}
+
+#[tokio::test]
+async fn physical_admin_root_rejects_legacy_open_verdict_without_native_proof() {
+    use tower::ServiceExt;
+    let mut f = admin_physical_fixture_with_native(false).await;
+    let router = physical_admin_router(&f).await;
+    let (request, carrier) = physical_admin_http(&mut f);
+    let response = router.oneshot(request).await.unwrap();
+    assert_ne!(response.status(), 200);
+    assert!(carrier.take().is_err());
+    assert!(f.binding.check_executing().is_err());
+    assert_eq!(f.port.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(f.owners.0.load(Ordering::SeqCst), 0);
 }
