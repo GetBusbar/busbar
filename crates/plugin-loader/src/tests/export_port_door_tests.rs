@@ -632,3 +632,204 @@ fn declared_scopes_are_get_routes_before_the_pump_starts() {
         "route assembly never starts the delivery worker"
     );
 }
+
+#[derive(Default)]
+struct Observations(Mutex<Vec<busbar_contract::export_calls::ExportObservation>>);
+
+impl busbar_contract::export_calls::ExportObserver for Observations {
+    fn observe(&self, event: busbar_contract::export_calls::ExportObservation) {
+        self.0.lock().unwrap().push(event);
+    }
+}
+
+fn observed(port: Arc<Double>, disk: Arc<Disk>) -> (Arc<PortDoor>, Arc<Observations>) {
+    let observer = Arc::new(Observations::default());
+    let door = PortDoor::prepare(
+        "observed",
+        port,
+        disk,
+        &InstanceLimits::default(),
+        observer.clone(),
+    );
+    (door, observer)
+}
+
+fn retained_lines(n: usize) -> Vec<super::Line> {
+    (0..n)
+        .map(|_| super::Line {
+            stream: x::STREAM_LOGS as u8,
+            bytes: busbar_contract::secure::SecureVec::from(b"line".to_vec()),
+            _hold: Box::new(()),
+        })
+        .collect()
+}
+
+#[test]
+fn observer_records_exact_accepted_prefixes_and_terminal_remainder() {
+    use busbar_contract::export_calls::{ExportCustodyLevel, ExportDropReason, ExportObservation};
+    use busbar_contract::export_stream::ExportStream;
+    let (port, calls) = Double::new(&[x::STREAM_LOGS]);
+    port.answer(Ok(Delivered::Acked {
+        accepted: 1,
+        custody: ACCEPTED,
+    }));
+    port.answer(Err(PortError::Failed {
+        code: busbar_plugin_abi::fail::failed::F_LIMIT,
+        text: "private".into(),
+        retry_after_s: None,
+        backend_status: None,
+        error: None,
+    }));
+    let (door, observer) = observed(port, Arc::new(Disk::default()));
+    door.shared
+        .deliver_set(x::STREAM_LOGS as u8, &retained_lines(3));
+    assert_eq!(
+        observer.0.lock().unwrap().as_slice(),
+        &[
+            ExportObservation::Custody {
+                stream: ExportStream::Logs,
+                level: ExportCustodyLevel::Accepted,
+                lines: 1
+            },
+            ExportObservation::Dropped {
+                reason: ExportDropReason::Refused,
+                lines: 2
+            },
+        ]
+    );
+    assert_eq!(door.delivered(), 1);
+    assert_eq!(door.dropped(), 2);
+    assert_eq!(next(&calls).lines.len(), 3);
+    assert_eq!(next(&calls).lines.len(), 2);
+    assert!(calls.try_recv().is_err());
+}
+
+#[test]
+fn observer_separates_capture_integrity_queue_full_and_stopped() {
+    use busbar_contract::export_calls::{ExportDropReason, ExportLossKind, ExportObservation};
+    let (port, _) = Double::new(&[x::STREAM_LOGS]);
+    let (door, observer) = observed(port, Arc::new(Disk::default()));
+    door.shed(ExportLossKind::CaptureRefused);
+    door.shed(ExportLossKind::IntegrityFailed);
+    assert_eq!(
+        door.deliver(x::STREAM_METRICS as u8, vec![], Box::new(())),
+        Queued::Shed
+    );
+    for _ in 0..super::MAX_QUEUED_LINES {
+        send(&door, x::STREAM_LOGS, "line");
+    }
+    assert_eq!(
+        door.deliver(x::STREAM_LOGS as u8, vec![], Box::new(())),
+        Queued::Shed
+    );
+    door.begin_drain(Instant::now());
+    assert_eq!(
+        door.deliver(x::STREAM_LOGS as u8, vec![], Box::new(())),
+        Queued::Shed
+    );
+    assert_eq!(
+        observer.0.lock().unwrap().as_slice(),
+        &[
+            ExportObservation::CaptureRefused,
+            ExportObservation::IntegrityFailed,
+            ExportObservation::CaptureRefused,
+            ExportObservation::Dropped {
+                reason: ExportDropReason::QueueFull,
+                lines: 1
+            },
+            ExportObservation::Dropped {
+                reason: ExportDropReason::Stopped,
+                lines: 1
+            },
+        ]
+    );
+    assert_eq!(
+        door.dropped(),
+        2,
+        "capture/integrity failures are not dropped lines"
+    );
+    drop(door);
+    assert_eq!(
+        observer.0.lock().unwrap().last(),
+        Some(&ExportObservation::Dropped {
+            reason: ExportDropReason::Stopped,
+            lines: super::MAX_QUEUED_LINES as u64,
+        })
+    );
+}
+
+#[test]
+fn observer_append_acknowledges_only_successful_disk_custody() {
+    use busbar_contract::export_calls::{ExportCustodyLevel, ExportDropReason, ExportObservation};
+    use busbar_contract::export_stream::ExportStream;
+    for foreign in [false, true] {
+        let (port, _) = Double::new(&[x::STREAM_LOGS]);
+        port.answer(Ok(Delivered::Append {
+            dest: 7,
+            bytes: None,
+            accepted: 2,
+        }));
+        let disk = Arc::new(Disk::default());
+        if foreign {
+            *disk.deny.lock().unwrap() = Some(AppendDenied::Foreign);
+        }
+        let (door, observer) = observed(port, disk);
+        door.shared
+            .deliver_set(x::STREAM_LOGS as u8, &retained_lines(2));
+        let expected = if foreign {
+            ExportObservation::Dropped {
+                reason: ExportDropReason::ForeignDestination,
+                lines: 2,
+            }
+        } else {
+            ExportObservation::Custody {
+                stream: ExportStream::Logs,
+                level: ExportCustodyLevel::Accepted,
+                lines: 2,
+            }
+        };
+        assert_eq!(observer.0.lock().unwrap().as_slice(), &[expected]);
+    }
+}
+
+#[test]
+fn observer_ignores_zero_and_invalid_custody_levels() {
+    use busbar_contract::export_calls::{ExportCustodyLevel, ExportObservation};
+    use busbar_contract::export_stream::ExportStream;
+    let (port, _) = Double::new(&[x::STREAM_LOGS]);
+    let (door, observer) = observed(port, Arc::new(Disk::default()));
+    for level in [0, 4, u32::MAX] {
+        door.shared.count_custody(x::STREAM_LOGS as u8, level, 1);
+    }
+    door.shared
+        .count_custody(x::STREAM_LOGS as u8, x::CUSTODY_ACCEPTED, 0);
+    door.shared
+        .count_custody(x::STREAM_LOGS as u8, x::CUSTODY_INDEXED, 2);
+    assert_eq!(
+        observer.0.lock().unwrap().as_slice(),
+        &[ExportObservation::Custody {
+            stream: ExportStream::Logs,
+            level: ExportCustodyLevel::Indexed,
+            lines: 2
+        },]
+    );
+    assert_eq!(door.custody_total(x::STREAM_LOGS, 0), 0);
+}
+
+#[test]
+fn observer_reports_stopping_inflight_bytes_once() {
+    use busbar_contract::export_calls::{ExportDropReason, ExportObservation};
+    let (port, calls) = Double::new(&[x::STREAM_LOGS]);
+    let (door, observer) = observed(port, Arc::new(Disk::default()));
+    door.begin_drain(Instant::now());
+    door.shared
+        .deliver_set(x::STREAM_LOGS as u8, &retained_lines(2));
+    assert!(calls.try_recv().is_err());
+    assert_eq!(
+        observer.0.lock().unwrap().as_slice(),
+        &[ExportObservation::Dropped {
+            reason: ExportDropReason::Stopped,
+            lines: 2
+        },]
+    );
+}
