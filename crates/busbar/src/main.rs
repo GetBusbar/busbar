@@ -1442,6 +1442,7 @@ async fn run(
             },
             &door_pools,
         ),
+        &cfg.min3.insecure_transport,
         deploy.public_url.as_deref(),
         &door_reach,
         &app.serve_tables,

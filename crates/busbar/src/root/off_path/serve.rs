@@ -478,6 +478,7 @@ pub(crate) async fn compose_served_checked(
     dispatcher: &Arc<Dispatcher>,
     late: &Services,
     sections: &BTreeMap<&'static str, busbar_contract::yaml::Value>,
+    accepted: &busbar_kernel::config::min3::InsecureTransportMap,
     public_url: Option<&str>,
     reach: &crate::root::door_steps::DoorReach<'_>,
     tables: &ServeTables,
@@ -529,6 +530,7 @@ pub(crate) async fn compose_served_checked(
         dispatcher,
         late,
         sections,
+        accepted,
         public_url,
         &money,
         Some(&egress),
@@ -808,6 +810,7 @@ pub(crate) async fn compose_planes(
     dispatcher: &Arc<Dispatcher>,
     late: &Services,
     sections: &BTreeMap<&'static str, busbar_contract::yaml::Value>,
+    accepted: &busbar_kernel::config::min3::InsecureTransportMap,
     public_url: Option<&str>,
     money: &dyn Fn() -> Arc<PlaneMoney>,
     egress: Option<&DoorEgress<'_>>,
@@ -824,6 +827,7 @@ pub(crate) async fn compose_planes(
         dispatcher,
         late,
         sections,
+        accepted,
         public_url,
         money,
         egress,
@@ -845,6 +849,7 @@ pub(crate) async fn compose_planes_over(
     dispatcher: &Arc<Dispatcher>,
     late: &Services,
     sections: &BTreeMap<&'static str, busbar_contract::yaml::Value>,
+    accepted: &busbar_kernel::config::min3::InsecureTransportMap,
     public_url: Option<&str>,
     money: &dyn Fn() -> Arc<PlaneMoney>,
     egress: Option<&DoorEgress<'_>>,
@@ -1146,10 +1151,13 @@ pub(crate) async fn compose_planes_over(
             kernel: Arc::clone(&kernel),
             dialects: served_facts.dialects.clone(),
             // #297 model A: the instance's `InstanceSpec.limits.accept`, the same value its native seat
-            // is opened with. A plane instance is never an `insecure_transport` block
-            // (`config::min3::blocks`), so its spec carries the default limits (`min3_boot` plane
-            // specs) and its acceptance is empty: verified TLS only.
-            accept: busbar_plugin_abi::host_side::caller::InstanceLimits::default().accept,
+            // is opened with: its own section's `insecure_transport` (TRANSPORT-SECURITY-POLICY §4).
+            accept: busbar_kernel::appbuild::limits_of(
+                accepted,
+                served_facts.section,
+                served_facts.section,
+            )
+            .accept,
         });
     }
     served

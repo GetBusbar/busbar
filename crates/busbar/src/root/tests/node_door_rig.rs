@@ -418,6 +418,7 @@ pub(crate) async fn node_rig(instance: &'static str, port: u16, opts: NodeRigOpt
         &dispatcher,
         &services,
         &sections,
+        &Default::default(),
         None,
         &plane_money,
         Some(&DoorEgress {

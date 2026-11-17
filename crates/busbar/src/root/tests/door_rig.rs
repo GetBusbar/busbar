@@ -350,6 +350,7 @@ impl<'a> DoorCompose<'a> {
             self.dispatcher,
             self.late,
             self.sections,
+            &Default::default(),
             self.public_url,
             self.money,
             egress,

@@ -182,6 +182,7 @@ fn each_admitted_plane_image_is_one_instance_named_by_its_alias_with_its_section
             plane("busbar-plane-x", ""),
         ],
         &sections,
+        &Default::default(),
     )
     .unwrap();
     assert_eq!(planes.len(), 2);
@@ -211,10 +212,54 @@ fn two_plane_images_answering_one_instance_name_are_refused() {
             plane("busbar-plane-b", "dup"),
         ],
         &std::collections::BTreeMap::new(),
+        &Default::default(),
     )
     .err()
     .expect("one instance name, two images");
     assert!(refusal.contains("`dup`"), "{refusal}");
+}
+
+/// #297, TRANSPORT-SECURITY-POLICY §4 (AGREED 2026-11-16 ~19:05Z): a plane instance's acceptance is its own
+/// section's `insecure_transport`, keyed (instance, instance); a plane whose section states none is verified TLS
+/// only. The key is core's, so the bag the plane is bound from never carries it.
+#[test]
+fn a_plane_instance_s_accept_is_its_own_section_s_insecure_transport() {
+    use busbar_plugin_abi::host_side::caller::Accept;
+    let mut sections = std::collections::BTreeMap::new();
+    sections.insert(
+        "mcp",
+        busbar_contract::yaml::from_str::<busbar_contract::yaml::Value>(
+            "docs: { url: \"http://127.0.0.1:9000/mcp\" }\n",
+        )
+        .unwrap(),
+    );
+    let mut accepted = busbar_kernel::config::min3::InsecureTransportMap::new();
+    accepted.insert(
+        (Box::from("mcp"), Box::from("mcp")),
+        busbar_kernel::config::min3::InsecureTransport {
+            accept: Accept(Accept::PLAINTEXT),
+            reason: "loopback test upstream".into(),
+        },
+    );
+    let planes = plane_instances(
+        &[
+            plane("busbar-plane-mcp", "mcp"),
+            plane("busbar-plane-a2a", "a2a"),
+        ],
+        &sections,
+        &accepted,
+    )
+    .unwrap();
+    assert_eq!(planes[0].limits.accept, Accept(Accept::PLAINTEXT));
+    assert_eq!(
+        planes[1].limits.accept,
+        Accept::default(),
+        "no insecure_transport in its section: verified TLS only"
+    );
+    assert!(
+        !String::from_utf8_lossy(&planes[0].config).contains("insecure_transport"),
+        "the plane's bag never carries core's key"
+    );
 }
 
 /// K7: the boot's one upstream table is the config's `upstreams:` section, each entry typed with its binding
