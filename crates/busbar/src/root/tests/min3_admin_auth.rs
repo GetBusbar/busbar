@@ -7,7 +7,7 @@ fn grants() -> BTreeMap<Box<str>, BTreeSet<Box<str>>> {
     BTreeMap::from([("reader".into(), BTreeSet::from(["signed".into()]))])
 }
 
-fn instance(name: &str, id: u64, kind: Option<&str>) -> GrantInstance<'_> {
+fn instance<'a>(name: &'a str, id: u64, kind: Option<&'a str>) -> GrantInstance<'a> {
     GrantInstance {
         name,
         id,
