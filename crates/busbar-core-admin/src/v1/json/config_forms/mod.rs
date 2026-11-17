@@ -119,7 +119,9 @@ pub(super) fn schema_document() -> Value {
             "require_if_match":nullable(json!({"type":"boolean"}))
         })),
     );
-    let verb_names: Vec<_> = crate::verb::admin_rows().map(|row| row.name).collect();
+    let verb_names: Vec<_> = crate::verb::admin_grant_rows()
+        .map(|row| row.name)
+        .collect();
     let mut binding = object(json!({
         "allowed_pools":nullable(strings()),"group":nullable(json!({"type":"string"})),
         "admin_scope":scope,"verbs":{"anyOf":[{"const":"*"},{"type":"array","items":{"enum":verb_names}},{"type":"null"}],
@@ -246,7 +248,7 @@ pub(super) fn extension() -> Value {
             .collect();
     json!({"version":1,"context":"user_configuration","reference_base":"schema","schema":schema_document(),
         "declared_plane_scope_kinds":scope_kinds,
-        "admin_verbs":crate::verb::admin_rows().map(|row|json!({"name":row.name,"scope":row.scope.as_str(),"bound":row.bound})).collect::<Vec<_>>(),
+        "admin_verbs":crate::verb::admin_grant_rows().map(|row|json!({"name":row.name,"scope":row.scope.as_str(),"bound":row.bound})).collect::<Vec<_>>(),
         "ownership":{
             "plugins":"host PluginsCfg loader, trust/fetch policy; runtime-only first_party_floors excluded",
             "oauth_as":"installed authorization-server owner input_schema; absence is explicitly unsupported",

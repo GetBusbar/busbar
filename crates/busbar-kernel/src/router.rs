@@ -487,15 +487,16 @@ pub fn build_router_with_limits(
     let plugin_routes = app.plugin_routes.clone();
 
     // The data router borrows the snapshot's plane slots before the handle takes the snapshot.
-    let (router, core_routes) = base_data_router(
+    let router = base_data_router_scoped(
         &plugin_routes,
         &app.plane_slots,
         app.oauth_as.as_ref(),
         Vec::new(),
         Vec::new(),
+        true,
     );
     let handle = std::sync::Arc::new(state::AppHandle::new(app));
-    let router = crate::admin::seam::mount_admin(router);
+    let (router, core_routes) = crate::admin::seam::mount_admin(router).into_parts();
     let router = crate::plugin_routes::mount_plugin_routes(router, &plugin_routes, true);
     let router = apply_common_layers(
         router,
@@ -524,6 +525,7 @@ pub(crate) fn base_data_router(
     crate::core_routes::CoreRouteTable,
 ) {
     base_data_router_scoped(plugin_routes, plane_slots, oauth_as, doors, sessions, true)
+        .into_parts()
 }
 
 pub(crate) fn mount_plane_route(
@@ -1114,7 +1116,7 @@ pub fn build_admin_router_on_with_dispatch_layer(
 ) -> Router {
     let plugin_routes = handle.load().plugin_routes.clone();
 
-    let (admin, admin_core_routes) = crate::core_routes::CoreRouter::new()
+    let admin = crate::core_routes::CoreRouter::new()
         .route(
             crate::auth::HEALTHZ_PATH,
             busbar_contract::abi::mechanism::route::RouteMethod::Get,
@@ -1132,9 +1134,8 @@ pub fn build_admin_router_on_with_dispatch_layer(
             busbar_contract::abi::mechanism::route::RouteMethod::Get,
             busbar_contract::abi::mechanism::route::RouteAuth::None,
             endpoints::readyz,
-        )
-        .into_parts();
-    let admin = crate::admin::seam::mount_admin(admin);
+        );
+    let (admin, admin_core_routes) = crate::admin::seam::mount_admin(admin).into_parts();
     let admin = crate::plugin_routes::mount_plugin_routes(admin, &plugin_routes, true);
     apply_common_layers(
         dispatch_layer(admin),
@@ -1167,7 +1168,8 @@ pub fn build_data_router_on(
         doors,
         sessions,
         false,
-    );
+    )
+    .into_parts();
     let data = apply_common_layers(
         data,
         core_routes.with_door_refusals(refusals),

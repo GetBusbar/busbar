@@ -65,19 +65,25 @@ fn seam_record_boot(app: &busbar_kernel::state::App) {
 }
 
 fn seam_mount(
-    router: axum::Router<std::sync::Arc<busbar_kernel::state::AppHandle>>,
-) -> axum::Router<std::sync::Arc<busbar_kernel::state::AppHandle>> {
+    router: busbar_kernel::core_routes::CoreRouter,
+) -> busbar_kernel::core_routes::CoreRouter {
+    use busbar_contract::abi::mechanism::route::{RouteAuth, RouteMethod};
+
     // `/metrics` and `/metrics/hooks` are the unprefixed Named surfaces; core encodes them itself.
     let router = router
         .route(
             "/metrics",
-            axum::routing::get(crate::v1::json::metrics::get),
+            RouteMethod::Get,
+            RouteAuth::Admin,
+            crate::v1::json::metrics::get,
         )
         .route(
             "/metrics/hooks",
-            axum::routing::get(crate::v1::json::metrics::get_hooks),
+            RouteMethod::Get,
+            RouteAuth::Admin,
+            crate::v1::json::metrics::get_hooks,
         );
-    crate::transport::mount(router, &crate::v1::json::JsonV1)
+    router.map_router(|router| crate::transport::mount(router, &crate::v1::json::JsonV1))
 }
 
 #[cfg(any(test, feature = "test-support"))]
