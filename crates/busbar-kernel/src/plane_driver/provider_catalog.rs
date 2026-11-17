@@ -73,6 +73,7 @@ pub struct ResolvedMember {
     pub max_requests: i64,
     pub attempt_timeout_ms: Option<u64>,
     pub context_max: Option<usize>,
+    pub resource: Option<Box<str>>,
 }
 
 /// Only root can join these facts to actual routes, NativeBindings and admission owners.
@@ -316,6 +317,13 @@ pub fn resolve(
         }
     }
     for (name, model) in &deploy.models {
+        if model
+            .resource
+            .as_deref()
+            .is_some_and(|resource| !crate::config::groups::valid_selected_identifier(resource))
+        {
+            errors.push(format!("models.{name}.resource must be a nonempty string of at most 128 UTF-8 bytes without controls"));
+        }
         if !name_ok(name) || deploy.pools.pools.contains_key(name) {
             errors.push(format!(
                 "models.{name}: invalid or ambiguous model/pool name"
@@ -574,6 +582,7 @@ fn add_pool(
                     .or(pool.attempt_timeout_ms)
                     .or(model.attempt_timeout_ms),
                 context_max: member.context_max,
+                resource: model.resource.clone(),
             },
         );
     }
