@@ -149,6 +149,8 @@ Restoring only `config.yaml.1.5.5` does **not** undo Store migrations. Restore t
 path too: the upgrader may have replaced it with a directory containing `busbar-1.6-folded`.
 An interrupted fold can leave the original bytes at `<overlay>.busbar-folding`; a completed
 fold keeps them at `<overlay>.1.5.5`. Preserve these recovery files until rollback is complete.
+To restore the overlay path by hand, writing `<o>` for the overlay path: move `<o>.busbar-folding` back to `<o>` if it exists, else move `<o>.1.5.5` back.
+A rollback that moves only `<o>.1.5.5` back loses the overlay a crash left at `<o>.busbar-folding`.
 If both an ordinary overlay file and a folding copy exist, stop all writers and reconcile
 which snapshot to restore before booting 1.5.5. Prefer restoring the complete backup rather
 than reconstructing the deployment from individual recovery files.
@@ -181,7 +183,7 @@ the key, matching the old reader's behavior. This does not relax validation of r
 current YAML or plugin settings. Invalid overlay JSON and unsupported overlay versions refuse
 the upgrade; review the report and retained original before accepting the fold.
 
-A stamped boot does not read that old overlay file or its environment selector. The CLI option
+1.6.0 checks the overlay only on this one upgrade boot. A stamped boot does not read that old overlay file or its environment selector. The CLI option
 `--safe-mode` is removed and returns a usage error. After migration, `--ignore-overlay` boots
 from the base configuration alone and leaves the **Store** overlay untouched; boot without it
 to apply the stored configuration again.
