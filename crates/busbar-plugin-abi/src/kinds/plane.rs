@@ -179,6 +179,33 @@ crate::kind! {
             pub scale: u32,
             pub source: u32,
         }
+        /// Current selected exchange-zero correlation; tail = configured resource, empty only if unbound.
+        pub struct SelectedResourceRec {
+            pub attempt: u32,
+            pub exchange: u32,
+        }
+        /// Complete candidate estimate replacement; tail = PREPARED_ESTIMATE records, one per declared class.
+        pub struct PreparedEstimatesRec {
+            pub attempt: u32,
+            pub exchange: u32,
+        }
+        /// Tail = class. knowledge 1 = known (scale <= 9), 2 = unknown (amount and scale exactly zero).
+        pub struct PreparedEstimateRec {
+            pub amount: u64,
+            pub scale: u32,
+            pub knowledge: u32,
+        }
+        /// Cumulative current-attempt usage; tail = declared attempt class, never a session total.
+        pub struct AttemptUsageRec {
+            pub attempt: u32,
+            pub _r: u32,
+            pub usage: UsageRec,
+        }
+        /// Current attempt terminal coverage: 1 complete, 2 partial, 3 unknown. No tail.
+        pub struct AttemptUsageEndRec {
+            pub attempt: u32,
+            pub completeness: u32,
+        }
         /// Describe: one billable class this plane may report. unit = UNIT_*. expected_units = the amount
         /// of this class one request is expected to use when the plane states no EXPECT for it (NaN = no
         /// default: the class is left out of candidate cost recipes). Tail = class text.
@@ -580,6 +607,15 @@ crate::kind! {
             /// `request` answer: expected usage of one class for this request (UsageRec + class text; source
             /// must be SRC_ESTIMATED). Core prices it per candidate into C_COST_TERM (§8.4). Plane-local.
             EXPECT = 0x013A;
+            /// Selected preparation input/echo; upstream answer only (SelectedResourceRec + resource).
+            SELECTED_RESOURCE = 0x0160;
+            /// Complete typed estimate view in upstream preparation (PreparedEstimatesRec + nested entries).
+            PREPARED_ESTIMATES = 0x0161;
+            /// Nested only in PREPARED_ESTIMATES (PreparedEstimateRec + class).
+            PREPARED_ESTIMATE = 0x0162;
+            /// Cumulative current-attempt facts; FROM_UPSTREAM exchange zero or current unsealed session end.
+            ATTEMPT_USAGE = 0x0163;
+            ATTEMPT_USAGE_END = 0x0164;
             /// usage-observation custody (§12.4): intents, their core-built answers, nested pieces.
             OBS_SCOPE = 0x013B;
             OBS_SCOPE_ANS = 0x013C;
@@ -632,6 +668,9 @@ crate::kind! {
             D_DIALECT = 0x0181;
             D_TICK_S = 0x0182;
             D_USAGE_CLASS = 0x0183;
+            /// Unique attempt-owned subset of D_USAGE_CLASS; every UNIT_TOKENS class must be included.
+            /// Physical token quantities must be producer-normalized and disjoint; no semantic dedup in core.
+            D_ATTEMPT_CLASS = 0x0198;
             D_PROVIDER_SCHEMA = 0x0185;
             D_DIALECT_AUTH = 0x0186;
             /// Round 15: the nested fields of D_DIALECT_AUTH (only valid inside it; anywhere else FAULT UnknownTag).
@@ -841,6 +880,10 @@ crate::kind! {
         /// 0x100 (round 3's kind code CONNECT_REQUIRED) is retired: it is the generic R_CONNECT_REQUIRED now.
         /// describe fact bits: FB_PROBES = core may call `probe` per member (today's TAIL_PROBES).
             FB_PROBES: u64 = 1;
+            /// Opt-in cumulative attempt accounting. Attempt classes cannot also use USAGE/OBS_COUNT in forwarded sessions.
+            FB_ATTEMPT_USAGE: u64 = 1 << 1;
+            /// Independent opt-in: every successful preparation returns a complete known/unknown estimate view.
+            FB_PREPARED_ESTIMATES: u64 = 1 << 2;
         /// wants (core reads them to choose candidates; plane-local keys, never forwarded to another kind)
         /// Round 10: W_UPSTREAM (FACT_TEXT = a configured upstream name the plane saw in `Target.upstream`):
         /// core's walk tries only that member and never reroutes; RETRY/HARD then yield P_EXHAUSTED (a

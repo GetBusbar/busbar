@@ -61,6 +61,11 @@ pub enum PlaneOut<'o> {
     },
     Fact(u32, FactRef<'o>),
     Conversation(&'o [u8]),
+    /// Selected exchange-zero correlation; host authority is retained separately.
+    SelectedResource(busbar_plugin_abi::fallback_usage::SelectedResource<'o>),
+    PreparedEstimates(busbar_plugin_abi::fallback_usage::PreparedEstimates<'o>),
+    AttemptUsage(busbar_plugin_abi::fallback_usage::AttemptUsage<'o>),
+    AttemptUsageEnd(busbar_plugin_abi::fallback_usage::AttemptEnd),
     Usage {
         class: &'o str,
         amount: u64,
@@ -325,6 +330,10 @@ pub trait PlanePort: Send + Sync + 'static {
     fn routes(&self) -> &[RouteInfo];
     fn dialects(&self) -> &[Box<str>];
     fn usage_classes(&self) -> &[UsageClass];
+    /// Frozen D_ATTEMPT_CLASS subset. An opted-in image cannot use the legacy empty default.
+    fn attempt_classes(&self) -> &[Box<str>] {
+        &[]
+    }
     fn facts(&self) -> u64;
     /// D_TICK_S, if declared.
     fn tick_s(&self) -> Option<u64>;
