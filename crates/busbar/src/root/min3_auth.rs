@@ -9,8 +9,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use busbar_kernel::auth::chain_run::{
-    run_owned_chain, AuthServices, ChainEnd, ChainInstance, Request,
+    prepare_owned, AuthServices, ChainInstance, IdentityPolicy, Request, Verdict,
 };
+#[cfg(test)]
+use busbar_kernel::auth::chain_run::{run_owned_chain, ChainEnd};
+use busbar_kernel::auth::native_admin::{PreparedAnswer, PreparedIdentity};
 use busbar_kernel::auth::native_policy::{BindingsPolicy, ChainPolicy};
 use busbar_kernel::auth::verdicts::VerdictCache;
 use busbar_kernel::directory::{HoldSet, Holds};
@@ -131,6 +134,65 @@ pub(crate) struct NativeChain {
 }
 
 impl NativeChain {
+    pub(crate) async fn prepare(
+        self: &Arc<Self>,
+        cx: CallCx,
+        request: Request,
+    ) -> Result<PreparedAnswer, busbar_ports::PortError> {
+        for instance in &self.instances {
+            let caller = caller(instance, cx);
+            let services = AuthServices {
+                issued: self.owners.issued.as_ref(),
+                replay: self.owners.replay.as_ref(),
+                policy: &self.policy,
+            };
+            let verdict = prepare_owned(
+                &services,
+                self.owners.cache.as_ref(),
+                ChainInstance {
+                    id: instance.opened.who.instance,
+                    port: instance.opened.port.as_ref(),
+                    caller: &caller,
+                    keys: &instance.keys,
+                    holds: &instance.holds,
+                },
+                cx,
+                &request,
+            )
+            .await?;
+            match verdict {
+                Verdict::NotMine => continue,
+                Verdict::Identity(identity) => {
+                    let cutoff = match identity.replay() {
+                        Some((_, ttl)) => {
+                            let Some(until) =
+                                request.view(|req| req.now_s.checked_add(ttl.clamp(1, 86_400)))
+                            else {
+                                return Ok(PreparedAnswer::Rejected);
+                            };
+                            Some(until)
+                        }
+                        None => None,
+                    };
+                    return Ok(PreparedAnswer::Identity(Arc::new(Prepared {
+                        chain: Arc::clone(self),
+                        instance: Arc::clone(instance),
+                        request,
+                        identity,
+                        cx,
+                        cutoff,
+                    })));
+                }
+                Verdict::Held => return Ok(PreparedAnswer::Held),
+                Verdict::Rejected { .. } | Verdict::PolicyRejected { .. } => {
+                    return Ok(PreparedAnswer::Rejected)
+                }
+            }
+        }
+        Ok(PreparedAnswer::NotMine)
+    }
+
+    #[cfg(test)]
     pub(crate) fn verify<'a>(
         &'a self,
         cx: CallCx,
@@ -176,6 +238,75 @@ impl NativeChain {
             };
             run_owned_chain(&services, self.owners.cache.as_ref(), &chain, cx, request).await
         }
+    }
+}
+
+fn caller(instance: &AuthInstance, cx: CallCx) -> Caller<'_> {
+    let opened = &instance.opened;
+    Caller {
+        plugin: &opened.who.plugin,
+        kind: KindCode::Auth,
+        name: &opened.who.name,
+        instance: opened.who.instance,
+        slot: opened.who.slot,
+        chain: 0,
+        deadline: cx.deadline,
+        stack: cx.stack,
+        out_of_process: opened.out_of_process,
+        limits: opened.limits,
+    }
+}
+
+struct Prepared {
+    chain: Arc<NativeChain>,
+    instance: Arc<AuthInstance>,
+    request: Request,
+    identity: busbar_ports::auth::Identity,
+    cx: CallCx,
+    cutoff: Option<u64>,
+}
+
+impl PreparedIdentity for Prepared {
+    fn credential_headers(&self) -> &[Box<str>] {
+        self.instance.opened.port.cred_headers()
+    }
+    fn identity(&self) -> &busbar_ports::auth::Identity {
+        &self.identity
+    }
+    fn request(&self) -> &Request {
+        &self.request
+    }
+    fn authorize(&self, now_s: u64) -> Result<(), u32> {
+        use busbar_plugin_abi::fail::refused::R_POLICY;
+        if self.cutoff.is_some_and(|until| now_s >= until)
+            || busbar_kernel::holds::held_by(Some(&self.instance.holds), self.identity.subject())
+                .is_some()
+        {
+            return Err(R_POLICY);
+        }
+        self.request.view(|req| {
+            let now = AuthIn { now_s, ..*req };
+            self.chain
+                .policy
+                .authorize(self.instance.opened.who.instance, &self.identity, &now)
+        })
+    }
+    fn claim(&self) -> busbar_plugin_abi::host_side::caller::BoxFut<'_, bool> {
+        Box::pin(async move {
+            match (self.identity.replay(), self.cutoff) {
+                (Some((key, _)), Some(until)) => {
+                    let who = caller(&self.instance, self.cx);
+                    self.chain
+                        .owners
+                        .replay
+                        .claim_until(&who, key, until)
+                        .await
+                        .unwrap_or(false)
+                }
+                (None, None) => true,
+                _ => false,
+            }
+        })
     }
 }
 

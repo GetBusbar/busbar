@@ -575,6 +575,7 @@ impl AdmittedRequest {
 struct ReplayAdmission {
     pending: crate::auth::PendingClaim,
     won: tokio::sync::OnceCell<bool>,
+    execution: std::sync::OnceLock<crate::auth::native_admin::ExecutionAdmission>,
 }
 
 /// Host-only upgrade authority derived from one admitted request's sealed route.
@@ -854,10 +855,21 @@ async fn claim_request_replay(
     let Some(replay) = replay else {
         return true;
     };
-    let won = until_deadline(deadline, replay.won.get_or_init(|| replay.pending.win()))
-        .await
-        .copied()
-        .unwrap_or(false);
+    let won = until_deadline(
+        deadline,
+        replay.won.get_or_init(|| async {
+            match replay.pending.complete_admin().await {
+                Ok(execution) => {
+                    let _ = replay.execution.set(execution);
+                    true
+                }
+                Err(()) => false,
+            }
+        }),
+    )
+    .await
+    .copied()
+    .unwrap_or(false);
     won && alive.load(std::sync::atomic::Ordering::Acquire)
 }
 
@@ -2826,6 +2838,7 @@ impl Inbound {
                 Arc::new(ReplayAdmission {
                     pending,
                     won: tokio::sync::OnceCell::new(),
+                    execution: std::sync::OnceLock::new(),
                 })
             })
         });

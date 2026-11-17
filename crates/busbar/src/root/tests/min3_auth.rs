@@ -184,3 +184,57 @@ async fn retained_native_chain_snapshots_request_and_rejects_before_replay() {
     assert_eq!(second.calls.load(Ordering::SeqCst), 1);
     assert_eq!(owners.0.load(Ordering::SeqCst), 0);
 }
+
+#[tokio::test]
+async fn prepared_native_chain_retains_original_request_without_spending_replay() {
+    let port = Arc::new(Port {
+        calls: AtomicUsize::new(0),
+        not_mine: false,
+    });
+    let owners = Arc::new(Owners(AtomicUsize::new(0)));
+    let chain = Arc::new(NativeChain {
+        instances: vec![instance(42, port.clone())],
+        policy: ChainPolicy::new(7, Vec::new()),
+        owners: Arc::new(AuthOwners {
+            issued: owners.clone(),
+            replay: owners.clone(),
+            cache: Arc::new(Verdicts::new(VerdictPolicy::DEFAULT)),
+        }),
+    });
+    let request = Request::new(&AuthIn {
+        method: "POST",
+        path: "/resource",
+        query: "a=b",
+        authority: "node",
+        headers: &[],
+        peer: "peer",
+        tls_peer_cert: b"certificate",
+        body: b"body",
+        now_s: 1,
+    });
+    let cx = CallCx {
+        deadline: std::time::Instant::now() + Duration::from_secs(30),
+        request_id: 9,
+        stack: Default::default(),
+    };
+    let busbar_kernel::auth::native_admin::PreparedAnswer::Identity(prepared) =
+        chain.prepare(cx, request).await.unwrap()
+    else {
+        panic!("prepared identity")
+    };
+    assert_eq!(prepared.identity().subject(), "client");
+    prepared.request().view(|req| {
+        assert_eq!(req.body, b"body");
+        assert_eq!(req.query, "a=b");
+    });
+    assert!(
+        prepared.authorize(2).is_err(),
+        "preparation has not granted route authority"
+    );
+    assert!(
+        prepared.authorize(61).is_err(),
+        "original replay window cannot be extended"
+    );
+    assert_eq!(port.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(owners.0.load(Ordering::SeqCst), 0);
+}
