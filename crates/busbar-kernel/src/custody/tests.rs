@@ -482,7 +482,8 @@ fn resolve_ref_answers_kernel_callers_and_registers_in_no_instance() {
         .now_or_never()
         .expect("ready")
         .expect("resolves");
-    assert_eq!(value.as_slice(), b"sk-live-0007-db");
+    assert_eq!(value.value.as_slice(), b"sk-live-0007-db");
+    assert_eq!(value.until, None, "an unleased answer has no lease end");
     assert!(!masked(&scrub, "sk-live-0007-db"));
     assert_eq!(fx.audits(CustodyEvent::Resolved), 0);
 }
@@ -549,4 +550,86 @@ async fn concurrent_misses_of_one_key_make_one_resolve() {
         .filter(|(_, _, event)| *event == CustodyEvent::Resolved)
         .count();
     assert_eq!(resolved, 1, "one registration for 64 misses");
+}
+
+fn digest(value: &str) -> [u8; 32] {
+    busbar_contract::crypto::sha256_parts(&[value.as_bytes()])
+}
+
+fn kernel_cx() -> CallCx {
+    CallCx {
+        deadline: Instant::now() + Duration::from_secs(60),
+        request_id: 0,
+        stack: CallStack::default(),
+    }
+}
+
+/// DES-454 T22: a leased handle is not a poll subscriber. What it publishes says it is leased, a minting leased
+/// source read through `resolve_ref` is served from the source-level cache (no bypass) and writes nothing into
+/// the instance, and the handle rotates only at its lease end, through the lease path.
+#[test]
+fn a_leased_handle_rotates_only_at_its_lease_end_and_a_kernel_read_writes_nothing() {
+    let fx = Fixture::new();
+    let vault = Vault::new(&[("db", "alpha-7Q2x-leased")], Some(60));
+    fx.source("vault", 50, Arc::clone(&vault));
+    let scrub = fx.instance(1);
+    fx.bind(1, 1, source("vault", "db"));
+    let who = caller(1);
+    assert_eq!(fx.custody.held(1, 1), None, "nothing published yet");
+    fx.resolve(&who, 1).expect("A");
+    let held = fx.custody.held(1, 1).expect("A is published");
+    assert_eq!(held.digest, digest("alpha-7Q2x-leased"));
+    assert!(held.until.is_some(), "a leased handle says so");
+
+    vault.set("db", "bravo-9K4m-leased");
+    let read = fx
+        .custody
+        .resolve_ref(kernel_cx(), &source("vault", "db"))
+        .now_or_never()
+        .expect("ready")
+        .expect("resolves");
+    assert_eq!(
+        read.value.as_slice(),
+        b"alpha-7Q2x-leased",
+        "the lease is never bypassed"
+    );
+    assert_eq!(read.until, held.until);
+    assert_eq!(vault.calls(), 1);
+    assert_eq!(
+        fx.custody.generation(&who, 1),
+        1,
+        "a kernel read writes nothing"
+    );
+    assert_eq!(fx.custody.held(1, 1), Some(held));
+    assert!(!masked(&scrub, "bravo-9K4m-leased"));
+
+    fx.advance(61);
+    assert_eq!(value(&fx.resolve(&who, 1).expect("B")), "bravo-9K4m-leased");
+    assert_eq!(fx.custody.generation(&who, 1), 2);
+    let renewed = fx.custody.held(1, 1).expect("B is published");
+    assert_eq!(renewed.digest, digest("bravo-9K4m-leased"));
+    assert!(masked(&scrub, "alpha-7Q2x-leased") && masked(&scrub, "bravo-9K4m-leased"));
+}
+
+/// An unleased handle publishes no lease end: it is the kind a rotation poll compares (DES-454 §2.1).
+#[test]
+fn an_unleased_handle_publishes_its_digest_and_no_lease_end() {
+    let fx = Fixture::new();
+    fx.source("vault", 50, Vault::new(&[("db", "sk-live-0009-db")], None));
+    fx.instance(1);
+    fx.bind(1, 1, source("vault", "db"));
+    fx.resolve(&caller(1), 1).expect("resolves");
+    assert_eq!(
+        fx.custody.held(1, 1),
+        Some(HeldView {
+            digest: digest("sk-live-0009-db"),
+            until: None,
+        })
+    );
+    fx.custody.drop_instance(1);
+    assert_eq!(
+        fx.custody.held(1, 1),
+        None,
+        "a dropped instance holds nothing"
+    );
 }

@@ -12,7 +12,8 @@ use std::time::Instant;
 use busbar_contract::secret_ref::SecretRef;
 use busbar_contract::secure::SecureVec;
 use busbar_kernel::custody::{
-    Custody, CustodyDenied, CustodyEvent, CustodyHost, CustodyKey, SecretCustody, SecretSource,
+    Custody, CustodyDenied, CustodyEvent, CustodyHost, CustodyKey, HeldView, Leased, RoundValues,
+    SecretCustody, SecretSource,
 };
 use busbar_kernel::plugin_config::{ConfigBinder, RefSource};
 use busbar_plugin_abi::host_side::caller::{BoxFut, Caller};
@@ -242,7 +243,10 @@ impl BootSecrets {
             request_id: 0,
             stack: Default::default(),
         };
-        self.custody.resolve_ref(cx, reference).await
+        self.custody
+            .resolve_ref(cx, reference)
+            .await
+            .map(|leased| leased.value)
     }
 }
 
@@ -267,8 +271,20 @@ impl SecretCustody for BootCustody {
         &'a self,
         cx: CallCx,
         r: &'a SecretRef,
-    ) -> BoxFut<'a, Result<SecureVec, CustodyDenied>> {
+    ) -> BoxFut<'a, Result<Leased, CustodyDenied>> {
         self.0.custody.resolve_ref(cx, r)
+    }
+
+    fn seed(&self, instance: u64, values: RoundValues) {
+        self.0.custody.seed(instance, values);
+    }
+
+    fn unseed(&self, instance: u64) {
+        self.0.custody.unseed(instance);
+    }
+
+    fn held(&self, instance: u64, handle: u32) -> Option<HeldView> {
+        self.0.custody.held(instance, handle)
     }
 }
 

@@ -257,6 +257,8 @@ mod c_secret_cycle;
 mod c_secret_foreign;
 #[path = "c_secret_ref.rs"]
 mod c_secret_ref;
+#[path = "c_secret_rotation.rs"]
+mod c_secret_rotation;
 #[path = "c_session_drop.rs"]
 mod c_session_drop;
 #[path = "c_session_order.rs"]

@@ -98,12 +98,75 @@ pub trait SecretCustody: Send + Sync + 'static {
     ) -> impl Future<Output = Result<Arc<SecureVec>, CustodyDenied>> + Send;
     /// One Relaxed load: the value generation of (who.instance, handle), 0 = never resolved.
     fn generation(&self, who: &Caller<'_>, handle: u32) -> u64;
-    /// Kernel-internal callers (no plugin caller): by SecretRef directly, with an empty stack.
+    /// Kernel-internal callers (no plugin caller): by SecretRef directly, with an empty stack. The answer
+    /// carries its lease end, so a rotation poll schedules itself on it (DES-454 §2.2). A leased value comes
+    /// from the source-level cache while it lasts; the cache is never bypassed.
     fn resolve_ref<'a>(
         &'a self,
         cx: CallCx,
         r: &'a SecretRef,
-    ) -> BoxFut<'a, Result<SecureVec, CustodyDenied>>;
+    ) -> BoxFut<'a, Result<Leased, CustodyDenied>>;
+    /// DES-454 §4.2: install `values` as `instance`'s seed overlay. A per-instance miss of `instance` consults it
+    /// by source id before it fetches, and the miss still runs through the leader (register, then publish). A
+    /// leader of `instance` already in flight is superseded: it neither registers nor publishes (§3.1).
+    fn seed(&self, instance: u64, values: RoundValues);
+    /// Remove `instance`'s seed overlay (after the swap, or when the instance closes).
+    fn unseed(&self, instance: u64);
+    /// What `(instance, handle)` publishes now: the SHA-256 of its value and its lease end. None: nothing
+    /// published. A rotation poll compares unleased handles with it (DES-454 §2.2 step 3).
+    fn held(&self, instance: u64, handle: u32) -> Option<HeldView>;
+}
+
+/// A kernel-internal resolve's answer: the value and its lease end (None: unleased).
+pub struct Leased {
+    pub value: SecureVec,
+    pub until: Option<Instant>,
+}
+
+/// What a per-instance handle publishes: the SHA-256 of its value and its lease end (None: unleased).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HeldView {
+    pub digest: [u8; 32],
+    pub until: Option<Instant>,
+}
+
+/// One rotation round's values by source id ([`source_id`]): what a successor's seed overlay answers, so the
+/// successor opens with exactly the values the round compared, with no further resolve (DES-454 §4.2, T23).
+#[derive(Clone, Default)]
+pub struct RoundValues(HashMap<[u8; 32], Held>);
+
+impl RoundValues {
+    /// The value the round read for the source `id`, with its lease end.
+    pub fn insert(&mut self, id: [u8; 32], value: Arc<SecureVec>, until: Option<Instant>) {
+        self.0.insert(id, Held::new(value, until));
+    }
+
+    /// The value the round holds for the source `id`.
+    #[must_use]
+    pub fn value(&self, id: &[u8; 32]) -> Option<Arc<SecureVec>> {
+        self.0.get(id).map(|held| Arc::clone(&held.value))
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+/// A source reference's identity: SHA-256 over the module's length, the module and the encoded settings. The
+/// source-level cache, the seed overlay and the rotation refresher key on it. None: the settings do not encode.
+#[must_use]
+pub fn source_id(source: &SourceReference) -> Option<[u8; 32]> {
+    let encoded = source.settings.encode().ok()?;
+    let reference = encoded.expose(&crate::seal::lend());
+    let module_len = u32::try_from(source.module.len())
+        .unwrap_or(u32::MAX)
+        .to_le_bytes();
+    Some(busbar_contract::crypto::sha256_parts(&[
+        &module_len,
+        source.module.as_bytes(),
+        reference,
+    ]))
 }
 
 /// Outbound credentials from auth plugins (F_CACHE_S > 0). Core-owned custody. The key separates every input
@@ -258,9 +321,19 @@ struct Entry {
 struct Held {
     value: Arc<SecureVec>,
     until: Option<Instant>,
+    digest: [u8; 32],
 }
 
 impl Held {
+    fn new(value: Arc<SecureVec>, until: Option<Instant>) -> Self {
+        let digest = busbar_contract::crypto::sha256_parts(&[value.as_slice()]);
+        Held {
+            value,
+            until,
+            digest,
+        }
+    }
+
     fn fresh(&self, now: Instant) -> bool {
         self.until.is_none_or(|until| now < until)
     }
@@ -397,10 +470,7 @@ impl<H: CustodyHost> Custody<H> {
             self.host
                 .audit(who, key.handle, CustodyEvent::TooShortToScrub);
         }
-        let held = Arc::new(Held {
-            value: Arc::clone(&resolved.value),
-            until: resolved.until,
-        });
+        let held = Arc::new(Held::new(Arc::clone(&resolved.value), resolved.until));
         #[cfg(feature = "conformance")]
         if let Some(probe) = self.probe.load_full() {
             if probe.publish_first {
@@ -448,14 +518,7 @@ impl<H: CustodyHost> Custody<H> {
             .encode()
             .map_err(|_| CustodyDenied::Denied)?;
         let reference = encoded.expose(&crate::seal::lend());
-        let module_len = u32::try_from(source.module.len())
-            .unwrap_or(u32::MAX)
-            .to_le_bytes();
-        let id = busbar_contract::crypto::sha256_parts(&[
-            &module_len,
-            source.module.as_bytes(),
-            reference,
-        ]);
+        let id = source_id(source).ok_or(CustodyDenied::Denied)?;
         let now = self.host.now();
         let cached = lock(&self.sources)
             .get(&id)
@@ -468,10 +531,7 @@ impl<H: CustodyHost> Custody<H> {
         let until = answer
             .lease_s
             .and_then(|lease| self.host.now().checked_add(Duration::from_secs(lease)));
-        let held = Held {
-            value: Arc::new(answer.value),
-            until,
-        };
+        let held = Held::new(Arc::new(answer.value), until);
         if held.until.is_some() {
             lock(&self.sources).insert(id, held.clone());
         }
@@ -560,11 +620,22 @@ impl<H: CustodyHost> SecretCustody for Custody<H> {
         &'a self,
         cx: CallCx,
         r: &'a SecretRef,
-    ) -> BoxFut<'a, Result<SecureVec, CustodyDenied>> {
+    ) -> BoxFut<'a, Result<Leased, CustodyDenied>> {
         Box::pin(async move {
             let resolved = self.resolved(cx, r).await?;
-            Ok(SecureVec::from(resolved.value.as_slice()))
+            Ok(Leased {
+                value: SecureVec::from(resolved.value.as_slice()),
+                until: resolved.until,
+            })
         })
+    }
+
+    fn seed(&self, _instance: u64, _values: RoundValues) {}
+
+    fn unseed(&self, _instance: u64) {}
+
+    fn held(&self, _instance: u64, _handle: u32) -> Option<HeldView> {
+        None
     }
 }
 
