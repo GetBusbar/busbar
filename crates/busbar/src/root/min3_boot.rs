@@ -351,9 +351,12 @@ pub(crate) fn signed_ingress(booted: &Booted) -> Arc<Ingress> {
 /// The MIN-3 images the plugins directory's scan holds, each with its signed manifest's `alias` (a plane instance is
 /// named by it, [`plane_instances`]). The scan verified each one; admission re-verifies the same bytes. An image that
 /// is not MIN-3 (a refusal at admit) stays on the old path, which judges it as before.
-pub(crate) fn admit_images(plugins: &PluginsCfg) -> Result<Vec<(Admitted, String)>, String> {
+pub(crate) fn admit_images(
+    plugins: &PluginsCfg,
+    scanned: &super::loader::PluginRegistry,
+) -> Result<Vec<(Admitted, String)>, String> {
     let mut admitted = admit_linked_images(crate::LINKED.images)?;
-    admit_dropped_images(plugins, &mut admitted)?;
+    admit_dropped_images(plugins, scanned, &mut admitted)?;
     Ok(admitted)
 }
 
@@ -372,11 +375,9 @@ fn admit_linked_images(
 #[cfg(target_os = "linux")]
 fn admit_dropped_images(
     plugins: &PluginsCfg,
+    scanned: &super::loader::PluginRegistry,
     admitted: &mut Vec<(Admitted, String)>,
 ) -> Result<(), String> {
-    let Some(scanned) = super::boot::dropped_registry() else {
-        return Ok(());
-    };
     let policy = super::boot::trust_policy(plugins, env!("CARGO_PKG_VERSION"))
         .map_err(|error| format!("plugins.trust is invalid: {error}"))?;
     for row in scanned.loadable() {
@@ -399,6 +400,7 @@ fn admit_dropped_images(
 #[cfg(not(target_os = "linux"))]
 fn admit_dropped_images(
     _plugins: &PluginsCfg,
+    _scanned: &super::loader::PluginRegistry,
     _admitted: &mut Vec<(Admitted, String)>,
 ) -> Result<(), String> {
     Ok(())
