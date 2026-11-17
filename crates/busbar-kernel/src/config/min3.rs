@@ -25,6 +25,8 @@ use super::DeployCfg;
 /// for a config that writes none of them.
 #[derive(Clone, Default, PartialEq, Eq)]
 pub struct Min3Config {
+    /// The checked core-owned `auth.verdict_cache` policy (IF §12.28).
+    pub verdict_cache: crate::auth::verdicts::VerdictPolicy,
     /// `identity-providers.<name>.provisioning`, by configured auth instance name (IF §12.29).
     pub provisioning: BTreeMap<Box<str>, ProvisioningCfg>,
     /// `<kind>.<name>.insecure_transport`, by (kind section, configured instance name) (TRANSPORT-SECURITY-POLICY
@@ -122,10 +124,20 @@ pub fn parse_min3(deploy: &DeployCfg) -> Result<Min3Config, Vec<String>> {
     let mut refused = Vec::new();
     let insecure_transport = kept(parse_insecure_transport(deploy), &mut refused);
     let provisioning = kept(parse_provisioning(deploy), &mut refused);
+    let verdict_cache = kept(
+        deploy
+            .auth
+            .as_ref()
+            .map_or_else(Default::default, |auth| auth.verdict_cache)
+            .resolve()
+            .map_err(|why| vec![why.to_owned()]),
+        &mut refused,
+    );
     if !refused.is_empty() {
         return Err(refused);
     }
     Ok(Min3Config {
+        verdict_cache,
         provisioning,
         insecure_transport,
     })

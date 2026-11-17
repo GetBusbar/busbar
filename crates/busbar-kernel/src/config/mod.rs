@@ -636,6 +636,7 @@ pub fn resolve_auth(
         .collect();
 
     AuthCfg {
+        verdict_cache: auth.verdict_cache,
         signing_key: auth.signing_key.clone(),
         chain,
         admin_auth,

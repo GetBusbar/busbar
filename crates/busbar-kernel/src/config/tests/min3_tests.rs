@@ -58,6 +58,30 @@ fn verdict_cache_policy_rejects_invalid_types_keys_and_ttl_range() {
     }
 }
 
+#[test]
+fn verdict_cache_overrides_survive_resolved_auth_authoring() {
+    let deploy = deploy(
+        "providers: {}\nmodels: {}\nauth: {chain: [], admin_auth: [], verdict_cache: {default_ttl_s: 0, max_ttl_s: 86400, max_entries: 7, max_identity_bytes: 512}}\n",
+    );
+    let mut errors = Vec::new();
+    let auth = crate::config::resolve_auth(
+        deploy.auth.as_ref().expect("auth configured"),
+        &deploy.identity_providers,
+        &mut errors,
+    );
+    assert!(errors.is_empty());
+    let authored = serde_json::to_value(auth.authoring(&crate::seal::acquire())).unwrap();
+    assert_eq!(
+        authored["verdict_cache"],
+        serde_json::json!({
+            "default_ttl_s": 0,
+            "max_ttl_s": 86400,
+            "max_entries": 7,
+            "max_identity_bytes": 512
+        })
+    );
+}
+
 fn transport(yaml: &str) -> Result<InsecureTransport, String> {
     let doc: InsecureTransportDoc =
         busbar_contract::yaml::from_str(yaml).map_err(|e| e.to_string())?;
