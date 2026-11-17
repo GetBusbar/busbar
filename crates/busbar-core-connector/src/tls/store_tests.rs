@@ -649,3 +649,27 @@ fn native_need_waiver_preserves_operator_key_pin() {
         "waiver cannot erase configured pin"
     );
 }
+
+#[test]
+fn native_cached_config_cannot_survive_operator_anchor_withdrawal() {
+    let short = ca_with("Native expiring CA", true, None, (2020, 1, 1), (2030, 1, 2));
+    let store = Arc::new(
+        build(&format!(
+            "roots: none\ndestinations:\n  - match: secret.internal\n    trust_anchors: [{}]\n",
+            inline(&short.pem())
+        ))
+        .expect("store"),
+    );
+    let cache = crate::need::tlsconf::Configs::new(Arc::clone(&store));
+    let plan = need_plan(None);
+    let first = cache.get("secret.internal", &plan, &[]).expect("warm");
+    assert!(Arc::ptr_eq(
+        &first,
+        &cache.get("secret.internal", &plan, &[]).expect("cached")
+    ));
+    store.sweep(at_2030() + Duration::from_secs(2 * 24 * 3600));
+    assert_eq!(
+        cache.get("secret.internal", &plan, &[]).err(),
+        Some(busbar_plugin_abi::host_side::needs::NeedErr::Tls)
+    );
+}
