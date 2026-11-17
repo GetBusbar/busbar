@@ -31,6 +31,7 @@ fn opened(points: u32, facts: u64, words: &[&str]) -> OpenedHook {
         port: Arc::new(Port { points, facts }),
         image: Arc::from("image"),
         words: words.iter().map(|s| Box::from(*s)).collect(),
+        timeout: std::time::Duration::from_millis(89),
     }
 }
 
@@ -176,6 +177,7 @@ fn strategy_uses_admitted_word_and_refuses_ambiguous_unopened_images() {
     .strategy("rank")
     .unwrap();
     assert_eq!(call.strategy.as_deref(), Some("rank"));
+    assert_eq!(call.timeout.as_millis(), 89);
     assert_eq!(call.prompt, PromptAccess::No);
     assert_eq!(call.user, UserAccess::No);
     assert!(call.signals.wants(crate::hooks::Signal::CandidateRouteCost));
@@ -189,4 +191,266 @@ fn strategy_uses_admitted_word_and_refuses_ambiguous_unopened_images() {
     .err()
     .unwrap()
     .contains("several"));
+}
+
+fn names(calls: &[Arc<Call>]) -> Vec<&str> {
+    calls.iter().map(|c| c.name.as_ref()).collect()
+}
+
+#[test]
+fn scope_priority_and_group_selection_are_frozen_without_candidate_scope_guessing() {
+    let mut hooks = HookRegistry::new();
+    for (name, priority, group) in [
+        ("global", 7, None),
+        ("section", 3, None),
+        ("pool", 3, Some("team")),
+    ] {
+        let mut hook = definition();
+        hook.priority = priority;
+        hook.groups = group.into_iter().map(str::to_owned).collect();
+        hooks.insert(name.into(), hook);
+    }
+    let ports = hooks
+        .keys()
+        .map(|name| (name.clone(), opened(1 << POINT_ROUTE, 0, &[])))
+        .collect();
+    let words = BTreeMap::new();
+    let pool = crate::config::PoolCfg {
+        gates: vec!["pool".into()],
+        ..Default::default()
+    };
+    let tables = Tables::build(
+        &Calls {
+            hooks: &hooks,
+            opened: &ports,
+            words: &words,
+        },
+        &["global".into()],
+        &["section".into()],
+        Some(&pool),
+    )
+    .unwrap();
+    let tree = [(
+        "child".into(),
+        crate::config::groups::GroupCfg {
+            parent: Some("team".into()),
+            ..Default::default()
+        },
+    )]
+    .into_iter()
+    .collect();
+    assert_eq!(
+        names(&tables.select(Some("child"), &tree, true).gates),
+        ["section", "pool", "global"]
+    );
+    assert_eq!(
+        names(&tables.select(None, &tree, true).gates),
+        ["section", "global"]
+    );
+    assert_eq!(
+        names(&tables.select(Some("child"), &tree, false).gates),
+        ["section", "global"]
+    );
+    // Configuration mutation belongs to the next generation, never this table.
+    hooks.get_mut("global").unwrap().priority = 0;
+    hooks.get_mut("pool").unwrap().groups = vec!["unrelated".into()];
+    assert_eq!(
+        names(&tables.select(Some("child"), &tree, true).gates),
+        ["section", "pool", "global"]
+    );
+}
+
+#[test]
+fn rewrites_keep_scope_order_and_taps_keep_declared_phases() {
+    use busbar_plugin_abi::kinds::hook::hook::POINT_NOTIFY;
+    let mut global = definition();
+    global.prompt = PromptAccess::Rw;
+    global.priority = 40;
+    let mut pool_hook = definition();
+    pool_hook.prompt = PromptAccess::Rw;
+    pool_hook.priority = 0;
+    let mut tap = definition();
+    tap.kind = crate::config::HookKind::Tap;
+    tap.phase = vec![crate::config::HookStage::Response];
+    let hooks = [
+        ("global".into(), global),
+        ("pool".into(), pool_hook),
+        ("tap".into(), tap),
+    ]
+    .into_iter()
+    .collect::<HookRegistry>();
+    let ports = hooks
+        .keys()
+        .map(|name| {
+            (
+                name.clone(),
+                opened(
+                    (1 << POINT_REWRITE) | (1 << POINT_NOTIFY),
+                    FB_WANTS_PROMPT,
+                    &[],
+                ),
+            )
+        })
+        .collect();
+    let words = BTreeMap::new();
+    let pool = crate::config::PoolCfg {
+        gates: vec!["pool".into()],
+        ..Default::default()
+    };
+    let tables = Tables::build(
+        &Calls {
+            hooks: &hooks,
+            opened: &ports,
+            words: &words,
+        },
+        &["global".into(), "tap".into()],
+        &[],
+        Some(&pool),
+    )
+    .unwrap();
+    let picked = tables.select(None, &BTreeMap::new(), true);
+    assert_eq!(names(&picked.rewrites), ["global", "pool"]);
+    assert!(picked.gates.is_empty());
+    assert!(picked.taps.request.is_empty());
+    assert!(picked.taps.candidate.is_empty());
+    assert!(picked.taps.routing.is_empty());
+    assert_eq!(names(&picked.taps.response), ["tap"]);
+}
+
+#[test]
+fn no_attachment_allocates_no_hook_stage_and_missing_name_does_not_disappear() {
+    let hooks = HookRegistry::new();
+    let ports = BTreeMap::new();
+    let words = BTreeMap::new();
+    let calls = Calls {
+        hooks: &hooks,
+        opened: &ports,
+        words: &words,
+    };
+    let tables = Tables::build(&calls, &[], &[], None).unwrap();
+    assert!(!tables.active());
+    assert!(!tables.enforcing());
+    let failure = Tables::build(&calls, &[], &["missing".into()], None)
+        .err()
+        .unwrap();
+    assert!(failure.contains("missing"));
+}
+
+#[test]
+fn rewrite_without_declared_prompt_and_missing_fallback_point_refuse() {
+    let mut guard = definition();
+    guard.prompt = PromptAccess::Rw;
+    let mut hooks = [("guard".into(), guard)]
+        .into_iter()
+        .collect::<HookRegistry>();
+    let mut ports = [("guard".into(), opened(1 << POINT_REWRITE, 0, &[]))]
+        .into_iter()
+        .collect();
+    let words = BTreeMap::new();
+    assert!(Calls {
+        hooks: &hooks,
+        opened: &ports,
+        words: &words
+    }
+    .named("guard", POINT_REWRITE)
+    .is_err());
+    ports.insert(
+        "guard".into(),
+        opened(1 << POINT_REWRITE, FB_WANTS_PROMPT, &[]),
+    );
+    hooks.get_mut("guard").unwrap().on_error = "fallback".into();
+    hooks.insert("fallback".into(), definition());
+    ports.insert(
+        "fallback".into(),
+        opened(1 << POINT_ROUTE, FB_WANTS_PROMPT, &[]),
+    );
+    assert!(Calls {
+        hooks: &hooks,
+        opened: &ports,
+        words: &words
+    }
+    .named("guard", POINT_REWRITE)
+    .err()
+    .unwrap()
+    .contains("fallback"));
+}
+
+#[test]
+fn fallback_group_scope_is_checked_without_replacing_its_final_terminal() {
+    let mut guard = definition();
+    guard.on_error = "fallback".into();
+    let mut fallback = definition();
+    fallback.groups = vec!["team".into()];
+    let hooks = [("guard".into(), guard), ("fallback".into(), fallback)]
+        .into_iter()
+        .collect();
+    let ports = ["guard", "fallback"]
+        .into_iter()
+        .map(|name| (name.into(), opened(1 << POINT_ROUTE, 0, &[])))
+        .collect();
+    let words = BTreeMap::new();
+    let tables = Tables::build(
+        &Calls {
+            hooks: &hooks,
+            opened: &ports,
+            words: &words,
+        },
+        &["guard".into()],
+        &[],
+        None,
+    )
+    .unwrap();
+    let picked = tables.select(None, &BTreeMap::new(), false);
+    assert_eq!(picked.gates[0].on_error, PolicyOnError::Reject);
+    assert!(picked.gates[0].fallbacks.is_empty());
+    assert_eq!(
+        tables.select(Some("team"), &BTreeMap::new(), false).gates[0]
+            .fallbacks
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn configured_strategy_disambiguates_by_admitted_identity_and_default_does_not_override_explicit_base(
+) {
+    let mut hook = definition();
+    hook.default = true;
+    let hooks = [("rank".into(), hook)].into_iter().collect();
+    let ports = [("rank".into(), opened(1 << POINT_ROUTE, 0, &["rank"]))]
+        .into_iter()
+        .collect();
+    let words = [
+        ("image".into(), vec![Box::from("rank")]),
+        ("other-image".into(), vec![Box::from("rank")]),
+    ]
+    .into_iter()
+    .collect();
+    let calls = Calls {
+        hooks: &hooks,
+        opened: &ports,
+        words: &words,
+    };
+    assert_eq!(
+        calls.strategy("rank").unwrap().strategy.as_deref(),
+        Some("rank")
+    );
+    let pool = crate::config::PoolCfg::default();
+    assert_eq!(
+        Tables::build(&calls, &[], &[], Some(&pool))
+            .unwrap()
+            .policy
+            .unwrap()
+            .call
+            .strategy,
+        None
+    );
+    let pool = crate::config::PoolCfg {
+        base_named: true,
+        ..pool
+    };
+    assert!(Tables::build(&calls, &[], &[], Some(&pool))
+        .unwrap()
+        .policy
+        .is_none());
 }
