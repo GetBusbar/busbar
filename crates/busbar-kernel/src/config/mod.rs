@@ -27,6 +27,8 @@ pub mod named_map;
 pub mod operator_file;
 pub use operator_file::{operator_file_policy, OperatorFileDefs};
 pub mod readback;
+mod resource_ownership;
+pub use resource_ownership::ResourceOwnership;
 pub(crate) mod restart;
 
 pub mod parse;

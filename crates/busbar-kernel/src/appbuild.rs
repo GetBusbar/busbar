@@ -109,6 +109,8 @@ const SESSION_STORE_TTL_MS: u64 = 60 * 60 * 1_000;
 
 pub struct LoadedConfig {
     pub deploy: config::DeployCfg,
+    /// Names in the composed source before any typed overlay is applied.
+    pub resource_ownership: config::ResourceOwnership,
     pub defs: HashMap<String, config::ProviderDef>,
 
     pub providers_path: std::path::PathBuf,
@@ -133,12 +135,13 @@ impl LoadedConfig {
     /// `POST /plugins/rollback`): the overlay's root applied to config.yaml's deploy, then resolved.
     /// A disk rebuild re-reads config.yaml, so config.yaml's operator definitions, before any
     /// patch, become the file-policy reference (OPERATOR-FROM-ADMITTED-AUTH §3.6.1): editing them
-    /// and reloading is how the operator credential rotates. The caller merges the overlay's named
-    /// maps after it records the base names.
+    /// and reloading is how the operator credential rotates. Resource ownership was captured before
+    /// typed overlays; callers carry those names and merge the resolved hook/group overlay.
     #[cold]
     #[inline(never)]
     pub fn disk_candidate(&mut self) -> Result<config::RootCfg, String> {
         if let Some(doc) = self.overlay_doc.as_ref() {
+            self.resource_ownership.validate_named_maps(doc)?;
             config::overlay::apply_root_to_deploy(&mut self.deploy, doc)?;
         }
         let mut cfg = config::resolve(&self.deploy, &self.defs)
@@ -428,8 +431,10 @@ impl RawDocuments<'_> {
             &bound_grammar,
         )?;
         let resolution = config::overlay::resolve_backend(&deploy.config);
+        let resource_ownership = config::ResourceOwnership::capture(&deploy);
         Ok(LoadedConfig {
             deploy,
+            resource_ownership,
             defs,
             providers_path,
             overlay_path: None,

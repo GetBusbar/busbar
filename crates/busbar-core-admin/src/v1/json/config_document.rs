@@ -285,6 +285,8 @@ pub(super) async fn apply(
             if loaded.deploy.advanced.worker_threads == Some(0) {
                 return Err(AdminError::Validation("advanced.worker_threads must be positive".into()));
             }
+            loaded.resource_ownership.validate_named_maps(&doc)
+                .map_err(AdminError::Validation)?;
             busbar_kernel::config::overlay::apply_root_to_deploy(&mut loaded.deploy, &doc)
                 .map_err(AdminError::Validation)?;
             if let Some(patch) = request.providers_patch.as_ref() {
@@ -298,8 +300,8 @@ pub(super) async fn apply(
             }
             let mut cfg = busbar_kernel::config::resolve(&loaded.deploy, &loaded.defs)
                 .map_err(|_| AdminError::Validation("patched configuration failed resolution".into()))?;
-            let base_hook_names = cfg.hooks.keys().cloned().collect();
-            let base_group_names = cfg.groups.keys().cloned().collect();
+            let base_hook_names = loaded.resource_ownership.hook_names().clone();
+            let base_group_names = loaded.resource_ownership.group_names().clone();
             busbar_kernel::config::overlay::merge_into(&mut cfg, doc.clone());
             if let Some(rejection) =
                 trust_ceiling_rejection(&snapshot.identity_providers, &cfg.identity_providers, &ceiling_actor)
