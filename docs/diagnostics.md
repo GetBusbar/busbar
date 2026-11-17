@@ -1508,7 +1508,7 @@ A plugin artifact is present in the plugins directory but was NOT loaded because
 - **Since:** 1.6.0
 - **Slug:** `plugin-loaded-unverified`
 
-A plugin was loaded even though its signature is UNVERIFIED — its code is running unauthenticated, permitted only because an explicit `plugins.trust` opt-in (`allow_unsigned`/`allow_third_party`) let it through. Security-relevant: unverified plugin code runs in-process with busbar's privileges. Emitted once per such plugin at boot.
+A plugin was loaded even though its signature is UNVERIFIED — its code is running unauthenticated, permitted only because an explicit `plugins.trust` opt-in (`allow_untrusted`) let it through. Security-relevant: unverified plugin code runs in-process with busbar's privileges. Emitted once per such plugin at boot.
 
 **What to do:** Prefer a signed artifact from a trusted publisher and remove the `plugins.trust` opt-in once you no longer need it. If running unverified is a deliberate, understood choice (e.g. a locally-built plugin), the opt-in is what keeps it explicit.
 
@@ -2260,9 +2260,9 @@ RETIRED. A provider's `api_key` secret reference did not resolve at boot, so bus
 - **Since:** 1.6.0
 - **Slug:** `open-relay-no-auth`
 
-The auth chain is empty (either explicitly, or because the `auth:` block is absent and serde-defaults to none), so every data-plane request is admitted unauthenticated — an OPEN RELAY forwarding anyone's traffic on your upstream credentials. Emitted at ERROR (not warn, which RUST_LOG=error would suppress) and unconditionally on stderr so the state cannot be masked by log configuration. Acceptable only for local development.
+The auth chain is written empty (`auth: { chain: [] }`, the operator's explicit open-relay acknowledgement), so every data-plane request is admitted unauthenticated — an OPEN RELAY forwarding anyone's traffic on your upstream credentials. Emitted at ERROR (not warn, which RUST_LOG=error would suppress) and unconditionally on stderr so the state cannot be masked by log configuration. A configuration with no `auth:` block is refused with this code instead of booting: busbar never runs an open relay by omission, and the 1.5.5 upgrade writes no `auth:` block for you (it reports the missing block as an action item with the same remedy). Acceptable only for local development.
 
-**What to do:** Configure `auth.chain` (a `keys` verifier and/or an auth plugin) before exposing busbar to any untrusted network. This is the same open-relay condition as BUSBAR-4004, surfaced at boot.
+**What to do:** Add `auth: { chain: [] }` explicitly to run an open relay (bannered at every boot and audited as `open_relay` in `node.boot`), or configure a chain (`auth: { chain: [keys] }` with virtual keys minted through the admin API, and/or an auth plugin) before exposing busbar to any untrusted network. This is the same open-relay condition as BUSBAR-4004, surfaced at boot.
 
 <a id="store-secret-ref-unresolved"></a>
 ### BUSBAR-8015 — Store settings hold a secret reference that does not resolve here

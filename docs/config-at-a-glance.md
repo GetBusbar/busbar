@@ -51,9 +51,9 @@ plugins:
   enabled: false                # MASTER SWITCH (default false): nothing loads while off
   dir: plugins                  # where signed tarballs live
   trust:                        # Busbar's release key is embedded; untrusted plugins never dlopen
-    publishers: [ { name: acme, public_key: "<64-hex ed25519>" } ]
-    allow_unsigned: false
-    allow_third_party: false
+    publishers:
+      - { name: acme, plugins: [acme-store-dynamo], keys: [ { public_key: "<64-hex ed25519>", revoked: false } ] }
+    allow_untrusted: false      # unsigned or unknown-publisher code: refused unless opted in, always unverified
   # min_versions: { acme-store-dynamo: "2.0.0" }   # anti-downgrade floors
 ```
 

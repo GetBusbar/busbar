@@ -159,3 +159,39 @@ async fn a_release_floor_refuses_its_pre_release() {
         .await
         .is_err());
 }
+
+/// UPG-7 (#332): carrying host-keyed floors is idempotent, keeps the deployment's own higher
+/// floor, never touches the deployment's rows, and a rerun carries nothing.
+#[tokio::test]
+async fn carrying_host_floors_keeps_the_highest_and_is_idempotent() {
+    let backend = Arc::new(Backend::default());
+    let owner = PluginFloor::new(Arc::new(attach(backend).await)).unwrap();
+    owner
+        .enforce_candidate("deployment", candidate("2.0.0", false), true)
+        .await
+        .unwrap();
+    owner
+        .enforce_candidate("pod-a", candidate("1.5.0", false), true)
+        .await
+        .unwrap();
+    owner
+        .enforce_release_keys("pod-a", &[9], true)
+        .await
+        .unwrap();
+    owner
+        .enforce_release_keys("deployment", &[3], true)
+        .await
+        .unwrap();
+    assert_eq!(owner.adopt_host_floors("deployment").await.unwrap(), 2);
+    assert!(owner
+        .enforce_candidate("deployment", candidate("1.9.0", false), false)
+        .await
+        .is_err());
+    assert_eq!(owner.release_keys_floor("deployment").await.unwrap(), 9);
+    assert_eq!(owner.release_keys_floor("pod-a").await.unwrap(), 0);
+    owner
+        .enforce_candidate("pod-a", candidate("0.1.0", false), false)
+        .await
+        .unwrap();
+    assert_eq!(owner.adopt_host_floors("deployment").await.unwrap(), 0);
+}
