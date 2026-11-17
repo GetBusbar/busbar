@@ -1457,7 +1457,7 @@ pub(crate) struct DispatchSnapshot {
     pub(crate) entries: Vec<Arc<EntrySpans>>,
     pub(crate) served: Served,
 
-    pub(crate) claim_doors: Option<Arc<OnceLock<serve_datagram::ClaimDoors>>>,
+    pub(crate) claim_doors: Option<Arc<serve_datagram::ClaimDoors>>,
     pub(crate) post: Arc<crate::root::plane_node::NodeEndPost>,
 
     pub(crate) pin: fn() -> Option<crate::root::kernel::PinnedHistory>,
@@ -1604,20 +1604,20 @@ pub(crate) fn listener_method_bits(method: RouteMethod) -> u32 {
 pub(crate) struct ListenerPlan {
     pub(crate) root_claim: Result<String, String>,
     pub(crate) initial: crate::root::boot::ListenerNeeds,
-    pub(crate) served: std::sync::OnceLock<Served>,
-    pub(crate) upgrades: std::sync::OnceLock<Vec<String>>,
-    pub(crate) claim_doors: Arc<OnceLock<serve_datagram::ClaimDoors>>,
-    pub(crate) planes: std::sync::OnceLock<Vec<ListenerPlaneLine>>,
-    pub(crate) plane_sections: std::sync::OnceLock<foldhash::HashMap<String, (&'static str, bool)>>,
-    pub(crate) plane_keys: std::sync::OnceLock<foldhash::HashMap<String, String>>,
+    pub(crate) served: Option<Served>,
+    pub(crate) upgrades: Option<Vec<String>>,
+    pub(crate) claim_doors: Arc<serve_datagram::ClaimDoors>,
+    pub(crate) planes: Option<Vec<ListenerPlaneLine>>,
+    pub(crate) plane_sections: Option<foldhash::HashMap<String, (&'static str, bool)>>,
+    pub(crate) plane_keys: Option<foldhash::HashMap<String, String>>,
     pub(crate) offers: Vec<TransportOffer>,
     pub(crate) framers: foldhash::HashMap<String, (u64, bool)>,
     pub(crate) refusals: Mutex<foldhash::HashMap<String, Vec<PlaneRefusalSpec>>>,
     pub(crate) nests: NestRoutes,
-    pub(crate) plugin_mounts: std::sync::OnceLock<Vec<(String, RouteMethod, bool)>>,
+    pub(crate) plugin_mounts: Option<Vec<(String, RouteMethod, bool)>>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct ListenerPlaneLine {
     pub(crate) line: busbar_kernel::guest::Line,
     pub(crate) transport: String,
@@ -1973,7 +1973,7 @@ impl DataRoutes {
         let doors = self
             .claim_doors
             .as_ref()
-            .and_then(|doors| doors.get())
+            .map(Arc::as_ref)
             .unwrap_or(&self.served.claim_doors);
         let Some(claim_door) = doors.get(carrier) else {
             let live = &self.served.planes[door.plane].live;

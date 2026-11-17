@@ -150,17 +150,17 @@ fn plan(mut topology: ListenerNeeds) -> Arc<ListenerPlan> {
     Arc::new(ListenerPlan {
         root_claim: Ok("http".into()),
         initial: topology,
-        served: std::sync::OnceLock::new(),
-        upgrades: std::sync::OnceLock::new(),
+        served: None,
+        upgrades: None,
         claim_doors: Arc::default(),
-        planes: std::sync::OnceLock::new(),
-        plane_sections: std::sync::OnceLock::new(),
-        plane_keys: std::sync::OnceLock::new(),
+        planes: None,
+        plane_sections: None,
+        plane_keys: None,
         offers: vec![("http", AuthPoints::HEAD)],
         framers: [("http".into(), (1, false))].into_iter().collect(),
         refusals: std::sync::Mutex::default(),
         nests: Arc::default(),
-        plugin_mounts: std::sync::OnceLock::new(),
+        plugin_mounts: None,
     })
 }
 
@@ -356,8 +356,11 @@ async fn replacement_without_a_need_does_not_inherit_old_instance_listener_autho
         1,
     )
     .await;
-    plan.mount_planes(&super::Served::default(), &boot, &[])
-        .unwrap();
+    let plan = Arc::new(
+        plan.mount_planes(&super::Served::default(), &boot, &[])
+            .unwrap(),
+    );
+    plan.check(&boot).unwrap();
     let mut replacement = initial;
     replacement.needs.clear();
     replacement.binds.truncate(2);
@@ -394,8 +397,11 @@ async fn moving_data_routes_between_bound_listeners_keeps_admin_placement_separa
     )
     .await;
     plan.check(&boot).unwrap();
-    plan.mount_planes(&super::Served::default(), &boot, &[])
-        .unwrap();
+    let plan = Arc::new(
+        plan.mount_planes(&super::Served::default(), &boot, &[])
+            .unwrap(),
+    );
+    plan.check(&boot).unwrap();
     let mut moved = initial.clone();
     moved.needs[0].at = "listen".into();
     let moved = projection_boundary_app(
@@ -438,52 +444,46 @@ async fn identical_plane_paths_on_distinct_listeners_are_sealed_independently() 
         auth: String::new(),
         at: "listen".into(),
     });
-    let plan = plan(topology.clone());
-    plan.planes
-        .set(
-            ["left", "right"]
-                .into_iter()
-                .map(|owner| super::ListenerPlaneLine {
-                    line: Line {
-                        route: Route {
-                            methods: METHOD_GET,
-                            path_form: PATH_EXACT,
-                            path: "/same".into(),
-                            fields: Vec::new(),
-                            rung: 0,
-                        },
-                        claimant: Claimant::Plane(owner.into()),
-                        dialect: 0,
-                        auth: LineAuth::None,
-                        upgrade: None,
-                        offered: AuthPoints::HEAD,
+    let mut plan = plan(topology.clone());
+    Arc::get_mut(&mut plan).unwrap().planes = Some(
+        ["left", "right"]
+            .into_iter()
+            .map(|owner| super::ListenerPlaneLine {
+                line: Line {
+                    route: Route {
+                        methods: METHOD_GET,
+                        path_form: PATH_EXACT,
+                        path: "/same".into(),
+                        fields: Vec::new(),
+                        rung: 0,
                     },
-                    transport: "http".into(),
-                    root_only: false,
-                })
-                .collect(),
-        )
-        .unwrap();
-    plan.plane_sections
-        .set(
-            [
-                ("left".into(), ("left-resource", false)),
-                ("right".into(), ("right-resource", false)),
-            ]
-            .into_iter()
+                    claimant: Claimant::Plane(owner.into()),
+                    dialect: 0,
+                    auth: LineAuth::None,
+                    upgrade: None,
+                    offered: AuthPoints::HEAD,
+                },
+                transport: "http".into(),
+                root_only: false,
+            })
             .collect(),
-        )
-        .unwrap();
-    plan.plane_keys
-        .set(
-            [
-                ("left".into(), "left-module".into()),
-                ("right".into(), "right-module".into()),
-            ]
-            .into_iter()
-            .collect(),
-        )
-        .unwrap();
+    );
+    Arc::get_mut(&mut plan).unwrap().plane_sections = Some(
+        [
+            ("left".into(), ("left-resource", false)),
+            ("right".into(), ("right-resource", false)),
+        ]
+        .into_iter()
+        .collect(),
+    );
+    Arc::get_mut(&mut plan).unwrap().plane_keys = Some(
+        [
+            ("left".into(), "left-module".into()),
+            ("right".into(), "right-module".into()),
+        ]
+        .into_iter()
+        .collect(),
+    );
     let mut candidate = projection_boundary_app(topology, Vec::new(), 1).await;
 
     Arc::get_mut(&mut candidate).unwrap().plane_sections =
@@ -623,26 +623,24 @@ async fn datagram_session_description_keeps_its_existing_http_post_route() {
         .unwrap()
         .framers
         .insert("datagram-fixture".into(), (2, true));
-    plan.planes
-        .set(vec![super::ListenerPlaneLine {
-            line: Line {
-                route: Route {
-                    methods: METHOD_POST,
-                    path_form: PATH_EXACT,
-                    path: "/session-description".into(),
-                    fields: Vec::new(),
-                    rung: 0,
-                },
-                claimant: Claimant::Plane("private".into()),
-                dialect: 0,
-                auth: LineAuth::None,
-                upgrade: None,
-                offered: AuthPoints::HEAD,
+    Arc::get_mut(&mut plan).unwrap().planes = Some(vec![super::ListenerPlaneLine {
+        line: Line {
+            route: Route {
+                methods: METHOD_POST,
+                path_form: PATH_EXACT,
+                path: "/session-description".into(),
+                fields: Vec::new(),
+                rung: 0,
             },
-            transport: "datagram-fixture".into(),
-            root_only: false,
-        }])
-        .unwrap();
+            claimant: Claimant::Plane("private".into()),
+            dialect: 0,
+            auth: LineAuth::None,
+            upgrade: None,
+            offered: AuthPoints::HEAD,
+        },
+        transport: "datagram-fixture".into(),
+        root_only: false,
+    }]);
     let candidate = projection_boundary_app(topology, Vec::new(), 1).await;
     plan.check(&candidate).unwrap();
     assert!(matches!(
@@ -934,8 +932,11 @@ async fn unopened_dispatch_cannot_replace_a_serving_route_but_new_paths_still_ne
         1,
     )
     .await;
-    plan.mount_planes(&super::Served::default(), &boot, &[])
-        .unwrap();
+    let plan = Arc::new(
+        plan.mount_planes(&super::Served::default(), &boot, &[])
+            .unwrap(),
+    );
+    plan.check(&boot).unwrap();
     let replacement = projection_boundary_app(
         topology.clone(),
         vec![unavailable("/exports/private/scrape")],
@@ -971,8 +972,11 @@ async fn renamed_plugin_uses_its_candidate_physical_listener() {
         route
     };
     let boot = projection_boundary_app(initial.clone(), vec![declared("private")], 1).await;
-    plan.mount_planes(&super::Served::default(), &boot, &[])
-        .unwrap();
+    let plan = Arc::new(
+        plan.mount_planes(&super::Served::default(), &boot, &[])
+            .unwrap(),
+    );
+    plan.check(&boot).unwrap();
     let mut renamed = initial;
     renamed.needs[0].instance = "renamed".into();
     let next = projection_boundary_app(renamed.clone(), vec![declared("renamed")], 2).await;
@@ -994,8 +998,11 @@ async fn a_new_data_method_on_a_boot_plugin_path_prepares_a_new_router() {
         1,
     )
     .await;
-    plan.mount_planes(&super::Served::default(), &boot, &[])
-        .unwrap();
+    let plan = Arc::new(
+        plan.mount_planes(&super::Served::default(), &boot, &[])
+            .unwrap(),
+    );
+    plan.check(&boot).unwrap();
     let mut post = route("private", "/exports/private/scrape", RouteAuth::None);
     post.route.method = RouteMethod::Post;
     let candidate = projection_boundary_app(initial, vec![post], 2).await;
@@ -1049,12 +1056,14 @@ async fn actual_handlers_migrate_only_on_publication_and_old_requests_keep_their
     use axum::http::StatusCode;
     let initial = topology();
     let plan = plan(initial.clone());
-    let rules = Arc::new(crate::root::door_steps::Rules::default());
-    rules.hold_listeners(plan.clone()).unwrap();
     let mut boot = projection_boundary_app(initial.clone(), vec![labeled_route("boot")], 1).await;
+    let plan = Arc::new(
+        plan.mount_planes(&super::Served::default(), &boot, &[])
+            .unwrap(),
+    );
+    plan.check(&boot).unwrap();
+    let rules = Arc::new(crate::root::door_steps::Rules::default().with_listeners(plan.clone()));
     Arc::get_mut(&mut boot).unwrap().root_rules = rules.clone();
-    plan.mount_planes(&super::Served::default(), &boot, &[])
-        .unwrap();
     let boot_lifetime = Arc::downgrade(&boot);
     let handle = Arc::new(busbar_kernel::state::AppHandle::new(boot.clone()));
     let handle_lifetime = Arc::downgrade(&handle);
@@ -1158,8 +1167,11 @@ async fn a_swap_between_route_selection_and_auth_keeps_the_selected_generation()
     initial.needs[0].at = "listen".into();
     let plan = plan(initial.clone());
     let boot = projection_boundary_app(initial.clone(), vec![labeled_route("selected")], 1).await;
-    plan.mount_planes(&super::Served::default(), &boot, &[])
-        .unwrap();
+    let plan = Arc::new(
+        plan.mount_planes(&super::Served::default(), &boot, &[])
+            .unwrap(),
+    );
+    plan.check(&boot).unwrap();
     let next = projection_boundary_app(initial, vec![labeled_route("later")], 2).await;
     plan.check(&next).unwrap();
     let handle = Arc::new(busbar_kernel::state::AppHandle::new(boot));
@@ -1192,8 +1204,11 @@ async fn newly_opened_data_paths_are_physically_served_without_a_restart_report(
     let initial = topology();
     let plan = plan(initial.clone());
     let boot = projection_boundary_app(initial.clone(), vec![labeled_route("boot")], 1).await;
-    plan.mount_planes(&super::Served::default(), &boot, &[])
-        .unwrap();
+    let plan = Arc::new(
+        plan.mount_planes(&super::Served::default(), &boot, &[])
+            .unwrap(),
+    );
+    plan.check(&boot).unwrap();
     let next = projection_boundary_app(
         initial,
         vec![
@@ -1553,40 +1568,36 @@ async fn registered_http_listener_accepts_only_its_planes_registered_upgrade() {
                 "initial app construction precedes plane OPEN: {initial_check:?}"
             );
         }
-        plan.planes
-            .set(vec![super::ListenerPlaneLine {
-                line: Line {
-                    route: Route {
-                        methods: METHOD_GET,
-                        path_form: PATH_EXACT,
-                        path: "/live".into(),
-                        fields: vec![],
-                        rung: 0,
-                    },
-                    claimant: Claimant::Plane(claimant.into()),
-                    dialect: 0,
-                    auth: LineAuth::None,
-                    upgrade: upgrade.map(str::to_string),
-                    offered: AuthPoints::HEAD,
+        plan.planes = Some(vec![super::ListenerPlaneLine {
+            line: Line {
+                route: Route {
+                    methods: METHOD_GET,
+                    path_form: PATH_EXACT,
+                    path: "/live".into(),
+                    fields: vec![],
+                    rung: 0,
                 },
-                transport: transport.into(),
-                root_only: false,
-            }])
-            .unwrap();
+                claimant: Claimant::Plane(claimant.into()),
+                dialect: 0,
+                auth: LineAuth::None,
+                upgrade: upgrade.map(str::to_string),
+                offered: AuthPoints::HEAD,
+            },
+            transport: transport.into(),
+            root_only: false,
+        }]);
         if ws.facts().claims.contains(&transport) {
             assert!(
                 plan.check(&app).is_err(),
                 "a partially mounted snapshot must not defer claim proof"
             );
         }
-        plan.upgrades
-            .set(
-                super::upgrade_carriers(crate::LINKED.transports, &[])
-                    .into_iter()
-                    .map(str::to_string)
-                    .collect(),
-            )
-            .unwrap();
+        plan.upgrades = Some(
+            super::upgrade_carriers(crate::LINKED.transports, &[])
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+        );
         plan.check(&app)
     };
     assert!(

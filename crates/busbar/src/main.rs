@@ -1137,9 +1137,7 @@ async fn run(catalogue: busbar_kernel::diagnostics::Catalogue, control_work: Con
         root::serve::transport_offers(LINKED.transports, &dropped_doors),
         &|scheme| root::connector::the().framer_for(scheme),
     ));
-    root_rules
-        .hold_listeners(Arc::clone(&listener_plan))
-        .unwrap_or_else(|e| die(e));
+    let root_rules = Arc::new(root_rules.with_listeners(Arc::clone(&listener_plan)));
 
     let record_bootstrap_store = serde_json::to_value(
         cfg.store
@@ -1403,9 +1401,22 @@ async fn run(catalogue: busbar_kernel::diagnostics::Catalogue, control_work: Con
     )
     .await
     .unwrap_or_else(|e| die(e));
+    let mut listener_plan = listener_plan
+        .mount_planes(
+            &served,
+            &app,
+            &root::serve::upgrade_carriers(LINKED.transports, &dropped_doors),
+        )
+        .unwrap_or_else(|e| die(e));
     listener_plan
         .share_claim_doors(&mut served)
         .unwrap_or_else(|e| die(e));
+    let listener_plan = Arc::new(listener_plan);
+    let root_rules = Arc::new(root_rules.with_listeners(Arc::clone(&listener_plan)));
+    let mut app = Arc::unwrap_or_clone(app);
+    app.root_rules = root_rules.clone();
+    let app = Arc::new(app);
+    listener_plan.check(&app).unwrap_or_else(|e| die(e));
     root_rules.hold_owned_anchors(&served.need_trust());
     root_rules.hold_member_tls_sections(&served.member_tls_sections());
 
