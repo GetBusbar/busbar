@@ -1480,3 +1480,38 @@ async fn issued_key_debug_never_leaks_the_live_token() {
         "key_id (safe id) still shows: {dbg}"
     );
 }
+
+#[derive(Clone, Default)]
+struct LogBuf(Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl std::io::Write for LogBuf {
+    fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(b);
+        Ok(b.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// #359 SEC-L5: a refused self-serve subject's control characters are escaped in its log line, so
+/// a caller-chosen principal id cannot forge a second log line.
+#[test]
+fn a_refused_subject_cannot_forge_a_log_line() {
+    let buf = LogBuf::default();
+    let writer = buf.clone();
+    let subscriber = tracing_subscriber::fmt()
+        .with_writer(move || writer.clone())
+        .with_target(false)
+        .with_ansi(false)
+        .with_max_level(tracing::Level::DEBUG)
+        .finish();
+    let refused = tracing::subscriber::with_default(subscriber, || {
+        tracing::callsite::rebuild_interest_cache();
+        super::sanitize_self_sub("evil\n2026-01-01T00:00:00Z ERROR forged")
+    });
+    assert!(matches!(refused, Err(ExchangeError::BadSubject)));
+    let text = String::from_utf8(buf.0.lock().unwrap().clone()).unwrap();
+    assert_eq!(text.lines().count(), 1, "one escaped line: {text:?}");
+    assert!(text.contains(r"evil\n"), "the newline is escaped: {text:?}");
+}
