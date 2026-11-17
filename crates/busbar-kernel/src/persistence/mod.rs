@@ -22,6 +22,8 @@ pub(crate) mod history;
 pub(crate) mod host_records;
 // Staged journal owner; removed with its asynchronous recovery caller port.
 pub mod first_start;
+// The record-format migration owner (#319 r4): the only handle before ordinary admission.
+pub mod format_migration;
 pub mod import_target;
 pub mod journal;
 pub(crate) mod keys;
@@ -35,6 +37,7 @@ mod slot_seal;
 pub mod startup;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_backend;
-// The store kit: kernel-level Startup conformance a store's own CI runs against itself.
-#[cfg(any(test, feature = "test-support"))]
+// The store kit: kernel-level Startup conformance run against a store (DES-STOREKIT r2: the
+// harness build's `--store-kit` runner, through the `store-kit` feature).
+#[cfg(any(test, feature = "test-support", feature = "store-kit"))]
 pub mod store_kit;

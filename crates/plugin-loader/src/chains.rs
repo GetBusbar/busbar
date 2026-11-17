@@ -243,9 +243,15 @@ pub(crate) fn decode_described(
                 }
             }
             tag::D_SCHEMA => {
-                let text = rec
-                    .text()
-                    .map_err(|_| invalid("describe.schema", "not UTF-8", "UTF-8 JSON"))?;
+                // IF r29 l.2764: core's D_SCHEMA validator holds the schema to the authoritative-schema rules.
+                let text = crate::settings_schema::authoritative_schema(rec.body, "D_SCHEMA")
+                    .map_err(|why| {
+                        invalid(
+                            "describe.schema",
+                            why,
+                            "a JSON Schema object or boolean of at most 262144 bytes",
+                        )
+                    })?;
                 if schema.replace(Box::<str>::from(text)).is_some() {
                     return Err(invalid("describe.schema", "a second schema", "at most one"));
                 }
@@ -281,6 +287,19 @@ pub(crate) fn decode_described(
         ));
     }
     crate::upstream_paths::validate(kind, &items)?;
+    if kind == KindCode::Transport {
+        busbar_ports::codec::transport::decode_listener_slots(
+            facts.unwrap_or(0),
+            items.iter().map(|(tag, body)| (*tag, body.as_slice())),
+        )
+        .map_err(|_| {
+            invalid(
+                "describe.listener_slots",
+                "invalid initial stream-listener declarations",
+                "at most 64 distinct 1..=128-byte ASCII slots on a server stream transport",
+            )
+        })?;
+    }
     Ok(Described {
         kind,
         methods,
@@ -431,6 +450,7 @@ pub(crate) fn plan_order(
 /// borrowed spec is copied once, synchronously, before the future is built.
 pub(crate) struct OwnedSpec {
     purpose: OpenPurpose,
+    store_migration: Option<Arc<busbar_plugin_abi::host_side::entry::StoreMigrationAdmission>>,
     identity: String,
     name: String,
     config_json: SecureVec,
@@ -449,6 +469,7 @@ impl OwnedSpec {
     pub(crate) fn new(s: &InstanceSpec<'_>) -> Self {
         OwnedSpec {
             purpose: s.purpose,
+            store_migration: s.store_migration.as_ref().map(Arc::clone),
             identity: s.identity.to_owned(),
             name: s.name.to_owned(),
             config_json: SecureVec::from(s.config_json),
@@ -461,6 +482,7 @@ impl OwnedSpec {
     pub(crate) fn spec(&self) -> InstanceSpec<'_> {
         InstanceSpec {
             purpose: self.purpose,
+            store_migration: self.store_migration.as_ref().map(Arc::clone),
             identity: &self.identity,
             name: &self.name,
             config_json: &self.config_json,
@@ -536,6 +558,106 @@ fn set_at(
     Ok(())
 }
 
+/// LEGACY-KEYFILE-MARKER r2 (IF r35 M-1): core migration vocabulary, written by core alone.
+const MIGRATED: &str = "$migrated";
+
+/// Whether `bytes` may hold the word at all (a JSON escape still spells `migrated`), so most bags skip the parse.
+fn mentions_marker(bytes: &[u8]) -> bool {
+    bytes.windows(8).any(|w| w == b"migrated")
+}
+
+/// r2 §3: an operator bag never carries `$migrated` at its top level, on any path that binds (boot, reload,
+/// admin PATCH and install, DRY_RUN); core writes it only into the bytes a marked converting open sees.
+fn refuse_operator_marker(s: &InstanceSpec<'_>) -> Result<(), OpenError> {
+    if !mentions_marker(s.config_json) {
+        return Ok(());
+    }
+    let held = json::parse_value(s.config_json)
+        .ok()
+        .is_some_and(|v| v.as_object().is_some_and(|m| m.contains_key(&MIGRATED)));
+    if held {
+        return Err(plan_error(format!(
+            "{}: `{MIGRATED}` is core migration vocabulary and cannot appear in a configuration",
+            s.name
+        )));
+    }
+    Ok(())
+}
+
+/// Whether D_SECRET_PATH `pattern` names the concrete `pointer` (a `*` token is any array index).
+fn declares(pattern: &str, pointer: &str) -> bool {
+    if !pointer.starts_with('/') || !pattern.starts_with('/') {
+        return false;
+    }
+    let (mut want, mut have) = (pattern.split('/'), pointer.split('/'));
+    loop {
+        match (want.next(), have.next()) {
+            (None, None) => return true,
+            (Some(w), Some(h))
+                if w == h
+                    || (w == "*" && !h.is_empty() && h.bytes().all(|b| b.is_ascii_digit())) => {}
+            _ => return false,
+        }
+    }
+}
+
+/// r2 §3: marks are for a converting open only, and each names a declared D_SECRET_PATH slot present in the bag.
+fn check_marks(s: &InstanceSpec<'_>, marks: &[Box<str>], secret: &[&str]) -> Result<(), OpenError> {
+    if s.purpose != OpenPurpose::ConvertUnstamped {
+        return Err(plan_error(format!(
+            "{}: `{MIGRATED}` marks only a converting open",
+            s.name
+        )));
+    }
+    let doc = json::parse_value(s.config_json)
+        .map_err(|_| plan_error(format!("{}: the config is not JSON", s.name)))?;
+    for mark in marks {
+        let present = json::pointer(&doc, mark).is_some_and(|v| !v.is_null());
+        if !present || !secret.iter().any(|p| declares(p, mark)) {
+            return Err(plan_error(format!(
+                "{}: {mark} is not a secret position of module {}",
+                s.name, s.identity
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// r2 §2: `"$migrated": {"legacy": [..]}` at the top of the bound bag, the marks deduplicated in order.
+fn insert_marker(v: &mut json::Value, marks: &[Box<str>], name: &str) -> Result<(), OpenError> {
+    let mut legacy: Vec<&str> = Vec::with_capacity(marks.len());
+    for mark in marks {
+        if !legacy.contains(&&**mark) {
+            legacy.push(mark);
+        }
+    }
+    let text = json::to_string(&legacy).unwrap_or_default();
+    let marker = json::parse_value(format!(r#"{{"legacy":{text}}}"#).as_bytes())
+        .map_err(|_| plan_error(format!("{name}: core cannot write `{MIGRATED}`")))?;
+    v.as_object_mut()
+        .ok_or_else(|| plan_error(format!("{name}: a marked config is not a JSON object")))?
+        .insert(MIGRATED, marker);
+    Ok(())
+}
+
+/// r2 §4: a settled CONFIG with `$migrated` at its top level, re-encoded without it (None = nothing to strip).
+fn strip_marker(config: &[u8], name: &str) -> Result<Option<Vec<u8>>, OpenError> {
+    if !mentions_marker(config) {
+        return Ok(None);
+    }
+    let mut v = json::parse_value(config)
+        .map_err(|_| plan_error(format!("{name}: open CONFIG is not valid JSON")))?;
+    let Some(map) = v.as_object_mut() else {
+        return Ok(None);
+    };
+    if map.remove(&MIGRATED).is_none() {
+        return Ok(None);
+    }
+    json::to_vec(&v)
+        .map(Some)
+        .map_err(|_| plan_error(format!("{name}: open CONFIG cannot be re-encoded")))
+}
+
 /// How many `{"$dest": n}` handles the bound config holds.
 fn count_dests(v: &json::Value) -> u32 {
     match v.get_type() {
@@ -585,6 +707,7 @@ impl Registry {
         id: u64,
         slot: u32,
         refs: &dyn RefSource,
+        marks: Vec<Box<str>>,
     ) -> Result<Prepared, OpenError> {
         let entry = self.entry_of(s.identity).ok_or_else(|| {
             OpenError::Unknown(format!(
@@ -613,6 +736,10 @@ impl Registry {
                 .filter_map(|(_, b)| core::str::from_utf8(b).ok())
                 .collect()
         };
+        refuse_operator_marker(s)?;
+        if !marks.is_empty() {
+            check_marks(s, &marks, &paths(tag::D_SECRET_PATH))?;
+        }
         let bind = match s.purpose {
             OpenPurpose::Canonical => ConfigBinder::bind,
             OpenPurpose::ConvertUnstamped => ConfigBinder::bind_any,
@@ -642,10 +769,14 @@ impl Registry {
         );
         let dest_paths = paths(tag::D_DEST_PATH);
         let write_urls = s.public_url.is_some() && !urls.is_empty();
-        let (bound, dests) = if write_urls || !ups.is_empty() || !dest_paths.is_empty() {
+        let marked = !marks.is_empty();
+        let (bound, dests) = if write_urls || !ups.is_empty() || !dest_paths.is_empty() || marked {
             let mut v: json::Value = json::parse_value(resolved.as_slice()).map_err(|e| {
                 plan_error(format!("{}: the bound config is not JSON: {e}", s.name))
             })?;
+            if marked {
+                insert_marker(&mut v, &marks, s.name)?;
+            }
             if let Some(url) = s.public_url {
                 for p in &urls {
                     set_at(&mut v, p, json::Value::from(url), s.name)?;
@@ -660,7 +791,7 @@ impl Registry {
                 set_at(&mut v, p, json::Value::from(names), s.name)?;
             }
             let dests = count_dests(&v);
-            if write_urls || !ups.is_empty() {
+            if write_urls || !ups.is_empty() || marked {
                 (SecureVec::from(json::to_vec(&v).unwrap_or_default()), dests)
             } else {
                 (resolved, dests)
@@ -725,6 +856,11 @@ impl Registry {
         let mut drv = Driver::new(needs, caller)
             .for_open()
             .with_max_steps(self.ceilings.max_steps);
+        if flags == 0 && K::CODE == KindCode::Store {
+            if let Some(admission) = &s.store_migration {
+                drv = drv.with_store_migration(Arc::clone(admission));
+            }
+        }
         if K::CODE == KindCode::Store
             && p.described.facts & busbar_plugin_abi::store::F_BLOCKING_FILE != 0
         {
@@ -774,9 +910,21 @@ impl Registry {
             ));
         }
         let p = self
-            .prepare_with_id(s, kind, id, lease.slot(), refs)
+            .prepare_with_id(s, kind, id, lease.slot(), refs, self.take_legacy(s.name))
             .await?;
-        let finished = self.run_open::<K, N>(s, &p, &lease, 0, &**needs).await?;
+        let finished = self.run_open::<K, N>(s, &p, &lease, 0, &**needs).await;
+        if kind == KindCode::Store
+            && s.store_migration
+                .as_ref()
+                .is_some_and(|admission| admission.first_refused().is_some())
+        {
+            // The image, binding and slot remain owned here until cleanup has completed.
+            // A faulty plugin cannot publish CONFIG or Applied state by ignoring the gate.
+            let _denied = busbar_plugin_abi::host_side::entry::MigrationScope::deny();
+            drop(finished);
+            return Err(plan_error("Store recovery admission refused".into()));
+        }
+        let finished = finished?;
         let Finished { answer, instance } = finished;
         let (status, scrub, errors) = (
             answer.answer().status,
@@ -850,11 +998,23 @@ impl Registry {
             ))
         })?
         else {
+            // #432: a converting open with no CONFIG answer is "unchanged"; core settles the bag as bound.
+            if s.purpose == OpenPurpose::ConvertUnstamped {
+                self.keep_settled(
+                    s.name,
+                    Settled {
+                        config_json: SecureVec::from(s.config_json.to_vec()),
+                        core_cfg: Vec::new(),
+                        answered: false,
+                    },
+                );
+            }
             return Ok(());
         };
+        let unmarked = strip_marker(out.config, s.name)?;
         let config_json = SecureVec::from(
             self.binder
-                .unbind_refs(id, out.config)
+                .unbind_refs(id, unmarked.as_deref().unwrap_or(out.config))
                 .map_err(|e| bind_error(s.name, e))?,
         );
         json::parse_value(config_json.as_slice())
@@ -883,6 +1043,7 @@ impl Registry {
             Settled {
                 config_json,
                 core_cfg,
+                answered: true,
             },
         );
         Ok(())
@@ -899,7 +1060,7 @@ impl Registry {
         let reserved = self.reserve(s)?;
         let lease = reserved.lease;
         let p = self
-            .prepare_with_id(s, kind, reserved.id, lease.slot(), refs)
+            .prepare_with_id(s, kind, reserved.id, lease.slot(), refs, Vec::new())
             .await?;
         let finished = self
             .run_open::<K, DeniedNeeds>(
@@ -977,6 +1138,96 @@ mod tests {
         assert_eq!(
             m.label_keys.iter().map(|k| &**k).collect::<Vec<_>>(),
             ["op"]
+        );
+    }
+
+    /// IF r29 l.2764 ("core's D_SCHEMA validator"): the describe's D_SCHEMA meets the authoritative-schema rules
+    /// a Statement settings_schema met (public JSON within 262144 bytes, an object or boolean), so a pathological
+    /// schema is DescribeInvalid at admission, naming D_SCHEMA and the parser's reason.
+    #[test]
+    fn a_pathological_or_non_schema_d_schema_is_describe_invalid() {
+        let schema = |text: &str| {
+            let mut r = Reply::new();
+            mask(&mut r, tag::D_METHODS, st::REQUIRED);
+            r.put_text(tag::D_SCHEMA, text).unwrap();
+            decode_described(KindCode::Store, Records::new(r.as_bytes()))
+        };
+        let bomb = format!("{}true{}", "{\"allOf\":[".repeat(500), "]}".repeat(500));
+        let e = schema(&bomb).err().expect("a recursion bomb is refused");
+        assert_eq!(e.code, RefusalCode::DescribeInvalid);
+        assert_eq!(e.field, "describe.schema");
+        assert!(
+            e.have.contains("D_SCHEMA") && e.have.contains("recursion limit exceeded"),
+            "{e:?}"
+        );
+        let e = schema("[1]").err().expect("an array is not a schema");
+        assert_eq!(e.code, RefusalCode::DescribeInvalid);
+        let e = schema("{").err().expect("not JSON");
+        assert_eq!(e.code, RefusalCode::DescribeInvalid);
+        let big = format!("{{\"description\":\"{}\"}}", "x".repeat(256 * 1024));
+        let e = schema(&big).err().expect("over the cap");
+        assert_eq!(e.code, RefusalCode::DescribeInvalid);
+        assert!(schema("true").is_ok() && schema(r#"{"type":"object"}"#).is_ok());
+    }
+
+    fn transport_slots(facts: u64, slots: &[&[u8]]) -> Reply {
+        let mut out = Reply::new();
+        mask(
+            &mut out,
+            tag::D_METHODS,
+            busbar_plugin_abi::transport::REQUIRED,
+        );
+        mask(&mut out, tag::D_FACTS, facts);
+        for slot in slots {
+            out.put(0x0182, slot).expect("listener descriptor fits");
+        }
+        out
+    }
+
+    #[test]
+    fn native_listener_slots_are_validated_before_admission() {
+        use busbar_plugin_abi::transport::{FB_CLIENT, FB_DATAGRAM, FB_SERVER};
+        let long = vec![b'a'; 129];
+        let invalid: Vec<(u64, Vec<&[u8]>)> = vec![
+            (FB_SERVER, vec![b""]),
+            (FB_SERVER, vec![b"listen.path"]),
+            (FB_SERVER, vec![b"listen/path"]),
+            (FB_SERVER, vec![b"listen slot"]),
+            (FB_SERVER, vec![b"\xff"]),
+            (FB_SERVER, vec![&long]),
+            (FB_SERVER, vec![b"listen", b"listen"]),
+            (FB_CLIENT, vec![b"listen"]),
+            (FB_SERVER | FB_DATAGRAM, vec![b"listen"]),
+        ];
+        for (facts, slots) in invalid {
+            let out = transport_slots(facts, &slots);
+            let refused = decode_described(KindCode::Transport, Records::new(out.as_bytes()))
+                .err()
+                .expect("invalid initial-listener authority is rejected");
+            assert_eq!(refused.code, RefusalCode::DescribeInvalid);
+            assert_eq!(refused.field, "describe.listener_slots");
+        }
+    }
+
+    #[test]
+    fn native_listener_slot_count_is_bounded_and_names_are_exact() {
+        use busbar_plugin_abi::transport::FB_SERVER;
+        let names: Vec<String> = (0..65).map(|n| format!("slot_{n}")).collect();
+        let slots: Vec<&[u8]> = names.iter().map(|name| name.as_bytes()).collect();
+        let out = transport_slots(FB_SERVER, &slots);
+        assert!(decode_described(KindCode::Transport, Records::new(out.as_bytes())).is_err());
+        let out = transport_slots(FB_SERVER, &slots[..64]);
+        assert!(decode_described(KindCode::Transport, Records::new(out.as_bytes())).is_ok());
+        let out = transport_slots(FB_SERVER, &[b"listen", b"Listen", b"unused-slot"]);
+        let described = decode_described(KindCode::Transport, Records::new(out.as_bytes()))
+            .expect("distinct exact slots");
+        assert_eq!(
+            described
+                .items
+                .iter()
+                .filter(|(tag, _)| *tag == 0x0182)
+                .count(),
+            3
         );
     }
 

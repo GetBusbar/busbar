@@ -1415,8 +1415,13 @@ fn boot_refuses_a_set_retired_worker_threads_variable_before_config_migration() 
         }),
         "the retired setting must explain the refusal: {stderr}"
     );
-    assert!(std::fs::read_to_string(dir.join("config.yaml")).unwrap().contains("goovernance"));
-    assert!(!dir.join("config.yaml.1.5.5").exists(), "no migration backup before refusal");
+    assert!(std::fs::read_to_string(dir.join("config.yaml"))
+        .unwrap()
+        .contains("goovernance"));
+    assert!(
+        !dir.join("config.yaml.1.5.5").exists(),
+        "no migration backup before refusal"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -1477,10 +1482,9 @@ fn validate_refuses_each_retired_launch_variable_with_replacement_guidance() {
         );
     }
     assert!(
-        notices.iter().any(|line| line_has_in_order(
-            line,
-            &["BUSBAR_PROVIDERS", "providers.yaml"]
-        )),
+        notices
+            .iter()
+            .any(|line| line_has_in_order(line, &["BUSBAR_PROVIDERS", "providers.yaml"])),
         "the busbar-release FIX cell's match must hold: {stderr}"
     );
 

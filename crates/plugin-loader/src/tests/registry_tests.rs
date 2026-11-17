@@ -504,7 +504,7 @@ fn untrusted_is_skipped_not_fatal_but_reference_fails_loud() {
         reg.resolve("dynamo").is_none(),
         "a skipped plugin never resolves"
     );
-    let err = reg.store_door("dynamo").map(|_| ()).unwrap_err();
+    let err = reg.kind_refusal("store", "back the governance store", "dynamo");
     assert!(err.contains("was not loaded"), "got {err}");
     assert!(
         err.contains("allow_untrusted"),
@@ -621,7 +621,7 @@ fn open_store_refuses_non_store_kind() {
     let m = crate::sign::seal_test_artifact(&release, m, b"hook lib");
     write_tarball(&dir, "hook.tar.gz", &m, b"hook lib");
     let reg = scan_and_validate(&dir, &policy(&release)).expect("scan");
-    let err = reg.store_door("ranker").map(|_| ()).unwrap_err();
+    let err = reg.kind_refusal("store", "back the governance store", "ranker");
     assert!(err.contains("kind 'hook'"), "got {err}");
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -649,7 +649,7 @@ fn open_secret_refuses_non_secret_kind_and_vice_versa() {
     let err = reg.secret_refusal("gamma");
     assert!(err.contains("kind 'store'"), "got {err}");
 
-    let err = reg.store_door("delta").map(|_| ()).unwrap_err();
+    let err = reg.kind_refusal("store", "back the governance store", "delta");
     assert!(err.contains("kind 'secret'"), "got {err}");
 
     let err = reg.secret_refusal("nope");
@@ -1108,9 +1108,11 @@ fn a_1_5_5_name_resolves_to_the_1_6_0_plugin_dropped_in_and_linked() {
         "alpha",
         &["busbar-store-alpha-plugin"],
     ));
-    let refusal = reg
-        .store_door("busbar-store-alpha-plugin")
-        .expect_err("a door row of a store is not the store kind's linked row");
+    let refusal = reg.kind_refusal(
+        "store",
+        "back the governance store",
+        "busbar-store-alpha-plugin",
+    );
     assert!(
         refusal.contains("busbar-store-alpha") && !refusal.contains("no plugin named"),
         "the former name resolved to the plugin: {refusal}"
@@ -1418,11 +1420,9 @@ fn a_linked_built_in_answers_its_canonical_name_and_prints_its_key() {
         let p = reg.resolve(word).expect("resolves");
         assert_eq!(p.key(), key, "{word}");
     }
-    assert!(reg.store_door("busbar-store-mem").is_ok() && reg.store_door("mem").is_ok());
-
     assert_eq!(
-        reg.store_door("busbar-auth-tok").err().as_deref(),
-        Some("plugin 'tok' has kind 'auth', not 'store' - it cannot back the governance store")
+        reg.kind_refusal("store", "back the governance store", "busbar-auth-tok"),
+        "plugin 'tok' has kind 'auth', not 'store' - it cannot back the governance store"
     );
     assert_eq!(
         reg.secret_refusal("tok"),

@@ -1388,7 +1388,7 @@ impl EgressFarEnd<'_> {
         });
         let (pool, member) = named.unwrap_or_default();
         tracing::error!(
-            diag = "BUSBAR-EGRESS-LOCAL-FRAMER",
+            diag = %crate::diagnostics::EGRESS_LOCAL_FRAMER_FAILED.banner(),
             pool = %pool,
             member = %member,
             error = %cause.text,
@@ -1549,8 +1549,20 @@ impl EgressFarEnd<'_> {
         }
     }
 
-    async fn send_attempt(&self, token: &Pass<Route>, mut request: OutboundRequest) -> bool {
+    async fn send_attempt(
+        &self,
+        token: &Pass<Route>,
+        mut request: OutboundRequest,
+        mut selected: Option<&mut super::port_egress::SelectedHandoff>,
+    ) -> bool {
         let e = self.egress;
+
+        if selected
+            .as_ref()
+            .is_some_and(|handoff| !handoff.accepts_request(&request))
+        {
+            return false;
+        }
 
         busbar_kernel_egress::upstream::strip_re_derived(&mut request.fields);
 
@@ -1594,6 +1606,13 @@ impl EgressFarEnd<'_> {
             self.lock().unsent = Some(RefusalCode::UnsentNoAttempt);
             return false;
         };
+        if selected.as_ref().is_some_and(|handoff| {
+            !handoff.accepts(&selected_pool, &qualified_member, self.route.unit)
+                || request.attempt_no != record.attempt
+        }) {
+            self.settle_attempt(&record);
+            return false;
+        }
         let Some(route) = e.routes.get(&destination).cloned() else {
             self.lock().unsent = Some(RefusalCode::UnsentNoRoute);
             return false;
@@ -1909,6 +1928,12 @@ impl EgressFarEnd<'_> {
 
         // The head built above is the one the open sends: it moves into the connection, which
         // keeps it for the dial (and wipes it) without copying it again.
+        if let Some(handoff) = selected.as_mut() {
+            if !handoff.commit() {
+                self.settle_attempt(&record);
+                return false;
+            }
+        }
         let opened = e.conns.open_owned(
             e.caller,
             need,
@@ -2712,7 +2737,16 @@ impl FarEnd for EgressFarEnd<'_> {
         token: &'a Pass<Route>,
         request: OutboundRequest,
     ) -> impl Future<Output = bool> + Send + 'a {
-        self.send_attempt(token, request)
+        self.send_attempt(token, request, None)
+    }
+
+    fn send_selected<'a>(
+        &'a self,
+        token: &'a Pass<Route>,
+        request: OutboundRequest,
+        handoff: &'a mut super::port_egress::SelectedHandoff,
+    ) -> impl Future<Output = bool> + Send + 'a {
+        self.send_attempt(token, request, Some(handoff))
     }
 
     fn next<'a>(
@@ -2750,7 +2784,7 @@ impl FarEnd for EgressFarEnd<'_> {
         request.attempt_no = taken.attempt;
         self.admit_taken(taken, token.call());
         drop(walking);
-        self.send_attempt(token, request).await
+        self.send_attempt(token, request, None).await
     }
 
     fn candidates(&self, _token: &Pass<Route>) -> Option<Candidates> {

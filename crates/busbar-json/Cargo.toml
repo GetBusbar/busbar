@@ -1,0 +1,30 @@
+[package]
+name = "busbar-json"
+version = "1.6.0"
+publish = false
+edition = "2021"
+rust-version = "1.97"
+description = "The shared exact-number JSON facade, without configuration or YAML dependencies."
+license = "Apache-2.0"
+
+[dependencies]
+busbar-count = { path = "../busbar-count" }
+serde = { workspace = true }
+sonic-rs = { workspace = true }
+jsonschema = { workspace = true, optional = true }
+axum-core = { workspace = true, optional = true }
+http = { workspace = true, optional = true }
+
+[dev-dependencies]
+futures = { workspace = true }
+
+[[test]]
+name = "body"
+required-features = ["axum"]
+
+[features]
+schema = ["dep:jsonschema"]
+axum = ["dep:axum-core", "dep:http"]
+
+[lints]
+workspace = true

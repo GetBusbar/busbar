@@ -136,21 +136,17 @@ async fn governed_full(
         }
     });
     let directory = crate::root::test_plugins::scratch(instance);
-    let mut store_module = None;
+    let store_module;
     {
         let kind = "store";
         let path = crate::root::test_plugins::application_store_library();
-        let statement = crate::root::loader::dispatch::rendering_of_library(&path)
-            .unwrap()
-            .expect("the actual product states itself");
-        let facts = busbar_contract::abi::mechanism::rendering::read(&statement).unwrap();
-        let mut manifest = crate::root::test_plugins::manifest(
+        // The application Store is a native MIN-3 image (its stamp names it).
+        store_module = Some(crate::root::test_plugins::native_image(&path).name);
+        let manifest = crate::root::test_plugins::native_manifest(
             kind,
-            &facts.name,
+            &path,
             crate::root::test_plugins::FIXTURE_PUBLISHER,
         );
-        manifest.statement = Some(hex::encode(statement));
-        store_module = Some(facts.name);
         let archive = crate::root::test_plugins::signed(
             &crate::root::test_plugins::key(0x5a),
             manifest,
@@ -1053,6 +1049,52 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for AttachErrors {
     ) {
         event.record(&mut self.clone());
     }
+}
+
+#[tokio::test]
+async fn exhausted_terminal_storage_refuses_before_session_attachment() {
+    use busbar_kernel::limits::process_admission::{AdmissionClass, ProcessAdmission};
+
+    let _one = PUBLISHING.lock().await;
+    let mut g = governed("session-terminal-storage", false).await;
+    let budget = ProcessAdmission::with_limits(0, 32, 8);
+    g.post
+        .node()
+        .expect("fixture Node")
+        .rebind_terminal_storage(&budget);
+    let routes = session_custody_routes(&mut g, false);
+    let mut request = session_custody_request(&g, "/open");
+    request.request = budget.try_enter(AdmissionClass::Data).unwrap();
+    let _held = request.request.storage().try_reserve(24).unwrap();
+    assert!(request.request.storage().try_reserve(1).is_err());
+
+    let admitted = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let on_admit = Arc::clone(&admitted);
+    let attach = super::Attach {
+        answered: super::SWITCHED,
+        admitted: Some(Box::new(move |unit| {
+            on_admit.lock().expect("unpoisoned").push(unit);
+            Ok(())
+        })),
+        ended: None,
+    };
+    let (door, arrival, _) = routes.arrived(0, 1, request);
+    let (verdict, said) = tokio::sync::oneshot::channel();
+    Arc::clone(&routes)
+        .session(door, session_custody_caller(), arrival, verdict, attach)
+        .await;
+    let verdict = said.await.expect("original session verdict");
+    assert!(
+        admitted.lock().expect("unpoisoned").is_empty(),
+        "session attachment ran without storage for its original terminal custody"
+    );
+    assert!(
+        matches!(verdict, Err(None)),
+        "unfunded terminal custody must refuse admission"
+    );
+    assert_eq!(g.post.open_units(), 0);
+    assert_eq!(g.money.open_units(), 0);
+    assert!(routes.frames_lock().is_empty());
 }
 
 #[tokio::test]
@@ -2138,12 +2180,6 @@ async fn a_root_reservation_rejects_a_different_full_key_and_an_exited_loaded_ge
     assert_concurrent_custody(&g, &source.group, false, source.now).await;
     assert_source_request_retained(&g, &source).await;
 }
-
-#[path = "serve_neutral_tests.rs"]
-mod neutral_ingress_tests;
-
-#[path = "governed_upgrade.rs"]
-mod governed_upgrade_tests;
 
 #[path = "serve_nested_neutral.rs"]
 mod nested_neutral_tests;

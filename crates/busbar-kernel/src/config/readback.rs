@@ -191,7 +191,7 @@ impl ConfiguredView {
         let secrets: BTreeMap<_, _> = cfg
             .secrets
             .iter()
-            .map(|(name, def)| (name, plugin_view(name, &def.settings, sources)))
+            .map(|(name, def)| (name, plugin_view(&def.module, &def.settings, sources)))
             .collect();
         put!("secrets", secrets);
         put!(

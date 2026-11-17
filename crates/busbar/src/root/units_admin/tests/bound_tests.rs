@@ -173,13 +173,12 @@ async fn an_unknown_plane_write_keeps_its_exact_record_and_never_repeats_the_ups
             })
         })
     };
-    let mut request = AdminRequest {
-        method: "POST".into(), path: "/api/v1/admin/plane-record-write".into(),
+    let mut request = AdminRequest::test_fixture(crate::root::units_admin::TestAdminRequest { method: "POST".into(), path: "/api/v1/admin/plane-record-write".into(),
         credential: None,
         headers: vec![("idempotency-key".into(), "unknown-record".into())],
         body: br#"{"plane":"alpha","kind":"note","id":"n1","parent":"p1","terminal":true,"body":{"n":7}}"#.to_vec(),
         at: 1_700_000_000, unit: 1,
-    };
+    });
     let cache = super::ReplayCache::new();
     let lookup = |key: &str| (key == "alpha").then_some(plane("alpha", &["note"]));
     async fn ask(
@@ -197,10 +196,10 @@ async fn an_unknown_plane_write_keeps_its_exact_record_and_never_repeats_the_ups
                 actor: "admin",
             },
             request,
-            &request.body,
+            request.body(),
             None,
             super::ReplayContext::None,
-            || plane_record_write_effect(&request.body, request.at, lookup, Some(sink)),
+            || plane_record_write_effect(request.body(), request.at(), lookup, Some(sink)),
         )
         .await
         .expect("the write answers")
@@ -215,7 +214,7 @@ async fn an_unknown_plane_write_keeps_its_exact_record_and_never_repeats_the_ups
             id: "n1".into(),
             parent: Some("p1".into()),
             seq: 0,
-            ts: request.at,
+            ts: request.at(),
             disposition: PlaneDisposition::Terminal,
             body: br#"{"n":7}"#.to_vec(),
         }
@@ -223,13 +222,13 @@ async fn an_unknown_plane_write_keeps_its_exact_record_and_never_repeats_the_ups
     let name =
         busbar_core_admin::verb_name(busbar_core_admin::KernelVerb::PlaneRecordWrite).unwrap();
     let replay_key = ("admin".to_string(), format!("{name}:unknown-record"));
-    let kept = match durable::claim_held(&store, &replay_key, request.at).await {
+    let kept = match durable::claim_held(&store, &replay_key, request.at()).await {
         Err(Refused::Retained(bytes)) => super::kept_answer(&bytes).expect("readable receipt"),
         other => panic!("the exact unknown receipt must be durable: {other:?}"),
     };
     assert_eq!(
         kept.digest,
-        busbar_contract::abi::sdk::digest::sha256(&request.body)
+        busbar_contract::abi::sdk::digest::sha256(request.body())
     );
     assert_eq!(kept.answer, first);
     assert_eq!(
@@ -253,7 +252,9 @@ async fn an_unknown_plane_write_keeps_its_exact_record_and_never_repeats_the_ups
         ask(&cache, &request, &replay_store, &sink, &lookup).await,
         as_replayed(&first)
     );
-    request.at += busbar_core_admin::idempotency::IDEMPOTENCY_TTL_SECS + 1;
+    request.edit_for_test(|draft| {
+        draft.at += busbar_core_admin::idempotency::IDEMPOTENCY_TTL_SECS + 1
+    });
     assert_eq!(
         ask(&cache, &request, &replay_store, &sink, &lookup).await,
         as_replayed(&first),
@@ -276,7 +277,9 @@ async fn an_unknown_plane_write_keeps_its_exact_record_and_never_repeats_the_ups
         vec![original],
         "no retry changed metadata or repeated the upsert"
     );
-    request.body = br#"{"plane":"alpha","kind":"note","id":"other","body":{}}"#.to_vec();
+    request.edit_for_test(|draft| {
+        draft.body = br#"{"plane":"alpha","kind":"note","id":"other","body":{}}"#.to_vec()
+    });
     assert_eq!(
         ask(
             &super::ReplayCache::new(),
@@ -552,15 +555,17 @@ fn trust_reason_codes_are_stable() {
 }
 
 fn trust_request(key: &str, body: &[u8]) -> crate::root::units_admin::AdminRequest {
-    crate::root::units_admin::AdminRequest {
-        method: "POST".into(),
-        path: "/api/v1/admin/trust/approve".into(),
-        credential: None,
-        headers: vec![("idempotency-key".into(), key.into())],
-        body: body.to_vec(),
-        at: 1_700_000_000,
-        unit: 1,
-    }
+    crate::root::units_admin::AdminRequest::test_fixture(
+        crate::root::units_admin::TestAdminRequest {
+            method: "POST".into(),
+            path: "/api/v1/admin/trust/approve".into(),
+            credential: None,
+            headers: vec![("idempotency-key".into(), key.into())],
+            body: body.to_vec(),
+            at: 1_700_000_000,
+            unit: 1,
+        },
+    )
 }
 
 /// R6 and condition B-C4: a decision under an `Idempotency-Key` runs once; the same key and bytes
@@ -616,7 +621,7 @@ async fn trust_approve_honours_idempotency_key() {
                 actor: "op",
             },
             request,
-            &request.body,
+            request.body(),
             None,
             super::ReplayContext::Trust {
                 kernel: Some(&*kernel),
@@ -625,7 +630,7 @@ async fn trust_approve_honours_idempotency_key() {
             || async {
                 ran.fetch_add(1, Ordering::SeqCst);
                 super::trust_decide_effect(
-                    &request.body,
+                    request.body(),
                     Ruling::Approve,
                     Some(&*kernel),
                     "op",
@@ -957,7 +962,7 @@ async fn wrapped_approve(
             actor: "op",
         },
         &request,
-        &request.body,
+        request.body(),
         None,
         super::ReplayContext::Trust {
             kernel: Some(kernel),
@@ -966,7 +971,7 @@ async fn wrapped_approve(
         || async {
             ran.fetch_add(1, Ordering::SeqCst);
             super::trust_decide_effect(
-                &request.body,
+                request.body(),
                 Ruling::Approve,
                 Some(kernel),
                 "op",

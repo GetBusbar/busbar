@@ -11,6 +11,7 @@ mod far_end;
 mod govern;
 pub(crate) mod hooks;
 pub mod host;
+pub mod image_identity;
 mod money;
 pub mod native_hook_bindings;
 pub mod plane_judge;
@@ -37,13 +38,17 @@ pub mod port_upstream;
 pub mod port_work;
 pub mod provider_catalog;
 pub mod request_admission;
+pub use money::native_attempt::NativeRequestMoney;
 pub(crate) use money::native_attempt::PreparedRateAttempt;
+pub(crate) use money::native_attempt::{NativeAttempt, NativeAttemptError, NativeCommitError};
 pub(crate) use money::observation_budget_id;
-pub use money::NativeAdmissionError;
+pub use money::SelectedTerminalReceipt;
+pub use money::{AdmissionRollback, NativeAdmissionError};
 pub(crate) mod needs;
 mod probe;
 pub mod registry;
 mod route;
+pub mod route_identity;
 pub mod route_input;
 pub mod route_tables;
 pub mod serve;
@@ -96,7 +101,7 @@ pub use money::{
     EndPost, FeeRefund, MeasurementRequestGuard, MeasurementRequestState, ObservationPolicy,
     ObservationRuntimeError, ParentMoney, PlaneMoney, ReservedRequestLineage,
     ReturnedTicketReservation, SpentTicketReservation, TicketReservation, UnitEnd, UnitMoney,
-    UsageFold,
+    UsageFold, UsageView,
 };
 pub use needs::{resolve_member_needs, MemberAuth, NeedRefusal};
 pub use probe::PlaneProbes;

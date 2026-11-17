@@ -567,6 +567,7 @@ fn _error_taxonomy_is_referenced(e: &AdminError) {
         | AdminError::RateLimited
         | AdminError::Internal
         | AdminError::Unavailable(_)
+        | AdminError::RetryLater { .. }
         | AdminError::UnpricedClass { .. }
         | AdminError::PluginText { .. } => {}
     }

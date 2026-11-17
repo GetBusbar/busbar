@@ -420,12 +420,12 @@ pub(crate) fn compose_egress(
 /// is swapped in.
 #[derive(Debug, Clone)]
 pub(crate) struct DoorConfig {
-    /// Candidate-owned physical handlers, constructed by its root rules before publication.
-    pub(crate) listener_routes: Option<crate::root::serve::PreparedListeners>,
+    /// Complete native owner retained with this App, including invocation registrations.
+    pub(crate) native_generation: Option<Arc<crate::root::min3_candidate::NativeGeneration>>,
+    /// Exact candidate-native dispatchers; request lookup always uses its retained App.
+    pub(crate) native_slots: crate::root::min3_physical::NativeSlots,
     /// Effective physical listener settings of this candidate, before publication.
     pub(crate) listeners: Result<crate::root::boot::ListenerNeeds, String>,
-    /// Effective root binds, independent of the boot catalog used by the early projection.
-    pub(crate) root_binds: Result<Vec<crate::root::loader::boot::InboundBind>, String>,
     /// The ordered configured data auth positions, resolved against this candidate's opened auths.
     pub(crate) data_chain: Vec<String>,
     /// The kernel-owned sections, and beside them every plane section the configuration carries RAW
@@ -443,18 +443,18 @@ pub(crate) fn door_config(
     cfg: &busbar_kernel::config::RootCfg,
 ) -> Arc<dyn std::any::Any + Send + Sync> {
     let sections = kernel_sections(cfg).map(|mut sections| {
-        for (key, value) in raw_sections(cfg) {
+        for (key, value) in cfg.instance_sections() {
             sections.entry(key).or_insert(value);
         }
         sections
     });
     let config = DoorConfig {
-        listener_routes: None,
+        native_generation: None,
+        native_slots: Default::default(),
         listeners: sections
             .as_ref()
             .map_err(Clone::clone)
             .and_then(|sections| crate::root::boot::configured_listener_needs(cfg, sections)),
-        root_binds: crate::root::boot::configured_root_binds(cfg),
         data_chain: cfg
             .auth
             .as_ref()
@@ -474,21 +474,10 @@ pub(crate) fn listener_needs(
     cfg: &busbar_kernel::config::RootCfg,
 ) -> Result<crate::root::boot::ListenerNeeds, String> {
     let mut sections = kernel_sections(cfg)?;
-    for (key, value) in raw_sections(cfg) {
+    for (key, value) in cfg.instance_sections() {
         sections.entry(key).or_insert(value);
     }
     crate::root::boot::configured_listener_needs(cfg, &sections)
-}
-
-pub(crate) fn raw_sections(
-    cfg: &busbar_kernel::config::RootCfg,
-) -> BTreeMap<&'static str, busbar_contract::yaml::Value> {
-    cfg.endpoint_resources
-        .values()
-        .filter_map(|r| r.downcast_ref::<(&'static str, busbar_contract::yaml::Value)>())
-        .filter(|(_, v)| !v.is_null())
-        .map(|(k, v)| (*k, v.clone()))
-        .collect()
 }
 
 pub(crate) fn owned_anchor_refusal(at: &str, written: &str) -> Result<(), String> {
@@ -535,7 +524,8 @@ pub(crate) fn owned_anchors_refusal<P: AsRef<str>>(
 pub(crate) struct Rules {
     reader: Arc<dyn busbar_kernel::appbuild::RootRules>,
     pub(crate) member_tls_sections: Mutex<Vec<&'static str>>,
-    pub(crate) listeners: Option<Arc<crate::root::serve::ListenerPlan>>,
+    native_listeners: Option<Arc<crate::root::min3_listener_plan::NativeListenerPlan>>,
+    native_candidate: Option<Arc<crate::root::min3_candidate::Factory>>,
     /// The owned trust anchors the composed door planes name, held as each plane is composed.
     pub(crate) owned_anchors: Mutex<Vec<&'static str>>,
     /// The declaring sections of the door planes the boot bound but did not open (their section
@@ -579,7 +569,8 @@ impl Rules {
         Self {
             reader,
             member_tls_sections: Mutex::new(Vec::new()),
-            listeners: None,
+            native_listeners: None,
+            native_candidate: None,
             owned_anchors: Mutex::new(Vec::new()),
             unopened: Mutex::new(Vec::new()),
             guard,
@@ -587,9 +578,25 @@ impl Rules {
         }
     }
 
-    /// Construct the rules retained by a completed serving generation. No candidate can
-    /// install listener state into rules already retained by a different generation.
-    pub(crate) fn with_listeners(&self, listeners: Arc<crate::root::serve::ListenerPlan>) -> Self {
+    pub(crate) fn with_native_listeners(
+        &self,
+        listeners: Arc<crate::root::min3_listener_plan::NativeListenerPlan>,
+    ) -> Self {
+        let mut next = self.copy_rules();
+        next.native_listeners = Some(listeners);
+        next
+    }
+
+    pub(crate) fn with_native_candidate(
+        &self,
+        candidate: Arc<crate::root::min3_candidate::Factory>,
+    ) -> Self {
+        let mut next = self.copy_rules();
+        next.native_candidate = Some(candidate);
+        next
+    }
+
+    fn copy_rules(&self) -> Self {
         Self {
             reader: Arc::clone(&self.reader),
             member_tls_sections: Mutex::new(
@@ -598,7 +605,8 @@ impl Rules {
                     .unwrap_or_else(|p| p.into_inner())
                     .clone(),
             ),
-            listeners: Some(listeners),
+            native_listeners: self.native_listeners.clone(),
+            native_candidate: self.native_candidate.clone(),
             owned_anchors: Mutex::new(
                 self.owned_anchors
                     .lock()
@@ -675,6 +683,51 @@ impl Rules {
     }
 }
 
+/// The async native producer supplies fresh owners and the actual reserved publication
+/// epoch. This seals only the exclusively owned candidate; no live owner is replaced.
+pub(crate) fn prepare_native_candidate(
+    plan: &crate::root::min3_listener_plan::NativeListenerPlan,
+    app: &mut App,
+    served: &crate::root::serve::Served,
+    owners: &crate::root::min3_physical::SlotOwners,
+) -> Result<(), String> {
+    check_native_topology(app, plan)?;
+    if app.prepared_generation() != Some(owners.epoch) {
+        return Err("native candidate has no matching reserved publication epoch".into());
+    }
+    let native = served
+        .native
+        .as_ref()
+        .ok_or("candidate has no freshly prepared native owners")?;
+    if native.config_version != app.config_version
+        || !Arc::ptr_eq(&native.auth, &owners.auth)
+        || !Arc::ptr_eq(&native.inventories, &owners.inventories)
+    {
+        return Err("native listener owners belong to another serving candidate".into());
+    }
+    crate::root::min3_admin_auth::install(app, Arc::clone(&owners.auth), owners.epoch)?;
+    let slots = plan.assemble(app, served, owners)?;
+    crate::root::serve::install_native_slots(app, slots)
+}
+
+fn check_native_topology(
+    app: &App,
+    plan: &crate::root::min3_listener_plan::NativeListenerPlan,
+) -> Result<(), String> {
+    let config = app
+        .config_projection
+        .as_ref()
+        .and_then(|value| value.downcast_ref::<DoorConfig>())
+        .ok_or("native candidate has no root configuration projection")?;
+    let needs = config.listeners.as_ref().map_err(Clone::clone)?;
+    if !needs.needs.is_empty() || needs.binds.as_slice() != plan.binds() {
+        return Err(
+            "native listener topology changed; write the configuration file and restart".into(),
+        );
+    }
+    Ok(())
+}
+
 pub(crate) fn writes_plane(section: &str, cfg: &busbar_kernel::config::RootCfg) -> bool {
     cfg.plane_sections.contains(section)
 }
@@ -715,6 +768,30 @@ pub(crate) fn unloaded_plane_refusal(
 }
 
 impl busbar_kernel::appbuild::RootRules for Rules {
+    fn prepare_read(
+        &self,
+        input: &busbar_kernel::config::grammar::PhaseOneIn<'_>,
+    ) -> Result<
+        busbar_kernel::config::grammar::PreparedConfigRead,
+        busbar_kernel::config::GrammarRefusal,
+    > {
+        self.reader.prepare_read(input)
+    }
+
+    fn prepare_candidate<'a>(
+        &'a self,
+        cfg: &'a busbar_kernel::config::RootCfg,
+        plugins: &'a busbar_kernel::config::PluginsCfg,
+    ) -> busbar_plugin_abi::host_side::caller::BoxFut<
+        'a,
+        Result<Option<Box<dyn busbar_kernel::appbuild::CandidatePreparation>>, String>,
+    > {
+        match &self.native_candidate {
+            Some(candidate) => candidate.prepare(cfg),
+            None => self.reader.prepare_candidate(cfg, plugins),
+        }
+    }
+
     fn grammar(
         &self,
         input: &busbar_kernel::config::grammar::PhaseOneIn<'_>,
@@ -756,15 +833,40 @@ impl busbar_kernel::appbuild::RootRules for Rules {
         {
             config.sections.as_ref().map_err(Clone::clone)?;
         }
-        match self.listeners.as_ref() {
-            Some(listeners) => listeners.prepare(app),
-            None => Ok(()),
+        if let Some(plan) = &self.native_listeners {
+            let generation = crate::root::min3_candidate::generation(app)?;
+            if generation.native.config_version != app.config_version
+                || !generation.has_prepared_workers()
+            {
+                return Err(
+                    "native candidate has no complete generation with dormant workers".into(),
+                );
+            }
+            check_native_topology(app, plan)?;
+            let config = app
+                .config_projection
+                .as_ref()
+                .and_then(|value| value.downcast_ref::<DoorConfig>())
+                .ok_or("native candidate has no root configuration projection")?;
+            let required: std::collections::BTreeSet<_> =
+                plan.binds().iter().map(|bind| bind.at.as_str()).collect();
+            if config.native_slots.len() != required.len()
+                || plan.binds().iter().any(|bind| {
+                    config
+                        .native_slots
+                        .get(&bind.at)
+                        .is_none_or(|slot| slot.slot() != bind.at)
+                })
+            {
+                return Err(
+                    "native candidate has no complete freshly prepared listener map".into(),
+                );
+            }
+            return Ok(());
         }
+        Ok(())
     }
 
-    fn mounted_plugin_paths(&self, app: &App) -> Option<std::collections::HashSet<String>> {
-        self.listeners.as_ref()?.mounted_plugin_paths(app)
-    }
     fn unloaded_plane_refusal(&self, keys: &[&str]) -> Option<String> {
         unloaded_plane_refusal(
             &self
@@ -796,7 +898,7 @@ impl busbar_kernel::appbuild::RootRules for Rules {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
-        let sections = raw_sections(cfg);
+        let sections = cfg.instance_sections();
         owned_anchors_refusal(&anchors, &sections)?;
         for section in self
             .member_tls_sections
@@ -3219,6 +3321,48 @@ mod owned_reader_tests {
         > {
             Box::pin(async { Err("candidate boot projection refused".into()) })
         }
+    }
+
+    struct CandidateReader;
+    impl RootRules for CandidateReader {
+        fn prepare_read(
+            &self,
+            _: &config::grammar::PhaseOneIn<'_>,
+        ) -> Result<config::grammar::PreparedConfigRead, config::GrammarRefusal> {
+            Ok(
+                config::grammar::PreparedConfigRead::new(config::Grammar::empty())
+                    .with_context(Arc::new(73u64)),
+            )
+        }
+        fn prepare_candidate<'a>(
+            &'a self,
+            _: &'a config::RootCfg,
+            _: &'a config::PluginsCfg,
+        ) -> busbar_plugin_abi::host_side::caller::BoxFut<
+            'a,
+            Result<Option<Box<dyn busbar_kernel::appbuild::CandidatePreparation>>, String>,
+        > {
+            Box::pin(async { Err("exact candidate preparation refused".into()) })
+        }
+        fn check(&self, _: &config::RootCfg) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn serving_rules_preserve_native_read_and_candidate_preparation() {
+        let rules = Rules::with_reader(None, Arc::new(CandidateReader));
+        let plugins = config::PluginsCfg::default();
+        let read = rules
+            .prepare_read(&config::grammar::PhaseOneIn::of(&plugins))
+            .unwrap();
+        assert_eq!(read.context::<u64>(), Some(&73));
+        let deploy = busbar_contract::yaml::from_str("{}").unwrap();
+        let cfg = config::resolve(&deploy, &Default::default()).unwrap();
+        assert_eq!(
+            rules.prepare_candidate(&cfg, &plugins).await.err().unwrap(),
+            "exact candidate preparation refused"
+        );
     }
 
     #[tokio::test]

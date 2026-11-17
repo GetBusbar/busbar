@@ -29,7 +29,8 @@ fn make_root_cfg(
         tls: None,
         admin_listen: busbar_kernel::config::DEFAULT_ADMIN_LISTEN_ADDR.to_string(),
         admin_tls: None,
-        auth: None,
+        // #358: the open posture is written explicitly; omission is refused.
+        auth: Some(config::AuthCfg::default_none()),
 
         providers: providers
             .into_iter()
@@ -47,14 +48,7 @@ fn make_root_cfg(
         store: Some(config::StoreCfg {
             module: {
                 let path = crate::root::test_plugins::application_store_library();
-                let statement = busbar_plugin_loader::dispatch::rendering_of_library(
-                    std::path::Path::new(&path),
-                )
-                .expect("the actual store statement reads")
-                .expect("the actual store exports its statement");
-                busbar_contract::abi::mechanism::rendering::read(&statement)
-                    .expect("the actual store statement is valid")
-                    .name
+                crate::root::test_plugins::native_image(&path).name
             },
             settings: Default::default(),
             insecure_transport: None,

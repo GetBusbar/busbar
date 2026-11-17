@@ -10,49 +10,15 @@ use busbar_plugin_abi::host_side::caller::BoxFut;
 use busbar_ports::auth::Identity;
 use busbar_ports::{CallCx, PortError};
 
-use super::chain_run::Request;
+use crate::inbound::request_snapshot::ChargedRequestSnapshot;
 use crate::state::{AdmissionLease, App, AppHandle, InvocationId};
-
-/// Snapshot the actual HTTP carrier. Transport adapters with peer/certificate custody extend the
-/// view before snapshotting; an unavailable transport property is represented as absent.
-pub fn http_request(
-    method: &str,
-    target: &str,
-    headers: &axum::http::HeaderMap,
-    body: &[u8],
-    now_s: u64,
-) -> Request {
-    use busbar_plugin_abi::types::{Bytes, Pair, Str};
-    let fields: Vec<_> = headers
-        .iter()
-        .map(|(name, value)| Pair {
-            name: Str::new(name.as_str()),
-            value: Bytes::new(value.as_bytes()),
-        })
-        .collect();
-    let (path, query) = target.split_once('?').unwrap_or((target, ""));
-    Request::new(&busbar_ports::auth::AuthIn {
-        method,
-        path,
-        query,
-        authority: headers
-            .get(axum::http::header::HOST)
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or(""),
-        headers: &fields,
-        peer: "",
-        tls_peer_cert: &[],
-        body,
-        now_s,
-    })
-}
 
 pub trait NativeAdmin: Send + Sync {
     fn prepare<'a>(
         &'a self,
         name: &'a str,
         cx: CallCx,
-        request: Request,
+        request: Arc<ChargedRequestSnapshot>,
     ) -> BoxFut<'a, Result<PreparedAnswer, PortError>>;
 }
 
@@ -66,15 +32,74 @@ pub enum PreparedAnswer {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AdmissionRefused;
 
+/// The actual single replay call result; only Duplicate is a confirmed rejection.
+pub enum NativeReplayClaim {
+    Claimed,
+    Duplicate,
+    Unknown(crate::plugin_records::RecordsDenied),
+    Inconsistent,
+}
+
+pub struct AdminReplayDenial {
+    _lease: AdmissionLease,
+    invocation: Invocation,
+    _prepared: Arc<dyn PreparedIdentity>,
+}
+
+impl AdminReplayDenial {
+    pub fn matches(&self, binding: &crate::inbound::native::RequestBinding) -> bool {
+        Arc::ptr_eq(binding.handle(), &self.invocation.handle)
+            && Arc::ptr_eq(binding.app(), &self.invocation.selected)
+            && binding.invocation() == self.invocation.id
+            && binding
+                .snapshot()
+                .is_ok_and(|snapshot| Arc::ptr_eq(&snapshot, &self.invocation.request))
+    }
+}
+
+/// Retains original preparation/operation custody without manufacturing a duplicate refusal.
+pub struct AdminReplayUnknown {
+    _lease: AdmissionLease,
+    _invocation: Invocation,
+    _prepared: Arc<dyn PreparedIdentity>,
+    _error: crate::plugin_records::RecordsDenied,
+}
+
+pub enum AdminCompletionRefused {
+    Unavailable,
+    ReplayDenied(AdminReplayDenial),
+    ReplayUnknown(AdminReplayUnknown),
+}
+
+impl std::fmt::Debug for AdminCompletionRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Unavailable => "AdminCompletionRefused::Unavailable",
+            Self::ReplayDenied(_) => "AdminCompletionRefused::ReplayDenied",
+            Self::ReplayUnknown(_) => "AdminCompletionRefused::ReplayUnknown",
+        })
+    }
+}
+
 /// Host-only immutable verification state. Neither identity projection nor STRIP certifies that
 /// every declared credential field was verified; field provenance needs its own attestation.
 pub trait PreparedIdentity: Send + Sync {
     fn provider(&self) -> &str;
     fn credential_headers(&self) -> &[Box<str>];
     fn identity(&self) -> &Identity;
-    fn request(&self) -> &Request;
+    fn request(&self) -> &Arc<ChargedRequestSnapshot>;
     fn authorize(&self, now_s: u64) -> Result<(), u32>;
     fn claim(&self) -> BoxFut<'_, bool>;
+    fn claim_classified(&self) -> BoxFut<'_, NativeReplayClaim> {
+        Box::pin(async move {
+            if self.claim().await {
+                NativeReplayClaim::Claimed
+            } else {
+                // Compatibility implementations expose no confirmed-false distinction.
+                NativeReplayClaim::Unknown(crate::plugin_records::RecordsDenied::Unavailable)
+            }
+        })
+    }
 }
 
 impl std::fmt::Debug for dyn PreparedIdentity {
@@ -91,7 +116,7 @@ pub struct Invocation {
     pub selected: Arc<App>,
     pub id: InvocationId,
     pub cx: CallCx,
-    pub request: Arc<Request>,
+    pub request: Arc<ChargedRequestSnapshot>,
 }
 
 pub(super) struct Pending {
@@ -110,12 +135,21 @@ impl Pending {
     }
 
     pub(super) async fn complete(&self) -> Result<ExecutionAdmission, AdmissionRefused> {
+        self.complete_classified()
+            .await
+            .map_err(|_| AdmissionRefused)
+    }
+
+    pub(super) async fn complete_classified(
+        &self,
+    ) -> Result<ExecutionAdmission, AdminCompletionRefused> {
         // Consume before the first await. A cancelled or failed store call cannot retry this right.
         if self.spent.swap(true, Ordering::AcqRel)
+            || !Arc::ptr_eq(&self.invocation.request, self.prepared.request())
             || self.invocation.cx.request_id != self.invocation.id.request_id().get()
             || std::time::Instant::now() >= self.invocation.cx.deadline
         {
-            return Err(AdmissionRefused);
+            return Err(AdminCompletionRefused::Unavailable);
         }
         let lease = self
             .invocation
@@ -123,13 +157,30 @@ impl Pending {
             .admit_current(&self.invocation.selected, self.invocation.id, |_| {
                 self.prepared.authorize(crate::store::now())
             })
-            .map_err(|_| AdmissionRefused)?;
-        if !self.prepared.claim().await {
-            return Err(AdmissionRefused);
+            .map_err(|_| AdminCompletionRefused::Unavailable)?;
+        match self.prepared.claim_classified().await {
+            NativeReplayClaim::Claimed => {}
+            NativeReplayClaim::Duplicate => {
+                return Err(AdminCompletionRefused::ReplayDenied(AdminReplayDenial {
+                    _lease: lease,
+                    invocation: self.invocation.clone(),
+                    _prepared: Arc::clone(&self.prepared),
+                }))
+            }
+            NativeReplayClaim::Unknown(error) => {
+                return Err(AdminCompletionRefused::ReplayUnknown(AdminReplayUnknown {
+                    _lease: lease,
+                    _invocation: self.invocation.clone(),
+                    _prepared: Arc::clone(&self.prepared),
+                    _error: error,
+                }))
+            }
+            NativeReplayClaim::Inconsistent => return Err(AdminCompletionRefused::Unavailable),
         }
         // Publication after the lease is not cancellation of this already-admitted operation.
         Ok(ExecutionAdmission {
             native: Some((lease, Arc::clone(&self.prepared))),
+            origin: Some(self.invocation.clone()),
         })
     }
 }
@@ -138,16 +189,28 @@ impl Pending {
 /// or conversion back to pending, and cloning an Arc to this value does not mint execution rights.
 pub struct ExecutionAdmission {
     native: Option<(AdmissionLease, Arc<dyn PreparedIdentity>)>,
+    origin: Option<Invocation>,
 }
 
 impl ExecutionAdmission {
     pub(super) fn legacy() -> Self {
-        Self { native: None }
+        Self {
+            native: None,
+            origin: None,
+        }
     }
     pub fn native(&self) -> Option<(&AdmissionLease, &dyn PreparedIdentity)> {
         self.native
             .as_ref()
             .map(|(lease, prepared)| (lease, prepared.as_ref()))
+    }
+
+    /// Lend the actual origin for the physical request's final join. Equal generation pointers
+    /// cannot substitute for the originating publication owner, request id or call deadline.
+    pub fn native_origin(&self) -> Option<(&Arc<AppHandle>, CallCx)> {
+        self.origin
+            .as_ref()
+            .map(|origin| (&origin.handle, origin.cx))
     }
 
     pub(super) fn door_for(&self, app: &App) -> Option<super::AdminDoor> {
@@ -164,6 +227,7 @@ impl ExecutionAdmission {
                     ttl_secs: identity.cache_s().map(u64::from),
                 },
                 resolved: None,
+                signed_authority: None,
             },
             super::module_admin_scope_cap(app, prepared.provider()),
         ))
@@ -183,6 +247,7 @@ impl ExecutionAdmission {
                     ttl_secs: identity.cache_s().map(u64::from),
                 },
                 resolved: None,
+                signed_authority: None,
             },
             super::module_admin_scope_cap(lease.generation(), prepared.provider()),
             identity.expires_at_s(),
@@ -199,25 +264,47 @@ impl ExecutionAdmission {
         let Some((_, prepared)) = self.native() else {
             return false;
         };
-        let (path, query) = target.split_once('?').unwrap_or((target, ""));
-        prepared.request().view(|original| {
-            original.method == method
-                && original.path == path
-                && original.query == query
-                && original.body == body
-                && original.headers.len() == headers.len()
-                && original.headers.iter().all(|field| {
-                    let name = field.name.get();
-                    original
-                        .headers
-                        .iter()
-                        .filter(|field| field.name.get().eq_ignore_ascii_case(name))
-                        .map(|field| field.value.get())
-                        .eq(headers
-                            .get_all(name)
-                            .iter()
-                            .map(axum::http::HeaderValue::as_bytes))
-                })
-        })
+        snapshot_matches_http(prepared.request(), method, target, headers, body)
     }
+}
+
+/// Validate an HTTP projection without allocating an ABI Pair view or losing empty-query presence.
+/// This compares content only; execution additionally requires the exact snapshot Arc identity.
+pub fn snapshot_matches_http(
+    original: &ChargedRequestSnapshot,
+    method: &str,
+    target: &str,
+    headers: &axum::http::HeaderMap,
+    body: &[u8],
+) -> bool {
+    original.method() == method
+        && original.target() == target
+        && original.body() == body
+        && original.headers().len() == headers.len()
+        && original.headers().all(|(name, _)| {
+            original
+                .headers()
+                .filter(|(key, _)| key.eq_ignore_ascii_case(name))
+                .map(|(_, value)| value)
+                .eq(headers
+                    .get_all(name)
+                    .iter()
+                    .map(axum::http::HeaderValue::as_bytes))
+        })
+}
+
+/// Keep the exact physical owner both in the transport handoff and in the body lifetime.
+/// The native bridge moves the extension into delivery custody alongside its StreamOwner.
+pub fn retain_physical_response(
+    mut response: axum::response::Response,
+    physical: Arc<crate::inbound::native::PhysicalAdminExecution>,
+) -> axum::response::Response {
+    use http_body_util::BodyExt;
+    response.extensions_mut().insert(physical.clone());
+    let body = std::mem::replace(response.body_mut(), axum::body::Body::empty());
+    *response.body_mut() = axum::body::Body::new(body.map_frame(move |frame| {
+        let _retain_until_body_drop = &physical;
+        frame
+    }));
+    response
 }

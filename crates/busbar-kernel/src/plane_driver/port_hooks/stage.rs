@@ -126,6 +126,12 @@ impl<'a> Observed<'a> {
     }
 }
 impl Effects for Observed<'_> {
+    fn admission_owner(&self) -> Option<&Arc<super::super::port_admission::Pending>> {
+        self.inner.admission_owner()
+    }
+    fn data(&self) -> Option<&Arc<crate::auth::native_data::NativeDataPending>> {
+        self.inner.data()
+    }
     fn admission(&self) -> Option<&super::super::port_admission::Pending> {
         self.inner.admission()
     }

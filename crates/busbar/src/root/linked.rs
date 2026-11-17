@@ -75,7 +75,22 @@ pub mod node {
 
     /// What a unit consumed: its usage, its fee count, its serving lane and its sealed
     /// attribution (`group`, `pool`, `provider`; ADMIN-API-1.6 §3.2).
-    pub type Reported = (busbar_contract::billing::ExactUsage, u32, String, String);
+    pub type LegacyReport = (busbar_contract::billing::ExactUsage, u32, String, String);
+
+    pub enum Reported {
+        Legacy(LegacyReport),
+        /// A factual preview; it is never substituted for terminal custody.
+        Partitioned,
+    }
+
+    impl Reported {
+        pub(crate) fn legacy(self) -> Option<LegacyReport> {
+            match self {
+                Self::Legacy(report) => Some(report),
+                Self::Partitioned => None,
+            }
+        }
+    }
 
     pub type Late = Box<dyn FnOnce() -> Option<Reported> + Send>;
 
@@ -96,75 +111,41 @@ pub mod node {
     pub(crate) type Handed = (PrincipalId, OpClassId, &'static str, Build);
 }
 
-/// One linked wire, as its door's Statement states it: the layers it declares, its claims (its
-/// own, which is its registry key, first), its upgrade and first-line claims and the auth points it
-/// offers. Every field is read
-/// off the row's bare `door` (`linked_transport!`): no row reads a constant of its crate's, so a
-/// door-root crate whose only public item is `door` (`BUSBAR-1.6.0.md` l.3560) links exactly as a
-/// crate with a `linked` module does (l.3561: a linked row holds the same `door` pointer).
+/// One linked wire, as its door's Statement states it: its upgrade and first-line claims. Every
+/// field is read off the row's bare `door` (`linked_transport!`): no row reads a constant of its
+/// crate's, so a door-root crate whose only public item is `door` (`BUSBAR-1.6.0.md` l.3560) links
+/// exactly as a crate with a `linked` module does (l.3561: a linked row holds the same `door`
+/// pointer).
 #[derive(Clone, Copy)]
 pub struct LinkedTransport {
-    /// The layers its door's tail declares, in the order it would take one.
-    pub composes_over: LayersOf,
-    /// Every scheme its entry claims, its own first: a door row's are read off the door's
-    /// Statement (ONE ENTRY PER PLUGIN, the schemes are its claims), and the connector serves each.
-    pub claims: ClaimsOf,
     /// The claims whose unit 0 opens at an UPGRADE, read off the door's Statement: the data door's
     /// upgrade lines (`crate::root::serve::upgrade_carriers`).
     pub upgrades: ClaimsOf,
     /// The claims whose unit 0 opens on the FIRST LINE, read off the door's Statement: the line
     /// carrier the process's own stdin/stdout serves (`crate::root::serve::lines::line_carrier`).
     pub lines: ClaimsOf,
-    /// The auth points it offers, read off the door's Statement (`abi::transport::
-    /// EXT_OFFERED_POINTS`): a guest-list line's auth may need no other (THE DESIGN §6 step 3).
-    pub offered: OfferedOf,
 }
 
 pub type ClaimsOf = fn() -> Vec<&'static str>;
 
-pub type LayersOf = fn() -> &'static [&'static str];
-
-/// The linked transport row is built from its bare `door`: its layers are read once (the
-/// Statement's name held equal to its own claim, the tail's `composes_over`), and its claims,
-/// upgrade lines, first-line claims and offered points are read off the same door. The generated linked table expands one per `transport` row, so every
+/// The linked transport row is built from its bare `door`: its upgrade lines and first-line claims
+/// are read off the door. The generated linked table expands one per `transport` row, so every
 /// transport, whatever its crate exports beside `door`, is linked through this one path. Core alone
 /// links no transport, so it expands nowhere there.
 #[cfg(any(test, linked_transport_rows))]
 macro_rules! linked_transport {
     ($door:path) => {{
-        fn facts() -> &'static $crate::root::doors::RowFacts {
-            static FACTS: ::std::sync::OnceLock<$crate::root::doors::RowFacts> =
-                ::std::sync::OnceLock::new();
-            FACTS.get_or_init(|| $crate::root::doors::row_facts($door))
-        }
-        fn composes_over() -> &'static [&'static str] {
-            facts().composes_over.as_slice()
-        }
-        fn claims() -> ::std::vec::Vec<&'static str> {
-            $crate::root::doors::claims_of($door)
-        }
         fn upgrades() -> ::std::vec::Vec<&'static str> {
             $crate::root::doors::upgrades_of($door)
         }
         fn lines() -> ::std::vec::Vec<&'static str> {
             $crate::root::doors::lines_of($door)
         }
-        fn offered() -> ::busbar_contract::abi::auth::AuthPoints {
-            $crate::root::doors::offered_of($door)
-        }
-        $crate::root::linked::LinkedTransport {
-            composes_over,
-            claims,
-            upgrades,
-            lines,
-            offered,
-        }
+        $crate::root::linked::LinkedTransport { upgrades, lines }
     }};
 }
 #[cfg(any(test, linked_transport_rows))]
 pub(crate) use linked_transport;
-
-pub type OfferedOf = fn() -> busbar_contract::abi::auth::AuthPoints;
 
 /// One linked plane's contribution to the boot seal: the pure plane registered under its own key,
 /// and the claims that plane declares.
@@ -357,25 +338,6 @@ pub fn register_stores(linked: &Linked) {
             crate::root::exit::exit(2);
         }
     }
-}
-
-fn store_axis() -> std::sync::Arc<dyn busbar_contract::persistence::axis::PersistenceAxis> {
-    let conns: std::sync::Arc<dyn busbar_contract::conn::DeclaredConns> =
-        crate::root::connector::the().clone();
-    std::sync::Arc::new(crate::root::loader::store_v4::DoorPersistenceAxis {
-        dispatcher: crate::root::dispatch::dispatcher(),
-        logs: crate::root::boot::plugin_logs().clone(),
-        conns: crate::root::loader::dispatch::ConnTable::Host(crate::root::connector::admit(conns)),
-        // Resource admission for one crossing, not a persisted-record or transaction limit.
-        // Includes descriptor overhead above the existing raw conditional carrier.
-        limits: crate::root::loader::store_v4::Limits {
-            descriptor_bytes: 512 * 1024 * 1024,
-            output_items: (512 * 1024 * 1024)
-                / std::mem::size_of::<busbar_contract::abi::store::v4::ReadValue>(),
-            output_bytes: 512 * 1024 * 1024,
-            decode_bytes: 512 * 1024 * 1024,
-        },
-    })
 }
 
 static SECRETS: std::sync::OnceLock<crate::root::loader::secret_calls::SecretRows> =
@@ -655,6 +617,8 @@ pub(crate) const HOST_SERIES: &[&str] = &[
     busbar_kernel::snapshot::BILLING_TRUNCATED_TOTAL,
     busbar_kernel::snapshot::PLUGIN_OBSERVATIONS_DROPPED_TOTAL,
     busbar_kernel::snapshot::PLUGIN_TEXT_CUT_TOTAL,
+    busbar_kernel::snapshot::PLUGIN_INSPECT_CAP_REFUSALS_TOTAL,
+    busbar_kernel::snapshot::PLUGIN_INSPECT_SLOT_HELD_SECONDS,
     busbar_kernel::snapshot::JOURNAL_QUARANTINED_TOTAL,
     busbar_kernel::snapshot::STORE_SLOTS,
     busbar_kernel::snapshot::UNIT_CHECKPOINTS_TERMINAL,

@@ -65,9 +65,6 @@ impl StoreRow<LinkedStoreDoor> {
     }
 }
 
-pub type StoreAxisOf =
-    fn() -> std::sync::Arc<dyn busbar_contract::persistence::axis::PersistenceAxis>;
-
 use busbar_contract::plugin_rows::PluginRows;
 pub use busbar_kernel_identity::operator::LinkedAuth;
 

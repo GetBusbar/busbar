@@ -42,12 +42,6 @@ use crate::root::serve::*;
 /// The model catalog, in the map type the configuration (`RootCfg::models`) holds it as.
 pub(crate) type ModelCatalog = std::collections::HashMap<String, busbar_contract::config::ModelCfg>;
 
-/// The mounted plugin paths, in the set type the kernel's configuration check takes.
-pub(crate) type MountedPaths = std::collections::HashSet<String>;
-
-pub(crate) type PreparedListeners =
-    foldhash::HashMap<String, Arc<busbar_kernel::router::PreparedListener>>;
-
 pub(crate) struct ApplyReach {
     pub(crate) providers: BTreeMap<String, crate::root::door_steps::ProviderRoute>,
     pub(crate) auths: Arc<crate::root::door_steps::OutboundAuths>,
@@ -339,11 +333,9 @@ impl Served {
             tokio::spawn(async move { driver.drives().await });
         }
 
-        if let Some(post) = &self.post {
-            let lease = LeaseTick {
-                node: Arc::clone(post.node()),
-            };
-            tokio::spawn(lease.ticks());
+        // The post holds the Node weakly; a Node already gone has no lease to tick.
+        if let Some(node) = self.post.as_ref().and_then(|post| post.node()) {
+            tokio::spawn(LeaseTick { node }.ticks());
         }
     }
 }
@@ -371,9 +363,18 @@ impl LeaseTick {
         type JournalFlush =
             std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>>;
         let mut flushing: Option<JournalFlush> = None;
+        // The existing native audit queue owns uncertain refusal/export originals. Keep its
+        // driver independent of the journal so an isolated lost ACK needs no later request.
+        let mut auditing: Option<JournalFlush> = None;
         // The store settle pass is its own future: a stalled store never blocks the flush.
         let mut settling: Option<std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>> =
             None;
+        // Native DATA audit r2: the retained process pulse drives installed native entries,
+        // at most the adopted 64 candidates per pass, resuming from the retained cursor.
+        type NativeDrive =
+            std::pin::Pin<Box<dyn std::future::Future<Output = (usize, Option<u64>)> + Send>>;
+        let mut native_cursor: Option<u64> = None;
+        let mut driving: Option<NativeDrive> = None;
         loop {
             tokio::select! {
                 biased;
@@ -386,6 +387,13 @@ impl LeaseTick {
                         let tick = Arc::clone(&this);
                         flushing = Some(Box::pin(async move { tick.tick().await }));
                     }
+                    if auditing.is_none() && busbar_kernel::audit::auditlog::has_unsettled_audit() {
+                        auditing = Some(Box::pin(async {
+                            busbar_kernel::audit::auditlog::flush_pending()
+                                .await
+                                .map_err(|error| error.to_string())
+                        }));
+                    }
                     if sweep.is_none() {
                         let custody = Arc::clone(&this.node.ticket_custody);
                         sweep = Some(Box::pin(async move { custody.sweep().await }));
@@ -394,6 +402,26 @@ impl LeaseTick {
                         let node = Arc::clone(&this.node);
                         settling = Some(Box::pin(async move { node.settle_store().await }));
                     }
+                    if driving.is_none() && this.node.native_pending() != 0 {
+                        let node = Arc::clone(&this.node);
+                        let mut cursor = native_cursor;
+                        driving = Some(Box::pin(async move {
+                            let retired = node.drive_native(&mut cursor).await;
+                            (retired, cursor)
+                        }));
+                    }
+                }
+                // r2's journal-progress trigger: a confirmed audit run can advance staged native
+                // entries before the next regular tick.
+                () = crate::root::durability::records_pulse().notified(),
+                    if driving.is_none() && this.node.native_pending() != 0 =>
+                {
+                    let node = Arc::clone(&this.node);
+                    let mut cursor = native_cursor;
+                    driving = Some(Box::pin(async move {
+                        let retired = node.drive_native(&mut cursor).await;
+                        (retired, cursor)
+                    }));
                 }
                 result = async {
                     match flushing.as_mut() {
@@ -403,6 +431,15 @@ impl LeaseTick {
                 } => {
                     flushing = None;
                     if let Err(error) = result { tracing::warn!(reason = error, "native journal custody is still pending"); }
+                }
+                result = async {
+                    match auditing.as_mut() {
+                        Some(auditing) => auditing.await,
+                        None => std::future::pending().await,
+                    }
+                } => {
+                    auditing = None;
+                    if let Err(error) = result { tracing::warn!(reason = error, "native audit originals are still pending"); }
                 }
                 () = async {
                     match sweep.as_mut() {
@@ -416,6 +453,15 @@ impl LeaseTick {
                         None => std::future::pending().await,
                     }
                 } => { settling = None; }
+                (_, cursor) = async {
+                    match driving.as_mut() {
+                        Some(driving) => driving.await,
+                        None => std::future::pending().await,
+                    }
+                } => {
+                    driving = None;
+                    native_cursor = cursor;
+                }
             }
         }
     }
@@ -1597,1173 +1643,38 @@ pub(crate) fn arrival_entries(served: &Served) -> Vec<Arc<EntrySpans>> {
     tail
 }
 
-/// Prepare both the compatibility operator mounts and their neutral governed dispatcher.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "composition takes every boot part it wires together"
-)]
-pub(crate) fn data_routes_with_dispatch(
-    served: Served,
+/// Project only the candidate retained by this request. A current global handle is never
+/// consulted, so a reload cannot substitute a different physical route token mid-request.
+pub(crate) fn native_slot(
     app: &busbar_kernel::state::App,
-    plan: &ListenerPlan,
-    at: &str,
-    data_chain: &[ChainAuth],
-    core: &[(String, RouteMethod, RouteAuth)],
-    upgrades: &[&str],
-    offers: &[TransportOffer],
-) -> Result<(DataMounts, Arc<DataRoutes>), String> {
-    let mounts = door_mounts_planned(
-        served,
-        || crate::root::kernel::ROOT_CARD.pin(),
-        data_chain,
-        core,
-        upgrades,
-        offers,
-        Some((plan, app, at)),
-    )?;
-    busbar_kernel::plane_routes::pair_door_refusals(
-        &mounts.routes,
-        &mounts.sessions,
-        &mounts.refusals,
-    )?;
-    Ok((
-        (
-            mounts.routes,
-            mounts.sessions,
-            mounts.refusals,
-            mounts.refuse_by_path,
-        ),
-        mounts.data,
-    ))
+    slot: &str,
+) -> Option<Arc<crate::root::min3_physical::NativeSlot>> {
+    app.config_projection
+        .as_ref()?
+        .downcast_ref::<crate::root::door_steps::DoorConfig>()?
+        .native_slots
+        .get(slot)
+        .cloned()
 }
 
-impl ListenerPlan {
-    fn core_lines(&self, app: &busbar_kernel::state::App) -> Vec<(String, RouteMethod, RouteAuth)> {
-        let mut lines = busbar_kernel::base_data_core_lines(app);
-        if let Some(native) = self
-            .served
-            .as_ref()
-            .and_then(|served| served.native.as_ref())
-        {
-            lines.extend(crate::root::provisioning::route_lines(&native.provisioning));
-        }
-        lines
+/// Install a complete prepared map on an unpublished candidate; the caller publishes App
+/// only after every slot has passed its actual transport/route/class checks.
+pub(crate) fn install_native_slots(
+    app: &mut busbar_kernel::state::App,
+    slots: crate::root::min3_physical::NativeSlots,
+) -> Result<(), String> {
+    if slots.iter().any(|(name, slot)| name != slot.slot()) {
+        return Err("native slot map key differs from its physical owner".into());
     }
-
-    pub(crate) fn new(
-        mut initial: crate::root::boot::ListenerNeeds,
-        offers: Vec<TransportOffer>,
-        framer_for: &FramerFor,
-    ) -> Self {
-        let mut seen = foldhash::HashSet::default();
-        let mut root_claims = Vec::new();
-        for (scheme, _) in &offers {
-            let Some(door) = framer_for(scheme) else {
-                continue;
-            };
-            let Some(owner) = door.instance().filter(|owner| *owner != 0) else {
-                continue;
-            };
-            if !seen.insert(owner) || !door.accepts() {
-                continue;
-            }
-            for binding in door
-                .listener_bindings()
-                .iter()
-                .filter(|binding| binding.slot == "listen")
-            {
-                root_claims.push(binding.clone());
-            }
-        }
-        let root_claim =
-            busbar_contract::abi::transport::listener_bindings::resolve("listen", &root_claims);
-        if let Ok(claim) = &root_claim {
-            for bind in &mut initial.binds {
-                if bind.owner == crate::root::loader::boot::BindOwner::Root && bind.at == "listen" {
-                    bind.transport.clone_from(claim);
-                }
-            }
-        }
-        let framers: foldhash::HashMap<String, (u64, bool)> = offers
-            .iter()
-            .filter_map(|(scheme, _)| {
-                let door = framer_for(scheme)?;
-                let facts = door.facts();
-                if facts.role != busbar_contract::abi::transport::ROLE_FRAMER || !door.accepts() {
-                    return None;
-                }
-                Some((
-                    (*scheme).to_string(),
-                    (door.instance().filter(|id| *id != 0)?, facts.datagram),
-                ))
-            })
-            .collect();
-        // Only a truly unused implicit root bind may disappear. An accepting framer without
-        // the slot declaration is an error, never an invitation to pick its first claim.
-        if !initial.root_required && initial.needs.is_empty() && framers.is_empty() {
-            initial.binds.retain(|bind| bind.at != "listen");
-        }
-        Self {
-            root_claim,
-            initial,
-            served: None,
-            upgrades: None,
-            claim_doors: Arc::default(),
-            planes: None,
-            plane_sections: None,
-            plane_keys: None,
-            offers,
-            framers,
-            refusals: Mutex::default(),
-            nests: Arc::default(),
-            plugin_mounts: None,
-        }
-    }
-
-    pub(crate) fn binds(&self) -> &[crate::root::loader::boot::InboundBind] {
-        &self.initial.binds
-    }
-
-    /// Whether boot retained a physical root data listener.
-    pub(crate) fn has_root_listener(&self) -> bool {
-        self.initial.binds.iter().any(|bind| bind.at == "listen")
-    }
-
-    /// The exact application claim declared for the legacy root data bind.
-    pub(crate) fn root_claim(&self) -> Result<&str, String> {
-        let claim = self.root_claim.as_deref().map_err(Clone::clone)?;
-        if !self
-            .framers
-            .get(claim)
-            .is_some_and(|(_, datagram)| !datagram)
-        {
-            return Err("listen: its declared claim requires an accepting stream framer".into());
-        }
-        Ok(claim)
-    }
-
-    pub(crate) fn share_claim_doors(&mut self, served: &mut Served) -> Result<(), String> {
-        served.nests = Some(Arc::clone(&self.nests));
-        for need in &self.initial.needs {
-            if !self
-                .framers
-                .get(&need.transport)
-                .is_some_and(|(_, datagram)| *datagram)
-            {
-                continue;
-            }
-            if let Some(bind) = self.initial.binds.iter().find(|bind| bind.at == need.at) {
-                if let Some(door) = served.claim_doors.get(&bind.transport) {
-                    served.claim_doors.insert(&need.transport, door);
-                } else {
-                    return Err(format!(
-                        "{}: its validated claim door was not bound",
-                        need.instance
-                    ));
-                }
-            }
-        }
-        self.claim_doors = Arc::new(served.claim_doors.clone());
-        self.served = Some(served.clone());
-        Ok(())
-    }
-
-    #[cfg(test)]
-    pub(crate) fn guests(
-        &self,
-        app: &busbar_kernel::state::App,
-        at: &str,
-    ) -> Result<busbar_kernel::guest::GuestList, String> {
-        let tail = self
-            .lists(app)?
-            .into_iter()
-            .find(|(name, _)| name == at)
-            .map(|(_, guests)| guests)
-            .ok_or_else(|| format!("listener {at} has no guest list"));
-        tail
-    }
-
-    pub(crate) fn stream_binds(
-        &self,
-    ) -> impl Iterator<Item = &crate::root::loader::boot::InboundBind> {
-        self.initial.binds.iter().filter(|bind| {
-            bind.owner != crate::root::loader::boot::BindOwner::Root
-                && self
-                    .framers
-                    .get(&bind.transport)
-                    .is_some_and(|(_, datagram)| !datagram)
-        })
-    }
-
-    pub(crate) fn mount_planes(
-        &self,
-        served: &Served,
-        app: &busbar_kernel::state::App,
-        upgrades: &[&str],
-    ) -> Result<Self, String> {
-        use busbar_contract::abi::transport::route::PATH_EXACT;
-        use busbar_kernel::guest::{Claimant, Line, LineAuth, Route};
-        let mut mounted = Self {
-            root_claim: self.root_claim.clone(),
-            initial: self.initial.clone(),
-            served: Some(served.clone()),
-            upgrades: Some(
-                upgrades
-                    .iter()
-                    .map(|scheme| (*scheme).to_string())
-                    .collect(),
-            ),
-            claim_doors: Arc::new(served.claim_doors.clone()),
-            planes: None,
-            plane_sections: None,
-            plane_keys: None,
-            offers: self.offers.clone(),
-            framers: self.framers.clone(),
-            refusals: Mutex::default(),
-            nests: Arc::clone(&self.nests),
-            plugin_mounts: None,
-        };
-        let cfg = self.config(app)?;
-        let chain: Vec<_> = cfg
-            .data_chain
-            .iter()
-            .map(|name| (name.clone(), app.auth.position_points(name)))
-            .collect();
-        let mut lines = Vec::new();
-        for plane in &served.planes {
-            for (rung, claim) in plane.snapshot.claims.iter().enumerate() {
-                if !routed(claim) || lines::carrier() == Some(claim.carrier.as_str()) {
-                    continue;
-                }
-                let rung = u32::try_from(rung).map_err(|_| "plane claim index does not fit u32")?;
-                lines.push(ListenerPlaneLine {
-                    line: claim_line(&plane.instance, rung, claim, &chain, upgrades, &self.offers)?
-                        .0,
-                    transport: claim.carrier.clone(),
-                    root_only: false,
-                });
-            }
-            for (rung, route) in plane
-                .snapshot
-                .admin_routes
-                .iter()
-                .enumerate()
-                .filter(|(_, route)| route.flags & busbar_contract::abi::plane::ROUTE_PUBLIC != 0)
-            {
-                let method = METHODS
-                    .into_iter()
-                    .find(|method| method.as_str().eq_ignore_ascii_case(&route.verb))
-                    .ok_or_else(|| {
-                        format!(
-                            "{}: unsupported public route method {}",
-                            plane.instance, route.verb
-                        )
-                    })?;
-                lines.push(ListenerPlaneLine {
-                    line: Line {
-                        route: Route {
-                            methods: listener_method_bits(method),
-                            path_form: PATH_EXACT,
-                            path: route.target.clone(),
-                            fields: Vec::new(),
-                            rung: u32::try_from(plane.snapshot.claims.len() + rung)
-                                .map_err(|_| "plane route index does not fit u32")?,
-                        },
-                        claimant: Claimant::Plane(plane.instance.clone()),
-                        dialect: 0,
-                        auth: LineAuth::None,
-                        upgrade: None,
-                        offered: crate::root::doors::offers_unstated(),
-                    },
-                    transport: self.root_claim()?.into(),
-                    root_only: true,
-                });
-            }
-        }
-        for line in crate::root::port_mount::guest_lines(&served.ports, &chain) {
-            lines.push(ListenerPlaneLine {
-                line,
-                transport: self.root_claim()?.into(),
-                root_only: true,
-            });
-        }
-        mounted.plane_keys = Some(
-            served
-                .planes
-                .iter()
-                .map(|plane| (plane.instance.clone(), plane.live.plugin.name().to_string()))
-                .collect(),
-        );
-        mounted.plane_sections = Some(
-            served
-                .planes
-                .iter()
-                .map(|plane| {
-                    (
-                        plane.instance.clone(),
-                        (
-                            plane.live.served_facts.section,
-                            plane.live.served_facts.fallback,
-                        ),
-                    )
-                })
-                .collect(),
-        );
-        mounted.planes = Some(lines);
-        mounted.freeze_mounts(app);
-        mounted.check_topology(app)?;
-        Ok(mounted)
-    }
-
-    fn freeze_mounts(&mut self, app: &busbar_kernel::state::App) {
-        self.plugin_mounts = Some(
-            app.plugin_routes
-                .descriptors()
-                .into_iter()
-                .map(|route| {
-                    (
-                        route.path.to_string(),
-                        route.method,
-                        route.auth == RouteAuth::Admin,
-                    )
-                })
-                .collect(),
-        );
-    }
-
-    pub(crate) fn data_guests(
-        &self,
-        app: &busbar_kernel::state::App,
-    ) -> Result<busbar_kernel::guest::GuestList, String> {
-        self.lists(app)?
-            .into_iter()
-            .find(|(at, _)| at == "listen")
-            .map(|(_, guests)| guests)
-            .ok_or_else(|| "the root data listener is unavailable".into())
-    }
-
-    pub(crate) fn config<'a>(
-        &self,
-        app: &'a busbar_kernel::state::App,
-    ) -> Result<&'a crate::root::door_steps::DoorConfig, String> {
-        app.config_projection
-            .as_ref()
-            .and_then(|c| c.downcast_ref())
-            .ok_or_else(|| "listener candidate has no root configuration projection".into())
-    }
-
-    pub(crate) fn needs(
-        &self,
-        app: &busbar_kernel::state::App,
-    ) -> Result<crate::root::boot::ListenerNeeds, String> {
-        let cfg = self.config(app)?;
-        let mut needs = crate::root::boot::candidate_listener_needs(
-            app,
-            cfg.sections.as_ref().map_err(Clone::clone)?,
-            cfg.root_binds.clone()?,
-        )
-        .unwrap_or_else(|| cfg.listeners.clone())?;
-        needs.root_required = cfg.listeners.as_ref().map_err(Clone::clone)?.root_required;
-        Ok(needs)
-    }
-
-    pub(crate) fn check(&self, app: &busbar_kernel::state::App) -> Result<(), String> {
-        self.check_topology(app)?;
-        self.prepare_routes(app).map(|_| ())
-    }
-
-    fn check_topology(&self, app: &busbar_kernel::state::App) -> Result<(), String> {
-        let lists = self.lists(app)?;
-        self.check_mounts(app)?;
-        for (_, guests) in lists {
-            self.auths(app, &guests)?;
-        }
-        Ok(())
-    }
-
-    pub(crate) fn prepare(&self, app: &mut busbar_kernel::state::App) -> Result<(), String> {
-        self.check_topology(app)?;
-        let Some(prepared) = self.prepare_routes(app)? else {
-            return Ok(());
-        };
-        let mut cfg = self.config(app)?.clone();
-        cfg.listener_routes = Some(prepared);
-        app.config_projection = Some(Arc::new(cfg));
-        Ok(())
-    }
-
-    fn prepare_routes(
-        &self,
-        app: &busbar_kernel::state::App,
-    ) -> Result<Option<PreparedListeners>, String> {
-        let Some(served) = self.served.as_ref() else {
-            return Ok(None);
-        };
-        let cfg = self.config(app)?;
-        let chain: Vec<_> = cfg
-            .data_chain
-            .iter()
-            .map(|name| (name.clone(), app.auth.position_points(name)))
-            .collect();
-        let upgrades: Vec<_> = self
-            .upgrades
-            .as_ref()
-            .into_iter()
-            .flatten()
-            .map(String::as_str)
-            .collect();
-        let mut prepared = PreparedListeners::default();
-        for (at, guests) in self.lists(app)? {
-            let core = if at == "listen" {
-                self.core_lines(app)
-            } else {
-                Vec::new()
-            };
-            let ((doors, sessions, refusals, refuse_by_path), data) = data_routes_with_dispatch(
-                served.clone(),
-                app,
-                self,
-                &at,
-                &chain,
-                &core,
-                &upgrades,
-                &self.offers,
-            )?;
-            let plugins = app.plugin_routes.for_listener(&guests);
-            let router = busbar_kernel::router::PreparedListener::new(
-                app,
-                &plugins,
-                doors,
-                sessions,
-                refusals,
-                refuse_by_path,
-                at == "listen",
-            )?
-            .with_data(data)
-            .with_dispatch_layer(crate::root::listener::deferred_dispatch_layer);
-            let router = if at == "listen" {
-                match served.native.as_ref() {
-                    Some(native) => router.with_core_routes(|routes| {
-                        crate::root::provisioning::mount_routes(routes, &native.provisioning)
-                    }),
-                    None => router,
-                }
-            } else {
-                router
-            };
-            prepared.insert(at, Arc::new(router));
-        }
-
-        Ok(Some(prepared))
-    }
-
-    pub(crate) fn prepared(
-        &self,
-        app: &busbar_kernel::state::App,
-        at: &str,
-    ) -> Option<Arc<busbar_kernel::router::PreparedListener>> {
-        self.config(app)
-            .ok()?
-            .listener_routes
-            .as_ref()?
-            .get(at)
-            .cloned()
-    }
-
-    pub(crate) fn mounted_plugin_paths(
-        &self,
-        app: &busbar_kernel::state::App,
-    ) -> Option<MountedPaths> {
-        self.config(app).ok()?.listener_routes.as_ref()?;
-        let mut paths: MountedPaths = self
-            .plugin_mounts
-            .as_ref()?
-            .iter()
-            .filter(|(_, _, admin)| *admin)
-            .map(|(path, _, _)| path.clone())
-            .collect();
-        paths.extend(
-            app.plugin_routes
-                .descriptors()
-                .into_iter()
-                .filter(|route| route.auth != RouteAuth::Admin && route.dispatch_available)
-                .map(|route| route.path.to_string()),
-        );
-        Some(paths)
-    }
-
-    pub(crate) fn router(
-        self: &Arc<Self>,
-        handle: &Arc<busbar_kernel::state::AppHandle>,
-        at: String,
-        body_limit: usize,
-        max_inbound: usize,
-        server_timing: bool,
-    ) -> axum::Router {
-        let plan = Arc::clone(self);
-        busbar_kernel::router::serve_listener_generations(
-            Arc::clone(handle),
-            move |app| plan.prepared(app, &at),
-            body_limit,
-            max_inbound,
-            server_timing,
-        )
-    }
-
-    pub(crate) fn check_mounts(&self, app: &busbar_kernel::state::App) -> Result<(), String> {
-        if self
-            .served
-            .as_ref()
-            .and_then(|served| served.native.as_ref())
-            .is_some_and(|native| {
-                !native.auth.is_empty() && native.config_version != app.config_version
-            })
-        {
-            return Err("identity-providers: candidate needs freshly prepared auth and route owners; restart required".into());
-        }
-        for route in app.plugin_routes.descriptors() {
-            if !route.dispatch_available
-                && self
-                    .plugin_mounts
-                    .as_ref()
-                    .is_none_or(|mounted| mounted.iter().any(|(path, _, _)| path == route.path))
-            {
-                return Err(format!(
-                    "{}: the candidate has no opened SERVE dispatcher for this mounted route; restart required",
-                    route.path
-                ));
-            }
-        }
-        if let Some(mounted) = self.plugin_mounts.as_ref() {
-            for route in app.plugin_routes.descriptors() {
-                if mounted.iter().any(|(path, _, _)| path == route.path)
-                    && !mounted.iter().any(|(path, method, admin)| {
-                        path == route.path
-                            && *admin == (route.auth == RouteAuth::Admin)
-                            && (!*admin || *method == route.method)
-                    })
-                {
-                    return Err(format!(
-                        "{}: changing a mounted admin plugin method or physical admin placement requires a restart",
-                        route.path
-                    ));
-                }
-            }
-        }
-        Ok(())
-    }
-
-    pub(crate) fn auths(
-        &self,
-        app: &busbar_kernel::state::App,
-        guests: &busbar_kernel::guest::GuestList,
-    ) -> Result<busbar_kernel::inbound::Auths, String> {
-        let declared = self.needs(app)?;
-        let mut auths = busbar_kernel::inbound::Auths::default();
-        for name in guests
-            .lines()
-            .iter()
-            .filter_map(|line| match &line.auth {
-                busbar_kernel::guest::LineAuth::Chain(names, _) => Some(names),
-                busbar_kernel::guest::LineAuth::None => None,
-            })
-            .flatten()
-        {
-            if name == busbar_kernel::config::KEYS_MODULE {
-                continue;
-            }
-            let calls = app
-                .auth
-                .position_calls(name)
-                .or_else(|| {
-                    declared
-                        .needs
-                        .iter()
-                        .chain(&self.initial.needs)
-                        .filter_map(|need| app.inbound_default_auth(&need.auth).ok().flatten())
-                        .find(|default| default.provider == *name)
-                        .map(|default| default.calls)
-                })
-                .ok_or_else(|| format!("listener candidate has no opened auth provider {name}"))?;
-            auths.insert(name.clone(), calls);
-        }
-        Ok(auths)
-    }
-
-    pub(crate) fn withheld_public_export_need(
-        &self,
-        app: &busbar_kernel::state::App,
-        need: &crate::root::boot::ListenerNeed,
-    ) -> bool {
-        use busbar_contract::abi::host::conn::connector::DIRECTION_INBOUND;
-        use busbar_contract::abi::mechanism::KindCode;
-        if need.kind != KindCode::Export
-            || need.at != "listen"
-            || !self.root_claim().is_ok_and(|claim| need.transport == claim)
-            || !need.auth.is_empty()
-            || !app.plugin_routes.public_export_withheld(&need.instance)
-        {
-            return false;
-        }
-        let Some(def) = app.export_defs.get(&need.instance) else {
-            return false;
-        };
-        let Some(row) = crate::root::boot::dropped_registry()
-            .and_then(|registry| registry.resolve(def.module.trim()))
-        else {
-            return false;
-        };
-        let Ok(Some(candidate)) = row.candidate() else {
-            return false;
-        };
-        if candidate.kind != KindCode::Export || candidate.name != need.module {
-            return false;
-        }
-
-        candidate
-            .needs
-            .iter()
-            .filter(|decl| decl.direction == DIRECTION_INBOUND)
-            .count()
-            == 1
-            && candidate.needs.get(need.need as usize).is_some_and(|decl| {
-                decl.direction == DIRECTION_INBOUND
-                    && decl.transport == need.transport
-                    && decl.target_from == "listen"
-                    && decl.auth.is_empty()
-            })
-    }
-
-    pub(crate) fn lists(
-        &self,
-        app: &busbar_kernel::state::App,
-    ) -> Result<Vec<(String, busbar_kernel::guest::GuestList)>, String> {
-        use crate::root::loader::boot::BindOwner;
-        use busbar_contract::abi::mechanism::KindCode;
-        use busbar_contract::abi::transport::route::{PATH_EXACT, PATH_PATTERN};
-        use busbar_kernel::guest::{Claimant, GuestList, Line, LineAuth, Route};
-        let cfg = self.config(app)?;
-        let mut next = self.needs(app)?;
-        if self.has_root_listener() {
-            let claim = self.root_claim()?;
-            for bind in &mut next.binds {
-                if bind.owner == BindOwner::Root && bind.at == "listen" && bind.transport.is_empty()
-                {
-                    bind.transport = claim.into();
-                }
-            }
-        } else {
-            if next.root_required || next.needs.iter().any(|need| need.at == "listen") {
-                return Err("listen: adding a physical listener requires a restart".into());
-            }
-            next.binds.retain(|bind| bind.at != "listen");
-        }
-        next.needs
-            .retain(|need| !self.withheld_public_export_need(app, need));
-        let physical_bind = |at: &str| {
-            let proposed = next.binds.iter().find(|bind| bind.at == at);
-            self.initial
-                .binds
-                .iter()
-                .find(|old| {
-                    proposed.is_some_and(|bind| {
-                        old.listen == bind.listen
-                            && old.transport == bind.transport
-                            && old.tls == bind.tls
-                            && old.max_conns == bind.max_conns
-                            && (old.at == bind.at || bind.listen.port() != 0)
-                    })
-                })
-                .or_else(|| {
-                    self.initial
-                        .binds
-                        .iter()
-                        .find(|old| old.at == at && proposed.is_none())
-                })
-        };
-        for bind in &next.binds {
-            if physical_bind(&bind.at).is_none() {
-                return Err(format!(
-                    "{}: changing or adding a physical listener requires a restart",
-                    bind.at
-                ));
-            }
-        }
-        let mut datagram_claims = foldhash::HashMap::default();
-        for need in &next.needs {
-            if need.kind == KindCode::Plane && self.planes.as_ref().is_some_and(|lines|
-                !lines.iter().any(|route| matches!(&route.line.claimant, Claimant::Plane(owner) if owner == &need.instance)
-                    && !route.root_only && route.transport == need.transport)) {
-                return Err(format!("{}: inbound need {} has no served plane claim", need.instance, need.need));
-            }
-            let Some((owner, datagram)) = self.framers.get(&need.transport) else {
-                return Err(format!(
-                    "{}: inbound need {} has no accepting framer for {}",
-                    need.instance, need.need, need.transport
-                ));
-            };
-            if *datagram {
-                if need.kind != KindCode::Plane || need.at == "listen" {
-                    return Err(format!(
-                        "{}: datagram need {} has no physical plane claim door",
-                        need.instance, need.need
-                    ));
-                }
-                let bind = physical_bind(&need.at)
-                    .ok_or_else(|| format!("{}: unknown datagram listener", need.at))?;
-                if let Some(previous) = datagram_claims.insert(&need.transport, &bind.at) {
-                    if previous != &bind.at {
-                        return Err(format!(
-                            "{}: a second claim door for {}",
-                            need.at, need.transport
-                        ));
-                    }
-                }
-            }
-            {
-                let bind = physical_bind(&need.at)
-                    .ok_or_else(|| format!("{}: unknown physical listener", need.at))?;
-                let scheme = &bind.transport;
-                let physical = self.framers.get(scheme);
-
-                let upgrade_claims_match = match (self.planes.as_ref(), self.upgrades.as_ref()) {
-                    (None, None) => true,
-                    (Some(lines), Some(upgrades)) => upgrades.contains(&need.transport)
-                        && lines.iter().any(|route| {
-                            matches!(&route.line.claimant, Claimant::Plane(instance) if instance == &need.instance)
-                                && !route.root_only
-                                && route.transport == need.transport
-                                && route.line.upgrade.as_deref() == Some(need.transport.as_str())
-                        }),
-                    _ => false,
-                };
-                let upgrades_here = bind.owner == BindOwner::Root
-                    && bind.at == "listen"
-                    && need.kind == KindCode::Plane
-                    && !*datagram
-                    && physical.is_some_and(|(_, datagram)| !datagram)
-                    && self.framers.get(&need.transport).is_some_and(
-                        |(upgrade_owner, datagram)| upgrade_owner == owner && !datagram,
-                    )
-                    && upgrade_claims_match;
-                if bind.at == "admin_listen"
-                    || (physical.is_none_or(|(physical, _)| physical != owner) && !upgrades_here)
-                {
-                    return Err(format!(
-                        "{}: inbound need {} has incompatible physical framing at {}",
-                        need.instance, need.need, bind.at
-                    ));
-                }
-            }
-            if matches!(need.kind, KindCode::Hook | KindCode::Export)
-                && !app.plugin_routes.descriptors().iter().any(|route| {
-                    route.source_instance == need.instance
-                        && route.dispatch_available
-                        && (!route.persistent || self.initial.needs.contains(need))
-                        && route.auth != RouteAuth::Admin
-                        && match need.kind {
-                            KindCode::Hook => {
-                                route.kind == busbar_kernel::plugin_routes::RouteKind::Hook
-                            }
-                            _ => route.kind == busbar_kernel::plugin_routes::RouteKind::Export,
-                        }
-                })
-            {
-                return Err(format!(
-                    "{}: inbound need {} has no data SERVE route",
-                    need.instance, need.need
-                ));
-            }
-        }
-        let chain: Vec<_> = cfg
-            .data_chain
-            .iter()
-            .map(|name| (name.clone(), app.auth.position_points(name)))
-            .collect();
-        let data_mode = DataChainMode::for_candidate(app, &chain);
-        let default_auth = |mut line: Line,
-                            need: &crate::root::boot::ListenerNeed,
-                            allow_operator_open: bool|
-         -> Result<Line, String> {
-            if cfg.data_chain.is_empty() && matches!(line.auth, LineAuth::Chain(..)) {
-                if let Some(default) = app.inbound_default_auth(&need.auth)? {
-                    line.auth = chain_auth(&[(default.provider, default.points)]);
-                } else if allow_operator_open {
-                    line.auth = inherited_data_auth(&chain, data_mode);
-                }
-            }
-            Ok(line)
-        };
-        let mut partitions: Vec<(String, Vec<Line>)> = self
-            .initial
-            .binds
-            .iter()
-            .filter(|bind| {
-                bind.at != "admin_listen"
-                    && !self
-                        .framers
-                        .get(&bind.transport)
-                        .is_some_and(|(_, datagram)| *datagram)
-            })
-            .map(|bind| (bind.at.clone(), Vec::new()))
-            .collect();
-        let place = |partitions: &mut Vec<(String, Vec<Line>)>,
-                     at: &str,
-                     mut line: Line|
-         -> Result<(), String> {
-            let bind =
-                physical_bind(at).ok_or_else(|| format!("listener {at} was not bound at boot"))?;
-            let scheme = &bind.transport;
-            line.offered = offered_by(&self.offers, scheme);
-            if matches!(line.auth, LineAuth::Chain(..)) && !cfg.data_chain.is_empty() {
-                line.auth = chain_auth(&chain);
-            }
-            let lines = &mut partitions
-                .iter_mut()
-                .find(|(name, _)| name == &bind.at)
-                .ok_or_else(|| {
-                    format!("{at}: a data route cannot be placed on the admin listener")
-                })?
-                .1;
-            let already_served = lines.iter().any(|old| {
-                let mut equivalent = line.clone();
-                if matches!((&old.claimant, &line.claimant), (Claimant::Need(a, _), Claimant::Need(b, _)) if a == b) {
-                    equivalent.claimant = old.claimant.clone();
-                }
-                *old == equivalent
-            });
-            if !already_served {
-                lines.push(line);
-            }
-            Ok(())
-        };
-        let assigned = |kind: KindCode, owner: &str, transport: Option<&str>| {
-            next.needs
-                .iter()
-                .filter(move |need| {
-                    need.kind == kind
-                        && need.instance == owner
-                        && transport.is_none_or(|scheme| need.transport == scheme)
-                })
-                .collect::<Vec<_>>()
-        };
-        for route in self.planes.as_ref().into_iter().flatten() {
-            let mut line = route.line.clone();
-            if matches!(line.auth, LineAuth::Chain(..)) {
-                line.auth = chain_auth(&chain);
-            }
-            let transport = &route.transport;
-            let Claimant::Plane(owner) = &line.claimant else {
-                continue;
-            };
-            let allow_operator_open = self
-                .served
-                .as_ref()
-                .and_then(|served| served.planes.iter().find(|plane| plane.instance == *owner))
-                .and_then(|plane| {
-                    plane
-                        .snapshot
-                        .claims
-                        .get(line.route.rung as usize)
-                        .map(|claim| {
-                            operator_open_claim(
-                                data_mode,
-                                plane.live.served_facts.section,
-                                claim.flags,
-                            )
-                        })
-                })
-                .unwrap_or(false);
-            if self
-                .plane_sections
-                .as_ref()
-                .and_then(|sections| sections.get(owner))
-                .is_some_and(|(section, fallback)| {
-                    !fallback
-                        && app
-                            .plane_sections
-                            .as_ref()
-                            .is_some_and(|sections| !sections.contains(section))
-                })
-            {
-                continue;
-            }
-            if route.root_only {
-                place(&mut partitions, "listen", line.clone())?;
-                continue;
-            }
-            let mut needs = assigned(KindCode::Plane, owner, Some(transport));
-            if needs.is_empty() && line.upgrade.is_some() {
-                let upgraded = assigned(KindCode::Plane, owner, None)
-                    .into_iter()
-                    .filter(|need| {
-                        self.framers
-                            .get(&need.transport)
-                            .is_some_and(|(_, datagram)| !datagram)
-                    })
-                    .collect();
-                needs = upgraded;
-            }
-            if needs.is_empty() {
-                if next
-                    .needs
-                    .iter()
-                    .any(|need| need.kind == KindCode::Plane && need.instance == *owner)
-                    && line.upgrade.is_none()
-                {
-                    return Err(format!(
-                        "{owner}: claim {} has no inbound need for its transport {transport}",
-                        line.route.path
-                    ));
-                }
-                if allow_operator_open && matches!(line.auth, LineAuth::Chain(..)) {
-                    line.auth = inherited_data_auth(&chain, data_mode);
-                }
-                place(&mut partitions, "listen", line.clone())?;
-            } else {
-                for need in needs {
-                    if self
-                        .framers
-                        .get(&need.transport)
-                        .is_some_and(|(_, datagram)| *datagram)
-                    {
-                        place(
-                            &mut partitions,
-                            "listen",
-                            default_auth(line.clone(), need, allow_operator_open)?,
-                        )?;
-                    } else {
-                        place(
-                            &mut partitions,
-                            &need.at,
-                            default_auth(line.clone(), need, allow_operator_open)?,
-                        )?;
-                    }
-                }
-            }
-        }
-        for (rung, (path, method, auth)) in (0u32..).zip(
-            self.has_root_listener()
-                .then(|| self.core_lines(app))
-                .into_iter()
-                .flatten(),
-        ) {
-            place(
-                &mut partitions,
-                "listen",
-                Line {
-                    route: Route {
-                        methods: listener_method_bits(method),
-                        path_form: if path.contains('{') {
-                            PATH_PATTERN
-                        } else {
-                            PATH_EXACT
-                        },
-                        path,
-                        fields: Vec::new(),
-                        rung,
-                    },
-                    claimant: Claimant::Clean(CORE_CLAIMANT.into()),
-                    dialect: 0,
-                    auth: match auth {
-                        // Core Admin routes use the operator adapter's admin chain;
-                        // the data chain must not authenticate them first.
-                        RouteAuth::None | RouteAuth::Admin => LineAuth::None,
-                        RouteAuth::Key => inherited_data_auth(&chain, data_mode),
-                    },
-                    upgrade: None,
-                    offered: crate::root::doors::offers_unstated(),
-                },
-            )?;
-        }
-        for (rung, route) in (0u32..).zip(app.plugin_routes.descriptors()) {
-            if route.auth == RouteAuth::Admin || !route.dispatch_available {
-                continue;
-            }
-            let kind = match route.kind {
-                busbar_kernel::plugin_routes::RouteKind::Hook => KindCode::Hook,
-                busbar_kernel::plugin_routes::RouteKind::Export => KindCode::Export,
-            };
-            let needs = if route.persistent {
-                self.initial
-                    .needs
-                    .iter()
-                    .filter(|need| need.kind == kind && need.instance == route.source_instance)
-                    .collect()
-            } else {
-                assigned(kind, route.source_instance, None)
-            };
-            let line = |need| Line {
-                route: Route {
-                    methods: listener_method_bits(route.method),
-                    path_form: PATH_EXACT,
-                    path: route.path.into(),
-                    fields: Vec::new(),
-                    rung,
-                },
-                claimant: Claimant::Need(route.source_instance.into(), need),
-                dialect: 0,
-                auth: if route.auth == RouteAuth::None {
-                    LineAuth::None
-                } else {
-                    chain_auth(&chain)
-                },
-                upgrade: None,
-                offered: crate::root::doors::offers_unstated(),
-            };
-            if needs.is_empty() {
-                let mut line = line(0);
-                if matches!(line.auth, LineAuth::Chain(..)) {
-                    line.auth = inherited_data_auth(&chain, data_mode);
-                }
-                place(&mut partitions, "listen", line)?;
-            } else {
-                for need in needs {
-                    place(
-                        &mut partitions,
-                        &need.at,
-                        default_auth(line(need.need), need, true)?,
-                    )?;
-                }
-            }
-        }
-        let tail = partitions
-            .into_iter()
-            .map(|(at, lines)| {
-                GuestList::seal(lines)
-                    .map(|list| (at.clone(), list))
-                    .map_err(|refusal| {
-                        let listener = physical_bind(&at)
-                            .map(|bind| format!("{at} ({})", bind.listen))
-                            .unwrap_or_else(|| at.clone());
-                        guest_refusal(&listener, refusal)
-                    })
-            })
-            .collect();
-        tail
-    }
-
-    pub(crate) fn policy(self: &Arc<Self>, at: String) -> crate::root::inbound::ListenerPolicy {
-        let plan = Arc::clone(self);
-        Arc::new(move |source| {
-            let guests = plan
-                .lists(&source.app)?
-                .into_iter()
-                .find(|(name, _)| *name == at)
-                .map(|(_, guests)| guests)
-                .ok_or_else(|| format!("listener {at} is unavailable"))?;
-            let auths = plan.auths(&source.app, &guests)?;
-            let owned_guests = guests.clone();
-            let keys = plan.plane_keys.as_ref().cloned().unwrap_or_default();
-            let legacy_fallback = at == "listen";
-            let neutral_refuse: Option<busbar_kernel::inbound::NeutralRefuse> = plan.prepared(&source.app, &at)
-                .and_then(|prepared| prepared.data())
-                .and_then(|data| data.downcast::<DataRoutes>().ok())
-                .map(|routes| Arc::new(move |_: &Arc<busbar_kernel::state::App>, refusal: &busbar_kernel::plane_routes::KernelRefusal<'_>| routes.refuse_line(refusal)) as busbar_kernel::inbound::NeutralRefuse);
-            let audit_kind = plan
-                .prepared(&source.app, &at)
-                .and_then(|prepared| prepared.data())
-                .and_then(|data| data.downcast::<DataRoutes>().ok())
-                .map(|routes| {
-                    Arc::new(move |line| routes.inbound_audit_kind(line))
-                        as Arc<dyn Fn(u32) -> OpClassId + Send + Sync>
-                });
-            let scope = busbar_kernel::inbound::ListenerScope {
-                audit_kind,
-                neutral_refuse,
-                legacy_fallback,
-                refuse: plan
-                    .prepared(&source.app, &at)
-                    .and_then(|prepared| prepared.refusal_renderer()),
-                admission: Arc::new(move |app, head| {
-                    use busbar_kernel::guest::{Claimant, Matched};
-                    let fields: Vec<_> = head
-                        .fields
-                        .iter()
-                        .map(|(name, value)| (name.as_str(), value.as_slice()))
-                        .collect();
-                    let Matched::Line(line) =
-                        owned_guests.matched(&head.method, &head.target, &fields)
-                    else {
-                        return None;
-                    };
-                    match &line.claimant {
-                        Claimant::Plane(owner) => keys
-                            .get(owner)
-                            .and_then(|key| app.planes.admission_of(key))
-                            .cloned(),
-                        Claimant::Need(..) => None,
-                        _ if legacy_fallback => app.planes.admission_for(&head.target).cloned(),
-                        _ => None,
-                    }
-                }),
-            };
-            Ok(busbar_kernel::inbound::Listener {
-                ids: Vec::new(),
-                guests,
-                auths,
-                body_limit: source
-                    .app
-                    .limits
-                    .as_ref()
-                    .map_or(source.body_limit, |limits| {
-                        limits.request_body_max_bytes as u64
-                    }),
-                app: Arc::clone(&source.app),
-                door_refusals: plan
-                    .prepared(&source.app, &at)
-                    .map(|prepared| prepared.refusals.clone())
-                    .unwrap_or_else(|| {
-                        plan.refusals
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner)
-                            .get(&at)
-                            .cloned()
-                            .unwrap_or_default()
-                    }),
-                signed_ingress: if legacy_fallback {
-                    source.signed_ingress.clone()
-                } else {
-                    Arc::new(|_, _| false)
-                },
-                scope: Some(scope),
-            })
-        })
-    }
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum DataChainMode {
-    Credentialed,
-    OpenRelay,
-}
-
-impl DataChainMode {
-    pub(crate) fn for_candidate(app: &busbar_kernel::state::App, chain: &[ChainAuth]) -> Self {
-        if chain.is_empty() && app.auth.is_open() {
-            Self::OpenRelay
-        } else {
-            Self::Credentialed
-        }
-    }
-}
-
-pub(crate) fn inherited_data_auth(
-    chain: &[ChainAuth],
-    mode: DataChainMode,
-) -> busbar_kernel::guest::LineAuth {
-    if mode == DataChainMode::OpenRelay && chain.is_empty() {
-        busbar_kernel::guest::LineAuth::None
-    } else {
-        chain_auth(chain)
-    }
-}
-
-pub(crate) fn operator_open_claim(mode: DataChainMode, section: &str, flags: u32) -> bool {
-    use busbar_contract::abi::plane::{CLAIM_SIGNED_INGRESS, CLAIM_TICKET};
-    mode == DataChainMode::OpenRelay
-        && section == busbar_contract::section::RESERVED_POOLS_KEY
-        && flags & (CLAIM_SIGNED_INGRESS | CLAIM_TICKET) == 0
+    let mut config = app
+        .config_projection
+        .as_ref()
+        .and_then(|value| value.downcast_ref::<crate::root::door_steps::DoorConfig>())
+        .ok_or("native listener candidate has no root configuration projection")?
+        .clone();
+    config.native_slots = slots;
+    app.config_projection = Some(Arc::new(config));
+    Ok(())
 }
 
 pub(crate) fn chain_auth(data_chain: &[ChainAuth]) -> busbar_kernel::guest::LineAuth {
@@ -2847,13 +1758,7 @@ type StoreTickets = (
 );
 
 pub(crate) struct TransportRow {
-    pub(crate) claims: Vec<&'static str>,
-
     pub(crate) upgrades: Vec<&'static str>,
-
-    pub(crate) under: Option<&'static str>,
-
-    pub(crate) offered: busbar_contract::abi::auth::AuthPoints,
 }
 
 pub(crate) fn transport_rows(
@@ -2861,41 +1766,12 @@ pub(crate) fn transport_rows(
     dropped: &[crate::root::registry::DroppedDoor],
 ) -> Vec<TransportRow> {
     let linked = transports.iter().map(|t| TransportRow {
-        claims: (t.claims)(),
         upgrades: (t.upgrades)(),
-        under: (t.composes_over)().first().copied(),
-        offered: (t.offered)(),
     });
     let dropped = dropped.iter().map(|d| TransportRow {
-        claims: d.claims.clone(),
         upgrades: d.upgrades.clone(),
-        under: d.composes_over.first().copied(),
-        offered: d.offered,
     });
     linked.chain(dropped).collect()
-}
-
-#[must_use]
-pub(crate) fn transport_offers(
-    transports: &[crate::root::linked::LinkedTransport],
-    dropped: &[crate::root::registry::DroppedDoor],
-) -> Vec<TransportOffer> {
-    let rows = transport_rows(transports, dropped);
-    let own: Vec<TransportOffer> = rows
-        .iter()
-        .flat_map(|r| r.claims.iter().map(move |c| (*c, r.offered)))
-        .collect();
-    let tail = rows
-        .iter()
-        .flat_map(|r| {
-            let under = r.under.map(|l| offered_by(&own, l));
-            r.claims.iter().map(move |c| match under {
-                Some(under) if r.upgrades.contains(c) => (*c, under),
-                _ => (*c, r.offered),
-            })
-        })
-        .collect();
-    tail
 }
 
 pub(crate) fn offered_by(
@@ -3050,7 +1926,7 @@ pub(crate) fn door_mounts(
     upgrades: &[&str],
     offers: &[TransportOffer],
 ) -> Result<DoorMounts, String> {
-    door_mounts_planned(served, pin, data_chain, core, upgrades, offers, None)
+    door_mounts_planned(served, pin, data_chain, core, upgrades, offers)
 }
 
 pub(crate) fn door_mounts_planned(
@@ -3060,28 +1936,12 @@ pub(crate) fn door_mounts_planned(
     core: &[(String, RouteMethod, RouteAuth)],
     upgrades: &[&str],
     offers: &[TransportOffer],
-    plan: Option<(&ListenerPlan, &busbar_kernel::state::App, &str)>,
 ) -> Result<DoorMounts, String> {
-    use busbar_contract::abi::transport::route::{method_bit, PATH_EXACT, PATH_PATTERN};
+    use busbar_contract::abi::transport::route::{PATH_EXACT, PATH_PATTERN};
     use busbar_kernel::guest::{Claimant, GuestList, LineAuth, Matched};
     use foldhash::HashMap;
 
-    let mut public = if plan.is_none_or(|(_, _, at)| at == "listen") {
-        public_routes(&served)
-    } else {
-        Vec::new()
-    };
-    let physical = if let Some((plan, app, at)) = plan {
-        Some(
-            plan.lists(app)?
-                .into_iter()
-                .find(|(name, _)| name == at)
-                .ok_or_else(|| format!("listener {at} has no guest list"))?
-                .1,
-        )
-    } else {
-        None
-    };
+    let mut public = public_routes(&served);
     let mut upgraded: foldhash::HashSet<DoorClaim> = foldhash::HashSet::default();
     let mut lines = Vec::new();
     let mut doors: Vec<(busbar_kernel::guest::Line, Option<RouteMethod>, DoorClaim)> = Vec::new();
@@ -3092,16 +1952,8 @@ pub(crate) fn door_mounts_planned(
             }
             let rung =
                 u32::try_from(i).map_err(|_| format!("{}: too many claims", plane.instance))?;
-            let (mut line, method) =
+            let (line, method) =
                 claim_line(&plane.instance, rung, claim, data_chain, upgrades, offers)?;
-            if let Some(guests) = &physical {
-                let Some(admitted) = guests.lines().iter().find(|admitted| {
-                    admitted.claimant == line.claimant && admitted.route.rung == rung
-                }) else {
-                    continue;
-                };
-                line = admitted.clone();
-            }
             if line.upgrade.is_some() {
                 upgraded.insert((p, rung));
             }
@@ -3110,18 +1962,15 @@ pub(crate) fn door_mounts_planned(
         }
     }
 
-    // Without a physical ListenerPlan (the actual-root fixtures), seal the same native lines.
-    // A planned listener already supplied these in its complete immutable guest list.
-    if physical.is_none() {
-        lines.extend(crate::root::port_mount::guest_lines(
-            &served.ports,
-            data_chain,
-        ));
-    }
+    // The native port lines join the same sealed guest list.
+    lines.extend(crate::root::port_mount::guest_lines(
+        &served.ports,
+        data_chain,
+    ));
     for (rung, (path, method, auth)) in (0u32..).zip(core) {
         lines.push(busbar_kernel::guest::Line {
             route: busbar_kernel::guest::Route {
-                methods: method_bit(method.as_str()),
+                methods: listener_method_bits(*method),
                 path_form: if path.contains('{') {
                     PATH_PATTERN
                 } else {
@@ -3142,12 +1991,8 @@ pub(crate) fn door_mounts_planned(
             offered: crate::root::doors::offers_unstated(),
         });
     }
-    let guests = match physical {
-        Some(guests) => guests,
-        None => {
-            GuestList::seal(lines).map_err(|refusal| guest_refusal("the data listener", refusal))?
-        }
-    };
+    let guests =
+        GuestList::seal(lines).map_err(|refusal| guest_refusal("the data listener", refusal))?;
     let post = served.post.clone().unwrap_or_else(|| {
         Arc::new(crate::root::plane_node::NodeEndPost::new(
             crate::root::plane_node::node(),
@@ -3223,7 +2068,7 @@ pub(crate) fn door_mounts_planned(
             .collect(),
         entries: arrival_entries(&served),
         served,
-        claim_doors: plan.map(|(plan, _, _)| Arc::clone(&plan.claim_doors)),
+        claim_doors: None,
         post,
         pin,
         guests,
@@ -3233,28 +2078,16 @@ pub(crate) fn door_mounts_planned(
             .collect(),
         frames: Mutex::default(),
     })?;
-    if plan.is_none_or(|(_, _, at)| at == "listen") {
-        public.extend(crate::root::port_mount::routes(
-            &routes.served.ports,
-            routes
-                .served
-                .native
-                .as_deref()
-                .map(crate::root::min3_boot::signed_ingress),
-            routes.served.billing.as_ref(),
-            Some(Arc::clone(&routes)),
-        ));
-    }
-    if let Some((plan, _, _)) = plan {
-        {
-            let mut nests = plan
-                .nests
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            nests.retain(|routes| routes.strong_count() != 0);
-            nests.push(Arc::downgrade(&routes));
-        }
-    }
+    public.extend(crate::root::port_mount::routes(
+        &routes.served.ports,
+        routes
+            .served
+            .native
+            .as_deref()
+            .map(crate::root::min3_boot::signed_ingress),
+        routes.served.billing.as_ref(),
+        Some(Arc::clone(&routes)),
+    ));
     let mut session_mounts: Vec<(String, RouteMethod, RouteAuth, DoorClaim)> = Vec::new();
     let mut sessions = Vec::new();
     let mut requests = Vec::new();
@@ -3477,9 +2310,7 @@ pub(crate) fn door_mounts_planned(
     let mut routes_of = routes_of;
     routes_of.extend(public);
 
-    if plan.is_none() {
-        crate::root::inbound::stage(routes.guests.clone(), refusals.clone());
-    }
+    crate::root::inbound::stage(routes.guests.clone(), refusals.clone());
     Ok(DoorMounts {
         data: routes,
         routes: routes_of,

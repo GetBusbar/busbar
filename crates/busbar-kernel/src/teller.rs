@@ -19,6 +19,9 @@ use crate::slice::{takes_lease, ConcurrencyGauge, GroupLeaseSlip, LeaseCell, IN_
 #[cfg(any(test, feature = "test-support"))]
 pub mod seats;
 
+/// One native allocation's call-bound audit custody; Node owns the money, signing and journal joins.
+pub mod native_data_audit;
+
 /// The kernel's own authority: the one place the tokens the units are lent are minted.
 ///
 /// One of these exists per node, made at boot. It is not a capability the units can see; it is the

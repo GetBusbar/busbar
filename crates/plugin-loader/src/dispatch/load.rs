@@ -287,7 +287,7 @@ pub fn enter_door(door_fn: RawDoorFn) -> *const Door {
     crate::ffi_thread::on_plugin_thread(call).unwrap_or(std::ptr::null())
 }
 
-#[cfg(any(test, feature = "test-support", feature = "pack"))]
+#[cfg(any(test, feature = "test-support"))]
 pub fn rendering_of_library(path: &std::path::Path) -> Result<Option<Vec<u8>>, LoadError> {
     crate::stage::allow_standalone_path_load().map_err(LoadError::Open)?;
     let lib = crate::stage::dlopen_on_worker(path.as_os_str()).map_err(LoadError::Open)?;
@@ -557,7 +557,7 @@ pub enum LoadError {
     Entropy(String),
 }
 
-pub const REBUILD: &str = "rebuild the plugin against the 1.6.0 SDK";
+pub use busbar_artifact_verifier::REBUILD;
 
 impl fmt::Display for LoadError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

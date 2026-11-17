@@ -157,7 +157,9 @@ impl<'a, V: Clone> Drop for Reservation<'a, V> {
 
 pub mod durable {
     use busbar_contract::Secret;
-    use busbar_kernel::persistence::scoped::{ClaimOutcome, Outcome, ScopedStore};
+    use busbar_kernel::persistence::scoped::{
+        ClaimOutcome, Expected, Mutation, Outcome, Predicate, Request, ScopedStore,
+    };
 
     use super::{BindingMismatch, IDEMPOTENCY_TTL_SECS};
 
@@ -233,6 +235,86 @@ pub mod durable {
 
     fn held_record_id(id: &str, generation: u32) -> String {
         format!("held:{id}:{generation}")
+    }
+
+    struct HeldHead {
+        generation: u32,
+        bytes: Option<Secret<Vec<u8>>>,
+    }
+
+    async fn held_head(store: &ScopedStore, id: &str) -> Result<HeldHead, Refused> {
+        let bytes = store
+            .get(REPLAY_KIND, format!("held-head:{id}").as_bytes())
+            .await
+            .map_err(|e| Refused::Unavailable(format!("{e:?}")))?;
+        let generation = match &bytes {
+            None => 0,
+            Some(value) => {
+                let body = value.expose(&busbar_kernel::seal::lend());
+                if body.len() != 5 || body[0] != 1 {
+                    return Err(Refused::Unavailable(
+                        "unreadable held idempotency cursor".into(),
+                    ));
+                }
+                u32::from_be_bytes(body[1..].try_into().expect("length checked"))
+            }
+        };
+        Ok(HeldHead { generation, bytes })
+    }
+
+    async fn advance_head(
+        store: &ScopedStore,
+        id: &str,
+        head: &HeldHead,
+        generation: u32,
+    ) -> Result<(), Refused> {
+        if generation == head.generation {
+            return Ok(());
+        }
+        if generation < head.generation {
+            return Err(Refused::Unavailable(
+                "held idempotency cursor cannot regress".into(),
+            ));
+        }
+        let key = format!("held-head:{id}").into_bytes();
+        let mut body = vec![1];
+        body.extend_from_slice(&generation.to_be_bytes());
+        let mut identity = b"busbar.admin.held-head.v1\0".to_vec();
+        identity.extend_from_slice(
+            &u64::try_from(id.len())
+                .expect("record identity length fits u64")
+                .to_be_bytes(),
+        );
+        identity.extend_from_slice(id.as_bytes());
+        identity.push(u8::from(head.bytes.is_some()));
+        if let Some(prior) = &head.bytes {
+            // The observed representation is exactly five bytes, validated by held_head.
+            identity.extend_from_slice(prior.expose(&busbar_kernel::seal::lend()));
+        }
+        identity.extend_from_slice(&generation.to_be_bytes());
+        let digest = busbar_contract::abi::sdk::digest::sha256(&identity);
+        let request = Request {
+            op_id: digest[..16].try_into().expect("fixed digest length"),
+            predicates: vec![Predicate {
+                schema: REPLAY_KIND.into(),
+                key: key.clone(),
+                expected: head
+                    .bytes
+                    .as_ref()
+                    .map_or(Expected::Absent, |value| Expected::Exact(value.clone())),
+            }],
+            mutations: vec![Mutation::Put {
+                schema: REPLAY_KIND.into(),
+                key,
+                value: Secret::new(body),
+            }],
+        };
+        match store.conditional_native(&request).await {
+            Ok(Outcome::Applied) => Ok(()),
+            other => Err(Refused::Unavailable(format!(
+                "held idempotency cursor publication was not confirmed: {other:?}"
+            ))),
+        }
     }
 
     fn encode(generation: u32, written_at: u64, settled: &Settled) -> Vec<u8> {
@@ -314,6 +396,23 @@ pub mod durable {
             )));
         };
         Ok(Some((generation, written_at, settled)))
+    }
+
+    async fn held_row(
+        store: &ScopedStore,
+        id: &str,
+        generation: u32,
+    ) -> Result<Option<(u64, Settled)>, Refused> {
+        let row = held_record_id(id, generation);
+        let Some((held, written_at, settled)) = read_any(store, &row).await? else {
+            return Ok(None);
+        };
+        if held != generation {
+            return Err(Refused::Unavailable(format!(
+                "the held idempotency record `{row}` names a different generation"
+            )));
+        }
+        Ok(Some((written_at, settled)))
     }
 
     async fn read(
@@ -427,9 +526,51 @@ pub mod durable {
         },
         /// Settled with an answer written at `completed_at`.
         Done { answer: Vec<u8>, completed_at: u64 },
+        /// An unresolved operation's exact producer-owned intent, without a reply expiry.
+        Retained { receipt: Vec<u8> },
     }
 
-    /// Reads one operation: `None` when the key is unknown or past retention.
+    async fn lookup_held(
+        store: &ScopedStore,
+        id: &str,
+        now: u64,
+    ) -> Result<(bool, Option<Looked>), Refused> {
+        let head = held_head(store, id).await?;
+        let mut observed = head.bytes.is_some();
+        let mut generation = head.generation;
+        for _ in 0..MAX_GENERATIONS {
+            let Some((written_at, settled)) = held_row(store, id, generation).await? else {
+                return Ok((observed, None));
+            };
+            observed = true;
+            match advance_held(settled, written_at, now) {
+                Err(Refused::Retained(receipt)) => {
+                    return Ok((true, Some(Looked::Retained { receipt })))
+                }
+                Err(Refused::Answer(answer)) => {
+                    return Ok((
+                        true,
+                        Some(Looked::Done {
+                            answer,
+                            completed_at: written_at,
+                        }),
+                    ))
+                }
+                Err(Refused::Applied(_)) => return Ok((true, None)),
+                Err(error) => return Err(error),
+                Ok(()) => {
+                    generation = generation.checked_add(1).ok_or_else(|| {
+                        Refused::Unavailable("held idempotency generation exhausted".into())
+                    })?
+                }
+            }
+        }
+        Err(Refused::Unavailable(
+            "held idempotency lookup exceeded its traversal budget".into(),
+        ))
+    }
+
+    /// Reads one operation: completed answers expire, but retained intents remain visible.
     pub async fn lookup(
         store: &ScopedStore,
         key: &(String, String),
@@ -437,6 +578,10 @@ pub mod durable {
     ) -> Result<Option<Looked>, String> {
         let id = record_id(key);
         let unavailable = |e: Refused| format!("{e:?}");
+        let (held, looked) = lookup_held(store, &id, now).await.map_err(unavailable)?;
+        if held {
+            return Ok(looked);
+        }
         match read_any(store, &id).await.map_err(unavailable)? {
             Some((_, written_at, Settled::Answer(answer))) => {
                 if now.saturating_sub(written_at) < IDEMPOTENCY_TTL_SECS {
@@ -480,19 +625,16 @@ pub mod durable {
         now: u64,
     ) -> Result<Claim, Refused> {
         let id = record_id(key);
-        let mut generation = 0;
-        loop {
+        let head = held_head(store, &id).await?;
+        let mut generation = head.generation;
+        for _ in 0..MAX_GENERATIONS {
             let row = held_record_id(&id, generation);
-            if let Some((held, written_at, settled)) = read_any(store, &row).await? {
-                if held != generation {
-                    return Err(Refused::Unavailable(format!(
-                        "the held idempotency record `{row}` names a different generation"
-                    )));
-                }
+            if let Some((written_at, settled)) = held_row(store, &id, generation).await? {
                 advance_held(settled, written_at, now)?;
                 generation = generation.checked_add(1).ok_or(Refused::InFlight)?;
                 continue;
             }
+            advance_head(store, &id, &head, generation).await?;
             if generation == 0 {
                 let legacy_generation = match read_any(store, &id).await? {
                     Some((held, written_at, settled)) => {
@@ -522,10 +664,14 @@ pub mod durable {
                 });
             }
 
-            if read_any(store, &row).await?.is_none() {
-                return Err(Refused::InFlight);
-            }
+            // A competing claimant won. A later request can read its settled outcome;
+            // this invocation neither restarts its read budget nor redeems another generation.
+            return Err(Refused::InFlight);
         }
+        advance_head(store, &id, &head, generation).await?;
+        Err(Refused::Unavailable(
+            "held idempotency claim exceeded its traversal budget".into(),
+        ))
     }
 
     /// Settle a retained receipt terminally (TRUST-ADMIN-PRODUCER-DESIGN r3 §4.6): the held row of
@@ -640,7 +786,7 @@ pub mod durable {
                 }
             };
             for (key, bytes) in page.rows {
-                if key.starts_with(b"held:") {
+                if key.starts_with(b"held:") || key.starts_with(b"held-head:") {
                     continue;
                 }
                 let body = bytes.expose(&busbar_kernel::seal::lend());

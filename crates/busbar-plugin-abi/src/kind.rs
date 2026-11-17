@@ -895,6 +895,10 @@ mod tests {
                 let _ = (h, mode, req, body, out);
                 Err(crate::fail::Fail::unsupported())
             }
+            sync fn channel(&self, h: &Host, s: &mut Session, target: &Target<'_>, out: &mut Out<'_>) -> Result<(), Fail> {
+                let _ = (h, s, target, out);
+                Err(crate::fail::Fail::unsupported())
+            }
         }
     }
 
@@ -1212,7 +1216,7 @@ mod tests {
             },
         );
 
-        fn lease() -> OutLease {
+        fn lease() -> OutLease<'static> {
             OutLease::new(vec![0; 4096], 1 << 20).expect("a free ACTIVE slot")
         }
 

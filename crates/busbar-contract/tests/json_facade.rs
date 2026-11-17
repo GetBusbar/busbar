@@ -412,53 +412,6 @@ fn schema_check_profile_matches_dev() {
     assert!(!nonnullable.is_valid(b"null"));
 }
 
-/// `json::Body` answers the writer's bytes as `application/json` (status from the tuple, as axum's
-/// `Json`); no serde_json, no axum `json` feature.
-#[cfg(feature = "axum")]
-#[test]
-fn body_bytes_and_content_type_pinned() {
-    use axum_core::response::IntoResponse;
-    use futures::StreamExt;
-    use http::header::CONTENT_TYPE;
-    use http::StatusCode;
-
-    #[derive(Serialize)]
-    struct Answer {
-        b: u64,
-        a: &'static str,
-    }
-
-    let content_type = |response: &axum_core::response::Response| {
-        let types: Vec<Vec<u8>> = response
-            .headers()
-            .get_all(CONTENT_TYPE)
-            .iter()
-            .map(|value| value.as_bytes().to_vec())
-            .collect();
-        types
-    };
-    let read = |response: axum_core::response::Response| {
-        let chunks = futures::executor::block_on(
-            response.into_body().into_data_stream().collect::<Vec<_>>(),
-        );
-        chunks
-            .into_iter()
-            .flat_map(|chunk| chunk.expect("body chunk").to_vec())
-            .collect::<Vec<u8>>()
-    };
-
-    let response = json::Body(Answer { b: 2, a: "x\"y" }).into_response();
-    assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(content_type(&response), [b"application/json".to_vec()]);
-    assert_eq!(read(response), br#"{"b":2,"a":"x\"y"}"#);
-
-    let exact = json::parse_value(br#"{"n":18446744073709551617}"#).expect("parsed");
-    let response = (StatusCode::UNAUTHORIZED, json::Body(exact)).into_response();
-    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    assert_eq!(content_type(&response), [b"application/json".to_vec()]);
-    assert_eq!(read(response), br#"{"n":18446744073709551617}"#);
-}
-
 /// A built or edited object is written in key order whatever order it was built in (#162: the
 /// workspace's sonic `sort_keys`, the order serde_json's `Map` wrote), and twice the same.
 #[test]

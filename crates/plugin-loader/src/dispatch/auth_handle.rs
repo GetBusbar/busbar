@@ -409,7 +409,7 @@ static NONE_LINES: std::sync::Mutex<Vec<(u64, u64)>> = std::sync::Mutex::new(Vec
 
 static NONE_UNITS: AtomicU64 = AtomicU64::new(0);
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 #[must_use]
 pub fn lend_none_line(owner: u64, id: u64) -> Option<AuthRef> {
     let r = mint_auth_ref(owner, generation(), id)?;

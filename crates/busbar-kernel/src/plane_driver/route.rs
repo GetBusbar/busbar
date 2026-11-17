@@ -163,6 +163,15 @@ pub struct RoutedScope {
 }
 
 pub trait FarEnd: Sync {
+    fn send_selected<'a>(
+        &'a self,
+        token: &'a Pass<Route>,
+        request: OutboundRequest,
+        handoff: &'a mut super::port_egress::SelectedHandoff,
+    ) -> impl Future<Output = bool> + Send + 'a {
+        let _ = (token, request, handoff);
+        async { false }
+    }
     fn member<'a>(
         &'a self,
         token: &'a Pass<Route>,

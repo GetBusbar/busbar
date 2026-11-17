@@ -1097,9 +1097,9 @@ mod tests {
             }
         }
         fields.extend(
-            super::super::plane_sections::config_sections()
-                .into_iter()
-                .map(str::to_owned),
+            super::super::recognizer::core_keys()
+                .iter()
+                .map(|key| (*key).to_owned()),
         );
         assert!(
             fields.len() > 25,
