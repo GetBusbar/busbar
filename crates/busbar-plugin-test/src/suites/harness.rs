@@ -27,7 +27,8 @@ use busbar_contract::json::{
     self as facade, JsonContainerTrait, JsonValueMutTrait, JsonValueTrait, Value,
 };
 use busbar_contract::secure::SecureVec;
-use busbar_plugin_abi::host_side::caller::{BoxFut, InstanceLimits};
+use busbar_plugin_abi::host_side::caller::BoxFut;
+pub use busbar_plugin_abi::host_side::caller::{Accept, InstanceLimits};
 use busbar_plugin_abi::host_side::HOST;
 use busbar_plugin_abi::need::need_flag;
 use busbar_plugin_abi::plugin::__rt::LinkedPlugin;
@@ -35,9 +36,9 @@ use busbar_plugin_abi::plugin::Plugin;
 use busbar_plugin_abi::types::KindCode;
 use busbar_plugin_loader::admit::{admit_header, admit_linked, Admitted};
 use busbar_plugin_loader::instance::{
-    Ceilings, DeclaredEndpoint, ImagesBuilder, InstanceSpec, OpenError, OpenedPort, Registry,
-    Settled,
+    Ceilings, DeclaredEndpoint, ImagesBuilder, Registry, Settled,
 };
+pub use busbar_plugin_loader::instance::{InstanceSpec, OpenError, OpenPurpose, OpenedPort};
 use busbar_plugin_loader::refusal::{Refusal, RefusalCode};
 use busbar_ports::auth::AuthPort;
 use busbar_ports::binder::{BindError, ConfigBinder, DestDef, TrustAnchor};
@@ -886,7 +887,7 @@ impl Harness {
         config: &'a [u8],
     ) -> InstanceSpec<'a> {
         InstanceSpec {
-            purpose: busbar_plugin_loader::instance::OpenPurpose::Canonical,
+            purpose: OpenPurpose::Canonical,
             identity: module,
             name,
             config_json: config,
@@ -913,8 +914,8 @@ impl Harness {
         self.check_spec(&spec)
     }
 
-    /// The typed store facade supplies limits without bypassing endpoint or refusal observations.
-    pub(crate) fn check_spec(&self, spec: &InstanceSpec<'_>) -> Result<(), OpenError> {
+    /// Check an explicit case spec, preserving its purpose and limits and recording endpoints/refusals.
+    pub fn check_spec(&self, spec: &InstanceSpec<'_>) -> Result<(), OpenError> {
         let declared = self.noted(self.block_on(self.registry.check_endpoints(spec)))?;
         self.declared
             .lock()
@@ -951,56 +952,54 @@ impl Harness {
 
     /// Open the instance as its kind and return the typed port.
     pub fn open(&self, name: &str, config: &[u8]) -> Result<OpenedPort, OpenError> {
-        match self.kind {
-            KindCode::Store => self.open_store(name, config).map(OpenedPort::Store),
-            KindCode::Secret => self.open_secret(name, config).map(OpenedPort::Secret),
-            KindCode::Auth => self.open_auth(name, config).map(OpenedPort::Auth),
-            KindCode::Hook => self.open_hook(name, config).map(OpenedPort::Hook),
-            KindCode::Export => self.open_export(name, config).map(OpenedPort::Export),
-            KindCode::Plane => self.open_plane(name, config).map(OpenedPort::Plane),
-            KindCode::Transport => self.open_transport(name, config).map(OpenedPort::Transport),
-        }
+        self.open_spec(&self.spec(name, config))
     }
 
     /// Open an unstamped legacy bag; CONFIG is required even when its contents are unchanged.
     pub fn open_converting(&self, name: &str, config: &[u8]) -> Result<OpenedPort, OpenError> {
         let mut spec = self.spec(name, config);
-        spec.purpose = busbar_plugin_loader::instance::OpenPurpose::ConvertUnstamped;
+        spec.purpose = OpenPurpose::ConvertUnstamped;
+        self.open_spec(&spec)
+    }
+
+    /// Open the admitted kind with the case's explicit purpose, limits and core context.
+    /// Conversion intent is supplied by the test, never inferred from settings.
+    pub fn open_spec(&self, spec: &InstanceSpec<'_>) -> Result<OpenedPort, OpenError> {
         self.noted(self.block_on(async {
             match self.kind {
                 KindCode::Store => self
                     .registry
-                    .open_store(&spec, &self.needs, &self.refs, test_store_seal()?)
+                    .open_store(spec, &self.needs, &self.refs, test_store_seal()?)
                     .await
                     .map(OpenedPort::Store),
                 KindCode::Secret => self
                     .registry
-                    .open_secret(&spec, &self.needs, &self.refs)
+                    .open_secret(spec, &self.needs, &self.refs)
                     .await
                     .map(OpenedPort::Secret),
                 KindCode::Auth => self
                     .registry
-                    .open_auth(&spec, &self.needs, &self.refs)
+                    .open_auth(spec, &self.needs, &self.refs)
                     .await
                     .map(OpenedPort::Auth),
                 KindCode::Hook => self
                     .registry
-                    .open_hook(&spec, &self.needs, &self.refs)
+                    .open_hook(spec, &self.needs, &self.refs)
                     .await
                     .map(OpenedPort::Hook),
                 KindCode::Export => self
                     .registry
-                    .open_export(&spec, &self.needs, &self.refs)
+                    .open_export(spec, &self.needs, &self.refs)
                     .await
                     .map(OpenedPort::Export),
                 KindCode::Plane => self
                     .registry
-                    .open_plane(&spec, &self.needs, &self.refs)
+                    .open_plane(spec, &self.needs, &self.refs)
                     .await
                     .map(OpenedPort::Plane),
                 KindCode::Transport => self
                     .registry
-                    .open_transport(&spec, &self.needs, &self.refs)
+                    .open_transport(spec, &self.needs, &self.refs)
                     .await
                     .map(OpenedPort::Transport),
             }
