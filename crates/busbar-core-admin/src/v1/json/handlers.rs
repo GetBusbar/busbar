@@ -143,31 +143,12 @@ pub(crate) async fn list_plugins(
         &filter,
         crate::v1::contract::LIST_LIMIT_DEFAULT
     ));
-    let (entered, started) = tokio::sync::oneshot::channel();
-    let scan = busbar_kernel::config::transaction::config_reload_transaction(&handle, move |txn| {
-        // Bound waiting for the mutation fence, not the scan that owns it. The
-        // blocking transaction retains that fence even if this caller disconnects.
-        let _ = entered.send(());
-        let snapshot = txn.app().clone();
-        Ok(txn.store_write_async(async move {
-            Ok(Outcome::Value(
-                AdminService::new(snapshot)
-                    .list_plugins_current_async(&ptype)
-                    .await?,
-            ))
-        }))
-    });
-    tokio::pin!(scan);
-    let out = tokio::select! {
-        biased;
-        out = &mut scan => out,
-        _ = started => scan.await,
-        _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => {
-            Err(AdminError::Unavailable(
-                "the plugin catalog scan is taking too long; try again shortly".into(),
-            ))
-        }
-    };
+    // DES-359 r3 L9: a catalog read never enters the mutation fence. It pins one generation and
+    // scans under the shared scan gate (bounded wait, off the reactor); the directory fingerprint
+    // read before and after the scan keeps the answer one consistent view.
+    let out = AdminService::new(handle.load())
+        .list_plugins_current_async(&ptype)
+        .await;
     respond(
         StatusCode::OK,
         out.map(|page| {
@@ -233,6 +214,9 @@ pub(crate) async fn install_plugin(
     let out = config_transaction(&handle, move |txn| {
         let snapshot = txn.app().clone();
         Ok(txn.store_write_async(async move {
+            // The catalog reads scan under this gate, not the effect lock (DES-359 r3 L9): an
+            // install holds it so a read never sees a half-written directory change.
+            let _gate = crate::v1::service::scan_gate("plugins.install").await?;
             let view = AdminService::new(snapshot).install_store_plugin(&file, &tarball)?;
 
             Ok(Outcome::Value(view))
@@ -322,6 +306,8 @@ pub(crate) async fn remove_plugin(
     let out = config_transaction(&handle, move |txn| {
         let snapshot = txn.app().clone();
         Ok(txn.store_write_async(async move {
+            // Same scan gate as the catalog reads (DES-359 r3 L9).
+            let _gate = crate::v1::service::scan_gate("plugins.remove").await?;
             AdminService::new(snapshot)
                 .remove_store_plugin_if_archive(&file, expected.as_deref())?;
             Ok(Outcome::Value(()))
@@ -3270,6 +3256,35 @@ pub(crate) async fn patch_hook_settings(
     }
 }
 
+/// The installed-archive schema read (DES-359 r3 L9): `app` is the pinned generation; the read holds
+/// the shared scan gate for its whole run on a blocking worker, so a dropped waiter cannot release
+/// the gate while the archive is still being read.
+async fn installed_schema_read(
+    app: Arc<busbar_kernel::state::App>,
+    name: String,
+    expected: Option<String>,
+    actor: String,
+) -> Result<serde_json::Value, AdminError> {
+    let gate = crate::v1::service::scan_gate("plugins.schema").await?;
+    match tokio::task::spawn_blocking(move || {
+        let _gate = gate;
+        AdminService::new(app).installed_plugin_schema(&name, expected.as_deref(), &actor)
+    })
+    .await
+    {
+        Ok(read) => read,
+        Err(join_err) => {
+            diag_error!(
+                busbar_kernel::diagnostics::ADMIN_STORE_TASK_JOIN_FAILED,
+                operation = "plugins.schema",
+                error = %join_err,
+                "admin plugin schema worker failed"
+            );
+            Err(AdminError::Internal)
+        }
+    }
+}
+
 pub(crate) async fn plugin_schema(
     State(handle): State<Arc<AppHandle>>,
     principal: Option<axum::Extension<busbar_kernel::auth::AuthPrincipal>>,
@@ -3306,20 +3321,9 @@ pub(crate) async fn plugin_schema(
             || "anonymous".to_string(),
             |axum::Extension(p)| p.actor_id().to_string(),
         );
-        let out =
-            busbar_kernel::config::transaction::config_reload_transaction(&handle, move |txn| {
-                let snapshot = txn.app().clone();
-                Ok(txn.store_write_async(async move {
-                    Ok(Outcome::Value(
-                        AdminService::new(snapshot).installed_plugin_schema(
-                            &name,
-                            expected.as_deref(),
-                            &actor,
-                        )?,
-                    ))
-                }))
-            })
-            .await;
+        // DES-359 r3 L9: off the mutation fence, on a pinned generation, under the shared scan gate
+        // (which install and remove also take) and off the reactor.
+        let out = installed_schema_read(handle.load(), name, expected, actor).await;
         return respond(StatusCode::OK, out);
     }
     if query.contains_key("expected_archive_sha256") {
