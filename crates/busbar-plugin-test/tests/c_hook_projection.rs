@@ -8,7 +8,7 @@
 //! the arm's body and un-ignores it in its own MR (red first, then green).
 
 #[test]
-#[ignore = "owner: W1-K8C"]
+#[ignore = "owner: W1-K8 + hook-webrequest P; blocked (re-checked on dev 2026-11-16): hooks are not wired into min3_boot (OUTSTANDING row 8, W2-SW-HOOK), the golden 1.5.5 decision and the byte-equal projection are hook-webrequest's P suite, and the ranking clause needs a hook-ranking fixture; the view builder (plugin-loader hook_door/port.rs) stays private (not widened for a test), its encoding unit-tested in plugin-loader encode/hook.rs"]
 fn hook_views_round_trip_the_golden_decision() {
-    todo!("owner: W1-K8C (C-HOOK-PROJECTION)")
+    todo!("blocked: the view builder (plugin-loader hook_door/port.rs C_HAS_* and S_STAGE* code) is private to HookDoor; encoding is unit-tested in plugin-loader encode/hook.rs; the hook-webrequest golden runs in its repo (C-HOOK-PROJECTION)")
 }

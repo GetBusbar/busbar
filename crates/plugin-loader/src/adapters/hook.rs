@@ -25,10 +25,11 @@ use busbar_plugin_abi::kinds::hook::hook::{
 use busbar_plugin_abi::records::{tag as gtag, RecErr, Records};
 use busbar_plugin_abi::types::Status;
 
-use crate::encode::hook::encode_view;
-use crate::instance::{ErrorBook, PluginCode};
-use crate::ports::hook::{HookAnswer, HookCall, HookPort, HookView};
-use crate::ports::{CallCx, PortError};
+use crate::instance::ErrorBook;
+use busbar_ports::codec::hook::encode_view;
+use busbar_ports::hook::{HookAnswer, HookCall, HookPort, HookView};
+use busbar_ports::PluginCode;
+use busbar_ports::{CallCx, PortError};
 
 /// The hook port over one instance's proxy.
 pub struct HookAdapter<N: Needs> {
@@ -241,7 +242,7 @@ fn decode_answer(recs: Records<'_>, scrub: &Scrub) -> Result<HookAnswer, RecErr>
 /// A REFUSED or FAILED answer as a `PortError`. The text is scrubbed whole, then cut (I14). The facts are the
 /// FAILED answer's own; a REFUSED answer never carries any.
 #[allow(clippy::too_many_arguments)]
-fn port_error(
+pub fn port_error(
     scrub: &Scrub,
     failed_answer: bool,
     code: u32,

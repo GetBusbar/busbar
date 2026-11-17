@@ -9,18 +9,12 @@ use std::sync::Arc;
 async fn admin_plugin_full_binding_allows_mutation() {
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch("auth-admin-full");
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
@@ -57,13 +51,16 @@ async fn admin_plugin_full_binding_allows_mutation() {
         },
         "groups": { "team": { "child_default": { "limits": [{ "budget": 500, "per": "month" }] } } },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
     }), &crate::root::boot::axis_test_grammar())
     .expect("the product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let anchor = crate::root::test_plugins::bootstrap_fresh_application_store(
+    let crate::root::min3_boot::fixture::Admitted {
+        core: anchor,
+        rules,
+    } = crate::root::test_plugins::bootstrap_fresh_application_store(
         &config,
         &plugin_config,
         &directory,
@@ -72,8 +69,6 @@ async fn admin_plugin_full_binding_allows_mutation() {
     .expect("the actual Store bootstraps its config authority");
     let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
         .expect("the actual Store supports conditional config records");
-    let rules = Arc::new(crate::root::door_steps::Rules::default())
-        as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
         plugin_config,
@@ -136,18 +131,12 @@ async fn admin_plugin_full_binding_allows_mutation() {
 async fn admin_max_admin_scope_caps_binding() {
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch("auth-admin-capped");
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
@@ -184,13 +173,16 @@ async fn admin_max_admin_scope_caps_binding() {
         },
         "groups": { "team": { "child_default": { "limits": [{ "budget": 500, "per": "month" }] } } },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
     }), &crate::root::boot::axis_test_grammar())
     .expect("the product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let anchor = crate::root::test_plugins::bootstrap_fresh_application_store(
+    let crate::root::min3_boot::fixture::Admitted {
+        core: anchor,
+        rules,
+    } = crate::root::test_plugins::bootstrap_fresh_application_store(
         &config,
         &plugin_config,
         &directory,
@@ -199,8 +191,6 @@ async fn admin_max_admin_scope_caps_binding() {
     .expect("the actual Store bootstraps its config authority");
     let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
         .expect("the actual Store supports conditional config records");
-    let rules = Arc::new(crate::root::door_steps::Rules::default())
-        as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
         plugin_config,
@@ -258,18 +248,12 @@ async fn admin_max_admin_scope_caps_binding() {
 async fn admin_plugin_readonly_binding_get_ok_post_403() {
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch("auth-admin-readonly");
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
@@ -306,13 +290,16 @@ async fn admin_plugin_readonly_binding_get_ok_post_403() {
         },
         "groups": { "team": { "child_default": { "limits": [{ "budget": 500, "per": "month" }] } } },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
     }), &crate::root::boot::axis_test_grammar())
     .expect("the product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let anchor = crate::root::test_plugins::bootstrap_fresh_application_store(
+    let crate::root::min3_boot::fixture::Admitted {
+        core: anchor,
+        rules,
+    } = crate::root::test_plugins::bootstrap_fresh_application_store(
         &config,
         &plugin_config,
         &directory,
@@ -321,8 +308,6 @@ async fn admin_plugin_readonly_binding_get_ok_post_403() {
     .expect("the actual Store bootstraps its config authority");
     let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
         .expect("the actual Store supports conditional config records");
-    let rules = Arc::new(crate::root::door_steps::Rules::default())
-        as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
         plugin_config,
@@ -416,18 +401,12 @@ async fn admin_plugin_readonly_binding_get_ok_post_403() {
 async fn roleless_external_admin_principal_denied() {
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch("auth-admin-roleless");
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
@@ -464,13 +443,16 @@ async fn roleless_external_admin_principal_denied() {
         },
         "groups": { "team": { "child_default": { "limits": [{ "budget": 500, "per": "month" }] } } },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
     }), &crate::root::boot::axis_test_grammar())
     .expect("the product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let anchor = crate::root::test_plugins::bootstrap_fresh_application_store(
+    let crate::root::min3_boot::fixture::Admitted {
+        core: anchor,
+        rules,
+    } = crate::root::test_plugins::bootstrap_fresh_application_store(
         &config,
         &plugin_config,
         &directory,
@@ -479,8 +461,6 @@ async fn roleless_external_admin_principal_denied() {
     .expect("the actual Store bootstraps its config authority");
     let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
         .expect("the actual Store supports conditional config records");
-    let rules = Arc::new(crate::root::door_steps::Rules::default())
-        as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
         plugin_config,
@@ -531,18 +511,12 @@ async fn roleless_external_admin_principal_denied() {
 async fn forbidden_admin_requests_audit_once_per_window() {
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch("auth-admin-audit-window");
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
@@ -579,13 +553,16 @@ async fn forbidden_admin_requests_audit_once_per_window() {
         },
         "groups": { "team": { "child_default": { "limits": [{ "budget": 500, "per": "month" }] } } },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
     }), &crate::root::boot::axis_test_grammar())
     .expect("the product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let anchor = crate::root::test_plugins::bootstrap_fresh_application_store(
+    let crate::root::min3_boot::fixture::Admitted {
+        core: anchor,
+        rules,
+    } = crate::root::test_plugins::bootstrap_fresh_application_store(
         &config,
         &plugin_config,
         &directory,
@@ -594,8 +571,6 @@ async fn forbidden_admin_requests_audit_once_per_window() {
     .expect("the actual Store bootstraps its config authority");
     let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
         .expect("the actual Store supports conditional config records");
-    let rules = Arc::new(crate::root::door_steps::Rules::default())
-        as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
         plugin_config,
@@ -669,18 +644,12 @@ async fn forbidden_admin_requests_audit_once_per_window() {
 async fn the_admin_gate_admits_only_the_listed_verbs() {
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch("auth-admin-named");
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
@@ -717,13 +686,16 @@ async fn the_admin_gate_admits_only_the_listed_verbs() {
         },
         "groups": { "team": { "child_default": { "limits": [{ "budget": 500, "per": "month" }] } } },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
     }), &crate::root::boot::axis_test_grammar())
     .expect("the product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let anchor = crate::root::test_plugins::bootstrap_fresh_application_store(
+    let crate::root::min3_boot::fixture::Admitted {
+        core: anchor,
+        rules,
+    } = crate::root::test_plugins::bootstrap_fresh_application_store(
         &config,
         &plugin_config,
         &directory,
@@ -732,8 +704,6 @@ async fn the_admin_gate_admits_only_the_listed_verbs() {
     .expect("the actual Store bootstraps its config authority");
     let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
         .expect("the actual Store supports conditional config records");
-    let rules = Arc::new(crate::root::door_steps::Rules::default())
-        as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
         plugin_config,
@@ -866,18 +836,8 @@ fn actual_operator_requests_keep_credentials_out_of_core_logs() {
         tokio::runtime::Builder::new_current_thread().enable_all().build().expect("runtime").block_on(async {
             crate::dist_root_install::install();
             let library_path = crate::root::test_plugins::application_store_library();
-            let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-                .expect("the actual store statement reads")
-                .expect("the actual store exports its statement");
-            let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-                .expect("the actual store statement is valid")
-                .name;
-            let mut manifest = plugins::manifest(
-                "store",
-                &module,
-                crate::root::test_plugins::FIXTURE_PUBLISHER,
-            );
-            manifest.statement = Some(hex::encode(statement));
+            let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest("store", &library_path, crate::root::test_plugins::FIXTURE_PUBLISHER);
             let library = std::fs::read(library_path).expect("the actual store library reads");
             let directory = plugins::scratch("auth-admin-logs");
             let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
@@ -908,17 +868,18 @@ fn actual_operator_requests_keep_credentials_out_of_core_logs() {
                 },
                 "groups": { "team": { "child_default": { "limits": [{ "budget": 500, "per": "month" }] } } },
                 "store": { "module": module, "settings": settings },
-                "advanced": { "allow_destinations": ["127.0.0.1"] },
+                "advanced": {  },
             }), &crate::root::boot::axis_test_grammar())
             .expect("the product deployment parses");
             let config = busbar_kernel::config::resolve(&deploy, &Default::default())
                 .expect("the product deployment resolves");
             let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-            let anchor = crate::root::real_store::core_over(busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config, &busbar_kernel::preflight::Unopened).await.expect("the actual Store bootstraps its config authority")).await;
-            let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
-            .expect("the actual Store supports conditional config records");
             let rules = Arc::new(crate::root::door_steps::Rules::default())
                 as Arc<dyn busbar_kernel::appbuild::RootRules>;
+            let crate::root::min3_boot::fixture::Fixture { backend: anchor, rules } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules).await.expect("the actual Store bootstraps its config authority");
+            let anchor = crate::root::real_store::core_over(anchor).await;
+            let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
+            .expect("the actual Store supports conditional config records");
             let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
                 config,
                 plugin_config,
@@ -980,18 +941,12 @@ fn a_slow_admin_door_does_not_stall_healthz() {
     use std::time::{Duration, Instant};
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch("auth-admin-pending");
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
@@ -1024,7 +979,7 @@ fn a_slow_admin_door_does_not_stall_healthz() {
             .unwrap();
     let point = &signing_key.public_key();
     let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD;
-    let jwks = serde_json::json!({"keys": [{
+    let jwks = busbar_contract::json::json!({"keys": [{
         "kty": "EC", "crv": "P-256", "kid": "held-verifier", "alg": "ES256", "use": "sig",
         "x": b64.encode(&point[1..33]), "y": b64.encode(&point[33..65]),
     }]})
@@ -1163,7 +1118,7 @@ fn a_slow_admin_door_does_not_stall_healthz() {
             },
             "groups": { "team": { "child_default": { "limits": [{ "budget": 500, "per": "month" }] } } },
             "store": { "module": module, "settings": settings },
-            "advanced": { "allow_destinations": ["127.0.0.1"] },
+            "advanced": {  },
         }), &crate::root::boot::axis_test_grammar())
         .expect("the product deployment parses");
         let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -1175,7 +1130,10 @@ fn a_slow_admin_door_does_not_stall_healthz() {
             let config = busbar_kernel::config::resolve(&deploy, &Default::default())
                 .expect("the product deployment resolves");
             let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-            let anchor = crate::root::test_plugins::bootstrap_fresh_application_store(
+            let crate::root::min3_boot::fixture::Admitted {
+                core: anchor,
+                rules,
+            } = crate::root::test_plugins::bootstrap_fresh_application_store(
                 &config,
                 &plugin_config,
                 &directory,
@@ -1184,8 +1142,6 @@ fn a_slow_admin_door_does_not_stall_healthz() {
             .expect("the actual Store bootstraps its config authority");
             let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
                 .expect("the actual Store supports conditional config records");
-            let rules = Arc::new(crate::root::door_steps::Rules::default())
-                as Arc<dyn busbar_kernel::appbuild::RootRules>;
             let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
                 config,
                 plugin_config,
@@ -1309,18 +1265,12 @@ fn a_slow_admin_door_does_not_stall_healthz() {
 async fn external_admin_verifier_receives_bearer_and_admin_header_candidates() {
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch("auth-admin-candidates");
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
@@ -1357,13 +1307,16 @@ async fn external_admin_verifier_receives_bearer_and_admin_header_candidates() {
         },
         "groups": { "team": { "child_default": { "limits": [{ "budget": 500, "per": "month" }] } } },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
     }), &crate::root::boot::axis_test_grammar())
     .expect("the product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let anchor = crate::root::test_plugins::bootstrap_fresh_application_store(
+    let crate::root::min3_boot::fixture::Admitted {
+        core: anchor,
+        rules,
+    } = crate::root::test_plugins::bootstrap_fresh_application_store(
         &config,
         &plugin_config,
         &directory,
@@ -1372,8 +1325,6 @@ async fn external_admin_verifier_receives_bearer_and_admin_header_candidates() {
     .expect("the actual Store bootstraps its config authority");
     let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
         .expect("the actual Store supports conditional config records");
-    let rules = Arc::new(crate::root::door_steps::Rules::default())
-        as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
         plugin_config,
@@ -1490,18 +1441,12 @@ async fn every_request_is_verified_by_the_door_and_the_kernel_caches_no_verdict(
     }
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch("auth-admin-no-kernel-cache");
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
@@ -1538,13 +1483,16 @@ async fn every_request_is_verified_by_the_door_and_the_kernel_caches_no_verdict(
         },
         "groups": { "team": { "child_default": { "limits": [{ "budget": 500, "per": "month" }] } } },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
     }), &crate::root::boot::axis_test_grammar())
     .expect("the product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let anchor = crate::root::test_plugins::bootstrap_fresh_application_store(
+    let crate::root::min3_boot::fixture::Admitted {
+        core: anchor,
+        rules,
+    } = crate::root::test_plugins::bootstrap_fresh_application_store(
         &config,
         &plugin_config,
         &directory,
@@ -1553,8 +1501,6 @@ async fn every_request_is_verified_by_the_door_and_the_kernel_caches_no_verdict(
     .expect("the actual Store bootstraps its config authority");
     let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
         .expect("the actual Store supports conditional config records");
-    let rules = Arc::new(crate::root::door_steps::Rules::default())
-        as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
         plugin_config,

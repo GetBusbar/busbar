@@ -22,7 +22,7 @@ fn a_fresh_unit() -> u64 {
 }
 
 fn request(method: &str, path: &str) -> AdminRequest {
-    AdminRequest {
+    AdminRequest::test_fixture(crate::root::units_admin::TestAdminRequest {
         method: method.to_string(),
         path: path.to_string(),
         credential: None,
@@ -30,7 +30,7 @@ fn request(method: &str, path: &str) -> AdminRequest {
         body: Vec::new(),
         at: 1_700_000_000,
         unit: a_fresh_unit(),
-    }
+    })
 }
 
 async fn walk(door: AdminDoorFn, request: AdminRequest) -> (AdminAnswer, Vec<AuditRecord>) {
@@ -69,7 +69,9 @@ async fn a_refused_admin_unit_seals_a_refused_record() {
     let walked = request("POST", "/api/v1/admin/keys");
     let unit = UnitKey::new(walked.unit);
     let refusing: AdminDoorFn = Arc::new(|_: &AdminRequest| {
-        busbar_kernel::auth::AdminVerdict::from(busbar_kernel::auth::AdminDoor::Denied)
+        Box::pin(std::future::ready(busbar_kernel::auth::AdminVerdict::from(
+            busbar_kernel::auth::AdminDoor::Denied,
+        )))
     });
     let (answer, records) = walk(refusing, walked).await;
     assert_eq!(answer.status, 401, "the door refuses the caller");

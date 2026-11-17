@@ -79,7 +79,7 @@ async fn persist_prefix_rejects_changed_child_parent_or_fence_before_any_effects
             } else {
                 let raw = backend.state.lock().unwrap().rows[&address(&target)].clone();
                 let mut tip: Head =
-                    serde_json::from_slice(raw.expose(&crate::seal::lend())).unwrap();
+                    busbar_contract::json::parse(raw.expose(&crate::seal::lend())).unwrap();
                 tip.revision += 1;
                 select(backend, &event, &tip);
             }

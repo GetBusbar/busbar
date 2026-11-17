@@ -7,6 +7,18 @@ use super::{
     backend_only_reached, crypto_graph, no_getrandom, repo_root, scan_source, seam_only_reached,
 };
 
+#[test]
+fn shipped_graph_cannot_hide_crypto_outside_the_root_workspace() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/crypto-graph");
+    let findings = crypto_graph(&root).expect("local resolver fixture");
+    assert!(
+        findings
+            .iter()
+            .any(|finding| finding.contains("ring v0.1.0")),
+        "shipped crypto must be detected even when the root graph is clean: {findings:?}"
+    );
+}
+
 /// The real tree: core's feature-resolved graph builds ring, sha2, ed25519-dalek and curve25519-dalek
 /// only beneath the seam, and curve25519-dalek only beneath the backend.
 #[test]

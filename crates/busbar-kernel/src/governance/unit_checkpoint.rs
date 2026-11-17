@@ -19,6 +19,38 @@ use crate::persistence::journal::runtime::Carried;
 /// batches, so a drain stops within one batch and the control thread waits at most one batch.
 const UNIT_FLUSH_BATCH: usize = 128;
 
+mod ordinary_completion;
+pub mod partitions;
+mod terminal_completion;
+pub use ordinary_completion::OrdinaryTerminalCompletion;
+pub(crate) use ordinary_completion::OrdinaryTerminalReservation;
+pub use terminal_completion::SelectedTerminalCompletion;
+use terminal_completion::TerminalSignal;
+
+/// Terminal ownership is explicit. A refusal returns the entire unowned snapshot to its caller.
+pub enum SelectedTransfer {
+    Applied(Arc<UnitCheckpoint>),
+    RetainedPending(Arc<UnitCheckpoint>),
+    RejectedNotOwned {
+        snapshot: UnitCheckpoint,
+        error: RecordStoreError,
+    },
+}
+
+/// Initial custody refused before publication, or the synchronous admission publication failed.
+#[derive(Debug)]
+pub(crate) enum SelectedActivationError<E> {
+    Custody(RecordStoreError),
+    Publish(E),
+}
+
+/// Dispatch custody validation failed, or the synchronous rate commitment was refused.
+#[derive(Debug)]
+pub(crate) enum SelectedCommitError<E> {
+    Custody(RecordStoreError),
+    Commit(E),
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct UnitTarget {
@@ -52,6 +84,9 @@ pub struct UnitCheckpoint {
     /// ended the unit first (`BUSBAR-5046`). Absent when nothing went unread.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unread: Option<String>,
+    /// Absent is the historical single-lane representation, never an inferred attempt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub partitions: Option<partitions::PartitionedUsageV1>,
 }
 
 impl UnitCheckpoint {
@@ -110,6 +145,7 @@ use book::{Pending, PendingBook};
 
 #[derive(Default)]
 pub(super) struct UnitCheckpointBook {
+    identity: Arc<()>,
     sink: OnceLock<Arc<dyn UnitCheckpointSink>>,
     pending: PendingBook,
     flushing: tokio::sync::Mutex<()>,
@@ -127,7 +163,329 @@ fn error(message: &str) -> RecordStoreError {
     crate::cold::governance::runtime::unit_checkpoint_refusal(message)
 }
 
+/// Keeps a new, unpublished entry invisible to flush until admission commits. Removal also
+/// restores the book's indexes on an unwind; it never invokes Store or changes fee ownership.
+struct InitialActivation<'a> {
+    pending: book::PendingGuard<'a>,
+    id: [u8; 16],
+    committed: bool,
+}
+
+impl Drop for InitialActivation<'_> {
+    fn drop(&mut self) {
+        if !self.committed {
+            self.pending.remove(&self.id);
+        }
+    }
+}
+
 impl GovState {
+    /// Install initial custody and publish admission under the same book lock. The caller holds
+    /// its Open shard throughout and must not reenter this book from `publish`. On refusal it
+    /// retains responsibility for removing Open and releasing the original pending admission.
+    /// No checkpoint can reach the flusher before the synchronous publication succeeds.
+    pub(crate) fn activate_selected_checkpoint<R, E>(
+        &self,
+        snapshot: UnitCheckpoint,
+        publish: impl FnOnce(Arc<UnitCheckpoint>) -> Result<R, E>,
+    ) -> Result<R, SelectedActivationError<E>> {
+        let validate = || -> RecordStoreResult<()> {
+            let Some(parts) = &snapshot.partitions else {
+                return Err(error("selected activation requires partitioned custody"));
+            };
+            if snapshot.revision != 0
+                || snapshot.ended
+                || snapshot.metered
+                || snapshot.terminal.is_some()
+                || parts.disposition != partitions::Disposition::Running
+                || !parts.attempts.is_empty()
+                || parts.session.is_some()
+                || parts.far_end_answered
+                || parts.caller_bytes_committed
+                || parts.final_target.is_some()
+                || !matches!(
+                    &parts.fee,
+                    partitions::CapturedFee::PendingOwner { .. }
+                        | partitions::CapturedFee::NotOwner { .. }
+                )
+            {
+                return Err(error("selected activation requires empty initial facts"));
+            }
+            snapshot.validate()?;
+            parts.preflight_terminal_bound(snapshot.targets.len())?;
+            self.validate_selected_terminal_capacity(&snapshot)
+        };
+        validate().map_err(SelectedActivationError::Custody)?;
+        let mut pending = self.unit_checkpoints.pending.lock();
+        if pending.get(&snapshot.id).is_some() {
+            return Err(SelectedActivationError::Custody(error(
+                "selected activation already has checkpoint custody",
+            )));
+        }
+        let accepted = Arc::new(snapshot.clone());
+        let id = snapshot.id;
+        pending.insert(
+            id,
+            Pending::selected(snapshot, self.unit_checkpoints_enabled(), false),
+        );
+        let mut activation = InitialActivation {
+            pending,
+            id,
+            committed: false,
+        };
+        let result = publish(accepted).map_err(SelectedActivationError::Publish)?;
+        activation.committed = true;
+        Ok(result)
+    }
+
+    /// Commit the last prepared attempt at the actual connector handoff. All validation and
+    /// allocation precede `commit`; its success is followed only by infallible replacement of
+    /// the existing live entry. Refusal leaves the predecessor unchanged. The caller retains
+    /// its Open lock, borrows its reservation into this callback, and installs the returned Arc
+    /// before sending. Lock order is Open, checkpoint book, then the callback's rate cells;
+    /// the synchronous callback must not reenter this book.
+    pub(crate) fn commit_selected_checkpoint<R, E>(
+        &self,
+        mut snapshot: UnitCheckpoint,
+        expected_revision: u64,
+        commit: impl FnOnce() -> Result<R, E>,
+    ) -> Result<(Arc<UnitCheckpoint>, R), SelectedCommitError<E>> {
+        use partitions::{Disposition, Finality, Transport};
+        let mut pending = self.unit_checkpoints.pending.lock();
+        let mut entry = pending.edit(&snapshot.id).ok_or_else(|| {
+            SelectedCommitError::Custody(error("selected dispatch has no live custody"))
+        })?;
+        let preflight = || -> RecordStoreResult<()> {
+            let before = entry.snapshot();
+            if before.revision != expected_revision
+                || before.ended
+                || before.terminal.is_some()
+                || entry.is_recovered()
+            {
+                return Err(error("selected dispatch has no current live predecessor"));
+            }
+            let Some(parts) = &before.partitions else {
+                return Err(error("selected dispatch requires partitioned custody"));
+            };
+            if parts.disposition != Disposition::Running {
+                return Err(error("selected dispatch requires a running predecessor"));
+            }
+            Ok(())
+        };
+        preflight().map_err(SelectedCommitError::Custody)?;
+        let mut expected = entry.snapshot().clone();
+        expected.revision = expected.revision.checked_add(1).ok_or_else(|| {
+            SelectedCommitError::Custody(error("selected checkpoint revision exhausted"))
+        })?;
+        let parts = expected.partitions.as_mut().ok_or_else(|| {
+            SelectedCommitError::Custody(error("selected dispatch requires partitioned custody"))
+        })?;
+        let dispatch = parts
+            .attempts
+            .iter()
+            .filter_map(|attempt| attempt.dispatch)
+            .max()
+            .unwrap_or(0)
+            .checked_add(1)
+            .ok_or_else(|| {
+                SelectedCommitError::Custody(error("selected dispatch ordinal exhausted"))
+            })?;
+        let last = parts.attempts.last_mut().ok_or_else(|| {
+            SelectedCommitError::Custody(error("selected dispatch has no prepared attempt"))
+        })?;
+        if last.transport != Transport::Prepared
+            || last.dispatch.is_some()
+            || last.finality != Finality::Live
+        {
+            return Err(SelectedCommitError::Custody(error(
+                "selected dispatch requires the last live prepared attempt",
+            )));
+        }
+        last.transport = Transport::Committed;
+        last.dispatch = Some(dispatch);
+        snapshot.revision = expected.revision;
+        if snapshot != expected {
+            return Err(SelectedCommitError::Custody(error(
+                "selected dispatch changes facts outside the prepared transport commitment",
+            )));
+        }
+        partitions::validate_successor(entry.snapshot(), &snapshot)
+            .map_err(SelectedCommitError::Custody)?;
+        self.validate_selected_terminal_capacity(&snapshot)
+            .map_err(SelectedCommitError::Custody)?;
+        let accepted = Arc::new(snapshot.clone());
+        let committed = commit().map_err(SelectedCommitError::Commit)?;
+        entry.replace_snapshot(snapshot);
+        Ok((accepted, committed))
+    }
+
+    /// Publish one selected revision into the existing book, including RAM-only selected units.
+    /// The money owner publishes the returned same revision into Open while retaining its lock.
+    pub fn stage_selected_checkpoint(
+        &self,
+        mut snapshot: UnitCheckpoint,
+        expected_revision: Option<u64>,
+    ) -> RecordStoreResult<Arc<UnitCheckpoint>> {
+        if snapshot.ended || snapshot.terminal.is_some() || snapshot.partitions.is_none() {
+            return Err(error(
+                "selected running publication requires a running selected snapshot",
+            ));
+        }
+        let mut pending = self.unit_checkpoints.pending.lock();
+        let previous = pending.get(&snapshot.id);
+        if previous.map(|entry| entry.snapshot().revision) != expected_revision {
+            return Err(error(
+                "selected running publication has a stale predecessor",
+            ));
+        }
+        if let Some(entry) = previous {
+            snapshot.revision = entry.snapshot().revision;
+            if &snapshot == entry.snapshot() {
+                return Ok(Arc::new(snapshot));
+            }
+        }
+        snapshot.revision = match previous {
+            Some(entry) => entry
+                .snapshot()
+                .revision
+                .checked_add(1)
+                .ok_or_else(|| error("selected checkpoint revision exhausted"))?,
+            None => 0,
+        };
+        snapshot.validate()?;
+        if let Some(entry) = previous {
+            partitions::validate_successor(entry.snapshot(), &snapshot)?;
+        } else if let Some(parts) = &snapshot.partitions {
+            parts.preflight_terminal_bound(snapshot.targets.len())?;
+        }
+        self.validate_selected_terminal_capacity(&snapshot)?;
+        let accepted = Arc::new(snapshot.clone());
+        match pending.edit(&snapshot.id) {
+            Some(mut entry) => entry.replace_snapshot(snapshot),
+            None => {
+                pending.insert(
+                    snapshot.id,
+                    Pending::selected(snapshot, self.unit_checkpoints_enabled(), false),
+                );
+            }
+        }
+        Ok(accepted)
+    }
+
+    /// Transfer all terminal facts before the money owner removes Open or releases participation.
+    /// A selected unit never falls back to a separate ordinary bill on a refused transfer.
+    pub fn finish_selected_checkpoint(
+        &self,
+        snapshot: UnitCheckpoint,
+        expected_revision: Option<u64>,
+    ) -> SelectedTransfer {
+        self.finish_selected_checkpoint_with_fee(snapshot, expected_revision, None)
+    }
+
+    pub fn finish_selected_checkpoint_with_fee(
+        &self,
+        mut snapshot: UnitCheckpoint,
+        expected_revision: Option<u64>,
+        completion: Option<Arc<dyn partitions::SelectedFeeCompletion>>,
+    ) -> SelectedTransfer {
+        let mut pending = self.unit_checkpoints.pending.lock();
+        if let Some(previous) = pending
+            .get(&snapshot.id)
+            .filter(|entry| entry.snapshot().ended)
+        {
+            snapshot.revision = previous.snapshot().revision;
+            return if &snapshot == previous.snapshot() {
+                SelectedTransfer::RetainedPending(Arc::new(previous.snapshot().clone()))
+            } else {
+                SelectedTransfer::RejectedNotOwned {
+                    snapshot,
+                    error: error("selected terminal custody is already frozen"),
+                }
+            };
+        }
+        let prepare = || -> RecordStoreResult<(u64, bool, Option<u64>)> {
+            if !snapshot.ended || snapshot.partitions.is_none() || snapshot.terminal.is_some() {
+                return Err(error(
+                    "selected terminal transfer requires a complete unfrozen terminal",
+                ));
+            }
+            let previous = pending.get(&snapshot.id);
+            if previous.is_none() {
+                return Err(error("selected terminal has no activated custody owner"));
+            }
+            if previous.map(|entry| entry.snapshot().revision) != expected_revision {
+                return Err(error("selected terminal transfer has a stale predecessor"));
+            }
+            let revision = match previous {
+                Some(entry) => entry
+                    .snapshot()
+                    .revision
+                    .checked_add(1)
+                    .ok_or_else(|| error("selected checkpoint revision exhausted"))?,
+                None => 0,
+            };
+            snapshot.validate()?;
+            if snapshot
+                .partitions
+                .as_ref()
+                .is_some_and(|parts| parts.fee.pending())
+                && completion.is_none()
+            {
+                return Err(error(
+                    "pending selected fee requires its nonparticipating observer",
+                ));
+            }
+            partitions::ValidatedSelectedCheckpoint::try_from(&snapshot)?.project()?;
+            self.validate_selected_terminal_capacity(&snapshot)?;
+            if let Some(entry) = previous {
+                partitions::validate_successor(entry.snapshot(), &snapshot)?;
+            }
+            Ok((
+                revision,
+                previous.map_or(self.unit_checkpoints_enabled(), |entry| {
+                    !entry.is_memory_selected()
+                }),
+                previous.and_then(Pending::persisted),
+            ))
+        };
+        let (revision, durable, persisted) = match prepare() {
+            Ok(prepared) => prepared,
+            Err(error) => return SelectedTransfer::RejectedNotOwned { snapshot, error },
+        };
+        snapshot.revision = revision;
+        let accepted = Arc::new(snapshot.clone());
+        if snapshot
+            .partitions
+            .as_ref()
+            .is_some_and(|parts| parts.fee.pending())
+        {
+            pending.insert(
+                snapshot.id,
+                Pending::selected(snapshot, durable, true).with_fee_completion(completion),
+            );
+            return SelectedTransfer::RetainedPending(accepted);
+        }
+        if durable {
+            let applied = self.apply_unit_checkpoint_live(&snapshot).is_ok();
+            let entry = if applied {
+                Pending::terminal(snapshot, persisted)
+            } else {
+                Pending::recovered(snapshot, persisted)
+            };
+            pending.insert(entry.snapshot().id, entry.require_terminal_reader());
+            SelectedTransfer::RetainedPending(accepted)
+        } else if self.apply_selected_checkpoint_memory(&snapshot).is_ok() {
+            pending.remove(&snapshot.id);
+            SelectedTransfer::Applied(accepted)
+        } else {
+            pending.insert(
+                snapshot.id,
+                Pending::selected(snapshot, false, true).require_terminal_reader(),
+            );
+            SelectedTransfer::RetainedPending(accepted)
+        }
+    }
+
     /// Bind after usage recovery is attached and before admitting any units. A recovered running
     /// unit ends at its last confirmed report, without reconstructing an admission or a fee.
     pub async fn attach_unit_checkpoint_sink(
@@ -137,9 +495,32 @@ impl GovState {
         if !self.recovery_enabled() {
             return Err(error("running unit custody requires usage recovery"));
         }
-        let recovered = sink.replay().await?;
-        for snapshot in &recovered {
+        let mut recovered = sink.replay().await?;
+        let persisted_versions: BTreeMap<_, _> = recovered
+            .iter()
+            .map(|snapshot| (snapshot.id, snapshot.revision))
+            .collect();
+        for snapshot in &mut recovered {
             snapshot.validate()?;
+            if let Some(partitions) = &mut snapshot.partitions {
+                if !snapshot.ended || partitions.fee.pending() {
+                    partitions.recover_running();
+                    snapshot.ended = true;
+                    snapshot.revision = snapshot
+                        .revision
+                        .checked_add(1)
+                        .ok_or_else(|| error("unit checkpoint revision exhausted"))?;
+                }
+            }
+            if snapshot.partitions.is_some() && snapshot.terminal.is_none() {
+                snapshot.terminal = Some(self.unit_terminal_events(snapshot)?);
+                snapshot.revision = snapshot
+                    .revision
+                    .checked_add(1)
+                    .ok_or_else(|| error("unit checkpoint revision exhausted"))?;
+                snapshot.validate()?;
+            }
+            self.validate_selected_terminal(snapshot)?;
             sink.recover_audit(snapshot).await?;
         }
         self.unit_checkpoints
@@ -149,7 +530,9 @@ impl GovState {
         {
             let mut pending = self.unit_checkpoints.pending.lock();
             for mut snapshot in recovered {
-                let persisted = Some(snapshot.revision);
+                // A selected running recovery was advanced before audit reconstruction above;
+                // its recovered disposition must still be published, not treated as an ACK.
+                let persisted = persisted_versions.get(&snapshot.id).copied();
                 if !snapshot.ended {
                     snapshot.ended = true;
                     snapshot.revision = snapshot
@@ -289,7 +672,13 @@ impl GovState {
         if previous.is_some_and(|p| p.snapshot().ended) {
             return true;
         }
-        snapshot.revision = previous.map_or(0, |p| p.snapshot().revision.saturating_add(1));
+        snapshot.revision = match previous {
+            Some(entry) => match entry.snapshot().revision.checked_add(1) {
+                Some(next) => next,
+                None => return true,
+            },
+            None => 0,
+        };
         if snapshot.audit.is_none() {
             snapshot.audit = previous.and_then(|p| p.snapshot().audit.clone());
         }
@@ -323,12 +712,50 @@ impl GovState {
         &self,
         halt: &(impl Fn() -> bool + Sync),
     ) -> RecordStoreResult<()> {
-        let Some(sink) = self.unit_checkpoints.sink.get() else {
-            return Ok(());
-        };
         let _flush = self.unit_checkpoints.flushing.lock().await;
-        let ids = self.unit_checkpoints.pending.lock().flush_order();
+        let memory = self.unit_checkpoints.pending.lock().memory_order();
         let mut first_error = None;
+        for batch in memory.chunks(UNIT_FLUSH_BATCH) {
+            if halt() {
+                break;
+            }
+            for id in batch {
+                let mut pending = self.unit_checkpoints.pending.lock();
+                let Some(mut entry) = pending.edit(id) else {
+                    continue;
+                };
+                match entry.resolve_fee() {
+                    Ok(true) => {}
+                    Ok(false) => continue,
+                    Err(error) => {
+                        first_error.get_or_insert(error);
+                        continue;
+                    }
+                }
+                if entry.awaiting_terminal_reader() {
+                    continue;
+                }
+                let snapshot = entry.snapshot().clone();
+                drop(entry);
+                match self.apply_selected_checkpoint_memory(&snapshot) {
+                    Ok(()) => {
+                        pending.remove(id);
+                    }
+                    Err(failed) => {
+                        first_error.get_or_insert_with(|| {
+                            error(&format!(
+                                "selected RAM custody remains unresolved: {failed}"
+                            ))
+                        });
+                    }
+                }
+            }
+            tokio::task::yield_now().await;
+        }
+        let Some(sink) = self.unit_checkpoints.sink.get() else {
+            return first_error.map_or(Ok(()), Err);
+        };
+        let ids = self.unit_checkpoints.pending.lock().flush_order();
         for batch in ids.chunks(UNIT_FLUSH_BATCH) {
             if halt() {
                 break;
@@ -391,22 +818,58 @@ impl GovState {
                 failed.push((item.id, why));
                 false
             }
-            None => item.snapshot.terminal.is_some(),
+            None => item.snapshot.terminal.is_some() && !item.awaiting_terminal_reader,
         });
 
-        // T: select every terminal operation of the batch before driving any.
-        for item in &mut items {
-            if let Err(why) = self.select_unit_terminal(&item.snapshot).await {
-                item.failed = Some(why);
+        // T: select every terminal operation of the batch before driving any, in one keep.
+        let mut intents: Vec<(usize, RecoveryEvent)> = Vec::new();
+        for (at, item) in items.iter_mut().enumerate() {
+            match self.unselected_unit_terminal(&item.snapshot).await {
+                Ok(unselected) => intents.extend(unselected.into_iter().map(|event| (at, event))),
+                Err(why) => item.failed = Some(why),
             }
         }
-        // V-K2: drive each selected operation to Settled.
-        for item in &mut items {
-            if item.failed.is_some() {
-                continue;
+        intents.retain(|(at, _)| items[*at].failed.is_none());
+        if !intents.is_empty() {
+            let events: Vec<RecoveryEvent> =
+                intents.iter().map(|(_, event)| event.clone()).collect();
+            let results = self.keep_recovery_events(&events).await;
+            for ((at, _), result) in intents.iter().zip(results) {
+                if let Err(why) = result {
+                    items[*at].failed.get_or_insert(why);
+                }
             }
-            if let Err(why) = self.settle_unit_terminal(&item.snapshot).await {
-                item.failed = Some(why);
+        }
+        // V-K2: drive every selected operation of the batch to Settled, in lockstep.
+        let mut operations: Vec<(usize, [u8; 16])> = Vec::new();
+        for (at, item) in items.iter().enumerate() {
+            if item.failed.is_none() {
+                operations.extend(
+                    item.snapshot
+                        .terminal
+                        .iter()
+                        .flatten()
+                        .map(|initial| (at, initial.operation_id)),
+                );
+            }
+        }
+        if !operations.is_empty() {
+            let ids: Vec<[u8; 16]> = operations.iter().map(|(_, id)| *id).collect();
+            let results = self.drive_raw_recoveries(&ids).await;
+            // One ambiguous operation does not strand its siblings; a unit is settled only when
+            // all of its operations are.
+            for ((at, id), result) in operations.iter().zip(results) {
+                let item = &mut items[*at];
+                if let Err(failed) = result {
+                    item.failed.get_or_insert(failed);
+                } else if !self
+                    .recovery_event(*id)
+                    .is_some_and(|e| e.state == RecoveryState::Settled)
+                {
+                    item.failed.get_or_insert_with(|| {
+                        error("terminal unit awaits durable recovery acknowledgement")
+                    });
+                }
             }
         }
         // R: recovered targets refreshed, then one removal per settled unit.
@@ -441,7 +904,23 @@ impl GovState {
         for item in &items {
             match results.next() {
                 Some(Ok(())) => {
-                    self.unit_checkpoints.pending.lock().remove(&item.id);
+                    let mut pending = self.unit_checkpoints.pending.lock();
+                    let Some(mut entry) = pending.edit(&item.id) else {
+                        failed.push((
+                            item.id,
+                            error("original checkpoint disappeared before R acknowledgement"),
+                        ));
+                        continue;
+                    };
+                    if let Err(why) =
+                        entry.confirm_ordinary(&item.snapshot, item.ordinary_signal.as_ref())
+                    {
+                        failed.push((item.id, why));
+                        continue;
+                    }
+                    drop(entry);
+                    pending.remove(&item.id);
+                    drop(pending);
                     for event in item.snapshot.terminal.iter().flatten() {
                         self.forget_confirmed_recovery(event.operation_id);
                     }
@@ -460,13 +939,25 @@ impl GovState {
             return Ok(None);
         };
         entry.snapshot().validate()?;
-        if entry.snapshot().ended && entry.snapshot().terminal.is_none() {
+        let fee_ready = !entry.snapshot().ended || entry.resolve_fee()?;
+        if fee_ready
+            && !entry.is_memory_selected()
+            && entry.snapshot().ended
+            && entry.snapshot().terminal.is_none()
+        {
             let events = self.unit_terminal_events(entry.snapshot())?;
             let revision = entry
                 .snapshot()
                 .revision
                 .checked_add(1)
                 .ok_or_else(|| error("unit checkpoint revision exhausted"))?;
+            let mut sealed = entry.snapshot().clone();
+            sealed.terminal = Some(events.clone());
+            sealed.revision = revision;
+            sealed.validate()?;
+            if let Some(signal) = entry.ordinary_signal() {
+                signal.fund_events(&events)?;
+            }
             entry.set_terminal(events, revision);
         }
         Ok(Some(UnitFlushItem {
@@ -474,44 +965,78 @@ impl GovState {
             snapshot: entry.snapshot().clone(),
             persisted: entry.persisted(),
             recovered: entry.is_recovered(),
+            awaiting_terminal_reader: entry.awaiting_terminal_reader(),
+            ordinary_signal: entry.ordinary_signal().cloned(),
             failed: None,
         }))
     }
 
-    /// Phase T for one unit: restore its terminal receipts and select each terminal operation's
-    /// Intent, or check the selected one is this exact identity.
-    async fn select_unit_terminal(&self, snapshot: &UnitCheckpoint) -> RecordStoreResult<()> {
+    /// Transfer the exact final immutable revision to the root terminal/audit reader. Pending
+    /// fee completion returns None; the caller uses its existing terminal retry owner. In RAM
+    /// mode the book cannot retire before this handoff. No live money is reread or reconstructed.
+    pub fn take_selected_terminal_snapshot(
+        &self,
+        id: [u8; 16],
+    ) -> RecordStoreResult<Option<Arc<UnitCheckpoint>>> {
+        self.take_selected_terminal_snapshot_for(id, None)
+    }
+
+    fn take_selected_terminal_snapshot_for(
+        &self,
+        id: [u8; 16],
+        signal: Option<&Arc<TerminalSignal>>,
+    ) -> RecordStoreResult<Option<Arc<UnitCheckpoint>>> {
+        let Some(item) = self.unit_flush_item(id)? else {
+            return Ok(None);
+        };
+        if !item.snapshot.ended
+            || item
+                .snapshot
+                .partitions
+                .as_ref()
+                .is_none_or(|parts| parts.fee.pending())
+        {
+            return Ok(None);
+        }
+        let snapshot = Arc::new(item.snapshot);
+        let mut pending = self.unit_checkpoints.pending.lock();
+        let Some(mut entry) = pending.edit(&id) else {
+            return Ok(None);
+        };
+        if !entry.matches_terminal_signal(signal) {
+            return Err(error(
+                "selected terminal reader belongs to a different completion lease",
+            ));
+        }
+        if entry.snapshot() != snapshot.as_ref() {
+            return Err(error(
+                "selected terminal revision changed before reader handoff",
+            ));
+        }
+        entry.terminal_reader_accepted();
+        Ok(Some(snapshot))
+    }
+
+    /// Phase T for one unit: restore its terminal receipts, check each selected terminal
+    /// operation is this exact identity, and return the Intents not yet selected (the pass keeps
+    /// them in one batch).
+    async fn unselected_unit_terminal(
+        &self,
+        snapshot: &UnitCheckpoint,
+    ) -> RecordStoreResult<Vec<RecoveryEvent>> {
+        self.validate_selected_terminal(snapshot)?;
+        let mut unselected = Vec::new();
         for initial in snapshot.terminal.iter().flatten() {
             self.restore_unit_terminal_receipt(initial).await?;
             if self.recovery_event(initial.operation_id).is_none() {
-                self.keep_recovery_event(initial).await?;
+                unselected.push(initial.clone());
             } else if self.recovery_initial_event(initial.operation_id).as_ref() != Some(initial) {
                 return Err(error(
                     "terminal unit operation identity differs from recovery custody",
                 ));
             }
         }
-        Ok(())
-    }
-
-    /// Phases V-K2 for one unit: drive every terminal operation. One ambiguous operation does not
-    /// strand its siblings; the unit is settled only when all of them are.
-    async fn settle_unit_terminal(&self, snapshot: &UnitCheckpoint) -> RecordStoreResult<()> {
-        let mut first_error = None;
-        for initial in snapshot.terminal.iter().flatten() {
-            if let Err(failed) = self.drive_raw_recovery(initial.operation_id).await {
-                first_error.get_or_insert(failed);
-            }
-            if !self
-                .recovery_event(initial.operation_id)
-                .is_some_and(|e| e.state == RecoveryState::Settled)
-            {
-                first_error.get_or_insert_with(|| {
-                    error("terminal unit awaits durable recovery acknowledgement")
-                });
-            }
-        }
-        first_error.map_or(Ok(()), Err)
+        Ok(unselected)
     }
 }
 
@@ -521,6 +1046,8 @@ struct UnitFlushItem {
     snapshot: UnitCheckpoint,
     persisted: Option<u64>,
     recovered: bool,
+    awaiting_terminal_reader: bool,
+    ordinary_signal: Option<Arc<ordinary_completion::OrdinarySignal>>,
     failed: Option<RecordStoreError>,
 }
 

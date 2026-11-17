@@ -367,6 +367,130 @@ pub mod plumbing {
         self as wire, AttemptId, CandHead, Committed, MutationRec, PredicateRec, TimeGuard,
     };
     use crate::records::{Rec, RecErr, Records, tag};
+    use crate::secure::{Overflow, SecureVec};
+    use std::convert::Infallible;
+    use zeroize::Zeroize;
+
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    pub(super) enum AllocationSite {
+        Metadata,
+        Row,
+    }
+
+    #[cfg(test)]
+    std::thread_local! {
+        static REFUSE_ALLOCATION: std::cell::Cell<Option<(AllocationSite, usize)>> = const { std::cell::Cell::new(None) };
+    }
+
+    #[cfg(test)]
+    pub(super) fn with_allocation_failure<R>(
+        site: AllocationSite,
+        after: usize,
+        run: impl FnOnce() -> R,
+    ) -> R {
+        struct Restore(Option<(AllocationSite, usize)>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                REFUSE_ALLOCATION.set(self.0);
+            }
+        }
+        let _restore = Restore(REFUSE_ALLOCATION.replace(Some((site, after))));
+        run()
+    }
+
+    #[cfg(test)]
+    fn allocation_refused(site: AllocationSite) -> bool {
+        REFUSE_ALLOCATION.with(|state| match state.get() {
+            Some((wanted, left)) if wanted == site => {
+                if left == 0 {
+                    true
+                } else {
+                    state.set(Some((wanted, left - 1)));
+                    false
+                }
+            }
+            _ => false,
+        })
+    }
+
+    #[cfg(not(test))]
+    const fn allocation_refused(_: AllocationSite) -> bool {
+        false
+    }
+
+    trait Reservation {
+        type Error;
+        fn reserve<T>(values: &mut Vec<T>) -> Result<(), Self::Error>;
+    }
+
+    struct Legacy;
+    impl Reservation for Legacy {
+        type Error = Infallible;
+        fn reserve<T>(values: &mut Vec<T>) -> Result<(), Self::Error> {
+            values.reserve(1);
+            Ok(())
+        }
+    }
+
+    struct Fallible;
+    impl Reservation for Fallible {
+        type Error = Overflow;
+        fn reserve<T>(values: &mut Vec<T>) -> Result<(), Self::Error> {
+            if values.len() == values.capacity() {
+                if allocation_refused(AllocationSite::Metadata) {
+                    return Err(Overflow);
+                }
+                values.try_reserve(1).map_err(|_| Overflow)?;
+            }
+            Ok(())
+        }
+    }
+
+    /// Why assembling one scan row failed. No incomplete row is emitted.
+    #[derive(Clone, Copy, Debug)]
+    pub enum RowErr {
+        Size,
+        Allocation,
+        Full(crate::records::Full),
+    }
+
+    pub(super) fn row_shape(key: usize, value: usize) -> Result<(u32, usize), RowErr> {
+        let key_len = u32::try_from(key).map_err(|_| RowErr::Size)?;
+        let total = key.checked_add(value).ok_or(RowErr::Size)?;
+        Ok((key_len, total))
+    }
+
+    /// Emit an admitted row using operation-owned scratch. Dirty input and every exit are volatile-wiped.
+    pub fn write_row(
+        out: &mut impl crate::records::Writer,
+        scratch: &mut SecureVec,
+        key: &[u8],
+        value: &[u8],
+    ) -> Result<(), RowErr> {
+        struct RowScratch<'a>(&'a mut SecureVec);
+        impl Drop for RowScratch<'_> {
+            fn drop(&mut self) {
+                self.0.zeroize();
+            }
+        }
+        let scratch = RowScratch(scratch);
+        scratch.0.zeroize();
+        let (key_len, total) = row_shape(key.len(), value.len())?;
+        if scratch.0.capacity() < total {
+            if allocation_refused(AllocationSite::Row) {
+                return Err(RowErr::Allocation);
+            }
+            *scratch.0 = SecureVec::with_capacity(total).map_err(|_| RowErr::Allocation)?;
+        }
+        scratch.0.extend(key).map_err(|_| RowErr::Allocation)?;
+        scratch.0.extend(value).map_err(|_| RowErr::Allocation)?;
+        out.put_pod_tail(
+            wire::tag::ROW,
+            &wire::RowRec { key_len, _r: 0 },
+            scratch.0.as_slice(),
+        )
+        .map_err(RowErr::Full)
+    }
 
     /// `physical_version` of a receipt-era dataset; M4 refuses it at `open`.
     pub const RECEIPT_ERA_VERSION: u32 = 1;
@@ -520,6 +644,22 @@ pub mod plumbing {
     pub fn prelude_order<'a>(
         items: impl IntoIterator<Item = (&'a [u8; 16], &'a [u8], Use)>,
     ) -> Vec<([u8; 16], bool)> {
+        match ordered::<Legacy>(items) {
+            Ok(plan) => plan,
+            Err(never) => match never {},
+        }
+    }
+
+    /// Fallible version of [`prelude_order`], with identical namespace merging and byte order.
+    pub fn try_prelude_order<'a>(
+        items: impl IntoIterator<Item = (&'a [u8; 16], &'a [u8], Use)>,
+    ) -> Result<Vec<([u8; 16], bool)>, Overflow> {
+        ordered::<Fallible>(items)
+    }
+
+    fn ordered<'a, R: Reservation>(
+        items: impl IntoIterator<Item = (&'a [u8; 16], &'a [u8], Use)>,
+    ) -> Result<Vec<([u8; 16], bool)>, R::Error> {
         let mut out: Vec<([u8; 16], bool)> = Vec::new();
         for (namespace, key, how) in items {
             let target = match how {
@@ -535,10 +675,13 @@ pub mod plumbing {
                         held.1 |= exclusive;
                     }
                 }
-                Err(at) => out.insert(at, (target, exclusive)),
+                Err(at) => {
+                    R::reserve(&mut out)?;
+                    out.insert(at, (target, exclusive));
+                }
             }
         }
-        out
+        Ok(out)
     }
 
     /// One decoded FENCE or PREDICATE: `expected` is empty for `PREDICATE_ABSENT`.
@@ -596,6 +739,24 @@ pub mod plumbing {
         Fault(RecErr),
         /// N1: a slot and sequence that are neither slotted nor self-fenced: REFUSED.
         Refused,
+    }
+
+    /// A malformed/refused candidate, or inability to allocate its metadata before backend work.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum PrepareErr {
+        Commit(CommitErr),
+        Allocation,
+    }
+
+    enum DecodeErr<E> {
+        Commit(CommitErr),
+        Allocation(E),
+    }
+
+    impl<E> From<CommitErr> for DecodeErr<E> {
+        fn from(error: CommitErr) -> Self {
+            Self::Commit(error)
+        }
     }
 
     const SIZE: CommitErr = CommitErr::Fault(RecErr::Size);
@@ -665,10 +826,26 @@ pub mod plumbing {
 
     /// Decode a commit request: `CAND_HEAD, FENCE*, PREDICATE*, MUTATION*, RESULT`, with N1 on the head and
     /// G2 (N13) on every record. `METRIC` records are skipped.
-    pub fn decode_commit(mut req: Records<'_>) -> Result<Commit<'_>, CommitErr> {
+    pub fn decode_commit(req: Records<'_>) -> Result<Commit<'_>, CommitErr> {
+        match decode::<Legacy>(req) {
+            Ok(commit) => Ok(commit),
+            Err(DecodeErr::Commit(error)) => Err(error),
+            Err(DecodeErr::Allocation(never)) => match never {},
+        }
+    }
+
+    /// Decode exactly as [`decode_commit`], returning allocation refusal before any backend operation.
+    pub fn try_decode_commit(req: Records<'_>) -> Result<Commit<'_>, PrepareErr> {
+        decode::<Fallible>(req).map_err(|error| match error {
+            DecodeErr::Commit(error) => PrepareErr::Commit(error),
+            DecodeErr::Allocation(_) => PrepareErr::Allocation,
+        })
+    }
+
+    fn decode<R: Reservation>(mut req: Records<'_>) -> Result<Commit<'_>, DecodeErr<R::Error>> {
         let first = next(&mut req)?.ok_or(CommitErr::Fault(RecErr::Truncated))?;
         if first.tag != wire::tag::CAND_HEAD {
-            return Err(CommitErr::Fault(RecErr::Unknown(first.tag)));
+            return Err(CommitErr::Fault(RecErr::Unknown(first.tag)).into());
         }
         let cand = first.pod::<CandHead>().map_err(CommitErr::Fault)?;
         let slot = if cand.slot < wire::MAX_SLOTS && cand.seq >= 1 {
@@ -679,28 +856,36 @@ pub mod plumbing {
         } else if cand.slot == wire::SLOT_SELF_FENCED && cand.seq == 0 {
             CommitSlot::SelfFenced
         } else {
-            return Err(CommitErr::Refused);
+            return Err(CommitErr::Refused.into());
         };
         let (mut fences, mut predicates, mut mutations) = (Vec::new(), Vec::new(), Vec::new());
         let mut stage = 0u8;
         let result = loop {
             let rec = next(&mut req)?.ok_or(CommitErr::Fault(RecErr::Truncated))?;
             match rec.tag {
-                wire::tag::FENCE if stage == 0 => fences.push(cond(&rec)?),
+                wire::tag::FENCE if stage == 0 => {
+                    let item = cond(&rec)?;
+                    R::reserve(&mut fences).map_err(DecodeErr::Allocation)?;
+                    fences.push(item);
+                }
                 wire::tag::PREDICATE if stage <= 1 => {
                     stage = 1;
-                    predicates.push(cond(&rec)?);
+                    let item = cond(&rec)?;
+                    R::reserve(&mut predicates).map_err(DecodeErr::Allocation)?;
+                    predicates.push(item);
                 }
                 wire::tag::MUTATION if stage <= 2 => {
                     stage = 2;
-                    mutations.push(mutation(&rec)?);
+                    let item = mutation(&rec)?;
+                    R::reserve(&mut mutations).map_err(DecodeErr::Allocation)?;
+                    mutations.push(item);
                 }
                 wire::tag::RESULT => break rec.body,
-                other => return Err(CommitErr::Fault(RecErr::Unknown(other))),
+                other => return Err(CommitErr::Fault(RecErr::Unknown(other)).into()),
             }
         };
         if let Some(extra) = next(&mut req)? {
-            return Err(CommitErr::Fault(RecErr::Unknown(extra.tag)));
+            return Err(CommitErr::Fault(RecErr::Unknown(extra.tag)).into());
         }
         Ok(Commit {
             head: CommitHead {

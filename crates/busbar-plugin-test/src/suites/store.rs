@@ -17,6 +17,14 @@
 use crate::fake_needs::FakeNeeds;
 use busbar_plugin_abi::plugin::Plugin;
 
+#[cfg(feature = "test-seal")]
+pub(crate) fn run_parameterized(
+    host: &crate::store::StoreHarness,
+    case: impl FnMut(&str) -> crate::store::StoreCase,
+) {
+    cases::run_parameterized(host, case);
+}
+
 pub(super) fn run(plugin: &'static Plugin, config: &[u8], needs: FakeNeeds) {
     #[cfg(feature = "test-seal")]
     cases::run(plugin, config, needs);
@@ -43,11 +51,10 @@ mod cases {
     use busbar_contract::plugin::TestKernelSeal;
     use busbar_contract::Secret;
     use busbar_plugin_abi::plugin::Plugin;
-    use busbar_plugin_abi::types::KindCode;
-    use busbar_plugin_loader::ports::store::StoreHandle;
+    use busbar_ports::store::StoreHandle;
 
-    use super::super::harness::Harness;
     use crate::fake_needs::FakeNeeds;
+    use crate::store::{StoreCase, StoreHarness};
 
     const NS: [u8; 16] = *b"suite.store.v1\0\0";
     const WRITER: [u8; 16] = [0xA1; 16];
@@ -69,23 +76,27 @@ mod cases {
     }
 
     pub(super) fn run(plugin: &'static Plugin, config: &[u8], needs: FakeNeeds) {
-        let h = Harness::admit(plugin, needs).unwrap_or_else(|r| panic!("admit refused: {r:?}"));
-        assert_eq!(
-            h.kind(),
-            KindCode::Store,
-            "suites::store needs a store image"
-        );
-        h.registry()
-            .set_store_seal(Box::new(|| Box::new(TestKernelSeal)));
+        let host =
+            StoreHarness::admit(plugin, needs).unwrap_or_else(|r| panic!("admit refused: {r:?}"));
+        run_parameterized(&host, |case| {
+            let name = format!("store-{case}");
+            StoreCase::new(name.clone(), config_for(config, &name))
+        });
+    }
+
+    pub(super) fn run_parameterized(
+        host: &StoreHarness,
+        mut case_config: impl FnMut(&str) -> StoreCase,
+    ) {
+        let h = host.harness();
 
         // DRY_RUN open (`--validate`): bind and check, keep nothing.
-        h.check("store-check", &config_for(config, "store-check"))
+        host.check(&case_config("check"))
             .unwrap_or_else(|e| panic!("check of the operator config failed: {e:?}"));
 
-        let open = |case: &str| -> Live {
-            let name = format!("store-{case}");
+        let mut open = |case: &str| -> Live {
             Live(
-                h.open_store(&name, &config_for(config, &name))
+                host.open(&case_config(case))
                     .unwrap_or_else(|e| panic!("open for {case} failed: {e:?}")),
             )
         };
@@ -122,22 +133,30 @@ mod cases {
         // Slot mechanic (item 18): each case on a fresh instance.
         let live = open("8.1");
         h.block_on(sdk::detached_original_after_reuse(&live));
+        drop(live);
         let live = open("8.2");
         h.block_on(sdk::initialize_lost_reply(&live));
+        drop(live);
         let live = open("8.2b");
         h.block_on(sdk::initialize_race_lost_reply(&live));
+        drop(live);
         let live = open("8.2c");
         h.block_on(sdk::register_race(&live));
+        drop(live);
         let live = open("8.3");
         h.block_on(sdk::duplicate_and_conflict_replay(&live));
+        drop(live);
         let live = open("8.4");
         h.block_on(sdk::zombie_fenced_in_doubt(&live));
+        drop(live);
 
         // C13 and C20.
         let live = open("c13");
         h.block_on(c13_two_absent_puts(live.backend()));
+        drop(live);
         let live = open("c20");
         h.block_on(c20_put_then_delete(live.backend()));
+        drop(live);
 
         // Nothing the suite did may have been refused unnoticed.
         assert!(
@@ -145,6 +164,8 @@ mod cases {
             "an open or check was refused: {:?}",
             h.refusals()
         );
+        h.assert_needs_declared("store");
+        host.finish().expect("store socket target finished cleanly");
     }
 
     /// The operator config for instance `name`: `{instance}` becomes the name.

@@ -78,8 +78,22 @@ fn both(m: Manifest, door: DoorFn, path: PathBuf) -> [PluginRegistry; 2] {
     } else {
         crate::sign::SigningKey::from_bytes(&[22; 32])
     };
-    let publisher = (m.publisher.clone(), signer.verifying_key());
-    let package = crate::sign::sign(&signer, m, &lib);
+    let publisher = (
+        m.publisher.clone(),
+        crate::sign::PublisherTrust {
+            plugins: [m.name.clone()].into_iter().collect(),
+            keys: vec![crate::sign::PublisherKey {
+                key: signer.verifying_key(),
+                revoked: false,
+            }],
+        },
+    );
+    let first_party = m.publisher == crate::sign::FIRST_PARTY_PUBLISHER;
+    let package = if first_party {
+        crate::sign::seal_test_artifact(&signer, m, &lib)
+    } else {
+        crate::sign::sign(&signer, m, &lib)
+    };
     let dir = scratch(&format!("package-{}", package.name));
     std::fs::write(
         dir.join("exporter.tar.gz"),
@@ -90,7 +104,7 @@ fn both(m: Manifest, door: DoorFn, path: PathBuf) -> [PluginRegistry; 2] {
         first_party_key: Some(release.verifying_key()),
         first_party_keys: vec![crate::sign::FirstPartyKey::unnamed(release.verifying_key())],
         publishers: std::iter::once(publisher)
-            .filter(|(_, key)| *key != release.verifying_key())
+            .filter(|_| !first_party)
             .collect(),
         binary_version: package.version.clone(),
         ..Default::default()

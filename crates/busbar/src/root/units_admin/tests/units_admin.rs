@@ -1,4 +1,82 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
 use super::*;
+use busbar_contract::json::{self, JsonValueTrait};
+
+#[test]
+fn cloned_admin_carrier_keeps_original_empty_request_and_exact_query_presence() {
+    use busbar_kernel::inbound::request_snapshot::{ChargedRequestSnapshot, SnapshotInput};
+    use busbar_kernel::limits::process_admission::{AdmissionClass, ProcessAdmission};
+
+    let process = ProcessAdmission::new(2);
+    let lease = process.try_enter(AdmissionClass::Data).unwrap();
+    let fields = [
+        ("x-original", b"\xff".as_slice()),
+        ("x-original", b"second"),
+    ];
+    let snapshot = ChargedRequestSnapshot::capture(
+        SnapshotInput {
+            method: "GET",
+            path: "/api/v1/admin/audit",
+            query: "",
+            query_present: true,
+            authority: "node.example",
+            headers: fields.iter().copied(),
+            peer: "192.0.2.1:42",
+            tls_peer_cert: b"certificate",
+            body: &[],
+            now_s: 42,
+        },
+        &lease,
+    )
+    .unwrap();
+    let request = AdminRequest::from_snapshot(snapshot.clone(), 7);
+    let retained = request.clone();
+    assert!(Arc::ptr_eq(request.snapshot(), retained.snapshot()));
+    assert!(retained.snapshot().request().same_request(&lease));
+    assert_eq!(retained.path(), "/api/v1/admin/audit?");
+    assert_eq!(retained.headers().collect::<Vec<_>>(), fields);
+    assert_eq!(retained.snapshot().peer(), "192.0.2.1:42");
+    assert_eq!(retained.snapshot().tls_peer_cert(), b"certificate");
+    drop((request, snapshot, lease));
+    assert!(process.try_enter(AdmissionClass::Data).is_err());
+    drop(retained);
+    assert!(process.try_enter(AdmissionClass::Data).is_ok());
+}
+
+#[test]
+fn admin_http_body_projection_retains_same_snapshot_without_copying() {
+    use busbar_kernel::inbound::request_snapshot::{ChargedRequestSnapshot, SnapshotInput};
+    use busbar_kernel::limits::process_admission::{AdmissionClass, ProcessAdmission};
+
+    let process = ProcessAdmission::new(2);
+    let lease = process.try_enter(AdmissionClass::Data).unwrap();
+    let snapshot = ChargedRequestSnapshot::capture(
+        SnapshotInput {
+            method: "POST",
+            path: "/api/v1/admin/config/apply",
+            query: "",
+            query_present: false,
+            authority: "node",
+            headers: std::iter::empty(),
+            peer: "",
+            tls_peer_cert: &[],
+            body: b"original body",
+            now_s: 1,
+        },
+        &lease,
+    )
+    .unwrap();
+    let request = AdminRequest::from_snapshot(snapshot, 8);
+    let projected = request.snapshot().body_bytes();
+    assert_eq!(projected.as_ptr(), request.body().as_ptr());
+    drop((request, lease));
+    assert!(process.try_enter(AdmissionClass::Data).is_err());
+    assert_eq!(projected.as_ref(), b"original body");
+    drop(projected);
+    assert!(process.try_enter(AdmissionClass::Data).is_ok());
+}
 
 fn a_fresh_unit() -> u64 {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -6,7 +84,7 @@ fn a_fresh_unit() -> u64 {
 }
 
 fn a_request() -> AdminRequest {
-    AdminRequest {
+    AdminRequest::test_fixture(crate::root::units_admin::TestAdminRequest {
         method: "GET".to_string(),
         path: "/api/v1/admin/audit?limit=4".to_string(),
         credential: Some("admin-token".to_string()),
@@ -14,13 +92,13 @@ fn a_request() -> AdminRequest {
         body: Vec::new(),
         at: 1_700_000_000,
         unit: a_fresh_unit(),
-    }
+    })
 }
 
 #[test]
 fn debug_redacts_the_presented_credential_and_the_header_it_arrived_in() {
     const SECRET: &str = "a-distinctive-admin-secret-7f31c9";
-    let request = AdminRequest {
+    let request = AdminRequest::test_fixture(crate::root::units_admin::TestAdminRequest {
         method: "POST".to_string(),
         path: "/api/v1/admin/config/apply".to_string(),
         credential: Some(SECRET.to_string()),
@@ -32,7 +110,7 @@ fn debug_redacts_the_presented_credential_and_the_header_it_arrived_in() {
         body: b"{}".to_vec(),
         at: 1_700_000_000,
         unit: a_fresh_unit(),
-    };
+    });
 
     let rendered = format!("{request:?}");
     assert!(
@@ -40,38 +118,19 @@ fn debug_redacts_the_presented_credential_and_the_header_it_arrived_in() {
         "Debug must never carry the presented credential — not in the field, not in the header it \
          arrived in. Got: {rendered}"
     );
-    assert!(
-        rendered.matches("<redacted>").count() >= 3,
-        "the field and BOTH carriers must be redacted, got: {rendered}"
-    );
-
-    assert!(rendered.contains("AdminRequest"), "got: {rendered}");
-    assert!(
-        rendered.contains("/api/v1/admin/config/apply"),
-        "got: {rendered}"
-    );
-    assert!(
-        rendered.contains("content-type") && rendered.contains("application/json"),
-        "a header that carries no credential still prints as itself, got: {rendered}"
-    );
-    assert!(rendered.contains("\"POST\""), "got: {rendered}");
-
-    let mut nothing_presented = request;
-    nothing_presented.credential = None;
-    nothing_presented.headers = vec![(
-        "authorization".to_string(),
-        "Bearer not-what-was-presented".to_string(),
-    )];
-    let rendered = format!("{nothing_presented:?}");
-    assert!(rendered.contains("credential: None"), "got: {rendered}");
-    assert!(
-        !rendered.contains("<redacted>"),
-        "nothing was presented, so nothing is redacted, got: {rendered}"
-    );
-    assert!(
-        rendered.contains("Bearer not-what-was-presented"),
-        "got: {rendered}"
-    );
+    assert!(rendered.contains("AdminRequest"));
+    for value in [
+        "/api/v1/admin/config/apply",
+        "authorization",
+        "Bearer",
+        "application/json",
+        "{}",
+    ] {
+        assert!(
+            !rendered.contains(value),
+            "snapshot content leaked in Debug: {rendered}"
+        );
+    }
 }
 
 #[test]
@@ -80,7 +139,7 @@ fn the_door_answers_the_published_releases_own_bytes() {
         env!("BUSBAR_CORE_DIR"),
         "/../../testing/shadow-oracle/golden/1.5.5/cells/admin.ops__GetConfig__unauth.json"
     ));
-    let cell: serde_json::Value = serde_json::from_str(GOLDEN).expect("the golden cell parses");
+    let cell: json::Value = json::parse_value(GOLDEN.as_bytes()).expect("the golden cell parses");
     let answer = door_answer();
     assert!(
         answer.headers.iter().any(|(name, value)| {
@@ -95,7 +154,7 @@ fn the_door_answers_the_published_releases_own_bytes() {
         "the door's status is the recorded one"
     );
 
-    let recorded = serde_json::to_vec(&cell["body"]["json"]).expect("the recorded body serialises");
+    let recorded = json::to_vec(&cell["body"]["json"]).expect("the recorded body serialises");
     assert_eq!(
         answer.body, recorded,
         "the door's bytes are the recorded answer's bytes"
@@ -165,7 +224,7 @@ async fn a_body_the_wrap_will_not_read_is_refused_rather_than_emptied() {
         .expect("the request builds");
     let response = wrapped
         .clone()
-        .oneshot(request)
+        .oneshot(charged_http_for_test(request).await)
         .await
         .expect("the router answers");
     assert_eq!(response.status(), 400);
@@ -176,7 +235,10 @@ async fn a_body_the_wrap_will_not_read_is_refused_rather_than_emptied() {
         .header(axum::http::header::CONTENT_LENGTH, "10")
         .body(axum::body::Body::from(b"0123456789".to_vec()))
         .expect("the request builds");
-    let response = wrapped.oneshot(request).await.expect("the router answers");
+    let response = wrapped
+        .oneshot(charged_http_for_test(request).await)
+        .await
+        .expect("the router answers");
     assert_eq!(
         response.status(),
         200,
@@ -274,9 +336,11 @@ fn the_audit_doors_carry_no_credential_into_the_sealed_facts() {
         ),
     ] {
         let mut request = a_request();
-        request.method = "PUT".to_string();
-        request.path = "/api/v1/admin/config/settings".to_string();
-        request.credential = Some("sk-live-the-presented-secret".to_string());
+        request.edit_for_test(|draft| draft.method = "PUT".to_string());
+        request.edit_for_test(|draft| draft.path = "/api/v1/admin/config/settings".to_string());
+        request.edit_for_test(|draft| {
+            draft.credential = Some("sk-live-the-presented-secret".to_string())
+        });
         let mut walk = AdminWalk::new(request);
         let _ = decode(&mut walk);
         let _ = verify(&mut walk, &PrincipalId::new("key_operator_7"));
@@ -296,10 +360,10 @@ async fn the_formerly_irreducible_verbs_are_authorized_by_the_grant_alone() {
     let under = async |path: &str, granted: VerbScope| -> Result<(), ReasonCode> {
         let binding = AdminBinding::new(Arc::new(AnsweringDispatch), open_door());
         let mut request = a_request();
-        request.method = "POST".to_string();
-        request.path = path.to_string();
+        request.edit_for_test(|draft| draft.method = "POST".to_string());
+        request.edit_for_test(|draft| draft.path = path.to_string());
 
-        request.body = b"{\"backup_ref\":\"backup-1\"}".to_vec();
+        request.edit_for_test(|draft| draft.body = b"{\"backup_ref\":\"backup-1\"}".to_vec());
         let mut walk = AdminWalk::new(request);
         decode(&mut walk).expect("the plane's table declares this operation");
         walk.granted = Some(granted);
@@ -327,7 +391,11 @@ async fn the_formerly_irreducible_verbs_are_authorized_by_the_grant_alone() {
 }
 
 fn a_door_answering(door: busbar_kernel::auth::AdminDoor) -> AdminDoorFn {
-    Arc::new(move |_: &AdminRequest| busbar_kernel::auth::AdminVerdict::from(door.clone()))
+    Arc::new(move |_: &AdminRequest| {
+        Box::pin(std::future::ready(busbar_kernel::auth::AdminVerdict::from(
+            door.clone(),
+        )))
+    })
 }
 
 fn listed_door(named: &[&str], needs: Scope) -> busbar_kernel::auth::AdminDoor {
@@ -348,12 +416,20 @@ fn approved_under(
 ) -> Result<(), ReasonCode> {
     let binding = AdminBinding::new(Arc::new(AnsweringDispatch), a_door_answering(door));
     let mut request = a_request();
-    request.method = method.to_string();
-    request.path = path.to_string();
+    request.edit_for_test(|draft| draft.method = method.to_string());
+    request.edit_for_test(|draft| draft.path = path.to_string());
     let mut walk = AdminWalk::new(request);
     decode(&mut walk).expect("the plane's table declares this operation");
     let bindings = crate::root::auth_bindings::AuthBindings::without_directory();
-    authenticate(&binding, &bindings, &mut walk)?;
+    {
+        let mut future = std::pin::pin!(authenticate(&binding, &bindings, &mut walk));
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        let std::task::Poll::Ready(answer) = std::future::Future::poll(future.as_mut(), &mut cx)
+        else {
+            panic!("this fixture is a ready door")
+        };
+        answer?;
+    }
     approve(&walk)
 }
 
@@ -520,7 +596,7 @@ async fn a_replayed_idempotency_key_answers_the_first_answers_bytes() {
     let store = crate::root::real_store::admin_scoped().await;
     let held = Arc::clone(&store);
     let replay_store: bound::ReplayStore = Arc::new(move || Some(Arc::clone(&held)));
-    let request = AdminRequest {
+    let request = AdminRequest::test_fixture(crate::root::units_admin::TestAdminRequest {
         method: "POST".to_string(),
         path: "/api/v1/admin/commit-upgrade".to_string(),
         credential: None,
@@ -528,7 +604,7 @@ async fn a_replayed_idempotency_key_answers_the_first_answers_bytes() {
         body: br#"{"version":"once"}"#.to_vec(),
         at: 1_700_000_000,
         unit: a_fresh_unit(),
-    };
+    });
     let minted = std::sync::atomic::AtomicUsize::new(0);
 
     let mint = || async {
@@ -563,8 +639,9 @@ async fn a_replayed_idempotency_key_answers_the_first_answers_bytes() {
                 actor: "operator",
             },
             &request,
-            &request.body,
+            request.body(),
             None,
+            bound::ReplayContext::None,
             mint,
         )
         .await
@@ -582,7 +659,12 @@ async fn a_replayed_idempotency_key_answers_the_first_answers_bytes() {
         ("another node", &sibling),
     ] {
         assert_eq!(replayed.status, first.status, "{who}: the first status");
-        assert_eq!(replayed.headers, first.headers, "{who}: the first headers");
+        let mut marked = first.headers.clone();
+        marked.push(("idempotent-replayed".to_string(), "true".to_string()));
+        assert_eq!(
+            replayed.headers, marked,
+            "{who}: the first headers, marked as replayed (r3 §4.6)"
+        );
         assert_eq!(replayed.body, first.body, "{who}: the first body's bytes");
     }
     assert_eq!(
@@ -673,10 +755,48 @@ async fn answer_at_the_closed_door(door: AdminDoorFn, credential: Option<&str>) 
             Denylist(false),
         )));
     let mut request = a_request();
-    request.credential = credential.map(str::to_string);
+    request.edit_for_test(|draft| draft.credential = credential.map(str::to_string));
     AdminNode::new(crate::root::kernel::new_kernel(), units)
         .answer(request)
         .await
+}
+
+#[tokio::test]
+async fn authoritative_admin_door_awaits_before_revocation_and_approval() {
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let observed = calls.clone();
+    let door: AdminDoorFn = Arc::new(move |_: &AdminRequest| {
+        let calls = calls.clone();
+        Box::pin(async move {
+            tokio::task::yield_now().await;
+            calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            busbar_kernel::auth::AdminDoor::Identified(
+                busbar_contract::auth::Principal::from_id(
+                    busbar_kernel::config::operator_principal_id(),
+                ),
+                busbar_contract::authz::Grants::of(Scope::Full),
+            )
+            .into()
+        })
+    });
+    assert_eq!(
+        answer_at_the_closed_door(door.clone(), Some("credential"))
+            .await
+            .status,
+        200
+    );
+    let units = crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch), door)
+        .await
+        .with_auth_bindings(crate::root::auth_bindings::AuthBindings::new(Arc::new(
+            Denylist(true),
+        )));
+    let mut request = a_request();
+    request.edit_for_test(|draft| draft.credential = Some("credential".into()));
+    let answer = AdminNode::new(crate::root::kernel::new_kernel(), units)
+        .answer(request)
+        .await;
+    assert_eq!(answer.status, 401);
+    assert_eq!(observed.load(std::sync::atomic::Ordering::SeqCst), 2);
 }
 
 #[tokio::test]
@@ -707,7 +827,7 @@ async fn a_wrong_or_absent_credential_is_refused_at_the_door() {
         absent,
         door_answer(),
         "a caller who presented NO credential must be the door's answer — this is the arm a step \
-         that never reads `request.credential` cannot produce"
+         that never reads `request.credential()` cannot produce"
     );
     assert_eq!(absent.status, 401, "and that answer's status is the door's");
 }
@@ -828,7 +948,7 @@ async fn the_admin_listener_is_exempt_from_the_cap_the_data_listener_is_refused_
         answer_for(Outcome::Refused(StepName::Arrival, ReasonCode::InFlightCap)),
         "the answer is the request's own, not the gate's refusal"
     );
-    let document: serde_json::Value = serde_json::from_slice(&answer.body).expect("audit JSON");
+    let document: json::Value = json::parse_value(&answer.body).expect("audit JSON");
     assert!(
         document["items"].is_array(),
         "the real audit handler answered"
@@ -929,18 +1049,12 @@ async fn one_admin_unit_seals_exactly_one_entry_on_the_one_ring_and_a_read_seals
 
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = crate::root::loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual Store statement reads")
-        .expect("the actual Store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual Store statement is valid")
-        .name;
-    let mut manifest = crate::root::test_plugins::manifest(
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual Store library reads");
     let directory = crate::root::test_plugins::scratch(&format!(
         "admin-unit-{}",
@@ -958,11 +1072,11 @@ async fn one_admin_unit_seals_exactly_one_entry_on_the_one_ring_and_a_read_seals
         "the actual Store settings are an object"
     );
     let deploy = busbar_kernel::config::deploy_from_deserializer(
-        serde_json::json!({
+        json::json!({
             "providers": {}, "models": {},
             "auth": {"chain": [], "admin_auth": []},
             "store": {"module": module, "settings": settings},
-            "advanced": {"allow_destinations": ["127.0.0.1"]},
+            "advanced": {},
         }),
         &crate::root::boot::axis_test_grammar(),
     )
@@ -1027,8 +1141,8 @@ async fn one_admin_unit_seals_exactly_one_entry_on_the_one_ring_and_a_read_seals
     };
     let mutating = |path: &str| {
         let mut request = a_request();
-        request.method = "POST".to_string();
-        request.path = path.to_string();
+        request.edit_for_test(|draft| draft.method = "POST".to_string());
+        request.edit_for_test(|draft| draft.path = path.to_string());
         request
     };
 
@@ -1171,9 +1285,9 @@ async fn each_recovery_verb_reaches_the_store_and_a_refusing_store_is_the_answer
         let store = Arc::new(RecordingStore::default());
         let binding = AdminBinding::new(Arc::new(NeverDispatched), open_door());
         let mut request = a_request();
-        request.method = "POST".to_string();
-        request.path = path.to_string();
-        request.body = body.as_bytes().to_vec();
+        request.edit_for_test(|draft| draft.method = "POST".to_string());
+        request.edit_for_test(|draft| draft.path = path.to_string());
+        request.edit_for_test(|draft| draft.body = body.as_bytes().to_vec());
         let mut walk = AdminWalk::new(request);
         decode(&mut walk).unwrap_or_else(|_| panic!("{path} is a row the plane's table declares"));
         walk.granted = Some(VerbScope::Full);
@@ -1198,6 +1312,114 @@ async fn each_recovery_verb_reaches_the_store_and_a_refusing_store_is_the_answer
             outcome.err(),
             Some(ReasonCode::DurabilityUnavailable),
             "{path} did not surface the refusing store's refusal"
+        );
+    }
+}
+
+/// Aikido 1074606954 (#108): chain-break and store-restore are durable writes like the other
+/// mutating verbs, so they pass the current-authority effect admission first (docs/admin-api.md).
+/// An admin whose authority was revoked after the request was admitted reaches no store method.
+#[tokio::test]
+async fn a_recovery_verb_is_refused_when_current_authority_no_longer_admits_the_effect() {
+    #[derive(Debug, Default)]
+    struct RecordingStore(Mutex<Vec<String>>);
+
+    impl busbar_kernel::persistence::recovery_api::Store for RecordingStore {
+        fn chain_break<'a>(
+            &'a self,
+            _admin: &'a busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
+        ) -> busbar_kernel::persistence::recovery_api::StoreCall<'a> {
+            Box::pin(async move {
+                self.0.lock().unwrap().push("chain_break".to_string());
+                Ok(())
+            })
+        }
+        fn store_restore<'a>(
+            &'a self,
+            _admin: &'a busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
+            backup_ref: &'a str,
+        ) -> busbar_kernel::persistence::recovery_api::StoreCall<'a> {
+            Box::pin(async move {
+                self.0
+                    .lock()
+                    .unwrap()
+                    .push(format!("store_restore:{backup_ref}"));
+                Ok(())
+            })
+        }
+    }
+
+    struct NeverDispatched;
+    #[async_trait::async_trait]
+    impl AdminDispatch for NeverDispatched {
+        async fn execute(&self, verb: KernelVerb, _request: &AdminRequest) -> AdminAnswer {
+            panic!("a recovery verb reached the governance seam: {verb:?}");
+        }
+    }
+
+    fn revoked(
+        _context: &busbar_kernel::auth::effect::Context,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = Result<
+                        busbar_kernel::config::transaction::EffectGuard,
+                        busbar_kernel::config::transaction::TxnError,
+                    >,
+                > + Send
+                + '_,
+        >,
+    > {
+        Box::pin(async { Err(busbar_kernel::config::transaction::TxnError::Forbidden) })
+    }
+
+    let admin = crate::root::kernel::new_kernel().admin_token();
+
+    for (path, body) in [
+        ("/api/v1/admin/chain-break", "{}"),
+        (
+            "/api/v1/admin/store-restore",
+            "{\"backup_ref\":\"nightly-2026-09-05\"}",
+        ),
+    ] {
+        let store = Arc::new(RecordingStore::default());
+        let mut binding = AdminBinding::new(Arc::new(NeverDispatched), open_door());
+        let admission: EffectAdmission = Arc::new(revoked);
+        binding.effect_admission = Some(admission);
+        let mut request = a_request();
+        request.edit_for_test(|draft| draft.method = "POST".to_string());
+        request.edit_for_test(|draft| draft.path = path.to_string());
+        request.edit_for_test(|draft| draft.body = body.as_bytes().to_vec());
+        let mut walk = AdminWalk::new(request);
+        decode(&mut walk).unwrap_or_else(|_| panic!("{path} is a row the plane's table declares"));
+        walk.granted = Some(VerbScope::Full);
+        walk.effect_context = Some(busbar_kernel::auth::effect::Context::new(
+            "POST",
+            path,
+            Default::default(),
+            &busbar_kernel::auth::AdminDoor::Open,
+        ));
+
+        let outcome = route(
+            &binding,
+            Some(Arc::clone(&store)
+                as Arc<
+                    dyn busbar_kernel::persistence::recovery_api::Store + Send + Sync,
+                >),
+            &admin,
+            &mut walk,
+        )
+        .await;
+
+        assert!(
+            store.0.lock().unwrap().is_empty(),
+            "{path} reached the store without current authority"
+        );
+        assert_eq!(outcome, Ok(()), "{path}: the refusal is the answer");
+        assert_eq!(
+            walk.answer.as_ref().map(|answer| answer.status),
+            Some(403),
+            "{path} is refused as forbidden"
         );
     }
 }
@@ -1240,56 +1462,6 @@ fn a_restore_that_names_no_backup_is_refused_rather_than_defaulted() {
     }
 
     assert_eq!(backup_ref_of(&[0xff, 0xfe]), None);
-}
-
-#[test]
-fn either_carrier_reaches_the_loop_as_the_credential_itself() {
-    let presented = |name: &str, value: &str| -> Option<String> {
-        let mut headers = axum::http::HeaderMap::new();
-        headers.insert(
-            axum::http::HeaderName::from_bytes(name.as_bytes()).expect("a header name"),
-            axum::http::HeaderValue::from_str(value).expect("a header value"),
-        );
-        presented_credential(&headers)
-    };
-    let secret = "shadow-oracle-admin";
-
-    for value in [
-        format!("Bearer {secret}"),
-        format!("bearer {secret}"),
-        format!("BEARER {secret}"),
-        format!("Bearer  {secret}"),
-        format!("  Bearer {secret}"),
-    ] {
-        assert_eq!(
-            presented("authorization", &value).as_deref(),
-            Some(secret),
-            "{value:?} did not arrive as the secret"
-        );
-    }
-    assert_eq!(
-        presented(ADMIN_TOKEN_HEADER, secret).as_deref(),
-        Some(secret),
-        "the second carrier is a carrier"
-    );
-
-    assert_eq!(
-        presented("authorization", "Bearer Bearer token").as_deref(),
-        Some("Bearer token")
-    );
-
-    assert_eq!(
-        presented("authorization", "Basic abc123").as_deref(),
-        Some("Basic abc123")
-    );
-
-    assert_eq!(presented("authorization", "Bearer ").as_deref(), None);
-    assert_eq!(presented(ADMIN_TOKEN_HEADER, "").as_deref(), None);
-    assert_eq!(
-        presented_credential(&axum::http::HeaderMap::new()),
-        None,
-        "a request with no carrier at all presents nothing"
-    );
 }
 
 #[test]
@@ -1410,11 +1582,10 @@ const LEDGER_PATHS: &[&str] = &[
     "/api/v1/admin/ledger/checkpoints",
     "/api/v1/admin/ledger/reconciliation",
     "/api/v1/admin/ledger/migration",
-    "/api/v1/admin/ledger/openapi.json",
 ];
 
 fn a_ledger_request(path: &str) -> AdminRequest {
-    AdminRequest {
+    AdminRequest::test_fixture(crate::root::units_admin::TestAdminRequest {
         method: "GET".to_string(),
         path: path.to_string(),
         credential: Some("admin-token".to_string()),
@@ -1422,7 +1593,7 @@ fn a_ledger_request(path: &str) -> AdminRequest {
         body: Vec::new(),
         at: 1_700_000_000,
         unit: a_fresh_unit(),
-    }
+    })
 }
 
 async fn answer_over_seeded_ledger(request: AdminRequest) -> AdminAnswer {
@@ -1446,7 +1617,7 @@ fn one_lane_rates() -> std::collections::BTreeMap<String, busbar_kernel::config:
         busbar_kernel::plane_driver::dispatch::fallback_key(),
     )
     .expect("the actual fallback plane declares its billable classes");
-    let zero = serde_json::from_value(serde_json::json!(0)).expect("an exact free unit rate");
+    let zero = json::from_value(&json::json!(0)).expect("an exact free unit rate");
     for class in plane.billable_classes {
         if !busbar_contract::records::RESERVED_UNITS.contains(&class.class)
             && !plane.fee_units.contains(&class.class)
@@ -1468,21 +1639,15 @@ fn one_lane_card() -> busbar_kernel::cost::CostModel {
 async fn answer_over_counts(
     gov: Arc<busbar_kernel::governance::GovState>,
     path: &str,
-) -> serde_json::Value {
+) -> json::Value {
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = crate::root::loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual Store statement reads")
-        .expect("the actual Store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual Store statement is valid")
-        .name;
-    let mut manifest = crate::root::test_plugins::manifest(
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual Store library reads");
     let directory = crate::root::test_plugins::scratch(&format!(
         "admin-unit-{}",
@@ -1499,10 +1664,9 @@ async fn answer_over_counts(
         settings.is_object(),
         "the actual Store settings are an object"
     );
-    let dialects: serde_json::Value = serde_json::from_str(include_str!(
-        "../../tests/fixtures/plane_node_dialects.json"
-    ))
-    .expect("the actual model dialects are recorded");
+    let dialects: json::Value =
+        json::parse_value(include_str!("../../tests/fixtures/plane_node_dialects.json").as_bytes())
+            .expect("the actual model dialects are recorded");
     let dialect = dialects["body_model"]
         .as_object()
         .and_then(|rows| rows.keys().next())
@@ -1512,13 +1676,13 @@ async fn answer_over_counts(
         &crate::root::boot::axis_test_grammar(),
     )
     .expect("the actual wire provider has its catalog declaration");
-    let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
+    let deploy = busbar_kernel::config::deploy_from_deserializer(json::json!({
         "providers": {"wire": {"protocol": dialect, "base_url": "http://127.0.0.1:9", "api_key": "none"}},
         "models": {"m": {"provider": "wire"}},
         "rate_card": one_lane_rates(),
         "auth": {"chain": [], "admin_auth": []},
         "store": {"module": module, "settings": settings},
-        "advanced": {"allow_destinations": ["127.0.0.1"]},
+        "advanced": {},
     }), &crate::root::boot::axis_test_grammar())
     .expect("the real admin deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &providers)
@@ -1576,7 +1740,7 @@ async fn answer_over_counts(
         .answer(a_ledger_request(path))
         .await;
     assert_eq!(answer.status, 200, "{path} did not answer");
-    serde_json::from_slice(&answer.body).unwrap_or_else(|e| panic!("{path}: {e}"))
+    json::parse_value(&answer.body).unwrap_or_else(|e| panic!("{path}: {e}"))
 }
 
 #[tokio::test]
@@ -1675,8 +1839,8 @@ async fn every_ledger_view_answers_from_the_ledger_and_not_from_the_dispatch() {
             vec![("content-type".to_string(), "application/json".to_string())],
             "{path} carried a header the view does not set"
         );
-        let parsed: serde_json::Value =
-            serde_json::from_slice(&answer.body).unwrap_or_else(|e| panic!("{path}: {e}"));
+        let parsed: json::Value =
+            json::parse_value(&answer.body).unwrap_or_else(|e| panic!("{path}: {e}"));
         assert!(parsed.is_object(), "{path} did not answer a JSON object");
         assert_ne!(
             answer.body, br#"{"entries":[]}"#,
@@ -1696,8 +1860,8 @@ async fn every_ledger_view_answers_from_the_ledger_and_not_from_the_dispatch() {
 
 #[tokio::test]
 async fn each_view_serves_the_figures_the_ledger_holds() {
-    let body = async |path: &str| -> serde_json::Value {
-        serde_json::from_slice(&answer_over_seeded_ledger(a_ledger_request(path)).await.body)
+    let body = async |path: &str| -> json::Value {
+        json::parse_value(&answer_over_seeded_ledger(a_ledger_request(path)).await.body)
             .expect("valid JSON")
     };
 
@@ -1719,15 +1883,12 @@ async fn each_view_serves_the_figures_the_ledger_holds() {
 
     assert_eq!(
         body("/api/v1/admin/ledger/checkpoints").await,
-        serde_json::json!({"checkpoints": []})
+        json::json!({"checkpoints": []})
     );
     assert_eq!(
         body("/api/v1/admin/ledger/migration").await,
-        serde_json::json!({"migrated": false, "marker": null})
+        json::json!({"migrated": false, "marker": null})
     );
-
-    let document = body("/api/v1/admin/ledger/openapi.json").await;
-    assert_eq!(document["info"]["version"], "1.6.0");
 }
 
 async fn real_admin_dispatch() -> RouterDispatch {
@@ -1744,18 +1905,12 @@ async fn real_admin_dispatch() -> RouterDispatch {
     );
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = crate::root::loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual Store statement reads")
-        .expect("the actual Store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual Store statement is valid")
-        .name;
-    let mut manifest = crate::root::test_plugins::manifest(
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual Store library reads");
     let directory = crate::root::test_plugins::scratch(&format!(
         "admin-unit-{}",
@@ -1773,11 +1928,11 @@ async fn real_admin_dispatch() -> RouterDispatch {
         "the actual Store settings are an object"
     );
     let deploy = busbar_kernel::config::deploy_from_deserializer(
-        serde_json::json!({
+        json::json!({
             "providers": {}, "models": {},
             "auth": {"chain": [], "admin_auth": []},
             "store": {"module": module, "settings": settings},
-            "advanced": {"allow_destinations": ["127.0.0.1"]},
+            "advanced": {},
         }),
         &crate::root::boot::axis_test_grammar(),
     )
@@ -1845,9 +2000,11 @@ async fn real_admin_dispatch() -> RouterDispatch {
 
 fn authenticated_admin_request() -> AdminRequest {
     let mut request = a_request();
-    request
-        .headers
-        .push(("x-admin-token".into(), "admin-token".into()));
+    request.edit_for_test(|draft| {
+        draft
+            .headers
+            .push(("x-admin-token".into(), "admin-token".into()))
+    });
     request
 }
 
@@ -1884,7 +2041,7 @@ async fn a_panicking_step_leaves_the_node_serving_valid_operations() {
         .is_panic());
     let answer = node.answer(authenticated_admin_request()).await;
     assert_eq!(answer.status, 200);
-    let document: serde_json::Value = serde_json::from_slice(&answer.body).expect("audit JSON");
+    let document: json::Value = json::parse_value(&answer.body).expect("audit JSON");
     assert!(
         document["items"].is_array(),
         "a real valid operation answered after the panic"
@@ -1898,18 +2055,18 @@ async fn an_unopened_ledger_answers_empty_rather_than_absent() {
         crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch), open_door())
             .await;
     let node = AdminNode::new(crate::root::kernel::new_kernel(), units);
-    let body = async |path: &str| -> serde_json::Value {
+    let body = async |path: &str| -> json::Value {
         let answer = node.answer(a_ledger_request(path)).await;
         assert_eq!(answer.status, 200, "{path}");
-        serde_json::from_slice(&answer.body).expect("valid JSON")
+        json::parse_value(&answer.body).expect("valid JSON")
     };
     assert_eq!(
         body("/api/v1/admin/ledger/totals").await["rows"],
-        serde_json::json!([])
+        json::json!([])
     );
     assert_eq!(
         body("/api/v1/admin/ledger/checkpoints").await["checkpoints"],
-        serde_json::json!([])
+        json::json!([])
     );
     assert_eq!(
         body("/api/v1/admin/ledger/migration").await["migrated"],
@@ -1917,7 +2074,7 @@ async fn an_unopened_ledger_answers_empty_rather_than_absent() {
     );
     assert_eq!(
         body("/api/v1/admin/ledger/migration").await["marker"],
-        serde_json::Value::Null
+        json::Value::new()
     );
 
     assert_eq!(
@@ -1928,7 +2085,7 @@ async fn an_unopened_ledger_answers_empty_rather_than_absent() {
 
 #[tokio::test]
 async fn the_reconciliation_holds_unless_a_row_is_refused_and_names_it() {
-    let served: serde_json::Value = serde_json::from_slice(
+    let served: json::Value = json::parse_value(
         &answer_over_seeded_ledger(a_ledger_request("/api/v1/admin/ledger/reconciliation"))
             .await
             .body,
@@ -1938,7 +2095,7 @@ async fn the_reconciliation_holds_unless_a_row_is_refused_and_names_it() {
         served["holds"], false,
         "a refused row is a row not measured"
     );
-    assert_eq!(served["discrepancies"], serde_json::json!([]));
+    assert_eq!(served["discrepancies"], json::json!([]));
     let refused = served["refused"].as_array().expect("refused");
     assert_eq!(refused.len(), 1);
     assert_eq!(refused[0]["bucket"], "key-3");
@@ -1964,12 +2121,12 @@ async fn verify_names_a_refused_row_and_every_other_finding() {
     let answer = crate::root::units_admin::bound::verify_effect(&SeededLedger, Some(&audit), None)
         .await
         .expect("a refused row must not take /admin/verify down");
-    let body: serde_json::Value = serde_json::from_slice(&answer.body).expect("valid JSON");
+    let body: json::Value = json::parse_value(&answer.body).expect("valid JSON");
     let findings: Vec<&str> = body["findings"]
         .as_array()
         .expect("findings")
         .iter()
-        .filter_map(serde_json::Value::as_str)
+        .filter_map(json::Value::as_str)
         .collect();
     assert!(
         findings
@@ -1992,7 +2149,7 @@ async fn verify_names_a_refused_row_and_every_other_finding() {
 async fn a_ledger_view_answers_an_unauthenticated_caller_exactly_as_the_legacy_usage_read_does() {
     let under = async |path: &str, credential: Option<&str>, revoked: bool| -> AdminAnswer {
         let mut request = a_ledger_request(path);
-        request.credential = credential.map(ToString::to_string);
+        request.edit_for_test(|draft| draft.credential = credential.map(ToString::to_string));
 
         let door = if revoked {
             a_door_that_identifies_the_operator()
@@ -2038,7 +2195,7 @@ async fn a_ledger_view_answers_an_unauthenticated_caller_exactly_as_the_legacy_u
 fn a_read_only_credential_reaches_every_view_and_still_no_mutation() {
     let decide = |path: &str, method: &str, granted: VerbScope| -> bool {
         let mut request = a_ledger_request(path);
-        request.method = method.to_string();
+        request.edit_for_test(|draft| draft.method = method.to_string());
         let mut walk = AdminWalk::new(request);
         walk.granted = Some(granted);
         approve(&walk).is_ok()
@@ -2275,6 +2432,57 @@ async fn answer_over_a_sealed_chain(request: AdminRequest) -> AdminAnswer {
 }
 
 #[tokio::test]
+async fn audit_verifying_keys_use_the_shared_cursor_page() {
+    let mut audit = a_sealed_chain();
+    for seed in [11u8, 19, 23] {
+        let signer = busbar_kernel_audit::AuditSigningKey::from_seed(&[seed; 32]);
+        audit.keys.insert(
+            busbar_kernel_audit::AuditVerifyingKey::from_hex(&signer.public_key_hex()).unwrap(),
+        );
+    }
+    let mut expected: Vec<String> = audit
+        .keys
+        .keys()
+        .iter()
+        .map(|key| key.key_id().to_owned())
+        .collect();
+    expected.sort();
+    let mut units =
+        crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch), open_door())
+            .await;
+    units.admin = AdminBinding::new(Arc::new(AnsweringDispatch), open_door())
+        .with_audit_view(Arc::new(audit) as Arc<dyn AuditView>);
+    let node = AdminNode::new(crate::root::kernel::new_kernel(), units);
+    let mut path = "/api/v1/admin/audit/keys?limit=1".to_string();
+    let mut ids = Vec::new();
+    for page in 0..4 {
+        let answer = node.answer(a_ledger_request(&path)).await;
+        assert_eq!(answer.status, 200);
+        let body: json::Value = json::parse_value(&answer.body).unwrap();
+        let items = body["items"].as_array().expect("every list uses items");
+        assert_eq!(items.len(), 1);
+        ids.push(items[0]["key_id"].as_str().unwrap().to_string());
+        assert_eq!(body["algorithm"].as_str(), Some("ed25519"));
+        assert!(body.get("keys").is_none(), "one collection member only");
+        if page == 3 {
+            assert!(body["next_cursor"].is_null());
+        } else {
+            let cursor = body["next_cursor"].as_str().expect("another key remains");
+            assert!(cursor.starts_with("k1."), "use the common cursor format");
+            path = format!("/api/v1/admin/audit/keys?limit=1&cursor={cursor}");
+        }
+    }
+    assert_eq!(ids, expected, "each public key appears exactly once");
+    let answer = node
+        .answer(a_ledger_request("/api/v1/admin/audit/keys?cursor=invalid"))
+        .await;
+    assert_eq!(answer.status, 400);
+    assert!(String::from_utf8(answer.body)
+        .unwrap()
+        .contains("malformed_cursor"));
+}
+
+#[tokio::test]
 async fn the_three_chain_reads_answer_with_the_chains_own_bytes() {
     let head = answer_over_a_sealed_chain(a_ledger_request("/api/v1/admin/audit/head")).await;
     assert_eq!(head.status, 200, "the head read did not answer");
@@ -2429,26 +2637,19 @@ fn every_1_6_0_row_names_a_kernel_verb_and_no_name_is_empty() {
 }
 
 #[tokio::test]
-async fn the_ledger_document_path_serves_the_one_document_and_it_describes_the_views() {
-    let answer =
-        answer_over_seeded_ledger(a_ledger_request("/api/v1/admin/ledger/openapi.json")).await;
-    assert_eq!(answer.status, 200);
-    let served = String::from_utf8(answer.body).expect("the document is text");
-    assert_eq!(
-        served,
-        busbar_core_admin::v1::json::openapi_document(),
-        "the ledger's document path must serve the one generated document, byte for byte"
-    );
-    let document: serde_json::Value = serde_json::from_str(&served).expect("it is JSON");
+async fn the_one_document_describes_the_ledger_views() {
+    // The ledger no longer has a document path of its own (#304): the one document is `GET /openapi.json`.
+    let served = busbar_core_admin::v1::json::openapi_document();
+    let document: json::Value = json::parse_value(served.as_bytes()).expect("it is JSON");
     let paths = document["paths"].as_object().expect("it declares paths");
     assert!(
-        paths.contains_key("/api/v1/admin/usage"),
-        "the ledger path serves a document that is not the administrative one"
+        paths.contains_key(&"/api/v1/admin/usage"),
+        "the one document is the administrative one"
     );
 
     for path in LEDGER_PATHS {
         let op = &paths
-            .get(*path)
+            .get(path)
             .unwrap_or_else(|| panic!("{path} is served and in no document"))["get"];
         assert!(
             op.is_object(),
@@ -2469,10 +2670,13 @@ async fn the_ledger_document_path_serves_the_one_document_and_it_describes_the_v
         );
     }
 
-    let pinned: serde_json::Value = serde_json::from_str(include_str!(concat!(
-        env!("BUSBAR_CORE_DIR"),
-        "/../../testing/shadow-oracle/fixtures/openapi-1.5.5.json"
-    )))
+    let pinned: json::Value = json::parse_value(
+        include_str!(concat!(
+            env!("BUSBAR_CORE_DIR"),
+            "/../../testing/shadow-oracle/fixtures/openapi-1.5.5.json"
+        ))
+        .as_bytes(),
+    )
     .expect("the pinned fixture is JSON");
     let pinned_paths = pinned["paths"].as_object().expect("it declares paths");
     assert!(
@@ -2516,8 +2720,8 @@ fn a_configured_name_cannot_break_out_of_the_document() {
             refusal: hostile.to_string(),
         }],
     };
-    let parsed: serde_json::Value =
-        serde_json::from_str(&render_totals(&ledger).expect("projects"))
+    let parsed: json::Value =
+        json::parse_value(render_totals(&ledger).expect("projects").as_bytes())
             .expect("a hostile name still renders JSON");
     assert_eq!(parsed["rows"][0]["bucket"], hostile);
     assert_eq!(parsed["refused"][0]["bucket"], hostile);
@@ -2542,8 +2746,8 @@ fn a_seeded_history() -> crate::root::kernel::RootHistory {
 }
 
 #[cfg(test)]
-fn a_body(body: serde_json::Value) -> Vec<u8> {
-    serde_json::to_vec(&body).expect("the correction serialises")
+fn a_body(body: json::Value) -> Vec<u8> {
+    json::to_vec(&body).expect("the correction serialises")
 }
 
 #[cfg(test)]
@@ -2722,7 +2926,7 @@ const ARRIVED: u64 = 86_406;
 
 #[cfg(test)]
 fn a_correction_body() -> Vec<u8> {
-    a_body(serde_json::json!({
+    a_body(json::json!({
         "effective_from": 0,
         "effective_until": 86_400_000,
         "rates": [ { "lane": "gpt", "class": "input", "micro_per_unit": 1.0 } ],
@@ -2746,7 +2950,7 @@ async fn amend_rate_history_appends_a_signed_back_dated_correction_and_rewrites_
         .await
         .expect("the correction applies");
     assert_eq!(answer.status, 200);
-    let doc: serde_json::Value = serde_json::from_slice(&answer.body).expect("the answer is JSON");
+    let doc: json::Value = json::parse_value(&answer.body).expect("the answer is JSON");
     assert_eq!(doc["history_seq"], 1);
     assert_eq!(doc["effective_from"], 0);
     assert_eq!(doc["effective_until"], 86_400_000);
@@ -2798,13 +3002,13 @@ async fn amend_rate_history_appends_a_signed_back_dated_correction_and_rewrites_
 #[tokio::test]
 async fn amend_rate_history_refuses_a_correction_that_names_a_currency() {
     for named in [
-        serde_json::json!("JPY"),
-        serde_json::json!("USD"),
-        serde_json::json!("nonsense"),
-        serde_json::json!(null),
+        json::json!("JPY"),
+        json::json!("USD"),
+        json::json!("nonsense"),
+        json::json!(null),
     ] {
         let history = a_seeded_history();
-        let body = a_body(serde_json::json!({
+        let body = a_body(json::json!({
             "effective_from": 0,
             "effective_until": 86_400_000,
             "currency": named,
@@ -2834,7 +3038,7 @@ async fn amend_rate_history_refuses_a_correction_that_names_a_currency() {
 
 #[test]
 fn the_canonical_amend_payload_names_no_currency() {
-    let body = serde_json::json!({
+    let body = json::json!({
         "effective_from": 0,
         "effective_until": 86_400_000,
         "rates": [ { "lane": "gpt", "class": "input", "micro_per_unit": 1.0 } ],
@@ -2847,23 +3051,46 @@ fn the_canonical_amend_payload_names_no_currency() {
         "the signed payload still names a currency: {text}"
     );
 
-    assert!(text.starts_with("busbar/amend-rate-history/v1\n"), "{text}");
+    assert!(text.starts_with("busbar/amend-rate-history/v2\n"), "{text}");
     for key in [
         "effective_from=",
         "effective_until=",
         "per_request_fee=",
-        "reason=",
+        "reason_sha256=",
         "rates=",
     ] {
         assert!(text.contains(key), "the payload dropped {key}: {text}");
     }
 }
 
+/// The amendment API keeps the reason's SHA-256, not its text (`kernel_verbs.rs`, openapi): the
+/// canonical payload stored in the policy journal carries the hash, never the operator's words.
+#[test]
+fn the_canonical_amend_payload_keeps_the_reason_hash_not_its_text() {
+    let reason = "vendor corrected the March price sheet";
+    let body = json::json!({
+        "effective_from": 0,
+        "rates": [ { "lane": "gpt", "class": "input", "micro_per_unit": 1.0 } ],
+        "reason": reason,
+    });
+    let payload = canonical_amend_payload(body.as_object().expect("an object"));
+    let text = String::from_utf8(payload).expect("the payload is text");
+    assert!(
+        !text.contains(reason),
+        "the signed payload carries the reason text: {text}"
+    );
+    let hash = hex::encode(busbar_contract::abi::sdk::digest::sha256(reason.as_bytes()));
+    assert!(
+        text.contains(&format!("reason_sha256=\"{hash}\"\n")),
+        "the signed payload names the reason by its SHA-256: {text}"
+    );
+}
+
 #[tokio::test]
 async fn amend_rate_history_refuses_a_negative_fee_and_appends_nothing() {
     for fee in [-1_i64, -5, i64::MIN] {
         let history = a_seeded_history();
-        let body = a_body(serde_json::json!({
+        let body = a_body(json::json!({
             "effective_from": 0,
             "effective_until": 86_400_000,
             "per_request_fee": fee,
@@ -2882,7 +3109,7 @@ async fn amend_rate_history_refuses_a_negative_fee_and_appends_nothing() {
 
     for fee in [5_i64, 0] {
         let history = a_seeded_history();
-        let body = a_body(serde_json::json!({
+        let body = a_body(json::json!({
             "effective_from": 0,
             "effective_until": 86_400_000,
             "per_request_fee": fee,
@@ -3008,7 +3235,7 @@ async fn a_correction_of_one_cell_keeps_every_other_price_and_the_fee() {
 #[tokio::test]
 async fn a_fee_or_plane_correction_moves_only_what_it_names() {
     let history = a_full_card_history();
-    let body = a_body(serde_json::json!({
+    let body = a_body(json::json!({
         "effective_from": 0,
         "effective_until": 86_400_000,
         "per_request_fee": 7,
@@ -3065,7 +3292,7 @@ async fn a_correction_across_a_card_boundary_or_onto_an_absent_plane_is_refused(
     );
 
     let history = a_full_card_history();
-    let body = a_body(serde_json::json!({
+    let body = a_body(json::json!({
         "effective_from": 0,
         "effective_until": 86_400_000,
         "rates": [ { "lane": "plane-c\u{1f}hop", "class": "bytes", "micro_per_unit": 1.0 } ],
@@ -3086,7 +3313,7 @@ const HOUR_MS: u64 = 3_600_000;
 
 #[cfg(test)]
 fn a_window_correction(from: u64, until: Option<u64>) -> Vec<u8> {
-    a_body(serde_json::json!({
+    a_body(json::json!({
         "effective_from": from,
         "effective_until": until,
         "rates": [ { "lane": "gpt", "class": "input", "micro_per_unit": 1.0 } ],
@@ -3247,7 +3474,7 @@ async fn a_replayed_signed_correction_is_refused_and_appends_nothing() {
     let book = a_memory_book().await;
     let journal = a_journal_over(&book);
     let history = a_seeded_history();
-    let first = a_priced_correction(5, serde_json::json!(1.5));
+    let first = a_priced_correction(5, json::json!(1.5));
     let apply = async |body: &[u8], arrival_secs: u64| {
         amend_rate_history_effect(
             &history,
@@ -3261,7 +3488,7 @@ async fn a_replayed_signed_correction_is_refused_and_appends_nothing() {
     apply(&first, ARRIVED)
         .await
         .expect("the first correction applies");
-    apply(&a_priced_correction(9, serde_json::json!(3.0)), ARRIVED + 1)
+    apply(&a_priced_correction(9, json::json!(3.0)), ARRIVED + 1)
         .await
         .expect("a later correction of the same window applies");
     assert_eq!(history.len(), 3);
@@ -3317,8 +3544,8 @@ impl Drop for AmendScratch {
 }
 
 #[cfg(test)]
-fn a_priced_correction(fee: i64, micro: serde_json::Value) -> Vec<u8> {
-    a_body(serde_json::json!({
+fn a_priced_correction(fee: i64, micro: json::Value) -> Vec<u8> {
+    a_body(json::json!({
         "effective_from": 0,
         "effective_until": 86_400_000,
         "per_request_fee": fee,
@@ -3336,7 +3563,7 @@ async fn a_sealed_amendment_survives_a_restart_with_its_figures() {
         amend_rate_history_effect(
             &history,
             Some(&a_journal_over(&book)),
-            &a_priced_correction(5, serde_json::json!(1.5)),
+            &a_priced_correction(5, json::json!(1.5)),
             ARRIVED,
             &an_attribution(),
         )
@@ -3366,7 +3593,7 @@ async fn a_sealed_amendment_survives_a_restart_with_its_figures() {
     assert!(
         record
             .signed_payload
-            .starts_with(b"busbar/amend-rate-history/v1\n"),
+            .starts_with(b"busbar/amend-rate-history/v2\n"),
         "the record keeps the correction's canonical bytes"
     );
 }
@@ -3374,11 +3601,11 @@ async fn a_sealed_amendment_survives_a_restart_with_its_figures() {
 #[tokio::test]
 async fn a_correction_rate_is_sealed_as_an_exact_integer_or_refused() {
     for (micro, nanos) in [
-        (serde_json::json!(1.5), 1_500),
-        (serde_json::json!(0.001), 1),
-        (serde_json::json!(2e-3), 2),
-        (serde_json::json!(7), 7_000),
-        (serde_json::json!(0.0), 0),
+        (json::json!(1.5), 1_500),
+        (json::json!(0.001), 1),
+        (json::json!(2e-3), 2),
+        (json::json!(7), 7_000),
+        (json::json!(0.0), 0),
     ] {
         let scratch = AmendScratch::new("exact-rate").await;
         let book = scratch.book().await;
@@ -3399,11 +3626,11 @@ async fn a_correction_rate_is_sealed_as_an_exact_integer_or_refused() {
         );
     }
     for micro in [
-        serde_json::json!(0.0001),
-        serde_json::json!(0.0015),
-        serde_json::json!(-1.0),
-        serde_json::json!(1e30),
-        serde_json::json!("1.5"),
+        json::json!(0.0001),
+        json::json!(0.0015),
+        json::json!(-1.0),
+        json::json!(1e30),
+        json::json!("1.5"),
     ] {
         let scratch = AmendScratch::new("inexact-rate").await;
         let book = scratch.book().await;
@@ -3443,7 +3670,7 @@ async fn a_thousand_later_amendments_do_not_erase_the_first() {
         amend_rate_history_effect(
             &history,
             Some(&journal),
-            &a_priced_correction(7, serde_json::json!(2.0)),
+            &a_priced_correction(7, json::json!(2.0)),
             ARRIVED,
             &an_attribution(),
         )
@@ -3454,7 +3681,7 @@ async fn a_thousand_later_amendments_do_not_erase_the_first() {
             amend_rate_history_effect(
                 &history,
                 Some(&journal),
-                &a_priced_correction(fee, serde_json::json!(1.0)),
+                &a_priced_correction(fee, json::json!(1.0)),
                 ARRIVED + 1,
                 &an_attribution(),
             )
@@ -3514,7 +3741,7 @@ async fn a_refused_amendment_leaves_no_record() {
     amend_rate_history_effect(
         &history,
         Some(&a_journal_over(&book)),
-        &a_priced_correction(-5, serde_json::json!(1.0)),
+        &a_priced_correction(-5, json::json!(1.0)),
         ARRIVED,
         &an_attribution(),
     )
@@ -3526,15 +3753,15 @@ async fn a_refused_amendment_leaves_no_record() {
 
 #[tokio::test]
 async fn amend_rate_history_refuses_a_correction_that_names_no_reason_window_or_price() {
-    let cases: &[serde_json::Value] = &[
-        serde_json::json!({ "effective_from": 1, "rates": [{"lane":"gpt","class":"input","micro_per_unit":1.0}] }),
-        serde_json::json!({ "effective_from": 9, "effective_until": 1, "rates": [{"lane":"gpt","class":"input","micro_per_unit":1.0}], "reason": "r" }),
-        serde_json::json!({ "effective_from": 1, "reason": "r" }),
-        serde_json::json!({ "rates": [{"lane":"gpt","class":"input","micro_per_unit":1.0}], "reason": "r" }),
+    let cases: &[json::Value] = &[
+        json::json!({ "effective_from": 1, "rates": [{"lane":"gpt","class":"input","micro_per_unit":1.0}] }),
+        json::json!({ "effective_from": 9, "effective_until": 1, "rates": [{"lane":"gpt","class":"input","micro_per_unit":1.0}], "reason": "r" }),
+        json::json!({ "effective_from": 1, "reason": "r" }),
+        json::json!({ "rates": [{"lane":"gpt","class":"input","micro_per_unit":1.0}], "reason": "r" }),
     ];
     for case in cases {
         let history = a_seeded_history();
-        let body = serde_json::to_vec(case).expect("serialises");
+        let body = json::to_vec(case).expect("serialises");
         let err = amend_through_a_journal(&history, &body, ARRIVED)
             .await
             .expect_err("a malformed correction must be refused");
@@ -3571,13 +3798,13 @@ async fn amend_rate_history_refuses_when_there_is_no_history_to_amend() {
 async fn amend_rate_history_applies_a_correction_that_carries_no_signature() {
     let history = a_seeded_history();
     let body = a_correction_body();
-    let doc: serde_json::Value = serde_json::from_slice(&body).expect("the body is JSON");
+    let doc: json::Value = json::parse_value(&body).expect("the body is JSON");
     assert!(doc.get("signature").is_none() && doc.get("operator_fingerprint").is_none());
     let answer = amend_through_a_journal(&history, &body, ARRIVED)
         .await
         .expect("an unsigned correction applies");
     assert_eq!(answer.status, 200);
-    let doc: serde_json::Value = serde_json::from_slice(&answer.body).expect("JSON");
+    let doc: json::Value = json::parse_value(&answer.body).expect("JSON");
     assert!(
         doc.get("operator_fingerprint").is_none(),
         "the answer names no signer: {doc}"
@@ -3588,14 +3815,13 @@ async fn amend_rate_history_applies_a_correction_that_carries_no_signature() {
 #[tokio::test]
 async fn amend_rate_history_ignores_a_signature_a_body_still_carries() {
     let history = a_seeded_history();
-    let mut doc: serde_json::Value =
-        serde_json::from_slice(&a_correction_body()).expect("the body is JSON");
-    doc["operator_fingerprint"] = serde_json::json!("a-fingerprint-nothing-checks");
-    doc["signature"] = serde_json::json!("00".repeat(64));
+    let mut doc: json::Value = json::parse_value(&a_correction_body()).expect("the body is JSON");
+    doc["operator_fingerprint"] = json::json!("a-fingerprint-nothing-checks");
+    doc["signature"] = json::json!("00".repeat(64));
     let answer = amend_through_a_journal(&history, &a_body(doc), ARRIVED)
         .await
         .expect("a body carrying a stale signature still applies");
-    let doc: serde_json::Value = serde_json::from_slice(&answer.body).expect("JSON");
+    let doc: json::Value = json::parse_value(&answer.body).expect("JSON");
     assert!(
         doc.get("operator_fingerprint").is_none(),
         "the answer names no signer: {doc}"
@@ -3646,16 +3872,16 @@ async fn a_signed_record_verifies_against_the_served_audit_keys() {
     let audit_token = an_audit_pass();
     let served_keys = async |units: crate::root::kernel::ProductionUnits| -> Vec<String> {
         let node = AdminNode::new(crate::root::kernel::new_kernel(), units);
-        let served: serde_json::Value = serde_json::from_slice(
+        let served: json::Value = json::parse_value(
             &node
                 .answer(a_ledger_request("/api/v1/admin/audit/keys"))
                 .await
                 .body,
         )
         .expect("valid JSON");
-        served["keys"]
+        served["items"]
             .as_array()
-            .expect("keys")
+            .expect("items")
             .iter()
             .map(|k| k["public_key"].as_str().expect("public_key").to_string())
             .collect()
@@ -3713,7 +3939,7 @@ async fn a_correction_on_a_node_with_no_data_dir_is_kept_by_the_store_and_surviv
         let answered = amend_rate_history_effect(
             &a_seeded_history(),
             Some(&a_journal_over(&book)),
-            &a_priced_correction(5, serde_json::json!(1.5)),
+            &a_priced_correction(5, json::json!(1.5)),
             ARRIVED,
             &an_attribution(),
         )
@@ -3740,7 +3966,7 @@ async fn a_correction_the_store_refuses_answers_503_with_the_reason() {
     let answered = amend_rate_history_effect(
         &a_seeded_history(),
         Some(&a_journal_over(&book)),
-        &a_priced_correction(5, serde_json::json!(1.5)),
+        &a_priced_correction(5, json::json!(1.5)),
         ARRIVED,
         &an_attribution(),
     )
@@ -3759,7 +3985,7 @@ async fn a_correction_the_store_refuses_answers_503_with_the_reason() {
     let again = amend_rate_history_effect(
         &a_seeded_history(),
         Some(&a_journal_over(&book)),
-        &a_priced_correction(6, serde_json::json!(2)),
+        &a_priced_correction(6, json::json!(2)),
         ARRIVED + 1,
         &an_attribution(),
     )
@@ -3775,8 +4001,7 @@ async fn a_correction_the_store_refuses_answers_503_with_the_reason() {
 
 #[tokio::test]
 async fn commit_upgrade_answers_only_once_the_store_kept_its_record() {
-    let body = serde_json::to_vec(&serde_json::json!({ "version": bound::RUNNING_RELEASE }))
-        .expect("json");
+    let body = json::to_vec(&json::json!({ "version": bound::RUNNING_RELEASE })).expect("json");
 
     let refusing = NativeJournalStore::new().await;
     refusing.refuse(true);
@@ -3847,7 +4072,7 @@ async fn a_correction_the_journal_retained_is_in_force_and_answered_not_yet_kept
     let answered = amend_rate_history_effect(
         &history,
         Some(&a_journal_over(&book)),
-        &a_priced_correction(5, serde_json::json!(1.5)),
+        &a_priced_correction(5, json::json!(1.5)),
         ARRIVED,
         &an_attribution(),
     )
@@ -3874,7 +4099,7 @@ async fn a_correction_the_journal_retained_is_in_force_and_answered_not_yet_kept
             amend_rate_history_effect(
                 &history,
                 Some(&a_journal_over(&book)),
-                &a_priced_correction(5, serde_json::json!(1.5)),
+                &a_priced_correction(5, json::json!(1.5)),
                 ARRIVED + 1,
                 &an_attribution(),
             )
@@ -3891,8 +4116,7 @@ async fn a_commit_the_journal_retained_is_answered_not_yet_kept_and_lands() {
     let refusing = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let book = a_book_whose_store_switches(&refusing).await;
     refusing.store(true, std::sync::atomic::Ordering::SeqCst);
-    let body = serde_json::to_vec(&serde_json::json!({ "version": bound::RUNNING_RELEASE }))
-        .expect("json");
+    let body = json::to_vec(&json::json!({ "version": bound::RUNNING_RELEASE })).expect("json");
     let answer =
         bound::commit_upgrade_effect(&body, 1_700_000_000, "admin", Some(&a_journal_over(&book)))
             .await
@@ -3939,11 +4163,14 @@ async fn a_keyed_commit_with_a_late_store_ack_seals_one_policy() {
     let store = crate::root::real_store::admin_scoped().await;
     let replay_store: bound::ReplayStore = Arc::new(move || Some(Arc::clone(&store)));
     let mut request = a_request();
-    request.method = "POST".into();
-    request.path = "/api/v1/admin/commit-upgrade".into();
-    request.headers = vec![("idempotency-key".into(), "late-commit-ack".into())];
-    request.body =
-        serde_json::to_vec(&serde_json::json!({ "version": bound::RUNNING_RELEASE })).unwrap();
+    request.edit_for_test(|draft| draft.method = "POST".into());
+    request.edit_for_test(|draft| draft.path = "/api/v1/admin/commit-upgrade".into());
+    request.edit_for_test(|draft| {
+        draft.headers = vec![("idempotency-key".into(), "late-commit-ack".into())]
+    });
+    request.edit_for_test(|draft| {
+        draft.body = json::to_vec(&json::json!({ "version": bound::RUNNING_RELEASE })).unwrap()
+    });
     let cache = Arc::new(bound::ReplayCache::new());
     let admin = crate::root::kernel::new_kernel().admin_token();
     let ask = async |cache: Arc<bound::ReplayCache>,
@@ -3967,7 +4194,7 @@ async fn a_keyed_commit_with_a_late_store_ack_seals_one_policy() {
             &governance,
             KernelVerb::CommitUpgrade,
             &admin,
-            &request.body,
+            request.body(),
         )
         .await
         .expect("the production caller answers")
@@ -3999,7 +4226,9 @@ async fn a_keyed_commit_with_a_late_store_ack_seals_one_policy() {
         ask(Arc::clone(&cache), &request, Some(Arc::clone(&journal))).await,
         first
     );
-    request.at += busbar_core_admin::idempotency::IDEMPOTENCY_TTL_SECS + 1;
+    request.edit_for_test(|draft| {
+        draft.at += busbar_core_admin::idempotency::IDEMPOTENCY_TTL_SECS + 1
+    });
     assert_eq!(
         ask(Arc::clone(&cache), &request, Some(Arc::clone(&journal))).await,
         first,
@@ -4047,8 +4276,10 @@ async fn a_keyed_commit_refused_before_sealing_accepts_corrected_input() {
     let replay_store: bound::ReplayStore = Arc::new(move || Some(Arc::clone(&store)));
     let cache = bound::ReplayCache::new();
     let mut request = a_request();
-    request.headers = vec![("idempotency-key".into(), "corrected-commit".into())];
-    request.body = br#"{"version":"not-this-binary"}"#.to_vec();
+    request.edit_for_test(|draft| {
+        draft.headers = vec![("idempotency-key".into(), "corrected-commit".into())]
+    });
+    request.edit_for_test(|draft| draft.body = br#"{"version":"not-this-binary"}"#.to_vec());
     let ask = async |request: &AdminRequest| {
         bound::replayable(
             &cache,
@@ -4058,10 +4289,11 @@ async fn a_keyed_commit_refused_before_sealing_accepts_corrected_input() {
                 actor: "admin",
             },
             request,
-            &request.body,
+            request.body(),
             Some(&journal),
+            bound::ReplayContext::None,
             || async {
-                bound::commit_upgrade_effect(&request.body, request.at, "admin", Some(&journal))
+                bound::commit_upgrade_effect(request.body(), request.at(), "admin", Some(&journal))
                     .await
             },
         )
@@ -4075,11 +4307,16 @@ async fn a_keyed_commit_refused_before_sealing_accepts_corrected_input() {
         before,
         "a definite refusal sealed nothing"
     );
-    request.body =
-        serde_json::to_vec(&serde_json::json!({ "version": bound::RUNNING_RELEASE })).unwrap();
+    request.edit_for_test(|draft| {
+        draft.body = json::to_vec(&json::json!({ "version": bound::RUNNING_RELEASE })).unwrap()
+    });
     let accepted = ask(&request).await;
     assert_eq!(accepted.status, 200);
-    assert_eq!(ask(&request).await, accepted);
+    let mut replayed = accepted.clone();
+    replayed
+        .headers
+        .push(("idempotent-replayed".to_string(), "true".to_string()));
+    assert_eq!(ask(&request).await, replayed);
     assert_eq!(journal.sealed_through(), before + 1);
 }
 
@@ -4088,8 +4325,8 @@ async fn route_refuses_a_unit_whose_grant_was_never_recorded() {
     let admin = crate::root::kernel::new_kernel().admin_token();
     let binding = AdminBinding::new(Arc::new(AnsweringDispatch), open_door());
     let mut request = a_request();
-    request.method = "POST".to_string();
-    request.path = "/api/v1/admin/chain-break".to_string();
+    request.edit_for_test(|draft| draft.method = "POST".to_string());
+    request.edit_for_test(|draft| draft.path = "/api/v1/admin/chain-break".to_string());
     let mut walk = AdminWalk::new(request);
     decode(&mut walk).expect("the plane's table declares this operation");
 
@@ -4106,7 +4343,7 @@ async fn a_keyed_write_retried_after_a_restart_replays_and_runs_nothing_again() 
     let store = crate::root::real_store::admin_scoped().await;
     let held = Arc::clone(&store);
     let replay_store: bound::ReplayStore = Arc::new(move || Some(Arc::clone(&held)));
-    let request = AdminRequest {
+    let request = AdminRequest::test_fixture(crate::root::units_admin::TestAdminRequest {
         method: "POST".to_string(),
         path: "/api/v1/admin/plane-records".to_string(),
         credential: None,
@@ -4114,7 +4351,7 @@ async fn a_keyed_write_retried_after_a_restart_replays_and_runs_nothing_again() 
         body: br#"{"record":1}"#.to_vec(),
         at: 1_700_000_000,
         unit: a_fresh_unit(),
-    };
+    });
     let ran = std::sync::atomic::AtomicUsize::new(0);
     let effect = || async {
         let n = ran.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -4132,8 +4369,9 @@ async fn a_keyed_write_retried_after_a_restart_replays_and_runs_nothing_again() 
             actor: "operator",
         },
         &request,
-        &request.body,
+        request.body(),
         None,
+        bound::ReplayContext::None,
         effect,
     )
     .await
@@ -4147,13 +4385,21 @@ async fn a_keyed_write_retried_after_a_restart_replays_and_runs_nothing_again() 
             actor: "operator",
         },
         &request,
-        &request.body,
+        request.body(),
         None,
+        bound::ReplayContext::None,
         effect,
     )
     .await
     .expect("the retry answers");
-    assert_eq!(retried, first, "the retry answers the first answer's bytes");
+    let mut marked = first.clone();
+    marked
+        .headers
+        .push(("idempotent-replayed".to_string(), "true".to_string()));
+    assert_eq!(
+        retried, marked,
+        "the retry answers the first answer's bytes, marked as replayed"
+    );
     assert_eq!(
         ran.load(std::sync::atomic::Ordering::SeqCst),
         1,
@@ -4202,7 +4448,7 @@ async fn a_unit_this_root_did_not_compose_is_not_sealed_as_an_admin_read() {
     for uncomposed in ["/v1/chat/completions", "/api/v1/admin/not-a-real-operation"] {
         let response = wrapped
             .clone()
-            .oneshot(get(uncomposed))
+            .oneshot(charged_http_for_test(get(uncomposed)).await)
             .await
             .expect("the router answers");
         let records = sealed();
@@ -4222,7 +4468,7 @@ async fn a_unit_this_root_did_not_compose_is_not_sealed_as_an_admin_read() {
     }
 
     let response = wrapped
-        .oneshot(get("/api/v1/admin/audit?limit=4"))
+        .oneshot(charged_http_for_test(get("/api/v1/admin/audit?limit=4")).await)
         .await
         .expect("the router answers");
     assert_eq!(response.status(), 200);
@@ -4254,7 +4500,10 @@ async fn a_claimed_length_is_checked_against_the_bytes_not_trusted() {
         .header(axum::http::header::CONTENT_LENGTH, "3")
         .body(axum::body::Body::from(b"0123456789".to_vec()))
         .expect("the request builds");
-    let response = wrapped.oneshot(request).await.expect("the router answers");
+    let response = wrapped
+        .oneshot(charged_http_for_test(request).await)
+        .await
+        .expect("the router answers");
     assert_eq!(
         response.status(),
         400,

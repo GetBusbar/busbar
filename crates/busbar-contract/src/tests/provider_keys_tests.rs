@@ -198,14 +198,14 @@ fn optional_nullability_and_record_names_round_trip_without_changing_old_descrip
 #[test]
 fn malformed_optional_diagnostic_and_nullability_metadata_is_refused() {
     let keys = every_shape();
-    let mut value: serde_json::Value = serde_json::from_slice(&encode(&keys)).unwrap();
-    value["catalog"]["name"] = serde_json::json!(7);
-    assert!(decode(&serde_json::to_vec(&value).unwrap())
+    let mut value: crate::json::Value = crate::json::parse_value(&encode(&keys)).unwrap();
+    value["catalog"]["name"] = crate::json::json!(7);
+    assert!(decode(&crate::json::to_vec(&value).unwrap())
         .unwrap_err()
         .contains("name"));
-    value["catalog"]["name"] = serde_json::json!("Record");
-    value["catalog"]["keys"][0]["nullable"] = serde_json::json!("yes");
-    assert!(decode(&serde_json::to_vec(&value).unwrap())
+    value["catalog"]["name"] = crate::json::json!("Record");
+    value["catalog"]["keys"][0]["nullable"] = crate::json::json!("yes");
+    assert!(decode(&crate::json::to_vec(&value).unwrap())
         .unwrap_err()
         .contains("nullable"));
 }

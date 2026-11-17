@@ -47,3 +47,8 @@ rcgen = { version = "0.14", default-features = false, features = ["crypto", "aws
 
 [profile.release]
 debug = "line-tables-only"
+
+# JSON: the same MattJackson sonic-rs fork at the rev the root workspace pins (root [patch.crates-io]).
+# crates.io sonic-rs 0.5.10 recurses in skip and overflows the stack on deep input (#451).
+[patch.crates-io]
+sonic-rs = { git = "https://github.com/MattJackson/sonic-rs", rev = "1241c129cef83686109f820825206f56ff470f67" }

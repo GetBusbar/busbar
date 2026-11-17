@@ -10,6 +10,16 @@
 //! Rule 15: no `unsafe` in any case file.
 #![forbid(unsafe_code)]
 
+/// Custom conformance registries share process-owned sinks, watchdog and instance IDs.
+/// Like the suite harness, these cases run one test per process under nextest.
+fn process_resources() -> &'static busbar_plugin_loader::process::ProcessResources {
+    static PROCESS: std::sync::OnceLock<busbar_plugin_loader::process::ProcessResources> =
+        std::sync::OnceLock::new();
+    PROCESS.get_or_init(|| {
+        busbar_plugin_loader::process::ProcessResources::new().expect("test process resources")
+    })
+}
+
 #[path = "bridge_fixture.rs"]
 mod bridge_fixture;
 #[path = "c_a2a_card_redirect.rs"]
@@ -152,6 +162,8 @@ mod c_metric;
 mod c_migrate;
 #[path = "c_migrate_admit.rs"]
 mod c_migrate_admit;
+#[path = "c_migrated_marker.rs"]
+mod c_migrated_marker;
 #[path = "c_mint.rs"]
 mod c_mint;
 #[path = "c_msg_flags.rs"]
@@ -286,6 +298,8 @@ mod c_sugar;
 mod c_suite_export;
 #[path = "c_suite_secret.rs"]
 mod c_suite_secret;
+#[path = "c_suite_transport.rs"]
+mod c_suite_transport;
 #[path = "c_ticket_either.rs"]
 mod c_ticket_either;
 #[path = "c_tls_key.rs"]
@@ -344,10 +358,22 @@ mod fu3_check_crypto_failed;
 // C-REPLAY, C-TRUST-VERIFY).
 #[path = "k10_rig.rs"]
 mod k10_rig;
+#[path = "fixtures/min3_endpoints.rs"]
+mod min3_endpoints;
 #[path = "fixtures/min3_export.rs"]
 mod min3_export;
+#[path = "fixtures/min3_export_fail.rs"]
+mod min3_export_fail;
+#[path = "fixtures/min3_export_metrics.rs"]
+mod min3_export_metrics;
+#[path = "fixtures/min3_second.rs"]
+mod min3_second;
 #[path = "fixtures/min3_secret.rs"]
 mod min3_secret;
+#[path = "fixtures/min3_store.rs"]
+mod min3_store;
+#[path = "fixtures/min3_transport.rs"]
+mod min3_transport;
 
 /// Every `tests/*.rs` is wired: a module of this binary or a `[[test]]` target of the manifest
 /// (`autotests = false`, so an unwired file would never run).

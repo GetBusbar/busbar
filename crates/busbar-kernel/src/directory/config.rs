@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! `auth.<name>.provisioning` semantics (IF §12.29 "Config"). W1-K7 parses the block into
+//! `identity-providers.<name>.provisioning` semantics (IF §12.29 "Config"). W1-K7 parses the block into
 //! [`ProvisioningCfg`] and calls [`check_provisioning`] at load; every refusal is a CONFIG text naming the instance
 //! and the key.
 
@@ -25,14 +25,14 @@ const REFRESH_MS: core::ops::RangeInclusive<u32> = 250..=10_000;
 const GUARD_MAX: core::ops::RangeInclusive<u32> = 1..=100_000;
 const WINDOW_S: core::ops::RangeInclusive<u64> = 60..=604_800;
 
-/// Every refusal of `auth.<name>.provisioning`. `inbound(n)` = `n` is a configured inbound auth instance.
+/// Every refusal of `identity-providers.<name>.provisioning`. `inbound(n)` = `n` is a configured inbound auth instance.
 pub fn check_provisioning(
     name: &str,
     cfg: &ProvisioningCfg,
     facts: ProvisioningFacts,
     inbound: &dyn Fn(&str) -> bool,
 ) -> Result<(), Vec<String>> {
-    let key = |k: &str| format!("auth.{name}.provisioning{k}");
+    let key = |k: &str| format!("identity-providers.{name}.provisioning{k}");
     let mut refused = Vec::new();
     if !facts.fb_provision {
         refused.push(format!(
@@ -46,6 +46,30 @@ pub fn check_provisioning(
             key("")
         ));
     }
+    if let Some(link) = &cfg.link {
+        for (i, auth) in link.auth.iter().enumerate() {
+            if !inbound(auth) {
+                refused.push(format!(
+                    "{}: '{auth}' is not a configured inbound auth instance",
+                    key(&format!(".link.auth[{i}]"))
+                ));
+            }
+        }
+    }
+    if let Err(mut reasons) = check_provisioning_shape(name, cfg) {
+        refused.append(&mut reasons);
+    }
+    if refused.is_empty() {
+        Ok(())
+    } else {
+        Err(refused)
+    }
+}
+
+/// Structural policy checks available before image admission and the typed boot walk.
+pub fn check_provisioning_shape(name: &str, cfg: &ProvisioningCfg) -> Result<(), Vec<String>> {
+    let key = |k: &str| format!("identity-providers.{name}.provisioning{k}");
+    let mut refused = Vec::new();
     if cfg.clients.is_empty() || cfg.clients.len() > MAX_CLIENTS {
         refused.push(format!(
             "{}: 1 to {MAX_CLIENTS} principals required",
@@ -72,14 +96,6 @@ pub fn check_provisioning(
                 "{}: 1 to {MAX_LINK_AUTH} inbound auth instances required",
                 key(".link.auth")
             ));
-        }
-        for (i, auth) in link.auth.iter().enumerate() {
-            if !inbound(auth) {
-                refused.push(format!(
-                    "{}: '{auth}' is not a configured inbound auth instance",
-                    key(&format!(".link.auth[{i}]"))
-                ));
-            }
         }
         if !REFRESH_MS.contains(&link.refresh_ms) {
             refused.push(format!(

@@ -6,6 +6,17 @@
 use super::*;
 
 #[test]
+fn native_refusal_uses_its_own_verdict_and_full_width_count() {
+    assert_eq!(
+        native_admission_refusal(9, Err("key resolver refused".to_owned())),
+        "CONFIG: key resolver refused"
+    );
+    let message = native_admission_refusal(u64::MAX, Ok(false));
+    assert!(message.contains("18446744073709551615"));
+    assert!(message.contains("Set `auth.signing_key`"));
+}
+
+#[test]
 fn the_stamp_decides_step_one() {
     assert_eq!(admit(0, false, false), Ok(Stamp::Older(0)));
     assert_eq!(admit(CONFIG_FORMAT, false, false), Ok(Stamp::Current));
@@ -72,28 +83,21 @@ fn the_recoverable_gate_answers_from_the_at_rest_key() {
     );
     assert!(
         no_key.contains(
-            "`openssl rand -hex 32 > /etc/busbar/at-rest.key && chmod 600 /etc/busbar/at-rest.key`"
+            "`openssl rand -hex 32 > /etc/busbar/signing.key && chmod 600 /etc/busbar/signing.key`"
         ),
         "{no_key}"
     );
     assert!(
-        no_key.contains("`credentials: {at_rest: {key: {file: /etc/busbar/at-rest.key}}}`"),
+        no_key.contains("`auth: {signing_key: {file: /etc/busbar/signing.key}}`"),
         "{no_key}"
     );
-    assert!(no_key.contains("`config.yaml.1.5.5`"), "{no_key}");
-    assert!(no_key.contains("\"At-rest key\""), "{no_key}");
     let unresolved = admit_answer(
         2,
-        Some(Err(
-            "credentials.at_rest.key did not resolve: gone".to_owned()
-        )),
+        Some(Err("auth.signing_key did not resolve: gone".to_owned())),
         dir,
     )
     .unwrap_err();
-    assert_eq!(
-        unresolved,
-        "CONFIG: credentials.at_rest.key did not resolve: gone"
-    );
+    assert_eq!(unresolved, "CONFIG: auth.signing_key did not resolve: gone");
     let unknown = admit_answer(1, None, dir).unwrap_err();
     assert!(unknown.starts_with("CONFIG: "), "{unknown}");
     assert_ne!(unknown, text_add_key(1, dir), "no verdict is not 'no key'");
@@ -379,6 +383,9 @@ fn a_stamped_boot_writes_the_settled_answer_back_once() {
     let stamped = "config_version: 1\nstore: {module: m, settings: {url: old, junk: 1}}\n";
     let config = scratch.config(stamped);
     let settled = [busbar_migrate::Settled {
+        placement: busbar_migrate::BagPlacement::Settings,
+        allowed_lifts: Default::default(),
+        known_secrets: Vec::new(),
         index: 0,
         path: vec!["store".to_owned()],
         settings: Some(busbar_contract::secure::SecureString::from(
@@ -419,4 +426,504 @@ fn a_stamped_boot_writes_the_settled_answer_back_once() {
         refused.starts_with("CONFIG: ") && refused.contains("instance 0"),
         "{refused}"
     );
+}
+
+// ---- Step 4 and 5S/5C over the opened store (MIGRATE-ON-BOOT r42 §3 4a, 4b, 5; §6; §9 C2) ----
+
+mod records_step {
+    use super::Scratch;
+    use crate::root::migrate_records::{self, Keys, Store, AUDIT_NS};
+    use busbar_contract::persistence::cells::{self, table, Cell, HEADLESS, IMPORT_NS};
+    use busbar_contract::persistence::NamespaceId;
+    use busbar_contract::secure::SecureVec;
+    use busbar_migrate::records::{Candidate, RecordStore};
+
+    /// A runtime that drives the store while the step blocks on the test thread, as the boot's
+    /// runtime drives it while the step runs on a blocking thread.
+    fn runtime() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap()
+    }
+
+    fn store(rt: &tokio::runtime::Runtime) -> Store {
+        Store::new(
+            rt.block_on(crate::root::real_store::core()),
+            rt.handle().clone(),
+        )
+    }
+
+    fn put(store: &Store, ns: NamespaceId, rows: &[(Vec<u8>, Vec<u8>)]) {
+        let mut c = Candidate::default();
+        for (key, value) in rows {
+            c.put
+                .push((ns, key.clone(), SecureVec::from(value.clone())));
+        }
+        assert_eq!(
+            store.commit(c).unwrap(),
+            busbar_migrate::records::Committed::Applied
+        );
+    }
+
+    fn all(store: &Store, ns: NamespaceId) -> Vec<(Vec<u8>, Vec<u8>)> {
+        store
+            .scan(ns, None, 4096)
+            .unwrap()
+            .rows
+            .into_iter()
+            .map(|(k, v)| (k, v.to_vec()))
+            .collect()
+    }
+
+    fn key_row(id: &str) -> (Vec<u8>, Vec<u8>) {
+        (
+            cells::key(table::KEY, &[Cell::Text(id)]),
+            cells::value(&[
+                Cell::Text(id),
+                Cell::Text("growth"),
+                Cell::Text("team"),
+                Cell::Null,
+                Cell::Text("{}"),
+                Cell::Int(1),
+                Cell::Text("gh1"),
+                Cell::Int(1_700_000_000),
+                Cell::Int(1_700_000_100),
+                Cell::Null,
+                Cell::Null,
+                Cell::Int(7),
+            ]),
+        )
+    }
+
+    const PLAIN_SECRET: &str = "wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY";
+
+    fn credential_row(id: &str) -> (Vec<u8>, Vec<u8>) {
+        let secret = format!("v1:plain:{PLAIN_SECRET}");
+        (
+            cells::key(table::CREDENTIAL, &[Cell::Text(id)]),
+            cells::value(&[
+                Cell::Text(id),
+                Cell::Text("vk_1"),
+                Cell::Text("sigv4"),
+                Cell::Int(0),
+                Cell::Text("AKIAEXAMPLE"),
+                Cell::Text(&secret),
+                Cell::Text("recoverable"),
+                Cell::Int(1_700_000_000),
+                Cell::Int(1_700_000_000),
+                Cell::Null,
+                Cell::Null,
+                Cell::Null,
+                Cell::Int(9),
+            ]),
+        )
+    }
+
+    fn usage_row(bucket: &str, window: i64, model: &str) -> (Vec<u8>, Vec<u8>) {
+        (
+            cells::key(table::USAGE, &[Cell::Text(bucket), Cell::Int(window)]),
+            cells::value(&[
+                Cell::Int(0),
+                Cell::Text(bucket),
+                Cell::Int(window),
+                Cell::Int(3),
+                Cell::Int(2),
+                Cell::Text(model),
+                Cell::Int(3),
+                Cell::Int(2),
+                Cell::Int(100),
+                Cell::Int(40),
+                Cell::Int(0),
+                Cell::Int(0),
+            ]),
+        )
+    }
+
+    fn metering_row(model: &str) -> (Vec<u8>, Vec<u8>) {
+        let key = [
+            Cell::Text("1767225600"),
+            Cell::Text("vk_1"),
+            Cell::Text("openai"),
+            Cell::Text(model),
+        ];
+        let mut value = key.to_vec();
+        value.extend([
+            Cell::Text("team"),
+            Cell::Text("p1"),
+            Cell::Int(3),
+            Cell::Int(3),
+            Cell::Int(100),
+            Cell::Int(5),
+            Cell::Int(0),
+            Cell::Int(0),
+        ]);
+        (cells::key(table::METERING, &key), cells::value(&value))
+    }
+
+    fn audit_row(seq: i64) -> (Vec<u8>, Vec<u8>) {
+        (
+            cells::key(table::AUDIT, &[Cell::Int(seq)]),
+            cells::value(&[
+                Cell::Int(seq),
+                Cell::Int(1_700_000_000 + seq),
+                Cell::Text("key.create"),
+                Cell::Text("vk_1"),
+                Cell::Text("ok"),
+                Cell::Text("admin"),
+                Cell::Text(""),
+                Cell::Text("h1"),
+            ]),
+        )
+    }
+
+    fn fold_of(key: &[u8], value: &[u8]) -> i64 {
+        if cells::tag_of(key) != Some(table::USAGE) {
+            return 1;
+        }
+        let cells = cells::decode(value).unwrap();
+        let headless = matches!(cells[0], Cell::Int(f) if f & HEADLESS != 0);
+        i64::from(!headless) + ((cells.len() - 5) / 7) as i64
+    }
+
+    /// IMPORT as a store's data step leaves it: `rows` and a SUMMARY that closes over them.
+    fn with_summary(rows: Vec<(Vec<u8>, Vec<u8>)>) -> Vec<(Vec<u8>, Vec<u8>)> {
+        let last = usize::from(table::LAST);
+        let mut counts = vec![[0i64; 2]; last + 1];
+        for (key, value) in &rows {
+            let tag = usize::from(cells::tag_of(key).unwrap());
+            counts[tag][0] += fold_of(key, value);
+            counts[tag][1] += 1;
+        }
+        let digest = [0xab; 32];
+        let mut summary = vec![Cell::Int(6), Cell::Int(7)];
+        for count in counts.iter().skip(1) {
+            summary.extend([Cell::Int(count[0]), Cell::Int(count[1]), Cell::Int(0)]);
+        }
+        summary.extend([Cell::Int(0), Cell::Int(0), Cell::Blob(&digest)]);
+        let mut out = rows;
+        out.push((cells::key(table::SUMMARY, &[]), cells::value(&summary)));
+        out
+    }
+
+    fn fixture() -> Vec<(Vec<u8>, Vec<u8>)> {
+        with_summary(vec![
+            key_row("vk_1"),
+            credential_row("cr_1"),
+            credential_row("cr_2"),
+            usage_row("vk_1", 1_767_225_600, "gpt"),
+            usage_row("team", 1_767_225_600, "gpt"),
+            metering_row("gpt"),
+            metering_row("o1"),
+            audit_row(1),
+        ])
+    }
+
+    fn keyed() -> Keys {
+        Keys {
+            at_rest: Some(busbar_kernel::governance::at_rest::AtRestKeys::new(
+                &[7u8; 32], None,
+            )),
+            seed: None,
+        }
+    }
+
+    fn keyless() -> Keys {
+        Keys {
+            at_rest: None,
+            seed: None,
+        }
+    }
+
+    fn native_key_address() -> busbar_contract::persistence::Address {
+        let key = busbar_contract::records::VirtualKey {
+            id: "vk_1".to_owned(),
+            ..Default::default()
+        };
+        busbar_kernel::persistence::import_target::records::identity::migration_key(&key)
+            .unwrap()
+            .remove(0)
+            .0
+    }
+
+    fn has_native_key(store: &Store) -> bool {
+        let address = native_key_address();
+        all(store, NamespaceId(address.namespace))
+            .iter()
+            .any(|(key, _)| *key == address.key)
+    }
+
+    /// Red (a)/(sl1), C2: IMPORT rows written by a store's data step become native records over the
+    /// real kernel store, the recoverable secrets sealed (never the plaintext), the usage and metering
+    /// index rows they share written once; the final commit consumes SUMMARY, IMPORT is empty, and a
+    /// stamped boot's audit is MIGRATION_COMPLETED.
+    #[test]
+    fn import_rows_become_native_records_sealed_and_import_is_emptied() {
+        let rt = runtime();
+        let store = store(&rt);
+        put(&store, IMPORT_NS, &fixture());
+        let scratch = Scratch::new("records-a");
+        let config = scratch.config(super::CONFIG_1_5_5);
+        let report = migrate_records::run_blocking(&store, &keyed(), &config, true)
+            .expect("the records step runs")
+            .expect("IMPORT held rows");
+        assert_eq!(report.rows[usize::from(table::KEY)], 1);
+        assert_eq!(report.rows[usize::from(table::CREDENTIAL)], 2);
+        assert_eq!(report.rows[usize::from(table::USAGE)], 2);
+        assert_eq!(report.rows[usize::from(table::METERING)], 2);
+        assert!(all(&store, IMPORT_NS).is_empty(), "IMPORT is consumed");
+        assert!(has_native_key(&store), "the key is a native record");
+        assert!(
+            native_rows_mentioning(&store, PLAIN_SECRET.as_bytes()).is_empty()
+                && native_rows_mentioning(&store, b"v1:plain:").is_empty(),
+            "no plaintext secret reaches a native record"
+        );
+        let audits = all(&store, AUDIT_NS);
+        assert_eq!(audits.len(), 1);
+        assert!(audits[0].0.starts_with(b"MIGRATION_COMPLETED/"));
+    }
+
+    fn contains(haystack: &[u8], needle: &[u8]) -> bool {
+        haystack.windows(needle.len()).any(|w| w == needle)
+    }
+
+    /// Every identity row (the key and credential namespaces) whose bytes mention `needle`.
+    fn native_rows_mentioning(store: &Store, needle: &[u8]) -> Vec<Vec<u8>> {
+        use busbar_kernel::persistence::import_target::records::identity::{
+            CONFIDENTIAL, NAMESPACE,
+        };
+        [NAMESPACE, CONFIDENTIAL]
+            .into_iter()
+            .flat_map(|ns| all(store, ns))
+            .filter(|(_, value)| contains(value, needle))
+            .map(|(_, value)| value)
+            .collect()
+    }
+
+    /// Red (sl1b)/(sl5)(5), C2: plain rows reach the step and no at-rest key is configured (a
+    /// stamped, records-pending boot whose key was removed, or a store that skipped its gate): CONFIG
+    /// with the "already migrated by its plugin" text, IMPORT byte-identical, no native record.
+    #[test]
+    fn plain_rows_without_a_key_refuse_config_and_import_is_untouched() {
+        let rt = runtime();
+        let store = store(&rt);
+        put(&store, IMPORT_NS, &fixture());
+        let before = all(&store, IMPORT_NS);
+        let scratch = Scratch::new("records-sl1b");
+        let config = scratch.config(super::CONFIG_1_5_5);
+        let refused = migrate_records::run_blocking(&store, &keyless(), &config, true).unwrap_err();
+        assert!(refused.starts_with("CONFIG: "), "{refused}");
+        assert!(
+            refused.contains("already migrated by its plugin"),
+            "{refused}"
+        );
+        assert_eq!(all(&store, IMPORT_NS), before, "IMPORT is byte-identical");
+        assert!(!has_native_key(&store), "no native record was written");
+        assert!(all(&store, AUDIT_NS).is_empty());
+    }
+
+    /// Red (c), C2: a native record already where a 1.5.5 row lands → VERIFY, nothing of the page
+    /// written, IMPORT byte-identical.
+    #[test]
+    fn a_pre_existing_native_address_is_refused_verify() {
+        let rt = runtime();
+        let store = store(&rt);
+        put(&store, IMPORT_NS, &fixture());
+        let address = native_key_address();
+        put(
+            &store,
+            NamespaceId(address.namespace),
+            &[(address.key.clone(), b"foreign".to_vec())],
+        );
+        let before = all(&store, IMPORT_NS);
+        let scratch = Scratch::new("records-c");
+        let config = scratch.config(super::CONFIG_1_5_5);
+        let refused = migrate_records::run_blocking(&store, &keyed(), &config, true).unwrap_err();
+        assert!(refused.starts_with("VERIFY: "), "{refused}");
+        assert_eq!(all(&store, IMPORT_NS), before);
+    }
+
+    /// Red (i), C2: SUMMARY counts one more source row than IMPORT holds → VERIFY before any core
+    /// commit: no native record, IMPORT byte-identical.
+    #[test]
+    fn counts_that_do_not_close_refuse_verify_before_any_commit() {
+        let rt = runtime();
+        let store = store(&rt);
+        let mut rows = fixture();
+        rows.retain(|(key, _)| cells::tag_of(key) != Some(table::AUDIT));
+        // The SUMMARY still counts the dropped AUDIT row.
+        put(&store, IMPORT_NS, &rows);
+        let before = all(&store, IMPORT_NS);
+        let scratch = Scratch::new("records-i");
+        let config = scratch.config(super::CONFIG_1_5_5);
+        let refused = migrate_records::run_blocking(&store, &keyed(), &config, true).unwrap_err();
+        assert!(refused.starts_with("VERIFY: "), "{refused}");
+        assert_eq!(all(&store, IMPORT_NS), before);
+        assert!(!has_native_key(&store));
+    }
+
+    /// Stamped-path cost (257c): an empty IMPORT is one one-row scan, nothing written, nothing settled.
+    #[test]
+    fn an_empty_import_writes_nothing() {
+        let rt = runtime();
+        let store = store(&rt);
+        let scratch = Scratch::new("records-empty");
+        let config = scratch.config(super::CONFIG_1_5_5);
+        assert_eq!(
+            migrate_records::run_blocking(&store, &keyless(), &config, true),
+            Ok(None)
+        );
+        assert!(all(&store, AUDIT_NS).is_empty());
+    }
+
+    /// 4b (§A6 "Attempts"): an attempt past its expiry that this directory never stamped is
+    /// MIGRATION_ABANDONED; the one whose 5d ran here (the marker names it, config.yaml is stamped
+    /// with the bytes it recorded) is MIGRATION_COMPLETED; both leave IMPORT.
+    #[test]
+    fn step4_settles_the_attempts() {
+        use busbar_migrate::records::attempts;
+        let rt = runtime();
+        let store = store(&rt);
+        let scratch = Scratch::new("records-attempts");
+        let stamped = "config_version: 1\nlisten: 127.0.0.1:0\nstore: {module: memory}\n";
+        let config = scratch.config(stamped);
+        let mine = attempts::Attempt {
+            digest: [1; 32],
+            nonce: [2; 16],
+            expires_at: u64::MAX,
+            written_sha256: busbar_contract::crypto::sha256_parts(&[stamped.as_bytes()]),
+        };
+        let stale = attempts::Attempt {
+            digest: [1; 32],
+            nonce: [3; 16],
+            expires_at: 1,
+            written_sha256: [0; 32],
+        };
+        attempts::begin(&store, &mine).unwrap();
+        attempts::begin(&store, &stale).unwrap();
+        std::fs::write(
+            migrate_records::attempt_file(&config),
+            hex::encode([2u8; 16]),
+        )
+        .unwrap();
+        assert_eq!(
+            migrate_records::run_blocking(&store, &keyless(), &config, true),
+            Ok(None)
+        );
+        assert!(
+            all(&store, IMPORT_NS).is_empty(),
+            "both attempts are settled"
+        );
+        let mut words: Vec<String> = all(&store, AUDIT_NS)
+            .into_iter()
+            .map(|(key, _)| {
+                String::from_utf8_lossy(&key)
+                    .split('/')
+                    .next()
+                    .unwrap()
+                    .to_owned()
+            })
+            .collect();
+        words.sort();
+        assert_eq!(words, ["MIGRATION_ABANDONED", "MIGRATION_COMPLETED"]);
+        assert!(
+            !migrate_records::attempt_file(&config).exists(),
+            "the marker goes once its attempt completed"
+        );
+    }
+
+    /// #328 (UPG-2): a step-5 refusal fires before the store is converted. The records step and the
+    /// write run together, and a document the check refuses leaves IMPORT, the native records and
+    /// config.yaml exactly as found.
+    #[test]
+    fn a_step5_refusal_leaves_the_store_and_config_unconverted() {
+        let rt = runtime();
+        let store = store(&rt);
+        put(&store, IMPORT_NS, &fixture());
+        let scratch = Scratch::new("records-328");
+        let config = scratch.config(super::CONFIG_1_5_5);
+        let plan = super::step1(&config, false, false, &super::accept)
+            .unwrap()
+            .expect("planned");
+        let refused = migrate_records::convert_and_write(
+            &store,
+            &keyed(),
+            &plan,
+            &[],
+            &|_: &str, _: Option<&str>| Err("a plane refused the settled document".to_owned()),
+            &config,
+            false,
+        )
+        .expect_err("the step-5 check refuses");
+        assert!(
+            refused.contains("a plane refused the settled document"),
+            "{refused}"
+        );
+        assert!(
+            !all(&store, IMPORT_NS).is_empty(),
+            "IMPORT is untouched: the store was not converted"
+        );
+        assert!(!has_native_key(&store), "no native record was written");
+        assert_eq!(
+            std::fs::read_to_string(&config).unwrap(),
+            super::CONFIG_1_5_5,
+            "config.yaml is unchanged"
+        );
+    }
+    /// 5S, 5d and 5C (§A6 "Attempts", red (n)(9)'s store half): step 5 over the opened store records
+    /// the attempt before writing, names it beside config.yaml before the rename, and consumes it
+    /// with MIGRATION_COMPLETED once config.yaml is stamped; IMPORT is empty afterwards.
+    #[test]
+    fn step5_records_and_completes_its_attempt() {
+        let rt = runtime();
+        let store = store(&rt);
+        let scratch = Scratch::new("records-5s");
+        let config = scratch.config(super::CONFIG_1_5_5);
+        let plan = super::step1(&config, false, false, &super::accept)
+            .unwrap()
+            .expect("planned");
+        let written = migrate_records::write_with_attempt(
+            &store,
+            &plan,
+            &[],
+            &|_: &str, _: Option<&str>| Ok(()),
+            &config,
+        )
+        .expect("step 5 writes");
+        assert_eq!(written, busbar_migrate::Written::Stamped);
+        assert!(all(&store, IMPORT_NS).is_empty(), "the attempt is consumed");
+        let audits = all(&store, AUDIT_NS);
+        assert_eq!(audits.len(), 1, "one completion record");
+        assert!(audits[0].0.starts_with(b"MIGRATION_COMPLETED/"));
+        assert!(!migrate_records::attempt_file(&config).exists());
+    }
+
+    /// Step 3 (§6a, red (h) with the production chain): a store whose format record a newer busbar
+    /// wrote (format 2, or format 1 migrating to 2) is refused NEWER at admission, before any write.
+    #[test]
+    fn a_newer_format_record_is_refused_newer() {
+        let rt = runtime();
+        for (format, tail) in [(2u32, 0u32), (1, 2)] {
+            let backend = rt.block_on(crate::root::real_store::native_backend());
+            let core = rt.block_on(crate::root::real_store::core_over(backend.clone()));
+            let store = Store::new(core, rt.handle().clone());
+            let address = busbar_kernel::persistence::import_target::target::manifest_address();
+            let ns = NamespaceId(address.namespace);
+            let (key, mut bytes) = all(&store, ns)
+                .into_iter()
+                .find(|(key, _)| *key == address.key)
+                .expect("the admitted store holds its format record");
+            for at in [8, 12, 16, 20] {
+                bytes[at..at + 4].copy_from_slice(&format.to_le_bytes());
+            }
+            bytes[72..76].copy_from_slice(&tail.to_le_bytes());
+            put(&store, ns, &[(key, bytes)]);
+            let refused = rt
+                .block_on(crate::root::boot::admit_format(backend, false))
+                .map(drop)
+                .unwrap_err();
+            assert!(refused.contains("NEWER"), "{refused}");
+        }
+    }
 }

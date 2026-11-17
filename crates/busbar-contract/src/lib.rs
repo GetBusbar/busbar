@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
 //! The plugin-visible contract, and nothing else: the traits a plugin implements, the closed
 
 #![deny(unsafe_code)]
@@ -39,7 +42,7 @@ pub mod config;
 pub mod config_time;
 pub mod confined_path;
 pub mod conn;
-pub mod count;
+pub use busbar_count::count;
 pub mod dest;
 
 pub mod diagnostic;
@@ -83,6 +86,7 @@ pub mod protocol;
 
 pub mod provider_keys;
 pub mod redacted;
+pub mod response_delivery;
 pub mod retry;
 
 #[allow(missing_docs)]
@@ -100,11 +104,15 @@ pub mod plugin_settings;
 
 pub mod secret_fields;
 pub mod section;
+/// SemVer 2.0 precedence for plugin version floors (#359 SEC-L11); owned by the artifact metadata
+/// crate so the standalone artifact verifier compares floors with the same one comparator.
+pub use busbar_artifact_metadata::semver;
 pub mod services;
 pub mod signal;
 
 pub mod spans;
 pub mod stage_probe;
+pub mod storage;
 pub mod surface;
 pub mod transport;
 pub mod unit;

@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+use busbar_contract::json::{self, JsonValueTrait as _};
 use std::collections::HashSet;
 use std::sync::Arc;
-
-use busbar_migrations::config::migrated_store_module;
 
 const LOCKED_CONFIG_MUTATION_MESSAGE: &str = "config mutation refused: this busbar has no writable Store-backed config overlay; edit config.yaml and reload a locked deployment";
 
@@ -32,7 +31,7 @@ async fn test_admin_v1_put_auth_refused_on_locked_config() {
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
         "identity-providers": {},
     });
     document["identity-providers"][operator] = serde_json::json!({
@@ -55,13 +54,12 @@ async fn test_admin_v1_put_auth_refused_on_locked_config() {
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let anchor = busbar_kernel::appbuild::bootstrap_config_store(
-        &config,
-        &plugin_config,
-        &busbar_kernel::preflight::Unopened,
-    )
-    .await
-    .expect("the actual Store opens the configuration authority");
+    let crate::root::min3_boot::fixture::Fixture {
+        backend: anchor,
+        rules,
+    } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
+        .await
+        .expect("the actual Store opens the configuration authority");
     let anchor = crate::root::real_store::core_over(anchor).await;
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
@@ -104,10 +102,7 @@ async fn test_admin_v1_put_auth_refused_on_locked_config() {
         .put(format!("http://{addr}/api/v1/admin/admin-auth"))
         .header("x-admin-token", "admintok")
         .header("content-type", "application/json")
-        .body(
-            serde_json::json!({"admin_auth": [busbar_kernel::config::operator_provider()]})
-                .to_string(),
-        )
+        .body(json::json!({"admin_auth": [busbar_kernel::config::operator_provider()]}).to_string())
         .send()
         .await
         .unwrap();
@@ -116,7 +111,7 @@ async fn test_admin_v1_put_auth_refused_on_locked_config() {
         400,
         "a locked config must refuse PUT /admin-auth"
     );
-    let body: serde_json::Value = resp.json().await.unwrap();
+    let body = json::parse_value(&resp.bytes().await.unwrap()).unwrap();
     assert_eq!(body["error"]["code"], "invalid_request");
     assert_eq!(
         body["error"]["message"].as_str(),
@@ -151,7 +146,7 @@ async fn test_admin_v1_config_apply_refused_on_locked_config() {
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
         "identity-providers": {},
     });
     document["identity-providers"][operator] = serde_json::json!({
@@ -165,7 +160,7 @@ async fn test_admin_v1_config_apply_refused_on_locked_config() {
         .expect("the actual OpenAI dialect is linked");
     let definitions = std::collections::HashMap::from([(
         "test-provider".to_string(),
-        serde_json::from_value::<busbar_kernel::config::ProviderDef>(serde_json::json!({
+        json::from_value::<busbar_kernel::config::ProviderDef>(&json::json!({
             "protocol": protocol, "base_url": "http://127.0.0.1:1/",
         }))
         .expect("the actual provider definition parses"),
@@ -190,13 +185,12 @@ async fn test_admin_v1_config_apply_refused_on_locked_config() {
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let anchor = busbar_kernel::appbuild::bootstrap_config_store(
-        &config,
-        &plugin_config,
-        &busbar_kernel::preflight::Unopened,
-    )
-    .await
-    .expect("the actual Store opens the configuration authority");
+    let crate::root::min3_boot::fixture::Fixture {
+        backend: anchor,
+        rules,
+    } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
+        .await
+        .expect("the actual Store opens the configuration authority");
     let anchor = crate::root::real_store::core_over(anchor).await;
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
@@ -234,13 +228,13 @@ async fn test_admin_v1_config_apply_refused_on_locked_config() {
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
     let client = reqwest::Client::new();
-    let body = serde_json::json!({
+    let body = json::json!({
         "providers": {
             "test-provider": {"protocol": "acme", "base_url": "http://127.0.0.1:1/"}
         },
         "config": {
             "listen": "127.0.0.1:0",
-            "store": {"module": migrated_store_module()},
+            "store": {"module": "memory"},
             "providers": {"test-provider": {"api_key": "none"}},
             "models": {"m0": {"provider": "test-provider", "max_concurrent": 4}},
             "pools": {"p": {"members": [{"model": "m0"}]}}
@@ -259,7 +253,7 @@ async fn test_admin_v1_config_apply_refused_on_locked_config() {
         400,
         "a locked config must refuse POST /config/apply"
     );
-    let body: serde_json::Value = resp.json().await.unwrap();
+    let body = json::parse_value(&resp.bytes().await.unwrap()).unwrap();
     assert_eq!(body["error"]["code"], "invalid_request");
     assert_eq!(
         body["error"]["message"].as_str(),
@@ -294,7 +288,7 @@ async fn test_admin_v1_config_settings_put_on_locked_config_is_refused() {
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
         "identity-providers": {},
     });
     document["identity-providers"][operator] = serde_json::json!({
@@ -317,13 +311,12 @@ async fn test_admin_v1_config_settings_put_on_locked_config_is_refused() {
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let anchor = busbar_kernel::appbuild::bootstrap_config_store(
-        &config,
-        &plugin_config,
-        &busbar_kernel::preflight::Unopened,
-    )
-    .await
-    .expect("the actual Store opens the configuration authority");
+    let crate::root::min3_boot::fixture::Fixture {
+        backend: anchor,
+        rules,
+    } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
+        .await
+        .expect("the actual Store opens the configuration authority");
     let anchor = crate::root::real_store::core_over(anchor).await;
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
@@ -366,12 +359,12 @@ async fn test_admin_v1_config_settings_put_on_locked_config_is_refused() {
 
     let put = admin(client.put(format!("http://{addr}/api/v1/admin/config/settings")))
         .header("content-type", "application/json")
-        .body(serde_json::json!({ "listen": "127.0.0.1:0" }).to_string())
+        .body(json::json!({ "listen": "127.0.0.1:0" }).to_string())
         .send()
         .await
         .unwrap();
     assert_eq!(put.status().as_u16(), 400, "{:?}", put.text().await);
-    let body: serde_json::Value = put.json().await.unwrap();
+    let body = json::parse_value(&put.bytes().await.unwrap()).unwrap();
     let msg = body["error"]["message"].as_str().unwrap_or_default();
     assert_eq!(body["error"]["code"], "invalid_request");
     assert_eq!(
@@ -407,7 +400,7 @@ async fn test_admin_v1_config_settings_put_refuses_locked_store_mutation() {
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
         "identity-providers": {},
     });
     document["identity-providers"][operator] = serde_json::json!({
@@ -430,13 +423,12 @@ async fn test_admin_v1_config_settings_put_refuses_locked_store_mutation() {
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let anchor = busbar_kernel::appbuild::bootstrap_config_store(
-        &config,
-        &plugin_config,
-        &busbar_kernel::preflight::Unopened,
-    )
-    .await
-    .expect("the actual Store opens the configuration authority");
+    let crate::root::min3_boot::fixture::Fixture {
+        backend: anchor,
+        rules,
+    } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
+        .await
+        .expect("the actual Store opens the configuration authority");
     let anchor = crate::root::real_store::core_over(anchor).await;
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
@@ -479,12 +471,12 @@ async fn test_admin_v1_config_settings_put_refuses_locked_store_mutation() {
 
     let put = admin(client.put(format!("http://{addr}/api/v1/admin/config/settings")))
         .header("content-type", "application/json")
-        .body(serde_json::json!({ "listen": "127.0.0.1:0" }).to_string())
+        .body(json::json!({ "listen": "127.0.0.1:0" }).to_string())
         .send()
         .await
         .unwrap();
     assert_eq!(put.status().as_u16(), 400, "{:?}", put.text().await);
-    let body: serde_json::Value = put.json().await.unwrap();
+    let body = json::parse_value(&put.bytes().await.unwrap()).unwrap();
     let msg = body["error"]["message"].as_str().unwrap_or_default();
     assert_eq!(body["error"]["code"], "invalid_request");
     assert_eq!(
@@ -526,7 +518,7 @@ async fn test_admin_v1_config_settings_put_rejects_retired_persist() {
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
         "identity-providers": {},
     });
     document["identity-providers"][operator] = serde_json::json!({
@@ -549,13 +541,12 @@ async fn test_admin_v1_config_settings_put_rejects_retired_persist() {
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let anchor = busbar_kernel::appbuild::bootstrap_config_store(
-        &config,
-        &plugin_config,
-        &busbar_kernel::preflight::Unopened,
-    )
-    .await
-    .expect("the actual Store opens the configuration authority");
+    let crate::root::min3_boot::fixture::Fixture {
+        backend: anchor,
+        rules,
+    } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
+        .await
+        .expect("the actual Store opens the configuration authority");
     let anchor = crate::root::real_store::core_over(anchor).await;
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
@@ -598,12 +589,12 @@ async fn test_admin_v1_config_settings_put_rejects_retired_persist() {
 
     let put = admin(client.put(format!("http://{addr}/api/v1/admin/config/settings")))
         .header("content-type", "application/json")
-        .body(serde_json::json!({ "persist": "yes" }).to_string())
+        .body(json::json!({ "persist": "yes" }).to_string())
         .send()
         .await
         .unwrap();
     assert_eq!(put.status().as_u16(), 400, "{:?}", put.text().await);
-    let body: serde_json::Value = put.json().await.unwrap();
+    let body = json::parse_value(&put.bytes().await.unwrap()).unwrap();
     let msg = body["error"]["message"].as_str().unwrap_or_default();
     assert!(
         msg.contains("persist") && msg.contains("unknown field"),
@@ -636,7 +627,7 @@ async fn test_admin_v1_config_settings_put_still_rejects_an_unknown_field_includ
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
         "identity-providers": {},
     });
     document["identity-providers"][operator] = serde_json::json!({
@@ -659,13 +650,12 @@ async fn test_admin_v1_config_settings_put_still_rejects_an_unknown_field_includ
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let anchor = busbar_kernel::appbuild::bootstrap_config_store(
-        &config,
-        &plugin_config,
-        &busbar_kernel::preflight::Unopened,
-    )
-    .await
-    .expect("the actual Store opens the configuration authority");
+    let crate::root::min3_boot::fixture::Fixture {
+        backend: anchor,
+        rules,
+    } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
+        .await
+        .expect("the actual Store opens the configuration authority");
     let anchor = crate::root::real_store::core_over(anchor).await;
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
@@ -708,12 +698,12 @@ async fn test_admin_v1_config_settings_put_still_rejects_an_unknown_field_includ
 
     let put = admin(client.put(format!("http://{addr}/api/v1/admin/config/settings")))
         .header("content-type", "application/json")
-        .body(serde_json::json!({ "persits": true }).to_string())
+        .body(json::json!({ "persits": true }).to_string())
         .send()
         .await
         .unwrap();
     assert_eq!(put.status().as_u16(), 400, "{:?}", put.text().await);
-    let body: serde_json::Value = put.json().await.unwrap();
+    let body = json::parse_value(&put.bytes().await.unwrap()).unwrap();
     let msg = body["error"]["message"].as_str().unwrap_or_default();
     assert!(
         msg.contains("unknown field"),

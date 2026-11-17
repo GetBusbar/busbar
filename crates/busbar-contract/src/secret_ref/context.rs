@@ -560,7 +560,7 @@ impl<'de, V: Visitor<'de>> Visitor<'de> for Reference<'_, V> {
                 .ok_or_else(|| de::Error::custom(undeclared(word)))?;
             let value = value.as_str().filter(|s| !s.trim().is_empty()).ok_or_else(||
                 de::Error::custom("a declared secret shorthand requires a non-empty text value (value not echoed)"))?;
-            let reference = sugar.reference(value);
+            let reference = sugar.checked_reference(value).map_err(de::Error::custom)?;
             held = Tree(serde_json::to_value(reference.writing()).map_err(de::Error::custom)?);
         }
         if held

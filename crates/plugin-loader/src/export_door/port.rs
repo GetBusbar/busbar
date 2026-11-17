@@ -19,17 +19,18 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
 
-use busbar_contract::abi::mechanism::route::Route;
+use busbar_contract::abi::mechanism::route::{Route, RouteAuth, RouteMethod};
 use busbar_contract::export_calls::{
-    Delivered as Queued, ExportCalls, Family, RecorderRequirements, ServeRequest, Served,
+    Delivered as Queued, ExportCalls, ExportCustodyLevel, ExportDropReason, ExportLossKind,
+    ExportObservation, ExportObserver, Family, RecorderRequirements, ServeRequest, Served,
 };
 use busbar_contract::secure::SecureVec;
 use busbar_plugin_abi::fail::CallError;
 use busbar_plugin_abi::host_side::caller::{CallStack, InstanceLimits};
 use busbar_plugin_abi::kinds::export::export as x;
 
-use crate::ports::export::{Delivered, ExportPort, FamilyIn, SampleIn};
-use crate::ports::{CallCx, PortError};
+use busbar_ports::export::{Delivered, ExportPort, FamilyIn, SampleIn};
+use busbar_ports::{CallCx, PortError};
 
 /// Lines one instance holds queued before the kernel's next line is shed (the old door's bound).
 pub const MAX_QUEUED_LINES: usize = super::MAX_QUEUED_LINES;
@@ -43,8 +44,10 @@ pub const DELIVER_ATTEMPTS: u32 = super::DELIVER_ATTEMPTS;
 pub const DEFAULT_DELIVER_TIMEOUT: Duration = Duration::from_secs(30);
 /// The Retry-After clamp of `RetrySite::ExportDeliver` (§12.3).
 pub const RETRY_AFTER_CLAMP_S: u64 = 300;
-/// The first resend's wait; each further resend doubles it, up to [`RETRY_AFTER_CLAMP_S`].
-pub const RESEND_BASE: Duration = Duration::from_millis(50);
+/// The shared host schedule's first failure ceiling (IF §49 Q5).
+pub const RESEND_BASE: Duration = Duration::from_millis(250);
+/// Exponential backoff is capped independently of a backend's Retry-After hint.
+pub const RESEND_CAP: Duration = Duration::from_secs(60);
 
 /// The bytes an `Append` answer asks core to append: the delivered prefix as handed to the plugin (no copy), or
 /// the plugin's own rendered bytes (IF §12.21 `AppendBytes`).
@@ -114,14 +117,49 @@ struct Line {
     _hold: Box<dyn Send>,
 }
 
+#[derive(Default)]
+struct Lifecycle {
+    deadline: Option<Instant>,
+    dropped_at_start: u64,
+    finished: bool,
+}
+
+/// A bounded shutdown observation. A cancelled call is never reported as a clean drain.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StopReport {
+    pub worker_stopped: bool,
+    pub queued: u64,
+    pub in_flight: u64,
+    pub dropped: u64,
+    pub cancelled: bool,
+    pub dispatch_failed: bool,
+}
+
+impl StopReport {
+    pub fn clean(self) -> bool {
+        self.worker_stopped
+            && self.queued == 0
+            && self.in_flight == 0
+            && self.dropped == 0
+            && !self.cancelled
+            && !self.dispatch_failed
+    }
+}
+
 struct Shared {
     port: Arc<dyn ExportPort>,
     disk: Arc<dyn DestAppend>,
+    observer: Arc<dyn ExportObserver>,
     label: Box<str>,
     timeout: Duration,
     queue: Mutex<VecDeque<Line>>,
     wake: Condvar,
     stop: AtomicBool,
+    abort: AtomicBool,
+    in_flight: AtomicU64,
+    lifecycle: Mutex<Lifecycle>,
+    settled: Condvar,
+    cancellation: Mutex<Option<futures::channel::oneshot::Sender<()>>>,
     shed: AtomicU64,
     delivered: AtomicU64,
     /// `export_custody_total{instance, stream, level}`, indexed `[stream][level]`.
@@ -129,6 +167,92 @@ struct Shared {
 }
 
 impl Shared {
+    fn lifecycle(&self) -> MutexGuard<'_, Lifecycle> {
+        self.lifecycle.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    fn expired(&self) -> bool {
+        self.abort.load(Ordering::Acquire)
+            || self
+                .lifecycle()
+                .deadline
+                .is_some_and(|d| Instant::now() >= d)
+    }
+
+    fn abort(&self) {
+        self.abort.store(true, Ordering::Release);
+        if let Some(cancel) = self
+            .cancellation
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take()
+        {
+            let _ = cancel.send(());
+        }
+        // Pair with the queue lock so a waiter cannot miss the wake before parking.
+        let _queue = self.lock();
+        self.wake.notify_all();
+    }
+
+    fn wait_retry(&self, wait: Duration) {
+        let until = Instant::now() + wait;
+        let mut queue = self.lock();
+        loop {
+            if self.expired() {
+                return;
+            }
+            let deadline = self.lifecycle().deadline.map_or(until, |d| d.min(until));
+            let Some(left) = deadline.checked_duration_since(Instant::now()) else {
+                return;
+            };
+            let (next, _) = self
+                .wake
+                .wait_timeout(queue, left)
+                .unwrap_or_else(|p| p.into_inner());
+            queue = next;
+        }
+    }
+
+    fn call(
+        &self,
+        stream: u8,
+        delivery: u64,
+        attempt: u32,
+        views: &[&[u8]],
+    ) -> Option<Result<Delivered, PortError>> {
+        let (send, receive) = futures::channel::oneshot::channel();
+        {
+            let mut slot = self.cancellation.lock().unwrap_or_else(|p| p.into_inner());
+            if self.expired() {
+                return None;
+            }
+            *slot = Some(send);
+        }
+        let result = futures::executor::block_on(futures::future::select(
+            self.port.deliver(
+                self.cx(delivery),
+                u32::from(stream),
+                delivery,
+                attempt,
+                views,
+            ),
+            receive,
+        ));
+        self.cancellation
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take();
+        match result {
+            futures::future::Either::Left((answer, _)) => Some(answer),
+            futures::future::Either::Right((_, pending)) => {
+                // Dropping the proxy future cancels its chain before releasing Need/input buffers.
+                // If native cancellation blocks, this worker retains Shared and its live instance.
+                drop(pending);
+                None
+            }
+        }
+    }
+
     fn lock(&self) -> MutexGuard<'_, VecDeque<Line>> {
         self.queue.lock().unwrap_or_else(|p| p.into_inner())
     }
@@ -137,7 +261,7 @@ impl Shared {
     fn next_set(&self) -> Option<(u8, Vec<Line>)> {
         let mut q = self.lock();
         loop {
-            if self.stop.load(Ordering::Acquire) {
+            if self.expired() {
                 return None;
             }
             if let Some(stream) = q.front().map(|l| l.stream) {
@@ -152,44 +276,77 @@ impl Shared {
                     bytes += l.bytes.len() + 1;
                     lines.extend(q.pop_front());
                 }
+                self.in_flight.store(lines.len() as u64, Ordering::Release);
                 return Some((stream, lines));
+            }
+            if self.stop.load(Ordering::Acquire) {
+                return None;
             }
             q = self.wake.wait(q).unwrap_or_else(|p| p.into_inner());
         }
     }
 
-    fn drop_lines(&self, n: usize, why: &str) {
+    fn drop_lines(&self, n: usize, reason: ExportDropReason) {
         if n == 0 {
             return;
         }
         self.shed.fetch_add(n as u64, Ordering::Relaxed);
-        tracing::warn!(instance = %self.label, lines = n, "{why}");
+        // The bound root observer owns coded, export-excluded diagnostics and durable evidence.
+        // Logging here would feed this loss back into the same export queue.
+        self.observer.observe(ExportObservation::Dropped {
+            reason,
+            lines: n as u64,
+        });
     }
 
     fn count_custody(&self, stream: u8, level: u32, n: usize) {
-        if let Some(row) = self.custody.get(stream as usize) {
-            if let Some(cell) = row.get(level as usize) {
-                cell.fetch_add(n as u64, Ordering::Relaxed);
-            }
+        // The loader owns wire classification; the observer receives only neutral checked levels.
+        let checked = match level {
+            x::CUSTODY_ACCEPTED => ExportCustodyLevel::Accepted,
+            x::CUSTODY_DURABLE => ExportCustodyLevel::Durable,
+            x::CUSTODY_INDEXED => ExportCustodyLevel::Indexed,
+            _ => return,
+        };
+        let Some(&stream_kind) =
+            busbar_contract::export_stream::ExportStream::ALL.get(stream as usize)
+        else {
+            return;
+        };
+        if n == 0 {
+            return;
         }
+        if let Some(cell) = self
+            .custody
+            .get(stream as usize)
+            .and_then(|row| row.get(level as usize))
+        {
+            cell.fetch_add(n as u64, Ordering::Relaxed);
+        }
+        self.observer.observe(ExportObservation::Custody {
+            stream: stream_kind,
+            level: checked,
+            lines: n as u64,
+        });
     }
 
     fn cx(&self, delivery: u64) -> CallCx {
+        let timeout = Instant::now() + self.timeout;
         CallCx {
-            deadline: Instant::now() + self.timeout,
+            deadline: self
+                .lifecycle()
+                .deadline
+                .map_or(timeout, |d| d.min(timeout)),
             request_id: delivery,
             stack: CallStack::default(),
         }
     }
 
-    /// The wait before resend `attempt` (>= 2): the stated Retry-After, clamped, else the doubling base.
+    /// The shared backoff for the preceding failed attempt, never below Retry-After or the host floor.
     fn resend_wait(attempt: u32, retry_after_s: Option<u64>) -> Duration {
-        match retry_after_s {
-            Some(s) => Duration::from_secs(s.min(RETRY_AFTER_CLAMP_S)),
-            None => RESEND_BASE
-                .saturating_mul(1 << attempt.saturating_sub(2).min(12))
-                .min(Duration::from_secs(RETRY_AFTER_CLAMP_S)),
-        }
+        busbar_contract::retry::Backoff::new(RESEND_BASE, RESEND_CAP)
+            .delay(attempt.saturating_sub(1), busbar_contract::retry::unit())
+            .max(Duration::from_secs(retry_after_s.unwrap_or(0)))
+            .min(Duration::from_secs(RETRY_AFTER_CLAMP_S))
     }
 
     /// Delivers one line set until every line is accepted, refused or out of attempts.
@@ -198,25 +355,25 @@ impl Shared {
         let mut attempt = 1u32;
         let mut start = 0usize;
         while start < lines.len() {
+            self.in_flight
+                .store((lines.len() - start) as u64, Ordering::Release);
+            if self.expired() {
+                self.drop_lines(lines.len() - start, ExportDropReason::Stopped);
+                return;
+            }
             if attempt > DELIVER_ATTEMPTS {
-                self.drop_lines(
-                    lines.len() - start,
-                    "export lines were not delivered within their attempts and are dropped",
-                );
+                self.drop_lines(lines.len() - start, ExportDropReason::AttemptsExhausted);
                 return;
             }
             let views: Vec<&[u8]> = lines[start..].iter().map(|l| l.bytes.as_slice()).collect();
-            let answer = futures::executor::block_on(self.port.deliver(
-                self.cx(delivery),
-                u32::from(stream),
-                delivery,
-                attempt,
-                &views,
-            ));
+            let Some(answer) = self.call(stream, delivery, attempt, &views) else {
+                self.drop_lines(lines.len() - start, ExportDropReason::Stopped);
+                return;
+            };
             let resend = |attempt: &mut u32, retry_after_s: Option<u64>| {
                 *attempt += 1;
-                if *attempt <= DELIVER_ATTEMPTS && !self.stop.load(Ordering::Acquire) {
-                    std::thread::sleep(Self::resend_wait(*attempt, retry_after_s));
+                if *attempt <= DELIVER_ATTEMPTS {
+                    self.wait_retry(Self::resend_wait(*attempt, retry_after_s));
                 }
             };
             match answer {
@@ -259,40 +416,43 @@ impl Shared {
                             }
                         }
                         Err(AppendDenied::Foreign) => {
-                            self.drop_lines(
-                                views.len(),
-                                "an export append named no destination of this instance; its lines are dropped",
-                            );
+                            self.drop_lines(views.len(), ExportDropReason::ForeignDestination);
                             return;
                         }
                         Err(_) => resend(&mut attempt, None),
                     }
                 }
+                Err(PortError::Failed {
+                    code: busbar_plugin_abi::fail::failed::F_LIMIT,
+                    ..
+                }) => {
+                    self.drop_lines(views.len(), ExportDropReason::Refused);
+                    return;
+                }
                 Err(PortError::Failed { retry_after_s, .. }) => resend(&mut attempt, retry_after_s),
                 Err(PortError::Call(CallError::Deadline)) => resend(&mut attempt, None),
-                Err(e) => {
-                    self.drop_lines(
-                        views.len(),
-                        &format!(
-                            "an export delivery was refused ({}); its lines are dropped",
-                            why(&e)
-                        ),
-                    );
+                Err(_) => {
+                    self.drop_lines(views.len(), ExportDropReason::Refused);
                     return;
                 }
             }
         }
     }
 
+    fn discard_queue(&self) {
+        let left = std::mem::take(&mut *self.lock());
+        self.drop_lines(left.len(), ExportDropReason::Stopped);
+        drop(left);
+    }
+
     fn pump(self: Arc<Self>) {
         while let Some((stream, lines)) = self.next_set() {
             self.deliver_set(stream, &lines);
+            self.in_flight.store(0, Ordering::Release);
         }
-        let left = std::mem::take(&mut *self.lock());
-        self.drop_lines(
-            left.len(),
-            "queued export lines are shed while the instance stops",
-        );
+        self.discard_queue();
+        self.lifecycle().finished = true;
+        self.settled.notify_all();
     }
 }
 
@@ -300,6 +460,8 @@ impl Shared {
 pub struct PortDoor {
     shared: Arc<Shared>,
     streams: Vec<u8>,
+    routes: Vec<Route>,
+    public_routes: Vec<String>,
     pump: Mutex<Option<std::thread::JoinHandle<()>>>,
 }
 
@@ -313,6 +475,70 @@ impl std::fmt::Debug for PortDoor {
 }
 
 impl PortDoor {
+    /// Close intake and drain accepted work. Repeated calls may shorten, never extend, the deadline.
+    pub fn begin_drain(&self, deadline: Instant) {
+        {
+            let mut life = self.shared.lifecycle();
+            if let Some(prior) = life.deadline {
+                life.deadline = Some(prior.min(deadline));
+            } else {
+                life.deadline = Some(deadline);
+                life.dropped_at_start = self.dropped();
+            }
+        }
+        let _queue = self.shared.lock();
+        self.shared.stop.store(true, Ordering::Release);
+        self.shared.wake.notify_all();
+        self.shared.settled.notify_all();
+    }
+
+    /// Wait only within the drain budget. Call on a blocking lifecycle thread, never a runtime worker.
+    /// If native code cannot return, its worker retains the port and buffers; root must report incomplete
+    /// shutdown and must not close the instance or native audit owner as though that worker quiesced.
+    pub fn stop_until(&self, deadline: Instant) -> StopReport {
+        self.begin_drain(deadline);
+        let mut life = self.shared.lifecycle();
+        while !life.finished {
+            let until = life.deadline.unwrap_or(deadline);
+            let Some(left) = until.checked_duration_since(Instant::now()) else {
+                break;
+            };
+            let (next, _) = self
+                .shared
+                .settled
+                .wait_timeout(life, left)
+                .unwrap_or_else(|p| p.into_inner());
+            life = next;
+        }
+        let finished = life.finished;
+        let baseline = life.dropped_at_start;
+        drop(life);
+        if !finished {
+            self.shared.abort();
+        }
+        let queued = self.shared.lock().len() as u64;
+        let report = StopReport {
+            worker_stopped: self.shared.lifecycle().finished,
+            queued,
+            in_flight: self.shared.in_flight.load(Ordering::Acquire),
+            dropped: self.dropped().saturating_sub(baseline),
+            cancelled: self.shared.abort.load(Ordering::Acquire),
+            dispatch_failed: crate::dispatch::handle::latched(),
+        };
+        if report.worker_stopped {
+            let mut worker = self.pump.lock().unwrap_or_else(|p| p.into_inner());
+            if worker
+                .as_ref()
+                .is_some_and(std::thread::JoinHandle::is_finished)
+            {
+                if let Some(worker) = worker.take() {
+                    let _ = worker.join();
+                }
+            }
+        }
+        report
+    }
+
     /// Starts the instance's pump over `port`. `label` is the operator's instance name; `limits` its
     /// `limits` (only `timeout_ms` is read here: the per-delivery deadline, 0 = [`DEFAULT_DELIVER_TIMEOUT`]).
     pub fn open(
@@ -320,36 +546,98 @@ impl PortDoor {
         port: Arc<dyn ExportPort>,
         disk: Arc<dyn DestAppend>,
         limits: &InstanceLimits,
+        observer: Arc<dyn ExportObserver>,
     ) -> Result<Arc<Self>, String> {
+        let door = Self::prepare(label, port, disk, limits, observer);
+        door.start()?;
+        Ok(door)
+    }
+
+    /// Construct a candidate's complete delivery adapter without starting its pump.
+    pub fn prepare(
+        label: &str,
+        port: Arc<dyn ExportPort>,
+        disk: Arc<dyn DestAppend>,
+        limits: &InstanceLimits,
+        observer: Arc<dyn ExportObserver>,
+    ) -> Arc<Self> {
         let timeout = match limits.timeout_ms {
             0 => DEFAULT_DELIVER_TIMEOUT,
             ms => Duration::from_millis(u64::from(ms)),
         };
         let streams = stream_ids(port.streams());
+        let routes = port
+            .scopes()
+            .iter()
+            .map(|scope| Route {
+                path: scope.path.to_string(),
+                method: RouteMethod::Get,
+                auth: RouteAuth::None,
+            })
+            .collect();
+        let public_routes = port
+            .scopes()
+            .iter()
+            .map(|scope| scope.path.to_string())
+            .collect();
         let shared = Arc::new(Shared {
             port,
             disk,
+            observer,
             label: label.into(),
             timeout,
             queue: Mutex::new(VecDeque::new()),
             wake: Condvar::new(),
             stop: AtomicBool::new(false),
+            abort: AtomicBool::new(false),
+            in_flight: AtomicU64::new(0),
+            lifecycle: Mutex::new(Lifecycle {
+                finished: true,
+                ..Lifecycle::default()
+            }),
+            settled: Condvar::new(),
+            cancellation: Mutex::new(None),
             shed: AtomicU64::new(0),
             delivered: AtomicU64::new(0),
             custody: Default::default(),
         });
-        let pump = {
-            let shared = shared.clone();
-            std::thread::Builder::new()
-                .name(format!("export-{label}"))
-                .spawn(move || shared.pump())
-                .map_err(|e| format!("the export pump for `{label}` could not start: {e}"))?
-        };
-        Ok(Arc::new(Self {
+        Arc::new(Self {
             shared,
             streams,
-            pump: Mutex::new(Some(pump)),
-        }))
+            routes,
+            public_routes,
+            pump: Mutex::new(None),
+        })
+    }
+
+    /// Start a prepared candidate once, after root's fallible serving assembly succeeds.
+    pub fn start(&self) -> Result<(), String> {
+        let mut pump = self.pump.lock().unwrap_or_else(|p| p.into_inner());
+        let mut life = self.shared.lifecycle();
+        if pump.is_some() || self.shared.stop.load(Ordering::Acquire) {
+            return Err(format!(
+                "the export pump for `{}` is already started or stopped",
+                self.shared.label
+            ));
+        }
+        life.finished = false;
+        let shared = Arc::clone(&self.shared);
+        match std::thread::Builder::new()
+            .name(format!("export-{}", shared.label))
+            .spawn(move || shared.pump())
+        {
+            Ok(worker) => {
+                *pump = Some(worker);
+                Ok(())
+            }
+            Err(error) => {
+                life.finished = true;
+                Err(format!(
+                    "the export pump for `{}` could not start: {error}",
+                    self.shared.label
+                ))
+            }
+        }
     }
 
     /// The custody ceiling the instance stated in its `open` answer (§8.5), read through L7.
@@ -403,12 +691,17 @@ impl PortDoor {
 impl Drop for PortDoor {
     fn drop(&mut self) {
         self.shared.stop.store(true, Ordering::Release);
-        self.shared.wake.notify_all();
+        self.shared.abort();
         let pump = self.pump.lock().unwrap_or_else(|p| p.into_inner()).take();
         if let Some(pump) = pump {
-            if pump.thread().id() != std::thread::current().id() {
+            if pump.is_finished() && pump.thread().id() != std::thread::current().id() {
                 let _ = pump.join();
             }
+            // A still-running worker owns Shared, including the live port and its buffers. Detaching
+            // here is deliberate: Drop is not a shutdown protocol and must never wait without a bound.
+        } else {
+            // A rolled-back prepared candidate has no worker to account its retained lines.
+            self.shared.discard_queue();
         }
     }
 }
@@ -425,18 +718,72 @@ impl ExportCalls for PortDoor {
         &self.streams
     }
 
-    /// MIN-3 exporters serve no routes of their own: core mounts each D_SCOPE path (§12.26).
+    /// Core mounts these immutable D_SCOPE paths and supplies each scope's snapshot.
     fn routes(&self) -> &[Route] {
-        &[]
+        &self.routes
+    }
+
+    fn public_routes(&self) -> &[String] {
+        &self.public_routes
+    }
+
+    fn scope(&self, path: &str) -> Option<u32> {
+        self.shared
+            .port
+            .scopes()
+            .iter()
+            .find(|scope| scope.path.as_ref() == path)
+            .map(|scope| scope.scope)
+    }
+
+    fn render_scope(&self, scope: u32, families: &[Family]) -> Result<Served, String> {
+        if !self
+            .shared
+            .port
+            .scopes()
+            .iter()
+            .any(|declared| declared.scope == scope)
+        {
+            return Err("the export instance did not declare this snapshot scope".into());
+        }
+        let mut response = Served {
+            status: 200,
+            headers: Vec::new(),
+            body: Vec::new(),
+        };
+        with_snapshot(families, |snapshot| {
+            self.shared
+                .port
+                .render(scope, snapshot, &mut |content_type, bytes| {
+                    response.headers = vec![("content-type".into(), content_type.into())];
+                    response.body.extend_from_slice(bytes);
+                })
+        })
+        .map_err(|error| {
+            format!(
+                "export instance `{}` did not render ({})",
+                self.shared.label,
+                why(&error)
+            )
+        })?;
+        Ok(response)
     }
 
     fn deliver(&self, stream: u8, line: Vec<u8>, hold: Box<dyn Send>) -> Queued {
-        if !self.streams.contains(&stream) || self.shared.stop.load(Ordering::Acquire) {
+        if !self.streams.contains(&stream) {
+            self.shed(ExportLossKind::CaptureRefused);
             return Queued::Shed;
         }
         {
             let mut q = self.shared.lock();
+            if self.shared.stop.load(Ordering::Acquire) {
+                drop(q);
+                self.shared.drop_lines(1, ExportDropReason::Stopped);
+                return Queued::Shed;
+            }
             if q.len() >= MAX_QUEUED_LINES {
+                drop(q);
+                self.shared.drop_lines(1, ExportDropReason::QueueFull);
                 return Queued::Shed;
             }
             q.push_back(Line {
@@ -478,8 +825,18 @@ impl ExportCalls for PortDoor {
         Err("a MIN-3 export instance serves no routes of its own".to_string())
     }
 
-    fn shed(&self) {
-        self.shared.shed.fetch_add(1, Ordering::Relaxed);
+    fn shed(&self, kind: ExportLossKind) {
+        match kind {
+            ExportLossKind::Dropped(reason) => self.shared.drop_lines(1, reason),
+            ExportLossKind::CaptureRefused => self
+                .shared
+                .observer
+                .observe(ExportObservation::CaptureRefused),
+            ExportLossKind::IntegrityFailed => self
+                .shared
+                .observer
+                .observe(ExportObservation::IntegrityFailed),
+        }
     }
 }
 

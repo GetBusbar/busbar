@@ -214,14 +214,14 @@ pub(crate) fn spawn_secret_resolver() -> busbar_core_connector::spawn_env::Spawn
 }
 
 pub fn boot(
+    reactor: tokio::runtime::Handle,
     doors: &[(&str, DoorFn)],
     settings: &TransportSettings,
     dest: Arc<dyn DestJudge>,
     listens: &[&str],
 ) -> &'static Arc<Connector> {
-    install_io_reactor();
-
-    crate::root::dispatch::dispatcher().install_runtime(io_reactor());
+    busbar_core_connector::io::install_process_reactor(reactor.clone());
+    crate::root::dispatch::dispatcher().install_runtime(reactor);
     let built = process::build_with_secrets(
         || {
             declared(
@@ -281,6 +281,7 @@ fn prepare_effective(
     Transports::new(entries).map_err(|error| error.to_string())
 }
 
+#[cfg(test)]
 pub(crate) fn install_io_reactor() {
     busbar_core_connector::io::install_process_reactor(io_reactor());
 }
@@ -291,24 +292,13 @@ pub(crate) fn install_io(dispatcher: &crate::root::loader::dispatch::Dispatcher)
     let _ = dispatcher.install_runtime(io_reactor());
 }
 
+#[cfg(test)]
 fn io_reactor() -> tokio::runtime::Handle {
     static IO: OnceLock<tokio::runtime::Handle> = OnceLock::new();
     IO.get_or_init(|| {
-        let rt = busbar_kernel::rt::current_thread()
-            .enable_all()
-            .build()
-            .unwrap_or_else(|e| {
-                eprintln!("busbar: the connector's I/O runtime did not build: {e}");
-                crate::root::exit::exit(2);
-            });
-        let handle = rt.handle().clone();
-        std::thread::Builder::new()
-            .name("busbar-conn-io".into())
-            .spawn(move || rt.block_on(std::future::pending::<()>()))
-            .unwrap_or_else(|e| {
-                eprintln!("busbar: the connector's I/O thread did not start: {e}");
-                crate::root::exit::exit(2);
-            });
+        let owner = crate::root::boot::process::ProcessIo::new().expect("test I/O executor");
+        let handle = owner.handle();
+        Box::leak(Box::new(owner));
         handle
     })
     .clone()

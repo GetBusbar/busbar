@@ -314,9 +314,9 @@ fn self_signed() -> (Vec<u8>, Vec<u8>) {
     (cert.der().to_vec(), kp.serialize_der())
 }
 
-/// Verify-off accepts a self-signed peer for operator infrastructure only.
+/// CLEAN-1.6: the retired verify-off flag cannot bypass certificate verification in any class.
 #[test]
-fn verify_off_accepts_a_self_signed_far_end_for_operator_infrastructure_only() {
+fn verify_off_refuses_even_operator_infrastructure() {
     let (leaf, key) = self_signed();
     worker().block_on(async move {
         let far = far_end(leaf, key, b"").await;
@@ -329,11 +329,9 @@ fn verify_off_accepts_a_self_signed_far_end_for_operator_infrastructure_only() {
             "a self-signed certificate fails verification"
         );
         let unverified = open(&c, &far);
-        assert_eq!(upgrade_with(&c, unverified, None, true).await, Ok(()));
-        send(&c, unverified, b"hello").await;
         assert_eq!(
-            gather(&c, unverified, 5).await.as_deref(),
-            Ok(&b"hello"[..])
+            upgrade_with(&c, unverified, None, true).await,
+            Err(ConnError::Refused)
         );
 
         let other = raw_connector();
@@ -342,7 +340,7 @@ fn verify_off_accepts_a_self_signed_far_end_for_operator_infrastructure_only() {
         assert_eq!(
             upgrade_with(&other, refused, None, true).await,
             Err(ConnError::Refused),
-            "verify-off is an operator-infrastructure need's only"
+            "verify-off is refused for every need"
         );
     });
 }
@@ -605,10 +603,9 @@ fn an_offered_name_must_be_the_dialled_host_unless_the_dial_is_an_ip_literal() {
     }
 }
 
-/// BUSBAR-6015: an honoured `UPGRADE_VERIFY_OFF` is flagged once per instance (a coded warning and
-/// an audit record), however many connections it upgrades.
+/// BUSBAR-6015: the retired flag is refused and reported once per instance.
 #[test]
-fn an_honoured_verify_off_is_flagged_once_per_instance() {
+fn a_refused_verify_off_is_flagged_once_per_instance() {
     let (leaf, key) = self_signed();
     worker().block_on(async move {
         let far = far_end(leaf, key, b"").await;
@@ -617,7 +614,10 @@ fn an_honoured_verify_off_is_flagged_once_per_instance() {
         assert!(c.abi_flags().is_empty());
         for _ in 0..2 {
             let id = open(&c, &far);
-            assert_eq!(upgrade_with(&c, id, None, true).await, Ok(()));
+            assert_eq!(
+                upgrade_with(&c, id, None, true).await,
+                Err(ConnError::Refused)
+            );
         }
         assert_eq!(c.abi_flags(), vec![(OWNER, 6015)]);
     });

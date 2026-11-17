@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! New records use `audit.v7` (recipe `busbar.audit.digest.v7`). Records sealed under `v5` and
-//! `v6` keep `audit.v5` and `audit.v6`, and legacy records keep their original bytes.
+//! Linked records use `audit.v8`, or `audit.v9` for complete selected billing evidence.
+//! Legacy records keep their original recipes and bytes.
 
 use busbar_contract::caps::UnitKey;
 
@@ -28,6 +28,9 @@ pub(crate) const JOURNAL_TAG_V7: &str = "audit.v7";
 /// fixed header of raw fingerprints and `linked_ms`, with no signature.
 pub(crate) const JOURNAL_TAG_V8: &str = "audit.v8";
 
+/// Complete selected billing linked content.
+pub(crate) const JOURNAL_TAG_V9: &str = "audit.v9";
+
 /// The original journal format retained for legacy digest recipes.
 pub(crate) const JOURNAL_TAG_V4: &str = "audit.v4";
 
@@ -49,8 +52,15 @@ impl std::error::Error for FieldTooLong {}
 
 /// The journal body of one sealed record.
 pub fn journal_body(record: &AuditRecord) -> Result<Vec<u8>, FieldTooLong> {
+    if !crate::record::billing::record_valid(record) {
+        return Err(FieldTooLong);
+    }
     let mut w = Writer::new();
+    if record.recipe == crate::recipe::Recipe::V9 {
+        w.body_limit = crate::record::billing::BILLING_RECORD_BYTES;
+    }
     w.text(match record.recipe {
+        crate::recipe::Recipe::V9 => JOURNAL_TAG_V9,
         crate::recipe::Recipe::V8 => JOURNAL_TAG_V8,
         crate::recipe::Recipe::V7 => JOURNAL_TAG_V7,
         crate::recipe::Recipe::V6 => JOURNAL_TAG_V6,
@@ -121,7 +131,8 @@ pub fn journal_body(record: &AuditRecord) -> Result<Vec<u8>, FieldTooLong> {
         crate::recipe::Recipe::V5
         | crate::recipe::Recipe::V6
         | crate::recipe::Recipe::V7
-        | crate::recipe::Recipe::V8 => {
+        | crate::recipe::Recipe::V8
+        | crate::recipe::Recipe::V9 => {
             w.num(u64::from(record.usage.rate_card_version.is_some()));
             if let Some(key) = &record.usage.rate_card_version {
                 w.bytes(key);
@@ -149,9 +160,19 @@ pub fn journal_body(record: &AuditRecord) -> Result<Vec<u8>, FieldTooLong> {
     }
     w.opt_text(record.correlation_hash.as_deref());
     if record.recipe.carries_unit_facts() {
-        write_unit_facts(&mut w, &record.unit);
+        write_unit_facts(
+            &mut w,
+            &record.unit,
+            record.recipe == crate::recipe::Recipe::V9,
+        );
     }
-    w.finish()
+    let bytes = w.finish()?;
+    if record.recipe == crate::recipe::Recipe::V9
+        && bytes.len() > crate::record::billing::BILLING_RECORD_BYTES
+    {
+        return Err(FieldTooLong);
+    }
+    Ok(bytes)
 }
 
 /// A link line's fingerprint text as its 32 body bytes. Every link line [`crate::link`] builds holds
@@ -163,7 +184,7 @@ fn link_bytes(text: &str) -> crate::link::Fingerprint {
 }
 
 /// The `v7` tail, in the recipe's order.
-fn write_unit_facts(w: &mut Writer, unit: &crate::record::UnitFacts) {
+fn write_unit_facts(w: &mut Writer, unit: &crate::record::UnitFacts, billing: bool) {
     w.num(unit.wall_ms);
     w.text(&unit.attribution);
     w.bytes(&unit.boot_nonce);
@@ -178,6 +199,27 @@ fn write_unit_facts(w: &mut Writer, unit: &crate::record::UnitFacts) {
         w.num(attempt.us);
     }
     w.num(u64::from(unit.attempts_total));
+    // The records tail (§3.5), in the recipe's order and only when the record keeps one: a body
+    // without it ends here, as every `v7` body written before the tail existed does.
+    let records = &unit.records;
+    if billing || !records.is_empty() {
+        if billing {
+            w.num(u64::from(records.user.is_some()));
+            w.text(records.user.as_deref().unwrap_or(""));
+        } else {
+            w.opt_text(records.user.as_deref());
+        }
+        w.num(records.labels.len() as u64);
+        for (name, value) in &records.labels {
+            w.text(name);
+            w.text(value);
+        }
+    }
+    if billing {
+        if let Some(billing) = &unit.billing {
+            billing.visit(w);
+        }
+    }
 }
 
 fn write_source(w: &mut Writer, source: &QuantitySource) {
@@ -209,6 +251,7 @@ fn write_source(w: &mut Writer, source: &QuantitySource) {
 pub(crate) struct Writer {
     out: Vec<u8>,
     limit: usize,
+    body_limit: usize,
     too_long: bool,
 }
 
@@ -221,6 +264,7 @@ impl Writer {
         Writer {
             out: Vec::new(),
             limit,
+            body_limit: usize::MAX,
             too_long: false,
         }
     }
@@ -233,16 +277,27 @@ impl Writer {
     /// formatted string, with no string built first.
     pub(crate) fn text_fmt(&mut self, value: std::fmt::Arguments<'_>) {
         /// Formats into the body's bytes.
-        struct Onto<'a>(&'a mut Vec<u8>);
+        struct Onto<'a>(&'a mut Vec<u8>, usize);
         impl std::fmt::Write for Onto<'_> {
             fn write_str(&mut self, s: &str) -> std::fmt::Result {
+                if s.len() > self.1.saturating_sub(self.0.len()) {
+                    return Err(std::fmt::Error);
+                }
                 self.0.extend_from_slice(s.as_bytes());
                 Ok(())
             }
         }
         let prefix = self.out.len();
+        if self.too_long || self.body_limit.saturating_sub(prefix) < 4 {
+            self.too_long = true;
+            return;
+        }
         self.out.extend_from_slice(&[0; 4]);
-        let _ = std::fmt::Write::write_fmt(&mut Onto(&mut self.out), value);
+        if std::fmt::Write::write_fmt(&mut Onto(&mut self.out, self.body_limit), value).is_err() {
+            self.out.truncate(prefix);
+            self.too_long = true;
+            return;
+        }
         let len = self.out.len() - prefix - 4;
         match u32::try_from(len).ok().filter(|_| len <= self.limit) {
             Some(len) => self.out[prefix..prefix + 4].copy_from_slice(&len.to_be_bytes()),
@@ -254,6 +309,12 @@ impl Writer {
     }
 
     pub(crate) fn bytes(&mut self, bytes: &[u8]) {
+        if self.too_long
+            || bytes.len().saturating_add(4) > self.body_limit.saturating_sub(self.out.len())
+        {
+            self.too_long = true;
+            return;
+        }
         match u32::try_from(bytes.len())
             .ok()
             .filter(|_| bytes.len() <= self.limit)
@@ -267,6 +328,10 @@ impl Writer {
     }
 
     pub(crate) fn num(&mut self, n: u64) {
+        if self.too_long || self.body_limit.saturating_sub(self.out.len()) < 8 {
+            self.too_long = true;
+            return;
+        }
         self.out.extend_from_slice(&n.to_be_bytes());
     }
 

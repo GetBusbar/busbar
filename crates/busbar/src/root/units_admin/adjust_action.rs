@@ -21,7 +21,17 @@ struct Receipt {
     status: u16,
 }
 
+/// The action's answer for a receipt whose final persistence is confirmed (a replay reads a kept one).
 fn answer(receipt: &Receipt) -> Result<AdminAnswer, GovernanceError> {
+    answer_settled(receipt, true)
+}
+
+/// The action's answer. `receipt_durable` is false when the effect is known in this process but the
+/// final receipt write was not confirmed (ADMIN-API-1.6-ONE-MODEL §10.2: the outcome is in the body).
+fn answer_settled(
+    receipt: &Receipt,
+    receipt_durable: bool,
+) -> Result<AdminAnswer, GovernanceError> {
     let mut response = super::super::json_answer(
         serde_json::to_vec(&serde_json::json!({
             "operation_id": receipt.operation_id,
@@ -34,14 +44,12 @@ fn answer(receipt: &Receipt) -> Result<AdminAnswer, GovernanceError> {
             "applied": receipt.effect == "applied",
             "retry": "same_action_only",
             "recovery": if receipt.effect == "unknown" { "reconcile_ledger_recovery" } else { "receipt" },
-            "count_scale": busbar_contract::count::COUNT_SCALE
+            "count_scale": busbar_contract::count::COUNT_SCALE,
+            "receipt_durable": receipt_durable
         }))
         .map_err(|_| GovernanceError::Store)?,
     );
     response.status = receipt.status;
-    response
-        .headers
-        .push(("x-busbar-adjust-effect".into(), receipt.effect.clone()));
     Ok(response)
 }
 
@@ -84,13 +92,17 @@ pub(crate) async fn adjust_request(
     if scope != busbar_contract::authz::Scope::Full {
         return Err(GovernanceError::Validation);
     }
-    let keys: Vec<_> = unit
-        .headers
-        .iter()
-        .filter(|(name, _)| name == "idempotency-key")
+    // The original request's header fields; HTTP field names are case-insensitive.
+    let keys: Vec<&[u8]> = unit
+        .headers()
+        .filter(|(name, _)| name.eq_ignore_ascii_case("idempotency-key"))
+        .map(|(_, value)| value)
         .collect();
-    let Some((_, action)) = keys.first() else {
+    let Some(action) = keys.first() else {
         return adjust_effect(body, scope, pool_known, adjuster).await;
+    };
+    let Ok(action) = std::str::from_utf8(action) else {
+        return Err(GovernanceError::Validation);
     };
     if keys.len() != 1
         || action.is_empty()
@@ -145,9 +157,6 @@ pub(crate) async fn adjust_request(
             "operation_id": operation_id, "effect": "unknown", "recovery": "reconcile_ledger_recovery"
         })).map_err(|_| GovernanceError::Store)?);
         response.status = 409;
-        response
-            .headers
-            .push(("x-busbar-adjust-effect".into(), "unknown".into()));
         return Ok(response);
     }
     keep(&store, &receipt).await?;
@@ -171,11 +180,7 @@ pub(crate) async fn adjust_request(
     if keep(&store, &receipt).await.is_err() {
         // The effect is known in this process, even if receipt settlement needs reconciliation.
         // Subsequent processes see the pre-effect unknown receipt and cannot apply twice.
-        let mut response = answer(&receipt)?;
-        response
-            .headers
-            .push(("x-busbar-receipt-durable".into(), "false".into()));
-        return Ok(response);
+        return answer_settled(&receipt, false);
     }
     answer(&receipt)
 }

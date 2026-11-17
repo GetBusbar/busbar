@@ -12,12 +12,14 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 use std::time::{Duration, Instant};
 
+use busbar_contract::json::{self, JsonValueMutTrait, JsonValueTrait};
+
 const GOLDEN: &str = include_str!(
     "../../../testing/shadow-oracle/golden/1.5.5/cells/export__request-log-file__jsonl.json"
 );
 
 fn golden_line() -> String {
-    let cell: serde_json::Value = serde_json::from_str(GOLDEN).expect("the golden cell parses");
+    let cell = json::parse_value(GOLDEN.as_bytes()).expect("the golden cell parses");
     cell["body"]["json"]["steps"]
         .as_array()
         .expect("the cell's steps")
@@ -28,38 +30,37 @@ fn golden_line() -> String {
         .to_string()
 }
 
-fn masked_record(text: &str) -> serde_json::Value {
-    fn mask(value: &mut serde_json::Value) {
-        match value {
-            serde_json::Value::Object(fields) => {
-                for (key, value) in fields {
-                    if ["latency_ms", "as_of", "ts"].contains(&key.as_str()) {
-                        assert!(
-                            value.is_number(),
-                            "the volatile field {key} must be numeric"
-                        );
-                        *value = serde_json::Value::String(format!("<{key}>"));
-                    } else {
-                        mask(value);
-                    }
+fn masked_record(text: &str) -> json::Value {
+    fn mask(value: &mut json::Value) {
+        if let Some(fields) = value.as_object_mut() {
+            for (key, value) in fields.iter_mut() {
+                if ["latency_ms", "as_of", "ts"].contains(&key) {
+                    assert!(
+                        value.is_number(),
+                        "the volatile field {key} must be numeric"
+                    );
+                    *value = json::Value::from(format!("<{key}>").as_str());
+                } else {
+                    mask(value);
                 }
             }
-            serde_json::Value::Array(values) => values.iter_mut().for_each(mask),
-            _ => {}
+        } else if let Some(values) = value.as_array_mut() {
+            values.iter_mut().for_each(mask);
         }
     }
     let mut value =
-        serde_json::from_str(text).expect("each request-log line is a complete JSON value");
+        json::parse_value(text.as_bytes()).expect("each request-log line is a complete JSON value");
     mask(&mut value);
     value
 }
 
-fn golden_record() -> serde_json::Value {
+fn golden_record() -> json::Value {
     let mut text = golden_line();
     for key in ["latency_ms", "as_of", "ts"] {
         text = text.replace(&format!(":<{key}>"), &format!(":\"<{key}>\""));
     }
-    serde_json::from_str(&text).expect("the golden record's known numeric placeholders parse")
+    json::parse_value(text.as_bytes())
+        .expect("the golden record's known numeric placeholders parse")
 }
 
 fn upstream() -> u16 {
@@ -135,8 +136,6 @@ fn write_configs(dir: &Path, data_port: u16, admin_port: u16, upstream: u16) {
             r#"listen: "127.0.0.1:{data_port}"
 admin_listen: "127.0.0.1:{admin_port}"
 admin_require_mtls: false
-advanced:
-  allow_destinations: ["127.0.0.1"]
 store: {{module: memory}}
 auth:
   chain: []
@@ -354,10 +353,10 @@ fn the_mask_replaces_only_the_masked_numbers() {
         masked_record(r#"{"a":9007199254740993,"latency_ms":12,"ts":1700000000.5,"x":"ts"}"#);
     assert_eq!(
         record,
-        serde_json::from_str::<serde_json::Value>(
-            r#"{"x":"ts","ts":"<ts>","a":9007199254740993,"latency_ms":"<latency_ms>"}"#
+        json::parse_value(
+            r#"{"x":"ts","ts":"<ts>","a":9007199254740993,"latency_ms":"<latency_ms>"}"#.as_bytes()
         )
         .unwrap()
     );
-    assert_ne!(record["a"], serde_json::json!(9007199254740992_u64));
+    assert_ne!(record["a"], json::json!(9007199254740992_u64));
 }

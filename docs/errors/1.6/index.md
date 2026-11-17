@@ -40,6 +40,15 @@ The thousands digit is the area.
 | [BUSBAR-2046](/docs/1.6/errors/BUSBAR-2046/) | Persisted journal record could not be reframed on restore (skipped, not dropped) | 1.6.0 |
 | [BUSBAR-2047](/docs/1.6/errors/BUSBAR-2047/) | Persisted admin audit record could not be decoded on restore (skipped, not dropped) | 1.6.0 |
 | [BUSBAR-2048](/docs/1.6/errors/BUSBAR-2048/) | A plane journal scope failed hash-chain verification on resume (tamper evidence) | 1.6.0 |
+| [BUSBAR-2049](/docs/1.6/errors/BUSBAR-2049/) | The audit notary could not stamp a page (lines stay durable and linked) | 1.6.0 |
+| [BUSBAR-2050](/docs/1.6/errors/BUSBAR-2050/) | Audit lines have gone unstamped for too long | 1.6.0 |
+| [BUSBAR-2051](/docs/1.6/errors/BUSBAR-2051/) | A request terminal audit original could not be staged | 1.6.0 |
+| [BUSBAR-2052](/docs/1.6/errors/BUSBAR-2052/) | An exporter first observed lost delivery or failed evidence | 1.6.0 |
+| [BUSBAR-2053](/docs/1.6/errors/BUSBAR-2053/) | Exporter loss evidence remains unconfirmed or a producer reported after quiescence | 1.6.0 |
+| [BUSBAR-2054](/docs/1.6/errors/BUSBAR-2054/) | An unstamped audit tail was sealed after a restart | 1.6.0 |
+| [BUSBAR-2055](/docs/1.6/errors/BUSBAR-2055/) | An audit chain is broken after its last valid stamp; the tail is recorded, never sealed | 1.6.0 |
+| [BUSBAR-2056](/docs/1.6/errors/BUSBAR-2056/) | A crashed predecessor on this host was not sealed | 1.6.0 |
+| [BUSBAR-2057](/docs/1.6/errors/BUSBAR-2057/) | Sealing a crashed predecessor is failing and is retried | 1.6.0 |
 
 ## 3xxx: Config
 
@@ -66,7 +75,7 @@ The thousands digit is the area.
 | [BUSBAR-3021](/docs/1.6/errors/BUSBAR-3021/) | A deprecated environment variable is set and still honored — RETIRED *(retired)* | 1.5.0 |
 | [BUSBAR-3023](/docs/1.6/errors/BUSBAR-3023/) | Config overlay rejected at read (the reason, naming the key and the file) — RETIRED *(retired)* | 1.6.0 |
 | [BUSBAR-3024](/docs/1.6/errors/BUSBAR-3024/) | A metadata host-list entry names no host (it matches nothing and is dropped) — RETIRED *(retired)* | 1.6.0 |
-| [BUSBAR-3025](/docs/1.6/errors/BUSBAR-3025/) | A provider URL names a private or loopback host the destination guard refuses | 1.6.0 |
+| [BUSBAR-3025](/docs/1.6/errors/BUSBAR-3025/) | A provider URL names a private or loopback host the destination guard refuses *(retired)* | 1.6.0 |
 | [BUSBAR-3026](/docs/1.6/errors/BUSBAR-3026/) | Declared billable classes have no configured rate | 1.6.0 |
 | [BUSBAR-3027](/docs/1.6/errors/BUSBAR-3027/) | A 1.5.5 file overlay held settings this Store had not imported — RETIRED *(retired)* | 1.6.0 |
 | [BUSBAR-3028](/docs/1.6/errors/BUSBAR-3028/) | A 1.5.5 overlay input was not read — RETIRED *(retired)* | 1.6.0 |
@@ -105,7 +114,7 @@ The thousands digit is the area.
 | [BUSBAR-3131](/docs/1.6/errors/BUSBAR-3131/) | An export sink definition is invalid | 1.6.0 |
 | [BUSBAR-3132](/docs/1.6/errors/BUSBAR-3132/) | An outbound destination is refused by the egress policy | 1.6.0 |
 | [BUSBAR-3133](/docs/1.6/errors/BUSBAR-3133/) | A login attempt limit setting is invalid | 1.6.0 |
-| [BUSBAR-3134](/docs/1.6/errors/BUSBAR-3134/) | An allowlist entry names a cloud-metadata destination | 1.6.0 |
+| [BUSBAR-3134](/docs/1.6/errors/BUSBAR-3134/) | An allowlist entry names a cloud-metadata destination *(retired)* | 1.6.0 |
 | [BUSBAR-3135](/docs/1.6/errors/BUSBAR-3135/) | A registration still carries the retired per-registration private-address switch | 1.6.0 |
 | [BUSBAR-3136](/docs/1.6/errors/BUSBAR-3136/) | A retired cloud-metadata carve-out key is set | 1.6.0 |
 | [BUSBAR-3137](/docs/1.6/errors/BUSBAR-3137/) | An advanced.tls trust anchor is not a usable CA | 1.6.0 |
@@ -336,6 +345,7 @@ The thousands digit is the area.
 | [BUSBAR-9022](/docs/1.6/errors/BUSBAR-9022/) | A writer lease or host assignment row does not decode (never closed) | 1.6.0 |
 | [BUSBAR-9023](/docs/1.6/errors/BUSBAR-9023/) | An expired writer was not closed (the next start retries) | 1.6.0 |
 | [BUSBAR-9024](/docs/1.6/errors/BUSBAR-9024/) | More expired writers remain than one start closes (the next start continues) | 1.6.0 |
+| [BUSBAR-9025](/docs/1.6/errors/BUSBAR-9025/) | Waiting on another owner's record-format conversion of this dataset (no listener bound yet) | 1.6.0 |
 | [BUSBAR-9101](/docs/1.6/errors/BUSBAR-9101/) | The command line names an argument busbar does not know | 1.6.0 |
 | [BUSBAR-9102](/docs/1.6/errors/BUSBAR-9102/) | A command's arguments do not fit together | 1.6.0 |
 | [BUSBAR-9103](/docs/1.6/errors/BUSBAR-9103/) | A command-line flag is missing its value | 1.6.0 |

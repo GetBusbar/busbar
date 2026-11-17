@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 use crate::root::test_plugins as plugins;
 use axum::http::StatusCode;
+use busbar_contract::json;
 use busbar_contract::persistence::*;
 use busbar_contract::records::*;
 use busbar_kernel::governance::at_rest::{self, AtRestKeys};
@@ -75,18 +76,12 @@ async fn unchanged_admin_reload_retries_at_rest_maintenance_after_store_recovery
     {
         crate::dist_root_install::install();
         let library_path = crate::root::test_plugins::application_store_library();
-        let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-            .expect("the actual store statement reads")
-            .expect("the actual store exports its statement");
-        let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-            .expect("the actual store statement is valid")
-            .name;
-        let mut manifest = plugins::manifest(
+        let module = crate::root::test_plugins::native_image(&library_path).name;
+        let manifest = crate::root::test_plugins::native_manifest(
             "store",
-            &module,
+            &library_path,
             crate::root::test_plugins::FIXTURE_PUBLISHER,
         );
-        manifest.statement = Some(hex::encode(statement));
         let library = std::fs::read(library_path).expect("the actual store library reads");
         let directory = plugins::scratch("admin-store-overlay");
         let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
@@ -103,7 +98,7 @@ async fn unchanged_admin_reload_retries_at_rest_maintenance_after_store_recovery
             "models": {},
             "auth": { "chain": [], "admin_auth": [] },
             "store": { "module": module, "settings": settings },
-            "advanced": { "allow_destinations": ["127.0.0.1"] },
+            "advanced": {  },
         });
         let deploy = busbar_kernel::config::deploy_from_deserializer(
             document.clone(),
@@ -115,13 +110,12 @@ async fn unchanged_admin_reload_retries_at_rest_maintenance_after_store_recovery
         let plugin_config = crate::root::test_plugins::trusted_config(&directory);
         let rules = Arc::new(crate::root::door_steps::Rules::default())
             as Arc<dyn busbar_kernel::appbuild::RootRules>;
-        let native = busbar_kernel::appbuild::bootstrap_config_store(
-            &config,
-            &plugin_config,
-            &busbar_kernel::preflight::Unopened,
-        )
-        .await
-        .expect("the actual native Store bootstraps");
+        let crate::root::min3_boot::fixture::Fixture {
+            backend: native,
+            rules,
+        } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
+            .await
+            .expect("the actual native Store bootstraps");
         let store = RewrapStore::new(native);
         let core = crate::root::real_store::core_over(store.clone()).await;
         let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
@@ -162,13 +156,11 @@ async fn unchanged_admin_reload_retries_at_rest_maintenance_after_store_recovery
         let dir = directory.clone();
         let config_path = dir.join("config.yaml");
         let providers_path = dir.join("providers.yaml");
-        let old_path = dir.join("old-at-rest.key");
-        let new_path = dir.join("new-at-rest.key");
-        std::fs::write(&old_path, [3_u8; 32]).unwrap();
-        std::fs::write(&new_path, [4_u8; 32]).unwrap();
+        let signing_path = dir.join("signing.key");
+        std::fs::write(&signing_path, [4_u8; 32]).unwrap();
         let mut disk = document.clone();
         disk["plugins"] = plugins::config_document(&app.plugins_cfg);
-        disk["credentials"] = serde_json::json!({"at_rest": {"key": {"file": new_path}, "previous": {"file": old_path}}});
+        disk["auth"]["signing_key"] = serde_json::json!({"file": signing_path});
         std::fs::write(
             &config_path,
             busbar_contract::yaml::to_string(&disk).unwrap(),
@@ -202,13 +194,9 @@ async fn unchanged_admin_reload_retries_at_rest_maintenance_after_store_recovery
             revoke_reason: None,
             revision: 0,
         };
-        let old_keys = AtRestKeys::new(&[3_u8; 32], None);
         core.identity()
             .put_credential(&CredentialSecret {
-                secret: old_keys
-                    .seal(&meta, b"recoverable-test-secret")
-                    .unwrap()
-                    .into(),
+                secret: "v1:plain:recoverable-test-secret".into(),
                 meta,
             })
             .await
@@ -302,8 +290,8 @@ async fn unchanged_admin_reload_retries_at_rest_maintenance_after_store_recovery
             .await
             .unwrap()
             .remove(0);
-        assert_eq!(at_rest::sealed_kid(&pending.secret), Some(old_keys.kid()));
-        let current_keys = AtRestKeys::new(&[4_u8; 32], Some(&[3_u8; 32]));
+        assert!(at_rest::is_plain(&pending.secret));
+        let current_keys = AtRestKeys::from_signing_secret(&[4_u8; 32]);
         assert_eq!(
             at_rest::open(Some(&current_keys), &pending.meta, &pending.secret)
                 .as_deref()
@@ -340,13 +328,13 @@ async fn unchanged_admin_reload_retries_at_rest_maintenance_after_store_recovery
             Some("recoverable-test-secret")
         );
 
-        std::fs::write(&new_path, [5_u8; 32]).unwrap();
+        std::fs::write(&signing_path, [5_u8; 32]).unwrap();
         overlay_faults.fail_writes.store(true, Ordering::SeqCst);
         let before = handle.load();
         let calls = store.listings.load(Ordering::SeqCst);
         let rejected = client
             .put(format!("http://{addr}/api/v1/admin/config/settings"))
-            .json(&serde_json::json!({"limits": {"request_body_max_bytes": 5000123}}))
+            .json(&json::json!({"limits": {"request_body_max_bytes": 5000123}}))
             .send()
             .await
             .unwrap();
@@ -359,7 +347,7 @@ async fn unchanged_admin_reload_retries_at_rest_maintenance_after_store_recovery
         );
         assert!(Arc::ptr_eq(&before, &handle.load()));
 
-        assert!(!gov.set_at_rest_keys(Some(AtRestKeys::new(&[4_u8; 32], Some(&[3_u8; 32])))));
+        assert!(!gov.set_at_rest_keys(Some(AtRestKeys::from_signing_secret(&[4_u8; 32]))));
         assert_eq!(
             store.listings.load(Ordering::SeqCst),
             calls,

@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+use busbar_contract::json::{self, JsonValueTrait as _};
+
 #[tokio::test]
 async fn test_admin_v1_all_reads_require_admin_token() {
     const CHILD: &str = "BUSBAR_ADMIN_BOOT_623A8A6529A7";
@@ -24,7 +26,7 @@ async fn test_admin_v1_all_reads_require_admin_token() {
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
         "identity-providers": {},
     });
     document["identity-providers"][operator] = serde_json::json!({
@@ -33,19 +35,15 @@ async fn test_admin_v1_all_reads_require_admin_token() {
     let (addr, handle, _book) =
         crate::distribution::rig::actual_root_unhydrated(document, &directory, &module).await;
     let client = reqwest::Client::new();
-    let document: serde_json::Value =
-        serde_json::from_str(&busbar_core_admin::v1::json::openapi_document())
+    let document: json::Value =
+        json::parse_value(busbar_core_admin::v1::json::openapi_document().as_bytes())
             .expect("the actual embedded admin document parses");
     let reads: Vec<&str> = document["paths"]
         .as_object()
         .expect("actual documented paths")
         .iter()
-        .filter(|(path, operations)| {
-            !path.contains('{')
-                && operations["get"].is_object()
-                && operations["get"]["x-busbar-plane"].is_null()
-        })
-        .map(|(path, _)| path.as_str())
+        .filter(|(path, operations)| !path.contains('{') && operations["get"].is_object())
+        .map(|(path, _)| path)
         .collect();
     assert!(
         reads.len() >= 14,
@@ -62,7 +60,7 @@ async fn test_admin_v1_all_reads_require_admin_token() {
             401,
             "{path} must reject a request with NO admin token"
         );
-        let body: serde_json::Value = none.json().await.unwrap();
+        let body = json::parse_value(&none.bytes().await.unwrap()).unwrap();
         assert_eq!(
             body["error"]["code"], "unauthorized",
             "{path}: the admin 401 speaks the v1 envelope: {body}"

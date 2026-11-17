@@ -124,6 +124,7 @@ impl SecretRef {
         let source = sources
             .with_role(crate::abi::mechanism::door::SUGAR_ROLE_FILL)
             .ok_or("no admitted source declares the template fill role")?;
+        source.check_unambiguous()?;
         Ok(Self::Template(TemplateReference {
             text: SecureString::from(text.into()),
             source: FillSource {
@@ -196,6 +197,9 @@ impl SecretRef {
         let source = sources
             .with_role(crate::abi::mechanism::door::SUGAR_ROLE_FILL)
             .ok_or("no admitted source declares the template fill role")?;
+        if source.ambiguous {
+            return Err("template fill source is ambiguous: name the secret instance with module:");
+        }
         if !source.answers(&template.source.module) || template.source.setting != source.setting {
             return Err("template source differs from the admitted fill source declaration");
         }
@@ -418,6 +422,9 @@ const CORE_WORDS: [&str; 5] = [
 /// declares it, the host names none).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Sugar {
+    /// The configured instance selected for this read, distinct from the declaring image.
+    instance: Option<String>,
+    ambiguous: bool,
     /// The reference key: the `k` in `{ k: X }`.
     pub word: String,
     /// The plugin whose Statement declares it.
@@ -439,12 +446,17 @@ pub struct Sugar {
 impl Sugar {
     /// The module a canonical reference to this owner names: its first alias, else its name.
     pub fn module(&self) -> &str {
-        self.aliases.first().unwrap_or(&self.plugin)
+        self.instance
+            .as_ref()
+            .or_else(|| self.aliases.first())
+            .unwrap_or(&self.plugin)
     }
 
     /// Whether `module` names this owner: its Statement name or any alias it declares.
     pub fn answers(&self, module: &str) -> bool {
-        self.plugin == module || self.aliases.iter().any(|alias| alias == module)
+        self.module() == module
+            || self.plugin == module
+            || self.aliases.iter().any(|alias| alias == module)
     }
 
     /// Validate only the scalar source position this owner explicitly declared.
@@ -472,7 +484,25 @@ impl Sugar {
         }
     }
 
-    /// Build the canonical reference named by this admitted owner's declaration.
+    /// Resolve a shorthand only when exactly one instance owns it. Canonical named references remain valid
+    /// when multiple instances of the same image are configured.
+    pub fn checked_reference(&self, value: impl Into<String>) -> Result<SecretRef, String> {
+        self.check_unambiguous()?;
+        Ok(self.reference(value))
+    }
+
+    fn check_unambiguous(&self) -> Result<(), String> {
+        if self.ambiguous {
+            Err(format!(
+                "`{{{}: …}}` is ambiguous: name the instance with `module:`",
+                self.word
+            ))
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Build the canonical reference named by this admitted source declaration.
     pub fn reference(&self, value: impl Into<String>) -> SecretRef {
         SecretRef::Source(SourceReference {
             module: self.module().to_owned(),
@@ -495,6 +525,37 @@ pub struct Sugars {
 }
 
 impl Sugars {
+    /// Bind declared words to configured instances (IF §8.2). `instances` contains canonical image identities,
+    /// not aliases. No configured instance selects the word's implicit empty-bag instance; more than one
+    /// refuses rather than choosing an arbitrary credential source. Image ownership remains unchanged.
+    pub fn bind_instances(&self, instances: &[(&str, &str)]) -> Result<Self, String> {
+        let mut bound = self.clone();
+        for sugar in &mut bound.sugars {
+            sugar.ambiguous = false;
+            let mut matching = instances
+                .iter()
+                .filter(|(_, identity)| *identity == sugar.plugin);
+            let selected = match (matching.next(), matching.next()) {
+                (None, _) => {
+                    if instances.iter().any(|(name, _)| *name == sugar.word) {
+                        return Err(format!(
+                            "implicit secret instance '{}' conflicts with a configured instance",
+                            sugar.word
+                        ));
+                    }
+                    sugar.word.clone()
+                }
+                (Some((name, _)), None) => (*name).to_owned(),
+                (Some(_), Some(_)) => {
+                    sugar.ambiguous = true;
+                    sugar.word.clone()
+                }
+            };
+            sugar.instance = Some(selected);
+        }
+        Ok(bound)
+    }
+
     /// Construct a canonical reference from one admitted core grammar role.
     pub fn reference_for_role(
         &self,
@@ -502,8 +563,8 @@ impl Sugars {
         value: impl Into<String>,
     ) -> Result<SecretRef, String> {
         self.with_role(role)
-            .map(|source| source.reference(value))
-            .ok_or_else(|| format!("no admitted source declares the '{role}' role"))
+            .ok_or_else(|| format!("no admitted source declares the '{role}' role"))?
+            .checked_reference(value)
     }
 
     /// Declare every sugar `plugin`'s Statement rewrites state (`(class, from, to)`, as a Statement
@@ -551,6 +612,8 @@ impl Sugars {
                 ));
             }
             mine.push(Sugar {
+                instance: None,
+                ambiguous: false,
                 word: from.clone(),
                 plugin: plugin.to_string(),
                 aliases: aliases.clone(),

@@ -92,6 +92,7 @@
 
 use std::collections::BTreeMap;
 
+use busbar_contract::json::{self, JsonContainerTrait as _, JsonValueTrait as _};
 use busbar_contract::yaml::{self, prelude::*};
 use serde::Deserialize;
 
@@ -521,21 +522,28 @@ const PROPOSED_ACCEPTS: &[(&str, &str)] = &[
 const RECORDED_CASES: usize = 1141;
 
 /// A recorded 1.5.5 value, spelled out in the fixture, as the tree it means.
-fn recorded(want: &serde_json::Value) -> Value {
-    use serde_json::Value as J;
-    match want {
+fn recorded(want: &json::Value) -> Value {
+    use json::JsonType as J;
+    match want.get_type() {
         J::Null => Value::Null,
-        J::Bool(b) => Value::Bool(*b),
-        J::String(s) => Value::Text(s.clone()),
-        J::Array(items) => Value::Array(items.iter().map(recorded).collect()),
-        J::Object(form) => {
-            if let Some(int) = form.get("int").and_then(J::as_str) {
+        J::Boolean => Value::Bool(want.as_bool().unwrap_or_default()),
+        J::String => Value::Text(want.as_str().unwrap_or_default().to_owned()),
+        J::Array => Value::Array(
+            want.as_array()
+                .into_iter()
+                .flatten()
+                .map(recorded)
+                .collect(),
+        ),
+        J::Object => {
+            let form = want;
+            if let Some(int) = form.get("int").and_then(|v| v.as_str()) {
                 return match int.parse::<u64>() {
                     Ok(u) => Value::from(u),
                     Err(_) => Value::from(int.parse::<i64>().expect("a recorded integer")),
                 };
             }
-            if let Some(float) = form.get("float").and_then(J::as_str) {
+            if let Some(float) = form.get("float").and_then(|v| v.as_str()) {
                 return Value::Float(match float {
                     ".inf" => f64::INFINITY,
                     "-.inf" => f64::NEG_INFINITY,
@@ -543,7 +551,7 @@ fn recorded(want: &serde_json::Value) -> Value {
                     finite => finite.parse().expect("a recorded float"),
                 });
             }
-            if let Some(pairs) = form.get("map").and_then(J::as_array) {
+            if let Some(pairs) = form.get("map").and_then(|v| v.as_array()) {
                 return Value::Map(
                     pairs
                         .iter()
@@ -551,12 +559,12 @@ fn recorded(want: &serde_json::Value) -> Value {
                         .collect(),
                 );
             }
-            if let Some(tag) = form.get("tag").and_then(J::as_str) {
+            if let Some(tag) = form.get("tag").and_then(|v| v.as_str()) {
                 return yaml::tagged(tag, recorded(&form["value"]));
             }
             panic!("an unknown recorded form: {want}");
         }
-        J::Number(_) => panic!("recorded numbers are spelled out: {want}"),
+        J::Number => panic!("recorded numbers are spelled out: {want}"),
     }
 }
 
@@ -612,7 +620,7 @@ fn every_recorded_1_5_5_input_means_what_it_meant() {
     let (mut accepted, mut refused, mut skipped) = (0usize, 0usize, 0usize);
     let mut failures = Vec::new();
     for line in fixture.lines() {
-        let record: serde_json::Value = serde_json::from_str(line).expect("a fixture record");
+        let record: json::Value = json::parse_value(line.as_bytes()).expect("a fixture record");
         let name = record["name"].as_str().expect("a name");
         let input = record["input"].as_str().expect("an input");
         if ACCEPTED_DIFFERENCES.iter().any(|(n, _)| *n == name) {

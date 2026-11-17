@@ -12,8 +12,8 @@ use busbar_plugin_abi::plane::{
     ATT_DECLINE, ATT_HARD, ATT_RELAY, ATT_RETRY, AUDIT_APPLIED, AUDIT_REJECTED, FROM_CLIENT,
     FROM_CORE, FROM_UPSTREAM, MSG_FIN, MSG_TEXT, SRC_ESTIMATED, SRC_REPORTED,
 };
-use busbar_plugin_loader::ports::plane::{PlaneIn, PlaneOut, TargetIn};
-use busbar_plugin_loader::ports::{FactRef, FactVal, PortError};
+use busbar_ports::plane::{PlaneIn, PlaneOut, TargetIn};
+use busbar_ports::{FactRef, FactVal, PortError};
 
 use super::{
     deliver, render, run_local, Calls, Effects, Origin, SessionError, Task, ToClient, Violation,
@@ -22,12 +22,27 @@ use crate::plane_driver::port_auth::refuse;
 use crate::plane_driver::usage::UsageInvalid;
 use crate::plane_driver::{CallerEnd, HeadFields};
 
+#[path = "selected_policy_runtime_tests.rs"]
+mod current_policy;
+
 /// One scripted sink item.
 #[derive(Clone)]
 enum It {
+    Prepared(
+        &'static [(
+            &'static str,
+            busbar_plugin_abi::fallback_usage::EstimateValue,
+        )],
+    ),
+    UpMethod,
+    UpEnd,
+    AttemptUsage,
+    SelectedResource,
+    ResourceEcho,
     Respond(u16),
     Header(&'static str, &'static [u8]),
     Body(&'static [u8]),
+    Conversation(&'static [u8]),
     Msg(u32, &'static [u8]),
     Trailers,
     End,
@@ -46,9 +61,66 @@ enum It {
 fn play(items: &[It], sink: &mut dyn FnMut(PlaneOut<'_>)) {
     for it in items {
         sink(match it {
+            It::Prepared(entries) => {
+                use busbar_plugin_abi::fallback_usage as wire;
+                let mut records = busbar_plugin_abi::records::Reply::new();
+                let entries: Vec<_> = entries
+                    .iter()
+                    .map(|(class, value)| wire::Estimate {
+                        class,
+                        value: *value,
+                    })
+                    .collect();
+                wire::write_prepared_estimates(
+                    &mut records,
+                    wire::SelectedResource {
+                        attempt: 1,
+                        exchange: 0,
+                        resource: "configured",
+                    },
+                    &entries,
+                )
+                .unwrap();
+                let record = busbar_plugin_abi::records::Records::new(records.as_bytes())
+                    .next()
+                    .unwrap()
+                    .unwrap();
+                sink(PlaneOut::PreparedEstimates(
+                    wire::decode_prepared(record).unwrap(),
+                ));
+                continue;
+            }
+            It::UpMethod => PlaneOut::UpMethod("POST"),
+            It::UpEnd => PlaneOut::UpEnd,
+            It::AttemptUsage => {
+                PlaneOut::AttemptUsage(busbar_plugin_abi::fallback_usage::AttemptUsage {
+                    attempt: 1,
+                    class: "tokens",
+                    amount: 7,
+                    scale: 0,
+                    source: busbar_plugin_abi::fallback_usage::UsageSource::Reported,
+                })
+            }
+            It::SelectedResource => {
+                PlaneOut::SelectedResource(busbar_plugin_abi::fallback_usage::SelectedResource {
+                    attempt: 1,
+                    exchange: 0,
+                    resource: "configured",
+                })
+            }
+            It::ResourceEcho => {
+                PlaneOut::ResourceEcho(busbar_plugin_abi::resource_admission::DescriptorEcho {
+                    invocation: 7,
+                    generation: 8,
+                    route: 9,
+                    descriptor: 10,
+                    instance: "seat",
+                })
+            }
             It::Respond(status) => PlaneOut::Respond { status: *status },
             It::Header(n, v) => PlaneOut::Header(n, v),
             It::Body(b) => PlaneOut::Body(b),
+            It::Conversation(b) => PlaneOut::Conversation(b),
             It::Msg(flags, b) => PlaneOut::Msg {
                 flags: *flags,
                 bytes: b,
@@ -93,7 +165,303 @@ fn play(items: &[It], sink: &mut dyn FnMut(PlaneOut<'_>)) {
     }
 }
 
+#[test]
+fn command_callback_rejects_trailing_effects_and_duplicate_channels() {
+    use busbar_plugin_abi::plane::{CARRIER_STDIO, CH_FRAME_NDJSON};
+    for duplicate in [false, true] {
+        let effects = Emitted::default();
+        let mut once = super::Once::default();
+        let mut answer = super::Answer::default();
+        let channel = || PlaneOut::Channel {
+            exchange: 1,
+            carrier: CARRIER_STDIO,
+            flags: 0,
+            framing: CH_FRAME_NDJSON,
+            key: "command",
+            head: busbar_plugin_abi::records::Records::new(&[]),
+        };
+        answer.take(channel(), Origin::Channel, &mut once, &effects);
+        assert_eq!(answer.intents.len(), 1);
+        assert!(answer.violation.is_none());
+        answer.take(
+            if duplicate {
+                channel()
+            } else {
+                PlaneOut::Emit {
+                    carrier: 1,
+                    bytes: b"forbidden",
+                }
+            },
+            Origin::Channel,
+            &mut once,
+            &effects,
+        );
+        assert!(answer.violation.is_some());
+        assert!(effects.0.lock().unwrap().is_empty());
+    }
+}
+
+#[test]
+fn an_unadmitted_resource_echo_cannot_be_ignored_in_request() {
+    let script = Script {
+        request: vec![It::Emit(5, b"must stay private"), It::ResourceEcho],
+        ..Script::default()
+    };
+    let fx = Emitted::default();
+    assert!(Task::begin(&script, &req(), b"", &fx).is_err());
+    assert!(fx.0.lock().unwrap().is_empty());
+}
+
+#[test]
+fn unadmitted_attempt_records_cannot_release_an_answer_prefix() {
+    for record in [It::AttemptUsage, It::SelectedResource] {
+        let script = Script {
+            request: vec![
+                It::Emit(1, b"held"),
+                It::Usage("tokens", 3, 0, SRC_REPORTED),
+                record,
+            ],
+            ..Script::default()
+        };
+        let effects = Emitted::default();
+        assert!(matches!(
+            Task::begin(&script, &req(), b"", &effects),
+            Err(SessionError::Violation(Violation::BadRecords))
+        ));
+        assert!(effects.0.lock().unwrap().is_empty());
+        assert!(script.dropped.load(Ordering::SeqCst));
+    }
+}
+
+#[test]
+fn the_actual_resource_echo_is_retained_on_exchange_zero() {
+    use busbar_plugin_abi::resource_admission::DescriptorEcho;
+    let echo = DescriptorEcho {
+        invocation: 7,
+        generation: 8,
+        route: 9,
+        descriptor: 10,
+        instance: "seat",
+    };
+    for echo_first in [false, true] {
+        let mut answer = super::Answer::default();
+        let mut once = super::Once::default();
+        let fx = Emitted::default();
+        let mut take = |out| answer.take(out, Origin::Upstream, &mut once, &fx);
+        if echo_first {
+            take(PlaneOut::ResourceEcho(echo));
+        }
+        take(PlaneOut::UpCarrier {
+            carrier: 0,
+            outbound: 0,
+        });
+        take(PlaneOut::UpMethod("POST"));
+        take(PlaneOut::UpPath("/configured"));
+        if !echo_first {
+            take(PlaneOut::ResourceEcho(echo));
+        }
+        take(PlaneOut::UpEnd);
+        let answer = answer.seal();
+        assert_eq!(answer.violation, None);
+        assert_eq!(answer.exchanges.len(), 1);
+        assert_eq!(
+            answer.exchanges[0]
+                .resource_echo
+                .as_ref()
+                .unwrap()
+                .borrowed(),
+            echo
+        );
+    }
+}
+
+#[test]
+fn an_unsolicited_upstream_echo_releases_neither_emits_nor_usage() {
+    let script = Script {
+        upstream_items: Mutex::new(VecDeque::from([vec![
+            It::Emit(5, b"must stay private"),
+            It::Usage("requests", 3, 0, SRC_REPORTED),
+            It::ResourceEcho,
+        ]])),
+        ..Script::default()
+    };
+    let fx = Emitted::default();
+    let (mut task, _) = Task::begin(&script, &req(), b"", &fx).unwrap();
+    assert!(task.upstream(&target(), &fx).is_err());
+    assert!(fx.0.lock().unwrap().is_empty());
+    assert!(task.usage().is_empty());
+    assert!(!task.open());
+}
+
 /// A session handle that says when it was dropped (a drop without `end` is a cancel).
+#[test]
+fn complete_preparation_requires_every_declared_class_before_any_effect() {
+    use busbar_plugin_abi::fallback_usage::{self as wire, EstimateValue};
+    const COMPLETE: &[(&str, EstimateValue)] = &[
+        ("tokens", EstimateValue::Unknown),
+        (
+            "requests",
+            EstimateValue::Known {
+                amount: 1,
+                scale: 0,
+            },
+        ),
+    ];
+    const PARTIAL: &[(&str, EstimateValue)] = &[("tokens", EstimateValue::Unknown)];
+    for (entries, valid) in [(PARTIAL, false), (COMPLETE, true)] {
+        let script = Script {
+            facts: busbar_plugin_abi::plane::FB_PREPARED_ESTIMATES,
+            classes: ["tokens", "requests"]
+                .into_iter()
+                .map(|class| busbar_ports::plane::UsageClass {
+                    class: class.into(),
+                    unit: 0,
+                    expected_units: None,
+                })
+                .collect(),
+            upstream_items: Mutex::new(VecDeque::from([vec![
+                It::Emit(1, b"held"),
+                It::SelectedResource,
+                It::Prepared(entries),
+                It::UpMethod,
+                It::UpEnd,
+            ]])),
+            ..Script::default()
+        };
+        let mut admission = busbar_plugin_abi::records::Reply::new();
+        wire::write_selected(
+            &mut admission,
+            wire::SelectedResource {
+                attempt: 1,
+                exchange: 0,
+                resource: "configured",
+            },
+        )
+        .unwrap();
+        let mut input = target();
+        input.admission = admission.as_bytes();
+        let effects = Emitted::default();
+        let (mut task, _) = Task::begin(&script, &req(), b"", &effects).unwrap();
+        let result = task.upstream(&input, &effects);
+        assert_eq!(result.is_ok(), valid);
+        assert_eq!(!effects.0.lock().unwrap().is_empty(), valid);
+        if !valid {
+            assert!(!task.open());
+        }
+    }
+}
+
+#[test]
+fn owned_selected_preparation_retains_complete_actual_estimates() {
+    use busbar_plugin_abi::fallback_usage::EstimateValue;
+    let script = Script {
+        facts: busbar_plugin_abi::plane::FB_PREPARED_ESTIMATES,
+        classes: vec![busbar_ports::plane::UsageClass {
+            class: "tokens".into(),
+            unit: busbar_plugin_abi::plane::UNIT_TOKENS,
+            expected_units: None,
+        }],
+        upstream_items: Mutex::new(VecDeque::from([vec![
+            It::SelectedResource,
+            It::Prepared(&[("tokens", EstimateValue::Unknown)]),
+            It::UpMethod,
+            It::UpEnd,
+        ]])),
+        ..Script::default()
+    };
+    let candidate = crate::plane_driver::port_upstream::Candidate {
+        pool: "actual-pool".into(),
+        qualified_member: "seat\u{1f}actual-model".into(),
+        identity: crate::plane_driver::port_upstream::TargetIdentity::Model {
+            dialect: "actual-dialect".into(),
+            model: "actual-wire-model".into(),
+        },
+        resource: Some("configured".into()),
+        upstream: "actual-model".into(),
+        provider: "{}".into(),
+        base_path: "".into(),
+        flags: 0,
+        params: vec![],
+    };
+    let effects = Emitted::default();
+    let (mut task, _) = Task::begin(&script, &req(), b"", &effects).unwrap();
+    let prepared = task
+        .prepare_selected(&candidate, 1, "request-dialect", "request-model", &effects)
+        .unwrap()
+        .unwrap();
+    assert_eq!(prepared.target(), &candidate);
+    assert_eq!(prepared.attempt(), 1);
+    assert_eq!(prepared.route(), req().route);
+    assert_eq!(prepared.exchange().method.as_deref(), Some("POST"));
+    assert!(prepared.exchange().end);
+    assert_eq!(
+        prepared.estimates(),
+        Some(&[(Box::<str>::from("tokens"), EstimateValue::Unknown)][..])
+    );
+    assert!(effects.0.lock().unwrap().is_empty());
+}
+
+#[test]
+fn selected_sender_has_no_borrowed_legacy_fallback() {
+    use crate::plane_driver::port_egress::OwnedPreparation;
+    use crate::plane_driver::port_upstream::{
+        Candidate, SendFailed, TargetIdentity, UpReply, UpSend,
+    };
+    struct Legacy;
+    impl UpSend for Legacy {
+        fn send(&mut self, _: &Candidate, _: &super::UpExchange) -> Result<UpReply, SendFailed> {
+            panic!("an owned selected preparation must never fall back to legacy send")
+        }
+    }
+    let script = Script {
+        upstream_items: Mutex::new(VecDeque::from([vec![It::UpMethod, It::UpEnd]])),
+        ..Script::default()
+    };
+    let effects = Emitted::default();
+    let (mut task, _) = Task::begin(&script, &req(), b"", &effects).unwrap();
+    let candidate = Candidate {
+        pool: "pool".into(),
+        qualified_member: "seat\u{1f}member".into(),
+        identity: TargetIdentity::Registration,
+        resource: None,
+        upstream: "member".into(),
+        provider: "{}".into(),
+        base_path: "".into(),
+        flags: 0,
+        params: vec![],
+    };
+    let prepared = task
+        .prepare_selected(&candidate, 1, "dialect", "model", &effects)
+        .unwrap()
+        .unwrap();
+    assert!(Legacy
+        .open_selected(OwnedPreparation::new(prepared, None))
+        .is_err());
+}
+
+#[test]
+fn later_forward_rejects_prior_attempt_owned_session_usage() {
+    let script = Script {
+        facts: busbar_plugin_abi::plane::FB_ATTEMPT_USAGE,
+        classes: vec![busbar_ports::plane::UsageClass {
+            class: "tokens".into(),
+            unit: busbar_plugin_abi::plane::UNIT_TOKENS,
+            expected_units: None,
+        }],
+        attempt_classes: vec!["tokens".into()],
+        request: vec![It::Usage("tokens", 0, 0, SRC_REPORTED)],
+        pieces: Mutex::new(VecDeque::from([vec![It::Emit(1, b"held"), It::Forward]])),
+        ..Script::default()
+    };
+    let effects = Emitted::default();
+    let (mut task, _) = Task::begin(&script, &req(), b"", &effects).unwrap();
+    assert!(matches!(
+        task.piece(FROM_CORE, 0, 0, b"", &effects),
+        Err(SessionError::Violation(Violation::BadRecords))
+    ));
+    assert!(effects.0.lock().unwrap().is_empty());
+}
+
 struct Live(Arc<AtomicBool>);
 
 impl Drop for Live {
@@ -104,6 +472,9 @@ impl Drop for Live {
 
 #[derive(Default)]
 struct Script {
+    facts: u64,
+    classes: Vec<busbar_ports::plane::UsageClass>,
+    attempt_classes: Vec<Box<str>>,
     request: Vec<It>,
     pieces: Mutex<VecDeque<Vec<It>>>,
     end: Vec<It>,
@@ -111,6 +482,7 @@ struct Script {
     fail_render: bool,
     upstream_items: Mutex<VecDeque<Vec<It>>>,
     refuse_request: bool,
+    refuse_rewrite: bool,
     dropped: Arc<AtomicBool>,
 }
 
@@ -124,6 +496,10 @@ fn refused() -> PortError {
 
 impl Calls for Script {
     type Session = Live;
+
+    fn usage_metadata(&self) -> (u64, &[busbar_ports::plane::UsageClass], &[Box<str>]) {
+        (self.facts, &self.classes, &self.attempt_classes)
+    }
 
     fn request(
         &self,
@@ -158,6 +534,13 @@ impl Calls for Script {
         _: &[u8],
         _: &mut dyn FnMut(PlaneOut<'_>),
     ) -> Result<(), PortError> {
+        if self.refuse_rewrite {
+            return Err(PortError::Refused {
+                code: busbar_plugin_abi::fail::refused::R_INVALID,
+                text: "rewrite does not fit this request".into(),
+                error: None,
+            });
+        }
         Ok(())
     }
 
@@ -246,6 +629,52 @@ fn a_forward_with_its_wants_is_one_forward() {
     assert_eq!(forward.wants, vec![(0x100, FactVal::U(7))]);
     assert!(first.client.is_empty());
     assert!(task.open());
+}
+
+#[test]
+fn a_hook_projection_is_driven_without_exposing_it_to_the_client() {
+    let script = Script {
+        request: vec![
+            It::Conversation(br#"{"messages":[{"role":"user","text":"private"}]}"#),
+            It::Forward,
+        ],
+        ..Script::default()
+    };
+    let mut request = req();
+    request.flags = busbar_plugin_abi::plane::RQ_PROJECT;
+    let fx = Emitted::default();
+    let (task, first) = Task::begin(&script, &request, b"", &fx).unwrap();
+    assert!(!first.later, "CONVERSATION is a native hook projection");
+    assert_eq!(
+        first.conversation.as_deref(),
+        Some(br#"{"messages":[{"role":"user","text":"private"}]}"#.as_slice()),
+        "the stage receives the plane's exact projection"
+    );
+    assert!(first.client.is_empty(), "projection is never client output");
+    assert!(first.forward.is_some());
+    assert!(task.open());
+}
+
+#[test]
+fn an_inapplicable_hook_rewrite_keeps_the_original_session() {
+    let script = Script {
+        request: vec![It::Forward],
+        refuse_rewrite: true,
+        ..Script::default()
+    };
+    let fx = Emitted::default();
+    let (mut task, _) = Task::begin(&script, &req(), b"original", &fx).unwrap();
+    let result = task.rewrite(br#"{"messages":[]}"#, &fx);
+    assert!(matches!(
+        result,
+        Err(SessionError::Port(PortError::Refused {
+            code: busbar_plugin_abi::fail::refused::R_INVALID,
+            ..
+        }))
+    ));
+    assert!(task.open(), "IF §8.6 keeps the original after R_INVALID");
+    assert!(!script.dropped.load(Ordering::SeqCst));
+    task.end(&fx).expect("original session still ends normally");
 }
 
 #[test]
@@ -613,6 +1042,7 @@ fn target() -> TargetIn<'static> {
         upstream: "u",
         provider: "{}",
         params: &[],
+        admission: &[],
     }
 }
 

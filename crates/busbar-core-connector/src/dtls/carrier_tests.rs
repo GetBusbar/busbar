@@ -8,8 +8,8 @@ use super::*;
 use crate::dtls::session::Live;
 use crate::dtls::tests::{check, creds};
 use busbar_plugin_abi::kinds::transport::transport as wire;
-use busbar_plugin_loader::ports::transport::{ConnIn, TransportEvent, TransportOut};
-use busbar_plugin_loader::ports::PortError;
+use busbar_ports::transport::{ConnIn, TransportEvent, TransportOut};
+use busbar_ports::PortError;
 use std::collections::VecDeque;
 
 const REMOTE_PWD: &str = "remote-password-0123456789";

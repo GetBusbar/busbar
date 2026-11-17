@@ -21,6 +21,9 @@ use crate::audit::stream_registry::{StreamInput, StreamRecord};
 use crate::audit::{Chain, Framing};
 use crate::persistence::scoped::ScopedStore;
 
+#[path = "cancellation_tests.rs"]
+mod cancellation;
+
 const START: u64 = 1_800_000_000;
 
 thread_local! {

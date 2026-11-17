@@ -9,21 +9,15 @@ use busbar_kernel::plane_driver::registry::BuildCtx;
 
 use crate::root::test_plugins as plugins;
 
-async fn lane_less_healthz(opening: Option<bool>) -> (u16, Vec<u8>) {
+async fn lane_less_app(opening: Option<bool>) -> Arc<kernel::state::App> {
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch(&format!("plane-health-{}", kernel::door::op_id().counter()));
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
@@ -41,7 +35,7 @@ async fn lane_less_healthz(opening: Option<bool>) -> (u16, Vec<u8>) {
             "models": {},
             "auth": { "chain": [], "admin_auth": [] },
             "store": { "module": module, "settings": settings },
-            "advanced": { "allow_destinations": ["127.0.0.1"] },
+            "advanced": {  },
         }),
         &crate::root::boot::axis_test_grammar(),
     )
@@ -124,7 +118,12 @@ async fn lane_less_healthz(opening: Option<bool>) -> (u16, Vec<u8>) {
         app.plane_sections = Some([decl.config_section].into_iter().collect());
         app.plane_slots.insert(decl.key, slot);
     }
-    let resp = kernel::endpoints::healthz(kernel::state::CurrentApp(Arc::new(app))).await;
+    Arc::new(app)
+}
+
+async fn lane_less_healthz(opening: Option<bool>) -> (u16, Vec<u8>) {
+    let resp =
+        kernel::endpoints::healthz(kernel::state::CurrentApp(lane_less_app(opening).await)).await;
     let status = resp.status().as_u16();
     let body = axum::body::to_bytes(resp.into_body(), 1024).await.unwrap();
     (status, body.to_vec())
@@ -161,4 +160,197 @@ async fn healthz_of_an_admin_only_engine_is_ready() {
         (200, b"ok".to_vec()),
         "no LLM plane, no providers and no other plane configured: lanes do not count against health"
     );
+}
+
+#[tokio::test]
+async fn readiness_requires_its_root_state_and_present_configured_plane() {
+    let mut app = lane_less_app(Some(true)).await;
+    let missing = kernel::endpoints::readyz(kernel::state::CurrentApp(app.clone()), None).await;
+    assert_eq!(missing.status(), 503);
+    let core = app
+        .governance
+        .as_ref()
+        .unwrap()
+        .core_store_handle()
+        .unwrap();
+    let journal = kernel::persistence::journal::runtime::RuntimeJournal::open(
+        core,
+        899,
+        kernel::persistence::journal::runtime::BufferBudget {
+            records: 1,
+            bytes: 4096,
+        },
+    )
+    .await
+    .unwrap();
+    let probes = Arc::new(kernel::endpoints::ProbeState::new(Some(journal)));
+    let response = kernel::endpoints::readyz(
+        kernel::state::CurrentApp(app.clone()),
+        Some(axum::Extension(probes.clone())),
+    )
+    .await;
+    assert_eq!(response.status(), 200);
+    let decl = kernel::plane_driver::registry::plane_decl_for_config_section("decisions").unwrap();
+    Arc::get_mut(&mut app).unwrap().plane_slots.remove(decl.key);
+    let response = kernel::endpoints::readyz(
+        kernel::state::CurrentApp(app),
+        Some(axum::Extension(probes)),
+    )
+    .await;
+    assert_eq!(
+        response.status(),
+        503,
+        "a configured plane without a slot cannot be ready"
+    );
+}
+
+#[tokio::test]
+async fn readiness_observes_journal_custody_without_affecting_liveness_or_admission() {
+    let app = lane_less_app(None).await;
+    let gov = app.governance.as_ref().unwrap();
+    let core = gov.core_store_handle().unwrap();
+    let journal = kernel::persistence::journal::runtime::RuntimeJournal::open(
+        core,
+        900,
+        kernel::persistence::journal::runtime::BufferBudget {
+            records: 1,
+            bytes: 4096,
+        },
+    )
+    .await
+    .unwrap();
+    let probes = Arc::new(kernel::endpoints::ProbeState::new(Some(journal.clone())));
+    let before = gov.admissions().live();
+    for blocked in [false, true] {
+        if blocked {
+            journal
+                .stage_run(&[busbar_kernel_wal::Entry::new(
+                    busbar_kernel_wal::RecordClass::Load,
+                    Vec::new(),
+                )])
+                .unwrap();
+        }
+        let response = kernel::endpoints::readyz(
+            kernel::state::CurrentApp(app.clone()),
+            Some(axum::Extension(probes.clone())),
+        )
+        .await;
+        assert_eq!(response.status().as_u16(), if blocked { 503 } else { 200 });
+        assert_eq!(
+            response.headers()["content-type"],
+            "text/plain; charset=utf-8"
+        );
+        assert_eq!(kernel::endpoints::livez().await.status(), 200);
+        assert_eq!(gov.admissions().live(), before);
+    }
+    probes.begin_stopping();
+    journal.stop_staging().unwrap();
+    let response = kernel::endpoints::readyz(
+        kernel::state::CurrentApp(app),
+        Some(axum::Extension(probes)),
+    )
+    .await;
+    assert_eq!(response.status(), 503);
+    assert_eq!(kernel::endpoints::livez().await.status(), 200);
+}
+
+#[tokio::test]
+async fn probe_routes_are_public_and_head_has_no_body() {
+    use tower::ServiceExt;
+    let mut app = lane_less_app(None).await;
+    Arc::get_mut(&mut app).unwrap().governance = None;
+    let handle = Arc::new(kernel::state::AppHandle::new(app));
+    let probes = Arc::new(kernel::endpoints::ProbeState::new(None));
+    let router = kernel::router::build_admin_router_on_with_dispatch_layer(
+        &handle,
+        1024,
+        false,
+        crate::root::listener::deferred_dispatch_layer,
+    )
+    .layer(axum::Extension(probes.clone()));
+    let data = kernel::router::build_router(handle.load()).layer(axum::Extension(probes));
+    for router in [router, data] {
+        for path in ["/livez", "/readyz"] {
+            for method in ["GET", "HEAD"] {
+                let response = router
+                    .clone()
+                    .oneshot(
+                        axum::http::Request::builder()
+                            .method(method)
+                            .uri(path)
+                            .body(axum::body::Body::empty())
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    response.status(),
+                    200,
+                    "{method} {path} without credentials"
+                );
+                assert_eq!(
+                    response.headers()["content-type"],
+                    "text/plain; charset=utf-8"
+                );
+                let body = axum::body::to_bytes(response.into_body(), 1024)
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    body.as_ref(),
+                    if method == "HEAD" {
+                        b"".as_slice()
+                    } else {
+                        b"ok".as_slice()
+                    }
+                );
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn readiness_refuses_missing_durability_and_closed_governed_admission() {
+    let app = lane_less_app(None).await;
+    let gov = app.governance.as_ref().unwrap();
+    let without_journal = Arc::new(kernel::endpoints::ProbeState::new(None));
+    assert_eq!(
+        kernel::endpoints::readyz(
+            kernel::state::CurrentApp(app.clone()),
+            Some(axum::Extension(without_journal))
+        )
+        .await
+        .status(),
+        503
+    );
+    let journal = kernel::persistence::journal::runtime::RuntimeJournal::open(
+        gov.core_store_handle().unwrap(),
+        901,
+        kernel::persistence::journal::runtime::BufferBudget {
+            records: 1,
+            bytes: 4096,
+        },
+    )
+    .await
+    .unwrap();
+    let probes = Arc::new(kernel::endpoints::ProbeState::new(Some(journal)));
+    assert_eq!(
+        kernel::endpoints::readyz(
+            kernel::state::CurrentApp(app.clone()),
+            Some(axum::Extension(probes.clone()))
+        )
+        .await
+        .status(),
+        200
+    );
+    gov.admissions().close();
+    assert_eq!(
+        kernel::endpoints::readyz(
+            kernel::state::CurrentApp(app),
+            Some(axum::Extension(probes))
+        )
+        .await
+        .status(),
+        503
+    );
+    assert_eq!(kernel::endpoints::livez().await.status(), 200);
 }

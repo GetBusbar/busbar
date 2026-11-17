@@ -170,6 +170,7 @@ async fn get_one(
         paths.sort();
         paths.dedup();
         let exports = if busbar_kernel::export::plugin::requires_restart(
+            &current.exports,
             &name,
             current.export_defs.get(&name),
         ) {
@@ -240,7 +241,7 @@ async fn put(
     State(handle): State<Arc<AppHandle>>,
     Extension(principal): Extension<busbar_kernel::auth::AuthPrincipal>,
     Path(name): Path<String>,
-    headers: axum::http::HeaderMap,
+    headers: busbar_kernel::inbound::http_projection::AdminHeaders,
     Extension(section): Extension<NamedMapSection>,
     body: axum::body::Bytes,
 ) -> Response {
@@ -275,7 +276,7 @@ async fn patch_settings(
     State(handle): State<Arc<AppHandle>>,
     Extension(principal): Extension<busbar_kernel::auth::AuthPrincipal>,
     Path(name): Path<String>,
-    headers: axum::http::HeaderMap,
+    headers: busbar_kernel::inbound::http_projection::AdminHeaders,
     Extension(section): Extension<NamedMapSection>,
     body: axum::body::Bytes,
 ) -> Response {
@@ -340,7 +341,7 @@ async fn delete(
     State(handle): State<Arc<AppHandle>>,
     Extension(principal): Extension<busbar_kernel::auth::AuthPrincipal>,
     Path(name): Path<String>,
-    headers: axum::http::HeaderMap,
+    headers: busbar_kernel::inbound::http_projection::AdminHeaders,
     Extension(section): Extension<NamedMapSection>,
 ) -> Response {
     if let Some(resp) = plane_gate(&handle, section) {
@@ -356,7 +357,7 @@ async fn apply(
     principal: busbar_kernel::auth::AuthPrincipal,
     section: NamedMapSection,
     name: String,
-    headers: axum::http::HeaderMap,
+    headers: busbar_kernel::inbound::http_projection::AdminHeaders,
     mutation: Mutation,
 ) -> Response {
     let actor = principal.actor_id().to_string();
@@ -573,6 +574,8 @@ async fn apply(
 
 
             loaded.overlay_doc = Some(doc.clone());
+            loaded.resource_ownership.validate_named_maps(&doc)
+                .map_err(AdminError::Validation)?;
             busbar_kernel::config::overlay::apply_root_to_deploy(&mut loaded.deploy, &doc)
                 .map_err(AdminError::Validation)?;
             if let Some(rejection) =
@@ -583,10 +586,8 @@ async fn apply(
             let built = Box::pin(async {
                 let mut cfg = busbar_kernel::config::resolve(&loaded.deploy, &loaded.defs)
                     .map_err(|errs| format!("config errors:\n  - {}", errs.join("\n  - ")))?;
-                let base_hook_names: std::collections::HashSet<String> =
-                    cfg.hooks.keys().cloned().collect();
-                let base_group_names: std::collections::HashSet<String> =
-                    cfg.groups.keys().cloned().collect();
+                let base_hook_names = loaded.resource_ownership.hook_names().clone();
+                let base_group_names = loaded.resource_ownership.group_names().clone();
                 busbar_kernel::config::overlay::merge_into(&mut cfg, doc);
                 Box::pin(busbar_kernel::build_app_from_config(
                     cfg,
@@ -628,6 +629,7 @@ async fn apply(
 
             let export_restart = if txn_section == NamedMapSection::Export
                 && busbar_kernel::export::plugin::requires_restart(
+                    &installed.exports,
                     &txn_name,
                     installed.export_defs.get(&txn_name),
                 )

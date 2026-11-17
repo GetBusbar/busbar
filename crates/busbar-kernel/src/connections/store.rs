@@ -28,8 +28,8 @@ use busbar_plugin_abi::fail::refused::R_CONNECT_REQUIRED;
 use busbar_plugin_abi::host_side::caller::{BoxFut, CallStack, Caller, InstanceLimits};
 use busbar_plugin_abi::plane::{CONN_NONE, CONN_READY, CONN_REFUSED};
 use busbar_plugin_abi::types::KindCode;
-use busbar_plugin_loader::ports::auth::{AuthPort, LoginAnswer, LoginIn, OutboundAnswer};
-use busbar_plugin_loader::ports::{CallCx, PortError};
+use busbar_ports::auth::{AuthPort, LoginAnswer, LoginIn, OutboundAnswer};
+use busbar_ports::{CallCx, PortError};
 
 use super::callback::CallbackAnswer;
 use super::pkce;

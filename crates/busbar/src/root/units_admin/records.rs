@@ -11,15 +11,21 @@ use std::collections::BTreeMap;
 
 use busbar_contract::caps::{Abort, Outcome};
 use busbar_contract::plane::PlaneDeclaration;
+use busbar_core_admin::v1::records as wire;
 use busbar_core_admin::v1::records::{
     unit_reason_class, RecordsPage, RecordsSource, UnitAttempt, UnitReason, UnitRecord, UnitTiming,
     UnitUsage, RECORDS_LIMIT_DEFAULT, RECORDS_LIMIT_MAX, RECORDS_SCAN_BOUND, RECORDS_WAIT_MAX_SECS,
     TIMED_OUT, UNIT_RECORD_SCHEMA,
 };
+use busbar_kernel_audit::record::billing as signed;
 use busbar_kernel_audit::{AuditRecord, FinishClass, Recipe, Subject};
 
 use super::{AdminAnswer, AuditView};
 use crate::root::durability::{records_pulse, AUDIT_RING};
+
+#[cfg(test)]
+#[path = "records_selected_tests.rs"]
+mod selected_tests;
 
 /// The planes this node knows, by key: where a record's `kind` and `category` come from.
 pub(crate) type Planes<'p> = &'p (dyn Fn(&str) -> Option<PlaneDeclaration> + Send + Sync);
@@ -232,7 +238,14 @@ fn nonzero(n: u64) -> Option<u64> {
 
 /// What pricing a record needs, kept beside its projection until the page is priced.
 #[derive(Debug, Clone)]
-pub(crate) struct Priceable {
+pub(crate) enum Priceable {
+    Legacy(LegacyPriceable),
+    Selected(Box<signed::BillingFacts>),
+}
+
+/// A legacy record's pricing inputs: its rate-card version, lane, fee count and usage; none secret.
+#[derive(Debug, Clone)]
+pub(crate) struct LegacyPriceable {
     key: [u8; 20],
     lane: String,
     fee_count: u32,
@@ -244,7 +257,18 @@ pub(crate) struct Priceable {
 /// node no longer has.
 pub(crate) fn project(record: &AuditRecord, planes: Planes<'_>) -> (UnitRecord, Option<Priceable>) {
     let v7 = record.recipe.carries_unit_facts();
-    let target = record.what.destination.as_deref();
+    let delivered = record.unit.billing.as_ref().and_then(|billing| {
+        let ordinal = billing.facts().final_target?;
+        billing.facts().partitions.iter().find(|p| {
+            matches!(p.scope,
+            signed::PartitionScope::Attempt { preparation, .. } if preparation == ordinal)
+        })
+    });
+    let target = if record.recipe == Recipe::V9 {
+        delivered.map(|p| p.lane.as_str())
+    } else {
+        record.what.destination.as_deref()
+    };
     let (instance, model) = match target {
         Some(lane) => match busbar_kernel_ledger::cost::split_plane_lane(lane) {
             ("", _) => (
@@ -277,17 +301,26 @@ pub(crate) fn project(record: &AuditRecord, planes: Planes<'_>) -> (UnitRecord, 
     };
     let priceable = match (&record.recipe, record.usage.rate_card_version, target) {
         (Recipe::V5 | Recipe::V6 | Recipe::V7 | Recipe::V8, Some(key), Some(lane)) => {
-            Some(Priceable {
+            Some(Priceable::Legacy(LegacyPriceable {
                 key,
                 lane: lane.to_string(),
                 fee_count: record.usage.fee_count,
                 classes: classes.clone(),
-            })
+            }))
         }
+        (Recipe::V9, _, _) => record
+            .unit
+            .billing
+            .as_ref()
+            .map(|b| Priceable::Selected(Box::new(b.facts().clone()))),
         _ => None,
     };
     let unit = UnitRecord {
-        schema: UNIT_RECORD_SCHEMA,
+        schema: if record.recipe == Recipe::V9 {
+            wire::UNIT_RECORD_SCHEMA_V2
+        } else {
+            UNIT_RECORD_SCHEMA
+        },
         seq: record.seq.to_string(),
         unit: record.unit_id().map(|id| id.to_string()),
         unit_key: record.what.unit_key.get().to_string(),
@@ -299,15 +332,32 @@ pub(crate) fn project(record: &AuditRecord, planes: Planes<'_>) -> (UnitRecord, 
         instance: instance.map(str::to_string),
         target: target.map(str::to_string),
         model: model.map(str::to_string),
-        provider: provider.map(str::to_string),
-        pool: pool.map(str::to_string),
+        provider: if record.recipe == Recipe::V9 {
+            delivered.and_then(|p| p.provider.clone())
+        } else {
+            provider.map(str::to_string)
+        },
+        pool: record
+            .unit
+            .billing
+            .as_ref()
+            .map(|b| b.facts().request_pool.clone())
+            .or_else(|| pool.map(str::to_string)),
         group: group.map(str::to_string),
         key: match &record.subject {
             Subject::PrincipalId(key) => Some(key.clone()),
             _ => None,
         },
-        user: None,
-        labels: BTreeMap::new(),
+        // §3.5: what `records.user` and `records.labels` sealed, from the record's own bytes; a
+        // record sealed before either was on, or with both off, keeps neither.
+        user: record.unit.records.user.clone(),
+        labels: record
+            .unit
+            .records
+            .labels
+            .iter()
+            .map(|(name, value)| (name.to_string(), value.clone()))
+            .collect(),
         attributes: BTreeMap::new(),
         outcome: outcome_tag(record.outcome.unit_end),
         finish: finish_tag(record.outcome.finish),
@@ -338,6 +388,11 @@ pub(crate) fn project(record: &AuditRecord, planes: Planes<'_>) -> (UnitRecord, 
                 .collect(),
             fee_count: record.usage.fee_count,
         },
+        billing: record
+            .unit
+            .billing
+            .as_ref()
+            .map(|b| billing_projection(b.facts())),
         spend_micros: None,
         rate_card_version,
         priced_by: None,
@@ -369,6 +424,13 @@ pub(crate) fn price(
     input: Priceable,
     view: &busbar_kernel_ledger::cost::HistoryView<'_>,
 ) {
+    let input = match input {
+        Priceable::Legacy(input) => input,
+        Priceable::Selected(input) => {
+            price_selected(record, &input, view);
+            return;
+        }
+    };
     use busbar_kernel_ledger::cost::{nanos_of_exact, price_era, EntryKey, MeteredRow};
     let key = EntryKey(input.key);
     let Some(entry) = view.entry_keyed(&key) else {
@@ -397,6 +459,186 @@ pub(crate) fn price(
     record.spend_micros = Some(micros_text(nanos));
     record.priced_by = Some(priced_by.hex());
     record.priced = true;
+}
+
+fn billing_era(era: signed::BillingEra) -> wire::BillingEra {
+    wire::BillingEra {
+        effective_from: era.effective_from,
+        entry_id: era.entry_id.map(hex::encode),
+    }
+}
+
+fn billing_projection(facts: &signed::BillingFacts) -> wire::UnitBilling {
+    let (logical_request, logical_preparation) = match facts.logical_request {
+        signed::LogicalRequest::None => ("none", None),
+        signed::LogicalRequest::HostOrigin => ("host_origin", None),
+        signed::LogicalRequest::DeliveredPreparation(n) => ("delivered_preparation", Some(n)),
+    };
+    let (disposition, reason) = match &facts.disposition {
+        signed::BillingDisposition::End => ("end", None),
+        signed::BillingDisposition::Failed => ("failed", None),
+        signed::BillingDisposition::Cancel(reason) => ("cancel", Some(reason.clone())),
+        signed::BillingDisposition::RecoveredRunning => ("recovered_running", None),
+    };
+    let quantity = |q: signed::SelectedQuantity| wire::BillingQuantity {
+        count: q.count.to_decimal_string(),
+        source: q.source.as_str(),
+    };
+    let partitions: Vec<_> = facts
+        .partitions
+        .iter()
+        .map(|p| {
+            let (scope, preparation, dispatch) = match p.scope {
+                signed::PartitionScope::Session => ("session", None, None),
+                signed::PartitionScope::Attempt {
+                    preparation,
+                    dispatch,
+                } => ("attempt", Some(preparation), dispatch),
+            };
+            wire::BillingPartition {
+                scope,
+                preparation,
+                dispatch,
+                kind: p.kind.as_str(),
+                instance: p.instance.clone(),
+                lane: p.lane.clone(),
+                provider: p.provider.clone(),
+                selected_pool: p.selected_pool.clone(),
+                resource: p.resource.clone(),
+                transport: p.transport.map(signed::Transport::as_str),
+                finality: p.finality.as_str(),
+                priced_by: None,
+                classes: p
+                    .classes
+                    .iter()
+                    .map(|(name, c)| {
+                        (
+                            name.clone(),
+                            wire::BillingClass {
+                                reported: c.reported.map(|n| n.to_decimal_string()),
+                                floor: c.floor.map(|n| n.to_decimal_string()),
+                                estimated: c.estimated.map(|n| n.to_decimal_string()),
+                                selected: c.selected.map(quantity),
+                                billed: c.billed.map(quantity),
+                                rate_high_water: c.rate_high_water.to_decimal_string(),
+                            },
+                        )
+                    })
+                    .collect(),
+            }
+        })
+        .collect();
+    wire::UnitBilling {
+        version: 1,
+        revision: facts.revision.to_string(),
+        request_pool: facts.request_pool.clone(),
+        routing_generation: facts.routing_generation.to_string(),
+        era: billing_era(facts.era),
+        session_instance: facts.session_origin.instance.clone(),
+        session_lane: facts.session_origin.lane.clone(),
+        session_provider: facts.session_origin.provider.clone(),
+        logical_request,
+        logical_preparation,
+        fee: wire::BillingFee {
+            state: facts.fee.state.as_str(),
+            lane: facts.fee.lane.clone(),
+            era: billing_era(facts.fee.era),
+            priced_by: None,
+        },
+        disposition,
+        reason,
+        far_end_answered: facts.far_end_answered,
+        caller_bytes_committed: facts.caller_bytes_committed,
+        final_target: facts.final_target,
+        dispatched: partitions.iter().filter(|p| p.dispatch.is_some()).count() as u32,
+        partitions,
+    }
+}
+
+fn selected_card<'v>(
+    view: &'v busbar_kernel_ledger::cost::HistoryView<'_>,
+    era: signed::BillingEra,
+    arrived: u64,
+) -> Option<(
+    busbar_kernel_ledger::cost::EntryKey,
+    &'v busbar_kernel_ledger::cost::RateCard,
+)> {
+    let id = busbar_kernel_ledger::cost::EntryId(era.entry_id?);
+    let day_start = arrived / 1_000 / 86_400 * 86_400;
+    let wall = busbar_core_admin::v1::service::row_priced_at_ms(day_start, era.effective_from);
+    // Some(id) makes price_era require that exact identity AND effective date.
+    busbar_kernel_ledger::cost::price_era(view, Some(id), era.effective_from, wall)
+}
+
+fn price_selected(
+    record: &mut UnitRecord,
+    facts: &signed::BillingFacts,
+    view: &busbar_kernel_ledger::cost::HistoryView<'_>,
+) {
+    use busbar_kernel_ledger::cost::{nanos_of_exact, Tally, STANDARD_TIER_BP};
+    let Some(billing) = record.billing.as_mut() else {
+        return;
+    };
+    let zero = busbar_contract::Count::from_micros(0);
+    let mut total = 0i128;
+    let mut keys = std::collections::BTreeSet::new();
+    let mut complete = facts.fee.state != signed::FeeState::Unknown;
+    for (p, output) in facts.partitions.iter().zip(&mut billing.partitions) {
+        let counts: Vec<_> = p
+            .classes
+            .iter()
+            .filter_map(|(name, c)| c.billed.map(|q| (name.as_str(), q.count)))
+            .collect();
+        if counts.is_empty() {
+            continue;
+        }
+        let Some((key, card)) = selected_card(view, facts.era, record.arrived_at_ms) else {
+            complete = false;
+            continue;
+        };
+        let mut tally = Tally::at_card_seq(key, card);
+        let exact = tally
+            .row(&p.lane, 0, STANDARD_TIER_BP, counts.into_iter(), zero)
+            .and_then(|()| tally.exact());
+        let Some(sum) = exact.ok().and_then(|n| total.checked_add(n)) else {
+            complete = false;
+            continue;
+        };
+        total = sum;
+        output.priced_by = Some(key.hex());
+        keys.insert(key.hex());
+    }
+    if facts.fee.state == signed::FeeState::Charged {
+        if let Some((key, card)) = selected_card(view, facts.fee.era, record.arrived_at_ms) {
+            let mut tally = Tally::at_card_seq(key, card);
+            let one = busbar_contract::Count::from(1u64);
+            let fee = match &facts.fee.lane {
+                Some(lane) => tally.lane_fee(lane, 0, STANDARD_TIER_BP, one),
+                None => tally.fee(0, STANDARD_TIER_BP, one),
+            }
+            .and_then(|()| tally.exact());
+            if let Some(sum) = fee.ok().and_then(|n| total.checked_add(n)) {
+                total = sum;
+                billing.fee.priced_by = Some(key.hex());
+                keys.insert(key.hex());
+            } else {
+                complete = false;
+            }
+        } else {
+            complete = false;
+        }
+    }
+    if complete {
+        if let Ok(nanos) = nanos_of_exact(total) {
+            record.spend_micros = Some(micros_text(nanos));
+            record.priced = true;
+            record.priced_by = if keys.len() == 1 {
+                keys.into_iter().next()
+            } else {
+                None
+            };
+        }
+    }
 }
 
 /// The node this view's chain seals as, and the next position it will seal.

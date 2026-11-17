@@ -47,6 +47,7 @@ pub fn err_kind_of(e: &AdminError) -> Option<ErrKind> {
         AdminError::Internal => None,
 
         AdminError::Unavailable(_) => None,
+        AdminError::RetryLater { .. } => None,
         AdminError::UnpricedClass { .. } => Some(ErrKind::UnpricedClass),
         AdminError::PluginText { .. } => Some(ErrKind::Validation),
     }
@@ -58,11 +59,42 @@ pub async fn apply_config(
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
 ) -> axum::response::Response {
+    use axum::extract::FromRequestParts;
+    use axum::response::IntoResponse;
+    let (mut parts, ()) = axum::http::Request::new(()).into_parts();
+    parts.headers = headers;
+    let headers = match busbar_kernel::inbound::http_projection::AdminHeaders::from_request_parts(
+        &mut parts,
+        &(),
+    )
+    .await
+    {
+        Ok(headers) => headers,
+        Err(error) => return error.into_response(),
+    };
     crate::v1::json::apply_config(state, principal, headers, body).await
 }
 
 pub fn openapi_json() -> String {
     crate::v1::json::openapi_json()
+}
+
+/// Exercise the production replay middleware around a controlled effect handler.
+pub fn with_idempotency(
+    router: axum::Router,
+    app: std::sync::Arc<busbar_kernel::state::App>,
+) -> axum::Router {
+    let handle = std::sync::Arc::new(busbar_kernel::state::AppHandle::new(app));
+    router
+        .route(
+            "/api/v1/admin/operations/{key}",
+            axum::routing::get(crate::v1::json::generation::get_operation)
+                .with_state(handle.clone()),
+        )
+        .layer(axum::middleware::from_fn(
+            crate::v1::json::generation::preconditions,
+        ))
+        .layer(axum::Extension(handle))
 }
 
 #[cfg(feature = "openapi-schema")]

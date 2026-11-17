@@ -9,12 +9,18 @@ use serde::Deserialize;
 #[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct ModelCfg {
+    /// Opaque configured selected-rate identity, validated by the host target producer.
+    #[serde(default)]
+    pub resource: Option<Box<str>>,
     /// Lifetime request cap for this model entry. `-1` (the default, via [`neg1`]) means unlimited.
     #[serde(default = "neg1")]
     pub max_requests: i64,
     /// The `providers:` entry this model is served through — the transport-agnostic connection
     /// (base_url, error_map, credential ref).
     pub provider: String,
+    /// Member dialect override; otherwise core uses the provider's resolved protocol.
+    #[serde(default, alias = "dialect")]
+    pub protocol: Option<String>,
     /// Per-lane concurrency limiter: the max number of in-flight requests admitted to this lane at
     /// once (excess requests park on the lane's semaphore until a slot frees or the request budget
     /// expires). OPTIONAL — omitted means UNBOUNDED (no concurrency cap), the same opt-in-limiter
@@ -61,12 +67,6 @@ pub struct ModelCfg {
     /// does same-protocol passthrough (byte-exact).
     #[serde(default)]
     pub prompt_caching: Option<bool>,
-    /// THE MODEL'S DIALECT OVERRIDE (#51): the wire protocol this model is spoken in when it
-    /// differs from its provider's `protocol`; absent = the provider's. The plane that serves the
-    /// model resolves model to dialect itself (THE DESIGN section 4); the kernel checks no dialect.
-    /// Appended last, so the refusal of an unknown member lists it last.
-    #[serde(default)]
-    pub protocol: Option<String>,
 }
 
 /// The serde default for `ModelCfg::max_requests` (`-1` = unlimited).

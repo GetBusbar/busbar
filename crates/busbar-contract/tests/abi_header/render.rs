@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
 //! THE GENERATED C HEADER, AND PROOF IT HAS NOT DRIFTED.
 
 use proc_macro2::{TokenStream, TokenTree};

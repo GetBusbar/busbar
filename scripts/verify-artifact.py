@@ -383,11 +383,12 @@ def row_archive_shape(ctx) -> str:
             "an upload starts, so a truncated upload is indistinguishable from a good one by name "
             "alone." % (size, MIN_ARCHIVE_BYTES)
         )
-    want = [ctx.spec["exe"]]
+    want = sorted([ctx.spec["exe"], "LICENSE", "NOTICE", "THIRD-PARTY-LICENSES"])
     if ctx.members != want:
         raise RowFailure(
-            "the archive contains %r; the contract says exactly %r. The documented install is "
-            "`tar -xzf ... && ./%s`, and install.sh copies that one name: any other shape is a "
+            "the archive contains %r; the contract says exactly %r (the executable plus the LICENSE, NOTICE and "
+            "THIRD-PARTY-LICENSES Apache-2.0 requires). The documented install is "
+            "`tar -xzf ... && ./%s`, and install.sh copies that one executable: any other shape is a "
             "broken install on this platform." % (ctx.members, want, ctx.spec["exe"])
         )
     if not os.path.exists(ctx.exe):

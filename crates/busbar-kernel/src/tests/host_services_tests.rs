@@ -123,12 +123,12 @@ fn rig() -> Rig {
     let store = Arc::new(ready(native_attach(Arc::clone(&backend))));
     let clock = Arc::new(AtomicU64::new(now * 1000));
     let c = Arc::clone(&clock);
-    let s = KernelServices::new()
+    let mut s = KernelServices::new()
         .with_pool(Arc::new(Inline))
         .with_signer(Arc::new(FixedKey))
         .with_demotions(demotions(&store), SECTION_KEY)
         .with_wall_clock(Arc::new(move || c.load(Ordering::SeqCst)));
-    assert!(s.attach_persistence(Arc::clone(&store)));
+    s = s.with_persistence(Arc::clone(&store));
     s.admit_sync(
         "inst",
         InstanceFacts {
@@ -465,23 +465,56 @@ fn sign_is_refused_without_a_declared_domain_or_a_key() {
 }
 
 #[test]
+fn absent_default_demotion_owner_preserves_scoped_durability_without_claiming_legacy_rows() {
+    let mut r = rig();
+    r.s.demotions.as_mut().unwrap().default_instance = None;
+    let record = Arc::clone(&r.s.demotions.as_ref().unwrap().record);
+    ready(record.record("cp", "unowned legacy row", 1)).unwrap();
+    let me = caller("inst");
+    assert_eq!(
+        run(|l| r.s.trust_sight(&me, "cp", "fp", l)).value,
+        svc::TRUST_NEW
+    );
+    ready(r.s.trust_rule_reviewed("inst/cp", crate::trust::book::Ruling::Approve)).unwrap();
+    assert_eq!(
+        run(|l| r.s.trust_sight(&me, "cp", "moved", l)).value,
+        svc::TRUST_DRIFTED
+    );
+    let rows = ready(record.list());
+    assert!(rows
+        .iter()
+        .any(|row| row.upstream == demotion_key("inst", "cp")));
+    assert!(rows.iter().any(|row| row.upstream == "cp"));
+    assert_eq!(
+        run(|l| r.s.trust_sight(&me, "cp", "fp", l)).value,
+        svc::TRUST_SAME
+    );
+    let rows = ready(record.list());
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        rows[0].upstream, "cp",
+        "no instance owns the unprefixed row"
+    );
+}
+
+#[test]
 fn trust_sight_judges_from_the_admitted_entries_and_writes_the_demotion() {
     let r = rig();
     let me = caller("inst");
     let sight = |h: &str| run(|l| r.s.trust_sight(&me, "cp", h, l));
 
     assert_eq!(sight("moved").value, svc::TRUST_NEW);
-    assert!(ready(r.s.demotions.get().unwrap().record.list()).is_empty());
+    assert!(ready(r.s.demotions.as_ref().unwrap().record.list()).is_empty());
     assert_eq!(sight("fp").value, svc::TRUST_NEW);
-    ready(r.s.trust_rule("inst/cp", crate::trust::book::Ruling::Approve)).unwrap();
+    ready(r.s.trust_rule_reviewed("inst/cp", crate::trust::book::Ruling::Approve)).unwrap();
     assert_eq!(sight("fp").value, svc::TRUST_SAME, "approved");
     assert_eq!(sight("moved").value, svc::TRUST_DRIFTED);
-    let demoted = ready(r.s.demotions.get().unwrap().record.list());
+    let demoted = ready(r.s.demotions.as_ref().unwrap().record.list());
     assert_eq!(demoted.len(), 1);
     assert_eq!(demoted[0].upstream, demotion_key("inst", "cp"));
     assert_eq!(sight("moved").value, svc::TRUST_QUARANTINED);
     assert_eq!(sight("fp").value, svc::TRUST_SAME);
-    assert!(ready(r.s.demotions.get().unwrap().record.list()).is_empty());
+    assert!(ready(r.s.demotions.as_ref().unwrap().record.list()).is_empty());
     let s = run(|l| r.s.trust_sight(&me, "nobody", "fp", l));
     assert_eq!((s.outcome, s.error), (Outcome::Refused, NOT_A_COUNTERPARTY));
 }
@@ -493,16 +526,16 @@ fn the_operators_trust_decisions_are_kept_and_replayed_at_a_restart() {
     let me = caller("inst");
 
     assert_eq!(r.s.trust_unreached(&me, "cp").value, svc::TRUST_NEW);
-    ready(r.s.trust_rule("inst/cp", Ruling::Approve)).unwrap();
+    ready(r.s.trust_rule_reviewed("inst/cp", Ruling::Approve)).unwrap();
     assert_eq!(
         run(|l| r.s.trust_sight(&me, "cp", "moved", l)).value,
         svc::TRUST_DRIFTED
     );
     assert_eq!(r.s.trust_unreached(&me, "cp").value, svc::TRUST_QUARANTINED);
-    let row = ready(r.s.trust_rule("inst/cp", Ruling::Approve)).unwrap();
+    let row = ready(r.s.trust_rule_reviewed("inst/cp", Ruling::Approve)).unwrap();
     assert_eq!(row.approved.as_deref(), Some("moved"));
     assert!(
-        ready(r.s.demotions.get().unwrap().record.list()).is_empty(),
+        ready(r.s.demotions.as_ref().unwrap().record.list()).is_empty(),
         "the approval clears the demotion"
     );
     assert_eq!(r.s.trust_unreached(&me, "cp").value, svc::TRUST_SAME);
@@ -514,7 +547,7 @@ fn the_operators_trust_decisions_are_kept_and_replayed_at_a_restart() {
         "the kept approval, over the declared pin"
     );
     assert_eq!(
-        ready(fresh.trust_rule("inst/nobody", Ruling::Revoke)),
+        ready(fresh.trust_rule_reviewed("inst/nobody", Ruling::Revoke)),
         Err(TrustRefused::NoSuchKey)
     );
     let s = fresh.trust_unreached(&caller("nowhere"), "cp");
@@ -531,7 +564,7 @@ fn an_approval_outlives_a_restart_and_a_moved_counterparty_is_drift_not_a_first_
         svc::TRUST_NEW,
         "a first sighting"
     );
-    let row = ready(r.s.trust_rule("inst/cp", Ruling::Approve)).unwrap();
+    let row = ready(r.s.trust_rule_reviewed("inst/cp", Ruling::Approve)).unwrap();
     assert_eq!(row.approved.as_deref(), Some("c1"));
     let fresh = restarted(&r);
     fresh.admit_sync("inst", trusting(Some("fp"))).unwrap();
@@ -557,8 +590,13 @@ fn trust_decide_is_the_one_decide_path_for_a_planes_own_verb() {
         generation: 1,
     };
     let _grant =
-        r.s.grant_trust_decision(&me, ticket, "cp")
-            .expect("gated admin grant");
+        r.s.grant_trust_decision(
+            &me,
+            ticket,
+            "cp",
+            crate::host_services::TrustDecisionAuthority::for_test(),
+        )
+        .expect("gated admin grant");
     let tool = TrustKeyRef {
         counterparty: "cp",
         item: Some("t"),
@@ -566,8 +604,8 @@ fn trust_decide_is_the_one_decide_path_for_a_planes_own_verb() {
     let serves = |item| r.s.trust_serves(&me, "cp", Some(item), None).value;
     assert_eq!(
         run(|later| r.s.trust_decide(&me, ticket, tool, Some("d1"), true, later)).value,
-        svc::UNDECIDED_UNPINNED,
-        "nothing sighted yet"
+        svc::UNDECIDED_STALE,
+        "nothing sighted yet: a reviewed digest that is not the current sighting is stale (r3 §4.1)"
     );
     assert_eq!(
         run(|later| r.s.trust_sight_item(&me, "cp", "t", "d1", later)).value,
@@ -611,8 +649,15 @@ fn trust_decide_is_the_one_decide_path_for_a_planes_own_verb() {
         svc::DISTRUST_CHANGED,
         "a changed sighting refuses"
     );
+    // Test-Change (TST-3, r3 §4.2c): no key-only approve through the plugin interface; the
+    // re-approval names the current sighting it reviewed.
     assert_eq!(
         run(|later| r.s.trust_decide(&me, ticket, tool, None, true, later)).value,
+        svc::UNDECIDED_STALE,
+        "an approve without a reviewed digest is refused"
+    );
+    assert_eq!(
+        run(|later| r.s.trust_decide(&me, ticket, tool, Some("d2"), true, later)).value,
         svc::TRUST_DECIDED_SERVING,
         "re-approved at its current sighting"
     );
@@ -665,12 +710,12 @@ fn trust_state_answers_the_counterparty_and_its_items_as_the_admin_list_does() {
     );
     run(|l| r.s.trust_sight(&me, "cp", "fp", l));
     assert_eq!(r.s.trust_state(&me, "cp").value, svc::KEY_NEW, "sighted");
-    ready(r.s.trust_rule("inst/cp", Ruling::Approve)).unwrap();
+    ready(r.s.trust_rule_reviewed("inst/cp", Ruling::Approve)).unwrap();
     assert_eq!(
         run(|later| r.s.trust_sight_item(&me, "cp", "t", "d1", later)).value,
         svc::TRUST_NEW
     );
-    ready(r.s.trust_rule("inst/cp/t", Ruling::Approve)).unwrap();
+    ready(r.s.trust_rule_reviewed("inst/cp/t", Ruling::Approve)).unwrap();
     assert_eq!(
         run(|later| r.s.trust_sight_item(&me, "cp", "u", "e1", later)).value,
         svc::TRUST_NEW
@@ -707,7 +752,7 @@ fn trust_state_answers_the_counterparty_and_its_items_as_the_admin_list_does() {
 fn a_durable_demotion_is_replayed_at_admit() {
     let r = rig();
     let me = caller("inst");
-    ready(r.s.trust_rule("inst/cp", crate::trust::book::Ruling::Approve)).unwrap();
+    ready(r.s.trust_rule_reviewed("inst/cp", crate::trust::book::Ruling::Approve)).unwrap();
     assert_eq!(
         run(|l| r.s.trust_sight(&me, "cp", "moved", l)).value,
         svc::TRUST_DRIFTED
@@ -805,9 +850,9 @@ fn an_items_drift_demotion_outlives_a_restart() {
     let r = rig();
     let me = caller("inst");
     run(|l| r.s.trust_sight(&me, "cp", "fp", l));
-    ready(r.s.trust_rule("inst/cp", Ruling::Approve)).unwrap();
+    ready(r.s.trust_rule_reviewed("inst/cp", Ruling::Approve)).unwrap();
     run(|later| r.s.trust_sight_item(&me, "cp", "t", "d1", later));
-    ready(r.s.trust_rule("inst/cp/t", Ruling::Approve)).unwrap();
+    ready(r.s.trust_rule_reviewed("inst/cp/t", Ruling::Approve)).unwrap();
     let serves = |s: &KernelServices| s.trust_serves(&me, "cp", Some("t"), None).value;
     assert_eq!(serves(&r.s), svc::DISTRUST_NONE);
     run(|later| r.s.trust_sight_item(&me, "cp", "t", "d2", later));
@@ -821,16 +866,22 @@ fn an_items_drift_demotion_outlives_a_restart() {
         svc::DISTRUST_NONE,
         "reverted after a restart, it stays refused"
     );
-    ready(fresh.trust_rule("inst/cp/t", Ruling::Approve)).unwrap();
+    ready(fresh.trust_rule_reviewed("inst/cp/t", Ruling::Approve)).unwrap();
     assert_eq!(serves(&fresh), svc::DISTRUST_NONE, "re-approved");
 }
 
 fn restarted(r: &Rig) -> KernelServices {
-    let demotions = r.s.demotions.get().unwrap();
-    let host = KernelServices::new()
-        .with_demotions(Arc::clone(&demotions.record), &demotions.default_instance)
+    let demotions = r.s.demotions.as_ref().unwrap();
+    let mut host = KernelServices::new()
+        .with_demotions(
+            Arc::clone(&demotions.record),
+            demotions
+                .default_instance
+                .as_deref()
+                .expect("fixture default owner"),
+        )
         .with_pool(Arc::new(Inline));
-    assert!(host.attach_persistence(Arc::clone(&r.store)));
+    host = host.with_persistence(Arc::clone(&r.store));
     host
 }
 
@@ -860,7 +911,7 @@ fn trusting(pin: Option<&str>) -> InstanceFacts {
 #[test]
 fn a_demotion_in_one_instance_is_never_replayed_into_another_with_the_same_counterparty() {
     let r = rig();
-    ready(r.s.trust_rule("inst/cp", crate::trust::book::Ruling::Approve)).unwrap();
+    ready(r.s.trust_rule_reviewed("inst/cp", crate::trust::book::Ruling::Approve)).unwrap();
     assert_eq!(
         run(|l| r.s.trust_sight(&caller("inst"), "cp", "moved", l)).value,
         svc::TRUST_DRIFTED
@@ -883,8 +934,8 @@ fn an_unprefixed_row_replays_into_the_default_instance_only_and_it_clears_it() {
     let r = rig();
     ready(
         r.s.demotions
-            .get()
-            .unwrap()
+            .as_ref()
+            .expect("fixture demotion owner")
             .record
             .record("cp", "quarantined", 1),
     )
@@ -910,7 +961,7 @@ fn an_unprefixed_row_replays_into_the_default_instance_only_and_it_clears_it() {
         run(|l| pinned.trust_sight(&caller(SECTION_KEY), "cp", "fp", l)).value,
         svc::TRUST_NEW
     );
-    assert!(ready(r.s.demotions.get().unwrap().record.list()).is_empty());
+    assert!(ready(r.s.demotions.as_ref().unwrap().record.list()).is_empty());
 }
 
 #[test]
@@ -1016,9 +1067,9 @@ fn pooled(
     rt: &tokio::runtime::Runtime,
     backend: Arc<dyn busbar_contract::persistence::PersistenceBackend>,
 ) -> KernelServices {
-    let host =
+    let mut host =
         KernelServices::new().with_pool(Arc::new(BlockingPool::new(rt.handle().clone(), 64)));
-    assert!(host.attach_persistence(attach_backend(backend)));
+    host = host.with_persistence(attach_backend(backend));
     host.admit_sync(
         "inst",
         InstanceFacts {
@@ -1105,24 +1156,67 @@ impl Offload for Arc<Held> {
 }
 
 #[test]
+fn native_record_drain_waits_for_admitted_unpolled_store_housekeeping() {
+    struct NoCredentials;
+    impl CredentialRead for NoCredentials {
+        fn installed(&self) -> bool {
+            false
+        }
+        fn read(&self, _: &str, _: &str) -> (busbar_contract::Secret<String>, bool) {
+            panic!("record upkeep must not read credentials")
+        }
+    }
+    let backend = Arc::new(NativeBackend::default());
+    let store = Arc::new(ready(native_attach(backend)));
+    let held = Arc::new(Held::default());
+    let services = KernelServices::from_inputs(CoreServicesInputs {
+        persistence: Arc::clone(&store),
+        pool: Arc::new(Arc::clone(&held)),
+        signer: None,
+        demotions: demotions(&store),
+        demotion_owner: None,
+        tickets: None,
+        standing: Arc::new(|principal, _| Some(Arc::clone(principal))),
+        judge: Arc::new(FakeGuard::default()),
+        credentials: Arc::new(NoCredentials),
+        disk: Arc::default(),
+    });
+    services.trust_resync_tick();
+    assert_eq!(
+        held.0.lock().unwrap().len(),
+        1,
+        "actual Store upkeep is admitted but not polled"
+    );
+    assert!(
+        !services.drain(Duration::ZERO),
+        "an empty record queue cannot certify an admitted Store job as drained"
+    );
+    assert_eq!(held.drain(), 1);
+    assert!(services.drain(Duration::ZERO));
+}
+
+#[test]
 fn a_demotion_is_written_on_the_pool_and_the_sighting_answers_after_it() {
     let r = rig();
     let held = Arc::new(Held::default());
     let s = restarted(&r).with_pool(Arc::new(Arc::clone(&held)));
     s.admit_sync("inst", trusting(Some("fp"))).unwrap();
-    ready(s.trust_rule("inst/cp", crate::trust::book::Ruling::Approve)).unwrap();
+    ready(s.trust_rule_reviewed("inst/cp", crate::trust::book::Ruling::Approve)).unwrap();
     let (slot, later) = recorder();
     let ran = s.trust_sight(&caller("inst"), "cp", "moved", later);
 
     assert!(matches!(ran, Ran::Later));
     assert!(slot.lock().unwrap().is_none());
-    assert!(ready(r.s.demotions.get().unwrap().record.list()).is_empty());
+    assert!(ready(r.s.demotions.as_ref().unwrap().record.list()).is_empty());
     assert_eq!(held.drain(), 1);
     assert_eq!(
         slot.lock().unwrap().take().unwrap().value,
         svc::TRUST_DRIFTED
     );
-    assert_eq!(ready(r.s.demotions.get().unwrap().record.list()).len(), 1);
+    assert_eq!(
+        ready(r.s.demotions.as_ref().unwrap().record.list()).len(),
+        1
+    );
 
     let s2 = run(|l| s.trust_sight(&caller("inst"), "cp", "moved", l));
     assert_eq!(s2.value, svc::TRUST_QUARANTINED);
@@ -1132,7 +1226,7 @@ fn a_demotion_is_written_on_the_pool_and_the_sighting_answers_after_it() {
 #[test]
 fn a_durable_record_with_no_pool_judges_nothing() {
     let r = rig();
-    let d = r.s.demotions.get().unwrap();
+    let d = r.s.demotions.as_ref().unwrap();
     let s = KernelServices::new().with_demotions(Arc::clone(&d.record), SECTION_KEY);
     s.admit_sync("inst", trusting(Some("fp"))).unwrap();
     let a = run(|l| s.trust_sight(&caller("inst"), "cp", "moved", l));
@@ -1234,8 +1328,9 @@ fn a_flush_the_pool_refuses_leaves_the_writes_readable_and_queued_for_the_next()
         .build()
         .unwrap();
     let store = native_store();
-    let s = KernelServices::new().with_pool(Arc::new(BlockingPool::new(rt.handle().clone(), 64)));
-    assert!(s.attach_persistence(store));
+    let mut s =
+        KernelServices::new().with_pool(Arc::new(BlockingPool::new(rt.handle().clone(), 64)));
+    s = s.with_persistence(store);
     s.admit_sync(
         "inst",
         InstanceFacts {
@@ -1259,7 +1354,7 @@ fn a_flush_the_pool_refuses_leaves_the_writes_readable_and_queued_for_the_next()
 fn a_row_without_a_label_is_read_back_under_the_section_key_instance_and_no_other() {
     let r = rig();
 
-    let d = r.s.demotions.get().unwrap();
+    let d = r.s.demotions.as_ref().unwrap();
     ready(d.record.record("cp", "quarantined", 1)).unwrap();
     let fresh = restarted(&r);
     for label in [SECTION_KEY, "inst", "tools-2"] {
@@ -1368,8 +1463,9 @@ fn a_call_past_the_pools_bound_answers_failed_at_once() {
         .build()
         .unwrap();
     let gate = Arc::new(Gate::default());
-    let s = KernelServices::new().with_pool(Arc::new(BlockingPool::new(rt.handle().clone(), 2)));
-    assert!(s.attach_persistence(attach_backend(gate.clone())));
+    let mut s =
+        KernelServices::new().with_pool(Arc::new(BlockingPool::new(rt.handle().clone(), 2)));
+    s = s.with_persistence(attach_backend(gate.clone()));
     s.admit_sync(
         "inst",
         InstanceFacts {
@@ -1478,8 +1574,8 @@ fn a_write_the_store_refuses_answers_failed_and_leaves_the_overlay() {
         backend: NativeBackend::default(),
     }));
     let held = Arc::new(Held::default());
-    let s = KernelServices::new().with_pool(Arc::new(Arc::clone(&held)));
-    assert!(s.attach_persistence(store));
+    let mut s = KernelServices::new().with_pool(Arc::new(Arc::clone(&held)));
+    s = s.with_persistence(store);
     s.admit_sync(
         "inst",
         InstanceFacts {
@@ -1505,8 +1601,8 @@ fn a_write_dropped_before_any_flush_answers_dropped() {
 }
 
 fn writer(store: &Arc<CoreStore>, pool: Arc<dyn Offload>) -> KernelServices {
-    let s = KernelServices::new().with_pool(pool);
-    assert!(s.attach_persistence(Arc::clone(store)));
+    let mut s = KernelServices::new().with_pool(pool);
+    s = s.with_persistence(Arc::clone(store));
     s.admit_sync(
         "inst",
         InstanceFacts {
@@ -1651,7 +1747,7 @@ fn key_granting(grants: &[(&str, &str)]) -> Arc<VirtualKey> {
     })
 }
 
-fn entitled(r: &Rig, unit: u64, principal: Option<Arc<VirtualKey>>, target: &str) -> u64 {
+fn entitled(r: &Rig, unit: u64, principal: Option<Arc<VirtualKey>>, target: &str) -> bool {
     r.s.units().admitted(
         unit,
         UnitRecord {
@@ -1659,8 +1755,7 @@ fn entitled(r: &Rig, unit: u64, principal: Option<Arc<VirtualKey>>, target: &str
             depth: 0,
         },
     );
-    r.s.entitlement_check(&caller("inst"), Some(unit), target)
-        .value
+    r.s.entitled(&caller("inst"), Some(unit), target)
 }
 
 fn sees(r: &Rig, unit: u64, principal: &Arc<VirtualKey>) -> Vec<&'static str> {
@@ -1672,7 +1767,7 @@ fn sees(r: &Rig, unit: u64, principal: &Arc<VirtualKey>) -> Vec<&'static str> {
                 unit,
                 Some(Arc::clone(principal)),
                 &format!("item:{item}"),
-            ) == svc::ENTITLED
+            )
         })
         .collect()
 }
@@ -1689,11 +1784,8 @@ fn two_grants_see_two_catalogues_and_a_third_sees_none() {
 fn a_group_grant_without_the_item_grant_sees_nothing() {
     let r = rig();
     let key = key_granting(&[("group", "g")]);
-    assert_eq!(
-        entitled(&r, 1, Some(Arc::clone(&key)), "group:g"),
-        svc::ENTITLED
-    );
-    assert_eq!(entitled(&r, 1, Some(key), "item:one"), svc::NOT_ENTITLED);
+    assert!(entitled(&r, 1, Some(Arc::clone(&key)), "group:g"));
+    assert!(!(entitled(&r, 1, Some(key), "item:one")));
 }
 
 #[test]
@@ -1701,10 +1793,7 @@ fn a_dead_or_expired_key_sees_nothing() {
     let r = rig();
     let now_s = r.clock.load(Ordering::SeqCst) / 1000;
     let live = key_granting(&[("item", "one")]);
-    assert_eq!(
-        entitled(&r, 1, Some(Arc::clone(&live)), "item:one"),
-        svc::ENTITLED
-    );
+    assert!(entitled(&r, 1, Some(Arc::clone(&live)), "item:one"));
     let dead = |f: &dyn Fn(&mut VirtualKey)| {
         let mut k = (*live).clone();
         f(&mut k);
@@ -1715,58 +1804,37 @@ fn a_dead_or_expired_key_sees_nothing() {
         dead(&|k| k.deleted_at = Some(1)),
         dead(&|k| k.expires_at = Some(now_s)),
     ] {
-        assert_eq!(entitled(&r, 2, Some(k), "item:one"), svc::NOT_ENTITLED);
+        assert!(!(entitled(&r, 2, Some(k), "item:one")));
     }
 }
 
 #[test]
 fn entitlement_is_judged_against_the_principal_as_it_stands_now() {
-    let r = rig();
+    let mut r = rig();
     let admitted = key_granting(&[("item", "one"), ("item", "two")]);
-    assert_eq!(
-        entitled(
-            &r,
-            1,
-            Some(Arc::clone(&admitted)),
-            svc::ENTITLEMENT_STANDING
-        ),
-        svc::ENTITLED,
+    assert!(
+        entitled(&r, 1, Some(Arc::clone(&admitted)), "standing:"),
         "unattached, the admitted principal stands"
     );
     let now: Arc<std::sync::Mutex<Option<Arc<VirtualKey>>>> = Arc::new(std::sync::Mutex::new(
         Some(key_granting(&[("item", "one")])),
     ));
     let live = Arc::clone(&now);
-    assert!(r
-        .s
-        .attach_standing(Arc::new(move |_, _| live.lock().unwrap().clone())));
-    assert_eq!(
-        entitled(&r, 1, Some(Arc::clone(&admitted)), "item:two"),
-        svc::NOT_ENTITLED,
+    r.s =
+        r.s.with_standing(Arc::new(move |_, _| live.lock().unwrap().clone()));
+    assert!(
+        !(entitled(&r, 1, Some(Arc::clone(&admitted)), "item:two")),
         "the narrowed grant is the one judged"
     );
-    assert_eq!(
-        entitled(&r, 1, Some(Arc::clone(&admitted)), "item:one"),
-        svc::ENTITLED
-    );
+    assert!(entitled(&r, 1, Some(Arc::clone(&admitted)), "item:one"));
     *now.lock().unwrap() = None;
-    assert_eq!(
-        entitled(
-            &r,
-            1,
-            Some(Arc::clone(&admitted)),
-            svc::ENTITLEMENT_STANDING
-        ),
-        svc::NOT_ENTITLED,
+    assert!(
+        !(entitled(&r, 1, Some(Arc::clone(&admitted)), "standing:")),
         "a revoked principal no longer stands"
     );
-    assert_eq!(
-        entitled(&r, 1, Some(admitted), "item:one"),
-        svc::NOT_ENTITLED
-    );
-    assert_eq!(
-        entitled(&r, 2, None, svc::ENTITLEMENT_STANDING),
-        svc::ENTITLED,
+    assert!(!(entitled(&r, 1, Some(admitted), "item:one")));
+    assert!(
+        entitled(&r, 2, None, "standing:"),
         "an ungoverned unit stands"
     );
 }
@@ -1775,32 +1843,22 @@ fn entitlement_is_judged_against_the_principal_as_it_stands_now() {
 fn an_undeclared_scope_kind_is_not_entitled() {
     let r = rig();
 
-    assert_eq!(entitled(&r, 1, None, "other:one"), svc::NOT_ENTITLED);
-    assert_eq!(entitled(&r, 1, None, "no-kind-at-all"), svc::NOT_ENTITLED);
-    assert_eq!(entitled(&r, 1, None, "item:one"), svc::ENTITLED);
+    assert!(!(entitled(&r, 1, None, "other:one")));
+    assert!(!(entitled(&r, 1, None, "no-kind-at-all")));
+    assert!(entitled(&r, 1, None, "item:one"));
 }
 
 #[test]
 fn a_unit_not_in_flight_or_no_unit_is_not_entitled_and_ungoverned_is() {
     let r = rig();
     let me = caller("inst");
-    assert_eq!(
-        r.s.entitlement_check(&me, None, "item:one").value,
-        svc::NOT_ENTITLED
-    );
-    assert_eq!(
-        r.s.entitlement_check(&me, Some(9), "item:one").value,
-        svc::NOT_ENTITLED
-    );
-    assert_eq!(entitled(&r, 9, None, "item:one:with:colons"), svc::ENTITLED);
+    assert!(!(r.s.entitled(&me, None, "item:one")));
+    assert!(!(r.s.entitled(&me, Some(9), "item:one")));
+    assert!(entitled(&r, 9, None, "item:one:with:colons"));
     r.s.units().ended(9);
-    assert_eq!(
-        r.s.entitlement_check(&me, Some(9), "item:one").value,
-        svc::NOT_ENTITLED
-    );
-    let stranger =
-        r.s.entitlement_check(&caller("stranger"), Some(9), "item:one");
-    assert_eq!(stranger.value, svc::NOT_ENTITLED);
+    assert!(!(r.s.entitled(&me, Some(9), "item:one")));
+    let stranger = r.s.entitled(&caller("stranger"), Some(9), "item:one");
+    assert!(!(stranger));
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -2169,12 +2227,15 @@ async fn a_trust_decision_the_store_refused_never_takes_effect() {
     r.observe(ORIGINAL).await;
     r.backend.refuse_commit.store(true, Ordering::SeqCst);
     assert!(matches!(
-        r.node.trust_rule(KEY, Ruling::Approve).await,
+        r.node.trust_rule_reviewed(KEY, Ruling::Approve).await,
         Err(TrustRefused::Store(_))
     ));
     assert_eq!(judged(&r.node, None), Err(Distrust::NotApproved));
     r.backend.refuse_commit.store(false, Ordering::SeqCst);
-    r.node.trust_rule(KEY, Ruling::Approve).await.unwrap();
+    r.node
+        .trust_rule_reviewed(KEY, Ruling::Approve)
+        .await
+        .unwrap();
     assert_eq!(judged(&r.node, None), Ok(()));
 }
 
@@ -2267,7 +2328,7 @@ fn a_credential_consumer_prefix_has_one_instance_owner() {
 
 #[tokio::test]
 async fn a_ticket_is_minted_for_the_units_principal_under_the_declared_prefix() {
-    let r = rig();
+    let mut r = rig();
     r.s.admit(
         "minter",
         InstanceFacts {
@@ -2295,9 +2356,7 @@ async fn a_ticket_is_minted_for_the_units_principal_under_the_declared_prefix() 
         (Outcome::Refused, TICKET_NO_PRESS)
     );
     let press = Arc::new(Press::default());
-    assert!(r
-        .s
-        .attach_tickets(Arc::clone(&press) as Arc<dyn TicketPress>));
+    r.s = r.s.with_tickets(Arc::clone(&press) as Arc<dyn TicketPress>);
     let minted = ticket_result(&r.s, caller("minter"), Some(7), 600, b"{\"m\":1}").await;
     assert_eq!(minted.outcome, Outcome::Ready);
     assert_eq!(minted.bytes, b"tk_vk_caller:600");
@@ -2396,7 +2455,7 @@ fn a_trust_decision_made_through_another_node_takes_effect_within_one_window() {
         svc::TRUST_NEW,
         "a first sighting on node a"
     );
-    ready(r.s.trust_rule("inst/cp", Ruling::Approve)).unwrap();
+    ready(r.s.trust_rule_reviewed("inst/cp", Ruling::Approve)).unwrap();
     assert_eq!(
         b.trust_unreached(&me, "cp").value,
         svc::TRUST_NEW,
@@ -2488,7 +2547,7 @@ async fn ticket_press_receives_the_exact_host_unit_caller_and_principal() {
             Ok(("published".into(), now + ttl_secs))
         }
     }
-    let r = rig();
+    let mut r = rig();
     r.s.admit(
         "minter",
         InstanceFacts {
@@ -2510,7 +2569,7 @@ async fn ticket_press_receives_the_exact_host_unit_caller_and_principal() {
             depth: 0,
         },
     );
-    assert!(r.s.attach_tickets(Arc::new(BoundPress { principal })));
+    r.s = r.s.with_tickets(Arc::new(BoundPress { principal }));
     let result = ticket_result(&r.s, caller("minter"), Some(71), 600, b"opaque").await;
     assert_eq!(result.outcome, Outcome::Ready);
     assert_eq!(result.bytes, b"published");
@@ -2548,7 +2607,7 @@ async fn a_refused_mint_carries_the_presss_code_retry_and_reason() {
         ),
         (TicketRefusal::NotKept, svc::TICKET_REFUSED_OTHER),
     ] {
-        let r = rig();
+        let mut r = rig();
         r.s.admit(
             "minter",
             InstanceFacts {
@@ -2568,7 +2627,7 @@ async fn a_refused_mint_carries_the_presss_code_retry_and_reason() {
                 depth: 0,
             },
         );
-        assert!(r.s.attach_tickets(Arc::new(Saturated(refusal))));
+        r.s = r.s.with_tickets(Arc::new(Saturated(refusal)));
         let result = ticket_result(&r.s, caller("minter"), Some(72), 600, b"opaque").await;
         assert_eq!(result.outcome, Outcome::Refused);
         assert_eq!(result.error, refusal.reason());
@@ -2606,13 +2665,40 @@ fn trust_decision_authority_is_scoped_to_incarnation_ticket_counterparty_and_lif
     };
     run(|later| r.s.trust_sight(&me, "cp", "fp", later));
     assert_eq!(decide(&me, ticket, key).error, NO_TRUST_DECISION_GRANT);
-    assert!(r.s.grant_trust_decision(&me, Ticket::NONE, "cp").is_none());
-    assert!(r.s.grant_trust_decision(&me, ticket, "foreign").is_none());
+    assert!(r
+        .s
+        .grant_trust_decision(
+            &me,
+            Ticket::NONE,
+            "cp",
+            crate::host_services::TrustDecisionAuthority::for_test()
+        )
+        .is_none());
+    assert!(r
+        .s
+        .grant_trust_decision(
+            &me,
+            ticket,
+            "foreign",
+            crate::host_services::TrustDecisionAuthority::for_test()
+        )
+        .is_none());
     let grant =
-        r.s.grant_trust_decision(&me, ticket, "cp")
-            .expect("admin call owns this grant");
+        r.s.grant_trust_decision(
+            &me,
+            ticket,
+            "cp",
+            crate::host_services::TrustDecisionAuthority::for_test(),
+        )
+        .expect("admin call owns this grant");
     assert!(
-        r.s.grant_trust_decision(&me, ticket, "cp").is_none(),
+        r.s.grant_trust_decision(
+            &me,
+            ticket,
+            "cp",
+            crate::host_services::TrustDecisionAuthority::for_test()
+        )
+        .is_none(),
         "cannot replace an outstanding grant"
     );
     assert_eq!(

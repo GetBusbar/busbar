@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 use crate::root::test_plugins as plugins;
+use busbar_contract::json::{self, JsonValueTrait as _};
 use std::sync::Arc;
 #[tokio::test]
 async fn oversized_request_413_is_reshaped_on_the_live_stack() {
@@ -9,18 +10,12 @@ async fn oversized_request_413_is_reshaped_on_the_live_stack() {
     isolated!(CHILD, WITNESS, witness = "usage");
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch("central2-live-body-limit");
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
@@ -38,7 +33,7 @@ async fn oversized_request_413_is_reshaped_on_the_live_stack() {
             "models": {},
             "auth": { "chain": [], "admin_auth": [] },
             "store": { "module": module, "settings": settings },
-            "advanced": { "allow_destinations": ["127.0.0.1"] },
+            "advanced": {  },
         }),
         &crate::root::boot::axis_test_grammar(),
     )
@@ -84,7 +79,7 @@ async fn oversized_request_413_is_reshaped_on_the_live_stack() {
     let (mut router, _handle) =
         busbar_kernel::build_router_with_limits(Arc::new(app), 64, 1024, false);
     let oversized = "x".repeat(4096);
-    let payload = serde_json::json!({"pad": oversized}).to_string();
+    let payload = json::json!({"pad": oversized}).to_string();
     let req = axum::http::Request::builder()
         .method(axum::http::Method::POST)
         .uri("/v1/chat/completions")
@@ -116,7 +111,7 @@ async fn oversized_request_413_is_reshaped_on_the_live_stack() {
         "an oversized-body 413 must speak JSON, not the bare `{body}` router tell (content-type \
          was `{ct}`) — the reshape layer's sentinel no longer matches what axum emits"
     );
-    let v: serde_json::Value = serde_json::from_str(&body)
+    let v: json::Value = json::parse_value(body.as_bytes())
         .unwrap_or_else(|e| panic!("the 413 body must be JSON ({e}): {body}"));
     assert!(
         v.get("error").is_some(),

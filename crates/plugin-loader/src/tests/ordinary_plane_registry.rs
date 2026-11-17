@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use crate::sign::{sign, Manifest, SigningKey, TrustPolicy};
+use crate::sign::{Manifest, SigningKey, TrustPolicy};
 
 fn plane_manifest(name: &str, alias: &str, publisher: &str) -> Manifest {
     Manifest {
@@ -33,8 +33,7 @@ fn first_party_only_policy(release: &SigningKey) -> TrustPolicy {
         first_party_floors: Default::default(),
         first_party_high_water: Default::default(),
         publishers: Default::default(),
-        allow_unsigned: false,
-        allow_third_party: false,
+        allow_untrusted: false,
         min_versions: Default::default(),
         ..TrustPolicy::default()
     }
@@ -59,7 +58,7 @@ fn write_plane_tarball(dir: &std::path::Path, file: &str, m: &Manifest, lib: &[u
 fn a_plane_with_no_door_is_refused() {
     let release = SigningKey::from_bytes(&[1u8; 32]);
     let dir = plane_tmpdir("no-door");
-    let m = sign(
+    let m = crate::sign::seal_test_artifact(
         &release,
         plane_manifest("busbar-plane-gamma-plugin", "gamma", "busbar"),
         b"plane lib",
@@ -119,9 +118,13 @@ fn a_min3_plane_image_is_left_to_the_min3_registry_not_refused_at_the_door_axis(
     let release = SigningKey::from_bytes(&[1u8; 32]);
     let dir = plane_tmpdir("min3");
     let lib = min3_plane_lib();
-    let m = sign(
+    let m = crate::sign::seal_test_artifact(
         &release,
-        plane_manifest("busbar-plane-delta", "delta", "busbar"),
+        // A native manifest lists its alias in former_names exactly once (sign.rs native rule).
+        Manifest {
+            former_names: vec!["delta".into()],
+            ..plane_manifest("busbar-plane-delta", "delta", "busbar")
+        },
         &lib,
     );
     write_plane_tarball(&dir, "plane.tar.gz", &m, &lib);

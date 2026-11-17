@@ -14,22 +14,21 @@
 //! path passes such an image over (plugin-loader `PluginRegistry::open_transport_entries`: a no-Statement row whose
 //! one stamp names kind TRANSPORT), the same door-axis rule W2-SW-PLANE gave planes.
 //!
-//! The opened ports are published once, before any listener serves, for the connector: the listener's
+//! The opened ports are retained by the complete native generation before any listener serves: the listener's
 //! `alpn(ROLE_SERVER)`, the dial's `alpn(ROLE_CLIENT)` and `defaults(ROLE_CLIENT)`, the session task's
 //! begin/ingest/emit/timer, and the upgrade target by D_PROTOCOL (§12.27).
 
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 use busbar_kernel::config::limits::LimitsResolved;
 use busbar_kernel::config::RootCfg;
 use busbar_plugin_abi::types::KindCode;
-use busbar_plugin_loader::admit::Admitted;
 use busbar_plugin_loader::instance::{BootPhase, InstanceSpec, OpenedPort};
-use busbar_plugin_loader::ports::transport::TransportPort;
+use busbar_ports::transport::TransportPort;
 
 use super::{Configured, MinRegistry};
 
-/// The limits section word a transport instance is keyed by (`<kind>.<name>.limits`, IF §12.22). The config
+/// The section word a transport instance is keyed by (`insecure_transport` lookups). The config
 /// grammar has no transport section, so every transport instance runs at the kind's defaults
 /// (`limits.stream_stall_ms` 60,000 included) until it gains one.
 const SECTION: &str = "transport";
@@ -51,17 +50,7 @@ pub(crate) struct ServedTransport {
     pub(crate) port: Arc<dyn TransportPort>,
 }
 
-static SERVED: OnceLock<Vec<ServedTransport>> = OnceLock::new();
-
-/// Every transport instance the MIN-3 boot opened, in plan order (empty before the boot, or when the boot took
-/// the old path).
-pub(crate) fn served() -> &'static [ServedTransport] {
-    SERVED.get().map_or(&[], Vec::as_slice)
-}
-
-/// The one instance of `served` declaring D_PROTOCOL `protocol` (ASCII case-insensitive): over [`served()`], the
-/// target of an upgrade to that protocol (§12.27 step 1: none = 501 R_UNSUPPORTED). [`publish`] refused a table
-/// in which two instances declare one protocol, so the first found is the only one.
+/// The unique instance declaring this protocol in an already validated generation table.
 pub(crate) fn declaring<'t>(
     served: &'t [ServedTransport],
     protocol: &str,
@@ -72,15 +61,6 @@ pub(crate) fn declaring<'t>(
             .iter()
             .any(|declared| declared.eq_ignore_ascii_case(protocol))
     })
-}
-
-/// The identity of every admitted MIN-3 transport image, in admission order.
-pub(super) fn identities<'i>(images: impl IntoIterator<Item = &'i Admitted>) -> Vec<String> {
-    images
-        .into_iter()
-        .filter(|image| image.kind() == KindCode::Transport)
-        .map(|image| image.identity().to_owned())
-        .collect()
 }
 
 /// One transport instance per identity, with the settings its D_SCHEMA names and the kind's limits.
@@ -112,33 +92,35 @@ pub(super) fn configured(
 /// value at each [`DEALT`] path the schema's top-level `properties` names. No schema, or one naming none of
 /// them, is `{}`. A schema that is not a JSON object refuses (admission validated it, so this is a fault).
 fn settings(limits: &LimitsResolved, schema: Option<&str>) -> Result<Vec<u8>, String> {
-    use serde_json::{Map, Value};
-    let declared: Map<String, Value> = match schema {
-        None => Map::new(),
-        Some(text) => match serde_json::from_str::<Value>(text) {
-            Ok(Value::Object(mut schema)) => match schema.remove("properties") {
-                None => Map::new(),
-                Some(Value::Object(properties)) => properties,
-                Some(_) => return Err("its D_SCHEMA `properties` is not an object".to_owned()),
-            },
+    use busbar_contract::json::{self, JsonValueMutTrait, JsonValueTrait, Map, Value};
+    let declared: Value = match schema {
+        None => Value::new(),
+        Some(text) => match json::parse_value(text.as_bytes()) {
+            Ok(mut schema) if schema.is_object() => {
+                match schema.as_object_mut().and_then(|s| s.remove(&"properties")) {
+                    None => Value::new(),
+                    Some(properties) if properties.is_object() => properties,
+                    Some(_) => return Err("its D_SCHEMA `properties` is not an object".to_owned()),
+                }
+            }
             _ => return Err("its D_SCHEMA is not a JSON object".to_owned()),
         },
     };
     let mut bag = Map::new();
-    for path in DEALT.iter().filter(|path| declared.contains_key(**path)) {
+    for path in DEALT.iter().filter(|path| declared.get(**path).is_some()) {
         let value = match *path {
             "advanced.upstream_h2_prior_knowledge" => {
-                Value::Bool(limits.upstream_h2_prior_knowledge)
+                Value::from(limits.upstream_h2_prior_knowledge)
             }
-            "advanced.upstream_http1_only" => Value::Bool(limits.upstream_http1_only),
+            "advanced.upstream_http1_only" => Value::from(limits.upstream_http1_only),
             "limits.request_body_max_bytes" => {
                 Value::from(u64::try_from(limits.request_body_max_bytes).unwrap_or(u64::MAX))
             }
             _ => Value::from(limits.upstream_request_timeout_secs),
         };
-        bag.insert((*path).to_owned(), value);
+        bag.insert(*path, value);
     }
-    serde_json::to_vec(&Value::Object(bag)).map_err(|error| error.to_string())
+    json::to_vec(&bag).map_err(|error| error.to_string())
 }
 
 /// The transport ports the walk opened, each with its instance name: every `OpenedPort::Transport` among
@@ -164,7 +146,7 @@ pub(super) fn opened(
 
 /// The served table, or the refusal: two instances declaring one D_PROTOCOL (an upgrade names a protocol, never
 /// a plugin, so exactly one instance may answer it).
-fn table(served: Vec<ServedTransport>) -> Result<Vec<ServedTransport>, String> {
+pub(super) fn table(served: Vec<ServedTransport>) -> Result<Vec<ServedTransport>, String> {
     for (at, one) in served.iter().enumerate() {
         for protocol in one.port.protocols() {
             if let Some(other) = declaring(&served[at + 1..], protocol) {
@@ -179,26 +161,6 @@ fn table(served: Vec<ServedTransport>) -> Result<Vec<ServedTransport>, String> {
     Ok(served)
 }
 
-/// Publish the opened transports for the connector, once per process, and say which they are.
-pub(super) fn publish(opened: Vec<ServedTransport>) -> Result<(), String> {
-    SERVED
-        .set(table(opened)?)
-        .map_err(|_| "the MIN-3 transports were published twice in one process".to_owned())?;
-    let served = served();
-    if !served.is_empty() {
-        tracing::info!(
-            "MIN-3 boot: {} transport instances opened through ports: {}",
-            served.len(),
-            served
-                .iter()
-                .map(|one| &*one.instance)
-                .collect::<Vec<_>>()
-                .join(", ")
-        );
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 #[path = "tests/min3_transports.rs"]
-mod tests;
+pub(crate) mod tests;

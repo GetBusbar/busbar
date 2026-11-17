@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::*;
+use busbar_contract::json;
 
 const MODEL: &str = "ordinary-unknown-model";
 const FIRST_INPUT: u64 = 7;
@@ -300,8 +301,8 @@ async fn ordinary_product_flush_quarantines_old_unknown_and_continues_fresh_posi
         .await
         .unwrap();
     assert_eq!(settled.state, RecoveryState::Settled);
-    let audit: serde_json::Value =
-        serde_json::from_slice(&gov.recovery_event(intent.operation_id).unwrap().payload).unwrap();
+    let audit: json::Value =
+        json::parse_value(&gov.recovery_event(intent.operation_id).unwrap().payload).unwrap();
     assert_eq!(audit["verdict"]["sender_quiesced"], true);
     assert_eq!(audit["verdict"]["backend_quiesced"], true);
     gov.recovery().resolve(&cost, resolution).await.unwrap();

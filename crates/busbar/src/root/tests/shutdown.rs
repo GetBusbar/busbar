@@ -63,6 +63,10 @@ pub(super) struct FlushBackend {
     pub(super) budget: Mutex<Option<Arc<FlushGate>>>,
     pub(super) metering: Mutex<Option<Arc<FlushGate>>>,
     pub(super) journal: Mutex<Option<Arc<FlushGate>>>,
+    /// A unit checkpoint selection or delete (`busbar.unitcp.v1` rows).
+    pub(super) unitcp: Mutex<Option<Arc<FlushGate>>>,
+    /// A usage recovery selection (`busbar.recover1` rows).
+    pub(super) recovery: Mutex<Option<Arc<FlushGate>>>,
     /// Every other commit (the lease release, retirement, identity rows).
     pub(super) other: Mutex<Option<Arc<FlushGate>>>,
     pub(super) fail_accounting: AtomicBool,
@@ -95,10 +99,19 @@ impl PersistenceBackend for FlushBackend {
             let budget = is(b"U");
             let metering = is(b"M");
             let journal = is(b"busbar.journal4\0");
+            let unitcp = candidate.candidate().mutations.iter().any(|mutation| {
+                matches!(mutation, Mutation::Put { address, .. } | Mutation::Delete(address)
+                    if address.key.starts_with(b"busbar.unitcp.v1"))
+            });
+            let recovery = is(b"busbar.recover1\0");
             let gate = if budget {
                 self.budget.lock().unwrap().take()
             } else if metering {
                 self.metering.lock().unwrap().take()
+            } else if unitcp {
+                self.unitcp.lock().unwrap().take()
+            } else if recovery {
+                self.recovery.lock().unwrap().take()
             } else if journal {
                 self.journal.lock().unwrap().take()
             } else {
@@ -169,6 +182,8 @@ impl Fixture {
             budget: Mutex::new(None),
             metering: Mutex::new(None),
             journal: Mutex::new(None),
+            unitcp: Mutex::new(None),
+            recovery: Mutex::new(None),
             other: Mutex::new(None),
             fail_accounting: AtomicBool::new(false),
             panic_budget: AtomicBool::new(false),
@@ -253,6 +268,84 @@ impl Fixture {
             now,
         );
     }
+    /// Attaches the store-backed usage recovery and unit checkpoint sinks over this fixture's own
+    /// node journal, as boot does, with a deployment signing key for `unit.accrued`.
+    pub(super) async fn attach_sinks(&self) {
+        {
+            let mut durability = self
+                .book
+                .durability
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            durability.record = std::mem::take(&mut durability.record)
+                .signing_with(busbar_kernel_audit::AuditSigningKey::from_seed(&[0x53; 32]));
+        }
+        let journal = self.book.runtime_journal.clone();
+        self.seen
+            .gov
+            .attach_recovery_sink(
+                crate::root::durability::usage_recovery_sink(journal.clone()).unwrap(),
+            )
+            .await
+            .unwrap();
+        self.seen
+            .gov
+            .attach_unit_checkpoint_sink(
+                crate::root::durability::unit_checkpoint_sink(&self.book.durability, journal)
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(self.seen.gov.unit_checkpoints_enabled());
+    }
+    /// One governed unit's checkpoint with its captured admission audit facts.
+    pub(super) fn unit(&self) -> busbar_kernel::governance::unit_checkpoint::UnitCheckpoint {
+        busbar_kernel::Registration::new()
+            .key("work")
+            .expect("test meter class registered");
+        let audit = crate::root::durability::RunningAudit {
+            selected_identity: None,
+            incarnation: 7,
+            principal: self.seen.key.id.clone(),
+            op_class: "shutdown.drain".into(),
+            origin: "client".into(),
+            parent: None,
+            wall: 1_700_000_000,
+            mono: 91,
+            destination: Some("verified-destination".into()),
+            rate_card: None,
+            policy_epoch: 3,
+            hooks: Vec::new(),
+        };
+        busbar_kernel::governance::unit_checkpoint::UnitCheckpoint {
+            id: busbar_kernel::door::op_id().0,
+            revision: 0,
+            unit: 17,
+            principal: self.seen.key.id.clone(),
+            group: String::new(),
+            arrived: 1_700_000_000,
+            lane: format!("shutdown{}lane", busbar_kernel::governance::PLANE_LANE_SEP),
+            provider: Some("shutdown".into()),
+            era_at: 42,
+            era_entry: None,
+            units: std::collections::BTreeMap::from([(
+                "work".into(),
+                busbar_contract::Count::parse("0.125").unwrap(),
+            )]),
+            targets: vec![busbar_kernel::governance::unit_checkpoint::UnitTarget {
+                bucket: self.seen.key.id.clone(),
+                window: 0,
+                group: None,
+            }],
+            metered: true,
+            ended: false,
+            terminal: None,
+            audit: Some(serde_json::to_vec(&audit).unwrap()),
+            measurement: None,
+            unread: None,
+            partitions: None,
+        }
+    }
     pub(super) fn stage(&self, count: usize) {
         let entries: Vec<_> = (0..count)
             .map(|_| Entry::new(RecordClass::Load, vec![7; 24]))
@@ -266,7 +359,7 @@ impl Fixture {
         self,
         governed: bool,
         flusher: Option<JoinHandle<()>>,
-        shutdown_tx: &tokio::sync::broadcast::Sender<()>,
+        _shutdown_tx: &tokio::sync::broadcast::Sender<()>,
         lines: Option<i32>,
     ) -> (PostServe<'static>, Observed) {
         let Fixture {
@@ -274,20 +367,26 @@ impl Fixture {
             startup,
             book,
         } = self;
+        let export_observers = crate::root::export_observer::ExportObservers::new();
         let post = PostServe {
             admin: None,
             lines: lines
                 .map(|code| Box::pin(async move { code }) as Pin<Box<dyn Future<Output = i32>>>),
             threads: Vec::new(),
             work_recovery: tokio::spawn(async {}),
+            generation_workers: crate::root::boot::workers::PreparedWorkers::new().start(),
+            exports: crate::root::exports::ports::Exports::new(Vec::new())
+                .expect("no configured exports"),
+            export_captures: Arc::default(),
+            export_observer_retry: ExportRetry::start(Arc::clone(&export_observers)),
+            export_observers,
             control_drain: Box::pin(async {}),
             node_lease: None,
             flusher,
             governance: governed.then(|| seen.gov.clone()),
-            late: LateServices::new(),
+            late: Services::bootstrap(),
             book: Some(book),
             startup,
-            shutdown_tx: shutdown_tx.clone(),
             predecessor: None,
         };
         (post, seen)
@@ -341,6 +440,7 @@ async fn the_drain_flushes_the_journal_lane_before_it_retires() {
     let (shutdown_tx, _) = tokio::sync::broadcast::channel(1);
     let (post, seen) = fixture.post(false, None, &shutdown_tx, None);
     let drain = ShutdownDrain::new(DrainClock::new(ROOMY));
+    coordinate_test(&drain, &shutdown_tx);
     let mut finishing = std::pin::pin!(finish(post, &drain));
     until_entered(finishing.as_mut(), &gate).await;
     still_running(finishing.as_mut()).await;
@@ -380,6 +480,7 @@ async fn the_drain_hands_the_store_every_accepted_original_at_capacity() {
     let (shutdown_tx, _) = tokio::sync::broadcast::channel(1);
     let (post, seen) = fixture.post(false, None, &shutdown_tx, None);
     let drain = ShutdownDrain::new(DrainClock::new(ROOMY));
+    coordinate_test(&drain, &shutdown_tx);
     let code = tokio::time::timeout(WAIT, finish(post, &drain))
         .await
         .expect("all accepted originals drain");
@@ -404,6 +505,7 @@ async fn the_money_driver_lets_the_runtime_progress_and_waits_for_each_store_wri
     let flusher = money_driver(&fixture.seen.gov, &clock, &shutdown_tx);
     let (post, seen) = fixture.post(true, Some(flusher), &shutdown_tx, None);
     let drain = ShutdownDrain::new(clock);
+    coordinate_test(&drain, &shutdown_tx);
     let mut finishing = std::pin::pin!(finish(post, &drain));
     until_entered(finishing.as_mut(), &budget).await;
     still_running(finishing.as_mut()).await;
@@ -456,6 +558,7 @@ async fn the_drain_reports_uncertain_budget_and_metering_writes_and_does_not_ret
     let flusher = money_driver(&fixture.seen.gov, &clock, &shutdown_tx);
     let (post, seen) = fixture.post(true, Some(flusher), &shutdown_tx, None);
     let drain = ShutdownDrain::new(clock);
+    coordinate_test(&drain, &shutdown_tx);
     let code = tokio::time::timeout(WAIT, finish(post, &drain))
         .await
         .expect("the drain ends by its own cuts, before the deadline");
@@ -486,6 +589,7 @@ async fn a_panicking_money_driver_is_reported_and_metering_and_journal_still_dra
     let flusher = money_driver(&fixture.seen.gov, &clock, &shutdown_tx);
     let (post, seen) = fixture.post(true, Some(flusher), &shutdown_tx, None);
     let drain = ShutdownDrain::new(clock);
+    coordinate_test(&drain, &shutdown_tx);
     let code = tokio::time::timeout(Duration::from_secs(10), finish(post, &drain))
         .await
         .expect("the drain ends by its own cuts");
@@ -526,6 +630,7 @@ async fn the_money_driver_finishes_before_journal_retirement(signal_first: bool)
         gate.entered().await;
     }
     let drain = ShutdownDrain::new(clock);
+    coordinate_test(&drain, &shutdown_tx);
     let mut finishing = std::pin::pin!(finish(post, &drain));
     if !signal_first {
         until_entered(finishing.as_mut(), &gate).await;
@@ -556,4 +661,23 @@ async fn shutdown_joins_inflight_background_accounting_before_retiring_journal()
 #[tokio::test(flavor = "current_thread")]
 async fn line_eof_stops_and_joins_background_accounting_before_retiring_journal() {
     the_money_driver_finishes_before_journal_retirement(false).await;
+}
+
+/// Real shutdown coordinator for native settlement tests, without a process-global refresher.
+pub(super) fn coordinate_test(
+    drain: &ShutdownDrain,
+    listeners: &tokio::sync::broadcast::Sender<()>,
+) {
+    let (workers, safety) = tokio::sync::watch::channel(false);
+    drain.start_deregister_with(
+        Duration::ZERO,
+        Arc::new(busbar_kernel::endpoints::ProbeState::new(None)),
+        ShutdownSignals {
+            safety,
+            support: workers.clone(),
+            workers,
+            listeners: listeners.clone(),
+        },
+        || {},
+    );
 }

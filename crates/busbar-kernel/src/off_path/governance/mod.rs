@@ -9,3 +9,4 @@ pub(crate) mod persistence;
 pub(crate) mod principal_transition;
 pub(crate) mod runtime;
 pub(crate) mod state;
+pub mod unit_checkpoint_store;

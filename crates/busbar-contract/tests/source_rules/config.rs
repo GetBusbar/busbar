@@ -5,6 +5,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use busbar_contract::json::{self, JsonContainerTrait as _, JsonValueTrait as _};
 use proc_macro2::TokenTree;
 use syn::visit::Visit;
 
@@ -143,7 +144,7 @@ fn accepted_keys(sources: &[walk::Source]) -> BTreeMap<String, BTreeSet<String>>
 fn descriptor_shape_matches(
     shape: &busbar_contract::provider_keys::Shape,
     rust: &str,
-    types: &serde_json::Map<String, serde_json::Value>,
+    types: &json::Map,
 ) -> bool {
     use busbar_contract::provider_keys::Shape;
     match (shape, rust) {
@@ -153,7 +154,7 @@ fn descriptor_shape_matches(
         (Shape::List(inner), text) if text.starts_with("Vec<") && text.ends_with('>') => {
             descriptor_shape_matches(inner, &text[4..text.len() - 1], types)
         }
-        (Shape::OneOf(words), name) => types.get(name).is_some_and(|ty| {
+        (Shape::OneOf(words), name) => types.get(&name).is_some_and(|ty| {
             if ty["kind"] != "enum" {
                 return false;
             }
@@ -168,7 +169,7 @@ fn descriptor_shape_matches(
             expected.sort();
             actual == expected
         }),
-        (Shape::Table(table), name) => types.get(name).is_some_and(|ty| {
+        (Shape::Table(table), name) => types.get(&name).is_some_and(|ty| {
             if ty["kind"] != "struct"
                 || table.name.as_deref() != Some(name)
                 || ty["deny_unknown_fields"].as_bool() != Some(table.deny_unknown)
@@ -195,9 +196,9 @@ fn descriptor_shape_matches(
 /// The actual plane descriptor is bound to the registry's independently pinned source capture.
 fn descriptor_provider_entries(
     sources: &[walk::Source],
-    types: &serde_json::Map<String, serde_json::Value>,
+    types: &json::Map,
 ) -> BTreeMap<String, BTreeSet<String>> {
-    let registry: serde_json::Value = busbar_contract::yaml::from_str(
+    let registry: json::Value = busbar_contract::yaml::from_str(
         &std::fs::read_to_string(walk::repo().join("plugins.yaml")).unwrap(),
     )
     .unwrap();
@@ -215,8 +216,10 @@ fn descriptor_provider_entries(
     let owner = captures[0];
     assert_eq!(owner["kind"].as_str(), Some("plane"));
     let capture = &owner["provider_key_census"];
-    let fixture: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(walk::repo().join(capture["fixture"].as_str().unwrap())).unwrap(),
+    let fixture: json::Value = json::parse_value(
+        std::fs::read_to_string(walk::repo().join(capture["fixture"].as_str().unwrap()))
+            .unwrap()
+            .as_bytes(),
     )
     .unwrap();
     let text = fixture["descriptor_text"].as_str().unwrap();
@@ -321,7 +324,7 @@ fn descriptor_provider_entries(
 }
 
 fn removed_config_keys(
-    types: &serde_json::Map<String, serde_json::Value>,
+    types: &json::Map,
     declared: &BTreeMap<String, BTreeSet<String>>,
     delegated: &BTreeMap<String, BTreeSet<String>>,
 ) -> Vec<String> {
@@ -333,9 +336,9 @@ fn removed_config_keys(
         let Some(keys) = declared.get(name) else {
             continue;
         };
-        for field in ty["fields"].as_object().unwrap().keys() {
+        for (field, _) in ty["fields"].as_object().unwrap() {
             if !keys.contains(field)
-                && !PLANE_SECTIONS.contains(&(name.as_str(), field.as_str()))
+                && !PLANE_SECTIONS.contains(&(name, field))
                 && !delegated.get(name).is_some_and(|keys| keys.contains(field))
             {
                 removed.push(format!("{name}.{field}"));
@@ -347,7 +350,7 @@ fn removed_config_keys(
 
 #[test]
 fn a_renamed_field_does_not_keep_its_old_name_accepted() {
-    let types: serde_json::Value = serde_json::json!({
+    let types: json::Value = json::json!({
         "S": {"kind": "struct", "fields": {"timeout_ms": {}}},
         "A": {"kind": "struct", "fields": {"old": {}}},
     });
@@ -368,9 +371,12 @@ fn a_renamed_field_does_not_keep_its_old_name_accepted() {
 
 #[test]
 fn descriptor_delegation_does_not_hide_removal_of_unrelated_core_fields() {
-    let snapshot: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(walk::repo().join(SNAPSHOT)).unwrap())
-            .unwrap();
+    let snapshot: json::Value = json::parse_value(
+        std::fs::read_to_string(walk::repo().join(SNAPSHOT))
+            .unwrap()
+            .as_bytes(),
+    )
+    .unwrap();
     let types = snapshot["types"].as_object().unwrap();
     let sources = walk::production(CORE_SRC);
     let mut declared = accepted_keys(&sources);
@@ -396,7 +402,7 @@ fn descriptor_delegation_does_not_hide_removal_of_unrelated_core_fields() {
 #[test]
 fn historical_config_key_changes_match_the_explicit_migration_contract() {
     let text = std::fs::read_to_string(walk::repo().join(SNAPSHOT)).expect("the snapshot");
-    let snapshot: serde_json::Value = serde_json::from_str(&text).expect("the snapshot is JSON");
+    let snapshot: json::Value = json::parse_value(text.as_bytes()).expect("the snapshot is JSON");
     let types = snapshot["types"].as_object().expect("`types`");
     let sources = walk::production(CORE_SRC);
     let declared = accepted_keys(&sources);

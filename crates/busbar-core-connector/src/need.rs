@@ -6,7 +6,8 @@
 //!
 //! Every OPEN, STARTTLS and FETCH runs, in this order: the unix rules (1) to (3) when the dest is a
 //! `unix:` path; the transport gate (`policy`, with the caller's core-held `Accept`) before the pool
-//! lookup and before any DNS; the pool probe on a [`key::NeedKey`] built from the normalised dest,
+//! lookup and before any DNS; the instance's unix-path binding check; the pool probe on a
+//! [`key::NeedKey`] built from the owning instance, normalised dest,
 //! `guard::judged_class(stated, configured)`, the effective SNI, the ALPN, the trust and
 //! certificate digests and the `verify` bit; and only on a miss the judge (`judge`: name, DNS,
 //! answer, the node's own ports), then the dial. Every refusal is `NeedErr::Denied` with no text
@@ -326,6 +327,7 @@ where
     ids: PooledIds,
     certs: CertDigests,
     reported: Reported,
+    admitted: policy::Admitted,
     configured: Option<ConfiguredFn>,
 }
 
@@ -395,6 +397,7 @@ where
             ids: PooledIds::default(),
             certs: CertDigests::default(),
             reported: Reported::default(),
+            admitted: policy::Admitted::default(),
             configured: None,
         }
     }
@@ -404,6 +407,7 @@ where
         self.ids.forget(instance);
         self.certs.forget(instance);
         self.reported.forget(instance);
+        self.admitted.forget(instance);
     }
 
     fn is_configured(&self, dest: &str) -> bool {
@@ -533,8 +537,16 @@ where
                 return Err(e);
             }
         };
+        self.admitted
+            .count(cx.kind.word(), cx.instance, cx.name, admit);
         let dest = normalise(n.dest)?;
         let class = judged_class(n.egress, self.is_configured(&dest));
+        if let Some(path) = unix {
+            if !self.binder.unix_path(cx.instance, path) {
+                self.audit_refused(cx, n.dest, class, "unix-path");
+                return Err(NeedErr::Denied);
+            }
+        }
         let inband = p.bits == TLS_INBAND;
         let (trust, trust_digest) = self.trust(cx, class, p.trust)?;
         let (_, cert_digest) = self.cert(cx, p.cert, false).await?;
@@ -552,6 +564,7 @@ where
             _ => Tls::Direct,
         };
         let key = NeedKey {
+            instance: busbar_contract::conn::InstanceId(cx.instance),
             dest: dest.clone(),
             sni: sni.clone(),
             alpn: p.alpn.into(),
@@ -581,13 +594,7 @@ where
         }
         // A miss: judge, then dial.
         let (addrs, path) = match unix {
-            Some(path) => {
-                if !self.binder.unix_path(cx.instance, path) {
-                    self.audit_refused(cx, n.dest, class, "unix-path");
-                    return Err(NeedErr::Denied);
-                }
-                (Vec::new(), Some(path))
-            }
+            Some(path) => (Vec::new(), Some(path)),
             None => {
                 let (host, port) = split_dest(&dest)?;
                 (
@@ -661,6 +668,8 @@ where
                 return Err(e);
             }
         };
+        self.admitted
+            .count(cx.kind.word(), cx.instance, cx.name, admit);
         let (trust, trust_digest) = self.trust(cx, held.key.class, p.trust)?;
         let (cert, cert_digest) = self.cert(cx, p.cert, true).await?;
         let sni = effective_sni(p.sni, &held.key.dest);
@@ -787,6 +796,8 @@ where
                 return Err(e);
             }
         };
+        self.admitted
+            .count(cx.kind.word(), cx.instance, cx.name, admit);
         let (host, port) = split_url(n.url)?;
         let dest = normalise(&format!("{host}:{port}"))?;
         let class = judged_class(n.egress, self.is_configured(&dest));

@@ -421,9 +421,28 @@ fn standing_in(
     admitted: &Arc<busbar_contract::records::VirtualKey>,
     now: u64,
 ) -> Option<Arc<busbar_contract::records::VirtualKey>> {
+    standing_with(app.governance.as_deref(), &app.role_bindings, admitted, now)
+}
+
+/// A complete immutable governance policy; it contains no application back-reference.
+pub fn policy_standing(
+    governance: Option<Arc<crate::governance::GovState>>,
+    role_bindings: crate::config::RoleBindings,
+) -> crate::host_services::Standing {
+    Arc::new(move |admitted, now| {
+        standing_with(governance.as_deref(), &role_bindings, admitted, now)
+    })
+}
+
+fn standing_with(
+    governance: Option<&crate::governance::GovState>,
+    role_bindings: &crate::config::RoleBindings,
+    admitted: &Arc<busbar_contract::records::VirtualKey>,
+    now: u64,
+) -> Option<Arc<busbar_contract::records::VirtualKey>> {
     let resolve = crate::governance::LiveResolve {
-        governance: app.governance.as_deref(),
-        role_bindings: &app.role_bindings,
+        governance,
+        role_bindings,
     };
     let standing = busbar_kernel::trust::validate::Standing::opened(
         Some(admitted),

@@ -63,6 +63,6 @@ fn no_two_kinds_share_a_fingerprint() {
         plane::FP,
         transport::FP,
     ];
-    all.sort_unstable();
+    all.sort();
     assert!(all.windows(2).all(|w| w[0] != w[1]));
 }

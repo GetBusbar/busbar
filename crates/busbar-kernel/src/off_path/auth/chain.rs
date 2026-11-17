@@ -3,14 +3,15 @@
 
 //! The auth chain's off-path code: the data and admin chains, the operator provider and the
 //! credential readers built once per configuration load, the admin service's views of them, and
-//! the admin plane's verify-request construction (the node's configuration plane, not the data
-//! path). The request path reads only what this builds.
+//! the admin plane's verify-request construction and its keys position and scope caps (the node's
+//! configuration plane, not the data path). The request path reads only what this builds.
 
+use axum::http::header::AUTHORIZATION;
 use axum::http::{HeaderMap, HeaderName};
 
 use crate::auth::{
-    instances, AdminAuthChain, AdminModule, AuthMiddleware, ChainEntry, CredentialReader, Operator,
-    Principal,
+    carried_named, instances, AdminAuthChain, AdminDoor, AdminModule, AuthMiddleware, ChainEntry,
+    ChainVerdict, CredentialReader, KeysAdmin, Operator, Principal, VerbAllowList,
 };
 use crate::config::AuthCfg;
 use crate::diagnostics::{diag_warn, AUTH_CHAIN_OPEN_RELAY};
@@ -199,8 +200,9 @@ impl AuthMiddleware {
         )
     }
 
-    /// [`Self::new`] over the build's shared `instances` (WASTE-AUTH-SECRETS W1).
-    pub(crate) fn build_on(
+    /// Build over explicit root-owned auth instances and their complete service-bound axis.
+    /// The same instance map is shared by all roles in this generation.
+    pub fn build_on(
         cfg: &AuthCfg,
         registry: &dyn busbar_contract::plugin_rows::PluginRows,
         secret_resolver: &crate::config::secret::SecretResolver,
@@ -495,4 +497,93 @@ pub(crate) fn admin_verbs_named(
             rung_of(verb.as_str()).is_some_and(|rung| cap.is_none_or(|c| c.allows(rung)))
         })
         .collect()
+}
+
+// --- The admin chain's built-in `keys` position and the scope a key or module earns: the admin
+// plane's verdict (the node's configuration plane, not the data path). ---
+
+/// The principal an admin key is: `key:<id>` (ADMIN-API r5 section 2.1).
+pub(crate) fn admin_key_principal(key: &crate::governance::VirtualKey) -> Principal {
+    Principal {
+        id: format!("key:{}", key.id),
+        name: Some(key.name.clone()),
+        roles: Vec::new(),
+        ttl_secs: None,
+    }
+}
+
+/// The admin chain's `keys` position: a busbar-signed key credential carried as the bearer or in
+/// `x-admin-token`, verified as the data plane's `keys` verifier does, and admitted only when the
+/// key holds an `admin` grant. A key without one is a data-plane key and is refused here
+/// (`credential_invalid`), exactly as an admin key is refused by the data plane's Approve step.
+pub(crate) fn admin_keys_arm(app: &crate::state::App, headers: &HeaderMap, now: u64) -> KeysAdmin {
+    let Some(token) = carried_named([AUTHORIZATION.as_str(), "x-admin-token"], headers)
+        .filter(|t| t.starts_with(crate::governance::signing::TOKEN_PREFIX))
+    else {
+        return KeysAdmin::Absent;
+    };
+    let Some(gov) = app.governance.as_deref() else {
+        return KeysAdmin::Refused("credential_invalid");
+    };
+    match gov.verify_token(token, now, None) {
+        Some(key) if key.admin.is_some() => KeysAdmin::Identified(ChainVerdict::Identified {
+            module: crate::config::KEYS_MODULE.to_string(),
+            principal: admin_key_principal(&key),
+            resolved: Some(key),
+            signed_authority: None,
+        }),
+        Some(_) => KeysAdmin::Refused("credential_invalid"),
+        None => KeysAdmin::Refused(gov.token_refusal(token, now, None)),
+    }
+}
+
+pub(crate) fn module_scope_cap(
+    caps: &std::collections::HashMap<String, String>,
+    operator: &Operator,
+    module: &str,
+) -> Option<busbar_contract::authz::Scope> {
+    use busbar_contract::authz::Scope;
+    if operator.is(module) {
+        return None;
+    }
+    Some(
+        caps.get(module)
+            .map(String::as_str)
+            .and_then(Scope::parse)
+            .unwrap_or(Scope::ReadOnly),
+    )
+}
+
+/// The door a key holding an `admin` grant opens (ADMIN-API r5 section 2.1). The scope is the
+/// ceiling: with no verbs named the key holds every verb within it (the rung alone); with verbs
+/// named it holds exactly those, each only when the closed table declares it and its rung is
+/// within the ceiling. A scope the grant spells otherwise is read as `read-only`.
+pub(crate) fn admin_door_of_key(
+    principal: Principal,
+    key: &crate::governance::VirtualKey,
+    rung_of: &impl Fn(&str) -> Option<busbar_contract::authz::Scope>,
+) -> AdminDoor {
+    use busbar_contract::authz::{Grants, Scope};
+    let Some(grant) = key.admin.as_ref() else {
+        return AdminDoor::Denied;
+    };
+    let ceiling = Scope::parse(&grant.scope).unwrap_or(Scope::ReadOnly);
+    if grant.verbs.is_empty() {
+        return AdminDoor::Identified(principal, Grants::of(ceiling));
+    }
+    let named: std::collections::BTreeSet<String> = (grant.verbs.iter())
+        .filter(|verb| rung_of(verb.as_str()).is_some_and(|rung| ceiling.allows(rung)))
+        .cloned()
+        .collect();
+    let reach = (named.iter())
+        .filter_map(|verb| rung_of(verb.as_str()))
+        .fold(Grants::default(), Grants::with);
+    AdminDoor::Listed(
+        principal,
+        reach,
+        VerbAllowList {
+            rungs: Grants::default(),
+            named,
+        },
+    )
 }

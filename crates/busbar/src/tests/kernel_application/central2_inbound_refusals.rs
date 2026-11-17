@@ -5,6 +5,7 @@ use crate::root::test_plugins as plugins;
 use busbar_contract::abi::auth::{AuthPoints, POINT_HEAD};
 use busbar_contract::abi::host::service::{UnitRef, FLOW_STOP, REFUSE_STOPPED};
 use busbar_contract::abi::transport::route::{METHOD_POST, PATH_EXACT};
+use busbar_contract::json;
 use busbar_kernel::guest::{Claimant, GuestList, Line, LineAuth, Route};
 use busbar_kernel::inbound::{Call, Head, Listener, ListenerScope, Refusal, Refuse};
 use std::sync::Arc;
@@ -16,14 +17,9 @@ async fn actual_inbound_refusals_preserve_builder_bytes_unit_retirement_and_real
     isolated!(CHILD, WITNESS, witness = "usage");
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest("store", &module, "third-party");
-    manifest.statement = Some(hex::encode(statement));
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest =
+        crate::root::test_plugins::native_manifest("store", &library_path, "third-party");
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch("inbound-keys-custody");
     let archive = plugins::signed(&plugins::key(0x33), manifest, &library);
@@ -45,7 +41,7 @@ async fn actual_inbound_refusals_preserve_builder_bytes_unit_retirement_and_real
             "models": {},
             "auth": { "chain": ["keys"], "admin_auth": [], "signing_key": { "file": signing } },
             "store": { "module": module, "settings": settings },
-            "advanced": { "allow_destinations": ["127.0.0.1"] },
+            "advanced": {  },
         }),
         &crate::root::boot::axis_test_grammar(),
     )
@@ -68,22 +64,23 @@ async fn actual_inbound_refusals_preserve_builder_bytes_unit_retirement_and_real
         .publishers
         .push(busbar_kernel::config::PluginPublisher {
             name: "third-party".into(),
-            public_key: hex::encode(plugins::key(0x33).verifying_key().as_bytes()),
+            plugins: vec![module.clone()],
+            keys: vec![busbar_kernel::config::PluginPublisherKey {
+                public_key: hex::encode(plugins::key(0x33).verifying_key().as_bytes()),
+                revoked: false,
+            }],
         });
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let native_config = config;
     let native_plugins = plugin_config;
-    let native_core = crate::root::real_store::core_over(
-        busbar_kernel::appbuild::bootstrap_config_store(
-            &native_config,
-            &native_plugins,
-            &busbar_kernel::preflight::Unopened,
-        )
+    let crate::root::min3_boot::fixture::Fixture {
+        backend: native_core,
+        rules,
+    } = crate::root::min3_boot::fixture::open(&native_config, &native_plugins, rules.clone())
         .await
-        .expect("actual Store opens for native startup"),
-    )
-    .await;
+        .expect("actual Store opens for native startup");
+    let native_core = crate::root::real_store::core_over(native_core).await;
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         native_config,
         native_plugins,
@@ -340,20 +337,17 @@ async fn actual_inbound_refusals_preserve_builder_bytes_unit_retirement_and_real
             let mut challenge = format!("Bearer resource_metadata=\"{METADATA}\"");
             let body = if token.is_some() {
                 challenge.push_str(", error=\"invalid_token\", error_description=\"Authentication is required for this resource.\"");
-                serde_json::json!({
+                json::json!({
                     "error": "invalid_token",
                     "error_description": "Authentication is required for this resource.",
                 })
             } else {
-                serde_json::json!({"error": "unauthorized"})
+                json::json!({"error": "unauthorized"})
             };
             assert!(got.fields.iter().any(|(name, value)| {
                 name == "www-authenticate" && value == challenge.as_bytes()
             }));
-            assert_eq!(
-                serde_json::from_slice::<serde_json::Value>(&got.body).unwrap(),
-                body
-            );
+            assert_eq!(json::parse_value(&got.body).unwrap(), body);
             assert!(inbound.unit_secret(7, stopped.unit.id).is_none());
             assert_eq!(captured.0.lock().unwrap().len(), before + 1);
         }

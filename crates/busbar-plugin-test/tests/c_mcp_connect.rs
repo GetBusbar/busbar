@@ -14,8 +14,8 @@ use busbar_contract::secure::SecureVec;
 use busbar_kernel::connections::{pkce, settle_outbound, CallbackAnswer, CallerConnections as _};
 use busbar_plugin_abi::fail::refused::R_CONNECT_REQUIRED;
 use busbar_plugin_abi::plane::{CONN_NONE, CONN_READY};
-use busbar_plugin_loader::ports::auth::OutboundAnswer;
-use busbar_plugin_loader::ports::PortError;
+use busbar_ports::auth::OutboundAnswer;
+use busbar_ports::PortError;
 
 use crate::k10_rig::{
     connect, plane, runtime, Deployment, CALLBACK, CONNECTED, GRANT, PUBLIC, SUBJECT,

@@ -6,13 +6,15 @@ slug: docs/1.6/errors/BUSBAR-3134
 
 **Area:** Config (3xxx) · **Severity:** fatal · **Since:** 1.6.0
 
+> **Retired.** Busbar no longer reports this code. The page stays so an old log line still resolves; the code is never reused.
+
 ## What it means
 
-An `advanced.allow_destinations` entry is a cloud-metadata host name (such as `metadata.google.internal`), a metadata address (such as `169.254.169.254`, `fd00:ec2::254` or an IPv6 link-local address), or a /32 or /128 network equal to one. Cloud metadata is refused for every outbound connection, in every egress class, and no configuration admits it, so the entry is refused at startup rather than silently ignored. A wider network that merely covers a metadata address (such as `169.254.0.0/16`) loads, and still never admits the metadata address.
+RETIRED. The global advanced.allow_destinations setting was removed. Private reach is owned by a declared registration or core-selected provider route. No route grant admits cloud metadata.
 
 ## How to fix it
 
-Remove the entry named in the message. A workload that needs cloud credentials uses workload-identity federation (IRSA, AKS workload identity, GKE workload identity federation) through a projected token file, never the instance metadata endpoint.
+Remove advanced.allow_destinations. Set allow_private only on the declared registration that requires private reach; metadata stays refused.
 
 ---
 

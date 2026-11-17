@@ -169,16 +169,6 @@
     "content_type": "application/json",
     "status": 404
   },
-  "signing_rotate_governance_off": {
-    "body": "{\"error\":{\"code\":\"conflict\",\"message\":\"governance is not enabled on this server; enable `governance:` in config.yaml to manage virtual keys\"}}",
-    "content_type": "application/json",
-    "status": 409
-  },
-  "signing_rotate_no_key": {
-    "body": "{\"error\":{\"code\":\"conflict\",\"message\":\"no signing key is configured; nothing to rotate\"}}",
-    "content_type": "application/json",
-    "status": 409
-  },
   "usage_governance_off": {
     "body": "{\"error\":{\"code\":\"not_found\",\"message\":\"key not found (governance is not enabled on this server)\"}}",
     "content_type": "application/json",

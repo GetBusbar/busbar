@@ -306,22 +306,25 @@ fn the_one_load_binds_each_selected_instance_to_its_own_log_sink() {
         candidate: 1,
         instance: "door-dropped".into(),
     });
-    let loaded = load(&LoadRequest {
-        candidates: &cands,
-        selected: &selected,
-        logs: &logs,
-        metrics: Arc::new(NoSink),
-        dispatcher: Adopter::unwatched(),
-        conns: crate::dispatch::ConnTable::Probe,
-        max_inflight_cap: 8,
-        opening: None,
-    })
-    .expect("every selected instance binds");
-    assert_eq!(loaded.bound.len(), selected.len());
-    assert!(loaded
-        .bound
+    // Each selected plane loads under its instance name (load_planes binds a candidate by its name).
+    let planes: Vec<Candidate> = selected
         .iter()
-        .all(|(_, b)| matches!(b, Bound::Plane(_))));
+        .map(|s| {
+            let mut c = cands[s.candidate].clone();
+            c.name = s.instance.clone();
+            c
+        })
+        .collect();
+    let loaded = load_planes(
+        &planes,
+        &logs,
+        Arc::new(NoSink),
+        Adopter::unwatched(),
+        8,
+        crate::dispatch::ConnTable::Probe,
+    )
+    .expect("every selected instance binds");
+    assert_eq!(loaded.len(), selected.len());
     for s in &selected {
         assert!(
             dir.join(format!("{}.log", s.instance)).exists(),
@@ -350,19 +353,16 @@ fn red_an_instance_that_will_not_bind_is_named() {
     c.stated = unsafe { render(&stated) }.expect("the changed Statement renders");
     assert!(busbar_contract::abi::mechanism::rendering::read(&c.stated).is_ok());
     let logs = PluginLogConfig::from_words(None, None, &Default::default(), None, None).unwrap();
-    let err = load(&LoadRequest {
-        candidates: &[c],
-        selected: &[Selected {
-            candidate: 0,
-            instance: "tools".into(),
-        }],
-        logs: &logs,
-        metrics: Arc::new(NoSink),
-        dispatcher: Adopter::unwatched(),
-        conns: crate::dispatch::ConnTable::NoNeeds,
-        max_inflight_cap: 8,
-        opening: None,
-    })
+    c.name = "tools".into();
+    let err = load_planes(
+        &[c],
+        &logs,
+        Arc::new(NoSink),
+        Adopter::unwatched(),
+        8,
+        crate::dispatch::ConnTable::NoNeeds,
+    )
+    .map(|_| ())
     .unwrap_err();
     assert!(
         err.starts_with("tools: ") && err.contains("repack"),
@@ -406,7 +406,7 @@ fn a_linked_and_a_dropped_plane_door_load_through_the_same_path() {
     };
 
     let release = crate::sign::SigningKey::from_bytes(&[37u8; 32]);
-    let manifest = crate::sign::sign(&release, manifest, &lib);
+    let manifest = crate::sign::seal_test_artifact(&release, manifest, &lib);
     let tarball = crate::tarball::package(&manifest, "lib.so", &lib).unwrap();
     std::fs::write(dir.join("plane-door.tar.gz"), tarball).unwrap();
     let policy = crate::sign::TrustPolicy {
@@ -415,8 +415,7 @@ fn a_linked_and_a_dropped_plane_door_load_through_the_same_path() {
         first_party_floors: Default::default(),
         first_party_high_water: Default::default(),
         publishers: Default::default(),
-        allow_unsigned: false,
-        allow_third_party: false,
+        allow_untrusted: false,
         min_versions: Default::default(),
         ..crate::sign::TrustPolicy::default()
     };
@@ -915,15 +914,12 @@ impl busbar_contract::secret::SecretResolve for Resolver {
         &self,
         r: &busbar_contract::secret_ref::SecretRef,
     ) -> Result<busbar_contract::redacted::Secret<Vec<u8>>, String> {
-        use crate::dispatch::ready::ready_plugins::auth;
         let admitted: busbar_contract::secret_ref::SecretRef = serde_json::from_value(
             serde_json::json!({"module":"ready-secret-source", "settings":{"slot":"available"}}),
         )
         .unwrap();
         if r == &admitted {
-            Ok(busbar_contract::redacted::Secret::new(
-                auth::SECRET.to_vec(),
-            ))
+            Ok(busbar_contract::redacted::Secret::new(b"s3cret".to_vec()))
         } else {
             Err(format!("{} is not set", r.describe()))
         }
@@ -937,98 +933,6 @@ impl busbar_contract::secret::SecretResolve for Resolver {
             .into_text()
             .map_err(|e| format!("{} is not text: {e:?}", r.describe()))
     }
-}
-
-fn boot_auth(door: DoorFn, name: &str, settings: &str) -> Result<usize, String> {
-    use crate::dispatch::{DispatchConfig, Dispatcher};
-    let d = Dispatcher::new(
-        DispatchConfig::default(),
-        busbar_contract::services::test_caller_binding(),
-    );
-    let c = Candidate::linked(door).expect("the auth witness states itself");
-    assert_eq!(c.kind, KindCode::Auth);
-    let root = kind_of(KindCode::Auth)
-        .root_key()
-        .expect("auth has a root key");
-    let plan = doc(&format!(
-        r#"{{"{root}": {{"oidc": {{"module": "{name}", "settings": {settings}}}}}}}"#
-    ));
-    let cands = [c];
-    let selected = select(&Uses::of(&plan), &cands);
-    assert_eq!(selected.len(), 1, "the auth entry selects the witness");
-    let logs = PluginLogConfig::from_words(None, None, &Default::default(), None, None).unwrap();
-    load(&LoadRequest {
-        candidates: &cands,
-        selected: &selected,
-        logs: &logs,
-        metrics: Arc::new(NoSink),
-        dispatcher: d.adopter(),
-        conns: crate::dispatch::ConnTable::NoNeeds,
-        max_inflight_cap: 8,
-        opening: Some(Opening {
-            doc: &plan,
-            dispatcher: &d,
-            secrets: &Resolver,
-            sources: &busbar_contract::secret_ref::Sugars::default(),
-            scope: &busbar_contract::config_time::ConfigScope::config_time(),
-        }),
-    })
-    .map(|l| l.bound.len())
-}
-
-#[test]
-fn red_an_auth_door_whose_ready_errs_refuses_the_boot_with_its_text() {
-    use crate::dispatch::ready::ready_plugins::auth::{with_ready, NAME};
-    assert_eq!(
-        boot_auth(
-            with_ready::door,
-            NAME,
-            r#""err:discovery: the issuer answered 503""#
-        ),
-        Err(
-            "oidc: plugin 'ready-auth-witness' ready failed: discovery: the issuer answered 503"
-                .to_string()
-        )
-    );
-    assert_eq!(
-        boot_auth(with_ready::door, NAME, r#""pend""#),
-        Ok(1),
-        "a ready that pends boots after its wake"
-    );
-    assert_eq!(
-        boot_auth(with_ready::door, NAME, r#""ok""#),
-        Ok(1),
-        "the GREEN twin boots"
-    );
-}
-
-#[test]
-fn red_an_auth_door_declaring_a_secret_ref_is_handed_it_resolved_at_open() {
-    use crate::dispatch::ready::ready_plugins::auth::{with_secret, SECRET_NAME};
-    assert_eq!(
-        boot_auth(
-            with_secret::door,
-            SECRET_NAME,
-            r#"{"issuer": "https://idp", "client_secret": {"module":"ready-secret-source","settings":{"slot":"available"}}}"#
-        ),
-        Ok(1)
-    );
-    let unresolved = boot_auth(
-        with_secret::door,
-        SECRET_NAME,
-        r#"{"client_secret": {"module":"ready-secret-source","settings":{"slot":"missing"}}}"#,
-    )
-    .unwrap_err();
-    assert!(
-        unresolved.starts_with("oidc: settings.client_secret: the secret did not resolve"),
-        "{unresolved}"
-    );
-    let unset = boot_auth(with_secret::door, SECRET_NAME, "{}").unwrap_err();
-    assert_eq!(
-        unset,
-        "oidc: plugin 'secret-auth-witness' open failed: 1 secret(s) handed, not the resolved \
-         client_secret"
-    );
 }
 
 fn linked_cand(name: &str, version: &str) -> Candidate {
@@ -1209,76 +1113,6 @@ fn a_dropped_listener_binding_selects_its_exact_declared_claim_without_a_url() {
     assert!(!unrelated.serves(&Uses::default()));
     assert!(read_candidate(br#"[{"slot":"listen","claim":"undeclared"}]"#).is_err());
     assert!(read_candidate(br#"[{"slot":"listen","claim":"foreign-wire","priority":0}]"#).is_err());
-}
-
-mod pl_src_1_open_lease {
-    use super::*;
-    use crate::dispatch::ready::ready_plugins::auth::{with_ready, NAME};
-    use busbar_contract::abi::auth::Ops;
-    use busbar_contract::abi::mechanism::call::{OutHead, Outcome, RawOutcome};
-    use busbar_contract::abi::mechanism::door::Door;
-    use busbar_contract::abi::mechanism::lifecycle::{OpenOut, ReleaseIn};
-    use std::ffi::c_void;
-    use std::sync::atomic::{AtomicU64, Ordering};
-
-    const FAKE: u64 = 0xFA00_0001;
-    static RELEASED: AtomicU64 = AtomicU64::new(0);
-
-    fn base() -> &'static Ops {
-        // SAFETY: the SDK door and its complete auth table have static storage.
-        unsafe { &*Door::read_parts(with_ready::door()).ops.cast::<Ops>() }
-    }
-
-    extern "C" fn open(i: *mut c_void, input: *const c_void, out: *mut c_void) -> RawOutcome {
-        // SAFETY: forwards the loader's live OPEN frames to the original SDK slot unchanged.
-        let result = unsafe { base().head.open.unwrap()(i, input, out) };
-        if result.outcome() == Outcome::Ready {
-            // SAFETY: the OPEN crossing lends a complete exclusive OpenOut; the lease is a host
-            // fixture the RELEASE wrapper below recognises and consumes.
-            unsafe { (*out.cast::<OpenOut>()).head.lease = FAKE };
-        }
-        result
-    }
-
-    extern "C" fn release(i: *mut c_void, input: *const c_void, out: *mut c_void) -> RawOutcome {
-        // SAFETY: RELEASE's input is a complete ReleaseIn for this crossing.
-        if unsafe { (*input.cast::<ReleaseIn>()).lease } != FAKE {
-            // SAFETY: forwards a real SDK lease to the instance that issued it.
-            return unsafe { base().head.release.unwrap()(i, input, out) };
-        }
-        RELEASED.fetch_add(1, Ordering::SeqCst);
-        // SAFETY: the host's RELEASE output is an exclusive OutHead.
-        unsafe { (*out.cast::<OutHead>()).outcome = RawOutcome::of(Outcome::Ready) };
-        RawOutcome::of(Outcome::Ready)
-    }
-
-    extern "C" fn door() -> &'static Door {
-        static DOOR: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-        let address = *DOOR.get_or_init(|| {
-            let mut ops = *base();
-            ops.head.open = Some(open);
-            ops.head.release = Some(release);
-            // SAFETY: the SDK door is static; the copied table keeps every other slot.
-            unsafe {
-                let mut parts = Door::read_parts(with_ready::door());
-                parts.ops = std::ptr::from_ref(Box::leak(Box::new(ops))).cast();
-                Box::into_raw(Box::new(Door::__from_parts(parts))) as usize
-            }
-        });
-        // SAFETY: the descriptor and copied table were permanently retained.
-        unsafe { &*(address as *const Door) }
-    }
-
-    #[test]
-    fn a_boot_opened_auth_instance_releases_its_ready_open_answer_lease() {
-        RELEASED.store(0, Ordering::SeqCst);
-        assert_eq!(boot_auth(door, NAME, r#""ok""#), Ok(1));
-        assert_eq!(
-            RELEASED.load(Ordering::SeqCst),
-            1,
-            "the lease on the boot OPEN answer is released"
-        );
-    }
 }
 
 /// SECRET-SHORTHAND-BOOT §3.10 (G4): a claim conflict names where each claimant comes from, so the

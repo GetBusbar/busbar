@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use crate::hashing::Sha256;
+use busbar_contract::json::{self, JsonContainerTrait, JsonValueTrait};
 
 fn published_spec() -> String {
     published_page("audit-chain-digest-v4.md")
@@ -75,7 +76,7 @@ fn canonical_decimal(s: &str) -> Option<u64> {
 
 /// Every published page spells a recipe number as its canonical decimal text in a JSON string: a
 /// `u64` above 2^53 does not survive a reader that maps JSON numbers to doubles.
-fn frame(out: &mut Vec<u8>, value: &serde_json::Value, kind: Kind) {
+fn frame(out: &mut Vec<u8>, value: &json::Value, kind: Kind) {
     match kind {
         Kind::Text => {
             let s = value
@@ -97,7 +98,7 @@ fn frame(out: &mut Vec<u8>, value: &serde_json::Value, kind: Kind) {
     }
 }
 
-fn preimage_from_published(order: &[(String, Kind)], record: &serde_json::Value) -> Vec<u8> {
+fn preimage_from_published(order: &[(String, Kind)], record: &json::Value) -> Vec<u8> {
     let mut out = Vec::new();
     let mut i = 0usize;
     while i < order.len() {
@@ -144,11 +145,11 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-fn digest_from_published(order: &[(String, Kind)], record: &serde_json::Value) -> String {
+fn digest_from_published(order: &[(String, Kind)], record: &json::Value) -> String {
     hex(&Sha256::digest(preimage_from_published(order, record)))
 }
 
-fn spec_json_block(doc: &str, nth: usize) -> serde_json::Value {
+fn spec_json_block(doc: &str, nth: usize) -> json::Value {
     let block = doc
         .split("```json")
         .nth(nth + 1)
@@ -156,7 +157,7 @@ fn spec_json_block(doc: &str, nth: usize) -> serde_json::Value {
         .split("```")
         .next()
         .expect("a fenced block closes");
-    serde_json::from_str(block).expect("the published spec's example is valid JSON")
+    json::parse_value(block.as_bytes()).expect("the published spec's example is valid JSON")
 }
 
 #[test]
@@ -246,12 +247,9 @@ fn the_published_table_still_describes_what_this_build_seals() {
         &token,
     );
 
-    let body: serde_json::Value = serde_json::from_str(&busbar_kernel_audit::expose::range_body(
-        &chain,
-        std::slice::from_ref(&sealed),
-        1,
-        1,
-    ))
+    let body: json::Value = json::parse_value(
+        busbar_kernel_audit::expose::range_body(std::slice::from_ref(&sealed), 1, 1).as_bytes(),
+    )
     .expect("a published body is JSON");
 
     assert_eq!(
@@ -274,7 +272,7 @@ fn the_published_key_set_checks_the_published_examples_signature() {
     let domain = range["signature_domain"]
         .as_str()
         .expect("the published body names its signature domain");
-    let published_key = &keys["keys"][0];
+    let published_key = &keys["items"][0];
     let key_hex = published_key["public_key"]
         .as_str()
         .expect("a published key");
@@ -326,7 +324,7 @@ fn the_recomputation_rejects_the_published_example_with_one_cosmetic_field_alter
         .as_str()
         .and_then(canonical_decimal)
         .expect("the example carries a mono");
-    record["mono"] = serde_json::json!((was + 1).to_string());
+    record["mono"] = json::json!((was + 1).to_string());
     assert_ne!(
         digest_from_published(&order, &record),
         published_hash,
@@ -351,15 +349,11 @@ fn the_published_bodies_expose_a_window_that_stops_short() {
         })
         .collect();
 
-    let short: serde_json::Value = serde_json::from_str(&busbar_kernel_audit::expose::range_body(
-        &chain,
-        &records[..4],
-        1,
-        5,
-    ))
-    .expect("a published body is JSON");
-    let head: serde_json::Value =
-        serde_json::from_str(&busbar_kernel_audit::expose::head_body(&chain))
+    let short: json::Value =
+        json::parse_value(busbar_kernel_audit::expose::range_body(&records[..4], 1, 5).as_bytes())
+            .expect("a published body is JSON");
+    let head: json::Value =
+        json::parse_value(busbar_kernel_audit::expose::head_body(&chain).as_bytes())
             .expect("a published body is JSON");
 
     let asked_to = short["to"]

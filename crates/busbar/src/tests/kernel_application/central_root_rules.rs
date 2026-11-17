@@ -44,7 +44,7 @@ async fn boot_refusal_releases_the_completed_candidates_routes_without_committin
         fn check(&self, _: &busbar_kernel::config::RootCfg) -> Result<(), String> {
             Ok(())
         }
-        fn check_built(&self, candidate: &busbar_kernel::state::App) -> Result<(), String> {
+        fn check_built(&self, candidate: &mut busbar_kernel::state::App) -> Result<(), String> {
             assert_eq!(
                 candidate.config_version, 0,
                 "this is the actual startup candidate"
@@ -59,18 +59,12 @@ async fn boot_refusal_releases_the_completed_candidates_routes_without_committin
     }
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch("root-rules-hearing");
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
@@ -88,7 +82,7 @@ async fn boot_refusal_releases_the_completed_candidates_routes_without_committin
             "models": {},
             "auth": { "chain": [], "admin_auth": [] },
             "store": { "module": module, "settings": settings },
-            "advanced": { "allow_destinations": ["127.0.0.1"] },
+            "advanced": {  },
         }),
         &crate::root::boot::axis_test_grammar(),
     )
@@ -135,7 +129,7 @@ async fn a_completed_candidate_refusal_is_returned_before_a_reload_can_replace_t
         fn check(&self, _: &busbar_kernel::config::RootCfg) -> Result<(), String> {
             Ok(())
         }
-        fn check_built(&self, candidate: &busbar_kernel::state::App) -> Result<(), String> {
+        fn check_built(&self, candidate: &mut busbar_kernel::state::App) -> Result<(), String> {
             self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             assert_eq!(
                 candidate.config_version, 1,
@@ -146,18 +140,12 @@ async fn a_completed_candidate_refusal_is_returned_before_a_reload_can_replace_t
     }
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch("root-rules-hearing");
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
@@ -175,7 +163,7 @@ async fn a_completed_candidate_refusal_is_returned_before_a_reload_can_replace_t
             "models": {},
             "auth": { "chain": [], "admin_auth": [] },
             "store": { "module": module, "settings": settings },
-            "advanced": { "allow_destinations": ["127.0.0.1"] },
+            "advanced": {  },
         }),
         &crate::root::boot::axis_test_grammar(),
     )
@@ -251,18 +239,12 @@ async fn a_completed_candidate_refusal_is_returned_before_a_reload_can_replace_t
 async fn a_kept_build_raises_its_destinations_to_the_rules_it_was_judged_by() {
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch("root-rules-hearing");
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
@@ -280,7 +262,7 @@ async fn a_kept_build_raises_its_destinations_to_the_rules_it_was_judged_by() {
             "models": {},
             "auth": { "chain": [], "admin_auth": [] },
             "store": { "module": module, "settings": settings },
-            "advanced": { "allow_destinations": ["127.0.0.1"] },
+            "advanced": {  },
         }),
         &crate::root::boot::axis_test_grammar(),
     )
@@ -377,18 +359,12 @@ async fn a_configuration_the_root_rules_refuse_is_refused_by_the_build() {
     }
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch("root-rules-configuration");
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
@@ -406,7 +382,7 @@ async fn a_configuration_the_root_rules_refuse_is_refused_by_the_build() {
             "models": {},
             "auth": { "chain": [], "admin_auth": [] },
             "store": { "module": module, "settings": settings },
-            "advanced": { "allow_destinations": ["127.0.0.1"] },
+            "advanced": {  },
         }),
         &crate::root::boot::axis_test_grammar(),
     )

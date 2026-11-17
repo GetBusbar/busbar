@@ -12,8 +12,8 @@
 
 use busbar_plugin_abi::{auth, export, hook, plane, secret, store, transport};
 use busbar_plugin_loader::instance::{InstanceSpec, Registry, SlotLease};
-use busbar_plugin_loader::ports::plane::PlaneSession;
 use busbar_plugin_test::FakeNeeds;
+use busbar_ports::plane::PlaneSession;
 
 fn send_sync<T: Send + Sync>() {}
 
@@ -47,14 +47,20 @@ fn the_slot_lease_is_send_and_sync() {
 
 #[test]
 fn the_registrys_open_and_check_futures_are_send() {
-    fn opens(registry: &Registry<FakeNeeds>, spec: &InstanceSpec<'_>) {
-        sent(&registry.open_store(spec));
-        sent(&registry.open_secret(spec));
-        sent(&registry.open_auth(spec));
-        sent(&registry.open_hook(spec));
-        sent(&registry.open_export(spec));
-        sent(&registry.open_plane(spec));
-        sent(&registry.open_transport(spec));
+    fn opens(
+        registry: &Registry,
+        needs: &std::sync::Arc<FakeNeeds>,
+        refs: &std::sync::Arc<dyn busbar_ports::binder::RefSource>,
+        seal: busbar_plugin_loader::instance::StoreSeal,
+        spec: &InstanceSpec<'_>,
+    ) {
+        sent(&registry.open_store(spec, needs, refs, seal));
+        sent(&registry.open_secret(spec, needs, refs));
+        sent(&registry.open_auth(spec, needs, refs));
+        sent(&registry.open_hook(spec, needs, refs));
+        sent(&registry.open_export(spec, needs, refs));
+        sent(&registry.open_plane(spec, needs, refs));
+        sent(&registry.open_transport(spec, needs, refs));
         sent(&registry.check(spec));
     }
     let _ = opens;

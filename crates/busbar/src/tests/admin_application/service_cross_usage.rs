@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use crate::root::test_plugins as plugins;
+use busbar_contract::json::{self, JsonValueTrait};
 use busbar_kernel::cost::{
     self as ledger_cost, Author, CardEntryDraft, History, LedgerEntry, RateCard, TierRates,
 };
@@ -34,7 +35,7 @@ fn card(micro_per_token: f64) -> RateCard {
 }
 
 fn enforcement_groups() -> BTreeMap<String, busbar_kernel::config::GroupCfg> {
-    serde_json::from_value(serde_json::json!({
+    json::from_value(&json::json!({
         (GROUP): {"limits": [{"tokens": u64::MAX, "per": "day"}]}
     }))
     .expect("the actual day enforcement group parses")
@@ -112,18 +113,12 @@ async fn one_recorded_usage_is_one_number_on_every_surface() {
     crate::dist_root_install::install();
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch(&format!(
         "admin-service-cross-usage-{}",
@@ -153,7 +148,7 @@ async fn one_recorded_usage_is_one_number_on_every_surface() {
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": {"file": signing_key} },
         "identity-providers": {},
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
     });
     document["identity-providers"][operator] =
         serde_json::json!({"module": operator, "token": {"file": operator_token}});
@@ -272,6 +267,7 @@ async fn one_recorded_usage_is_one_number_on_every_surface() {
         store
             .ledger()
             .add_metering(&busbar_contract::records::MeteringDelta {
+                pricing: None,
                 scale: 0,
                 usage_units: Default::default(),
                 key_id: KEY.into(),
@@ -341,7 +337,7 @@ async fn one_recorded_usage_is_one_number_on_every_surface() {
         .await
         .unwrap();
     assert_eq!(response.status().as_u16(), 200);
-    let view: serde_json::Value = response.json().await.expect("usage read");
+    let view = json::parse_value(&response.bytes().await.expect("usage read")).expect("usage read");
     let admin = view["total"]["spend_micros"]
         .as_i64()
         .expect("the usage figure");

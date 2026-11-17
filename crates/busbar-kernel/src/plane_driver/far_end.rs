@@ -190,7 +190,7 @@ impl ResponseKeep {
 /// A member's auth binding: the auth instance, the handle its `open_outbound` answered, the
 /// style's `STYLE_*` flags and the auth points it needs (what `fields` reads).
 #[derive(Clone)]
-pub struct AuthBinding {
+pub struct ConfiguredAuthBinding {
     /// The auth instance serving the member's style.
     pub auth: Arc<dyn OutboundAuth>,
     /// The handle.
@@ -208,6 +208,18 @@ pub struct AuthBinding {
     /// handle is asked for each attempt, in place of `handle`; one that answers none refuses the
     /// unit `credential_unavailable`. `None` = the handle stands for the generation.
     pub per_request: Option<Arc<dyn busbar_contract::auth_calls::PerRequestHandle>>,
+}
+
+/// The existing configured owner and the native retained owner are separate call paths.
+#[derive(Clone)]
+pub enum AuthBinding {
+    Configured(ConfiguredAuthBinding),
+    Native(crate::auth_bindings::native::NativeRouteBindings),
+}
+impl AuthBinding {
+    fn passthrough(&self) -> bool {
+        matches!(self, Self::Configured(binding) if binding.passthrough)
+    }
 }
 
 pub type BreakerSource = Arc<dyn Fn() -> Arc<dyn Breaker> + Send + Sync>;
@@ -246,6 +258,11 @@ pub struct Egress {
 /// What one unit's walk is told at its start.
 #[derive(Debug, Clone)]
 pub struct UnitRoute {
+    /// Native receipt grants retain full member identity, including the instance prefix.
+    pub native_member_grants: Option<std::collections::BTreeMap<String, Vec<String>>>,
+    /// Core-owned member grants, keyed by the actual pool being walked.
+    /// A present map denies pools absent from it, including on fallback and retry.
+    pub member_grants: Option<std::collections::BTreeMap<String, Vec<String>>>,
     /// Host-issued confinement of a nested dispatch to one configured member.
     /// Hook rankings and pool spill cannot widen this binding.
     pub allowed_member: Option<String>,
@@ -306,6 +323,8 @@ pub(super) fn dial_admitted(
 impl Default for UnitRoute {
     fn default() -> Self {
         UnitRoute {
+            native_member_grants: None,
+            member_grants: None,
             allowed_member: None,
             connection_required: false,
             authorization: None,
@@ -387,7 +406,9 @@ impl Egress {
     #[must_use]
     pub fn probe(&self, destination: DestinationId, timeout: Duration) -> Option<EgressFarEnd<'_>> {
         let route = self.routes.get(&destination)?;
-        if route.auth.as_ref().is_some_and(|a| a.passthrough) {
+        if matches!(&route.auth, Some(AuthBinding::Native(_)))
+            || route.auth.as_ref().is_some_and(|a| a.passthrough())
+        {
             return None;
         }
         let member = self
@@ -396,12 +417,50 @@ impl Egress {
             .flat_map(|p| &p.members)
             .find(|m| m.destination == destination)?
             .clone();
+        Some(self.probe_member(String::new(), member, timeout))
+    }
+
+    /// A native probe retains the exact configured pool/member selection.
+    pub fn probe_selected(
+        &self,
+        pool: &str,
+        qualified_member: &str,
+        destination: DestinationId,
+        timeout: Duration,
+    ) -> Option<EgressFarEnd<'_>> {
+        let route = self.routes.get(&destination)?;
+        match route.auth.as_ref() {
+            Some(AuthBinding::Native(bindings)) => {
+                bindings.select(pool, qualified_member, destination).ok()?;
+            }
+            Some(AuthBinding::Configured(binding)) if binding.passthrough => return None,
+            _ => {}
+        }
+        let member = self
+            .pools
+            .get(pool)?
+            .members
+            .iter()
+            .find(|member| {
+                !member.passthrough
+                    && member.name == qualified_member
+                    && member.destination == destination
+            })?
+            .clone();
+        Some(self.probe_member(pool.to_owned(), member, timeout))
+    }
+
+    fn probe_member(&self, pool: String, member: Member, timeout: Duration) -> EgressFarEnd<'_> {
+        let destination = member.destination;
         let breaker = (self.breaker)();
         let walk = Walk::pinned(&self.ports(breaker.as_ref()), timeout.as_secs().max(1));
-        Some(EgressFarEnd {
+        EgressFarEnd {
             egress: self,
             breaker,
-            route: UnitRoute::default(),
+            route: UnitRoute {
+                pool,
+                ..UnitRoute::default()
+            },
             state: Mutex::new(State {
                 walk,
                 retiring: 0,
@@ -422,7 +481,7 @@ impl Egress {
             signals: None,
             constraint: Mutex::new(None),
             scratch: Mutex::new(Vec::new()),
-        })
+        }
     }
 }
 
@@ -787,10 +846,29 @@ impl EgressFarEnd<'_> {
 impl Shape for EgressFarEnd<'_> {
     fn shape(
         &self,
+        pool: &str,
         members: Vec<Member>,
         primary: bool,
     ) -> Option<(Vec<Member>, Vec<DestinationId>)> {
         let (mut members, mut order) = self.constrained(members, primary).ok()?;
+        if let Some(grants) = &self.route.native_member_grants {
+            members.retain(|m| {
+                grants
+                    .get(pool)
+                    .is_some_and(|allowed| allowed.iter().any(|name| name == &m.name))
+            });
+            order.retain(|id| members.iter().any(|m| m.destination == *id));
+        }
+        if let Some(grants) = &self.route.member_grants {
+            members.retain(|m| {
+                grants.get(pool).is_some_and(|allowed| {
+                    allowed.iter().any(|name| {
+                        super::route::operator_name(m.name.as_bytes()) == name.as_bytes()
+                    })
+                })
+            });
+            order.retain(|id| members.iter().any(|m| m.destination == *id));
+        }
         if let Some(allowed) = &self.route.allowed_member {
             members
                 .retain(|m| super::route::operator_name(m.name.as_bytes()) == allowed.as_bytes());
@@ -1154,7 +1232,7 @@ impl EgressFarEnd<'_> {
         let passthrough = member.passthrough
             || route
                 .and_then(|r| r.auth.as_ref())
-                .is_some_and(|a| a.passthrough);
+                .is_some_and(|a| a.passthrough());
         let provider = route.map(|r| r.provider.clone()).unwrap_or_default();
         let live = Live {
             pool: pool.clone(),
@@ -1225,7 +1303,14 @@ impl EgressFarEnd<'_> {
             }
         };
         if let Some(member) = probe {
-            return self.claim_member(String::new(), member, None, None, false, (1, token.call()));
+            return self.claim_member(
+                self.route.pool.clone(),
+                member,
+                None,
+                None,
+                false,
+                (1, token.call()),
+            );
         }
         let wait = match walking
             .walk
@@ -1340,9 +1425,69 @@ impl EgressFarEnd<'_> {
         self.lock().live.as_ref().is_some_and(|l| l.passthrough)
     }
 
+    async fn native_credential(
+        &self,
+        binding: &crate::auth_bindings::native::NativeBinding,
+        request: &OutboundRequest,
+        url: &str,
+        scope: Option<&[u8]>,
+        defaults: &[(Vec<u8>, Vec<u8>)],
+    ) -> Result<crate::auth_bindings::native::NativeCredential, busbar_ports::PortError> {
+        use busbar_plugin_abi::types::{Bytes, Pair, Str};
+        fn pairs(rows: &[(Vec<u8>, Vec<u8>)]) -> Vec<Pair<'_>> {
+            rows.iter()
+                .filter_map(|(name, value)| {
+                    std::str::from_utf8(name).ok().map(|name| Pair {
+                        name: Str::new(name),
+                        value: Bytes::new(value),
+                    })
+                })
+                .collect::<Vec<_>>()
+        }
+        let plane = pairs(&request.fields);
+        let transport = pairs(defaults);
+        let headers = crate::auth::upstream_binding::upstream_head(&plane, &transport);
+        let invalid = || busbar_ports::PortError::Refused {
+            code: busbar_plugin_abi::fail::refused::R_POLICY,
+            text: "native outbound input is invalid".into(),
+            error: None,
+        };
+        let method = std::str::from_utf8(&request.verb).map_err(|_| invalid())?;
+        let scope = if binding.scoped() {
+            scope
+                .map(std::str::from_utf8)
+                .transpose()
+                .map_err(|_| invalid())?
+        } else {
+            None
+        };
+        let input = busbar_ports::auth::UpstreamIn {
+            method,
+            url,
+            headers: &headers,
+            body_sha256: binding
+                .needs_body_hash()
+                .then(|| busbar_contract::crypto::sha256(&request.body)),
+            caller_cred: &[],
+            scope,
+            caller_grant: None,
+            min_valid_s: 0,
+        };
+        binding
+            .credential(
+                busbar_ports::CallCx {
+                    deadline: std::time::Instant::now() + Duration::from_millis(self.attempt_cap()),
+                    request_id: self.route.unit.get(),
+                    stack: Default::default(),
+                },
+                &input,
+            )
+            .await
+    }
+
     async fn auth_fields(
         &self,
-        binding: &AuthBinding,
+        binding: &ConfiguredAuthBinding,
         handle: u64,
         request: &OutboundRequest,
         url: &str,
@@ -1404,8 +1549,20 @@ impl EgressFarEnd<'_> {
         }
     }
 
-    async fn send_attempt(&self, token: &Pass<Route>, mut request: OutboundRequest) -> bool {
+    async fn send_attempt(
+        &self,
+        token: &Pass<Route>,
+        mut request: OutboundRequest,
+        mut selected: Option<&mut super::port_egress::SelectedHandoff>,
+    ) -> bool {
         let e = self.egress;
+
+        if selected
+            .as_ref()
+            .is_some_and(|handoff| !handoff.accepts_request(&request))
+        {
+            return false;
+        }
 
         busbar_kernel_egress::upstream::strip_re_derived(&mut request.fields);
 
@@ -1436,6 +1593,8 @@ impl EgressFarEnd<'_> {
             w.live.as_ref().map(|live| {
                 (
                     live.member.destination,
+                    live.pool.clone(),
+                    live.member.name.clone(),
                     busbar_kernel_ledger::cost::split_plane_lane(&live.member.name)
                         .1
                         .to_owned(),
@@ -1443,10 +1602,17 @@ impl EgressFarEnd<'_> {
                 )
             })
         };
-        let Some((destination, member, record)) = live else {
+        let Some((destination, selected_pool, qualified_member, member, record)) = live else {
             self.lock().unsent = Some(RefusalCode::UnsentNoAttempt);
             return false;
         };
+        if selected.as_ref().is_some_and(|handoff| {
+            !handoff.accepts(&selected_pool, &qualified_member, self.route.unit)
+                || request.attempt_no != record.attempt
+        }) {
+            self.settle_attempt(&record);
+            return false;
+        }
         let Some(route) = e.routes.get(&destination).cloned() else {
             self.lock().unsent = Some(RefusalCode::UnsentNoRoute);
             return false;
@@ -1594,7 +1760,9 @@ impl EgressFarEnd<'_> {
             opening.len(),
         );
 
-        if let Some(binding) = route.auth.as_ref().filter(|_| !waived && !bound) {
+        if let Some(AuthBinding::Configured(binding)) =
+            route.auth.as_ref().filter(|_| !waived && !bound)
+        {
             let handle = match &binding.per_request {
                 Some(per) => per.handle_now(),
                 None => Some(binding.handle),
@@ -1620,10 +1788,45 @@ impl EgressFarEnd<'_> {
                 }
             }
         }
+        let mut native = None;
+        if let Some(AuthBinding::Native(bindings)) = route.auth.as_ref().filter(|_| !bound) {
+            if self.live_passthrough() {
+                self.lock().refused = Some(ReasonCode::CredentialUnavailable);
+                self.settle_attempt(&record);
+                return false;
+            }
+            let result = match bindings.select(&selected_pool, &qualified_member, destination) {
+                Ok(crate::auth_bindings::native::SelectedCredential::None) => Ok(None),
+                Ok(crate::auth_bindings::native::SelectedCredential::Required(binding)) => self
+                    .native_credential(binding, &request, &url, scope.as_deref(), &defaults)
+                    .await
+                    .map(Some),
+                Err(error) => Err(error),
+            };
+            match result {
+                Ok(value) => native = value,
+                Err(_) => {
+                    let mut walk = self.lock();
+                    walk.unsent = Some(RefusalCode::UnsentAuthFailed);
+                    walk.credential_refused = true;
+                    drop(walk);
+                    self.settle_attempt(&record);
+                    return false;
+                }
+            }
+        }
         if !self.owns_attempt(record.attempt, destination) {
             return false;
         }
 
+        let native_requires_secure = native
+            .as_ref()
+            .is_some_and(|fields| fields.require_secure());
+        let native_names = native
+            .as_ref()
+            .map(|fields| fields.sealed_names())
+            .unwrap_or_default();
+        let native_selected = matches!(&route.auth, Some(AuthBinding::Native(_)));
         let (_, path) = split(&url);
 
         busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::OutboundHead);
@@ -1631,6 +1834,9 @@ impl EgressFarEnd<'_> {
             request.fields.len() + auth.len() + defaults.len(),
         );
 
+        if let Some(fields) = native {
+            fields.append_to(&mut head);
+        }
         head.extend(auth.iter().filter(|f| !f.query).map(|f| {
             (
                 String::from_utf8_lossy(&f.name).into_owned(),
@@ -1653,6 +1859,14 @@ impl EgressFarEnd<'_> {
                     !auth
                         .iter()
                         .any(|f| !f.query && f.name.eq_ignore_ascii_case(n))
+                        && !native_names
+                            .iter()
+                            .any(|name| name.as_bytes().eq_ignore_ascii_case(n))
+                })
+                .filter(|(n, _)| {
+                    !native_selected
+                        || !std::str::from_utf8(n)
+                            .is_ok_and(crate::auth::upstream_binding::framer_owned)
                 })
                 .filter(|(n, _)| !busbar_contract::conn::is_sealed_fields_field(n))
                 .filter(|(n, _)| !busbar_contract::conn::is_sealed_query_field(n))
@@ -1664,25 +1878,33 @@ impl EgressFarEnd<'_> {
                 .iter()
                 .filter(|(n, _)| {
                     !n.eq_ignore_ascii_case(CONTENT_LENGTH)
+                        && (!native_selected
+                            || !std::str::from_utf8(n)
+                                .is_ok_and(crate::auth::upstream_binding::framer_owned))
                         && !auth
                             .iter()
                             .any(|f| !f.query && f.name.eq_ignore_ascii_case(n))
+                        && !native_names
+                            .iter()
+                            .any(|name| name.as_bytes().eq_ignore_ascii_case(n))
                 })
                 .map(|(n, v)| (String::from_utf8_lossy(n).into_owned(), v.clone())),
         );
 
-        let sealed: Vec<String> = auth
+        let mut sealed: Vec<String> = auth
             .iter()
             .filter(|f| !f.query)
             .map(|f| String::from_utf8_lossy(&f.name).to_ascii_lowercase())
             .collect();
+        sealed.extend(native_names);
         if !sealed.is_empty() {
             head.push(
                 busbar_contract::conn::SEALED_FIELDS_FIELD.to_owned(),
                 sealed.join(",").into_bytes(),
             );
         }
-        let require_secure = protected || auth.iter().any(|f| f.require_secure);
+        let require_secure =
+            protected || auth.iter().any(|f| f.require_secure) || native_requires_secure;
         drop(auth);
         let cap_ms = self.attempt_cap();
         let (pool, stated, degraded) = {
@@ -1706,6 +1928,12 @@ impl EgressFarEnd<'_> {
 
         // The head built above is the one the open sends: it moves into the connection, which
         // keeps it for the dial (and wipes it) without copying it again.
+        if let Some(handoff) = selected.as_mut() {
+            if !handoff.commit() {
+                self.settle_attempt(&record);
+                return false;
+            }
+        }
         let opened = e.conns.open_owned(
             e.caller,
             need,
@@ -2509,7 +2737,16 @@ impl FarEnd for EgressFarEnd<'_> {
         token: &'a Pass<Route>,
         request: OutboundRequest,
     ) -> impl Future<Output = bool> + Send + 'a {
-        self.send_attempt(token, request)
+        self.send_attempt(token, request, None)
+    }
+
+    fn send_selected<'a>(
+        &'a self,
+        token: &'a Pass<Route>,
+        request: OutboundRequest,
+        handoff: &'a mut super::port_egress::SelectedHandoff,
+    ) -> impl Future<Output = bool> + Send + 'a {
+        self.send_attempt(token, request, Some(handoff))
     }
 
     fn next<'a>(
@@ -2547,7 +2784,7 @@ impl FarEnd for EgressFarEnd<'_> {
         request.attempt_no = taken.attempt;
         self.admit_taken(taken, token.call());
         drop(walking);
-        self.send_attempt(token, request).await
+        self.send_attempt(token, request, None).await
     }
 
     fn candidates(&self, _token: &Pass<Route>) -> Option<Candidates> {
@@ -2558,6 +2795,25 @@ impl FarEnd for EgressFarEnd<'_> {
             members: members
                 .iter()
                 .enumerate()
+                .filter(|(_, m)| {
+                    self.route
+                        .native_member_grants
+                        .as_ref()
+                        .is_none_or(|grants| {
+                            grants
+                                .get(&pool.name)
+                                .is_some_and(|allowed| allowed.iter().any(|name| name == &m.name))
+                        })
+                })
+                .filter(|(_, m)| {
+                    self.route.member_grants.as_ref().is_none_or(|grants| {
+                        grants.get(&pool.name).is_some_and(|allowed| {
+                            allowed.iter().any(|name| {
+                                super::route::operator_name(m.name.as_bytes()) == name.as_bytes()
+                            })
+                        })
+                    })
+                })
                 .filter(|(_, m)| {
                     self.route.allowed_member.as_ref().is_none_or(|allowed| {
                         super::route::operator_name(m.name.as_bytes()) == allowed.as_bytes()
@@ -2599,6 +2855,32 @@ impl FarEnd for EgressFarEnd<'_> {
         })
     }
 
+    fn scope(&self, _token: &Pass<Route>) -> Option<super::RoutedScope> {
+        let pool = self.egress.pools.get(&self.route.pool)?;
+        Some(super::RoutedScope {
+            pool: pool.name.clone(),
+            container: String::new(),
+        })
+    }
+
+    fn candidate_lane(&self, token: &Pass<Route>, index: usize) -> Option<String> {
+        // Indexes are stable positions in this exact admissible pool, including filtered gaps.
+        let candidates = self.candidates(token)?;
+        if !candidates
+            .members
+            .iter()
+            .any(|candidate| candidate.idx == index)
+        {
+            return None;
+        }
+        self.egress
+            .pools
+            .get(&self.route.pool)?
+            .admissible_members()
+            .get(index)
+            .map(|member| member.name.clone())
+    }
+
     fn remaining(&self, _token: &Pass<Route>) -> Option<usize> {
         let w = self.lock();
         let Some((name, primary)) = w.walk.walking() else {
@@ -2606,7 +2888,7 @@ impl FarEnd for EgressFarEnd<'_> {
         };
         let pool = self.egress.pools.get(name)?;
         let members = self
-            .shape(pool.admissible_members().into_owned(), primary)
+            .shape(&pool.name, pool.admissible_members().into_owned(), primary)
             .map(|(members, _)| members)
             .unwrap_or_default();
         Some(

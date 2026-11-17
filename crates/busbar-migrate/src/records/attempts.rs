@@ -11,7 +11,7 @@
 //! node's upgrade in progress). So every attempt ends COMPLETED, REFUSED or ABANDONED, and no path
 //! writes MIGRATION_COMPLETED for an attempt whose config.yaml was not renamed into place.
 
-use busbar_contract::abi::sdk::store::cells::{self, Cell, IMPORT_NS};
+use busbar_contract::persistence::cells::{self, Cell, IMPORT_NS};
 use busbar_contract::secure::SecureVec;
 
 use super::{Audit, Candidate, Committed, RecordStore, Refusal, ATTEMPT_PREFIX, PAGE};
@@ -125,6 +125,7 @@ pub fn begin(store: &dyn RecordStore, attempt: &Attempt) -> Result<(), Refusal> 
         Committed::Conflict => Err(Refusal::Verify(
             "this upgrade attempt's key is already recorded; nothing was written".to_owned(),
         )),
+        other => Err(other.unapplied("the upgrade attempt's record")),
     }
 }
 
@@ -134,7 +135,11 @@ fn consume(store: &dyn RecordStore, attempt: &Attempt, settled: Settled) -> Resu
     c.exact.push((IMPORT_NS, attempt.key(), attempt.value()));
     c.delete.push((IMPORT_NS, attempt.key()));
     c.audit.push(Audit::Attempt(settled));
-    Ok(store.commit(c)? == Committed::Applied)
+    match store.commit(c)? {
+        Committed::Applied => Ok(true),
+        Committed::Conflict => Ok(false),
+        other => Err(other.unapplied("the upgrade attempt's settlement")),
+    }
 }
 
 /// 5C: config.yaml is renamed into place; MIGRATION_COMPLETED, the attempt consumed.
@@ -183,9 +188,8 @@ pub fn settle(store: &dyn RecordStore, local: &Local, now: u64) -> Result<Vec<Se
     let mut after = ATTEMPT_PREFIX.to_vec();
     after.pop();
     loop {
-        let page = store.scan(IMPORT_NS, &after, PAGE)?;
-        let full = page.len() == PAGE as usize;
-        for (key, value) in &page {
+        let page = store.scan(IMPORT_NS, Some(&after), PAGE)?;
+        for (key, value) in &page.rows {
             if !key.starts_with(ATTEMPT_PREFIX) {
                 continue;
             }
@@ -212,9 +216,9 @@ pub fn settle(store: &dyn RecordStore, local: &Local, now: u64) -> Result<Vec<Se
                 settled.push(outcome);
             }
         }
-        match page.last() {
-            Some((last, _)) if full => after.clone_from(last),
-            _ => break,
+        match super::continuation(&page)? {
+            Some(next) => after = next,
+            None => break,
         }
     }
     Ok(settled)

@@ -1,5 +1,8 @@
 Busbar
-Copyright (C) 2026 Busbar Inc and contributors
+Copyright (C) 2026 Busbar, Inc. and contributors
 
 This product includes software developed as part of the Busbar project
 (https://getbusbar.com).
+
+Third-party notices for bundled dependencies are in THIRD-PARTY-LICENSES, shipped beside this
+file in every release archive and in /licenses in the container image.

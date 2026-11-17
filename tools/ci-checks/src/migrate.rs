@@ -6,14 +6,11 @@
 //! - `migrate-flag-text` (red (mc1)(3)): 1.6.0 has no `--migrate-config`; the boot migrates. No
 //!   production string literal or doc comment under `crates/` names the flag, so no text sends an
 //!   operator to it. Test code (a `#[cfg(test)]` scope, a `#[test]` fn, a module file declared
-//!   under test cfg, a `tests/` tree) is not production. `crates/busbar-migrations` is skipped: it
-//!   is deleted whole at C3 (§A9 item 8), and nothing in the gateway depends on it after C1.
+//!   under test cfg, a `tests/` tree) is not production. No crate is skipped.
 //! - `migrate-retired-words` (red (k)): none of the migration table's vocabulary survives. No
 //!   `[package.metadata.busbar.*]` table carries a `former.`, `retired.` or `name_1_5_5` key (the root
 //!   migration table is gone, names resolve through each plugin's `FORMER_NAMES`), and no production
-//!   source names `RootHost`, the host the retired flag ran plugin migrations through. The files
-//!   `PENDING_BINDING` lists still hold `RootHost`: package 4 (mob/c1c2-binding) deletes them with
-//!   the `main.rs` interleave, and removes the entries.
+//!   source names `RootHost`, the host the retired flag ran plugin migrations through.
 //! - `migrate-anchors` (red (sz1)(3c)): each anchor the `migrate-size` job sums from carries
 //!   `#[cold]` and `#[inline(never)]` in the source, so fat LTO cannot inline it away and a
 //!   rename cannot hide code: "anchor not pinned" otherwise, "anchor not found" when it is gone.
@@ -32,24 +29,14 @@ use super::{
 /// The retired flag's spelling; no production text names it.
 pub(crate) const FLAG: &str = "--migrate-config";
 
-/// Deleted whole at C3 (§A9 item 8); not product code after C1.
-const RETIRING: &str = "busbar-migrations";
-
 /// The host of the retired flag's plugin migrations.
 pub(crate) const ROOT_HOST: &str = "RootHost";
-
-/// Files that still name `RootHost` because `startup_upgrade/` is called from the `main.rs` boot
-/// interleave, which package 4 rebuilds around the seam. Package 4 deletes them and this list.
-const PENDING_BINDING: [&str; 2] = [
-    "crates/busbar/src/root/config_migrate.rs",
-    "crates/busbar/src/root/startup_upgrade/",
-];
 
 /// Metadata key prefixes that belonged to the root migration table.
 const RETIRED_KEYS: [&str; 3] = ["former.", "retired.", "name_1_5_5"];
 
 /// The † anchors of MIGRATE-ON-BOOT §7: (file, the fn's `impl` type or "" for a free fn, fn name).
-pub(crate) const ANCHORS: [(&str, &str, &str); 3] = [
+pub(crate) const ANCHORS: [(&str, &str, &str); 2] = [
     (
         "crates/busbar-kernel/src/persistence/startup.rs",
         "Manifest",
@@ -60,18 +47,12 @@ pub(crate) const ANCHORS: [(&str, &str, &str); 3] = [
         "",
         "read_answer",
     ),
-    (
-        "crates/plugin-loader/src/dispatch/migrate.rs",
-        "",
-        "settings_migration",
-    ),
 ];
 
 pub(crate) fn flag_text(root: &Path) -> Result<Vec<String>, String> {
     let mut files = Vec::new();
     for dir in sorted_entries(&root.join("crates"))? {
-        let retiring = dir.file_name().is_some_and(|name| name == RETIRING);
-        if !retiring && dir.is_dir() {
+        if dir.is_dir() {
             rust_files(&dir, &mut files)?;
         }
     }
@@ -210,7 +191,7 @@ impl<'ast> Visit<'ast> for WordScan<'_> {
 }
 
 /// The migration table's vocabulary that must not come back: metadata keys in any `Cargo.toml` and
-/// production `RootHost`. See the module comment for `PENDING_BINDING`.
+/// production `RootHost`.
 pub(crate) fn retired_words(root: &Path) -> Result<Vec<String>, String> {
     let mut findings = Vec::new();
     let mut manifests = vec![root.join("dist/default/Cargo.toml")];
@@ -234,8 +215,7 @@ pub(crate) fn retired_words(root: &Path) -> Result<Vec<String>, String> {
     }
     let mut files = Vec::new();
     for dir in sorted_entries(&root.join("crates"))? {
-        let retiring = dir.file_name().is_some_and(|name| name == RETIRING);
-        if !retiring && dir.is_dir() {
+        if dir.is_dir() {
             rust_files(&dir, &mut files)?;
         }
     }
@@ -243,12 +223,6 @@ pub(crate) fn retired_words(root: &Path) -> Result<Vec<String>, String> {
     let mut test_modules = Vec::new();
     for file in files {
         let shown = rel(root, &file);
-        if PENDING_BINDING
-            .iter()
-            .any(|prefix| shown.starts_with(prefix))
-        {
-            continue;
-        }
         let text = std::fs::read_to_string(&file).map_err(|error| format!("{shown}: {error}"))?;
         test_modules.extend(scan_source(&file, &text).test_modules);
         for line in root_host_sites(&text) {

@@ -77,17 +77,20 @@ fn err_json_tagged(e: &AdminError, cond: Option<Cond>) -> Response {
     };
     let reason = cond.map(Cond::reason);
     let details = details_of(e, reason);
-    tagged(
-        busbar_kernel::admin::gate::admin_error_envelope_with(
-            e.http_status(),
-            e.code(),
-            reason,
-            &e.message(),
-            &details,
-        ),
-        e,
-        cond,
-    )
+    let mut resp = busbar_kernel::admin::gate::admin_error_envelope_with(
+        e.http_status(),
+        e.code(),
+        reason,
+        &e.message(),
+        &details,
+    );
+    if let AdminError::RetryLater { retry_after_s, .. } = e {
+        resp.headers_mut().insert(
+            axum::http::header::RETRY_AFTER,
+            axum::http::HeaderValue::from(*retry_after_s),
+        );
+    }
+    tagged(resp, e, cond)
 }
 
 /// Test builds tag the envelope with the declared kind and condition the contract tests read back.

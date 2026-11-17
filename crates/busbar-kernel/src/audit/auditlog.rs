@@ -12,6 +12,7 @@ use crate::audit_ring::{AuditData, AuditEntry, MAX_AUDIT_ENTRIES};
 use crate::host_records_async::{AsyncHistory, HistoryCollection, HistoryMode, HistoryOutcome};
 use crate::persistence::facade::CoreStore;
 use crate::store::plane_view::{encode, KIND_AUDIT};
+use busbar_contract::export_calls::{ExportLossFacts, ExportLossKind};
 use busbar_contract::records::Retention;
 use busbar_contract::records::{
     PlaneDisposition, PlaneRecord, PlaneSelector, RecordStoreError, RecordStoreResult,
@@ -23,6 +24,10 @@ pub const PERSISTENCE_OWNER: &str = "busbar.core.admin-audit";
 pub(crate) const KIND_ID_AUDIT: u32 = 3;
 
 const ADMIN_LOG: &str = "admin";
+
+#[path = "native_refusal.rs"]
+mod native_refusal;
+pub use native_refusal::{record_native_refusal, NativeRefusalAudit, NativeRefusalError};
 
 const AUDIT_FRAMING: Framing = Framing::PipeSeparated;
 const AUDIT_DIGESTS_SCOPE: bool = false;
@@ -83,7 +88,8 @@ pub(crate) fn audit_suffix_safe(
 }
 
 /// Everything an audit row says besides its position in the chain (ADMIN-API-1.6 section 7.2).
-/// The five legacy fields come first; the rest are the scheme 3 fields.
+/// The five legacy fields come first; then the scheme 3 fields, then what scheme 4 adds
+/// (ADMIN-API-1.6-ONE-MODEL section 7.1).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AuditRowInput {
     pub action: String,
@@ -100,10 +106,21 @@ pub struct AuditRowInput {
     pub severity: String,
     pub message: String,
     pub data: AuditData,
+    /// The caller's own `X-Request-Id`, kept beside the minted `request_id` (section 7).
+    pub client_request_id: Option<String>,
+    /// The W3C trace id the request arrived in: 32 lowercase hex digits.
+    pub trace_id: Option<String>,
+    /// The operation the request created (an `Idempotency-Key` request).
+    pub operation_id: Option<String>,
+    /// The request was admitted on `If-Match: *`: a deliberately unconditional mutation.
+    pub unconditional: bool,
 }
 
 /// The first byte of a scheme 3 suffix. Scheme 1 starts with `|` and scheme 2 with 0x00.
 const ROW_SUFFIX_MARKER: u8 = 0x03;
+
+/// The first byte of a scheme 4 suffix.
+const ROW4_SUFFIX_MARKER: u8 = 0x04;
 
 fn push_opt(out: &mut Vec<u8>, value: Option<&str>) {
     match value {
@@ -117,37 +134,68 @@ fn push_opt(out: &mut Vec<u8>, value: Option<&str>) {
     }
 }
 
-/// The bytes scheme 3 seals for one row (the recipe is on `AuditEntry::hash`).
+/// The bytes scheme 3 seals for one row (the recipe is on `AuditEntry::hash`). Rows already sealed
+/// under it keep verifying; new rows seal under [`row4_suffix`].
 pub(crate) fn row_suffix(ts: u64, row: &AuditRowInput) -> Vec<u8> {
     let mut out = vec![ROW_SUFFIX_MARKER];
-    push_lp(&mut out, &ts.to_be_bytes());
-    push_lp(&mut out, row.action.as_bytes());
-    push_lp(&mut out, row.resource.as_bytes());
-    push_lp(&mut out, row.outcome.as_bytes());
-    push_lp(&mut out, row.principal.as_bytes());
-    push_opt(&mut out, row.config_generation.as_deref());
-    push_opt(&mut out, row.request_id.as_deref());
-    push_opt(&mut out, row.idempotency_key.as_deref());
-    push_opt(&mut out, row.kind.as_deref());
-    push_opt(&mut out, row.instance.as_deref());
+    push_row_fields(&mut out, ts, row);
+    out
+}
+
+/// The bytes scheme 4 seals for one row (ADMIN-API-1.6-ONE-MODEL section 7.1; the recipe is on
+/// `AuditEntry::hash`): scheme 3's fields after a 0x04 marker, `ts` being `at_ms / 1000`, then `at_ms`
+/// (8 bytes, big-endian), `client_request_id`, `trace_id`, `operation_id` and `on_behalf_of`
+/// (each framed like `request_id`), `unconditional` (one byte, 0x00 or 0x01), then `before_digest`
+/// and `after_digest` (framed like `request_id`). `client_request_id`, `trace_id` and `operation_id`
+/// are the request's (absent on a row no request caused); `on_behalf_of` and the digests are sealed
+/// absent until a release fills them.
+pub(crate) fn row4_suffix(at_ms: u64, row: &AuditRowInput) -> Vec<u8> {
+    let mut out = vec![ROW4_SUFFIX_MARKER];
+    push_row_fields(&mut out, at_ms / 1000, row);
+    out.extend_from_slice(&at_ms.to_be_bytes());
+    push_opt(&mut out, row.client_request_id.as_deref());
+    push_opt(&mut out, row.trace_id.as_deref());
+    push_opt(&mut out, row.operation_id.as_deref());
+    // on_behalf_of
+    push_opt(&mut out, None);
+    out.push(u8::from(row.unconditional));
+    // before_digest, after_digest
+    push_opt(&mut out, None);
+    push_opt(&mut out, None);
+    out
+}
+
+/// Scheme 3's fields after the marker, shared by schemes 3 and 4.
+fn push_row_fields(out: &mut Vec<u8>, ts: u64, row: &AuditRowInput) {
+    push_lp(out, &ts.to_be_bytes());
+    push_lp(out, row.action.as_bytes());
+    push_lp(out, row.resource.as_bytes());
+    push_lp(out, row.outcome.as_bytes());
+    push_lp(out, row.principal.as_bytes());
+    push_opt(out, row.config_generation.as_deref());
+    push_opt(out, row.request_id.as_deref());
+    push_opt(out, row.idempotency_key.as_deref());
+    push_opt(out, row.kind.as_deref());
+    push_opt(out, row.instance.as_deref());
     out.extend_from_slice(&(row.sections_changed.len() as u64).to_be_bytes());
     for section in &row.sections_changed {
-        push_lp(&mut out, section.as_bytes());
+        push_lp(out, section.as_bytes());
     }
     let severity = if row.severity.is_empty() {
         crate::audit_ring::SEVERITIES[0]
     } else {
         row.severity.as_str()
     };
-    push_lp(&mut out, severity.as_bytes());
-    push_lp(&mut out, row.message.as_bytes());
-    push_lp(&mut out, row.data.as_str().as_bytes());
-    out
+    push_lp(out, severity.as_bytes());
+    push_lp(out, row.message.as_bytes());
+    push_lp(out, row.data.as_str().as_bytes());
 }
 
-/// A sealed suffix read back: its `ts`, the scheme it was sealed under and the row.
+/// A sealed suffix read back: its `ts`, the scheme it was sealed under and the row, and on a scheme 4
+/// row its `at_ms`.
 pub(crate) struct ParsedSuffix {
     pub(crate) ts: u64,
+    pub(crate) at_ms: Option<u64>,
     pub(crate) scheme: u8,
     pub(crate) row: AuditRowInput,
 }
@@ -174,20 +222,25 @@ fn ts_of(bytes: &[u8]) -> u64 {
 /// Read a sealed suffix of any scheme. A scheme 1 or 2 suffix reads with the row defaults
 /// (severity `info`, no `data`); a damaged scheme 3 suffix reads as far as it goes and never panics.
 pub(crate) fn parse_suffix_entry(content: &[u8]) -> ParsedSuffix {
-    let Some(mut rest) = content.strip_prefix(&[ROW_SUFFIX_MARKER]) else {
-        let (ts, action, resource, outcome, principal, scheme) = parse_audit_suffix(content);
-        return ParsedSuffix {
-            ts,
-            scheme,
-            row: AuditRowInput {
-                action,
-                resource,
-                outcome,
-                principal,
-                severity: crate::audit_ring::SEVERITIES[0].to_string(),
-                ..Default::default()
-            },
-        };
+    let (scheme, mut rest) = match content.split_first() {
+        Some((&ROW_SUFFIX_MARKER, rest)) => (crate::audit_ring::AUDIT_SCHEME_ROW, rest),
+        Some((&ROW4_SUFFIX_MARKER, rest)) => (crate::audit_ring::AUDIT_SCHEME_ROW4, rest),
+        _ => {
+            let (ts, action, resource, outcome, principal, scheme) = parse_audit_suffix(content);
+            return ParsedSuffix {
+                ts,
+                at_ms: None,
+                scheme,
+                row: AuditRowInput {
+                    action,
+                    resource,
+                    outcome,
+                    principal,
+                    severity: crate::audit_ring::SEVERITIES[0].to_string(),
+                    ..Default::default()
+                },
+            };
+        }
     };
     let ts = ts_of(&take_lp(&mut rest));
     let action = lossy(take_lp(&mut rest));
@@ -219,9 +272,36 @@ pub(crate) fn parse_suffix_entry(content: &[u8]) -> ParsedSuffix {
     let severity = lossy(take_lp(&mut rest));
     let message = lossy(take_lp(&mut rest));
     let data = AuditData::from_json(&lossy(take_lp(&mut rest))).unwrap_or_default();
+    let (at_ms, correlation, unconditional) = if scheme == crate::audit_ring::AUDIT_SCHEME_ROW4 {
+        let at_ms = match rest.split_first_chunk::<8>() {
+            Some((at_ms, after)) => {
+                rest = after;
+                Some(u64::from_be_bytes(*at_ms))
+            }
+            None => {
+                rest = &[];
+                None
+            }
+        };
+        let client_request_id = take_opt(&mut rest);
+        let trace_id = take_opt(&mut rest);
+        let operation_id = take_opt(&mut rest);
+        // on_behalf_of: sealed absent by every writer so far.
+        let _ = take_opt(&mut rest);
+        let unconditional = rest.first() == Some(&1);
+        (
+            at_ms,
+            (client_request_id, trace_id, operation_id),
+            unconditional,
+        )
+    } else {
+        (None, (None, None, None), false)
+    };
+    let (client_request_id, trace_id, operation_id) = correlation;
     ParsedSuffix {
         ts,
-        scheme: crate::audit_ring::AUDIT_SCHEME_ROW,
+        at_ms,
+        scheme,
         row: AuditRowInput {
             action,
             resource,
@@ -236,6 +316,10 @@ pub(crate) fn parse_suffix_entry(content: &[u8]) -> ParsedSuffix {
             severity,
             message,
             data,
+            client_request_id,
+            trace_id,
+            operation_id,
+            unconditional,
         },
     }
 }
@@ -248,10 +332,19 @@ fn entry_of(
     parsed: ParsedSuffix,
     recorded_here: bool,
 ) -> AuditEntry {
-    let ParsedSuffix { ts, scheme, row } = parsed;
+    let ParsedSuffix {
+        ts,
+        at_ms,
+        scheme,
+        row,
+    } = parsed;
+    let unconditional =
+        (scheme == crate::audit_ring::AUDIT_SCHEME_ROW4).then_some(row.unconditional);
     AuditEntry {
         seq,
         ts,
+        at_ms,
+        unconditional,
         action: row.action,
         resource: row.resource,
         outcome: row.outcome,
@@ -268,6 +361,9 @@ fn entry_of(
         severity: row.severity,
         message: row.message,
         data: row.data,
+        client_request_id: row.client_request_id,
+        trace_id: row.trace_id,
+        operation_id: row.operation_id,
         recorded_here,
     }
 }
@@ -295,6 +391,7 @@ pub const AUDIT_ACTIONS: &[&str] = &[
     "credential.at_rest.open",
     "credential.at_rest.rewrap",
     "diagnostic.raised",
+    "export.loss",
     "group.create",
     "group.delete",
     "group.patch",
@@ -314,6 +411,7 @@ pub const AUDIT_ACTIONS: &[&str] = &[
     "node.drain",
     "overlay.reset",
     "plugin.health",
+    "plugin.inspect",
     "plugin.install",
     "plugin.need",
     "plugin.op",
@@ -411,7 +509,7 @@ struct PersistedAuditBody {
     content: Vec<u8>,
 }
 fn decode_audit_body(body: &[u8]) -> RecordStoreResult<NeutralBody> {
-    let value: PersistedAuditBody = serde_json::from_slice(body)
+    let value: PersistedAuditBody = busbar_contract::json::parse(body)
         .map_err(|_| RecordStoreError("unknown or damaged native audit body".into()))?;
     Ok(NeutralBody {
         seq: value.seq,
@@ -705,11 +803,17 @@ impl PlaneAuditLog {
         if query.descending {
             return self.list_after(query);
         }
-        let Some(native) = native_owner(self.kind_id).filter(|n| n.ready.load(Ordering::Acquire))
+        let Some(native) =
+            native_owner(self.kind_id).filter(|n| n.storage.ready.load(Ordering::Acquire))
         else {
             return self.list_after(query);
         };
-        let Ok(records) = native.history.list(KIND_AUDIT, &PlaneSelector::All).await else {
+        let Ok(records) = native
+            .storage
+            .history
+            .list(KIND_AUDIT, &PlaneSelector::All)
+            .await
+        else {
             return self.list_after(query);
         };
         let mut rows: Vec<AuditEntry> = records
@@ -782,7 +886,8 @@ impl PlaneAuditLog {
     }
 }
 
-const MAX_PENDING_AUDIT: usize = 256;
+/// Shared bound for native audit originals and logical export first-loss reservations.
+pub const MAX_PENDING_AUDIT: usize = 256;
 
 /// Confirmation observers for one administrative execution, independent of queue custody.
 #[derive(Default)]
@@ -824,6 +929,10 @@ pub fn scope_request_sync<T>(request: Option<Arc<AuditRequest>>, work: impl FnOn
 #[derive(Default)]
 struct RequestAudit {
     idempotency_key: Option<String>,
+    /// The operation the request created (ADMIN-API-1.6-ONE-MODEL section 6.4).
+    operation_id: Option<String>,
+    /// The request was admitted on `If-Match: *`.
+    unconditional: bool,
     /// Reads the config generation the request's change published; called when an applied row is
     /// written, after the change committed.
     generation: Option<Arc<dyn Fn() -> u64 + Send + Sync>>,
@@ -841,6 +950,18 @@ pub fn note_idempotency_key(key: &str) {
     with_context(|ctx| ctx.idempotency_key = Some(key.to_string()));
 }
 
+/// The operation the request in flight created; its rows carry its id
+/// (ADMIN-API-1.6-ONE-MODEL section 7.1).
+pub fn note_operation_id(id: &str) {
+    with_context(|ctx| ctx.operation_id = Some(id.to_string()));
+}
+
+/// The request in flight was admitted on `If-Match: *`: its rows are sealed as unconditional
+/// (ADMIN-API-1.6-ONE-MODEL section 6.2).
+pub fn note_unconditional() {
+    with_context(|ctx| ctx.unconditional = true);
+}
+
 /// Where the request in flight reads the config generation its change published. Set only for a
 /// config-changing request: its applied rows then carry `config_generation`.
 pub fn note_generation_source(source: Arc<dyn Fn() -> u64 + Send + Sync>) {
@@ -852,25 +973,39 @@ pub fn note_sections_changed(sections: Vec<String>) {
     with_context(|ctx| ctx.sections = sections);
 }
 
-/// Fill what `row` leaves unset from the request in flight: its id, its `Idempotency-Key`, and, on an
-/// applied row only (a rejected one changed nothing), the generation and sections it changed.
+/// Fill what `row` leaves unset from the request in flight: its id, the caller's own id and trace id, its
+/// `Idempotency-Key` and the operation it created, whether it was admitted on `If-Match: *`, and, on an applied row only (a rejected one changed nothing), the generation and sections it changed.
 pub(crate) fn stamp_request_context(row: &mut AuditRowInput) {
     if row.request_id.is_none() {
         row.request_id = crate::admin::gate::request_id_in_scope();
     }
+    if let Some(correlation) = crate::admin::gate::correlation_in_scope() {
+        if row.client_request_id.is_none() {
+            row.client_request_id = correlation.client_request_id;
+        }
+        if row.trace_id.is_none() {
+            row.trace_id = correlation.trace.map(|trace| trace.trace_id);
+        }
+    }
     let Some(request) = current_request() else {
         return;
     };
-    let (key, generation, sections) = {
+    let (key, operation, unconditional, generation, sections) = {
         let ctx = request.context.lock().unwrap_or_else(|e| e.into_inner());
         (
             ctx.idempotency_key.clone(),
+            ctx.operation_id.clone(),
+            ctx.unconditional,
             ctx.generation.clone(),
             ctx.sections.clone(),
         )
     };
+    row.unconditional |= unconditional;
     if row.idempotency_key.is_none() {
         row.idempotency_key = key;
+    }
+    if row.operation_id.is_none() {
+        row.operation_id = operation;
     }
     if row.outcome == busbar_contract::vocab::OUTCOME_APPLIED {
         if row.config_generation.is_none() {
@@ -882,10 +1017,10 @@ pub(crate) fn stamp_request_context(row: &mut AuditRowInput) {
     }
 }
 
-/// Write one row under hash scheme 3, stamped with the request in flight.
+/// Write one row under hash scheme 4, stamped with the request in flight.
 pub fn emit_row_now(mut row: AuditRowInput) {
     stamp_request_context(&mut row);
-    let suffix = row_suffix(busbar_kernel::store::now(), &row);
+    let suffix = row4_suffix(busbar_kernel::store::now_ms(), &row);
     drain_pending_audit();
     enqueue_pending_audit(ADMIN_LOG, suffix, EventOrigin::Mutation);
     drain_pending_audit();
@@ -1035,11 +1170,26 @@ impl PendingAuditQueue {
     }
 
     fn try_enqueue(&self, p: PendingAudit) -> RecordStoreResult<()> {
+        self.try_enqueue_background(p)
+            .inspect_err(|_| request_failed())
+    }
+
+    /// Transfer a background original without borrowing an unrelated request's audit context.
+    fn try_enqueue_background(&self, p: PendingAudit) -> RecordStoreResult<()> {
+        self.try_enqueue_original(p).map_err(|(_, error)| error)
+    }
+
+    /// A known no-effect refusal returns the exact original; it has not entered the queue
+    /// or crossed storage. Its original owner may retry this transfer without reminting it.
+    fn try_enqueue_original(
+        &self,
+        p: PendingAudit,
+    ) -> Result<(), (PendingAudit, RecordStoreError)> {
         let mut q = self.rows.lock().unwrap_or_else(|e| e.into_inner());
         if q.queued.len() >= self.cap {
-            request_failed();
-            return Err(RecordStoreError(
-                "the admin audit recovery queue is full".into(),
+            return Err((
+                p,
+                RecordStoreError("the admin audit recovery queue is full".into()),
             ));
         }
         q.queued.push_back(p);
@@ -1124,6 +1274,62 @@ impl PendingAuditQueue {
 
 static PENDING_AUDIT: PendingAuditQueue = PendingAuditQueue::new(MAX_PENDING_AUDIT);
 
+/// An observer of one original. Dropping this receipt never abandons queued evidence.
+#[derive(Clone, Debug)]
+pub struct ExportAuditReceipt(Arc<AtomicBool>);
+
+impl ExportAuditReceipt {
+    #[must_use]
+    pub fn is_confirmed(&self) -> bool {
+        self.0.load(Ordering::Acquire)
+    }
+}
+
+/// Transfer first-loss evidence once. On refusal the caller retains its facts for retry;
+/// on success the native queue owns the exact operation until confirmation. This synchronous
+/// transfer neither starts I/O nor inherits the current request's principal or confirmation.
+pub fn try_enqueue_export_failure(
+    facts: &ExportLossFacts,
+) -> RecordStoreResult<ExportAuditReceipt> {
+    enqueue_export_failure(&PENDING_AUDIT, facts)
+}
+
+fn enqueue_export_failure(
+    queue: &PendingAuditQueue,
+    facts: &ExportLossFacts,
+) -> RecordStoreResult<ExportAuditReceipt> {
+    let (class, reason) = match facts.kind {
+        ExportLossKind::Dropped(reason) => ("dropped", reason.as_str()),
+        ExportLossKind::CaptureRefused => ("capture_refused", "admission_rejected"),
+        ExportLossKind::IntegrityFailed => ("integrity_failed", "audit_unavailable"),
+    };
+    let row = AuditRowInput {
+        action: "export.loss".into(),
+        resource: format!("{class}.{reason}.count_{}", facts.count),
+        outcome: busbar_contract::vocab::OUTCOME_DEGRADED.into(),
+        principal: PLUGIN_REFUSAL_PRINCIPAL.into(),
+        kind: Some(busbar_contract::plugin::Kind::Export.root().into()),
+        instance: Some(facts.instance.clone()),
+        severity: "error".into(),
+        ..AuditRowInput::default()
+    };
+    // The loss is observed in whole seconds; its scheme 4 instant is that second.
+    let suffix = row4_suffix(facts.observed_at.saturating_mul(1000), &row);
+    let mut operation = [0; 16];
+    busbar_contract::crypto::fill(&mut operation)
+        .map_err(|error| RecordStoreError(format!("export audit operation entropy: {error}")))?;
+    let confirmed = Arc::new(AtomicBool::new(false));
+    queue.try_enqueue_background(PendingAudit {
+        scope: ADMIN_LOG.into(),
+        suffix,
+        origin: EventOrigin::ExportFailure,
+        operation,
+        prepared: None,
+        confirmation: Some(confirmed.clone()),
+    })?;
+    Ok(ExportAuditReceipt(confirmed))
+}
+
 fn pending_audit(
     scope: &str,
     suffix: Vec<u8>,
@@ -1162,7 +1368,7 @@ fn drain_pending_audit() {
     let Some(native) = native_owner(KIND_ID_AUDIT) else {
         return;
     };
-    if !native.ready.load(Ordering::Acquire) {
+    if !native.storage.ready.load(Ordering::Acquire) {
         return;
     }
     {
@@ -1220,10 +1426,10 @@ pub fn has_unsettled_audit() -> bool {
     !queue.queued.is_empty()
 }
 
-fn deliver_audit_event(entry: &AuditEntry) {
+fn deliver_audit_event(exports: &crate::export::plugin::Exports, entry: &AuditEntry) {
     use busbar_contract::export_stream::ExportStream;
 
-    crate::export::plugin::deliver(ExportStream::Events, &entry.action, |projection| {
+    crate::export::plugin::deliver_on(exports, ExportStream::Events, &entry.action, |projection| {
         project_audit_event(projection, entry)
     });
 }
@@ -1254,11 +1460,11 @@ pub(crate) async fn register_and_restore(
 ) -> RecordStoreResult<()> {
     register_audit_stream(app);
     let native = install_native(KIND_ID_AUDIT, store)?;
-    if native.ready.load(Ordering::Acquire) {
+    if native.storage.ready.load(Ordering::Acquire) {
         return drain_native(&PENDING_AUDIT, &AUDIT_LOG, native).await;
     }
     let restored = restore_native(&AUDIT_LOG, &native).await?;
-    native.ready.store(true, Ordering::Release);
+    native.storage.ready.store(true, Ordering::Release);
     if restored.records == 0 && restored.unreadable == 0 && restored.chain_breaks.is_empty() {
         tracing::debug!(
             records = restored.records,
@@ -1616,7 +1822,7 @@ pub async fn register_test_audit_stream(app: &Arc<crate::state::App>) {
         .core_store_handle()
         .expect("native audit test Store");
     if let Some(previous) = native_owner(KIND_ID_AUDIT) {
-        if !Arc::ptr_eq(&previous.store, &store) {
+        if !Arc::ptr_eq(&previous.storage.store, &store) {
             // A test's new deployment must finish the prior deployment's real
             // native queue before replacing its global test registration.
             flush_pending()
@@ -1656,11 +1862,11 @@ pub async fn ensure_global_audit_stream_registered() {
                 None => install_native(KIND_ID_AUDIT, crate::real_store::core().await)
                     .expect("native audit test owner"),
             };
-            if !native.ready.load(Ordering::Acquire) {
+            if !native.storage.ready.load(Ordering::Acquire) {
                 restore_native(&AUDIT_LOG, &native)
                     .await
                     .expect("native audit test restore");
-                native.ready.store(true, Ordering::Release);
+                native.storage.ready.store(true, Ordering::Release);
             }
             open_plugin_refusals();
         })
@@ -1675,6 +1881,13 @@ pub async fn ensure_global_audit_stream_registered() {
 mod tests;
 
 struct NativeAudit {
+    storage: Arc<NativeAuditStorage>,
+    exports: Option<Arc<crate::export::plugin::Exports>>,
+}
+
+/// The attachment identity and durable state survive bootstrap-to-serving observer assembly.
+/// A pending original always retains this exact owner, never a newly opened attachment.
+struct NativeAuditStorage {
     store: Arc<CoreStore>,
     history: AsyncHistory,
     heads: Mutex<std::collections::BTreeMap<String, (u64, String)>>,
@@ -1683,7 +1896,7 @@ struct NativeAudit {
 }
 #[derive(Clone)]
 struct PreparedAudit {
-    native: Arc<NativeAudit>,
+    native: Arc<NativeAuditStorage>,
     envelope: PlaneRecord,
     entry: AuditEntry,
 }
@@ -1704,7 +1917,7 @@ fn install_native(kind: u32, store: Arc<CoreStore>) -> RecordStoreResult<Arc<Nat
         .lock()
         .unwrap_or_else(|error| error.into_inner());
     if let Some(held) = owners.get(&kind) {
-        if !Arc::ptr_eq(&held.store, &store) {
+        if !Arc::ptr_eq(&held.storage.store, &store) {
             return Err(RecordStoreError(
                 "audit owner cannot retarget retained operations to another CoreStore attachment"
                     .into(),
@@ -1724,15 +1937,62 @@ fn install_native(kind: u32, store: Arc<CoreStore>) -> RecordStoreResult<Arc<Nat
     )
     .map_err(native_error)?;
     let native = Arc::new(NativeAudit {
-        store,
-        history,
-        heads: Mutex::default(),
-        driving: tokio::sync::Mutex::new(()),
-        ready: AtomicBool::new(false),
+        storage: Arc::new(NativeAuditStorage {
+            store,
+            history,
+            heads: Mutex::default(),
+            driving: tokio::sync::Mutex::new(()),
+            ready: AtomicBool::new(false),
+        }),
+        exports: None,
     });
     owners.insert(kind, native.clone());
     Ok(native)
 }
+/// Publish completed audit observers without retargeting any durable original. Bootstrap
+/// owners and already-running drains retain the same storage, locks, heads and operation IDs.
+pub(crate) fn publish_export_observers(app: &crate::state::App) -> Result<(), String> {
+    let Some(governance) = &app.governance else {
+        return Ok(());
+    };
+    let store = governance
+        .core_store_handle()
+        .map_err(|error| error.to_string())?;
+    let mut owners = native_owners()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    publish_export_observers_on(&mut owners, &store, &app.exports)
+}
+
+fn publish_export_observers_on(
+    owners: &mut std::collections::HashMap<u32, Arc<NativeAudit>>,
+    store: &Arc<CoreStore>,
+    exports: &Arc<crate::export::plugin::Exports>,
+) -> Result<(), String> {
+    for native in owners
+        .values()
+        .filter(|native| Arc::ptr_eq(&native.storage.store, store))
+    {
+        if native
+            .exports
+            .as_ref()
+            .is_some_and(|held| !Arc::ptr_eq(held, exports))
+        {
+            return Err("audit export observers already belong to another serving registry".into());
+        }
+    }
+    for native in owners
+        .values_mut()
+        .filter(|native| Arc::ptr_eq(&native.storage.store, store))
+    {
+        *native = Arc::new(NativeAudit {
+            storage: Arc::clone(&native.storage),
+            exports: Some(Arc::clone(exports)),
+        });
+    }
+    Ok(())
+}
+
 fn native_error(error: crate::host_records_async::HistoryError) -> RecordStoreError {
     RecordStoreError(format!("native audit persistence: {error:?}"))
 }
@@ -1746,10 +2006,11 @@ async fn restore_native(
 ) -> RecordStoreResult<AuditRestored> {
     let mut scopes: std::collections::BTreeMap<String, Vec<Vec<u8>>> =
         std::collections::BTreeMap::new();
-    let legacy = crate::persistence::history::Audit::authorized(&native.store, PERSISTENCE_OWNER)
-        .list()
-        .await
-        .map_err(native_error)?;
+    let legacy =
+        crate::persistence::history::Audit::authorized(&native.storage.store, PERSISTENCE_OWNER)
+            .list()
+            .await
+            .map_err(native_error)?;
     for record in legacy {
         scopes
             .entry(ADMIN_LOG.into())
@@ -1768,6 +2029,7 @@ async fn restore_native(
             })?);
     }
     for record in native
+        .storage
         .history
         .list(KIND_AUDIT, &PlaneSelector::All)
         .await
@@ -1838,6 +2100,7 @@ async fn restore_native(
         return Err(RecordStoreError("canonical audit evidence has ambiguous positions or unreadable bodies; continuation requires explicit recovery".into()));
     }
     *native
+        .storage
         .heads
         .lock()
         .unwrap_or_else(|error| error.into_inner()) = heads;
@@ -1849,6 +2112,7 @@ fn prepare_native(
     native: Arc<NativeAudit>,
 ) -> RecordStoreResult<PreparedAudit> {
     let (previous, prev_hash) = native
+        .storage
         .heads
         .lock()
         .unwrap_or_else(|error| error.into_inner())
@@ -1877,7 +2141,7 @@ fn prepare_native(
         content: pending.suffix.clone(),
     })?;
     Ok(PreparedAudit {
-        native,
+        native: Arc::clone(&native.storage),
         envelope: PlaneRecord {
             kind: KIND_AUDIT.into(),
             id: pending.scope.clone(),
@@ -1895,8 +2159,8 @@ async fn drain_native(
     log: &PlaneAuditLog,
     native: Arc<NativeAudit>,
 ) -> RecordStoreResult<()> {
-    let _driving = native.driving.lock().await;
-    if !native.ready.load(Ordering::Acquire) {
+    let _driving = native.storage.driving.lock().await;
+    if !native.storage.ready.load(Ordering::Acquire) {
         return Err(RecordStoreError(
             "canonical audit restore has not completed".into(),
         ));
@@ -1925,12 +2189,13 @@ async fn drain_native(
             first.prepared.clone_from(&pending.prepared);
         }
         let prepared = pending.prepared.as_ref().expect("retained audit original");
-        if !Arc::ptr_eq(&prepared.native, &native) {
+        if !Arc::ptr_eq(&prepared.native, &native.storage) {
             return Err(RecordStoreError(
                 "audit attempt belongs to another native attachment".into(),
             ));
         }
         let outcome = native
+            .storage
             .history
             .append_with_id(pending.operation, prepared.envelope.view())
             .await;
@@ -1966,6 +2231,7 @@ async fn drain_native(
             Err(error) => return Err(native_error(error)),
         }
         native
+            .storage
             .heads
             .lock()
             .unwrap_or_else(|error| error.into_inner())
@@ -1980,7 +2246,19 @@ async fn drain_native(
             false,
         );
         if pending.origin.redispatch() {
-            deliver_audit_event(&prepared.entry);
+            // A drain may have captured its bootstrap wrapper before S9. Resolve only an
+            // observer published over the exact same durable attachment; never retarget it.
+            let exports = native.exports.clone().or_else(|| {
+                native_owners()
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .values()
+                    .find(|owner| Arc::ptr_eq(&owner.storage, &native.storage))
+                    .and_then(|owner| owner.exports.clone())
+            });
+            if let Some(exports) = exports {
+                deliver_audit_event(&exports, &prepared.entry);
+            }
         }
         {
             let mut held = queue.rows.lock().unwrap_or_else(|error| error.into_inner());
@@ -1998,6 +2276,9 @@ async fn drain_native(
         if let Some(confirmation) = &pending.confirmation {
             confirmation.store(true, Ordering::Release);
         }
+        // Ring publication precedes queue capacity release and exact confirmation. Wake the
+        // same existing signal afterwards, including background rows without observers.
+        log.appended.notify_waiters();
     }
 }
 

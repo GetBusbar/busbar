@@ -1,6 +1,6 @@
 name: hooks
 group: hooks
-description: Pool hooks on the request path - ranking (cheapest, least_busy) and the complexity classifier (a decisions child call per request).
+description: Pool hooks on the request path - ranking (cheapest, least_busy) and the complexity hook.
 config: |
   listen: "{LISTEN}"
   admin_listen: "{ADMIN}"
@@ -31,7 +31,7 @@ config: |
     m-cheap: { input_utok: 1000, output_utok: 2000 }
   decisions:
     models:
-      classifier: { provider: dec, upstream_model: classifier, protocol: jev }
+      classifier: { provider: dec, upstream_model: classifier }
   hooks:
     complexity:
       kind: gate
@@ -41,17 +41,6 @@ config: |
       signals: [request_text_complete]
       timeout_ms: 1500
       on_error: weighted
-      child_dispatch:
-        revision: 1
-        plane: decision
-        operation: POST
-        target: /busbar/decisions/v1/classify
-        target_binding: classifier
-        max_input_bytes: 16384
-        max_output_bytes: 65536
-        max_children: 1
-        timeout_ms: 1000
-        max_budget_micros: 1000000
       settings:
         classifier_model: classifier
         mode: prefer
@@ -108,7 +97,7 @@ cases:
         headers: { authorization: "Bearer {KEY}", content-type: application/json }
         body: '{"model":"p-least-busy","messages":[{"role":"user","content":"hello"}],"max_tokens":16}'
         contains: hammer-ok
-  - name: complexity (decisions child call)
+  - name: complexity
     shape: { closed: 32 }
     requests:
       - path: /v1/chat/completions

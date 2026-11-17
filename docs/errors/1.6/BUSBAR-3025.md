@@ -6,13 +6,15 @@ slug: docs/1.6/errors/BUSBAR-3025
 
 **Area:** Config (3xxx) · **Severity:** actionable · **Since:** 1.6.0
 
+> **Retired.** Busbar no longer reports this code. The page stays so an old log line still resolves; the code is never reused.
+
 ## What it means
 
-A provider's `base_url` or `token_url` names a private or loopback address (an RFC 1918, loopback, link-local, CGNAT or unique-local literal, or the `localhost` name), and `advanced.block_private_addresses` is on (the default) and `advanced.allow_destinations` does not name it. The destination guard refuses every request to it, so the provider would fail on its first request rather than at startup. 1.5.5 had no such guard. Emitted once per URL at config load, naming the provider, the key and the host.
+RETIRED. Configured providers retain private reach on their core-selected base/token routes. The grant is restricted to those origins and never becomes a global hostname permission. Metadata remains refused.
 
 ## How to fix it
 
-Add exactly that host to `advanced.allow_destinations`, or point the provider at a public address. Turning `block_private_addresses` off also admits it, and every other private address with it.
+Nothing emits this code. Review the configured provider route; arbitrary requests and strict OPEN_WEB checks do not inherit its private reach.
 
 ---
 

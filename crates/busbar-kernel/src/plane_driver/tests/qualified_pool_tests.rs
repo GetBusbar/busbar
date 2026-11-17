@@ -34,14 +34,13 @@ struct Rig {
 
 fn rig() -> Rig {
     let limit = |amount, pool: Option<&str>| LimitCfg {
+        selected: None,
         metric: LimitMetric::Budget,
         amount,
         per: Some(LimitWindow::Total),
         scope: pool.map(ScopeRef::pool),
         on_exhaust: None,
         downgrade_to: None,
-        admission: None,
-        on_exhaustion: None,
     };
     let groups = BTreeMap::from([
         (

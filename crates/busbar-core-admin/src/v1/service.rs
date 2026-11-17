@@ -14,11 +14,11 @@ use busbar_kernel::diagnostics::{
 use busbar_kernel::state::App;
 
 use crate::v1::contract::{
-    AdminAuthView, AdminError, AuthView, BuildInfo, ClassUsage, ConfigValidateView,
-    EffectiveConfigView, GroupView, HookHealthView, HookTransportView, HookView, InfoView,
-    KeyUsageView, ModelUsageView, ModelView, NamedDefView, NodeView, Page, PluginView,
-    PoolDetailView, PoolMemberStatusView, PoolMemberView, PoolView, ProviderView, TopologyInfo,
-    UsageBreakdown, UsageView, UsageWindow,
+    AdminAuthView, AdminError, AuthView, ClassUsage, ConfigValidateView, EffectiveConfigView,
+    GroupView, HookHealthView, HookTransportView, HookView, InfoView, InfoWarning, KeyUsageView,
+    ModelUsageView, ModelView, NamedDefView, Page, PluginView, PoolDetailView,
+    PoolMemberStatusView, PoolMemberView, PoolView, ProviderView, UsageBreakdown, UsageView,
+    UsageWindow,
 };
 use busbar_kernel::config::named_map::NamedMapSection;
 use busbar_kernel::config::{HookCfg, HookKind, HookStage, PromptAccess, UserAccess};
@@ -342,18 +342,21 @@ pub mod read_path_money {
     pub use crate::v1::contract::UsageBreakdown;
 }
 
-static PROCESS_START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
-
-static PROCESS_START_EPOCH: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+/// Epoch milliseconds the process started, stamped once by [`mark_start`].
+static PROCESS_START_MS: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
 
 pub fn mark_start() {
-    let _ = PROCESS_START.set(std::time::Instant::now());
-    let _ = PROCESS_START_EPOCH.set(busbar_kernel::store::now());
+    let _ = PROCESS_START_MS.set(busbar_kernel::store::now_ms());
 }
 
 /// Epoch seconds the process started, once [`mark_start`] ran.
 pub(crate) fn started_at() -> Option<u64> {
-    PROCESS_START_EPOCH.get().copied()
+    started_at_ms().map(|ms| ms / 1000)
+}
+
+/// Epoch milliseconds the process started, once [`mark_start`] ran (`/info.started_at_ms`).
+pub(crate) fn started_at_ms() -> Option<u64> {
+    PROCESS_START_MS.get().copied()
 }
 
 struct CatalogCacheEntry {
@@ -427,11 +430,12 @@ pub(crate) fn running_grammar(app: &App) -> busbar_kernel::config::Grammar {
 /// on a blocking worker. The caller ran the authority pre-check before calling this. The grammar
 /// is trimmed for an admin response: a refusal names the item and its cause, never a file.
 pub(crate) async fn read_grammar(
+    rules: std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>,
     plugins: busbar_kernel::config::PluginsCfg,
     blocked_metadata_hosts: Vec<String>,
     fetch: busbar_kernel::config::grammar::Fetch,
     operation: &'static str,
-) -> Result<busbar_kernel::config::Grammar, AdminError> {
+) -> Result<Arc<busbar_kernel::config::grammar::PreparedConfigRead>, AdminError> {
     let joined = |join_err: tokio::task::JoinError| {
         diag_error!(
             ADMIN_STORE_TASK_JOIN_FAILED,
@@ -453,7 +457,7 @@ pub(crate) async fn read_grammar(
     let gate = scan_gate(operation).await?;
     tokio::task::spawn_blocking(move || {
         let _gate = gate;
-        phase_one(&plugins, fetch, operation)
+        phase_one(&plugins, fetch, operation, rules.as_ref())
     })
     .await
     .map_err(joined)?
@@ -465,15 +469,17 @@ pub(crate) fn phase_one(
     plugins: &busbar_kernel::config::PluginsCfg,
     fetch: busbar_kernel::config::grammar::Fetch,
     operation: &'static str,
-) -> Result<busbar_kernel::config::Grammar, AdminError> {
+    rules: &dyn busbar_kernel::appbuild::RootRules,
+) -> Result<Arc<busbar_kernel::config::grammar::PreparedConfigRead>, AdminError> {
     let pins = std::collections::BTreeMap::new();
-    busbar_kernel::config::grammar::grammar_for(&busbar_kernel::config::grammar::PhaseOneIn {
+    busbar_kernel::config::grammar::prepare_read_for(&busbar_kernel::config::grammar::PhaseOneIn {
         plugins,
         dir: Path::new(&plugins.dir),
         pins: &pins,
         fetch,
-    })
-    .map(busbar_kernel::config::Grammar::trimmed)
+    }, rules)
+    .map(busbar_kernel::config::grammar::PreparedConfigRead::trimmed)
+    .map(Arc::new)
     .map_err(|refusal| {
         tracing::warn!(operation, refusal = %refusal, "the plugins: block's modules cannot be judged");
         AdminError::Validation(format!(
@@ -517,18 +523,19 @@ pub(crate) async fn read_disk_generation(
     .map_err(AdminError::Validation)?;
     busbar_kernel::config::security_policy::precheck(current, &read.candidate)?;
     let grammar = read_grammar(
+        current.root_rules.clone(),
         read.candidate.plugins.clone(),
         read.candidate.blocked_metadata_hosts.clone(),
         busbar_kernel::config::grammar::Fetch::Reload,
         operation,
     )
     .await?;
-    read.typed(
+    read.typed_prepared(
         config_path,
         current.providers_override.as_deref(),
         env,
         &*current.root_rules,
-        &grammar,
+        grammar,
     )
     .map_err(AdminError::Validation)
 }
@@ -838,8 +845,8 @@ pub fn build_with_hook(current: &App, name: &str, cfg: HookCfg) -> Result<App, A
     }
 
     rebuild_hook_derived(&mut next);
-    next.root_rules
-        .check_built(&next)
+    Arc::clone(&next.root_rules)
+        .check_built(&mut next)
         .map_err(AdminError::Validation)?;
     Ok(next)
 }
@@ -868,8 +875,8 @@ pub fn build_without_hook(current: &App, name: &str) -> Result<App, AdminError> 
     next.global_hooks.retain(|n| n != name);
     stage_hook_routes(&mut next)?;
     rebuild_hook_derived(&mut next);
-    next.root_rules
-        .check_built(&next)
+    Arc::clone(&next.root_rules)
+        .check_built(&mut next)
         .map_err(AdminError::Validation)?;
     Ok(next)
 }
@@ -981,8 +988,8 @@ pub(crate) fn build_with_registry(
         return Err(AdminError::Validation(e));
     }
     rebuild_hook_derived(&mut next);
-    next.root_rules
-        .check_built(&next)
+    Arc::clone(&next.root_rules)
+        .check_built(&mut next)
         .map_err(AdminError::Validation)?;
     Ok(next)
 }
@@ -1094,7 +1101,7 @@ pub(crate) fn inspect_plugin_view(
         "kind": manifest.kind,
         "schema": schema,
         "schema_error": schema_error,
-        "trust": trust,
+        "trust": crate::v1::contract::PluginTrustView::from_verification(manifest.signature_present, trust, &Default::default()),
         "source": "manifest",
         "restart_required_default": restart_default(&manifest.kind),
     })
@@ -1145,7 +1152,13 @@ fn plugin_inventory_view(row: busbar_kernel::admission::Inventoried) -> PluginVi
         version: row.stated.as_ref().map(|m| m.version.clone()),
         publisher: row.stated.as_ref().map(|m| m.publisher.clone()),
         interface_version: row.stated.as_ref().map(|m| m.abi_version),
-        trust,
+        trust: trust.map(|verdict| {
+            crate::v1::contract::PluginTrustView::from_verification(
+                row.stated.as_ref().is_some_and(|m| m.signature_present),
+                verdict,
+                &Default::default(),
+            )
+        }),
         valid: Some(row.status == "ready"),
         error: (row.status != "ready").then(|| row.status.clone()),
         schema_url,
@@ -1220,6 +1233,8 @@ pub(crate) struct AdminService {
 
 #[path = "service_operations.rs"]
 mod operations;
+#[cfg(test)]
+pub(crate) use operations::refused as admission_refused;
 pub(crate) use operations::{parse_utc_day, SeriesSpec, UsageDim};
 
 pub(crate) fn project_hook_view(name: &str, cfg: &HookCfg, global_hooks: &[String]) -> HookView {

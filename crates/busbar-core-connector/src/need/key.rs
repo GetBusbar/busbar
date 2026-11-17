@@ -4,7 +4,7 @@
 //! THE NEED POOL (IF 6.1, 13): conns keyed by value, so a hit is always a conn dialled, judged and
 //! verified for this very destination and name.
 //!
-//! [`NeedKey`] compares `dest`, `sni` and `alpn` by value (never by their hash), carries the judged
+//! [`NeedKey`] isolates runtime instances, compares `dest`, `sni` and `alpn` by value (never by their hash), carries the judged
 //! class, the TLS mode, the SHA-256 of the trust anchor and of the client certificate chain, and the
 //! core-only `verify` bit (TRANSPORT-SECURITY-POLICY 3) that keeps a waived conn from serving an
 //! instance that did not accept the waiver. The 0x20/0x40 key forms and the plaintext-fallback row
@@ -29,6 +29,8 @@ pub enum Tls {
 /// What a pooled conn was dialled, judged and verified for.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct NeedKey {
+    /// The owning runtime instance. Authenticated sessions never cross instance boundaries.
+    pub instance: busbar_contract::conn::InstanceId,
     /// The normalised destination, `host:port` or `unix:/path`.
     pub dest: Box<str>,
     /// The effective SNI (empty when none).

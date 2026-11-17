@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use crate::root::test_plugins as plugins;
+use busbar_contract::json::{self, JsonValueTrait};
 use busbar_contract::records::VirtualKey;
 use busbar_kernel::governance::{AdjustRefused, Adjustment, GovState};
 use std::collections::BTreeMap;
@@ -25,18 +26,12 @@ async fn an_adjust_of_a_units_counts_moves_the_served_usage_figure() {
     crate::dist_root_install::install();
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch(&format!(
         "admin-service-adjust-usage-{}",
@@ -66,7 +61,7 @@ async fn an_adjust_of_a_units_counts_moves_the_served_usage_figure() {
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": {"file": signing_key} },
         "identity-providers": {},
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
     });
     document["identity-providers"][operator] =
         serde_json::json!({"module": operator, "token": {"file": operator_token}});
@@ -177,6 +172,7 @@ async fn an_adjust_of_a_units_counts_moves_the_served_usage_figure() {
     store
         .ledger()
         .add_metering(&busbar_contract::records::MeteringDelta {
+            pricing: None,
             scale: 0,
             key_id: ADJUSTED_KEY.into(),
             bucket: day,
@@ -222,11 +218,7 @@ async fn an_adjust_of_a_units_counts_moves_the_served_usage_figure() {
     let addr = listener.local_addr().unwrap();
     let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
     let client = reqwest::Client::new();
-    async fn total(
-        client: &reqwest::Client,
-        addr: std::net::SocketAddr,
-        day: u64,
-    ) -> serde_json::Value {
+    async fn total(client: &reqwest::Client, addr: std::net::SocketAddr, day: u64) -> json::Value {
         let response = client
             .get(format!("http://{addr}/api/v1/admin/usage?window={day}"))
             .header("x-admin-token", "admintok")
@@ -234,7 +226,7 @@ async fn an_adjust_of_a_units_counts_moves_the_served_usage_figure() {
             .await
             .unwrap();
         assert_eq!(response.status().as_u16(), 200);
-        response.json::<serde_json::Value>().await.unwrap()["total"].clone()
+        json::parse_value(&response.bytes().await.unwrap()).unwrap()["total"].clone()
     }
     let before = total(&client, addr, day).await;
     assert_eq!(

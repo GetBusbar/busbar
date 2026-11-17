@@ -111,20 +111,49 @@ fn usage_address(bucket: &str, window: u64) -> Result<Address> {
     )
 }
 fn meter_address(bucket: u64, row: &MeteringRow) -> Result<Address> {
-    address(
-        time_namespace(METERING, bucket),
-        b'M',
-        &[
-            &METERING.0,
-            &bucket.to_be_bytes(),
-            row.key_id.as_bytes(),
-            row.model.as_bytes(),
-            row.provider.as_bytes(),
-            &row.priced_from_ms.to_be_bytes(),
-            row.key_group_at_use.as_bytes(),
-            row.pricing_version.as_bytes(),
-        ],
-    )
+    let bucket_bytes = bucket.to_be_bytes();
+    let priced_bytes = row.priced_from_ms.to_be_bytes();
+    let mut parts: Vec<&[u8]> = vec![
+        &METERING.0,
+        &bucket_bytes,
+        row.key_id.as_bytes(),
+        row.model.as_bytes(),
+        row.provider.as_bytes(),
+        &priced_bytes,
+        row.key_group_at_use.as_bytes(),
+        row.pricing_version.as_bytes(),
+    ];
+    let role = row.pricing.as_ref().map(|pricing| pricing.identity());
+    let present = u64::from(role.as_ref().is_some_and(|role| role.lane().is_some())).to_be_bytes();
+    if let Some(role) = &role {
+        parts.extend([
+            b"selected.v1".as_slice(),
+            role.name().as_bytes(),
+            &present,
+            role.lane().unwrap_or_default().as_bytes(),
+        ]);
+    }
+    address(time_namespace(METERING, bucket), b'M', &parts)
+}
+
+fn meter_suffix_valid(parts: &[&[u8]]) -> bool {
+    if parts.len() == 8 {
+        return true;
+    }
+    if parts.len() != 12 || parts[8] != b"selected.v1" {
+        return false;
+    }
+    let Ok(lane) = std::str::from_utf8(parts[11]) else {
+        return false;
+    };
+    let Ok(presence) = <[u8; 8]>::try_from(parts[10]).map(u64::from_be_bytes) else {
+        return false;
+    };
+    match (parts[9], presence) {
+        (b"usage" | b"request", 0) | (b"fee", 0) => lane.is_empty(),
+        (b"fee", 1) => !lane.is_empty() && lane.len() <= 4096 && !lane.contains('\0'),
+        _ => false,
+    }
 }
 fn time_namespace(family: NamespaceId, time: u64) -> NamespaceId {
     partition::namespace(family, &[&time.to_be_bytes()])
@@ -179,8 +208,10 @@ pub fn migration_authorizes(at: &Address) -> bool {
             let Ok(parts) = keys::components(&at.key, b'M') else {
                 return false;
             };
-            let [family, bucket, key, model, provider, priced, group, version] = parts.as_slice()
-            else {
+            if !meter_suffix_valid(&parts) {
+                return false;
+            }
+            let [family, bucket, key, model, provider, priced, group, version] = &parts[..8] else {
                 return false;
             };
             let Some(bucket) = time(bucket) else {
@@ -260,6 +291,7 @@ pub fn migration_metering(
 
 fn empty_meter(d: &MeteringDelta) -> MeteringRow {
     MeteringRow {
+        pricing: d.pricing.as_ref().map(|pricing| pricing.zeroed()),
         scale: busbar_contract::COUNT_SCALE,
         key_id: d.key_id.clone(),
         model: d.model.clone(),
@@ -282,12 +314,23 @@ struct Record<T> {
     version: u32,
     record: T,
 }
-fn encode<T: Serialize>(record: &T) -> Result<Vec<u8>> {
-    serde_json::to_vec(&Record { version: 1, record }).map_err(|_| corrupt())
+fn encode<T: Serialize + Canonical>(record: &T) -> Result<Vec<u8>> {
+    record.validate()?;
+    busbar_contract::json::to_vec(&Record {
+        version: record.version(),
+        record,
+    })
+    .map_err(|_| corrupt())
 }
 trait Canonical {
     /// The record's canonical member names (checked on the stored bytes, no DOM).
     const SHAPE: Level<'static>;
+    fn version(&self) -> u32 {
+        1
+    }
+    fn validate(&self) -> Result<()> {
+        Ok(())
+    }
 }
 const fn only(names: &'static [&'static str]) -> Level<'static> {
     Level {
@@ -303,6 +346,26 @@ impl Canonical for UsageLedger {
     };
 }
 impl Canonical for MeteringRow {
+    fn version(&self) -> u32 {
+        if self.pricing.is_some() {
+            2
+        } else {
+            1
+        }
+    }
+    fn validate(&self) -> Result<()> {
+        let mut checked = self.clone();
+        checked.normalize_scale6()?;
+        if self.pricing.as_ref().is_some_and(|pricing| {
+            matches!(
+                pricing,
+                busbar_contract::records::MeteringPricingV1::SelectedFee { .. }
+            ) && !pricing.has_fee_evidence()
+        }) {
+            return Err(corrupt());
+        }
+        Ok(())
+    }
     const SHAPE: Level<'static> = only(&[
         "scale",
         "key_id",
@@ -318,6 +381,7 @@ impl Canonical for MeteringRow {
         "pricing_version",
         "priced_from_ms",
         "usage_units",
+        "pricing",
     ]);
 }
 // Metadata inspection never supplies quantity values. Counts decode directly from
@@ -333,10 +397,11 @@ fn decode<T: DeserializeOwned + Canonical>(bytes: &Secret<Vec<u8>>) -> Result<T>
     if !shape::check(bytes, &metadata) {
         return Err(corrupt());
     }
-    let value: Record<T> = serde_json::from_slice(bytes).map_err(|_| corrupt())?;
-    if value.version != 1 {
+    let value: Record<T> = busbar_contract::json::parse(bytes).map_err(|_| corrupt())?;
+    if value.version != value.record.version() {
         return Err(corrupt());
     }
+    value.record.validate()?;
     Ok(value.record)
 }
 #[derive(Serialize, Deserialize)]
@@ -427,7 +492,7 @@ impl<'a> Tx<'a> {
             Err(Error::Conflict)
         }
     }
-    fn put<T: Serialize>(&mut self, at: Address, row: &T) -> Result<()> {
+    fn put<T: Serialize + Canonical>(&mut self, at: Address, row: &T) -> Result<()> {
         self.changes.insert(at, Some(Secret::new(encode(row)?)));
         Ok(())
     }
@@ -798,6 +863,7 @@ impl Ledger<'_> {
                 a.priced_from_ms,
                 &a.key_group_at_use,
                 &a.pricing_version,
+                a.pricing.as_ref().map(|pricing| pricing.identity()),
             )
                 .cmp(&(
                     &b.key_id,
@@ -806,6 +872,7 @@ impl Ledger<'_> {
                     b.priced_from_ms,
                     &b.key_group_at_use,
                     &b.pricing_version,
+                    b.pricing.as_ref().map(|pricing| pricing.identity()),
                 ))
         });
         Ok(result)
@@ -960,7 +1027,7 @@ impl Ledger<'_> {
                     }
                     window
                 } else {
-                    if parts.len() != 8 || parts[0] != METERING.0 {
+                    if !meter_suffix_valid(&parts) || parts[0] != METERING.0 {
                         return Err(corrupt());
                     }
                     let bucket = u64::from_be_bytes(parts[1].try_into().map_err(|_| corrupt())?);

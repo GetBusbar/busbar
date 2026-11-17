@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+use busbar_contract::json::{self, JsonValueTrait};
 use std::path::{Path, PathBuf};
 
 const PLANE_PREFIX: &str = "busbar-plane-";
@@ -61,8 +62,7 @@ fn pinned_dirs(root: &Path) -> Vec<(String, PathBuf)> {
         "cargo metadata failed; the pinned planes {rows:?} cannot be read: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let meta: serde_json::Value =
-        serde_json::from_slice(&out.stdout).expect("cargo metadata answers JSON");
+    let meta = json::parse_value(&out.stdout).expect("cargo metadata answers JSON");
     let packages = meta["packages"]
         .as_array()
         .expect("cargo metadata lists packages");

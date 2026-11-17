@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::*;
+use busbar_contract::json;
 use busbar_kernel::audit::amend::{NodeAmendments, Reader};
 use busbar_kernel::persistence::{
     facade::CoreStore,
@@ -76,18 +77,12 @@ fn accessed(journal: &NodeAmendments) -> Vec<String> {
 async fn application(core: Arc<CoreStore>) -> Arc<busbar_kernel::state::App> {
     crate::dist_root_install::install();
     let path = crate::root::test_plugins::application_store_library();
-    let statement = crate::root::loader::dispatch::rendering_of_library(&path)
-        .expect("the product store statement reads")
-        .expect("the product store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the product store statement is valid")
-        .name;
-    let mut manifest = crate::root::test_plugins::manifest(
+    let module = crate::root::test_plugins::native_image(&path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(path).expect("the product store library reads");
     let directory = crate::root::durability::Scratch::new("amend-app-plugins");
     let archive = crate::root::test_plugins::signed(
@@ -99,12 +94,12 @@ async fn application(core: Arc<CoreStore>) -> Arc<busbar_kernel::state::App> {
         .expect("the actual store archive is staged");
     let settings = crate::root::test_plugins::application_store_settings(&directory.0);
     let deploy = busbar_kernel::config::deploy_from_deserializer(
-        serde_json::json!({
+        &json::json!({
             "providers": {},
             "models": {},
             "auth": { "chain": [], "admin_auth": [] },
             "store": { "module": module, "settings": settings },
-            "advanced": { "allow_destinations": ["127.0.0.1"] },
+            "advanced": {  },
         }),
         &crate::root::boot::axis_test_grammar(),
     )

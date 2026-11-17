@@ -6,19 +6,13 @@ use super::*;
 #[test]
 fn every_patch_mirrors_every_field_of_its_section() {
     let crate::config::LimitsCfg {
-        // Migration allocations are captured before the Store overlay can be read.
-        // Runtime patches cannot change the retained startup operation's budgets.
-        migration_index_bytes: _,
-        migration_value_bytes: _,
         upstream_request_timeout_secs,
         request_body_max_bytes,
-        datagram_line_memory_bytes,
         pool_max_idle_per_host,
         pool_idle_timeout_secs,
         max_inbound_concurrent,
         max_keys_per_principal,
         max_auto_provisioned_groups,
-        hook_content_max_bytes,
         hard_down_cooldown_secs,
         upstream_error_body_max_bytes,
         tls_handshake_timeout_secs,
@@ -30,13 +24,11 @@ fn every_patch_mirrors_every_field_of_its_section() {
     let _ = LimitsPatch {
         upstream_request_timeout_secs: Some(upstream_request_timeout_secs),
         request_body_max_bytes: Some(request_body_max_bytes),
-        datagram_line_memory_bytes: Some(datagram_line_memory_bytes),
         pool_max_idle_per_host: Some(pool_max_idle_per_host),
         pool_idle_timeout_secs: Some(pool_idle_timeout_secs),
         max_inbound_concurrent: Some(max_inbound_concurrent),
         max_keys_per_principal: Some(max_keys_per_principal),
         max_auto_provisioned_groups: Some(max_auto_provisioned_groups),
-        hook_content_max_bytes: Some(hook_content_max_bytes),
         hard_down_cooldown_secs: Some(hard_down_cooldown_secs),
         upstream_error_body_max_bytes: Some(upstream_error_body_max_bytes),
         tls_handshake_timeout_secs: Some(tls_handshake_timeout_secs),
@@ -58,6 +50,7 @@ fn every_patch_mirrors_every_field_of_its_section() {
     };
 
     let crate::config::AdvancedCfg {
+        shutdown: _,
         rate_sweep_interval,
         usage_flush_interval_ms,
         response_headers,
@@ -67,13 +60,10 @@ fn every_patch_mirrors_every_field_of_its_section() {
         upstream_h2_prior_knowledge: _,
 
         block_private_addresses: _,
-        allow_destinations: _,
         tls: _,
         proxy_resolution: _,
         trusted_proxies: _,
         forwarded_header: _,
-        shutdown: _,
-        governance: _,
     } = crate::config::AdvancedCfg::default();
     let _ = AdvancedPatch {
         rate_sweep_interval: Some(rate_sweep_interval),
@@ -137,34 +127,40 @@ fn merge_accumulates_across_puts() {
 
 #[test]
 fn an_unknown_field_is_refused() {
-    assert!(serde_json::from_str::<LimitsPatch>(r#"{"max_inbound_concurent": 5}"#).is_err());
+    assert!(
+        busbar_contract::json::parse_str::<LimitsPatch>(r#"{"max_inbound_concurent": 5}"#).is_err()
+    );
 }
 
 #[test]
-fn datagram_line_memory_patch_distinguishes_omission_set_and_disable() {
-    let mut base = crate::config::LimitsCfg {
-        datagram_line_memory_bytes: Some(12345),
-        ..Default::default()
-    };
-    let omitted: LimitsPatch = serde_json::from_str(r#"{"max_inbound_concurrent":7}"#).unwrap();
-    assert_eq!(omitted.datagram_line_memory_bytes, None);
-    omitted.apply(&mut base);
-    assert_eq!(base.datagram_line_memory_bytes, Some(12345));
+fn hook_content_max_bytes_is_refused_as_an_unknown_limits_key() {
+    let yaml = "{ default_max_tokens: 2048, hook_content_max_bytes: 4096 }";
+    let err = busbar_contract::yaml::from_str::<crate::config::LimitsCfg>(yaml)
+        .expect_err("limits.hook_content_max_bytes no longer exists")
+        .to_string();
+    assert!(
+        err.contains("unknown field `hook_content_max_bytes`"),
+        "{err}"
+    );
+}
 
-    let set: LimitsPatch = serde_json::from_str(r#"{"datagram_line_memory_bytes":54321}"#).unwrap();
-    assert_eq!(set.datagram_line_memory_bytes, Some(Some(54321)));
-    set.apply(&mut base);
-    assert_eq!(base.datagram_line_memory_bytes, Some(54321));
+#[test]
+fn hook_content_max_bytes_is_refused_by_the_admin_settings_patch() {
+    let err = serde_json::from_str::<LimitsPatch>(r#"{"hook_content_max_bytes":4096}"#)
+        .expect_err("PUT /config/settings must refuse limits.hook_content_max_bytes")
+        .to_string();
+    assert!(
+        err.contains("unknown field `hook_content_max_bytes`"),
+        "{err}"
+    );
+}
 
-    let disable: LimitsPatch =
-        serde_json::from_str(r#"{"datagram_line_memory_bytes":null}"#).unwrap();
-    assert_eq!(disable.datagram_line_memory_bytes, Some(None));
-    let merged = disable.merge(set);
-    assert_eq!(merged.datagram_line_memory_bytes, Some(None));
-    let persisted = serde_json::to_string(&merged).unwrap();
-    let restored: LimitsPatch = serde_json::from_str(&persisted).unwrap();
-    assert_eq!(restored.datagram_line_memory_bytes, Some(None));
-    restored.apply(&mut base);
-    assert_eq!(base.datagram_line_memory_bytes, None);
-    assert_eq!(base.max_inbound_concurrent, 7);
+#[test]
+fn a_1_5_5_shaped_limits_block_still_parses() {
+    let yaml = "{ default_max_tokens: 2048, request_body_max_bytes: 1048576, \
+                hard_down_cooldown_secs: 30, max_keys_per_principal: 5 }";
+    let limits = busbar_contract::yaml::from_str::<crate::config::LimitsCfg>(yaml)
+        .expect("a 1.5.5 limits block parses");
+    assert_eq!(limits.default_max_tokens, 2048);
+    assert_eq!(limits.hard_down_cooldown_secs, 30);
 }

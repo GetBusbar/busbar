@@ -359,11 +359,11 @@ mod cacheable {
 }
 
 fn dropping(alias: &str, door: busbar_contract::abi::mechanism::door::DoorFn) -> AuthRows {
-    use crate::sign::{sign, Manifest, SigningKey, TrustPolicy, FIRST_PARTY_PUBLISHER};
+    use crate::sign::{Manifest, SigningKey, TrustPolicy, FIRST_PARTY_PUBLISHER};
     let key = SigningKey::from_bytes(&[0x3c; 32]);
     let lib: &[u8] = b"not a library: a fact read never opens it";
     let stated = crate::dispatch::rendering_of(door).expect("the door states itself");
-    let m = sign(
+    let m = crate::sign::seal_test_artifact(
         &key,
         Manifest {
             name: format!("busbar-auth-{alias}"),

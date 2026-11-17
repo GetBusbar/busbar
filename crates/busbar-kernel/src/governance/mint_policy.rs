@@ -77,9 +77,6 @@ pub struct MintPolicy {
     pub block_binding_modes: Option<Vec<String>>,
     /// Per-role ceilings (`auth.policy.mint_ceilings.<role>`).
     pub ceilings: std::collections::BTreeMap<String, RoleCeiling>,
-    /// The most unredeemed tickets (ephemeral secrets) one key may hold on one node
-    /// (`auth.policy.max_outstanding_tickets_per_key`). `None` = the built-in default, 256.
-    pub max_outstanding_tickets_per_key: Option<u32>,
 }
 
 pub struct MintRequest<'a> {

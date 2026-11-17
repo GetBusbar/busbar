@@ -51,18 +51,22 @@ pub use busbar_plugin_loader::test_host::{
     both, rendering, Answer, Called, Done, Host, Image, Life, Loaded, Opened, Opening, Pending,
     Refused, Submitted, TimedOut,
 };
+/// The existing login vocabulary used with [`suites::harness::Harness::open_auth`].
+pub use busbar_ports::auth::{LoginAnswer, LoginIn};
+/// The existing upstream target and output vocabulary used with [`suites::harness::Harness::open_plane`].
+pub use busbar_ports::plane::{PlaneOut, TargetIn};
+pub use busbar_ports::{CallCx, PortError};
 pub use envelopes::{DiagRecord, Envelopes, MetricRecord};
 pub use fake_needs::{ConnScript, FakeNeeds};
 pub use services::Services;
 
-/// Plain re-exports with no policy (STH-ROWS D-7, D-9): the boot selector, a door's settings
-/// migration, a reference-field read and a rendered Statement's parse.
+/// Plain re-exports with no policy (STH-ROWS D-7, D-9): the boot selector, a reference-field read
+/// and a rendered Statement's parse.
 pub use busbar_contract::abi::mechanism::extensions::reference_fields;
 pub use busbar_contract::abi::mechanism::rendering::{
     read as read_rendering, Read as RenderedStatement, Unreadable,
 };
 pub use busbar_plugin_loader::boot::{select, Candidate, Selected, Uses};
-pub use busbar_plugin_loader::dispatch::migrate::migrate_door;
 
 #[cfg(feature = "test-seal")]
 pub use busbar_contract::abi::sdk::test_support::chip;
@@ -79,3 +83,21 @@ pub use busbar_contract::{
 pub fn host() -> Host {
     Host::new(test_caller_binding())
 }
+
+#[cfg(all(test, feature = "target-sockets"))]
+#[path = "host_target/socket_tests.rs"]
+mod socket_tests;
+
+/// Explicit loopback sockets for MIN-3 SDK store tests.
+#[cfg(feature = "target-sockets")]
+#[path = "host_target/sockets.rs"]
+pub mod sockets;
+
+/// Typed live store test requests and harness; never exports a production KernelSeal.
+#[cfg(feature = "test-seal")]
+pub mod store;
+
+/// Native message transport conformance; never a production listener.
+#[cfg(feature = "target-native-stream")]
+#[path = "host_target/native_stream.rs"]
+pub mod native_stream;

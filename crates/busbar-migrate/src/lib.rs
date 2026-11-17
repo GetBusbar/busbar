@@ -26,11 +26,12 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 
 mod absent_store;
-pub mod allow_dest;
 mod catalog;
 #[cfg(any(test, feature = "counted"))]
 pub mod counted;
 mod files;
+mod legacy_credentials;
+pub use legacy_credentials::{Mark, MIGRATED};
 mod legacy_markers;
 mod listen;
 mod lock;
@@ -39,6 +40,7 @@ mod overlay;
 mod overlay_hooks;
 pub mod patch;
 pub mod records;
+mod secret_instances;
 mod settle;
 mod steps;
 mod styles;
@@ -46,8 +48,8 @@ mod templates;
 
 pub use overlay::{Selected, SelectedBy};
 pub use settle::{
-    apply_settled, section as core_cfg_section, write_secrets, Applied, CoreCfg, SecretFile,
-    Settled,
+    apply_settled, section as core_cfg_section, write_secrets, Applied, BagPlacement, CoreCfg,
+    SecretFile, Settled,
 };
 
 /// Count one entry of `$field` in a test build (§9 C1 (sz2)); nothing in a shipped one.
@@ -207,8 +209,6 @@ pub struct Facts {
     /// fact (IF §12.10 item 1): `Some` and the document names no store module, exactly one is named, zero or several
     /// refuse CONFIG. `None` on today's ABI, where the 1.5.5-shape constant stands (1d).
     pub ephemeral_stores: Option<Vec<String>>,
-    /// How `allow_dest` resolves a provider host name (once, at migrate time).
-    pub resolve: allow_dest::Resolve,
 }
 
 impl Facts {
@@ -224,7 +224,6 @@ impl Facts {
             env,
             cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             ephemeral_stores: None,
-            resolve: allow_dest::system_resolve,
         }
     }
 }
@@ -303,9 +302,18 @@ pub struct Plan {
     ignore_overlay: bool,
     /// The styles `resolve_styles` resolved the deferred bindings with, re-applied by the write's re-run.
     styles: Vec<(String, Vec<String>)>,
+    /// The 1.5.5 credential slots core marks at the migrating bind (LEGACY-KEYFILE-MARKER r2 §3).
+    marks: Vec<Mark>,
 }
 
 impl Plan {
+    /// The 1.5.5 credential slots core marks at the migrating bind: `(instance path, pointer)`,
+    /// never a value (LEGACY-KEYFILE-MARKER r2 §3). The written text never carries the marker.
+    #[must_use]
+    pub fn legacy_marks(&self) -> &[Mark] {
+        &self.marks
+    }
+
     /// `config::resolve_styles` (IF §12.10 item 3, §12.18): after every image is admitted and before
     /// `boot_plan`, the gateway hands the styles the admitted auth images declared
     /// (`Registry::outbound_styles`); each deferred `{"$style": w}` binding of the plan becomes the
@@ -447,6 +455,15 @@ pub fn plan(inputs: &Inputs<'_>) -> Result<Plan, Refusal> {
         Some(selected) => Some(overlay::read(selected, inputs.ignore_overlay)?),
         None => None,
     };
+    // Refuse existing conflicts before boot opens or converts the store. Step 5 repeats
+    // these checks under its lock because another writer can change the files meanwhile.
+    files::backup_absent_or_equal(
+        &files::sibling(inputs.path, BACKUP_SUFFIX),
+        source.as_bytes(),
+    )?;
+    if let Some(read) = &read {
+        overlay::backup_absent_or_equal(read)?;
+    }
     match &read {
         Some(read) => {
             report.push(read.line());
@@ -464,6 +481,9 @@ pub fn plan(inputs: &Inputs<'_>) -> Result<Plan, Refusal> {
         &mut report,
     )?;
     judge(&chained, inputs.facts, inputs.check)?;
+    if let Some(catalog) = &chained.catalog {
+        catalog::check_destination(catalog)?;
+    }
     Ok(Plan {
         path: inputs.path.to_path_buf(),
         from,
@@ -476,6 +496,7 @@ pub fn plan(inputs: &Inputs<'_>) -> Result<Plan, Refusal> {
         overlay: selected,
         ignore_overlay: inputs.ignore_overlay,
         styles: Vec::new(),
+        marks: chained.marks,
     })
 }
 
@@ -540,14 +561,48 @@ pub fn write_settled(
     settled: &[Settled],
     check: Check<'_>,
 ) -> Result<Written, Refusal> {
-    entered!(write);
-    let _held = lock::Held::take(&plan.path)?;
-    if let Some(selected) = &plan.overlay {
-        overlay::sweep(selected);
-    }
+    write_attempted(plan, settled, check, None)
+}
+
+/// The store side of step 5 (§3 5, §A6 "Attempts"), which the seam implements over the opened store:
+/// 5S records the attempt once every read-only precondition of the write held and before its first
+/// write; 5d marks this directory's attempt just before the rename over config.yaml. Its refusal
+/// stops the write with nothing renamed.
+pub trait Attempted {
+    /// 5S: `digest` is the plan's ([`Plan::digest`]), `written_sha256` the SHA-256 of the stamped
+    /// document about to be written.
+    ///
+    /// # Errors
+    /// The store's refusal; nothing was written.
+    fn begin(&self, digest: [u8; 32], written_sha256: [u8; 32]) -> Result<(), Refusal>;
+    /// 5d, just before the rename: this directory names the attempt as its own.
+    ///
+    /// # Errors
+    /// The marker could not be written; config.yaml is not renamed.
+    fn before_rename(&self) -> Result<(), Refusal>;
+}
+
+/// What step 5 re-runs from disk, under the directory lock, before it writes anything.
+enum Rerun {
+    /// A peer already stamped config.yaml: there is nothing to write or check.
+    StampedByPeer,
+    Ready(Box<Ready>),
+}
+
+struct Ready {
+    now: String,
+    read: Option<overlay::Read>,
+    again: Chained,
+    applied: Applied,
+}
+
+/// 5R: re-run 1b from disk, re-plan the same document, file the settled answers into it, and judge
+/// the result with `check`. Read-only: it is the whole of step 5's refusals, so the converting boot
+/// can run it before the store is touched (#328).
+fn rerun(plan: &Plan, settled: &[Settled], check: Check<'_>) -> Result<Rerun, Refusal> {
     let now = files::read_bounded(&plan.path)?;
     if read_version(&now)? >= CONFIG_FORMAT {
-        return Ok(Written::StampedByPeer);
+        return Ok(Rerun::StampedByPeer);
     }
     // 5R re-runs 1b from disk too: an interrupted 5c reads back to the same bytes.
     let read = match &plan.overlay {
@@ -574,12 +629,12 @@ pub fn write_settled(
         let (resolved, _) = plan.with_styles(|styles| styles::resolve(&again.text, styles))?;
         again.text = resolved;
     }
-    if again.text != plan.planned || again.catalog != plan.catalog {
+    if again.text != plan.planned || again.catalog != plan.catalog || again.marks != plan.marks {
         return Err(Refusal::Config(format!(
             "the upgrade of {} did not plan the same document twice from the same bytes ({}); \
              nothing was written",
             plan.path.display(),
-            first_difference(
+            where_plans_differ(
                 &plan.planned,
                 &again.text,
                 plan.catalog.is_some(),
@@ -590,10 +645,64 @@ pub fn write_settled(
     let applied = apply_settled(&again.text, &plan.path, settled, false, plan.facts.env)?;
     again.text = applied.text().to_owned();
     judge(&again, &plan.facts, check)?;
+    Ok(Rerun::Ready(Box::new(Ready {
+        now,
+        read,
+        again,
+        applied,
+    })))
+}
+
+/// Step 5's refusals without its writes: the settled document is re-planned and judged exactly as
+/// [`write_attempted`] will judge it, under the same lock, and nothing is written. The converting
+/// boot calls this before it converts the store, so a refusal changes nothing (#328).
+///
+/// # Errors
+/// As [`write_settled`], for everything before its first write.
+#[cold]
+#[inline(never)]
+pub fn check_settled(plan: &Plan, settled: &[Settled], check: Check<'_>) -> Result<(), Refusal> {
+    let _held = lock::Held::take(&plan.path)?;
+    rerun(plan, settled, check).map(drop)
+}
+
+/// [`write_settled`] with the store side of step 5: `attempted` begins (5S) after the re-run and the
+/// read-only preconditions and before 5a, and marks (5d) before the rename. `None` writes no attempt.
+///
+/// # Errors
+/// As [`write_settled`], and the attempt's refusal.
+#[cold]
+#[inline(never)]
+pub fn write_attempted(
+    plan: &Plan,
+    settled: &[Settled],
+    check: Check<'_>,
+    attempted: Option<&dyn Attempted>,
+) -> Result<Written, Refusal> {
+    entered!(write);
+    let _held = lock::Held::take(&plan.path)?;
+    if let Some(selected) = &plan.overlay {
+        overlay::sweep(selected);
+    }
+    let Ready {
+        now,
+        read,
+        again,
+        applied,
+    } = match rerun(plan, settled, check)? {
+        Rerun::StampedByPeer => return Ok(Written::StampedByPeer),
+        Rerun::Ready(ready) => *ready,
+    };
     let backup = files::sibling(&plan.path, BACKUP_SUFFIX);
     files::backup_absent_or_equal(&backup, now.as_bytes())?;
     if let Some(read) = &read {
         overlay::backup_absent_or_equal(read)?;
+    }
+    if let Some(attempted) = attempted {
+        attempted.begin(
+            plan.digest,
+            busbar_contract::crypto::sha256_parts(&[again.text.as_bytes()]),
+        )?;
     }
     write_secrets(applied.secrets())?;
     if let Some(planned) = &again.catalog {
@@ -608,38 +717,14 @@ pub fn write_settled(
             return Err(refusal);
         }
     }
-    files::replace(&fresh, &plan.path)?;
-    Ok(Written::Stamped)
-}
-
-/// Where the planned document and the re-run one first differ: the line number and both lines,
-/// or the catalog when the documents are equal.
-fn first_difference(
-    planned: &str,
-    again: &str,
-    planned_catalog: bool,
-    again_catalog: bool,
-) -> String {
-    let mut was = planned.lines();
-    let mut now = again.lines();
-    let mut number = 1_usize;
-    loop {
-        match (was.next(), now.next()) {
-            (None, None) => {
-                return format!(
-                    "the documents are equal; the catalog differs (planned: {planned_catalog}, re-run: {again_catalog})"
-                );
-            }
-            (a, b) if a == b => number += 1,
-            (a, b) => {
-                return format!(
-                    "first difference at line {number}: planned {:?}, re-run {:?}",
-                    a.unwrap_or("<end>"),
-                    b.unwrap_or("<end>")
-                );
-            }
+    if let Some(attempted) = attempted {
+        if let Err(refusal) = attempted.before_rename() {
+            let _ = std::fs::remove_file(&fresh);
+            return Err(refusal);
         }
     }
+    files::replace(&fresh, &plan.path)?;
+    Ok(Written::Stamped)
 }
 
 /// How [`write_back`] ended. Every outcome but [`WroteBack::Written`] left config.yaml as it was.
@@ -698,6 +783,7 @@ pub fn write_back(
 struct Chained {
     text: String,
     catalog: Option<catalog::Planned>,
+    marks: Vec<Mark>,
 }
 
 /// `STEPS[from..CONFIG_FORMAT]` over the source text, then the stamp.
@@ -716,6 +802,7 @@ fn chain(
         overlay,
         report,
         catalog: None,
+        marks: Vec::new(),
     };
     let mut text = source.to_owned();
     for step in steps::STEPS.iter().skip(first) {
@@ -724,7 +811,32 @@ fn chain(
     Ok(Chained {
         text: patch::stamp(&text, CONFIG_FORMAT)?,
         catalog: work.catalog,
+        marks: work.marks,
     })
+}
+
+/// Where two plans of the same bytes part, for the refusal: the first differing line and the lengths
+/// (never the text, which may hold a literal secret).
+fn where_plans_differ(
+    first: &str,
+    second: &str,
+    first_catalog: bool,
+    second_catalog: bool,
+) -> String {
+    if first == second {
+        return format!("the catalog differs: planned {first_catalog}, then {second_catalog}");
+    }
+    let line = first
+        .lines()
+        .zip(second.lines())
+        .position(|(a, b)| a != b)
+        .unwrap_or(first.lines().count().min(second.lines().count()))
+        + 1;
+    format!(
+        "the document differs at line {line}: {} bytes, then {} bytes",
+        first.len(),
+        second.len()
+    )
 }
 
 /// Proof three (§A7 "Authored text"): the planned document and catalog, interpolated as every later

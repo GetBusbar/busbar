@@ -8,7 +8,7 @@ use crate::governance::recovery::{
 
 #[tokio::test]
 async fn live_flusher_resumes_not_landed_with_current_cost_without_blocking_reactor() {
-    flusher_resumes_not_landed_with_current_cost(false).await;
+    Box::pin(flusher_resumes_not_landed_with_current_cost(false)).await;
 }
 
 /// SHUTDOWN-HANG 8.10: a correction whose verdict is durable but unsettled at SIGTERM is settled
@@ -16,7 +16,7 @@ async fn live_flusher_resumes_not_landed_with_current_cost_without_blocking_reac
 /// pass resumes correction verdicts as the periodic tick does.
 #[tokio::test]
 async fn the_drain_money_driver_settles_a_durable_correction_verdict_before_money_stop() {
-    flusher_resumes_not_landed_with_current_cost(true).await;
+    Box::pin(flusher_resumes_not_landed_with_current_cost(true)).await;
 }
 
 async fn flusher_resumes_not_landed_with_current_cost(drain: bool) {
@@ -164,6 +164,8 @@ async fn flusher_resumes_not_landed_with_current_cost(drain: bool) {
     let app = Arc::new(crate::state::App::from_test_parts(crate::state::AppParts {
         fallback_runtime_key: "",
         serve_tables: Default::default(),
+        port_seats: Default::default(),
+        exports: Default::default(),
         root_rules: Arc::new(crate::appbuild::AcceptAll),
         config_projection: Default::default(),
         config_tables: Default::default(),

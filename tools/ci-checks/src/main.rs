@@ -9,6 +9,11 @@
 //!   `crates/busbar-crypto*` names the `getrandom` crate, except test code: an item or module under a
 //!   test-only `#[cfg(test)]` (read from the syn AST, as bad-patterns does), a `#[test]` fn, or a
 //!   `tests/` tree. A file syn cannot parse is scanned line by line instead, so it is never skipped.
+//! - `spdx-headers`: every tracked `.rs` file and migration-corpus YAML carries `SPDX-License-Identifier:
+//!   Apache-2.0` near the top and none names another licence (#277, `spdx.rs`).
+//! - `no-serde-json`: JSON is sonic-rs through `busbar_contract::json` (DEP-3, #162): no first-party
+//!   Rust file or manifest under `crates/`, `dist/`, `tools/` or `testing/` names serde_json, tests
+//!   included, outside the wave-3 paths `ci/serde-json-w3.allow` lists (`no_serde_json.rs`).
 //! - `crypto-graph`: AWS-LC is the one crypto provider, reached only through the facade (229). In
 //!   the root workspace's feature-resolved graph (`cargo tree`: every feature, target and edge
 //!   kind), `ring`, `sha2`, `ed25519-dalek` and `curve25519-dalek` are built only beneath
@@ -54,14 +59,18 @@ use syn::{
 mod migrate;
 mod migrate_overlay;
 mod migrate_size;
+mod no_serde_json;
 mod oracle;
 mod oracle_judge;
 mod oracle_run;
 mod oracle_selftest;
+mod spdx;
 
 /// Checks over core's own tree: with no argument every one runs.
-const CHECKS: [&str; 15] = [
+const CHECKS: [&str; 17] = [
     "no-getrandom",
+    "spdx-headers",
+    "no-serde-json",
     "crypto-graph",
     "fleet-manifest",
     "c-transport",
@@ -129,6 +138,8 @@ fn main() -> ExitCode {
     for name in names {
         let outcome = match name {
             "no-getrandom" => no_getrandom(&root),
+            "spdx-headers" => spdx::spdx_headers(&root),
+            "no-serde-json" => no_serde_json::no_serde_json(&root),
             "crypto-graph" => crypto_graph(&root),
             "migrate-flag-text" => migrate::flag_text(&root),
             "migrate-retired-words" => migrate::retired_words(&root),
@@ -546,13 +557,34 @@ fn rel(root: &Path, file: &Path) -> String {
 
 // ---- crypto-graph -------------------------------------------------------------------------------
 
-/// The root workspace's feature-resolved graph (every feature, target and edge kind), outside the
+/// Both the root and shipped workspace's feature-resolved graphs (every feature, target and edge kind), outside the
 /// seam: cargo's own resolver decides what builds. `Cargo.lock` alone over-reports: it also records
 /// an optional dependency that only a weak feature names (rustls-webpki's `alloc = ["ring?/alloc"]`
 /// keeps a `ring` entry that no build compiles). Then the facade's own graph without the backend:
 /// a private (FIPS) build swaps the backend and keeps the facade, so a backend-only crate reached
 /// from the facade would enter that build too.
+///
+/// The facade's own graph is read once, in the root workspace, where busbar-crypto is a member and
+/// `--all-features` turns on every feature it has. In the shipped workspace busbar-crypto is a path
+/// dependency, not a member: cargo refuses features for it there, and the features its members
+/// unify on it are a subset of the root reading's, so only the graph outside the seam is read.
 fn crypto_graph(root: &Path) -> Result<Vec<String>, String> {
+    let mut findings = seam_outside_graph(root)?;
+    let facade = cargo_tree(root, &["--package", SEAM, "--prune", BACKEND])?;
+    findings.extend(backend_only_reached(&facade));
+    let shipped = root.join("dist/default");
+    if shipped.join("Cargo.toml").is_file() {
+        findings.extend(
+            seam_outside_graph(&shipped)?
+                .into_iter()
+                .map(|finding| format!("dist/default: {finding}")),
+        );
+    }
+    Ok(findings)
+}
+
+/// Every seam-only crate the workspace reaches outside busbar-crypto (and its backend).
+fn seam_outside_graph(root: &Path) -> Result<Vec<String>, String> {
     let outside = cargo_tree(
         root,
         &[
@@ -565,10 +597,7 @@ fn crypto_graph(root: &Path) -> Result<Vec<String>, String> {
             BACKEND,
         ],
     )?;
-    let facade = cargo_tree(root, &["--package", SEAM, "--prune", BACKEND])?;
-    let mut findings = seam_only_reached(&outside);
-    findings.extend(backend_only_reached(&facade));
-    Ok(findings)
+    Ok(seam_only_reached(&outside))
 }
 
 /// `cargo tree` over every feature, target and edge kind, as `--prefix depth` lines of `{p}`.
@@ -647,3 +676,6 @@ mod migrate_size_tests;
 
 #[cfg(test)]
 mod checks_tests;
+
+#[cfg(test)]
+mod spdx_tests;

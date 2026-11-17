@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::*;
+use busbar_contract::json;
 
 fn signer() -> TokenSigner {
     TokenSigner::from_secret_bytes(&[7u8; 32], DEFAULT_KID)
@@ -28,7 +29,7 @@ fn audience_bound_token_is_rejected_on_the_plain_verify_path() {
     let s = signer();
     let v = verifier(&s);
 
-    let payload = serde_json::to_vec(&serde_json::json!({
+    let payload = json::to_vec(&json::json!({
         "sub": "vk_audience",
         "exp": 2000u64,
         "kid": DEFAULT_KID,
@@ -84,7 +85,7 @@ fn legacy_token_without_audience_still_verifies_on_the_data_plane() {
     let s = signer();
     let v = verifier(&s);
 
-    let payload = serde_json::to_vec(&serde_json::json!({
+    let payload = json::to_vec(&json::json!({
         "sub": "vk_old",
         "exp": 2000u64,
         "kid": DEFAULT_KID

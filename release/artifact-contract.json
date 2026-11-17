@@ -37,7 +37,7 @@
   "rows": [
     {
       "id": "archive_shape",
-      "title": "the archive contains exactly the declared executable, at a plausible size",
+      "title": "the archive contains exactly the declared executable plus LICENSE, NOTICE and THIRD-PARTY-LICENSES, at a plausible size",
       "exec": false,
       "why": [
         "GitHub creates an asset row the moment an upload starts, so a truncated or empty upload",

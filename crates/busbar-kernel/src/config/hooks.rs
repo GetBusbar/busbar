@@ -20,8 +20,6 @@ use super::PolicyOnError;
 #[derive(Debug, Deserialize, Clone, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct HookDefCfg {
-    #[serde(default)]
-    pub child_dispatch: Option<crate::hook_child::Grant>,
     /// The `kind: hook` PLUGIN backing this named hook (by signed-manifest name/alias). REQUIRED,
     /// non-empty; an unresolvable/wrong-kind reference is a fail-closed plugin-preflight error.
     pub module: String,
@@ -67,9 +65,6 @@ pub struct HookDefCfg {
     /// Ordering key (default 0).
     #[serde(default)]
     pub priority: Option<u16>,
-    /// `limits` beside `module` (IF §12.22), as written: parsed and stripped by [`super::min3::parse_min3`].
-    #[serde(default, deserialize_with = "busbar_contract::yaml::untyped_option")]
-    pub limits: Option<busbar_contract::yaml::Value>,
     /// `insecure_transport` beside `module` (TRANSPORT-SECURITY-POLICY §4), as written: parsed and stripped by
     /// [`super::min3::parse_min3`].
     #[serde(default, deserialize_with = "busbar_contract::yaml::untyped_option")]
@@ -285,9 +280,6 @@ pub type HookRegistry = std::collections::HashMap<String, HookCfg>;
 #[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct HookCfg {
-    /// Optional host-owned authority for one child per admitted parent invocation.
-    #[serde(default)]
-    pub child_dispatch: Option<crate::hook_child::Grant>,
     /// The hook's MODE: `tap` (fire-and-forget) or `gate` (fire-and-wait, returns a reply arm).
     pub kind: HookKind,
 
@@ -387,7 +379,6 @@ impl HookCfg {
     ) -> impl Serialize + 'a {
         #[derive(Serialize)]
         struct View<'a, F0: Serialize> {
-            child_dispatch: &'a Option<crate::hook_child::Grant>,
             kind: &'a HookKind,
             #[serde(rename = "module")]
             plugin: &'a String,
@@ -405,7 +396,6 @@ impl HookCfg {
             phase: &'a Vec<HookStage>,
         }
         View {
-            child_dispatch: &self.child_dispatch,
             kind: &self.kind,
             plugin: &self.plugin,
             timeout_ms: &self.timeout_ms,

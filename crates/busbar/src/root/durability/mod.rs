@@ -31,6 +31,7 @@ mod usage_recovery;
 pub(crate) use unit_checkpoint::unit_checkpoint_sink;
 #[cfg(test)]
 pub(crate) use unit_checkpoint_audit::RunningAudit;
+pub(crate) use unit_checkpoint_audit::SelectedAuditIdentity;
 pub(crate) use usage_recovery::usage_recovery_sink;
 
 mod store_identity;
@@ -48,9 +49,17 @@ pub(crate) use amend::verify_held;
 
 mod audit;
 
-pub(crate) use audit::AuditWindowAt;
+pub(crate) use audit::{AuditWindowAt, FrozenNativeAudit, LineIdentity, NativeStagedAudit};
 
 mod audit_page;
+
+pub(crate) mod audit_services;
+pub(crate) mod notary;
+pub(crate) mod predecessor;
+pub(crate) mod response_intent;
+pub(crate) mod restart_seal;
+pub(crate) mod signer;
+pub(crate) use notary::HeadFeed;
 
 mod ring;
 pub(crate) use ring::AuditRing;
@@ -96,6 +105,7 @@ pub struct Durability {
     pub incarnation: u64,
 
     pub restart_findings: Vec<String>,
+    boot_records: Vec<JournalRecord>,
 
     pub voided_claims: Vec<String>,
 
@@ -108,6 +118,13 @@ pub struct Durability {
     /// Where a sealed terminal unit's audit line is noted for its checkpoint removal
     /// (SHUTDOWN-HANG F1a). Weak: governance owns the checkpoint sink, which holds this book.
     pub audit_hints: Option<std::sync::Weak<busbar_kernel::governance::GovState>>,
+
+    /// THE NOTARY'S HEAD FEED (SEALING-FIX §3.2): every staged line is published here under this
+    /// book's lock, so the notary reads the head without taking it.
+    pub(crate) head: Arc<HeadFeed>,
+
+    /// The WAL `node_seq` of the newest audit line read back at reopen (0 for none).
+    resumed_head_node_seq: u64,
 }
 
 impl Durability {
@@ -450,10 +467,15 @@ pub(crate) fn decode_audit(record: &JournalRecord) -> Result<Option<AuditRecord>
 }
 
 pub struct NodeBook {
+    /// Verified persisted deployment public keys, retained with journal/export history.
+    pub audit_verification_keys: Arc<AuditKeySet>,
+    pub(crate) response_intents: Option<Arc<response_intent::ResponseIntentService>>,
     pub durability: Arc<std::sync::Mutex<Durability>>,
     pub runtime_journal: Arc<RuntimeJournal>,
     pub node_lease: Option<Arc<busbar_kernel::persistence::boot_identity::NodeLease>>,
     pub verb_store: crate::root::kernel::VerbStoreHandle,
+    /// The signer threads and the notary (SEALING-FIX §3.3); `None` on a keyless book.
+    pub audit: Option<Arc<audit_services::AuditServices>>,
 }
 impl NodeBook {
     #[cfg(test)]
@@ -482,10 +504,13 @@ pub(crate) async fn node_book(
     )
     .await?;
     Ok(NodeBook {
+        audit_verification_keys: Arc::new(AuditKeySet::new()),
+        response_intents: None,
         durability: Arc::new(std::sync::Mutex::new(durability)),
         runtime_journal: journal,
         node_lease: None,
         verb_store: None,
+        audit: None,
     })
 }
 
@@ -511,11 +536,14 @@ pub(crate) async fn build_on_store(
         audit_signed_from: None,
         incarnation: 0,
         restart_findings: Vec::new(),
+        boot_records: Vec::new(),
         voided_claims: Vec::new(),
         amendments_through: None,
         history_budget,
         resumed: true,
         audit_hints: None,
+        head: Arc::new(HeadFeed::default()),
+        resumed_head_node_seq: 0,
     };
     let mut findings = Vec::new();
     if let Some(cards) = cards {
@@ -525,6 +553,7 @@ pub(crate) async fn build_on_store(
             .map_err(|error| native_open_error(error.to_string()))?;
     }
     durability.resume_audit(&records);
+    durability.publish_resumed_head();
     findings.extend(
         durability
             .audit_findings
@@ -545,6 +574,7 @@ pub(crate) async fn build_on_store(
     durability.void_claims(open).await?;
     findings.dedup();
     durability.restart_findings = findings;
+    durability.boot_records = records;
     Ok(durability)
 }
 
@@ -566,3 +596,15 @@ mod boot_reads;
 #[cfg(test)]
 #[path = "../tests/durability_reads_unlocked.rs"]
 mod reads_unlocked;
+
+#[cfg(test)]
+#[path = "../tests/durability_notary.rs"]
+mod notary_tests;
+
+#[cfg(test)]
+#[path = "../tests/durability_signer.rs"]
+mod signer_tests;
+
+#[cfg(test)]
+#[path = "../tests/response_intent.rs"]
+pub(crate) mod response_intent_tests;

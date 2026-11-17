@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::*;
-use serde_json::Value;
+use busbar_contract::json::Value;
 
 #[tokio::test]
 async fn a_transport_refusal_keeps_its_status_and_names_no_id() {
@@ -14,9 +14,9 @@ async fn a_transport_refusal_keeps_its_status_and_names_no_id() {
         let r = transport_refusal(status, "no");
         assert_eq!(r.status(), status);
         let bytes = axum::body::to_bytes(r.into_body(), 1 << 16).await.unwrap();
-        let body: Value = serde_json::from_slice(&bytes).expect("a JSON body");
+        let body: Value = busbar_contract::json::parse_value(&bytes).expect("a JSON body");
         assert_eq!(body["jsonrpc"], "2.0", "{body}");
-        assert_eq!(body["id"], Value::Null, "{body}");
+        assert_eq!(body["id"], Value::new(), "{body}");
         assert_eq!(body["error"]["code"], INVALID_REQUEST, "{body}");
         assert_eq!(body["error"]["message"], "no", "{body}");
     }

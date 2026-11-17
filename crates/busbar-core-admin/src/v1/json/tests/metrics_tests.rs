@@ -7,7 +7,114 @@ use busbar_contract::abi::export::{
     SCRAPE_KIND_COUNTER, SCRAPE_KIND_HISTOGRAM, SCRAPE_KIND_SUMMARY,
 };
 use busbar_contract::export_calls::Sample;
+use busbar_contract::json::{JsonContainerTrait as _, JsonValueTrait as _};
 use http_body_util::BodyExt;
+
+#[tokio::test]
+async fn real_encoded_frame_alias_retains_payload_credit_after_response_drop() {
+    use busbar_kernel::limits::process_admission::{AdmissionClass, ProcessAdmission};
+    for representation in [
+        Representation::Json,
+        Representation::Text(Format::Prometheus),
+    ] {
+        let process = ProcessAdmission::with_limits(1, 1024 * 1024, 1024);
+        let request = process.try_enter(AdmissionClass::Operator).unwrap();
+        let mut scratch = busbar_kernel::limits::output::CaptureScope::new(&request).unwrap();
+        if representation == Representation::Json {
+            scratch
+                .reserve_requested(json_scratch(&families()).unwrap())
+                .unwrap();
+        }
+        let response = encode_response(&families(), &request, representation).unwrap();
+        drop(scratch);
+        drop(request);
+        let used = process.used();
+        assert!(used.0 > 0, "an unpolled response owns its backing");
+        assert!(process.try_enter(AdmissionClass::Operator).is_err());
+        let mut body = response.into_body();
+        let frame = body.frame().await.unwrap().unwrap().into_data().unwrap();
+        let alias = frame.slice(0..1);
+        drop(frame);
+        drop(body);
+        assert_eq!(process.used(), used);
+        assert!(process.try_enter(AdmissionClass::Operator).is_err());
+        drop(alias);
+        assert_eq!(process.used(), (0, 0));
+        assert!(process.try_enter(AdmissionClass::Operator).is_ok());
+    }
+}
+
+#[test]
+fn real_encoder_refusal_drops_partial_body_without_partial_success() {
+    use busbar_kernel::limits::process_admission::{AdmissionClass, ProcessAdmission};
+    for representation in [
+        Representation::Json,
+        Representation::Text(Format::Prometheus),
+    ] {
+        let scratch_bytes = if representation == Representation::Json {
+            json_scratch(&families()).unwrap()
+        } else {
+            0
+        };
+        let process =
+            ProcessAdmission::with_limits(0, u32::try_from(scratch_bytes + 512).unwrap(), 0);
+        let request = process.try_enter(AdmissionClass::Operator).unwrap();
+        let mut scratch = busbar_kernel::limits::output::CaptureScope::new(&request).unwrap();
+        scratch.reserve_requested(scratch_bytes).unwrap();
+        assert!(matches!(
+            encode_response(&families(), &request, representation),
+            Err(OutputError::Capacity)
+        ));
+        assert_eq!(process.used(), (scratch_bytes, 0));
+        drop(scratch);
+        assert_eq!(process.used(), (0, 0));
+    }
+}
+
+#[test]
+fn json_escape_scratch_is_reserved_before_the_real_writer_runs() {
+    use busbar_kernel::limits::output::CaptureScope;
+    use busbar_kernel::limits::process_admission::{AdmissionClass, ProcessAdmission};
+    let mut value = families();
+    value[0].help = Some("\\\"\n".repeat(2048));
+    let needed = json_scratch(&value).unwrap();
+    let process = ProcessAdmission::with_limits(0, u32::try_from(needed - 1).unwrap(), 0);
+    let request = process.try_enter(AdmissionClass::Operator).unwrap();
+    let mut scope = CaptureScope::new(&request).unwrap();
+    assert_eq!(scope.reserve_requested(needed), Err(OutputError::Capacity));
+    assert_eq!(process.used(), (0, 0));
+}
+
+#[tokio::test]
+async fn capacity_refusal_preserves_existing_correlated_error_schema() {
+    let response = busbar_kernel::admin::gate::in_request_scope("r_0123456789abcdef", || {
+        output_refused(OutputError::Capacity)
+    });
+    let (status, headers, bytes) = body(response).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    let document = busbar_contract::json::parse_value(&bytes).unwrap();
+    assert_eq!(document["code"], "BUSBAR-8110");
+    assert_eq!(document["error"].as_object().unwrap().len(), 6);
+    assert_eq!(document["error"]["request_id"], "r_0123456789abcdef");
+    assert_eq!(headers["x-request-id"], "r_0123456789abcdef");
+    assert_eq!(bytes.len(), 189);
+}
+
+// Existing representation fixtures borrow caller-owned families. Use the real charged encoder;
+// source-capture allocation and route tests exercise the separate production projection owner.
+fn render(families: &[Family], representation: Representation) -> Response {
+    use busbar_kernel::limits::output::CaptureScope;
+    use busbar_kernel::limits::process_admission::{AdmissionClass, ProcessAdmission};
+    let process = ProcessAdmission::with_limits(0, 16 * 1024 * 1024, 0);
+    let request = process.try_enter(AdmissionClass::Operator).unwrap();
+    let mut scope = CaptureScope::new(&request).unwrap();
+    if representation == Representation::Json {
+        scope
+            .reserve_requested(json_scratch(families).unwrap())
+            .unwrap();
+    }
+    encode_response(families, &request, representation).unwrap()
+}
 
 fn accept(value: &str) -> HeaderMap {
     let mut h = HeaderMap::new();
@@ -157,7 +264,7 @@ async fn metrics_json_by_accept_covers_every_family() {
         headers[header::CONTENT_TYPE],
         busbar_contract::protocol::APPLICATION_JSON
     );
-    let doc: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let doc = busbar_contract::json::parse_value(&bytes).unwrap();
     let listed: Vec<&str> = doc["families"]
         .as_array()
         .unwrap()
@@ -174,19 +281,19 @@ async fn metrics_json_by_accept_covers_every_family() {
     assert_eq!(counter["type"], "counter");
     assert_eq!(counter["owner"], "core");
     assert_eq!(counter["help"], "r");
-    assert_eq!(counter["labels"], serde_json::json!(["pool"]));
+    assert_eq!(counter["labels"], busbar_contract::json::json!(["pool"]));
     assert_eq!(
         counter["series"][1],
-        serde_json::json!({"labels": {"pool": "b"}, "value": 4.0})
+        busbar_contract::json::json!({"labels": {"pool": "b"}, "value": 4.0})
     );
 
     let histogram = &doc["families"][1];
     assert_eq!(histogram["type"], "histogram");
-    assert_eq!(histogram["labels"], serde_json::json!(["pool"]));
+    assert_eq!(histogram["labels"], busbar_contract::json::json!(["pool"]));
     assert_eq!(histogram["series"].as_array().unwrap().len(), 2);
     assert_eq!(
         histogram["series"][0],
-        serde_json::json!({
+        busbar_contract::json::json!({
             "labels": {"pool": "a"},
             "buckets": [{"le": "1", "count": 1.0}, {"le": "+Inf", "count": 2.0}],
             "sum": 1.5,
@@ -204,12 +311,12 @@ async fn metrics_json_by_accept_covers_every_family() {
 async fn metrics_explicit_off_is_503_with_reason_telemetry_disabled() {
     let (status, headers, bytes) = body(refused(ScrapeRefusal::TelemetryDisabled)).await;
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
-    let doc: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let doc = busbar_contract::json::parse_value(&bytes).unwrap();
     assert_eq!(doc["error"]["code"], "unavailable");
     assert_eq!(doc["error"]["reason"], "telemetry_disabled");
     assert!(headers.contains_key("x-request-id"));
     let (status, _, bytes) = body(refused(ScrapeRefusal::NotReady)).await;
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
-    let doc: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let doc = busbar_contract::json::parse_value(&bytes).unwrap();
     assert_ne!(doc["error"]["reason"], "telemetry_disabled");
 }

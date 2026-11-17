@@ -6,34 +6,7 @@
 use std::any::Any;
 use std::sync::Arc;
 
-/// One axis of a hook manifest's declared intent — the SAME `no ⊂ ro ⊂ rw` ladder the operator
-/// grant uses, so the core can compare "declared" against "granted" directly. `rw` is meaningful
-/// only on the `prompt` axis (identity is never rewritten); on `user` it reads as "at least ro".
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum NeedLevel {
-    /// Declares no need for this content (the default).
-    #[default]
-    No,
-    /// Asks to READ this content.
-    Ro,
-    /// Asks to read AND rewrite (prompt axis only).
-    Rw,
-}
-
-impl NeedLevel {
-    /// Whether the plugin declared it needs to READ this axis (`ro` or `rw`).
-    #[must_use]
-    pub fn wants_read(self) -> bool {
-        !matches!(self, NeedLevel::No)
-    }
-
-    /// Whether the plugin declared it needs to REWRITE (prompt axis; `rw`).
-    #[must_use]
-    pub fn wants_rewrite(self) -> bool {
-        matches!(self, NeedLevel::Rw)
-    }
-}
+pub use busbar_artifact_metadata::rows::NeedLevel;
 
 /// How a row came to be admitted: a valid signature from a trusted key, or an explicit operator
 /// opt-in (`plugins.trust`) for one that is not.
@@ -50,11 +23,12 @@ pub enum Trust {
     Allowed {
         /// The opt-in's reason.
         reason: String,
-        /// The `plugins.trust` setting that admitted it: `allow_unsigned`, `allow_third_party`
-        /// or `retired_key` (a publisher entry naming a retired release key).
+        /// The `plugins.trust` setting that admitted it: `allow_untrusted`.
         setting: &'static str,
     },
 }
+
+pub use busbar_artifact_metadata::rows::Verification;
 
 /// One admitted row, as its signed manifest states it (a linked row states what a release-signed
 /// tarball of it would).
@@ -122,6 +96,16 @@ pub trait PluginRows: Send + Sync + std::fmt::Debug {
         None
     }
 
+    /// Whether the admitted image carried signature text; presence alone is not trust.
+    fn signature_present(&self, _name_or_alias: &str) -> bool {
+        false
+    }
+
+    /// Retained proof of the admission of this loaded generation; does not re-admit disk bytes.
+    fn verification(&self, _name_or_alias: &str) -> Option<Verification> {
+        None
+    }
+
     /// Why `name_or_alias` resolves to nothing, when a SKIPPED plugin matches it.
     fn unresolved_reason(&self, name_or_alias: &str) -> Option<Skipped>;
 
@@ -133,12 +117,6 @@ pub trait PluginRows: Send + Sync + std::fmt::Debug {
 
     /// Every skipped plugin.
     fn skipped(&self) -> Vec<Skipped>;
-
-    /// THE DOOR the store `name_or_alias` resolves to opens through
-    fn store_door(
-        &self,
-        name_or_alias: &str,
-    ) -> Result<crate::persistence::axis::StoreDoor, String>;
 
     /// Why no secret plugin answers `name_or_alias` on the secret axis, in the registry's words.
     fn secret_refusal(&self, name_or_alias: &str) -> String;

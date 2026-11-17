@@ -13,10 +13,10 @@ use busbar_plugin_abi::fail::refused::{R_CONNECT_REQUIRED, R_UNSUPPORTED};
 use busbar_plugin_abi::host_side::caller::{BoxFut, CallStack, Caller, InstanceLimits};
 use busbar_plugin_abi::plane::{CONN_NONE, CONN_READY};
 use busbar_plugin_abi::types::KindCode;
-use busbar_plugin_loader::ports::auth::{
+use busbar_ports::auth::{
     AuthIn, AuthPort, LoginAnswer, LoginIn, OutboundAnswer, ServeIn, ServeOut, UpstreamIn, Verify,
 };
-use busbar_plugin_loader::ports::{CallCx, PortError};
+use busbar_ports::{CallCx, PortError};
 
 use super::*;
 use crate::plugin_records::{RecordsDenied, StoreRecords};
@@ -71,7 +71,7 @@ impl AuthPort for FakeOauth {
         None
     }
 
-    fn verify<'a>(&'a self, _cx: CallCx, _req: &'a AuthIn<'a>) -> Verify<'a> {
+    fn verify<'a>(&'a self, _cx: CallCx, _req: &AuthIn<'_>, _issued: Option<&[u8]>) -> Verify<'a> {
         Verify::Done(Err(refused(R_UNSUPPORTED)))
     }
 

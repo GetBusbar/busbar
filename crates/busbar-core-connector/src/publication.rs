@@ -444,17 +444,19 @@ impl Custody {
             memory,
             transfer: None,
             leg,
+            owner: None,
         }
     }
 }
 
 /// Reader ownership of charged output. Release follows consumption, including partial reads.
-#[derive(Debug)]
 pub struct ReaderCustody {
     custody: Custody,
     memory: Option<Arc<Memory>>,
     transfer: Option<Transfer>,
     leg: Option<usize>,
+    // External allocation custody follows the existing queue/reader lifetime.
+    owner: Option<Arc<dyn Send + Sync>>,
 }
 
 /// An actual read/copy or receiver handoff which can retire charged storage without another
@@ -485,7 +487,27 @@ impl Drop for Transfer {
     }
 }
 
+impl std::fmt::Debug for ReaderCustody {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ReaderCustody")
+            .field("custody", &self.custody)
+            .field("leg", &self.leg)
+            .field("has_owner", &self.owner.is_some())
+            .finish_non_exhaustive()
+    }
+}
+
 impl ReaderCustody {
+    /// Attach external storage lifetime once, without replacing line memory or transfer custody.
+    /// A second attachment returns this reader intact and drops only the rejected new owner.
+    pub fn with_owner(mut self, owner: Arc<dyn Send + Sync>) -> Result<Self, Self> {
+        if self.owner.is_some() {
+            return Err(self);
+        }
+        self.owner = Some(owner);
+        Ok(self)
+    }
+
     /// Mark a synchronous copy as in flight. Drop its guard after the queue lock is released.
     #[must_use]
     pub fn copying(&self) -> Transfer {

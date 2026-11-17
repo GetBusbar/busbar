@@ -1,0 +1,60 @@
+# no-serde-json (tools/ci-checks, #162, DEP-3): the paths that may still name serde_json, because
+# wave 3 of MIN-3 deletes or rewrites them (ABI-MIN3-WBS W3-D-*; SERDE-JSON-EXIT §4). One path per
+# line, relative to the repository root; a line ending in `/` covers the directory below it.
+# The list only shrinks: a line under which no file names serde_json any more fails the check, so
+# the deleting MR deletes its lines too. Do not add a path here; move the code to busbar_contract::json.
+
+# W3-D-CONTRACT: the old ABI, its settings, services and lifecycle codecs, and their old-ABI users.
+crates/busbar-contract/src/abi/
+crates/busbar-contract/src/auth_calls.rs
+crates/busbar-contract/src/persistence/lifecycle/codec/source.rs
+crates/busbar-contract/src/plane_calls.rs
+crates/busbar-contract/src/plugin_settings.rs
+crates/busbar-contract/src/plugin_settings/owned.rs
+crates/busbar-contract/src/services.rs
+crates/busbar-contract/src/services/disk_admission.rs
+crates/busbar-contract/tests/architecture_surface.rs
+crates/busbar-core-admin/src/keys.rs
+crates/busbar-core-admin/src/v1/json/contract_metadata.rs
+crates/busbar-core-admin/src/v1/json/plane_input_schemas.rs
+crates/busbar-core-admin/src/v1/json/tests/plane_input_schemas.rs
+crates/busbar-core-admin/src/v1/tests/service_tests.rs
+crates/busbar-core-oauth2/src/cimd.rs
+crates/busbar-core-oauth2/src/tests/cimd_tests.rs
+crates/busbar-kernel/src/host_services.rs
+crates/busbar-kernel/src/off_path/plane_door.rs
+crates/busbar-kernel/src/tests/trust_verify_tests.rs
+crates/busbar-kernel/tests/support/plane_driver_actual.rs
+crates/busbar/src/main.rs
+crates/busbar/src/root/door_steps.rs
+crates/busbar/src/root/tests/auth_bindings.rs
+crates/busbar/src/root/tests/node_door_cells.rs
+crates/busbar/src/root/tests/node_door_rig.rs
+crates/busbar/src/root/tests/serve.rs
+crates/busbar/src/root/tests/serve_door_far.rs
+crates/busbar/src/root/tests/serve_door_far_caller_secret.rs
+crates/busbar/src/root/units_admin/tests/admin_path_without_plane_face.rs
+crates/busbar/src/root/units_admin/tests/bound_tests.rs
+crates/busbar/src/tests/kernel_application/misc_router_door.rs
+crates/plugin-loader/src/auth_door.rs
+crates/plugin-loader/src/boot.rs
+crates/plugin-loader/src/cold/export_door.rs
+crates/plugin-loader/src/cold/hook_door.rs
+crates/plugin-loader/src/cold/store_v4.rs
+crates/plugin-loader/src/export_door.rs
+crates/plugin-loader/src/hook_door/port.rs
+crates/plugin-loader/src/integer_token.rs
+crates/plugin-loader/src/observe.rs
+crates/plugin-loader/src/pack.rs
+crates/plugin-loader/src/settings_schema.rs
+crates/plugin-loader/src/sign.rs
+crates/plugin-loader/src/tarball.rs
+crates/plugin-loader/src/tests/auth_door_tests.rs
+crates/plugin-loader/src/tests/hook_door_tests.rs
+crates/plugin-loader/tests/fixtures/hook_door_plugin.rs
+crates/plugin-loader/tests/fixtures/secret_door_plugin.rs
+dist/default/tests/traces_stream_both_doors.rs
+tools/plugin-bench/
+
+# W3-D-LOADER: the old dispatch and the loader modules it alone references.
+crates/plugin-loader/src/dispatch/

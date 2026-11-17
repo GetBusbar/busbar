@@ -549,15 +549,14 @@ fn a_forged_or_tampered_login_cookie_is_refused() {
     assert!(LoginCookie::decode(&honest, &seal()).is_some());
 
     // 1.6 dev's attack: a hand-written, unsigned cookie naming the attacker's own state.
-    let unsigned = B64.encode(serde_json::to_vec(&door_cookie()).unwrap());
+    let unsigned = B64.encode(json::to_vec(&door_cookie()).unwrap());
     assert!(LoginCookie::decode(&unsigned, &seal()).is_none());
 
     // A signed cookie whose payload was edited (here: `refresh` flipped on).
     let (payload, tag) = honest.split_once('.').unwrap();
-    let mut edited: serde_json::Value =
-        serde_json::from_slice(&B64.decode(payload).unwrap()).unwrap();
-    edited["refresh"] = serde_json::Value::Bool(true);
-    let edited = format!("{}.{tag}", B64.encode(serde_json::to_vec(&edited).unwrap()));
+    let mut edited: json::Value = json::parse_value(&B64.decode(payload).unwrap()).unwrap();
+    edited["refresh"] = json::Value::from(true);
+    let edited = format!("{}.{tag}", B64.encode(json::to_vec(&edited).unwrap()));
     assert!(LoginCookie::decode(&edited, &seal()).is_none());
 
     // Another deployment's key.
@@ -666,4 +665,33 @@ fn the_callback_query_reads_as_a_form() {
     .map(|(k, v)| (k.to_owned(), v.to_owned()))
     .collect();
     assert_eq!(pairs, expected);
+}
+
+/// #359 SEC-L8: the cookie-bound hosted login page refuses to render inside another origin's frame.
+#[test]
+fn credential_prompt_refuses_framing() {
+    use busbar_contract::auth::{FieldKind, LoginField, LoginForm};
+    let response = begin_outcome(
+        &seal(),
+        "unrelated-instance",
+        None,
+        "https://host.example",
+        String::new(),
+        "state".into(),
+        String::new(),
+        false,
+        LoginOutcome::Prompt(LoginForm {
+            fields: vec![LoginField {
+                name: "password".into(),
+                label: "Password".into(),
+                kind: FieldKind::Password,
+                required: true,
+            }],
+        }),
+    );
+    assert_eq!(response.headers()[header::X_FRAME_OPTIONS], "DENY");
+    assert_eq!(
+        response.headers()[header::CONTENT_SECURITY_POLICY],
+        "frame-ancestors 'none'"
+    );
 }

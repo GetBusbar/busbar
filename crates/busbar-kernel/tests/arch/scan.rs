@@ -88,8 +88,6 @@ pub struct Workspace {
 }
 
 pub struct Reached {
-    /// Index into `Workspace::packages` of the package that owns the file.
-    pub package: usize,
     pub production: bool,
     pub build_script: bool,
     /// The module path below the target root of the first production route to the file.
@@ -182,7 +180,6 @@ struct Job {
     /// Children of a root, `mod.rs` or `#[path]` file live in its own directory.
     mod_rs: bool,
     module: Vec<String>,
-    package: usize,
     include: bool,
 }
 
@@ -190,7 +187,7 @@ impl Workspace {
     /// Walk every target of every member. `test_only` members are test code in full.
     pub fn walk(&mut self, test_only: &BTreeSet<String>) {
         let mut queue = Vec::new();
-        for (index, package) in self.packages.iter().enumerate() {
+        for package in &self.packages {
             let whole_test = test_only.contains(&package.name);
             for (root, class) in &package.roots {
                 queue.push(Job {
@@ -199,7 +196,6 @@ impl Workspace {
                     build_script: *class == Class::BuildScript,
                     mod_rs: true,
                     module: Vec::new(),
-                    package: index,
                     include: false,
                 });
             }
@@ -223,9 +219,7 @@ impl Workspace {
             let file = Parsed::new(&source);
             // A file-level test-only `#![cfg]` gates the file like the same cfg on its `mod` line.
             let production = job.production && !file.whole_file_test;
-            let owner = self.owner_of(&path).unwrap_or(job.package);
             let entry = self.files.entry(path.clone()).or_insert(Reached {
-                package: owner,
                 production: false,
                 build_script: false,
                 module: job.module.clone(),
@@ -271,7 +265,6 @@ impl Workspace {
                             build_script: job.build_script,
                             mod_rs: found.mod_rs,
                             module: found.module,
-                            package: job.package,
                             include: false,
                         });
                     });
@@ -285,21 +278,11 @@ impl Workspace {
                         build_script: job.build_script,
                         mod_rs: true,
                         module: job.module.clone(),
-                        package: job.package,
                         include: true,
                     });
                 }
             }
         }
-    }
-
-    fn owner_of(&self, path: &Path) -> Option<usize> {
-        self.packages
-            .iter()
-            .enumerate()
-            .filter(|(_, package)| path.starts_with(&package.dir))
-            .max_by_key(|(_, package)| package.dir.components().count())
-            .map(|(index, _)| index)
     }
 
     /// Production lines per file, and every non-literal production `include!`.
@@ -669,23 +652,6 @@ impl Parsed {
         let mut lines = Vec::new();
         if let Some(stream) = &self.tokens {
             idents_named(stream.clone(), "unsafe", &mut lines);
-        }
-        lines
-            .into_iter()
-            .filter(|line| !self.excluded(*line))
-            .count()
-    }
-
-    /// `allow(unsafe_code)` or `expect(unsafe_code)` attributes outside test ranges.
-    pub fn unsafe_allows(&self) -> usize {
-        let mut lines = Vec::new();
-        if let Some(stream) = &self.tokens {
-            lint_attributes(
-                stream.clone(),
-                &["allow", "expect"],
-                &|lint| lint == "unsafe_code",
-                &mut lines,
-            );
         }
         lines
             .into_iter()

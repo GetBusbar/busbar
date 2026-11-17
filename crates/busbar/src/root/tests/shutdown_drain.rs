@@ -7,17 +7,39 @@
 //! its write still lands: nothing is cancelled), and returns 75 or 70 by the custody rule, never
 //! 1. `finish` returns the code instead of exiting; that is the test seam.
 //!
-//! Not here (they need a running gateway, a live plane or a successor process): every
-//! successor/adoption assertion, (a)-(c) and (g), (h) and its variants v2-v7, (i), the notary,
-//! the predecessor fence cases and the slow-store backlog.
+//! (a) and (b) run here over the store-backed unit checkpoint and recovery sinks. Not here (they
+//! need a running gateway, a live plane or a successor process): every successor/adoption
+//! assertion, (c) (its removal first confirms a sealed audit line), (g), (h) and its variants
+//! v2-v7, (i), the notary, the predecessor fence cases and the slow-store backlog.
 
-use super::tests::{money_driver, Fixture, FlushGate};
+use super::tests::{coordinate_test, money_driver, Fixture, FlushGate};
 use super::*;
 
 /// A budget whose cuts these tests wait out: C1 1.5 s, C2 1.75 s, C3 1.875 s.
 const SHORT: Duration = Duration::from_secs(2);
 /// The design's bound on every stalled case: the budget plus one second.
 const SLACK: Duration = Duration::from_secs(1);
+
+/// A control task may still own a capture producer when its join reaches C1. A failed
+/// join is not permission to close the native journal underneath its eventual loss report.
+#[tokio::test(flavor = "current_thread")]
+async fn an_unquiesced_capture_producer_keeps_native_journal_intake_open() {
+    let fixture = Fixture::new(16).await;
+    let (shutdown_tx, _) = tokio::sync::broadcast::channel(1);
+    let (mut post, seen) = fixture.post(false, None, &shutdown_tx, None);
+    post.control_drain = Box::pin(std::future::pending());
+    let drain = ShutdownDrain::new(DrainClock::new(SHORT));
+
+    let (code, _) = finished(post, &drain).await;
+    assert_eq!(code, 75, "an unquiesced producer prevents clean retirement");
+    seen.journal
+        .stage_run(&[busbar_kernel_wal::Entry::new(
+            busbar_kernel_wal::RecordClass::Load,
+            vec![3; 24],
+        )])
+        .expect("native audit intake must remain open for the outstanding producer");
+    seen.still_admitted().await;
+}
 
 /// Runs `finish` and returns its code and how long it took.
 async fn finished(post: PostServe<'static>, drain: &ShutdownDrain) -> (i32, Duration) {
@@ -56,6 +78,7 @@ async fn a_held_budget_flight_detaches_the_money_driver_and_exits_70() {
     let flusher = money_driver(&fixture.seen.gov, &clock, &shutdown_tx);
     let (post, seen) = fixture.post(true, Some(flusher), &shutdown_tx, None);
     let drain = ShutdownDrain::new(clock);
+    coordinate_test(&drain, &shutdown_tx);
     let (code, _) = finished(post, &drain).await;
     assert_eq!(
         code, 70,
@@ -85,6 +108,7 @@ async fn a_held_journal_flush_is_detached_at_the_deadline_and_exits_75() {
     let (shutdown_tx, _) = tokio::sync::broadcast::channel(1);
     let (post, seen) = fixture.post(false, None, &shutdown_tx, None);
     let drain = ShutdownDrain::new(DrainClock::new(SHORT));
+    coordinate_test(&drain, &shutdown_tx);
     let (code, took) = finished(post, &drain).await;
     assert_eq!(code, 75);
     assert!(drain.detached() >= 1, "the journal flush was detached");
@@ -113,6 +137,7 @@ async fn a_held_retirement_write_is_detached_and_the_writer_stays_open() {
     let (shutdown_tx, _) = tokio::sync::broadcast::channel(1);
     let (post, seen) = fixture.post(false, None, &shutdown_tx, None);
     let drain = ShutdownDrain::new(DrainClock::new(SHORT));
+    coordinate_test(&drain, &shutdown_tx);
     let (code, _) = finished(post, &drain).await;
     assert_eq!(code, 75, "an unconfirmed retirement is never a clean exit");
     assert!(drain.detached() >= 1, "the retirement was detached");
@@ -156,6 +181,7 @@ async fn unflushed_metering_or_a_dirty_cell_at_the_deadline_exits_70() {
         let (shutdown_tx, _) = tokio::sync::broadcast::channel(1);
         let (post, seen) = fixture.post(true, None, &shutdown_tx, None);
         let drain = ShutdownDrain::new(DrainClock::new(SHORT));
+        coordinate_test(&drain, &shutdown_tx);
         let (code, _) = finished(post, &drain).await;
         assert_eq!(code, 70, "budget_cell={budget_cell}");
         let custody = seen.gov.spend_custody();
@@ -189,6 +215,7 @@ async fn a_second_signal_ends_the_drain_at_once() {
     post.admin = Some(Box::pin(std::future::pending::<()>()));
     let clock = DrainClock::new(Duration::from_secs(20));
     let drain = ShutdownDrain::new(Arc::clone(&clock));
+    coordinate_test(&drain, &shutdown_tx);
     let signalled = Arc::new(std::sync::Mutex::new(None::<std::time::Instant>));
     let signals = {
         let clock = Arc::clone(&clock);
@@ -240,6 +267,7 @@ async fn a_stalled_work_recovery_is_cut_at_c1_and_never_cancelled() {
         std::future::pending::<()>().await;
     });
     let drain = ShutdownDrain::new(DrainClock::new(SHORT));
+    coordinate_test(&drain, &shutdown_tx);
     let (code, took) = finished(post, &drain).await;
     assert_eq!(code, 75, "work recovery that did not stop is undrained");
     assert!(drain.detached() >= 1);
@@ -266,6 +294,7 @@ async fn serving_longer_than_the_budget_cuts_nothing_before_the_first_signal() {
         tokio::time::sleep(budget + Duration::from_secs(1)).await;
     }));
     let drain = ShutdownDrain::new(DrainClock::new(budget));
+    coordinate_test(&drain, &shutdown_tx);
     let started = std::time::Instant::now();
     let code = tokio::time::timeout(budget * 3, finish(post, &drain))
         .await
@@ -273,4 +302,67 @@ async fn serving_longer_than_the_budget_cuts_nothing_before_the_first_signal() {
     assert!(started.elapsed() >= budget + Duration::from_secs(1));
     assert_eq!(code, 0, "nothing was cut, so the writer retires");
     assert_eq!(drain.detached(), 0, "no detach before the first broadcast");
+}
+
+/// (a) A running unit's persist select the store never answers, and (b) a finished unit's
+/// recovery select the store never answers: the money driver's unit pass holds that write, is
+/// detached at C3 (never aborted), and the exit is 70 with the running unit flush `in_doubt`;
+/// released, the held write still lands.
+#[tokio::test(flavor = "current_thread")]
+async fn a_held_unit_select_detaches_the_money_driver_and_exits_70() {
+    for recovery in [false, true] {
+        let fixture = Fixture::new(16).await;
+        fixture.attach_sinks().await;
+        let unit = fixture.unit();
+        if recovery {
+            assert!(fixture.seen.gov.finish_unit_checkpoint(unit));
+        } else {
+            fixture.seen.gov.stage_unit_checkpoint(unit);
+        }
+        let gate = Arc::new(FlushGate::default());
+        let held = if recovery {
+            &fixture.seen.backend.recovery
+        } else {
+            &fixture.seen.backend.unitcp
+        };
+        *held.lock().unwrap() = Some(gate.clone());
+        let (shutdown_tx, _) = tokio::sync::broadcast::channel(1);
+        let clock = DrainClock::new(SHORT);
+        let flusher = money_driver(&fixture.seen.gov, &clock, &shutdown_tx);
+        let (post, seen) = fixture.post(true, Some(flusher), &shutdown_tx, None);
+        let drain = ShutdownDrain::new(clock);
+        coordinate_test(&drain, &shutdown_tx);
+        let (code, _) = finished(post, &drain).await;
+        assert_eq!(
+            code, 70,
+            "recovery={recovery}: the held unit write is in doubt"
+        );
+        assert!(
+            drain.detached() >= 1,
+            "recovery={recovery}: the money driver was detached at C3"
+        );
+        let custody = seen.gov.spend_custody();
+        assert!(
+            custody
+                .in_doubt
+                .iter()
+                .any(|item| item.kind == "unit_flush"),
+            "recovery={recovery}: {custody:?}"
+        );
+        gate.release();
+        let gov = Arc::clone(&seen.gov);
+        eventually(
+            "the detached unit pass ends once its write lands",
+            move || {
+                let gov = Arc::clone(&gov);
+                async move {
+                    !gov.spend_custody()
+                        .in_doubt
+                        .iter()
+                        .any(|item| item.kind == "unit_flush")
+                }
+            },
+        )
+        .await;
+    }
 }

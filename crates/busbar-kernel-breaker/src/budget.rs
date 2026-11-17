@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
 //! The per-destination LIFETIME request budget: a `total`-window cap scoped to the destination, not
 
 use std::sync::atomic::{AtomicI64, Ordering};

@@ -161,7 +161,7 @@ pub(crate) fn signing_token(
 ) -> String {
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     use base64::Engine as _;
-    let payload = serde_json::to_vec(claims).expect("TokenClaims serializes");
+    let payload = busbar_contract::json::to_vec(claims).expect("TokenClaims serializes");
     let sig = key.sign(&payload);
     let encoded = |bytes: usize| bytes.div_ceil(3) * 4;
     let mut token = String::with_capacity(prefix.len() + encoded(payload.len()) + 1 + encoded(64));

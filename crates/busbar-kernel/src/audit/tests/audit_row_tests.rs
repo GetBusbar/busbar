@@ -23,6 +23,10 @@ fn full_row() -> AuditRowInput {
         message: "applied".into(),
         data: AuditData::from_json(r#"{"plugin_diag":"d1","text":"t1","n":12345678901234567890}"#)
             .unwrap(),
+        client_request_id: None,
+        trace_id: None,
+        operation_id: None,
+        unconditional: false,
     }
 }
 
@@ -36,10 +40,45 @@ fn scheme3_row_round_trips_through_its_suffix() {
     assert_eq!(parsed.row, row);
 }
 
+/// ADMIN-API-1.6-ONE-MODEL section 7.1: a scheme 4 suffix reads back its row, `ts` and `at_ms`, and seals
+/// `at_ms` and `unconditional`.
+#[test]
+fn scheme4_row_round_trips_and_seals_at_ms_and_unconditional() {
+    let mut row = full_row();
+    row.unconditional = true;
+    let suffix = row4_suffix(1_700_000_000_123, &row);
+    let parsed = parse_suffix_entry(&suffix);
+    assert_eq!(parsed.scheme, crate::audit_ring::AUDIT_SCHEME_ROW4);
+    assert_eq!(parsed.ts, 1_700_000_000);
+    assert_eq!(parsed.at_ms, Some(1_700_000_000_123));
+    assert_eq!(parsed.row, row);
+    assert_ne!(
+        row4_suffix(1_700_000_000_124, &row),
+        suffix,
+        "at_ms is sealed"
+    );
+    let mut conditional = row.clone();
+    conditional.unconditional = false;
+    assert_ne!(
+        row4_suffix(1_700_000_000_123, &conditional),
+        suffix,
+        "unconditional is sealed"
+    );
+    assert_ne!(
+        row_suffix(1_700_000_000, &conditional),
+        row4_suffix(1_700_000_000_000, &conditional),
+        "scheme 4 never collides with scheme 3"
+    );
+    for cut in 0..suffix.len() {
+        let _ = parse_suffix_entry(&suffix[..cut]);
+    }
+}
+
 #[test]
 fn scheme3_digests_every_field() {
     let base = row_suffix(10, &full_row());
-    let edits: Vec<(&str, Box<dyn Fn(&mut AuditRowInput)>)> = vec![
+    type Edit = (&'static str, Box<dyn Fn(&mut AuditRowInput)>);
+    let edits: Vec<Edit> = vec![
         ("action", Box::new(|r| r.action.push('x'))),
         ("resource", Box::new(|r| r.resource.push('x'))),
         ("outcome", Box::new(|r| r.outcome = "rejected".into())),
@@ -213,6 +252,106 @@ async fn audit_rows_carry_generation_and_request() {
     let mut outside = AuditRowInput::default();
     stamp_request_context(&mut outside);
     assert!(outside.request_id.is_none() && outside.idempotency_key.is_none());
+}
+
+/// ADMIN-API-1.6-ONE-MODEL section 7.1: scheme 4 seals the request's correlation, and each member
+/// moves the digest.
+#[test]
+fn scheme4_seals_the_request_correlation() {
+    let mut row = full_row();
+    row.client_request_id = Some("console-req.1".into());
+    row.trace_id = Some("4bf92f3577b34da6a3ce929d0e0e4736".into());
+    row.operation_id = Some("op_0123456789abcdef0123456789abcdef".into());
+    let suffix = row4_suffix(1_700_000_000_123, &row);
+    let parsed = parse_suffix_entry(&suffix);
+    assert_eq!(parsed.row, row);
+    let clears: [fn(&mut AuditRowInput); 3] = [
+        |r: &mut AuditRowInput| r.client_request_id = None,
+        |r: &mut AuditRowInput| r.trace_id = None,
+        |r: &mut AuditRowInput| r.operation_id = None,
+    ];
+    for clear in clears {
+        let mut other = row.clone();
+        clear(&mut other);
+        assert_ne!(row4_suffix(1_700_000_000_123, &other), suffix, "{other:?}");
+    }
+    let mut swapped = row.clone();
+    std::mem::swap(&mut swapped.client_request_id, &mut swapped.operation_id);
+    assert_ne!(
+        row4_suffix(1_700_000_000_123, &swapped),
+        suffix,
+        "each member is sealed at its own position"
+    );
+    let entry = entry_of(1, String::new(), "h".into(), parsed, false);
+    assert_eq!(entry.client_request_id.as_deref(), Some("console-req.1"));
+    assert_eq!(
+        entry.trace_id.as_deref(),
+        Some("4bf92f3577b34da6a3ce929d0e0e4736")
+    );
+    assert_eq!(
+        entry.operation_id.as_deref(),
+        Some("op_0123456789abcdef0123456789abcdef")
+    );
+    let old = entry_of(
+        1,
+        String::new(),
+        "h".into(),
+        parse_suffix_entry(&row_suffix(1_700_000_000, &full_row())),
+        false,
+    );
+    let text = sonic_rs::to_string(&old).unwrap();
+    for member in ["client_request_id", "trace_id", "operation_id"] {
+        assert!(
+            !text.contains(member),
+            "a scheme 3 row serves no {member}: {text}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn audit_rows_carry_the_request_correlation() {
+    let request = Arc::new(AuditRequest::default());
+    let correlation = crate::admin::gate::Correlation {
+        client_request_id: Some("cli-7".into()),
+        trace: crate::admin::gate::TraceParent::parse(
+            "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+        ),
+    };
+    let row = crate::admin::gate::with_request_id(
+        "r_00000000000000bb".into(),
+        crate::admin::gate::with_correlation(
+            correlation,
+            scope_request(Some(request), async {
+                note_idempotency_key("cr-78");
+                note_operation_id("op_feedfacefeedfacefeedfacefeedface");
+                let mut row = AuditRowInput {
+                    outcome: "rejected".into(),
+                    ..Default::default()
+                };
+                stamp_request_context(&mut row);
+                row
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(row.request_id.as_deref(), Some("r_00000000000000bb"));
+    assert_eq!(row.client_request_id.as_deref(), Some("cli-7"));
+    assert_eq!(
+        row.trace_id.as_deref(),
+        Some("4bf92f3577b34da6a3ce929d0e0e4736")
+    );
+    assert_eq!(
+        row.operation_id.as_deref(),
+        Some("op_feedfacefeedfacefeedfacefeedface")
+    );
+    let mut outside = AuditRowInput::default();
+    stamp_request_context(&mut outside);
+    assert!(
+        outside.client_request_id.is_none()
+            && outside.trace_id.is_none()
+            && outside.operation_id.is_none(),
+        "a row no request caused carries no correlation"
+    );
 }
 
 fn push(log: &PlaneAuditLog, seq: u64, severity: &str, kind: Option<&str>, instance: Option<&str>) {

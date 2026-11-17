@@ -10,6 +10,9 @@ use std::sync::{Arc, Mutex};
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use base64::Engine as _;
 use busbar_contract::crypto::ed25519::SigningKey;
+use busbar_contract::json::{
+    json, JsonContainerTrait as _, JsonValueMutTrait as _, JsonValueTrait as _, Value,
+};
 use busbar_plugin_abi::host_side::caller::{CallStack, Caller, InstanceLimits};
 use busbar_plugin_abi::plane::{
     DISTRUST_CHANGED, DISTRUST_NONE, DISTRUST_NOT_APPROVED, DISTRUST_QUARANTINED, DISTRUST_UNKNOWN,
@@ -17,7 +20,6 @@ use busbar_plugin_abi::plane::{
     SIGNED_VERIFIED,
 };
 use busbar_plugin_abi::types::KindCode;
-use serde_json::{json, Value};
 
 use super::*;
 use crate::plugin_records::StoreRecords;
@@ -413,12 +415,19 @@ async fn verify_is_todays_trust_verify_body() {
     let tampered = {
         let mut sig = good.clone();
         let mut raw = URL_SAFE_NO_PAD
-            .decode(sig["signature"].as_str().unwrap_or_default())
+            .decode(
+                sig.get(&"signature")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default(),
+            )
             .unwrap_or_default();
         if let Some(b) = raw.get_mut(10) {
             *b ^= 1;
         }
-        sig["signature"] = Value::String(URL_SAFE_NO_PAD.encode(raw));
+        sig.as_object_mut().expect("a signature object").insert(
+            &"signature",
+            Value::from(URL_SAFE_NO_PAD.encode(raw).as_str()),
+        );
         sig
     };
     let corpus: Vec<(&[u8], Value)> = vec![
@@ -430,7 +439,7 @@ async fn verify_is_todays_trust_verify_body() {
         ),
         (PAYLOAD, json!([signature(&key(2), &eddsa, PAYLOAD)])),
         (PAYLOAD, json!([])),
-        (PAYLOAD, Value::Array(vec![good.clone(); 9])),
+        (PAYLOAD, json!(vec![good.clone(); 9])),
         (PAYLOAD, json!([{"protected": "!!", "signature": "AA"}])),
         (PAYLOAD, json!([{"signature": "AA"}])),
         (

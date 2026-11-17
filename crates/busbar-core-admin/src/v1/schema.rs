@@ -255,8 +255,6 @@ pub struct ConfigReloadView {
 #[derive(Serialize, JsonSchema)]
 pub struct RestartView {
     pub restarting: bool,
-    /// Whether a process supervisor was detected. False means the caller confirmed explicitly.
-    pub supervisor_detected: bool,
     pub note: String,
 }
 
@@ -295,18 +293,6 @@ pub struct RevokeView {
     pub revoked: String,
 }
 
-/// `POST /signing-key/rotate`: the current key-signing key id plus the REVOKE-ALL warning. 1.5.0 is
-/// single-key: the actual swap is an operator action, so this reports intent, not an in-process swap.
-#[derive(Serialize, JsonSchema)]
-pub struct SigningKeyRotateView {
-    /// The current signing-key id (`kid`) that tokens are minted under.
-    pub current_kid: String,
-    /// Always `true`: rotating the signing key revokes every outstanding key (all must be re-minted).
-    pub revoke_all: bool,
-    /// Human-readable guidance for the operator-driven lockstep rotation.
-    pub message: String,
-}
-
 /// `GET`/`PUT /config/settings` (1.5.0 full-config coverage): the API-settable single-value config
 /// overlay (`root` section) and, on a PUT, the apply metadata. `settings` is the CURRENT effective
 /// root override (the merge of prior overlay + this request). It is overlay-persisted so it survives
@@ -327,11 +313,6 @@ pub struct SigningKeyRotateView {
 /// reused `UpstreamClients` only reads once at boot, and `max_inbound_concurrent`, which is baked
 /// once into the data router's `GlobalConcurrencyLimitLayer` at process start (a config apply swaps
 /// only `Arc<App>`, never the router): two independent freezing mechanisms.
-/// The optional `limits.datagram_line_memory_bytes` setting is off by default. Setting it to
-/// a positive integer enables a retained-capacity limit for new datagram LINE pairings; null
-/// disables it. Existing connections retain their chosen limit. Exhaustion closes the affected
-/// connection. The limit counts retained requested capacity across both directions, queued output
-/// ownership and metadata, not process RSS or allocator overhead.
 /// There is NO
 /// `observability` section here, and no `metrics` one either: 1.5.3 DELETED both from the config
 /// grammar, and `RootSettings` (what this endpoint projects) carries neither field: a PUT naming
@@ -340,7 +321,9 @@ pub struct SigningKeyRotateView {
 /// are authored through the named exporter routes or source-fenced configuration document edits.
 /// Module-carried streams, produced fields and required pinned fields are published in the export
 /// form schema; lifecycle and restart requirements remain explicit in mutation responses.
-/// `advanced` is live EXCEPT `response_headers`: `response_headers.server_timing` is
+/// The settings endpoint exposes only the patchable advanced fields. The document-only
+/// `advanced.shutdown.deregister_delay` is captured at boot and requires restart.
+/// Within these settings, `advanced` is live EXCEPT `response_headers`: `response_headers.server_timing` is
 /// baked into router middleware state at boot (same "config apply swaps `Arc<App>`, never the
 /// router" freezing as `max_inbound_concurrent`) and `response_headers.route_policy` seeds a
 /// process-global `OnceLock`; neither is rebuilt by an apply.
@@ -417,9 +400,8 @@ pub struct PluginSchemaView {
     /// `schema: null`: a present-but-corrupt schema is a real
     /// authoring/packaging bug, not "this plugin simply has none."
     pub schema_error: Option<String>,
-    /// `"trusted" | "unverified" | "rejected"`: the same vocabulary the plugin catalog already
-    /// uses (never `"verified"`).
-    pub trust: String,
+    /// The signed image trust object; presence is distinct from verified signer evidence.
+    pub trust: crate::v1::contract::PluginTrustView,
     /// `"describe"` when a currently-loaded `kind: hook` answered its live `describe` wire
     /// message; `"statement"` for a linked plugin; `"manifest"` for a dropped-in plugin
     /// (its signed Statement schema, or the legacy manifest fallback); "installed_archive" for
@@ -585,6 +567,7 @@ fn _error_taxonomy_is_referenced(e: &AdminError) {
         | AdminError::RateLimited
         | AdminError::Internal
         | AdminError::Unavailable(_)
+        | AdminError::RetryLater { .. }
         | AdminError::UnpricedClass { .. }
         | AdminError::PluginText { .. } => {}
     }

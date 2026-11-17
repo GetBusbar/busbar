@@ -11,6 +11,7 @@
 
 use std::sync::Arc;
 
+use busbar_contract::json::{self, JsonContainerTrait as _, JsonValueTrait as _, Value};
 use busbar_plugin_abi::host_side::caller::{BoxFut, CallStack, Caller, InstanceLimits};
 use busbar_plugin_abi::plane::{
     DISTRUST_CHANGED, DISTRUST_NONE, DISTRUST_NOT_APPROVED, DISTRUST_QUARANTINED, DISTRUST_UNKNOWN,
@@ -18,9 +19,9 @@ use busbar_plugin_abi::plane::{
     SIGNED_VERIFIED,
 };
 use busbar_plugin_abi::types::KindCode;
-use busbar_plugin_loader::ports::plane::TrustItem;
+use busbar_ports::plane::TrustItem;
 
-use super::book::{self as kernel_book, Distrust, Effect, Ruling, RulingRow, TrustFacts};
+use super::book::{self as kernel_book, Distrust, Effect, Reviewed, Ruling, RulingRow, TrustFacts};
 use super::section::{DeclaredPin, TrustEntry};
 use crate::plane_grants::core_name;
 use crate::plugin_records::{PluginRecords, RecordsDenied, Scope};
@@ -44,7 +45,12 @@ pub trait TrustBook: Send + Sync + 'static {
         item: Option<(&str, Option<[u8; 32]>)>,
     ) -> u32;
     /// TRUST_STATE: the counterparty verdict and per-item state, for the plane's admin views.
-    fn state(&self, plane: &Caller<'_>, party: &str, sink: &mut dyn FnMut(TrustItem<'_>)) -> u32;
+    fn state(
+        &self,
+        plane: &Caller<'_>,
+        party: &str,
+        sink: &mut dyn FnMut(TrustItem<'_>),
+    ) -> (u32, Option<[u8; 32]>);
     /// Upstreams of this plane instance whose re-verification is due; K8 runs `probe(TGT_SIGHT)` for each
     /// (and on DX_RESIGHT), with RetrySite::PlaneProbe.
     fn due(&self, plane: &Caller<'_>, now_s: u64) -> Vec<Box<str>>;
@@ -164,13 +170,12 @@ fn demotion_key(party: &str) -> Vec<u8> {
 /// `{mechanism, key}` (the authenticity root `verify` checks signatures with, e.g. plane-a2a's `jws_issuer_key`),
 /// `fingerprint` = the catalogue hash the operator approved, `items` = item name → its approved `sha256:` digest.
 /// Every key is optional; any other key, or a digest in another form, is refused with core's text.
-pub fn approval_entry(at: &str, value: &serde_json::Value) -> Result<TrustEntry, String> {
-    use serde_json::Value;
+pub fn approval_entry(at: &str, value: &Value) -> Result<TrustEntry, String> {
     let map = value
         .as_object()
         .ok_or_else(|| format!("`{at}` must be a mapping"))?;
-    for key in map.keys() {
-        if !matches!(key.as_str(), "root" | "fingerprint" | "items") {
+    for (key, _) in map {
+        if !matches!(key, "root" | "fingerprint" | "items") {
             return Err(format!(
                 "`{at}.{key}` is not a trust approval key; the keys are root, fingerprint, items"
             ));
@@ -178,25 +183,26 @@ pub fn approval_entry(at: &str, value: &serde_json::Value) -> Result<TrustEntry,
     }
     let text = |v: Option<&Value>, name: &str| -> Result<Option<String>, String> {
         match v {
-            None | Some(Value::Null) => Ok(None),
-            Some(Value::String(s)) if s.trim().is_empty() => Ok(None),
-            Some(Value::String(s)) => Ok(Some(s.clone())),
-            Some(_) => Err(format!("`{at}.{name}` must be text")),
+            None => Ok(None),
+            Some(v) if v.is_null() => Ok(None),
+            Some(v) => match v.as_str() {
+                Some(s) if s.trim().is_empty() => Ok(None),
+                Some(s) => Ok(Some(s.to_owned())),
+                None => Err(format!("`{at}.{name}` must be text")),
+            },
         }
     };
-    let fingerprint = text(map.get("fingerprint"), "fingerprint")?;
-    let pin = match map.get("root") {
-        None | Some(Value::Null) => fingerprint.clone().map(|fp| DeclaredPin {
-            mechanism: "fingerprint".to_owned(),
-            root: false,
-            peer_key: false,
-            key: None,
-            fingerprint: Some(fp),
-        }),
-        Some(Value::Object(root)) => {
-            let mechanism = text(root.get("mechanism"), "root.mechanism")?
+    let fingerprint = text(map.get(&"fingerprint"), "fingerprint")?;
+    let pin = match map.get(&"root") {
+        None => fingerprint.clone().map(fingerprint_pin),
+        Some(v) if v.is_null() => fingerprint.clone().map(fingerprint_pin),
+        Some(v) => {
+            let root = v
+                .as_object()
+                .ok_or_else(|| format!("`{at}.root` must be a mapping"))?;
+            let mechanism = text(root.get(&"mechanism"), "root.mechanism")?
                 .ok_or_else(|| format!("`{at}.root.mechanism` is required"))?;
-            let key = text(root.get("key"), "root.key")?
+            let key = text(root.get(&"key"), "root.key")?
                 .ok_or_else(|| format!("`{at}.root.key` is required"))?;
             Some(DeclaredPin {
                 mechanism,
@@ -206,12 +212,15 @@ pub fn approval_entry(at: &str, value: &serde_json::Value) -> Result<TrustEntry,
                 fingerprint: fingerprint.clone(),
             })
         }
-        Some(_) => return Err(format!("`{at}.root` must be a mapping")),
     };
     let mut approved = std::collections::BTreeMap::new();
-    match map.get("items") {
-        None | Some(Value::Null) => {}
-        Some(Value::Object(items)) => {
+    match map.get(&"items") {
+        None => {}
+        Some(v) if v.is_null() => {}
+        Some(v) => {
+            let items = v
+                .as_object()
+                .ok_or_else(|| format!("`{at}.items` must be a mapping"))?;
             for (item, digest) in items {
                 let digest = text(Some(digest), &format!("items.{item}"))?;
                 let Some(digest) = digest else {
@@ -222,10 +231,9 @@ pub fn approval_entry(at: &str, value: &serde_json::Value) -> Result<TrustEntry,
                         "`{at}.items.{item}` must be `sha256:` and 64 hex digits"
                     ));
                 }
-                approved.insert(item.clone(), digest.to_ascii_lowercase());
+                approved.insert(item.to_owned(), digest.to_ascii_lowercase());
             }
         }
-        Some(_) => return Err(format!("`{at}.items` must be a mapping")),
     }
     Ok(TrustEntry {
         pin,
@@ -235,6 +243,17 @@ pub fn approval_entry(at: &str, value: &serde_json::Value) -> Result<TrustEntry,
         },
         approved,
     })
+}
+
+/// The pin of an approval that names only a catalogue fingerprint.
+fn fingerprint_pin(fingerprint: String) -> DeclaredPin {
+    DeclaredPin {
+        mechanism: "fingerprint".to_owned(),
+        root: false,
+        peer_key: false,
+        key: None,
+        fingerprint: Some(fingerprint),
+    }
 }
 
 /// The trust book planes run on (IF §12.14): the kernel's judge ([`kernel_book::TrustBook`], shared, so the core
@@ -298,7 +317,7 @@ impl<R: PluginRecords> CoreTrustBook<R> {
         let mut decided: Vec<RulingRow> = Vec::new();
         self.records
             .list(&ns, Scope::default(), b"R", MAX_ROWS, &mut |_, value| {
-                if let Ok(row) = serde_json::from_slice::<RulingRow>(value) {
+                if let Ok(row) = json::parse::<RulingRow>(value) {
                     decided.push(row);
                 }
             })
@@ -323,7 +342,7 @@ impl<R: PluginRecords> CoreTrustBook<R> {
     }
 
     async fn keep_decision(&self, row: &RulingRow) -> Result<(), RecordsDenied> {
-        let value = serde_json::to_vec(row).map_err(|_| RecordsDenied::Invalid)?;
+        let value = json::to_vec(row).map_err(|_| RecordsDenied::Invalid)?;
         let name = core_name(&row.instance, TAG);
         let ns = Self::rows_ns(&name);
         self.records
@@ -363,7 +382,7 @@ impl<R: PluginRecords> CoreTrustBook<R> {
         party: &str,
         item: Option<&str>,
         ruling: Ruling,
-        expected: Option<&str>,
+        reviewed: Option<Reviewed<'_>>,
     ) -> Result<(), RecordsDenied> {
         let permit = self
             .book
@@ -371,7 +390,7 @@ impl<R: PluginRecords> CoreTrustBook<R> {
             .map_err(|_| RecordsDenied::Invalid)?;
         let fact = self
             .book
-            .rule(plane_name, party, item, ruling, expected)
+            .rule(plane_name, party, item, ruling, reviewed)
             .map_err(|_| RecordsDenied::Invalid)?;
         self.keep_decision(&fact).await?;
         permit.apply(&fact).map_err(|_| RecordsDenied::Invalid)?;
@@ -460,16 +479,24 @@ impl<R: PluginRecords> TrustBook for CoreTrustBook<R> {
         )
     }
 
-    fn state(&self, plane: &Caller<'_>, party: &str, sink: &mut dyn FnMut(TrustItem<'_>)) -> u32 {
+    fn state(
+        &self,
+        plane: &Caller<'_>,
+        party: &str,
+        sink: &mut dyn FnMut(TrustItem<'_>),
+    ) -> (u32, Option<[u8; 32]>) {
         let verdict = self.judged(plane.name, party, None, None);
         if verdict == DISTRUST_UNKNOWN {
-            return verdict;
+            return (verdict, None);
         }
+        // One snapshot of the rows: the catalogue digest and every item state come from the same read.
+        let mut catalog = None;
         for row in self.book.rows() {
             if row.instance != plane.name || row.counterparty != party {
                 continue;
             }
             let Some(item) = row.item.as_deref() else {
+                catalog = row.seen.as_deref().and_then(digest_of);
                 continue;
             };
             sink(TrustItem {
@@ -479,7 +506,7 @@ impl<R: PluginRecords> TrustBook for CoreTrustBook<R> {
                 sighted: row.seen.as_deref().and_then(digest_of),
             });
         }
-        verdict
+        (verdict, catalog)
     }
 
     fn due(&self, plane: &Caller<'_>, now_s: u64) -> Vec<Box<str>> {
@@ -522,8 +549,14 @@ impl<R: PluginRecords> TrustBook for CoreTrustBook<R> {
         Box::pin(async move {
             let item = (!item.is_empty()).then_some(item);
             let reviewed = digest_text(&digest);
-            self.decide(plane_name, party, item, Ruling::Approve, Some(&reviewed))
-                .await?;
+            self.decide(
+                plane_name,
+                party,
+                item,
+                Ruling::Approve,
+                Some(Reviewed::Seen(&reviewed)),
+            )
+            .await?;
             if item.is_none() {
                 self.keep_quarantine(plane_name, party, None).await?;
             }
@@ -562,8 +595,8 @@ impl<R: PluginRecords> TrustBook for CoreTrustBook<R> {
 /// SIGNED_MALFORMED_SIGNATURE (today's service refused it outright; an intent answers a verdict).
 fn verified(key: &str, payload: &[u8], signatures: &[u8], named: &mut String) -> u32 {
     let sigs = match signatures {
-        [] => serde_json::Value::Null,
-        json => match serde_json::from_slice(json) {
+        [] => Value::new(),
+        doc => match json::parse_value(doc) {
             Ok(v) => v,
             Err(_) => return SIGNED_MALFORMED_SIGNATURE,
         },

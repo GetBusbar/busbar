@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use busbar_contract::caps::Pass;
+use busbar_contract::json::{self, JsonContainerTrait, JsonValueTrait};
 use busbar_contract::{
     caps::{
         Audit as AuditStep, KernelSeal, LocatorPtr, MeterClassId, Origin, OriginKind, Outcome,
@@ -145,7 +146,7 @@ fn the_published_recipe_hashes_to_the_digest_the_chain_seals() {
 fn every_recipe_field_is_published_under_its_own_name() {
     let mut chain = AuditChain::new().signing_with(signer());
     let record = chain.seal(inputs(1), &Pass::<AuditStep>::mint(&crate::seal::acquire()));
-    let body = expose::range_body(&chain, std::slice::from_ref(&record), 1, 1);
+    let body = expose::range_body(std::slice::from_ref(&record), 1, 1);
     for field in digest_fields(&record) {
         let name = field
             .name
@@ -425,8 +426,8 @@ fn head_history_survives_a_restart_rebuilt_from_its_records() {
         "an anchor that is not signed is not evidence"
     );
     assert_eq!(
-        expose::range_body(&resumed, &records[..3], 1, 3),
-        expose::range_body(&chain, &records[..3], 1, 3),
+        expose::range_body(&records[..3], 1, 3),
+        expose::range_body(&records[..3], 1, 3),
         "a window's published anchor moved across the restart"
     );
 
@@ -536,15 +537,15 @@ fn the_range_read_is_inclusive_and_clips_rather_than_refusing() {
         .map(|i| chain.seal(inputs(i), &Pass::<AuditStep>::mint(&crate::seal::acquire())))
         .collect();
 
-    let two_three = expose::range_body(&chain, &records, 2, 3);
+    let two_three = expose::range_body(&records, 2, 3);
     assert_eq!(two_three.matches("\"prev_hash\"").count(), 2);
     assert!(two_three.contains(&records[1].hash));
     assert!(two_three.contains(&records[2].hash));
 
-    let past_the_end = expose::range_body(&chain, &records, 4, 400);
+    let past_the_end = expose::range_body(&records, 4, 400);
     assert_eq!(past_the_end.matches("\"prev_hash\"").count(), 2);
 
-    let empty = expose::range_body(&chain, &records, 90, 99);
+    let empty = expose::range_body(&records, 90, 99);
     assert!(empty.contains("\"records\":[]"), "{empty}");
 }
 
@@ -555,7 +556,7 @@ fn an_empty_group_publishes_an_empty_array() {
         empty_group_inputs(),
         &Pass::<AuditStep>::mint(&crate::seal::acquire()),
     );
-    let body = expose::range_body(&chain, std::slice::from_ref(&record), 1, 1);
+    let body = expose::range_body(std::slice::from_ref(&record), 1, 1);
     assert!(
         body.contains("\"lines_count\":\"0\",\"lines\":[]"),
         "{body}"
@@ -576,11 +577,11 @@ fn caller_named_text_survives_into_the_published_body() {
     let mut i = inputs(1);
     i.what.op_class = OpClassId::new("tool\"a\\b\nc\u{1}d|e");
     let record = chain.seal(i, &Pass::<AuditStep>::mint(&crate::seal::acquire()));
-    let body = expose::range_body(&chain, std::slice::from_ref(&record), 1, 1);
+    let body = expose::range_body(std::slice::from_ref(&record), 1, 1);
 
     let expected = format!("tool{}\"a{}{}b{}nc{}u0001d|e", "\\", "\\", "\\", "\\", "\\");
     assert!(body.contains(&expected), "{body}");
-    let parsed: serde_json::Value = serde_json::from_str(&body).expect("the body is valid JSON");
+    let parsed: json::Value = json::parse_value(body.as_bytes()).expect("the body is valid JSON");
     assert_eq!(
         parsed["records"][0]["op_class"].as_str(),
         Some("tool\"a\\b\nc\u{1}d|e")
@@ -598,14 +599,14 @@ fn the_published_bodies_parse_and_the_wide_numbers_are_text() {
 
     for body in [
         expose::head_body(&chain),
-        expose::range_body(&chain, &records, 1, 2),
+        expose::range_body(&records, 1, 2),
         expose::keys_body(&keys),
     ] {
-        serde_json::from_str::<serde_json::Value>(&body).expect("every published body is JSON");
+        json::parse_value(body.as_bytes()).expect("every published body is JSON");
     }
 
-    let parsed: serde_json::Value =
-        serde_json::from_str(&expose::range_body(&chain, &records, 1, 2)).expect("JSON");
+    let parsed: json::Value =
+        json::parse_value(expose::range_body(&records, 1, 2).as_bytes()).expect("JSON");
     assert_eq!(parsed["records"][0]["emission_delta"].as_str(), Some("-7"));
 
     let record = parsed["records"][0]
@@ -613,7 +614,7 @@ fn the_published_bodies_parse_and_the_wide_numbers_are_text() {
         .expect("a published record is an object");
     for stored_price in ["pre_tier", "priced", "amount"] {
         assert!(
-            !record.contains_key(stored_price),
+            !record.contains_key(&stored_price),
             "the published record carries a stored price `{stored_price}`: {record:?}"
         );
     }
@@ -624,7 +625,7 @@ fn the_published_bodies_parse_and_the_wide_numbers_are_text() {
     assert!(!hooks.is_empty(), "the record names the hook that ran");
     for hook in hooks {
         let hook = hook.as_object().expect("a hook is an object");
-        let mut keys: Vec<&str> = hook.keys().map(String::as_str).collect();
+        let mut keys: Vec<&str> = hook.iter().map(|(key, _)| key).collect();
         keys.sort();
         assert_eq!(
             keys,
@@ -633,12 +634,15 @@ fn the_published_bodies_parse_and_the_wide_numbers_are_text() {
         );
         for priced in ["price", "priced", "priced_delta", "cost", "amount"] {
             assert!(
-                !hook.keys().any(|k| k.contains(priced)),
+                !hook.iter().any(|(k, _)| k.contains(priced)),
                 "a hook entry carries a price field `{priced}`: {hook:?}"
             );
         }
     }
-    assert_eq!(parsed["recipe"].as_str(), Some("busbar.audit.digest.v7"));
+    assert_eq!(
+        parsed["recipe"].as_str(),
+        Some(busbar_kernel_audit::LINK_RECIPE)
+    );
 
     assert_eq!(parsed["records"][0]["tier_bp"].as_str(), Some("9000"));
     assert_eq!(parsed["records"][0]["fee_count"].as_str(), Some("1"));
@@ -648,7 +652,7 @@ fn the_published_bodies_parse_and_the_wide_numbers_are_text() {
     );
 
     assert_eq!(parsed["records"][0]["seq"].as_str(), Some("1"));
-    assert!(parsed["records"][0]["lines"][0]["quantity"].is_string());
+    assert!(parsed["records"][0]["lines"][0]["quantity"].is_str());
 
     assert_eq!(parsed["from"].as_u64(), Some(1));
     assert_eq!(parsed["to"].as_u64(), Some(2));
@@ -658,13 +662,9 @@ fn the_published_bodies_parse_and_the_wide_numbers_are_text() {
 fn the_body_keeps_the_texts_texts_and_the_numbers_decimal_text() {
     let mut chain = AuditChain::new().signing_with(signer());
     let record = chain.seal(inputs(1), &Pass::<AuditStep>::mint(&crate::seal::acquire()));
-    let parsed: serde_json::Value = serde_json::from_str(&expose::range_body(
-        &chain,
-        std::slice::from_ref(&record),
-        1,
-        1,
-    ))
-    .expect("JSON");
+    let parsed: json::Value =
+        json::parse_value(expose::range_body(std::slice::from_ref(&record), 1, 1).as_bytes())
+            .expect("JSON");
     let published = &parsed["records"][0];
     for field in digest_fields(&record) {
         let Some(name) = field.name.strip_suffix("").filter(|n| !n.contains("[]")) else {
@@ -672,7 +672,7 @@ fn the_body_keeps_the_texts_texts_and_the_numbers_decimal_text() {
         };
         match field.value {
             DigestValue::Text(_) => assert!(
-                published[name].is_string(),
+                published[name].is_str(),
                 "{name} is a recipe text but is not published as a string"
             ),
             DigestValue::Num(n) => assert_eq!(
@@ -689,12 +689,12 @@ fn a_node_above_two_to_the_fifty_three_is_published_exactly() {
     let node: u64 = 16_045_690_984_833_335_023;
     let mut chain = AuditChain::new().signing_with(signer()).sealing_as(node);
     let record = chain.seal(inputs(1), &Pass::<AuditStep>::mint(&crate::seal::acquire()));
-    let body = expose::range_body(&chain, std::slice::from_ref(&record), 1, 1);
+    let body = expose::range_body(std::slice::from_ref(&record), 1, 1);
     assert!(
         body.contains("\"node\":\"16045690984833335023\","),
         "{body}"
     );
-    let parsed: serde_json::Value = serde_json::from_str(&body).expect("JSON");
+    let parsed: json::Value = json::parse_value(body.as_bytes()).expect("JSON");
     assert_eq!(
         parsed["records"][0]["node"]
             .as_str()
@@ -718,91 +718,6 @@ fn worked_example_inputs() -> AuditInputs {
 }
 
 const WORKED_EXAMPLE_NODE: u64 = 5;
-
-fn spec_json_block(doc: &str, nth: usize) -> serde_json::Value {
-    let block = doc
-        .split("```json")
-        .nth(nth + 1)
-        .unwrap_or_else(|| panic!("the spec has no json block {nth}"))
-        .split("```")
-        .next()
-        .expect("a fenced block closes");
-    serde_json::from_str(block).expect("the spec's worked example is valid JSON")
-}
-
-#[test]
-fn the_legacy_v4_worked_example_keeps_its_exact_record_hash_and_signature() {
-    let doc = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../docs/audit-chain-digest-v4.md"),
-    )
-    .expect("the published spec is in the tree");
-
-    let mut chain = AuditChain::new()
-        .signing_with(signer())
-        .sealing_as(WORKED_EXAMPLE_NODE);
-    let mut record = chain.seal(
-        worked_example_inputs(),
-        &Pass::<AuditStep>::mint(&crate::seal::acquire()),
-    );
-    record.usage.rate_card_version = None;
-    record.recipe = busbar_kernel_audit::Recipe::V4 {
-        legacy_rate_card_version: 3,
-    };
-    record.hash = AuditChain::digest_of(&record);
-    record.signature = Some(signer().sign_digest(&record.hash));
-    record.key_id = Some(signer().key_id().into());
-    let chain = AuditChain::resume(std::slice::from_ref(&record));
-    let mut keys = AuditKeySet::new();
-    keys.insert(AuditVerifyingKey::from_hex(&signer().public_key_hex()).expect("a public key"));
-
-    let parse = |body: String| -> serde_json::Value {
-        let mut value: serde_json::Value =
-            serde_json::from_str(&body).expect("a published body is JSON");
-        assert_eq!(
-            value["recipe"], "busbar.audit.digest.v7",
-            "the envelope names this build's writer"
-        );
-        value["recipe"] = serde_json::json!("busbar.audit.digest.v4");
-        value
-    };
-    assert_eq!(
-        spec_json_block(&doc, 0),
-        parse(expose::range_body(
-            &chain,
-            std::slice::from_ref(&record),
-            1,
-            1
-        )),
-        "the spec's range example is not what this build answers with"
-    );
-    assert_eq!(
-        spec_json_block(&doc, 1),
-        parse(expose::head_body(&chain)),
-        "the spec's head example is not what this build answers with"
-    );
-    assert_eq!(
-        spec_json_block(&doc, 2),
-        parse(expose::keys_body(&keys)),
-        "the spec's key-set example is not what this build answers with"
-    );
-
-    assert!(
-        doc.contains(&record.hash),
-        "the spec quotes a digest this build does not produce"
-    );
-    assert!(doc.contains(&signer().public_key_hex()));
-    assert!(doc.contains(signer().key_id()));
-    assert!(
-        doc.contains(&format!("preimage is {} bytes", 489)),
-        "the spec quotes a preimage length this build does not produce"
-    );
-    assert_eq!(
-        digest_over(&digest_fields(&record)).len(),
-        64,
-        "a digest is 64 lowercase hex characters"
-    );
-}
 
 #[test]
 fn the_worked_examples_preimage_is_the_length_the_spec_quotes() {

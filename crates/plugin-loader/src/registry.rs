@@ -13,7 +13,7 @@
 //!    error naming the file and the reason (never a partial boot).
 //! 2. **TRUST**: the signature verifies against the embedded busbar release key (first-party) or an
 //!    allowlisted publisher - else the plugin loads only under the matching explicit opt-in flag
-//!    (`allow_unsigned` / `allow_third_party`), otherwise it is logged and SKIPPED (never
+//!    (`allow_untrusted`), otherwise it is logged and SKIPPED (never
 //!    `dlopen`ed). Anti-downgrade floors are hard rejects inside this phase.
 //! 3. **CONFLICT** (over the loadable set): no two plugins share a `name`, no two share an `alias`,
 //!    and no alias collides with another plugin's `name`. Any collision is a HARD error naming
@@ -24,27 +24,14 @@
 //! filename is irrelevant.
 
 use crate::sign::{
-    evaluate_with_evidence, validate_structure, Manifest, TrustPolicy, Verdict, HOST_IDENTITY,
+    evaluate_with_verification, validate_structure, Manifest, TrustPolicy, Verdict, HOST_IDENTITY,
 };
 use crate::tarball;
 use busbar_contract::abi::mechanism::kind;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-/// The ONE abi_version this binary loads for `kind` (LINT-RULES R21: exact match, never a range
-/// or a set); `None` for a kind it does not know.
-pub fn supported_abi(kind: &str) -> Option<u32> {
-    match kind {
-        kind::STORE => Some(busbar_contract::abi::store::ABI_VERSION),
-        kind::SECRET => Some(busbar_contract::abi::secret::ABI_VERSION),
-        kind::AUTH => Some(busbar_contract::abi::auth::ABI_VERSION),
-        kind::HOOK => Some(busbar_contract::abi::hook::ABI_VERSION),
-        kind::EXPORT => Some(busbar_contract::abi::export::ABI_VERSION),
-        kind::PLANE => Some(busbar_contract::abi::plane::ABI_VERSION),
-        kind::TRANSPORT => Some(busbar_contract::abi::transport::ABI_VERSION),
-        _ => None,
-    }
-}
+pub use busbar_artifact_verifier::supported_abi;
 
 /// ONE ROW of the registry: a plugin it resolves by name or alias, loaded through the one loading
 /// path (`load_linked` / `load_dropped`). A DROPPED-IN row passed phases 1 + 2 — its signed
@@ -67,7 +54,7 @@ pub struct LoadablePlugin {
     pub archive_sha256: Option<String>,
     /// Authenticated keys-document version from this exact image's successful first-party seal.
     /// Never recovered by parsing an unverified signature, and absent for linked/unverified rows.
-    accepted_release_keys_version: Option<u64>,
+    pub verification: crate::sign::Verification,
     /// Whether what this plugin holds is lost on restart — a store's own statement ([`LinkedPlugin`]).
     /// A dropped-in row never states it: the plugins directory is where a durable store comes from.
     pub ephemeral: bool,
@@ -101,7 +88,7 @@ impl LoadablePlugin {
 
     #[must_use]
     pub fn release_keys_version(&self) -> Option<u64> {
-        self.accepted_release_keys_version
+        self.verification.keys_version
     }
 
     pub fn key(&self) -> &str {
@@ -197,56 +184,6 @@ impl LoadablePlugin {
                     ..
                 }
             )
-    }
-
-    pub fn validate_migrated(&self, settings: &serde_json::Value) -> Result<(), String> {
-        use crate::dispatch::migrate::{validate_migrated_door, validate_migrated_library};
-        match self.door() {
-            Some(door) => validate_migrated_door(door, settings),
-            None => validate_migrated_library(&self.lib_bytes, &self.file, settings),
-        }
-    }
-
-    /// Discover credential references in a registered owner's borrowed source sections.
-    pub fn migrate_references(
-        &self,
-        settings: &serde_json::Value,
-        from: &str,
-    ) -> Result<Option<busbar_contract::abi::sdk::migrate::MigrationAnswer>, String> {
-        use crate::dispatch::migrate::{migrate_references_door, migrate_references_library};
-        match self.door() {
-            Some(door) => migrate_references_door(door, settings, from),
-            None => migrate_references_library(&self.lib_bytes, &self.file, settings, from),
-        }
-    }
-
-    /// Route guarded credential custody through the receiving owner's migration door.
-    pub fn migrate_credential(
-        &self,
-        credential: &busbar_contract::Secret<String>,
-        from: &str,
-        seal: &dyn busbar_contract::plugin::KernelSeal,
-    ) -> Result<busbar_contract::abi::sdk::migrate::MigratedCredential, String> {
-        use crate::dispatch::migrate::{migrate_credential_door, migrate_credential_library};
-        match self.door() {
-            Some(door) => migrate_credential_door(door, credential, from, seal),
-            None => migrate_credential_library(&self.lib_bytes, &self.file, credential, from, seal),
-        }
-    }
-
-    pub fn migrate(
-        &self,
-        settings: &serde_json::Value,
-        from: &str,
-    ) -> Result<Option<busbar_contract::abi::sdk::migrate::MigrationAnswer>, String> {
-        use crate::dispatch::migrate::{migrate_door, migrate_library};
-        match &self.entry {
-            Some(LinkedEntry::Store { door }) => {
-                migrate_door(crate::dispatch::load::raw(*door), settings, from)
-            }
-            Some(LinkedEntry::Door(door)) => migrate_door(*door, settings, from),
-            None => migrate_library(&self.lib_bytes, &self.file, settings, from),
-        }
     }
 }
 
@@ -520,15 +457,16 @@ impl SkippedPlugin {
             .into_iter()
             .find(|k| *k == self.manifest.kind)?;
         let why = match self.kind {
+            RejectKind::VerificationUnavailable => "verification unavailable",
             RejectKind::Unsigned => "unsigned",
             RejectKind::Tampered => "tampered",
             RejectKind::UnknownPublisher => "unknown publisher",
+            RejectKind::PublisherScope => "publisher not authorized for this plugin",
             RejectKind::RetiredKey => "retired key",
             RejectKind::Revoked => "revoked",
             RejectKind::Superseded => "superseded",
             RejectKind::AntiDowngrade => "below its version floor (anti-downgrade)",
             RejectKind::UntrustedFloored => "untrusted below floor",
-            RejectKind::EgressGrant => "provider egress refused: not first-party",
             RejectKind::ExternalCrypto => "not busbar's own release, on a FIPS crypto backend",
         };
         let escaped = self.file.escape_debug().to_string();
@@ -658,7 +596,7 @@ impl PluginRegistry {
                 manifest,
                 lib_bytes: std::sync::Arc::default(),
                 archive_sha256: None,
-                accepted_release_keys_version: None,
+                verification: crate::sign::Verification::default(),
                 ephemeral,
                 entry: Some(entry),
                 keyed_by_alias,
@@ -789,39 +727,6 @@ impl PluginRegistry {
             ));
         }
         Ok(p)
-    }
-
-    fn resolve_store(&self, name_or_alias: &str) -> Result<&LoadablePlugin, String> {
-        self.resolve_kind(name_or_alias, "store", "back the governance store")
-    }
-
-    pub fn store_door(
-        &self,
-        name_or_alias: &str,
-    ) -> Result<busbar_contract::persistence::axis::StoreDoor, String> {
-        use busbar_contract::persistence::axis::StoreDoor;
-        let p = self.resolve_store(name_or_alias)?;
-        let no_door = || {
-            format!(
-                "plugin '{}' states no store door: rebuild the plugin against the 1.6.0 SDK",
-                p.key()
-            )
-        };
-        if let Some(entry) = p.entry {
-            return match entry {
-                LinkedEntry::Store { door } => Ok(StoreDoor::Linked(door)),
-                LinkedEntry::Door(_) => Err(no_door()),
-            };
-        }
-        let named = |e: String| format!("plugin '{}': {e}", p.key());
-        match p.manifest.stated_rendering().map_err(named)? {
-            Some(stated) => Ok(StoreDoor::Dropped {
-                file: p.file.clone(),
-                bytes: std::sync::Arc::clone(&p.lib_bytes),
-                stated,
-            }),
-            None => Err(no_door()),
-        }
     }
 
     #[must_use]
@@ -1161,7 +1066,9 @@ fn examine(path: &Path, policy: &TrustPolicy) -> FileOutcome {
         HOST_IDENTITY,
     ) {
         let speaks = supported_abi(&unpacked.manifest.kind);
-        if speaks.is_some_and(|v| v != unpacked.manifest.abi_version) {
+        if matches!(crate::sign::native_stamp(&unpacked.lib_bytes), Ok(None))
+            && speaks.is_some_and(|v| v != unpacked.manifest.abi_version)
+        {
             return FileOutcome::Outdated {
                 file,
                 reason,
@@ -1171,8 +1078,8 @@ fn examine(path: &Path, policy: &TrustPolicy) -> FileOutcome {
         return FileOutcome::Invalid { file, reason };
     }
 
-    match evaluate_with_evidence(&unpacked.lib_bytes, &unpacked.manifest, policy) {
-        Ok((verdict, accepted_release_keys_version)) => {
+    match evaluate_with_verification(&unpacked.lib_bytes, &unpacked.manifest, policy) {
+        Ok((verdict, verification)) => {
             let settings_schema = match unpacked.manifest.settings_schema_text() {
                 Ok(schema) => schema,
                 Err(reason) => return FileOutcome::Invalid { file, reason },
@@ -1187,7 +1094,7 @@ fn examine(path: &Path, policy: &TrustPolicy) -> FileOutcome {
                 verdict,
                 lib_bytes: std::sync::Arc::new(unpacked.lib_bytes),
                 archive_sha256: Some(crate::sign::sha256_hex(&bytes)),
-                accepted_release_keys_version,
+                verification,
                 ephemeral: false,
                 entry: None,
                 keyed_by_alias: false,
@@ -1195,19 +1102,7 @@ fn examine(path: &Path, policy: &TrustPolicy) -> FileOutcome {
                 configuration_statement,
             };
 
-            match plugin.first_party() {
-                true => FileOutcome::Loadable(plugin),
-                false => match crate::sign::egress_grant(&plugin.manifest) {
-                    Ok(()) => FileOutcome::Loadable(plugin),
-                    Err(reason) => FileOutcome::Skipped(SkippedPlugin {
-                        file: plugin.file,
-                        manifest: plugin.manifest,
-                        reason,
-                        kind: crate::sign::RejectKind::EgressGrant,
-                        trusted_keys: Vec::new(),
-                    }),
-                },
-            }
+            FileOutcome::Loadable(plugin)
         }
         Err(rejected) => FileOutcome::Skipped(SkippedPlugin {
             file,
@@ -1303,6 +1198,7 @@ fn superseder<'a>(
     outcomes.iter().find_map(|o| match o {
         FileOutcome::Loadable(q)
             if q.file != file
+                && matches!(crate::sign::native_stamp(&q.lib_bytes), Ok(None))
                 && q.manifest.kind == old.kind
                 && (!stated || q.manifest.statement.is_some())
                 && (q.manifest.name == old.name || q.manifest.former_names.contains(&old.name))
@@ -1320,7 +1216,10 @@ fn supersede(outcomes: Vec<FileOutcome>) -> Vec<FileOutcome> {
         .map(|o| {
             let (file, old, stated) = match o {
                 FileOutcome::Outdated { file, manifest, .. } => (file, manifest, false),
-                FileOutcome::Loadable(p) if p.manifest.statement.is_none() => {
+                FileOutcome::Loadable(p)
+                    if p.manifest.statement.is_none()
+                        && matches!(crate::sign::native_stamp(&p.lib_bytes), Ok(None)) =>
+                {
                     (&p.file, &p.manifest, true)
                 }
                 _ => return None,
@@ -1417,15 +1316,7 @@ pub fn inventory(dir: &Path, policy: &TrustPolicy) -> Vec<InventoryEntry> {
                         first_party: true, ..
                     } => "first-party".to_string(),
                     Verdict::Trusted { publisher, .. } => format!("publisher:{publisher}"),
-                    Verdict::Allowed {
-                        allow: crate::sign::AllowReason::Unsigned,
-                        ..
-                    } => "unsigned (allowed)".to_string(),
-                    Verdict::Allowed {
-                        allow: crate::sign::AllowReason::RetiredKey,
-                        ..
-                    } => "retired-key (allowed)".to_string(),
-                    Verdict::Allowed { .. } => "third-party (allowed)".to_string(),
+                    Verdict::Allowed { .. } => "unverified (allow_untrusted)".to_string(),
                 };
                 rows.push(InventoryEntry {
                     file: p.file.clone(),
@@ -1442,9 +1333,10 @@ pub fn inventory(dir: &Path, policy: &TrustPolicy) -> Vec<InventoryEntry> {
 
                     RejectKind::UntrustedFloored => "untrusted (below floor)",
                     RejectKind::UnknownPublisher => "unknown-publisher",
+                    RejectKind::PublisherScope => "publisher-scope",
                     RejectKind::Tampered => "tampered",
+                    RejectKind::VerificationUnavailable => "verification unavailable",
                     RejectKind::Unsigned => "unsigned",
-                    RejectKind::EgressGrant => "third-party (egress grant)",
                     RejectKind::ExternalCrypto => "not first-party (FIPS backend)",
                     RejectKind::Superseded => "superseded",
                     RejectKind::RetiredKey => "retired-key",
@@ -1453,7 +1345,6 @@ pub fn inventory(dir: &Path, policy: &TrustPolicy) -> Vec<InventoryEntry> {
                 .to_string();
                 let status = match s.kind {
                     RejectKind::AntiDowngrade
-                    | RejectKind::EgressGrant
                     | RejectKind::Revoked
                     | RejectKind::ExternalCrypto => {
                         format!("REJECTED: {}", s.reason)

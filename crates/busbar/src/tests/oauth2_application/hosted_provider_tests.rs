@@ -3,6 +3,7 @@
 
 use super::{application_with_auth_plugin, issuer, plugins};
 use base64::Engine as _;
+use busbar_contract::json::{self, JsonValueTrait as _};
 
 fn client() -> reqwest::Client {
     reqwest::Client::builder()
@@ -11,11 +12,11 @@ fn client() -> reqwest::Client {
         .unwrap()
 }
 
-fn cookie(raw: &str) -> serde_json::Value {
+fn cookie(raw: &str) -> json::Value {
     let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .decode(raw)
         .expect("cookie base64url");
-    serde_json::from_slice(&bytes).expect("the browser cookie carries JSON")
+    json::parse_value(&bytes).expect("the browser cookie carries JSON")
 }
 
 async fn hosted(methods: &[(&str, bool)]) -> (String, tokio::task::JoinHandle<()>) {
@@ -62,7 +63,7 @@ async fn hosted_with_secret(
         serde_json::json!({
             "providers":{},"models":{},"public_url":"https://busbar.example.com",
             "identity-providers":definitions,"auth":{"chain":[],"admin_auth":[]},
-            "advanced":{"allow_destinations":["127.0.0.1"]},
+            "advanced":{},
         }),
         &library,
     )
@@ -245,7 +246,7 @@ async fn a_refresh_link_rotates_only_from_busbars_own_page() {
     handle.abort();
 }
 
-async fn start_cookie(base: &str) -> (String, serde_json::Value) {
+async fn start_cookie(base: &str) -> (String, json::Value) {
     let response = client()
         .get(format!("{base}/auth/token?method=microsoft"))
         .send()
@@ -445,7 +446,7 @@ async fn api_json_path_stays_json_not_html() {
         !body.contains("<!doctype") && !body.contains("class=\"backlink\""),
         "the API path must NOT return the styled HTML error card: {body}"
     );
-    let json: serde_json::Value = serde_json::from_str(&body).expect("API error is JSON");
+    let json: json::Value = json::parse_value(body.as_bytes()).expect("API error is JSON");
     assert!(
         json.get("error").and_then(|e| e.as_str()).is_some(),
         "the API keeps the {{\"error\":…}} shape: {body}"

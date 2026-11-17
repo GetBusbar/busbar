@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use crate::root::test_plugins as plugins;
+use busbar_contract::json::{self, JsonValueTrait};
 use std::collections::HashSet;
 use std::sync::Arc;
 const TOKEN: &str = "admintok";
@@ -51,7 +52,7 @@ async fn application() -> (Arc<busbar_kernel::state::App>, Scratch) {
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
         "identity-providers": {},
     });
     document["identity-providers"][operator] = serde_json::json!({
@@ -67,13 +68,12 @@ async fn application() -> (Arc<busbar_kernel::state::App>, Scratch) {
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let anchor = busbar_kernel::appbuild::bootstrap_config_store(
-        &config,
-        &plugin_config,
-        &busbar_kernel::preflight::Unopened,
-    )
-    .await
-    .expect("the actual Store opens the configuration authority");
+    let crate::root::min3_boot::fixture::Fixture {
+        backend: anchor,
+        rules,
+    } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
+        .await
+        .expect("the actual Store opens the configuration authority");
     let anchor = crate::root::real_store::core_over(anchor).await;
     let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
         .expect("the actual Store supports conditional configuration records");
@@ -106,14 +106,14 @@ async fn application() -> (Arc<busbar_kernel::state::App>, Scratch) {
     (app, Scratch(directory))
 }
 
-async fn body(response: reqwest::Response, status: u16) -> serde_json::Value {
+async fn body(response: reqwest::Response, status: u16) -> json::Value {
     let actual = response.status().as_u16();
     let bytes = response.bytes().await.unwrap();
     assert_eq!(actual, status, "{}", String::from_utf8_lossy(&bytes));
     if bytes.is_empty() {
-        serde_json::Value::Null
+        json::Value::new()
     } else {
-        serde_json::from_slice(&bytes).unwrap()
+        json::parse_value(&bytes).unwrap()
     }
 }
 
@@ -225,7 +225,7 @@ async fn installed_schema_urls_bind_actual_archive_before_reload_and_refuse_stal
         );
         let digest = busbar_contract::redacted::sha256_hex(&archive);
         body(client.post(format!("{base}/plugins")).bearer_auth(TOKEN)
-            .json(&serde_json::json!({"file":"reviewed.tar.gz","tarball_b64":base64::engine::general_purpose::STANDARD.encode(&archive)}))
+            .json(&json::json!({"file":"reviewed.tar.gz","tarball_b64":base64::engine::general_purpose::STANDARD.encode(&archive)}))
             .send().await.unwrap(),201).await;
         // No reload: the loaded name remains absent, but the installed artifact URL must work.
         body(
@@ -287,17 +287,14 @@ async fn installed_schema_urls_bind_actual_archive_before_reload_and_refuse_stal
         assert_eq!(read["source"], "installed_archive");
         assert_eq!(read["schema_state"], "present");
         assert_eq!(read["archive_sha256"], digest);
-        assert_eq!(
-            read["schema"],
-            serde_json::from_slice::<serde_json::Value>(schema).unwrap()
-        );
+        assert_eq!(read["schema"], json::parse_value(schema).unwrap());
         assert!(read["schema"]["properties"].get("legacy").is_none());
         old_url = url.to_string();
     }
     let absent = schema_candidate(b"", None);
     let digest = busbar_contract::redacted::sha256_hex(&absent);
     body(client.post(format!("{base}/plugins")).bearer_auth(TOKEN)
-        .json(&serde_json::json!({"file":"reviewed.tar.gz","tarball_b64":base64::engine::general_purpose::STANDARD.encode(&absent)}))
+        .json(&json::json!({"file":"reviewed.tar.gz","tarball_b64":base64::engine::general_purpose::STANDARD.encode(&absent)}))
         .send().await.unwrap(),201).await;
     let url = format!(
         "{base}/plugins/reviewed.tar.gz/schema?source=installed_archive&expected_archive_sha256={digest}"
@@ -484,15 +481,15 @@ async fn plugin_configuration_inactive_signed_archives_report_declarations_witho
         if kind == "plane" {
             assert_eq!(
                 metadata["root_keys"],
-                serde_json::json!(["fixture-root", "fixture-owned"])
+                json::json!(["fixture-root", "fixture-owned"])
             );
             assert_eq!(metadata["sections"][2]["consumed"], true);
         } else {
             assert_eq!(
                 metadata["root_keys"],
-                serde_json::json!([busbar_contract::plugin::Kind::Transport.root()])
+                json::json!([busbar_contract::plugin::Kind::Transport.root()])
             );
-            assert_eq!(metadata["claims"], serde_json::json!(["fixture-wire"]));
+            assert_eq!(metadata["claims"], json::json!(["fixture-wire"]));
         }
         let url = format!(
             "{base}/plugins/inactive.tar.gz/schema?source=installed_archive&expected_archive_sha256={digest}"
@@ -524,10 +521,7 @@ async fn plugin_configuration_inactive_signed_archives_report_declarations_witho
         inspected["configuration"]["declaration_availability"],
         "unavailable"
     );
-    assert_eq!(
-        inspected["configuration"]["root_keys"],
-        serde_json::json!([])
-    );
+    assert_eq!(inspected["configuration"]["root_keys"], json::json!([]));
     server.abort();
 }
 
@@ -618,13 +612,10 @@ async fn plugin_configuration_actual_linked_plane_and_transport_reads_never_call
         assert_eq!(read["source"], "statement");
         let facts = declared.configuration.unwrap();
         if declared.kind == "transport" {
-            assert_eq!(
-                row["configuration"]["claims"],
-                serde_json::json!(facts.claims)
-            );
+            assert_eq!(row["configuration"]["claims"], json::json!(facts.claims));
             assert_eq!(
                 row["configuration"]["root_keys"],
-                serde_json::json!([busbar_contract::Kind::Transport.root()])
+                json::json!([busbar_contract::Kind::Transport.root()])
             );
         } else {
             use busbar_contract::abi::mechanism::door::{SECTION_CONSUMED, SECTION_DECLARING};
@@ -636,7 +627,7 @@ async fn plugin_configuration_actual_linked_plane_and_transport_reads_never_call
                 })
                 .map(|(name, _)| name)
                 .collect();
-            assert_eq!(row["configuration"]["root_keys"], serde_json::json!(roots));
+            assert_eq!(row["configuration"]["root_keys"], json::json!(roots));
             assert!(!roots.is_empty());
         }
         if let Some(url) = row["schema_url"].as_str() {
@@ -666,7 +657,7 @@ async fn plugin_configuration_actual_linked_plane_and_transport_reads_never_call
 // Decode the listing row's field schema; the field name is not a provider selector. A
 // compiled-in row has no backing artifact, so the listing contract omits its `file`; every
 // other row is an archive row and must name its file.
-fn artifact_file(row: &serde_json::Value) -> Option<&str> {
+fn artifact_file(row: &json::Value) -> Option<&str> {
     #[derive(serde::Deserialize)]
     struct Artifact<'a> {
         loader: &'a str,

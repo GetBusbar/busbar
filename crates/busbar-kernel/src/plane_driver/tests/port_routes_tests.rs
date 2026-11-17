@@ -12,10 +12,10 @@ use busbar_plugin_abi::plane::{
     AUTH_TICKET, ROUTE_ADMIN, ROUTE_CATALOG, ROUTE_LINE, ROUTE_RECOVERY, ROUTE_UPGRADE,
     RQ_RECOVERY,
 };
-use busbar_plugin_loader::ports::plane::{
+use busbar_ports::plane::{
     PlaneIn, PlaneOut, PlanePort, PlaneSession, RouteInfo, TargetIn, UsageClass,
 };
-use busbar_plugin_loader::ports::{CallCx, PortError};
+use busbar_ports::{CallCx, PortError};
 
 use super::{admin_catalog, admin_hydrate, plan, recovery_request, RouteRefused};
 
@@ -27,11 +27,36 @@ fn route(id: u32, flags: u32, auth: u32, pattern: &str) -> RouteInfo {
         auth,
         pattern: pattern.into(),
         cred_header: None,
+        resource_kinds: Vec::new(),
     }
 }
 
 fn none(_: u32) -> Option<u32> {
     None
+}
+
+#[test]
+fn resource_metadata_cannot_activate_unsupported_or_ambiguous_mounts() {
+    let mut r = route(1, 0, AUTH_PRINCIPAL, "/x");
+    r.resource_kinds = vec!["pool".into()];
+    assert_eq!(
+        plan(&[r.clone()], None, &none).unwrap().data[0].resource_kinds,
+        r.resource_kinds
+    );
+    for kinds in [
+        vec!["Pool".into()],
+        vec!["pool".into(), "pool".into()],
+        vec!["pool".into(); 9],
+    ] {
+        r.resource_kinds = kinds;
+        assert!(plan(&[r.clone()], None, &none).is_err());
+    }
+    r.resource_kinds = vec!["pool".into()];
+    r.auth = AUTH_PUBLIC;
+    assert!(plan(&[r.clone()], None, &none).is_err());
+    r.auth = AUTH_PRINCIPAL;
+    r.flags = ROUTE_UPGRADE;
+    assert!(plan(&[r], None, &none).is_err());
 }
 
 #[test]

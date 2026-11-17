@@ -40,9 +40,35 @@ pub(crate) fn sync<'o>(
         return Err(CallError::Quarantined);
     }
     // None: busbar-ffi's ACTIVE stack is full, a host fault and not the plugin's (no sink, no quarantine).
-    let status =
-        step(inst.slot, entry, buf, call).ok_or(CallError::Fault(FaultReason::BadInstance))?;
+    let status = step(inst.slot, entry, None, buf, call)
+        .ok_or(CallError::Fault(FaultReason::BadInstance))?;
     Answer::parse(status, buf.bytes()).map_err(|reason| report_fault(inst.slot, false, reason))
+}
+
+/// The fixed-storage counterpart of `sync`. Exactly one callback; no pool acquisition, growth or replay.
+/// The caller has already admitted and charged the input and the complete output backing.
+pub(crate) fn sync_fixed<'o>(
+    inst: &Instance,
+    entry: u8,
+    buf: &'o mut [u8],
+    call: impl for<'loan> FnOnce(&mut OutLease<'loan>) -> Status,
+) -> Result<(Answer<'o>, usize), CallError> {
+    if !inst.is_live() {
+        return Err(CallError::Quarantined);
+    }
+    let cap = buf.len().min(inst.max_out);
+    let buf = &mut buf[..cap];
+    let (status, len) = crate::host_side::driver::step_fixed(inst.slot, entry, buf, |lease| {
+        let status = call(lease);
+        (status, lease.len())
+    })
+    .ok_or(CallError::Fault(FaultReason::BadInstance))?;
+    let bytes = buf
+        .get(..len)
+        .ok_or_else(|| report_fault(inst.slot, false, FaultReason::BadInstance))?;
+    Answer::parse(status, bytes)
+        .map(|answer| (answer, len))
+        .map_err(|reason| report_fault(inst.slot, false, reason))
 }
 
 /// One session opener: the handle exists if and only if the answer is OK with a leading session TOKEN (which
@@ -56,8 +82,8 @@ pub(crate) fn opener<'o, K: Kind>(
     if !inst.is_live() {
         return Err(CallError::Quarantined);
     }
-    let (status, session) =
-        step(inst.slot, entry, buf, call).ok_or(CallError::Fault(FaultReason::BadInstance))?;
+    let (status, session) = step(inst.slot, entry, None, buf, call)
+        .ok_or(CallError::Fault(FaultReason::BadInstance))?;
     match Answer::parse(status, buf.bytes()) {
         Ok(answer) => Ok((session, answer)),
         // `session` drops here: busbar-ffi cancels the token the plugin minted.

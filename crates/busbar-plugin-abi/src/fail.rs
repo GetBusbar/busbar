@@ -4,6 +4,7 @@
 //! Errors: the plugin-side `Fail`, its codes and fact keys, and the host-side `CallError` (IF §4.1, §4.2).
 
 use std::borrow::Cow;
+use std::fmt::{self, Write as _};
 
 use crate::host::CryptoErr;
 use crate::need::need::NeedErr;
@@ -52,6 +53,14 @@ impl Fail {
     }
     pub fn refused_because(code: u32, text: impl Into<Cow<'static, str>>) -> Self {
         Self::of(Status::REFUSED, code, text.into())
+    }
+    /// Format immediately into the final diagnostic owner. Ordinary String growth is allowed;
+    /// formatting errors panic like format!, rather than returning a partial diagnostic.
+    pub fn refused_format(code: u32, args: fmt::Arguments<'_>) -> Self {
+        let mut text = String::new();
+        text.write_fmt(args)
+            .expect("a formatting trait implementation returned an error");
+        Self::refused_because(code, text)
     }
     pub const fn failed(code: u32) -> Self {
         Self::of(Status::FAILED, code, Cow::Borrowed(""))

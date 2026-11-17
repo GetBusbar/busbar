@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use busbar_contract::{persistence::*, Secret};
+use busbar_contract::{json, persistence::*, Secret};
 use busbar_core_admin::v1::contract::AdminError;
 use busbar_kernel::config::transaction::config_transaction;
 use busbar_kernel::persistence::scoped::ScopedStore;
@@ -78,18 +78,12 @@ async fn apply_refuses_unrecoverable_store_overlay_before_replacing_security_sta
     {
         crate::dist_root_install::install();
         let library_path = crate::root::test_plugins::application_store_library();
-        let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-            .expect("the actual store statement reads")
-            .expect("the actual store exports its statement");
-        let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-            .expect("the actual store statement is valid")
-            .name;
-        let mut manifest = plugins::manifest(
+        let module = crate::root::test_plugins::native_image(&library_path).name;
+        let manifest = crate::root::test_plugins::native_manifest(
             "store",
-            &module,
+            &library_path,
             crate::root::test_plugins::FIXTURE_PUBLISHER,
         );
-        manifest.statement = Some(hex::encode(statement));
         let library = std::fs::read(library_path).expect("the actual store library reads");
         let directory = plugins::scratch("admin-store-overlay");
         let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
@@ -107,7 +101,7 @@ async fn apply_refuses_unrecoverable_store_overlay_before_replacing_security_sta
             "groups": {"security_team": {}},
             "auth": { "chain": [], "admin_auth": [] },
             "store": { "module": module, "settings": settings },
-            "advanced": { "allow_destinations": ["127.0.0.1"] },
+            "advanced": {  },
         });
         document["plugins"] = plugins::config_document(&plugins::trusted_config(&directory));
         let deploy = busbar_kernel::config::deploy_from_deserializer(
@@ -120,13 +114,12 @@ async fn apply_refuses_unrecoverable_store_overlay_before_replacing_security_sta
         let plugin_config = crate::root::test_plugins::trusted_config(&directory);
         let rules = Arc::new(crate::root::door_steps::Rules::default())
             as Arc<dyn busbar_kernel::appbuild::RootRules>;
-        let actual = busbar_kernel::appbuild::bootstrap_config_store(
-            &config,
-            &plugin_config,
-            &busbar_kernel::preflight::Unopened,
-        )
-        .await
-        .expect("actual native Store opens");
+        let crate::root::min3_boot::fixture::Fixture {
+            backend: actual,
+            rules,
+        } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
+            .await
+            .expect("actual native Store opens");
         let faults = OverlayFaults::new(actual);
         let core = crate::root::real_store::core_over(faults.clone()).await;
         let calls = overlay_scope(core.clone());
@@ -158,7 +151,7 @@ async fn apply_refuses_unrecoverable_store_overlay_before_replacing_security_sta
 
         app.hook_registry.insert(
             "security_gate".into(),
-            serde_json::from_value(serde_json::json!({
+            json::from_value(&json::json!({
                 "kind": "gate", "module": "test-hook", "global": true,
             }))
             .unwrap(),
@@ -201,10 +194,8 @@ async fn apply_refuses_unrecoverable_store_overlay_before_replacing_security_sta
 
                 let schema = "busbar.config.overlay.v1";
                 let raw = calls.get(schema, b"head").await.unwrap().unwrap();
-                let mut head: serde_json::Value =
-                    serde_json::from_slice(raw.expose(&busbar_kernel::seal::lend())).unwrap();
-                let generation: [u8; 16] =
-                    serde_json::from_value(head["generation"].clone()).unwrap();
+                let mut head = json::parse_value(raw.expose(&busbar_kernel::seal::lend())).unwrap();
+                let generation: [u8; 16] = json::from_value(&head["generation"]).unwrap();
                 let bytes =
                     serde_json::to_vec(&doc.authoring(&busbar_kernel::seal::acquire())).unwrap();
                 assert!(bytes.len() <= busbar_contract::MAX_RECORD_BYTES);
@@ -215,15 +206,11 @@ async fn apply_refuses_unrecoverable_store_overlay_before_replacing_security_sta
                     .put(schema, &chunk, Secret::new(bytes.clone()))
                     .await
                     .unwrap();
-                head["length"] = serde_json::json!(bytes.len());
+                head["length"] = json::json!(bytes.len());
                 let digest: [u8; 32] = busbar_contract::crypto::sha256(&bytes).into();
-                head["digest"] = serde_json::json!(digest);
+                head["digest"] = json::json!(digest);
                 calls
-                    .put(
-                        schema,
-                        b"head",
-                        Secret::new(serde_json::to_vec(&head).unwrap()),
-                    )
+                    .put(schema, b"head", Secret::new(json::to_vec(&head).unwrap()))
                     .await
                     .unwrap();
                 assert!(matches!(
@@ -257,18 +244,12 @@ async fn reload_refuses_a_store_read_failure_and_preserves_the_running_generatio
 
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch("admin-store-overlay");
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
@@ -286,7 +267,7 @@ async fn reload_refuses_a_store_read_failure_and_preserves_the_running_generatio
         "groups": {"persisted_team": {}},
         "auth": { "chain": [], "admin_auth": [] },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
     });
     document["plugins"] = plugins::config_document(&plugins::trusted_config(&directory));
     let deploy = busbar_kernel::config::deploy_from_deserializer(
@@ -299,13 +280,12 @@ async fn reload_refuses_a_store_read_failure_and_preserves_the_running_generatio
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let actual = busbar_kernel::appbuild::bootstrap_config_store(
-        &config,
-        &plugin_config,
-        &busbar_kernel::preflight::Unopened,
-    )
-    .await
-    .expect("actual native Store opens");
+    let crate::root::min3_boot::fixture::Fixture {
+        backend: actual,
+        rules,
+    } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
+        .await
+        .expect("actual native Store opens");
     let faults = OverlayFaults::new(actual);
     let core = crate::root::real_store::core_over(faults.clone()).await;
     let (mut app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
@@ -437,18 +417,12 @@ async fn group_creation_refuses_store_failure_and_unknown_commit() {
     {
         crate::dist_root_install::install();
         let library_path = crate::root::test_plugins::application_store_library();
-        let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-            .expect("the actual store statement reads")
-            .expect("the actual store exports its statement");
-        let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-            .expect("the actual store statement is valid")
-            .name;
-        let mut manifest = plugins::manifest(
+        let module = crate::root::test_plugins::native_image(&library_path).name;
+        let manifest = crate::root::test_plugins::native_manifest(
             "store",
-            &module,
+            &library_path,
             crate::root::test_plugins::FIXTURE_PUBLISHER,
         );
-        manifest.statement = Some(hex::encode(statement));
         let library = std::fs::read(library_path).expect("the actual store library reads");
         let directory = plugins::scratch("admin-store-overlay");
         let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
@@ -465,7 +439,7 @@ async fn group_creation_refuses_store_failure_and_unknown_commit() {
             "models": {},
             "auth": { "chain": [], "admin_auth": [] },
             "store": { "module": module, "settings": settings },
-            "advanced": { "allow_destinations": ["127.0.0.1"] },
+            "advanced": {  },
         });
         document["plugins"] = plugins::config_document(&plugins::trusted_config(&directory));
         let deploy = busbar_kernel::config::deploy_from_deserializer(
@@ -478,13 +452,12 @@ async fn group_creation_refuses_store_failure_and_unknown_commit() {
         let plugin_config = crate::root::test_plugins::trusted_config(&directory);
         let rules = Arc::new(crate::root::door_steps::Rules::default())
             as Arc<dyn busbar_kernel::appbuild::RootRules>;
-        let actual = busbar_kernel::appbuild::bootstrap_config_store(
-            &config,
-            &plugin_config,
-            &busbar_kernel::preflight::Unopened,
-        )
-        .await
-        .expect("actual native Store opens");
+        let crate::root::min3_boot::fixture::Fixture {
+            backend: actual,
+            rules,
+        } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
+            .await
+            .expect("actual native Store opens");
         let faults = OverlayFaults::new(actual);
         let core = crate::root::real_store::core_over(faults.clone()).await;
         let (mut app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
@@ -534,7 +507,7 @@ async fn group_creation_refuses_store_failure_and_unknown_commit() {
         }
         let response = client
             .post(format!("http://{addr}/api/v1/admin/groups"))
-            .json(&serde_json::json!({"name": "candidate_team", "config": {}}))
+            .json(&json::json!({"name": "candidate_team", "config": {}}))
             .send()
             .await
             .unwrap();
@@ -564,18 +537,12 @@ async fn settings_preserves_a_large_store_overlay_across_reload() {
     isolated!(CHILD, WITNESS, witness = "usage");
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch("admin-store-overlay");
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
@@ -592,7 +559,7 @@ async fn settings_preserves_a_large_store_overlay_across_reload() {
         "models": {},
         "auth": { "chain": [], "admin_auth": [] },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
     });
     document["plugins"] = plugins::config_document(&plugins::trusted_config(&directory));
     let deploy = busbar_kernel::config::deploy_from_deserializer(
@@ -605,13 +572,12 @@ async fn settings_preserves_a_large_store_overlay_across_reload() {
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let actual = busbar_kernel::appbuild::bootstrap_config_store(
-        &config,
-        &plugin_config,
-        &busbar_kernel::preflight::Unopened,
-    )
-    .await
-    .expect("actual native Store opens");
+    let crate::root::min3_boot::fixture::Fixture {
+        backend: actual,
+        rules,
+    } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
+        .await
+        .expect("actual native Store opens");
     let faults = OverlayFaults::new(actual);
     let core = crate::root::real_store::core_over(faults.clone()).await;
     let (mut app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
@@ -679,7 +645,7 @@ async fn settings_preserves_a_large_store_overlay_across_reload() {
     let response = reqwest::Client::new()
         .put(format!("http://{addr}/api/v1/admin/config/settings"))
         .header("x-admin-token", "admintok")
-        .json(&serde_json::json!({"per_request_fee": 31}))
+        .json(&json::json!({"per_request_fee": 31}))
         .send()
         .await
         .unwrap();
@@ -702,8 +668,8 @@ async fn settings_preserves_a_large_store_overlay_across_reload() {
     let doc = loaded.overlay_doc.unwrap();
     assert_eq!(doc.root.unwrap().per_request_fee, Some(31));
     assert_eq!(
-        serde_json::to_value(doc.groups).unwrap(),
-        serde_json::to_value(groups).unwrap()
+        json::to_value(&doc.groups).unwrap(),
+        json::to_value(&groups).unwrap()
     );
     assert!(
         overlay
@@ -725,18 +691,12 @@ async fn unknown_settings_receipt_requires_successful_reload_before_new_mutation
     isolated!(CHILD, WITNESS, witness = "usage");
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch("admin-store-overlay");
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
@@ -753,7 +713,7 @@ async fn unknown_settings_receipt_requires_successful_reload_before_new_mutation
         "models": {},
         "auth": { "chain": [], "admin_auth": [] },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
     });
     document["plugins"] = plugins::config_document(&plugins::trusted_config(&directory));
     let deploy = busbar_kernel::config::deploy_from_deserializer(
@@ -766,13 +726,12 @@ async fn unknown_settings_receipt_requires_successful_reload_before_new_mutation
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let actual = busbar_kernel::appbuild::bootstrap_config_store(
-        &config,
-        &plugin_config,
-        &busbar_kernel::preflight::Unopened,
-    )
-    .await
-    .expect("actual native Store opens");
+    let crate::root::min3_boot::fixture::Fixture {
+        backend: actual,
+        rules,
+    } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
+        .await
+        .expect("actual native Store opens");
     let faults = OverlayFaults::new(actual);
     let core = crate::root::real_store::core_over(faults.clone()).await;
     let (mut app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
@@ -833,7 +792,7 @@ async fn unknown_settings_receipt_requires_successful_reload_before_new_mutation
         async move {
             client
                 .put(format!("http://{addr}/api/v1/admin/config/settings"))
-                .json(&serde_json::json!({"per_request_fee": fee}))
+                .json(&json::json!({"per_request_fee": fee}))
                 .send()
                 .await
                 .unwrap()
@@ -880,7 +839,7 @@ async fn unknown_settings_receipt_requires_successful_reload_before_new_mutation
     assert!(Arc::ptr_eq(&handle.load(), &before));
     let group = client
         .post(format!("http://{addr}/api/v1/admin/groups"))
-        .json(&serde_json::json!({"name": "after_failed_reload", "config": {}}))
+        .json(&json::json!({"name": "after_failed_reload", "config": {}}))
         .send()
         .await
         .unwrap();
@@ -966,18 +925,12 @@ async fn an_unknown_store_overlay_commit_never_swaps_or_claims_success() {
     isolated!(CHILD, WITNESS, witness = "usage");
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch("admin-store-overlay");
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
@@ -994,7 +947,7 @@ async fn an_unknown_store_overlay_commit_never_swaps_or_claims_success() {
         "models": {},
         "auth": { "chain": [], "admin_auth": [] },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
     });
     document["plugins"] = plugins::config_document(&plugins::trusted_config(&directory));
     let deploy = busbar_kernel::config::deploy_from_deserializer(
@@ -1007,13 +960,12 @@ async fn an_unknown_store_overlay_commit_never_swaps_or_claims_success() {
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let actual = busbar_kernel::appbuild::bootstrap_config_store(
-        &config,
-        &plugin_config,
-        &busbar_kernel::preflight::Unopened,
-    )
-    .await
-    .expect("actual native Store opens");
+    let crate::root::min3_boot::fixture::Fixture {
+        backend: actual,
+        rules,
+    } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
+        .await
+        .expect("actual native Store opens");
     let faults = OverlayFaults::new(actual);
     let core = crate::root::real_store::core_over(faults.clone()).await;
     let (mut app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
@@ -1112,18 +1064,12 @@ async fn a_cancelled_store_overlay_persist_finishes_before_releasing_the_domain(
     isolated!(CHILD, WITNESS, witness = "usage");
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch("admin-store-overlay");
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
@@ -1140,7 +1086,7 @@ async fn a_cancelled_store_overlay_persist_finishes_before_releasing_the_domain(
         "models": {},
         "auth": { "chain": [], "admin_auth": [] },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
     });
     document["plugins"] = plugins::config_document(&plugins::trusted_config(&directory));
     let deploy = busbar_kernel::config::deploy_from_deserializer(
@@ -1153,13 +1099,12 @@ async fn a_cancelled_store_overlay_persist_finishes_before_releasing_the_domain(
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let actual = busbar_kernel::appbuild::bootstrap_config_store(
-        &config,
-        &plugin_config,
-        &busbar_kernel::preflight::Unopened,
-    )
-    .await
-    .expect("actual native Store opens");
+    let crate::root::min3_boot::fixture::Fixture {
+        backend: actual,
+        rules,
+    } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
+        .await
+        .expect("actual native Store opens");
     let faults = OverlayFaults::new(actual);
     let core = crate::root::real_store::core_over(faults.clone()).await;
     let (mut app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(

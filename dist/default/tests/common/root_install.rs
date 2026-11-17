@@ -13,50 +13,6 @@ pub fn trust_policy(cfg: &PluginsCfg) -> Result<TrustPolicy, String> {
     crate::root::boot::trust_policy(cfg, env!("CARGO_PKG_VERSION"))
 }
 
-static CREDENTIAL_HANDLE: std::sync::OnceLock<crate::root::credentials::LateHandle> =
-    std::sync::OnceLock::new();
-static HOST_SERVICES: std::sync::OnceLock<std::sync::Arc<crate::root::serve::LateServices>> =
-    std::sync::OnceLock::new();
-
-/// Bind the admitted application's real async service pool and persistence to
-/// the dispatcher used by linked auth and export plugins in this fixture.
-pub fn attach_services(app: &busbar_kernel::state::App) {
-    install();
-    let late = HOST_SERVICES
-        .get()
-        .expect("the real host services are installed");
-    let declarations: Vec<_> = busbar_kernel::plane_driver::registry::plane_decls()
-        .iter()
-        .map(|decl| &decl.declaration)
-        .collect();
-    crate::root::serve::attach(
-        late,
-        app.governance.as_deref(),
-        app.governance
-            .clone()
-            .map(|gov| gov as std::sync::Arc<dyn busbar_kernel::host_services::SignKey>),
-        &app.demotion_record,
-        &declarations,
-    );
-}
-
-/// Complete the production credential-source lifecycle for an isolated application fixture.
-pub fn bind_credentials_once(handle: std::sync::Arc<busbar_kernel::state::AppHandle>) {
-    install();
-    let late = CREDENTIAL_HANDLE
-        .get()
-        .expect("the real credential source is installed");
-    assert!(
-        !late.is_set(),
-        "the isolated fixture binds its live credential source once"
-    );
-    late.set(handle);
-    assert!(
-        late.is_set(),
-        "the fixture retains its actual live AppHandle"
-    );
-}
-
 pub fn install() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
@@ -64,9 +20,19 @@ pub fn install() {
             "BUSBAR_TEST_HARNESS_FIRST_PARTY_KEY",
             hex::encode(release_key().verifying_key().as_bytes()),
         );
-        let late = crate::root::serve::LateServices::new();
-        assert!(HOST_SERVICES.set(late.clone()).is_ok());
-        let dispatcher = crate::root::dispatch::boot(1, &late);
+        let destinations = busbar_kernel::config::Destinations {
+            block_private_addresses: busbar_kernel::config::AdvancedCfg::default()
+                .block_private_addresses,
+            ..Default::default()
+        };
+        let judge = crate::root::connector::guard_for(&destinations)
+            .expect("the fixture's default destination policy");
+        let services = crate::root::serve::Services::serving(std::sync::Arc::new(
+            crate::root::serve::kernel_services(judge.clone()).with_credentials(
+                std::sync::Arc::new(crate::root::credentials::AppCredentials::new(None)),
+            ),
+        ));
+        let dispatcher = crate::root::dispatch::boot(1, &services);
         crate::root::doors::install_dispatcher(dispatcher);
         crate::root::linked::register_stores(&crate::LINKED);
         crate::register_protocols();
@@ -74,20 +40,24 @@ pub fn install() {
         crate::root::doors::install_plugin_logs(crate::root::boot::plugin_logs());
         crate::register_diagnostics();
         let deploy = busbar_kernel::config::deploy_from_yaml_str(
-            "providers: {}\nmodels: {}\nadvanced:\n  allow_destinations: [127.0.0.1]\n",
+            "providers: {}\nmodels: {}\n",
             &crate::root::boot::axis_test_grammar(),
         )
         .expect("the loopback IdP deployment");
         let cfg = busbar_kernel::config::resolve(&deploy, &Default::default())
             .expect("the loopback IdP deployment resolves");
-        let judge = crate::root::connector::dest_judge(&cfg);
-        let (credentials, handle) = crate::root::credentials::AppCredentials::late();
-        assert!(
-            CREDENTIAL_HANDLE.set(handle).is_ok(),
-            "the real credential source initializes once"
+        assert_eq!(
+            cfg.destinations(),
+            destinations,
+            "the fixture guard matches its deployment"
         );
-        crate::root::serve::compose(judge.clone(), &late, credentials);
+        static IO: std::sync::OnceLock<crate::root::boot::process::ProcessIo> =
+            std::sync::OnceLock::new();
+        let io = IO.get_or_init(|| {
+            crate::root::boot::process::ProcessIo::new().expect("fixture I/O executor")
+        });
         crate::root::connector::boot(
+            io.handle(),
             crate::LINKED_TRANSPORT_DOORS,
             &crate::root::policy::client_settings(&cfg.limits),
             judge,

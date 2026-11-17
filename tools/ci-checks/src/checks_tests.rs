@@ -7,6 +7,8 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
+use busbar_contract::json;
+
 use super::core_scan::{identity_hits, module_values};
 use super::core_src::{
     count_lines, export_stream_findings, licence_header, licence_rust, transport_findings,
@@ -292,7 +294,7 @@ fn the_symbol_patterns_catch_aws_lc_busbar_crypto_ring_and_rustls() {
 
 #[test]
 fn the_cdylib_packages_are_the_ones_with_a_cdylib_target() {
-    let meta: serde_json::Value = serde_json::from_str(
+    let meta: json::Value = json::parse_str(
         r#"{"packages":[{"name":"a-plugin","targets":[{"crate_types":["cdylib"]}]},{"name":"a","targets":[{"crate_types":["lib"]}]}]}"#,
     )
     .expect("json");
@@ -301,8 +303,8 @@ fn the_cdylib_packages_are_the_ones_with_a_cdylib_target() {
 
 // ---- plugin rules ----------------------------------------------------------------------------------------------
 
-fn meta(deps: &str) -> serde_json::Value {
-    serde_json::from_str(&format!(
+fn meta(deps: &str) -> json::Value {
+    json::parse_str(&format!(
         r#"{{"packages":[
  {{"name":"busbar-store-x","dependencies":[{deps}]}},
  {{"name":"busbar-store-x-plugin","dependencies":[{{"name":"busbar-store-x","kind":null}},{{"name":"busbar-plugin-abi","kind":null,"features":[],"uses_default_features":true}}]}},
@@ -350,7 +352,7 @@ fn rule_1a_refuses_core_crates_other_plugins_and_a_helper_with_a_second_busbar_e
         let found = dep_findings(&bad, true);
         assert!(found.iter().any(|f| f.contains(needle)), "{dep}: {found:?}");
     }
-    let helper = serde_json::from_str::<serde_json::Value>(
+    let helper = json::parse_str::<json::Value>(
         r#"{"packages":[{"name":"busbar-store-x-plugin","dependencies":[{"name":"busbar-helper","kind":null}]},{"name":"busbar-helper","dependencies":[{"name":"busbar-contract","kind":null}]}]}"#,
     )
     .expect("json");
@@ -477,6 +479,38 @@ fn d(v: &Value) -> bool { v.get("module") == Some("env") }
     assert_eq!(module_values("module: env\n"), ["env"]);
     assert_eq!(module_values("{\"module\": \"vault\"}"), ["vault"]);
     assert_eq!(module_values("the module is"), Vec::<String>::new());
+}
+
+#[test]
+fn a_module_key_in_config_text_is_a_hit_but_prose_naming_one_is_not() {
+    // Real config uses: YAML block, list item, flow mapping, JSON key.
+    assert_eq!(
+        module_values("export:\n  metrics:\n    module: memory\n"),
+        ["memory"]
+    );
+    assert_eq!(module_values("stores:\n  - module: env\n"), ["env"]);
+    assert_eq!(module_values("store: {module: memory}"), ["memory"]);
+    assert_eq!(module_values("[{\"module\": \"env\"}]"), ["env"]);
+    // The verbatim 1.5.5 remedy prose (busbar-migrate legacy markers) names a config line; it is not one.
+    assert_eq!(
+        module_values("an `export:` instance with `module: memory` and `settings.url`"),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        module_values("a `module: env` / `module: memory` instance"),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        module_values("submodule: env\nfoo-module: env"),
+        Vec::<String>::new()
+    );
+    let source = r#"
+fn a() -> &'static str { "export:\n  m:\n    module: memory\n" }
+const REMEDY: &str = "the `export:` map, a `module: memory` / `module: env` instance";
+fn b() -> &'static str { "store:\n  - module: env\n" }
+"#;
+    let lines: Vec<usize> = hits(source).iter().map(|(line, _)| *line).collect();
+    assert_eq!(lines, [2, 4], "{:?}", hits(source));
 }
 
 #[test]

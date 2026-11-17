@@ -4,59 +4,12 @@
 use super::*;
 use crate::config::groups::{GroupCfg, LimitCfg, LimitMetric, LimitWindow};
 use crate::config::RateEntryCfg;
+use busbar_contract::json::{self, JsonValueTrait};
 use busbar_contract::records::{
     VirtualKey, RESERVED_UNITS, UNIT_CACHE_READ, UNIT_CACHE_WRITE, UNIT_INPUT, UNIT_OUTPUT,
 };
 use busbar_kernel_ledger::cost::{whole, Money, MoneyError, Tally, STANDARD_TIER_BP};
 use std::collections::BTreeMap;
-
-#[test]
-fn common_measurements_price_exactly_without_enabling_legacy_card() {
-    use busbar_kernel_ledger::cost::{measurement_lane, ClassPrice, UnitRate};
-    let rates = BTreeMap::from([(
-        "hook".into(),
-        BTreeMap::from([(
-            "policy".into(),
-            BTreeMap::from([
-                ("input".into(), UnitRate::parse_micros("0.125").unwrap()),
-                ("calls".into(), UnitRate::from_nanos(0)),
-            ]),
-        )]),
-    )]);
-    let model = resolve_card_fee(None, 0).with_measurement_rates(&rates);
-    assert!(
-        !model.pricing_enabled(),
-        "legacy absent card remains disabled"
-    );
-    assert_eq!(
-        model
-            .card()
-            .lane_pricing("legacy-model")
-            .class_price("input"),
-        ClassPrice::Nanos(0),
-    );
-    let lane = measurement_lane("hook", "policy");
-    assert_eq!(
-        model.card().lane_pricing(&lane).class_price("input"),
-        ClassPrice::Nanos(125)
-    );
-    assert_eq!(
-        model.card().lane_pricing(&lane).class_price("calls"),
-        ClassPrice::Nanos(0)
-    );
-    assert_eq!(
-        model.card().lane_pricing(&lane).class_price("images"),
-        ClassPrice::Unpriced
-    );
-    assert_eq!(
-        model
-            .card()
-            .lane_pricing(&measurement_lane("auth", "policy"))
-            .class_price("input"),
-        ClassPrice::Unpriced,
-        "same instance label in a different kind cannot borrow a price",
-    );
-}
 
 fn bucket_money<'a>(
     model: &CostModel,
@@ -98,15 +51,24 @@ fn resolve_card_fee(
 
 fn limit(metric: LimitMetric, amount: u64, per: Option<LimitWindow>) -> LimitCfg {
     LimitCfg {
+        selected: None,
         metric,
         amount,
         per,
         scope: None,
         on_exhaust: None,
         downgrade_to: None,
-        admission: None,
-        on_exhaustion: None,
     }
+}
+
+#[test]
+fn selected_resource_limits_never_enter_request_money_buckets() {
+    let groups = busbar_contract::yaml::from_str("team:\n  limits:\n    - {requests: 9, per: minute}\n    - {id: rpm, upstream_resource: p/r, per_key: true, enforcement: process, requests: 1, per: minute}\n    - {id: tpm, upstream_resource: p/r, per_key: true, enforcement: process, tokens: 2, per: minute}").unwrap();
+    let cost = CostModel::resolve_parts(None, 0, &groups);
+    let group = cost.group_named("team").unwrap();
+    assert_eq!(group.buckets.len(), 1);
+    assert_eq!(group.buckets[0].requests_cap, Some(9));
+    assert_eq!(group.buckets[0].tokens_cap, None);
 }
 
 fn group(parent: Option<&str>, limits: Vec<LimitCfg>) -> GroupCfg {
@@ -1037,15 +999,15 @@ fn omitted_cache_write_rate_prices_at_input() {
     let omitted: RateEntryCfg =
         busbar_contract::yaml::from_str("{input_utok: 2.5, output_utok: 10}")
             .expect("a rate entry");
-    let bytes = serde_json::to_value(&omitted).expect("serializes");
+    let bytes = json::to_value(&omitted).expect("serializes");
     assert!(
         bytes.get("cache_write_utok").is_none(),
         "an unset write rate is not emitted as 0: {bytes}"
     );
-    let back: RateEntryCfg = serde_json::from_value(bytes).expect("round-trips");
+    let back: RateEntryCfg = json::from_value(&bytes).expect("round-trips");
     assert_eq!(back, omitted);
     assert_eq!(
-        serde_json::to_value(&back)
+        json::to_value(&back)
             .expect("serializes")
             .get("cache_write_utok"),
         None

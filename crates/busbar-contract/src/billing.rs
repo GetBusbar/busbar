@@ -168,7 +168,8 @@ impl Default for RawTierRates {
 
 /// READ A JSON NUMBER AS AN EXACT, NON-NEGATIVE INTEGER COUNT, or `None` when it is not one: the
 #[must_use]
-pub fn read_count_u64(v: &serde_json::Value) -> Option<u64> {
+pub fn read_count_u64(v: &crate::json::Value) -> Option<u64> {
+    use crate::json::JsonValueTrait as _;
     if let Some(u) = v.as_u64() {
         return Some(u);
     }

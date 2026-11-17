@@ -33,6 +33,7 @@ pub(crate) mod program;
 pub mod proxy;
 pub mod proxy_route;
 pub mod publication;
+pub mod raw_progress;
 pub mod registry;
 pub(crate) mod seal;
 pub mod secure_vec;
@@ -358,8 +359,7 @@ pub(crate) const fn verdict_text(v: Verdict) -> &'static str {
              security.blocked_metadata_hosts"
         }
         DEST_INTERNAL => {
-            "the destination guard refuses an internal or loopback address (list it in \
-             advanced.allow_destinations to allow it)"
+            "the destination guard refuses an internal or loopback address (enable allow_private on its upstream registration to allow it)"
         }
         DEST_OBFUSCATED => {
             "the destination guard refuses an alternate IPv4 spelling; write the address in \
@@ -1306,8 +1306,8 @@ pub struct Connector {
     member_anchored: MemberAnchored,
     /// The registrations' seals at each destination, by the need's owner, the need and the
     registered: Mutex<HashMap<(InstanceId, NeedId, String), Registered>>,
-    /// The REGISTRATIONS holding a PRIVATE REACH (`abi::plane::TRUST_PRIVATE_REACH`), by the need's
-    reaching: Mutex<ByMember<String>>,
+    /// The core-selected registrations holding private reach, by the need's
+    reaching: Mutex<ByMember<(String, bool)>>,
     /// Each member's auth binding: what a plugin's own request naming that member is authenticated
     auths: Mutex<Auths>,
     /// The instances whose connections' authority the host writes
@@ -3689,26 +3689,17 @@ impl DeclaredConns for Connector {
         if self.framed(caller, need) {
             return Err(ConnError::Refused);
         }
-        let config = if verify_off {
-            let class = self
-                .over
-                .lock()
-                .expect("needs")
-                .get(&(caller, need))
-                .map(|d| d.egress_class);
-            if class != Some(EGRESS_OPERATOR_INFRASTRUCTURE) {
-                return Err(ConnError::Refused);
-            }
+        if verify_off {
             self.flag_once(
                 caller,
                 &busbar_kernel::diagnostics::PLUGIN_USES_DEPRECATED_ABI_VALUE,
                 busbar_kernel::audit::auditlog::PluginRefusal::Open,
-                "an operator-infrastructure connection was secured with UPGRADE_VERIFY_OFF: the far \
-                 end's certificate is NOT verified. The flag is deprecated and refused from busbar \
-                 1.7.0; configure the server's CA instead of disabling verification",
+                "UPGRADE_VERIFY_OFF is retired and refused in busbar 1.6.0; use the core-held \
+                 insecure_transport policy on a Need instead",
             );
-            Some(crate::tls::client::unverified_client_config().map_err(|_| ConnError::Refused)?)
-        } else {
+            return Err(ConnError::Refused);
+        }
+        let config = {
             let declared = self.declared.lock().expect("declared needs");
             let trust_from = declared
                 .get(&(caller, need))
@@ -4063,7 +4054,10 @@ impl Connector {
         )
         .and_then(udp::ReadyPort::open)
         .map_err(|_| ConnError::Fault)?;
-        let judged_class = guard::judged_class(egress_class, declared_target.is_some());
+        let judged_class = guard::judged_class(
+            egress_class,
+            declared_target.is_some() && desc.member.is_empty(),
+        );
         let (framing, began) = datagram::DatagramFraming::dial_minted(
             Arc::clone(door),
             port.local_addr(),
@@ -4300,9 +4294,15 @@ impl Connector {
                 .lock()
                 .expect("reach")
                 .get(caller, need, desc.member)
-                .is_some_and(|at| at.eq_ignore_ascii_case(planned.authority()));
+                .is_some_and(|(authority, secure)| {
+                    authority.eq_ignore_ascii_case(planned.authority())
+                        && *secure == planned.secure()
+                });
 
-        let judged_class = guard::judged_class(egress_class, declared_target.is_some());
+        let judged_class = guard::judged_class(
+            egress_class,
+            declared_target.is_some() && desc.member.is_empty(),
+        );
 
         if let Some(declared) = declared_target {
             let located = record
@@ -5022,6 +5022,10 @@ impl PollConns for Connector {
             _ => self.tls_policy.as_ref(),
         };
         let located = door.as_ref().and_then(|door| self.located(door, target));
+        if anchors.private_reach && (member.is_empty() || located.is_none()) {
+            return Err(ConnError::Refused);
+        }
+        let located_secure = located.as_ref().is_some_and(|l| l.secure);
         let at = located.map(|mut l| {
             l.authority.make_ascii_lowercase();
             (owner, need, l.authority)
@@ -5068,7 +5072,19 @@ impl PollConns for Connector {
                 }
             }
         }
+        if at.is_none() {
+            self.reaching
+                .lock()
+                .expect("reach")
+                .remove(owner, need, member);
+        }
         if let Some(at) = at {
+            let mut reaching = self.reaching.lock().expect("reach");
+            if anchors.private_reach {
+                reaching.insert(owner, need, member, (at.2.clone(), located_secure));
+            } else {
+                reaching.remove(owner, need, member);
+            }
             crate::off_path::conns::seal_registration(
                 &mut registered.entry(at).or_default().members,
                 member,
@@ -5106,10 +5122,12 @@ impl PollConns for Connector {
             return Err(ConnError::Refused);
         }
         located.authority.make_ascii_lowercase();
-        self.reaching
-            .lock()
-            .expect("reach")
-            .insert(owner, need, member, located.authority);
+        self.reaching.lock().expect("reach").insert(
+            owner,
+            need,
+            member,
+            (located.authority, located.secure),
+        );
         Ok(())
     }
 }
@@ -5124,7 +5142,6 @@ mod real_tcp_tests;
 
 #[cfg(test)]
 #[path = "tests/callback_waker.rs"]
-#[allow(unsafe_code)]
 pub(crate) mod callback_waker;
 
 #[cfg(test)]

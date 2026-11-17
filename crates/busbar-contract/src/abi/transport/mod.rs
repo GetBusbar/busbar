@@ -209,7 +209,7 @@ use super::mechanism::lifecycle::{OpsHead, LIFECYCLE_SLOTS};
 pub const ABI_VERSION: u32 = super::versions::TRANSPORT.raw();
 
 /// The transport kind's layout fingerprint ([`crate::abi::mechanism::layout`]): the fold of
-pub const LAYOUT_FINGERPRINT: u64 = 0x284b380003b951b8;
+pub const LAYOUT_FINGERPRINT: u64 = 0x4aa149ac9c634294;
 
 /// The transport kind's shapes, in fold order ([`crate::layout_shape!`]): every `#[repr(C)]` struct
 pub const LAYOUT_SHAPES: &[&[u64]] = &[
@@ -310,6 +310,7 @@ pub const LAYOUT_SHAPES: &[&[u64]] = &[
     crate::layout_shape!(FramingIn => head, framing, sink, lane),
     crate::layout_shape!(AdoptIn => head, side, _reserved, facts, leftover, leftover_len, sink),
     crate::layout_shape!(DatagramPath => path, _reserved, addr),
+    crate::abi::host::service::HOST_SLOTS_LAYOUT,
 ];
 
 /// The transport kind's generation as the Rust face states it (`Plugin::abi`): [`ABI_VERSION`]

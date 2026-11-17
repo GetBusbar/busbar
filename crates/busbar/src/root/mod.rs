@@ -37,14 +37,22 @@ pub mod admission;
 )]
 pub mod auth_bindings;
 pub mod boot;
+/// The boot's configuration reader rules and its one application build.
+pub(crate) mod boot_app;
 pub mod card_history;
 pub mod cli;
 // The one cold module (LINT-RULES LR-167): refusal text and rare first-sight paths the request-path
 // modules beside it call out of line.
 pub(crate) mod cold;
-pub mod config_migrate;
 pub mod connector;
 pub mod credentials;
+pub(crate) mod export_observer;
+pub(crate) mod min3_admin_auth;
+pub(crate) mod min3_auth;
+pub(crate) mod min3_outbound_auth;
+pub(crate) mod native_refusals;
+pub(crate) mod provisioning;
+pub(crate) mod provisioning_mount;
 // busbar:request-path
 #[cfg_attr(
     not(test),
@@ -169,6 +177,7 @@ pub mod inbound;
 #[cfg(all(test, linked_every_plane_door))]
 #[path = "tests/inbound.rs"]
 mod inbound_tests;
+pub(crate) mod ingress_context;
 pub mod kernel;
 pub mod keyset;
 pub mod linked;
@@ -189,13 +198,24 @@ pub mod linked;
     )
 )]
 pub mod listener;
+pub(crate) mod listener_native;
 pub(crate) mod loader;
 pub(crate) mod measurements;
 /// The migrate-on-boot seam: step 1 (the stamp) and step 5 (the write and re-exec).
 pub(crate) mod migrate;
-pub mod migration_secrets;
+/// Migrate-on-boot steps 4 and 5S/5C: core's records step over the opened store.
+pub(crate) mod migrate_records;
 /// The boot's MIN-3 registry: Need handlers, image admission, the boot walk (ROOT-BOOT).
 pub(crate) mod min3_boot;
+/// Native lifetime custody attached to the exact published App.
+pub(crate) mod min3_candidate;
+pub(crate) mod min3_candidate_secrets;
+pub(crate) mod min3_framers;
+pub(crate) mod min3_listener_plan;
+pub(crate) mod min3_physical;
+pub(crate) mod min3_provider_catalog;
+pub(crate) mod min3_provider_plan;
+pub(crate) mod min3_selected_policy;
 /// K9: each MIN-3 plane seat's egress walk and channel carrier, composed at boot from the configured upstreams.
 pub(crate) mod plane_seats;
 /// The HTTP mount of the MIN-3 plane instances: their data routes onto `PortDriver::serve`.
@@ -258,9 +278,14 @@ pub mod plane_node;
 pub mod plugin_fetch;
 pub mod policy;
 pub mod principal_transition;
+// ADMIN-API-1.6 §3.5: `records.user` and `records.labels`, configured at boot.
+pub(crate) mod records_capture;
 pub mod registry;
 // busbar:request-path
+/// The launch variables 1.6.0 retired: the BUSBAR-3029 "set but ignored" notice.
+pub(crate) mod retired_env;
 pub(crate) mod secret_custody;
+pub(crate) mod secret_grammar;
 #[cfg_attr(
     not(test),
     deny(
@@ -279,7 +304,6 @@ pub(crate) mod secret_custody;
 pub mod serve;
 pub mod settings_public;
 pub mod shutdown;
-pub mod startup_upgrade;
 // busbar:request-path
 #[cfg_attr(
     not(test),
@@ -318,6 +342,10 @@ mod product_pin_aliases;
 mod product_pin_former_names;
 
 #[cfg(test)]
+#[path = "tests/records_capture.rs"]
+mod records_capture_tests;
+
+#[cfg(test)]
 pub(crate) static PUBLISHING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 #[cfg(test)]
@@ -345,3 +373,7 @@ include!(concat!(env!("OUT_DIR"), "/context_test_sources.rs"));
 owner_test_sources!(root_stdio);
 #[cfg(test)]
 owner_test_sources!(root_http);
+
+pub(crate) mod selected_report;
+#[cfg(test)]
+mod selected_report_tests;

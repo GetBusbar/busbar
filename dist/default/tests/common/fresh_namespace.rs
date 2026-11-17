@@ -4,6 +4,7 @@
 //! Explicit creation of a real durable namespace for subprocess protocol fixtures.
 //! A Memory Store cannot carry a cold CLI baseline into the later stdio process.
 
+use busbar_contract::json::{self, JsonValueTrait};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::sync::Arc;
@@ -18,15 +19,10 @@ const WITNESS_KEY: &[u8] = b"namespace";
 /// Exclusive file creation precedes every Store open and is retained as creation provenance.
 pub fn stage(directory: &Path) {
     let library = super::plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library)
-        .expect("the qualified actual Store statement reads")
-        .expect("the qualified actual Store states its door");
-    let facts = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the qualified actual Store statement parses");
-    let mut manifest =
-        super::plugins::manifest("store", &facts.name, super::plugins::FIXTURE_PUBLISHER);
-    manifest.version = facts.version;
-    manifest.statement = Some(hex::encode(statement));
+    // The actual Store is a native MIN-3 image: its stamp names it and its header completes the manifest.
+    let facts = super::plugins::native_image(&library);
+    let manifest =
+        super::plugins::native_manifest("store", &library, super::plugins::FIXTURE_PUBLISHER);
     let image = std::fs::read(&library).expect("the qualified actual Store image reads");
     let archive =
         super::plugins::signed(&super::credentials::harness_release_key(), manifest, &image);
@@ -56,7 +52,7 @@ pub fn stage(directory: &Path) {
             .open(&database)
             .expect("the fixture exclusively creates its new database before any Store open"),
     );
-    let creation = serde_json::json!({
+    let creation = json::json!({
         "database": database,
         "creation": "exclusive create_new before first Store open",
         "fixture": directory,
@@ -67,7 +63,7 @@ pub fn stage(directory: &Path) {
     });
     std::fs::write(
         directory.join(CREATION_FILE),
-        serde_json::to_vec(&creation).expect("creation provenance serializes"),
+        json::to_vec(&creation).expect("creation provenance serializes"),
     )
     .expect("retain genuine namespace creation provenance");
     std::fs::write(
@@ -153,7 +149,7 @@ fn command_output(mut command: Command) -> Output {
     }
 }
 
-fn run(command: &Command, input: &Path, action: &str, directory: &Path) -> serde_json::Value {
+fn run(command: &Command, input: &Path, action: &str, directory: &Path) -> json::Value {
     let mut child = clone_command(command);
     child
         .args([
@@ -182,27 +178,27 @@ fn run(command: &Command, input: &Path, action: &str, directory: &Path) -> serde
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr),
     );
-    serde_json::from_slice(&output.stdout).expect("actual principal CLI report is JSON")
+    json::parse_value(&output.stdout).expect("actual principal CLI report is JSON")
 }
 
-/// A writer admitted in this process on the fixture's actual durable Store: the Store opened
-/// through its native door with the exact settings boot uses, and `Startup` advanced to
-/// `Admitted`. On a new namespace it owns the unpublished first start. Dropping it without
-/// [`busbar_kernel::persistence::first_start::FirstStart::abandon`] is a crash for that owner:
-/// nothing retires its writer row.
+/// A writer admitted in this process on the fixture's actual durable Store: the native Store image
+/// opened through `Registry::open_store` (the loader's test `NativeStores`) with the exact settings
+/// boot uses, and `Startup` advanced to `Admitted`. On a new namespace it owns the unpublished first
+/// start. Dropping it without [`busbar_kernel::persistence::first_start::FirstStart::abandon`] is a
+/// crash for that owner: nothing retires its writer row.
 pub struct Owner {
-    pub axis: busbar_plugin_loader::store_v4::DoorPersistenceAxis,
+    pub stores: busbar_plugin_loader::test_host::NativeStores,
     pub startup: busbar_kernel::persistence::startup::Startup,
     pub store: Arc<busbar_kernel::persistence::facade::CoreStore>,
 }
 
-/// Open the namespace `stage` created, through the same signed actual Store image, and admit a
-/// writer on it in this process (FIRST-START-TAKEOVER §2.4). Every Store call opens and ends its
-/// own transaction inside the call, so once this returns the owner holds no Store lock.
+/// Open the namespace `stage` created, through the same actual Store image, and admit a writer on
+/// it in this process (FIRST-START-TAKEOVER §2.4). Every Store call opens and ends its own
+/// transaction inside the call, so once this returns the owner holds no Store lock.
 pub async fn admit_in_process(directory: &Path) -> Owner {
-    use busbar_contract::persistence::axis::{PersistenceAxis as _, StoreDoor};
+    use busbar_plugin_loader::test_host::{admit_bytes, test_sign, NativeStores, TEST_PUBLISHER};
     let creation = std::fs::read(directory.join(CREATION_FILE)).expect("creation provenance reads");
-    let provenance: serde_json::Value = serde_json::from_slice(&creation).unwrap();
+    let provenance = json::parse_value(&creation).unwrap();
     let library = PathBuf::from(
         provenance["library"]
             .as_str()
@@ -210,43 +206,36 @@ pub async fn admit_in_process(directory: &Path) -> Owner {
     );
     let image = std::fs::read(&library).expect("the same actual Store image reads");
     assert_eq!(provenance["library_sha256"], super::plugins::sha256(&image));
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library)
-        .expect("actual Store statement reads")
-        .expect("actual Store states its door");
-    let dispatcher = Arc::new(busbar_plugin_loader::dispatch::Dispatcher::new(
-        busbar_plugin_loader::dispatch::DispatchConfig::default(),
-        busbar_contract::services::test_caller_binding(),
-    ));
-    let axis = busbar_plugin_loader::store_v4::DoorPersistenceAxis {
-        dispatcher,
-        logs: busbar_plugin_loader::dispatch::PluginLogConfig::from_words(
-            None,
-            None,
-            &Default::default(),
-            None,
-            None,
-        )
-        .expect("ordinary Store log defaults"),
-        conns: busbar_plugin_loader::dispatch::ConnTable::NoNeeds,
-        limits: busbar_plugin_loader::store_v4::Limits {
-            descriptor_bytes: 32 * 1024 * 1024,
-            output_items: 4096,
-            output_bytes: 32 * 1024 * 1024,
-            decode_bytes: 32 * 1024 * 1024,
-        },
+    // The native image (store-sqlite opens with no NEED: it calls only host services).
+    let manifest = test_sign(
+        super::plugins::native_manifest("store", &library, TEST_PUBLISHER),
+        &image,
+    );
+    let identity = manifest.name.clone();
+    let admitted =
+        admit_bytes(&image, &manifest, &identity).expect("the actual Store image is admitted");
+    let binder: Arc<dyn busbar_ports::binder::ConfigBinder> =
+        Arc::new(busbar_kernel::plugin_config::Binder::new(
+            Arc::new(busbar_contract::secret_ref::Sugars::default()),
+            Vec::new(),
+        ));
+    let stores = NativeStores::new(admitted, binder).expect("one registry over the Store image");
+    let config =
+        serde_json::to_vec(&super::plugins::application_store_settings(directory)).unwrap();
+    let spec = busbar_plugin_loader::instance::InstanceSpec {
+        purpose: busbar_plugin_loader::instance::OpenPurpose::Canonical,
+        identity: &identity,
+        name: "fixture-in-process-writer",
+        config_json: &config,
+        limits: Default::default(),
+        public_url: None,
+        caller_upstreams: &[],
     };
-    let backend = axis
-        .open(
-            StoreDoor::Dropped {
-                file: library.display().to_string(),
-                bytes: Arc::new(image),
-                stated: statement,
-            },
-            "fixture-in-process-writer",
-            &serde_json::to_vec(&super::plugins::application_store_settings(directory)).unwrap(),
-        )
+    let backend = stores
+        .open(&spec, Arc::new(|| Box::new(busbar_kernel::seal::lend())))
         .await
-        .expect("the actual durable Store opens through its native door");
+        .expect("the actual durable Store opens natively")
+        .backend;
     assert_ne!(
         backend.info().durability,
         busbar_contract::persistence::Durability::Ephemeral
@@ -276,7 +265,7 @@ pub async fn admit_in_process(directory: &Path) -> Owner {
     }
     let store = startup.store().expect("admitted in-process Store");
     Owner {
-        axis,
+        stores,
         startup,
         store,
     }
@@ -284,7 +273,7 @@ pub async fn admit_in_process(directory: &Path) -> Owner {
 
 /// Initialize only the namespace this fixture just created, then prove the actual durable head.
 /// No provider identity, grants or baseline bytes are fabricated by the fixture.
-pub fn initialize(directory: &Path, command: &Command) -> Result<serde_json::Value, String> {
+pub fn initialize(directory: &Path, command: &Command) -> Result<json::Value, String> {
     let before = run(command, Path::new("-"), "inspect", directory);
     if !before["principal_receipt_head_sha256"].is_null() {
         return Err("a retained namespace cannot be presented as freshly created".into());
@@ -302,7 +291,7 @@ pub fn initialize(directory: &Path, command: &Command) -> Result<serde_json::Val
     );
     let creation = std::fs::read(directory.join(CREATION_FILE)).expect("creation provenance reads");
     let witness = super::plugins::sha256(&creation).into_bytes();
-    let axis = tokio::runtime::Builder::new_current_thread()
+    let stores = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .expect("the isolated witness writer runtime")
@@ -335,12 +324,12 @@ pub fn initialize(directory: &Path, command: &Command) -> Result<serde_json::Val
                     "the witness writer hands its first start over"
                 );
             }
-            // The Store and its writer close inside the runtime; the door axis outlives it.
-            let Owner { axis, .. } = writer;
-            axis
+            // The Store and its writer close inside the runtime; its registry outlives it.
+            let Owner { stores, .. } = writer;
+            stores
         });
-    drop(axis);
-    let receipt = serde_json::json!({
+    drop(stores);
+    let receipt = json::json!({
         "version": 2,
         "witness_binding": {"instance": "busbar.fixture.principal-creation", "private": true,
                             "source_scope": "unscoped"},
@@ -358,11 +347,11 @@ pub fn initialize(directory: &Path, command: &Command) -> Result<serde_json::Val
         "reason": "exclusive new database file; no application senders started; actual creation witness committed before real cold initialization",
     });
     let receipt_path = directory.join("principal-fresh.json");
-    std::fs::write(&receipt_path, serde_json::to_vec(&receipt).unwrap()).unwrap();
+    std::fs::write(&receipt_path, json::to_vec(&receipt).unwrap()).unwrap();
     run(command, &receipt_path, "initialize-fresh", directory);
     let after = run(command, Path::new("-"), "inspect", directory);
     assert!(
-        after["principal_receipt_head_sha256"].is_string(),
+        after["principal_receipt_head_sha256"].is_str(),
         "real initialized head survives a separate CLI process"
     );
     assert_eq!(after["store_config_sha256"], before["store_config_sha256"]);

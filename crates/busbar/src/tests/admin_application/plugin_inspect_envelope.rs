@@ -4,6 +4,8 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
+use busbar_contract::json;
+
 #[tokio::test(flavor = "current_thread")]
 async fn inspect_plugin_still_refuses_a_bad_candidate_in_the_envelope() {
     const CHILD: &str = "BUSBAR_ADMIN_BOOT_A92E3B6FE44D";
@@ -27,7 +29,7 @@ async fn inspect_plugin_still_refuses_a_bad_candidate_in_the_envelope() {
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
         "identity-providers": {},
     });
     document["identity-providers"][operator] = serde_json::json!({
@@ -43,13 +45,12 @@ async fn inspect_plugin_still_refuses_a_bad_candidate_in_the_envelope() {
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let anchor = busbar_kernel::appbuild::bootstrap_config_store(
-        &config,
-        &plugin_config,
-        &busbar_kernel::preflight::Unopened,
-    )
-    .await
-    .expect("the actual Store opens the configuration authority");
+    let crate::root::min3_boot::fixture::Fixture {
+        backend: anchor,
+        rules,
+    } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
+        .await
+        .expect("the actual Store opens the configuration authority");
     let anchor = crate::root::real_store::core_over(anchor).await;
     let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
         .expect("the actual Store supports conditional configuration records");
@@ -92,7 +93,7 @@ async fn inspect_plugin_still_refuses_a_bad_candidate_in_the_envelope() {
     let resp = client
         .post(format!("http://{addr}/api/v1/admin/plugins/inspect"))
         .header("x-admin-token", "admintok")
-        .json(&serde_json::json!({
+        .json(&json::json!({
             "file": "candidate.tar.gz",
             "tarball_b64": base64::engine::general_purpose::STANDARD.encode(b"not a tarball at all"),
         }))
@@ -102,7 +103,7 @@ async fn inspect_plugin_still_refuses_a_bad_candidate_in_the_envelope() {
         .to_str()
         .unwrap()
         .to_string();
-    let body: serde_json::Value = resp.json().await.unwrap();
+    let body = json::parse_value(&resp.bytes().await.unwrap()).unwrap();
     assert!(ct.starts_with("application/json"), "{ct}");
     assert_eq!(body["error"]["code"], "invalid_request");
     assert_eq!(body["error"]["message"], expected_refusal, "{body}");
@@ -110,12 +111,12 @@ async fn inspect_plugin_still_refuses_a_bad_candidate_in_the_envelope() {
     let resp = client
         .post(format!("http://{addr}/api/v1/admin/plugins/inspect"))
         .header("x-admin-token", "admintok")
-        .json(&serde_json::json!({"file":"x.tar.gz", "tarball_b64":"%%%"}))
+        .json(&json::json!({"file":"x.tar.gz", "tarball_b64":"%%%"}))
         .send()
         .await
         .unwrap();
     assert_eq!(resp.status(), reqwest::StatusCode::BAD_REQUEST);
-    let body: serde_json::Value = resp.json().await.unwrap();
+    let body = json::parse_value(&resp.bytes().await.unwrap()).unwrap();
     assert_eq!(body["error"]["code"], "invalid_request");
     handle.abort();
     println!("{WITNESS}");
