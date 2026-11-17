@@ -666,6 +666,7 @@ async fn answer(
                     },
                 )
                 .with_channel_budget(seat.channel_budget.unit())
+                .with_current_rates(ctx.handle.selected_rate_admission())
                 .with_route(original_route),
             ))
         }

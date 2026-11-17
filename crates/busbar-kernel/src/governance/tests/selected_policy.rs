@@ -1,5 +1,45 @@
 use super::*;
 
+#[tokio::test]
+async fn initial_install_requires_the_exact_unpublished_app_and_shared_governor() {
+    let groups = groups(2);
+    let mut app = crate::inbound::native::tests::app();
+    let app = Arc::get_mut(&mut app).unwrap();
+    app.cost = Arc::new(CostModel::resolve_parts(None, 0, &groups));
+    let pending =
+        |cost| SelectedPolicy::compile(&groups, cost, &[target(Some("r"), true)], None).unwrap();
+    assert!(pending(app.cost.clone()).install_initial(app).is_err());
+    assert!(
+        app.selected_policy.is_none(),
+        "missing governance cannot publish an unclocked policy"
+    );
+    let store = crate::real_store::core().await;
+    let gov = Arc::new(
+        super::super::GovState::new_with_core(store, None, None)
+            .await
+            .unwrap(),
+    );
+    app.governance = Some(gov.clone());
+    let different_cost = Arc::new(CostModel::resolve_parts(None, 0, &groups));
+    assert!(pending(different_cost).install_initial(app).is_err());
+    assert!(
+        app.selected_policy.is_none(),
+        "equal group config is not the compiled App cost identity"
+    );
+    let before = gov.selected_rates().activation_minute().unwrap();
+    pending(app.cost.clone()).install_initial(app).unwrap();
+    let after = gov.selected_rates().activation_minute().unwrap();
+    let installed = app.selected_policy.as_ref().unwrap().clone();
+    assert_eq!(installed.revision(), 1);
+    assert!((before..=after).contains(&installed.activated_minute()));
+    assert!(Arc::ptr_eq(&installed.cost, &app.cost));
+    assert!(pending(app.cost.clone()).install_initial(app).is_err());
+    assert!(Arc::ptr_eq(
+        app.selected_policy.as_ref().unwrap(),
+        &installed
+    ));
+}
+
 #[test]
 fn target_compatibility_compares_retained_destination_policy_across_reopen() {
     use crate::config::min3::UpstreamCfg;
