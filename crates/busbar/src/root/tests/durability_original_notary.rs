@@ -3,7 +3,7 @@
 
 use super::*;
 use crate::root::durability::audit::{tests::inputs, FrozenNativeAudit};
-use crate::root::durability::tests::{audit_pass, token, NativeFixture};
+use crate::root::durability::tests::{audit_pass, token, NativeFixture, BUDGET};
 use crate::root::durability::Durability;
 use busbar_contract::storage::{StorageAccount, StorageDenied, StorageSource};
 use busbar_kernel_audit::{AuditSigningKey, LiveSigner, Notary};
@@ -143,10 +143,23 @@ async fn original_receipt_requires_exact_signed_run_applied_and_retains_credit()
     assert_eq!(account.0.load(Ordering::Acquire), bytes);
     drop(line);
     assert_eq!(account.0.load(Ordering::Acquire), 0);
-    let requests = fixture.faults.requests.lock().unwrap();
-    assert_eq!(requests.len(), 2);
-    assert_eq!(requests[0].candidate().id, requests[1].candidate().id);
-    assert_eq!(requests[0].fingerprint(), requests[1].fingerprint());
+    {
+        let requests = fixture.faults.requests.lock().unwrap();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0].candidate().id, requests[1].candidate().id);
+        assert_eq!(requests[0].fingerprint(), requests[1].fingerprint());
+    }
+    let reopened = RuntimeJournal::open(fixture.core.clone(), 7, BUDGET)
+        .await
+        .unwrap();
+    let stored = reopened.read_records(BUDGET).await.unwrap();
+    assert_eq!(stored.len(), 2);
+    assert_eq!(stored[1], run.records()[0]);
+    assert_eq!(
+        reopened.is_confirmed(&run),
+        Err(busbar_kernel::persistence::journal::runtime::RuntimeError::Authority),
+        "persisted bytes do not reconstruct the previous live owner's capability"
+    );
 }
 
 #[tokio::test]
