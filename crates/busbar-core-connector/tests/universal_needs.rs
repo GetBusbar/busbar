@@ -868,7 +868,6 @@ fn fetch_table_judged(
     let table = busbar_core_connector::fetch::Table {
         owner: InstanceId(9),
         secured_need: NeedId(1),
-        plain_need: NeedId(2),
         declared: std::sync::Arc::clone(&c) as std::sync::Arc<dyn DeclaredConns>,
         conns: c as std::sync::Arc<dyn PollConns>,
     };
