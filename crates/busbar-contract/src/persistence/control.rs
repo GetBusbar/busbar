@@ -597,6 +597,10 @@ impl Writer {
 mod d299_tests;
 
 #[cfg(test)]
+#[path = "tests/control_restore_tests.rs"]
+mod restore_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
