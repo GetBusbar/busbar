@@ -1599,6 +1599,9 @@ impl<N: Needs> PlanePort for PlaneAdapter<N> {
         out: &mut [u8],
     ) -> Result<usize, PortError> {
         self.live()?;
+        if !Arc::ptr_eq(self.proxy.instance(), s.instance()) {
+            return Err(PortError::Call(CallError::Fault(FaultReason::BadInstance)));
+        }
         let (answer, len) = s
             .piece_fixed(out, from, exchange, flags, bytes)
             .map_err(PortError::Call)?;
