@@ -1766,6 +1766,7 @@ async fn run(
                 admin = Some(Box::pin(serve_listener(
                     listener,
                     native,
+                    root::plane_node::node(),
                     native_alpn,
                     bind.tls.clone(),
                     Arc::clone(&tls_secret_resolver),
@@ -1802,6 +1803,7 @@ async fn run(
                             serve_listener(
                                 listener,
                                 native,
+                                root::plane_node::node(),
                                 native_alpn,
                                 tls,
                                 resolver,
@@ -2119,6 +2121,7 @@ fn serve_thread_per_core(
                     serve_listener(
                         listener,
                         native,
+                        root::plane_node::node(),
                         alpn,
                         tls,
                         resolver,
@@ -2146,6 +2149,7 @@ fn serve_thread_per_core(
 async fn serve_listener(
     listener: impl busbar_core_connector::listen::Admits,
     native: Arc<root::listener_native::NativeListener>,
+    node: Arc<root::plane_node::Node>,
     alpn: Vec<Box<str>>,
     tls_cfg: Option<busbar_kernel::config::sections::TlsCfg>,
     secret_resolver: Arc<busbar_kernel::config::secret::SecretResolver>,
@@ -2184,15 +2188,9 @@ async fn serve_listener(
             Some(security)
         }
     };
-    let result = root::listener_native::serve_admitted(
-        listener,
-        native,
-        security,
-        root::plane_node::node(),
-        shutdown,
-        balancer,
-    )
-    .await;
+    let result =
+        root::listener_native::serve_admitted(listener, native, security, node, shutdown, balancer)
+            .await;
     if let Err(e) = result {
         die(format!("server error on '{label}': {e}"));
     }
