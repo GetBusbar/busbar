@@ -188,9 +188,19 @@ fn prepared(
     port: Arc<dyn TransportPort>,
     path: &str,
 ) -> Arc<PreparedListener> {
+    prepared_with_auth(app, slot, port, path, RouteAuth::None)
+}
+
+fn prepared_with_auth(
+    app: &App,
+    slot: &str,
+    port: Arc<dyn TransportPort>,
+    path: &str,
+    auth: RouteAuth,
+) -> Arc<PreparedListener> {
     let line = line(path);
     let guests = GuestList::seal(vec![line.clone()]).unwrap();
-    let routes = vec![RouteBinding::core(line, RouteAuth::None).unwrap()];
+    let routes = vec![RouteBinding::core(line, auth).unwrap()];
     let plan = PhysicalPlan::new(slot.into(), port, guests, routes).unwrap();
     Arc::new(
         PreparedListener::new(
@@ -215,15 +225,19 @@ struct Fixture {
     budget: Arc<crate::limits::process_admission::ProcessAdmission>,
 }
 fn fixture() -> Fixture {
+    fixture_for(AdmissionClass::Data, RouteAuth::None)
+}
+
+fn fixture_for(class: AdmissionClass, auth: RouteAuth) -> Fixture {
     let app = app();
     let port: Arc<dyn TransportPort> = Arc::new(Transport);
-    let prepared = prepared(&app, "listen", port.clone(), "/one");
+    let prepared = prepared_with_auth(&app, "listen", port.clone(), "/one", auth);
     let selected = prepared.clone();
     let listener = PhysicalListener::new(
         Arc::new(AppHandle::new(app.clone())),
         "listen".into(),
         port,
-        AdmissionClass::Data,
+        class,
         Arc::new(move |_, slot| (slot == "listen").then(|| selected.clone())),
     )
     .unwrap();
@@ -275,7 +289,7 @@ fn arrive(f: &Fixture, conn: &PhysicalConnection, stream: u64) -> (PhysicalReque
     conn.head(
         stream,
         head("/one"),
-        f.budget.try_enter(AdmissionClass::Data).unwrap(),
+        f.budget.try_enter(f.listener.class).unwrap(),
         None,
     )
     .unwrap()
@@ -496,6 +510,48 @@ fn native_physical_body_rejects_unfunded_spare_capacity() {
 }
 
 #[test]
+fn native_physical_head_charges_unused_descriptor_backing() {
+    let mut f = fixture();
+    f.budget = crate::limits::process_admission::ProcessAdmission::with_limits(3, 256, 128);
+    let conn = f.listener.connect(accepted());
+    let mut original = head("/one");
+    original.fields = Vec::with_capacity(8);
+    assert!(matches!(
+        conn.head(
+            1,
+            original,
+            f.budget.try_enter(AdmissionClass::Data).unwrap(),
+            None
+        ),
+        Err(ArrivalRefusal::Capacity)
+    ));
+    assert_eq!(f.budget.used(), (0, 0));
+    // A refused head has not occupied the stream or retained the request permit.
+    let (request, _owner) = arrive(&f, &conn, 1);
+    assert!(request.binding().check_live().is_ok());
+}
+
+#[test]
+fn native_physical_head_charges_spare_string_backing() {
+    let mut f = fixture();
+    f.budget = crate::limits::process_admission::ProcessAdmission::with_limits(3, 256, 128);
+    let conn = f.listener.connect(accepted());
+    let mut original = head("/one");
+    original.authority = String::with_capacity(256);
+    original.authority.push_str("a");
+    assert!(matches!(
+        conn.head(
+            1,
+            original,
+            f.budget.try_enter(AdmissionClass::Data).unwrap(),
+            None
+        ),
+        Err(ArrivalRefusal::Capacity)
+    ));
+    assert_eq!(f.budget.used(), (0, 0));
+}
+
+#[test]
 fn native_physical_incomplete_body_cannot_enter_completion() {
     let f = fixture();
     let conn = f.listener.connect(accepted());
@@ -525,7 +581,7 @@ fn native_physical_response_owner_retains_request_count_after_input_drop() {
 #[test]
 fn native_physical_snapshot_captures_original_fields_once() {
     let mut f = fixture();
-    f.budget = crate::limits::process_admission::ProcessAdmission::with_limits(3, 4096, 4096);
+    f.budget = crate::limits::process_admission::ProcessAdmission::with_limits(3, 4096, 128);
     let facts = accepted_with_certificate(b"certificate");
     let conn = f.listener.connect(facts);
     let mut original = head("/one");
@@ -575,7 +631,7 @@ fn native_physical_snapshot_captures_original_fields_once() {
 #[test]
 fn native_physical_snapshot_requires_complete_input_and_preserves_absent_query() {
     let mut f = fixture();
-    f.budget = crate::limits::process_admission::ProcessAdmission::with_limits(3, 4096, 4096);
+    f.budget = crate::limits::process_admission::ProcessAdmission::with_limits(3, 4096, 128);
     let conn = f.listener.connect(accepted());
     let (request, _owner) = arrive(&f, &conn, 1);
     assert!(matches!(
@@ -587,4 +643,49 @@ fn native_physical_snapshot_requires_complete_input_and_preserves_absent_query()
     let snapshot = request.binding().snapshot().unwrap();
     assert!(!snapshot.query_present());
     assert_eq!(snapshot.query(), "");
+}
+
+#[test]
+fn native_physical_admin_carrier_requires_operator_and_admin_route() {
+    for (class, auth) in [
+        (AdmissionClass::Data, RouteAuth::Admin),
+        (AdmissionClass::Operator, RouteAuth::None),
+    ] {
+        let f = fixture_for(class, auth);
+        let conn = f.listener.connect(accepted());
+        let (request, _owner) = arrive(&f, &conn, 1);
+        let credit = request.binding().request().try_reserve(0).unwrap();
+        let completing = request
+            .finish_input(SecureVec::new(), credit)
+            .unwrap()
+            .begin_completion()
+            .unwrap();
+        assert!(matches!(
+            completing.into_admin(),
+            Err(ArrivalRefusal::Class)
+        ));
+    }
+}
+
+#[test]
+fn native_physical_admin_carrier_clone_shares_one_pending_right() {
+    let f = fixture_for(AdmissionClass::Operator, RouteAuth::Admin);
+    let conn = f.listener.connect(accepted());
+    let (request, _owner) = arrive(&f, &conn, 1);
+    let credit = request.binding().request().try_reserve(0).unwrap();
+    let carrier = request
+        .finish_input(SecureVec::new(), credit)
+        .unwrap()
+        .begin_completion()
+        .unwrap()
+        .into_admin()
+        .unwrap();
+    let clone = carrier.clone();
+    let binding = carrier.binding().clone();
+    let completing = clone.take().unwrap();
+    assert!(matches!(carrier.take(), Err(ArrivalRefusal::ForeignInput)));
+    drop((carrier, clone));
+    assert!(binding.check_live().is_ok());
+    drop(completing);
+    assert_eq!(binding.check_live(), Err(ArrivalRefusal::Cancelled));
 }
