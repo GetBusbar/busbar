@@ -117,7 +117,24 @@ impl Wires for FakeWires {
 struct Script;
 
 impl Demuxer for Script {
-    fn demux(&self, _key: &str, message: &[u8]) -> Option<Demuxed> {
+    fn demux(
+        &self,
+        _key: &str,
+        message: &[u8],
+    ) -> Result<Option<Demuxed>, busbar_ports::PortError> {
+        if message == b"native-fault" {
+            return Err(busbar_ports::PortError::Call(
+                busbar_plugin_abi::fail::CallError::Fault(
+                    busbar_plugin_abi::fail::FaultReason::BadInstance,
+                ),
+            ));
+        }
+        Ok(Self::route(message))
+    }
+}
+
+impl Script {
+    fn route(message: &[u8]) -> Option<Demuxed> {
         let text = std::str::from_utf8(message).ok()?;
         let (head, tail) = text.split_once('|')?;
         let slot = |n: &str| n.parse::<u64>().unwrap();
@@ -484,6 +501,20 @@ async fn a_message_with_no_demux_is_dropped_and_the_next_still_arrives() {
     child.says("noise").await;
     child.says(&format!("r{}|real", a.slot)).await;
     assert_eq!(message(&mut a).await, format!("r{}|real", a.slot));
+}
+
+#[tokio::test]
+async fn native_demux_fault_ends_the_generation_instead_of_becoming_drop() {
+    let mut f = fixture();
+    let up = upstream(300);
+    let mut a = attach(&f, &up, req(&f.budget, 1, "k", 0)).await.unwrap();
+    a.ready(b"");
+    let mut child = f.remotes.recv().await.unwrap();
+    child.says("native-fault").await;
+    assert_eq!(message(&mut a).await, "<ended>");
+    assert!(a.send(b"late", false).await.is_err());
+    assert!(f.signals.0.lock().unwrap().is_empty());
+    assert!(f.told.resighted.lock().unwrap().is_empty());
 }
 
 #[tokio::test]
