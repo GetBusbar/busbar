@@ -1206,7 +1206,8 @@ fn drive_blocking(
         Some(subject) => Resolver::new(intents, None).with_principal(subject, req.identity),
         None => Resolver::new(intents, None),
     }
-    .with_route(route);
+    .with_route(route)
+    .with_admission(effects.admission.as_deref());
     let session = carrier.map(|carrier| {
         carrier
             .session_with_budget(

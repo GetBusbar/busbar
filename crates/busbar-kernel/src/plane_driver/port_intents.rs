@@ -285,6 +285,13 @@ pub trait IntentHost: Send + Sync {
     fn push(&self, ttl_s: u64, recs: &[u8]) -> Result<(), RecordsDenied>;
     /// SIGNAL: every session of this instance detached under `key` (only `subject`'s when it is Some).
     fn signal(&self, key: &[u8], subject: Option<[u8; 32]>);
+    /// A command signal cannot fall back to instance or subject-wide delivery.
+    fn signal_command(
+        &self,
+        _authority: &crate::channels::authority::ChannelAuthority,
+        _key: &[u8],
+    ) {
+    }
     /// ENTITLE: does the verified principal (its ID_* `identity` records) hold `grant`? The default is no.
     fn entitle(&self, _identity: &[u8], _grant: &str) -> bool {
         false
@@ -381,12 +388,35 @@ pub struct Piece {
 }
 
 /// Resolves intents against a host for one request: `subject` is the verified principal's scope, if any.
+fn signal_admitted(
+    host: &dyn IntentHost,
+    request: &super::request_admission::AdmittedRequest,
+    flags: u32,
+    key: &[u8],
+    subject: Option<[u8; 32]>,
+) {
+    if !request.is_live() {
+        return;
+    }
+    if request.registered_command().is_some() {
+        if let Ok(authority) = crate::channels::authority::ChannelAuthority::new(request.clone()) {
+            host.signal_command(&authority, key);
+        }
+    } else if flags & LK_CALLER == 0 {
+        host.signal(key, None);
+    } else if let Some(subject) = subject {
+        host.signal(key, Some(subject));
+    }
+}
+
+/// Resolves intents against the same admitted request throughout the session.
 pub struct Resolver<'h> {
     host: &'h dyn IntentHost,
     subject: Option<[u8; 32]>,
     channels: Option<&'h dyn ChannelHost>,
     principal: Option<Principal<'h>>,
     route: u32,
+    pending: Option<&'h super::port_admission::Pending>,
 }
 
 /// The verified principal an intent runs as: its ID_SUBJECT text and the ID_* identity records it was admitted with.
@@ -405,6 +435,7 @@ impl<'h> Resolver<'h> {
             channels: None,
             principal: None,
             route: 0,
+            pending: None,
         }
     }
 
@@ -418,6 +449,11 @@ impl<'h> Resolver<'h> {
     #[must_use]
     pub fn with_route(mut self, route: u32) -> Self {
         self.route = route;
+        self
+    }
+
+    pub fn with_admission(mut self, pending: Option<&'h super::port_admission::Pending>) -> Self {
+        self.pending = pending;
         self
     }
 
@@ -487,7 +523,17 @@ impl<'h> Resolver<'h> {
                     }
                 }
                 Intent::Signal { flags, key } => {
-                    if flags & LK_CALLER == 0 {
+                    if let Some(pending) = self.pending {
+                        if let Some(admitted) = pending.admitted() {
+                            signal_admitted(
+                                self.host,
+                                &admitted.request,
+                                *flags,
+                                key,
+                                self.subject,
+                            );
+                        }
+                    } else if flags & LK_CALLER == 0 {
                         self.host.signal(key, None);
                     } else if let Some(subject) = self.subject {
                         self.host.signal(key, Some(subject));
@@ -1639,6 +1685,11 @@ impl<R: PluginRecords> IntentHost for KernelIntents<R> {
     fn signal(&self, key: &[u8], subject: Option<[u8; 32]>) {
         self.signals
             .signal(self.who.instance, key, subject, P_SIGNAL, key);
+    }
+
+    fn signal_command(&self, authority: &crate::channels::authority::ChannelAuthority, key: &[u8]) {
+        self.signals
+            .signal_command(self.who.instance, authority, key, P_SIGNAL, key);
     }
 
     fn entitle(&self, identity: &[u8], grant: &str) -> bool {
