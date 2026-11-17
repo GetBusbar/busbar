@@ -2,7 +2,15 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The error pages and the code ledger: the committed `docs/errors/` tree is exactly what the
-//! catalog renders, and no code is ever dropped, renumbered or reused.
+//! catalog renders, and no code is ev
+/// Where the proposed pages and ledger are written for review (`target/diagnostics-generated/`).
+fn generated_dir() -> PathBuf {
+    std::env::var_os("CARGO_TARGET_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target"))
+        .join("diagnostics-generated")
+}
+er dropped, renumbered or reused.
 
 use super::pages::render_all;
 use super::{all_texts, REGISTRY};
@@ -18,6 +26,14 @@ fn update() -> bool {
     std::env::var("UPDATE_ERROR_PAGES").is_ok_and(|v| v == "1")
 }
 
+/// Where the proposed pages and ledger are written for review (`target/diagnostics-generated/`).
+fn generated_dir() -> PathBuf {
+    std::env::var_os("CARGO_TARGET_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target"))
+        .join("diagnostics-generated")
+}
+
 const REGENERATE: &str =
     "regenerate with `UPDATE_ERROR_PAGES=1 cargo test -p busbar-kernel error_pages`";
 
@@ -31,6 +47,13 @@ fn error_pages_match_the_catalog() {
         for (name, body) in &pages {
             std::fs::write(out.join(name), body).expect("write a page to ERROR_PAGES_OUT");
         }
+    }
+    // The proposed tree always goes to `target/diagnostics-generated/` (CI keeps it as an artifact:
+    // the exact pages to commit when this test fails). The assertions below are unchanged.
+    let proposed = generated_dir().join(error_docs_version());
+    std::fs::create_dir_all(&proposed).expect("create target/diagnostics-generated");
+    for (name, body) in &pages {
+        std::fs::write(proposed.join(name), body).expect("write a proposed page");
     }
     if update() {
         if dir.exists() {
@@ -116,12 +139,7 @@ fn error_pages_ledger_never_loses_or_reuses_a_code() {
     if missing.is_empty() {
         return;
     }
-    assert!(
-        update(),
-        "{} code(s) are not in docs/errors/LEDGER.tsv: {:?}; {REGENERATE}",
-        missing.len(),
-        missing.iter().map(|d| d.code).collect::<Vec<_>>()
-    );
+    let codes: Vec<u16> = missing.iter().map(|d| d.code).collect();
     let mut text = if text.is_empty() {
         "# Every BUSBAR-NNNN code ever published: code, slug, version introduced. Append-only.\n"
             .to_string()
@@ -131,6 +149,14 @@ fn error_pages_ledger_never_loses_or_reuses_a_code() {
     for d in missing {
         text.push_str(&format!("{}\t{}\t{}\n", d.banner(), d.slug, d.since));
     }
+    // The appended ledger goes to `target/diagnostics-generated/LEDGER.tsv` for review either way.
+    std::fs::create_dir_all(generated_dir()).expect("create target/diagnostics-generated");
+    std::fs::write(generated_dir().join("LEDGER.tsv"), &text).expect("write the proposed ledger");
+    assert!(
+        update(),
+        "{} code(s) are not in docs/errors/LEDGER.tsv: {codes:?}; {REGENERATE}",
+        codes.len(),
+    );
     std::fs::create_dir_all(docs_errors()).expect("create docs/errors");
     std::fs::write(&path, text).expect("append to LEDGER.tsv");
 }
