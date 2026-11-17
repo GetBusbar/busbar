@@ -406,13 +406,7 @@ auth:
 | `admin_auth` | list of provider NAMES | no | `[admin-tokens]` | The chain gating `/api/v1/admin/*`, same bare-name references as `chain`. The built-in `admin-tokens` provider carries the operator credential as a secret reference (`token:`) on its definition. `[]` = OPEN admin (dev only; loud warning). |
 | `role_bindings` | map | no | `{}` | Role policy, NESTED BY PROVIDER NAME: `role_bindings.<provider>.<role> -> { allowed_pools?, group?, admin_scope?, verbs? }`. Keying by NAME (not by the backing plugin's own name) is what lets two named providers share one module and still hold independent grants. See below. |
 | `key_ttl` | duration string | no | `90d` | The lifetime of a key minted by the self-serve token exchange (`POST /auth/token`): the key expires `key_ttl` after it is minted. Read at every apply/reload. |
-| `require_if_match` | bool | no | `false` | When `true`, a guarded config mutation through the admin API that carries no `If-Match` header is refused `428` (`invalid_request` / `if_match_required`). Absent or `false` accepts a missing `If-Match`. See the development-status note below. |
-
-> **Development status:** `auth.require_if_match` is the intended 1.6.0 spelling. The current
-> development parser still reads `auth.policy.require_if_match`; the rename and migration of
-> existing configuration remain outstanding. Do not move this key in a running deployment
-> until its build supports the new spelling. The [release-candidate checks](migration-1.6.md#release-candidate-checks)
-> must establish the final schema and migration before release.
+| `require_if_match` | bool | no | `false` | When `true`, a guarded config mutation through the admin API that carries no `If-Match` header is refused `428` (`invalid_request` / `if_match_required`). Absent or `false` accepts a missing `If-Match`. `auth.policy.require_if_match` is not a key: it is refused as an unknown field. |
 
 **The `identity-providers:` definition map.** `name -> { module, settings?, max_admin_scope?, token?, browser_login? }`.
 
