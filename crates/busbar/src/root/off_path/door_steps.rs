@@ -3224,6 +3224,48 @@ mod owned_reader_tests {
         }
     }
 
+    struct CandidateReader;
+    impl RootRules for CandidateReader {
+        fn prepare_read(
+            &self,
+            _: &config::grammar::PhaseOneIn<'_>,
+        ) -> Result<config::grammar::PreparedConfigRead, config::GrammarRefusal> {
+            Ok(
+                config::grammar::PreparedConfigRead::new(config::Grammar::empty())
+                    .with_context(Arc::new(73u64)),
+            )
+        }
+        fn prepare_candidate<'a>(
+            &'a self,
+            _: &'a config::RootCfg,
+            _: &'a config::PluginsCfg,
+        ) -> busbar_plugin_abi::host_side::caller::BoxFut<
+            'a,
+            Result<Option<Box<dyn busbar_kernel::appbuild::CandidatePreparation>>, String>,
+        > {
+            Box::pin(async { Err("exact candidate preparation refused".into()) })
+        }
+        fn check(&self, _: &config::RootCfg) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn serving_rules_preserve_native_read_and_candidate_preparation() {
+        let rules = Rules::with_reader(None, Arc::new(CandidateReader));
+        let plugins = config::PluginsCfg::default();
+        let read = rules
+            .prepare_read(&config::grammar::PhaseOneIn::of(&plugins))
+            .unwrap();
+        assert_eq!(read.context::<u64>(), Some(&73));
+        let deploy = busbar_contract::yaml::from_str("{}").unwrap();
+        let cfg = config::resolve(&deploy, &Default::default()).unwrap();
+        assert_eq!(
+            rules.prepare_candidate(&cfg, &plugins).await.err().unwrap(),
+            "exact candidate preparation refused"
+        );
+    }
+
     #[tokio::test]
     async fn serving_rules_preserve_the_owned_reader_refusals() {
         let rules = Rules::with_reader(None, Arc::new(Reader));
