@@ -440,9 +440,11 @@ fn flag_parsing() {
         allow_unsigned: unsigned,
         schema_derived,
         former_names,
+        native,
     } = parse_flags(&args).unwrap();
     assert!(unsigned);
     assert!(!schema_derived);
+    assert!(!native);
     assert!(former_names.is_empty());
     assert_eq!(flags["lib"], "a.so");
     assert_eq!(flags["name"], "n");
