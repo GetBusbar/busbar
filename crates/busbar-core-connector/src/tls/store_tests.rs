@@ -627,3 +627,25 @@ fn native_need_client_identity_conflicts_and_waivers_refuse() {
     plan.waive = true;
     assert!(s.config_for_need("secret.internal", &plan, &[]).is_err());
 }
+
+#[test]
+fn native_need_waiver_preserves_operator_key_pin() {
+    let private = ca("Waived peer CA");
+    let (chain, key) = private.issue("other-name.internal");
+    let pin = crate::tls::client::peer_key_pin(chain[0].as_ref()).expect("pin");
+    let s = build(&format!(
+        "destinations:\n  - match: secret.internal\n    pin_spki_sha256: {pin}\n"
+    ))
+    .expect("store");
+    let mut plan = need_plan(None);
+    plan.waive = true;
+    let c = s
+        .config_for_need("secret.internal", &plan, &[])
+        .expect("waived");
+    handshake(c.clone(), "secret.internal", (chain, key))
+        .expect("explicit waiver permits peer name and CA");
+    assert!(
+        handshake(c, "secret.internal", private.issue("secret.internal")).is_err(),
+        "waiver cannot erase configured pin"
+    );
+}
