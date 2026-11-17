@@ -1710,7 +1710,11 @@ async fn run(
     drop(recovery_served);
 
     busbar_kernel::boot::start_planes(&app_handle).unwrap_or_else(|e| die(e));
-    let predecessor = spawn_predecessor_task(governance.as_ref(), control_work.shutdown_rx.clone());
+    let predecessor = spawn_predecessor_task(
+        governance.as_ref(),
+        book.as_ref(),
+        control_work.shutdown_rx.clone(),
+    );
     // SEALING-FIX §3.3: the audit notary, after `Ready`, on this control runtime.
     if let Some(audit) = book.as_ref().and_then(|book| book.audit.as_ref()) {
         audit.start_notary(audit_seal_every, Arc::clone(&drain_clock));
@@ -1895,6 +1899,7 @@ async fn run(
 /// boundary; the drain joins it and settles its fence in the seal phase.
 fn spawn_predecessor_task(
     gov: Option<&Arc<busbar_kernel::governance::GovState>>,
+    book: Option<&root::durability::NodeBook>,
     stop: tokio::sync::watch::Receiver<bool>,
 ) -> Option<(
     tokio::task::JoinHandle<()>,
@@ -1910,9 +1915,13 @@ fn spawn_predecessor_task(
             return None;
         }
     };
+    let sealing = book
+        .and_then(|book| book.audit.as_ref())
+        .and_then(|audit| audit.take_predecessor());
+    let book = book.map(|book| Arc::clone(&book.durability));
     let task = Arc::clone(&fence);
     let handle = tokio::spawn(root::measurements::maintenance(async move {
-        task.run(stop).await;
+        root::durability::predecessor::run(task, sealing, book, stop).await;
     }));
     Some((handle, fence))
 }
