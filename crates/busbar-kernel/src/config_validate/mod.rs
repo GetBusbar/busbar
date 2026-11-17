@@ -212,6 +212,9 @@ fn judge_with_plugins(
     if let Err(security_errors) = validate_bootstrap_security(cfg) {
         errors.extend(security_errors);
     }
+    // #359 SEC-L1 (owner ruling L1 "Refuse, give remedy"): a root listener with neither TLS nor its explicit
+    // acceptance refuses, loopback included, with the one-line remedy. Nothing writes the acceptance.
+    errors.extend(crate::config::listener_acceptance::refusals(cfg));
     if cfg.auth.is_none() {
         errors.push(open_relay_by_omission(&cfg.listen));
     }
@@ -1003,8 +1006,10 @@ fn judge_with_plugins(
             advisories.raise(|| {
                 diag_warn!(
                     CONFIG_OPEN_ADMIN_MINT,
-                    "auth.chain names `keys` and auth.admin_auth is explicitly empty (open admin) — \
-                     ANYONE can mint virtual keys through the admin API. Acceptable only for dev."
+                    "auth.chain names `keys` and auth.admin_auth is explicitly empty: refused, since \
+                     1.6.0 has no open admin posture and a key is minted only with an admin \
+                     credential. Delete the auth.admin_auth line to use the default chain, or \
+                     list the admin providers you use."
                 )
             });
         }
@@ -1898,6 +1903,17 @@ fn judge_operator(cfg: &RootCfg, errors: &mut Vec<String>, advisories: &mut Advi
         && cfg.admin_auth[0] == crate::config::KEYS_MODULE;
     if keys_default_only || cfg.admin_auth.iter().any(|name| name.trim().is_empty()) {
         refuse(errors, operator::no_default_admin_chain());
+    }
+
+    // ADMIN-API-1.6-ONE-MODEL §8.1.1: an explicit `auth.admin_auth: []` (an absent key takes the
+    // closed default chain) is the 1.5.5 open admin posture, which 1.6.0 removes. Refused on every
+    // read, boot and `--validate` alike, with the remedy; never migrated.
+    if cfg
+        .auth
+        .as_ref()
+        .is_some_and(|auth| auth.admin_auth.is_empty())
+    {
+        refuse(errors, operator::open_admin_posture_removed());
     }
 
     // THE FILE POLICY (ruling 2, §3.5/§3.6.1): an operator-backed definition the overlay holds is

@@ -92,7 +92,7 @@ pools:
     let mut document: serde_json::Value = busbar_contract::yaml::from_str(yaml)
         .expect("the concrete product deployment is valid YAML");
     document["store"] = serde_json::json!({"module": module, "settings": settings});
-    document["auth"] = serde_json::json!({"chain": [], "admin_auth": []});
+    document["auth"] = serde_json::json!({"chain": []});
     document["advanced"] = serde_json::json!({});
     let deploy = busbar_kernel::config::deploy_from_deserializer(
         document,
@@ -236,7 +236,7 @@ pools:
     let mut document: serde_json::Value = busbar_contract::yaml::from_str(yaml)
         .expect("the concrete product deployment is valid YAML");
     document["store"] = serde_json::json!({"module": module, "settings": settings});
-    document["auth"] = serde_json::json!({"chain": [], "admin_auth": []});
+    document["auth"] = serde_json::json!({"chain": []});
     document["advanced"] = serde_json::json!({});
     let deploy = busbar_kernel::config::deploy_from_deserializer(
         document,
@@ -377,7 +377,7 @@ pools:
     let mut document: serde_json::Value = busbar_contract::yaml::from_str(yaml)
         .expect("the concrete product deployment is valid YAML");
     document["store"] = serde_json::json!({"module": module, "settings": settings});
-    document["auth"] = serde_json::json!({"chain": [], "admin_auth": []});
+    document["auth"] = serde_json::json!({"chain": []});
     document["advanced"] = serde_json::json!({});
     let deploy = busbar_kernel::config::deploy_from_deserializer(
         document,
@@ -481,7 +481,7 @@ pools:
     let mut document: serde_json::Value = busbar_contract::yaml::from_str(yaml)
         .expect("the concrete product deployment is valid YAML");
     document["store"] = serde_json::json!({"module": module, "settings": settings});
-    document["auth"] = serde_json::json!({"chain": [], "admin_auth": []});
+    document["auth"] = serde_json::json!({"chain": []});
     document["advanced"] = serde_json::json!({});
     let deploy = busbar_kernel::config::deploy_from_deserializer(
         document,
@@ -836,7 +836,7 @@ pools:
     let mut document: serde_json::Value = busbar_contract::yaml::from_str(yaml)
         .expect("the concrete product deployment is valid YAML");
     document["store"] = serde_json::json!({"module": module, "settings": settings});
-    document["auth"] = serde_json::json!({"chain": [], "admin_auth": []});
+    document["auth"] = serde_json::json!({"chain": []});
     document["advanced"] = serde_json::json!({});
     let deploy = busbar_kernel::config::deploy_from_deserializer(
         document,

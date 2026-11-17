@@ -173,7 +173,7 @@ async fn an_empty_plane_set_still_stages_the_core_listener_lines() {
         &busbar_contract::json::json!({
             "providers": {},
             "models": {},
-            "auth": { "chain": [], "admin_auth": [] },
+            "auth": { "chain": [] },
             "store": { "module": module, "settings": settings },
             "advanced": {  },
         }),

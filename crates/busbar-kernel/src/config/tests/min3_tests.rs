@@ -202,7 +202,7 @@ fn verdict_cache_policy_rejects_invalid_types_keys_and_ttl_range() {
 #[test]
 fn verdict_cache_overrides_survive_resolved_auth_authoring() {
     let deploy = deploy(
-        "providers: {}\nmodels: {}\nauth: {chain: [], admin_auth: [], verdict_cache: {default_ttl_s: 0, max_ttl_s: 86400, max_entries: 7, max_identity_bytes: 512}}\n",
+        "providers: {}\nmodels: {}\nauth: {chain: [], verdict_cache: {default_ttl_s: 0, max_ttl_s: 86400, max_entries: 7, max_identity_bytes: 512}}\n",
     );
     let mut errors = Vec::new();
     let auth = crate::config::resolve_auth(

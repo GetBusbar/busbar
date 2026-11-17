@@ -48,7 +48,7 @@ parent:
             "providers": {"p": {"api_key": "none"}},
             "models": {"m": {"provider": "p"}},
             "pools": {"x@day": {"members": ["m"]}},
-            "auth": {"chain": [], "admin_auth": []},
+            "auth": {"chain": []},
             "store": {"module": module, "settings": settings},
             "advanced": {},
         }),

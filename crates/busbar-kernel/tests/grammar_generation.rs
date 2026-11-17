@@ -53,11 +53,7 @@ fn scratch(tag: &str, body: &str) -> std::path::PathBuf {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("plugins")).expect("scratch dir");
     let config = dir.join("config.yaml");
-    std::fs::write(
-        &config,
-        format!("providers: {{}}\nmodels: {{}}\nauth:\n  admin_auth: []\n{body}"),
-    )
-    .expect("config");
+    std::fs::write(&config, format!("providers: {{}}\nmodels: {{}}\n{body}")).expect("config");
     config
 }
 

@@ -688,7 +688,7 @@ async fn the_admin_catalog_row_for_a_harness_signed_plugin(
     .unwrap();
     let deploy = busbar_kernel::config::deploy_from_deserializer(
         serde_json::json!({
-            "providers": {}, "models": {}, "auth": {"chain": [], "admin_auth": []},
+            "providers": {}, "models": {}, "auth": {"chain": []},
             "store": {"module": module, "settings": settings},
             "advanced": {}
         }),

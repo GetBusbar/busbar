@@ -202,3 +202,23 @@ fn response_objects_are_open_and_response_enums_are_marked() {
         offenders.join("\n  ")
     );
 }
+
+/// DES-I-3-376: 1.6.0 has no deployment keyset rotation (no transaction, route or writer; a replaced
+/// keyset is a new deployment, refused as `StoreMissing`), so `keyset.rotated` can never fire and is
+/// not published. Neither the engine's closed action catalogue nor the committed document's
+/// `components.x-busbar-audit-actions` lists it.
+#[test]
+fn the_published_audit_actions_omit_keyset_rotated() {
+    let doc = json::parse_value(DOCUMENT.as_bytes()).expect("the committed admin document parses");
+    let published = doc["components"]["x-busbar-audit-actions"]
+        .as_object()
+        .expect("the document publishes the audit action catalogue");
+    assert!(
+        published.get(&"keyset.rotated").is_none(),
+        "the document publishes keyset.rotated, which nothing writes"
+    );
+    assert!(
+        !busbar_kernel::audit::auditlog::AUDIT_ACTIONS.contains(&"keyset.rotated"),
+        "the engine catalogue lists keyset.rotated, which nothing writes"
+    );
+}
