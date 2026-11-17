@@ -1343,10 +1343,10 @@ async fn run(
             app.governance.clone(),
             app.role_bindings.clone(),
         ),
-        Some(
-            root::min3_boot::ServingEnvironment::new(&native_config, &app)
-                .unwrap_or_else(|error| die(error)),
-        ),
+        Some(root::min3_boot::ServingEnvironment::new(
+            &native_config,
+            &app,
+        )),
         &observation_reservation,
     )
     .await

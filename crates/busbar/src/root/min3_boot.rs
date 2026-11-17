@@ -819,7 +819,7 @@ impl Steps<'_> {
         &self,
         spec: &InstanceSpec<'_>,
         prepared: PreparedInstance,
-        hooks: &hooks::Environment<'_>,
+        hooks: &hooks::Environment,
         opened_hooks: &std::collections::BTreeMap<String, hooks::Opened>,
     ) -> Result<(), OpenError> {
         let services = self.services.clone().ok_or_else(|| {
@@ -949,7 +949,7 @@ impl Steps<'_> {
         &self,
         index: u32,
         prepared: PreparedInstance,
-        hooks: Option<&hooks::Environment<'_>>,
+        hooks: Option<&hooks::Environment>,
         opened_hooks: &std::collections::BTreeMap<String, hooks::Opened>,
     ) -> Result<Option<OpenedPort>, OpenError> {
         let Some((kind, spec)) = self.instances.get(index as usize) else {
@@ -1058,6 +1058,7 @@ pub(crate) struct BootstrapReady {
 
 /// S4b's effective registry and its retained bootstrap leases, before serving opens.
 pub(crate) struct ServingReady {
+    hook_plan: hooks::Plan,
     built: Built,
     instances: Vec<Configured>,
     declared: std::collections::BTreeMap<String, busbar_kernel::upstreams::Declared>,
@@ -1358,7 +1359,9 @@ pub(crate) fn prepare_serving(
         binder,
         guard,
     };
+    let hook_plan = hooks::Plan::capture(cfg, &instances)?;
     Ok(ServingReady {
+        hook_plan,
         built,
         instances,
         declared,
@@ -1377,19 +1380,11 @@ pub(crate) fn prepare_serving(
 pub(crate) struct ServingEnvironment<'a> {
     cfg: &'a RootCfg,
     app: &'a busbar_kernel::state::App,
-    hooks: hooks::Environment<'a>,
 }
 
 impl<'a> ServingEnvironment<'a> {
-    pub(crate) fn new(
-        cfg: &'a RootCfg,
-        app: &'a busbar_kernel::state::App,
-    ) -> Result<Self, String> {
-        Ok(Self {
-            cfg,
-            app,
-            hooks: hooks::Environment::new(cfg, app)?,
-        })
+    pub(crate) fn new(cfg: &'a RootCfg, app: &'a busbar_kernel::state::App) -> Self {
+        Self { cfg, app }
     }
 }
 
@@ -1411,6 +1406,7 @@ pub(crate) async fn finish(
     String,
 > {
     let ServingReady {
+        hook_plan,
         built,
         instances,
         declared,
@@ -1424,7 +1420,11 @@ pub(crate) async fn finish(
         converting,
         normalization_source,
     } = ready;
-    let hooks = environment.as_ref().map(|environment| &environment.hooks);
+    let hook_environment = environment
+        .as_ref()
+        .map(|environment| hooks::Environment::new(hook_plan, environment.app))
+        .transpose()?;
+    let hooks = hook_environment.as_ref();
     if let Some(hooks) = hooks {
         hooks.check_pools(&instances)?;
     }
