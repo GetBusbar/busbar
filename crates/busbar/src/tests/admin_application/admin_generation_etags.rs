@@ -361,6 +361,79 @@ async fn idempotent_replay_every_mutation() {
     println!("{WITNESS}");
 }
 
+#[tokio::test]
+async fn original_precondition_replays_original_generation_after_other_publications() {
+    isolated!(CHILD, WITNESS, witness = "generation");
+    let s = serve("original-precondition-replay", false).await;
+    let original = s.get("/groups").send().await.unwrap().headers()["etag"].clone();
+    let body = json::json!({"name": "user:retry", "config": {"parent": "team"}}).to_string();
+    let first = s
+        .send(reqwest::Method::POST, "/groups")
+        .header("if-match", original.clone())
+        .header("idempotency-key", "original-precondition")
+        .body(body.clone())
+        .send()
+        .await
+        .unwrap();
+    assert!(first.status().is_success(), "{}", first.status());
+    let status = first.status();
+    let etag = first.headers()["etag"].clone();
+    assert_ne!(original, etag);
+    let content_type = first.headers()["content-type"].clone();
+    let answer = first.bytes().await.unwrap();
+    let other = s
+        .send(reqwest::Method::POST, "/groups")
+        .body(json::json!({"name": "user:later", "config": {"parent": "team"}}).to_string())
+        .send()
+        .await
+        .unwrap();
+    assert!(other.status().is_success());
+    let current = s.get("/groups").send().await.unwrap().headers()["etag"].clone();
+    assert_ne!(current, etag);
+    let retry = s
+        .send(reqwest::Method::POST, "/groups")
+        .header("if-match", original.clone())
+        .header("idempotency-key", "original-precondition")
+        .body(body.clone())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(retry.status(), status);
+    assert_eq!(retry.headers()["idempotent-replayed"], "true");
+    assert_eq!(retry.headers()["etag"], etag);
+    assert_eq!(retry.headers()["content-type"], content_type);
+    assert_eq!(retry.bytes().await.unwrap(), answer);
+    let stale = s
+        .send(reqwest::Method::POST, "/groups")
+        .header("if-match", original.clone())
+        .header("idempotency-key", "new-stale-operation")
+        .body(body.clone())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(stale.status().as_u16(), 409);
+    let stale = json::parse_value(&stale.bytes().await.unwrap()).unwrap();
+    assert_eq!(stale["error"]["reason"], "stale_if_match");
+    let mismatch = s
+        .send(reqwest::Method::POST, "/groups")
+        .header("if-match", original)
+        .header("idempotency-key", "original-precondition")
+        .body(json::json!({"name": "user:changed", "config": {"parent": "team"}}).to_string())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(mismatch.status().as_u16(), 409);
+    let mismatch = json::parse_value(&mismatch.bytes().await.unwrap()).unwrap();
+    assert_eq!(mismatch["error"]["reason"], "idempotency_mismatch");
+    assert_eq!(
+        s.get("/groups").send().await.unwrap().headers()["etag"],
+        current,
+        "replay and both conflicts must publish nothing"
+    );
+    s.finish();
+    println!("{WITNESS}");
+}
+
 fn unknown_effect_request(body: &'static str) -> axum::http::Request<axum::body::Body> {
     axum::http::Request::builder()
         .method("POST")
