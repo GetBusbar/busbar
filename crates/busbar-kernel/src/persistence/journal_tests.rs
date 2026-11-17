@@ -2,6 +2,9 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::*;
+
+#[path = "journal/conditional_tests.rs"]
+mod conditional_tests;
 use crate::persistence::{commit::SubmitResult, facade::Limits};
 use busbar_contract::persistence::{
     control, BackendInfo, Call, ClockObservation, Decision, Durability, Page, PersistenceBackend,
