@@ -306,6 +306,9 @@ struct InputSlot {
     body: Option<InputBody>,
     // The same owner also accompanies completion. A reset can still reach it after input EOS.
     owner: Arc<StreamOwner>,
+    node: Option<crate::root::plane_node::NativeNodeHandle>,
+    carrier_reported: bool,
+    held: Option<serving::HeldRequest>,
 }
 
 pub(crate) struct ReadyInput {
@@ -396,6 +399,9 @@ impl NativeIngress {
                     pending: Some(pending),
                     body: Some(body),
                     owner: Arc::new(owner),
+                    node: None,
+                    carrier_reported: false,
+                    held: None,
                 });
                 if end_stream {
                     self.end(stream).map(Some)

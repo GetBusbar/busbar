@@ -16,7 +16,18 @@ use tower::ServiceExt;
 use super::delivery::{CompletedResponse, RegisteredResponse, ResponseAuthority};
 use super::{data, InputError, NativeListener, ReadyInput};
 use crate::root::durability::response_intent::ResponseConnection;
-use crate::root::plane_node::Node;
+use crate::root::plane_node::{NativeNodeHandle, Node};
+
+impl From<InputError> for data::DataPrepareError {
+    fn from(error: InputError) -> Self {
+        Self::Input(error)
+    }
+}
+impl From<busbar_kernel::inbound::native::ArrivalRefusal> for data::DataPrepareError {
+    fn from(error: busbar_kernel::inbound::native::ArrivalRefusal) -> Self {
+        Self::Input(error.into())
+    }
+}
 
 pub(super) struct Prepared {
     response: axum::response::Response,
@@ -25,6 +36,11 @@ pub(super) struct Prepared {
 }
 
 impl Prepared {
+    pub(super) fn native_node_handle(&self) -> Option<NativeNodeHandle> {
+        self.settlement
+            .as_ref()
+            .and_then(data::DataSettlement::native_node_handle)
+    }
     pub(super) async fn send(self, feeds: &mpsc::Sender<Feed>, node: &Node) -> CompletedResponse {
         let mut completed = self.registered.send_http(self.response, feeds, node).await;
         // The completion keeps the original physical execution and input retirement guard until
@@ -47,7 +63,7 @@ pub(super) async fn prepare(
     node: Arc<Node>,
     connection: Arc<ResponseConnection>,
     registrations: mpsc::Sender<RegisterResponse>,
-) -> Result<Prepared, InputError> {
+) -> Result<Prepared, data::DataPrepareError> {
     let binding = ready.request.binding().clone();
     let deadline = binding.deadline().ok_or(InputError::Invalid)?.into();
     let data_request = matches!(binding.route().target(), RouteTarget::Plane(_));
@@ -66,7 +82,7 @@ pub(super) async fn prepare(
                         data::DataAuthority::Executing(owner) => ResponseAuthority::Data(owner),
                         data::DataAuthority::Refused(owner) => ResponseAuthority::Refused(owner),
                     },
-                    Some(prepared.settlement),
+                    prepared.settlement,
                 )
             }
             RouteTarget::Core(RouteAuth::None) => {
@@ -97,22 +113,23 @@ pub(super) async fn prepare(
                     (None, Some(carrier)) => {
                         let owner = carrier.take()?;
                         if !Arc::ptr_eq(owner.binding(), &binding) {
-                            return Err(InputError::Invalid);
+                            return Err(InputError::Invalid.into());
                         }
                         ResponseAuthority::Refused(owner)
                     }
-                    (Some(_), _) => return Err(InputError::Invalid),
+                    (Some(_), _) => return Err(InputError::Invalid.into()),
                     // A raw request binding is not output authority. A denied walk needs its
                     // own consumed physical refusal owner before it can register a response.
                     (None, None) => {
                         return Err(InputError::Delivery(
                             busbar_contract::response_delivery::ResponseStop::Integrity,
-                        ))
+                        )
+                        .into())
                     }
                 };
                 (response, authority, None)
             }
-            RouteTarget::Core(_) => return Err(InputError::Invalid),
+            RouteTarget::Core(_) => return Err(InputError::Invalid.into()),
         };
         let registered = match RegisteredResponse::register(
             &connection,
@@ -129,9 +146,18 @@ pub(super) async fn prepare(
                 // be waiting to send into it. No registered delivery receipt is invented here.
                 drop(response);
                 if let Some(settlement) = settlement {
-                    settlement.registration_failed().await?;
+                    let handle = settlement.native_node_handle();
+                    let error = settlement
+                        .registration_failed()
+                        .await
+                        .err()
+                        .unwrap_or(error);
+                    return Err(match handle {
+                        Some(handle) => data::DataPrepareError::HeldNode { error, handle },
+                        None => data::DataPrepareError::Input(error),
+                    });
                 }
-                return Err(error);
+                return Err(error.into());
             }
         };
         Ok(Prepared {
@@ -147,7 +173,7 @@ pub(super) async fn prepare(
     }
     tokio::select! {
         result = work => result,
-        () = binding.cancelled() => Err(InputError::Delivery(busbar_contract::response_delivery::ResponseStop::Cancelled)),
-        () = tokio::time::sleep_until(deadline) => Err(InputError::Delivery(busbar_contract::response_delivery::ResponseStop::Deadline)),
+        () = binding.cancelled() => Err(InputError::Delivery(busbar_contract::response_delivery::ResponseStop::Cancelled).into()),
+        () = tokio::time::sleep_until(deadline) => Err(InputError::Delivery(busbar_contract::response_delivery::ResponseStop::Deadline).into()),
     }
 }
