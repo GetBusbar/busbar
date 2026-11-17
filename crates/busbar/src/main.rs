@@ -1119,6 +1119,7 @@ async fn run(
     let max_inbound = cfg.limits.max_inbound_concurrent;
     let request_admission =
         busbar_kernel::limits::process_admission::ProcessAdmission::new(max_inbound);
+    use busbar_kernel::limits::process_admission::AdmissionClass;
 
     root::registry::check_or_exit(LINKED.claims);
 
@@ -1778,6 +1779,7 @@ async fn run(
         }
         for (limits, framer, tls, addr, router) in plugin_listeners {
             threads.push(serve_private_listener(
+                request_admission.connection_storage(AdmissionClass::Data),
                 addr,
                 limits,
                 router,
@@ -1813,6 +1815,7 @@ async fn run(
                     });
             if let Some(framer) = framer {
                 threads.extend(serve_thread_per_core(
+                    request_admission.connection_storage(AdmissionClass::Data),
                     data_workers,
                     listen.clone(),
                     bound_at("listen", &listen),
@@ -1830,6 +1833,7 @@ async fn run(
                 "admin listening through the connector"
             );
             admin = Some(Box::pin(serve_listener(
+                request_admission.connection_storage(AdmissionClass::Operator),
                 admin_listener,
                 admin_router,
                 admin_tls_cfg,
@@ -1848,6 +1852,7 @@ async fn run(
             if let Some(framer) = framer {
                 let resolver = tls_secret_resolver.clone();
                 let shutdown = shutdown_tx.subscribe();
+                let storage = request_admission.connection_storage(AdmissionClass::Data);
                 threads.push(spawn_multithread_data(
                     data_workers,
                     worker_shutdown_rx,
@@ -1855,6 +1860,7 @@ async fn run(
                         let data_listener =
                             root::listener::SocketAdmits::new(bind_listener(&listen).await);
                         serve_listener(
+                            storage,
                             data_listener,
                             data_router,
                             tls_cfg,
@@ -1870,6 +1876,7 @@ async fn run(
                 ));
             }
             admin = Some(Box::pin(serve_listener(
+                request_admission.connection_storage(AdmissionClass::Operator),
                 admin_listener,
                 admin_router,
                 admin_tls_cfg,
@@ -2110,6 +2117,7 @@ fn spawn_multithread_data(
 #[cfg(unix)]
 #[allow(clippy::too_many_arguments)]
 fn serve_thread_per_core(
+    storage: busbar_contract::storage::StorageSource,
     n: usize,
     addr: String,
 
@@ -2155,6 +2163,7 @@ fn serve_thread_per_core(
         let balancer = balancers[i].take();
         let bind_at = bind_at.clone();
         let framer = framer.clone();
+        let storage = storage.clone();
         let spawned = std::thread::Builder::new()
             .name(format!("busbar-core-{i}"))
             .spawn(move || {
@@ -2189,6 +2198,7 @@ fn serve_thread_per_core(
                         "data door listening through the connector"
                     );
                     serve_listener(
+                        storage,
                         listener,
                         router,
                         tls,
@@ -2216,6 +2226,7 @@ fn serve_thread_per_core(
 
 #[allow(clippy::too_many_arguments)]
 fn serve_private_listener(
+    storage: busbar_contract::storage::StorageSource,
     addr: String,
     limits: AcceptLimits,
     router: Router,
@@ -2240,6 +2251,7 @@ fn serve_private_listener(
                 let listener = Listening::bind_stream(via.as_ref(), &addr, limits)
                     .unwrap_or_else(|e| die(format!("cannot bind listener {addr}: {e}")));
                 serve_listener(
+                    storage,
                     listener,
                     router,
                     tls,
@@ -2263,6 +2275,7 @@ fn serve_private_listener(
 
 #[allow(clippy::too_many_arguments)]
 async fn serve_listener(
+    storage: busbar_contract::storage::StorageSource,
     listener: impl busbar_core_connector::listen::Admits,
     router: Router,
     tls_cfg: Option<busbar_kernel::config::sections::TlsCfg>,
@@ -2301,6 +2314,7 @@ async fn serve_listener(
     let result = match framer {
         Some(framer) => {
             root::listener::serve_admitted_framed(
+                storage,
                 listener,
                 router,
                 security,
@@ -2311,7 +2325,8 @@ async fn serve_listener(
             .await
         }
         None => {
-            root::listener::serve_admitted(listener, router, security, shutdown, balancer).await
+            root::listener::serve_admitted(storage, listener, router, security, shutdown, balancer)
+                .await
         }
     };
     if let Err(e) = result {

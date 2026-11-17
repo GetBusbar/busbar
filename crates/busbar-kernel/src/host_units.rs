@@ -118,6 +118,8 @@ impl UnitRecords {
     pub fn admitted(&self, unit: u64, record: UnitRecord) {
         let mut units = self.lock(unit);
         let entry = units.entry(unit).or_default();
+        entry.signed_authority = None;
+        entry.data_gate = None;
         entry.invocation_owner = None;
         entry.admission_phase = Some(Arc::new(
             crate::plane_driver::request_admission::AdmissionPhase::admitted(),
@@ -134,6 +136,8 @@ impl UnitRecords {
     ) {
         let mut units = self.lock(unit);
         let entry = units.entry(unit).or_default();
+        entry.signed_authority = None;
+        entry.data_gate = None;
         entry.invocation_owner = Some(caller.incarnation().clone());
         entry.admission_phase = Some(Arc::new(
             crate::plane_driver::request_admission::AdmissionPhase::admitted(),

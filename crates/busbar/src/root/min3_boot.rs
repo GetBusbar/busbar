@@ -203,6 +203,7 @@ impl Shared {
 pub(crate) struct Booted {
     pub(crate) registry: Arc<MinRegistry>,
     _bootstrap_registry: Arc<MinRegistry>,
+    _channel_accounts: Arc<ChannelAccounts>,
     _transports: Vec<transports::ServedTransport>,
     _native_invocations: Vec<busbar_kernel::host_services::NativeInvocationAdmission>,
     _opened: Vec<(
@@ -410,6 +411,55 @@ pub(crate) struct Configured {
     pub(crate) name: String,
     pub(crate) config: Vec<u8>,
     pub(crate) limits: busbar_plugin_abi::host_side::caller::InstanceLimits,
+}
+
+/// Process capacity and stable configured-instance accounts survive serving generations.
+/// A reopened native runtime ID does not create another capacity allowance.
+struct ChannelAccounts {
+    process: busbar_kernel::channels::budget::ChannelBudget,
+    instances: Mutex<
+        std::collections::BTreeMap<
+            (String, String),
+            busbar_kernel::channels::budget::InstanceBudget,
+        >,
+    >,
+}
+
+impl ChannelAccounts {
+    fn new() -> Self {
+        Self {
+            process: busbar_kernel::channels::budget::ChannelBudget::new(),
+            instances: Mutex::default(),
+        }
+    }
+
+    fn for_instances(
+        &self,
+        registry: &MinRegistry,
+        configured: &[Configured],
+    ) -> Result<
+        std::collections::BTreeMap<String, busbar_kernel::channels::budget::InstanceBudget>,
+        String,
+    > {
+        let mut retained = self
+            .instances
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let mut selected = std::collections::BTreeMap::new();
+        for instance in configured.iter().filter(|one| one.kind == KindCode::Plane) {
+            let identity = registry
+                .identity_of(&instance.identity)
+                .ok_or("channel account plane image is not admitted")?;
+            let account = retained
+                .entry((identity, instance.name.clone()))
+                .or_insert_with(|| self.process.instance())
+                .clone();
+            if selected.insert(instance.name.clone(), account).is_some() {
+                return Err("channel account repeats configured plane name".into());
+            }
+        }
+        Ok(selected)
+    }
 }
 
 /// One admitted MIN-3 plane image: its identity and its signed manifest's `alias` (today's plane name, IF §12.10:
@@ -749,6 +799,7 @@ impl BootSteps for BootstrapSteps<'_> {
 
 /// S8 steps hold the completed S5 secret prefix. They cannot extend or replace it.
 struct Steps<'r> {
+    images: &'r super::boot::images::FileImages,
     registry: &'r MinRegistry,
     instances: &'r [(KindCode, InstanceSpec<'r>)],
     services: Option<Arc<KernelServices>>,
@@ -888,6 +939,7 @@ impl Steps<'_> {
         let seat = SeatShared {
             upstreams: self.seat.upstreams.clone(),
             catalogs: self.seat.catalogs.clone(),
+            channel_budgets: self.seat.channel_budgets.clone(),
             signals: Arc::clone(&self.seat.signals),
             secrets: Arc::new(SpawnCustody(prefix)),
             kernel: Arc::clone(&self.seat.kernel),
@@ -935,12 +987,17 @@ impl Steps<'_> {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .push(PortSeat {
+                image: self
+                    .images
+                    .plane_identity(&who.plugin)
+                    .map_err(OpenError::Unknown)?,
                 instance: spec.name.to_owned(),
                 driver: Arc::new(driver),
                 audience: audience_of(spec.config_json),
                 intents: Arc::new(intents),
                 who,
                 request_routes: wiring.request_routes,
+                channel_budget: wiring.channel_budget,
                 upstream: wiring.upstream,
                 carrier: Some(wiring.carrier),
             });
@@ -1051,6 +1108,7 @@ where
 
 /// S6 owners. No serving instance has opened when this value is returned.
 pub(crate) struct BootstrapReady {
+    channel_accounts: Arc<ChannelAccounts>,
     built: Built,
     instances: Vec<Configured>,
     bootstrap: super::boot::walk::Bootstrap<Option<OpenedPort>>,
@@ -1062,6 +1120,8 @@ pub(crate) struct BootstrapReady {
 
 /// S4b's effective registry and its retained bootstrap leases, before serving opens.
 pub(crate) struct ServingReady {
+    images: Arc<super::boot::images::FileImages>,
+    channel_accounts: Arc<ChannelAccounts>,
     hook_plan: hooks::Plan,
     provider_plan: super::min3_provider_plan::Plan,
     provider_catalogs: busbar_kernel::plane_driver::provider_catalog::ProviderCatalogs,
@@ -1192,6 +1252,7 @@ pub(crate) async fn prepare_bootstrap(
     let core = Arc::new(core_secrets_of(cfg, &prefix).await?);
     Ok(Some((
         BootstrapReady {
+            channel_accounts: Arc::new(ChannelAccounts::new()),
             built,
             instances,
             bootstrap,
@@ -1240,8 +1301,10 @@ pub(crate) fn prepare_serving(
     catalogs: &busbar_kernel::plane_driver::provider_catalog::ProviderCatalogs,
     guard: Guard,
 ) -> Result<ServingReady, String> {
+    let effective_images = Arc::new(effective_images);
     let mut provider_plan = super::min3_provider_plan::capture(&effective_images, cfg, catalogs)?;
     let BootstrapReady {
+        channel_accounts,
         built: bootstrap_built,
         instances: before,
         bootstrap,
@@ -1250,7 +1313,7 @@ pub(crate) fn prepare_serving(
         converting,
         normalization_source,
     } = ready;
-    let images = effective_images.images;
+    let images = effective_images.images.clone();
     let transports: Vec<String> = images
         .identities()
         .filter(|id| {
@@ -1262,7 +1325,8 @@ pub(crate) fn prepare_serving(
         .collect();
     let planes: Vec<PlaneImage> = effective_images
         .aliases
-        .into_iter()
+        .iter()
+        .cloned()
         .filter(|(id, _)| {
             images
                 .described(id)
@@ -1440,6 +1504,8 @@ pub(crate) fn prepare_serving(
     };
     let hook_plan = hooks::Plan::capture(cfg, &instances)?;
     Ok(ServingReady {
+        images: effective_images,
+        channel_accounts,
         hook_plan,
         provider_plan,
         provider_catalogs: catalogs.clone(),
@@ -1490,6 +1556,8 @@ pub(crate) async fn finish(
     String,
 > {
     let ServingReady {
+        images,
+        channel_accounts,
         hook_plan,
         provider_plan,
         mut provider_catalogs,
@@ -1539,12 +1607,14 @@ pub(crate) async fn finish(
             .map(|(name, split)| (name.clone(), Arc::new(split.definitions.clone())))
             .collect(),
         catalogs: Default::default(),
+        channel_budgets: channel_accounts.for_instances(&built.registry, &instances)?,
         signals: Arc::clone(&shared.signals),
         secrets: Arc::new(SpawnCustody(Arc::clone(&prefix))),
         kernel: Arc::new(Kernel::new()),
         table: ConnTable::installed(),
     };
     let mut steps = Steps {
+        images: &images,
         registry: &built.registry,
         instances: &specs,
         services,
@@ -1871,6 +1941,7 @@ pub(crate) async fn finish(
         .unwrap_or_else(PoisonError::into_inner);
     let ticking = seats.clone();
     let booted = Arc::new(Booted {
+        _channel_accounts: channel_accounts,
         resolver: secrets.resolver(reactor, built.sugars.clone()),
         registry: built.registry,
         _bootstrap_registry,
