@@ -5,6 +5,7 @@
 //! queue (frames in arrival order, drained by the carrier's writer task), the CH_READY tail and the greet
 //! hand-off. The carrier driver builds one `Link` per generation and hands each attach an `Attachment`.
 
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
@@ -12,6 +13,9 @@ use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, watch, Notify};
 
 use super::ask_line::{AskLine, Write};
+use super::budget::{Charge, LinkBudget, UnitBudget};
+use super::frame::Framing;
+use super::protected::GuardedWrite;
 
 /// Who holds the greeting of a generation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -40,8 +44,10 @@ pub enum Claim {
 pub struct ChannelGone;
 
 pub struct Link {
-    line: Mutex<AskLine>,
-    writer: mpsc::UnboundedSender<Box<[u8]>>,
+    state: Mutex<State>,
+    writer: mpsc::Sender<GuardedWrite>,
+    budget: LinkBudget,
+    framing: Framing,
     ready: watch::Sender<Option<Box<[u8]>>>,
     greet_free: Notify,
     greet: Mutex<Greet>,
@@ -51,15 +57,31 @@ pub struct Link {
     last_ns: AtomicU64,
 }
 
+struct State {
+    line: AskLine<GuardedWrite, Charge>,
+    slots: HashSet<u64>,
+    ended: bool,
+}
+
 impl Link {
     /// A fresh generation; `serial` = CH_SERIAL. The receiver is the writer task's queue.
     #[must_use]
-    pub fn new(serial: bool) -> (Arc<Self>, mpsc::UnboundedReceiver<Box<[u8]>>) {
-        let (writer, queue) = mpsc::unbounded_channel();
+    pub fn new(
+        serial: bool,
+        framing: Framing,
+        budget: LinkBudget,
+    ) -> (Arc<Self>, mpsc::Receiver<GuardedWrite>) {
+        let (writer, queue) = mpsc::channel(64);
         let (ready, _) = watch::channel(None);
         let link = Self {
-            line: Mutex::new(AskLine::new(serial)),
+            state: Mutex::new(State {
+                line: AskLine::new(serial),
+                slots: HashSet::new(),
+                ended: false,
+            }),
             writer,
+            budget,
+            framing,
             ready,
             greet_free: Notify::new(),
             greet: Mutex::new(Greet::Open),
@@ -71,12 +93,42 @@ impl Link {
     }
 
     /// One EX_MSG of `slot`. Err = the generation's writer is gone (the generation ended).
-    pub(super) fn send(&self, slot: u64, message: &[u8], ask: bool) -> Result<(), ()> {
+    pub(super) fn send(
+        &self,
+        slot: u64,
+        unit: &UnitBudget,
+        message: &[u8],
+        ask: bool,
+    ) -> Result<(), ()> {
+        let message =
+            GuardedWrite::new(unit, &self.budget, self.framing, message, ask).map_err(|_| ())?;
+        self.send_owned(slot, message).map_err(|_| ())
+    }
+
+    pub fn budget(&self) -> &LinkBudget {
+        &self.budget
+    }
+
+    /// Publish one owned, fully admitted message to the actual live attachment and generation.
+    pub fn send_owned(&self, slot: u64, mut message: GuardedWrite) -> Result<(), ChannelGone> {
+        if !message.destination(&self.budget, self.framing) {
+            return Err(ChannelGone);
+        }
+        let mut state = self.lock();
+        if state.ended || !state.slots.contains(&slot) {
+            return Err(ChannelGone);
+        }
+        let permit = self.writer.try_reserve().map_err(|_| ChannelGone)?;
         self.touch();
-        let write = self.lock().send(slot, message, ask);
+        let ask = message.take_ask();
+        let write = state.line.send_owned(slot, message, ask);
         match write {
-            Write::Now(bytes) => self.writer.send(bytes).map_err(|_| ()),
+            Write::Now(bytes) => {
+                permit.send(bytes);
+                Ok(())
+            }
             Write::Queued => Ok(()),
+            Write::Rejected => Err(ChannelGone),
         }
     }
 
@@ -124,26 +176,40 @@ impl Link {
 
     /// `slot` detached: its asks leave the line, what that frees is written, a pending greet moves on.
     pub(super) fn detach(&self, slot: u64, greet: bool) {
+        let mut state = self.lock();
+        if !state.slots.remove(&slot) {
+            return;
+        }
         self.touch();
         self.attached.fetch_sub(1, Ordering::AcqRel);
-        let freed = self.lock().detached(slot);
+        let freed = state.line.detached(slot);
         for bytes in freed {
-            let _ = self.writer.send(bytes);
+            let _ = self.writer.try_send(bytes);
         }
+        drop(state);
         if greet {
-            let mut held = self.greeting();
-            if *held == Greet::Held(slot) {
-                *held = Greet::Open;
-            }
-            drop(held);
-            self.greet_free.notify_one();
+            self.release_greet(slot);
         }
     }
 
+    pub(super) fn release_greet(&self, slot: u64) {
+        let mut held = self.greeting();
+        if *held == Greet::Held(slot) {
+            *held = Greet::Open;
+        }
+        drop(held);
+        self.greet_free.notify_one();
+    }
+
     /// An attachment was built on this generation.
-    pub(super) fn attach(&self) {
+    pub(super) fn attach(&self, slot: u64) -> bool {
+        let mut state = self.lock();
+        if slot == 0 || state.ended || state.slots.len() >= 256 || !state.slots.insert(slot) {
+            return false;
+        }
         self.touch();
         self.attached.fetch_add(1, Ordering::AcqRel);
+        true
     }
 
     /// How many attachments hold this generation.
@@ -166,26 +232,36 @@ impl Link {
     /// The slot DX_OUTSTANDING delivers to: the head of the ask line.
     #[must_use]
     pub fn head(&self) -> Option<u64> {
-        self.lock().head()
+        self.lock().line.head()
     }
 
     /// Writes `bytes` to the channel now, outside the ask line (the plane's DX_OUTSTANDING fallback).
-    pub fn write(&self, bytes: Box<[u8]>) -> Result<(), ChannelGone> {
+    pub fn write(&self, message: GuardedWrite) -> Result<(), ChannelGone> {
+        let state = self.lock();
+        if !message.destination(&self.budget, self.framing) || state.ended {
+            return Err(ChannelGone);
+        }
         self.touch();
-        self.writer.send(bytes).map_err(|_| ChannelGone)
+        self.writer.try_send(message).map_err(|_| ChannelGone)
     }
 
     /// DX_FINAL to `slot`: its oldest ask leaves the line and the next serial ask is written.
     pub fn finished(&self, slot: u64) {
-        let freed = self.lock().finished(slot);
+        let mut state = self.lock();
+        if state.ended || !state.slots.contains(&slot) {
+            return;
+        }
+        let freed = state.line.finished(slot);
         for bytes in freed {
-            let _ = self.writer.send(bytes);
+            let _ = self.writer.try_send(bytes);
         }
     }
 
     /// The generation ended: the slots whose asks were open (each gets P_ERROR).
     pub fn ended(&self) -> Vec<u64> {
-        self.lock().ended()
+        let mut state = self.lock();
+        state.ended = true;
+        state.line.ended()
     }
 
     fn touch(&self) {
@@ -197,7 +273,7 @@ impl Link {
         self.greet.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    fn lock(&self) -> MutexGuard<'_, AskLine> {
-        self.line.lock().unwrap_or_else(PoisonError::into_inner)
+    fn lock(&self) -> MutexGuard<'_, State> {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }
