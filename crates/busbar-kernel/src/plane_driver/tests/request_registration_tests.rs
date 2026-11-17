@@ -249,3 +249,250 @@ async fn native_ordinary_startup_rollback_retains_the_original_open() {
         "native ordinary startup rollback destroyed the original Open before its receipt"
     );
 }
+
+/// The actual original checkpoint sink with an injectable held/failed R acknowledgement.
+#[derive(Default)]
+struct GatedCheckpoints {
+    held: std::sync::Mutex<Vec<crate::governance::unit_checkpoint::UnitCheckpoint>>,
+    refuse_remove: std::sync::atomic::AtomicBool,
+    removed: std::sync::atomic::AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl crate::governance::unit_checkpoint::UnitCheckpointSink for GatedCheckpoints {
+    async fn persist(
+        &self,
+        snapshot: &crate::governance::unit_checkpoint::UnitCheckpoint,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
+        snapshot.validate()?;
+        let mut held = self.held.lock().unwrap();
+        held.retain(|kept| kept.id != snapshot.id);
+        held.push(snapshot.clone());
+        Ok(())
+    }
+    async fn remove(
+        &self,
+        snapshot: &crate::governance::unit_checkpoint::UnitCheckpoint,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
+        if self.refuse_remove.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(busbar_contract::records::RecordStoreError(
+                "original R acknowledgement held".into(),
+            ));
+        }
+        self.held
+            .lock()
+            .unwrap()
+            .retain(|kept| kept.id != snapshot.id);
+        self.removed
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(())
+    }
+    async fn replay(
+        &self,
+    ) -> busbar_contract::records::RecordStoreResult<
+        Vec<crate::governance::unit_checkpoint::UnitCheckpoint>,
+    > {
+        Ok(self.held.lock().unwrap().clone())
+    }
+}
+
+#[derive(Default)]
+struct KeptRecovery(std::sync::Mutex<Vec<crate::governance::recovery::RecoveryEvent>>);
+
+#[async_trait::async_trait]
+impl crate::governance::recovery::RecoverySink for KeptRecovery {
+    async fn persist(
+        &self,
+        event: &crate::governance::recovery::RecoveryEvent,
+    ) -> Result<(), crate::governance::recovery::RecoveryError> {
+        let mut held = self.0.lock().unwrap();
+        if !held.contains(event) {
+            held.push(event.clone());
+        }
+        Ok(())
+    }
+    async fn replay(
+        &self,
+    ) -> Result<
+        Vec<crate::governance::recovery::RecoveryEvent>,
+        crate::governance::recovery::RecoveryError,
+    > {
+        Ok(self.0.lock().unwrap().clone())
+    }
+}
+
+struct OrdinaryRig {
+    money: Arc<crate::plane_driver::PlaneMoney>,
+    gov: Arc<GovState>,
+    sink: Arc<GatedCheckpoints>,
+    admitted: AdmittedRequest,
+    slot: Arc<crate::plane_driver::port_billing::NativeOrdinaryTerminalSlot>,
+    _invocation: (InvocationContext, NativeInvocationAdmission),
+    _lease: crate::limits::process_admission::RequestLease,
+}
+
+/// One actual native ordinary admission owned by its funded slot, over durable unit custody.
+async fn ordinary_rig(unit: u64) -> OrdinaryRig {
+    use crate::config::groups::ExhaustionMode;
+    use crate::plane_driver::{EndPost, PlaneMoney};
+    struct Posted;
+    impl EndPost for Posted {
+        fn post(&self, _: &crate::teller::UnitCtx, _: crate::teller::Ended) {}
+    }
+    let cost = Arc::new(CostModel::resolve_parts(None, 0, &Default::default()));
+    let key = Arc::new(VirtualKey {
+        id: "ordinary-terminal".into(),
+        enabled: true,
+        ..Default::default()
+    });
+    let routes = RequestRoutes::new("seat", None, None, None)
+        .unwrap()
+        .with_registrations(table(&[definition("command", true)]))
+        .unwrap();
+    let (ctx, owner) = context_with_key(unit, key);
+    let receipt = RequestAllocation::new(ctx.clone(), cost, 100)
+        .unwrap()
+        .registration(&routes, None, "command")
+        .unwrap();
+    let gov = Arc::new(
+        GovState::new_with_core(crate::real_store::core().await, None, None)
+            .await
+            .unwrap(),
+    );
+    gov.attach_recovery_sink(Arc::new(KeptRecovery::default()))
+        .await
+        .unwrap();
+    let sink = Arc::new(GatedCheckpoints::default());
+    gov.attach_unit_checkpoint_sink(sink.clone()).await.unwrap();
+    assert!(gov.unit_checkpoints_enabled());
+    let money = Arc::new(PlaneMoney::new(gov.clone(), Arc::new(Posted)));
+    let process = crate::limits::process_admission::ProcessAdmission::new(0);
+    let lease = process
+        .try_enter(crate::limits::process_admission::AdmissionClass::Data)
+        .unwrap();
+    let slot = crate::plane_driver::port_billing::NativeOrdinaryTerminalSlot::reserve(
+        &ctx,
+        &lease.storage(),
+    )
+    .unwrap();
+    let admitted = money
+        .admit_existing_ordinary(
+            receipt.begin().unwrap(),
+            &slot,
+            Arc::from([]),
+            super::super::super::money::FeeRefund::CallerStatus,
+            ExhaustionMode::FinishUnit,
+        )
+        .unwrap();
+    OrdinaryRig {
+        money,
+        gov,
+        sink,
+        admitted,
+        slot,
+        _invocation: (ctx, owner),
+        _lease: lease,
+    }
+}
+
+fn ended(status: u32) -> crate::plane_driver::UnitEnd {
+    crate::plane_driver::UnitEnd {
+        caller_status: status,
+        cut: false,
+        refused_unspent: false,
+    }
+}
+
+/// Held R: the transfer removes Open, but nothing confirms until the actual original sink
+/// acknowledges removal. A failed R retains the same pending owner; the pulse retry confirms.
+#[tokio::test]
+async fn ordinary_receipt_waits_for_the_original_r_acknowledgement() {
+    let rig = ordinary_rig(51).await;
+    rig.sink
+        .refuse_remove
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    rig.slot
+        .request_terminal(&rig.admitted, ended(200))
+        .unwrap();
+    assert!(rig.money.drive_ordinary_terminal(&rig.slot).unwrap());
+    assert_eq!(rig.money.open_units(), 0);
+    assert!(!rig.slot.checkpoint_confirmed(&rig.money).unwrap());
+    assert!(rig.gov.flush_unit_checkpoints().await.is_err());
+    assert!(
+        !rig.slot.checkpoint_confirmed(&rig.money).unwrap(),
+        "a failed R acknowledgement cannot confirm the original receipt"
+    );
+    assert_eq!(
+        rig.sink.removed.load(std::sync::atomic::Ordering::SeqCst),
+        0
+    );
+    rig.sink
+        .refuse_remove
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    rig.gov.flush_unit_checkpoints().await.unwrap();
+    assert!(rig.slot.checkpoint_confirmed(&rig.money).unwrap());
+    assert_eq!(
+        rig.sink.removed.load(std::sync::atomic::Ordering::SeqCst),
+        1
+    );
+}
+
+/// Explicit finish racing rollback destruction: the first valid intent is elected, the loser
+/// cannot replace it, and only one original transfer and one receipt exist.
+#[tokio::test]
+async fn ordinary_finish_and_rollback_elect_one_original_transfer() {
+    let rig = ordinary_rig(52).await;
+    let rollback = rig.money.admission_rollback(&rig.admitted).unwrap();
+    drop(rollback);
+    assert_eq!(rig.money.open_units(), 1, "rollback recorded intent only");
+    rig.slot
+        .request_terminal(&rig.admitted, ended(200))
+        .unwrap();
+    assert!(rig.money.drive_ordinary_terminal(&rig.slot).unwrap());
+    assert_eq!(rig.money.open_units(), 0);
+    assert!(
+        rig.money.drive_ordinary_terminal(&rig.slot).unwrap(),
+        "a later drive observes the retained transfer"
+    );
+    assert!(
+        !rig.money
+            .settle_admitted(&rig.admitted, ended(200))
+            .unwrap(),
+        "the boolean path cannot settle a second time"
+    );
+    rig.gov.flush_unit_checkpoints().await.unwrap();
+    assert!(rig.slot.checkpoint_confirmed(&rig.money).unwrap());
+    assert_eq!(
+        rig.sink.removed.load(std::sync::atomic::Ordering::SeqCst),
+        1
+    );
+}
+
+/// The boolean settlement refuses a slot-owned Open instead of destroying it before receipt.
+#[tokio::test]
+async fn slot_owned_open_refuses_boolean_settlement() {
+    let rig = ordinary_rig(53).await;
+    assert!(rig
+        .money
+        .settle_admitted(&rig.admitted, ended(200))
+        .is_err());
+    rig.money.settle_end_as(rig.admitted.unit(), ended(200));
+    assert_eq!(rig.money.open_units(), 1);
+    assert!(!rig.money.drive_ordinary_terminal(&rig.slot).unwrap());
+}
+
+/// Shutdown: dropping waiters and the money owner without a flush never confirms the receipt;
+/// the original pending checkpoint entry remains for drain.
+#[tokio::test]
+async fn forced_teardown_cannot_confirm_an_ordinary_receipt() {
+    let rig = ordinary_rig(54).await;
+    rig.slot
+        .request_terminal(&rig.admitted, ended(200))
+        .unwrap();
+    assert!(rig.money.drive_ordinary_terminal(&rig.slot).unwrap());
+    assert!(!rig.slot.checkpoint_confirmed(&rig.money).unwrap());
+    assert_eq!(
+        rig.sink.removed.load(std::sync::atomic::Ordering::SeqCst),
+        0
+    );
+}
