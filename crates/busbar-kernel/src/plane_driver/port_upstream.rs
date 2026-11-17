@@ -433,7 +433,7 @@ pub fn run_attempts<K: Calls + ?Sized>(
 ) -> Result<Attempted, SessionError> {
     // The borrowed legacy sender cannot own a selected-attempt partition or its transport
     // reservation. Only the separate owned preparation/money handoff may enable that cohort.
-    if task.selected_attempts() {
+    if task.selected_attempts() || task.data().is_some() {
         return Err(SessionError::NotDriven);
     }
     let mut attempts = 0_u32;

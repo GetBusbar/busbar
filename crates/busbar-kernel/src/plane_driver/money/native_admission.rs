@@ -80,6 +80,7 @@ impl PlaneMoney {
         if !request.is_live()
             || !request.context().same_unit(declaration.context())
             || !declaration.context().is_live()
+            || request.context().generation().routing_generation() != Some(routing_generation)
         {
             return Err(NativeAdmissionError::NotLive);
         }

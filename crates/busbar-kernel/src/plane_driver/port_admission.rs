@@ -43,6 +43,7 @@ pub struct Pending {
     admitted: OnceLock<AdmittedUnit>,
     journal: Option<Arc<dyn super::HookJournal>>,
     channel_budget: Option<crate::channels::budget::UnitBudget>,
+    route: Option<super::route_identity::OriginalPlaneRoute>,
 }
 
 impl Pending {
@@ -60,6 +61,7 @@ impl Pending {
             admitted: OnceLock::new(),
             journal,
             channel_budget: None,
+            route: None,
         }
     }
 
@@ -80,6 +82,7 @@ impl Pending {
             admitted: OnceLock::new(),
             journal,
             channel_budget: None,
+            route: None,
         }
     }
 
@@ -92,6 +95,13 @@ impl Pending {
     }
     pub fn channel_budget(&self) -> Option<&crate::channels::budget::UnitBudget> {
         self.channel_budget.as_ref()
+    }
+    pub fn with_route(mut self, route: super::route_identity::OriginalPlaneRoute) -> Self {
+        self.route = Some(route);
+        self
+    }
+    pub fn original_route(&self) -> Option<&super::route_identity::OriginalPlaneRoute> {
+        self.route.as_ref()
     }
     pub fn journal(&self) -> Option<Arc<dyn super::HookJournal>> {
         self.journal.clone()
@@ -119,6 +129,9 @@ impl Pending {
             .take()
             .ok_or(SessionError::NotDriven)?;
         let selected_required = declaration.selected();
+        if selected_required && declaration.original_route().is_none() {
+            return Err(SessionError::NotDriven);
+        }
         if declaration.selected() && matches!(&commit, Commit::Ordinary(_)) {
             return Err(SessionError::NotDriven);
         }

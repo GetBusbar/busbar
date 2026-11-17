@@ -21,6 +21,7 @@ use crate::inbound::native::{
 };
 use crate::plane_driver::port::PortSeat;
 use crate::plane_driver::port_admission::{AdmittedUnit, Pending};
+use crate::plane_driver::port_session::RequestDeclaration;
 use crate::plane_driver::request_admission::{
     AdmittedRequest, RequestAllocation, RequestPoolReceipt, RequestRoutes,
 };
@@ -75,6 +76,7 @@ impl NativeDataRoute {
             || mounted.auth != AUTH_PRINCIPAL
             || mounted.effective != AUTH_PRINCIPAL
             || mounted.resource_kinds.is_empty()
+            || seat.driver.port().facts() & busbar_plugin_abi::plane::FB_RESOURCE_ADMISSION == 0
             || seat.driver.has_hooks(mounted.route)
             || !owners.chain.is_data()
         {
@@ -260,6 +262,14 @@ impl PendingData {
 }
 
 /// Privately minted after actual policy and replay, not from a public identity callback.
+///
+/// ```compile_fail,E0599
+/// use std::sync::Arc;
+/// use busbar_kernel::auth::{native_admin::PreparedIdentity, native_data::DataAuthorization};
+/// fn fabricate(identity: Arc<dyn PreparedIdentity>) -> DataAuthorization {
+///     DataAuthorization::from_identity(identity)
+/// }
+/// ```
 pub struct DataAuthorization {
     binding: Arc<RequestBinding>,
     route: Arc<NativeDataRoute>,
@@ -321,6 +331,9 @@ impl NativeDataAllocation {
             .binding
             .check_live()
             .map_err(|_| DataRefused::Cancelled)?;
+        if Instant::now() >= authorization.deadline {
+            return Err(DataRefused::Cancelled);
+        }
         let plan = &authorization.route;
         let unit = plan.owners.keys.mint();
         let gate = Arc::new(NativeDataEffectGate::new(
@@ -376,6 +389,34 @@ impl NativeDataAllocation {
         self,
         commit: impl FnOnce(RequestPoolReceipt) -> Result<AdmittedUnit, ClientRefusal> + Send + 'static,
     ) -> NativeDataPending {
+        self.into_pending_using(
+            move |receipt, ()| commit(receipt),
+            |allocation, routes, commit| {
+                Pending::new(allocation, routes, None, move |receipt| commit(receipt, ()))
+            },
+        )
+    }
+
+    /// Preserve the declaration minted by the same preparatory Task for the selected
+    /// monetary binder. This does not mint or reconstruct a declaration from route facts.
+    pub fn into_pending_selected(
+        self,
+        commit: impl FnOnce(RequestPoolReceipt, RequestDeclaration) -> Result<AdmittedUnit, ClientRefusal>
+            + Send
+            + 'static,
+    ) -> NativeDataPending {
+        self.into_pending_using(commit, |allocation, routes, commit| {
+            Pending::new_selected(allocation, routes, None, commit)
+        })
+    }
+
+    fn into_pending_using<D: Send + 'static>(
+        self,
+        commit: impl FnOnce(RequestPoolReceipt, D) -> Result<AdmittedUnit, ClientRefusal>
+            + Send
+            + 'static,
+        build: impl FnOnce(RequestAllocation, Arc<RequestRoutes>, DataCommit<D>) -> Pending,
+    ) -> NativeDataPending {
         let Self {
             authorization,
             physical,
@@ -390,41 +431,47 @@ impl NativeDataAllocation {
         let route = authorization.route.clone();
         let selected = authorization.selected.clone();
         let prepared = authorization.prepared.clone();
-        let pending = Pending::new(allocation, routes, None, move |receipt| {
-            let refuse = || ClientRefusal {
-                status: 503,
-                code: busbar_plugin_abi::fail::refused::R_POLICY,
-                text: "native data admission refused".into(),
-            };
-            if authorization.binding.check_live().is_err()
-                || !registration.context.is_live()
-                || Instant::now() >= authorization.deadline
-            {
-                return Err(refuse());
-            }
-            let admitted = commit(receipt)?;
-            // effects-dependent is_live is intentionally NOT called until DATA starts.
-            if !admitted.request.context().same_unit(&registration.context)
-                || !registration.context.is_live()
-                || Instant::now() >= authorization.deadline
-                || admitted.unit.ctx.key != admitted.request.unit()
-                || !Arc::ptr_eq(admitted.request.key(), &authorization.key)
-            {
-                return Err(refuse());
-            }
-            let proof = DataExecutionAdmission {
-                authorization,
-                physical,
-                registration,
-                money: admitted.request.clone(),
-            };
-            gate.ready.store(true, Ordering::Release);
-            if proof.physical.start_execution(&proof).is_err() {
-                return Err(refuse());
-            }
-            retained.set(proof).map_err(|_| refuse())?;
-            Ok(admitted)
-        });
+        let binding = authorization.binding.clone();
+        let deadline = authorization.deadline;
+        let pending = build(
+            allocation,
+            routes,
+            Box::new(move |receipt, declaration| {
+                let refuse = || ClientRefusal {
+                    status: 503,
+                    code: busbar_plugin_abi::fail::refused::R_POLICY,
+                    text: "native data admission refused".into(),
+                };
+                if authorization.binding.check_live().is_err()
+                    || !registration.context.is_live()
+                    || Instant::now() >= authorization.deadline
+                {
+                    return Err(refuse());
+                }
+                let admitted = commit(receipt, declaration)?;
+                // effects-dependent is_live is intentionally NOT called until DATA starts.
+                if !admitted.request.context().same_unit(&registration.context)
+                    || !registration.context.is_live()
+                    || Instant::now() >= authorization.deadline
+                    || admitted.unit.ctx.key != admitted.request.unit()
+                    || !Arc::ptr_eq(admitted.request.key(), &authorization.key)
+                {
+                    return Err(refuse());
+                }
+                let proof = DataExecutionAdmission {
+                    authorization,
+                    physical,
+                    registration,
+                    money: admitted.request.clone(),
+                };
+                gate.ready.store(true, Ordering::Release);
+                if proof.physical.start_execution(&proof).is_err() {
+                    return Err(refuse());
+                }
+                retained.set(proof).map_err(|_| refuse())?;
+                Ok(admitted)
+            }),
+        );
         NativeDataPending {
             pending: Arc::new(pending),
             execution,
@@ -432,11 +479,18 @@ impl NativeDataAllocation {
             route,
             selected,
             prepared,
+            binding,
+            deadline,
         }
     }
 }
 
+type DataCommit<D> =
+    Box<dyn FnOnce(RequestPoolReceipt, D) -> Result<AdmittedUnit, ClientRefusal> + Send>;
+
 pub struct NativeDataPending {
+    binding: Arc<RequestBinding>,
+    deadline: Instant,
     route: Arc<NativeDataRoute>,
     selected: Arc<SelectedResources>,
     prepared: Arc<PreparedNativeIdentity>,
@@ -445,6 +499,15 @@ pub struct NativeDataPending {
     context: InvocationContext,
 }
 impl NativeDataPending {
+    pub fn is_live(&self) -> bool {
+        self.context.is_live()
+            && Instant::now() < self.deadline
+            && self.binding.check_live().is_ok()
+    }
+
+    pub fn binding(&self) -> &Arc<RequestBinding> {
+        &self.binding
+    }
     pub fn selected(&self) -> &SelectedResources {
         &self.selected
     }
@@ -459,7 +522,7 @@ impl NativeDataPending {
         driver: &crate::plane_driver::port::PortDriver,
         route: u32,
     ) -> bool {
-        self.context.is_live()
+        self.is_live()
             && self.route.caller.same_incarnation(driver.caller())
             && Arc::ptr_eq(self.route.owners.generation.core(), driver.core())
             && self.route.binding.line().route.rung == route

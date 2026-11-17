@@ -115,10 +115,51 @@ impl ChargedRequestSnapshot {
     where
         H: Clone + ExactSizeIterator<Item = (&'a str, &'a [u8])>,
     {
+        let count = input.headers.len();
+        let measure = input.headers.clone();
+        Self::capture_passes(input, measure, count, request)
+    }
+
+    /// The existing HTTP adapter can recreate borrowed HeaderMap iterators, which are neither
+    /// Clone nor ExactSizeIterator. Both passes use the same checked capture implementation.
+    pub fn capture_header_map<'a>(
+        input: SnapshotInput<'a, &'a http::HeaderMap>,
+        request: &RequestLease,
+    ) -> Result<Arc<Self>, SnapshotError> {
+        fn field<'h>(
+            (name, value): (&'h http::HeaderName, &'h http::HeaderValue),
+        ) -> (&'h str, &'h [u8]) {
+            (name.as_str(), value.as_bytes())
+        }
+        let count = input.headers.len();
+        let measure = input.headers.iter().map(field);
+        let input = SnapshotInput {
+            method: input.method,
+            path: input.path,
+            query: input.query,
+            query_present: input.query_present,
+            authority: input.authority,
+            headers: input.headers.iter().map(field),
+            peer: input.peer,
+            tls_peer_cert: input.tls_peer_cert,
+            body: input.body,
+            now_s: input.now_s,
+        };
+        Self::capture_passes(input, measure, count, request)
+    }
+
+    fn capture_passes<'a, H>(
+        input: SnapshotInput<'a, H>,
+        measure: H,
+        count: usize,
+        request: &RequestLease,
+    ) -> Result<Arc<Self>, SnapshotError>
+    where
+        H: Iterator<Item = (&'a str, &'a [u8])>,
+    {
         if !input.query_present && !input.query.is_empty() {
             return Err(SnapshotError::Invalid);
         }
-        let count = input.headers.len();
         let mut extent = add(
             usize::from(input.query_present),
             count.checked_mul(16).ok_or(SnapshotError::Overflow)?,
@@ -135,7 +176,7 @@ impl ChargedRequestSnapshot {
             extent = add(extent, len)?;
         }
         let mut observed = 0usize;
-        for (name, value) in input.headers.clone() {
+        for (name, value) in measure {
             observed = add(observed, 1)?;
             if observed > count {
                 return Err(SnapshotError::Invalid);

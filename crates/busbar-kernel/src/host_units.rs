@@ -114,6 +114,7 @@ impl UnitRecords {
     pub fn admitted(&self, unit: u64, record: UnitRecord) {
         let mut units = self.lock(unit);
         let entry = units.entry(unit).or_default();
+        entry.signed_authority = None;
         entry.invocation_owner = None;
         entry.admission_phase = Some(Arc::new(
             crate::plane_driver::request_admission::AdmissionPhase::admitted(),
@@ -130,6 +131,7 @@ impl UnitRecords {
     ) {
         let mut units = self.lock(unit);
         let entry = units.entry(unit).or_default();
+        entry.signed_authority = None;
         entry.invocation_owner = Some(caller.incarnation().clone());
         entry.admission_phase = Some(Arc::new(
             crate::plane_driver::request_admission::AdmissionPhase::admitted(),
@@ -161,50 +163,6 @@ impl UnitRecords {
             ..Default::default()
         });
         true
-    }
-
-    /// DATA registration installs its closed physical gate in the same vacant-entry transaction.
-    pub(crate) fn pre_admitted_data(
-        &self,
-        unit: u64,
-        caller: &busbar_contract::services::Caller,
-        record: UnitRecord,
-        gate: Arc<crate::auth::native_data::NativeDataEffectGate>,
-    ) -> Option<Arc<UnitRecord>> {
-        if unit == 0 || record.principal.is_none() {
-            return None;
-        }
-        let mut units = self.lock(unit);
-        let std::collections::hash_map::Entry::Vacant(slot) = units.entry(unit) else {
-            return None;
-        };
-        let record = Arc::new(record);
-        slot.insert(UnitEntry {
-            invocation_owner: Some(caller.incarnation().clone()),
-            admission_phase: Some(Arc::new(
-                crate::plane_driver::request_admission::AdmissionPhase::pending(),
-            )),
-            record: Some(record.clone()),
-            data_gate: Some(gate),
-            ..Default::default()
-        });
-        Some(record)
-    }
-
-    pub(crate) fn invocation_data_gate(
-        &self,
-        unit: u64,
-        caller: &busbar_contract::services::Caller,
-        record: &Arc<UnitRecord>,
-    ) -> Option<Option<Arc<crate::auth::native_data::NativeDataEffectGate>>> {
-        let units = self.lock(unit);
-        let entry = units.get(&unit)?;
-        if entry.invocation_owner.as_ref()? != caller.incarnation()
-            || !Arc::ptr_eq(entry.record.as_ref()?, record)
-        {
-            return None;
-        }
-        Some(entry.data_gate.clone())
     }
 
     /// Consume one actual signed verification into a fresh unit, deriving its principal here.
@@ -255,6 +213,50 @@ impl UnitRecords {
             return None;
         }
         entry.signed_authority.clone()
+    }
+
+    /// DATA registration installs its closed physical gate in the same vacant-entry transaction.
+    pub(crate) fn pre_admitted_data(
+        &self,
+        unit: u64,
+        caller: &busbar_contract::services::Caller,
+        record: UnitRecord,
+        gate: Arc<crate::auth::native_data::NativeDataEffectGate>,
+    ) -> Option<Arc<UnitRecord>> {
+        if unit == 0 || record.principal.is_none() {
+            return None;
+        }
+        let mut units = self.lock(unit);
+        let std::collections::hash_map::Entry::Vacant(slot) = units.entry(unit) else {
+            return None;
+        };
+        let record = Arc::new(record);
+        slot.insert(UnitEntry {
+            invocation_owner: Some(caller.incarnation().clone()),
+            admission_phase: Some(Arc::new(
+                crate::plane_driver::request_admission::AdmissionPhase::pending(),
+            )),
+            record: Some(record.clone()),
+            data_gate: Some(gate),
+            ..Default::default()
+        });
+        Some(record)
+    }
+
+    pub(crate) fn invocation_data_gate(
+        &self,
+        unit: u64,
+        caller: &busbar_contract::services::Caller,
+        record: &Arc<UnitRecord>,
+    ) -> Option<Option<Arc<crate::auth::native_data::NativeDataEffectGate>>> {
+        let units = self.lock(unit);
+        let entry = units.get(&unit)?;
+        if entry.invocation_owner.as_ref()? != caller.incarnation()
+            || !Arc::ptr_eq(entry.record.as_ref()?, record)
+        {
+            return None;
+        }
+        Some(entry.data_gate.clone())
     }
 
     pub(crate) fn invocation_phase(

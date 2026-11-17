@@ -30,6 +30,7 @@ async fn fixture() -> (Arc<GovState>, PlaneMoney, UnitMoney) {
         GroupCfg {
             enabled: true,
             limits: vec![LimitCfg {
+                selected: None,
                 metric: LimitMetric::Concurrent,
                 amount: 8,
                 per: None,

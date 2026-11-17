@@ -56,7 +56,7 @@ impl AdminNode {
         }
         let key = UnitKey::new(request.unit);
 
-        let arrived_at = request.at;
+        let arrived_at = request.at();
         let mut walk = AdminWalk::new(request);
         walk.admission = admission;
         let ended = decide(&self.units, &mut walk).await;
@@ -225,7 +225,8 @@ pub(crate) fn rate_limited_answer() -> AdminAnswer {
 }
 
 pub(crate) fn scope_answer(request: &AdminRequest) -> AdminAnswer {
-    let needed = busbar_kernel::admin::scope::admin_required_scope(&request.method, &request.path);
+    let needed =
+        busbar_kernel::admin::scope::admin_required_scope(request.method(), request.path());
     error_answer_with_message(
         403,
         "forbidden",
@@ -317,8 +318,8 @@ pub(crate) fn explained_answer(request: &AdminRequest, outcome: Outcome) -> Opti
         Outcome::Refused(_, reason) | Outcome::Failed(_, reason)
             if class_of(reason) == RefusalClass::Unreadable
     );
-    let path = request.path.split('?').next().unwrap_or("");
-    (unreadable && request.method == "POST" && path == AMEND_RATE_HISTORY_PATH)
+    let path = request.path().split('?').next().unwrap_or("");
+    (unreadable && request.method() == "POST" && path == AMEND_RATE_HISTORY_PATH)
         .then(|| error_answer_with_message(400, "invalid_request", AMEND_RATE_HISTORY_SHAPE))
 }
 
@@ -375,18 +376,23 @@ async fn call(
     use tower::ServiceExt;
 
     let mut builder = axum::http::Request::builder()
-        .method(request.method.as_str())
-        .uri(request.path.as_str());
-    for (name, value) in &request.headers {
-        builder = builder.header(name.as_str(), value.as_str());
+        .method(request.method())
+        .uri(request.path());
+    for (name, value) in request.headers() {
+        builder = builder.header(name, value);
     }
-    builder = builder.extension(Arc::clone(replays));
+    builder = builder
+        .extension(Arc::clone(replays))
+        .extension(Arc::clone(request.snapshot()))
+        .extension(request.snapshot().request().clone());
     if let Some(admission) = admission {
         builder = builder.extension(admission);
     }
     if let Some(execution) = execution {
-        if let Some((lease, _)) = execution.native() {
-            if lease.invocation().request_id().get() != request.unit {
+        if let Some((lease, prepared)) = execution.native() {
+            if lease.invocation().request_id().get() != request.unit
+                || !Arc::ptr_eq(prepared.request(), request.snapshot())
+            {
                 return door_answer();
             }
             builder = builder
@@ -394,7 +400,7 @@ async fn call(
                 .extension(execution);
         }
     }
-    let Ok(http) = builder.body(axum::body::Body::from(request.body.clone())) else {
+    let Ok(http) = builder.body(axum::body::Body::from(request.snapshot().body_bytes())) else {
         return error_answer(400, "invalid_request");
     };
 
@@ -604,33 +610,58 @@ pub(crate) fn mount(
                     .get::<busbar_kernel::inbound::RequestAdmission>()
                     .cloned();
 
-                let Ok(bytes) = axum::body::to_bytes(body, request_body_max_bytes).await else {
-                    if let Some(admission) = &admission {
-                        admission.refuse(
-                            busbar_contract::caps::StepName::Decode,
-                            ReasonCode::DecodeFailed,
-                        );
-                    }
-                    return http_response(error_answer(400, "invalid_request"));
+                use busbar_kernel::inbound::request_snapshot::ChargedRequestSnapshot;
+                use busbar_kernel::limits::{input_body, process_admission::RequestLease};
+                // The transport owns the original admission and complete peer/TLS/head facts.
+                // Neither a new count permit nor a reconstructed empty transport view can replace it.
+                let Some(lease) = parts.extensions.get::<RequestLease>().cloned() else {
+                    return http_response(unavailable_answer());
                 };
-
+                let Some(snapshot) = parts
+                    .extensions
+                    .get::<Arc<ChargedRequestSnapshot>>()
+                    .cloned()
+                else {
+                    return http_response(unavailable_answer());
+                };
+                if !snapshot.request().same_request(&lease) {
+                    return http_response(unavailable_answer());
+                }
+                let bytes = match input_body::gather(body, &lease, request_body_max_bytes).await {
+                    Ok(bytes) => bytes,
+                    Err(input_body::GatherError::Capacity(_)) => {
+                        return http_response(unavailable_answer())
+                    }
+                    Err(error) => {
+                        if let Some(admission) = &admission {
+                            admission.refuse(
+                                busbar_contract::caps::StepName::Decode,
+                                ReasonCode::DecodeFailed,
+                            );
+                        }
+                        let _ = error;
+                        let status = 400;
+                        return http_response(error_answer(status, "invalid_request"));
+                    }
+                };
+                let target = parts
+                    .uri
+                    .path_and_query()
+                    .map_or(parts.uri.path(), |v| v.as_str());
+                if !busbar_kernel::auth::native_admin::snapshot_matches_http(
+                    &snapshot,
+                    parts.method.as_str(),
+                    target,
+                    &parts.headers,
+                    &bytes,
+                ) {
+                    return http_response(error_answer(400, "invalid_request"));
+                }
+                drop(bytes);
                 let unit = admission
                     .as_ref()
                     .map_or_else(|| node.next_unit(), |admission| admission.unit_key().get());
-                let request = AdminRequest {
-                    method: parts.method.as_str().to_string(),
-                    path: parts
-                        .uri
-                        .path_and_query()
-                        .map_or_else(|| parts.uri.path().to_string(), ToString::to_string),
-                    credential: presented_credential(&parts.headers),
-                    headers: header_pairs(&parts.headers),
-                    body: bytes.to_vec(),
-                    at: std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map_or(0, |d| d.as_secs()),
-                    unit,
-                };
+                let request = AdminRequest::from_snapshot(snapshot, unit);
 
                 let exit = ExitPath { unit };
                 // The operation keeps custody through client cancellation, including

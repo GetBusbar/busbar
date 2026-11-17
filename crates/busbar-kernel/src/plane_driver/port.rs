@@ -77,6 +77,7 @@ impl Effects for LineEffects<'_> {
 /// A served request's effects: the line carriers' emits, and the client's streamed items when the route layer
 /// gave a sink.
 struct ServeEffects<'a> {
+    data: Option<Arc<crate::auth::native_data::NativeDataPending>>,
     admission: Option<Arc<super::port_admission::Pending>>,
     lines: LineEffects<'a>,
     client: Option<Arc<dyn ClientSink>>,
@@ -85,6 +86,9 @@ struct ServeEffects<'a> {
 }
 
 impl Effects for ServeEffects<'_> {
+    fn data(&self) -> Option<&Arc<crate::auth::native_data::NativeDataPending>> {
+        self.data.as_ref()
+    }
     fn admission(&self) -> Option<&super::port_admission::Pending> {
         self.admission.as_deref()
     }
@@ -338,6 +342,55 @@ impl PortDriver {
     /// # Errors
     /// [`ServeError`]; a refusal is not an error, it is [`Served::Refused`].
     pub async fn serve(&self, input: ServeIn<'_>) -> Result<Served, ServeError> {
+        self.serve_inner(input, None).await
+    }
+
+    /// Consume the actual DATA/physical preparatory owner, retaining its charged original input.
+    pub async fn serve_admitted(
+        &self,
+        mut input: ServeIn<'_>,
+        data: Arc<crate::auth::native_data::NativeDataPending>,
+    ) -> Result<Served, ServeError> {
+        let snapshot = data.snapshot();
+        if !data.accepts(self, input.route)
+            || input.unit.is_some()
+            || !input.request.same_request(snapshot.request())
+            || input.http.method != snapshot.method()
+            || input.http.path != snapshot.path()
+            || input.http.query != snapshot.query()
+            || input.http.body.as_ref() != snapshot.body()
+            || input.now_s != snapshot.now_s()
+            || !input
+                .http
+                .headers
+                .iter()
+                .map(|(name, value)| (name.as_str(), value.as_slice()))
+                .eq(snapshot.headers())
+            || input
+                .invocation
+                .as_ref()
+                .is_some_and(|context| !context.same_unit(data.context()))
+            || input
+                .admission
+                .as_ref()
+                .is_some_and(|pending| !Arc::ptr_eq(pending, data.pending()))
+        {
+            return Err(ServeError::Invocation(
+                "DATA input does not match its original physical request",
+            ));
+        }
+        input.http.body = snapshot.body_bytes();
+        input.invocation = Some(data.context().clone());
+        input.admission = Some(Arc::clone(data.pending()));
+        input.principal = Some(Arc::from(data.identity().subject()));
+        self.serve_inner(input, Some(data)).await
+    }
+
+    async fn serve_inner(
+        &self,
+        input: ServeIn<'_>,
+        data: Option<Arc<crate::auth::native_data::NativeDataPending>>,
+    ) -> Result<Served, ServeError> {
         if input.admission.is_some() && (input.unit.is_some() || input.invocation.is_none()) {
             return Err(ServeError::Invocation(
                 "pending admission must own one unbilled invocation",
@@ -369,16 +422,22 @@ impl PortDriver {
             .find(|m| m.route == input.route)
             .cloned()
             .ok_or(ServeError::NoRoute)?;
-        let admission = admit(
-            route.route,
-            route.effective,
-            &input.creds,
-            &*self.tickets,
-            &*self.refusals,
-            input.audience,
-            input.now_s,
-        )
-        .await;
+        let admission = if let Some(data) = data {
+            ServingAdmission::Data(data)
+        } else {
+            ServingAdmission::Credentials(
+                admit(
+                    route.route,
+                    route.effective,
+                    &input.creds,
+                    &*self.tickets,
+                    &*self.refusals,
+                    input.audience,
+                    input.now_s,
+                )
+                .await,
+            )
+        };
         let hook_binder = self.hooks.clone();
         let arrived = input.now_s;
         let ServeIn {
@@ -650,6 +709,7 @@ impl Seated {
     /// A session's effects: emits to the line carriers; no client sink (the items are collected).
     fn effects(&self) -> ServeEffects<'_> {
         ServeEffects {
+            data: None,
             admission: None,
             lines: LineEffects {
                 carriers: self.services.line_carriers(),
@@ -932,6 +992,11 @@ pub enum ServeError {
 }
 
 /// One request, on a blocking thread: the admission's refusal, or the session.
+enum ServingAdmission {
+    Credentials(Result<Admitted, ClientRefusal>),
+    Data(Arc<crate::auth::native_data::NativeDataPending>),
+}
+
 #[allow(clippy::too_many_arguments)]
 fn serve_blocking(
     port: &dyn PlanePort,
@@ -940,7 +1005,7 @@ fn serve_blocking(
     carriers: &LineCarriers,
     owner: &Incarnation,
     route: &Mounted,
-    admission: Result<Admitted, ClientRefusal>,
+    admission: ServingAdmission,
     http: HttpIn,
     principal: Option<Arc<str>>,
     unit: Option<Unit>,
@@ -985,6 +1050,10 @@ fn serve_blocking(
                 unit,
             });
     let effects = ServeEffects {
+        data: match &admission {
+            ServingAdmission::Data(data) => Some(Arc::clone(data)),
+            ServingAdmission::Credentials(_) => None,
+        },
         admission: pending_admission,
         hooks,
         lines: LineEffects { carriers, owner },
@@ -1025,15 +1094,21 @@ fn serve_blocking(
         work: "",
         ticket_record,
     });
-    let admitted = match admission {
-        Ok(admitted) => admitted,
-        Err(refusal) => {
+    let req = match &admission {
+        ServingAdmission::Data(data) => build(
+            busbar_plugin_abi::plane::AUTH_PRINCIPAL,
+            data.identity().identity_records(),
+            &[],
+        ),
+        ServingAdmission::Credentials(Ok(admitted)) => {
+            build(admitted.auth, &admitted.identity, admitted.ticket_record())
+        }
+        ServingAdmission::Credentials(Err(refusal)) => {
             let lowest = route.effective & route.effective.wrapping_neg();
             let req = build(lowest, &[], &[]);
-            return Ok(Served::Refused(refuse(port, &req, &refusal, &effects)));
+            return Ok(Served::Refused(refuse(port, &req, refusal, &effects)));
         }
     };
-    let req = build(admitted.auth, &admitted.identity, admitted.ticket_record());
     if route.catalog {
         // A ROUTE_CATALOG route lists models: the plane renders core's list in its dialect, no session runs.
         let names: Vec<&str> = models.iter().map(String::as_str).collect();
