@@ -31,6 +31,8 @@
 //! - `c-transport`, `export-streams`, `no-licence`, `core-scan`: source checks over core (C-TRANSPORT
 //!   test 11, C-EXPORT-STREAMS, C-NO-LICENCE (a), the §15.8 core scan). `loc-report` prints per-file
 //!   production and test lines (a report, no gate).
+//! - `no-known-red`: no known-red, baseline or allow-failure list of failing tests (TST-8, busbar#280;
+//!   `known_red.rs`).
 //! - `rule-13`: a dlopened library leaves the loader only by IF §11.1's two exits (IF §15 rule 13, I13).
 //! - `oracle <sub> ...`: the data logic `bin/oracle` launches (`oracle.rs`): premise widening, the
 //!   shard split and its proofs, and the readers its ci-run and replay sections need (BLD-6).
@@ -68,8 +70,9 @@ mod oracle_selftest;
 mod spdx;
 
 /// Checks over core's own tree: with no argument every one runs.
-const CHECKS: [&str; 17] = [
+const CHECKS: [&str; 18] = [
     "no-getrandom",
+    "no-known-red",
     "spdx-headers",
     "no-serde-json",
     "crypto-graph",
@@ -105,6 +108,7 @@ mod core_scan;
 mod core_src;
 mod fleet;
 mod host_link;
+mod known_red;
 mod plugin_rules;
 mod rule13;
 mod supply;
@@ -149,6 +153,7 @@ fn main() -> ExitCode {
     for name in names {
         let outcome = match name {
             "no-getrandom" => no_getrandom(&root),
+            "no-known-red" => known_red::no_known_red(&root),
             "spdx-headers" => spdx::spdx_headers(&root),
             "no-serde-json" => no_serde_json::no_serde_json(&root),
             "crypto-graph" => crypto_graph(&root),
@@ -790,3 +795,6 @@ mod checks_tests;
 
 #[cfg(test)]
 mod spdx_tests;
+
+#[cfg(test)]
+mod known_red_tests;

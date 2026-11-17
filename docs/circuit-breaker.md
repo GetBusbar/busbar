@@ -251,7 +251,7 @@ For a single registration with no pool, unchanged: **failing fast instead of fai
 
 ### What a tripped target returns: MCP
 
-This shape is **live**: the MCP plane plugin's own test suite asserts it against a real dying peer.
+This is the 1.6.0 caller contract for a tripped tool server. The trip and the fast refusal are in force. The plane's rendering of the structured body below (the `-32030` code and its `data`, including `retry_after_ms`) is not yet asserted by a served test, so treat the body shape as the contract and check the plane's release notes for the version that renders it.
 
 A tripped tool server answers HTTP **`503`** with a **`Retry-After`** header populated from the cell's own remaining cooldown: an exact number rather than a guess, the same shape budget rejection already uses with `429`. The body is a **JSON-RPC error** with code **`-32030`**, in Busbar's implementation-defined band (JSON-RPC 2.0 §5.1 reserves `-32000`..`-32099` for exactly this), carrying structured `data`:
 
@@ -265,7 +265,7 @@ The breaker is consulted before any socket, immediately after the authorization 
 
 ### What a tripped target returns: A2A
 
-Also **live**, on all three bindings.
+The same status applies: this is the 1.6.0 caller contract on all three bindings. The trip and the fast refusal are in force; the plane's rendering of the `rejected` task with its task id is not yet asserted by a served test.
 
 A2A has what MCP lacks: task state is first class. A fresh submission to a tripped agent yields the task state **`rejected`**, not `failed`, returned **with a task id**, alongside `503` and the same exact `Retry-After`. A verb naming an *existing* task is different: the task lives at exactly one backend and a tripped backend must not end it, so the verb gets the refusal and the row keeps its last-known state. [A2A](/docs/a2a/#what-a-tripped-agent-returns) carries the full response.
 
