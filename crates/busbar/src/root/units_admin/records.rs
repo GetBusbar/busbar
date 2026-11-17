@@ -243,6 +243,8 @@ pub(crate) enum Priceable {
     Selected(Box<signed::BillingFacts>),
 }
 
+/// A legacy record's pricing inputs: its rate-card version, lane, fee count and usage; none secret.
+#[derive(Debug, Clone)]
 pub(crate) struct LegacyPriceable {
     key: [u8; 20],
     lane: String,

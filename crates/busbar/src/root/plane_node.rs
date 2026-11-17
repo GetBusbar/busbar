@@ -1824,6 +1824,7 @@ impl Drop for SessionSlot<'_> {
             if let Some(post) = self.occupied.post {
                 let evidence = self
                     .money_report()
+                    .and_then(Reported::legacy)
                     .map(|(_, fee_units, _, _)| Evidence {
                         fee_units,
                         ..Evidence::default()
