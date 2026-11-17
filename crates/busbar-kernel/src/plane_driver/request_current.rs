@@ -41,42 +41,61 @@ impl RequestRoutes {
         {
             return false;
         }
-        let selector = match request.domain() {
-            RequestDomain::NamedPool(name)
-            | RequestDomain::DirectModel(name)
-            | RequestDomain::Registration(name) => name,
-            RequestDomain::Local => return false,
-        };
-        let Ok((domain, initial)) = self.resolve(Some(selector)) else {
+        let Some(member_name) = member
+            .strip_prefix(self.instance.as_str())
+            .and_then(|suffix| suffix.strip_prefix(PLANE_LANE_SEP))
+        else {
             return false;
         };
-        if &domain != request.domain() {
-            return false;
-        }
-        let grants = self.member_grants(current_key);
-        if !grants
-            .get(selected_pool)
-            .is_some_and(|members| members.iter().any(|m| m == member))
-        {
-            return false;
-        }
-        if matches!(domain, RequestDomain::Registration(_)) {
-            return selected_pool == initial;
+        let allowed = |name: &str| {
+            self.scope_kind
+                .as_ref()
+                .is_none_or(|kind| current_key.scope_allowed(kind, name))
+        };
+        if let RequestDomain::Registration(name) = request.domain() {
+            return self.registration.as_ref().is_some_and(|registration| {
+                &registration.pool == name
+                    && selected_pool == registration.pool
+                    && allowed(name)
+                    && registration
+                        .members
+                        .iter()
+                        .any(|m| m.upstream == member_name)
+            });
         }
         let Some(catalog) = &self.catalog else {
             return false;
         };
-        let mut at = initial.as_str();
+        let selector = match request.domain() {
+            RequestDomain::NamedPool(name) | RequestDomain::DirectModel(name) => name,
+            _ => return false,
+        };
+        let Some(initial) = catalog.select(selector) else {
+            return false;
+        };
+        let Some(pool) = catalog.pools().get(initial) else {
+            return false;
+        };
+        if !matches!((request.domain(), &pool.kind),
+            (RequestDomain::NamedPool(a), RouteKind::NamedPool(b)) |
+            (RequestDomain::DirectModel(a), RouteKind::DirectModel(b)) if a == b)
+        {
+            return false;
+        }
+        let mut at = initial;
         // The frozen catalog bounds traversal; a cycle or a missing intermediary refuses.
         for _ in 0..catalog.pools().len() {
-            if !grants.contains_key(at) {
-                return false;
-            }
             let Some(pool) = catalog.pools().get(at) else {
                 return false;
             };
+            let name = match &pool.kind {
+                RouteKind::NamedPool(name) | RouteKind::DirectModel(name) => name,
+            };
+            if !allowed(name) {
+                return false;
+            }
             if at == selected_pool {
-                return catalog.target(at, member).is_some();
+                return pool.config.members.iter().any(|m| m.name() == member_name);
             }
             let Some(OnExhaustedCfg::FallbackPool(next)) = &pool.config.on_exhausted else {
                 return false;
@@ -87,7 +106,7 @@ impl RequestRoutes {
             if !catalog
                 .pools()
                 .get(next)
-                .is_some_and(|p| matches!(p.kind, RouteKind::NamedPool(_)))
+                .is_some_and(|p| matches!(&p.kind, RouteKind::NamedPool(_)))
             {
                 return false;
             }
