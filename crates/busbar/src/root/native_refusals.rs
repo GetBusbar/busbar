@@ -7,9 +7,65 @@ use busbar_contract::caps::ReasonCode;
 use busbar_kernel::refusal::ClientRefusal;
 
 pub(crate) fn client(reason: ReasonCode, status: u16, text: &str) -> ClientRefusal {
-    let _ = reason;
+    use busbar_plugin_abi::fail::failed::{F_INTERNAL, F_TIMEOUT, F_UNAVAILABLE};
+    use busbar_plugin_abi::fail::refused::{
+        R_AUTH_REQUIRED, R_BAD_CREDENTIAL, R_BUDGET, R_INVALID, R_NOT_TRUSTED, R_NO_ROUTE,
+        R_POLICY, R_RATE_LIMITED, R_REPLAYED,
+    };
+    let code = match reason {
+        ReasonCode::OverBudget | ReasonCode::OverdraftCeiling => R_BUDGET,
+        ReasonCode::RateLimited | ReasonCode::InFlightCap | ReasonCode::InFlight => R_RATE_LIMITED,
+        ReasonCode::SessionUnbound => R_AUTH_REQUIRED,
+        ReasonCode::Unauthenticated
+        | ReasonCode::SchemeNotDeclared
+        | ReasonCode::ChallengeExhausted
+        | ReasonCode::Revoked => R_BAD_CREDENTIAL,
+        ReasonCode::ScopeDenied
+        | ReasonCode::PoolNotPermitted
+        | ReasonCode::HookVeto
+        | ReasonCode::GroupFrozen => R_POLICY,
+        ReasonCode::Untrusted => R_NOT_TRUSTED,
+        ReasonCode::Replayed => R_REPLAYED,
+        ReasonCode::NoDestination
+        | ReasonCode::DestinationBudgetExhausted
+        | ReasonCode::BreakerOpen
+        | ReasonCode::DestinationUnreachable
+        | ReasonCode::CredentialUnavailable => R_NO_ROUTE,
+        ReasonCode::Stalled | ReasonCode::DeadlineExceeded => F_TIMEOUT,
+        ReasonCode::MeterDisputed
+        | ReasonCode::HandoffMismatch
+        | ReasonCode::PlanePanic
+        | ReasonCode::TaskLost
+        | ReasonCode::SecretPlaceholder
+        | ReasonCode::Internal => F_INTERNAL,
+        ReasonCode::SessionBudget
+        | ReasonCode::SpillBudget
+        | ReasonCode::ScratchExhausted
+        | ReasonCode::OpenSlotBusy
+        | ReasonCode::StaleSlice
+        | ReasonCode::DurabilityUnavailable
+        | ReasonCode::TierMismatch
+        | ReasonCode::Drain
+        | ReasonCode::ClientGone => F_UNAVAILABLE,
+        ReasonCode::CursorBudget
+        | ReasonCode::CredentialBudget
+        | ReasonCode::BodyTooLarge
+        | ReasonCode::DecodeFailed
+        | ReasonCode::NoRate
+        | ReasonCode::Unpriced
+        | ReasonCode::Superseded
+        | ReasonCode::MethodNotAllowed => R_INVALID,
+    };
+    // The actual core request status/text remains authoritative for request-specific decisions
+    // (413, NoRate400, upstream availability503). Monetary and replay semantics have native
+    // generic defaults; the selected plane alone applies its caller-dialect override.
+    let status = match code {
+        R_BUDGET => 402,
+        R_REPLAYED => 409,
+        _ => status,
+    };
     ClientRefusal {
-        code: busbar_plugin_abi::fail::refused::R_INVALID,
+        code,
         status,
         text: text.to_owned().into(),
     }
@@ -36,7 +92,11 @@ mod tests {
             assert_eq!((request.code, request.status), (R_INVALID, status));
             assert_eq!(request.text, "core request explanation");
         }
-        let destination = client(ReasonCode::DestinationBudgetExhausted, 503, "destination spent");
+        let destination = client(
+            ReasonCode::DestinationBudgetExhausted,
+            503,
+            "destination spent",
+        );
         assert_eq!((destination.code, destination.status), (R_NO_ROUTE, 503));
     }
 }
