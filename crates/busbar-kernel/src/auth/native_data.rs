@@ -5,7 +5,7 @@
 //! real verification. Registration and monetary admission cannot reconstruct this proof.
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 
 use busbar_contract::records::VirtualKey;
@@ -16,8 +16,8 @@ use busbar_ports::CallCx;
 use super::native_chain::{NativeChain, NativePreparedAnswer, PreparedNativeIdentity};
 use crate::host_services::{InvocationContext, ServingGeneration};
 use crate::inbound::native::{
-    AuthorizedPhysicalData, CompletingPhysicalRequest, PhysicalExecutionOwner, RequestBinding,
-    RouteBinding, RouteTarget,
+    AuthorizedPhysicalData, DataPreparation, DataPreparationDenied, DataPreparationSuccess,
+    PhysicalExecutionOwner, RequestBinding, RouteBinding, RouteTarget,
 };
 use crate::plane_driver::port::PortSeat;
 use crate::plane_driver::port_admission::{AdmittedUnit, Pending};
@@ -39,6 +39,7 @@ pub enum DataRefused {
     Policy,
     Replay,
     Unit,
+    Unavailable,
 }
 
 /// Actual immutable candidate owners. Root assembles these; none is a plugin proof.
@@ -110,15 +111,17 @@ impl NativeDataRoute {
         }))
     }
 
-    /// Takes the sole pending physical owner. Calling code cannot duplicate verification
-    /// by retaining a read-only RequestBinding or reuse an admin PreparedIdentity.
+    /// Consumes the original physical preparation latch before verification.
+    /// Root retains the completion owner for the exact authorization or denied result.
     pub async fn prepare(
         self: &Arc<Self>,
-        physical: CompletingPhysicalRequest,
+        preparation: DataPreparation,
         selected: SelectedResources,
         cx: CallCx,
-    ) -> Result<PendingData, DataRefused> {
-        let binding = physical.binding();
+    ) -> Result<PendingData, DataPreparationFailed> {
+        let binding = preparation.binding().clone();
+        let selected = Arc::new(selected);
+        let result = async {
         binding.check_live().map_err(|_| DataRefused::Cancelled)?;
         if !Arc::ptr_eq(binding.route(), &self.binding)
             || cx.request_id != binding.invocation().request_id().get()
@@ -162,27 +165,35 @@ impl NativeDataRoute {
             }
             Ok(())
         }).map_err(|_| DataRefused::Capacity)??;
-        let prepared = tokio::select! {
-            biased;
-            () = binding.cancelled() => return Err(DataRefused::Cancelled),
-            () = tokio::time::sleep_until(cx.deadline.into()) => return Err(DataRefused::Cancelled),
-            answer = self.owners.chain.prepare_snapshot(cx, snapshot) => answer.map_err(|_| DataRefused::Credential)?,
-        };
+        let prepared = self.owners.chain.prepare_snapshot(cx, snapshot).await.map_err(|_| DataRefused::Credential)?;
+        binding.check_live().map_err(|_| DataRefused::Cancelled)?;
         let NativePreparedAnswer::Identity(prepared) = prepared else {
             return Err(DataRefused::Credential);
         };
-        Ok(PendingData {
-            physical,
-            route: self.clone(),
-            selected: Arc::new(selected),
-            prepared,
-            deadline: cx.deadline,
-        })
+            Ok(prepared)
+        }.await;
+        match result {
+            Ok(prepared) => Ok(PendingData {
+                preparation,
+                route: self.clone(),
+                selected,
+                prepared,
+                deadline: cx.deadline,
+            }),
+            Err(reason) => Err(preparation_failed(
+                preparation,
+                self.clone(),
+                selected,
+                None,
+                reason,
+                None,
+            )),
+        }
     }
 }
 
 pub struct PendingData {
-    physical: CompletingPhysicalRequest,
+    preparation: DataPreparation,
     route: Arc<NativeDataRoute>,
     selected: Arc<SelectedResources>,
     prepared: Arc<PreparedNativeIdentity>,
@@ -191,79 +202,195 @@ pub struct PendingData {
 impl PendingData {
     /// Consumes the completion right before awaiting replay. Publication after this lease
     /// is not cancellation; reset/deadline and an uncertain replay still grant no effects.
-    pub async fn complete(self) -> Result<AuthorizedPhysicalData, DataRefused> {
-        let binding = self.physical.binding().clone();
-        binding.check_live().map_err(|_| DataRefused::Cancelled)?;
-        if Instant::now() >= self.deadline {
-            return Err(DataRefused::Cancelled);
-        }
-        let mut key = None;
-        let lease = binding
-            .handle()
-            .admit_current(binding.app(), binding.invocation(), |app| {
-                let now = crate::store::now();
-                self.prepared.fresh(now).map_err(|_| DataRefused::Policy)?;
-                if !self.prepared.belongs_to(&self.route.owners.chain)
-                    || !self
-                        .selected
-                        .request()
-                        .matches_snapshot(self.prepared.snapshot())
-                    || app.config_generation.load(Ordering::Acquire) != self.selected.epoch()
-                {
-                    return Err(DataRefused::Binding);
-                }
-                let identity = self.prepared.identity();
-                let (_, gov) = super::resolve_identity_from_bindings(
-                    &app.role_bindings,
-                    super::ChainVerdict::Identified {
-                        module: self.prepared.provider().to_owned(),
-                        principal: super::Principal {
-                            id: identity.subject().to_owned(),
-                            name: None,
-                            roles: identity.groups().map(str::to_owned).collect(),
-                            ttl_secs: identity.cache_s().map(u64::from),
+    pub async fn complete(self) -> Result<DataAuthorization, DataPreparationFailed> {
+        let binding = self.preparation.binding().clone();
+        let mut replay_error = None;
+        let result = async {
+            binding.check_live().map_err(|_| DataRefused::Cancelled)?;
+            if Instant::now() >= self.deadline {
+                return Err(DataRefused::Cancelled);
+            }
+            let mut key = None;
+            let lease = binding
+                .handle()
+                .admit_current(binding.app(), binding.invocation(), |app| {
+                    let now = crate::store::now();
+                    self.prepared.fresh(now).map_err(|_| DataRefused::Policy)?;
+                    if !self.prepared.belongs_to(&self.route.owners.chain)
+                        || !self
+                            .selected
+                            .request()
+                            .matches_snapshot(self.prepared.snapshot())
+                        || app.config_generation.load(Ordering::Acquire) != self.selected.epoch()
+                    {
+                        return Err(DataRefused::Binding);
+                    }
+                    let identity = self.prepared.identity();
+                    let (_, gov) = super::resolve_identity_from_bindings(
+                        &app.role_bindings,
+                        super::ChainVerdict::Identified {
+                            module: self.prepared.provider().to_owned(),
+                            principal: super::Principal {
+                                id: identity.subject().to_owned(),
+                                name: None,
+                                roles: identity.groups().map(str::to_owned).collect(),
+                                ttl_secs: identity.cache_s().map(u64::from),
+                            },
+                            resolved: None,
                         },
-                        resolved: None,
-                    },
-                )
+                    )
+                    .map_err(|_| DataRefused::Policy)?;
+                    let resolved = gov.key.ok_or(DataRefused::Policy)?;
+                    if !resolved.enabled
+                        || resolved.deleted_at.is_some()
+                        || resolved.expires_at.is_some_and(|until| now >= until)
+                        || !self.selected.scope_allowed(&resolved)
+                    {
+                        return Err(DataRefused::Policy);
+                    }
+                    key = Some(resolved);
+                    Ok(())
+                })
                 .map_err(|_| DataRefused::Policy)?;
-                let resolved = gov.key.ok_or(DataRefused::Policy)?;
-                if !resolved.enabled
-                    || resolved.deleted_at.is_some()
-                    || resolved.expires_at.is_some_and(|until| now >= until)
-                    || !self.selected.scope_allowed(&resolved)
-                {
-                    return Err(DataRefused::Policy);
+            match self.prepared.claim_classified().await {
+                super::native_admin::NativeReplayClaim::Claimed => {}
+                super::native_admin::NativeReplayClaim::Duplicate => {
+                    return Err(DataRefused::Replay)
                 }
-                key = Some(resolved);
-                Ok(())
-            })
-            .map_err(|_| DataRefused::Policy)?;
-        let claimed = tokio::select! {
-            biased;
-            () = binding.cancelled() => return Err(DataRefused::Cancelled),
-            () = tokio::time::sleep_until(self.deadline.into()) => return Err(DataRefused::Cancelled),
-            result = self.prepared.claim() => result,
+                super::native_admin::NativeReplayClaim::Unknown(error) => {
+                    replay_error = Some(error);
+                    return Err(DataRefused::Unavailable);
+                }
+                super::native_admin::NativeReplayClaim::Inconsistent => {
+                    return Err(DataRefused::Binding)
+                }
+            }
+            binding.check_live().map_err(|_| DataRefused::Cancelled)?;
+            if Instant::now() >= self.deadline {
+                return Err(DataRefused::Cancelled);
+            }
+            Ok((lease, key.ok_or(DataRefused::Policy)?))
+        }
+        .await;
+        let (lease, key) = match result {
+            Ok(parts) => parts,
+            Err(reason) => {
+                return Err(preparation_failed(
+                    self.preparation,
+                    self.route,
+                    self.selected,
+                    Some(self.prepared),
+                    reason,
+                    replay_error,
+                ))
+            }
         };
-        if !claimed {
-            return Err(DataRefused::Replay);
-        }
-        binding.check_live().map_err(|_| DataRefused::Cancelled)?;
-        if Instant::now() >= self.deadline {
-            return Err(DataRefused::Cancelled);
-        }
-        let authorization = DataAuthorization {
+        let preparation = self.preparation.authorize().map_err(|_| {
+            DataPreparationFailed::Unknown(UnknownDataPreparation {
+                _preparation: None,
+                _prepared: Some(self.prepared.clone()),
+                reason: DataRefused::Cancelled,
+                replay_error: None,
+            })
+        })?;
+        Ok(DataAuthorization {
+            preparation,
             binding,
             route: self.route,
             selected: self.selected,
             prepared: self.prepared,
             lease,
-            key: key.ok_or(DataRefused::Policy)?,
+            key,
             deadline: self.deadline,
-        };
-        self.physical
-            .complete(authorization)
-            .map_err(|_| DataRefused::Cancelled)
+        })
+    }
+}
+
+pub enum DataPreparationFailed {
+    Denied(PreparedDataDenial),
+    Unknown(UnknownDataPreparation),
+}
+impl std::fmt::Debug for DataPreparationFailed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DataPreparationFailed")
+            .field("reason", &self.reason())
+            .finish()
+    }
+}
+impl DataPreparationFailed {
+    pub fn reason(&self) -> DataRefused {
+        match self {
+            Self::Denied(denied) => denied.decision,
+            Self::Unknown(unknown) => unknown.reason,
+        }
+    }
+}
+
+pub struct PreparedDataDenial {
+    preparation: DataPreparationDenied,
+    _route: Arc<NativeDataRoute>,
+    _selected: Arc<SelectedResources>,
+    _prepared: Option<Arc<PreparedNativeIdentity>>,
+    decision: DataRefused,
+}
+impl PreparedDataDenial {
+    pub(crate) fn preparation(&self) -> &DataPreparationDenied {
+        &self.preparation
+    }
+    pub fn binding(&self) -> &Arc<RequestBinding> {
+        self.preparation.binding()
+    }
+    pub fn decision(&self) -> DataRefused {
+        self.decision
+    }
+}
+
+pub struct UnknownDataPreparation {
+    _preparation: Option<DataPreparation>,
+    _prepared: Option<Arc<PreparedNativeIdentity>>,
+    reason: DataRefused,
+    replay_error: Option<crate::plugin_records::RecordsDenied>,
+}
+impl UnknownDataPreparation {
+    pub fn replay_error(&self) -> Option<&crate::plugin_records::RecordsDenied> {
+        self.replay_error.as_ref()
+    }
+}
+
+fn preparation_failed(
+    preparation: DataPreparation,
+    route: Arc<NativeDataRoute>,
+    selected: Arc<SelectedResources>,
+    prepared: Option<Arc<PreparedNativeIdentity>>,
+    reason: DataRefused,
+    replay_error: Option<crate::plugin_records::RecordsDenied>,
+) -> DataPreparationFailed {
+    if matches!(
+        reason,
+        DataRefused::Credential | DataRefused::Policy | DataRefused::Replay
+    ) {
+        match preparation.deny() {
+            Ok(preparation) => DataPreparationFailed::Denied(PreparedDataDenial {
+                preparation,
+                _route: route,
+                _selected: selected,
+                _prepared: prepared,
+                decision: reason,
+            }),
+            Err(_) => DataPreparationFailed::Unknown(UnknownDataPreparation {
+                _preparation: None,
+                _prepared: prepared,
+                reason: DataRefused::Cancelled,
+                replay_error,
+            }),
+        }
+    } else {
+        DataPreparationFailed::Unknown(UnknownDataPreparation {
+            _preparation: Some(preparation),
+            _prepared: prepared,
+            reason,
+            replay_error,
+        })
     }
 }
 
@@ -277,6 +404,7 @@ impl PendingData {
 /// }
 /// ```
 pub struct DataAuthorization {
+    preparation: DataPreparationSuccess,
     binding: Arc<RequestBinding>,
     route: Arc<NativeDataRoute>,
     selected: Arc<SelectedResources>,
@@ -286,6 +414,9 @@ pub struct DataAuthorization {
     deadline: Instant,
 }
 impl DataAuthorization {
+    pub(crate) fn preparation(&self) -> &DataPreparationSuccess {
+        &self.preparation
+    }
     pub fn binding(&self) -> &Arc<RequestBinding> {
         &self.binding
     }
@@ -329,6 +460,7 @@ pub struct NativeDataAllocation {
     registration: Arc<Registration>,
     gate: Arc<NativeDataEffectGate>,
     allocation: RequestAllocation,
+    audit: Arc<crate::teller::native_data_audit::NativeAuditState>,
 }
 impl NativeDataAllocation {
     pub fn register(physical: AuthorizedPhysicalData) -> Result<Self, DataRefused> {
@@ -376,13 +508,28 @@ impl NativeDataAllocation {
             authorization.prepared.snapshot().now_s(),
         )
         .map_err(|_| DataRefused::Unit)?;
+        let audit = crate::teller::native_data_audit::NativeAuditState::new(
+            registration.context.clone(),
+            authorization.key.clone(),
+            authorization.binding.clone(),
+        );
         Ok(Self {
+            audit,
             authorization,
             physical,
             registration,
             gate,
             allocation,
         })
+    }
+
+    /// Transfer the original allocation's one-shot audit registration to Node custody.
+    pub fn take_audit_registration(
+        &mut self,
+    ) -> Result<crate::teller::native_data_audit::NativeAuditRegistration, DataRefused> {
+        self.audit
+            .take_registration()
+            .map_err(|_| DataRefused::Unit)
     }
 
     pub fn context(&self) -> &InvocationContext {
@@ -525,6 +672,7 @@ impl NativeDataAllocation {
             registration,
             gate,
             allocation,
+            audit,
         } = self;
         let execution = Arc::new(OnceLock::new());
         let retained = execution.clone();
@@ -535,6 +683,16 @@ impl NativeDataAllocation {
         let prepared = authorization.prepared.clone();
         let binding = authorization.binding.clone();
         let deadline = authorization.deadline;
+        let custody = Arc::new(Mutex::new(DataCommitCustody {
+            phase: DataCommitPhase::Awaiting,
+            bundle: Some(DataCommitBundle {
+                authorization,
+                physical,
+                registration,
+            }),
+            refusal: None,
+        }));
+        let commit_custody = custody.clone();
         let pending = build(
             allocation,
             routes,
@@ -544,37 +702,67 @@ impl NativeDataAllocation {
                     code: busbar_plugin_abi::fail::refused::R_POLICY,
                     text: "native data admission refused".into(),
                 };
-                if authorization.binding.check_live().is_err()
-                    || !registration.context.is_live()
-                    || Instant::now() >= authorization.deadline
                 {
-                    return Err(refuse());
+                    let mut custody = commit_custody.lock().map_err(|_| refuse())?;
+                    let bundle = custody.bundle.as_ref().ok_or_else(refuse)?;
+                    if custody.phase != DataCommitPhase::Awaiting
+                        || !audit.node_ready()
+                        || bundle.authorization.binding.check_live().is_err()
+                        || !bundle.registration.context.is_live()
+                        || Instant::now() >= bundle.authorization.deadline
+                    {
+                        return Err(refuse());
+                    }
+                    custody.phase = DataCommitPhase::Committing;
                 }
-                let admitted = commit(receipt, declaration)?;
-                // effects-dependent is_live is intentionally NOT called until DATA starts.
-                if !admitted.request.context().same_unit(&registration.context)
-                    || !registration.context.is_live()
-                    || Instant::now() >= authorization.deadline
-                    || admitted.unit.ctx.key != admitted.request.unit()
-                    || !Arc::ptr_eq(admitted.request.key(), &authorization.key)
-                {
-                    return Err(refuse());
-                }
+                // The original physical owner remains installed while the callback runs.
+                // No custody lock crosses monetary work or a plugin/Store call.
+                let admitted = match commit(receipt, declaration) {
+                    Ok(admitted) => admitted,
+                    Err(decision) => {
+                        let mut custody = commit_custody.lock().map_err(|_| refuse())?;
+                        custody.phase = DataCommitPhase::ExpectedPreMoneyRefusal;
+                        custody.refusal = Some(decision.clone());
+                        return Err(decision);
+                    }
+                };
+                let bundle = {
+                    let mut custody = commit_custody.lock().map_err(|_| refuse())?;
+                    custody.phase = DataCommitPhase::MoneyAccepted;
+                    let bundle = custody.bundle.as_ref().ok_or_else(refuse)?;
+                    if !admitted
+                        .request
+                        .context()
+                        .same_unit(&bundle.registration.context)
+                        || !bundle.registration.context.is_live()
+                        || Instant::now() >= bundle.authorization.deadline
+                        || admitted.unit.ctx.key != admitted.request.unit()
+                        || !Arc::ptr_eq(admitted.request.key(), &bundle.authorization.key)
+                    {
+                        return Err(refuse());
+                    }
+                    audit.bind_money(&admitted).map_err(|_| refuse())?;
+                    let bundle = custody.bundle.take().ok_or_else(refuse)?;
+                    custody.phase = DataCommitPhase::ExecutingTransferred;
+                    bundle
+                };
                 let proof = DataExecutionAdmission {
-                    authorization,
-                    physical,
-                    registration,
+                    authorization: bundle.authorization,
+                    physical: bundle.physical,
+                    registration: bundle.registration,
                     money: admitted.request.clone(),
                 };
-                gate.ready.store(true, Ordering::Release);
                 if proof.physical.start_execution(&proof).is_err() {
                     return Err(refuse());
                 }
+                audit.executing().map_err(|_| refuse())?;
                 retained.set(proof).map_err(|_| refuse())?;
+                gate.ready.store(true, Ordering::Release);
                 Ok(admitted)
             }),
         );
         NativeDataPending {
+            custody,
             pending: Arc::new(configure(pending)),
             execution,
             context,
@@ -584,6 +772,38 @@ impl NativeDataAllocation {
             binding,
             deadline,
         }
+    }
+}
+
+struct DataCommitBundle {
+    authorization: DataAuthorization,
+    physical: PhysicalExecutionOwner,
+    registration: Arc<Registration>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DataCommitPhase {
+    Awaiting,
+    Committing,
+    MoneyAccepted,
+    ExecutingTransferred,
+    ExpectedPreMoneyRefusal,
+    RefusalTransferred,
+}
+
+struct DataCommitCustody {
+    phase: DataCommitPhase,
+    bundle: Option<DataCommitBundle>,
+    refusal: Option<ClientRefusal>,
+}
+
+pub(crate) struct DataRefusalCustody {
+    authorization: DataAuthorization,
+    _registration: Arc<Registration>,
+}
+impl DataRefusalCustody {
+    pub(crate) fn matches(&self, binding: &Arc<RequestBinding>) -> bool {
+        Arc::ptr_eq(&self.authorization.binding, binding)
     }
 }
 
@@ -599,8 +819,32 @@ pub struct NativeDataPending {
     pending: Arc<Pending>,
     execution: Arc<OnceLock<DataExecutionAdmission>>,
     context: InvocationContext,
+    custody: Arc<Mutex<DataCommitCustody>>,
 }
 impl NativeDataPending {
+    pub(crate) fn take_refusal(
+        &self,
+        decision: &ClientRefusal,
+    ) -> Result<(PhysicalExecutionOwner, DataRefusalCustody), DataRefused> {
+        let mut custody = self.custody.lock().map_err(|_| DataRefused::Unit)?;
+        if custody.phase != DataCommitPhase::ExpectedPreMoneyRefusal
+            || custody.refusal.as_ref() != Some(decision)
+            || self.execution.get().is_some()
+            || self.pending.admitted().is_some()
+        {
+            return Err(DataRefused::Unit);
+        }
+        let bundle = custody.bundle.take().ok_or(DataRefused::Unit)?;
+        custody.phase = DataCommitPhase::RefusalTransferred;
+        Ok((
+            bundle.physical,
+            DataRefusalCustody {
+                authorization: bundle.authorization,
+                _registration: bundle.registration,
+            },
+        ))
+    }
+
     pub fn is_live(&self) -> bool {
         self.context.is_live()
             && Instant::now() < self.deadline
