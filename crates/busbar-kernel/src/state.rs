@@ -1023,6 +1023,21 @@ pub fn seed_request_id_counter() -> u64 {
     request_id::seed()
 }
 
+/// The host's existing request identity, shared by selection and final admission. This is
+/// correlation only: authority comes from a checked selection and the publication gate.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct InvocationId(std::num::NonZeroU64);
+
+impl InvocationId {
+    pub fn from_request_id(request_id: std::num::NonZeroU64) -> Self {
+        Self(request_id)
+    }
+
+    pub fn request_id(self) -> std::num::NonZeroU64 {
+        self.0
+    }
+}
+
 pub struct AppHandle {
     current: arc_swap::ArcSwap<App>,
     publication: std::sync::Mutex<()>,
