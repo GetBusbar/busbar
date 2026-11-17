@@ -264,6 +264,10 @@ pub struct Connection {
     presented: Arc<std::sync::atomic::AtomicBool>,
     /// Connection security's own error, when it is what failed the connection.
     security_error: Option<String>,
+    /// The connection failed on its transport (a socket read or write error, or the peer's EOF) while
+    /// its TLS handshake was under way, not by a TLS refusal: the stage is `CAUSE_CONNECT`, not
+    /// `CAUSE_SECURITY` (#245, DES-245 r3 section 3.2). Unset, a handshake failure is a refusal.
+    handshake_transport: bool,
     /// Why the connection failed, once it has (its stage and the underlying error's own text).
     cause: Option<ConnCause>,
     /// THE PROXY TUNNEL a dial through a proxy asks for before anything else rides the socket
@@ -1188,6 +1192,7 @@ impl Connection {
             pinned,
             presented,
             security_error: None,
+            handshake_transport: false,
             cause: None,
             opening_owed: false,
             unfed: VecDeque::new(),
@@ -1259,6 +1264,7 @@ impl Connection {
             seals: crate::seal::Seals::default(),
             opening_sensitive: SensitiveFields::default(),
             security_error: None,
+            handshake_transport: false,
             pinned: None,
             presented: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             door: None,
@@ -1402,6 +1408,7 @@ impl Connection {
             pinned: None,
             presented: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             security_error: None,
+            handshake_transport: false,
             cause: None,
             opening_owed: false,
             unfed: VecDeque::new(),
@@ -1810,6 +1817,15 @@ impl Connection {
         self.tls.as_ref().is_some_and(|t| t.is_handshaking())
     }
 
+    /// The carrier failed (a socket read or write error): while a TLS handshake is under way, from
+    /// the first byte or an in-Open upgrade, that is the handshake's transport failing, so the cause
+    /// stage is `CAUSE_CONNECT` and not `CAUSE_SECURITY` (DES-245 r3 section 3.2).
+    fn transport_failed(&mut self) {
+        if matches!(self.phase, Phase::Handshaking) || self.handshaking() {
+            self.handshake_transport = true;
+        }
+    }
+
     /// Whether connection security is set and its handshake has completed: what
     pub(crate) fn secured(&self) -> bool {
         self.tls.as_ref().is_some_and(|t| !t.is_handshaking())
@@ -1850,13 +1866,20 @@ impl Connection {
         // The framer's own error is let go either way; the outbound emit's, when held, wins.
         let framer_error = self.framer_error.take();
         let framer = emitted.or(framer_error);
+        // A handshake (from the first byte, or an in-Open upgrade) that failed on its transport is a
+        // connect failure with nothing sent; one the TLS stack refused is security (DES-245 r3
+        // section 3.2). No text is inspected; an unmarked site keeps security.
+        let handshake = if self.handshake_transport {
+            CAUSE_CONNECT
+        } else {
+            CAUSE_SECURITY
+        };
         let stage = match (&f, &self.phase) {
             (Failure::Timeout, _) => CAUSE_DEADLINE,
             (_, Phase::Open) if framer.is_some() => CAUSE_FRAMER,
             (_, Phase::Connecting) => CAUSE_CONNECT,
-            (_, Phase::Handshaking) => CAUSE_SECURITY,
-
-            _ if self.handshaking() => CAUSE_SECURITY,
+            (_, Phase::Handshaking) => handshake,
+            _ if self.handshaking() => handshake,
             _ => CAUSE_EXCHANGE,
         };
         let text = match &f {
@@ -2201,6 +2224,7 @@ impl Connection {
                     Poll::Ready(Ok(())) => self.unflushed = false,
                     Poll::Ready(Err(e)) => {
                         self.carrier_lost = true;
+                        self.transport_failed();
                         return Err(failed(e));
                     }
                 }
@@ -2241,6 +2265,7 @@ impl Connection {
                 }
                 Poll::Ready(Err(e)) => {
                     self.carrier_lost = true;
+                    self.transport_failed();
                     return Err(failed(e));
                 }
                 Poll::Pending => return Ok(moved),
@@ -2290,6 +2315,7 @@ impl Connection {
                 if self.door.is_none() && self.tls.is_none() {
                     self.framer_error = Some(crate::cold::framing::display(&e));
                 }
+                self.transport_failed();
                 Err(failed(e))
             }
         }
@@ -2584,6 +2610,11 @@ impl Connection {
         }
         if end {
             tls.read_tls(&mut io::empty()).map_err(failed)?;
+            // The peer's EOF while the handshake (from the first byte, or an upgrade) is under way is
+            // a transport failure, not a refusal (DES-245 r3 section 3.2).
+            if matches!(self.phase, Phase::Handshaking) || tls.is_handshaking() {
+                self.handshake_transport = true;
+            }
         }
         if matches!(self.phase, Phase::Handshaking) {
             if end {
