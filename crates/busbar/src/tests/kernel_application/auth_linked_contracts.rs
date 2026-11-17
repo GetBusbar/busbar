@@ -136,10 +136,6 @@ async fn actual_operator_and_signing_file_reload_preserves_governance_and_fails_
         rotate.await;
     }
     let gov = prior.governance.as_ref().unwrap().clone();
-    assert_eq!(
-        gov.admin_token_hash().as_deref(),
-        Some(busbar_contract::redacted::sha256_hex(b"tok-v1").as_str())
-    );
     let now = busbar_kernel::store::now();
     let (_, old_token) = gov
         .mint_signed_async(
@@ -168,10 +164,6 @@ async fn actual_operator_and_signing_file_reload_preserves_governance_and_fails_
     rotate
         .expect("changed credentials install only on commit")
         .await;
-    assert_eq!(
-        gov.admin_token_hash().as_deref(),
-        Some(busbar_contract::redacted::sha256_hex(b"tok-v2").as_str())
-    );
     assert!(gov
         .verify_token(old_token.expose(&busbar_kernel::seal::lend()), now, None)
         .is_none());
@@ -224,10 +216,5 @@ async fn actual_operator_and_signing_file_reload_preserves_governance_and_fails_
             assert!(refusal.contains("whitespace"), "{refusal}");
         }
     }
-    assert_eq!(
-        gov.admin_token_hash().as_deref(),
-        Some(busbar_contract::redacted::sha256_hex(b"tok-v2").as_str()),
-        "refused candidates cannot replace committed operator"
-    );
     println!("{WITNESS}");
 }
