@@ -30,6 +30,7 @@ fn caller() -> Caller {
 
 fn upstream() -> Arc<UpstreamDef> {
     Arc::new(UpstreamDef {
+        resource: None,
         name: "shared".into(),
         allow_private: false,
         url: Some("https://example.invalid/".into()),
@@ -415,5 +416,41 @@ fn exact_pool_member_projection_refuses_unknown_or_model_like_resource_facts() {
             1 << 20
         ),
         Err(ResourceError::Unsupported)
+    ));
+}
+
+#[test]
+fn actual_target_resolves_one_selected_descriptor_and_never_guesses_an_ambiguous_path() {
+    let owner = caller();
+    let inventory = build(&owner, vec![fact("chat", 1)]).unwrap();
+    let selected = select(&inventory, request(9), &[ScopeRef::pool("chat")]).unwrap();
+    let candidate = inventory.descriptor(1).unwrap().candidate();
+    assert_eq!(
+        selected
+            .forward_for_target(&candidate, "", "")
+            .unwrap()
+            .descriptor()
+            .id(),
+        1
+    );
+    let mut ambiguous = fact("chat", 1);
+    let mut second = ambiguous.forwards[0].clone();
+    second.descriptor = 2;
+    second.target = "/different".into();
+    ambiguous.forwards.push(second);
+    let inventory = build(&owner, vec![ambiguous]).unwrap();
+    let selected = select(&inventory, request(10), &[ScopeRef::pool("chat")]).unwrap();
+    assert!(matches!(
+        selected.forward_for_target(&candidate, "", ""),
+        Err(ResourceError::Selection)
+    ));
+    let secret = build(&owner, vec![fact("secret", 3)])
+        .unwrap()
+        .descriptor(3)
+        .unwrap()
+        .candidate();
+    assert!(matches!(
+        selected.forward_for_target(&secret, "", ""),
+        Err(ResourceError::NotSelected)
     ));
 }

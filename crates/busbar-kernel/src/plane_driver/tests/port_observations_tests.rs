@@ -50,6 +50,7 @@ fn cost(rate: u64) -> Arc<CostModel> {
         GroupCfg {
             enabled: true,
             limits: vec![LimitCfg {
+                selected: None,
                 metric: LimitMetric::Budget,
                 amount: 1,
                 per: Some(LimitWindow::Total),

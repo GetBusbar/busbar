@@ -17,6 +17,7 @@ async fn gov() -> GovState {
 
 fn limit(metric: LimitMetric, amount: u64, per: Option<LimitWindow>) -> LimitCfg {
     LimitCfg {
+        selected: None,
         metric,
         amount,
         per,
@@ -734,6 +735,7 @@ async fn rate_headroom_reads_the_chain() {
 
 fn pooled(metric: LimitMetric, amount: u64, per: LimitWindow, pool: &str) -> LimitCfg {
     LimitCfg {
+        selected: None,
         metric,
         amount,
         per: Some(per),
