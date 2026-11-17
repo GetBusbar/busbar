@@ -18,7 +18,7 @@ Inputs are ordinary JSON files containing the unmodified bodies from these reads
 
 | Option | Body | Trust requirement |
 | --- | --- | --- |
-| `--keys` | `/api/v1/admin/audit/keys` | Authenticate these public keys independently, using your deployment's established trusted channel or previously recorded keys. |
+| `--keys` | `/api/v1/admin/audit/keys` | The response, unmodified: the keys are under `items`. A page whose `next_cursor` is not null is one page of several and is refused as an incomplete key set. Authenticate these public keys independently, using your deployment's established trusted channel or previously recorded keys. |
 | `--range` | `/api/v1/admin/audit/range?from=START&to=END` | Untrusted evidence to verify. Request the exact inclusive window you intend to check. |
 | `--trusted-head` | `/api/v1/admin/audit/head` | An independently retained terminal head whose origin and custody you trust. Its sequence must equal `END`. |
 

@@ -475,7 +475,7 @@ pub fn keys_body(keys: &AuditKeySet) -> String {
     out.push(',');
     member_str(&mut out, "algorithm", SIGNATURE_ALGORITHM);
     out.push(',');
-    push_json_string(&mut out, "keys");
+    push_json_string(&mut out, "items");
     out.push_str(":[");
     for (i, key) in keys.keys().iter().enumerate() {
         if i > 0 {
