@@ -67,6 +67,32 @@ async fn original_receipt_requires_exact_signed_run_applied_and_retains_credit()
     assert!(target.covers(&original));
     let stamp = signed(&notary, &target);
     assert!(feed.original.verify(&target, &stamp));
+    let foreign_key = AuditSigningKey::from_seed(&[42; 32]);
+    let (foreign_grant, _) = foreign_key
+        .into_grants(LiveSigner::SameAsBootstrap)
+        .unwrap();
+    let foreign_stamp = Notary::new(foreign_grant)
+        .sign_stamp(stamp.clone())
+        .unwrap();
+    assert!(!feed.original.verify(&target, &foreign_stamp));
+    let mut final_page = stamp.clone();
+    final_page.kind = StampKind::Final;
+    let final_page = notary.sign_stamp(final_page).unwrap();
+    assert!(!feed.original.verify(&target, &final_page));
+    let mut delegated = stamp.clone();
+    delegated.key_cert = 1;
+    let delegated = notary.sign_stamp(delegated).unwrap();
+    assert!(!feed.original.verify(&target, &delegated));
+    let restart_key = AuditSigningKey::from_seed(&[41; 32]);
+    let (_, restart_grant) = restart_key
+        .into_grants(LiveSigner::SameAsBootstrap)
+        .unwrap();
+    let mut restarted = stamp.clone();
+    restarted.kind = StampKind::AfterRestart;
+    let restarted = busbar_kernel_audit::BootstrapSigner::new(restart_grant)
+        .sign_restart_page(restarted)
+        .unwrap();
+    assert!(!feed.original.verify(&target, &restarted));
     feed.original.configure(&stamp).unwrap();
     let account = Arc::new(Account::default());
     let bytes = feed.original.bytes().unwrap();
