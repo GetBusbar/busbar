@@ -747,12 +747,7 @@ fn load_via_staged_file(
     let lib = match crate::stage::dlopen_on_worker(std::ffi::OsStr::new(&path)) {
         Ok(lib) => lib,
         Err(e) => {
-            // An attempted native open has no confirmed teardown result. Preserve
-            // its backing identity even when no Library handle was returned.
-            std::mem::forget(Staged::TempFile {
-                path,
-                pin: Some(pin),
-            });
+            abandon(pin, &path);
             return Err(format!("failed to load plugin '{display}': {e}"));
         }
     };
@@ -790,16 +785,8 @@ fn load_via_memfd(bytes: &[u8], display: &str) -> Result<(Library, Staged), Stri
     // SAFETY: same operator-trust as any plugin load; the fd content is exactly the verified bytes
     // and is not reachable by path from any other process's namespace. The name is not held by any
     // resident image: a released image that stays resident keeps its fd, so `N` is not free.
-    let lib = match crate::stage::dlopen_on_worker(std::ffi::OsStr::new(&path)) {
-        Ok(lib) => lib,
-        Err(error) => {
-            // Do not recycle a staging name after an unconfirmed native open.
-            std::mem::forget(fd);
-            return Err(format!(
-                "failed to load plugin '{display}' from memfd: {error}"
-            ));
-        }
-    };
+    let lib = crate::stage::dlopen_on_worker(std::ffi::OsStr::new(&path))
+        .map_err(|e| format!("failed to load plugin '{display}' from memfd: {e}"))?;
     Ok((lib, Staged::Memfd { fd: Some(fd) }))
 }
 
