@@ -31,6 +31,7 @@ fn drop_panic_in_cancel_or_close_faults_and_quarantines() {
 mod fixture {
     use std::collections::HashMap;
     use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::{Mutex, PoisonError};
 
     use busbar_plugin_abi::fail::refused::R_CONFIG;
     use busbar_plugin_abi::fail::Fail;
@@ -48,17 +49,57 @@ mod fixture {
     /// `release` calls the rig saw.
     pub static RELEASED: AtomicU32 = AtomicU32::new(0);
 
+    #[derive(Debug, PartialEq, Eq)]
+    pub enum Event {
+        Cancel {
+            expected: Option<u32>,
+            observed: Option<u32>,
+            watched: bool,
+        },
+        Release,
+    }
+
+    static EVENTS: Mutex<Vec<Event>> = Mutex::new(Vec::new());
+
+    pub fn take_events() -> Vec<Event> {
+        std::mem::take(&mut *EVENTS.lock().unwrap_or_else(PoisonError::into_inner))
+    }
+
     pub fn released() {
+        EVENTS
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(Event::Release);
         RELEASED.fetch_add(1, Ordering::SeqCst);
     }
 
     struct Fuse {
         armed: bool,
+        slot: Option<u32>,
     }
 
     impl Drop for Fuse {
         fn drop(&mut self) {
             if self.armed {
+                use busbar_plugin_abi::host_side::watch;
+                let watched = std::cell::Cell::new(false);
+                watch::scan(
+                    |slot, entry| {
+                        if Some(slot) == self.slot && entry == watch::ENTRY_CANCEL {
+                            watched.set(true);
+                        }
+                        (u32::MAX, 0)
+                    },
+                    |_, _, _, _| {},
+                );
+                EVENTS
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .push(Event::Cancel {
+                        expected: self.slot,
+                        observed: watch::current_slot(),
+                        watched: watched.get(),
+                    });
                 FUSES_BLOWN.fetch_add(1, Ordering::SeqCst);
                 panic!("C-PANIC-CANCEL: a chain future's Drop panics during cancel");
             }
@@ -87,6 +128,30 @@ mod fixture {
     impl Open for Fused {
         async fn open(_h: &'static Host, config: ChainBytes) -> Result<Self, Fail> {
             let close_panics = config.with(close_panics)?;
+            let cancel_open = config
+                .with(|bytes| {
+                    busbar_contract::json::parse::<HashMap<String, String>>(bytes)
+                        .map(|map| map.get("open").is_some_and(|v| v == "cancel-panic"))
+                })
+                .map_err(|_| Fail::refused_because(R_CONFIG, "config must be an object"))?;
+            if cancel_open {
+                let mut fuse = Fuse {
+                    armed: true,
+                    slot: busbar_plugin_abi::host_side::watch::current_slot(),
+                };
+                let req = Fetch {
+                    method: "GET",
+                    url: "https://sink.test/open",
+                    headers: &[],
+                    body: &[],
+                    max_body: 64,
+                    trust: TrustHandle::NONE,
+                    cert: None,
+                    egress: egress::OPEN_WEB,
+                };
+                let _ = need::fetch(&req).await;
+                fuse.armed = false;
+            }
             Ok(Fused { close_panics })
         }
 
@@ -113,7 +178,10 @@ mod fixture {
             _attempt: u32,
             batch: ChainBytes,
         ) -> Result<Reply, Fail> {
-            let mut fuse = Fuse { armed: true };
+            let mut fuse = Fuse {
+                armed: true,
+                slot: busbar_plugin_abi::host_side::watch::current_slot(),
+            };
             let req = Fetch {
                 method: "POST",
                 url: "https://sink.test/batch",
@@ -244,5 +312,129 @@ fn a_panicking_drop_in_cancel_or_close_does_not_abort() {
         fixture::FUSES_BLOWN.load(Ordering::SeqCst) - base.0,
         1,
         "a finished chain's fuse is disarmed"
+    );
+}
+
+fn assert_guarded_cancel_before_release() {
+    let events = fixture::take_events();
+    assert_eq!(
+        events.len(),
+        2,
+        "one cancellation, then one Needs release: {events:?}"
+    );
+    match &events[0] {
+        fixture::Event::Cancel {
+            expected,
+            observed,
+            watched,
+        } => {
+            assert!(expected.is_some(), "the started chain had an entry owner");
+            assert_eq!(
+                observed, expected,
+                "cancellation retains the chain's caller slot"
+            );
+            assert!(
+                *watched,
+                "the scanner sees ENTRY_CANCEL for the original slot"
+            );
+        }
+        other => panic!("cancel must precede release: {other:?}"),
+    }
+    assert_eq!(events[1], fixture::Event::Release);
+    assert_eq!(
+        busbar_plugin_abi::host_side::watch::current_slot(),
+        None,
+        "entry owner restored after cancel"
+    );
+}
+
+fn assert_one_cancel_fault(capture: &crate::min3_store::Capture, name: &str, image_owned: bool) {
+    let events = capture.with_message("plugin_fault: a plugin entry broke the interface contract");
+    assert_eq!(
+        events.len(),
+        1,
+        "cancellation reports exactly one fault: {events:?}"
+    );
+    assert_eq!(events[0].field("instance"), Some(name));
+    assert_eq!(
+        events[0].field("image_owned"),
+        Some(if image_owned { "true" } else { "false" })
+    );
+    assert_eq!(events[0].field("reason"), Some("Panic"));
+}
+
+/// The C-CANCEL-MIGRATE arm uses the real native OPEN chain; migration is owned by OPEN.
+pub(crate) fn assert_open_cancel_fault() {
+    let _serial = ONE_AT_A_TIME.lock().unwrap_or_else(PoisonError::into_inner);
+    let (registry, needs, identity) = rig(fixture::PLUGIN.plugin(), fixture::released);
+    let healthy = open(
+        &registry,
+        &needs,
+        &identity,
+        "healthy-during-open-cancel",
+        b"{}",
+    );
+    let capture = crate::min3_store::Capture::default();
+    let _capture = capture.install();
+    fixture::take_events();
+    let (waker, _) = counting_waker();
+    let spec = spec(
+        &identity,
+        "cancel-open-fault",
+        br#"{"open":"cancel-panic"}"#,
+    );
+    let mut future = registry.open_export(
+        &spec,
+        &needs,
+        &busbar_plugin_test::suites::harness::no_refs(),
+    );
+    assert!(
+        poll_once(&mut future, &waker).is_pending(),
+        "OPEN parked at its real FETCH"
+    );
+    drop(future);
+    assert_guarded_cancel_before_release();
+    assert_one_cancel_fault(&capture, "cancel-open-fault", true);
+
+    let lines: [&[u8]; 1] = [b"healthy"];
+    let mut served = healthy.deliver(cx(), busbar_plugin_abi::export::STREAM_LOGS, 1, 1, &lines);
+    assert!(poll_once(&mut served, &waker).is_pending());
+    assert!(
+        matches!(
+            poll_once(&mut served, &waker),
+            Poll::Ready(Ok(Delivered::Acked { accepted: 1, .. }))
+        ),
+        "an image-owned cancellation fault quarantines no existing instance"
+    );
+}
+
+#[test]
+fn a_panicking_chain_cancel_is_watched_and_quarantines_its_instance() {
+    let _serial = ONE_AT_A_TIME.lock().unwrap_or_else(PoisonError::into_inner);
+    let (registry, needs, identity) = rig(fixture::PLUGIN.plugin(), fixture::released);
+    let port = open(&registry, &needs, &identity, "cancel-instance-fault", b"{}");
+    let capture = crate::min3_store::Capture::default();
+    let _capture = capture.install();
+    fixture::take_events();
+    let (waker, _) = counting_waker();
+    let lines: [&[u8]; 1] = [b"one line"];
+    let mut future = port.deliver(cx(), busbar_plugin_abi::export::STREAM_LOGS, 1, 1, &lines);
+    assert!(poll_once(&mut future, &waker).is_pending());
+    drop(future);
+    assert_guarded_cancel_before_release();
+    assert_one_cancel_fault(&capture, "cancel-instance-fault", false);
+    let mut next = port.deliver(cx(), busbar_plugin_abi::export::STREAM_LOGS, 2, 1, &lines);
+    assert!(
+        matches!(
+            poll_once(&mut next, &waker),
+            Poll::Ready(Err(busbar_ports::PortError::Call(
+                busbar_plugin_abi::fail::CallError::Quarantined
+            )))
+        ),
+        "the faulted instance refuses its next call before plugin entry"
+    );
+    assert!(
+        fixture::take_events().is_empty(),
+        "the terminal refusal creates no second cancellation"
     );
 }
