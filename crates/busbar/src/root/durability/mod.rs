@@ -55,6 +55,7 @@ mod audit_page;
 pub(crate) mod audit_services;
 pub(crate) mod notary;
 pub(crate) mod predecessor;
+pub(crate) mod response_intent;
 pub(crate) mod restart_seal;
 pub(crate) mod signer;
 pub(crate) use notary::HeadFeed;

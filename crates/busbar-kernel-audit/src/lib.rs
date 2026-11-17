@@ -10,6 +10,8 @@
 #[cfg(test)]
 mod response_intent_tests;
 
+pub mod response_intent;
+
 // busbar:request-path
 #[cfg_attr(
     not(test),
