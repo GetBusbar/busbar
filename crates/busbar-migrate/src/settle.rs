@@ -334,7 +334,89 @@ fn settle_block(
             _ => {}
         }
     }
+    // #441: a literal the plugin left at a declared secret position without asking for its LIFT is
+    // lifted by core, so the write-back never persists a declared secret as plaintext. An empty
+    // value is not a secret and stays.
+    for pointer in &answer.allowed_lifts {
+        if lifted.contains(&pointer.as_str()) {
+            continue;
+        }
+        let Some(bag) = block.get_key_mut("settings") else {
+            break;
+        };
+        let Some(slot) = pointer_mut(bag, pointer) else {
+            continue;
+        };
+        if !slot.as_text().is_some_and(|text| !text.is_empty()) {
+            continue;
+        }
+        let file = secret_path(dir, &answer.path, pointer)?;
+        let reference = Value::Map(vec![(
+            Value::from("file"),
+            Value::from(file.to_str().unwrap_or_default()),
+        )]);
+        let Value::Text(literal) = std::mem::replace(slot, reference) else {
+            continue;
+        };
+        report.push(format!(
+            "{shown}: the literal secret at `{pointer}` was not lifted by its instance; core moved it \
+             to the 0600 file {}",
+            file.display()
+        ));
+        secrets.push(SecretFile {
+            path: file,
+            bytes: literal.into_bytes(),
+        });
+    }
+    // #441: a known 1.5.5 secret value may not remain in plaintext anywhere else in the bag (the
+    // instance moved it to a position it does not declare secret).
+    if !answer.known_secrets.is_empty() {
+        if let Some(bag) = block.get_key("settings") {
+            let mut found = None;
+            find_known(bag, "", &answer.known_secrets, &mut found);
+            if let Some(pointer) = found {
+                return Err(refuse(
+                    index,
+                    &format!(
+                        "a 1.5.5 secret value stays in plaintext at `{pointer}`, a position the image \
+                         does not declare secret; keep it at its declared secret position or in a \
+                         secret reference. Nothing was written"
+                    ),
+                ));
+            }
+        }
+    }
     Ok(())
+}
+
+/// The first pointer under `at` whose text equals one of the `known` secrets.
+fn find_known(value: &Value, at: &str, known: &[SecureString], found: &mut Option<String>) {
+    if found.is_some() {
+        return;
+    }
+    match value {
+        Value::Text(text) => {
+            if !text.is_empty() && known.iter().any(|secret| secret.as_str() == text.as_str()) {
+                *found = Some(at.to_owned());
+            }
+        }
+        Value::Map(entries) => {
+            for (key, child) in entries {
+                let step = key
+                    .as_text()
+                    .unwrap_or("")
+                    .replace('~', "~0")
+                    .replace('/', "~1");
+                find_known(child, &format!("{at}/{step}"), known, found);
+            }
+        }
+        Value::Array(items) => {
+            for (index, child) in items.iter().enumerate() {
+                find_known(child, &format!("{at}/{index}"), known, found);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// Apply `settled` to `text` (config.yaml, after the chain): each instance's bag replaced, its

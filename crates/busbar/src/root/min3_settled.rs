@@ -35,6 +35,23 @@ pub(super) fn answer(
         })
     });
     allowed_lifts.extend(core);
+    // The literals this instance was handed at its declared secret positions (#441): the settled
+    // document may hold none of them in plaintext.
+    let known_secrets = json::parse_value(&instance.config)
+        .map(|input| {
+            let mut positions = std::collections::BTreeSet::new();
+            for path in described.paths(tag::D_SECRET_PATH) {
+                let _ = expand(&input, path, &mut positions);
+            }
+            positions
+                .iter()
+                .filter_map(|position| json::pointer(&input, position))
+                .filter_map(|value| value.as_str())
+                .filter(|text| !text.is_empty())
+                .map(SecureString::from)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
     let (path, placement) = match instance.kind {
         KindCode::Plane => (
             vec![instance.name.clone()],
@@ -78,7 +95,7 @@ pub(super) fn answer(
         settings: Some(SecureString::from(settings)),
         core_cfg,
         allowed_lifts,
-        known_secrets: Vec::new(),
+        known_secrets,
     })
 }
 
