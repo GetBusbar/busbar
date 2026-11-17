@@ -10,17 +10,14 @@ use busbar_contract::conn::{DeclaredConns, InstanceId, NeedId, PollConns};
 // The download itself runs once, at boot stage 3c: it lives off the request path.
 pub use crate::off_path::egress::fetch::download;
 
-/// The connection table a download rides: whose needs, the need a secured URL rides and the one a
-/// plaintext URL (a loopback or private registry) rides, where they are declared, where they are
-/// opened and read.
+/// The connection table a download rides: whose need, the need its URL rides (https only, SEC-2 /
+/// #297: there is no plaintext download), where it is declared, where it is opened and read.
 #[derive(Clone)]
 pub struct Table {
     /// The identity the download's needs are declared and opened under.
     pub owner: InstanceId,
-    /// The need a secured URL rides.
+    /// The need a (secured) download URL rides.
     pub secured_need: NeedId,
-    /// The need a plaintext URL rides.
-    pub plain_need: NeedId,
     /// Where the needs are declared.
     pub declared: Arc<dyn DeclaredConns>,
     /// Where the connection is opened and read.

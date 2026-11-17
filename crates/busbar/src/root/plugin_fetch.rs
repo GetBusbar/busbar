@@ -11,7 +11,6 @@ fn the_table() -> Table {
     Table {
         owner: crate::root::connector::ROOT_OWNER,
         secured_need: NeedId(1),
-        plain_need: NeedId(2),
         declared: Arc::clone(one) as Arc<dyn DeclaredConns>,
         conns: Arc::clone(one) as Arc<dyn PollConns>,
     }

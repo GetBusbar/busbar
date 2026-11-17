@@ -792,6 +792,10 @@ pub type PlaneRateCards =
 
 pub type PlaneFeesMap = std::collections::BTreeMap<String, busbar_kernel_ledger::cost::PlaneFees>;
 
+/// Each plane section's `insecure_transport` as written, by instance name: lifted off the section by
+/// the pre-pass and judged by [`min3::parse_min3`] with every other kind's.
+pub type PlaneInsecureTransport = std::collections::BTreeMap<String, busbar_contract::yaml::Value>;
+
 /// A plane section's reserved `fees:` (#44: `{ per_request | per_session }`), in minor units; an
 /// absent key is a fee of 0. Never rounded, never divided — each is one flat fee per unit.
 #[derive(Debug, Clone, Copy, Default, Deserialize)]
@@ -956,9 +960,15 @@ pub struct DeployCfg {
     /// lifted like its card. The pools plane's fee is `per_request_fee:`.
     #[serde(skip)]
     pub plane_fees: PlaneFeesMap,
+    /// Every plane section's `insecure_transport` (TRANSPORT-SECURITY-POLICY §4): core's key, lifted off
+    /// that section like its card, so the plane never sees it. [`min3::parse_min3`] judges it into
+    /// [`RootCfg::min3`] keyed (instance name, instance name).
+    #[serde(skip)]
+    pub plane_insecure_transport: PlaneInsecureTransport,
     /// THE RECOGNIZER MAP: each admitted plane instance's section by instance name
-    /// ([`recognizer`], WP1-GAP-plane-sections r3), with its core-owned `rate_card` and `fees`
-    /// lifted off into [`DeployCfg::plane_rate_cards`] and [`DeployCfg::plane_fees`]. The
+    /// ([`recognizer`], WP1-GAP-plane-sections r3), with its core-owned `rate_card`, `fees` and
+    /// `insecure_transport` lifted off into [`DeployCfg::plane_rate_cards`],
+    /// [`DeployCfg::plane_fees`] and [`DeployCfg::plane_insecure_transport`]. The
     /// remainder is carried RAW for the plane to read over the ABI.
     #[serde(skip)]
     pub instance_sections: std::collections::BTreeMap<&'static str, busbar_contract::yaml::Value>,
@@ -2165,6 +2175,7 @@ impl std::fmt::Debug for DeployCfg {
             .field("per_request_fee", &self.per_request_fee)
             .field("plane_rate_cards", &self.plane_rate_cards)
             .field("plane_fees", &self.plane_fees)
+            .field("plane_insecure_transport", &self.plane_insecure_transport)
             .field("instance_sections", &self.instance_sections)
             .field("store", &self.store)
             .field("secrets", &self.secrets)

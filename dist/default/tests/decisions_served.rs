@@ -94,6 +94,8 @@ providers:
 models: {{}}
 decisions:
   ingress: {{ listen: "127.0.0.1:{decisions}" }}
+  # #297: the relay's upstream is plaintext loopback; only this plane's own acceptance admits it.
+  insecure_transport: {{ accept: plaintext, reason: "loopback test upstream" }}
   # This date is the release of this synthetic relay fixture, not a provider model.
   catalog:
     jev-1:

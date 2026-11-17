@@ -1491,10 +1491,20 @@ pub fn instance_limits(
     section: &str,
     name: &str,
 ) -> busbar_plugin_abi::host_side::caller::InstanceLimits {
+    limits_of(&cfg.min3.insecure_transport, section, name)
+}
+
+/// [`instance_limits`] over the parsed acceptances alone (`RootCfg::min3.insecure_transport`). A plane
+/// instance is keyed (`<instance>`, `<instance>`): its section word is its instance name.
+pub fn limits_of(
+    accepted: &config::min3::InsecureTransportMap,
+    section: &str,
+    name: &str,
+) -> busbar_plugin_abi::host_side::caller::InstanceLimits {
     let key: (Box<str>, Box<str>) = (Box::from(section), Box::from(name));
     let mut limits = busbar_plugin_abi::host_side::caller::InstanceLimits::default();
     // TRANSPORT-SECURITY-POLICY §4: the instance's `insecure_transport`, absent = verified TLS only.
-    if let Some(accepted) = cfg.min3.insecure_transport.get(&key) {
+    if let Some(accepted) = accepted.get(&key) {
         limits.accept = accepted.accept;
     }
     limits
