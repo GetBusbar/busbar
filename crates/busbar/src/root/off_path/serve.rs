@@ -2056,12 +2056,8 @@ pub(crate) fn door_mounts_planned(
             offered: crate::root::doors::offers_unstated(),
         });
     }
-    let guests = match physical {
-        Some(guests) => guests,
-        None => {
-            GuestList::seal(lines).map_err(|refusal| guest_refusal("the data listener", refusal))?
-        }
-    };
+    let guests =
+        GuestList::seal(lines).map_err(|refusal| guest_refusal("the data listener", refusal))?;
     let post = served.post.clone().unwrap_or_else(|| {
         Arc::new(crate::root::plane_node::NodeEndPost::new(
             crate::root::plane_node::node(),
@@ -2137,7 +2133,7 @@ pub(crate) fn door_mounts_planned(
             .collect(),
         entries: arrival_entries(&served),
         served,
-        claim_doors: plan.map(|(plan, _, _)| Arc::clone(&plan.claim_doors)),
+        claim_doors: None,
         post,
         pin,
         guests,
@@ -2147,28 +2143,16 @@ pub(crate) fn door_mounts_planned(
             .collect(),
         frames: Mutex::default(),
     })?;
-    if plan.is_none_or(|(_, _, at)| at == "listen") {
-        public.extend(crate::root::port_mount::routes(
-            &routes.served.ports,
-            routes
-                .served
-                .native
-                .as_deref()
-                .map(crate::root::min3_boot::signed_ingress),
-            routes.served.billing.as_ref(),
-            Some(Arc::clone(&routes)),
-        ));
-    }
-    if let Some((plan, _, _)) = plan {
-        {
-            let mut nests = plan
-                .nests
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            nests.retain(|routes| routes.strong_count() != 0);
-            nests.push(Arc::downgrade(&routes));
-        }
-    }
+    public.extend(crate::root::port_mount::routes(
+        &routes.served.ports,
+        routes
+            .served
+            .native
+            .as_deref()
+            .map(crate::root::min3_boot::signed_ingress),
+        routes.served.billing.as_ref(),
+        Some(Arc::clone(&routes)),
+    ));
     let mut session_mounts: Vec<(String, RouteMethod, RouteAuth, DoorClaim)> = Vec::new();
     let mut sessions = Vec::new();
     let mut requests = Vec::new();
@@ -2391,9 +2375,7 @@ pub(crate) fn door_mounts_planned(
     let mut routes_of = routes_of;
     routes_of.extend(public);
 
-    if plan.is_none() {
-        crate::root::inbound::stage(routes.guests.clone(), refusals.clone());
-    }
+    crate::root::inbound::stage(routes.guests.clone(), refusals.clone());
     Ok(DoorMounts {
         data: routes,
         routes: routes_of,
