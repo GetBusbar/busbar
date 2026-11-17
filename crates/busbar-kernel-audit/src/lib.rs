@@ -7,6 +7,11 @@
 #![deny(missing_docs)]
 #![deny(rustdoc::broken_intra_doc_links)]
 
+#[cfg(test)]
+mod response_intent_tests;
+
+pub mod response_intent;
+
 // busbar:request-path
 #[cfg_attr(
     not(test),
@@ -183,7 +188,7 @@ pub use notary_key::{
 pub use recipe::{
     digest_over, digest_record, visit_fields, DigestField, DigestValue, FieldSink, Recipe,
     DIGEST_RECIPE, DIGEST_RECIPE_V2, DIGEST_RECIPE_V4, DIGEST_RECIPE_V6, DIGEST_RECIPE_V7,
-    LINK_RECIPE,
+    LINK_RECIPE, LINK_RECIPE_V2,
 };
 pub use record::{
     attribution, Attempt, AttemptOutcome, Audit, AuditBreak, AuditBreakKind, AuditChain,

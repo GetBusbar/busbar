@@ -248,7 +248,6 @@ async fn serve_admission_with_inputs(
     let core = configured
         .core_store_handle()
         .expect("native admission Store");
-    configured.set_admin_token(Some("admintok"));
     configured.set_signing_key(Some(
         busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
             &[9u8; 32],

@@ -8,15 +8,17 @@
 //! R0 ([`super::run`]), which always encodes at the current format.
 //!
 //! A chain runs under the manifest's `migrating_to` tail and a cursor record beside the manifest:
-//! - an open commit (manifest (f, 0) → (f, f+1), the step's initial cursor);
+//! - the opening (manifest (f, 0) → (f, f+1), the step's initial cursor), which is the kernel's
+//!   admission's, atomically with a dataset epoch advance and a fresh migration owner (r4 §6);
 //! - payload pages (exact on the manifest, the cursor and every old row; the converted rows; the
 //!   cursor at the last committed source key, with checked per-namespace counts);
 //! - a zero-payload namespace advance once a namespace is explicitly exhausted (every row of a page
 //!   committed and the store's continuation absent; a page shorter than asked is not the end);
 //! - a zero-payload step completion: between steps the manifest moves (f, f+1) → (f+1, f+2) with
 //!   the next step's initial cursor, so a chain never publishes an intermediate tail of zero; the
-//!   last step's completion publishes (T, 0) and deletes the cursor. Each completion carries its
-//!   RECORDS_EVOLVED.
+//!   last step's completion is the final publication ([`FormatStore::finalize`]): (T, 0) under a
+//!   fresh registrar and an advanced dataset epoch, the cursor deleted. Each completion carries
+//!   its RECORDS_EVOLVED.
 //!
 //! Nothing serves while the tail is nonzero (r4 §5), and the operational full-fleet stop keeps
 //! every reader away (r4 §3), so mixed-format rows are read only here.
@@ -25,7 +27,7 @@ use busbar_contract::persistence::cells::{self, Cell};
 use busbar_contract::persistence::NamespaceId;
 use busbar_contract::secure::SecureVec;
 
-use super::{continuation, Audit, Candidate, Committed, RecordStore, Refusal, PAGE};
+use super::{continuation, Audit, Candidate, Committed, FormatStore, Refusal, PAGE};
 
 /// The record format this busbar reads and writes (the kernel manifest's).
 pub const RECORD_FORMAT: u32 = 1;
@@ -158,14 +160,15 @@ impl Cursor {
     }
 }
 
-/// [`evolve_with`] over the production chain to [`RECORD_FORMAT`].
-///
-/// # Errors
-/// As [`evolve_with`].
-#[cold]
-#[inline(never)]
-pub fn evolve(store: &dyn RecordStore, manifest: &Manifest<'_>) -> Result<Option<u64>, Refusal> {
-    evolve_with(store, RECORD_STEPS, RECORD_FORMAT, manifest)
+/// The cursor the step from `from` in `steps` starts at: what the kernel's opening writes for it
+/// (#319 r4 §6). `None` when no step reads `from`.
+#[must_use]
+pub fn initial_cursor(steps: &[RecordStep], from: u32) -> Option<Vec<u8>> {
+    let step = steps.iter().find(|step| step.from == from)?;
+    Cursor::initial(step)
+        .encode()
+        .ok()
+        .map(|bytes| bytes.to_vec())
 }
 
 fn newer() -> Refusal {
@@ -194,15 +197,20 @@ impl Held {
     }
 }
 
-/// Run `steps` from the manifest's format to `current`, resuming a step under way. `Ok(None)` for a
-/// current manifest (no read made); otherwise the rows converted, every step's counts summed.
+/// Run `steps` from the manifest's format to `current`, resuming the step under way. `Ok(None)`
+/// for a current manifest (no read made); otherwise the rows converted, every step's counts
+/// summed. The kernel's admission opened the step (or claimed it from a stalled owner) before
+/// this runs: the manifest's tail is nonzero and `store` commits under the migration owner.
 ///
 /// # Errors
 /// NEWER for a format or tail above `current`; UNSUPPORTED for a format no step reads; VERIFY when
-/// a commit loses its predicates (another owner, or the manifest moved), the cursor is missing or
-/// malformed, or a store page does not progress; a step's own refusal.
+/// the step was not opened, a commit loses its predicates or is fenced (another owner), the cursor
+/// is missing or malformed, or a store page does not progress; STORE when the store refuses a
+/// one-row page or a zero-payload transition; a step's own refusal.
+#[cold]
+#[inline(never)]
 pub fn evolve_with(
-    store: &dyn RecordStore,
+    store: &dyn FormatStore,
     steps: &[RecordStep],
     current: u32,
     manifest: &Manifest<'_>,
@@ -226,49 +234,29 @@ pub fn evolve_with(
             .find(|s| s.from == f)
             .ok_or_else(|| unsupported(f))
     };
-    // The whole chain to `current` must be supported before anything is written.
+    // The whole chain to `current` must be supported before anything is read or written.
     for f in format..current {
         step_from(f)?;
     }
+    if tail == 0 {
+        return Err(Refusal::Verify(format!(
+            "the records are at format {format} and no step is open: the store's admission opens \
+             it (advancing the dataset epoch) before conversion; nothing was written"
+        )));
+    }
+    if tail != format + 1 {
+        return Err(unsupported(format));
+    }
     let mut step = step_from(format)?;
-    let (mut cursor, mut held) = if tail == 0 {
-        store.register()?;
-        let cursor = Cursor::initial(step);
-        let held = Held {
-            manifest: (manifest.encode)(format, format + 1),
-            cursor: cursor.encode()?,
-        };
-        let mut c = Candidate::default();
-        c.exact.push((
-            manifest.ns,
-            manifest.key.to_vec(),
-            SecureVec::from(manifest.bytes.to_vec()),
-        ));
-        c.absent.push((manifest.ns, CURSOR_KEY.to_vec()));
-        c.put.push((
-            manifest.ns,
-            manifest.key.to_vec(),
-            SecureVec::from(held.manifest.clone()),
-        ));
-        c.put
-            .push((manifest.ns, CURSOR_KEY.to_vec(), held.cursor.clone()));
-        commit(store, c)?;
-        (cursor, held)
-    } else {
-        if tail != format + 1 {
-            return Err(unsupported(format));
-        }
-        let found = store.read(manifest.ns, CURSOR_KEY)?.ok_or_else(|| {
-            Refusal::Verify(format!(
-                "the records are migrating from format {format} but the step's cursor is missing"
-            ))
-        })?;
-        let cursor = Cursor::decode(&found, step)?;
-        let held = Held {
-            manifest: manifest.bytes.to_vec(),
-            cursor: found,
-        };
-        (cursor, held)
+    let found = store.read(manifest.ns, CURSOR_KEY)?.ok_or_else(|| {
+        Refusal::Verify(format!(
+            "the records are migrating from format {format} but the step's cursor is missing"
+        ))
+    })?;
+    let mut cursor = Cursor::decode(&found, step)?;
+    let mut held = Held {
+        manifest: manifest.bytes.to_vec(),
+        cursor: found,
     };
     let mut total = 0u64;
     loop {
@@ -291,7 +279,7 @@ pub fn evolve_with(
             let mut c = held.candidate(manifest);
             c.put
                 .push((manifest.ns, CURSOR_KEY.to_vec(), encoded.clone()));
-            commit(store, c)?;
+            settle(store.commit(c)?, "a record-format namespace advance")?;
             cursor = next;
             held.cursor = encoded;
             continue;
@@ -306,11 +294,10 @@ pub fn evolve_with(
         });
         total = total.checked_add(rows).ok_or_else(overflow)?;
         if format + 1 == current {
-            let flipped = (manifest.encode)(current, 0);
-            c.put
-                .push((manifest.ns, manifest.key.to_vec(), SecureVec::from(flipped)));
+            // The final publication: the kernel adds the fresh registrar, the dataset epoch and
+            // the Current manifest to this completion, in one transaction (r4 §9).
             c.delete.push((manifest.ns, CURSOR_KEY.to_vec()));
-            commit(store, c)?;
+            settle(store.finalize(c, current)?, "the record-format publication")?;
             return Ok(Some(total));
         }
         let next_step = step_from(format + 1)?;
@@ -324,7 +311,7 @@ pub fn evolve_with(
         ));
         c.put
             .push((manifest.ns, CURSOR_KEY.to_vec(), encoded.clone()));
-        commit(store, c)?;
+        settle(store.commit(c)?, "a record-format step completion")?;
         format += 1;
         step = next_step;
         cursor = next;
@@ -335,11 +322,14 @@ pub fn evolve_with(
     }
 }
 
-/// One payload page of `ns` after the cursor: converts and commits every row the store returned,
-/// with the cursor at the last of them. `Ok(true)` when the namespace is explicitly exhausted
-/// (the page's rows all committed and the store's continuation absent).
+/// One payload page of `ns` after the cursor (#319 r4 §7.2-§7.3). Its first candidate carries
+/// every row the store returned; a never-uncertain refusal retries the first half of them as a
+/// fresh candidate, down to one row (at most 1 + floor(log2 n) candidates), and a refused single
+/// row stops the conversion with the committed cursor kept. The cursor records only the rows
+/// that committed. `Ok(true)` when the namespace is explicitly exhausted: every row of the page
+/// committed and the store's continuation absent.
 fn page(
-    store: &dyn RecordStore,
+    store: &dyn FormatStore,
     manifest: &Manifest<'_>,
     step: &RecordStep,
     ns: NamespaceId,
@@ -348,36 +338,65 @@ fn page(
 ) -> Result<bool, Refusal> {
     let found = store.scan(ns, cursor.last.as_deref(), PAGE)?;
     let more = continuation(&found)?;
-    let Some((last, _)) = found.rows.last() else {
+    if found.rows.is_empty() {
         return Ok(true);
-    };
-    let mut next = cursor.clone();
-    next.last = Some(last.clone());
-    let added = u64::try_from(found.rows.len()).map_err(|_| overflow())?;
-    let count = next.counts.get_mut(cursor.ns).ok_or_else(malformed)?;
-    *count = count.checked_add(added).ok_or_else(overflow)?;
-    let encoded = next.encode()?;
-    let mut c = held.candidate(manifest);
-    for (key, value) in &found.rows {
-        let converted = (step.convert)(ns, key, value)?;
-        c.exact.push((ns, key.clone(), value.clone()));
-        c.put.push((ns, key.clone(), converted));
     }
-    c.put
-        .push((manifest.ns, CURSOR_KEY.to_vec(), encoded.clone()));
-    commit(store, c)?;
-    *cursor = next;
-    held.cursor = encoded;
-    Ok(more.is_none())
+    let mut converted = Vec::with_capacity(found.rows.len());
+    for (key, value) in &found.rows {
+        converted.push((step.convert)(ns, key, value)?);
+    }
+    let mut size = found.rows.len();
+    loop {
+        let prefix = &found.rows[..size];
+        let mut next = cursor.clone();
+        next.last = prefix.last().map(|(key, _)| key.clone());
+        let added = u64::try_from(size).map_err(|_| overflow())?;
+        let count = next.counts.get_mut(cursor.ns).ok_or_else(malformed)?;
+        *count = count.checked_add(added).ok_or_else(overflow)?;
+        let encoded = next.encode()?;
+        let mut c = held.candidate(manifest);
+        for ((key, value), new) in prefix.iter().zip(&converted) {
+            c.exact.push((ns, key.clone(), value.clone()));
+            c.put.push((ns, key.clone(), new.clone()));
+        }
+        c.put
+            .push((manifest.ns, CURSOR_KEY.to_vec(), encoded.clone()));
+        match store.commit(c)? {
+            Committed::Applied => {
+                *cursor = next;
+                held.cursor = encoded;
+                return Ok(size == found.rows.len() && more.is_none());
+            }
+            Committed::Refused if size > 1 => size /= 2,
+            Committed::Refused => {
+                return Err(Refusal::Store(format!(
+                    "the store refused a one-row record-format page in step {} -> {}; the \
+                     conversion stops with its committed cursor and the tail kept",
+                    step.from,
+                    step.from + 1
+                )));
+            }
+            lost => return Err(unapplied(lost, "a record-format page")),
+        }
+    }
 }
 
-fn commit(store: &dyn RecordStore, c: Candidate) -> Result<(), Refusal> {
-    match store.commit(c)? {
+/// An outcome that must have applied: a lost predicate or a fence is VERIFY (another owner, or the
+/// manifest moved), a refusal is STORE; nothing of the commit was written either way.
+fn settle(outcome: Committed, what: &str) -> Result<(), Refusal> {
+    match outcome {
         Committed::Applied => Ok(()),
-        Committed::Conflict => Err(Refusal::Verify(
-            "a record-format step lost its predicates (another owner, or the manifest moved); \
-             nothing of the commit was written"
-                .to_owned(),
+        lost => Err(unapplied(lost, what)),
+    }
+}
+
+/// The refusal for an outcome that applied nothing.
+fn unapplied(outcome: Committed, what: &str) -> Refusal {
+    match outcome {
+        Committed::Conflict => Refusal::Verify(format!(
+            "{what} lost its predicates (another owner, or the manifest moved); nothing of it was \
+             written"
         )),
+        other => other.unapplied(what),
     }
 }

@@ -459,7 +459,7 @@ impl Drop for UnpublishedPluginPin {
 pub(crate) async fn rollback_plugin(
     State(handle): State<Arc<AppHandle>>,
     axum::Extension(principal): axum::Extension<busbar_kernel::auth::AuthPrincipal>,
-    headers: axum::http::HeaderMap,
+    headers: busbar_kernel::inbound::http_projection::AdminHeaders,
     body: axum::body::Bytes,
 ) -> Response {
     let actor = principal.actor_id().to_string();
@@ -871,7 +871,7 @@ impl GroupPatchReq {
 pub(crate) async fn register_hook(
     State(handle): State<Arc<AppHandle>>,
     axum::Extension(principal): axum::Extension<busbar_kernel::auth::AuthPrincipal>,
-    headers: axum::http::HeaderMap,
+    headers: busbar_kernel::inbound::http_projection::AdminHeaders,
     body: axum::body::Bytes,
 ) -> Response {
     let actor = principal.actor_id().to_string();
@@ -950,7 +950,7 @@ pub(crate) async fn put_hook(
     State(handle): State<Arc<AppHandle>>,
     axum::Extension(principal): axum::Extension<busbar_kernel::auth::AuthPrincipal>,
     Path(name): Path<String>,
-    headers: axum::http::HeaderMap,
+    headers: busbar_kernel::inbound::http_projection::AdminHeaders,
     body: axum::body::Bytes,
 ) -> Response {
     let actor = principal.actor_id().to_string();
@@ -1022,7 +1022,7 @@ pub(crate) async fn delete_hook(
     State(handle): State<Arc<AppHandle>>,
     axum::Extension(principal): axum::Extension<busbar_kernel::auth::AuthPrincipal>,
     Path(name): Path<String>,
-    headers: axum::http::HeaderMap,
+    headers: busbar_kernel::inbound::http_projection::AdminHeaders,
 ) -> Response {
     let actor = principal.actor_id().to_string();
     let expected = ok_or_respond!(if_match_version(&headers));
@@ -1091,7 +1091,7 @@ pub(crate) use busbar_kernel::governance::group_provision::plan_mint_group;
 pub(crate) async fn register_group(
     State(handle): State<Arc<AppHandle>>,
     axum::Extension(principal): axum::Extension<busbar_kernel::auth::AuthPrincipal>,
-    headers: axum::http::HeaderMap,
+    headers: busbar_kernel::inbound::http_projection::AdminHeaders,
     body: axum::body::Bytes,
 ) -> Response {
     let actor = principal.actor_id().to_string();
@@ -1147,7 +1147,7 @@ pub(crate) async fn put_group(
     State(handle): State<Arc<AppHandle>>,
     axum::Extension(principal): axum::Extension<busbar_kernel::auth::AuthPrincipal>,
     Path(name): Path<String>,
-    headers: axum::http::HeaderMap,
+    headers: busbar_kernel::inbound::http_projection::AdminHeaders,
     body: axum::body::Bytes,
 ) -> Response {
     let actor = principal.actor_id().to_string();
@@ -1199,7 +1199,7 @@ pub(crate) async fn patch_group(
     State(handle): State<Arc<AppHandle>>,
     axum::Extension(principal): axum::Extension<busbar_kernel::auth::AuthPrincipal>,
     Path(name): Path<String>,
-    headers: axum::http::HeaderMap,
+    headers: busbar_kernel::inbound::http_projection::AdminHeaders,
     body: axum::body::Bytes,
 ) -> Response {
     let actor = principal.actor_id().to_string();
@@ -1260,7 +1260,7 @@ pub(crate) async fn delete_group(
     State(handle): State<Arc<AppHandle>>,
     axum::Extension(principal): axum::Extension<busbar_kernel::auth::AuthPrincipal>,
     Path(name): Path<String>,
-    headers: axum::http::HeaderMap,
+    headers: busbar_kernel::inbound::http_projection::AdminHeaders,
 ) -> Response {
     let actor = principal.actor_id().to_string();
     let expected = ok_or_respond!(if_match_version(&headers));
@@ -1345,7 +1345,7 @@ pub(crate) async fn reset_overlay_section(
     State(handle): State<Arc<AppHandle>>,
     axum::Extension(principal): axum::Extension<busbar_kernel::auth::AuthPrincipal>,
     Path(section): Path<String>,
-    headers: axum::http::HeaderMap,
+    headers: busbar_kernel::inbound::http_projection::AdminHeaders,
 ) -> Response {
     use busbar_kernel::config::overlay::OverlaySection;
     let actor = principal.actor_id().to_string();
@@ -1933,7 +1933,7 @@ pub(crate) struct RollbackReq {
 pub(crate) async fn rollback_config(
     State(handle): State<Arc<AppHandle>>,
     axum::Extension(principal): axum::Extension<busbar_kernel::auth::AuthPrincipal>,
-    headers: axum::http::HeaderMap,
+    headers: busbar_kernel::inbound::http_projection::AdminHeaders,
     body: axum::body::Bytes,
 ) -> Response {
     let actor = principal.actor_id().to_string();
@@ -2009,7 +2009,7 @@ pub(crate) async fn rollback_config(
 pub(crate) async fn put_auth(
     State(handle): State<Arc<AppHandle>>,
     axum::Extension(principal): axum::Extension<busbar_kernel::auth::AuthPrincipal>,
-    headers: axum::http::HeaderMap,
+    headers: busbar_kernel::inbound::http_projection::AdminHeaders,
     body: axum::body::Bytes,
 ) -> Response {
     let expected = ok_or_respond!(if_match_version(&headers));
@@ -2324,7 +2324,7 @@ pub(crate) struct RestartReq {
 
 pub(crate) async fn restart(
     State(handle): State<Arc<AppHandle>>,
-    headers: axum::http::HeaderMap,
+    headers: busbar_kernel::inbound::http_projection::AdminHeaders,
     axum::Extension(principal): axum::Extension<busbar_kernel::auth::AuthPrincipal>,
     body: axum::body::Bytes,
 ) -> Response {
@@ -2478,7 +2478,7 @@ enum Applied {
 pub(crate) async fn apply_config(
     State(handle): State<Arc<AppHandle>>,
     axum::Extension(principal): axum::Extension<busbar_kernel::auth::AuthPrincipal>,
-    headers: axum::http::HeaderMap,
+    headers: busbar_kernel::inbound::http_projection::AdminHeaders,
     body: axum::body::Bytes,
 ) -> Response {
     let actor = principal.actor_id().to_string();
@@ -2892,9 +2892,13 @@ pub(crate) async fn get_config_settings(State(handle): State<Arc<AppHandle>>) ->
 pub(crate) async fn put_config_settings(
     State(handle): State<Arc<AppHandle>>,
     axum::Extension(principal): axum::Extension<busbar_kernel::auth::AuthPrincipal>,
-    headers: axum::http::HeaderMap,
+    original: Option<axum::Extension<super::generation::OriginalConfigPrecondition>>,
+    headers: busbar_kernel::inbound::http_projection::AdminHeaders,
     body: axum::body::Bytes,
 ) -> Response {
+    if super::instance_settings::is_request(&body) {
+        return super::instance_settings::put(handle, principal, original, headers, body).await;
+    }
     if super::config_document::is_document_request(&body) {
         return super::config_document::put(handle, principal, headers, body).await;
     }
@@ -3142,7 +3146,7 @@ pub(crate) async fn patch_hook_settings(
     State(handle): State<Arc<AppHandle>>,
     axum::Extension(principal): axum::Extension<busbar_kernel::auth::AuthPrincipal>,
     Path(name): Path<String>,
-    headers: axum::http::HeaderMap,
+    headers: busbar_kernel::inbound::http_projection::AdminHeaders,
     body: axum::body::Bytes,
 ) -> Response {
     let actor = principal.actor_id().to_string();
@@ -4759,8 +4763,42 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
     body_raw!(
         "/config/settings",
         "put",
-        json!({"oneOf": [super::contract_metadata::root_settings_schema(), super::config_document::request_schema()]})
+        json!({"oneOf": [super::contract_metadata::root_settings_schema(), super::config_document::request_schema(), super::instance_settings::request_schema()]})
     );
+    if let Some(operation) = op!("/config/settings", "put") {
+        operation["x-busbar-instance-edit"] = json!({
+            "request_mode":"instance_edit",
+            "precondition":"one_strong_config_etag_on_new_dispatch",
+            "idempotency":"required_exact_method_path_query_body",
+            "discovery":"/kinds/{kind}/instances/{id}",
+            "effect":"configuration_publication_not_physical_activation"
+        });
+        let idempotency = json!({
+            "name":"Idempotency-Key",
+            "in":"header",
+            "required":false,
+            "schema":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"},
+            "description":"Required exactly once for instance_edit; optional for other settings request modes. Use 1..128 ASCII letters, digits, dot, underscore, colon or hyphen. The authenticated principal and key retain the exact separately framed method, path, query and body identity. Identical authenticated replay returns the original outcome and ETag before checking the original now-stale precondition; changed request bytes conflict. A failed response or canceled HTTP request does not prove no effect. Preserve this key for operation lookup and uncertain-outcome recovery; never automatically retry under a new key."
+        });
+        if let Some(parameters) = operation
+            .get_mut("parameters")
+            .and_then(|p| p.as_array_mut())
+        {
+            parameters.push(idempotency);
+        } else {
+            operation["parameters"] = json!([idempotency]);
+        }
+        if let Some(parameters) = operation
+            .get_mut("parameters")
+            .and_then(|p| p.as_array_mut())
+        {
+            for parameter in parameters {
+                if parameter["name"] == "If-Match" {
+                    parameter["description"] = json!("The current config-generation ETag. New instance_edit dispatch requires exactly one strong ETag even when global require_if_match is false; missing is 428, weak/wildcard/malformed is 400, stale is 409. Exact authenticated idempotent replay returns its retained outcome without a new effect. Other request modes retain their existing conditional-write policy.");
+                }
+            }
+        }
+    }
     body_raw!(
         PATH_GROUPS,
         "post",

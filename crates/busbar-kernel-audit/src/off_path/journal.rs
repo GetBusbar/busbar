@@ -6,7 +6,9 @@
 
 use busbar_contract::caps::{Abort, MeterClassId, Outcome, ReasonCode, StepName, UnitKey};
 
-use crate::journal::{JOURNAL_TAG, JOURNAL_TAG_V4, JOURNAL_TAG_V6, JOURNAL_TAG_V7, JOURNAL_TAG_V8};
+use crate::journal::{
+    JOURNAL_TAG, JOURNAL_TAG_V4, JOURNAL_TAG_V6, JOURNAL_TAG_V7, JOURNAL_TAG_V8, JOURNAL_TAG_V9,
+};
 use crate::link::Fingerprint;
 use crate::record::{
     direction_tag, displays_as, finish_tag, step_tag, AbortTag, Attempt, AttemptOutcome,
@@ -20,6 +22,11 @@ pub fn from_journal_body(
     bytes: &[u8],
     class: &dyn Fn(&str) -> Option<MeterClassId>,
 ) -> Result<Option<AuditRecord>, String> {
+    if Reader::new(bytes).bytes() == Some(JOURNAL_TAG_V9.as_bytes())
+        && bytes.len() > crate::record::billing::BILLING_RECORD_BYTES
+    {
+        return Err("selected audit body exceeds its byte bound".into());
+    }
     let mut r = Reader { bytes, at: 0 };
     let Some(keyed) = journal_kind(&mut r) else {
         return Ok(None);
@@ -62,15 +69,16 @@ pub fn head_from_journal_body(bytes: &[u8]) -> Result<Option<JournalHead>, Strin
         crate::recipe::DIGEST_RECIPE_V6 if keyed == 6 => {}
         crate::recipe::DIGEST_RECIPE_V7 if keyed == 7 => {}
         crate::recipe::LINK_RECIPE if keyed == 8 => {}
+        crate::recipe::LINK_RECIPE_V2 if keyed == 9 => {}
         crate::recipe::DIGEST_RECIPE_V4 if keyed == 4 => {}
         crate::recipe::DIGEST_RECIPE_V2 if keyed == 4 => {
             r.skip_text().ok_or_else(bad)?;
         }
-        other if keyed == 8 => return Err(link_recipe_unsupported(other)),
+        other if matches!(keyed, 8 | 9) => return Err(link_recipe_unsupported(other)),
         _ => return Err("an audit head names an unknown recipe".into()),
     }
     let seq = r.num().ok_or_else(bad)?;
-    let (prev_hash, hash, signature, key_id) = if keyed == 8 {
+    let (prev_hash, hash, signature, key_id) = if matches!(keyed, 8 | 9) {
         let prev = r.fingerprint().ok_or_else(bad)?;
         let hash = r.fingerprint().ok_or_else(bad)?;
         r.num().ok_or_else(bad)?;
@@ -116,6 +124,7 @@ fn journal_kind(r: &mut Reader<'_>) -> Option<u8> {
         JOURNAL_TAG_V6 => Some(6),
         JOURNAL_TAG_V7 => Some(7),
         JOURNAL_TAG_V8 => Some(8),
+        JOURNAL_TAG_V9 => Some(9),
         JOURNAL_TAG_V4 => Some(4),
         _ => None,
     }
@@ -153,7 +162,8 @@ fn decode(
         crate::recipe::DIGEST_RECIPE_V6 if keyed == 6 => crate::recipe::Recipe::V6,
         crate::recipe::DIGEST_RECIPE_V7 if keyed == 7 => crate::recipe::Recipe::V7,
         crate::recipe::LINK_RECIPE if keyed == 8 => crate::recipe::Recipe::V8,
-        other if keyed == 8 => return Err(link_recipe_unsupported(other)),
+        crate::recipe::LINK_RECIPE_V2 if keyed == 9 => crate::recipe::Recipe::V9,
+        other if matches!(keyed, 8 | 9) => return Err(link_recipe_unsupported(other)),
         crate::recipe::DIGEST_RECIPE_V4 if keyed == 4 => crate::recipe::Recipe::V4 {
             legacy_rate_card_version: 0,
         },
@@ -220,6 +230,9 @@ fn decode(
         stale_policy: r.flag().ok_or_else(|| bad("stale_policy"))?,
     };
     let n = r.num().ok_or_else(|| bad("lines"))?;
+    if keyed == 9 && n != 0 {
+        return Err(bad("selected legacy usage lines"));
+    }
     let mut lines = Vec::new();
     for _ in 0..n {
         let name = r.text().ok_or_else(|| bad("line class"))?;
@@ -251,7 +264,8 @@ fn decode(
         crate::recipe::Recipe::V5
         | crate::recipe::Recipe::V6
         | crate::recipe::Recipe::V7
-        | crate::recipe::Recipe::V8 => {
+        | crate::recipe::Recipe::V8
+        | crate::recipe::Recipe::V9 => {
             if r.flag().ok_or_else(|| bad("rate_card_key_present"))? {
                 Some(
                     r.bytes()
@@ -308,14 +322,14 @@ fn decode(
     }
     let correlation_hash = r.opt_text().ok_or_else(|| bad("correlation_hash"))?;
     let unit = if recipe.carries_unit_facts() {
-        read_unit_facts(r).ok_or_else(|| bad("unit facts"))?
+        read_unit_facts(r, keyed == 9).ok_or_else(|| bad("unit facts"))?
     } else {
         UnitFacts::default()
     };
     if r.at != r.bytes.len() {
         return Err(bad("tail"));
     }
-    Ok(AuditRecord {
+    let record = AuditRecord {
         subject,
         what,
         wall,
@@ -334,12 +348,16 @@ fn decode(
         hash,
         signature,
         key_id,
-    })
+    };
+    if !crate::record::billing::record_valid(&record) {
+        return Err(bad("billing representation"));
+    }
+    Ok(record)
 }
 
 /// The `v7` tail, as [`crate::journal::journal_body`] writes it. More attempts than there are
 /// slots, an unknown outcome or a nonce that is not 16 bytes refuses the record.
-fn read_unit_facts(r: &mut Reader<'_>) -> Option<UnitFacts> {
+fn read_unit_facts(r: &mut Reader<'_>, billing: bool) -> Option<UnitFacts> {
     let mut unit = UnitFacts {
         wall_ms: r.num()?,
         attribution: r.text()?,
@@ -365,22 +383,47 @@ fn read_unit_facts(r: &mut Reader<'_>) -> Option<UnitFacts> {
     // The optional records tail (§3.5): present only when the record keeps a user or a label, so
     // a body that ends here is a `v7` body with neither. An empty tail is refused: it is not how
     // the writer frames anything, and a second spelling of one record is not admitted.
-    if !r.done() {
-        unit.records.user = r.opt_text()?;
+    if billing || !r.done() {
+        unit.records.user = if billing {
+            let present = r.flag()?;
+            let text = r.bounded_text(4096)?;
+            if present {
+                Some(text)
+            } else {
+                if !text.is_empty() {
+                    return None;
+                }
+                None
+            }
+        } else {
+            r.opt_text()?
+        };
         let labels = usize::try_from(r.num()?).ok()?;
         if labels > LABEL_SLOTS {
             return None;
         }
         unit.records.labels.reserve_exact(labels);
         for _ in 0..labels {
-            let name = r.text()?;
+            let name = if billing {
+                r.bounded_text(4096)?
+            } else {
+                r.text()?
+            };
+            let value = if billing {
+                r.bounded_text(4096)?
+            } else {
+                r.text()?
+            };
             unit.records
                 .labels
-                .push((std::sync::Arc::from(name), r.text()?));
+                .push((std::sync::Arc::from(name), value));
         }
-        if unit.records.is_empty() {
+        if unit.records.is_empty() && !billing {
             return None;
         }
+    }
+    if billing {
+        unit.billing = Some(crate::record::billing::PartitionedBillingV1::read(r)?);
     }
     Some(unit)
 }
@@ -559,6 +602,14 @@ impl Reader<'_> {
     pub(crate) fn text(&mut self) -> Option<String> {
         let text = String::from_utf8(self.bytes()?.to_vec()).ok();
         text
+    }
+
+    pub(crate) fn bounded_text(&mut self, limit: usize) -> Option<String> {
+        let bytes = self.bytes()?;
+        if bytes.len() > limit {
+            return None;
+        }
+        Some(std::str::from_utf8(bytes).ok()?.into())
     }
 
     fn skip_text(&mut self) -> Option<()> {

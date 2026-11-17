@@ -8,7 +8,7 @@
 //! CRYPTO-SEAM style, in a scratch workspace under this target's tmp dir. The scratch manifest names
 //! the stub as the facade's `busbar-crypto-backend` by path: the swap a private build makes with
 //! `[patch]`, without the git source a `[patch]` must resolve (the build runs offline). Asserted:
-//! - the stub as written (`API = 2`, `EXTERNAL_PLUGINS = false`) builds;
+//! - the stub as written (`API = 3`, `EXTERNAL_PLUGINS = false`) builds;
 //! - the same stub keeping `API = 1`, or not defining `EXTERNAL_PLUGINS`, fails to compile at the
 //!   facade's contract block, so a backend that never heard of the gate cannot admit by omission;
 //! - linked, the facade states the stub's `EXTERNAL_PLUGINS`, `supports("EXTERNAL_PLUGINS")` answers
@@ -54,6 +54,7 @@ zeroize = {{ version = "1", default-features = false }}
 tls = []
 test-support = []
 api1 = ["busbar-crypto-backend/api1"]
+api2 = ["busbar-crypto-backend/api2"]
 silent = ["busbar-crypto-backend/silent"]
 
 [workspace]
@@ -77,6 +78,7 @@ path = '{lib}'
 
 [features]
 api1 = []
+api2 = []
 silent = []
 "#,
         lib = fixtures.join("backend.rs").display(),
@@ -119,7 +121,7 @@ fn c_fips_gate_and_fill_checked_on_a_stub_backend() {
     let control = cargo(&dir, &["check"], "");
     assert!(
         control.status.success(),
-        "the deny-list stub as written (API = 2, EXTERNAL_PLUGINS = false) must build:\n{}",
+        "the deny-list stub as written (API = 3, EXTERNAL_PLUGINS = false) must build:\n{}",
         shown(&control)
     );
 
@@ -129,6 +131,12 @@ fn c_fips_gate_and_fill_checked_on_a_stub_backend() {
         "a backend that keeps API = 1 must fail to compile at the contract block:\n{}",
         shown(&stale)
     );
+
+    let stale_api2 = cargo(&dir, &["check", "--features", "api2"], "");
+    assert!(fails_with(
+        &stale_api2,
+        "busbar-crypto-backend API mismatch"
+    ));
 
     let silent = cargo(&dir, &["check", "--features", "silent"], "");
     assert!(
@@ -144,7 +152,7 @@ fn c_fips_gate_and_fill_checked_on_a_stub_backend() {
         let run = cargo(&dir, &["run", "--bin", "probe"], fill);
         let want = format!(
             "fill_checked={checked}\nfill=Err(RngError)\nexternal_plugins=false\n\
-             supports_external_plugins=false\nsupports_md5=false\nbackend=stub\n"
+             supports_external_plugins=false\nsupports_md5=false\nbackend=stub\nchecked_hash=Err(Provider(ProviderUnavailable))\n"
         );
         assert!(
             run.status.success() && String::from_utf8_lossy(&run.stdout) == want,

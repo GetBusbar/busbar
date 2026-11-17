@@ -123,6 +123,29 @@ fn every_request_is_its_own_unit() {
 }
 
 #[test]
+fn pending_allocations_mint_distinct_units_without_opening_or_charging_money() {
+    let r = rig(BTreeMap::new());
+    let classes = admit(&r, None).classes;
+    let first = r.billing.allocate(classes.clone());
+    let second = r.billing.allocate(classes);
+    assert_ne!(first.ctx.key, second.ctx.key);
+    assert_eq!(r.money.open_units(), 0);
+    let usage = ready(r.billing.gov.derived_bucket_usage_async(
+        &r.cost,
+        "k",
+        crate::governance::WINDOW_TOTAL,
+        true,
+        NOW,
+    ))
+    .unwrap();
+    assert_eq!(usage.requests, 0);
+    assert_eq!(usage.spend_cents, 0);
+    r.billing.settle(first.ctx.key, super::end_of(503, false));
+    r.billing.settle(second.ctx.key, super::end_of(503, false));
+    assert_eq!(r.money.open_units(), 0);
+}
+
+#[test]
 fn a_frozen_group_refuses_the_request_before_any_unit_opens() {
     let groups = BTreeMap::from([(
         "g".to_string(),
@@ -211,13 +234,13 @@ fn a_native_child_does_not_take_a_second_concurrency_hold() {
         "g".into(),
         GroupCfg {
             limits: vec![LimitCfg {
+                selected: None,
                 metric: LimitMetric::Concurrent,
                 amount: 1,
                 per: None,
                 scope: None,
                 on_exhaust: None,
                 downgrade_to: None,
-                selected: None,
             }],
             ..GroupCfg::default()
         },
