@@ -157,6 +157,25 @@ fn claimed_has(filter: axum::routing::MethodFilter, method: &axum::http::Method)
 }
 
 impl PreparedListener {
+    /// Prepare the same operator surface as the existing admin listener, retaining the
+    /// actual mounted declaration table beside its dispatcher before publication.
+    pub fn new_admin(app: &state::App) -> Result<Self, String> {
+        let (router, core_routes) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            admin_routes(&app.plugin_routes)
+        }))
+        .map_err(|_| "candidate operator routes cannot be mounted together".to_string())?;
+        Ok(Self {
+            physical: None,
+            data: None,
+            router,
+            core_routes,
+            refusals: Vec::new(),
+            refuse_by_path: None,
+            root_surface: false,
+            dispatch_layer: unchanged_dispatch_layer,
+        })
+    }
+
     pub fn new(
         app: &state::App,
         plugins: &crate::plugin_routes::PluginRouteTable,
@@ -200,6 +219,40 @@ impl PreparedListener {
             dispatch_layer: unchanged_dispatch_layer,
         })
     }
+}
+
+/// The actual admin mount, shared by ordinary and physically prepared listener construction.
+pub(crate) fn admin_routes(
+    plugins: &crate::plugin_routes::PluginRouteTable,
+) -> (
+    axum::Router<std::sync::Arc<state::AppHandle>>,
+    crate::core_routes::CoreRouteTable,
+) {
+    use busbar_contract::abi::mechanism::route::{RouteAuth, RouteMethod};
+    let admin = crate::core_routes::CoreRouter::new()
+        .route(
+            crate::auth::HEALTHZ_PATH,
+            RouteMethod::Get,
+            RouteAuth::None,
+            endpoints::healthz,
+        )
+        .route(
+            crate::auth::LIVEZ_PATH,
+            RouteMethod::Get,
+            RouteAuth::None,
+            endpoints::livez,
+        )
+        .route(
+            crate::auth::READYZ_PATH,
+            RouteMethod::Get,
+            RouteAuth::None,
+            endpoints::readyz,
+        );
+    let (admin, routes) = crate::admin::seam::mount_admin(admin).into_parts();
+    (
+        crate::plugin_routes::mount_plugin_routes(admin, plugins, true),
+        routes,
+    )
 }
 
 pub(crate) fn project_auth_scope_caps<M: FromIterator<(String, String)>>(a: &config::AuthCfg) -> M {
