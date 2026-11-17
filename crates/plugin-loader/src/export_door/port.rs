@@ -395,6 +395,12 @@ impl Shared {
                 self.drop_lines(lines.len() - start, ExportDropReason::Stopped);
                 return;
             };
+            // DES-454 §4.3: a refusal or failure from a binding the door no longer holds is not final. Before any
+            // backoff, the next attempt goes to the successor, and still counts against DELIVER_ATTEMPTS.
+            if answer.is_err() && !Arc::ptr_eq(&self.binding.load(), &binding) {
+                attempt += 1;
+                continue;
+            }
             let resend = |attempt: &mut u32, retry_after_s: Option<u64>| {
                 *attempt += 1;
                 if *attempt <= DELIVER_ATTEMPTS {
@@ -680,8 +686,18 @@ impl PortDoor {
         expected: &Arc<ExportBinding>,
         next: ExportBinding,
     ) -> Result<Arc<ExportBinding>, (SwapRefused, ExportBinding)> {
-        let _ = expected;
-        Err((SwapRefused::Superseded, next))
+        // Under the queue lock: `begin_drain` sets `stop` under it, and swaps serialise on it.
+        let _queue = self.shared.lock();
+        if self.shared.stop.load(Ordering::Acquire) || self.shared.expired() {
+            return Err((SwapRefused::Stopping, next));
+        }
+        if !Arc::ptr_eq(&self.shared.binding.load(), expected) {
+            return Err((SwapRefused::Superseded, next));
+        }
+        if !same_shape(&*expected.port, &*next.port) {
+            return Err((SwapRefused::ShapeChanged, next));
+        }
+        Ok(self.shared.binding.swap(Arc::new(next)))
     }
 
     /// The custody ceiling the instance stated in its `open` answer (§8.5), read through L7.
@@ -895,6 +911,25 @@ impl ExportCalls for PortDoor {
                 .observe(ExportObservation::IntegrityFailed),
         }
     }
+}
+
+/// DES-454 §4.2 step 5: a successor serves in place of its predecessor only with the same streams, scopes,
+/// recorder needs, span records and custody ceiling, because the door's routes and streams stay as they are.
+fn same_shape(served: &dyn ExportPort, next: &dyn ExportPort) -> bool {
+    let recorder = |port: &dyn ExportPort| {
+        port.recorder()
+            .map(|needs| (needs.retention_s, needs.key_gauge_limit))
+    };
+    served.streams() == next.streams()
+        && served.span_records() == next.span_records()
+        && served.custody_ceiling() == next.custody_ceiling()
+        && recorder(served) == recorder(next)
+        && served.scopes().len() == next.scopes().len()
+        && served
+            .scopes()
+            .iter()
+            .zip(next.scopes())
+            .all(|(a, b)| a.scope == b.scope && a.path == b.path)
 }
 
 /// Core's words for a port error: the code only, never the plugin's text (§12.16).
