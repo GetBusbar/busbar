@@ -5,6 +5,68 @@ use super::*;
 use std::collections::BTreeSet;
 
 #[test]
+fn named_secret_readback_uses_selected_module_even_when_name_collides() {
+    const CHILD: &str = "BUSBAR_SECRET_READBACK_MODULE_CHILD";
+    const WITNESS: &str = "selected secret module projection verified";
+    if std::env::var_os(CHILD).is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "config::readback::tests::named_secret_readback_uses_selected_module_even_when_name_collides",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains(WITNESS));
+        return;
+    }
+    struct Projection;
+    impl crate::config::settings_public::PublicSettings for Projection {
+        fn public(&self, module: &str) -> BTreeSet<String> {
+            match module {
+                "selected-source" => BTreeSet::from(["visible".to_string()]),
+                "other-source" => BTreeSet::from(["opaque".to_string()]),
+                _ => BTreeSet::new(),
+            }
+        }
+    }
+    static PROJECTION: Projection = Projection;
+    crate::config::settings_public::install(&PROJECTION);
+    let deploy = crate::config::deploy_from_deserializer(
+        json!({
+            "providers":{}, "models":{}, "auth":{"chain":[],"admin_auth":[]},
+            "store":{"module":"fixture-store"},
+            "secrets":{
+                "friendly-name":{"module":"selected-source","settings":{"visible":true,"opaque":"PRIVATE_SENTINEL"}},
+                "other-source":{"module":"selected-source","settings":{"visible":true,"opaque":"COLLISION_SENTINEL"}}
+            }
+        }),
+        &crate::config::Grammar::empty(),
+    )
+    .unwrap();
+    let config = crate::config::resolve(&deploy, &Default::default()).unwrap();
+    let view = ConfiguredView::from_root(&config, &deploy.plugins);
+    for name in ["friendly-name", "other-source"] {
+        assert_eq!(view.sections["secrets"][name]["module"], "selected-source");
+        assert_eq!(
+            view.sections["secrets"][name]["settings_public"],
+            json!({"visible":true})
+        );
+    }
+    let encoded = serde_json::to_string(&view).unwrap();
+    assert!(!encoded.contains("PRIVATE_SENTINEL"));
+    assert!(!encoded.contains("COLLISION_SENTINEL"));
+    println!("{WITNESS}");
+}
+
+#[test]
 fn opaque_settings_are_never_copied_and_public_references_stay_hidden() {
     let settings = json!({
         "timeout": 42,

@@ -41,6 +41,18 @@ notes = "DEP-5: this exact Git revision requires imported coverage or a separate
 [policy.h2]
 audit-as-crates-io = true
 
+[policy.http]
+audit-as-crates-io = true
+notes = "Exact-revision adopted native HTTP fork; its explicit exemption is not an imported or self-authored audit."
+
+[policy.hyper]
+audit-as-crates-io = true
+notes = "Exact-revision adopted native HTTP fork; its explicit exemption is not an imported or self-authored audit."
+
+[policy.hyper-util]
+audit-as-crates-io = true
+notes = "Exact-revision adopted native HTTP fork; its explicit exemption is not an imported or self-authored audit."
+
 [policy.jobserver]
 audit-as-crates-io = true
 notes = "DEP-5: this exact Git revision requires imported coverage or a separately justified exemption. Superseded local reviews are historical evidence only; they do not attest the Git revision or its registry base. See supply-chain/history/README.md at the repository root."
@@ -48,6 +60,10 @@ notes = "DEP-5: this exact Git revision requires imported coverage or a separate
 [policy.olpc-cjson]
 audit-as-crates-io = true
 notes = "Exact-revision Git fork of the published 0.1.4; see its exemption."
+
+[policy.rustls]
+audit-as-crates-io = true
+notes = "Exact-revision adopted funded TLS output/ticket source; its explicit exemption is not an imported or self-authored audit."
 
 [policy.serde-saphyr]
 audit-as-crates-io = true
@@ -336,8 +352,9 @@ criteria = "safe-to-deploy"
 notes = "DEP-5 coordinator exemption for the allow-listed MattJackson/granit-parser fork revision under serde-saphyr (the settled YAML stack, DEP-3), carrying the opt-in serde_yaml-compatibility patches offered upstream. Tracking: GetBusbar/busbar#429. No self-audit is claimed."
 
 [[exemptions.h2]]
-version = "0.4.18"
+version = "0.4.18@git:6bdbf046878247aebe9138f37f32d2665b54bdd9"
 criteria = "safe-to-deploy"
+notes = "DEP-5 coordinator exemption for this exact adopted fork revision: HTTP/2 serializer attribution and release barriers retain the adopted native delivery contract. Trusted imported audits do not cover these local deltas. Source selection and approval are recorded in house-recovery-execution/w07/SOURCE.md; remote qualification and owner-reviewed upstream publication remain required. No self-audit is claimed."
 
 [[exemptions.h2]]
 version = "0.4.18@git:d6146a5c425e55653cdfebc5660e52d87430c588"
@@ -358,8 +375,9 @@ version = "0.5.2"
 criteria = "safe-to-deploy"
 
 [[exemptions.http]]
-version = "1.4.1"
+version = "1.4.1@git:904f4519b5f27a0424b121a4828640c741efcd95"
 criteria = "safe-to-deploy"
+notes = "DEP-5 coordinator exemption for this exact adopted fork revision: HTTP-PROJECTION-PRODUCER r2 requires library-owned allocation quotation and shared method/header backing; full-map replacement regressions are included. Trusted imported audits do not cover these local deltas. Source selection and approval are recorded in house-recovery-execution/w07/SOURCE.md; remote qualification and owner-reviewed upstream publication remain required. No self-audit is claimed."
 
 [[exemptions.http-body]]
 version = "1.1.0"
@@ -378,12 +396,14 @@ version = "0.4.15"
 criteria = "safe-to-deploy"
 
 [[exemptions.hyper]]
-version = "1.11.1"
+version = "1.11.1@git:c140435f43477ca3ffbdb2078a5994e9dfb11969"
 criteria = "safe-to-deploy"
+notes = "DEP-5 coordinator exemption for the adopted fork successor c140435f: exactly 5b1c5189 plus one compile-only commit in src/proto/h1/encode.rs (chunked serialization spans read through the bytes Chain accessors); hyper manifest unchanged. Same source record as 5b1c5189 (house-recovery-execution/w07/SOURCE.md); remote qualification and owner-reviewed upstream publication remain required. No self-audit is claimed."
 
 [[exemptions.hyper-util]]
-version = "0.1.20"
+version = "0.1.20@git:b4c554c133c7fc83ee55a9ce0271849f7387994d"
 criteria = "safe-to-deploy"
+notes = "DEP-5 coordinator exemption for this exact adopted fork revision: Carries the same adopted serializer provenance through the connection builder. Trusted imported audits do not cover these local deltas. Source selection and approval are recorded in house-recovery-execution/w07/SOURCE.md; remote qualification and owner-reviewed upstream publication remain required. No self-audit is claimed."
 
 [[exemptions.idna]]
 version = "1.1.0"
@@ -691,8 +711,9 @@ version = "1.1.6"
 criteria = "safe-to-deploy"
 
 [[exemptions.rustls]]
-version = "0.23.46"
+version = "0.23.46@git:02181ad51e81f9cb33a0648117b03039274716a3"
 criteria = "safe-to-deploy"
+notes = "DEP-5 coordinator exemption for the adopted fork successor 02181ad5: exactly a33d40bc plus one compile fix (rustls/src/client/ech.rs propagates the fallible PSK binder; rustls/src/server/server_conn.rs restores the server builder); manifest unchanged. Same TLS-OUTPUT-STORAGE-392-r2 / TLS-TICKET-STORAGE-392-r2 source record as a33d40bc; remote qualification and owner-reviewed upstream publication remain required. No self-audit is claimed."
 
 [[exemptions.rustls-pki-types]]
 version = "1.15.1"

@@ -530,6 +530,7 @@ pub(crate) fn admin_keys_arm(app: &crate::state::App, headers: &HeaderMap, now: 
             module: crate::config::KEYS_MODULE.to_string(),
             principal: admin_key_principal(&key),
             resolved: Some(key),
+            signed_authority: None,
         }),
         Some(_) => KeysAdmin::Refused("credential_invalid"),
         None => KeysAdmin::Refused(gov.token_refusal(token, now, None)),

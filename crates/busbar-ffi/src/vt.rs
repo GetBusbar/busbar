@@ -526,6 +526,8 @@ pub mod plane {
         pub probe: VtEntry<Opens<EntryFn1<TargetRef>>>,
         pub demux: VtEntry<Plain<EntryFn2<St, B>>>,
         pub select_resources: VtEntry<Plain<EntryFn3<u32, PlaneRef, B>>>,
+        /// Slot 10, appended (M_CHANNEL): pure preparation of one admitted selected command channel.
+        pub channel: VtEntry<OnSession<EntryFn2<u64, TargetRef>>>,
     }
 
     impl Vt {
@@ -541,7 +543,8 @@ pub mod plane {
                 + Start2<u32, B, 6>
                 + Opener1<TargetRef, 7>
                 + Call2<St, B, 8>
-                + Call3<u32, PlaneRef, B, 9>,
+                + Call3<u32, PlaneRef, B, 9>
+                + Session1<TargetRef, 10>,
         {
             Built::new(Vt {
                 request: VtEntry::new(Opens(shim::opener2::<M, PlaneRef, B, 0>)),
@@ -554,6 +557,7 @@ pub mod plane {
                 probe: VtEntry::new(Opens(shim::opener1::<M, TargetRef, 7>)),
                 demux: VtEntry::new(Plain(shim::sync2::<M, St, B, 8>)),
                 select_resources: VtEntry::new(Plain(shim::sync3::<M, u32, PlaneRef, B, 9>)),
+                channel: VtEntry::new(OnSession(shim::session1::<M, TargetRef, 10>)),
             })
         }
         /// The first null entry, named (admit refuses it, step 9).
@@ -569,6 +573,7 @@ pub mod plane {
                 ("probe", self.probe.is_null()),
                 ("demux", self.demux.is_null()),
                 ("select_resources", self.select_resources.is_null()),
+                ("channel", self.channel.is_null()),
             ]
             .into_iter()
             .find_map(|(name, null)| null.then_some(name))

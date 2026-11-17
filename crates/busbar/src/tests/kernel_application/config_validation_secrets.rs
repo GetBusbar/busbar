@@ -10,18 +10,12 @@ use crate::root::test_plugins as plugins;
 fn unreferenced_identity_provider_token_is_not_resolved_by_actual_validate() {
     crate::dist_root_install::install();
     let path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
+    let module = crate::root::test_plugins::native_image(&path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(path).expect("the actual store library reads");
     let directory = plugins::scratch("config-secret-token-coverage");
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);

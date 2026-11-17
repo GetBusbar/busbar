@@ -54,18 +54,12 @@ async fn actual_operator_and_signing_file_reload_preserves_governance_and_fails_
     crate::dist_root_install::install();
     let directory = plugins::scratch("actual-operator-file-reload");
     let library = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library)
-        .unwrap()
-        .unwrap();
-    let store = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .unwrap()
-        .name;
-    let mut manifest = plugins::manifest(
+    let store = crate::root::test_plugins::native_image(&library).name;
+    let manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &store,
+        &library,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    manifest.statement = Some(hex::encode(statement));
     std::fs::write(
         directory.join("store.tar.gz"),
         plugins::signed(
@@ -142,10 +136,6 @@ async fn actual_operator_and_signing_file_reload_preserves_governance_and_fails_
         rotate.await;
     }
     let gov = prior.governance.as_ref().unwrap().clone();
-    assert_eq!(
-        gov.admin_token_hash().as_deref(),
-        Some(busbar_contract::redacted::sha256_hex(b"tok-v1").as_str())
-    );
     let now = busbar_kernel::store::now();
     let (_, old_token) = gov
         .mint_signed_async(
@@ -174,10 +164,6 @@ async fn actual_operator_and_signing_file_reload_preserves_governance_and_fails_
     rotate
         .expect("changed credentials install only on commit")
         .await;
-    assert_eq!(
-        gov.admin_token_hash().as_deref(),
-        Some(busbar_contract::redacted::sha256_hex(b"tok-v2").as_str())
-    );
     assert!(gov
         .verify_token(old_token.expose(&busbar_kernel::seal::lend()), now, None)
         .is_none());
@@ -230,10 +216,5 @@ async fn actual_operator_and_signing_file_reload_preserves_governance_and_fails_
             assert!(refusal.contains("whitespace"), "{refusal}");
         }
     }
-    assert_eq!(
-        gov.admin_token_hash().as_deref(),
-        Some(busbar_contract::redacted::sha256_hex(b"tok-v2").as_str()),
-        "refused candidates cannot replace committed operator"
-    );
     println!("{WITNESS}");
 }

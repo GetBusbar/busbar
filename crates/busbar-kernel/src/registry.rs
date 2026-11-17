@@ -9,11 +9,31 @@ use crate::grammar::{Selector, SelectorFamily};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Generation(u64);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GenerationExhausted;
+
 impl Generation {
     pub const FIRST: Generation = Generation(0);
 
     pub fn get(self) -> u64 {
         self.0
+    }
+
+    /// Allocate once when constructing an immutable native routing snapshot. This process-local
+    /// identity is qualified by the original audit incarnation when persisted.
+    pub(crate) fn allocate() -> Result<Self, GenerationExhausted> {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        Self::allocate_from(&NEXT)
+    }
+
+    fn allocate_from(next: &std::sync::atomic::AtomicU64) -> Result<Self, GenerationExhausted> {
+        next.fetch_update(
+            std::sync::atomic::Ordering::Relaxed,
+            std::sync::atomic::Ordering::Relaxed,
+            |value| value.checked_add(1),
+        )
+        .map(Self)
+        .map_err(|_| GenerationExhausted)
     }
 }
 

@@ -9,7 +9,7 @@
 //! Drop while its token is live) and `OutLease`. So here `ChainGuard` wraps a busbar-ffi `Chain` instead of
 //! holding `tok`, `vt_resume`, `vt_cancel` and a `ChainOwner` (the IF §10.5 fields), and keeps the rest of the
 //! §10.5 rule exactly: the chain token lives only inside the guard, every step runs inline in the driver's
-//! poll, and Drop is (1) cancel inline while the plugin holds a parked future (busbar-ffi's Chain Drop),
+//! poll, and Drop is (1) cancel inline under the caller's entry/watch scope while the future is parked,
 //! (2) `Needs::release` iff the chain made a NEED, (3) the pooled buffers zero themselves and go back.
 //!
 //! The decode table (§10.3) is `decode_need`: a Need that breaks a row is answered INVALID with no handler run;
@@ -34,7 +34,7 @@ use crate::host_side::needs::{
 };
 use crate::host_side::pool::{ChainBufs, Pool, PooledOut};
 use crate::host_side::scrub::Scrub;
-use crate::host_side::watch::{self, ENTRY_RESUME};
+use crate::host_side::watch::{self, ENTRY_CANCEL, ENTRY_RESUME};
 use crate::need::{NeedRec, dir, egress, need_flag, need_status, op};
 use crate::records::{RecDelRec, RecErr, RecPredRec, RecPutRec, Records, TokenRec, commit, tag};
 use crate::types::{KindCode, Status, Token};
@@ -253,6 +253,7 @@ impl Drop for Instance {
     /// The slot lease (`_tether`, the last field) drops after this body, so after the close has returned. With
     /// busbar-ffi's ACTIVE stack full the guard runs nothing and the instance closes unguarded right after.
     fn drop(&mut self) {
+        let _migration = crate::host_side::entry::MigrationScope::deny();
         let closed: Arc<dyn Any + Send + Sync> = Arc::new(());
         let mut live = Some(core::mem::replace(&mut self.live, closed));
         let mut out = Pool::global().acquire(self.max_out);
@@ -281,6 +282,7 @@ pub struct Driver<'a, N: Needs> {
     row: NeedRow,
     /// An `open` chain: Image-owned (no Instance yet), so a FAULT is audited and refuses, never quarantines.
     open: bool,
+    store_migration: Option<Arc<crate::host_side::entry::StoreMigrationAdmission>>,
 }
 impl<'a, N: Needs> Driver<'a, N> {
     /// Sets `caller.chain = next_chain()` (whatever the adapter wrote is overwritten); `max_steps` = 10,000.
@@ -295,6 +297,7 @@ impl<'a, N: Needs> Driver<'a, N> {
             max_steps: 10_000,
             row: NeedRow::of(caller.kind, false),
             open: false,
+            store_migration: None,
         }
     }
     /// Override the step cap (tests, Image-owned chains); never touches `chain`.
@@ -303,6 +306,16 @@ impl<'a, N: Needs> Driver<'a, N> {
     }
     pub fn caller(&self) -> &Caller<'a> {
         &self.caller
+    }
+    /// Authority belongs only to this ordinary Store-open chain, never a serving call.
+    pub fn with_store_migration(
+        mut self,
+        admission: Arc<crate::host_side::entry::StoreMigrationAdmission>,
+    ) -> Self {
+        if self.open && self.caller.kind == KindCode::Store {
+            self.store_migration = Some(admission);
+        }
+        self
     }
     /// W1-H1: this Driver runs an `open` chain (Image-owned, §10.5 `ChainOwner::Image`): the kind's open row
     /// (§6.1: transport may SECRET in `open` only), and a FAULT is audited and refuses the instance-to-be
@@ -349,6 +362,7 @@ impl<'a, N: Needs> Driver<'a, N> {
             chain: None,
             needs: self.needs,
             caller,
+            image_owned: self.open,
             needed: false,
             bufs: ChainBufs {
                 req,
@@ -358,7 +372,13 @@ impl<'a, N: Needs> Driver<'a, N> {
         };
         let first = {
             let ChainBufs { req, out, .. } = &mut guard.bufs;
-            step(caller.slot, entry, &mut out[0], |lease| start(req, lease))
+            step(
+                caller.slot,
+                entry,
+                self.store_migration.as_ref(),
+                &mut out[0],
+                |lease| start(req, lease),
+            )
         };
         let (mut status, mut instance) = match first {
             None => return Err(CallError::Fault(FaultReason::BadInstance)),
@@ -382,7 +402,7 @@ impl<'a, N: Needs> Driver<'a, N> {
             let count = match check_need_answer(guard.bufs.out[cur].bytes(), tok, self.row) {
                 Ok(count) => count,
                 Err(reason) => {
-                    drop(guard.chain.take());
+                    guard.cancel();
                     return Err(self.fault(reason));
                 }
             };
@@ -400,7 +420,7 @@ impl<'a, N: Needs> Driver<'a, N> {
                 )
                 .await
                 {
-                    drop(guard.chain.take());
+                    guard.cancel();
                     return Err(self.fault(reason));
                 }
             }
@@ -413,6 +433,7 @@ impl<'a, N: Needs> Driver<'a, N> {
                 step(
                     caller.slot,
                     ENTRY_RESUME,
+                    self.store_migration.as_ref(),
                     &mut guard.bufs.out[next],
                     |lease| chain.resume(results, lease),
                 )
@@ -541,18 +562,47 @@ impl NeedRow {
 
 /// The host-side owner of a chain (§10.5): the parked busbar-ffi `Chain` (its token never leaves it), the Needs
 /// and the caller it reports to, whether it ever made a NEED, and its buffers. Drop: the chain first (busbar-ffi
-/// cancels it inline while its token is live), then `release` iff `needed`, then the buffers (zeroed, pooled).
+/// cancels it inline under its caller's owner/watch scope), then `release` iff `needed`, then the buffers
+/// (zeroed, pooled). Cancellation faults use the same image/instance sink as other driver entries.
 pub(crate) struct ChainGuard<'g, 'i, N: Needs, K: Kind> {
     chain: Option<Chain<'i, K>>,
     needs: &'g N,
     caller: &'g Caller<'g>,
+    image_owned: bool,
     needed: bool,
     bufs: ChainBufs,
 }
 
+impl<N: Needs, K: Kind> ChainGuard<'_, '_, N, K> {
+    fn cancel(&mut self) {
+        let _migration = crate::host_side::entry::MigrationScope::deny();
+        let Some(chain) = self.chain.take() else {
+            return;
+        };
+        let status = {
+            let _owner = crate::host_side::entry::Owning::set(self.caller.slot);
+            let _watched = Watched::enter(self.caller.slot, ENTRY_CANCEL);
+            chain.cancel()
+        };
+        match status {
+            Status::OK => {}
+            Status::FAULT => {
+                report_fault(self.caller.slot, self.image_owned, FaultReason::Panic);
+            }
+            Status(other) => {
+                report_fault(
+                    self.caller.slot,
+                    self.image_owned,
+                    FaultReason::BadStatus(other),
+                );
+            }
+        }
+    }
+}
+
 impl<N: Needs, K: Kind> Drop for ChainGuard<'_, '_, N, K> {
     fn drop(&mut self) {
-        drop(self.chain.take());
+        self.cancel();
         if self.needed {
             self.needs.release(self.caller);
         }
@@ -560,16 +610,14 @@ impl<N: Needs, K: Kind> Drop for ChainGuard<'_, '_, N, K> {
 }
 
 /// The watchdog word for one step: set on entry, restored on return and on unwind.
-struct Watched;
+struct Watched {
+    _entry: watch::Entry,
+}
 impl Watched {
     fn enter(slot: u32, entry: u8) -> Watched {
-        watch::enter(slot, entry);
-        Watched
-    }
-}
-impl Drop for Watched {
-    fn drop(&mut self) {
-        watch::leave();
+        Watched {
+            _entry: watch::Entry::enter(slot, entry),
+        }
     }
 }
 
@@ -583,12 +631,28 @@ impl Drop for Watched {
 pub(crate) fn step<R>(
     slot: u32,
     entry: u8,
+    migration: Option<&Arc<crate::host_side::entry::StoreMigrationAdmission>>,
     out: &mut PooledOut,
     call: impl FnOnce(&mut OutLease) -> R,
 ) -> Option<R> {
+    let _migration = crate::host_side::entry::MigrationScope::set(migration.map(Arc::clone));
     let _owner = crate::host_side::entry::Owning::set(slot);
     let _watched = Watched::enter(slot, entry);
     out.lend(call)
+}
+
+/// One synchronous entry on caller-owned, fixed output storage. Uses the same owner and watchdog guards
+/// as `step`; the loan cannot grow, escape the callback, or transfer the lender's allocation.
+pub(crate) fn step_fixed<R>(
+    slot: u32,
+    entry: u8,
+    out: &mut [u8],
+    call: impl for<'loan> FnOnce(&mut OutLease<'loan>) -> R,
+) -> Option<R> {
+    let _migration = crate::host_side::entry::MigrationScope::deny();
+    let _owner = crate::host_side::entry::Owning::set(slot);
+    let _watched = Watched::enter(slot, entry);
+    OutLease::with_fixed(out, call)
 }
 
 /// At most this many Needs in one step (§6.1); more is FAULT.

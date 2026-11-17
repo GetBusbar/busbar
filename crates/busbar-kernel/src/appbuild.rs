@@ -1179,24 +1179,6 @@ impl RootRules for AcceptAll {
     }
 }
 
-/// Inspect a configured Store before ordinary OPEN can initialize or select its dataset.
-/// Historical transformation is supplied by the composition root, not this projection.
-pub async fn prepare_config_store(
-    cfg: &config::RootCfg,
-    plugins: &config::PluginsCfg,
-    resolver: &config::secret::SecretResolver,
-) -> Result<busbar_contract::persistence::lifecycle::axis::Prepared, String> {
-    let registry = bootstrap_store_inputs(cfg, plugins, resolver).await?;
-    let (door, label, settings) = config_store_inputs(cfg.store.as_ref(), &registry, resolver)?;
-    let axis = crate::preflight::root_rows()
-        .store_axis
-        .ok_or("no Store axis is installed")?;
-    axis()
-        .prepare(door, &label, settings.as_bytes())
-        .await
-        .map_err(|_| format!("Store '{label}' native preparation refused"))
-}
-
 pub async fn bootstrap_store_inputs(
     cfg: &config::RootCfg,
     plugins: &config::PluginsCfg,
@@ -1521,44 +1503,6 @@ pub fn instance_limits(
     limits
 }
 
-fn config_store_inputs(
-    store: Option<&config::StoreCfg>,
-    registry: &Arc<dyn busbar_contract::plugin_rows::PluginRows>,
-    resolver: &config::secret::SecretResolver,
-) -> Result<
-    (
-        busbar_contract::persistence::axis::StoreDoor,
-        String,
-        busbar_contract::secure::SecureString,
-    ),
-    String,
-> {
-    let store = store.ok_or_else(config::store_required)?;
-    let row = registry.resolve(&store.module);
-    let resolved = if row.as_ref().is_some_and(|row| row.in_process) {
-        Default::default()
-    } else {
-        config::secret::resolve_settings(
-            &store.settings,
-            &registry.secret_slots(&store.module),
-            &registry.reference_slots(&store.module),
-            &store.module,
-            resolver,
-            &busbar_contract::config_time::ConfigScope::config_time(),
-        )
-        .map_err(|error| format!("store '{}' settings: {error}", store.module))?
-    };
-    let bytes = resolved.encode().map_err(|error| error.to_string())?;
-    let settings = busbar_contract::secure::SecureString::from(
-        String::from_utf8(bytes.into_exposed(&crate::seal::lend()))
-            .map_err(|_| "settings encoding was not UTF-8")?,
-    );
-    drop(resolved);
-    let failed = |error: String| format!("store '{}' plugin load failed: {error}", store.module);
-    let door = registry.store_door(&store.module).map_err(failed)?;
-    Ok((door, store.module.clone(), settings))
-}
-
 /// The 1.5.5 `plugins.fetch` refusal: a header line, then one `  - ` bullet per failed target.
 fn plugins_fetch_refusal<S: AsRef<str>>(errors: &[S]) -> String {
     let mut out = String::from("plugins.fetch failed:");
@@ -1863,7 +1807,19 @@ async fn build_app_native(
     let transition_requirements =
         governance::principal_transition::requirements(&cfg, plugin_registry.as_ref())?;
 
-    let preparation = rules.prepare_candidate(&cfg, &plugins_cfg).await?;
+    let publication_generation = config::generation::reserve(prior).await?;
+    // Only build_boot_app supplies opened_secrets: its retained root preparation owns
+    // the exact already-opened bootstrap prefix and ServingReady. Full initial native
+    // completion remains after NodeBook confirms the boot generation. Every runtime
+    // rebuild instead requires its real early/late candidate producer here.
+    let preparation = if opened_secrets.is_some() {
+        if prior.is_some() || boot_store.is_none() {
+            return Err("initial secret ownership requires the admitted boot Store".into());
+        }
+        None
+    } else {
+        rules.prepare_candidate(&cfg, &plugins_cfg).await?
+    };
     let prepared_resolver = preparation
         .as_ref()
         .map(|preparation| preparation.secret_resolver());
@@ -2747,6 +2703,8 @@ async fn build_app_native(
     if let Some(prior) = prior {
         app.config_generation = Arc::clone(&prior.config_generation);
     }
+    app.publication_generation = publication_generation;
+    app.selected_predecessor = prior.and_then(|prior| prior.selected_policy.clone());
     app.configured_view = Some(configured_view);
     app.operator_file_defs = operator_file_defs;
     app.grammar = grammar;

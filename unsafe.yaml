@@ -225,8 +225,6 @@ interim:
   crates/busbar/src/root/tests/linked_auth.rs: { tokens: 1, by: "W3-D-BINARY (linked tables, generated code)" }
   crates/busbar/src/root/tests/linked_door_root.rs: { tokens: 1, by: "W3-D-BINARY (linked tables, generated code)" }
   crates/busbar/src/root/tests/linked_protocols.rs: { tokens: 1, by: "W3-D-BINARY (linked tables, generated code)" }
-  crates/busbar/src/root/tests/listener_framed_tests.rs: { tokens: 1, by: "W3-D-BINARY (linked tables, generated code)" }
-  crates/busbar/src/root/tests/listener_plan.rs: { tokens: 1, by: "W3-D-BINARY (linked tables, generated code)" }
   crates/busbar/src/root/tests/node_door_rig.rs: { tokens: 1, by: "W3-D-BINARY (linked tables, generated code)" }
   crates/busbar/src/root/tests/secret_source.rs: { tokens: 1, by: "W3-D-BINARY (linked tables, generated code)" }
   crates/busbar/src/root/tests/serve_datagram.rs: { tokens: 1, by: "W3-D-BINARY (linked tables, generated code)" }
@@ -286,7 +284,7 @@ interim:
   crates/plugin-loader/src/tests/auth_generation_tests.rs: { tokens: 2, by: "W2 / W3 (old dispatch and doors)" }
   crates/plugin-loader/src/tests/auth_header_boundary_tests.rs: { tokens: 6, by: "W2 / W3 (old dispatch and doors)" }
   crates/plugin-loader/src/tests/auth_instance_carriers_old_api_tests.rs: { tokens: 5, by: "W2 / W3 (old dispatch and doors)" }
-  crates/plugin-loader/src/tests/boot_tests.rs: { tokens: 19, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/src/tests/boot_tests.rs: { tokens: 11, by: "W2 / W3 (old dispatch and doors)" }
   crates/plugin-loader/src/tests/confined_kind_ops_tests.rs: { tokens: 2, by: "W2 / W3 (old dispatch and doors)" }
   crates/plugin-loader/src/tests/conformance_auth_unjudged_tests.rs: { tokens: 5, by: "W2 / W3 (old dispatch and doors)" }
   crates/plugin-loader/src/tests/conformance_export_unjudged_tests.rs: { tokens: 7, by: "W2 / W3 (old dispatch and doors)" }

@@ -3,6 +3,19 @@
 
 use super::*;
 use crate::config::{ExportCfg, ExportDefs};
+
+#[test]
+fn a_busy_request_capture_refuses_the_whole_granted_scrape_and_recovers() {
+    let _serial = crate::telemetry::drain_serial::lock();
+    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
+    let captured = crate::snapshot::request_store::with_workspace_held(|| {
+        futures::executor::block_on(lend(None, || read(SNAPSHOT_SCOPE_WHOLE)))
+    });
+    assert_eq!(captured, Snapshot::NotReady);
+    let recovered = futures::executor::block_on(lend(None, || read(SNAPSHOT_SCOPE_WHOLE)));
+    assert!(matches!(recovered, Snapshot::Families(_)));
+}
+
 #[test]
 fn an_explicit_neutral_declaration_selects_the_recorder_consumer() {
     let defs: ExportDefs = busbar_contract::yaml::from_str(

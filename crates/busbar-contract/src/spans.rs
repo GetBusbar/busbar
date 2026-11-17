@@ -26,37 +26,7 @@ pub fn resolve<'a>(
     arena.alloc_spans(&found[..len])
 }
 
-/// THE JSON NESTING-DEPTH GUARD: does `bytes` nest `{`/`[` deeper than `max`?
-#[must_use]
-pub fn exceeds_max_depth(bytes: &[u8], max: usize) -> bool {
-    let mut depth: usize = 0;
-    let mut in_string = false;
-    let mut escaped = false;
-    for &b in bytes {
-        if in_string {
-            if escaped {
-                escaped = false;
-            } else if b == b'\\' {
-                escaped = true;
-            } else if b == b'"' {
-                in_string = false;
-            }
-            continue;
-        }
-        match b {
-            b'"' => in_string = true,
-            b'{' | b'[' => {
-                depth += 1;
-                if depth > max {
-                    return true;
-                }
-            }
-            b'}' | b']' => depth = depth.saturating_sub(1),
-            _ => {}
-        }
-    }
-    false
-}
+pub use busbar_json::exceeds_max_depth;
 
 use std::borrow::Cow;
 

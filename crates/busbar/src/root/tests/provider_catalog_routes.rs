@@ -15,7 +15,7 @@ fn configured_resource(resource: Option<&str>) -> (RootCfg, CatalogPlan) {
     let resource = resource
         .map(|value| format!(", resource: {value}"))
         .unwrap_or_default();
-    let source = format!("providers:\n  p: {{api_key: none}}\nmodels:\n  m: {{provider: p, upstream_model: wire-model, max_concurrent: 2{resource}}}\npools:\n  fast: {{members: [m]}}\n  slow: {{members: [m]}}\n");
+    let source = format!("providers:\n  p: {{api_key: none}}\nmodels:\n  m: {{provider: p, upstream_model: wire-model, max_concurrent: 2, attempt_timeout_ms: 113{resource}}}\npools:\n  fast: {{members: [{{model: m, context_max: 4096, attempt_timeout_ms: 37}}]}}\n  slow: {{members: [m]}}\n");
     let deploy = config::deploy_from_yaml_str(&source, &grammar).unwrap();
     let defs = config::providers::catalog_from_str(
         "p:\n  protocol: wire\n  base_url: https://127.0.0.1/api\n  path: /chat\n",
@@ -55,6 +55,20 @@ fn staged_member_policy_keeps_the_resolved_catalog_values() {
         assert_eq!(row.context_max, target.context_max);
         assert_eq!(row.credential_mode, target.credential_mode);
     }
+    let fast = plan.select("fast").unwrap();
+    let slow = plan.select("slow").unwrap();
+    assert_eq!(
+        staged.rows[&(fast.into(), "chat\u{1f}m".into())].attempt_timeout_ms,
+        Some(37)
+    );
+    assert_eq!(
+        staged.rows[&(fast.into(), "chat\u{1f}m".into())].context_max,
+        Some(4096)
+    );
+    assert_eq!(
+        staged.rows[&(slow.into(), "chat\u{1f}m".into())].attempt_timeout_ms,
+        Some(113)
+    );
 }
 
 fn allocated(plan: &CatalogPlan) -> Allocations {
@@ -151,6 +165,10 @@ fn actual_definition_is_retained_in_the_model_table_and_exact_target_association
     for (key, row) in &staged.rows {
         let definition = staged.upstreams.get(&row.definition.name).unwrap();
         assert!(Arc::ptr_eq(&definition, &row.definition));
+        assert!(Arc::ptr_eq(
+            row.target.definition.as_ref().unwrap().as_arc(),
+            &definition,
+        ));
         assert_eq!(row.allocation.destination, allocations[key].destination);
         assert_eq!(
             row.target.registered_upstream.as_deref(),

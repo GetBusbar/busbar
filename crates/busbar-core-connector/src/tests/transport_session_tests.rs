@@ -40,6 +40,9 @@ pub(crate) enum Seen {
 #[derive(Debug, Clone)]
 pub(crate) enum Out {
     Write(&'static [u8]),
+    Part(u64, &'static [u8]),
+    WireEnd(u64),
+    Quiescent(u64),
     Echo(Vec<u8>),
     Close(bool),
     Head(u64),
@@ -57,6 +60,13 @@ pub(crate) struct Script {
     respond: Respond,
     seen: Arc<Mutex<Vec<Seen>>>,
     charges: Arc<Mutex<Vec<FaultReason>>>,
+    dropped: Arc<AtomicU64>,
+}
+
+impl Drop for Script {
+    fn drop(&mut self) {
+        self.dropped.fetch_add(1, Ordering::Relaxed);
+    }
 }
 
 impl Script {
@@ -88,6 +98,16 @@ impl Script {
         for out in &outs {
             match out {
                 Out::Write(bytes) => sink(TransportOut::Write(bytes)),
+                Out::Part(stream, bytes) => sink(TransportOut::WirePart {
+                    stream: *stream,
+                    class: WireClass::Payload,
+                    bytes,
+                }),
+                Out::WireEnd(stream) => sink(TransportOut::WireEnd {
+                    stream: *stream,
+                    requirement: CompletionRequirement::Flush,
+                }),
+                Out::Quiescent(stream) => sink(TransportOut::ResponseQuiescent(*stream)),
                 Out::Echo(bytes) => sink(TransportOut::Write(bytes)),
                 Out::Close(abort) => sink(TransportOut::Close { abort: *abort }),
                 Out::Head(stream) => sink(TransportOut::StreamHead {
@@ -120,21 +140,74 @@ struct Scripted {
     conn: TransportConn,
     seen: Arc<Mutex<Vec<Seen>>>,
     charges: Arc<Mutex<Vec<FaultReason>>>,
+    dropped: Arc<AtomicU64>,
+}
+
+#[tokio::test]
+async fn rejected_upgrade_retires_original_tcp_writer_before_failed_receipt() {
+    use busbar_contract::response_delivery::{DeliveryTerminal, ResponseKey, ResponseStop};
+    use busbar_kernel::limits::process_admission::{AdmissionClass, ProcessAdmission};
+    let source = ProcessAdmission::new(1).connection_storage(AdmissionClass::Data);
+    let mut ledger =
+        DeliveryLedger::new(&source, 8.try_into().unwrap(), 2.try_into().unwrap()).unwrap();
+    let handles = ledger
+        .admit(ResponseKey {
+            node: 1,
+            incarnation: 1,
+            unit: None,
+            connection_generation: 1,
+            stream: 1,
+        })
+        .unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mut peer = tokio::net::TcpStream::connect(listener.local_addr().unwrap())
+        .await
+        .unwrap();
+    let (socket, _) = listener.accept().await.unwrap();
+    let io = crate::raw_progress::tcp(socket);
+    let progress = io.progress();
+    let script = scripted(Box::new(|_| Vec::new()), None, false);
+    let outcome = Outcome::Upgraded {
+        delivery: Delivery::new(ledger, progress),
+        conn: script.conn,
+        io,
+        protocol: Name::copy(&source, "websocket").unwrap(),
+        leftover: Payload::copy(&source, &[]).unwrap(),
+    };
+    assert!(handles.watch.snapshot().terminal.is_none());
+    outcome.retire();
+    assert_eq!(
+        handles.watch.snapshot().terminal,
+        Some(DeliveryTerminal::Failed(ResponseStop::CarrierRetired))
+    );
+    assert!(!handles.watch.snapshot().first_payload_written);
+    let mut byte = [0];
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(1), peer.read(&mut byte))
+            .await
+            .unwrap()
+            .unwrap(),
+        0
+    );
+    assert_eq!(script.dropped.load(Ordering::Relaxed), 1);
 }
 
 fn scripted(respond: Respond, stall_ms: Option<u32>, quarantined: bool) -> Scripted {
     let seen = Arc::new(Mutex::new(Vec::new()));
     let charges = Arc::new(Mutex::new(Vec::new()));
+    let dropped = Arc::new(AtomicU64::new(0));
     let script = Script {
         quarantined,
         respond,
         seen: Arc::clone(&seen),
         charges: Arc::clone(&charges),
+        dropped: Arc::clone(&dropped),
     };
     Scripted {
         conn: TransportConn::scripted(script, stall_ms, Instant::now()),
         seen,
         charges,
+        dropped,
     }
 }
 
@@ -157,12 +230,122 @@ fn answer(
     answers: &mut Answers,
     called: Called,
     outs: Vec<TransportOut<'_>>,
-) -> Result<Vec<Act>, FaultReason> {
+) -> Result<Actions, FaultReason> {
     answers.start(called, Instant::now());
     for out in outs {
         answers.take(out);
     }
     answers.finish()
+}
+
+// Compare test observations explicitly; production payload owners deliberately have no equality API.
+impl PartialEq for Act {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Write(a), Self::Write(b)) => a.as_slice() == b.as_slice(),
+            (Self::Close { abort: a }, Self::Close { abort: b }) => a == b,
+            (Self::Wake(a), Self::Wake(b))
+            | (Self::End(a), Self::End(b))
+            | (Self::Opened(a), Self::Opened(b))
+            | (Self::Full(a), Self::Full(b))
+            | (Self::Writable(a), Self::Writable(b)) => a == b,
+            (
+                Self::Upgrade {
+                    protocol: a,
+                    leftover: x,
+                },
+                Self::Upgrade {
+                    protocol: b,
+                    leftover: y,
+                },
+            ) => a == b && x.as_slice() == y.as_slice(),
+            (
+                Self::Head {
+                    stream: a,
+                    end_stream: x,
+                    head: p,
+                },
+                Self::Head {
+                    stream: b,
+                    end_stream: y,
+                    head: q,
+                },
+            ) => a == b && x == y && p.as_slice() == q.as_slice(),
+            (
+                Self::Body {
+                    stream: a,
+                    flags: x,
+                    bytes: p,
+                },
+                Self::Body {
+                    stream: b,
+                    flags: y,
+                    bytes: q,
+                },
+            ) => a == b && x == y && p.as_slice() == q.as_slice(),
+            (Self::Reset { stream: a, code: x }, Self::Reset { stream: b, code: y }) => {
+                a == b && x == y
+            }
+            (
+                Self::Trailers {
+                    stream: a,
+                    pairs: x,
+                },
+                Self::Trailers {
+                    stream: b,
+                    pairs: y,
+                },
+            ) => a == b && x.as_slice() == y.as_slice(),
+            (Self::Pause, Self::Pause) | (Self::Resume, Self::Resume) => true,
+            _ => false,
+        }
+    }
+}
+
+impl PartialEq for Inbound {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (
+                Self::Head {
+                    stream: a,
+                    end_stream: x,
+                    head: p,
+                },
+                Self::Head {
+                    stream: b,
+                    end_stream: y,
+                    head: q,
+                },
+            ) => a == b && x == y && p.as_slice() == q.as_slice(),
+            (
+                Self::Body {
+                    stream: a,
+                    flags: x,
+                    bytes: p,
+                },
+                Self::Body {
+                    stream: b,
+                    flags: y,
+                    bytes: q,
+                },
+            ) => a == b && x == y && p.as_slice() == q.as_slice(),
+            (Self::Reset { stream: a, code: x }, Self::Reset { stream: b, code: y }) => {
+                a == b && x == y
+            }
+            (
+                Self::Trailers {
+                    stream: a,
+                    pairs: x,
+                },
+                Self::Trailers {
+                    stream: b,
+                    pairs: y,
+                },
+            ) => a == b && x.as_slice() == y.as_slice(),
+            (Self::End(a), Self::End(b)) | (Self::Stalled(a), Self::Stalled(b)) => a == b,
+            _ => false,
+        }
+    }
 }
 
 fn send_to() -> TransportOut<'static> {
@@ -171,6 +354,171 @@ fn send_to() -> TransportOut<'static> {
         secured: false,
         bytes: b"dg",
     }
+}
+
+#[test]
+fn native_callback_payloads_are_redacted_and_wiped_on_release() {
+    const SECRET: &[u8] = b"native-request-credential-72819";
+    let before = busbar_contract::secure::wipe_counts().1;
+    let mut answers = Answers::new(None, Instant::now());
+    let acts = answer(
+        &mut answers,
+        Called::Ingest,
+        vec![
+            TransportOut::Write(SECRET),
+            TransportOut::StreamHead {
+                stream: 1,
+                end_stream: false,
+                head: Records::new(SECRET),
+            },
+            TransportOut::StreamBody {
+                stream: 1,
+                flags: 0,
+                bytes: SECRET,
+            },
+            TransportOut::StreamTrailers {
+                stream: 1,
+                pairs: Records::new(SECRET),
+            },
+        ],
+    )
+    .expect("callback ownership");
+    let shown = format!("{acts:?}");
+    assert!(
+        !shown.contains(&format!("{SECRET:?}")),
+        "native payload Debug leaked bytes"
+    );
+    drop(acts);
+    assert_eq!(
+        busbar_contract::secure::wipe_counts().1 - before,
+        4,
+        "all four callback buffers wipe"
+    );
+}
+
+#[test]
+fn malformed_native_output_wipes_already_copied_payloads() {
+    let before = busbar_contract::secure::wipe_counts().1;
+    let mut answers = Answers::new(None, Instant::now());
+    assert_eq!(
+        answer(
+            &mut answers,
+            Called::Ingest,
+            vec![
+                TransportOut::Write(b"credential"),
+                TransportOut::StreamFull(1)
+            ]
+        ),
+        Err(GRAMMAR),
+    );
+    assert_eq!(
+        busbar_contract::secure::wipe_counts().1 - before,
+        1,
+        "discarded partial output wipes"
+    );
+}
+
+#[test]
+fn dropping_a_queued_native_piece_wipes_its_body() {
+    let before = busbar_contract::secure::wipe_counts().1;
+    let queued = piece(E_BODY, b"queued-response-credential");
+    let shown = format!("{queued:?}");
+    assert!(!shown.contains(&format!("{:?}", b"queued-response-credential".as_slice())));
+    drop(queued);
+    assert_eq!(busbar_contract::secure::wipe_counts().1 - before, 1);
+}
+
+#[test]
+fn upgrade_leftover_stays_in_wiping_custody() {
+    let before = busbar_contract::secure::wipe_counts().1;
+    let mut answers = Answers::new(None, Instant::now());
+    let acts = answer(
+        &mut answers,
+        emit(1, E_HEAD),
+        vec![
+            TransportOut::Upgrade {
+                protocol: "test-protocol",
+            },
+            TransportOut::Leftover(b"first-private-message"),
+        ],
+    )
+    .expect("upgrade output");
+    let [Act::Upgrade { protocol, leftover }] = acts.as_slice() else {
+        panic!("upgrade and leftover stay together");
+    };
+    assert_eq!(protocol.as_ref(), "test-protocol");
+    assert_eq!(leftover.as_slice(), b"first-private-message");
+    drop(acts);
+    assert_eq!(busbar_contract::secure::wipe_counts().1 - before, 1);
+}
+
+struct PendingRead;
+
+impl AsyncRead for PendingRead {
+    fn poll_read(
+        self: std::pin::Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+        out: &mut tokio::io::ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        out.put_slice(b"uncommitted-read");
+        Poll::Pending
+    }
+}
+
+#[tokio::test]
+async fn pending_native_read_wipes_the_abandoned_loan() {
+    use futures::FutureExt;
+    let mut bytes = SecureVec::new();
+    assert!(read_secure(&mut PendingRead, &mut bytes)
+        .now_or_never()
+        .is_none());
+    assert!(bytes.is_empty());
+    assert!(bytes.allocation().iter().all(|byte| *byte == 0));
+}
+
+struct PartialWriteThenPending(bool);
+
+impl AsyncWrite for PartialWriteThenPending {
+    fn poll_write(
+        mut self: std::pin::Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+        bytes: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        if self.0 {
+            Poll::Pending
+        } else {
+            self.0 = true;
+            Poll::Ready(Ok(bytes.len().min(3)))
+        }
+    }
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+    fn poll_shutdown(
+        self: std::pin::Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+}
+
+#[tokio::test]
+async fn partial_native_write_wipes_only_the_accepted_prefix() {
+    use futures::FutureExt;
+    let mut bytes = Payload::from(b"abcdef".as_slice());
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
+    assert!(
+        write_bounded(&mut PartialWriteThenPending(false), &mut bytes, deadline)
+            .now_or_never()
+            .is_none()
+    );
+    assert_eq!(bytes.as_slice(), b"def");
+    assert!(bytes.allocation()[..bytes.live_range().start]
+        .iter()
+        .all(|byte| *byte == 0));
 }
 
 // ---- the answer grammar charged to C1 (§11.3) ----
@@ -184,7 +532,7 @@ fn stream_full_holds_the_emits_own_stream() {
         vec![TransportOut::Write(b"x"), TransportOut::StreamFull(3)],
     )
     .expect("STREAM_FULL for the emit's own stream");
-    assert_eq!(acts, vec![Act::Write(b"x".to_vec()), Act::Full(3)]);
+    assert_eq!(acts, vec![Act::Write(b"x".as_slice().into()), Act::Full(3)]);
     assert!(answers.is_held(3));
     assert!(!answers.is_held(5));
 }
@@ -298,7 +646,10 @@ fn an_e_close_answer_is_writes_then_at_most_one_close() {
     .expect("WRITE* CLOSE?");
     assert_eq!(
         acts,
-        vec![Act::Write(b"bye".to_vec()), Act::Close { abort: false }]
+        vec![
+            Act::Write(b"bye".as_slice().into()),
+            Act::Close { abort: false }
+        ]
     );
     let bad: Vec<Vec<TransportOut<'static>>> = vec![
         vec![
@@ -500,7 +851,10 @@ fn e_close_is_sent_exactly_once_by_core() {
     let acts = s.conn.close(CR_DRAIN, now).expect("sent").expect("live");
     assert_eq!(
         acts,
-        vec![Act::Write(b"bye".to_vec()), Act::Close { abort: false }]
+        vec![
+            Act::Write(b"bye".as_slice().into()),
+            Act::Close { abort: false }
+        ]
     );
     assert_eq!(
         seen(&s.seen),
@@ -548,6 +902,115 @@ fn no_e_close_after_close_eof_a_lost_socket_or_quarantine() {
     let mut quarantined = scripted(Box::new(|_: &Seen| Vec::new()), None, true);
     assert_eq!(quarantined.conn.close(CR_DRAIN, now), Ok(None));
     assert_eq!(closes(&quarantined.seen), 0);
+}
+
+#[test]
+fn a_terminal_session_never_calls_the_framer_again() {
+    let now = Instant::now();
+    for lost in [false, true] {
+        let mut s = scripted(Box::new(|_| vec![Out::Close(false)]), None, false);
+        if lost {
+            s.conn.mark_lost();
+        } else {
+            s.conn.ingest(b"close", now).expect("framer close");
+        }
+        let before = seen(&s.seen);
+        assert!(!s.conn.is_live());
+        assert!(matches!(s.conn.timer(now), Err(Ended::Misuse(_))));
+        assert!(matches!(s.conn.ingest(b"late", now), Err(Ended::Misuse(_))));
+        assert!(matches!(
+            s.conn.emit(1, E_BODY, 0, b"late", now),
+            Err(Ended::Misuse(_))
+        ));
+        assert_eq!(seen(&s.seen), before);
+    }
+}
+
+#[test]
+fn core_close_retains_the_handle_until_the_output_owner_is_dropped() {
+    let mut s = scripted(Box::new(|_| vec![Out::Write(b"goodbye")]), None, false);
+    let now = Instant::now();
+    let output = s.conn.close(CR_DRAIN, now).expect("close").expect("output");
+    assert!(!s.conn.is_live());
+    assert_eq!(
+        s.dropped.load(Ordering::Relaxed),
+        0,
+        "close output still owns session custody"
+    );
+    assert!(matches!(s.conn.timer(now), Err(Ended::Misuse(_))));
+    assert_eq!(s.conn.close(CR_DRAIN, now), Ok(None));
+    assert_eq!(
+        s.dropped.load(Ordering::Relaxed),
+        0,
+        "repeat close cannot cancel pending output"
+    );
+    assert_eq!(output, [Act::Write(b"goodbye".as_slice().into())]);
+    drop(s.conn);
+    assert_eq!(s.dropped.load(Ordering::Relaxed), 1);
+}
+
+struct FlushFailure;
+
+impl AsyncRead for FlushFailure {
+    fn poll_read(
+        self: std::pin::Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+        _: &mut tokio::io::ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Poll::Pending
+    }
+}
+
+impl AsyncWrite for FlushFailure {
+    fn poll_write(
+        self: std::pin::Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+        bytes: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        Poll::Ready(Ok(bytes.len()))
+    }
+
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Poll::Ready(Err(std::io::ErrorKind::BrokenPipe.into()))
+    }
+
+    fn poll_shutdown(
+        self: std::pin::Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+}
+
+#[tokio::test]
+async fn a_framer_close_flush_failure_is_not_clean_completion() {
+    let s = scripted(Box::new(|_| Vec::new()), None, false);
+    let r = rig();
+    let outcome = drive(
+        s.conn,
+        vec![
+            Act::Write(b"goodbye".as_slice().into()),
+            Act::Close { abort: false },
+        ],
+        FlushFailure,
+        r.wiring,
+    )
+    .await;
+    assert!(matches!(outcome, Outcome::Lost(ref e) if e.kind() == std::io::ErrorKind::BrokenPipe));
+    assert_eq!(s.dropped.load(Ordering::Relaxed), 1);
+}
+
+#[tokio::test]
+async fn a_core_close_flush_failure_is_not_clean_completion() {
+    let s = scripted(Box::new(|_| vec![Out::Write(b"goodbye")]), None, false);
+    let r = rig();
+    r.close.send(CR_DRAIN).expect("drain");
+    let outcome = drive(s.conn, Vec::new(), FlushFailure, r.wiring).await;
+    assert!(matches!(outcome, Outcome::Lost(ref e) if e.kind() == std::io::ErrorKind::BrokenPipe));
+    assert_eq!(s.dropped.load(Ordering::Relaxed), 1);
 }
 
 #[test]
@@ -622,6 +1085,9 @@ fn not_called() -> PortError {
 }
 
 impl TransportPort for Offers {
+    fn listener_slots(&self) -> &[Box<str>] {
+        &[]
+    }
     fn alpn(&self, role: u32) -> &[Box<str>] {
         match role {
             wire::ROLE_SERVER => &self.server,
@@ -715,6 +1181,40 @@ fn the_listener_offers_the_server_list_and_the_dial_the_client_list() {
 
 // ---- the session task over a connection ----
 
+async fn drive<S: AsyncRead + AsyncWrite + Unpin>(
+    conn: TransportConn,
+    first: Vec<Act>,
+    io: S,
+    wiring: Wiring,
+) -> Outcome<crate::raw_progress::RawCarrier<S>> {
+    let mut answer = Actions::new(&conn.answers.source).expect("test answer owner");
+    for act in first {
+        answer.push(act).expect("test action capacity");
+    }
+    let io = crate::raw_progress::test_carrier(io);
+    let progress = io.progress();
+    super::drive(conn, answer, io, progress, wiring).await
+}
+
+#[test]
+fn storage_refusal_discards_complete_callback_without_charging_the_plugin() {
+    use busbar_kernel::limits::process_admission::{AdmissionClass, ProcessAdmission};
+    let account = ProcessAdmission::with_limits(1, 16, 4);
+    let source = account.connection_storage(AdmissionClass::Data);
+    let mut scripted = scripted(Box::new(|_| vec![Out::Write(b"private")]), None, false);
+    scripted.conn.answers =
+        Answers::with_source(None, Instant::now(), source).expect("empty owner");
+    assert!(matches!(
+        scripted.conn.ingest(b"input", Instant::now()),
+        Err(Ended::Capacity)
+    ));
+    assert!(
+        scripted.charges.lock().unwrap().is_empty(),
+        "host allocation refusal is not plugin fault"
+    );
+    assert_eq!(account.used(), (0, 0), "no retained answer prefix escaped");
+}
+
 struct Rig {
     feeds: mpsc::Sender<Feed>,
     inbound: mpsc::Receiver<Inbound>,
@@ -723,12 +1223,47 @@ struct Rig {
     wiring: Wiring,
 }
 
+#[test]
+fn attributed_output_is_retained_without_becoming_unattributed_write() {
+    use busbar_contract::response_delivery::{CompletionRequirement, WireClass};
+    let mut answers = Answers::new(None, Instant::now());
+    answers.start(Called::Timer, Instant::now());
+    answers.take(TransportOut::WirePart {
+        stream: 3,
+        class: WireClass::Payload,
+        bytes: b"body",
+    });
+    answers.take(TransportOut::WireEnd {
+        stream: 3,
+        requirement: CompletionRequirement::Flush,
+    });
+    answers.take(TransportOut::ResponseQuiescent(3));
+    let acts = answers.finish().expect("attributed native answer");
+    assert!(
+        matches!(&acts[0], Act::WirePart { stream: 3, class: WireClass::Payload, bytes } if bytes.as_slice() == b"body")
+    );
+    assert!(matches!(
+        &acts[1],
+        Act::WireEnd {
+            stream: 3,
+            requirement: CompletionRequirement::Flush
+        }
+    ));
+    assert!(matches!(&acts[2], Act::Quiescent(3)));
+}
+
 fn rig() -> Rig {
+    use busbar_kernel::limits::process_admission::{AdmissionClass, ProcessAdmission};
+    let source = ProcessAdmission::new(1).connection_storage(AdmissionClass::Data);
+    let (_register, registrations) = mpsc::channel(8);
     let (feeds, feed_rx) = mpsc::channel(8);
     let (inbound_tx, inbound) = mpsc::channel(8);
     let (close, close_rx) = oneshot::channel();
     let counters = Arc::new(SessionCounters::default());
     let wiring = Wiring {
+        delivery: DeliveryLedger::new(&source, 128.try_into().unwrap(), 8.try_into().unwrap())
+            .expect("test bounded ledger"),
+        registrations,
         feeds: feed_rx,
         inbound: inbound_tx,
         close: close_rx,
@@ -745,11 +1280,194 @@ fn rig() -> Rig {
     }
 }
 
+#[tokio::test]
+async fn abandoned_registration_ack_retires_unexposed_input_after_protocol_settlement() {
+    let s = scripted(
+        Box::new(|call| match call {
+            Seen::Emit {
+                stream: 1,
+                piece: E_RESET,
+                ..
+            } => vec![Out::Quiescent(1)],
+            _ => Vec::new(),
+        }),
+        None,
+        false,
+    );
+    let mut r = rig();
+    let (registration, registrations) = mpsc::channel(1);
+    r.wiring.registrations = registrations;
+    let (admitted, acknowledged) = oneshot::channel();
+    drop(acknowledged);
+    registration
+        .send(RegisterResponse {
+            key: ResponseKey {
+                node: 1,
+                incarnation: 1,
+                unit: None,
+                connection_generation: 1,
+                stream: 1,
+            },
+            admitted,
+        })
+        .await
+        .unwrap();
+    drop(registration);
+    drop(r.feeds);
+    let (peer, server) = tokio::io::duplex(64);
+    drop(peer);
+    let outcome = tokio::time::timeout(
+        Duration::from_secs(1),
+        drive(s.conn, Vec::new(), server, r.wiring),
+    )
+    .await
+    .expect("an unexposed response must not retain a ledger input slot forever");
+    assert!(
+        matches!(
+            outcome,
+            Outcome::PeerClosed | Outcome::CoreClosed(CR_NORMAL)
+        ),
+        "{outcome:?}"
+    );
+    let calls = seen(&s.seen);
+    assert_eq!(
+        calls
+            .iter()
+            .filter(|call| matches!(call, Seen::Emit { piece: E_RESET, .. }))
+            .count(),
+        1
+    );
+    assert_eq!(
+        calls
+            .iter()
+            .filter(|call| matches!(
+                call,
+                Seen::Emit {
+                    piece: wire::E_DELIVERY_SETTLED,
+                    ..
+                }
+            ))
+            .count(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn actual_owner_releases_held_output_then_retains_close_until_input_join() {
+    use busbar_contract::response_delivery::DeliveryTerminal;
+    let mut s = scripted(
+        Box::new(|call| match call {
+            Seen::Emit {
+                stream: 1,
+                piece: E_BODY,
+                ..
+            } => vec![Out::Part(1, b"a"), Out::Full(1)],
+            Seen::Emit {
+                stream: 1,
+                piece: wire::E_RELEASE,
+                ..
+            } => vec![Out::Part(1, b"z"), Out::Writable(1)],
+            Seen::Emit {
+                stream: 1,
+                piece: E_END,
+                ..
+            } => vec![Out::WireEnd(1), Out::Close(false)],
+            Seen::Emit {
+                stream: 1,
+                piece: wire::E_DELIVERY_SETTLED,
+                ..
+            } => vec![Out::Quiescent(1)],
+            _ => Vec::new(),
+        }),
+        None,
+        false,
+    );
+    s.conn.answers.provenance = true;
+    let mut r = rig();
+    let (registration, registrations) = mpsc::channel(1);
+    r.wiring.registrations = registrations;
+    let (mut peer, server) = tokio::io::duplex(64);
+    let body = async move {
+        let key = ResponseKey {
+            node: 1,
+            incarnation: 1,
+            unit: None,
+            connection_generation: 1,
+            stream: 1,
+        };
+        let (admitted, acknowledged) = oneshot::channel();
+        registration
+            .send(RegisterResponse { key, admitted })
+            .await
+            .unwrap();
+        let handles = acknowledged.await.unwrap().unwrap();
+        let (pieces, receiver) = mpsc::channel(1);
+        r.feeds
+            .send(Feed {
+                stream: 1,
+                pieces: receiver,
+                opened: None,
+            })
+            .await
+            .unwrap();
+        pieces.send(piece(E_BODY, b"input")).await.unwrap();
+        read_exactly(&mut peer, b"a").await;
+        pieces.send(piece(E_END, b"")).await.unwrap();
+        assert!(handles.watch.snapshot().first_payload_written);
+        assert_eq!(handles.watch.snapshot().terminal, None);
+        handles.release.freeze(key, 1).unwrap();
+        handles.release.publish(key, 1).unwrap();
+        let mut tail = Vec::new();
+        peer.read_to_end(&mut tail).await.unwrap();
+        assert_eq!(tail, b"z");
+        assert_eq!(
+            handles.watch.snapshot().terminal,
+            None,
+            "wire close cannot manufacture input EOF"
+        );
+        handles.input.producer_ended();
+        handles.input.reader_eof();
+        assert_eq!(
+            handles.watch.terminal().await.terminal,
+            Some(DeliveryTerminal::Complete)
+        );
+        (r.feeds, r.inbound, r.close, registration, pieces, handles)
+    };
+    let (outcome, _retained) = tokio::time::timeout(Duration::from_secs(2), async {
+        tokio::join!(drive(s.conn, Vec::new(), server, r.wiring), body)
+    })
+    .await
+    .expect("reserved controls and input join must make progress");
+    assert!(matches!(outcome, Outcome::Closed), "{outcome:?}");
+    let calls = seen(&s.seen);
+    let release = calls
+        .iter()
+        .position(|call| {
+            matches!(
+                call,
+                Seen::Emit {
+                    piece: wire::E_RELEASE,
+                    ..
+                }
+            )
+        })
+        .unwrap();
+    let end = calls
+        .iter()
+        .position(|call| matches!(call, Seen::Emit { piece: E_END, .. }))
+        .unwrap();
+    assert!(
+        release < end,
+        "E_END stayed held until the independent release made it writable"
+    );
+    assert_eq!(closes(&s.seen), 0);
+}
+
 fn piece(piece: u32, bytes: &[u8]) -> Piece {
     Piece {
         piece,
         arg: 0,
-        bytes: bytes.to_vec(),
+        bytes: bytes.into(),
     }
 }
 
@@ -766,7 +1484,7 @@ fn head(stream: u64) -> Inbound {
     Inbound::Head {
         stream,
         end_stream: false,
-        head: Vec::new(),
+        head: b"".as_slice().into(),
     }
 }
 

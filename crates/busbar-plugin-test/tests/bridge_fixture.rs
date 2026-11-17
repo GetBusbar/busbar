@@ -352,7 +352,7 @@ async fn run(p: &Plugin, reference: ChainBytes) -> Result<Reply, Fail> {
 // ---- the host side ----
 
 /// A fresh 64 KiB out lease (one per entry).
-pub fn lease() -> OutLease {
+pub fn lease() -> OutLease<'static> {
     match OutLease::new(vec![0; 64 * 1024], 1 << 20) {
         Some(lease) => lease,
         None => panic!("the ACTIVE stack is full"),
