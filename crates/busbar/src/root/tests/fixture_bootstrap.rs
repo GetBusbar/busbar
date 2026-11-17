@@ -85,6 +85,14 @@ pub(crate) struct PlaneFixture {
     _invocations: Vec<busbar_kernel::host_services::NativeInvocationAdmission>,
 }
 
+impl std::fmt::Debug for PlaneFixture {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PlaneFixture")
+            .field("seat", &self.seat)
+            .finish_non_exhaustive()
+    }
+}
+
 pub(crate) type HookFixture = hooks::Opened;
 
 impl PlaneFixture {
@@ -95,22 +103,43 @@ impl PlaneFixture {
         Ok(self.hooks.clone())
     }
 
-    /// Publish the actual native HTTP mounts and their checked generation before starting any
-    /// prepared instance worker. Callers retain this owner while either router can serve.
-    pub(crate) fn publish(
+    /// The production dispatcher shape, retaining the fixture's actual opened instance leases.
+    /// Its workers remain dormant until the caller has published the complete listener plan.
+    pub(crate) fn served(
         mut self,
-        app: Arc<busbar_kernel::state::App>,
+        app: &Arc<busbar_kernel::state::App>,
         post: Arc<crate::root::plane_node::NodeEndPost>,
         billing: busbar_kernel::plane_driver::port_billing::PortBilling,
-        body_limit: usize,
-    ) -> Result<PublishedFixture, String> {
+    ) -> (
+        crate::root::serve::Served,
+        crate::root::boot::workers::PreparedWorkers,
+    ) {
+        let workers = std::mem::replace(
+            &mut self.workers,
+            crate::root::boot::workers::PreparedWorkers::new(),
+        );
+        let owner = Arc::new(self);
         let served = crate::root::serve::Served {
-            ports: vec![self.seat.clone()],
+            ports: vec![owner.seat.clone()],
+            native_fixture: Some(owner),
             billing: Some(billing),
             post: Some(post),
             tables: app.serve_tables.clone(),
             ..Default::default()
         };
+        (served, workers)
+    }
+
+    /// Publish the actual native HTTP mounts and their checked generation before starting any
+    /// prepared instance worker. Callers retain this owner while either router can serve.
+    pub(crate) fn publish(
+        self,
+        app: Arc<busbar_kernel::state::App>,
+        post: Arc<crate::root::plane_node::NodeEndPost>,
+        billing: busbar_kernel::plane_driver::port_billing::PortBilling,
+        body_limit: usize,
+    ) -> Result<PublishedFixture, String> {
+        let (served, workers) = self.served(&app, post, billing);
         let mounts = crate::root::serve::door_mounts(
             served,
             || crate::root::kernel::ROOT_CARD.pin(),
@@ -128,17 +157,12 @@ impl PlaneFixture {
             0,
             false,
         );
-        let workers = std::mem::replace(
-            &mut self.workers,
-            crate::root::boot::workers::PreparedWorkers::new(),
-        )
-        .start();
+        let workers = workers.start();
         Ok(PublishedFixture {
             data,
             admin,
             handle,
             routes: mounts.data,
-            _plane: self,
             workers,
         })
     }
@@ -149,7 +173,6 @@ pub(crate) struct PublishedFixture {
     pub(crate) admin: axum::Router,
     pub(crate) handle: Arc<busbar_kernel::state::AppHandle>,
     pub(crate) routes: Arc<crate::root::serve::DataRoutes>,
-    _plane: PlaneFixture,
     workers: crate::root::boot::workers::RunningWorkers,
 }
 
