@@ -5,7 +5,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use busbar_contract::json::{self, JsonValueMutTrait as _, JsonValueTrait as _, Value};
+use busbar_contract::json::{
+    self, JsonContainerTrait as _, JsonValueMutTrait as _, JsonValueTrait as _, Value,
+};
 use busbar_kernel::auth_bindings::{
     self, CredentialFrom, OperatorAuth, ProviderBindings, ProviderView,
 };
