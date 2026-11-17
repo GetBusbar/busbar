@@ -485,3 +485,69 @@ async fn held_operation_lookup_follows_the_current_generation() {
         "expiry admits exactly one new generation"
     );
 }
+
+#[tokio::test]
+async fn expired_held_answer_does_not_hide_a_current_retained_intent() {
+    let now = busbar_kernel::store::now();
+    let old = now.saturating_sub(IDEMPOTENCY_TTL_SECS * 3);
+    let store = durable_store().await;
+    let k = key("alice", "op:expired-to-retained");
+    let first = durable::claim_held(&store, &k, old).await.unwrap();
+    durable::settle(&store, &first, old, &Settled::Answer(vec![1]))
+        .await
+        .unwrap();
+    let current = durable::claim_held(&store, &k, now).await.unwrap();
+    durable::settle(&store, &current, now, &Settled::Retained(vec![2]))
+        .await
+        .unwrap();
+    let looked = durable::lookup(&store, &k, now).await.unwrap();
+    assert!(
+        looked.is_some(),
+        "an expired predecessor cannot hide the current intent"
+    );
+    assert_ne!(
+        looked,
+        Some(durable::Looked::Done {
+            answer: vec![1],
+            completed_at: old
+        })
+    );
+    assert_eq!(
+        durable::claim_held(&store, &k, now).await,
+        Err(Refused::Retained(vec![2]))
+    );
+}
+
+#[tokio::test]
+async fn held_bare_successor_never_resurrects_an_ordinary_binding() {
+    let now = busbar_kernel::store::now();
+    let store = durable_store().await;
+    let k = key("alice", "op:bare-successor");
+    let ordinary = durable::claim_bound(&store, &k, [8; 32], now)
+        .await
+        .unwrap()
+        .unwrap();
+    durable::settle(&store, &ordinary, now, &Settled::Released)
+        .await
+        .unwrap();
+    let first = durable::claim_held(&store, &k, now).await.unwrap();
+    durable::settle(&store, &first, now, &Settled::Released)
+        .await
+        .unwrap();
+    let _bare = durable::claim_held(&store, &k, now).await.unwrap();
+    let framed = format!("{}:{}:{}", k.0.len(), k.0, k.1);
+    let ordinary_id = busbar_contract::redacted::sha256_hex(framed.as_bytes());
+    store
+        .delete("busbar.admin-idempotency", ordinary_id.as_bytes())
+        .await
+        .unwrap();
+    assert_eq!(
+        durable::lookup(&store, &k, now).await,
+        Ok(None),
+        "a bare current held claim has no receipt metadata to borrow from an older binding"
+    );
+    assert_eq!(
+        durable::claim_held(&store, &k, now).await,
+        Err(Refused::InFlight)
+    );
+}
