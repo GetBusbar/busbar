@@ -470,6 +470,7 @@ impl SkippedPlugin {
             .into_iter()
             .find(|k| *k == self.manifest.kind)?;
         let why = match self.kind {
+            RejectKind::VerificationUnavailable => "verification unavailable",
             RejectKind::Unsigned => "unsigned",
             RejectKind::Tampered => "tampered",
             RejectKind::UnknownPublisher => "unknown publisher",
@@ -1380,6 +1381,7 @@ pub fn inventory(dir: &Path, policy: &TrustPolicy) -> Vec<InventoryEntry> {
                     RejectKind::UnknownPublisher => "unknown-publisher",
                     RejectKind::PublisherScope => "publisher-scope",
                     RejectKind::Tampered => "tampered",
+                    RejectKind::VerificationUnavailable => "verification unavailable",
                     RejectKind::Unsigned => "unsigned",
                     RejectKind::ExternalCrypto => "not first-party (FIPS backend)",
                     RejectKind::Superseded => "superseded",

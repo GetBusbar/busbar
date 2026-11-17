@@ -250,6 +250,8 @@ pub mod pack_native;
 pub mod settings_schema;
 pub mod sign;
 mod stage;
+/// Authority-bound canonical release verification.
+pub mod verification;
 // busbar:request-path
 #[cfg_attr(
     not(test),

@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::{KeysDoc, ReleaseKey, Role, Signed, Target, TargetsDoc};
+use crate::verification::Verifier;
 use busbar_contract::json::{self, JsonContainerTrait, JsonValueTrait, Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -80,7 +81,10 @@ pub fn key_id(key: &ReleaseKey) -> String {
     crate::sign::sha256_hex(&bytes)
 }
 
-pub(crate) fn read_key_object(v: &Value) -> Result<ReleaseKey, String> {
+pub(crate) fn read_key_object(
+    verifier: &Verifier<'_>,
+    v: &Value,
+) -> crate::verification::Result<ReleaseKey> {
     let obj = v.as_object().ok_or("a key is not an object")?;
     only_fields(obj, &["keytype", "scheme", "keyval"], "key")?;
     let keytype = str_field(obj, "keytype")?;
@@ -92,16 +96,16 @@ pub(crate) fn read_key_object(v: &Value) -> Result<ReleaseKey, String> {
     only_fields(keyval, &["public"], "keyval")?;
     let public = str_field(keyval, "public")?;
     match (keytype, scheme) {
-        ("ed25519", "ed25519") => crate::sign::public_key_from_hex(public).map(ReleaseKey::Ed25519),
-        ("ecdsa", "ecdsa-sha2-nistp256") => p256_from_hex(public),
-        _ => Err(format!(
-            "key type '{keytype}' with scheme '{scheme}' is not one this build verifies \
-             (ed25519/ed25519, ecdsa/ecdsa-sha2-nistp256)"
-        )),
+        ("ed25519", "ed25519") => verifier.public_key_from_hex(public).map(ReleaseKey::Ed25519),
+        ("ecdsa", "ecdsa-sha2-nistp256") => p256_from_hex_guarded(verifier, public),
+        _ => Err(format!("key type '{keytype}' with scheme '{scheme}' is not one this build verifies (ed25519/ed25519, ecdsa/ecdsa-sha2-nistp256)").into()),
     }
 }
 
-pub(crate) fn p256_from_hex(s: &str) -> Result<ReleaseKey, String> {
+pub(crate) fn p256_from_hex_guarded(
+    verifier: &Verifier<'_>,
+    s: &str,
+) -> crate::verification::Result<ReleaseKey> {
     let bytes = hex::decode(s.trim()).map_err(|e| format!("p256 public key not valid hex: {e}"))?;
     let point: [u8; 65] = bytes.as_slice().try_into().map_err(|_| {
         format!(
@@ -112,24 +116,17 @@ pub(crate) fn p256_from_hex(s: &str) -> Result<ReleaseKey, String> {
     if point[0] != 4 {
         return Err("p256 public key is not an uncompressed SEC1 point (04 || x || y)".into());
     }
+    Verifier::primitive(verifier.crypto.validate_p256(&point))?;
     Ok(ReleaseKey::P256(point))
 }
 
-/// Strict Ed25519 (a weak key never verifies) or P-256 SHA-256 with an ASN.1 DER signature.
-pub fn verify(key: &ReleaseKey, msg: &[u8], sig: &[u8]) -> bool {
-    match key {
-        ReleaseKey::Ed25519(k) => {
-            let Ok(sig) = <&[u8; 64]>::try_from(sig) else {
-                return false;
-            };
-            !k.is_weak()
-                && k.verify_strict(msg, &crate::sign::Signature::from_bytes(sig))
-                    .is_ok()
-        }
-        ReleaseKey::P256(k) => {
-            k[0] == 4 && busbar_contract::crypto::ecdsa_p256::verify_asn1(k, msg, sig).is_ok()
-        }
-    }
+/// Strict verification; provider failures remain distinct from invalid signatures.
+pub fn verify(
+    key: &ReleaseKey,
+    msg: &[u8],
+    sig: &[u8],
+) -> Result<bool, busbar_contract::crypto::verification::Failure> {
+    Verifier::unrestricted().verify(key, msg, sig)
 }
 
 type KeyedSigs = Vec<(String, Vec<u8>)>;
@@ -219,6 +216,15 @@ fn header(obj: &Map, ty: &str) -> Result<(u64, u64), String> {
 }
 
 pub fn read_keys(bytes: &[u8]) -> Result<Signed<KeysDoc>, String> {
+    Verifier::unrestricted()
+        .read_keys(bytes)
+        .map_err(|error| error.to_string())
+}
+
+pub(crate) fn read_keys_guarded(
+    verifier: &Verifier<'_>,
+    bytes: &[u8],
+) -> crate::verification::Result<Signed<KeysDoc>> {
     let (signed, signed_bytes, signatures) = read_envelope(bytes, "keys document")?;
     let obj = signed.as_object().ok_or("`signed` is not an object")?;
     only_fields(
@@ -241,11 +247,10 @@ pub fn read_keys(bytes: &[u8]) -> Result<Signed<KeysDoc>, String> {
         .and_then(Value::as_object)
         .ok_or("`keys` is not an object")?
     {
-        let key = read_key_object(k).map_err(|e| format!("key {id}: {e}"))?;
-        if key_id(&key) != *id {
-            return Err(format!(
-                "key {id} is listed under an id that is not its own"
-            ));
+        let key = read_key_object(verifier, k)
+            .map_err(|e| e.map_refused(|e| format!("key {id}: {e}")))?;
+        if verifier.key_id(&key)? != *id {
+            return Err(format!("key {id} is listed under an id that is not its own").into());
         }
         keys.insert(id.to_string(), key);
     }

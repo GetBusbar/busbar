@@ -2517,7 +2517,7 @@ version = "2.1.1"
 source = "git+https://github.com/MattJackson/serde-saphyr?rev=a94d2da01a448d348b5d14945e29192e511b8452#a94d2da01a448d348b5d14945e29192e511b8452"
 dependencies = [
  "annotate-snippets",
- "base64 0.23.1",
+ "base64 0.22.1",
  "encoding_rs_io",
  "granit-parser",
  "nohash-hasher",

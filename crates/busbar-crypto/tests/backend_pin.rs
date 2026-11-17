@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 const BACKEND: &str = "crates/busbar-crypto-backend";
-const CORE_URL: &str = "https://github.com/GetBusbar/busbar";
+const CORE_URL: &str = "https://github.com/GetBusbar/busbar.git";
 
 fn here() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
