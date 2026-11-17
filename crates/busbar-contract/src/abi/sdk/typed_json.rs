@@ -10,6 +10,7 @@
 #![deny(missing_docs)]
 #![deny(missing_debug_implementations)]
 
+#[cfg(test)]
 use busbar_count::json_span::MAX_JSON_DEPTH;
 
 use serde::{Deserialize, Deserializer};
@@ -19,6 +20,9 @@ use std::marker::PhantomData;
 /// Parse one document bounded by [`MAX_JSON_DEPTH`], preserving exact numeric lexemes and
 /// literal object keys, including serde's private number marker. Duplicate object keys keep
 /// their last value. This is for public JSON; decoded strings are ordinary owned strings.
+/// Since #162 S1 a test oracle only (the settings tests compare against serde_json's exact reading);
+/// public JSON reads through `json::parse_value`.
+#[cfg(test)]
 pub fn parse_value(bytes: &[u8]) -> Result<Value, serde_json::Error> {
     if crate::spans::exceeds_max_depth(bytes, MAX_JSON_DEPTH) {
         return Err(<serde_json::Error as serde::de::Error>::custom(format!(
@@ -83,8 +87,10 @@ trait Scalar {
 }
 
 /// Each scalar as `Value` reads it, numbers kept as their exact lexeme.
+#[cfg(test)]
 struct Exact;
 
+#[cfg(test)]
 impl Scalar for Exact {
     fn read(token: &str) -> Result<Value, serde_json::Error> {
         serde_json::from_str::<Value>(token)
