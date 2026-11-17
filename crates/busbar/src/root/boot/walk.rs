@@ -12,11 +12,13 @@
 //! walk reads only plan indices and phases: no kind, plugin name or per-kind branch (§15.8, 257b).
 
 use busbar_plugin_abi::host_side::caller::BoxFut;
+#[cfg(test)]
 use busbar_plugin_abi::host_side::needs::Needs;
+#[cfg(test)]
 use busbar_plugin_abi::types::KindCode;
-use busbar_plugin_loader::instance::{
-    BootPhase, BootPlan, InstanceSpec, OpenError, OpenedPort, Registry,
-};
+use busbar_plugin_loader::instance::{BootPhase, BootPlan, OpenError};
+#[cfg(test)]
+use busbar_plugin_loader::instance::{InstanceSpec, OpenedPort, Registry};
 
 /// What the walk asks of the registry. `index` is the configured instance index the plan names.
 pub trait BootSteps: Sync {
@@ -132,6 +134,8 @@ impl core::fmt::Display for OpenText<'_> {
 
 /// Walk `plan`: open every step in order, with the deployment point between 2b and 2c (or after 2b when the
 /// plan has no 2c step). Stops at the first refusal; what was opened is dropped (closed) with the error.
+/// Fixtures retain the single-plan walk; production rebuilds the serving plan after S6.
+#[cfg(test)]
 pub async fn walk<S: BootSteps>(
     plan: &BootPlan,
     steps: &S,
@@ -139,12 +143,14 @@ pub async fn walk<S: BootSteps>(
     bootstrap(plan, steps).await?.finish(steps).await
 }
 
-/// Completed S5/S6 owners and the validated remainder. Constructing this value has
+/// Completed S5/S6 owners from a validated plan. Constructing this value has
 /// published and rechecked the deployment identity, but has opened no 2c instance.
-/// Root may retain it while reading overlays and constructing complete S7 services.
+/// Root retains these owners while reading overlays and constructing the effective S7 plan.
+/// Only single-plan fixtures retain the original unopened remainder.
 pub struct Bootstrap<O> {
     opened: Vec<(u32, BootPhase, O)>,
     deployment: [u8; 16],
+    #[cfg(test)]
     rest: Vec<u32>,
 }
 
@@ -165,6 +171,7 @@ impl<O: Send> Bootstrap<O> {
     }
 
     /// Consume the stage exactly once after the caller has prepared serving dependencies.
+    #[cfg(test)]
     pub async fn finish<S: BootSteps<Opened = O>>(
         self,
         steps: &S,
@@ -192,9 +199,11 @@ pub async fn bootstrap<S: BootSteps>(
 ) -> Result<Bootstrap<S::Opened>, BootRefused> {
     in_phase_order(plan)?;
     let mut opened = Vec::new();
+    #[cfg(test)]
     let mut rest = Vec::new();
     for &(index, phase) in &plan.steps {
         if phase == BootPhase::Rest {
+            #[cfg(test)]
             rest.push(index);
             continue;
         }
@@ -209,6 +218,7 @@ pub async fn bootstrap<S: BootSteps>(
     Ok(Bootstrap {
         opened,
         deployment,
+        #[cfg(test)]
         rest,
     })
 }
@@ -301,9 +311,10 @@ pub fn deployment_bytes(text: &str) -> Result<[u8; 16], String> {
 pub type DeploymentRead =
     dyn Fn(&busbar_ports::store::StoreHandle) -> BoxFut<'static, Result<[u8; 16], String>> + Sync;
 
-/// The MIN-3 registry as the walk's steps: `instances[i]` is configured instance `i` with its kind, exactly the
+/// The fixture registry as the walk's steps: `instances[i]` is configured instance `i` with its kind, exactly the
 /// slice `Registry::boot_plan` was given. The kind picks the registry's typed `open_<kind>`; this table is the
-/// only place the boot names a kind.
+/// fixture's kind dispatch.
+#[cfg(test)]
 pub struct RegistryBoot<'r, N: Needs> {
     pub registry: &'r Registry,
     pub needs: &'r std::sync::Arc<N>,
@@ -315,6 +326,7 @@ pub struct RegistryBoot<'r, N: Needs> {
     pub deployment: &'r DeploymentRead,
 }
 
+#[cfg(test)]
 fn wrap_open<'a, T: 'a>(
     fut: BoxFut<'a, Result<T, OpenError>>,
     wrap: fn(T) -> OpenedPort,
@@ -322,6 +334,7 @@ fn wrap_open<'a, T: 'a>(
     Box::pin(async move { fut.await.map(wrap) })
 }
 
+#[cfg(test)]
 impl<N: Needs> RegistryBoot<'_, N> {
     fn spec(&self, index: u32) -> Option<&(KindCode, InstanceSpec<'_>)> {
         usize::try_from(index)
@@ -331,12 +344,14 @@ impl<N: Needs> RegistryBoot<'_, N> {
 }
 
 /// The refusal of a plan step that names an instance the boot was not given.
+#[cfg(test)]
 fn unconfigured(index: u32) -> OpenError {
     OpenError::Unknown(format!(
         "the boot plan names instance {index}, which is not configured"
     ))
 }
 
+#[cfg(test)]
 impl<N: Needs> BootSteps for RegistryBoot<'_, N> {
     type Opened = OpenedPort;
 
