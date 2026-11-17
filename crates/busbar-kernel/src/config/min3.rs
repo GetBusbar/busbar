@@ -25,6 +25,8 @@ use super::DeployCfg;
 /// for a config that writes none of them.
 #[derive(Clone, PartialEq, Eq)]
 pub struct Min3Config {
+    /// Checked host outbound credential custody policy (IF §12.18).
+    pub outbound: crate::custody::CredPolicy,
     /// Checked host refresh interval (IF §8.3), never a plugin setting.
     pub unknown_key_refresh_s: u64,
     /// Explicit issued-kind grants keyed by configured auth instance, never image name.
@@ -41,6 +43,7 @@ pub struct Min3Config {
 impl Default for Min3Config {
     fn default() -> Self {
         Self {
+            outbound: crate::custody::CredPolicy::DEFAULT,
             unknown_key_refresh_s: 30,
             issued_kinds: BTreeMap::new(),
             verdict_cache: Default::default(),
@@ -141,6 +144,15 @@ pub fn parse_min3(deploy: &DeployCfg) -> Result<Min3Config, Vec<String>> {
     let insecure_transport = kept(parse_insecure_transport(deploy), &mut refused);
     let provisioning = kept(parse_provisioning(deploy), &mut refused);
     let issued_kinds = kept(parse_issued_kinds(deploy), &mut refused);
+    let outbound = kept(
+        deploy
+            .auth
+            .as_ref()
+            .map_or_else(Default::default, |auth| auth.outbound)
+            .resolve()
+            .map_err(|why| vec![why.to_owned()]),
+        &mut refused,
+    );
     let verdict_cache = kept(
         deploy
             .auth
@@ -154,6 +166,7 @@ pub fn parse_min3(deploy: &DeployCfg) -> Result<Min3Config, Vec<String>> {
         return Err(refused);
     }
     Ok(Min3Config {
+        outbound,
         unknown_key_refresh_s: deploy
             .auth
             .as_ref()

@@ -545,6 +545,45 @@ pub struct AuthDeployCfg {
     /// Core-owned native verifier cache policy (IF §12.28), never plugin settings.
     #[serde(default)]
     pub verdict_cache: VerdictCacheCfg,
+    /// Core-owned outbound credential custody policy (IF §12.18).
+    #[serde(default)]
+    pub outbound: OutboundCredentialCfg,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq)]
+#[serde(deny_unknown_fields, default)]
+pub struct OutboundCredentialCfg {
+    pub refresh_ahead_s: u32,
+    pub min_mint_interval_s: u32,
+    pub mint_deadline_s: u32,
+    pub max_keys_per_instance: u32,
+    pub max_hold_s: u32,
+}
+
+impl Default for OutboundCredentialCfg {
+    fn default() -> Self {
+        let policy = crate::custody::CredPolicy::DEFAULT;
+        Self {
+            refresh_ahead_s: policy.refresh_ahead_s,
+            min_mint_interval_s: policy.min_mint_interval_s,
+            mint_deadline_s: policy.mint_deadline_s,
+            max_keys_per_instance: policy.max_keys_per_instance,
+            max_hold_s: policy.max_hold_s,
+        }
+    }
+}
+
+impl OutboundCredentialCfg {
+    pub fn resolve(self) -> Result<crate::custody::CredPolicy, &'static str> {
+        crate::custody::CredPolicy {
+            refresh_ahead_s: self.refresh_ahead_s,
+            min_mint_interval_s: self.min_mint_interval_s,
+            mint_deadline_s: self.mint_deadline_s,
+            max_keys_per_instance: self.max_keys_per_instance,
+            max_hold_s: self.max_hold_s,
+        }
+        .checked()
+    }
 }
 
 /// `auth.verdict_cache` uses the kernel cache's adopted defaults and bounds.
@@ -651,6 +690,7 @@ impl Default for AuthDeployCfg {
             policy: AuthPolicyCfg::default(),
             login_limits: LoginLimitsCfg::default(),
             verdict_cache: VerdictCacheCfg::default(),
+            outbound: OutboundCredentialCfg::default(),
         }
     }
 }
@@ -660,6 +700,7 @@ impl Default for AuthDeployCfg {
 /// constructed by `resolve`, never parsed from YAML.
 #[derive(Debug, Clone)]
 pub struct AuthCfg {
+    pub outbound: OutboundCredentialCfg,
     pub unknown_key_refresh_s: u64,
     /// The authored native verifier cache policy, retained for config round trips.
     pub verdict_cache: VerdictCacheCfg,
@@ -702,6 +743,7 @@ impl AuthCfg {
     ) -> impl Serialize + 'a {
         #[derive(Serialize)]
         struct View<'a, F0: Serialize, F1: Serialize, F2: Serialize, F3: Serialize> {
+            outbound: &'a OutboundCredentialCfg,
             unknown_key_refresh_s: u64,
             verdict_cache: &'a VerdictCacheCfg,
             require_if_match: &'a Option<bool>,
@@ -714,6 +756,7 @@ impl AuthCfg {
             policy: &'a AuthPolicyCfg,
         }
         View {
+            outbound: &self.outbound,
             unknown_key_refresh_s: self.unknown_key_refresh_s,
             verdict_cache: &self.verdict_cache,
             require_if_match: &self.require_if_match,
@@ -743,6 +786,7 @@ impl AuthCfg {
 impl AuthCfg {
     pub fn default_none() -> Self {
         Self {
+            outbound: OutboundCredentialCfg::default(),
             unknown_key_refresh_s: 30,
             verdict_cache: VerdictCacheCfg::default(),
             require_if_match: None,

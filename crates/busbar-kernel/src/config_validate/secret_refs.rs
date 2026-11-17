@@ -275,6 +275,7 @@ fn walk_secret_refs_with_boot_token<'a>(
     if let Some(auth) = auth {
         let crate::config::AuthCfg {
             verdict_cache: _,
+            outbound: _,
             unknown_key_refresh_s: _,
             require_if_match: _,
             signing_key,
