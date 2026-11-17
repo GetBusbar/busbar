@@ -11,8 +11,10 @@ use std::ops::Range;
 use busbar_contract::secure::SecureVec;
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 
-use super::budget::{CapacityDenied, Charge, Claim, LinkBudget, UnitBudget, REPLY_BYTES};
-use super::frame::MAX_MESSAGE;
+use super::budget::{
+    CapacityDenied, Charge, Claim, InstanceBudget, LinkBudget, UnitBudget, REPLY_BYTES,
+};
+use super::frame::{Framing, MAX_MESSAGE};
 
 pub const OUTPUT_BYTES: usize = MAX_MESSAGE + 24;
 
@@ -97,6 +99,9 @@ impl ReplyStorage {
             bytes: writer,
             _payload: charge,
             _outbound: outbound,
+            ask: None,
+            link: link.clone(),
+            framing: Framing::Ndjson,
         })
     }
 }
@@ -118,9 +123,109 @@ pub struct GuardedWrite {
     bytes: SecureVec,
     _payload: Charge,
     _outbound: Charge,
+    ask: Option<Charge>,
+    link: LinkBudget,
+    framing: Framing,
 }
 
 impl GuardedWrite {
+    /// The already validated sessionless DEMUX fallback, bounded by its source-owned 4096-byte limit.
+    /// This private control path cannot be selected by ordinary sends or protected replies.
+    pub(super) fn fallback(
+        instance: &InstanceBudget,
+        link: &LinkBudget,
+        framing: Framing,
+        bytes: &[u8],
+    ) -> Result<Self, CapacityDenied> {
+        let wire = Self::wire_len(framing, bytes)?;
+        let (payload, outbound) = instance.reserve_fallback(link, bytes.len(), wire)?;
+        let mut owned = SecureVec::zeroed(bytes.len());
+        owned.copy_from_slice(bytes);
+        Ok(Self {
+            bytes: owned,
+            _payload: payload,
+            _outbound: outbound,
+            ask: None,
+            link: link.clone(),
+            framing,
+        })
+    }
+
+    fn wire_len(framing: Framing, bytes: &[u8]) -> Result<usize, CapacityDenied> {
+        match framing {
+            Framing::None => Ok(bytes.len()),
+            Framing::Ndjson => bytes.len().checked_add(1).ok_or(CapacityDenied),
+            Framing::Sse => bytes
+                .split(|b| *b == b'\n')
+                .try_fold(1usize, |len, line| {
+                    len.checked_add(line.len())?.checked_add(7)
+                })
+                .ok_or(CapacityDenied),
+        }
+    }
+    /// Admit a general message before its only payload copy. The ask cell is separate from the
+    /// writer payload so write completion cannot prematurely release an outstanding ask.
+    pub fn new(
+        unit: &UnitBudget,
+        link: &LinkBudget,
+        framing: Framing,
+        bytes: &[u8],
+        ask: bool,
+    ) -> Result<Self, CapacityDenied> {
+        if bytes.len() > MAX_MESSAGE {
+            return Err(CapacityDenied);
+        }
+        let wire_bytes = Self::wire_len(framing, bytes)?;
+        let payload = unit.reserve(
+            Claim {
+                bytes: bytes.len().checked_add(1).ok_or(CapacityDenied)?,
+                ..Claim::default()
+            },
+            None,
+        )?;
+        let outbound = unit.reserve(
+            Claim {
+                outbound_bytes: wire_bytes,
+                messages: 1,
+                ..Claim::default()
+            },
+            Some(link),
+        )?;
+        let ask = if ask {
+            Some(unit.reserve(
+                Claim {
+                    asks: 1,
+                    ..Claim::default()
+                },
+                Some(link),
+            )?)
+        } else {
+            None
+        };
+        let mut owned = SecureVec::zeroed(bytes.len());
+        owned.copy_from_slice(bytes);
+        Ok(Self {
+            bytes: owned,
+            _payload: payload,
+            _outbound: outbound,
+            ask,
+            link: link.clone(),
+            framing,
+        })
+    }
+
+    pub fn as_bytes(&self) -> &[u8] {
+        self.bytes.as_slice()
+    }
+
+    pub(super) fn destination(&self, link: &LinkBudget, framing: Framing) -> bool {
+        self.link.same_link(link) && self.framing == framing
+    }
+
+    pub(super) fn take_ask(&mut self) -> Option<Charge> {
+        self.ask.take()
+    }
+
     pub fn len(&self) -> usize {
         self.bytes.len()
     }
@@ -131,8 +236,32 @@ impl GuardedWrite {
     /// Retains byte/message custody while blocked, through payload, delimiter and flush. Dropping
     /// an interrupted future wipes its backing before its account shares are returned.
     pub async fn write_ndjson<W: AsyncWrite + Unpin>(self, writer: &mut W) -> io::Result<()> {
-        writer.write_all(self.bytes.as_slice()).await?;
-        writer.write_all(b"\n").await?;
+        if self.framing != Framing::Ndjson {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "channel framing mismatch",
+            ));
+        }
+        self.write(writer).await
+    }
+
+    /// Writes every supported framing directly from the charged backing, without an encoded copy.
+    pub async fn write<W: AsyncWrite + Unpin>(self, writer: &mut W) -> io::Result<()> {
+        match self.framing {
+            Framing::None => writer.write_all(self.bytes.as_slice()).await?,
+            Framing::Ndjson => {
+                writer.write_all(self.bytes.as_slice()).await?;
+                writer.write_all(b"\n").await?;
+            }
+            Framing::Sse => {
+                for line in self.bytes.as_slice().split(|b| *b == b'\n') {
+                    writer.write_all(b"data: ").await?;
+                    writer.write_all(line).await?;
+                    writer.write_all(b"\n").await?;
+                }
+                writer.write_all(b"\n").await?;
+            }
+        }
         writer.flush().await
     }
 }

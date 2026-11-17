@@ -76,6 +76,8 @@ pub trait UpstreamChannels: Send + Sync + 'static {
     ) -> BoxFut<'a, Result<Attachment, RecordsDenied>>;
 }
 pub struct ChannelReq<'a> {
+    /// The actual admitted unit's shared account; never constructed per attachment.
+    pub budget: &'a budget::UnitBudget,
     pub exchange: u32,
     pub carrier: u32,
     pub flags: u32,
@@ -93,27 +95,62 @@ pub struct Attachment {
     pub ready_tail: Box<[u8]>,
     rx: mpsc::Receiver<ChannelMsg>,
     link: Arc<Link>,
+    budget: budget::UnitBudget,
+    _lease: budget::Charge,
 }
 impl Attachment {
     /// Built by the carrier driver for each attach: `rx` carries the slot's demuxed inbound messages.
     #[must_use]
     pub fn linked(
         link: Arc<Link>,
+        budget: budget::UnitBudget,
         generation: u64,
         slot: u64,
         greet: bool,
         ready_tail: Box<[u8]>,
         rx: mpsc::Receiver<ChannelMsg>,
-    ) -> Self {
-        link.attach();
-        Self {
+    ) -> Result<Self, RecordsDenied> {
+        if !budget.accepts_link(link.budget()) {
+            return Err(RecordsDenied::Invalid);
+        }
+        let lease = budget
+            .reserve(
+                budget::Claim {
+                    leases: 1,
+                    ..budget::Claim::default()
+                },
+                None,
+            )
+            .map_err(|_| RecordsDenied::Unavailable)?;
+        Self::linked_reserved(link, budget, lease, generation, slot, greet, ready_tail, rx)
+    }
+
+    pub(super) fn linked_reserved(
+        link: Arc<Link>,
+        budget: budget::UnitBudget,
+        lease: budget::Charge,
+        generation: u64,
+        slot: u64,
+        greet: bool,
+        ready_tail: Box<[u8]>,
+        rx: mpsc::Receiver<ChannelMsg>,
+    ) -> Result<Self, RecordsDenied> {
+        if !budget.accepts_link(link.budget()) {
+            return Err(RecordsDenied::Invalid);
+        }
+        if !link.attach(slot) {
+            return Err(RecordsDenied::Unavailable);
+        }
+        Ok(Self {
             generation,
             slot,
             greet,
             ready_tail,
             rx,
             link,
-        }
+            budget,
+            _lease: lease,
+        })
     }
     /// Round 18: `ask` = the EX_MSG carried MSG_ASK (enters the ask line; under CH_SERIAL waits its turn).
     pub fn send<'a>(
@@ -123,9 +160,19 @@ impl Attachment {
     ) -> BoxFut<'a, Result<(), RecordsDenied>> {
         Box::pin(async move {
             self.link
-                .send(self.slot, message, ask)
+                .send(self.slot, &self.budget, message, ask)
                 .map_err(|()| RecordsDenied::Unavailable)
         })
+    }
+    /// Move a validated charged reply without copying or substituting its destination generation.
+    pub fn send_owned(&mut self, message: protected::GuardedWrite) -> Result<(), RecordsDenied> {
+        self.link
+            .send_owned(self.slot, message)
+            .map_err(|_| RecordsDenied::Unavailable)
+    }
+
+    pub fn link_budget(&self) -> &budget::LinkBudget {
+        self.link.budget()
     }
     pub fn ready(&mut self, tail: &[u8]) {
         if self.greet {

@@ -197,7 +197,7 @@ impl InstanceBudget {
             scope: Scope {
                 process: Arc::clone(&self.process),
                 instance: Arc::clone(&self.account),
-                unit: Account::new(Claim {
+                unit: Some(Account::new(Claim {
                     bytes: UNIT_BYTES,
                     outbound_bytes: UNIT_BYTES,
                     leases: 8,
@@ -205,7 +205,7 @@ impl InstanceBudget {
                     completions: 16,
                     asks: 32,
                     messages: 64,
-                }),
+                })),
                 channel: None,
             },
         }
@@ -223,6 +223,50 @@ impl InstanceBudget {
             }),
         }
     }
+
+    pub(super) fn accepts_unit(&self, unit: &UnitBudget) -> bool {
+        Arc::ptr_eq(&self.account, &unit.scope.instance)
+    }
+
+    /// Only sessionless DEMUX control fallback may omit a unit. It never consumes protected reserve.
+    pub(super) fn reserve_fallback(
+        &self,
+        link: &LinkBudget,
+        bytes: usize,
+        wire: usize,
+    ) -> Result<(Charge, Charge), CapacityDenied> {
+        if bytes > 4096 || !Arc::ptr_eq(&self.account, &link.instance) {
+            return Err(CapacityDenied);
+        }
+        let scope = Scope {
+            process: self.process.clone(),
+            instance: self.account.clone(),
+            unit: None,
+            channel: None,
+        };
+        let payload = scope.reserve(
+            Claim {
+                bytes: bytes + 1,
+                ..Claim::default()
+            },
+            Class::General,
+        )?;
+        let scope = Scope {
+            process: self.process.clone(),
+            instance: self.account.clone(),
+            unit: None,
+            channel: Some(link.account.clone()),
+        };
+        let outbound = scope.reserve(
+            Claim {
+                outbound_bytes: wire,
+                messages: 1,
+                ..Claim::default()
+            },
+            Class::General,
+        )?;
+        Ok((payload, outbound))
+    }
 }
 
 #[derive(Clone)]
@@ -236,7 +280,17 @@ pub struct LinkBudget {
     account: Arc<Account>,
 }
 
+impl LinkBudget {
+    pub(crate) fn same_link(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.account, &other.account) && Arc::ptr_eq(&self.instance, &other.instance)
+    }
+}
+
 impl UnitBudget {
+    pub(super) fn accepts_link(&self, link: &LinkBudget) -> bool {
+        Arc::ptr_eq(&self.scope.instance, &link.instance)
+    }
+
     pub fn reserve(
         &self,
         claim: Claim,
@@ -266,7 +320,26 @@ impl UnitBudget {
             }
             scope.channel = Some(Arc::clone(&link.account));
         }
-        scope.transaction(|accounts| {
+        scope.reserve(claim, class)
+    }
+
+    #[cfg(test)]
+    pub(super) fn used(&self) -> Claim {
+        self.scope.unit.as_ref().unwrap().used()
+    }
+}
+
+#[derive(Clone)]
+struct Scope {
+    process: Arc<Account>,
+    instance: Arc<Account>,
+    unit: Option<Arc<Account>>,
+    channel: Option<Arc<Account>>,
+}
+
+impl Scope {
+    fn reserve(self, claim: Claim, class: Class) -> Result<Charge, CapacityDenied> {
+        self.transaction(|accounts| {
             if !accounts.iter().all(|account| account.addable(claim, class)) {
                 return Err(CapacityDenied);
             }
@@ -280,27 +353,12 @@ impl UnitBudget {
             Ok(())
         })?;
         Ok(Charge {
-            scope,
+            scope: self,
             claim,
             class,
         })
     }
 
-    #[cfg(test)]
-    pub(super) fn used(&self) -> Claim {
-        self.scope.unit.used()
-    }
-}
-
-#[derive(Clone)]
-struct Scope {
-    process: Arc<Account>,
-    instance: Arc<Account>,
-    unit: Arc<Account>,
-    channel: Option<Arc<Account>>,
-}
-
-impl Scope {
     fn transaction<R>(&self, f: impl FnOnce(&mut [&mut Counts]) -> R) -> R {
         // Every reservation, transfer and release uses this order. No callbacks, logging or
         // allocations run in the transaction; the process lock makes the multi-scope change atomic.
@@ -314,12 +372,19 @@ impl Scope {
             .0
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        let mut unit = self.unit.0.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Some(channel) = &self.channel {
-            let mut channel = channel.0.lock().unwrap_or_else(PoisonError::into_inner);
-            f(&mut [&mut process, &mut instance, &mut unit, &mut channel])
-        } else {
-            f(&mut [&mut process, &mut instance, &mut unit])
+        let mut unit = self
+            .unit
+            .as_ref()
+            .map(|account| account.0.lock().unwrap_or_else(PoisonError::into_inner));
+        let mut channel = self
+            .channel
+            .as_ref()
+            .map(|account| account.0.lock().unwrap_or_else(PoisonError::into_inner));
+        match (unit.as_mut(), channel.as_mut()) {
+            (Some(unit), Some(channel)) => f(&mut [&mut process, &mut instance, unit, channel]),
+            (Some(unit), None) => f(&mut [&mut process, &mut instance, unit]),
+            (None, Some(channel)) => f(&mut [&mut process, &mut instance, channel]),
+            (None, None) => f(&mut [&mut process, &mut instance]),
         }
     }
 }
