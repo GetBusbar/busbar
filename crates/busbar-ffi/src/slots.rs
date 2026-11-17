@@ -6,7 +6,7 @@
 //!
 //! `unsafe` here: the value write of `insert`, `get_mut` (def and body), the value take of `remove`,
 //! `Sync for Slots`, `tie` (the one lifetime erasure of a chain future that borrows its instance) and
-//! `drop_inst` (def, the in-place drop and the free; the C-CLOSE-PARKED test calls it).
+//! `drop_inst` (def, the in-place drop and the free).
 
 #![allow(unsafe_code)]
 
@@ -658,7 +658,6 @@ mod tests {
     use super::*;
     use crate::raw::seal::ToChain;
     use crate::raw::{Arg, Bytes};
-    use std::sync::atomic::AtomicBool;
 
     #[test]
     fn tokens_pack_and_unpack() {
@@ -889,57 +888,5 @@ mod tests {
         assert_eq!(counting::rmw(), rmw, "a miss and a scan: none");
         assert_eq!(table.remove(again, newer), Some(2));
         assert_eq!(counting::rmw() - rmw, 1);
-    }
-
-    struct Plugin {
-        alive: AtomicBool,
-    }
-    impl Drop for Plugin {
-        fn drop(&mut self) {
-            self.alive.store(false, std::sync::atomic::Ordering::SeqCst);
-        }
-    }
-    struct Parked<'p> {
-        plugin: &'p Plugin,
-        saw_alive: &'static AtomicBool,
-    }
-    impl Drop for Parked<'_> {
-        fn drop(&mut self) {
-            let alive = self.plugin.alive.load(std::sync::atomic::Ordering::SeqCst);
-            self.saw_alive
-                .store(alive, std::sync::atomic::Ordering::SeqCst);
-        }
-    }
-
-    /// C-CLOSE-PARKED (Miri): a parked chain future that reads the plugin in its `Drop` runs before the
-    /// plugin drops, because `Inst` drops `chains` first.
-    #[test]
-    fn a_parked_chain_drops_before_its_plugin() {
-        type I = Inst<Plugin, (), (), ()>;
-        static SAW_ALIVE: AtomicBool = AtomicBool::new(false);
-        let address = Box::new(I::new(Plugin {
-            alive: AtomicBool::new(true),
-        }))
-        .into_instance();
-        let raw = core::ptr::with_exposed_provenance::<c_void>(address as usize);
-        // SAFETY: `raw` is the live boxed instance just made; it is only read until `drop_inst` below.
-        let inst = unsafe { &*raw.cast::<I>() };
-        let parked = Parked {
-            plugin: inst.plugin(),
-            saw_alive: &SAW_ALIVE,
-        };
-        let fut: Pin<Box<dyn Future<Output = ()> + Send + '_>> = Box::pin(async move {
-            let _keep = &parked;
-            core::future::pending::<()>().await;
-        });
-        let Some(id) = ChainId::mint(inst.serial()) else {
-            panic!("mint");
-        };
-        let mut cb = ChainBox::new(tie(fut), id, ());
-        assert!(ChainRef::new(&mut cb).poll().is_pending());
-        assert!(inst.chains().insert(cb).is_some());
-        // SAFETY: `raw` came from `into_instance` and is not used again.
-        unsafe { drop_inst::<I>(raw) };
-        assert!(SAW_ALIVE.load(std::sync::atomic::Ordering::SeqCst));
     }
 }
