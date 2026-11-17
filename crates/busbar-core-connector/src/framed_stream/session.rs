@@ -375,6 +375,8 @@ pub struct TransportConn {
     peer_closed: bool,
     /// The socket failed.
     lost: bool,
+    /// E_CLOSE was sent; the handle remains owned until its output is flushed or abandoned.
+    core_closed: bool,
 }
 
 impl std::fmt::Debug for TransportConn {
@@ -419,6 +421,7 @@ impl TransportConn {
             framer_closed: false,
             peer_closed: false,
             lost: false,
+            core_closed: false,
         };
         let acts = session.judged()?;
         Ok((session, acts))
@@ -432,13 +435,14 @@ impl TransportConn {
             framer_closed: false,
             peer_closed: false,
             lost: false,
+            core_closed: false,
         }
     }
 
     /// Whether the session still takes calls.
     #[must_use]
     pub fn is_live(&self) -> bool {
-        self.backend.is_some()
+        self.backend.is_some() && !self.framer_closed && !self.lost && !self.core_closed
     }
 
     /// Whether `stream` is held (core must not `emit` on it, nor pull its feed).
@@ -528,6 +532,7 @@ impl TransportConn {
     /// The socket failed: nothing more can be written, so no E_CLOSE will be sent.
     pub fn mark_lost(&mut self) {
         self.lost = true;
+        self.backend = None;
     }
 
     /// Core ends the live session itself with `reason` (CR_*): `emit(0, E_CLOSE, reason)`, once. `None` = not
@@ -535,13 +540,16 @@ impl TransportConn {
     /// is quarantined (the caller counts it). Either way the session takes no further call; the caller
     /// writes the answer's bytes, applies its CLOSE, and then drops this value.
     pub fn close(&mut self, reason: u32, now: Instant) -> Result<Option<Vec<Act>>, Ended> {
+        if self.core_closed || self.framer_closed {
+            return Ok(None);
+        }
         let quarantined = match &self.backend {
             Some(Backend::Port { handle, .. }) => !handle.instance().is_live(),
             #[cfg(test)]
             Some(Backend::Script(script)) => script.quarantined,
             None => true,
         };
-        if quarantined || self.framer_closed || self.peer_closed || self.lost {
+        if quarantined || self.peer_closed || self.lost {
             self.backend = None;
             return Ok(None);
         }
@@ -552,11 +560,14 @@ impl TransportConn {
             bytes: &[],
         };
         let acts = self.call(Called::Close, call, now)?;
-        self.backend = None;
+        self.core_closed = true;
         Ok(Some(acts))
     }
 
     fn call(&mut self, called: Called, call: Call<'_>, now: Instant) -> Result<Vec<Act>, Ended> {
+        if !self.is_live() {
+            return Err(Ended::Misuse("a call after the session was over"));
+        }
         let Self {
             backend, answers, ..
         } = self;
@@ -797,10 +808,11 @@ impl Task {
         write_timeout: Duration,
     ) -> Flow {
         let mut wrote = false;
+        let deadline = tokio::time::Instant::now() + write_timeout;
         for act in acts {
             match act {
                 Act::Write(bytes) => {
-                    if let Err(error) = write_bounded(io, &bytes, write_timeout).await {
+                    if let Err(error) = write_bounded(io, &bytes, deadline).await {
                         return Flow::Lost(error);
                     }
                     wrote = true;
@@ -808,9 +820,13 @@ impl Task {
                 Act::Close { abort } => {
                     if !abort {
                         if wrote {
-                            let _ = flush_bounded(io, write_timeout).await;
+                            if let Err(error) = flush_bounded(io, deadline).await {
+                                return Flow::Lost(error);
+                            }
                         }
-                        let _ = shut_bounded(io, write_timeout).await;
+                        if let Err(error) = shut_bounded(io, deadline).await {
+                            return Flow::Lost(error);
+                        }
                     }
                     return Flow::Closed;
                 }
@@ -820,7 +836,7 @@ impl Task {
                 }
                 Act::Upgrade { protocol, leftover } => {
                     if wrote {
-                        if let Err(error) = flush_bounded(io, write_timeout).await {
+                        if let Err(error) = flush_bounded(io, deadline).await {
                             return Flow::Lost(error);
                         }
                     }
@@ -869,7 +885,7 @@ impl Task {
             }
         }
         if wrote {
-            if let Err(error) = flush_bounded(io, write_timeout).await {
+            if let Err(error) = flush_bounded(io, deadline).await {
                 return Flow::Lost(error);
             }
         }
@@ -889,21 +905,27 @@ fn timed_out() -> std::io::Error {
 async fn write_bounded<S: AsyncWrite + Unpin>(
     io: &mut S,
     bytes: &[u8],
-    limit: Duration,
+    deadline: tokio::time::Instant,
 ) -> std::io::Result<()> {
-    tokio::time::timeout(limit, io.write_all(bytes))
+    tokio::time::timeout_at(deadline, io.write_all(bytes))
         .await
         .unwrap_or_else(|_| Err(timed_out()))
 }
 
-async fn flush_bounded<S: AsyncWrite + Unpin>(io: &mut S, limit: Duration) -> std::io::Result<()> {
-    tokio::time::timeout(limit, io.flush())
+async fn flush_bounded<S: AsyncWrite + Unpin>(
+    io: &mut S,
+    deadline: tokio::time::Instant,
+) -> std::io::Result<()> {
+    tokio::time::timeout_at(deadline, io.flush())
         .await
         .unwrap_or_else(|_| Err(timed_out()))
 }
 
-async fn shut_bounded<S: AsyncWrite + Unpin>(io: &mut S, limit: Duration) -> std::io::Result<()> {
-    tokio::time::timeout(limit, io.shutdown())
+async fn shut_bounded<S: AsyncWrite + Unpin>(
+    io: &mut S,
+    deadline: tokio::time::Instant,
+) -> std::io::Result<()> {
+    tokio::time::timeout_at(deadline, io.shutdown())
         .await
         .unwrap_or_else(|_| Err(timed_out()))
 }
@@ -918,10 +940,11 @@ async fn close_by_core<S: AsyncWrite + Unpin>(
     wiring: &Wiring,
 ) -> Ended2 {
     let limit = if reason == wire::CR_DRAIN {
-        wiring.drain_grace
+        wiring.drain_grace.min(wiring.write_timeout)
     } else {
         wiring.write_timeout
     };
+    let deadline = tokio::time::Instant::now() + limit;
     let (now, _) = crate::off_path::framing::session_clock();
     let acts = match conn.close(reason, now) {
         Ok(Some(acts)) => acts,
@@ -938,9 +961,8 @@ async fn close_by_core<S: AsyncWrite + Unpin>(
     for act in acts {
         match act {
             Act::Write(bytes) => {
-                if write_bounded(io, &bytes, limit).await.is_err() {
-                    abort = true;
-                    break;
+                if let Err(error) = write_bounded(io, &bytes, deadline).await {
+                    return Ended2::Lost(error);
                 }
             }
             Act::Close { abort: hard } => abort = hard,
@@ -948,8 +970,12 @@ async fn close_by_core<S: AsyncWrite + Unpin>(
         }
     }
     if !abort {
-        let _ = flush_bounded(io, limit).await;
-        let _ = shut_bounded(io, limit).await;
+        if let Err(error) = flush_bounded(io, deadline).await {
+            return Ended2::Lost(error);
+        }
+        if let Err(error) = shut_bounded(io, deadline).await {
+            return Ended2::Lost(error);
+        }
     }
     drop(conn);
     Ended2::Core(reason)
@@ -959,6 +985,7 @@ async fn close_by_core<S: AsyncWrite + Unpin>(
 enum Ended2 {
     Core(u32),
     Ended(Ended),
+    Lost(std::io::Error),
 }
 
 impl<S> From<Ended2> for Outcome<S> {
@@ -966,6 +993,7 @@ impl<S> From<Ended2> for Outcome<S> {
         match e {
             Ended2::Core(reason) => Outcome::CoreClosed(reason),
             Ended2::Ended(ended) => Outcome::Ended(ended),
+            Ended2::Lost(error) => Outcome::Lost(error),
         }
     }
 }
