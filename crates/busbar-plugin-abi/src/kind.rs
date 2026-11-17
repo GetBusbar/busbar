@@ -1127,7 +1127,7 @@ mod tests {
             ]
         );
         let mut fps: Vec<u64> = kinds.iter().map(|k| k.3).collect();
-        fps.sort_unstable();
+        fps.sort();
         fps.dedup();
         assert_eq!(fps.len(), 7, "every kind block hashes to its own FP");
         assert_eq!(store::tag::ROW, 0x0100);

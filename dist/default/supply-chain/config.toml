@@ -49,10 +49,6 @@ notes = "DEP-5: this exact Git revision requires imported coverage or a separate
 audit-as-crates-io = true
 notes = "Exact-revision Git fork of the published 0.1.4; see its exemption."
 
-[policy.stringprep]
-audit-as-crates-io = true
-notes = "DEP-5: this exact Git revision requires imported coverage or a separately justified exemption. Superseded local reviews are historical evidence only; they do not attest the Git revision or its registry base. See supply-chain/history/README.md at the repository root."
-
 [policy.serde-saphyr]
 audit-as-crates-io = true
 notes = "DEP-5: this exact Git revision requires imported coverage or a separately justified exemption. Superseded local reviews are historical evidence only; they do not attest the Git revision or its registry base. See supply-chain/history/README.md at the repository root."
@@ -68,6 +64,10 @@ notes = "Exact-revision Git fork of sonic-rs 0.5.11; see its exemption."
 [policy.sonic-simd]
 audit-as-crates-io = true
 notes = "Unchanged sonic-simd 0.1.4 from the sonic-rs fork repository; see the sonic-rs exemption."
+
+[policy.stringprep]
+audit-as-crates-io = true
+notes = "DEP-5: this exact Git revision requires imported coverage or a separately justified exemption. Superseded local reviews are historical evidence only; they do not attest the Git revision or its registry base. See supply-chain/history/README.md at the repository root."
 
 [policy.tungstenite]
 audit-as-crates-io = true
@@ -750,11 +750,11 @@ version = "0.1.1"
 criteria = "safe-to-deploy"
 
 [[exemptions.rand]]
-version = "0.10.2"
+version = "0.9.5"
 criteria = "safe-to-deploy"
 
 [[exemptions.rand]]
-version = "0.9.5"
+version = "0.10.2"
 criteria = "safe-to-deploy"
 
 [[exemptions.rand_xoshiro]]
