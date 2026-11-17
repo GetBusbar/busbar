@@ -1710,6 +1710,10 @@ async fn run(
                 "admin_listen" => AdmissionClass::Operator,
                 _ => die("unsupported native listener slot"),
             };
+            let native_alpn = supplier
+                .port
+                .alpn(busbar_plugin_abi::transport::ROLE_SERVER)
+                .to_vec();
             let native = Arc::new(
                 root::listener_native::NativeListener::new(
                     Arc::clone(&app_handle),
@@ -1746,6 +1750,7 @@ async fn run(
                 admin = Some(Box::pin(serve_listener(
                     listener,
                     native,
+                    native_alpn,
                     bind.tls.clone(),
                     Arc::clone(&tls_secret_resolver),
                     addr,
@@ -1761,6 +1766,7 @@ async fn run(
                     addr,
                     limits,
                     native,
+                    native_alpn,
                     bind.tls.clone(),
                     Arc::clone(&tls_secret_resolver),
                     &shutdown_tx,
@@ -1780,6 +1786,7 @@ async fn run(
                             serve_listener(
                                 listener,
                                 native,
+                                native_alpn,
                                 tls,
                                 resolver,
                                 addr,
@@ -2015,15 +2022,22 @@ fn serve_thread_per_core(
     bind_at: String,
     limits: AcceptLimits,
     native: Arc<root::listener_native::NativeListener>,
+    alpn: Vec<Box<str>>,
     tls_cfg: Option<busbar_kernel::config::sections::TlsCfg>,
     secret_resolver: Arc<busbar_kernel::config::secret::SecretResolver>,
     shutdown_tx: &tokio::sync::broadcast::Sender<()>,
     worker_shutdown: tokio::sync::watch::Receiver<bool>,
 ) -> Vec<std::thread::JoinHandle<()>> {
     if tls_cfg.is_some() {
-        let _ =
-            busbar_core_connector::tls::prepare(&addr, tls_cfg.as_ref(), &secret_resolver, true)
-                .unwrap_or_else(|e| die(e.to_string()));
+        let protocols: Vec<_> = alpn.iter().map(|value| value.as_bytes()).collect();
+        let _ = busbar_core_connector::tls::prepare_for_alpn(
+            &addr,
+            tls_cfg.as_ref(),
+            &secret_resolver,
+            true,
+            &protocols,
+        )
+        .unwrap_or_else(|e| die(e.to_string()));
     }
     let core_ids = core_affinity::get_core_ids().unwrap_or_default();
     let cores: Vec<Option<core_affinity::CoreId>> =
@@ -2045,6 +2059,7 @@ fn serve_thread_per_core(
     let mut handles = Vec::with_capacity(cores.len());
     for (i, core_id) in cores.into_iter().enumerate() {
         let native = Arc::clone(&native);
+        let alpn = alpn.clone();
         let tls = tls_cfg.clone();
         let resolver = secret_resolver.clone();
         let listen = addr.clone();
@@ -2088,6 +2103,7 @@ fn serve_thread_per_core(
                     serve_listener(
                         listener,
                         native,
+                        alpn,
                         tls,
                         resolver,
                         listen,
@@ -2114,6 +2130,7 @@ fn serve_thread_per_core(
 async fn serve_listener(
     listener: impl busbar_core_connector::listen::Admits,
     native: Arc<root::listener_native::NativeListener>,
+    alpn: Vec<Box<str>>,
     tls_cfg: Option<busbar_kernel::config::sections::TlsCfg>,
     secret_resolver: Arc<busbar_kernel::config::secret::SecretResolver>,
     label: String,
@@ -2133,9 +2150,15 @@ async fn serve_listener(
             None
         }
         Some(tls) => {
-            let security =
-                busbar_core_connector::tls::prepare(&label, Some(&tls), &secret_resolver, true)
-                    .unwrap_or_else(|e| die(e.to_string()));
+            let protocols: Vec<_> = alpn.iter().map(|value| value.as_bytes()).collect();
+            let security = busbar_core_connector::tls::prepare_for_alpn(
+                &label,
+                Some(&tls),
+                &secret_resolver,
+                true,
+                &protocols,
+            )
+            .unwrap_or_else(|e| die(e.to_string()));
             let mtls = tls.client_ca.is_some();
             if log_at_info {
                 tracing::info!(listen = %label, mtls, "busbar listening (TLS)");
