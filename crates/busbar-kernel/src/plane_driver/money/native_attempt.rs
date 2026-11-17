@@ -96,7 +96,11 @@ impl NativeRequestMoney {
         prepared: PreparedExchange,
     ) -> Result<PreparedRateAttempt, NativeAttemptError> {
         if !self.request.accepts_walk(selected.walk())
-            || self.request.walk_key() != Some(selected.pool())
+            || !member_granted(
+                self.request.member_grants(),
+                selected.pool(),
+                selected.qualified_member(),
+            )
             || selected.target() != prepared.target()
             || selected.preparation() != prepared.attempt()
         {
@@ -263,6 +267,12 @@ fn preparation_follows(limit: u32, attempts: &[AttemptPartition], preparation: u
         && attempts
             .last()
             .is_none_or(|prior| prior.preparation < preparation && prior.finality != Finality::Live)
+}
+
+fn member_granted(grants: &BTreeMap<String, Vec<String>>, pool: &str, member: &str) -> bool {
+    grants
+        .get(pool)
+        .is_some_and(|members| members.iter().any(|held| held == member))
 }
 use busbar_plugin_abi::records::RecErr;
 use busbar_ports::codec::fallback_usage::{

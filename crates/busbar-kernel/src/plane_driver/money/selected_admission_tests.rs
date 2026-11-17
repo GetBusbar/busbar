@@ -286,3 +286,53 @@ async fn retired_receipt_settles_only_its_original_money_open_once() {
         .unwrap();
     assert_eq!((usage.requests, usage.spend_cents), (0, 0));
 }
+
+#[tokio::test]
+async fn callback_rollback_owns_only_original_admission_until_handoff_commits() {
+    let (money, gov, context, _lease, request) = selected_fixture(78, true).await;
+    let cost = request.cost().clone();
+    let key = request.key().clone();
+    let admitted = money
+        .admit_existing(
+            request,
+            Arc::from([]),
+            FeeRefund::CallerStatus,
+            ExhaustionMode::FinishUnit,
+        )
+        .unwrap();
+    let (foreign, _, _, _foreign_lease, foreign_request) = selected_fixture(79, true).await;
+    let other = foreign
+        .admit_existing(
+            foreign_request,
+            Arc::from([]),
+            FeeRefund::CallerStatus,
+            ExhaustionMode::FinishUnit,
+        )
+        .unwrap();
+    assert!(foreign.admission_rollback(&admitted).is_err());
+    let guard = money.admission_rollback(&admitted).unwrap();
+    assert!(guard.accepts(&admitted));
+    assert!(!guard.accepts(&other));
+    assert_eq!(money.open_units(), 1);
+    drop(guard);
+    assert_eq!(money.open_units(), 0);
+    assert!(!context.is_live());
+    let usage = gov
+        .derived_bucket_usage_async(&cost, &key.id, crate::governance::WINDOW_TOTAL, true, 100)
+        .await
+        .unwrap();
+    assert_eq!((usage.requests, usage.spend_cents), (0, 0));
+
+    let (money, _, context, _lease, request) = selected_fixture(80, true).await;
+    let admitted = money
+        .admit_existing(
+            request,
+            Arc::from([]),
+            FeeRefund::CallerStatus,
+            ExhaustionMode::FinishUnit,
+        )
+        .unwrap();
+    money.admission_rollback(&admitted).unwrap().commit();
+    assert_eq!(money.open_units(), 1);
+    assert!(context.is_live());
+}
