@@ -451,13 +451,10 @@ fn audit_action_catalogue_closed() {
     for action in AUDIT_ACTIONS {
         assert!(action.contains('.') && !action.starts_with('.'), "{action}");
     }
-    for known in [
-        "keyset.rotated",
-        "config.apply",
-        "hook.register",
-        "plugin.health",
-    ] {
+    for known in ["config.apply", "hook.register", "plugin.health"] {
         assert!(AUDIT_ACTIONS.contains(&known), "{known}");
     }
+    // DES-I-3-376: no 1.6.0 writer rotates the deployment keyset, so the action is not listed.
+    assert!(!AUDIT_ACTIONS.contains(&"keyset.rotated"));
     assert!(action_admitted(&["config"], "config.apply"));
 }

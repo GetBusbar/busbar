@@ -64,7 +64,7 @@ fn audit_action_catalogue_closed() {
         published_sorted, kernel,
         "the document publishes the kernel catalogue"
     );
-    assert!(published.contains(&"keyset.rotated"));
+    assert!(!published.contains(&"keyset.rotated"));
     if let Some(params) = doc["paths"]["/api/v1/admin/audit"]["get"]["parameters"].as_array() {
         let names: Vec<&str> = params.iter().filter_map(|p| p["name"].as_str()).collect();
         assert!(!names.contains(&"kinds"), "{names:?}");
