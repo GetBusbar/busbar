@@ -106,13 +106,18 @@ pub enum Act {
     Write(Payload),
     /// Serializer-attributed ordered wire bytes, retaining their charged backing.
     WirePart {
+        /// Host response stream, or zero for connection control.
         stream: u64,
+        /// Actual serializer payload/control classification.
         class: WireClass,
+        /// The charged serialized bytes.
         bytes: Payload,
     },
     /// A finite response wire prefix requiring an actual carrier operation.
     WireEnd {
+        /// The host response stream whose serialized output ended.
         stream: u64,
+        /// The actual carrier operation needed for this finite prefix.
         requirement: CompletionRequirement,
     },
     /// Protocol abort; its opaque protocol code grants no host reason authority.

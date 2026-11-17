@@ -9,7 +9,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use crate::response_delivery::CarrierProgressReader;
-use crate::storage::StorageSource;
+use crate::storage::{StorageCredit, StorageDenied, StorageSource};
 
 /// Which way bytes are moving.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize)]
@@ -485,12 +485,75 @@ pub trait ConnectionSecurity: Send + Sync {
 /// The one boxed future [`ConnectionSecurity::wrap`] returns — named for the same reason
 pub type SecuredIoFut<'a> = Pin<Box<dyn Future<Output = std::io::Result<SecuredIo>> + Send + 'a>>;
 
+/// Actual TLS handshake metadata copied before the provider's connection is erased.
+/// Bytes reserve their original connection account before allocation and retain that credit.
+pub struct HandshakeInfo {
+    bytes: crate::secure::SecureVec,
+    alpn_len: Option<usize>,
+    server_name: Option<std::ops::Range<usize>>,
+    _credit: StorageCredit,
+}
+
+impl HandshakeInfo {
+    /// Capture actual negotiated ALPN and received server-side SNI. On a dial, `server_name`
+    /// is the configured DNS name actually sent as SNI, never a claim of received negotiation.
+    pub fn capture(
+        source: &StorageSource,
+        alpn: Option<&[u8]>,
+        server_name: Option<&str>,
+    ) -> Result<Self, StorageDenied> {
+        let alpn_len = alpn.map(<[u8]>::len);
+        let start = alpn_len.unwrap_or(0);
+        let length = start
+            .checked_add(server_name.map_or(0, str::len))
+            .ok_or(StorageDenied)?;
+        let credit = source.try_reserve(length)?;
+        let mut bytes =
+            crate::secure::SecureVec::with_capacity(length).map_err(|_| StorageDenied)?;
+        if bytes.capacity() > length {
+            return Err(StorageDenied);
+        }
+        if let Some(alpn) = alpn {
+            bytes.extend(alpn).map_err(|_| StorageDenied)?;
+        }
+        if let Some(name) = server_name {
+            bytes.extend(name.as_bytes()).map_err(|_| StorageDenied)?;
+        }
+        Ok(Self {
+            bytes,
+            alpn_len,
+            server_name: server_name.map(|_| start..length),
+            _credit: credit,
+        })
+    }
+    /// Actual ALPN bytes, preserving absence and deferring protocol-specific text validation.
+    pub fn alpn(&self) -> Option<&[u8]> {
+        self.alpn_len.map(|len| &self.bytes.as_slice()[..len])
+    }
+    /// The original received/configured SNI text as described by [`Self::capture`].
+    pub fn server_name(&self) -> Option<&str> {
+        self.server_name.as_ref().map(|range| {
+            std::str::from_utf8(&self.bytes.as_slice()[range.clone()])
+                .expect("handshake name copied from UTF-8")
+        })
+    }
+}
+impl fmt::Debug for HandshakeInfo {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("HandshakeInfo")
+            .field("bytes", &self.bytes.len())
+            .finish_non_exhaustive()
+    }
+}
+
 /// A secured stream and the peer leaf certificate verified by its handshake.
 pub struct SecuredIo {
     /// The stream returned by the completed security handshake.
     pub io: Box<dyn RawIo>,
     /// Verified peer leaf certificate bytes, or empty when no peer certificate is supplied.
     pub peer_certificate: Box<[u8]>,
+    /// Actual TLS metadata, mandatory for TLS even when ALPN/SNI are absent; None is plaintext.
+    pub tls_handshake: Option<HandshakeInfo>,
     /// Logical protocol-byte progress maintained by the returned stream's carrier producer.
     ///
     /// A TLS implementation supplies its post-handshake plaintext reader, not the raw
@@ -515,6 +578,7 @@ impl SecuredIo {
         Self {
             io: io.io,
             peer_certificate: Box::default(),
+            tls_handshake: None,
             progress: io.progress,
             storage: io.storage,
         }

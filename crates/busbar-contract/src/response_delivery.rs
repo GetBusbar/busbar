@@ -128,6 +128,8 @@ pub struct DeliverySnapshot {
 
 /// Read-only response facts usable without depending on the connector implementation.
 pub trait DeliveryReader: Send + Sync {
+    /// The original admitted identity privately retained by this delivery owner.
+    fn key(&self) -> ResponseKey;
     /// Read the response's coherent monotone snapshot.
     fn snapshot(&self) -> DeliverySnapshot;
 }
