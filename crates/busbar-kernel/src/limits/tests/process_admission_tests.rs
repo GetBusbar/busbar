@@ -140,7 +140,7 @@ fn completed_pair_releases_total_before_data_at_an_observable_interleaving() {
     let budget = budget(2);
     let mut request = budget.try_enter(AdmissionClass::Data).unwrap();
     let observe = Arc::clone(&budget);
-    Arc::get_mut(&mut request.0).unwrap().permits.after_total = Some(Box::new(move || {
+    Arc::get_mut(&mut request.0).unwrap()._permits.after_total = Some(Box::new(move || {
         assert_eq!(observe.counts.as_ref().unwrap().data.available_permits(), 0);
         assert!(observe.try_enter(AdmissionClass::Data).is_err());
         assert!(observe.try_enter(AdmissionClass::Operator).is_ok());
@@ -246,5 +246,54 @@ fn simultaneous_classes_keep_both_byte_counters_consistent() {
             });
         }
     });
+    assert_eq!(budget.used(), (0, 0));
+}
+
+#[test]
+fn incremental_input_charges_before_growth_and_retires_discarded_payload() {
+    let budget = budget(2);
+    let request = budget.try_enter(AdmissionClass::Data).unwrap();
+    let mut input = request.adopt_input(Vec::new()).unwrap();
+    input.try_extend_from_slice(b"line\r\n").unwrap();
+    assert_eq!(input.as_ref(), b"line\r\n");
+    assert_eq!(budget.used(), (6, 6));
+    assert!(input.try_extend_from_slice(b"1234567").is_err());
+    assert_eq!(
+        input.as_ref(),
+        b"line\r\n",
+        "denied growth retains original bytes"
+    );
+    assert_eq!(budget.used(), (6, 6));
+    input.truncate(4);
+    assert_eq!(input.as_ref(), b"line");
+    assert_eq!(budget.used(), (4, 4));
+    input.clear();
+    assert!(input.is_empty());
+    assert_eq!(budget.used(), (0, 0));
+}
+
+#[test]
+fn staged_credit_and_session_input_retain_the_admitted_request_until_consumed() {
+    let budget = budget(2);
+    let request = budget.try_enter(AdmissionClass::Data).unwrap();
+    let credit = request.try_reserve(4).unwrap();
+    let input = credit.into_input(b"data".to_vec()).unwrap();
+    let session = input.into_session_input();
+    drop(request);
+    assert_eq!(session.bytes, b"data");
+    assert!(session.custody.is_some());
+    assert_eq!(budget.used(), (4, 4));
+    assert!(budget.try_enter(AdmissionClass::Data).is_err());
+    drop(session);
+    assert_eq!(budget.used(), (0, 0));
+    assert!(budget.try_enter(AdmissionClass::Data).is_ok());
+}
+
+#[test]
+fn mismatched_precharged_storage_is_discarded_without_leaking_capacity() {
+    let budget = budget(2);
+    let request = budget.try_enter(AdmissionClass::Data).unwrap();
+    let credit = request.try_reserve(1).unwrap();
+    assert!(credit.into_input(b"too much".to_vec()).is_err());
     assert_eq!(budget.used(), (0, 0));
 }
