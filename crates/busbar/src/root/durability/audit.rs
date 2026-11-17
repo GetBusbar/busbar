@@ -14,7 +14,43 @@ pub(crate) struct FrozenNativeAudit {
     journal: Arc<RuntimeJournal>,
 }
 
+/// Why [`FrozenNativeAudit::prepare`] refused to freeze. The source bundle comes back with it.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum NativeFreezeRefusal<E> {
+    /// The caller's own input building refused.
+    Build(E),
+}
+
+/// A refused native preparation: the caller's original, unchanged source bundle and why.
+#[derive(Debug)]
+pub(crate) struct NativeFreezeRefused<S, E> {
+    pub(crate) source: S,
+    pub(crate) why: NativeFreezeRefusal<E>,
+}
+
 impl FrozenNativeAudit {
+    /// The native preparation (native DATA audit r2, frozen input boundary): build canonical
+    /// inputs from the borrowed source bundle and bind this book's identity and journal. It has no
+    /// journal effect. A refusal returns the original bundle unchanged; success returns it too, so
+    /// the caller drops it only after the frozen inputs are installed in the entry.
+    pub(crate) fn prepare<S, E>(
+        source: S,
+        book: &Arc<std::sync::Mutex<Durability>>,
+        _pass: &busbar_contract::caps::Pass<busbar_contract::caps::Audit>,
+        build: impl FnOnce(&S) -> Result<AuditInputs, E>,
+    ) -> Result<(Self, S), NativeFreezeRefused<S, E>> {
+        let inputs = match build(&source) {
+            Ok(inputs) => inputs,
+            Err(why) => {
+                return Err(NativeFreezeRefused {
+                    source,
+                    why: NativeFreezeRefusal::Build(why),
+                })
+            }
+        };
+        Ok((Self::new(inputs, book), source))
+    }
+
     pub(crate) fn new(mut inputs: AuditInputs, book: &Arc<std::sync::Mutex<Durability>>) -> Self {
         let held = book.lock().unwrap_or_else(|poison| poison.into_inner());
         let identity = held.line_identity();
