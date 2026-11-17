@@ -14,6 +14,13 @@ pub enum NativeAdmissionError {
     MissingChain,
     Blocked(LimitBlocked),
     Phase(AdmissionError),
+    Parent(ReasonCode),
+}
+
+impl From<ReasonCode> for NativeAdmissionError {
+    fn from(reason: ReasonCode) -> Self {
+        Self::Parent(reason)
+    }
 }
 
 /// Until installation commits, only this owner refunds the newly acquired admission.
@@ -52,6 +59,41 @@ impl Drop for PendingAdmission {
 }
 
 impl PlaneMoney {
+    /// Activate a child's own checked route while retaining its actual parent's monetary
+    /// scope, grant and fee participation. This path never acquires another admission.
+    pub fn admit_existing_child(
+        &self,
+        request: CommittingRequest,
+        parent: &ParentMoney,
+        classes: Arc<[String]>,
+        fee: FeeRefund,
+    ) -> Result<AdmittedRequest, NativeAdmissionError> {
+        if !request.is_live() {
+            return Err(NativeAdmissionError::NotLive);
+        }
+        let unit = request.unit();
+        let lane = format!("{}{PLANE_LANE_SEP}", request.context().instance());
+        self.install_child_with(
+            parent,
+            unit,
+            lane,
+            classes,
+            fee,
+            |money, grant, identity| {
+                request
+                    .admitted_child(
+                        parent,
+                        money,
+                        grant,
+                        self.gov.clone(),
+                        self.book.clone(),
+                        identity,
+                    )
+                    .map_err(NativeAdmissionError::Phase)
+            },
+        )
+    }
+
     /// Complete the actual pre-money allocation. `begin` already won its one-shot phase before
     /// this method can acquire a grant; no numeric key or copied route metadata enters here.
     pub fn admit_existing(
