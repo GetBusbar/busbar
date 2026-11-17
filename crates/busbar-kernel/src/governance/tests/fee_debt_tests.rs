@@ -196,3 +196,138 @@ async fn unfunded_targets_refuse_before_any_mutation() {
         Err(FeeDebtRefusal::Identity)
     ));
 }
+
+/// A governance with the actual recovery journal and one unresolved usage owner that a
+/// negative capture can absorb into, as the raw recovery fixtures build it.
+async fn absorbing_owner() -> (
+    Arc<super::super::GovState>,
+    super::super::recovery::RecoveryEvent,
+    super::super::raw_recovery::DurableUsageFlight,
+) {
+    use super::super::recovery::RecoveryState;
+    let gov = governance().await;
+    gov.attach_recovery_sink(Arc::new(super::super::recovery::tests::Journal::default()))
+        .await
+        .unwrap();
+    let child = super::super::GovState::usage_recovery_child(
+        "recovery-bucket",
+        0,
+        super::super::ExactUsageDelta {
+            requests: 7,
+            ..Default::default()
+        },
+        super::super::ExactUsageDelta::default(),
+    )
+    .unwrap()
+    .unwrap();
+    let owner = gov
+        .new_recovery_event(
+            child.operation_id,
+            child.kind,
+            child.body_fingerprint,
+            RecoveryState::Intent,
+            child.first_sent_at_ms,
+            child.payload,
+        )
+        .unwrap();
+    gov.keep_recovery_event(&owner).await.unwrap();
+    let captured = gov
+        .capture_usage_recovery(
+            "recovery-bucket",
+            0,
+            super::super::ExactUsageDelta {
+                requests: -3,
+                ..Default::default()
+            },
+            Default::default(),
+            &gov.capture_foreign_settled_snapshot().await,
+        )
+        .unwrap();
+    assert_eq!(
+        captured.prerequisite.as_ref().unwrap().operation_id,
+        owner.operation_id
+    );
+    (gov, owner, captured)
+}
+
+/// An absorbed negative transfers its obligation to the exact retained owner: it is not
+/// Applied by the kept Intent, and becomes Applied only once that owner's own raw operation
+/// and handoff graph settle.
+#[tokio::test]
+async fn an_absorbed_obligation_waits_for_its_exact_owner_settled_proof() {
+    let (gov, owner, captured) = absorbing_owner().await;
+    let parent = captured.prerequisite.clone().unwrap();
+    let observer = observed(&gov, &["recovery-bucket"]).await;
+    observer.mark(0, "recovery-bucket", 5, 0, 1);
+    let capture = FeeCapture::frozen(&gov.fee_debt, "recovery-bucket", 5, 0, 1, false);
+    associate(&gov, &observer, &capture);
+    assert!(gov.fee_hold(
+        parent.operation_id,
+        parent.revision,
+        parent.body_fingerprint
+    ));
+    assert!(capture.finish_transferred(
+        true,
+        false,
+        parent.operation_id,
+        parent.revision,
+        parent.body_fingerprint
+    ));
+    gov.drive_durable_usage_flight(&captured).await.unwrap();
+    gov.resolve_fee_transfers(&observer).await;
+    assert_eq!(
+        observer.status(),
+        FeeDebtStatus::Pending,
+        "a kept Intent is not the owner's settled proof"
+    );
+    gov.drive_raw_recovery(owner.operation_id).await.unwrap();
+    gov.resolve_fee_transfers(&observer).await;
+    assert_eq!(
+        observer.status(),
+        FeeDebtStatus::Complete(FeeDebtReceipt {
+            applied: 1,
+            cancelled_before_send: 0
+        })
+    );
+}
+
+/// The live transfer pins its exact owner: forgetting cannot discard the settled proof the
+/// obligation depends on, and the pin is released exactly once.
+#[tokio::test]
+async fn a_live_transfer_pins_its_exact_owner_against_forgetting() {
+    let (gov, owner, captured) = absorbing_owner().await;
+    let parent = captured.prerequisite.clone().unwrap();
+    assert!(!gov.fee_hold(
+        parent.operation_id,
+        parent.revision + 1,
+        parent.body_fingerprint
+    ));
+    assert!(!gov.fee_hold(parent.operation_id, parent.revision, [0; 32]));
+    assert!(!gov.fee_hold([9; 16], parent.revision, parent.body_fingerprint));
+    gov.drive_durable_usage_flight(&captured).await.unwrap();
+    gov.drive_raw_recovery(owner.operation_id).await.unwrap();
+    assert!(gov.fee_hold(
+        parent.operation_id,
+        parent.revision,
+        parent.body_fingerprint
+    ));
+    gov.forget_confirmed_recovery(owner.operation_id);
+    assert!(
+        gov.recovery_event(owner.operation_id).is_some(),
+        "a pinned owner's settled proof was forgotten"
+    );
+    gov.fee_release(owner.operation_id);
+}
+
+/// A transfer whose exact owner cannot be pinned never becomes a receipt.
+#[tokio::test]
+async fn an_unpinnable_transfer_is_unresolved() {
+    let gov = governance().await;
+    let observer = observed(&gov, &["k"]).await;
+    observer.mark(0, "k", 5, 0, 1);
+    let capture = FeeCapture::frozen(&gov.fee_debt, "k", 5, 0, 1, false);
+    associate(&gov, &observer, &capture);
+    assert!(!gov.fee_hold([7; 16], 1, [0; 32]));
+    capture.finish(false, false);
+    assert_eq!(observer.status(), FeeDebtStatus::Unresolved);
+}
