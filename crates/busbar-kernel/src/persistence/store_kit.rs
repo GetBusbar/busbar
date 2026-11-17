@@ -71,16 +71,57 @@ pub const MARK: &str = "busbar-store-kit:";
 
 /// Every case, each on its own fresh dataset. Panics naming the case and step.
 pub async fn run<F: Fixture>(fixture: &F) {
+    run_cases(fixture, None).await;
+}
+
+/// [`run`] with a deadline per case (DES-STOREKIT r2 §2.3): a case still running at `deadline`
+/// panics as `TIMEOUT <case>`, so a hang is a red case, never a stuck job.
+pub async fn run_within<F: Fixture>(fixture: &F, deadline: Duration) {
+    run_cases(fixture, Some(deadline)).await;
+}
+
+async fn run_cases<F: Fixture>(fixture: &F, deadline: Option<Duration>) {
     println!("{MARK} cases {}", CASES.len());
-    k1_first_start_publication(fixture).await;
-    k2_empty_refuses_without_initialize(fixture).await;
-    k3_racing_initialize(fixture).await;
-    t1_staggered_boot(fixture).await;
-    t2_waiter_restart(fixture).await;
-    t11_abandon_hands_over(fixture).await;
-    f1_format_opening_fences_the_old_epoch(fixture).await;
-    f2_racing_openings_have_one_owner(fixture).await;
-    f3_pages_and_final_publication(fixture).await;
+    within(deadline, CASES[0], k1_first_start_publication(fixture)).await;
+    within(
+        deadline,
+        CASES[1],
+        k2_empty_refuses_without_initialize(fixture),
+    )
+    .await;
+    within(deadline, CASES[2], k3_racing_initialize(fixture)).await;
+    within(deadline, CASES[3], t1_staggered_boot(fixture)).await;
+    within(deadline, CASES[4], t2_waiter_restart(fixture)).await;
+    within(deadline, CASES[5], t11_abandon_hands_over(fixture)).await;
+    within(
+        deadline,
+        CASES[6],
+        f1_format_opening_fences_the_old_epoch(fixture),
+    )
+    .await;
+    within(
+        deadline,
+        CASES[7],
+        f2_racing_openings_have_one_owner(fixture),
+    )
+    .await;
+    within(deadline, CASES[8], f3_pages_and_final_publication(fixture)).await;
+}
+
+/// One case, bounded by `deadline` when there is one.
+async fn within(
+    deadline: Option<Duration>,
+    case: &str,
+    run: impl std::future::Future<Output = ()>,
+) {
+    match deadline {
+        None => run.await,
+        Some(deadline) => {
+            if tokio::time::timeout(deadline, run).await.is_err() {
+                panic!("{MARK} TIMEOUT {case} ({} s)", deadline.as_secs());
+            }
+        }
+    }
 }
 
 /// A store that holds its data across processes can also seed a raw record with its own driver,

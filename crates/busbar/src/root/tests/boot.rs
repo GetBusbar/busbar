@@ -688,7 +688,7 @@ async fn the_admin_catalog_row_for_a_harness_signed_plugin(
     .unwrap();
     let deploy = busbar_kernel::config::deploy_from_deserializer(
         serde_json::json!({
-            "providers": {}, "models": {}, "auth": {"chain": [], "admin_auth": []},
+            "providers": {}, "models": {}, "auth": {"chain": []},
             "store": {"module": module, "settings": settings},
             "advanced": {}
         }),
@@ -922,82 +922,6 @@ fn red_3g_deals_a_root_pool_named_after_a_knob_as_a_pool() {
                 "work": {"members": [{"model": "m"}]},
             }})
         )]
-    );
-}
-
-static SECRET_ROWS: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-fn dropped_secret(name: &str) -> Candidate {
-    Candidate {
-        kind: KindCode::Secret,
-        name: name.into(),
-        version: "1.0.0".into(),
-        aliases: Vec::new(),
-        sugar: Vec::new(),
-        verbs: Vec::new(),
-        selecting: Vec::new(),
-        schemes: Vec::new(),
-        needs: Vec::new(),
-        stated: Vec::new(),
-        origin: Origin::Dropped {
-            file: format!("{name}.tar.gz"),
-            bytes: Arc::new(Vec::new()),
-        },
-        disk: false,
-        orders: true,
-    }
-}
-
-#[test]
-fn red_a_dry_runs_registry_build_leaves_the_live_dropped_secret_rows_alone() {
-    use busbar_contract::secret::SecretAxis as _;
-    let _held = SECRET_ROWS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let rows = crate::root::linked::secret_rows();
-    rows.set_dropped([dropped_secret("row159-live-vault")]);
-    assert!(
-        rows.answers("row159-live-vault"),
-        "the running node's dropped-in secret answers"
-    );
-
-    let off = PluginsCfg::default();
-    assert!(
-        !off.enabled,
-        "the dry run's configuration turns the plugins directory off"
-    );
-    crate::root::boot::registry(Vec::new(), Some(&off), None, &mut |_| {})
-        .expect("a build with the plugins directory off is the linked rows alone");
-    let answers = rows.answers("row159-live-vault");
-    rows.set_dropped(std::iter::empty());
-    assert!(
-        answers,
-        "a dry run's registry build replaced the running node's dropped-in secret rows"
-    );
-}
-
-#[tokio::test]
-async fn a_committing_builds_admission_replaces_the_dropped_secret_rows() {
-    if !isolated_card_case("a_committing_builds_admission_replaces_the_dropped_secret_rows").await {
-        return;
-    }
-    use busbar_contract::secret::SecretAxis as _;
-    let rows = crate::root::linked::secret_rows();
-    rows.set_dropped([dropped_secret("row159-stale-vault")]);
-
-    let off = PluginsCfg::default();
-    let registry = crate::root::boot::registry(Vec::new(), Some(&off), None, &mut |_| {})
-        .expect("a build with the plugins directory off is the linked rows alone");
-
-    let plugin_rows: Arc<dyn busbar_contract::plugin_rows::PluginRows> = Arc::new(registry);
-    admit_secrets(&plugin_rows, &off)
-        .await
-        .expect("no dropped-in secret contests a word");
-    let answers = rows.answers("row159-stale-vault");
-    rows.set_dropped(std::iter::empty());
-    assert!(
-        !answers,
-        "the committing build's admission kept a dropped-in secret its registry no longer has"
     );
 }
 

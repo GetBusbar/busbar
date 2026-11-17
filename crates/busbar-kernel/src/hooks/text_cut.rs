@@ -112,8 +112,6 @@ pub fn cap_of(field: TextField) -> usize {
     }
 }
 
-pub use crate::off_path::hooks::parse_hook_status_metrics;
-
 #[cfg(test)]
 #[path = "tests/text_cut_tests.rs"]
 pub(crate) mod text_cut_tests;

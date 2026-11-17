@@ -44,6 +44,54 @@ pub(super) fn linked(n: u64) -> (AuditChain, Vec<AuditRecord>) {
     (chain, lines)
 }
 
+#[test]
+fn certificate_shares_unit_chain_and_refuses_stale_signing_position() {
+    use busbar_contract::crypto::{LocalSigner, Signer};
+    use busbar_kernel_audit::linked_record::{verify_linked_chain, AuditLinkedRecord};
+    use busbar_kernel_audit::{AuditSigningKey, BootstrapSigner, LiveSigner};
+    let (mut chain, units) = linked(1);
+    let (_, grant) = AuditSigningKey::from_seed(&[7; 32])
+        .into_grants(LiveSigner::SameAsBootstrap)
+        .unwrap();
+    let bootstrap = BootstrapSigner::new(grant);
+    let live = LocalSigner::from_seed(&[9; 32]).unwrap();
+    let previous = Fingerprint::from_hex(chain.head()).unwrap();
+    let certificate = bootstrap
+        .sign_notary_key(NODE, chain.next_seq(), previous, live.public_key())
+        .unwrap();
+    let prepare = || AuditChain::prepare_notary_key(NODE, 2, previous, certificate.clone());
+    let linked = chain
+        .link_notary_key(prepare(), LINKED_AT + 2, &pass())
+        .unwrap();
+    assert_eq!(chain.next_seq(), 2, "link without stage does not advance");
+    chain.advance_notary_key(&linked).unwrap();
+    assert_eq!(chain.next_seq(), 3);
+    assert_eq!(chain.head(), linked.record().fingerprint.to_string());
+    assert_eq!(chain.heads().tip().unwrap().seq, 2);
+    assert!(chain
+        .link_notary_key(prepare(), LINKED_AT + 3, &pass())
+        .is_err());
+    assert!(
+        chain.advance_notary_key(&linked).is_err(),
+        "no repeated advance"
+    );
+    let next = chain.link(
+        AuditChain::prepare(super::sign_tests::rich_inputs(3), NODE),
+        LINKED_AT + 3,
+        &pass(),
+    );
+    chain.advance(&next);
+    let rows = vec![
+        AuditLinkedRecord::Unit(Box::new(units[0].clone())),
+        AuditLinkedRecord::NotaryKey(Box::new(linked.into_record())),
+        AuditLinkedRecord::Unit(Box::new(next.into_record())),
+    ];
+    verify_linked_chain(&rows).unwrap();
+    let resumed = AuditChain::resume_linked(&rows).unwrap();
+    assert_eq!(resumed.next_seq(), 4);
+    assert_eq!(resumed.head(), chain.head());
+}
+
 /// SEALING-FIX test 25(b): a link line names `busbar.audit.link.v1`, signs nothing, and its hash is
 /// SHA-256 over its content fields first, then `linked_ms`, `seq` and the predecessor's 32 raw
 /// bytes, each framed by its big-endian eight-byte length.

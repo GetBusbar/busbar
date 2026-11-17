@@ -263,6 +263,9 @@ impl std::fmt::Debug for ConditionalOwed {
 pub(crate) struct ConditionalWrite {
     pub instance: Arc<str>,
     pub request: conditional::Request,
+    /// On CoreStore, the receipt identity `request.op_id` derives from: every retry, before or
+    /// after CoreStore's logical entry pops, keeps its generation pinned (DES-264 §4.1).
+    pub held: Option<crate::persistence::record_ops::HeldOp>,
     pub chains: Vec<crate::host_chains::ConditionalChain>,
     pub owed: ConditionalOwed,
     _unit: Option<Arc<crate::host_units::UnitRecord>>,
@@ -276,6 +279,7 @@ impl ConditionalWrite {
     pub(crate) fn new(
         instance: Arc<str>,
         request: conditional::Request,
+        held: Option<crate::persistence::record_ops::HeldOp>,
         chains: Vec<crate::host_chains::ConditionalChain>,
         owed: ConditionalOwed,
         unit: Option<Arc<crate::host_units::UnitRecord>>,
@@ -283,6 +287,7 @@ impl ConditionalWrite {
         Self {
             instance,
             request,
+            held,
             chains,
             owed,
             _unit: unit,

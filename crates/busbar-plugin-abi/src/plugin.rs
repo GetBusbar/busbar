@@ -56,7 +56,7 @@ pub mod __rt {
 pub trait Open: Sized + Send + Sync + 'static {
     /// Build the instance. May await Need steps (connect, fetch JWKS, SECRET by handle). `config` is the bound
     /// JSON (§12.7); keep SecretHandle/TrustHandle values, never resolved secret bytes, in long-lived state
-    /// unless the protocol needs the value on every call (then wrap it in `zeroize::Zeroizing`).
+    /// unless the protocol needs the value on every call (then hold it in a [`crate::secure::SecureVec`]).
     ///
     /// Round 31 (owner ruling, §47): **`open` is the plugin's migration.** Before it answers INSTANCE it brings
     /// its own data and its own settings to its current format, keyed on its own markers (current data: one

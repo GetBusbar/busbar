@@ -13,9 +13,15 @@
 //! signs on the Bootstrap signer thread.
 
 use crate::link::Fingerprint;
-use crate::record::{AuditBreakKind, AuditChain, AuditRecord};
-use crate::sign::{AuditVerifyingKey, SIGNATURE_ALGORITHM};
-use crate::stamp::{BreakReason, Stamp, StampKind};
+use crate::record::AuditRecord;
+#[cfg(feature = "test-support")]
+use crate::record::{AuditBreakKind, AuditChain};
+use crate::sign::AuditVerifyingKey;
+#[cfg(feature = "test-support")]
+use crate::sign::SIGNATURE_ALGORITHM;
+#[cfg(feature = "test-support")]
+use crate::stamp::StampKind;
+use crate::stamp::{BreakReason, Stamp};
 
 mod backward;
 pub use backward::BackwardWalk;
@@ -34,6 +40,13 @@ pub enum TailItem {
         /// The decoded line.
         record: AuditRecord,
         /// The WAL `node_seq` of the journal record that carries it.
+        node_seq: u64,
+    },
+    /// A Bootstrap-certified notary key occupying a link position in the audit chain.
+    Certificate {
+        /// The decoded linked certificate, never a legacy signature anchor.
+        record: crate::notary_key::NotaryKeyRecord,
+        /// Its WAL position.
         node_seq: u64,
     },
     /// A page stamp (`audit.stamp.v1`).
@@ -123,12 +136,14 @@ pub enum WalkOutcome {
 }
 
 /// One anchor candidate, newest first.
+#[cfg(feature = "test-support")]
 enum Candidate<'a> {
     Stamp(&'a Stamp),
     Legacy(usize),
 }
 
 /// The anchor found in step 1.
+#[cfg(feature = "test-support")]
 struct Anchor<'a> {
     /// M.
     seq: u64,
@@ -147,6 +162,25 @@ pub fn span_ms(every: u64) -> u64 {
 /// THE WALK (§3.6.0): `items` are the node's records oldest first, through its tail.
 #[must_use]
 pub fn walk_tail(items: &[TailItem], cx: &WalkContext<'_>) -> WalkOutcome {
+    let mut walk = BackwardWalk::default();
+    for item in items.iter().rev() {
+        let outcome = walk.push(item, cx);
+        if outcome != WalkOutcome::NeedMore {
+            return outcome;
+        }
+    }
+    if cx.complete {
+        walk.finish(cx)
+    } else {
+        WalkOutcome::NeedMore
+    }
+}
+
+/// Test-only forward oracle for the pre-certificate unit fixtures. Production boot and
+/// predecessor sealing both use [`BackwardWalk`], so their link/break rules cannot diverge.
+#[cfg(feature = "test-support")]
+#[must_use]
+pub fn reference_walk_tail(items: &[TailItem], cx: &WalkContext<'_>) -> WalkOutcome {
     // The node's lines in journal order, each with its item index and WAL position.
     let lines: Vec<(&AuditRecord, u64, usize)> = items
         .iter()
@@ -271,6 +305,7 @@ pub fn walk_tail(items: &[TailItem], cx: &WalkContext<'_>) -> WalkOutcome {
             TailItem::Line { record, node_seq } => (record, *node_seq),
             TailItem::Undecodable { node_seq } => return broken(BreakReason::Decode, *node_seq),
             TailItem::Stamp { .. } => continue,
+            TailItem::Certificate { .. } => return WalkOutcome::Unsupported,
         };
         if record.node != cx.node {
             return broken(BreakReason::Link, node_seq);
@@ -348,6 +383,7 @@ pub fn walk_tail(items: &[TailItem], cx: &WalkContext<'_>) -> WalkOutcome {
 }
 
 /// Whether one stamp candidate passes step 1 against its line `to`.
+#[cfg(feature = "test-support")]
 fn stamp_passes(stamp: &Stamp, line: &AuditRecord, cx: &WalkContext<'_>) -> bool {
     // Only Bootstrap-keyed stamps (`key_cert = 0`) are resolvable: no build of this release
     // writes a `notary_key` certificate line, so a certified key can never be shown genuine here.

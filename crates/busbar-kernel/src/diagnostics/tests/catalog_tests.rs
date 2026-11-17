@@ -4,6 +4,24 @@
 use super::*;
 
 #[test]
+fn local_framer_catalog_names_the_emitted_context_and_health_disposition() {
+    let diagnostic = Catalogue::NEUTRAL
+        .by_code(5052)
+        .expect("the local framing refusal is catalogued");
+    assert_eq!(diagnostic.class, Class::Proxy);
+    assert!(
+        !diagnostic.retired,
+        "{} is still emitted",
+        diagnostic.banner()
+    );
+    assert!(diagnostic.summary.contains("pool") && diagnostic.summary.contains("member"));
+    assert!(diagnostic.summary.contains("before any answer"));
+    assert!(diagnostic
+        .summary
+        .contains("without charging member health"));
+}
+
+#[test]
 fn codes_are_unique() {
     let mut seen = std::collections::BTreeSet::new();
     for d in REGISTRY {

@@ -485,7 +485,7 @@ async fn the_boot_path_keeps_its_journal_in_the_store_with_a_configured_director
             "providers": {},
             "models": {},
             "store": { "module": store_module },
-            "auth": { "chain": [], "admin_auth": [] },
+            "auth": { "chain": [] },
         }),
         &crate::root::boot::axis_test_grammar(),
     )
@@ -714,7 +714,7 @@ async fn the_boot_book_binds_the_store_keyset_and_refuses_a_mismatched_store_key
     let records =
         ScopedStore::host_private(core.clone(), INSTANCE, [KEYSET_SCHEMA.into()]).unwrap();
     let corrupt = Request {
-        op_id: busbar_kernel::door::op_id().0,
+        op: records.record_op().await.unwrap(),
         predicates: vec![Predicate {
             schema: KEYSET_SCHEMA.into(),
             key: b"deployment".to_vec(),
@@ -785,7 +785,7 @@ async fn one_seal_after_two_reloads() {
             "providers": {},
             "models": {},
             "store": { "module": store_module },
-            "auth": { "chain": [], "admin_auth": [] },
+            "auth": { "chain": [] },
         }),
         &crate::root::boot::axis_test_grammar(),
     )

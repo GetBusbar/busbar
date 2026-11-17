@@ -214,7 +214,11 @@ impl StorePushQueue {
         self.in_doubt.settle_one().await;
         let now = (self.clock)();
         let ttl = if ttl_s == 0 { MAX_PUSH_TTL_S } else { ttl_s };
-        let key = operation(&self.store)?;
+        let key = self
+            .store
+            .next_id()
+            .map_err(|_| RecordsDenied::Unavailable)?
+            .operation;
         let first = records
             .put(PUSHES, &key, envelope(expiry(now, ttl), now, 0, recs))
             .await;
@@ -251,6 +255,7 @@ impl StorePushQueue {
     async fn remove(&self, records: &ScopedStore, row: &Row) -> Result<bool, RecordsDenied> {
         let request = records
             .prepare_delete_exact(PUSHES, &row.key, row.raw.clone())
+            .await
             .map_err(denied)?;
         let first = records.conditional_native(&request).await;
         self.in_doubt.decided(records, first).await
@@ -306,7 +311,7 @@ impl StorePushQueue {
                             // A removal or another worker may have settled this row while the
                             // connector was in flight. Retry only the version we delivered.
                             let request = Request {
-                                op_id: operation(&self.store)?,
+                                op: operation(&self.store).await?,
                                 predicates: vec![Predicate {
                                     schema: PUSHES.into(),
                                     key: row.key.clone(),

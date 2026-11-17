@@ -347,21 +347,20 @@ dependencies = [
 [[package]]
 name = "busbar-auth-admin-tokens"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-auth-admin-tokens?rev=d2f65de0e2b35c68ba9162eff375d48c77130ff7#d2f65de0e2b35c68ba9162eff375d48c77130ff7"
+source = "git+https://github.com/GetBusbar/busbar-auth-admin-tokens?rev=e12a8df9fa704a2869af5e72c30a187976fa74c6#e12a8df9fa704a2869af5e72c30a187976fa74c6"
 dependencies = [
- "busbar-contract",
- "serde_json",
- "tracing",
- "zeroize",
+ "busbar-plugin-abi",
+ "serde",
+ "sonic-rs",
 ]
 
 [[package]]
 name = "busbar-auth-admin-tokens-plugin"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-auth-admin-tokens?rev=d2f65de0e2b35c68ba9162eff375d48c77130ff7#d2f65de0e2b35c68ba9162eff375d48c77130ff7"
+source = "git+https://github.com/GetBusbar/busbar-auth-admin-tokens?rev=e12a8df9fa704a2869af5e72c30a187976fa74c6#e12a8df9fa704a2869af5e72c30a187976fa74c6"
 dependencies = [
  "busbar-auth-admin-tokens",
- "busbar-contract",
+ "busbar-plugin-abi",
 ]
 
 [[package]]
@@ -1093,23 +1092,21 @@ dependencies = [
 [[package]]
 name = "busbar-secret-env"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-secret-env?rev=007554053b92727b5ca71b23c2304c4cf1549a17#007554053b92727b5ca71b23c2304c4cf1549a17"
+source = "git+https://github.com/GetBusbar/busbar-secret-env?rev=171ffa824c4e99e0e466c84ada50a74d62cce96b#171ffa824c4e99e0e466c84ada50a74d62cce96b"
 dependencies = [
- "busbar-contract",
- "serde",
- "serde_json",
+ "busbar-plugin-abi",
+ "sonic-rs",
 ]
 
 [[package]]
 name = "busbar-secret-file"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-secret-file?rev=81f591ae354391d4c5a4ec31e9b23db345da4019#81f591ae354391d4c5a4ec31e9b23db345da4019"
+source = "git+https://github.com/GetBusbar/busbar-secret-file?rev=4360a0ba0dc60a7ade98cd3401ec47495aee73f1#4360a0ba0dc60a7ade98cd3401ec47495aee73f1"
 dependencies = [
- "busbar-contract",
+ "busbar-plugin-abi",
  "libc",
  "serde",
  "serde_json",
- "zeroize",
 ]
 
 [[package]]
@@ -3635,7 +3632,7 @@ version = "2.1.1"
 source = "git+https://github.com/MattJackson/serde-saphyr?rev=a94d2da01a448d348b5d14945e29192e511b8452#a94d2da01a448d348b5d14945e29192e511b8452"
 dependencies = [
  "annotate-snippets",
- "base64 0.22.1",
+ "base64 0.23.1",
  "encoding_rs_io",
  "granit-parser",
  "nohash-hasher",
@@ -4005,7 +4002,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",

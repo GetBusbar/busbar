@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use super::overlay::{OverlayDoc, OverlayReadState};
 use crate::persistence::{
     facade::CoreStore,
-    scoped::{Expected, Mutation, Outcome, Predicate, Request, ScopedStore},
+    scoped::{Expected, HeldOp, Mutation, Outcome, Predicate, Request, ScopedStore},
 };
 
 const SCHEMA: &str = "busbar.config.overlay.v1";
@@ -377,8 +377,13 @@ impl NativeOverlay {
             let head: Head =
                 serde_json::from_slice(&candidate.head).map_err(|error| error.to_string())?;
             let prefix = chunk_prefix(&head.generation);
+            let op = self
+                .core
+                .record_op()
+                .await
+                .map_err(|error| format!("config overlay cleanup identity: {error:?}"))?;
             candidate.cleanup = Some(Request {
-                op_id: crate::door::op_id().0,
+                op: op.into(),
                 predicates: vec![Predicate {
                     schema: SCHEMA.into(),
                     key: HEAD.to_vec(),
@@ -444,7 +449,14 @@ impl NativeOverlay {
             doc.version = super::overlay::OVERLAY_VERSION;
             let bytes = serde_json::to_vec(&doc.authoring(&crate::seal::acquire()))
                 .map_err(|error| error.to_string())?;
-            let op_id = crate::door::op_id().0;
+            // The generation is a held receipt identity: its chunk stages land in its partition
+            // and every stage request holds it.
+            let held = self
+                .core
+                .record_op()
+                .await
+                .map_err(|error| format!("config overlay operation identity: {error:?}"))?;
+            let op_id = held.bytes();
             let head = Head {
                 version: 1,
                 generation: op_id,
@@ -466,7 +478,7 @@ impl NativeOverlay {
                     prefix,
                 });
             }
-            let stages = stage_chunks(&op_id, &bytes);
+            let stages = stage_chunks(&held, &bytes);
             operation.candidate = Some(Candidate {
                 head,
                 stages,
@@ -474,7 +486,7 @@ impl NativeOverlay {
                 conflicted: false,
                 cleanup: None,
                 request: Request {
-                    op_id,
+                    op: held.into(),
                     predicates: vec![Predicate {
                         schema: SCHEMA.into(),
                         key: HEAD.to_vec(),
@@ -520,7 +532,10 @@ fn chunk_key(generation: &[u8; 16], index: u64) -> Vec<u8> {
     key
 }
 
-fn stage_chunks(generation: &[u8; 16], bytes: &[u8]) -> Vec<Request> {
+/// Chunk stage ops are `gen8 ‖ digest(generation, index)[..8]`: they land in the generation's
+/// receipt partition, and each stage holds the generation's identity.
+fn stage_chunks(held: &HeldOp, bytes: &[u8]) -> Vec<Request> {
+    let generation = held.bytes();
     bytes
         .chunks(busbar_contract::MAX_RECORD_BYTES)
         .enumerate()
@@ -530,10 +545,10 @@ fn stage_chunks(generation: &[u8; 16], bytes: &[u8]) -> Vec<Request> {
             hash.update(generation);
             hash.update((index as u64).to_be_bytes());
             let digest: [u8; 32] = hash.finalize();
-            let op_id = digest[..16].try_into().expect("fixed digest width");
-            let key = chunk_key(generation, index as u64);
+            let tail = digest[..8].try_into().expect("fixed digest width");
+            let key = chunk_key(&generation, index as u64);
             Request {
-                op_id,
+                op: held.with_tail(tail).into(),
                 predicates: vec![Predicate {
                     schema: SCHEMA.into(),
                     key: key.clone(),

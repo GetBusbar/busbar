@@ -929,7 +929,7 @@ struct GrantedCounterparty {
 /// from request headers or from a principal alone. Absent: the plane may not decide.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TrustDecisionAuthority {
-    /// The resolved principal, or `anonymous` only under an open admin door.
+    /// The resolved principal.
     pub principal: String,
     /// The grant admits `trust_approve`.
     pub approve: bool,
@@ -2386,9 +2386,18 @@ impl KernelServices {
             }
             Ok(schema)
         };
+        // On CoreStore the receipt identity is a held class-M op (DES-264 §4.1): the request's
+        // `op_id` is derived from it and the write keeps it until its definitive outcome. A
+        // record store plugin dedupes on its own receipts, so it takes a plain kernel op id.
+        let held = native
+            .map(|store| store.try_record_op())
+            .transpose()
+            .map_err(|_| QUEUE_FULL)?;
         let mut request = Request {
             version: VERSION,
-            op_id: crate::door::op_id(),
+            op_id: held
+                .as_ref()
+                .map_or_else(crate::door::op_id, |held| held.op_id()),
             predicates: Vec::new(),
             mutations: Vec::new(),
         };
@@ -2477,6 +2486,7 @@ impl KernelServices {
         let write = ConditionalWrite::new(
             Arc::clone(caller.namespace()),
             request,
+            held,
             chains,
             ConditionalOwed::new(candidate.correlation, acked),
             unit,
@@ -3918,8 +3928,8 @@ impl HostServices for KernelServices {
             Err(Unjudged::UnknownCounterparty) => return Stored::refused(NOT_A_COUNTERPARTY),
         };
         let sigs = match sigs {
-            [] => serde_json::Value::Null,
-            json => match serde_json::from_slice(json) {
+            [] => busbar_contract::json::Value::new(),
+            json => match busbar_contract::json::parse_value(json) {
                 Ok(v) => v,
                 Err(_) => return Stored::refused(SIGNATURES_NOT_JSON),
             },

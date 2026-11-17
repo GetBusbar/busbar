@@ -255,7 +255,7 @@ async fn build_application(
         serde_json::json!({
             "providers": {},
             "models": {},
-            "auth": { "chain": [], "admin_auth": [] },
+            "auth": { "chain": [] },
             "advanced": {  },
         })
     });

@@ -60,8 +60,7 @@ pub(super) async fn append(
     scope: &str,
     content: &[u8],
 ) -> Outcome {
-    let mut operation = [0; 16];
-    busbar_contract::crypto::fill(&mut operation).unwrap();
+    let held = rows.record_op().await.unwrap();
     let (request, position) = book
         .prepare_ordinary_async(
             rows,
@@ -72,11 +71,11 @@ pub(super) async fn append(
                 content,
                 framing: FRAMING,
             },
-            operation,
+            &held,
         )
         .await
         .unwrap();
-    let outcome = rows.conditional(&request).await.unwrap();
+    let outcome = rows.conditional(&held, &request).await.unwrap();
     match outcome {
         Outcome::Applied => book.conditional_settled(&position, Decision::Applied),
         Outcome::ConditionConflict => {
@@ -235,6 +234,7 @@ async fn neutral_failed_write_does_not_burn_a_sequence() {
     let (_, rows) = fixture().await;
     let book = ChainBook::default();
     append(&book, &rows, "acme", b"|one").await;
+    let held = rows.record_op().await.unwrap();
     let (mut request, position) = book
         .prepare_ordinary_async(
             &rows,
@@ -245,7 +245,7 @@ async fn neutral_failed_write_does_not_burn_a_sequence() {
                 content: b"|two",
                 framing: FRAMING,
             },
-            [7; 16],
+            &held,
         )
         .await
         .unwrap();
@@ -255,7 +255,7 @@ async fn neutral_failed_write_does_not_burn_a_sequence() {
         expected: Expected::Bytes(b"absent".to_vec()),
     });
     assert_eq!(
-        rows.conditional(&request).await.unwrap(),
+        rows.conditional(&held, &request).await.unwrap(),
         Outcome::ConditionConflict
     );
     book.conditional_settled(&position, Decision::ConditionConflict);

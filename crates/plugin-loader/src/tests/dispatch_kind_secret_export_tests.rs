@@ -5,13 +5,11 @@ use std::mem::size_of;
 
 use busbar_contract::abi::export::{self, CheckOut, ScrapeIn, ScrapeOut, ServeOut, StatusOut};
 use busbar_contract::abi::mechanism::call::{
-    Blob, InHead, OutHead, Outcome, RawOutcome, BLOB_ABSENT, BLOB_SECRET,
+    Blob, InHead, OutHead, Outcome, RawOutcome, BLOB_ABSENT,
 };
 use busbar_contract::abi::mechanism::check::{fault, Rule};
-use busbar_contract::abi::secret::{self, ResolveIn, ResolveOut, ERROR_KIND_NOT_FOUND};
 
 use crate::dispatch::kinds::export::Export;
-use crate::dispatch::kinds::secret::Secret;
 use crate::dispatch::{in_head, out_head, Answer, Kind, NO_BLOB};
 
 fn answer<I, O>(slot: u32, outcome: Outcome, input: &I, out: &O) -> Answer<'static> {
@@ -33,83 +31,6 @@ fn head(o: Outcome) -> OutHead {
         outcome: RawOutcome::of(o),
         ..out_head()
     }
-}
-
-fn resolve(outcome: Outcome, secret: Blob, error_kind: u32) -> ResolveOut {
-    ResolveOut {
-        head: head(outcome),
-        secret,
-        error_kind,
-        _reserved: 0,
-        needed: 0,
-    }
-}
-
-#[test]
-fn secret_resolve_is_checked() {
-    let mut buf = [b'k'; 4];
-    let input = ResolveIn {
-        head: in_head(),
-        settings: NO_BLOB,
-        secret_buf: buf.as_mut_ptr(),
-        secret_cap: buf.len(),
-    };
-    let material = Blob {
-        ptr: buf.as_ptr(),
-        len: 1,
-        fmt: BLOB_ABSENT,
-        flags: BLOB_SECRET,
-    };
-    let s = secret::slot::RESOLVE;
-    let ok = resolve(Outcome::Ready, material, 0);
-    assert_eq!(
-        Secret::check(&answer(s, Outcome::Ready, &input, &ok)),
-        Ok(())
-    );
-
-    let mut leased = ok;
-    leased.head.lease = 7;
-    assert_eq!(
-        Secret::check(&answer(s, Outcome::Ready, &input, &leased)),
-        Err(fault(Rule::Contradiction, "resolve.lease"))
-    );
-
-    let plugin = *b"k";
-    let foreign = resolve(
-        Outcome::Ready,
-        Blob {
-            ptr: plugin.as_ptr(),
-            ..material
-        },
-        0,
-    );
-    assert_eq!(
-        Secret::check(&answer(s, Outcome::Ready, &input, &foreign)),
-        Err(fault(Rule::Foreign, "resolve.secret_outside_buffer"))
-    );
-
-    let mut short = resolve(Outcome::Failed, NO_BLOB, 0);
-    short.needed = 5;
-    let a = answer(s, Outcome::Failed, &input, &short);
-    assert_eq!(Secret::check(&a), Ok(()));
-    assert!(Secret::short(&a));
-    assert!(!Secret::short(&answer(s, Outcome::Ready, &input, &ok)));
-    let failed = resolve(Outcome::Failed, NO_BLOB, ERROR_KIND_NOT_FOUND);
-    assert_eq!(
-        Secret::check(&answer(s, Outcome::Failed, &input, &failed)),
-        Ok(())
-    );
-
-    let leak = resolve(Outcome::Failed, material, ERROR_KIND_NOT_FOUND);
-    assert_eq!(
-        Secret::check(&answer(s, Outcome::Failed, &input, &leak)),
-        Err(fault(Rule::Contradiction, "resolve.secret_on_failed"))
-    );
-
-    let small = head(Outcome::Ready);
-    let f = Secret::check(&answer(s, Outcome::Ready, &input, &small)).unwrap_err();
-    assert_eq!(f.rule, Rule::Foreign);
-    assert_eq!(Secret::op_name(s), "resolve");
 }
 
 fn scrape_in(cap: usize) -> ScrapeIn {
@@ -234,18 +155,8 @@ fn export_every_slot_is_named_and_reaches_its_check() {
 
 #[test]
 fn zeroed_pending_and_refused_pass_every_op() {
-    let resolve_in = ResolveIn {
-        head: in_head(),
-        settings: NO_BLOB,
-        secret_buf: std::ptr::null_mut(),
-        secret_cap: 0,
-    };
     let h: InHead = in_head();
     for o in [Outcome::Pending, Outcome::Refused] {
-        let out = resolve(o, NO_BLOB, 0);
-        let a = answer(secret::slot::RESOLVE, o, &resolve_in, &out);
-        assert_eq!(Secret::check(&a), Ok(()), "resolve {o:?}");
-
         let deliver = head(o);
         let a = answer(export::slot::DELIVER, o, &h, &deliver);
         assert_eq!(Export::check(&a), Ok(()), "deliver {o:?}");
