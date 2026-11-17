@@ -110,12 +110,6 @@ pub(crate) fn installed_line_ids(
         .collect()
 }
 
-/// `listener::framed`: the reason a failed body piece hands its reader, once, as the stream ends.
-#[cold]
-pub(crate) fn failed_piece_reason(bytes: &[u8]) -> String {
-    String::from_utf8_lossy(bytes).into_owned()
-}
-
 /// `model_egress`: the name of a pool outside the plan, which has no breaker ladder to share
 /// a name from, copied once per held probe.
 #[cold]
