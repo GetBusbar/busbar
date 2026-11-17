@@ -30,14 +30,12 @@ static GLOBAL: stats_alloc::StatsAlloc<tikv_jemallocator::Jemalloc> =
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::Router;
-
 use busbar_kernel::{config, config_validate, diagnostics, export, snapshot};
 use busbar_kernel::{LoadedConfig, ENV_CONFIG};
 
+use busbar_core_connector::listen::AcceptLimits;
 #[cfg(unix)]
-use busbar_core_connector::listen::DEFAULT_HANDSHAKE_TIMEOUT;
-use busbar_core_connector::listen::{AcceptLimits, Listening};
+use busbar_core_connector::listen::Listening;
 
 #[cfg(not(target_env = "msvc"))]
 pub(crate) fn build_info_line() -> String {
@@ -1107,11 +1105,6 @@ async fn run(
         "metadata protection: {blocked} hosts blocked (--print-metadata-blocklist to view)"
     );
 
-    let listen = cfg.listen.clone();
-    let tls_cfg = cfg.tls.clone();
-
-    let admin_listen = cfg.admin_listen.clone();
-    let admin_tls_cfg = cfg.admin_tls.clone();
     let req_body_max = cfg.limits.request_body_max_bytes;
     let max_inbound = cfg.limits.max_inbound_concurrent;
     let request_admission =
@@ -1148,12 +1141,12 @@ async fn run(
     ));
 
     root_rules.hold_unloaded(root::door_steps::unloaded_doors());
-    let listener_plan = Arc::new(root::serve::ListenerPlan::new(
-        root::door_steps::listener_needs(&cfg).unwrap_or_else(|e| die(e)),
-        root::serve::transport_offers(LINKED.transports, &dropped_doors),
-        &|scheme| root::connector::the().framer_for(scheme),
-    ));
-    let root_rules = Arc::new(root_rules.with_listeners(Arc::clone(&listener_plan)));
+    let listener_needs = root::door_steps::listener_needs(&cfg).unwrap_or_else(|error| die(error));
+    let native_request_timeout = Duration::from_secs(cfg.limits.request_body_read_timeout_secs);
+    let native_handshake_timeout = Duration::from_secs(cfg.limits.tls_handshake_timeout_secs);
+    // Root policy: the configured upstream response budget also bounds active native
+    // output; the runtime keeps that deadline absolute through partial writes.
+    let native_write_timeout = Duration::from_secs(cfg.limits.upstream_request_timeout_secs);
 
     let record_bootstrap_store = serde_json::to_value(
         cfg.store
@@ -1368,6 +1361,11 @@ async fn run(
         .await
         .unwrap_or_else(|error| die(error));
 
+    let listener_plan = Arc::new(
+        root::min3_listener_plan::NativeListenerPlan::new(listener_needs, &native.framers)
+            .unwrap_or_else(|error| die(error)),
+    );
+
     let export_registry = export::plugin::open_prepared(
         &export_config,
         &exports.calls(),
@@ -1399,8 +1397,8 @@ async fn run(
         app.limits.as_ref(),
         root::serve::upgrade_carriers(LINKED.transports, &dropped_doors),
     );
-    let mut served = root::serve::compose_served_checked(
-        Some(native),
+    let served = root::serve::compose_served_checked(
+        Some(Arc::clone(&native)),
         app.governance.clone(),
         root::boot::door_planes(),
         &serving_dispatcher,
@@ -1434,33 +1432,24 @@ async fn run(
             })
         }),
         &app.serve_tables,
-        &|served| {
-            listener_plan.mount_planes(
-                served,
-                &app,
-                &root::serve::upgrade_carriers(LINKED.transports, &dropped_doors),
-            )?;
-            Ok(listener_plan.binds().to_vec())
-        },
+        &|_| Ok(listener_plan.binds().to_vec()),
     )
     .await
-    .unwrap_or_else(|e| die(e));
-    let mut listener_plan = listener_plan
-        .mount_planes(
-            &served,
-            &app,
-            &root::serve::upgrade_carriers(LINKED.transports, &dropped_doors),
-        )
-        .unwrap_or_else(|e| die(e));
-    listener_plan
-        .share_claim_doors(&mut served)
-        .unwrap_or_else(|e| die(e));
-    let listener_plan = Arc::new(listener_plan);
-    let root_rules = Arc::new(root_rules.with_listeners(Arc::clone(&listener_plan)));
+    .unwrap_or_else(|error| die(error));
+    let root_rules = Arc::new(root_rules.with_native_listeners(Arc::clone(&listener_plan)));
     let mut app = Arc::unwrap_or_clone(app);
     app.root_rules = root_rules.clone();
-    listener_plan.check(&app).unwrap_or_else(|e| die(e));
-    listener_plan.prepare(&mut app).unwrap_or_else(|e| die(e));
+    let owners = root::min3_physical::SlotOwners {
+        auth: Arc::clone(&native.auth),
+        epoch: auth_epoch,
+        inventories: Arc::clone(&native.inventories),
+        keys: root::plane_node::node().kernel_and_keys().1,
+        core: root::min3_listener_plan::core_lines(&app, &served).into(),
+    };
+    let slots = listener_plan
+        .assemble(&app, &served, &owners)
+        .unwrap_or_else(|error| die(error));
+    root::serve::install_native_slots(&mut app, slots).unwrap_or_else(|error| die(error));
     let app = Arc::new(app);
     root_rules.hold_owned_anchors(&served.need_trust());
     root_rules.hold_member_tls_sections(&served.member_tls_sections());
@@ -1504,48 +1493,10 @@ async fn run(
     let probes = Arc::new(busbar_kernel::endpoints::ProbeState::new(
         book.as_ref().map(|book| book.runtime_journal.clone()),
     ));
-    let admin_router = busbar_kernel::router::build_admin_router_on_with_dispatch_layer(
-        &app_handle,
-        req_body_max,
-        response_headers_cfg.server_timing,
-        root::listener::deferred_dispatch_layer,
-    )
-    .layer(axum::Extension(probes.clone()));
-    let data_router = listener_plan
-        .router(
-            &app_handle,
-            "listen".into(),
-            req_body_max,
-            0, // The framed actor applies one physical cap to data and operator requests.
-            response_headers_cfg.server_timing,
-        )
-        .layer(axum::Extension(probes.clone()));
-    let mut physical_routers = std::collections::HashMap::new();
-    for bind in listener_plan.stream_binds() {
-        let router = listener_plan
-            .router(
-                &app_handle,
-                bind.at.clone(),
-                req_body_max,
-                0, // The framed actor owns this listener's shared admission cap.
-                response_headers_cfg.server_timing,
-            )
-            .layer(axum::Extension(probes.clone()));
-        physical_routers.insert(bind.at.clone(), router);
-    }
     let _ = door_live_handle.set(std::sync::Arc::downgrade(&app_handle));
 
     let _ = root::inbound::install(root::doors::dispatcher());
-    if listener_plan.has_root_listener() {
-        let app = app_handle.load();
-        let guests = listener_plan.data_guests(&app).unwrap_or_else(|e| die(e));
-        let refusals = listener_plan
-            .prepared(&app, "listen")
-            .expect("boot prepared the actual root data router")
-            .refusals
-            .clone();
-        root::inbound::stage(guests, refusals);
-    }
+    stage_native_inbound(&app_handle.load());
     let _ = root::inbound::publish(&app_handle.load());
     export::plugin::publish_observers(&app_handle.load()).unwrap_or_else(|e| die(e));
     if let Some(publisher) = trace_publisher {
@@ -1568,23 +1519,9 @@ async fn run(
         }
     }
     let generation_workers = generation_workers.start();
-    app_handle.on_apply(Box::new({
-        let plan = Arc::clone(&listener_plan);
-        move |app| {
-            if !plan.has_root_listener() {
-                return;
-            }
-            let guests = plan.data_guests(app).expect(
-                "RootRules checked this candidate's physical listener lists before publication",
-            );
-            let refusals = plan
-                .prepared(app, "listen")
-                .expect("RootRules prepared this candidate's actual physical router")
-                .refusals
-                .clone();
-            root::inbound::stage(guests, refusals);
-            let _ = root::inbound::publish(app);
-        }
+    app_handle.on_apply(Box::new(|app| {
+        stage_native_inbound(app);
+        let _ = root::inbound::publish(app);
     }));
     app_handle.on_apply_async(Box::new({
         let door_appliers = door_appliers.clone();
@@ -1757,147 +1694,96 @@ async fn run(
             stop,
         )));
     } else {
-        let framer = listener_plan.has_root_listener().then(|| {
-            listener_framer(
-                &listen,
-                listener_plan.root_claim().unwrap_or_else(|e| die(e)),
-                &listener_plan,
-                "listen",
-                max_inbound,
-            )
-        });
-        let mut plugin_listeners = Vec::new();
-        for bind in listener_plan.stream_binds() {
-            let framer = listener_framer(
-                &bind.at,
-                &bind.transport,
-                &listener_plan,
-                &bind.at,
-                max_inbound,
-            );
-            let tls = bind.tls.clone();
-            let addr = bind.listen.to_string();
-            busbar_core_connector::tls::prepare(&addr, tls.as_ref(), &tls_secret_resolver, true)
-                .unwrap_or_else(|e| die(e.to_string()));
-            let limits = busbar_core_connector::listen::AcceptLimits {
-                max_conns: usize::try_from(bind.max_conns).unwrap_or(usize::MAX),
-                handshake_timeout: busbar_core_connector::listen::DEFAULT_HANDSHAKE_TIMEOUT,
+        for bind in listener_plan.binds() {
+            let supplier = listener_plan
+                .supplier(&bind.at)
+                .unwrap_or_else(|| die("native listener supplier disappeared"));
+            let class = match bind.at.as_str() {
+                "listen" => AdmissionClass::Data,
+                "admin_listen" => AdmissionClass::Operator,
+                _ => die("unsupported native listener slot"),
             };
-            let router = physical_routers
-                .remove(&bind.at)
-                .expect("each physical listener has its own boot router");
-            plugin_listeners.push((limits, framer, tls, addr, router));
-        }
-        for (limits, framer, tls, addr, router) in plugin_listeners {
-            threads.push(serve_private_listener(
-                request_admission.connection_storage(AdmissionClass::Data),
-                addr,
-                limits,
-                router,
-                tls,
-                Arc::clone(&tls_secret_resolver),
-                shutdown_tx.subscribe(),
-                worker_shutdown_rx.clone(),
-                framer,
-            ));
-        }
-
-        #[cfg(unix)]
-        {
-            let binds = listener_plan.binds();
-            let bound_at = |setting: &str, addr: &str| {
-                binds
-                    .iter()
-                    .find(|b| b.at == setting)
-                    .map(|b| b.listen.to_string())
-                    .unwrap_or_else(|| {
-                        die(format!(
-                            "cannot bind listen address '{addr}': it resolves to no socket address"
-                        ))
-                    })
-            };
-            let admin_at = bound_at("admin_listen", &admin_listen);
-
-            let admin_via = root::connector::the().address_via();
-            let admin_listener =
-                Listening::bind_stream(admin_via.as_ref(), &admin_at, ROOT_BIND_LIMITS)
-                    .unwrap_or_else(|e| {
-                        die(format!("cannot bind listen address '{admin_listen}': {e}"))
-                    });
-            if let Some(framer) = framer {
-                threads.extend(serve_thread_per_core(
-                    request_admission.connection_storage(AdmissionClass::Data),
-                    data_workers,
-                    listen.clone(),
-                    bound_at("listen", &listen),
-                    data_router,
-                    tls_cfg,
-                    tls_secret_resolver.clone(),
-                    &shutdown_tx,
-                    worker_shutdown_rx,
-                    framer,
-                ));
-            }
-            tracing::debug!(
-                listen = %admin_listen,
-                carrier = %root::connector::carrier_name(admin_via.as_ref()),
-                "admin listening through the connector"
-            );
-            admin = Some(Box::pin(serve_listener(
-                request_admission.connection_storage(AdmissionClass::Operator),
-                admin_listener,
-                admin_router,
-                admin_tls_cfg,
-                tls_secret_resolver.clone(),
-                &admin_listen,
-                recv_shutdown(shutdown_tx.subscribe()),
-                None,
-                true,
-                None,
-            )));
-        }
-        #[cfg(not(unix))]
-        {
-            let admin_listener =
-                root::listener::SocketAdmits::new(bind_listener(&admin_listen).await);
-            if let Some(framer) = framer {
-                let resolver = tls_secret_resolver.clone();
-                let shutdown = shutdown_tx.subscribe();
-                let storage = request_admission.connection_storage(AdmissionClass::Data);
-                threads.push(spawn_multithread_data(
-                    data_workers,
-                    worker_shutdown_rx,
-                    async move {
-                        let data_listener =
-                            root::listener::SocketAdmits::new(bind_listener(&listen).await);
-                        serve_listener(
-                            storage,
-                            data_listener,
-                            data_router,
-                            tls_cfg,
-                            resolver,
-                            &listen,
-                            recv_shutdown(shutdown),
-                            None,
-                            true,
-                            Some(framer),
-                        )
-                        .await;
+            let native = Arc::new(
+                root::listener_native::NativeListener::new(
+                    Arc::clone(&app_handle),
+                    bind.at.clone().into_boxed_str(),
+                    Arc::clone(&supplier.port),
+                    Arc::clone(&request_admission),
+                    class,
+                    Arc::new(root::serve::native_slot),
+                    root::listener_native::NativeLimits {
+                        body_bytes: req_body_max,
+                        stall_ms: None,
+                        handshake_timeout: native_handshake_timeout,
+                        request_timeout: native_request_timeout,
+                        write_timeout: native_write_timeout,
+                        // Shutdown may shorten the existing output deadline, never restart it.
+                        drain_grace: busbar_kernel::detached::DETACHED_DRAIN_GRACE,
                     },
+                )
+                .unwrap_or_else(|error| die(format!("native listener {}: {error:?}", bind.at))),
+            );
+            let addr = bind.listen.to_string();
+            let limits = native_bind_limits(bind.max_conns, native_handshake_timeout);
+            if bind.at == "admin_listen" {
+                #[cfg(unix)]
+                let listener = Listening::bind_stream(
+                    root::connector::the().address_via().as_ref(),
+                    &addr,
+                    limits,
+                )
+                .unwrap_or_else(|error| die(format!("cannot bind {addr}: {error}")));
+                #[cfg(not(unix))]
+                let listener = root::listener::SocketAdmits::new(bind_listener(&addr).await);
+                admin = Some(Box::pin(serve_listener(
+                    listener,
+                    native,
+                    bind.tls.clone(),
+                    Arc::clone(&tls_secret_resolver),
+                    addr,
+                    recv_shutdown(shutdown_tx.subscribe()),
+                    None,
+                    true,
+                )));
+            } else {
+                #[cfg(unix)]
+                threads.extend(serve_thread_per_core(
+                    data_workers,
+                    addr.clone(),
+                    addr,
+                    limits,
+                    native,
+                    bind.tls.clone(),
+                    Arc::clone(&tls_secret_resolver),
+                    &shutdown_tx,
+                    worker_shutdown_rx.clone(),
                 ));
+                #[cfg(not(unix))]
+                {
+                    let resolver = Arc::clone(&tls_secret_resolver);
+                    let tls = bind.tls.clone();
+                    let shutdown = shutdown_tx.subscribe();
+                    threads.push(spawn_multithread_data(
+                        data_workers,
+                        worker_shutdown_rx.clone(),
+                        async move {
+                            let listener =
+                                root::listener::SocketAdmits::new(bind_listener(&addr).await);
+                            serve_listener(
+                                listener,
+                                native,
+                                tls,
+                                resolver,
+                                addr,
+                                recv_shutdown(shutdown),
+                                None,
+                                true,
+                            )
+                            .await;
+                        },
+                    ));
+                }
             }
-            admin = Some(Box::pin(serve_listener(
-                request_admission.connection_storage(AdmissionClass::Operator),
-                admin_listener,
-                admin_router,
-                admin_tls_cfg,
-                tls_secret_resolver.clone(),
-                &admin_listen,
-                recv_shutdown(shutdown_tx.subscribe()),
-                None,
-                true,
-                None,
-            )));
         }
     }
 
@@ -2030,11 +1916,21 @@ async fn refresh_node_lease(
     }
 }
 
-#[cfg(unix)]
 const ROOT_BIND_LIMITS: AcceptLimits = AcceptLimits {
     max_conns: busbar_core_connector::listen::DEFAULT_MAX_CONNS,
-    handshake_timeout: DEFAULT_HANDSHAKE_TIMEOUT,
+    handshake_timeout: busbar_core_connector::listen::DEFAULT_HANDSHAKE_TIMEOUT,
 };
+
+fn native_bind_limits(max_conns: u64, handshake_timeout: Duration) -> AcceptLimits {
+    AcceptLimits {
+        // Root bind declarations use u64::MAX as their unspecified cap. Preserve the
+        // connector's physical bound instead of turning that declaration into unlimited IO.
+        max_conns: usize::try_from(max_conns)
+            .unwrap_or(usize::MAX)
+            .min(ROOT_BIND_LIMITS.max_conns),
+        handshake_timeout,
+    }
+}
 
 #[cfg(not(unix))]
 async fn bind_listener(addr: &str) -> tokio::net::TcpListener {
@@ -2043,39 +1939,16 @@ async fn bind_listener(addr: &str) -> tokio::net::TcpListener {
         .unwrap_or_else(|e| die(format!("cannot bind listen address '{addr}': {e}")))
 }
 
-fn listener_framer(
-    listen: &str,
-    scheme: &str,
-    plan: &Arc<root::serve::ListenerPlan>,
-    at: &str,
-    max_inbound: usize,
-) -> root::listener::framed::DataFramer {
-    let framer = root::listener::framed::listener_framer(
-        Arc::new(|scheme: &str| root::connector::the().framer_for(scheme)),
-        scheme,
-        plan.policy(at.into()),
-    )
-    .unwrap_or_else(|| {
-        die(format!(
-            "cannot serve data listener '{listen}': no loaded transport plugin provides an \
-         accepting framer for '{}'; load a transport plugin that accepts this listener's scheme",
-            scheme,
-        ))
-    });
-    tracing::debug!(
-        framer = %framer.door().facts().name,
-        "data door served through its framer's accept side"
-    );
-    let plan = Arc::clone(plan);
-    let at = at.to_string();
-    framer
-        .with_dispatch(Arc::new(move |admission| {
-            plan.prepared(&admission.app(), &at)?
-                .data()?
-                .downcast()
-                .ok()
-        }))
-        .with_inbound_limit(max_inbound)
+fn stage_native_inbound(app: &busbar_kernel::state::App) {
+    let Some(slot) = root::serve::native_slot(app, "listen") else {
+        return;
+    };
+    let routes = slot
+        .prepared()
+        .data()
+        .and_then(|data| data.downcast::<root::serve::DataRoutes>().ok())
+        .unwrap_or_else(|| die("native data slot has no retained route owner"));
+    root::inbound::stage(routes.guests.clone(), slot.prepared().refusals.clone());
 }
 
 async fn recv_shutdown(mut rx: tokio::sync::broadcast::Receiver<()>) {
@@ -2128,18 +2001,16 @@ fn spawn_multithread_data(
 #[cfg(unix)]
 #[allow(clippy::too_many_arguments)]
 fn serve_thread_per_core(
-    storage: busbar_contract::storage::StorageSource,
     n: usize,
     addr: String,
 
     bind_at: String,
-    data_router: Router,
+    limits: AcceptLimits,
+    native: Arc<root::listener_native::NativeListener>,
     tls_cfg: Option<busbar_kernel::config::sections::TlsCfg>,
     secret_resolver: Arc<busbar_kernel::config::secret::SecretResolver>,
     shutdown_tx: &tokio::sync::broadcast::Sender<()>,
     worker_shutdown: tokio::sync::watch::Receiver<bool>,
-
-    framer: root::listener::framed::DataFramer,
 ) -> Vec<std::thread::JoinHandle<()>> {
     if tls_cfg.is_some() {
         let _ =
@@ -2165,7 +2036,7 @@ fn serve_thread_per_core(
             .collect();
     let mut handles = Vec::with_capacity(cores.len());
     for (i, core_id) in cores.into_iter().enumerate() {
-        let router = data_router.clone();
+        let native = Arc::clone(&native);
         let tls = tls_cfg.clone();
         let resolver = secret_resolver.clone();
         let listen = addr.clone();
@@ -2173,8 +2044,6 @@ fn serve_thread_per_core(
         let worker_shutdown = worker_shutdown.clone();
         let balancer = balancers[i].take();
         let bind_at = bind_at.clone();
-        let framer = framer.clone();
-        let storage = storage.clone();
         let spawned = std::thread::Builder::new()
             .name(format!("busbar-core-{i}"))
             .spawn(move || {
@@ -2196,7 +2065,7 @@ fn serve_thread_per_core(
                     });
                 rt.block_on(async move {
                     let via = crate::root::connector::the().address_via();
-                    let listener = Listening::bind_stream(via.as_ref(), &bind_at, ROOT_BIND_LIMITS)
+                    let listener = Listening::bind_stream(via.as_ref(), &bind_at, limits)
                         .unwrap_or_else(|e| {
                             die(format!(
                                 "cannot bind SO_REUSEPORT data listener on '{listen}' (per-core \
@@ -2209,16 +2078,14 @@ fn serve_thread_per_core(
                         "data door listening through the connector"
                     );
                     serve_listener(
-                        storage,
                         listener,
-                        router,
+                        native,
                         tls,
                         resolver,
-                        &listen,
+                        listen,
                         recv_shutdown(shutdown_rx),
                         balancer,
                         i == 0,
-                        Some(framer),
                     )
                     .await;
 
@@ -2236,69 +2103,17 @@ fn serve_thread_per_core(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn serve_private_listener(
-    storage: busbar_contract::storage::StorageSource,
-    addr: String,
-    limits: AcceptLimits,
-    router: Router,
-    tls: Option<busbar_kernel::config::sections::TlsCfg>,
-    resolver: Arc<busbar_kernel::config::secret::SecretResolver>,
-    shutdown: tokio::sync::broadcast::Receiver<()>,
-    worker_shutdown: tokio::sync::watch::Receiver<bool>,
-    framer: root::listener::framed::DataFramer,
-) -> std::thread::JoinHandle<()> {
-    std::thread::Builder::new()
-        .name("busbar-listener".into())
-        .spawn(move || {
-            let detached = busbar_kernel::detached::DetachedTasks::new();
-            busbar_kernel::detached::set_worker_detached(detached.clone());
-            busbar_kernel::detached::set_worker_shutdown(worker_shutdown);
-            let runtime = busbar_kernel::rt::current_thread()
-                .enable_all()
-                .build()
-                .unwrap_or_else(|e| die(format!("cannot build listener runtime for {addr}: {e}")));
-            runtime.block_on(async move {
-                let via = root::connector::the().address_via();
-                let listener = Listening::bind_stream(via.as_ref(), &addr, limits)
-                    .unwrap_or_else(|e| die(format!("cannot bind listener {addr}: {e}")));
-                serve_listener(
-                    storage,
-                    listener,
-                    router,
-                    tls,
-                    resolver,
-                    &addr,
-                    recv_shutdown(shutdown),
-                    None,
-                    true,
-                    Some(framer),
-                )
-                .await;
-                let _ = tokio::time::timeout(
-                    busbar_kernel::detached::DETACHED_DRAIN_GRACE,
-                    detached.drained(),
-                )
-                .await;
-            });
-        })
-        .unwrap_or_else(|e| die(format!("cannot spawn listener worker: {e}")))
-}
-
-#[allow(clippy::too_many_arguments)]
 async fn serve_listener(
-    storage: busbar_contract::storage::StorageSource,
     listener: impl busbar_core_connector::listen::Admits,
-    router: Router,
+    native: Arc<root::listener_native::NativeListener>,
     tls_cfg: Option<busbar_kernel::config::sections::TlsCfg>,
     secret_resolver: Arc<busbar_kernel::config::secret::SecretResolver>,
-    label: &str,
+    label: String,
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
 
     balancer: Option<root::listener::ConnBalancer>,
 
     log_at_info: bool,
-
-    framer: Option<root::listener::framed::DataFramer>,
 ) {
     let security = match tls_cfg {
         None => {
@@ -2311,7 +2126,7 @@ async fn serve_listener(
         }
         Some(tls) => {
             let security =
-                busbar_core_connector::tls::prepare(label, Some(&tls), &secret_resolver, true)
+                busbar_core_connector::tls::prepare(&label, Some(&tls), &secret_resolver, true)
                     .unwrap_or_else(|e| die(e.to_string()));
             let mtls = tls.client_ca.is_some();
             if log_at_info {
@@ -2322,24 +2137,15 @@ async fn serve_listener(
             Some(security)
         }
     };
-    let result = match framer {
-        Some(framer) => {
-            root::listener::serve_admitted_framed(
-                storage,
-                listener,
-                router,
-                security,
-                shutdown,
-                balancer,
-                Some(framer),
-            )
-            .await
-        }
-        None => {
-            root::listener::serve_admitted(storage, listener, router, security, shutdown, balancer)
-                .await
-        }
-    };
+    let result = root::listener_native::serve_admitted(
+        listener,
+        native,
+        security,
+        root::plane_node::node(),
+        shutdown,
+        balancer,
+    )
+    .await;
     if let Err(e) = result {
         die(format!("server error on '{label}': {e}"));
     }
@@ -2458,5 +2264,15 @@ fn root_listeners_keep_the_connector_connection_bound() {
         ROOT_BIND_LIMITS.max_conns,
         busbar_core_connector::listen::DEFAULT_MAX_CONNS,
         "root data and admin binds must not disable connection admission"
+    );
+    assert_eq!(
+        native_bind_limits(u64::MAX, ROOT_BIND_LIMITS.handshake_timeout).max_conns,
+        busbar_core_connector::listen::DEFAULT_MAX_CONNS,
+        "native root declarations must retain the connector connection admission bound"
+    );
+    assert_eq!(
+        native_bind_limits(1, ROOT_BIND_LIMITS.handshake_timeout).max_conns,
+        1,
+        "a stricter declared connection cap must remain effective"
     );
 }
