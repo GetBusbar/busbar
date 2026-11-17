@@ -38,6 +38,13 @@ pub(crate) enum SelectedActivationError<E> {
     Publish(E),
 }
 
+/// Dispatch custody validation failed, or the synchronous rate commitment was refused.
+#[derive(Debug)]
+pub(crate) enum SelectedCommitError<E> {
+    Custody(RecordStoreError),
+    Commit(E),
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct UnitTarget {
@@ -222,6 +229,87 @@ impl GovState {
         let result = publish(accepted).map_err(SelectedActivationError::Publish)?;
         activation.committed = true;
         Ok(result)
+    }
+
+    /// Commit the last prepared attempt at the actual connector handoff. All validation and
+    /// allocation precede `commit`; its success is followed only by infallible replacement of
+    /// the existing live entry. Refusal leaves the predecessor unchanged. The caller retains
+    /// its Open lock, borrows its reservation into this callback, and installs the returned Arc
+    /// before sending. Lock order is Open, checkpoint book, then the callback's rate cells;
+    /// the synchronous callback must not reenter this book.
+    pub(crate) fn commit_selected_checkpoint<R, E>(
+        &self,
+        mut snapshot: UnitCheckpoint,
+        expected_revision: u64,
+        commit: impl FnOnce() -> Result<R, E>,
+    ) -> Result<(Arc<UnitCheckpoint>, R), SelectedCommitError<E>> {
+        use partitions::{Disposition, Finality, Transport};
+        let mut pending = self.unit_checkpoints.pending.lock();
+        let mut entry = pending.edit(&snapshot.id).ok_or_else(|| {
+            SelectedCommitError::Custody(error("selected dispatch has no live custody"))
+        })?;
+        let preflight = || -> RecordStoreResult<()> {
+            let before = entry.snapshot();
+            if before.revision != expected_revision
+                || before.ended
+                || before.terminal.is_some()
+                || entry.is_recovered()
+            {
+                return Err(error("selected dispatch has no current live predecessor"));
+            }
+            let Some(parts) = &before.partitions else {
+                return Err(error("selected dispatch requires partitioned custody"));
+            };
+            if parts.disposition != Disposition::Running {
+                return Err(error("selected dispatch requires a running predecessor"));
+            }
+            Ok(())
+        };
+        preflight().map_err(SelectedCommitError::Custody)?;
+        let mut expected = entry.snapshot().clone();
+        expected.revision = expected.revision.checked_add(1).ok_or_else(|| {
+            SelectedCommitError::Custody(error("selected checkpoint revision exhausted"))
+        })?;
+        let parts = expected.partitions.as_mut().ok_or_else(|| {
+            SelectedCommitError::Custody(error("selected dispatch requires partitioned custody"))
+        })?;
+        let dispatch = parts
+            .attempts
+            .iter()
+            .filter_map(|attempt| attempt.dispatch)
+            .max()
+            .unwrap_or(0)
+            .checked_add(1)
+            .ok_or_else(|| {
+                SelectedCommitError::Custody(error("selected dispatch ordinal exhausted"))
+            })?;
+        let last = parts.attempts.last_mut().ok_or_else(|| {
+            SelectedCommitError::Custody(error("selected dispatch has no prepared attempt"))
+        })?;
+        if last.transport != Transport::Prepared
+            || last.dispatch.is_some()
+            || last.finality != Finality::Live
+        {
+            return Err(SelectedCommitError::Custody(error(
+                "selected dispatch requires the last live prepared attempt",
+            )));
+        }
+        last.transport = Transport::Committed;
+        last.dispatch = Some(dispatch);
+        snapshot.revision = expected.revision;
+        if snapshot != expected {
+            return Err(SelectedCommitError::Custody(error(
+                "selected dispatch changes facts outside the prepared transport commitment",
+            )));
+        }
+        partitions::validate_successor(entry.snapshot(), &snapshot)
+            .map_err(SelectedCommitError::Custody)?;
+        self.validate_selected_terminal_capacity(&snapshot)
+            .map_err(SelectedCommitError::Custody)?;
+        let accepted = Arc::new(snapshot.clone());
+        let committed = commit().map_err(SelectedCommitError::Commit)?;
+        entry.replace_snapshot(snapshot);
+        Ok((accepted, committed))
     }
 
     /// Publish one selected revision into the existing book, including RAM-only selected units.
