@@ -230,6 +230,7 @@ fn unit() -> UnitCheckpoint {
         audit: Some(json::to_vec(&audit).unwrap()),
         measurement: None,
         unread: None,
+        partitions: None,
     }
 }
 
