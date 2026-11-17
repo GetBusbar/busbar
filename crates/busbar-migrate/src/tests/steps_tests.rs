@@ -101,6 +101,55 @@ fn a_store_less_1_5_5_config_names_the_store_1_5_5_implied() {
     );
 }
 
+/// #358 (PRD-4 with PRD-5): 1.5.5 ran a config with no `auth:` block, or a null one, as an open
+/// relay; 1.6.0 refuses that omission (BUSBAR-8014). The upgrade writes the posture 1.5.5 ran,
+/// `auth: { chain: [] }`, the explicit open-relay acknowledgement 1.6.0 boots bannered, with one
+/// report line naming the open relay and the authenticated fix. A config that writes its own
+/// `auth:` block, open or not, keeps it as written and gets no line.
+#[test]
+fn a_1_5_5_config_with_no_auth_block_gains_the_explicit_open_posture() {
+    for (source, golden) in [
+        (
+            "listen: x\nstore: {module: sqlite}\n",
+            "config_version: 1\nlisten: x\nauth:\n  chain: []\nstore: {module: sqlite}\n",
+        ),
+        (
+            "listen: x\nauth:\nstore: {module: sqlite}\n",
+            "config_version: 1\nlisten: x\nauth:\n  chain: []\nstore: {module: sqlite}\n",
+        ),
+    ] {
+        let (written, report) = upgrade(source, &facts());
+        assert_eq!(written, golden, "{source:?}");
+        let lines: Vec<&String> = report
+            .iter()
+            .filter(|line| line.starts_with("auth: "))
+            .collect();
+        assert_eq!(lines.len(), 1, "{report:?}");
+        assert!(
+            lines[0].contains("auth: { chain: [] }")
+                && lines[0].contains("open relay")
+                && lines[0].contains("chain: [keys]"),
+            "the line names the written posture, the open relay and the authenticated fix: {}",
+            lines[0]
+        );
+    }
+    for source in [
+        "listen: x\nauth:\n  chain: [keys]\nstore: {module: sqlite}\n",
+        "listen: x\nauth: {chain: []}\nstore: {module: sqlite}\n",
+    ] {
+        let (written, report) = upgrade(source, &facts());
+        assert_eq!(
+            written,
+            format!("config_version: 1\n{source}"),
+            "{source:?}"
+        );
+        assert!(
+            !report.iter().any(|line| line.starts_with("auth: ")),
+            "{report:?}"
+        );
+    }
+}
+
 /// (j) and (l): `module:` values are the plugins' (step 2): the migrator resolves no name. A 1.5.5
 /// name a P0 plugin declares as a former name, and 1.5.5's retired `redis`, reach the boot's parse
 /// as written; 1.5.5's name-based marker is not copied, so `redis` is not refused here (the loader's
