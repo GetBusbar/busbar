@@ -106,7 +106,6 @@ pub struct Durability {
     pub incarnation: u64,
 
     pub restart_findings: Vec<String>,
-    boot_records: Vec<JournalRecord>,
 
     pub voided_claims: Vec<String>,
 
@@ -125,7 +124,7 @@ pub struct Durability {
     pub(crate) head: Arc<HeadFeed>,
 
     /// THE RECORDS READ AT REOPEN, kept only until the own-node restart seal walks them
-    /// ([`restart_seal::seal_own_node`], SEALING-FIX §3.6.1: "no extra store read"), then taken.
+    /// ([`restart_seal::prepare_own_node`], SEALING-FIX §3.6.1: "no extra store read"), then taken.
     boot_records: Vec<JournalRecord>,
 }
 
@@ -546,7 +545,6 @@ pub(crate) async fn build_on_store(
         audit_signed_from: None,
         incarnation: 0,
         restart_findings: Vec::new(),
-        boot_records: Vec::new(),
         voided_claims: Vec::new(),
         amendments_through: None,
         history_budget,
