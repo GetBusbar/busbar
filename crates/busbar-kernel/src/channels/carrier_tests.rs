@@ -362,7 +362,7 @@ async fn stdio_requires_the_same_live_admission_and_selected_definition_before_o
 
 async fn message(a: &mut Attachment) -> String {
     match timeout(WAIT, a.recv()).await.expect("a message") {
-        Some(ChannelMsg::Message(bytes)) => String::from_utf8(bytes.into_vec()).unwrap(),
+        Some(ChannelMsg::Message(bytes)) => String::from_utf8(bytes.to_vec()).unwrap(),
         Some(ChannelMsg::Ended) => "<ended>".to_owned(),
         None => "<none>".to_owned(),
     }
@@ -385,7 +385,7 @@ async fn the_first_attach_of_a_generation_greets_and_the_next_waits_for_its_read
         timeout(SHORT, &mut waiting).await.is_err(),
         "no other session is released before CH_READY"
     );
-    a.ready(b"caps");
+    a.ready(b"caps").unwrap();
     let b = timeout(WAIT, waiting).await.unwrap().unwrap();
     assert!(!b.greet);
     assert_eq!(&*b.ready_tail, b"caps");
@@ -425,7 +425,7 @@ async fn messages_are_written_framed_and_a_final_reply_releases_the_next_serial_
     let mut a = attach(&f, &up, req(&f.budget, &f.authority, 1, "k", CH_SERIAL))
         .await
         .unwrap();
-    a.ready(b"");
+    a.ready(b"").unwrap();
     let mut b = attach(&f, &up, req(&f.budget, &f.authority, 2, "k", CH_SERIAL))
         .await
         .unwrap();
@@ -452,7 +452,7 @@ async fn a_message_that_is_not_an_ask_is_written_at_once_even_behind_a_serial_as
     let mut a = attach(&f, &up, req(&f.budget, &f.authority, 1, "k", CH_SERIAL))
         .await
         .unwrap();
-    a.ready(b"");
+    a.ready(b"").unwrap();
     let mut b = attach(&f, &up, req(&f.budget, &f.authority, 2, "k", CH_SERIAL))
         .await
         .unwrap();
@@ -472,7 +472,7 @@ async fn an_unbidden_message_goes_to_the_head_of_the_ask_line_and_leaves_its_ask
     let mut a = attach(&f, &up, req(&f.budget, &f.authority, 1, "k", CH_SERIAL))
         .await
         .unwrap();
-    a.ready(b"");
+    a.ready(b"").unwrap();
     let mut child = f.remotes.recv().await.unwrap();
     a.send(b"ask-a", true).await.unwrap();
     assert_eq!(child.line().await, "ask-a\n");
@@ -493,7 +493,7 @@ async fn an_unbidden_message_with_no_ask_open_writes_the_planes_fallback_or_is_c
     let mut a = attach(&f, &up, req(&f.budget, &f.authority, 1, "k", 0))
         .await
         .unwrap();
-    a.ready(b"");
+    a.ready(b"").unwrap();
     let mut child = f.remotes.recv().await.unwrap();
     child.says("o|{\"error\":\"no\"}").await;
     assert_eq!(
@@ -525,7 +525,7 @@ async fn an_http_broadcast_preserves_the_key_and_channels_subject() {
     r.carrier = CARRIER_HTTP;
     r.subject = Some(subject);
     let mut a = attach(&f, &up, r).await.unwrap();
-    a.ready(b"");
+    a.ready(b"").unwrap();
     let mut child = f.remotes.recv().await.unwrap();
     child.says("b|resources/updated").await;
     for _ in 0..100 {
@@ -593,7 +593,7 @@ async fn a_resight_flag_asks_for_a_sighting_of_the_upstream() {
     let mut a = attach(&f, &up, req(&f.budget, &f.authority, 1, "k", 0))
         .await
         .unwrap();
-    a.ready(b"");
+    a.ready(b"").unwrap();
     let mut child = f.remotes.recv().await.unwrap();
     child.says(&format!("s{}|changed", a.slot)).await;
     assert_eq!(message(&mut a).await, format!("s{}|changed", a.slot));
@@ -607,7 +607,7 @@ async fn a_message_with_no_demux_is_dropped_and_the_next_still_arrives() {
     let mut a = attach(&f, &up, req(&f.budget, &f.authority, 1, "k", 0))
         .await
         .unwrap();
-    a.ready(b"");
+    a.ready(b"").unwrap();
     let mut child = f.remotes.recv().await.unwrap();
     child.says("noise").await;
     child.says(&format!("r{}|real", a.slot)).await;
@@ -621,7 +621,7 @@ async fn native_demux_fault_ends_the_generation_instead_of_becoming_drop() {
     let mut a = attach(&f, &up, req(&f.budget, &f.authority, 1, "k", 0))
         .await
         .unwrap();
-    a.ready(b"");
+    a.ready(b"").unwrap();
     let mut child = f.remotes.recv().await.unwrap();
     child.says("native-fault").await;
     assert_eq!(message(&mut a).await, "<ended>");
@@ -638,7 +638,7 @@ async fn a_child_that_exits_ends_the_generation_for_every_session_and_the_next_a
     let mut a = attach(&f, &up, req(&f.budget, &f.authority, 1, "k", 0))
         .await
         .unwrap();
-    a.ready(b"");
+    a.ready(b"").unwrap();
     let mut b = attach(&f, &up, req(&f.budget, &f.authority, 2, "k", 0))
         .await
         .unwrap();
@@ -677,7 +677,7 @@ async fn generation_end_joins_a_blocked_writer_before_notifying_attachments() {
     let mut a = attach(&f, &up, req(&f.budget, &f.authority, 1, "k", 0))
         .await
         .unwrap();
-    a.ready(b"");
+    a.ready(b"").unwrap();
     let mut child = f.remotes.recv().await.unwrap();
     // Exceeds the wire's 64 KiB capacity while staying within general (non-protected) output.
     let bytes = vec![b'x'; 1 << 20];
@@ -704,7 +704,7 @@ async fn the_fifth_end_inside_a_minute_trips_the_channel_and_audits_it_once() {
         let mut a = attach(&f, &up, req(&f.budget, &f.authority, 1, "k", 0))
             .await
             .unwrap();
-        a.ready(b"");
+        a.ready(b"").unwrap();
         let child = f.remotes.recv().await.unwrap();
         child.exits();
         assert_eq!(message(&mut a).await, "<ended>", "end {end}");
@@ -837,7 +837,7 @@ async fn a_held_request_streams_in_and_takes_no_writes() {
     r.carrier = CARRIER_HTTP;
     r.framing = busbar_plugin_abi::plane::CH_FRAME_SSE;
     let mut a = attach(&f, &up, r).await.unwrap();
-    a.ready(b"");
+    a.ready(b"").unwrap();
     let mut held = f.remotes.recv().await.unwrap();
     held.stdout
         .write_all(b"event: endpoint\ndata: /m?s=1\n\n")

@@ -221,7 +221,7 @@ mod attachments {
                 1,
                 slot,
                 greet,
-                Box::new([]),
+                bytes::Bytes::new(),
                 rx,
             )
             .unwrap(),
@@ -265,9 +265,9 @@ mod attachments {
         let (unit, link, queue) = link(false);
         let (mut g, _tg) = attach(&unit, &link, 1, true);
         let (mut n, _tn) = attach(&unit, &link, 2, false);
-        n.ready(b"no");
+        n.ready(b"no").unwrap();
         assert!(link.ready_tail().is_none());
-        g.ready(b"yes");
+        g.ready(b"yes").unwrap();
         assert_eq!(link.ready_tail().as_deref(), Some(b"yes".as_slice()));
         drop(queue);
         assert_eq!(g.send(b"x", false).await, Err(RecordsDenied::Unavailable));
@@ -279,6 +279,32 @@ mod attachments {
         let (g, _tg) = attach(&unit, &link, 1, true);
         drop(g);
         link.greet_released().await;
+    }
+
+    #[test]
+    fn ready_aliases_retain_one_backing_and_retired_publication_releases_its_credit() {
+        let (unit, link, queue) = link(false);
+        let (mut g, tx) = attach(&unit, &link, 1, true);
+        let before = unit.used().bytes;
+        g.ready(b"ready").unwrap();
+        assert_eq!(unit.used().bytes, before + 5);
+        let first = link.ready_tail().unwrap();
+        let second = link.ready_tail().unwrap();
+        assert_eq!(first.as_ptr(), second.as_ptr());
+        g.ready(b"ignored").unwrap();
+        assert_eq!(unit.used().bytes, before + 5);
+        drop((g, tx, queue, link, first));
+        assert_eq!(unit.used().bytes, 5);
+        drop(second);
+        assert_eq!(unit.used().bytes, 0);
+
+        let (unit, link, _queue) = self::link(false);
+        let (mut g, _tx) = attach(&unit, &link, 1, true);
+        let before = unit.used().bytes;
+        link.ended();
+        assert_eq!(g.ready(b"late"), Err(RecordsDenied::Unavailable));
+        assert!(link.ready_tail().is_none());
+        assert_eq!(unit.used().bytes, before);
     }
 }
 
