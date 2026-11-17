@@ -108,6 +108,21 @@ fn next_ready(waiting: &mut VecDeque<Waiting>) -> Option<ReadyInput> {
     }
 }
 
+fn stop_connection(
+    ingress: &super::NativeIngress,
+    waiting: &mut VecDeque<Waiting>,
+    close: &mut Option<oneshot::Sender<u32>>,
+    reason: u32,
+) {
+    waiting.clear();
+    for slot in &ingress.slots {
+        ingress.connection.cancel(&slot.owner);
+    }
+    if let Some(close) = close.take() {
+        let _ = close.send(reason);
+    }
+}
+
 async fn supervise(
     opened: OpenedConnection,
     native: Arc<NativeListener>,
@@ -203,14 +218,12 @@ async fn supervise(
             }, if close.is_some() => {
                 failure.get_or_insert(InputError::Delivery(busbar_contract::response_delivery::ResponseStop::Deadline));
                 input_open = false;
-                waiting.clear();
-                for slot in &ingress.slots { ingress.connection.cancel(&slot.owner); }
-                if let Some(close) = close.take() { let _ = close.send(CR_NORMAL); }
+                stop_connection(&ingress, &mut waiting, &mut close, CR_NORMAL);
             },
             changed = stopped.changed(), if close.is_some() => {
                 if changed.is_err() || *stopped.borrow() {
-                    if let Some(close) = close.take() { let _ = close.send(CR_DRAIN); }
-                    for slot in &ingress.slots { ingress.connection.cancel(&slot.owner); }
+                    input_open = false;
+                    stop_connection(&ingress, &mut waiting, &mut close, CR_DRAIN);
                 }
             },
             outcome = &mut driver, if !driver_done => {
@@ -235,55 +248,85 @@ async fn supervise(
                     },
                     Some(Ok((owner, Err(error)))) => {
                         ingress.connection.cancel(&owner);
-                        ingress.retire(&owner)?;
+                        if let Err(error) = ingress.retire(&owner) { failure.get_or_insert(error); }
                         failure.get_or_insert(error);
-                        if let Some(close) = close.take() { let _ = close.send(CR_NORMAL); }
+                        input_open = false;
+                        stop_connection(&ingress, &mut waiting, &mut close, CR_NORMAL);
                     },
-                    Some(Err(error)) => return Err(InputError::Io(std::io::Error::other(error))),
+                    Some(Err(error)) => {
+                        failure.get_or_insert(InputError::Io(std::io::Error::other(error)));
+                        input_open = false;
+                        stop_connection(&ingress, &mut waiting, &mut close, CR_NORMAL);
+                    },
                     None => {},
                 }
             },
             completed = responses.join_next(), if !responses.is_empty() => {
                 match completed {
                     Some(Ok((owner, result))) => {
-                        ingress.retire(&owner)?;
+                        if let Err(error) = ingress.retire(&owner) {
+                            failure.get_or_insert(error);
+                            input_open = false;
+                            stop_connection(&ingress, &mut waiting, &mut close, CR_NORMAL);
+                        }
                         if let Err(error) = result { failure.get_or_insert(error); }
                     },
-                    Some(Err(error)) => return Err(InputError::Io(std::io::Error::other(error))),
+                    Some(Err(error)) => {
+                        failure.get_or_insert(InputError::Io(std::io::Error::other(error)));
+                        input_open = false;
+                        stop_connection(&ingress, &mut waiting, &mut close, CR_NORMAL);
+                    },
                     None => {},
                 }
             },
             input = inputs.recv(), if input_open => {
                 let Some(input) = input else { input_open = false; continue };
                 if let Inbound::Head { stream, .. } = &input {
-                    if waiting.len() == LIVE_RESPONSES { return Err(InputError::Capacity); }
+                    if waiting.len() == LIVE_RESPONSES {
+                        failure.get_or_insert(InputError::Capacity);
+                        input_open = false;
+                        stop_connection(&ingress, &mut waiting, &mut close, CR_NORMAL);
+                        continue;
+                    }
                     waiting.push_back(Waiting { stream: *stream, ready: None });
                 }
                 let reset = match &input {
                     Inbound::Reset { stream, .. } | Inbound::Stalled(stream) => Some(*stream),
                     _ => None,
                 };
-                let deadline = std::time::Instant::now().checked_add(native.limits.request_timeout)
-                    .ok_or(InputError::Capacity)?;
+                let Some(deadline) = std::time::Instant::now().checked_add(native.limits.request_timeout) else {
+                    failure.get_or_insert(InputError::Capacity);
+                    input_open = false;
+                    stop_connection(&ingress, &mut waiting, &mut close, CR_NORMAL);
+                    continue;
+                };
                 match ingress.accept(input, Some(deadline)) {
                     Ok(Some(ready)) => {
                         let stream = ready.request.binding().stream();
-                        let entry = waiting.iter_mut().find(|entry| entry.stream == stream).ok_or(InputError::Invalid)?;
-                        entry.ready = Some(ready);
+                        if let Some(entry) = waiting.iter_mut().find(|entry| entry.stream == stream) {
+                            entry.ready = Some(ready);
+                        } else {
+                            failure.get_or_insert(InputError::Invalid);
+                            input_open = false;
+                            stop_connection(&ingress, &mut waiting, &mut close, CR_NORMAL);
+                        }
                     },
                     Ok(None) => {},
                     Err(error) => {
                         failure.get_or_insert(error);
                         input_open = false;
-                        if let Some(close) = close.take() { let _ = close.send(CR_NORMAL); }
-                        for slot in &ingress.slots { ingress.connection.cancel(&slot.owner); }
+                        stop_connection(&ingress, &mut waiting, &mut close, CR_NORMAL);
                     },
                 }
                 if let Some(stream) = reset {
                     if let Some(index) = waiting.iter().position(|entry| entry.stream == stream) {
                         waiting.remove(index);
                         if let Some(owner) = ingress.slots.iter().find(|slot| slot.stream == stream).map(|slot| slot.owner.clone()) {
-                            ingress.retire(&owner)?;
+                            if let Err(error) = ingress.retire(&owner) {
+                                failure.get_or_insert(error);
+                                input_open = false;
+                                stop_connection(&ingress, &mut waiting, &mut close, CR_NORMAL);
+                            }
                         }
                     }
                 }
