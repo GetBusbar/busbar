@@ -14,6 +14,7 @@ use crate::plane_driver::port_upstream::TargetIdentity;
 use crate::plane_driver::PreparedRateAttempt;
 use crate::state::App;
 
+use super::current_credential::CurrentCredentialRefusal;
 use super::selected_resource::RateMetric;
 
 impl super::GovState {
@@ -75,9 +76,19 @@ pub struct SelectedPolicy {
 /// Current-policy refusal occurs before the governor owns any reservation or prepared token.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SelectedPolicyRefusal {
-    CurrentAuthority,
+    CurrentAuthority(CurrentCredentialRefusal),
+    CurrentGroup(busbar_contract::caps::ReasonCode),
     StalePolicyTarget,
     InvalidBinding,
+}
+
+impl From<CurrentCredentialRefusal> for SelectedPolicyRefusal {
+    fn from(cause: CurrentCredentialRefusal) -> Self {
+        match cause {
+            CurrentCredentialRefusal::ForeignAuthority => Self::InvalidBinding,
+            other => Self::CurrentAuthority(other),
+        }
+    }
 }
 
 struct CurrentRequest<'a> {
@@ -155,7 +166,7 @@ impl SelectedPolicy {
         origin: &crate::plane_driver::route_identity::OriginalPlaneRoute,
         now: u64,
     ) -> Result<CurrentRequest<'a>, SelectedPolicyRefusal> {
-        use SelectedPolicyRefusal::{CurrentAuthority, InvalidBinding, StalePolicyTarget};
+        use SelectedPolicyRefusal::{InvalidBinding, StalePolicyTarget};
         if !current
             .selected_policy
             .as_ref()
@@ -164,7 +175,7 @@ impl SelectedPolicy {
         {
             return Err(InvalidBinding);
         }
-        let governance = current.governance.as_ref().ok_or(CurrentAuthority)?;
+        let governance = current.governance.as_ref().ok_or(InvalidBinding)?;
         if !receipt.is_live()
             || !receipt.matches_governance(governance)
             || !valid_selected_identifier(&receipt.key().id)
@@ -185,9 +196,9 @@ impl SelectedPolicy {
         // provider current authority never falls back to a key lookup or signed generation.
         let key = receipt
             .signed_authority()
-            .ok_or(CurrentAuthority)?
+            .ok_or(InvalidBinding)?
             .current_key(governance, now, seat.audience.as_deref())
-            .ok_or(CurrentAuthority)?;
+            .map_err(SelectedPolicyRefusal::from)?;
         if key.id != receipt.key().id {
             return Err(InvalidBinding);
         }
@@ -218,13 +229,17 @@ impl SelectedPolicy {
         instance: &str,
         resource: Option<&str>,
     ) -> Result<Box<[ResolvedSelectedRule]>, SelectedPolicyRefusal> {
-        use SelectedPolicyRefusal::{CurrentAuthority, InvalidBinding};
-        let chain = self.cost.chain_for(key).map_err(|_| CurrentAuthority)?;
+        use busbar_contract::caps::ReasonCode;
+        use SelectedPolicyRefusal::{CurrentGroup, InvalidBinding};
+        let chain = self
+            .cost
+            .chain_for(key)
+            .map_err(|_| CurrentGroup(ReasonCode::ScopeDenied))?;
         let mut rows = Vec::new();
         for &index in chain.group_indices() {
             let group = self.cost.groups().get(index).ok_or(InvalidBinding)?;
             if !group.enabled {
-                return Err(CurrentAuthority);
+                return Err(CurrentGroup(ReasonCode::GroupFrozen));
             }
             let rules = self.groups.get(&group.name).ok_or(InvalidBinding)?;
             for rule in rules.iter().filter(|rule| {
