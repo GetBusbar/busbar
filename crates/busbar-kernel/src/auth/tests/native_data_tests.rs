@@ -552,7 +552,15 @@ async fn native_data_keeps_gate_closed_until_actual_money_and_physical_join() {
             },
         })
     });
-    pending.pending().admit(None, None).unwrap();
+    let pending = Arc::new(pending);
+    let calls = PlaneCalls(AtomicUsize::new(0));
+    let mut task = begin_task(&calls, &pending);
+    let declaration = task.request_declaration().unwrap();
+    pending.pending().admit(None, None, declaration).unwrap();
+    task.bind_admission(pending.pending()).unwrap();
+    assert_eq!(calls.0.load(Ordering::SeqCst), 1);
+    task.end(&DataEffects(&pending)).unwrap();
+    drop(task);
     assert!(context.effects_allowed());
     assert!(binding.check_executing().is_ok());
     assert_eq!(
@@ -654,9 +662,14 @@ async fn native_data_reset_after_registration_closes_the_exact_context() {
         .unwrap();
     let allocation = NativeDataAllocation::register(authorized).unwrap();
     let context = allocation.context().clone();
+    let pending =
+        Arc::new(allocation.into_pending(|_| panic!("reset request must not acquire money")));
+    let calls = PlaneCalls(AtomicUsize::new(0));
+    let task = begin_task(&calls, &pending);
+    let declaration = task.request_declaration().unwrap();
     assert!(f.connection.cancel(&owner));
-    let pending = allocation.into_pending(|_| panic!("reset request must not acquire money"));
-    assert!(pending.pending().admit(None, None).is_err());
+    assert!(pending.pending().admit(None, None, declaration).is_err());
+    drop(task);
     assert!(pending.execution().is_none());
     assert!(!context.effects_allowed());
     assert!(binding.check_executing().is_err());
@@ -765,4 +778,121 @@ async fn native_data_pending_liveness_tracks_physical_reset_before_task() {
     assert!(pending.is_live());
     assert!(f.connection.cancel(&owner));
     assert!(!pending.is_live());
+}
+
+struct PlaneCalls(AtomicUsize);
+impl crate::plane_driver::port_session::Calls for PlaneCalls {
+    type Session = ();
+    fn resource_scoped(&self, _: u32) -> bool {
+        true
+    }
+    fn request(
+        &self,
+        request: &busbar_ports::plane::PlaneIn<'_>,
+        body: &[u8],
+        _: &mut dyn FnMut(busbar_ports::plane::PlaneOut<'_>),
+    ) -> Result<(), PortError> {
+        assert_eq!(request.route, 3);
+        assert_eq!(request.path, "/resource");
+        assert_eq!(body, b"admin-body");
+        self.0.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+    fn piece(
+        &self,
+        _: &mut (),
+        _: u32,
+        _: u32,
+        _: u32,
+        _: &[u8],
+        _: &mut dyn FnMut(busbar_ports::plane::PlaneOut<'_>),
+    ) -> Result<(), PortError> {
+        Ok(())
+    }
+    fn rewrite(
+        &self,
+        _: &mut (),
+        _: &[u8],
+        _: &mut dyn FnMut(busbar_ports::plane::PlaneOut<'_>),
+    ) -> Result<(), PortError> {
+        panic!("no hooks")
+    }
+    fn end(
+        &self,
+        _: (),
+        _: &mut dyn FnMut(busbar_ports::plane::PlaneOut<'_>),
+    ) -> Result<(), PortError> {
+        Ok(())
+    }
+    fn probe(
+        &self,
+        _: &busbar_ports::plane::TargetIn<'_>,
+        _: &mut dyn FnMut(busbar_ports::plane::PlaneOut<'_>),
+    ) -> Result<(), PortError> {
+        panic!("no probe")
+    }
+    fn render(
+        &self,
+        _: &busbar_ports::plane::PlaneIn<'_>,
+        _: u32,
+        _: &[u8],
+        _: &mut dyn FnMut(busbar_ports::plane::PlaneOut<'_>),
+    ) -> Result<(), PortError> {
+        panic!("no render")
+    }
+    fn upstream(
+        &self,
+        _: &mut (),
+        _: &busbar_ports::plane::TargetIn<'_>,
+        _: &mut dyn FnMut(busbar_ports::plane::PlaneOut<'_>),
+    ) -> Result<(), PortError> {
+        panic!("local fixture")
+    }
+}
+struct DataEffects<'a>(&'a Arc<NativeDataPending>);
+impl crate::plane_driver::port_session::Effects for DataEffects<'_> {
+    fn data(&self) -> Option<&Arc<NativeDataPending>> {
+        Some(self.0)
+    }
+    fn invocation(&self) -> Option<&InvocationContext> {
+        Some(self.0.context())
+    }
+    fn admission(&self) -> Option<&Pending> {
+        Some(self.0.pending())
+    }
+    fn emit(&self, _: u64, _: &[u8]) {
+        panic!("no external effects in the preparatory phase")
+    }
+}
+fn begin_task<'a>(
+    calls: &'a PlaneCalls,
+    data: &Arc<NativeDataPending>,
+) -> crate::plane_driver::port_session::Task<'a, PlaneCalls> {
+    let effects = DataEffects(data);
+    let (task, _) = data
+        .snapshot()
+        .with_auth_input(|request| {
+            crate::plane_driver::port_session::Task::begin(
+                calls,
+                &busbar_ports::plane::PlaneIn {
+                    route: data.selected().request().route(),
+                    flags: 0,
+                    auth: AUTH_PRINCIPAL,
+                    method: request.method,
+                    path: request.path,
+                    query: request.query,
+                    headers: request.headers,
+                    identity: data.identity().identity_records(),
+                    request_id: data.binding().invocation().request_id().get(),
+                    carrier: 0,
+                    work: "",
+                    ticket_record: &[],
+                },
+                request.body,
+                &effects,
+            )
+        })
+        .unwrap()
+        .unwrap();
+    task
 }
