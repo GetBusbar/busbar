@@ -196,8 +196,8 @@ impl NativeRequestMoney {
         let open = all
             .get_mut(&self.request.unit())
             .ok_or(NativeAttemptError::Unavailable)?;
-        self.check_open(open)?;
-        if !prepared.request.matches_money(
+        self.check_open_identity(open)?;
+        if !prepared.request.matches_money_identity(
             &self.money.book,
             &open.identity,
             open.grant.as_ref().ok_or(NativeAttemptError::Unavailable)?,
@@ -208,7 +208,7 @@ impl NativeRequestMoney {
             .native
             .as_mut()
             .ok_or(NativeAttemptError::Unavailable)?;
-        let mut snapshot = native.accepted.as_ref().clone();
+        let mut snapshot = native.checkpoint().as_ref().clone();
         let attempt = snapshot
             .partitions
             .as_mut()
@@ -222,12 +222,7 @@ impl NativeRequestMoney {
         }
         attempt.transport = Transport::NoSend;
         attempt.finality = Finality::Unknown;
-        native.accepted = self
-            .money
-            .gov
-            .stage_selected_checkpoint(snapshot, Some(native.accepted.revision))
-            .map_err(NativeAttemptError::Custody)?;
-        Ok(())
+        native.publish_incurred(&self.money.gov, snapshot)
     }
 
     fn check_open(&self, open: &super::Open) -> Result<(), NativeAttemptError> {
@@ -257,6 +252,8 @@ impl NativeRequestMoney {
 
 #[path = "native_live.rs"]
 mod live;
+#[path = "native_session.rs"]
+mod session;
 #[cfg(test)]
 use live::effective_tokens;
 pub(crate) use live::{NativeAttempt, NativeCommitError};
