@@ -3,8 +3,8 @@
 
 use super::*;
 
-const INPUT: MeterClassId = MeterClassId::new("tokens.input");
-const OUTPUT: MeterClassId = MeterClassId::new("tokens.output");
+const INPUT: &str = "tokens.input";
+const OUTPUT: &str = "tokens.output";
 
 fn rates(capacity: usize) -> (Arc<SelectedRates>, Arc<AtomicU64>) {
     let elapsed = Arc::new(AtomicU64::new(0));
@@ -42,7 +42,7 @@ fn rule(metric: RateMetric, threshold: u64) -> RateTerms {
     }
 }
 
-fn token(class: MeterClassId, amount: Option<i128>, authoritative: bool) -> EffectiveToken {
+fn token(class: &str, amount: Option<i128>, authoritative: bool) -> EffectiveToken<'_> {
     EffectiveToken {
         class,
         quantity: amount.map(|n| Count::from_integer(n).unwrap()),
@@ -50,7 +50,7 @@ fn token(class: MeterClassId, amount: Option<i128>, authoritative: bool) -> Effe
     }
 }
 
-fn view(amount: i128) -> EffectiveTokenView {
+fn view(amount: i128) -> EffectiveTokenView<'static> {
     EffectiveTokenView(vec![token(INPUT, Some(amount), true)])
 }
 
@@ -343,7 +343,7 @@ fn independent_processes_do_not_share_rate_cells_and_clock_overflow_fails_closed
 fn no_matching_rows_are_a_noop_even_without_a_usable_rate_clock() {
     let (rates, elapsed) = rates(1);
     elapsed.store(u64::MAX, Ordering::Relaxed);
-    let mut hold = rates.reserve_terms(Vec::new(), &[]).unwrap();
+    let mut hold = rates.reserve_terms(Vec::new(), &[] as &[&str]).unwrap();
     hold.commit().unwrap();
     hold.finish(TokenCoverage::Complete).unwrap();
     assert!(rates.headroom_terms(Vec::new()).unwrap().is_empty());
