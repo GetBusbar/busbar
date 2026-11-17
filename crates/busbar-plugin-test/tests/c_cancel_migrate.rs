@@ -58,15 +58,19 @@ fn dropping_the_boot_future_mid_open_cancels_once() {
         "migrate-deadline",
         br#"{"id":"migrate-deadline","secret":"the operator's reference","hold":true}"#,
     );
-    let timed_out = rt.block_on(tokio::time::timeout(
-        Duration::from_millis(200),
-        registry.open_store(
-            &spec,
-            &needs,
-            &busbar_plugin_test::suites::harness::no_refs(),
-            Arc::new(|| Box::new(busbar_contract::plugin::TestKernelSeal)),
-        ),
-    ));
+    // The timer is made inside the runtime: tokio's timeout needs the runtime when it is built.
+    let timed_out = rt.block_on(async {
+        tokio::time::timeout(
+            Duration::from_millis(200),
+            registry.open_store(
+                &spec,
+                &needs,
+                &busbar_plugin_test::suites::harness::no_refs(),
+                Arc::new(|| Box::new(busbar_contract::plugin::TestKernelSeal)),
+            ),
+        )
+        .await
+    });
     assert!(timed_out.is_err(), "the parked open never finished");
     assert_eq!(needs.parked(), 1, "the open parked on its SECRET");
     cancelled_once("migrate-deadline");
