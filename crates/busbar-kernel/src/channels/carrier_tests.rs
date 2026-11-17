@@ -17,7 +17,8 @@ use busbar_plugin_abi::plane::{
 };
 use busbar_plugin_abi::records::Records;
 use tokio::io::{
-    duplex, split, AsyncBufReadExt, AsyncWriteExt, BufReader, DuplexStream, ReadHalf, WriteHalf,
+    duplex, split, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader, DuplexStream, ReadHalf,
+    WriteHalf,
 };
 use tokio::sync::mpsc;
 use tokio::time::timeout;

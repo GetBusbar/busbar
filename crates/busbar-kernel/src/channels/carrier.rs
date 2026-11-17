@@ -160,6 +160,7 @@ struct Generation {
     slots: Mutex<HashMap<u64, mpsc::Sender<ChannelMsg>>>,
     next_slot: AtomicU64,
     alive: AtomicBool,
+    stopping: AtomicBool,
     /// Ends the generation (the writer failed): one stored permit is enough.
     stop: Notify,
     upstream: Box<str>,
@@ -276,6 +277,9 @@ impl ChannelDriver {
         let stdio = req.carrier == CARRIER_STDIO;
         let mut state = channel.state.lock().await;
         if let Some(live) = &state.live {
+            if live.stopping.load(Ordering::Acquire) {
+                return Err(RecordsDenied::Unavailable);
+            }
             if live.alive.load(Ordering::Acquire) {
                 return Ok(Arc::clone(live));
             }
@@ -314,6 +318,7 @@ impl ChannelDriver {
             slots: Mutex::new(HashMap::new()),
             next_slot: AtomicU64::new(1),
             alive: AtomicBool::new(true),
+            stopping: AtomicBool::new(false),
             stop: Notify::new(),
             upstream: key.upstream.clone(),
             key: req.key.into(),
@@ -526,15 +531,19 @@ impl Run {
                 self.deliver(last).await;
             }
         }
-        writer.abort();
         drop(read);
         let mut state = self.channel.state.lock().await;
         if self.stdio && end == End::Wire && state.respawn.ended(Instant::now()) {
             self.shared.events.tripped(&self.generation.upstream);
         }
         self.generation.alive.store(false, Ordering::Release);
-        self.generation.slots().clear();
+        self.generation.stopping.store(true, Ordering::Release);
         let _ = self.generation.link.ended();
+        writer.abort();
+        // The state lock prevents a replacement generation from opening until the writer's
+        // actual future has dropped every queued/in-progress payload and its account guards.
+        let _ = writer.await;
+        self.generation.slots().clear();
         self.generation.link.pass_on();
         if state
             .live
@@ -544,8 +553,8 @@ impl Run {
             state.live = None;
         }
         // The wire goes last: whoever sees the child gone finds its generation already ended.
-        drop(state);
         drop(hold);
+        drop(state);
     }
 
     /// One framed inbound message: asks the plane where it goes and routes it.
@@ -561,6 +570,10 @@ impl Run {
         let Ok((message, routed)) = routed else {
             return;
         };
+        if !generation.alive.load(Ordering::Acquire) || generation.stopping.load(Ordering::Acquire)
+        {
+            return;
+        }
         let Some(demuxed) = routed else {
             tracing::debug!(
                 upstream = &*generation.upstream,
@@ -644,6 +657,7 @@ async fn write_loop(
     };
     while let Some(message) = queue.recv().await {
         if message.write(&mut write).await.is_err() {
+            generation.stopping.store(true, Ordering::Release);
             generation.stop.notify_one();
             return;
         }
