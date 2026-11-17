@@ -136,3 +136,72 @@ async fn failed_phase_activation_removes_only_the_new_open_and_rolls_back_once()
     money.settle_end(UnitKey::new(1), 499);
     assert_eq!(totals(&gov, &unit).await, (0, 0));
 }
+
+#[tokio::test]
+async fn selected_fee_observer_neither_participates_nor_retains_the_admission_hold() {
+    use crate::governance::unit_checkpoint::partitions::{CapturedFee, FeeResult};
+
+    for child_incurred in [false, true] {
+        let (gov, money, unit) = fixture().await;
+        money
+            .install_native_pending(UnitKey::new(1), pending(&gov, &unit), |_, _, _| Ok(()))
+            .unwrap();
+        let parent = money.parent_money(UnitKey::new(1), &unit.key).unwrap();
+        money
+            .open_child(
+                &parent,
+                UnitKey::new(2),
+                "other\u{1f}model".into(),
+                unit.classes.clone(),
+                FeeRefund::CallerStatus,
+            )
+            .unwrap();
+        let (captured, observer) = money.shard(UnitKey::new(1))[&UnitKey::new(1)]
+            .fee
+            .selected_fee();
+        let observer = observer.expect("original fee owner has a nonparticipating observer");
+        assert!(matches!(captured, CapturedFee::PendingOwner { .. }));
+        assert!(
+            captured.basis().lane.is_none(),
+            "original flat fee, not child lane"
+        );
+        let (child_fee, child_observer) = money.shard(UnitKey::new(2))[&UnitKey::new(2)]
+            .fee
+            .selected_fee();
+        assert!(matches!(child_fee, CapturedFee::NotOwner { .. }));
+        assert_eq!(child_fee.basis(), captured.basis());
+        assert!(child_observer.is_none());
+        drop(parent);
+
+        money.settle_end(UnitKey::new(1), 503);
+        assert!(
+            observer.observe().is_none(),
+            "actual child still participates"
+        );
+        assert_eq!(gov.concurrent_in_flight("g"), 1);
+        money.settle_end(UnitKey::new(2), if child_incurred { 200 } else { 503 });
+        assert_eq!(
+            observer.observe(),
+            Some(if child_incurred {
+                FeeResult::Charged
+            } else {
+                FeeResult::Refunded
+            }),
+        );
+        assert_eq!(
+            totals(&gov, &unit).await,
+            (1, if child_incurred { 5 } else { 0 })
+        );
+        assert_eq!(
+            gov.concurrent_in_flight("g"),
+            0,
+            "observer retains no grant"
+        );
+        money.settle_end(UnitKey::new(1), 503);
+        money.settle_end(UnitKey::new(2), 503);
+        assert_eq!(
+            totals(&gov, &unit).await,
+            (1, if child_incurred { 5 } else { 0 })
+        );
+    }
+}
