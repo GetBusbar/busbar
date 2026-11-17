@@ -1591,9 +1591,6 @@ async fn render_ledger_view(
 
         KernelVerb::GetLedgerMigration => b"{\"migrated\":false,\"marker\":null}".to_vec(),
 
-        KernelVerb::GetLedgerOpenapiJson => {
-            busbar_core_admin::v1::json::openapi_document().into_bytes()
-        }
         _ => return Err(busbar_core_admin::GovernanceError::NotFound),
     })
 }

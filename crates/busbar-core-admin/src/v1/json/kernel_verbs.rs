@@ -747,8 +747,6 @@ pub(crate) struct StoreRestoreReq {
 enum Success {
     Json(Value, &'static str),
 
-    Document,
-
     NoContent(&'static str),
 }
 
@@ -1320,18 +1318,6 @@ fn doc_for(
             schema_of(gen.subschema_for::<LedgerMigration>()),
             "Whether this deployment has migrated, and the marker if it has",
         ),
-        KernelVerb::GetLedgerOpenapiJson => VerbDoc {
-            summary: "The full administrative OpenAPI 3.1 document, served at the ledger's own path",
-            description: "The committed, generated document, unfiltered: every operation this \
-                          BUILD can serve, including each plane's. `GET /openapi.json` serves the \
-                          same document filtered to the planes this node configured."
-                .to_string(),
-            success: Success::Document,
-            request: None,
-            query: Vec::new(),
-            errors: vec![unavailable_503("the node could not take the unit")],
-        },
-
 
         KernelVerb::GetAuditHead => audit_read(
             "The audit record chain's tip: position, digest, signature, key identifier and clock",
@@ -1623,15 +1609,6 @@ pub(crate) fn operations(
                     "200".into(),
                     json!({"description": description,
                            "content": {"application/json": {"schema": schema}}}),
-                );
-            }
-            Success::Document => {
-                by_status.insert(
-                    "200".into(),
-                    json!({"description": "The one administrative OpenAPI document",
-                           "content": {"application/json": {"schema": {
-                               "type": "object",
-                               "description": "An OpenAPI 3.1 document (this document's shape)"}}}}),
                 );
             }
             Success::NoContent(description) => {

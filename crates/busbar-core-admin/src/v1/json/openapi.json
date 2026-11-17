@@ -9635,8 +9635,7 @@
     "version": "1.6.0",
     "x-busbar-marks": {
       "money": "Money fields use the representation declared by their schema: ledger Amount values are decimal-integer JSON strings; spend_cents and spend_micros are JSON integers. Counts are JSON numbers.",
-      "scope": "ONE generated document, describing every administrative operation this build can serve; a node serves it filtered to the planes it configured.",
-      "x-busbar-plane": "The operation is mounted only on a node whose config carries that plane's `<section>:` block; elsewhere its path answers `404 not_found` and the node's served `GET /openapi.json` omits it (and every schema only it references).",
+      "scope": "ONE generated document, describing every administrative operation this build can serve, served unfiltered.",
       "x-busbar-since": "Added in that release, and answered by the node's administrative loop."
     }
   },
@@ -22395,129 +22394,6 @@
         "x-busbar-verb": "get_ledger_migration"
       }
     },
-    "/api/v1/admin/ledger/openapi.json": {
-      "get": {
-        "description": "The committed, generated document, unfiltered: every operation this BUILD can serve, including each plane's. `GET /openapi.json` serves the same document filtered to the planes this node configured.",
-        "operationId": "GetLedgerOpenapiJson",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "description": "An OpenAPI 3.1 document (this document's shape)",
-                  "type": "object"
-                }
-              }
-            },
-            "description": "The one administrative OpenAPI document",
-            "headers": {
-              "Cache-Control": {
-                "description": "Administrative responses, including credential issuance and replay, must not be stored.",
-                "schema": {
-                  "const": "no-store",
-                  "type": "string"
-                }
-              }
-            }
-          },
-          "401": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "Missing/invalid admin credential (error code `unauthorized`)",
-            "headers": {
-              "Cache-Control": {
-                "description": "Administrative responses, including credential issuance and replay, must not be stored.",
-                "schema": {
-                  "const": "no-store",
-                  "type": "string"
-                }
-              }
-            }
-          },
-          "413": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "Admin request exceeds the listener body limit (request_too_large)",
-            "headers": {
-              "Cache-Control": {
-                "description": "Administrative responses, including credential issuance and replay, must not be stored.",
-                "schema": {
-                  "const": "no-store",
-                  "type": "string"
-                }
-              }
-            }
-          },
-          "503": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "`unavailable`: the node could not take the unit. The body is the admin error envelope with code `unavailable`",
-            "headers": {
-              "Cache-Control": {
-                "description": "Administrative responses, including credential issuance and replay, must not be stored.",
-                "schema": {
-                  "const": "no-store",
-                  "type": "string"
-                }
-              },
-              "Retry-After": {
-                "description": "Delay in seconds when supplied by the listener's rate/backpressure refusal; absence makes no retry promise.",
-                "schema": {
-                  "minimum": 0,
-                  "type": "integer"
-                }
-              }
-            }
-          },
-          "default": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "Other typed administrative refusal. Branch on known codes while preserving unknown strings; retry depends on operation semantics.",
-            "headers": {
-              "Cache-Control": {
-                "description": "Administrative responses, including credential issuance and replay, must not be stored.",
-                "schema": {
-                  "const": "no-store",
-                  "type": "string"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "adminToken": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "summary": "The full administrative OpenAPI 3.1 document, served at the ledger's own path",
-        "x-busbar-required-scope": "read-only",
-        "x-busbar-since": "1.6.0",
-        "x-busbar-verb": "get_ledger_openapi_json"
-      }
-    },
     "/api/v1/admin/ledger/reconciliation": {
       "get": {
         "description": "There is one ledger, so there is no second set of figures to be out by: `discrepancies` is always empty, and `holds` is true unless a key's counts the rate card refused to price are named under `refused`. A read: it mutates nothing, is never posture-gated, and needs no more authority than `GET /usage`.",
@@ -28055,11 +27931,6 @@
       },
       {
         "bound": true,
-        "name": "get_ledger_openapi_json",
-        "scope": "read-only"
-      },
-      {
-        "bound": true,
         "name": "get_audit_head",
         "scope": "read-only"
       },
@@ -31279,7 +31150,6 @@
                       "get_ledger_checkpoints",
                       "get_ledger_reconciliation",
                       "get_ledger_migration",
-                      "get_ledger_openapi_json",
                       "get_audit_head",
                       "get_audit_range",
                       "get_audit_keys",
