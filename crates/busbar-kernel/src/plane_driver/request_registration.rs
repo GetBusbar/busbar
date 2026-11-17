@@ -55,6 +55,8 @@ impl RequestRoutes {
 
 impl RequestAllocation {
     /// The retained Task supplied FORWARD + W_UPSTREAM. W_MODEL may not select a different domain.
+    /// A command is never a pool member, so the pool selection does not decide it: the key's
+    /// own grant of the command in the seat's declared kind does (K2, PM ruling 2 on #462).
     /// No FarEnd, exchange or synthetic URL is minted for a configured command.
     pub fn registration(
         self,
@@ -68,11 +70,7 @@ impl RequestAllocation {
         let definition = routes
             .command_registration(upstream)
             .ok_or(AdmissionError::Route)?;
-        if routes
-            .scope_kind
-            .as_ref()
-            .is_some_and(|kind| !self.key.scope_allowed(kind, upstream))
-        {
+        if !routes.key_admits(&self.key, upstream) {
             return Err(AdmissionError::Scope);
         }
         let mut receipt =
