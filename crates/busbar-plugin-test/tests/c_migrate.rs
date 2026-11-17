@@ -39,15 +39,6 @@ mod suite_fixture {
                 json::parse_typed(&config).map_err(|_| Fail::refused(refused::R_CONFIG))?;
             let mode = value.get("mode").and_then(Value::as_str).unwrap_or("echo");
             let phase = value.get("phase").and_then(Value::as_u64).unwrap_or(0);
-            if mode == "limits" {
-                let connection = need::open(
-                    "migration.test:80",
-                    need::Tls::None,
-                    busbar_plugin_abi::need::egress::OPERATOR_INFRASTRUCTURE,
-                )
-                .await?;
-                need::close(connection.conn, false).await?;
-            }
             if value.get("v").and_then(Value::as_u64).unwrap_or(2) > 2 {
                 return Err(Fail::refused_because(
                     refused::R_VERSION,
