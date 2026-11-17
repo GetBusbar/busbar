@@ -163,6 +163,42 @@ fn play(items: &[It], sink: &mut dyn FnMut(PlaneOut<'_>)) {
 }
 
 #[test]
+fn command_callback_rejects_trailing_effects_and_duplicate_channels() {
+    use busbar_plugin_abi::plane::{CARRIER_STDIO, CH_FRAME_NDJSON};
+    for duplicate in [false, true] {
+        let effects = Emitted::default();
+        let mut once = super::Once::default();
+        let mut answer = super::Answer::default();
+        let channel = || PlaneOut::Channel {
+            exchange: 1,
+            carrier: CARRIER_STDIO,
+            flags: 0,
+            framing: CH_FRAME_NDJSON,
+            key: "command",
+            head: busbar_plugin_abi::records::Records::new(&[]),
+        };
+        answer.take(channel(), Origin::Channel, &mut once, &effects);
+        assert_eq!(answer.intents.len(), 1);
+        assert!(answer.violation.is_none());
+        answer.take(
+            if duplicate {
+                channel()
+            } else {
+                PlaneOut::Emit {
+                    carrier: 1,
+                    bytes: b"forbidden",
+                }
+            },
+            Origin::Channel,
+            &mut once,
+            &effects,
+        );
+        assert!(answer.violation.is_some());
+        assert!(effects.0.lock().unwrap().is_empty());
+    }
+}
+
+#[test]
 fn an_unadmitted_resource_echo_cannot_be_ignored_in_request() {
     let script = Script {
         request: vec![It::Emit(5, b"must stay private"), It::ResourceEcho],
@@ -360,6 +396,44 @@ fn owned_selected_preparation_retains_complete_actual_estimates() {
         Some(&[(Box::<str>::from("tokens"), EstimateValue::Unknown)][..])
     );
     assert!(effects.0.lock().unwrap().is_empty());
+}
+
+#[test]
+fn selected_sender_has_no_borrowed_legacy_fallback() {
+    use crate::plane_driver::port_egress::OwnedPreparation;
+    use crate::plane_driver::port_upstream::{
+        Candidate, SendFailed, TargetIdentity, UpReply, UpSend,
+    };
+    struct Legacy;
+    impl UpSend for Legacy {
+        fn send(&mut self, _: &Candidate, _: &super::UpExchange) -> Result<UpReply, SendFailed> {
+            panic!("an owned selected preparation must never fall back to legacy send")
+        }
+    }
+    let script = Script {
+        upstream_items: Mutex::new(VecDeque::from([vec![It::UpMethod, It::UpEnd]])),
+        ..Script::default()
+    };
+    let effects = Emitted::default();
+    let (mut task, _) = Task::begin(&script, &req(), b"", &effects).unwrap();
+    let candidate = Candidate {
+        pool: "pool".into(),
+        qualified_member: "seat\u{1f}member".into(),
+        identity: TargetIdentity::Registration,
+        resource: None,
+        upstream: "member".into(),
+        provider: "{}".into(),
+        base_path: "".into(),
+        flags: 0,
+        params: vec![],
+    };
+    let prepared = task
+        .prepare_selected(&candidate, 1, "dialect", "model", &effects)
+        .unwrap()
+        .unwrap();
+    assert!(Legacy
+        .open_selected(OwnedPreparation::new(prepared, None))
+        .is_err());
 }
 
 #[test]

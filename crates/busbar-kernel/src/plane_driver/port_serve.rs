@@ -398,47 +398,62 @@ fn drive_answers<K: Calls + ?Sized>(
     drive.effects.observed_usage(task.usage());
     hand_out(drive.effects, &mut ran.client);
     if let Some(forward) = forward {
-        let (Some(members), Some(send)) = (drive.members.as_deref_mut(), drive.send.as_deref_mut())
-        else {
-            return Err(SessionError::NotDriven);
-        };
         let wants = Wants::from_facts(&forward.wants);
-        let model = wants.model.clone().unwrap_or_default();
-        let mut mapped;
-        let members: &mut dyn Members = match drive.carrier {
-            Some(carrier) => {
-                mapped = Mapped::new(members, &carrier.map);
-                &mut mapped
-            }
-            None => members,
-        };
-        let walked = run_attempts(
-            task,
-            &wants,
-            drive.dialect,
-            &model,
-            members,
-            send,
-            drive.effects,
-        )?;
-        let wait = members.retry_after();
-        match walked {
-            Attempted::Served {
-                client,
-                member,
-                attempts,
-                ..
-            } => {
-                ran.client.extend(client);
-                drive.effects.observed_usage(task.usage());
-                hand_out(drive.effects, &mut ran.client);
-                ran.member = Some(member);
-                ran.attempts = attempts;
-            }
-            Attempted::Exhausted { attempts } => {
-                ran.attempts = attempts;
-                ran.exhausted = true;
-                exhausted(task, req, drive, &mut ran, wait)?;
+        if task.is_command() {
+            let answer = task.command(&wants, drive.dialect, drive.effects)?;
+            let answers = task.resolve(answer, drive.resolver, drive.effects)?;
+            let written = write_channels(task, &answers, drive.resolver, drive.effects)?;
+            absorb(&mut ran, &mut None, answers, drive.books);
+            absorb(&mut ran, &mut None, written, drive.books);
+            drive.effects.observed_usage(task.usage());
+            hand_out(drive.effects, &mut ran.client);
+        } else {
+            let (Some(members), Some(send)) =
+                (drive.members.as_deref_mut(), drive.send.as_deref_mut())
+            else {
+                return Err(SessionError::NotDriven);
+            };
+            let wants = Wants::from_facts(&forward.wants);
+            let model = wants.model.clone().unwrap_or_default();
+            let mut mapped;
+            let members: &mut dyn Members = match drive.carrier {
+                Some(carrier) => {
+                    mapped = Mapped::new(members, &carrier.map);
+                    &mut mapped
+                }
+                None => members,
+            };
+            let walked = run_attempts(
+                task,
+                &wants,
+                drive.dialect,
+                &model,
+                members,
+                send,
+                drive.effects,
+            )?;
+            let wait = members.retry_after();
+            match walked {
+                Attempted::Served {
+                    client,
+                    member,
+                    attempts,
+                    ..
+                } => {
+                    ran.client.extend(client);
+                    drive.effects.observed_usage(task.usage());
+                    hand_out(drive.effects, &mut ran.client);
+                    ran.member = Some(member);
+                    ran.attempts = attempts;
+                }
+                Attempted::Exhausted {
+                    attempts,
+                    local_quota,
+                } => {
+                    ran.attempts = attempts;
+                    ran.exhausted = true;
+                    exhausted(task, req, drive, &mut ran, wait, local_quota)?;
+                }
             }
         }
     }
@@ -468,8 +483,14 @@ fn exhausted<K: Calls + ?Sized>(
     drive: &Drive<'_>,
     ran: &mut Ran,
     wait: Option<u32>,
+    local_quota: bool,
 ) -> Result<(), SessionError> {
-    let refusal = drive.refusals.for_core(req.route, R_NO_ROUTE);
+    let code = if local_quota {
+        busbar_plugin_abi::fail::refused::R_RATE_LIMITED
+    } else {
+        R_NO_ROUTE
+    };
+    let refusal = drive.refusals.for_core(req.route, code);
     let before = ran.client.len();
     let mut arg = Reply::new();
     if encode_refusal(&mut arg, refusal.status, refusal.code, &refusal.text).is_err() {

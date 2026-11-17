@@ -254,6 +254,12 @@ impl UpChunks for Whole {
 
 /// The carrier: core adds the host, the carrier's defaults and the credential and sends the exchange.
 pub trait UpSend {
+    fn open_selected<'a>(
+        &'a mut self,
+        _prepared: super::port_egress::OwnedPreparation,
+    ) -> Result<super::port_egress::SelectedOpen<'a>, super::port_egress::SelectedSendError> {
+        Err(super::port_egress::SelectedSendError::backend())
+    }
     /// The whole reply. A carrier that streams implements [`open`](Self::open) and need not implement this one's
     /// buffering; a carrier that does not stream implements this one and gets `open` for free.
     fn send(&mut self, member: &Candidate, exchange: &UpExchange) -> Result<UpReply, SendFailed>;
@@ -285,7 +291,7 @@ pub enum Attempted {
         attempt: Option<AttemptItem>,
     },
     /// No member is left.
-    Exhausted { attempts: u32 },
+    Exhausted { attempts: u32, local_quota: bool },
 }
 
 /// The reply's head as the piece it is fed in: H_STATUS, PAIR*.
@@ -433,13 +439,17 @@ pub fn run_attempts<K: Calls + ?Sized>(
 ) -> Result<Attempted, SessionError> {
     // The borrowed legacy sender cannot own a selected-attempt partition or its transport
     // reservation. Only the separate owned preparation/money handoff may enable that cohort.
-    if task.selected_attempts() || task.data().is_some() {
+    if task.data().is_some() && !task.selected_attempts() {
         return Err(SessionError::NotDriven);
     }
     let mut attempts = 0_u32;
+    let mut local_quota = false;
     loop {
         let Some(member) = members.next(wants) else {
-            return Ok(Attempted::Exhausted { attempts });
+            return Ok(Attempted::Exhausted {
+                attempts,
+                local_quota,
+            });
         };
         attempts += 1;
         effects.routing(
@@ -448,27 +458,68 @@ pub fn run_attempts<K: Calls + ?Sized>(
             members.hook_remaining(),
             members.hook_failure(),
         );
-        let answer = member.with_target(attempts, dialect, model, |t| task.upstream(t, effects))?;
-        if answer
-            .attempt
-            .as_ref()
-            .is_some_and(|a| a.verdict == ATT_DECLINE)
-        {
-            members.declined(&member);
-            continue;
-        }
-        let exchange = exchange_zero(answer.exchanges)?;
         let unsent = Failure {
             verdict: ATT_RETRY,
             class: FC_SERVER,
             retry_after_s: 0,
         };
-        let Ok(reply) = send.open(&member, &exchange) else {
-            members.failed(&member, &unsent);
-            continue;
+        let reply = if task.selected_attempts() {
+            let Some(prepared) =
+                task.prepare_selected(&member, attempts, dialect, model, effects)?
+            else {
+                members.declined(&member);
+                continue;
+            };
+            let owned = super::port_egress::OwnedPreparation::new(prepared, task.data().cloned());
+            let opened = match send.open_selected(owned) {
+                Ok(opened) => opened,
+                Err(error) => {
+                    use super::port_egress::SelectedFailure;
+                    match &error.0 {
+                        SelectedFailure::NoSend | SelectedFailure::Policy(crate::governance::selected_policy::SelectedPolicyRefusal::StalePolicyTarget) => {
+                            members.declined(&member);
+                            continue;
+                        }
+                        SelectedFailure::Quota => {
+                            local_quota = true;
+                            members.declined(&member);
+                            continue;
+                        }
+                        _ => return Err(SessionError::SelectedRefused(error)),
+                    }
+                }
+            };
+            task.install_attempt(opened.attempt)?;
+            match opened.opened {
+                Ok(reply) => reply,
+                Err(_) => {
+                    task.finish_attempt()?;
+                    members.failed(&member, &unsent);
+                    continue;
+                }
+            }
+        } else {
+            let answer =
+                member.with_target(attempts, dialect, model, |t| task.upstream(t, effects))?;
+            if answer
+                .attempt
+                .as_ref()
+                .is_some_and(|a| a.verdict == ATT_DECLINE)
+            {
+                members.declined(&member);
+                continue;
+            }
+            let exchange = exchange_zero(answer.exchanges)?;
+            let Ok(reply) = send.open(&member, &exchange) else {
+                members.failed(&member, &unsent);
+                continue;
+            };
+            reply
         };
+        task.answered_attempt()?;
         let fed = feed(task, reply, effects)?;
         if fed.broken {
+            task.finish_attempt()?;
             members.failed(&member, &unsent);
             continue;
         }
@@ -477,6 +528,7 @@ pub fn run_attempts<K: Calls + ?Sized>(
             .as_ref()
             .filter(|a| matches!(a.verdict, ATT_RETRY | ATT_HARD))
         {
+            task.finish_attempt()?;
             members.failed(
                 &member,
                 &Failure {
@@ -487,6 +539,7 @@ pub fn run_attempts<K: Calls + ?Sized>(
             );
             continue;
         }
+        task.served_attempt()?;
         members.served(&member);
         return Ok(Attempted::Served {
             client: fed.client,

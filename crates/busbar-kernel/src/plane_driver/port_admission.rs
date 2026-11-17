@@ -23,6 +23,22 @@ pub struct AdmittedUnit {
 }
 
 impl AdmittedUnit {
+    pub fn selected(
+        unit: Unit,
+        money: super::NativeRequestMoney,
+        rollback: super::AdmissionRollback,
+    ) -> Result<Self, super::NativeAdmissionError> {
+        let request = money.request().clone();
+        if unit.ctx.key != request.unit() || !rollback.accepts(&request) {
+            return Err(super::NativeAdmissionError::Declaration);
+        }
+        Ok(Self {
+            request,
+            unit,
+            selected: Some(money),
+            rollback: Mutex::new(Some(rollback)),
+        })
+    }
     /// Keep exact money rollback armed until the same Task has accepted all admission proofs.
     pub fn ordinary(
         request: AdmittedRequest,
@@ -185,6 +201,23 @@ impl Pending {
             .ok_or(SessionError::NotDriven)?;
         let mut members = members;
         let receipt = match wants {
+            Some(wants)
+                if wants
+                    .upstream
+                    .as_deref()
+                    .is_some_and(|name| self.routes.command_registration(name).is_some()) =>
+            {
+                allocation
+                    .registration(
+                        &self.routes,
+                        wants.model.as_deref(),
+                        wants
+                            .upstream
+                            .as_deref()
+                            .expect("classified actual command"),
+                    )
+                    .map_err(|_| SessionError::NotDriven)?
+            }
             Some(wants) => {
                 let members = members.as_deref_mut().ok_or(SessionError::NotDriven)?;
                 let walk = members.request_walk().ok_or(SessionError::NotDriven)?;
@@ -200,6 +233,7 @@ impl Pending {
                 .local(&self.routes)
                 .map_err(|_| SessionError::NotDriven)?,
         };
+        let walk_selected = receipt.walk_key().is_some();
         let admitted = match commit {
             Commit::Ordinary(commit) => commit(receipt),
             Commit::Selected(commit) => commit(receipt, declaration),
@@ -223,7 +257,7 @@ impl Pending {
         self.admitted
             .set(admitted)
             .map_err(|_| SessionError::NotDriven)?;
-        if let Some(members) = members.filter(|_| wants.is_some()) {
+        if let Some(members) = members.filter(|_| walk_selected) {
             if !members.admit_request(&self.admitted.get().unwrap().request) {
                 return Err(SessionError::NotDriven);
             }
@@ -246,7 +280,11 @@ impl Pending {
 
 impl Books for Pending {
     fn ended(&self, ending: super::usage::Ending, usage: &super::usage::SessionUsage) {
-        if let Some(books) = self.books() {
+        if let Some(money) = self.admitted.get().and_then(|unit| unit.selected.as_ref()) {
+            if let Err(error) = money.work_ended(ending) {
+                tracing::warn!(?error, "selected work ending remains in original custody");
+            }
+        } else if let Some(books) = self.books() {
             books.ended(ending, usage);
         }
         if let Some(admitted) = self.admitted.get() {

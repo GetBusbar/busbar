@@ -86,6 +86,9 @@ struct ServeEffects<'a> {
 }
 
 impl Effects for ServeEffects<'_> {
+    fn admission_owner(&self) -> Option<&Arc<super::port_admission::Pending>> {
+        self.admission.as_ref()
+    }
     fn data(&self) -> Option<&Arc<crate::auth::native_data::NativeDataPending>> {
         self.data.as_ref()
     }
@@ -684,6 +687,49 @@ pub(crate) fn refusal_of(
     refusals.for_port(route, error)
 }
 
+/// Preserve the current authority's refusal vocabulary at the original route renderer.
+fn selected_refusal(
+    route: u32,
+    failure: &super::port_egress::SelectedFailure,
+    refusals: &dyn RefusalMap,
+) -> ClientRefusal {
+    use super::port_egress::SelectedFailure;
+    use crate::governance::selected_policy::SelectedPolicyRefusal;
+    use busbar_contract::caps::ReasonCode;
+    use busbar_plugin_abi::fail::refused::{R_NO_ROUTE, R_POLICY, R_RATE_LIMITED};
+
+    match failure {
+        SelectedFailure::Quota => return refusals.for_core(route, R_RATE_LIMITED),
+        SelectedFailure::NoSend
+        | SelectedFailure::Policy(SelectedPolicyRefusal::StalePolicyTarget) => {
+            return refusals.for_core(route, R_NO_ROUTE);
+        }
+        SelectedFailure::Policy(SelectedPolicyRefusal::CurrentAuthority(reason)) => {
+            if let Some(code) = reason.auth_code() {
+                return refusals.for_auth(route, code);
+            }
+        }
+        SelectedFailure::Policy(SelectedPolicyRefusal::CurrentGroup(
+            ReasonCode::ScopeDenied | ReasonCode::GroupFrozen,
+        )) => return refusals.for_core(route, R_POLICY),
+        _ => {}
+    }
+    refusals.for_port(
+        route,
+        &PortError::Failed {
+            code: if matches!(failure, SelectedFailure::Backend) {
+                busbar_plugin_abi::fail::failed::F_UNAVAILABLE
+            } else {
+                busbar_plugin_abi::fail::failed::F_INTERNAL
+            },
+            text: "".into(),
+            retry_after_s: None,
+            backend_status: None,
+            error: None,
+        },
+    )
+}
+
 /// Ties a request builder's two borrowed inputs to the one lifetime of the [`PlaneIn`] it returns (a closure
 /// with elided reference parameters would give each its own, and the result borrows both).
 fn one_lifetime<'a, F>(build: F) -> F
@@ -1160,15 +1206,18 @@ fn drive_blocking(
         Some(subject) => Resolver::new(intents, None).with_principal(subject, req.identity),
         None => Resolver::new(intents, None),
     }
-    .with_route(route);
+    .with_route(route)
+    .with_admission(effects.admission.as_deref());
     let session = carrier.map(|carrier| {
-        carrier.session_with_budget(
-            effects
-                .admission
-                .as_ref()
-                .and_then(|pending| pending.channel_budget())
-                .cloned(),
-        )
+        carrier
+            .session_with_budget(
+                effects
+                    .admission
+                    .as_ref()
+                    .and_then(|pending| pending.channel_budget())
+                    .cloned(),
+            )
+            .with_admission(effects.admission.clone())
     });
     let resolver = match &session {
         Some(session) => resolver.with_channels(&session.host),
@@ -1231,6 +1280,14 @@ fn drive_blocking(
     };
     match ran {
         Ok(ran) => Ok(Served::Ran(ran)),
+        Err(SessionError::CoreRefused(code)) => {
+            let refusal = refusals.for_core(req.route, code);
+            Ok(Served::Refused(refuse(port, req, &refusal, effects)))
+        }
+        Err(SessionError::SelectedRefused(error)) => {
+            let refusal = selected_refusal(req.route, &error.0, refusals);
+            Ok(Served::Refused(refuse(port, req, &refusal, effects)))
+        }
         Err(SessionError::HookRefused(refusal) | SessionError::AdmissionRefused(refusal)) => {
             Ok(Served::Refused(refuse(port, req, &refusal, effects)))
         }

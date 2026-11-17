@@ -21,6 +21,8 @@ mod native_admission;
 pub(super) mod native_attempt;
 pub use native_admission::{AdmissionRollback, NativeAdmissionError};
 mod native_fee;
+mod native_terminal;
+pub use native_terminal::SelectedTerminalReceipt;
 mod selected_view;
 pub use selected_view::UsageView;
 mod observations;
@@ -1041,6 +1043,9 @@ impl PlaneMoney {
                 busbar_contract::stage_probe::Derive::MoneyShardLock,
             );
             let mut all = self.shard(key);
+            if all.get(&key).is_some_and(|open| open.native.is_some()) {
+                return;
+            }
             all.remove(&key)
         };
         let Some(open) = removed else {
@@ -1432,6 +1437,9 @@ impl MoneySeam for PlaneMoney {
         let Some(open) = all.get_mut(&ctx.key) else {
             return Checkpoint::Continue;
         };
+        if open.native.is_some() {
+            return Checkpoint::Unpriced;
+        }
         if !adds_up(&open.money.classes, units)
             || units.iter().any(|u| {
                 units_bill(u.source) && u.amount != 0 && open.observation_classes.contains(&u.class)
@@ -1512,7 +1520,7 @@ impl MoneySeam for PlaneMoney {
             let Some(open) = all.get_mut(&ctx.key) else {
                 return;
             };
-            if open.ledgered || open.session {
+            if open.native.is_some() || open.ledgered || open.session {
                 return;
             }
             open.ledgered = true;
@@ -1543,6 +1551,7 @@ impl MoneySeam for PlaneMoney {
             let mut all = self.shard(ctx.key);
             all.measurement_requests.remove(&ctx.key);
             match all.get_mut(&ctx.key) {
+                Some(open) if open.native.is_some() => None,
                 Some(open) if !open.ledgered && open.finished => {
                     all.remove(&ctx.key).map(|open| (open, true))
                 }
@@ -1579,13 +1588,16 @@ impl MoneySeam for PlaneMoney {
 
     fn finished(&self, ctx: &UnitCtx) {
         if let Some(open) = self.shard(ctx.key).get_mut(&ctx.key) {
+            if open.native.is_some() {
+                return;
+            }
             open.finished = true;
         }
     }
 
     fn session_opened(&self, ctx: &UnitCtx) -> Result<(), ReasonCode> {
         match self.shard(ctx.key).get_mut(&ctx.key) {
-            Some(open) if !open.ledgered => {
+            Some(open) if !open.ledgered && open.native.is_none() => {
                 open.session = true;
                 Ok(())
             }
@@ -1599,7 +1611,7 @@ impl MoneySeam for PlaneMoney {
             let Some(open) = all.get_mut(&ctx.key) else {
                 return;
             };
-            if open.ledgered || !open.session {
+            if open.native.is_some() || open.ledgered || !open.session {
                 return;
             }
             open.ledgered = true;
@@ -1627,6 +1639,9 @@ impl MoneySeam for PlaneMoney {
 
     fn served(&self, ctx: &UnitCtx, member: &str, provider: &str) {
         if let Some(open) = self.shard(ctx.key).get_mut(&ctx.key) {
+            if open.native.is_some() {
+                return;
+            }
             if !open.laned {
                 let lane = &mut Arc::make_mut(&mut open.money).lane;
                 lane.clear();
@@ -1643,6 +1658,9 @@ impl MoneySeam for PlaneMoney {
             return;
         }
         if let Some(open) = self.shard(ctx.key).get_mut(&ctx.key) {
+            if open.native.is_some() {
+                return;
+            }
             let money = Arc::make_mut(&mut open.money);
             // `<plane><SEP><lane>`, keeping the plane prefix already there, in the lane's own buffer.
             let plane = busbar_kernel_ledger::cost::split_plane_lane(&money.lane)

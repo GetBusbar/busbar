@@ -113,7 +113,19 @@ async fn signed_verifier_receipt_binds_once_to_the_original_record_before_money(
     let (_money, admitted) = admit(gov.clone(), ctx.clone());
     let proof = admitted.signed_authority().expect("installed actual proof");
     assert!(Arc::ptr_eq(proof.original_key(), admitted.key()));
-    assert!(proof.current_key(&gov, 1001, None).is_some());
+    assert!(proof.current_key(&gov, 1001, None).is_ok());
+    let expired = proof.current_key(&gov, 2000, None).unwrap_err();
+    assert_eq!(
+        crate::governance::selected_policy::SelectedPolicyRefusal::from(expired),
+        crate::governance::selected_policy::SelectedPolicyRefusal::CurrentAuthority(
+            crate::governance::current_credential::CurrentCredentialRefusal::Expired
+        )
+    );
+    assert!(Arc::ptr_eq(proof.original_key(), admitted.key()));
+    assert!(
+        admitted.signed_authority().is_some(),
+        "current refusal does not replace or retire original custody"
+    );
     ctx.retire();
     assert!(admitted.signed_authority().is_none());
     assert!(admitted.matches_money_identity(&admitted.book, &admitted.open, &admitted.grant));
