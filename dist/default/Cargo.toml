@@ -1074,6 +1074,7 @@ zeroize = "1"
 # busbar-contract links into the binary, and a plugin's rev of busbar never decides what the
 # binary's contract is. Add a row here for each busbar crate a pulled plugin names directly.
 [patch.'https://github.com/GetBusbar/busbar']
+busbar-crypto-backend = { path = "../../crates/busbar-crypto-backend" }
 busbar-plugin-abi = { path = "../../crates/busbar-plugin-abi" }
 busbar-contract = { path = "../../crates/busbar-contract" }
 
@@ -1082,7 +1083,6 @@ busbar-contract = { path = "../../crates/busbar-contract" }
 [patch.'https://github.com/GetBusbar/busbar.git']
 busbar-contract = { path = "../../crates/busbar-contract" }
 busbar-plugin-abi = { path = "../../crates/busbar-plugin-abi" }
-busbar-crypto-backend = { path = "../../crates/busbar-crypto-backend" }
 
 # Exact release-line fixes submitted upstream: h2 sensitive indexed fields and WebSocket 1014.
 [patch.crates-io]

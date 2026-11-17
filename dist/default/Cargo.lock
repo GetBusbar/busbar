@@ -319,6 +319,32 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
 
 [[package]]
+name = "busbar-artifact-metadata"
+version = "1.6.0"
+dependencies = [
+ "busbar-json",
+ "serde",
+ "time",
+]
+
+[[package]]
+name = "busbar-artifact-verifier"
+version = "1.6.0"
+dependencies = [
+ "busbar-artifact-metadata",
+ "busbar-crypto",
+ "busbar-json",
+ "busbar-plugin-abi",
+ "flate2",
+ "hex",
+ "olpc-cjson",
+ "serde",
+ "sonic-rs",
+ "tar",
+ "time",
+]
+
+[[package]]
 name = "busbar-auth-admin-tokens"
 version = "1.6.0"
 source = "git+https://github.com/GetBusbar/busbar-auth-admin-tokens?rev=d2f65de0e2b35c68ba9162eff375d48c77130ff7#d2f65de0e2b35c68ba9162eff375d48c77130ff7"
@@ -426,10 +452,11 @@ name = "busbar-contract"
 version = "1.6.0"
 dependencies = [
  "async-trait",
- "axum-core",
  "base64 0.22.1",
+ "busbar-artifact-metadata",
  "busbar-count",
  "busbar-crypto",
+ "busbar-json",
  "busbar-secure",
  "bytes",
  "ciborium",
@@ -439,7 +466,6 @@ dependencies = [
  "http",
  "idna",
  "indexmap",
- "jsonschema",
  "libc",
  "memchr",
  "percent-encoding",
@@ -789,6 +815,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "busbar-json"
+version = "1.6.0"
+dependencies = [
+ "axum-core",
+ "busbar-count",
+ "http",
+ "jsonschema",
+ "serde",
+ "sonic-rs",
+]
+
+[[package]]
 name = "busbar-kernel"
 version = "1.6.0"
 dependencies = [
@@ -1004,6 +1042,8 @@ name = "busbar-plugin-loader"
 version = "1.6.0"
 dependencies = [
  "arc-swap",
+ "busbar-artifact-metadata",
+ "busbar-artifact-verifier",
  "busbar-contract",
  "busbar-ffi",
  "busbar-kernel-breaker",

@@ -228,7 +228,6 @@ members = ["."]
 [patch.'https://github.com/GetBusbar/busbar']
 busbar-contract = { path = "../../crates/busbar-contract" }
 
-[patch.'https://github.com/GetBusbar/busbar.git']
 busbar-crypto-backend = { path = "../../crates/busbar-crypto-backend" }
 
 [patch.crates-io]

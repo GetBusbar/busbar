@@ -218,7 +218,6 @@ large_futures = "deny"
 busbar-contract = { path = "crates/busbar-contract" }
 
 # The one crypto backend: busbar-crypto names it by this URL; a private build patches its own in.
-[patch.'https://github.com/GetBusbar/busbar.git']
 busbar-crypto-backend = { path = "crates/busbar-crypto-backend" }
 
 # Pinned dependency fixes: h2 sensitive fields, WebSocket 1014 and bounded frame diagnostics.
