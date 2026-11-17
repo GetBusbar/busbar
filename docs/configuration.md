@@ -2109,8 +2109,10 @@ connection admission slot remains held until the actual transport is released,
 including normal draining. These fixed policies add no configuration keys and do
 not govern plugin-framed upgrades or datagrams.
 
-**Active-stall limitation:** Hyper's keepalive timeout starts protocol shutdown;
-it is not a hard socket-close deadline. An active peer that stops reading can
-block the GOAWAY write and retain its connection slot. There is currently no hard
-active-stall bound or per-stream incomplete-header deadline. The first-header and
-zero-active deadlines above still force closure even when transport writes block.
+**Active output stall:** the native listener bounds every write. Each batch of
+output for a connection has one absolute deadline of
+`limits.upstream_request_timeout_secs`; partial progress does not extend it. A
+peer that stops reading, or reads one byte at a time, loses the connection when
+the deadline passes: the transport is dropped directly (no protocol shutdown a
+stalled peer could block) and its connection slot is released. A drain close by
+core is bounded by the shorter of that deadline and the drain grace.

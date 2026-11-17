@@ -1112,10 +1112,14 @@ fn deployment_read(startup: Arc<Mutex<Option<Startup>>>) -> Box<DeploymentRead> 
             let backend = handle.backend.clone();
             let startup = Arc::clone(&startup);
             Box::pin(async move {
+                // DES-331 §B5.2: the restore row is read before any writer registration commit.
+                busbar_kernel::persistence::restore::boot(backend.as_ref()).await?;
                 let admitted = super::boot::admit_format(backend, true).await?;
                 let core = admitted
                     .store()
                     .ok_or("the Store admission has no core store")?;
+                // A process launched with --restore-quarantine writes the pending marker (§B5.1).
+                busbar_kernel::persistence::restore::admitted(&core).await?;
                 let kept = BootIdentity::new(core)?.keep_deployment_id().await?;
                 *startup.lock().unwrap_or_else(PoisonError::into_inner) = Some(admitted);
                 deployment_bytes(&kept)

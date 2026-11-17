@@ -257,7 +257,7 @@ interim:
   crates/plugin-loader/src/dispatch/mod.rs: { tokens: 17, by: "W2 / W3 (old dispatch and doors)" }
   crates/plugin-loader/src/dispatch/observation.rs: { tokens: 10, by: "W2 / W3 (old dispatch and doors)" }
   crates/plugin-loader/src/dispatch/plugin.rs: { tokens: 105, by: "W2 / W3 (old dispatch and doors)" }
-  crates/plugin-loader/src/dispatch/services.rs: { tokens: 70, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/src/dispatch/services.rs: { tokens: 69, by: "W2 / W3 (old dispatch and doors)" }
   crates/plugin-loader/src/dispatch/snapshot.rs: { tokens: 18, by: "W2 / W3 (old dispatch and doors)" }
   crates/plugin-loader/src/dispatch/tests/auth_outbound_tests.rs: { tokens: 1, by: "W2 / W3 (old dispatch and doors)" }
   crates/plugin-loader/src/dispatch/tests/framing_loan_tests.rs: { tokens: 8, by: "W2 / W3 (old dispatch and doors)" }
@@ -300,7 +300,7 @@ interim:
   crates/plugin-loader/src/tests/export_door_tests.rs: { tokens: 11, by: "W2 / W3 (old dispatch and doors)" }
   crates/plugin-loader/src/tests/export_refresh_tests.rs: { tokens: 12, by: "W2 / W3 (old dispatch and doors)" }
   crates/plugin-loader/src/tests/head_snapshot_tests.rs: { tokens: 2, by: "W2 / W3 (old dispatch and doors)" }
-  crates/plugin-loader/src/tests/host_services_tests.rs: { tokens: 111, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/src/tests/host_services_tests.rs: { tokens: 110, by: "W2 / W3 (old dispatch and doors)" }
   crates/plugin-loader/src/tests/io_slots_tests.rs: { tokens: 6, by: "W2 / W3 (old dispatch and doors)" }
   crates/plugin-loader/src/tests/kind_boundary_loaded_tests.rs: { tokens: 3, by: "W2 / W3 (old dispatch and doors)" }
   crates/plugin-loader/src/tests/lifecycle_worker_tests.rs: { tokens: 4, by: "W2 / W3 (old dispatch and doors)" }
@@ -330,7 +330,6 @@ interim:
   crates/plugin-loader/src/tests/transport_answer_lease_tests.rs: { tokens: 6, by: "W2 / W3 (old dispatch and doors)" }
   crates/plugin-loader/src/tests/transport_receive_tests.rs: { tokens: 7, by: "W2 / W3 (old dispatch and doors)" }
   crates/plugin-loader/tests/fixtures/dispatch_test_plugin.rs: { tokens: 28, by: "W2 / W3 (old dispatch and doors)" }
-  crates/plugin-loader/tests/fixtures/hook_door_plugin.rs: { tokens: 1, by: "W2 / W3 (old dispatch and doors)" }
   crates/plugin-loader/tests/fixtures/log_witness_plugin.rs: { tokens: 15, by: "W2 / W3 (old dispatch and doors)" }
   crates/plugin-loader/tests/fixtures/neutral_frame_door.rs: { tokens: 24, by: "W2 / W3 (old dispatch and doors)" }
   crates/plugin-loader/tests/fixtures/neutral_plane_plugin.rs: { tokens: 4, by: "W2 / W3 (old dispatch and doors)" }

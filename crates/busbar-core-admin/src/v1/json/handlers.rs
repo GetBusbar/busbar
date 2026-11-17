@@ -4770,6 +4770,43 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         }),
     );
     schemas.insert(
+        super::kinds::CORE_STATE_PROCESS.to_string(),
+        json!({
+            "type": "object",
+            "description": "The core/process instance's state.",
+            "required": ["crypto"],
+            "properties": {
+                "crypto": {
+                    "type": "object",
+                    "description": "The linked crypto backend.",
+                    "required": ["backend", "module", "api", "validated_mode", "validation"],
+                    "properties": {
+                        "backend": {
+                            "type": "string",
+                            "description": "The linked crypto backend's name (`software` in core; a private build's backend states its own)."
+                        },
+                        "module": {
+                            "type": "string",
+                            "description": "The linked crypto module's version."
+                        },
+                        "api": {
+                            "type": "integer",
+                            "description": "The crypto backend contract version (3 in 1.6.0)."
+                        },
+                        "validated_mode": {
+                            "type": "boolean",
+                            "description": "True only when the linked backend states a validation; the same value as /info crypto.validated_mode."
+                        },
+                        "validation": {
+                            "type": ["string", "null"],
+                            "description": "The linked backend's validation statement (a certificate reference), or null; the same value as /info crypto.validation."
+                        }
+                    }
+                }
+            }
+        }),
+    );
+    schemas.insert(
         "ConfigSettingsMutationView".to_string(),
         json!({"oneOf": [
             {"$ref": "#/components/schemas/ConfigSettingsView"},

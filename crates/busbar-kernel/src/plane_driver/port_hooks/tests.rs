@@ -504,3 +504,83 @@ async fn a_full_retained_generation_pool_refuses_the_hook_without_starting_it() 
     );
     assert!(spy.seen.lock().unwrap().is_empty());
 }
+
+/// Records every candidate record a native hook call is shown (DES-NATIVE-HOOKS-PARITY r3 §E).
+struct RecSpy(Mutex<Vec<abi::CandidateRec>>);
+impl HookPort for RecSpy {
+    fn points(&self) -> u32 {
+        1 << abi::POINT_ROUTE
+    }
+    fn facts(&self) -> u64 {
+        0
+    }
+    fn on<'a>(&'a self, _: CallCx, _: u32, view: &'a HookView<'a>) -> HookCall<'a> {
+        self.0
+            .lock()
+            .unwrap()
+            .extend(view.candidates.iter().map(|candidate| candidate.rec));
+        HookCall::Done(Ok(abstain()))
+    }
+}
+
+/// The candidate records one route call shows a hook that requested `signals`, over one member
+/// with a sample of every opt-in signal: error rate 25%, breaker open, p95 120 ms.
+async fn recs_shown(signals: &[busbar_contract::signal::Signal]) -> Vec<abi::CandidateRec> {
+    let fixture = Fixture::new();
+    let spy = Arc::new(RecSpy(Mutex::default()));
+    let mut call = configured(spy.clone(), PromptAccess::No, UserAccess::No);
+    for &signal in signals {
+        Arc::get_mut(&mut call).unwrap().signals.insert(signal);
+    }
+    let candidates = [CandidateView {
+        facts: CandidateFacts {
+            idx: 0,
+            model: "m".into(),
+            error_rate: Some(0.25),
+            breaker_state: Some("open"),
+            latency_p95_ms: Some(120),
+            ..Default::default()
+        },
+        lane: "plane/lane-a".into(),
+    }];
+    let projection = Projection::default();
+    let selection = fixture.selection();
+    let input = call::Input {
+        projection: &projection,
+        selected: &fixture.selected,
+        selection: &selection,
+        identity: &[],
+        candidates: &candidates,
+        quantities: &[],
+        stage: &[],
+        context: &fixture.context,
+    };
+    assert!(call::one(&call, abi::POINT_ROUTE, &input).await.is_ok());
+    let recs = spy.0.lock().unwrap().clone();
+    recs
+}
+
+/// RED before §E (#459): a hook that did not request `candidate_error_rate` was shown it anyway
+/// (the error_rate leak); nor is it shown the breaker or the p95.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_non_requesting_hook_sees_no_error_rate_breaker_or_p95() {
+    let recs = recs_shown(&[]).await;
+    assert_eq!(recs.len(), 1);
+    let rec = recs[0];
+    assert_eq!(
+        rec.flags & abi::C_HAS_ERROR_RATE,
+        0,
+        "error_rate is an opt-in signal"
+    );
+    assert_eq!(rec.error_rate_ppm, 0);
+    assert_eq!(rec.breaker, 0);
+}
+
+/// A hook that requested `candidate_error_rate` sees it, with its presence bit, in ppm.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_requesting_hook_sees_error_rate_with_its_presence_bit() {
+    let recs = recs_shown(&[busbar_contract::signal::Signal::CandidateErrorRate]).await;
+    assert_eq!(recs.len(), 1);
+    assert_ne!(recs[0].flags & abi::C_HAS_ERROR_RATE, 0);
+    assert_eq!(recs[0].error_rate_ppm, 250_000);
+}

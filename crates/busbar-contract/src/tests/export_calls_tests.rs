@@ -20,11 +20,11 @@ fn recorder_protocol_requires_an_explicit_supported_version() {
     for wrong in [b"2".as_slice(), b"true", b"null", b"{}", b"\"1\""] {
         assert!(recorder_protocol(&encode(&[(EXT_RECORDER_REQUIREMENTS, wrong)])).is_err());
     }
-    assert!(serde_json::from_str::<RecorderRequirements>(
+    assert!(crate::json::parse_str::<RecorderRequirements>(
         r#"{"retention_seconds":1,"key_gauge_limit":0,"buffer_seconds":4}"#
     )
     .is_err());
-    assert!(serde_json::from_str::<RecorderRequirements>(r#"{"retention_seconds":1}"#).is_err());
+    assert!(crate::json::parse_str::<RecorderRequirements>(r#"{"retention_seconds":1}"#).is_err());
     assert!(RecorderRequirements {
         retention_seconds: 0,
         key_gauge_limit: 0

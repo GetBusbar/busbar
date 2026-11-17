@@ -50,6 +50,7 @@ impl FormatRecord {
         startup::Manifest {
             dataset: self.dataset,
             registrar: self.registrar,
+            format: startup::RECORD_FORMAT,
         }
         .encode()
     }
@@ -239,6 +240,7 @@ pub async fn prepare_activation(
             writer_epoch: epoch,
             ..authority
         },
+        format: startup::RECORD_FORMAT,
     };
     Ok(ActivationChange {
         predicates: vec![
