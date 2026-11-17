@@ -7,12 +7,27 @@ use super::*;
 use crate::auth::native_data::DataRefused;
 use crate::inbound::native::{PhysicalRefusal, RouteTarget};
 
-/// Retains the actual physical owner and the observer of its one queued original.
-/// Dropping a confirmation future never removes or replaces that queued operation.
+/// Retains the physical owner and its one frozen original before and after queue acceptance.
+/// Dropping a confirmation future never removes or replaces that operation.
 pub struct NativeRefusalAudit {
     refusal: PhysicalRefusal,
     native: Arc<NativeAudit>,
     confirmed: Arc<AtomicBool>,
+    // The one already-framed original remains here until the existing queue accepts it.
+    pending: Mutex<Option<PendingAudit>>,
+}
+
+/// Every failure returns its real original owner. Only NotQueued has a frozen operation that
+/// can be retried; Unprepared remains an explicit incomplete disposition in its supervisor.
+pub enum NativeRefusalError {
+    Unprepared {
+        refusal: PhysicalRefusal,
+        error: RecordStoreError,
+    },
+    NotQueued {
+        audit: NativeRefusalAudit,
+        error: RecordStoreError,
+    },
 }
 
 impl NativeRefusalAudit {
@@ -26,13 +41,23 @@ impl NativeRefusalAudit {
         self.confirmed.load(Ordering::Acquire)
     }
 
-    /// Observe the existing queue's actual progress without creating another retry owner.
+    /// On existing queue progress, transfer any still-held original and observe its confirmation.
+    /// Store work remains with the existing queue driver; no new retry owner is created.
     pub async fn wait_original_confirmation(&self) {
-        wait_confirmation(&AUDIT_LOG, &self.confirmed).await;
+        wait_confirmation(&AUDIT_LOG, &self.confirmed, || self.transfer_original()).await;
     }
 
-    /// Retry the existing queue with its original attachment. This never enqueues a new row.
+    fn transfer_original(&self) -> RecordStoreResult<()> {
+        let mut pending = self
+            .pending
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        transfer_original(&PENDING_AUDIT, &mut pending)
+    }
+
+    /// Retry custody transfer and the existing queue with the same frozen logical operation.
     pub async fn confirm(&self) -> RecordStoreResult<()> {
+        self.transfer_original()?;
         if !self.confirmed.load(Ordering::Acquire) {
             drain_native(&PENDING_AUDIT, &AUDIT_LOG, self.native.clone()).await?;
         }
@@ -56,11 +81,18 @@ impl NativeRefusalAudit {
     }
 }
 
-pub(super) async fn wait_confirmation(log: &PlaneAuditLog, confirmed: &AtomicBool) {
+pub(super) async fn wait_confirmation(
+    log: &PlaneAuditLog,
+    confirmed: &AtomicBool,
+    mut transfer: impl FnMut() -> RecordStoreResult<()>,
+) {
     loop {
         let notified = log.notified();
         tokio::pin!(notified);
         notified.as_mut().enable();
+        // Capacity refusal is known no-effect and retains the same pending owner. A real
+        // queue confirmation wakes this existing observer when capacity can be retried.
+        let _ = transfer();
         if confirmed.load(Ordering::Acquire) {
             return;
         }
@@ -68,24 +100,39 @@ pub(super) async fn wait_confirmation(log: &PlaneAuditLog, confirmed: &AtomicBoo
     }
 }
 
-/// Consume one actual pre-allocation denial. Errors retain its original physical owner;
-/// once queue admission is attempted, its audit latch stays spent even on refusal.
+pub(super) fn transfer_original(
+    queue: &PendingAuditQueue,
+    held: &mut Option<PendingAudit>,
+) -> RecordStoreResult<()> {
+    let Some(original) = held.take() else {
+        return Ok(());
+    };
+    match queue.try_enqueue_original(original) {
+        Ok(()) => Ok(()),
+        Err((original, error)) => {
+            *held = Some(original);
+            Err(error)
+        }
+    }
+}
+
+/// Consume one actual pre-allocation denial. Capacity refusal returns the already-framed
+/// operation in NotQueued; retry transfers it intact and never revisits the spent guard latch.
 /// No unit, principal, current App, execution admission or HTTP status is fabricated here.
 pub fn record_native_refusal(
     mut refusal: PhysicalRefusal,
-) -> Result<NativeRefusalAudit, (PhysicalRefusal, RecordStoreError)> {
-    let prepared = prepare_refusal(&refusal);
-    let (native, row) = match prepared {
+) -> Result<NativeRefusalAudit, NativeRefusalError> {
+    let (native, row) = match prepare_refusal(&refusal) {
         Ok(prepared) => prepared,
-        Err(error) => return Err((refusal, error)),
+        Err(error) => return Err(NativeRefusalError::Unprepared { refusal, error }),
     };
     let confirmed = Arc::new(AtomicBool::new(false));
     let mut operation = [0; 16];
     if let Err(error) = busbar_contract::crypto::fill(&mut operation) {
-        return Err((
+        return Err(NativeRefusalError::Unprepared {
             refusal,
-            RecordStoreError(format!("native refusal entropy: {error}")),
-        ));
+            error: RecordStoreError(format!("native refusal entropy: {error}")),
+        });
     }
     let pending = PendingAudit {
         scope: ADMIN_LOG.into(),
@@ -96,21 +143,23 @@ pub fn record_native_refusal(
         confirmation: Some(confirmed.clone()),
     };
     if refusal.claim_preunit_audit().is_err() {
-        return Err((
+        return Err(NativeRefusalError::Unprepared {
             refusal,
-            RecordStoreError(
+            error: RecordStoreError(
                 "native refusal audit ownership is already spent or unavailable".into(),
             ),
-        ));
+        });
     }
-    if let Err(error) = PENDING_AUDIT.try_enqueue_background(pending) {
-        return Err((refusal, error));
-    }
-    Ok(NativeRefusalAudit {
+    let audit = NativeRefusalAudit {
         refusal,
         native,
         confirmed,
-    })
+        pending: Mutex::new(Some(pending)),
+    };
+    match audit.transfer_original() {
+        Ok(()) => Ok(audit),
+        Err(error) => Err(NativeRefusalError::NotQueued { audit, error }),
+    }
 }
 
 fn prepare_refusal(

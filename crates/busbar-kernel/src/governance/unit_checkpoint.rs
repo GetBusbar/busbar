@@ -19,8 +19,11 @@ use crate::persistence::journal::runtime::Carried;
 /// batches, so a drain stops within one batch and the control thread waits at most one batch.
 const UNIT_FLUSH_BATCH: usize = 128;
 
+mod ordinary_completion;
 pub mod partitions;
 mod terminal_completion;
+pub use ordinary_completion::OrdinaryTerminalCompletion;
+pub(crate) use ordinary_completion::OrdinaryTerminalReservation;
 pub use terminal_completion::SelectedTerminalCompletion;
 use terminal_completion::TerminalSignal;
 
@@ -901,7 +904,23 @@ impl GovState {
         for item in &items {
             match results.next() {
                 Some(Ok(())) => {
-                    self.unit_checkpoints.pending.lock().remove(&item.id);
+                    let mut pending = self.unit_checkpoints.pending.lock();
+                    let Some(mut entry) = pending.edit(&item.id) else {
+                        failed.push((
+                            item.id,
+                            error("original checkpoint disappeared before R acknowledgement"),
+                        ));
+                        continue;
+                    };
+                    if let Err(why) =
+                        entry.confirm_ordinary(&item.snapshot, item.ordinary_signal.as_ref())
+                    {
+                        failed.push((item.id, why));
+                        continue;
+                    }
+                    drop(entry);
+                    pending.remove(&item.id);
+                    drop(pending);
                     for event in item.snapshot.terminal.iter().flatten() {
                         self.forget_confirmed_recovery(event.operation_id);
                     }
@@ -936,6 +955,9 @@ impl GovState {
             sealed.terminal = Some(events.clone());
             sealed.revision = revision;
             sealed.validate()?;
+            if let Some(signal) = entry.ordinary_signal() {
+                signal.fund_events(&events)?;
+            }
             entry.set_terminal(events, revision);
         }
         Ok(Some(UnitFlushItem {
@@ -944,6 +966,7 @@ impl GovState {
             persisted: entry.persisted(),
             recovered: entry.is_recovered(),
             awaiting_terminal_reader: entry.awaiting_terminal_reader(),
+            ordinary_signal: entry.ordinary_signal().cloned(),
             failed: None,
         }))
     }
@@ -1024,6 +1047,7 @@ struct UnitFlushItem {
     persisted: Option<u64>,
     recovered: bool,
     awaiting_terminal_reader: bool,
+    ordinary_signal: Option<Arc<ordinary_completion::OrdinarySignal>>,
     failed: Option<RecordStoreError>,
 }
 

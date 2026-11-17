@@ -512,7 +512,8 @@ impl NativeDataAllocation {
             registration.context.clone(),
             authorization.key.clone(),
             authorization.binding.clone(),
-        );
+        )
+        .map_err(|_| DataRefused::Capacity)?;
         Ok(Self {
             audit,
             authorization,
@@ -521,6 +522,10 @@ impl NativeDataAllocation {
             gate,
             allocation,
         })
+    }
+
+    pub fn request(&self) -> &crate::limits::process_admission::RequestLease {
+        self.authorization.binding.request()
     }
 
     /// Transfer the original allocation's one-shot audit registration to Node custody.

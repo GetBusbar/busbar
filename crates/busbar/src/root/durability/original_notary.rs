@@ -16,30 +16,57 @@ use super::super::audit::NativeStagedAudit;
 #[path = "../tests/durability_original_notary.rs"]
 mod tests;
 
+/// Finite scan position, never audit or completion authority. Every callback examines at
+/// most 64 candidates, including nonmembers, using the same captured upper bound.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct OriginalPageCursor {
+    pub(crate) last: Option<u64>,
+    pub(crate) upper: u64,
+}
+
+impl OriginalPageCursor {
+    pub(super) fn start(upper: u64) -> Self {
+        Self { last: None, upper }
+    }
+
+    pub(super) fn preserves(self, previous: Option<Self>, upper: Option<u64>) -> bool {
+        upper.is_none_or(|upper| upper == self.upper)
+            && self.last.is_none_or(|last| last <= self.upper)
+            && previous
+                .is_none_or(|previous| previous.upper == self.upper && self.last >= previous.last)
+    }
+
+    pub(super) fn advances(self, previous: Option<Self>, upper: Option<u64>) -> bool {
+        self.preserves(previous, upper)
+            && self.last.is_some()
+            && previous.is_none_or(|previous| self.last > previous.last)
+    }
+}
+
 /// One callback into the existing charged Node table. No subscriber or retry queue is added.
 pub(crate) trait OriginalPageReceiver: Send + Sync {
     fn fund_original_page(
         &self,
         target: &OriginalPageTarget,
         bytes: usize,
-        cursor: Option<u64>,
+        cursor: Option<OriginalPageCursor>,
     ) -> PageFunding;
     fn deliver_original_page(
         &self,
         page: &OriginalPageReceipt,
-        cursor: Option<u64>,
+        cursor: Option<OriginalPageCursor>,
     ) -> PageDelivery;
 }
 
 pub(crate) enum PageFunding {
-    Pending(u64),
-    Reserved(StorageCredit),
-    Empty,
-    Refused,
+    Pending(OriginalPageCursor),
+    Reserved(StorageCredit, u64),
+    Empty(u64),
+    Refused(Option<OriginalPageCursor>),
 }
 
 pub(crate) enum PageDelivery {
-    Pending(u64),
+    Pending(OriginalPageCursor),
     Complete,
     Refused,
 }

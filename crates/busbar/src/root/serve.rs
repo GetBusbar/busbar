@@ -1909,7 +1909,10 @@ impl DataRoutes {
         } else {
             served.live.current()
         };
-        let node = self.post.node();
+        let Some(node) = self.post.node() else {
+            let _ = verdict.send(Err(None));
+            return;
+        };
         let unit = door
             .admission
             .as_ref()
@@ -1994,6 +1997,7 @@ impl DataRoutes {
                 (self.pin)(),
                 live.facts.audit_kind,
                 door.admission.as_ref(),
+                &door.request,
             )
             .await
         else {
@@ -2436,7 +2440,7 @@ impl DataRoutes {
         let frame = self.frames_lock().get(&nest.parent).cloned()?;
         let parent = self
             .post
-            .node()
+            .node()?
             .parent(busbar_contract::UnitKey::new(nest.parent))?;
         Some((frame, parent))
     }
@@ -2564,7 +2568,7 @@ impl DataRoutes {
         caller.began(started);
         let claim = arrival.claim;
         let app_for_metrics = Arc::clone(&app);
-        let node = self.post.node();
+        let node = self.post.node()?;
         let unit = admission.map_or_else(|| node.mint(), |admission| admission.unit_key());
         let unit_id = node.unit_id(unit);
         if let Some(id) = unit_id {
@@ -2669,6 +2673,7 @@ impl DataRoutes {
                 live.facts.audit_kind,
                 admission,
                 Some(super::plane_node::Timing { started, caller }),
+                request,
             ),
         )
         .await;
@@ -2746,7 +2751,10 @@ fn journal_refused(
     post: &crate::root::plane_node::NodeEndPost,
     arrival: &Arrival,
 ) -> Option<Rendered> {
-    let why = post.node().journal_refusal()?;
+    let why = match post.node() {
+        Some(node) => node.journal_refusal()?,
+        None => "original node unavailable".to_owned(),
+    };
     let status = refusal_status(ReasonCode::DurabilityUnavailable);
     let dialect = served
         .snapshot
