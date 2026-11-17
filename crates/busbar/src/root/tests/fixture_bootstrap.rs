@@ -174,11 +174,18 @@ impl PlaneFixture {
             0,
             false,
         );
+        let guests = mounts.data.guests.clone();
+        let refuse_by_path = mounts.refuse_by_path;
+        if let Some(refuse) = &refuse_by_path {
+            handle.bind_door_refuser(Arc::clone(refuse));
+        }
         let workers = workers.start();
         Ok(PublishedFixture {
             data,
             admin,
             handle,
+            guests,
+            refuse_by_path,
             routes: mounts.data,
             workers,
         })
@@ -189,6 +196,8 @@ pub(crate) struct PublishedFixture {
     pub(crate) data: axum::Router,
     pub(crate) admin: axum::Router,
     pub(crate) handle: Arc<busbar_kernel::state::AppHandle>,
+    pub(crate) guests: busbar_kernel::guest::GuestList,
+    pub(crate) refuse_by_path: Option<busbar_kernel::plane_routes::PlaneRefuseByPathFn>,
     pub(crate) routes: Arc<crate::root::serve::DataRoutes>,
     workers: crate::root::boot::workers::RunningWorkers,
 }
