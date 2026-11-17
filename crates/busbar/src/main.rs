@@ -109,10 +109,6 @@ fn line_serve_requested(planes: &[&[root::linked::CliHelpRow]], argv: &root::cli
 
 const MAX_WORKER_THREADS: usize = 128;
 
-/// Allocation ceiling for each startup migration frame/page/semantic working buffer. Fixed; there
-/// is no config key for it.
-const MIGRATION_VALUE_BYTES: usize = 64 * 1024 * 1024;
-
 #[cfg(test)]
 fn worker_threads_from_env(name: &str) -> Option<usize> {
     let mut warnings = Vec::new();
@@ -1260,6 +1256,7 @@ async fn run(
         deploy,
         ..
     } = ready;
+    root::plane_node::node().bind_book(Arc::clone(&book.durability));
     let book = Some(book);
     // The same durably confirmed generation becomes live before any producer starts.
     boot_limits.keep().notify();
@@ -1360,14 +1357,11 @@ async fn run(
         Arc::clone(&app.amendments),
     )
     .unwrap_or_else(|error| die_list("config errors", [error]));
+    let mut app = Arc::unwrap_or_clone(app);
+    app.secret_resolver = Arc::clone(&native.resolver);
     let app = Arc::new(
-        export::plugin::assemble_routes(
-            Arc::unwrap_or_clone(app),
-            &export_config,
-            native.seats.clone(),
-            export_registry,
-        )
-        .unwrap_or_else(|error| die_list("config errors", [error])),
+        export::plugin::assemble_routes(app, &export_config, native.seats.clone(), export_registry)
+            .unwrap_or_else(|error| die_list("config errors", [error])),
     );
 
     let door_live_handle = Arc::default();
