@@ -56,6 +56,30 @@ pub(crate) async fn rig() -> (NativeFixture, Arc<ResponseIntentService>, Deliver
 }
 
 #[tokio::test]
+async fn rejected_registration_cancels_original_handles_without_publishing_release() {
+    let (_fixture, service, mut ledger) = rig().await;
+    let original = service.connection().unwrap();
+    let foreign = service.connection().unwrap();
+    let key = original.key(1, None).unwrap();
+    let handles = ledger.admit(key).unwrap();
+    let watch = handles.watch.clone();
+    assert!(foreign
+        .admit(
+            key,
+            handles,
+            tokio::time::Instant::now() + Duration::from_secs(1)
+        )
+        .is_err());
+    assert_eq!(watch.key(), key);
+    assert_eq!(watch.cancellation(), Some(ResponseStop::Integrity));
+    assert!(
+        watch.snapshot().terminal.is_none(),
+        "rejection cannot invent carrier settlement"
+    );
+    assert!(!watch.snapshot().first_payload_written);
+}
+
+#[tokio::test]
 async fn actual_publication_plan_and_confirmed_original_are_one_shot() {
     let (fixture, service, mut ledger) = rig().await;
     let connection = service.connection().unwrap();

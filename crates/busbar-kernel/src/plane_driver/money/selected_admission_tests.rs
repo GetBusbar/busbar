@@ -131,6 +131,19 @@ async fn selected_fixture(
     NativeInvocationAdmission,
     CommittingRequest,
 ) {
+    selected_fixture_with_post(unit, Arc::new(CapturedPost(audit))).await
+}
+
+async fn selected_fixture_with_post(
+    unit: u64,
+    post: Arc<dyn EndPost>,
+) -> (
+    Arc<PlaneMoney>,
+    Arc<GovState>,
+    InvocationContext,
+    NativeInvocationAdmission,
+    CommittingRequest,
+) {
     let key = Arc::new(VirtualKey {
         id: "selected-payer".into(),
         enabled: true,
@@ -158,8 +171,41 @@ async fn selected_fixture(
             .await
             .unwrap(),
     );
-    let money = Arc::new(PlaneMoney::new(gov.clone(), Arc::new(CapturedPost(audit))));
+    let money = Arc::new(PlaneMoney::new(gov.clone(), post));
     (money, gov, context, lease, request)
+}
+
+#[tokio::test]
+async fn selected_startup_terminal_captures_latest_original_audit_facts() {
+    use std::sync::atomic::{AtomicU8, Ordering};
+    struct UpdatedPost(Arc<AtomicU8>);
+    impl EndPost for UpdatedPost {
+        fn post(&self, _: &crate::teller::UnitCtx, _: crate::teller::Ended) {}
+        fn checkpoint_facts(&self, _: UnitKey) -> Option<Vec<u8>> {
+            Some(vec![self.0.load(Ordering::Acquire)])
+        }
+    }
+    let facts = Arc::new(AtomicU8::new(1));
+    let (money, _, context, _lease, request) =
+        selected_fixture_with_post(103, Arc::new(UpdatedPost(facts.clone()))).await;
+    let selected = money
+        .admit_existing_selected(
+            request,
+            declaration(&context),
+            context.generation().routing_generation().unwrap(),
+            NonZeroU32::new(1).unwrap(),
+            FeeRefund::CallerStatus,
+            ExhaustionMode::FinishUnit,
+        )
+        .unwrap();
+    let rollback = money.admission_rollback(selected.request()).unwrap();
+    let mut terminal = selected.terminal_receipt().unwrap();
+    facts.store(2, Ordering::Release);
+    drop(rollback);
+    let snapshot = terminal.wait().await.unwrap();
+    assert_eq!(snapshot.audit, Some(vec![2]));
+    assert!(snapshot.ended);
+    assert_eq!(money.open_units(), 0);
 }
 
 #[tokio::test]
@@ -539,4 +585,50 @@ async fn terminal_admission_equality_retains_exact_owner_after_retirement() {
     context.retire();
     assert!(selected.request().same_admission(&clone));
     assert!(!selected.request().same_admission(other.request()));
+}
+
+#[tokio::test]
+async fn selected_startup_rollback_preserves_original_fee_marker_after_initial_answer() {
+    use crate::governance::unit_checkpoint::partitions::{CapturedFee, Disposition, FeeResult};
+    use crate::plane_driver::usage::SessionUsage;
+    let (money, _, context, _lease, request) = selected_fixture(102, true).await;
+    let descriptor = declaration(&context);
+    let selected = money
+        .admit_existing_selected(
+            request,
+            descriptor.clone(),
+            context.generation().routing_generation().unwrap(),
+            NonZeroU32::new(1).unwrap(),
+            FeeRefund::PlaneFeeUnits(Arc::from([1])),
+            ExhaustionMode::FinishUnit,
+        )
+        .unwrap();
+    let guard = money.admission_rollback(selected.request()).unwrap();
+    let mut terminal = selected.terminal_receipt().unwrap();
+    let mut usage = SessionUsage::new();
+    usage
+        .answer(
+            "calls.custom",
+            busbar_plugin_abi::plane::UsageRec {
+                amount: 1,
+                scale: 0,
+                source: busbar_plugin_abi::plane::SRC_REPORTED,
+            },
+        )
+        .unwrap();
+    selected.observe_session(&descriptor, &usage).unwrap();
+    selected
+        .work_ended(crate::plane_driver::usage::Ending::Failed)
+        .unwrap();
+    drop(guard);
+    assert_eq!(money.open_units(), 0);
+    let snapshot = terminal.wait().await.unwrap();
+    let parts = snapshot.partitions.as_ref().unwrap();
+    assert_eq!(parts.disposition, Disposition::Failed);
+    assert!(
+        parts.session.is_none(),
+        "fee marker never becomes quantity usage"
+    );
+    assert!(matches!(parts.fee, CapturedFee::ResolvedOwner { result: FeeResult::Charged, .. }),
+        "the original fee-unit policy decides its original fee, independently of quantity disposition");
 }

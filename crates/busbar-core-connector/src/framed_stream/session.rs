@@ -964,6 +964,21 @@ pub enum Outcome<S> {
     },
 }
 
+impl<S> Outcome<S> {
+    /// Dispose an unadopted upgrade's exact writer before freezing its failed delivery facts.
+    /// Other outcomes have already disposed their writer inside the original session owner.
+    pub fn retire(self) {
+        if let Self::Upgraded {
+            delivery, io, conn, ..
+        } = self
+        {
+            drop(conn);
+            drop(io);
+            delivery.writer_retired();
+        }
+    }
+}
+
 /// One stream core feeds.
 struct Slot {
     pieces: mpsc::Receiver<Piece>,

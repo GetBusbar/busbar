@@ -214,6 +214,7 @@ impl Served {
     pub(crate) fn spawn_work_recovery(
         &self,
         app: Arc<busbar_kernel::state::AppHandle>,
+        admission: Arc<busbar_kernel::limits::process_admission::ProcessAdmission>,
         mut shutdown: tokio::sync::broadcast::Receiver<()>,
     ) -> tokio::task::JoinHandle<()> {
         let routes = self.nests.clone();
@@ -270,7 +271,7 @@ impl Served {
                     .unwrap_or_default();
                 let cycle = async {
                     for routes in live {
-                        routes.recover_work(app.load()).await;
+                        routes.recover_work(app.load(), &admission).await;
                     }
                     if let Some(native) = &native {
                         crate::root::min3_boot::recover_ports(native, app.load()).await;
@@ -370,6 +371,9 @@ impl LeaseTick {
         type JournalFlush =
             std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>>;
         let mut flushing: Option<JournalFlush> = None;
+        // The existing native audit queue owns uncertain refusal/export originals. Keep its
+        // driver independent of the journal so an isolated lost ACK needs no later request.
+        let mut auditing: Option<JournalFlush> = None;
         // The store settle pass is its own future: a stalled store never blocks the flush.
         let mut settling: Option<std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>> =
             None;
@@ -384,6 +388,13 @@ impl LeaseTick {
                     if flushing.is_none() {
                         let tick = Arc::clone(&this);
                         flushing = Some(Box::pin(async move { tick.tick().await }));
+                    }
+                    if auditing.is_none() && busbar_kernel::audit::auditlog::has_unsettled_audit() {
+                        auditing = Some(Box::pin(async {
+                            busbar_kernel::audit::auditlog::flush_pending()
+                                .await
+                                .map_err(|error| error.to_string())
+                        }));
                     }
                     if sweep.is_none() {
                         let custody = Arc::clone(&this.node.ticket_custody);
@@ -402,6 +413,15 @@ impl LeaseTick {
                 } => {
                     flushing = None;
                     if let Err(error) = result { tracing::warn!(reason = error, "native journal custody is still pending"); }
+                }
+                result = async {
+                    match auditing.as_mut() {
+                        Some(auditing) => auditing.await,
+                        None => std::future::pending().await,
+                    }
+                } => {
+                    auditing = None;
+                    if let Err(error) = result { tracing::warn!(reason = error, "native audit originals are still pending"); }
                 }
                 () = async {
                     match sweep.as_mut() {
@@ -4118,6 +4138,7 @@ impl DataRoutes {
     pub(crate) async fn recover_work(
         self: &Arc<Self>,
         app: Arc<busbar_kernel::state::App>,
+        admission: &Arc<busbar_kernel::limits::process_admission::ProcessAdmission>,
     ) -> usize {
         use busbar_kernel::guest::{Claimant, Matched};
         if app.governance.is_none() {
@@ -4179,6 +4200,11 @@ impl DataRoutes {
                     body: bytes::Bytes::new(),
                     carrier: 0,
                 };
+                let Ok(request) = admission
+                    .try_enter(busbar_kernel::limits::process_admission::AdmissionClass::Data)
+                else {
+                    continue;
+                };
                 let principal = PrincipalId::new(key.id.as_str());
                 let (caller, reply) = IngressCaller::new();
                 let routes = self.clone();
@@ -4194,6 +4220,7 @@ impl DataRoutes {
                             arrival,
                             None,
                             None,
+                            &request,
                         )
                         .await
                 };

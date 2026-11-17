@@ -6,7 +6,6 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use axum::body::Bytes;
-use axum::http::HeaderMap;
 use busbar_contract::abi::mechanism::route::RouteMethod;
 
 use crate::plane_driver::EngineHost;
@@ -94,7 +93,7 @@ pub struct AdminReqCtx {
 
     pub body: Bytes,
 
-    pub headers: HeaderMap,
+    pub headers: crate::inbound::http_projection::AdminHeaders,
 
     pub principal: Option<busbar_contract::auth::AuthPrincipal>,
 

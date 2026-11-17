@@ -20,6 +20,7 @@ pub(crate) struct AdminRequest {
     snapshot: Arc<busbar_kernel::inbound::request_snapshot::ChargedRequestSnapshot>,
     binding: Option<Arc<busbar_kernel::inbound::native::RequestBinding>>,
     physical: Option<Arc<busbar_kernel::inbound::native::PhysicalAdminExecution>>,
+    projection: Arc<Mutex<Option<Arc<busbar_kernel::inbound::http_projection::HttpProjection>>>>,
     pub unit: u64,
 }
 
@@ -36,6 +37,7 @@ impl AdminRequest {
             unit,
             binding: None,
             physical: None,
+            projection: Arc::new(Mutex::new(None)),
         }
     }
     pub(crate) fn from_binding(
@@ -47,6 +49,7 @@ impl AdminRequest {
             unit: binding.invocation().request_id().get(),
             binding: Some(binding),
             physical: None,
+            projection: Arc::new(Mutex::new(None)),
         })
     }
     pub(crate) fn attach_physical(
@@ -109,6 +112,9 @@ impl AdminRequest {
             })
     }
     pub(crate) fn http_headers(&self) -> Result<axum::http::HeaderMap, AdminHeadersInvalid> {
+        if self.binding.is_some() {
+            return Err(AdminHeadersInvalid);
+        }
         let mut headers = axum::http::HeaderMap::new();
         for (name, value) in self.headers() {
             headers.append(
@@ -118,6 +124,27 @@ impl AdminRequest {
             );
         }
         Ok(headers)
+    }
+
+    pub(crate) fn http_projection(
+        &self,
+    ) -> Option<Arc<busbar_kernel::inbound::http_projection::HttpProjection>> {
+        self.projection.lock().ok()?.as_ref().cloned()
+    }
+
+    pub(crate) fn attach_projection(
+        &self,
+        projection: busbar_kernel::inbound::http_projection::HttpProjection,
+    ) -> Result<(), AdminHeadersInvalid> {
+        if !Arc::ptr_eq(projection.snapshot(), &self.snapshot) {
+            return Err(AdminHeadersInvalid);
+        }
+        let mut slot = self.projection.lock().map_err(|_| AdminHeadersInvalid)?;
+        if slot.is_some() {
+            return Err(AdminHeadersInvalid);
+        }
+        *slot = Some(Arc::new(projection));
+        Ok(())
     }
 }
 
@@ -1005,6 +1032,7 @@ async fn audit_keys_page(
     body.insert(
         "next_cursor",
         page.next_cursor
+            .as_deref()
             .map_or_else(json::Value::new_null, json::Value::from),
     );
     json::to_vec(&json::Value::from(body))
@@ -2014,20 +2042,21 @@ pub(crate) async fn authenticate(
         Some(admission) => admission.admin_verdict(),
         None => (binding.door)(request).await,
     };
-    let headers = request
-        .http_headers()
-        .map_err(|_| ReasonCode::DecodeFailed)?;
-    walk.effect_context = Some(walk.admission.as_ref().map_or_else(
-        || {
-            busbar_kernel::auth::effect::Context::new(
+    // Native effects are built only after the actual replay and physical join below. Their
+    // retained proof already owns this snapshot; no HTTP metadata projection is needed here.
+    if walk.physical_pending.is_none() {
+        walk.effect_context = Some(match &walk.admission {
+            Some(admission) => admission.effect_context(),
+            None => busbar_kernel::auth::effect::Context::new(
                 request.method(),
                 request.path(),
-                headers,
+                request
+                    .http_headers()
+                    .map_err(|_| ReasonCode::DecodeFailed)?,
                 &verdict.door,
-            )
-        },
-        busbar_kernel::inbound::RequestAdmission::effect_context,
-    ));
+            ),
+        });
+    }
     let (principal, grants, listed) = match verdict.door {
         busbar_kernel::auth::AdminDoor::Open => (
             busbar_kernel_identity::principal::ANONYMOUS.to_string(),
@@ -2116,11 +2145,10 @@ fn complete_physical(walk: &mut AdminWalk) -> Result<(), ReasonCode> {
                     .complete_admin(execution.clone())
                     .map_err(|_| ReasonCode::Unauthenticated)?,
             );
-            if let Some(context) = &mut walk.effect_context {
-                context
-                    .attach_physical(physical.clone())
-                    .map_err(|_| ReasonCode::Unauthenticated)?;
-            }
+            walk.effect_context = Some(
+                busbar_kernel::auth::effect::Context::from_physical(physical.clone())
+                    .map_err(|_| ReasonCode::Unauthenticated)?,
+            );
             walk.request.attach_physical(physical)
         }
         None if walk

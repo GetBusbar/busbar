@@ -129,23 +129,6 @@ pub mod fetch;
         clippy::allow_attributes_without_reason
     )
 )]
-mod ffi_thread;
-// busbar:request-path
-#[cfg_attr(
-    not(test),
-    deny(
-        clippy::disallowed_macros,
-        clippy::disallowed_methods,
-        clippy::disallowed_types,
-        clippy::redundant_clone,
-        clippy::format_push_string,
-        clippy::needless_collect,
-        clippy::or_fun_call,
-        clippy::needless_pass_by_value,
-        clippy::allow_attributes,
-        clippy::allow_attributes_without_reason
-    )
-)]
 #[deny(unsafe_code)]
 pub mod highwater;
 // busbar:request-path
@@ -240,6 +223,9 @@ mod ordinary_load_negatives;
 #[path = "tests/sdk_registration_tests.rs"]
 mod sdk_registration_tests;
 
+#[cfg(test)]
+#[path = "tests/artifact_verifier_parity.rs"]
+mod artifact_verifier_parity;
 #[cfg(feature = "pack")]
 #[deny(unsafe_code)]
 pub mod integer_token;
@@ -250,6 +236,8 @@ pub mod pack_native;
 pub mod settings_schema;
 pub mod sign;
 mod stage;
+/// Authority-bound canonical release verification.
+pub mod verification;
 // busbar:request-path
 #[cfg_attr(
     not(test),

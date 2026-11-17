@@ -23,11 +23,18 @@ use busbar_plugin_abi::records::{tag, Records};
 use busbar_ports::transport::{ConnIn, TransportPort};
 use tokio_util::compat::{Compat, FuturesAsyncReadCompatExt, TokioAsyncReadCompatExt};
 
+#[path = "listener_native_data.rs"]
+mod data;
 #[path = "listener_native_delivery.rs"]
 mod delivery;
+#[path = "listener_native_dispatch.rs"]
+mod dispatch;
 #[path = "listener_native_response.rs"]
 mod response;
+#[path = "listener_native_serve.rs"]
+mod serving;
 pub(crate) use delivery::RegisteredDelivery;
+pub(crate) use serving::{serve_admitted, NativeCarrierRetired};
 
 pub(crate) type SelectNativeSlot = Arc<
     dyn Fn(&busbar_kernel::state::App, &str) -> Option<Arc<super::min3_physical::NativeSlot>>
@@ -36,18 +43,25 @@ pub(crate) type SelectNativeSlot = Arc<
 >;
 
 pub(crate) struct NativeLimits {
+    pub(crate) max_connections: usize,
     pub(crate) body_bytes: usize,
     pub(crate) stall_ms: Option<u32>,
     pub(crate) handshake_timeout: Duration,
+    pub(crate) request_timeout: Duration,
+    pub(crate) write_timeout: Duration,
+    pub(crate) drain_grace: Duration,
 }
 
 /// The selected native supplier and physical authority are captured together before accepting IO.
 pub(crate) struct NativeListener {
+    slot: Box<str>,
     port: Arc<dyn TransportPort>,
     physical: PhysicalListener,
     budget: Arc<ProcessAdmission>,
     class: AdmissionClass,
     limits: NativeLimits,
+    select: SelectNativeSlot,
+    admin: Option<axum::Router>,
 }
 
 pub(crate) struct OpenedConnection {
@@ -68,6 +82,7 @@ impl NativeListener {
         class: AdmissionClass,
         select: SelectNativeSlot,
         limits: NativeLimits,
+        admin: Option<axum::Router>,
     ) -> Result<Self, InputError> {
         use busbar_plugin_abi::transport::{FB_DATAGRAM, FB_SERVER, FB_WIRE_PROVENANCE};
         if !port
@@ -76,25 +91,30 @@ impl NativeListener {
             .any(|name| name.as_ref() == slot.as_ref())
             || port.facts() & (FB_SERVER | FB_WIRE_PROVENANCE) != (FB_SERVER | FB_WIRE_PROVENANCE)
             || port.facts() & FB_DATAGRAM != 0
+            || limits.max_connections == 0
         {
             return Err(InputError::Invalid);
         }
+        let select_physical = select.clone();
         let physical = PhysicalListener::new(
             handle,
-            slot,
+            slot.clone(),
             port.clone(),
             class,
             Arc::new(move |app, slot| {
-                select(app, slot).map(|selected| selected.prepared().clone())
+                select_physical(app, slot).map(|selected| selected.prepared().clone())
             }),
         )
         .map_err(|error| InputError::Arrival(ArrivalRefusal::Binding(error)))?;
         Ok(Self {
+            slot,
             port,
             physical,
             budget,
             class,
             limits,
+            select,
+            admin,
         })
     }
 
@@ -281,6 +301,7 @@ pub(crate) fn delivery_ledger(source: &StorageSource) -> Result<DeliveryLedger, 
 
 struct InputSlot {
     stream: u64,
+    deadline: Option<Instant>,
     pending: Option<PhysicalRequest>,
     body: Option<InputBody>,
     // The same owner also accompanies completion. A reset can still reach it after input EOS.
@@ -371,6 +392,7 @@ impl NativeIngress {
                 let body = InputBody::new(&request)?;
                 self.slots.push(InputSlot {
                     stream,
+                    deadline,
                     pending: Some(pending),
                     body: Some(body),
                     owner: Arc::new(owner),

@@ -44,9 +44,14 @@ pub fn complete(
         .map_err(|e| e.to_string())?;
     let name = crate::scan::text(&stamp.name);
     let version = crate::scan::text(&stamp.version);
+    if !manifest.version.is_empty() && manifest.version != version {
+        return Err(format!(
+            "--version {} is not the version plugin '{name}' states in its native stamp ({version})",
+            manifest.version
+        ));
+    }
     if manifest.name != name
         || manifest.kind != crate::admit::kind_word(kind)
-        || (!manifest.version.is_empty() && manifest.version != version)
         || abi_assertion.is_some_and(|abi| abi != stamp.kind_abi)
     {
         return Err("pack identity assertion disagrees with the native image stamp".into());
@@ -81,35 +86,47 @@ pub fn complete(
 
 #[cfg(unix)]
 struct Inspection {
-    opened: Option<busbar_ffi::image::Opened>,
-    _staged: crate::stage::Staged,
+    custody: Option<crate::stage::ImageCustody>,
+}
+
+#[cfg(unix)]
+impl Inspection {
+    fn finish(mut self) -> Result<(), &'static str> {
+        let Some(custody) = self.custody.take() else {
+            return Ok(());
+        };
+        if crate::stage::close_on_worker(custody) {
+            Ok(())
+        } else {
+            Err("native pack teardown is uncertain; image backing retained")
+        }
+    }
 }
 
 #[cfg(unix)]
 impl Drop for Inspection {
     fn drop(&mut self) {
-        if let Some(opened) = self.opened.take() {
-            crate::stage::close_on_worker(opened);
+        if let Some(custody) = self.custody.take() {
+            crate::stage::close_on_worker(custody);
         }
-        // Field teardown releases staging only after the worker closed the image.
     }
 }
 
 #[cfg(unix)]
 fn inspect_names(bytes: &[u8], name: &str) -> Result<Vec<String>, String> {
-    let (opened, staged) = crate::stage::open_image(bytes, name).map_err(|error| match error {
+    let custody = crate::stage::open_image(bytes, name).map_err(|error| match error {
         crate::stage::Unopened::Stage(why) => format!("native pack staging: {why}"),
         crate::stage::Unopened::Image(why) => format!("native pack header: {why:?}"),
         crate::stage::Unopened::Panicked => "native pack initializer panicked".into(),
     })?;
     let inspection = Inspection {
-        opened: Some(opened),
-        _staged: staged,
+        custody: Some(custody),
     };
     let opened = inspection
-        .opened
+        .custody
         .as_ref()
-        .ok_or("native pack inspection is closed")?;
+        .ok_or("native pack inspection is closed")?
+        .opened();
     // The header's stamp must match the scanned bytes, not merely their identity fields.
     // complete already established exactly one well-formed stamp; retain its original encoding.
     let stamped = bytes
@@ -139,6 +156,7 @@ fn inspect_names(bytes: &[u8], name: &str) -> Result<Vec<String>, String> {
             names.push(word.to_owned());
         }
     }
+    inspection.finish()?;
     Ok(names)
 }
 

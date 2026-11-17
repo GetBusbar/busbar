@@ -71,7 +71,7 @@ mod unload_witness {
         });
         let observed = Unloaded {
             thread: std::thread::current().id(),
-            permanent: crate::ffi_thread::on_permanent_worker(),
+            permanent: busbar_ffi::lifecycle::is_worker(),
             reentered,
             dispatcher: dispatcher.map(ManuallyDrop::new),
         };
@@ -116,7 +116,7 @@ mod unload_witness {
             let arm = unsafe { lib.get::<Arm>(b"busbar_test_arm_unload\0") }
                 .expect("the dropped fixture exports its finalizer witness");
             let context = Box::into_raw(Box::new(Context { sender, dispatcher })) as usize;
-            let armed = crate::ffi_thread::on_plugin_thread(|| arm(witnessed_unload, context))
+            let armed = busbar_ffi::lifecycle::run(|| arm(witnessed_unload, context))
                 .expect("fixture registration does not panic");
             if !armed {
                 // SAFETY: a refused registration retains no pointer; this caller still owns the Box.
@@ -389,15 +389,15 @@ fn raw_door_rendering_refuses_null_optional_blob_payloads() {
 #[test]
 fn statement_reading_calls_the_door_on_a_permanent_worker() {
     extern "C" fn worker_only_door() -> *const Door {
-        if crate::ffi_thread::on_permanent_worker() {
+        if busbar_ffi::lifecycle::is_worker() {
             plug::busbar_plugin_door()
         } else {
             std::ptr::null()
         }
     }
-    assert!(!crate::ffi_thread::on_permanent_worker());
+    assert!(!busbar_ffi::lifecycle::is_worker());
     assert!(crate::dispatch::load::statement_of(worker_only_door).is_ok());
-    crate::ffi_thread::on_plugin_thread(|| {
+    busbar_ffi::lifecycle::run(|| {
         assert!(crate::dispatch::load::statement_of(worker_only_door).is_ok());
     })
     .unwrap();

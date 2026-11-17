@@ -38,6 +38,9 @@ fn scanned(name: &str) -> bool {
             | "busbar-kernel"
             | "busbar-contract"
             | "busbar-count"
+            | "busbar-json"
+            | "busbar-artifact-metadata"
+            | "busbar-artifact-verifier"
     ) || name.starts_with("busbar-core-")
 }
 

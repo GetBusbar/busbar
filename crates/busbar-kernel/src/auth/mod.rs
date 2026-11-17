@@ -2386,7 +2386,7 @@ pub(crate) async fn auth_middleware(
         .map(crate::inbound::RequestAdmission::original_headers);
 
     // A handle on the received target (shared bytes, no copy): `req` is rewritten below.
-    let (uri, method) = (req.uri().clone(), req.method().clone());
+    let uri = req.uri().clone();
     let path = uri.path();
     let admission = inbound.as_ref().map_or_else(
         || {
@@ -2398,11 +2398,11 @@ pub(crate) async fn auth_middleware(
     );
 
     // The refusal door and its target are read only when this request is refused.
-    let door = || -> Option<RefusalDoor> {
+    let door = |method: &axum::http::Method| -> Option<RefusalDoor> {
         crate::cold::auth::chain::refusal_door(
             core_routes,
             path,
-            &method,
+            method,
             uri.path_and_query().map_or(path, |t| t.as_str()),
         )
     };
@@ -2486,7 +2486,7 @@ pub(crate) async fn auth_middleware(
                 return Err(sender_constraint_response(
                     &app,
                     path,
-                    door().as_ref(),
+                    door(req.method()).as_ref(),
                     admission.as_ref().map(|a| a.resource_metadata.as_str()),
                     reason,
                 ));
@@ -2669,19 +2669,16 @@ pub(crate) async fn auth_middleware(
                     )
                         .into_response(),
                 })?;
-            let headers = inbound_headers
-                .cloned()
-                .unwrap_or_else(|| req.headers().clone());
+            let headers = inbound_headers.unwrap_or_else(|| req.headers());
             if !native_admin::snapshot_matches_http(
                 &original,
                 req.method().as_str(),
                 target,
-                &headers,
+                headers,
                 &bytes,
             ) {
                 return Err(admin_unauthorized_response());
             }
-            *req.body_mut() = Body::from(original.body_bytes());
             drop(bytes);
             let id = binding.invocation();
             let mut cx = admin_call_context(id);
@@ -2693,13 +2690,14 @@ pub(crate) async fn auth_middleware(
                 selected: binding.app().clone(),
                 id,
                 cx,
-                request: original,
+                request: original.clone(),
             };
             let Ok((verdict, strips, projected)) =
-                judge_admin_invocation(&invocation, &headers).await
+                judge_admin_invocation(&invocation, headers).await
             else {
                 return Err(admin_unavailable_response());
             };
+            *req.body_mut() = Body::from(original.body_bytes());
             if admin_door_admits(&verdict.door, req.method().as_str(), target) {
                 if let Some(pending) = verdict.claim {
                     let execution = pending
@@ -2724,29 +2722,26 @@ pub(crate) async fn auth_middleware(
         if physical_pending.is_some() {
             return Err(admin_unauthorized_response());
         }
-        let mut effect_context = effect::Context::new(
-            req.method().as_str(),
-            target,
-            inbound_headers
-                .cloned()
-                .unwrap_or_else(|| req.headers().clone()),
-            &door,
-        );
-        if let Some(execution) = req
-            .extensions()
-            .get::<std::sync::Arc<native_admin::ExecutionAdmission>>()
-        {
-            effect_context
-                .attach_execution(execution.clone())
-                .map_err(|_| admin_unauthorized_response())?;
-        }
-        if let Some(physical) = &physical_execution {
-            effect_context
-                .attach_physical(physical.clone())
-                .map_err(|_| admin_unauthorized_response())?;
-        } else if effect_context.native.is_some() {
-            return Err(admin_unauthorized_response());
-        }
+        let effect_context = if let Some(physical) = &physical_execution {
+            effect::Context::from_physical(physical.clone())
+                .map_err(|_| admin_unauthorized_response())?
+        } else {
+            if req
+                .extensions()
+                .get::<std::sync::Arc<native_admin::ExecutionAdmission>>()
+                .is_some_and(|execution| execution.native().is_some())
+            {
+                return Err(admin_unauthorized_response());
+            }
+            effect::Context::new(
+                req.method().as_str(),
+                target,
+                inbound_headers
+                    .cloned()
+                    .unwrap_or_else(|| req.headers().clone()),
+                &door,
+            )
+        };
         let authorized = admin_door_admits(&door, req.method().as_str(), path);
         if path == crate::admin::gate::WHOAMI_PATH
             || (req.method() == axum::http::Method::POST && path == crate::admin::gate::KEYS_PATH)
@@ -2895,7 +2890,11 @@ pub(crate) async fn auth_middleware(
             )
             .await
             else {
-                return Err(unauthorized_response(&app, path, door().as_ref()));
+                return Err(unauthorized_response(
+                    &app,
+                    path,
+                    door(req.method()).as_ref(),
+                ));
             };
             let request = signed_request(&parts, &body_bytes);
             req = Request::from_parts(parts, Body::from(body_bytes));
@@ -2928,11 +2927,23 @@ pub(crate) async fn auth_middleware(
                             resolved: Some(std::sync::Arc::new(key)),
                             signed_authority: None,
                         }),
-                        None => return Err(unauthorized_response(&app, path, door().as_ref())),
+                        None => {
+                            return Err(unauthorized_response(
+                                &app,
+                                path,
+                                door(req.method()).as_ref(),
+                            ))
+                        }
                     }
                 }
 
-                Verified::Reject => return Err(unauthorized_response(&app, path, door().as_ref())),
+                Verified::Reject => {
+                    return Err(unauthorized_response(
+                        &app,
+                        path,
+                        door(req.method()).as_ref(),
+                    ))
+                }
 
                 Verified::Failed => {
                     verify_without_verdict("data", &reader.name, "no verdict");
@@ -2966,7 +2977,13 @@ pub(crate) async fn auth_middleware(
             Some(verdict)
         }
         Ok(None) => None,
-        Err(()) => return Err(unauthorized_response(&app, path, door().as_ref())),
+        Err(()) => {
+            return Err(unauthorized_response(
+                &app,
+                path,
+                door(req.method()).as_ref(),
+            ))
+        }
     };
     let verdict = if let Some(verdict) = signed {
         verdict
@@ -3058,7 +3075,7 @@ pub(crate) async fn auth_middleware(
                 refusal,
                 admission.as_ref(),
                 client_token.is_some(),
-                || unauthorized_with_completion_taps(&app, path, door().as_ref()),
+                || unauthorized_with_completion_taps(&app, path, door(req.method()).as_ref()),
             ));
         }
     }

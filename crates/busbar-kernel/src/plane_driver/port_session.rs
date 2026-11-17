@@ -100,10 +100,32 @@ pub trait Calls {
         t: &TargetIn<'_>,
         sink: &mut dyn FnMut(PlaneOut<'_>),
     ) -> Result<(), PortError>;
+
+    fn channel(
+        &self,
+        _session: &mut Self::Session,
+        _target: &TargetIn<'_>,
+        _sink: &mut dyn FnMut(PlaneOut<'_>),
+    ) -> Result<(), PortError> {
+        Err(PortError::Refused {
+            code: busbar_plugin_abi::fail::refused::R_UNSUPPORTED,
+            text: "".into(),
+            error: None,
+        })
+    }
 }
 
 impl Calls for dyn PlanePort {
     type Session = PlaneSession;
+
+    fn channel(
+        &self,
+        session: &mut PlaneSession,
+        target: &TargetIn<'_>,
+        sink: &mut dyn FnMut(PlaneOut<'_>),
+    ) -> Result<(), PortError> {
+        PlanePort::channel(self, session, target, sink)
+    }
 
     fn usage_metadata(&self) -> (u64, &[busbar_ports::plane::UsageClass], &[Box<str>]) {
         (self.facts(), self.usage_classes(), self.attempt_classes())
@@ -182,6 +204,7 @@ const EGRESS_CLASS_MAX: u32 = 4;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Origin {
     Request,
+    Channel,
     Piece(u32),
     Upstream,
     Rewrite,
@@ -354,6 +377,7 @@ pub struct ExMsgItem {
 /// One answer, decoded. Applied in the order the plane wrote it.
 #[derive(Debug, Default)]
 pub struct Answer {
+    pub(super) command_channel: bool,
     emitted: bool,
     attempt_usage: Vec<AttemptUsageItem>,
     attempt_end: Option<busbar_plugin_abi::fallback_usage::AttemptEnd>,
@@ -640,6 +664,15 @@ impl Answer {
         once: &mut Once,
         effects: &dyn Effects,
     ) -> Result<(), Violation> {
+        if origin == Origin::Channel {
+            match &out {
+                PlaneOut::Channel { carrier, .. }
+                    if *carrier == busbar_plugin_abi::plane::CARRIER_STDIO
+                        && self.intents.is_empty() => {}
+                PlaneOut::Fact(_, _) => {}
+                _ => return Err(Violation::BadRecords),
+            }
+        }
         match out {
             PlaneOut::SelectedResource(selected) => {
                 if origin != Origin::Upstream {
@@ -1113,14 +1146,17 @@ impl Answer {
                 framing,
                 key,
                 head,
-            } => self.intents.push(Intent::Channel {
-                exchange,
-                carrier,
-                flags,
-                framing,
-                key: key.to_owned(),
-                head: head.rest().to_vec(),
-            }),
+            } => {
+                self.command_channel = origin == Origin::Channel;
+                self.intents.push(Intent::Channel {
+                    exchange,
+                    carrier,
+                    flags,
+                    framing,
+                    key: key.to_owned(),
+                    head: head.rest().to_vec(),
+                });
+            }
             PlaneOut::ChReady { exchange, tail } => self.intents.push(Intent::ChReady {
                 exchange,
                 tail: tail.to_vec(),
@@ -1170,6 +1206,7 @@ fn fact_val(value: FactRef<'_>) -> FactVal {
 
 /// One plane session under core's hand.
 pub struct Task<'k, K: Calls + ?Sized> {
+    command_called: bool,
     active_attempt: Option<super::NativeAttempt>,
     pending: Option<Arc<super::port_admission::Pending>>,
     data: Option<Arc<crate::auth::native_data::NativeDataPending>>,
@@ -1245,6 +1282,7 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
             })
             .map_err(SessionError::Port)?;
         let mut task = Self {
+            command_called: false,
             active_attempt: None,
             pending: effects.admission_owner().cloned(),
             data,
@@ -1281,6 +1319,7 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
             })
             .map_err(SessionError::Port)?;
         let mut task = Self {
+            command_called: false,
             active_attempt: None,
             pending: None,
             data: None,
@@ -1305,6 +1344,63 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
     }
     pub(crate) fn data(&self) -> Option<&Arc<crate::auth::native_data::NativeDataPending>> {
         self.data.as_ref()
+    }
+
+    pub(crate) fn is_command(&self) -> bool {
+        self.admitted
+            .as_ref()
+            .is_some_and(|(request, _)| request.registered_command().is_some())
+    }
+
+    /// The selected command callback runs once, after the same request's admission and hooks.
+    /// Attempt zero is reserved for this callback: it is not an HTTP preparation ordinal.
+    pub(crate) fn command(
+        &mut self,
+        wants: &super::port_upstream::Wants,
+        dialect: &str,
+        effects: &dyn Effects,
+    ) -> Result<Answer, SessionError> {
+        let (request, routes) = self.admitted.as_ref().ok_or(SessionError::NotDriven)?;
+        if self.command_called
+            || !request.is_live()
+            || !self
+                .invocation
+                .as_ref()
+                .is_some_and(|context| context.same_unit(request.context()))
+            || !request.accepts_forward(routes, wants.model.as_deref(), wants.upstream.as_deref())
+            || self.data.is_some()
+        {
+            return Err(SessionError::NotDriven);
+        }
+        let definition = request
+            .registered_command()
+            .cloned()
+            .ok_or(SessionError::NotDriven)?;
+        self.command_called = true;
+        let target = TargetIn {
+            attempt: 0,
+            flags: 0,
+            dialect,
+            model: "",
+            base_path: "",
+            upstream: &definition.name,
+            provider: "{}",
+            params: &[],
+            admission: &[],
+        };
+        let buffered = Buffered::new(effects);
+        let mut answer = Answer::default();
+        let session = self.session.as_mut().ok_or(SessionError::Over)?;
+        let once = &mut self.once;
+        let called = self.calls.channel(session, &target, &mut |out| {
+            answer.take(out, Origin::Channel, once, &buffered);
+        });
+        if answer.intents.len() != 1 {
+            answer.violation.get_or_insert(Violation::BadRecords);
+        }
+        let answer = self.settle(called, answer)?;
+        buffered.release();
+        Ok(answer)
     }
 
     pub(crate) fn install_attempt(

@@ -4365,6 +4365,44 @@ async fn a_shed_followed_by_a_credential_refusal_is_the_walks_answer() {
 mod auth_fields_copy_tests;
 
 #[tokio::test]
+async fn native_credential_hashes_exact_body_bytes() {
+    use crate::auth_bindings::native_tests::{native_binding, NativePort};
+    let rig = rig(&[], OnExhausted::Status503, None);
+    let far = rig.egress.unit(route());
+    let port = Arc::new(NativePort::default());
+    let binding = native_binding(
+        Arc::clone(&port),
+        busbar_plugin_abi::auth::STYLE_PER_REQUEST,
+        1,
+    );
+    for (body, digest) in [
+        (
+            &b""[..],
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        ),
+        (
+            &b"abc"[..],
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+        ),
+        (
+            &b"\0\xffa\0"[..],
+            "68fb72a776827f2a507010fa33656289515073d97e757a66d8f93a1a1f8a2a35",
+        ),
+    ] {
+        let mut request = request();
+        request.body = body.to_vec();
+        far.native_credential(&binding, &request, "https://a.test/chat", None, &[])
+            .await
+            .unwrap();
+        let recorded = port.body_hashes.lock().unwrap();
+        let actual = recorded.last().unwrap().unwrap();
+        assert_eq!(actual.as_slice(), hex::decode(digest).unwrap());
+        assert_eq!(request.body, body);
+    }
+    assert_eq!(port.calls.load(Ordering::SeqCst), 3);
+}
+
+#[tokio::test]
 async fn native_selected_send_seals_credentials_and_requires_secure_connector() {
     use crate::auth_bindings::native::{NativeRouteBindings, SelectedCredential};
     use crate::auth_bindings::native_tests::{native_binding, NativePort};

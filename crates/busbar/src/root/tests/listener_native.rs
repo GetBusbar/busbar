@@ -65,7 +65,7 @@ fn native_input_window_is_not_a_total_body_limit_and_replacement_overlaps() {
     assert_eq!(small.used(), (6, 6));
 }
 
-async fn ingress_fixture() -> (NativeIngress, busbar_contract::storage::StorageSource) {
+pub(super) async fn ingress_fixture() -> (NativeIngress, busbar_contract::storage::StorageSource) {
     use busbar_kernel::inbound::native::{AcceptedConnection, PhysicalListener};
     busbar_core_admin::install();
     let app = crate::root::min3_auth::tests::physical_app().await;
@@ -98,7 +98,7 @@ async fn ingress_fixture() -> (NativeIngress, busbar_contract::storage::StorageS
     )
 }
 
-fn public_head(
+pub(super) fn public_head(
     source: &busbar_contract::storage::StorageSource,
     stream: u64,
     end_stream: bool,
@@ -185,6 +185,32 @@ async fn native_root_shape_retains_all_200_response_slots_until_actual_retiremen
     // Dropping external handles alone does not erase owner-side response cells.
     drop(handles);
     assert!(ledger.admit(key(202)).is_err());
+}
+
+#[tokio::test]
+async fn completed_public_request_dispatches_its_original_core_route_and_observes_reset() {
+    let (mut ingress, source) = ingress_fixture().await;
+    let ready = ingress
+        .accept(public_head(&source, 1, true), None)
+        .unwrap()
+        .unwrap();
+    let execution = ready.request.complete_public().unwrap();
+    let response = execution.http_response().await.unwrap();
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    assert_eq!(
+        axum::body::to_bytes(response.into_body(), 1024)
+            .await
+            .unwrap(),
+        "ok"
+    );
+    ingress
+        .accept(Inbound::Reset { stream: 1, code: 0 }, None)
+        .unwrap();
+    assert!(matches!(
+        execution.http_response().await,
+        Err(ArrivalRefusal::Cancelled)
+    ));
+    ingress.retire(&ready.owner).unwrap();
 }
 
 struct ObservedBegin {
@@ -291,10 +317,15 @@ async fn actual_tcp_accept_passes_real_socket_facts_and_host_clock_to_native_beg
         AdmissionClass::Operator,
         Arc::new(move |_, name| (name == slot.slot()).then(|| slot.clone())),
         NativeLimits {
+            max_connections: 2,
             body_bytes: 1024,
             stall_ms: None,
             handshake_timeout: Duration::from_secs(5),
+            request_timeout: Duration::from_secs(5),
+            write_timeout: Duration::from_secs(5),
+            drain_grace: Duration::from_secs(5),
         },
+        None,
     )
     .unwrap();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

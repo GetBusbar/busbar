@@ -227,14 +227,21 @@ members = ["."]
 # Dependency patches are effective only at the consuming workspace root: the root workspace's, verbatim.
 [patch.'https://github.com/GetBusbar/busbar']
 busbar-contract = { path = "../../crates/busbar-contract" }
+
 busbar-crypto-backend = { path = "../../crates/busbar-crypto-backend" }
 
 [patch.crates-io]
+# Adopted funded TLS output/ticket storage and actual wire provenance.
+rustls = { git = "https://github.com/MattJackson/rustls", rev = "a33d40bc1e034c617f566a7e2d70fef8422f43ba" }
 aws-lc-sys = { git = "https://github.com/MattJackson/aws-lc-sys", rev = "3469edb189e0cc2fab40e88f551713a828a5d867" }
 jobserver = { git = "https://github.com/MattJackson/jobserver-rs", rev = "fbe3efc1acc11add04854cc093f97876e439e129" }
 dunce = { git = "https://github.com/MattJackson/dunce", rev = "bb4757b8dffd9bdc619ce1fda1a147bd53e7b29d" }
 fs_extra = { git = "https://github.com/MattJackson/fs_extra", rev = "70f47864db8ae763979f47cde6785449cd790dad" }
-h2 = { git = "https://github.com/MattJackson/h2", rev = "d6146a5c425e55653cdfebc5660e52d87430c588" }
+# Native HTTP allocation projection and serializer provenance (adopted transport cohort).
+http = { git = "https://github.com/MattJackson/http", rev = "904f4519b5f27a0424b121a4828640c741efcd95" }
+h2 = { git = "https://github.com/MattJackson/h2", rev = "6bdbf046878247aebe9138f37f32d2665b54bdd9" }
+hyper = { git = "https://github.com/MattJackson/hyper", rev = "5b1c5189a69c701c70221b04ff0f0a2fbcb4574c" }
+hyper-util = { git = "https://github.com/MattJackson/hyper-util", rev = "b4c554c133c7fc83ee55a9ce0271849f7387994d" }
 tungstenite = { git = "https://github.com/MattJackson/tungstenite-rs", rev = "893a21f1f98011a2665840231330c473836c9a0a" }
 serde-saphyr = { git = "https://github.com/MattJackson/serde-saphyr", rev = "a94d2da01a448d348b5d14945e29192e511b8452" }
 granit-parser = { git = "https://github.com/MattJackson/granit-parser", rev = "d31e9292a0be49de7d3a85ee07555bb9d0afce20" }
