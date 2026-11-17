@@ -312,7 +312,7 @@ fn close_host_callback_keeps_the_submitted_framing_scope_outside_both_locks() {
                 owner: ask.owner,
                 conn: ask.conn,
                 worker: worker_mark(),
-                permanent: busbar_ffi::lifecycle::is_worker(),
+                permanent: crate::ffi_thread::on_permanent_worker(),
                 thread: std::thread::current().id(),
             });
             let probe = self.probe.lock().unwrap().clone();
