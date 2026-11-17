@@ -6,7 +6,10 @@
 //! file belongs to the task its ignore reasons name; that task fills and un-ignores its arms. Deleted or replaced
 //! cases have no file: C-TLS-UNVERIFIED, C-CANCEL-NOHOP, C-COLD-NONBLOCK, C-TLS-REFUSED (now C-TRANSPORT) and
 //! C-CARRIER-FOLD (now C-RETIRE); C-FIPS runs only in the private FIPS build, C-CONTENT-NOTEXT arrives with its
-//! 1.6.x producer, and C-FIPS-GATE is an arm of C-UNAVAILABLE.
+//! 1.6.x producer, and C-FIPS-GATE is an arm of C-UNAVAILABLE. X1's CI-job cases are busbar-ci-checks tests, not
+//! arms here: C-DEV-EDGES (plugin_rules, rule 1b), C-NO-HOST-LINK (host_link), C-ALIAS's manifest job (fleet,
+//! c-alias), C-NO-LICENCE (a) (core_src, no-licence) and C-TRANSPORT test 11 (core_src, c-transport; plugin_rules,
+//! the fleet loopback lint).
 //! Rule 15: no `unsafe` in any case file.
 #![forbid(unsafe_code)]
 
@@ -90,8 +93,6 @@ mod c_crypto_await;
 mod c_crypto_selftest;
 #[path = "c_deployment_id.rs"]
 mod c_deployment_id;
-#[path = "c_dev_edges.rs"]
-mod c_dev_edges;
 #[path = "c_dialect_auth.rs"]
 mod c_dialect_auth;
 #[path = "c_dtls_fp.rs"]
@@ -178,8 +179,6 @@ mod c_needfut_late;
 mod c_needfut_shared;
 #[path = "c_nested.rs"]
 mod c_nested;
-#[path = "c_no_host_link.rs"]
-mod c_no_host_link;
 #[path = "c_no_licence.rs"]
 mod c_no_licence;
 #[path = "c_null_empty.rs"]

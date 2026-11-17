@@ -38,6 +38,47 @@ fn floor_key(host: &str, name: &str) -> Result<Vec<u8>, String> {
     }
     Ok(key)
 }
+/// The `(scope, name)` parts of a [`floor_key`]; anything else is a corrupt row.
+fn split_floor_key(key: &[u8]) -> Result<(&[u8], &[u8]), String> {
+    let malformed = || "a stored plugin floor key is malformed".to_string();
+    let mut rest = key;
+    let mut parts: [&[u8]; 2] = [&[], &[]];
+    for part in &mut parts {
+        let (length, tail) = rest.split_first_chunk::<4>().ok_or_else(malformed)?;
+        let length = usize::try_from(u32::from_be_bytes(*length)).map_err(|_| malformed())?;
+        let (head, tail) = tail.split_at_checked(length).ok_or_else(malformed)?;
+        *part = head;
+        rest = tail;
+    }
+    if !rest.is_empty() {
+        return Err(malformed());
+    }
+    Ok((parts[0], parts[1]))
+}
+/// The higher of two stored floors of one schema. An unreadable plugin floor already refuses its
+/// plugin until an audited rollback, so it is kept over a readable one: carrying never lowers a
+/// floor.
+fn higher_floor(schema: &str, held: Option<&[u8]>, carried: &[u8]) -> Result<Vec<u8>, String> {
+    let Some(held) = held else {
+        return Ok(carried.to_vec());
+    };
+    if schema == RELEASE_KEYS_FLOOR_SCHEMA {
+        let highest = decode_keys(Some(held))?.max(decode_keys(Some(carried))?);
+        return Ok(highest.to_be_bytes().to_vec());
+    }
+    let read = |bytes: &[u8]| {
+        std::str::from_utf8(bytes)
+            .ok()
+            .filter(|version| valid_semver(version))
+            .map(str::to_owned)
+    };
+    Ok(match (read(held), read(carried)) {
+        (Some(have), Some(other)) if !version_at_least(&have, &other) => carried,
+        (Some(_), None) => carried,
+        _ => held,
+    }
+    .to_vec())
+}
 fn decode_keys(bytes: Option<&[u8]>) -> Result<u64, String> {
     bytes.map_or(Ok(0), |bytes| {
         bytes
@@ -160,6 +201,96 @@ impl PluginFloor {
         Ok(proof)
     }
 
+    /// UPG-7 (#332) migrate-on-boot: carry every floor row keyed by another scope (a host name,
+    /// as 1.6 builds before the deployment key wrote them) into `deployment`'s slot, and delete
+    /// it, one exact-predicated commit per row. Several hosts sharing this Store fold into the
+    /// highest floor, so no host's floor is lowered. Idempotent: a rerun, or a peer racing it,
+    /// finds the rows gone. Returns how many rows were carried.
+    pub async fn adopt_host_floors(&self, deployment: &str) -> Result<usize, String> {
+        let _gate = self.records.gate.lock().await;
+        self.records.resume().await?;
+        let mut carried = 0;
+        for schema in [PLUGIN_FLOOR_SCHEMA, RELEASE_KEYS_FLOOR_SCHEMA] {
+            let mut foreign = Vec::new();
+            let mut cursor = None;
+            loop {
+                let page = self
+                    .records
+                    .records
+                    .page(schema, b"", cursor.as_ref())
+                    .await
+                    .map_err(error)?;
+                for (key, _) in page.rows {
+                    let (scope, name) = split_floor_key(&key)?;
+                    if scope != deployment.as_bytes() {
+                        let name = std::str::from_utf8(name)
+                            .map_err(|_| "a stored plugin floor names no plugin".to_string())?;
+                        let target = floor_key(deployment, name)?;
+                        foreign.push((key, target));
+                    }
+                }
+                match page.next {
+                    Some(next) => cursor = Some(next),
+                    None => break,
+                }
+            }
+            for (key, target) in foreign {
+                loop {
+                    let Some(old) = self
+                        .records
+                        .records
+                        .get(schema, &key)
+                        .await
+                        .map_err(error)?
+                    else {
+                        break;
+                    };
+                    let held = self
+                        .records
+                        .records
+                        .get(schema, &target)
+                        .await
+                        .map_err(error)?;
+                    let seal = crate::seal::lend();
+                    let merged = higher_floor(
+                        schema,
+                        held.as_ref().map(|v| v.expose(&seal).as_slice()),
+                        old.expose(&seal),
+                    )?;
+                    let mut mutations = Vec::new();
+                    if held.as_ref().map(|v| v.expose(&seal).as_slice()) != Some(merged.as_slice())
+                    {
+                        mutations.push(Mutation::Put {
+                            schema: schema.into(),
+                            key: target.clone(),
+                            value: Secret::new(merged),
+                        });
+                    }
+                    mutations.push(Mutation::Delete {
+                        schema: schema.into(),
+                        key: key.clone(),
+                    });
+                    let predicates = vec![
+                        Predicate {
+                            schema: schema.into(),
+                            key: key.clone(),
+                            expected: Expected::Exact(old),
+                        },
+                        Predicate {
+                            schema: schema.into(),
+                            key: target.clone(),
+                            expected: held.map_or(Expected::Absent, Expected::Exact),
+                        },
+                    ];
+                    if self.records.decide(predicates, mutations).await? {
+                        carried += 1;
+                        break;
+                    }
+                }
+            }
+        }
+        Ok(carried)
+    }
     pub async fn release_keys_floor(&self, host: &str) -> Result<u64, String> {
         let _gate = self.records.gate.lock().await;
         self.records.resume().await?;
