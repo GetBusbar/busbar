@@ -41,6 +41,7 @@ use busbar_contract::conn::{
 use busbar_contract::secret_ref::SecretRef;
 use busbar_contract::transport::wire::WireStatusClass;
 use busbar_core_connector::child_job::ContainedChild;
+use busbar_kernel::channels::budget::InstanceBudget;
 use busbar_kernel::channels::carrier::{ChannelDriver, Events};
 use busbar_kernel::channels::signals::SignalRegistry;
 use busbar_kernel::channels::stdio::{
@@ -118,6 +119,8 @@ pub(crate) struct SeatShared {
     pub(crate) upstreams: BTreeMap<String, Arc<ConfiguredUpstreams>>,
     /// Auth-sealed model destinations and owned pool policy from this same candidate.
     pub(crate) catalogs: BTreeMap<String, Arc<CatalogSeat>>,
+    /// Root-retained stable instance accounts, shared with every serving/draining generation.
+    pub(crate) channel_budgets: BTreeMap<String, InstanceBudget>,
     pub(crate) signals: Arc<SignalRegistry>,
     pub(crate) secrets: Arc<dyn SpawnSecrets>,
     pub(crate) kernel: Arc<Kernel>,
@@ -744,6 +747,28 @@ fn probes_of(
     Some(Box::pin(run_probers(target, schedule, probers)))
 }
 
+/// Build the real channel driver over the retained account, never a generation-local replacement.
+fn channels_of(
+    shared: &SeatShared,
+    budget: InstanceBudget,
+    who: &Namespace,
+    port: Arc<dyn PlanePort>,
+    held: Option<Arc<dyn HeldHttp>>,
+) -> ChannelDriver {
+    let wires =
+        ProcessWires::new(Arc::clone(&shared.secrets), held).spawning(Arc::new(ContainedSpawn));
+    ChannelDriver::new(
+        who.instance,
+        budget,
+        Arc::new(wires),
+        Arc::new(PortDemuxer::new(port)),
+        Arc::clone(&shared.signals) as Arc<dyn SessionSignals>,
+        Arc::new(SeatEvents {
+            instance: Arc::clone(&who.name),
+        }),
+    )
+}
+
 /// Composes one seat's egress and carrier (see the module docs). `accept` is the instance's core-held
 /// `insecure_transport.accept` (`InstanceSpec.limits.accept`).
 ///
@@ -758,6 +783,11 @@ pub(crate) fn compose(
     port: Arc<dyn PlanePort>,
     rt: Handle,
 ) -> Result<SeatWiring, String> {
+    let channel_budget = shared
+        .channel_budgets
+        .get(instance)
+        .cloned()
+        .ok_or_else(|| format!("plane {instance}: no retained channel account was supplied"))?;
     let upstreams = shared.upstreams.get(instance).ok_or_else(|| {
         format!("plane {instance}: no declared registration table was built for this generation")
     })?;
@@ -826,17 +856,7 @@ pub(crate) fn compose(
         }
         None => (None, None, None),
     };
-    let wires =
-        ProcessWires::new(Arc::clone(&shared.secrets), held).spawning(Arc::new(ContainedSpawn));
-    let channels = ChannelDriver::new(
-        who.instance,
-        Arc::new(wires),
-        Arc::new(PortDemuxer::new(Arc::clone(&port))),
-        Arc::clone(&shared.signals) as Arc<dyn SessionSignals>,
-        Arc::new(SeatEvents {
-            instance: Arc::from(instance),
-        }),
-    );
+    let channels = channels_of(shared, channel_budget, who, port, held);
     let clock: Arc<dyn Fn() -> u64 + Send + Sync> =
         Arc::new(busbar_plugin_abi::host_side::host_vt::vt::mono);
     let carrier = PortCarrier::new(

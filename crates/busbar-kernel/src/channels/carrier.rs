@@ -30,11 +30,13 @@ use busbar_plugin_abi::plane::{
     CARRIER_HTTP, CARRIER_STDIO, CH_PER_CALLER, CH_SERIAL, DX_BROADCAST, DX_FINAL, DX_OUTSTANDING,
     DX_RESIGHT, P_SIGNAL, P_TEXT,
 };
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
 use tokio::sync::{mpsc, Notify};
 
-use super::frame::{frame, Framer, Framing};
+use super::budget::{Charge, Claim as BudgetClaim, InstanceBudget, UnitBudget};
+use super::frame::{Framer, Framing};
 use super::link::{Claim, Link};
+use super::protected::GuardedWrite;
 use super::respawn::{Respawn, Spawn};
 use super::{Attachment, ChannelMsg, ChannelReq, SessionSignals, UpstreamChannels};
 use crate::plane_driver::port_channels::Demuxed;
@@ -117,6 +119,7 @@ impl Counts {
 /// What the generation tasks share with the driver.
 struct Shared {
     instance: u64,
+    budget: InstanceBudget,
     demuxer: Arc<dyn Demuxer>,
     signals: Arc<dyn SessionSignals>,
     events: Arc<dyn Events>,
@@ -132,6 +135,15 @@ struct ChanKey {
 
 struct Channel {
     state: tokio::sync::Mutex<ChanState>,
+    _key: Charge,
+    policy: JoinPolicy,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct JoinPolicy {
+    carrier: u32,
+    flags: u32,
+    framing: u32,
 }
 
 #[derive(Default)]
@@ -174,6 +186,7 @@ impl ChannelDriver {
     #[must_use]
     pub fn new(
         instance: u64,
+        budget: InstanceBudget,
         wires: Arc<dyn Wires>,
         demuxer: Arc<dyn Demuxer>,
         signals: Arc<dyn SessionSignals>,
@@ -182,6 +195,7 @@ impl ChannelDriver {
         Self {
             shared: Arc::new(Shared {
                 instance,
+                budget,
                 demuxer,
                 signals,
                 events,
@@ -214,13 +228,39 @@ impl ChannelDriver {
         }
     }
 
-    fn channel(&self, key: ChanKey) -> Arc<Channel> {
+    fn channel(
+        &self,
+        key: ChanKey,
+        budget: &UnitBudget,
+        policy: JoinPolicy,
+    ) -> Result<Arc<Channel>, RecordsDenied> {
         let mut channels = self.channels.lock().unwrap_or_else(PoisonError::into_inner);
-        Arc::clone(channels.entry(key).or_insert_with(|| {
-            Arc::new(Channel {
-                state: tokio::sync::Mutex::new(ChanState::default()),
-            })
-        }))
+        if let Some(channel) = channels.get(&key) {
+            return if channel.policy == policy {
+                Ok(channel.clone())
+            } else {
+                Err(RecordsDenied::Invalid)
+            };
+        }
+        if channels.len() >= 64 {
+            return Err(RecordsDenied::Unavailable);
+        }
+        let charge = budget
+            .reserve(
+                BudgetClaim {
+                    keys: 1,
+                    ..BudgetClaim::default()
+                },
+                None,
+            )
+            .map_err(|_| RecordsDenied::Unavailable)?;
+        let channel = Arc::new(Channel {
+            state: tokio::sync::Mutex::new(ChanState::default()),
+            _key: charge,
+            policy,
+        });
+        channels.insert(key, channel.clone());
+        Ok(channel)
     }
 
     /// The live generation of `channel`, or a new one: a stdio child waits out its respawn delay and refuses
@@ -259,8 +299,15 @@ impl ChannelDriver {
                 return Err(denied);
             }
         };
-        let (link, queue) = Link::new(req.flags & CH_SERIAL != 0);
-        state.generations += 1;
+        let (link, queue) = Link::new(
+            req.flags & CH_SERIAL != 0,
+            framing,
+            self.shared.budget.link(),
+        );
+        state.generations = state
+            .generations
+            .checked_add(1)
+            .ok_or(RecordsDenied::Unavailable)?;
         let generation = Arc::new(Generation {
             number: state.generations,
             link,
@@ -301,11 +348,28 @@ impl ChannelDriver {
         framing: Framing,
         key: &ChanKey,
     ) -> Result<Attachment, RecordsDenied> {
+        // Reserve before a child/request can open or a greeting can be claimed. The same actual
+        // unit owns this lease while waiting and after publication; cancellation drops it.
+        let lease = req
+            .budget
+            .reserve(
+                BudgetClaim {
+                    leases: 1,
+                    ..BudgetClaim::default()
+                },
+                None,
+            )
+            .map_err(|_| RecordsDenied::Unavailable)?;
         'generations: loop {
             let generation = self
                 .generation(channel, upstream, req, framing, key)
                 .await?;
-            let slot = generation.next_slot.fetch_add(1, Ordering::Relaxed);
+            let slot = generation
+                .next_slot
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |next| {
+                    next.checked_add(1)
+                })
+                .map_err(|_| RecordsDenied::Unavailable)?;
             let (greet, ready_tail) = loop {
                 match generation.link.claim_greet(slot) {
                     Claim::Greeter => break (true, Box::<[u8]>::default()),
@@ -334,16 +398,28 @@ impl ChannelDriver {
                     generation.link.pass_on();
                     continue 'generations;
                 }
+                slots.retain(|_, tx| !tx.is_closed());
+                if slots.len() >= 256 {
+                    generation.link.release_greet(slot);
+                    return Err(RecordsDenied::Unavailable);
+                }
                 slots.insert(slot, tx);
             }
-            return Ok(Attachment::linked(
+            let attached = Attachment::linked_reserved(
                 Arc::clone(&generation.link),
+                req.budget.clone(),
+                lease,
                 generation.number,
                 slot,
                 greet,
                 ready_tail,
                 rx,
-            ));
+            );
+            if attached.is_err() {
+                generation.slots().remove(&slot);
+                generation.link.release_greet(slot);
+            }
+            return attached;
         }
     }
 }
@@ -357,7 +433,7 @@ impl UpstreamChannels for ChannelDriver {
     ) -> BoxFut<'a, Result<Attachment, RecordsDenied>> {
         let (deadline, instance) = (plane.deadline, plane.instance);
         Box::pin(async move {
-            if instance != self.shared.instance {
+            if instance != self.shared.instance || !self.shared.budget.accepts_unit(req.budget) {
                 return Err(RecordsDenied::Invalid);
             }
             let framing = Framing::of(req.framing).ok_or(RecordsDenied::Invalid)?;
@@ -374,7 +450,12 @@ impl UpstreamChannels for ChannelDriver {
                 key: req.key.into(),
                 subject,
             };
-            let channel = self.channel(key.clone());
+            let policy = JoinPolicy {
+                carrier: req.carrier,
+                flags: req.flags,
+                framing: req.framing,
+            };
+            let channel = self.channel(key.clone(), req.budget, policy)?;
             let until = tokio::time::Instant::from_std(deadline);
             match tokio::time::timeout_at(until, self.join(&channel, upstream, &req, framing, &key))
                 .await
@@ -405,7 +486,7 @@ struct Run {
 }
 
 impl Run {
-    async fn run(self, wire: Wire, queue: mpsc::UnboundedReceiver<Box<[u8]>>) {
+    async fn run(self, wire: Wire, queue: mpsc::Receiver<GuardedWrite>) {
         let Wire {
             mut read,
             write,
@@ -505,7 +586,20 @@ impl Run {
                         .fetch_add(1, Ordering::Relaxed);
                 }
                 None => {
-                    let _ = generation.link.write(demuxed.tail.into());
+                    let sent = GuardedWrite::fallback(
+                        &self.shared.budget,
+                        generation.link.budget(),
+                        generation.framing,
+                        &demuxed.tail,
+                    )
+                    .ok()
+                    .is_some_and(|message| generation.link.write(message).is_ok());
+                    if !sent {
+                        self.shared
+                            .counts
+                            .unattributed
+                            .fetch_add(1, Ordering::Relaxed);
+                    }
                 }
             }
         } else if demuxed.flags & DX_BROADCAST != 0 {
@@ -542,15 +636,14 @@ impl Run {
 async fn write_loop(
     generation: Arc<Generation>,
     write: Option<Box<dyn AsyncWrite + Send + Unpin>>,
-    mut queue: mpsc::UnboundedReceiver<Box<[u8]>>,
+    mut queue: mpsc::Receiver<GuardedWrite>,
 ) {
     let Some(mut write) = write else {
         drop(queue);
         return;
     };
     while let Some(message) = queue.recv().await {
-        let bytes = frame(generation.framing, &message);
-        if write.write_all(&bytes).await.is_err() || write.flush().await.is_err() {
+        if message.write(&mut write).await.is_err() {
             generation.stop.notify_one();
             return;
         }
