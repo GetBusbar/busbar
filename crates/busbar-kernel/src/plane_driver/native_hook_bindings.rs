@@ -33,6 +33,120 @@ pub struct OpenedHook {
     pub timeout: std::time::Duration,
 }
 
+/// Resolve implicit strategy opens before S8, using only the actual seat's attachment roots and
+/// pools. `configured` maps configured hook names to admitted image identities; `words` includes
+/// every admitted hook image, even those that have not been opened. The root opens each returned
+/// instance with empty settings through normal schema, Needs and limit admission.
+pub fn implicit_strategies(
+    hooks: &HookRegistry,
+    attachments: &[String],
+    pools: &[&crate::config::PoolCfg],
+    configured: &BTreeMap<String, String>,
+    words: &BTreeMap<String, Vec<Box<str>>>,
+) -> Result<BTreeMap<String, String>, String> {
+    let configured = hooks
+        .keys()
+        .map(|name| {
+            configured
+                .get(name)
+                .map(|image| (name.as_str(), image.as_str()))
+                .ok_or_else(|| {
+                    format!("hook `{name}` has no admitted image for strategy resolution")
+                })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let words = words
+        .iter()
+        .map(|(image, words)| (image.as_str(), words.iter().map(AsRef::as_ref).collect()))
+        .collect::<Vec<_>>();
+    let default = default_hook(hooks)?;
+    let mut roots = attachments
+        .iter()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
+    let mut strategies = BTreeSet::new();
+    for pool in pools {
+        roots.extend(pool.gates.iter().map(String::as_str));
+        if let Some((name, _)) = inherited_ordering(pool, hooks, default) {
+            roots.insert(name);
+        } else if let Some(word) = pool.policy.native_name() {
+            strategies.insert(word);
+        }
+    }
+    for name in roots {
+        let hook = hooks
+            .get(name)
+            .ok_or_else(|| format!("hook attachment `{name}` has no definition"))?;
+        if hook.kind == HookKind::Tap {
+            continue;
+        }
+        let mut seen = BTreeSet::from([name]);
+        let mut current = hook.on_error.as_str();
+        while crate::config::on_error_terminal(current).is_none() {
+            if !seen.insert(current) {
+                return Err(format!(
+                    "hook attachment `{name}` has a fallback cycle at `{current}`"
+                ));
+            }
+            let Some(fallback) = hooks.get(current) else {
+                if hook.prompt.can_rewrite() {
+                    return Err(format!(
+                        "hook attachment `{name}` fallback `{current}` cannot serve rewrite point"
+                    ));
+                }
+                strategies.insert(current);
+                break;
+            };
+            if fallback.kind != HookKind::Gate {
+                return Err(format!(
+                    "hook attachment `{name}` fallback `{current}` is not a gate"
+                ));
+            }
+            current = &fallback.on_error;
+        }
+    }
+    let mut implicit = BTreeMap::new();
+    for word in strategies {
+        let binding = crate::hooks::strategy::resolve_strategy(word, &configured, &words)
+            .map_err(|why| why.0)?;
+        if binding.implicit {
+            // resolve_strategy has already proved exactly one admitted image declares this word.
+            let image = words
+                .iter()
+                .find(|(_, declared)| declared.contains(&word))
+                .map(|(image, _)| *image)
+                .ok_or_else(|| format!("strategy `{word}` lost its admitted image"))?;
+            implicit.insert(binding.instance.into_string(), image.to_owned());
+        }
+    }
+    Ok(implicit)
+}
+
+fn default_hook(hooks: &HookRegistry) -> Result<Option<&str>, String> {
+    let defaults = hooks
+        .iter()
+        .filter(|(_, hook)| hook.default)
+        .collect::<Vec<_>>();
+    if defaults.len() > 1 {
+        return Err(format!(
+            "several default hook bindings: {}",
+            defaults
+                .iter()
+                .map(|(name, _)| name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    if let Some((name, hook)) = defaults.first() {
+        if hook.kind != HookKind::Gate || hook.prompt.can_rewrite() {
+            return Err(format!(
+                "default hook attachment `{name}` cannot represent a base routing policy"
+            ));
+        }
+    }
+    Ok(defaults.first().map(|(name, _)| name.as_str()))
+}
+
 /// The configured native seat and the one pool its actual egress walk can inspect and constrain.
 /// Routes are the exact admitted PlanePort route ids. Native seats currently have no container
 /// authority; a container attachment therefore refuses construction rather than disappearing.
@@ -481,29 +595,7 @@ impl Tables {
         section: &[String],
         pool: Option<&crate::config::PoolCfg>,
     ) -> Result<Self, String> {
-        let defaults = calls
-            .hooks
-            .iter()
-            .filter(|(_, h)| h.default)
-            .collect::<Vec<_>>();
-        if defaults.len() > 1 {
-            return Err(format!(
-                "several default hook bindings: {}",
-                defaults
-                    .iter()
-                    .map(|(n, _)| n.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ));
-        }
-        let default = defaults.first().map(|(name, _)| name.as_str());
-        if let Some((name, hook)) = defaults.first() {
-            if hook.kind != HookKind::Gate || hook.prompt.can_rewrite() {
-                return Err(format!(
-                    "default hook attachment `{name}` cannot represent a base routing policy"
-                ));
-            }
-        }
+        let default = default_hook(calls.hooks)?;
         let policy = if let Some(pool) = pool {
             if let Some((name, hook)) = inherited_ordering(pool, calls.hooks, default) {
                 Some(Bound::new(
