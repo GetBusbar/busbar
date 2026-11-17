@@ -28,6 +28,7 @@ enum It {
     Respond(u16),
     Header(&'static str, &'static [u8]),
     Body(&'static [u8]),
+    Conversation(&'static [u8]),
     Msg(u32, &'static [u8]),
     Trailers,
     End,
@@ -49,6 +50,7 @@ fn play(items: &[It], sink: &mut dyn FnMut(PlaneOut<'_>)) {
             It::Respond(status) => PlaneOut::Respond { status: *status },
             It::Header(n, v) => PlaneOut::Header(n, v),
             It::Body(b) => PlaneOut::Body(b),
+            It::Conversation(b) => PlaneOut::Conversation(b),
             It::Msg(flags, b) => PlaneOut::Msg {
                 flags: *flags,
                 bytes: b,
@@ -111,6 +113,7 @@ struct Script {
     fail_render: bool,
     upstream_items: Mutex<VecDeque<Vec<It>>>,
     refuse_request: bool,
+    refuse_rewrite: bool,
     dropped: Arc<AtomicBool>,
 }
 
@@ -158,6 +161,13 @@ impl Calls for Script {
         _: &[u8],
         _: &mut dyn FnMut(PlaneOut<'_>),
     ) -> Result<(), PortError> {
+        if self.refuse_rewrite {
+            return Err(PortError::Refused {
+                code: busbar_plugin_abi::fail::refused::R_INVALID,
+                text: "rewrite does not fit this request".into(),
+                error: None,
+            });
+        }
         Ok(())
     }
 
@@ -246,6 +256,47 @@ fn a_forward_with_its_wants_is_one_forward() {
     assert_eq!(forward.wants, vec![(0x100, FactVal::U(7))]);
     assert!(first.client.is_empty());
     assert!(task.open());
+}
+
+#[test]
+fn a_hook_projection_is_driven_without_exposing_it_to_the_client() {
+    let script = Script {
+        request: vec![
+            It::Conversation(br#"{"messages":[{"role":"user","text":"private"}]}"#),
+            It::Forward,
+        ],
+        ..Script::default()
+    };
+    let mut request = req();
+    request.flags = busbar_plugin_abi::plane::RQ_PROJECT;
+    let fx = Emitted::default();
+    let (task, first) = Task::begin(&script, &request, b"", &fx).unwrap();
+    assert!(!first.later, "CONVERSATION is a native hook projection");
+    assert!(first.client.is_empty(), "projection is never client output");
+    assert!(first.forward.is_some());
+    assert!(task.open());
+}
+
+#[test]
+fn an_inapplicable_hook_rewrite_keeps_the_original_session() {
+    let script = Script {
+        request: vec![It::Forward],
+        refuse_rewrite: true,
+        ..Script::default()
+    };
+    let fx = Emitted::default();
+    let (mut task, _) = Task::begin(&script, &req(), b"original", &fx).unwrap();
+    let result = task.rewrite(br#"{"messages":[]}"#, &fx);
+    assert!(matches!(
+        result,
+        Err(SessionError::Port(PortError::Refused {
+            code: busbar_plugin_abi::fail::refused::R_INVALID,
+            ..
+        }))
+    ));
+    assert!(task.open(), "IF §8.6 keeps the original after R_INVALID");
+    assert!(!script.dropped.load(Ordering::SeqCst));
+    task.end(&fx).expect("original session still ends normally");
 }
 
 #[test]
