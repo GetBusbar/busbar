@@ -69,9 +69,9 @@ pub trait Wires: Send + Sync + 'static {
 }
 
 /// The plane's sessionless `demux` (§8.6 DemuxRec): where one framed inbound message goes. `None` = the plane wrote
-/// no DEMUX (slot 0, dropped and audited at debug), or refused (the port handled the image).
+/// no DEMUX (slot 0, dropped and audited at debug). A native port error ends this generation.
 pub trait Demuxer: Send + Sync + 'static {
-    fn demux(&self, key: &str, message: &[u8]) -> Option<Demuxed>;
+    fn demux(&self, key: &str, message: &[u8]) -> Result<Option<Demuxed>, busbar_ports::PortError>;
 }
 
 /// What the driver says happened, for the audit chain and the sighting scheduler.
@@ -505,6 +505,9 @@ impl Run {
         });
         let mut check = tokio::time::Instant::now() + poll;
         let end = loop {
+            if self.generation.stopping.load(Ordering::Acquire) {
+                break End::Wire;
+            }
             tokio::select! {
                 got = read.read(&mut buf) => match got {
                     Ok(0) | Err(_) => break End::Wire,
@@ -560,6 +563,9 @@ impl Run {
     /// One framed inbound message: asks the plane where it goes and routes it.
     async fn deliver(&self, message: Box<[u8]>) {
         let generation = &self.generation;
+        if generation.stopping.load(Ordering::Acquire) {
+            return;
+        }
         let demuxer = Arc::clone(&self.shared.demuxer);
         let key = generation.key.clone();
         let routed = tokio::task::spawn_blocking(move || {
@@ -567,8 +573,13 @@ impl Run {
             (message, routed)
         })
         .await;
-        let Ok((message, routed)) = routed else {
-            return;
+        let (message, routed) = match routed {
+            Ok((message, Ok(routed))) => (message, routed),
+            Ok((_, Err(_))) | Err(_) => {
+                generation.stopping.store(true, Ordering::Release);
+                generation.stop.notify_one();
+                return;
+            }
         };
         if !generation.alive.load(Ordering::Acquire) || generation.stopping.load(Ordering::Acquire)
         {
