@@ -1148,6 +1148,7 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
         if let Some(data) = &data {
             if !data.is_live()
                 || data.selected().request().route() != req.route
+                || req.request_id != data.binding().invocation().request_id().get()
                 || req.auth != busbar_plugin_abi::plane::AUTH_PRINCIPAL
                 || req.identity != data.identity().identity_records()
                 || req.method != data.snapshot().method()

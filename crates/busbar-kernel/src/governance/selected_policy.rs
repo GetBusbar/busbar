@@ -159,6 +159,18 @@ impl SelectedPolicy {
         {
             return Err(StalePolicyTarget);
         }
+        let original_definition = selected.definition().ok_or(InvalidBinding)?;
+        let current_definition = target
+            .definition
+            .as_ref()
+            .ok_or(StalePolicyTarget)?
+            .as_arc();
+        if original_definition.resource.as_deref() != prepared.resource()
+            || current_definition.resource != target.resource
+            || !compatible_definition(original_definition, current_definition)
+        {
+            return Err(StalePolicyTarget);
+        }
         let rows = self.applicable_rows(&key, prepared.instance(), prepared.resource())?;
         Ok(ResolvedSelectedRules {
             key_id: key.id.clone().into_boxed_str(),
@@ -354,6 +366,59 @@ impl SelectedPolicy {
     pub fn cost_generation(&self) -> u64 {
         self.cost.generation()
     }
+}
+
+/// Compare actual retained destination policy, not a plane projection or Arc identity.
+/// The selected pair already fixes target identity; model allocation names may change when
+/// unrelated routes are inserted. Registration names are checked separately by the resolver.
+fn compatible_definition(
+    original: &crate::upstreams::UpstreamDef,
+    current: &crate::upstreams::UpstreamDef,
+) -> bool {
+    use crate::upstreams::{StdioCommand, UpstreamDef, UpstreamTls};
+    let UpstreamDef {
+        name: _,
+        resource,
+        allow_private,
+        url,
+        command,
+        tls,
+        auth,
+    } = original;
+    let UpstreamTls {
+        pin_spki,
+        client_identity,
+        trust,
+    } = tls;
+    resource == &current.resource
+        && allow_private == &current.allow_private
+        && url == &current.url
+        && auth == &current.auth
+        && pin_spki == &current.tls.pin_spki
+        && client_identity == &current.tls.client_identity
+        && match (trust, &current.tls.trust) {
+            (None, None) => true,
+            (Some(a), Some(b)) => a.sha256 == b.sha256 && a.der == b.der,
+            _ => false,
+        }
+        && match (command, &current.command) {
+            (None, None) => true,
+            (Some(a), Some(b)) => {
+                let StdioCommand {
+                    argv,
+                    env,
+                    cwd,
+                    pin,
+                    idle_s,
+                } = a;
+                argv == &b.argv
+                    && env == &b.env
+                    && cwd == &b.cwd
+                    && pin == &b.pin
+                    && idle_s == &b.idle_s
+            }
+            _ => false,
+        }
 }
 
 fn compile_row(
