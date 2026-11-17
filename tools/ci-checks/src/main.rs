@@ -16,7 +16,7 @@
 //!   included, outside the wave-3 paths `ci/serde-json-w3.allow` lists (`no_serde_json.rs`).
 //! - `crypto-graph`: AWS-LC is the one crypto provider, reached only through the facade (229). In
 //!   the root workspace's feature-resolved graph (`cargo tree`: every feature, target and edge
-//!   kind), `ring`, `sha2`, `ed25519-dalek` and `curve25519-dalek` are built only beneath
+//!   kind), `ring`, `sha2`, `hmac`, `md-5`, `ed25519-dalek` and `curve25519-dalek` are built only beneath
 //!   `busbar-crypto*`. Dev edges count: tests use the facade too. And `curve25519-dalek` is built
 //!   only beneath `busbar-crypto-backend`, never by the facade itself: a FIPS build swaps the
 //!   backend and keeps the facade, and admits no unvalidated crypto crate (QE-BOOT-KEYCHECK).
@@ -111,8 +111,16 @@ mod supply;
 const SEAM: &str = "busbar-crypto";
 /// The backend inside the seam: a private build swaps it by `[patch]`.
 const BACKEND: &str = "busbar-crypto-backend";
-/// Crypto crates reachable only through the seam.
-const SEAM_ONLY: [&str; 4] = ["ring", "sha2", "ed25519-dalek", "curve25519-dalek"];
+/// Crypto crates reachable only through the seam. `sha2`, `hmac` and `md-5` are what
+/// `postgres-protocol`'s SCRAM builds itself (#289).
+const SEAM_ONLY: [&str; 6] = [
+    "ring",
+    "sha2",
+    "hmac",
+    "md-5",
+    "ed25519-dalek",
+    "curve25519-dalek",
+];
 /// Crates only core's software backend may build: never the facade, which a FIPS build keeps
 /// (QE-BOOT-KEYCHECK: curve25519-dalek decompresses pinned Ed25519 keys in the backend alone).
 const BACKEND_ONLY: [&str; 1] = ["curve25519-dalek"];
