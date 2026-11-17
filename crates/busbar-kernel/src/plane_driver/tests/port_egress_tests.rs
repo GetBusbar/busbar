@@ -148,6 +148,7 @@ fn target_for(_pool: &str, name: &str) -> Option<MemberTarget> {
         identity: crate::plane_driver::port_upstream::TargetIdentity::Registration,
         resource: None,
         registered_upstream: None,
+        definition: None,
         provider: "{\"k\":1}".into(),
         base_path: "/v1".into(),
         flags: 2,

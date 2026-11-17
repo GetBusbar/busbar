@@ -50,12 +50,44 @@ use super::port_upstream::{
 use super::request_admission::{AdmittedRequest, RequestPoolReceipt, RequestWalk};
 use super::route::{operator_name, FarEnd, OutboundRequest, Pick};
 use crate::teller::Kernel;
+use crate::upstreams::UpstreamDef;
+
+/// The actual immutable definition retained by the route materializer.
+#[derive(Clone)]
+pub struct TargetDefinition(Arc<UpstreamDef>);
+
+impl TargetDefinition {
+    #[must_use]
+    pub fn new(definition: Arc<UpstreamDef>) -> Self {
+        Self(definition)
+    }
+
+    #[must_use]
+    pub fn as_arc(&self) -> &Arc<UpstreamDef> {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for TargetDefinition {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TargetDefinition").finish_non_exhaustive()
+    }
+}
+
+impl PartialEq for TargetDefinition {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+impl Eq for TargetDefinition {}
 
 /// How a member reads as the plane's `Target` (§6.1): the plane-owned provider keys, the base path, TGT_* flags
 /// and the route's configured parameters. Operator vocabulary only.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MemberTarget {
     pub identity: TargetIdentity,
+    /// Actual root-created definition; a matching name alone does not supply this association.
+    pub definition: Option<TargetDefinition>,
     /// Optional operator-configured rate resource from this exact target record.
     pub resource: Option<Box<str>>,
     /// Exact admitted registration name. Provider models have no registration authority.
@@ -73,6 +105,7 @@ impl MemberTarget {
     pub fn bare() -> Self {
         Self {
             identity: TargetIdentity::Registration,
+            definition: None,
             resource: None,
             registered_upstream: None,
             provider: "{}".into(),
@@ -111,7 +144,7 @@ struct Shared<'a, F: FarEnd> {
     request_walk: Option<RequestWalk>,
     pending: Option<Arc<super::port_admission::Pending>>,
     admitted: OnceCell<AdmittedRequest>,
-    selected: RefCell<Option<(Candidate, u32, Box<str>)>>,
+    selected: RefCell<Option<(Candidate, u32, Box<str>, Option<TargetDefinition>)>>,
     token: &'a Pass<Route>,
     handle: &'a Handle,
     targets: &'a (dyn Fn(&str, &str) -> Option<MemberTarget> + Send + Sync),
@@ -141,6 +174,7 @@ pub(crate) struct SelectedWalkAttempt {
     target: Candidate,
     preparation: u32,
     provider: Box<str>,
+    definition: Option<TargetDefinition>,
 }
 impl SelectedWalkAttempt {
     pub(crate) fn walk(&self) -> &RequestWalk {
@@ -163,6 +197,9 @@ impl SelectedWalkAttempt {
     }
     pub(crate) fn provider(&self) -> &str {
         &self.provider
+    }
+    pub(crate) fn definition(&self) -> Option<&Arc<UpstreamDef>> {
+        self.definition.as_ref().map(TargetDefinition::as_arc)
     }
 }
 
@@ -245,16 +282,17 @@ impl<F: FarEnd> WalkSend<'_, '_, F> {
             return None;
         }
         let mut selected = shared.selected.borrow_mut();
-        let (actual, ordinal, _) = selected.as_ref()?;
+        let (actual, ordinal, _, _) = selected.as_ref()?;
         if actual != target || *ordinal != preparation {
             return None;
         }
-        let (target, preparation, provider) = selected.take()?;
+        let (target, preparation, provider, definition) = selected.take()?;
         Some(SelectedWalkAttempt {
             walk: walk.clone(),
             target,
             preparation,
             provider,
+            definition,
         })
     }
 }
@@ -377,8 +415,12 @@ impl<F: FarEnd> Members for WalkMembers<'_, '_, F> {
                     };
                     let preparation = s.preparations.get().checked_add(1)?;
                     s.preparations.set(preparation);
-                    *s.selected.borrow_mut() =
-                        Some((candidate.clone(), preparation, provider.into()));
+                    *s.selected.borrow_mut() = Some((
+                        candidate.clone(),
+                        preparation,
+                        provider.into(),
+                        target.definition,
+                    ));
                     return Some(candidate);
                 }
                 Pick::Exhausted { retry_after, .. } => {
@@ -760,6 +802,7 @@ pub fn upstream_targets(
         let mut target = MemberTarget::bare();
         target.registered_upstream = Some(name.into());
         target.resource = upstream.resource.clone();
+        target.definition = Some(TargetDefinition::new(upstream));
         Some(target)
     })
 }
