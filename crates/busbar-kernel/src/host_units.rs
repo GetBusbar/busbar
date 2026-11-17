@@ -131,6 +131,7 @@ impl UnitRecords {
     ) {
         let mut units = self.lock(unit);
         let entry = units.entry(unit).or_default();
+        entry.signed_authority = None;
         entry.invocation_owner = Some(caller.incarnation().clone());
         entry.admission_phase = Some(Arc::new(
             crate::plane_driver::request_admission::AdmissionPhase::admitted(),
