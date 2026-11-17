@@ -49,6 +49,23 @@ impl ReplyStorage {
         &mut self.output
     }
 
+    /// A fully validated general answer keeps its entire fixed backing charged while the caller
+    /// admits every effect. Reclassification failure consumes/discards it without publication.
+    pub fn into_general(mut self) -> Result<GeneralStorage, CapacityDenied> {
+        // The maximum writer-copy allowance is unused on this path. Retire only that unused
+        // entitlement, never the live output allocation or callback completion cell.
+        let unused = self.charge.claim().bytes - self.output.len();
+        drop(self.charge.split(Claim {
+            bytes: unused,
+            ..Claim::default()
+        })?);
+        self.charge.reclassify_general()?;
+        Ok(GeneralStorage {
+            output: self.output,
+            _charge: self.charge,
+        })
+    }
+
     /// Consume the validated single reply's payload range. No backing escapes before its full
     /// writer capacity is reserved. The session must check the actual target lease beforehand.
     pub fn into_write(
@@ -81,6 +98,18 @@ impl ReplyStorage {
             _payload: charge,
             _outbound: outbound,
         })
+    }
+}
+
+/// Validated general callback storage. Capacity is not permission to apply any of its effects.
+pub struct GeneralStorage {
+    output: SecureVec,
+    _charge: Charge,
+}
+
+impl GeneralStorage {
+    pub fn output(&self) -> &[u8] {
+        self.output.as_slice()
     }
 }
 
