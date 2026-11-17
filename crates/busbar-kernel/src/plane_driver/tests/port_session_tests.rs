@@ -25,6 +25,8 @@ use crate::plane_driver::{CallerEnd, HeadFields};
 /// One scripted sink item.
 #[derive(Clone)]
 enum It {
+    AttemptUsage,
+    SelectedResource,
     ResourceEcho,
     Respond(u16),
     Header(&'static str, &'static [u8]),
@@ -48,6 +50,22 @@ enum It {
 fn play(items: &[It], sink: &mut dyn FnMut(PlaneOut<'_>)) {
     for it in items {
         sink(match it {
+            It::AttemptUsage => {
+                PlaneOut::AttemptUsage(busbar_plugin_abi::fallback_usage::AttemptUsage {
+                    attempt: 1,
+                    class: "tokens",
+                    amount: 7,
+                    scale: 0,
+                    source: busbar_plugin_abi::fallback_usage::UsageSource::Reported,
+                })
+            }
+            It::SelectedResource => {
+                PlaneOut::SelectedResource(busbar_plugin_abi::fallback_usage::SelectedResource {
+                    attempt: 1,
+                    exchange: 0,
+                    resource: "configured",
+                })
+            }
             It::ResourceEcho => {
                 PlaneOut::ResourceEcho(busbar_plugin_abi::resource_admission::DescriptorEcho {
                     invocation: 7,
@@ -114,6 +132,27 @@ fn an_unadmitted_resource_echo_cannot_be_ignored_in_request() {
     let fx = Emitted::default();
     assert!(Task::begin(&script, &req(), b"", &fx).is_err());
     assert!(fx.0.lock().unwrap().is_empty());
+}
+
+#[test]
+fn unadmitted_attempt_records_cannot_release_an_answer_prefix() {
+    for record in [It::AttemptUsage, It::SelectedResource] {
+        let script = Script {
+            request: vec![
+                It::Emit(1, b"held"),
+                It::Usage("tokens", 3, 0, SRC_REPORTED),
+                record,
+            ],
+            ..Script::default()
+        };
+        let effects = Emitted::default();
+        assert!(matches!(
+            Task::begin(&script, &req(), b"", &effects),
+            Err(SessionError::Violation(Violation::BadRecords))
+        ));
+        assert!(effects.0.lock().unwrap().is_empty());
+        assert!(script.dropped.load(Ordering::SeqCst));
+    }
 }
 
 #[test]
