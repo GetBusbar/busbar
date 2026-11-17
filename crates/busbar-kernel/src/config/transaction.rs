@@ -319,21 +319,26 @@ where
         }
     }
     let mut secrets = SecretRestore::take();
-    let outcome =
-        super::security_policy::scoped(guard.authority, || body(&Txn { app: &snapshot }))?;
+    let generation = super::generation::Context::new(handle);
+    let outcome = super::generation::scoped(Some(Arc::clone(&generation)), || {
+        super::security_policy::scoped(guard.authority, || body(&Txn { app: &snapshot }))
+    })?;
     let handle = Arc::clone(handle);
 
     let audit_request = crate::audit::auditlog::current_request();
     tokio::spawn(crate::audit::auditlog::scope_request(
         audit_request,
         crate::auth::effect::scope(context.clone(), async move {
-            let result = apply(
-                &handle,
-                outcome,
-                mode,
-                context.as_ref(),
-                guard.authority,
-                &mut secrets,
+            let result = super::generation::scoped_async(
+                Some(generation),
+                apply(
+                    &handle,
+                    outcome,
+                    mode,
+                    context.as_ref(),
+                    guard.authority,
+                    &mut secrets,
+                ),
             )
             .await;
             drop(secrets);
@@ -376,36 +381,42 @@ where
                 rates,
                 then,
             } => {
+                handle
+                    .check_candidate_generation(&next)
+                    .map_err(swap_error::<E>)?;
                 let expected = handle.load();
                 let worker_handle = Arc::clone(handle);
                 let worker_next = next.clone();
                 let worker_context = context.cloned();
                 let audit_request = crate::audit::auditlog::current_request();
+                let generation = super::generation::current();
                 authority = tokio::task::spawn_blocking(move || {
-                    crate::audit::auditlog::scope_request_sync(audit_request, || {
-                        let authority = if !committed {
-                            match &worker_context {
-                                Some(context) => Some(
-                                    tokio::runtime::Handle::current()
-                                        .block_on(context.revalidate(&worker_handle.load()))
-                                        .map_err(E::from)?,
-                                ),
-                                None => authority,
-                            }
-                        } else {
-                            authority
-                        };
-                        super::security_policy::admit(
-                            &worker_handle.load(),
-                            &worker_next,
-                            worker_context.as_ref(),
-                            authority,
-                        )
-                        .map_err(E::from)?;
-                        super::security_policy::scoped(authority, || {
-                            persist().map_err(swap_error::<E>)
-                        })?;
-                        Ok::<_, E>(authority)
+                    super::generation::scoped(generation, || {
+                        crate::audit::auditlog::scope_request_sync(audit_request, || {
+                            let authority = if !committed {
+                                match &worker_context {
+                                    Some(context) => Some(
+                                        tokio::runtime::Handle::current()
+                                            .block_on(context.revalidate(&worker_handle.load()))
+                                            .map_err(E::from)?,
+                                    ),
+                                    None => authority,
+                                }
+                            } else {
+                                authority
+                            };
+                            super::security_policy::admit(
+                                &worker_handle.load(),
+                                &worker_next,
+                                worker_context.as_ref(),
+                                authority,
+                            )
+                            .map_err(E::from)?;
+                            super::security_policy::scoped(authority, || {
+                                persist().map_err(swap_error::<E>)
+                            })?;
+                            Ok::<_, E>(authority)
+                        })
                     })
                 })
                 .await
@@ -457,6 +468,9 @@ where
             } => {
                 super::security_policy::admit(&handle.load(), &next, context, authority)
                     .map_err(E::from)?;
+                handle
+                    .check_candidate_generation(&next)
+                    .map_err(swap_error::<E>)?;
                 let expected = handle.load();
                 persist.await.map_err(swap_error::<E>)?;
                 if !Arc::ptr_eq(&expected, &handle.load()) {
@@ -497,21 +511,24 @@ where
                 let context = context.cloned();
                 let handle = Arc::clone(handle);
                 let audit_request = crate::audit::auditlog::current_request();
+                let generation = super::generation::current();
                 outcome = tokio::task::spawn_blocking(move || {
-                    crate::audit::auditlog::scope_request_sync(audit_request, || {
-                        let authority = if !committed {
-                            match context {
-                                Some(context) => Some(
-                                    tokio::runtime::Handle::current()
-                                        .block_on(context.revalidate(&handle.load()))
-                                        .map_err(E::from)?,
-                                ),
-                                None => authority,
-                            }
-                        } else {
-                            authority
-                        };
-                        super::security_policy::scoped(authority, f)
+                    super::generation::scoped(generation, || {
+                        crate::audit::auditlog::scope_request_sync(audit_request, || {
+                            let authority = if !committed {
+                                match context {
+                                    Some(context) => Some(
+                                        tokio::runtime::Handle::current()
+                                            .block_on(context.revalidate(&handle.load()))
+                                            .map_err(E::from)?,
+                                    ),
+                                    None => authority,
+                                }
+                            } else {
+                                authority
+                            };
+                            super::security_policy::scoped(authority, f)
+                        })
                     })
                 })
                 .await

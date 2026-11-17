@@ -10,12 +10,16 @@ use axum::http::StatusCode;
 #[cfg(test)]
 use axum::response::Response;
 
+use busbar_contract::caps::CallId;
 #[cfg(test)]
 use busbar_contract::caps::Route;
 use busbar_contract::caps::{
     Audit, Grant, OpClassId, OriginKind, Outcome, Pass, PrincipalId, VerifiedDestination,
 };
 use busbar_contract::{LaneId, UnitKey};
+use busbar_kernel::limits::process_admission::{AdmissionClass, ProcessAdmission, RequestLease};
+#[path = "plane_node/terminal_book.rs"]
+mod terminal_book;
 #[cfg(test)]
 use busbar_kernel::plane_driver::PlaneAnswer;
 use busbar_kernel::teller::{AccrualMeter, Ended, Evidence, RouteAwait, UnitCtx, Units};
@@ -27,6 +31,10 @@ use busbar_kernel_audit::{
     OpClassId as RecordOpClass, OutcomeFacts, Subject, Usage as RecordUsage,
     UsageLine as RecordLine, What, ATTEMPT_SLOTS,
 };
+use terminal_book::TerminalBook;
+#[path = "plane_node/native.rs"]
+mod native;
+pub(crate) use native::NativeNodeHandle;
 
 #[cfg(test)]
 use crate::root::linked::node::Handed;
@@ -129,7 +137,7 @@ pub(crate) struct Node {
 
     marked: AtomicU64,
 
-    lost: Mutex<HashMap<UnitKey, Lost>>,
+    lost: Mutex<Option<TerminalBook>>,
 
     mono: AtomicU64,
 
@@ -191,7 +199,7 @@ impl Node {
             })),
             next_key: Arc::default(),
             marked: AtomicU64::new(0),
-            lost: Mutex::new(HashMap::default()),
+            lost: Mutex::new(Self::fixture_terminal_book()),
             mono: AtomicU64::new(0),
             clock: Arc::new(busbar_kernel::WallClock),
 
@@ -199,6 +207,88 @@ impl Node {
             dispatch: Arc::new(crate::root::transports::DrivenOnce::new()),
             ticket_custody: crate::root::serve::TicketCustody::new(),
         }
+    }
+
+    /// Bind the actual process accounts once, before any terminal owner enters.
+    pub(crate) fn bind_terminal_storage(
+        &self,
+        process: &Arc<ProcessAdmission>,
+    ) -> Result<(), &'static str> {
+        let mut book = self
+            .lost
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if book.is_some() {
+            return Err("terminal storage already bound");
+        }
+        *book = Some(TerminalBook::new(
+            process.connection_storage(AdmissionClass::Data),
+            process.connection_storage(AdmissionClass::Operator),
+        ));
+        Ok(())
+    }
+
+    /// Production binds the actual boot ProcessAdmission in main; nothing is bound by default.
+    #[cfg(not(test))]
+    fn fixture_terminal_book() -> Option<TerminalBook> {
+        None
+    }
+
+    /// Unit fixtures use a real ProcessAdmission, as production does. A fixture asserting on
+    /// its own boot budget rebinds through `rebind_terminal_storage` before any unit enters.
+    #[cfg(test)]
+    fn fixture_terminal_book() -> Option<TerminalBook> {
+        let process = ProcessAdmission::new(0);
+        Some(TerminalBook::new(
+            process.connection_storage(AdmissionClass::Data),
+            process.connection_storage(AdmissionClass::Operator),
+        ))
+    }
+
+    /// Replace an empty fixture book with the fixture's own boot-bound process storage.
+    #[cfg(test)]
+    pub(crate) fn rebind_terminal_storage(&self, process: &Arc<ProcessAdmission>) {
+        let mut book = self
+            .lost
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert!(
+            book.as_ref().is_none_or(|book| book.len() == 0),
+            "terminal storage is rebound only before any unit enters"
+        );
+        *book = Some(TerminalBook::new(
+            process.connection_storage(AdmissionClass::Data),
+            process.connection_storage(AdmissionClass::Operator),
+        ));
+    }
+
+    pub(crate) fn terminal_pending(&self) -> usize {
+        self.lost
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .map_or(0, TerminalBook::len)
+    }
+
+    fn reserve_terminal(
+        &self,
+        class: AdmissionClass,
+        key: UnitKey,
+        call: CallId,
+    ) -> Option<TerminalReservation<'_>> {
+        self.lost
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_mut()?
+            .insert(class, key, RetainedUnit::reserved(call))
+            .ok()?;
+        Some(TerminalReservation {
+            node: self,
+            class,
+            key,
+            call,
+            active: true,
+        })
     }
 
     /// A node whose arrivals are read from `clock`.
@@ -462,6 +552,87 @@ impl Node {
         )
     }
 
+    /// Freeze a funded copy while the original native entry still owns its facts and pass.
+    /// This performs no journal stage, chain advance, receipt transfer or source removal.
+    pub(super) fn freeze_native_inputs(
+        &self,
+        terminal: &busbar_kernel::teller::native_data_audit::NativeAuditTerminal,
+        open: &OpenUnit,
+        // The original money owner's transferred report, never a re-derived bill.
+        report: Option<&Report>,
+    ) -> Result<AuditInputs, &'static str> {
+        let context = terminal.context();
+        let outcome = terminal.outcome();
+        let facts = terminal.facts();
+        if terminal.admission().is_some() && report.is_none() {
+            return Err("native terminal has no original monetary report");
+        }
+        let ran = &open.sealing.ran;
+        let (attempts, attempts_total) = ran.attempts(outcome);
+        let refused = matches!(outcome, Outcome::Refused(..));
+        let card = open.history.as_ref();
+        let served = report.map(|report| report.lane.as_str());
+        Ok(AuditInputs {
+            subject: Subject::PrincipalId(open.principal.as_str().to_owned()),
+            what: What {
+                unit_key: context.key,
+                incarnation: 0,
+                op_class: RecordOpClass::new(facts.op_class.as_str()),
+                destination: ran.destination(served).map(str::to_owned),
+                parent: match context.origin {
+                    OriginKind::Nested { parent } => Some(parent),
+                    _ => None,
+                },
+                pre_hook_head: None,
+                post_hook_head: None,
+            },
+            wall: open.arrived.secs(),
+            mono: open.arrived.mono(),
+            origin: self.kernel.origin(context.origin),
+            outcome: OutcomeFacts {
+                unit_end: outcome,
+                step: outcome.step(),
+                finish: audit_finish(facts.finish),
+                hook_failed: ran.hooks.iter().any(|hook| hook.failed),
+                emission_delta: 0,
+                stale_policy: false,
+            },
+            usage: RecordUsage {
+                lines: if refused {
+                    Vec::new()
+                } else {
+                    report.map(report_lines).unwrap_or_default()
+                },
+                tier_bp: 10_000,
+                fee_count: if refused {
+                    0
+                } else {
+                    report.map_or(0, |report| report.fee_count)
+                },
+                rate_card_version: card_in_force(card, open.arrived.ms()),
+                bucket_chain_ref: String::new(),
+            },
+            controls: Controls {
+                policy_epoch: policy_in_force(card, open.arrived.ms()),
+                hooks_applied: ran.hooks.clone(),
+                ..Controls::default()
+            },
+            correlation_label: None,
+            unit: busbar_kernel_audit::UnitFacts {
+                billing: None,
+                wall_ms: open.arrived.ms(),
+                attribution: report.map_or_else(String::new, |report| report.attribution.clone()),
+                boot_nonce: busbar_kernel::snapshot::boot_nonce(),
+                status: ran.measured.status,
+                ttft_us: ran.measured.ttft_us,
+                total_us: ran.measured.total_us,
+                attempts,
+                attempts_total,
+                records: ran.records.clone(),
+            },
+        })
+    }
+
     pub(crate) fn sweep(&self, now: Arrived) -> usize {
         if self.marked.swap(0, Ordering::AcqRel) == 0 {
             return 0;
@@ -480,13 +651,29 @@ impl Node {
             return false;
         }
 
-        let Some(lost) = self
-            .lost
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(&slot.key())
-        else {
-            return false;
+        let lost = {
+            let mut book = self
+                .lost
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let Some(book) = book.as_mut() else {
+                return false;
+            };
+            let class = [AdmissionClass::Data, AdmissionClass::Operator].into_iter().find(|class| {
+                book.get(*class, slot.key()).is_some_and(|entry| {
+                    matches!(&entry.state, RetainedState::Abandoned(lost) if Arc::ptr_eq(&lost.slot, slot))
+                })
+            });
+            let Some(class) = class else {
+                return false;
+            };
+            let Some(entry) = book.remove(class, slot.key()) else {
+                return false;
+            };
+            let RetainedState::Abandoned(lost) = entry.state else {
+                unreachable!("validated original abandoned owner")
+            };
+            lost
         };
         let verdict = busbar_kernel::tick::sweep(
             slot,
@@ -642,6 +829,7 @@ impl Node {
         audit_kind: OpClassId,
         admission: Option<&busbar_kernel::inbound::RequestAdmission>,
         timing: Option<Timing<'_>>,
+        request: &RequestLease,
     ) -> Option<Outcome> {
         self.sweep(arrived);
         if self.journal_refusal().is_some() {
@@ -653,6 +841,8 @@ impl Node {
             }
             return None;
         }
+        let call = self.kernel.next_call();
+        let reservation = self.reserve_terminal(request.class(), key, call)?;
         if admission.is_some_and(|admission| !admission.begin_execution()) {
             return None;
         }
@@ -664,7 +854,6 @@ impl Node {
         );
         let meter = Arc::new(AccrualMeter::new());
         let origin = parent.map_or(OriginKind::Client, |p| OriginKind::Nested { parent: p.key });
-        let call = self.kernel.next_call();
         let hold = busbar_kernel::inflight::arrival_hold(
             &self.kernel,
             &self.door,
@@ -688,6 +877,7 @@ impl Node {
         };
         let mut occupied = Occupied {
             node: self,
+            reservation,
             post: Some(post),
             slot: Arc::clone(&slot),
             arrived,
@@ -784,6 +974,7 @@ impl Node {
         history: Option<crate::root::kernel::PinnedHistory>,
         audit_kind: OpClassId,
         admission: Option<&busbar_kernel::inbound::RequestAdmission>,
+        request: &RequestLease,
     ) -> Option<(busbar_kernel::teller::SessionOpen, UnitCtx, SessionSlot<'n>)> {
         self.sweep(arrived);
         if self.journal_refusal().is_some() {
@@ -795,13 +986,14 @@ impl Node {
             }
             return None;
         }
+        let call = self.kernel.next_call();
+        let reservation = self.reserve_terminal(request.class(), key, call)?;
         if admission.is_some_and(|admission| !admission.begin_execution()) {
             return None;
         }
         post.open(key, principal.clone(), arrived, history);
         post.checkpoint_identity(key, audit_kind, OriginKind::Client);
         let meter = Arc::new(AccrualMeter::new());
-        let call = self.kernel.next_call();
         let hold = busbar_kernel::inflight::arrival_hold(
             &self.kernel,
             &self.door,
@@ -825,6 +1017,7 @@ impl Node {
         };
         let mut occupied = Occupied {
             node: self,
+            reservation,
             post: Some(post),
             slot: Arc::clone(&slot),
             arrived,
@@ -997,6 +1190,9 @@ impl Node {
         let (units, route, finish) = build((self.resolver(), arrived.secs()));
 
         let call = self.kernel.next_call();
+        let Some(reservation) = self.reserve_terminal(AdmissionClass::Data, key, call) else {
+            return unavailable(proto);
+        };
         let hold = busbar_kernel::inflight::arrival_hold(
             &self.kernel,
             &self.door,
@@ -1019,6 +1215,7 @@ impl Node {
             Ok(slot) => {
                 let mut occupied = Occupied {
                     node: self,
+                    reservation,
                     post: None,
                     slot: Arc::clone(&slot),
                     arrived,
@@ -1418,6 +1615,7 @@ impl Drop for LateBody {
 
 struct Occupied<'n> {
     node: &'n Node,
+    reservation: TerminalReservation<'n>,
 
     post: Option<&'n NodeEndPost>,
     slot: Arc<busbar_kernel::inflight::UnitSlot>,
@@ -1445,7 +1643,53 @@ impl<R: RouteAwait> Drop for ConfirmingUnit<'_, R> {
     }
 }
 
+pub(super) struct RetainedUnit {
+    call: CallId,
+    state: RetainedState,
+}
+impl RetainedUnit {
+    fn reserved(call: CallId) -> Self {
+        Self {
+            call,
+            state: RetainedState::Reserved,
+        }
+    }
+}
+enum RetainedState {
+    Reserved,
+    Abandoned(Lost),
+    Native(native::NativeUnit),
+}
+struct TerminalReservation<'n> {
+    node: &'n Node,
+    class: AdmissionClass,
+    key: UnitKey,
+    call: CallId,
+    active: bool,
+}
+impl Drop for TerminalReservation<'_> {
+    fn drop(&mut self) {
+        if !self.active {
+            return;
+        }
+        let mut book = self
+            .node
+            .lost
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(book) = book.as_mut() else {
+            return;
+        };
+        if book.get(self.class, self.key).is_some_and(|unit| {
+            unit.call == self.call && matches!(unit.state, RetainedState::Reserved)
+        }) {
+            book.remove(self.class, self.key);
+        }
+    }
+}
+
 struct Lost {
+    slot: Arc<busbar_kernel::inflight::UnitSlot>,
     arrived: Arrived,
 
     op_class: OpClassId,
@@ -1609,19 +1853,27 @@ impl Drop for Occupied<'_> {
         if self.reached_end {
             self.node.inflight.remove(self.slot.key());
         } else {
-            let open = self.post.and_then(|post| post.take(self.slot.key()));
-            self.node
+            let mut book = self
+                .node
                 .lost
                 .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .insert(
-                    self.slot.key(),
-                    Lost {
-                        arrived: self.arrived,
-                        op_class: self.op_class,
-                        open,
-                    },
-                );
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let entry = book
+                .as_mut()
+                .and_then(|book| book.get_mut(self.reservation.class, self.reservation.key))
+                .expect("effects require an installed terminal reservation");
+            assert!(
+                entry.call == self.reservation.call
+                    && matches!(entry.state, RetainedState::Reserved)
+            );
+            let open = self.post.and_then(|post| post.take(self.slot.key()));
+            entry.state = RetainedState::Abandoned(Lost {
+                slot: Arc::clone(&self.slot),
+                arrived: self.arrived,
+                op_class: self.op_class,
+                open,
+            });
+            self.reservation.active = false;
             self.slot.mark();
             self.node.marked.fetch_add(1, Ordering::AcqRel);
         }
@@ -1747,7 +1999,7 @@ pub(in crate::root) struct OpenUnit {
 }
 
 pub(crate) struct NodeEndPost {
-    pub(in crate::root) node: Arc<Node>,
+    pub(in crate::root) node: std::sync::Weak<Node>,
     pub(in crate::root) open: Vec<Mutex<OpenUnits>>,
 }
 
@@ -1779,8 +2031,8 @@ impl NodeEndPost {
     }
 
     #[must_use]
-    pub(crate) fn node(&self) -> &Arc<Node> {
-        &self.node
+    pub(crate) fn node(&self) -> Option<Arc<Node>> {
+        self.node.upgrade()
     }
 
     pub(crate) fn open(
@@ -1987,12 +2239,8 @@ impl busbar_kernel::plane_driver::EndPost for NodeEndPost {
     fn checkpoint_facts(&self, key: UnitKey) -> Option<Vec<u8>> {
         let all = self.lock(key);
         let open = all.get(&key)?;
-        let book = self
-            .node
-            .book
-            .get()?
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
+        let node = self.node()?;
+        let book = node.book.get()?.lock().unwrap_or_else(|p| p.into_inner());
         let captured = RunningAuditFacts {
             selected_identity: Some(crate::root::durability::SelectedAuditIdentity {
                 node: book.record.node(),
@@ -2028,6 +2276,11 @@ impl busbar_kernel::plane_driver::EndPost for NodeEndPost {
     }
 
     fn post(&self, ctx: &UnitCtx, ended: Ended) {
+        // Failed upgrade is permanent forced destruction of the original Node, not a
+        // retry against a replacement Node and never a successful terminal acknowledgement.
+        let Some(node) = self.node() else {
+            return;
+        };
         let facts = self.lock(ctx.key).remove(&ctx.key);
         if let Some(open) = facts {
             let parent = match ctx.origin {
@@ -2036,8 +2289,8 @@ impl busbar_kernel::plane_driver::EndPost for NodeEndPost {
             };
             let seal = open
                 .sealing
-                .into_seal(ctx.key, self.node.kernel.origin(ctx.origin), parent);
-            self.node.seal_end(
+                .into_seal(ctx.key, node.kernel.origin(ctx.origin), parent);
+            node.seal_end(
                 &open.principal,
                 open.arrived,
                 open.history.as_ref(),

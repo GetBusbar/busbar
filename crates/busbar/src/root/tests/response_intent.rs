@@ -25,8 +25,9 @@ fn stamp() -> ResponseIntentStamp {
     }
 }
 
-async fn rig() -> (NativeFixture, Arc<ResponseIntentService>, DeliveryLedger) {
+pub(crate) async fn rig() -> (NativeFixture, Arc<ResponseIntentService>, DeliveryLedger) {
     let fixture = NativeFixture::new(71).await;
+    let incarnation = fixture.book().await.incarnation;
     let key = AuditSigningKey::from_seed(&[47; 32]);
     let mut keys = AuditKeySet::new();
     keys.insert(AuditVerifyingKey::from_hex(&key.public_key_hex()).unwrap());
@@ -37,9 +38,13 @@ async fn rig() -> (NativeFixture, Arc<ResponseIntentService>, DeliveryLedger) {
         Arc::new(OnceLock::new()),
     )
     .unwrap();
-    let service =
-        ResponseIntentService::new(fixture.journal.clone(), 3, keys, signers.response_intent)
-            .unwrap();
+    let service = ResponseIntentService::new(
+        fixture.journal.clone(),
+        incarnation,
+        keys,
+        signers.response_intent,
+    )
+    .unwrap();
     let source = ProcessAdmission::new(0).connection_storage(AdmissionClass::Data);
     let ledger = DeliveryLedger::new(
         &source,
@@ -48,6 +53,30 @@ async fn rig() -> (NativeFixture, Arc<ResponseIntentService>, DeliveryLedger) {
     )
     .unwrap();
     (fixture, service, ledger)
+}
+
+#[tokio::test]
+async fn rejected_registration_cancels_original_handles_without_publishing_release() {
+    let (_fixture, service, mut ledger) = rig().await;
+    let original = service.connection().unwrap();
+    let foreign = service.connection().unwrap();
+    let key = original.key(1, None).unwrap();
+    let handles = ledger.admit(key).unwrap();
+    let watch = handles.watch.clone();
+    assert!(foreign
+        .admit(
+            key,
+            handles,
+            tokio::time::Instant::now() + Duration::from_secs(1)
+        )
+        .is_err());
+    assert_eq!(watch.key(), key);
+    assert_eq!(watch.cancellation(), Some(ResponseStop::Integrity));
+    assert!(
+        watch.snapshot().terminal.is_none(),
+        "rejection cannot invent carrier settlement"
+    );
+    assert!(!watch.snapshot().first_payload_written);
 }
 
 #[tokio::test]
@@ -121,12 +150,15 @@ async fn cancelled_scope_and_changed_intent_cannot_release() {
 
 #[tokio::test]
 async fn connection_and_stream_identity_are_not_reused() {
-    let (_, service, _) = rig().await;
+    let (fixture, service, _) = rig().await;
     let first = service.connection().unwrap();
     let second = service.connection().unwrap();
     let a = first.key(1, None).unwrap();
     let b = second.key(1, None).unwrap();
-    assert_eq!((a.node, a.incarnation), (71, 3));
+    assert_eq!(
+        (a.node, a.incarnation),
+        (71, fixture.book().await.incarnation)
+    );
     assert_ne!(a.connection_generation, b.connection_generation);
     assert!(first.key(1, None).is_err());
     assert!(first.key(0, None).is_err());

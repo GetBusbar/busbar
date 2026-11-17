@@ -47,6 +47,10 @@ pub(crate) struct RunningWorkers {
 }
 
 impl RunningWorkers {
+    pub(crate) fn request_stop(&self) {
+        self.stop.send_replace(true);
+    }
+
     pub(crate) async fn stop(self) -> Result<(), String> {
         let Self { stop, handles } = self;
         stop.send_replace(true);

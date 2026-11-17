@@ -528,11 +528,17 @@ pub(crate) fn live_planes(app: Arc<busbar_kernel::state::AppHandle>) -> PlaneLoo
 pub(crate) fn live_admin_door(app: Arc<busbar_kernel::state::AppHandle>) -> super::AdminDoorFn {
     Arc::new(
         move |request: &super::AdminRequest| -> super::AdminDoorFuture {
-            let Ok(headers) = request.http_headers() else {
+            let projection = request.http_projection();
+            let headers = if projection.is_some() {
+                None
+            } else {
+                request.http_headers().ok()
+            };
+            if projection.is_none() && headers.is_none() {
                 return Box::pin(std::future::ready(
                     busbar_kernel::auth::AdminDoor::Denied.into(),
                 ));
-            };
+            }
             let (handle, snapshot, id, cx) = if let Some(binding) = &request.binding {
                 if !Arc::ptr_eq(binding.handle(), &app)
                     || binding.check_live().is_err()
@@ -581,9 +587,18 @@ pub(crate) fn live_admin_door(app: Arc<busbar_kernel::state::AppHandle>) -> supe
                 cx,
                 request: Arc::clone(request.snapshot()),
             };
-            Box::pin(
-                async move { busbar_kernel::auth::admin_verdict_for(invocation, &headers).await },
-            )
+            Box::pin(async move {
+                let headers = projection
+                    .as_ref()
+                    .map(|p| p.headers())
+                    .or(headers.as_ref());
+                match headers {
+                    Some(headers) => {
+                        busbar_kernel::auth::admin_verdict_for(invocation, headers).await
+                    }
+                    None => busbar_kernel::auth::AdminDoor::Denied.into(),
+                }
+            })
         },
     )
 }

@@ -526,6 +526,7 @@ fn v7_records_verify_against_the_published_page() {
             controls: Controls::default(),
             correlation_hash: None,
             unit: UnitFacts {
+                billing: None,
                 wall_ms: 1_700_000_000_250,
                 attribution: busbar_kernel_audit::attribution("team", "default", "acme"),
                 boot_nonce: [0xab; 16],

@@ -248,6 +248,13 @@ impl DataRoutes {
         caller: &C,
         rendered: Rendered,
     ) {
+        let Some(node) = self.post.node() else {
+            admission.refuse(
+                busbar_contract::caps::StepName::Arrival,
+                ReasonCode::DurabilityUnavailable,
+            );
+            return;
+        };
         if rendered.body.is_empty() {
             caller.complete_head(rendered.status, rendered.fields);
         } else {
@@ -265,7 +272,7 @@ impl DataRoutes {
                 || PrincipalId::new(AuthPrincipal(None).actor_id()),
                 |key| PrincipalId::new(key.id.as_str()),
             );
-            self.post.node().unmetered_inbound(
+            node.unmetered_inbound(
                 admission.unit_key(),
                 self.live[plane].facts.audit_kind,
                 &principal,

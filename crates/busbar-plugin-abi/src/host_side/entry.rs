@@ -25,6 +25,26 @@ std::thread_local! {
     static MIGRATION: RefCell<Option<Arc<StoreMigrationAdmission>>> = const { RefCell::new(None) };
 }
 
+pub(crate) fn pure() -> bool {
+    PURE.with(Cell::get)
+}
+
+/// Pure selection has no Host service authority. Buffer growth is only output allocation.
+/// This is entry-local enforcement, not a sandbox against a malicious native plugin.
+pub(crate) struct Pure {
+    active: bool,
+    violation: bool,
+}
+
+impl Pure {
+    pub(crate) fn enter() -> Self {
+        Self {
+            active: PURE.with(|p| p.replace(true)),
+            violation: PURE_VIOLATION.with(|v| v.replace(false)),
+        }
+    }
+}
+
 /// Nonsecret authority for one Store-open operation. Never retained by a serving instance.
 pub struct StoreMigrationAdmission {
     recoverable_allowed: bool,
@@ -46,6 +66,29 @@ impl StoreMigrationAdmission {
             0 => None,
             count => Some(count),
         }
+    }
+}
+
+impl Pure {
+    pub(crate) fn violated(&self) -> bool {
+        PURE_VIOLATION.with(Cell::get)
+    }
+}
+
+/// Mark an attempted host service so a selector cannot succeed after ignoring the denial.
+pub(crate) fn deny_service() -> bool {
+    if pure() {
+        PURE_VIOLATION.with(|v| v.set(true));
+        true
+    } else {
+        false
+    }
+}
+
+impl Drop for Pure {
+    fn drop(&mut self) {
+        PURE.with(|p| p.set(self.active));
+        PURE_VIOLATION.with(|v| v.set(self.violation || (self.active && v.get())));
     }
 }
 
@@ -77,7 +120,7 @@ impl Drop for MigrationScope {
 }
 
 pub(crate) fn migration_admitted(count: u64) -> bool {
-    if busbar_ffi::host::teardown_active() || owner().is_none() {
+    if deny_service() || busbar_ffi::host::teardown_active() || owner().is_none() {
         return false;
     }
     MIGRATION
@@ -98,49 +141,6 @@ pub(crate) fn migration_admitted(count: u64) -> bool {
             false
         })
         .unwrap_or(false)
-}
-
-pub(crate) fn pure() -> bool {
-    PURE.with(Cell::get)
-}
-
-/// Pure selection has no Host service authority. Buffer growth is only output allocation.
-/// This is entry-local enforcement, not a sandbox against a malicious native plugin.
-pub(crate) struct Pure {
-    active: bool,
-    violation: bool,
-}
-
-impl Pure {
-    pub(crate) fn enter() -> Self {
-        Self {
-            active: PURE.with(|p| p.replace(true)),
-            violation: PURE_VIOLATION.with(|v| v.replace(false)),
-        }
-    }
-}
-
-impl Pure {
-    pub(crate) fn violated(&self) -> bool {
-        PURE_VIOLATION.with(Cell::get)
-    }
-}
-
-/// Mark an attempted host service so a selector cannot succeed after ignoring the denial.
-pub(crate) fn deny_service() -> bool {
-    if pure() {
-        PURE_VIOLATION.with(|v| v.set(true));
-        true
-    } else {
-        false
-    }
-}
-
-impl Drop for Pure {
-    fn drop(&mut self) {
-        PURE.with(|p| p.set(self.active));
-        PURE_VIOLATION.with(|v| v.set(self.violation || (self.active && v.get())));
-    }
 }
 
 /// The slot of the entry running on this thread, or None outside an entry.
@@ -224,6 +224,20 @@ mod migration_tests {
         assert!(HOST.migrate_admit(1).is_err());
         assert!(HOST.migrate_admit(0).is_ok());
         assert_eq!(permit.first_refused(), Some(u64::MAX));
+    }
+
+    #[test]
+    fn pure_selection_cannot_inherit_store_open_migration_authority() {
+        let permit = Arc::new(StoreMigrationAdmission::new(true));
+        let _owner = Owning::set(7);
+        let _scope = MigrationScope::set(Some(permit));
+        {
+            let pure = Pure::enter();
+            assert!(HOST.migrate_admit(0).is_err());
+            assert!(HOST.migrate_admit(9).is_err());
+            assert!(pure.violated());
+        }
+        assert!(HOST.migrate_admit(9).is_ok());
     }
 }
 

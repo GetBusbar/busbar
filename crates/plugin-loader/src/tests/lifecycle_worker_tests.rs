@@ -110,7 +110,7 @@ fn lifecycle_on_permanent_workers_the_assertion_trips_off_the_workers() {
         said.contains("open entered plugin code") && said.contains("not a permanent FFI worker"),
         "{said}"
     );
-    let on = crate::ffi_thread::on_plugin_thread(enter_a_slot);
+    let on = busbar_ffi::lifecycle::run(enter_a_slot);
     assert!(on.is_ok(), "on a permanent worker the assertion holds");
 }
 

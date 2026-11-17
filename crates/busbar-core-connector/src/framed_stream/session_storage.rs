@@ -16,6 +16,29 @@ pub struct Payload {
 }
 
 impl Payload {
+    /// Encode directly into a fixed loan of already funded secure backing. The canonical writer
+    /// cannot grow; errors and unwind wipe the entire abandoned loan before its credit is released.
+    pub fn encode(
+        source: &StorageSource,
+        extent: usize,
+        encode: impl FnOnce(
+            &mut busbar_plugin_abi::records::Fixed<'_>,
+        ) -> Result<(), busbar_plugin_abi::records::Full>,
+    ) -> Result<Self, StorageDenied> {
+        let credit = source.try_reserve(extent)?;
+        let mut bytes = SecureVec::with_capacity(extent).map_err(|_| StorageDenied)?;
+        bytes
+            .read_into(extent, busbar_contract::secure::Tail::Wipe, |loan| {
+                let mut writer = busbar_plugin_abi::records::Fixed::new(loan);
+                encode(&mut writer)
+                    .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidData))?;
+                Ok(writer.len())
+            })
+            .map_err(|_| StorageDenied)?
+            .map_err(|_| StorageDenied)?;
+        Ok(Self { bytes, credit })
+    }
+
     /// Reserve destination backing before allocating or copying a borrowed callback slice.
     pub fn copy(source: &StorageSource, bytes: &[u8]) -> Result<Self, StorageDenied> {
         let credit = source.try_reserve(bytes.len())?;

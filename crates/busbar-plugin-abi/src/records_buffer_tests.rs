@@ -3,6 +3,52 @@
 
 use super::*;
 
+#[test]
+fn fixed_writer_never_grows_and_rolls_back_failed_nested_records() {
+    let mut bytes = [0u8; 48];
+    let mut fixed = Fixed::new(&mut bytes);
+    fixed.put_text(tag::TEXT, "kept").unwrap();
+    assert_eq!(fixed.len(), record_size(4).unwrap());
+    let before = fixed.len();
+    assert!(
+        fixed
+            .put_nested(tag::TEXT, |nested| {
+                nested.put_text(tag::TEXT, "inside")?;
+                nested.put_text(tag::TEXT, "cannot fit")
+            })
+            .is_err()
+    );
+    assert_eq!(fixed.len(), before);
+    assert_eq!(
+        Records::new(fixed.as_bytes())
+            .next()
+            .unwrap()
+            .unwrap()
+            .text()
+            .unwrap(),
+        "kept"
+    );
+    assert!(fixed.bytes[before..].iter().all(|byte| *byte == 0));
+    assert!(fixed.put_text(tag::TEXT, &"x".repeat(48)).is_err());
+    assert_eq!(fixed.capacity(), 48);
+    assert_eq!(fixed.len(), before);
+}
+
+#[test]
+fn fixed_record_quote_checks_overflow_and_exact_padding() {
+    assert_eq!(record_size(0), Some(8));
+    assert_eq!(record_size(4), Some(16));
+    assert_eq!(record_size(8), Some(16));
+    assert_eq!(record_size(usize::MAX), None);
+    let mut bytes = [0; 16];
+    let mut fixed = Fixed::new(&mut bytes);
+    fixed
+        .put_pod(tag::H_STATUS, &U32Rec { value: 200 })
+        .unwrap();
+    assert_eq!(fixed.len(), 16);
+    assert!(fixed.put_text(tag::TEXT, "").is_err());
+}
+
 struct Sink {
     bytes: [u8; 64],
     len: usize,

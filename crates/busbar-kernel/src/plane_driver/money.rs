@@ -21,7 +21,9 @@ mod native_admission;
 pub(super) mod native_attempt;
 pub use native_admission::{AdmissionRollback, NativeAdmissionError};
 mod native_fee;
+mod native_ordinary;
 mod native_terminal;
+pub use native_ordinary::NativeOrdinaryTerminalSlot;
 pub use native_terminal::SelectedTerminalReceipt;
 mod selected_view;
 pub use selected_view::UsageView;
@@ -315,6 +317,8 @@ struct FeeState {
 struct FeeAccount {
     gov: Arc<GovState>,
     money: Arc<UnitMoney>,
+    // FEE-DEBT r1: the original native observer. Not a participant; never refunds or charges.
+    observer: Option<Arc<crate::governance::fee_debt::FeeDebtObserver>>,
     state: Mutex<FeeState>,
 }
 
@@ -345,21 +349,31 @@ impl Drop for FeeParticipation {
         };
         if result == Some(FeeResult::Refunded) {
             let m = &self.account.money;
-            self.account.gov.refund_charge(&m.charge);
+            let observer = self.account.observer.as_deref();
+            self.account.gov.refund_charge_observed(&m.charge, observer);
             if let FeeRefund::PlaneFeeUnits(fees) = &m.fee {
                 for unit in fees
                     .iter()
                     .filter_map(|c| m.classes.get(*c as usize))
                     .filter(|u| u.as_str() != busbar_contract::plane::PER_REQUEST)
                 {
-                    self.account.gov.refund_fee_unit_in_era(
-                        &m.cost,
-                        &m.key,
-                        &m.pool,
-                        m.arrived,
-                        unit,
-                        Some(m.charge.raw_era()),
-                    );
+                    match observer {
+                        // Observed: refund exactly the legs the original charge reached.
+                        Some(observer) => self.account.gov.refund_fee_unit_observed(
+                            &m.pool,
+                            unit,
+                            Some(m.charge.raw_era()),
+                            observer,
+                        ),
+                        None => self.account.gov.refund_fee_unit_in_era(
+                            &m.cost,
+                            &m.key,
+                            &m.pool,
+                            m.arrived,
+                            unit,
+                            Some(m.charge.raw_era()),
+                        ),
+                    }
                 }
             }
         }
@@ -371,6 +385,7 @@ impl Drop for FeeParticipation {
 }
 
 struct Open {
+    ordinary_terminal: Option<Arc<NativeOrdinaryTerminalSlot>>,
     native: Option<native_attempt::NativeMoney>,
     spend_ceiling_micros: Option<u64>,
     observation: Option<Arc<crate::persistence::observations::BoundScope>>,
@@ -412,6 +427,7 @@ impl Open {
     ) -> Self {
         Self {
             native: None,
+            ordinary_terminal: None,
             spend_ceiling_micros: None,
             observation: None,
             observation_started: false,
@@ -691,6 +707,7 @@ impl PlaneMoney {
         let account = Arc::new(FeeAccount {
             gov: self.gov.clone(),
             money: money.clone(),
+            observer: None,
             state: Mutex::new(FeeState {
                 children: 0,
                 parent_refund: None,
@@ -1043,7 +1060,10 @@ impl PlaneMoney {
                 busbar_contract::stage_probe::Derive::MoneyShardLock,
             );
             let mut all = self.shard(key);
-            if all.get(&key).is_some_and(|open| open.native.is_some()) {
+            if all
+                .get(&key)
+                .is_some_and(|open| open.native.is_some() || open.ordinary_terminal.is_some())
+            {
                 return;
             }
             all.remove(&key)
@@ -1076,6 +1096,11 @@ impl PlaneMoney {
             }
             if open.native.is_some() {
                 return Err(NativeAdmissionError::SelectedTerminalRequired);
+            }
+            // A funded native ordinary Open transfers only through its original slot; the
+            // boolean removal is not a terminal receipt.
+            if open.ordinary_terminal.is_some() {
+                return Err(NativeAdmissionError::NotLive);
             }
             all.remove(&request.unit())
         };

@@ -252,6 +252,8 @@ mod config_key_transactions;
 mod config_document_patch;
 #[path = "admin_application/config_price_activation.rs"]
 mod config_price_activation;
+#[path = "admin_application/instance_settings.rs"]
+mod instance_settings;
 
 #[path = "admin_application/service_group_deletion.rs"]
 mod service_group_deletion;

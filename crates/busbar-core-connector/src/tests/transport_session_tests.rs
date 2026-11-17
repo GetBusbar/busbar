@@ -143,6 +143,55 @@ struct Scripted {
     dropped: Arc<AtomicU64>,
 }
 
+#[tokio::test]
+async fn rejected_upgrade_retires_original_tcp_writer_before_failed_receipt() {
+    use busbar_contract::response_delivery::{DeliveryTerminal, ResponseKey, ResponseStop};
+    use busbar_kernel::limits::process_admission::{AdmissionClass, ProcessAdmission};
+    let source = ProcessAdmission::new(1).connection_storage(AdmissionClass::Data);
+    let mut ledger =
+        DeliveryLedger::new(&source, 8.try_into().unwrap(), 2.try_into().unwrap()).unwrap();
+    let handles = ledger
+        .admit(ResponseKey {
+            node: 1,
+            incarnation: 1,
+            unit: None,
+            connection_generation: 1,
+            stream: 1,
+        })
+        .unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mut peer = tokio::net::TcpStream::connect(listener.local_addr().unwrap())
+        .await
+        .unwrap();
+    let (socket, _) = listener.accept().await.unwrap();
+    let io = crate::raw_progress::tcp(socket);
+    let progress = io.progress();
+    let script = scripted(Box::new(|_| Vec::new()), None, false);
+    let outcome = Outcome::Upgraded {
+        delivery: Delivery::new(ledger, progress),
+        conn: script.conn,
+        io,
+        protocol: Name::copy(&source, "websocket").unwrap(),
+        leftover: Payload::copy(&source, &[]).unwrap(),
+    };
+    assert!(handles.watch.snapshot().terminal.is_none());
+    outcome.retire();
+    assert_eq!(
+        handles.watch.snapshot().terminal,
+        Some(DeliveryTerminal::Failed(ResponseStop::CarrierRetired))
+    );
+    assert!(!handles.watch.snapshot().first_payload_written);
+    let mut byte = [0];
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(1), peer.read(&mut byte))
+            .await
+            .unwrap()
+            .unwrap(),
+        0
+    );
+    assert_eq!(script.dropped.load(Ordering::Relaxed), 1);
+}
+
 fn scripted(respond: Respond, stall_ms: Option<u32>, quarantined: bool) -> Scripted {
     let seen = Arc::new(Mutex::new(Vec::new()));
     let charges = Arc::new(Mutex::new(Vec::new()));
@@ -1229,6 +1278,78 @@ fn rig() -> Rig {
         counters,
         wiring,
     }
+}
+
+#[tokio::test]
+async fn abandoned_registration_ack_retires_unexposed_input_after_protocol_settlement() {
+    let s = scripted(
+        Box::new(|call| match call {
+            Seen::Emit {
+                stream: 1,
+                piece: E_RESET,
+                ..
+            } => vec![Out::Quiescent(1)],
+            _ => Vec::new(),
+        }),
+        None,
+        false,
+    );
+    let mut r = rig();
+    let (registration, registrations) = mpsc::channel(1);
+    r.wiring.registrations = registrations;
+    let (admitted, acknowledged) = oneshot::channel();
+    drop(acknowledged);
+    registration
+        .send(RegisterResponse {
+            key: ResponseKey {
+                node: 1,
+                incarnation: 1,
+                unit: None,
+                connection_generation: 1,
+                stream: 1,
+            },
+            admitted,
+        })
+        .await
+        .unwrap();
+    drop(registration);
+    drop(r.feeds);
+    let (peer, server) = tokio::io::duplex(64);
+    drop(peer);
+    let outcome = tokio::time::timeout(
+        Duration::from_secs(1),
+        drive(s.conn, Vec::new(), server, r.wiring),
+    )
+    .await
+    .expect("an unexposed response must not retain a ledger input slot forever");
+    assert!(
+        matches!(
+            outcome,
+            Outcome::PeerClosed | Outcome::CoreClosed(CR_NORMAL)
+        ),
+        "{outcome:?}"
+    );
+    let calls = seen(&s.seen);
+    assert_eq!(
+        calls
+            .iter()
+            .filter(|call| matches!(call, Seen::Emit { piece: E_RESET, .. }))
+            .count(),
+        1
+    );
+    assert_eq!(
+        calls
+            .iter()
+            .filter(|call| matches!(
+                call,
+                Seen::Emit {
+                    piece: wire::E_DELIVERY_SETTLED,
+                    ..
+                }
+            ))
+            .count(),
+        1
+    );
 }
 
 #[tokio::test]

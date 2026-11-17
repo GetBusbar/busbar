@@ -822,7 +822,10 @@ mod standard_crypto {
             "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
         ] {
             if let Some(key) = ed25519(encoded) {
-                assert!(!wire::verify(&key, b"any message", &forged), "{encoded}");
+                assert!(
+                    !wire::verify(&key, b"any message", &forged).unwrap(),
+                    "{encoded}"
+                );
             }
         }
         let key =
@@ -831,7 +834,7 @@ mod standard_crypto {
             "e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e065224901555f",
             "b8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b"
         ));
-        assert!(wire::verify(&key, b"", &signature));
+        assert!(wire::verify(&key, b"", &signature).unwrap());
         for scalar in [
             bytes::<32>("edd3f55c1a631258d69cf7a2def9de1400000000000000000000000000000010"),
             bytes("4c8c7872aa064e049dbb3013fbf29380d25bf5f0595bbe24655141438e7a101b"),
@@ -839,19 +842,19 @@ mod standard_crypto {
         ] {
             let mut bad = signature;
             bad[32..].copy_from_slice(&scalar);
-            assert!(!wire::verify(&key, b"", &bad));
+            assert!(!wire::verify(&key, b"", &bad).unwrap());
         }
         let small_r = bytes::<64>(concat!(
             "0100000000000000000000000000000000000000000000000000000000000000",
             "be6ea3b30c95cf09aa095e2bbdd3d0ba5277670ebfab1b959653b0d80a614f0c"
         ));
-        assert!(!wire::verify(&key, b"low-order-r-canary", &small_r));
+        assert!(!wire::verify(&key, b"low-order-r-canary", &small_r).unwrap());
         for sig in [
             vec![],
             signature[..63].to_vec(),
             [signature.as_slice(), &[0]].concat(),
         ] {
-            assert!(!wire::verify(&key, b"", &sig));
+            assert!(!wire::verify(&key, b"", &sig).unwrap());
         }
     }
 
@@ -870,8 +873,8 @@ mod standard_crypto {
         for (public, message, sig) in MIXED {
             let key = ed25519(public).unwrap();
             let signature = bytes::<64>(sig);
-            assert!(wire::verify(&key, message.as_bytes(), &signature));
-            assert!(!wire::verify(&key, b"wrong message", &signature));
+            assert!(wire::verify(&key, message.as_bytes(), &signature).unwrap());
+            assert!(!wire::verify(&key, b"wrong message", &signature).unwrap());
         }
     }
 
@@ -910,16 +913,16 @@ mod standard_crypto {
         let key = signer.key();
         let message = b"P-256 signed original message";
         let sig = signer.sign(message);
-        assert!(wire::verify(&key, message, &sig));
+        assert!(wire::verify(&key, message, &sig).unwrap());
         let digest = busbar_contract::abi::sdk::digest::sha256(message);
-        assert!(!wire::verify(&key, &digest, &sig));
+        assert!(!wire::verify(&key, &digest, &sig).unwrap());
         for malformed in [
             vec![],
             vec![0; 64],
             sig[..sig.len() - 1].to_vec(),
             [sig.as_slice(), &[0]].concat(),
         ] {
-            assert!(!wire::verify(&key, message, &malformed));
+            assert!(!wire::verify(&key, message, &malformed).unwrap());
         }
     }
 

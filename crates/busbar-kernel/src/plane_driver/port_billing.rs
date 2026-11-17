@@ -25,6 +25,7 @@ use busbar_contract::caps::{CallId, OriginKind};
 use busbar_contract::records::VirtualKey;
 use busbar_contract::UnitKey;
 
+pub use super::money::NativeOrdinaryTerminalSlot;
 use super::money::{FeeRefund, PlaneMoney, UnitEnd, UnitMoney};
 use super::port::Unit;
 use super::port_money::PortMoney;
@@ -136,6 +137,40 @@ impl PortBilling {
         self.unit(self.keys.mint(), classes)
     }
 
+    /// Attach books to the DATA allocation's original registered unit without minting another.
+    pub fn allocated_data(
+        &self,
+        allocation: &crate::auth::native_data::NativeDataAllocation,
+        classes: Arc<[String]>,
+    ) -> Result<Unit, NativeAdmissionError> {
+        let context = allocation.context();
+        if !context.is_live() || context.principal().is_none() {
+            return Err(NativeAdmissionError::NotLive);
+        }
+        let generation = context
+            .generation()
+            .routing_generation()
+            .ok_or(NativeAdmissionError::NotLive)?;
+        let mut unit = self.unit(UnitKey::new(context.unit()), classes);
+        unit.ctx.generation = generation;
+        Ok(unit)
+    }
+
+    /// Bind billing to the original call minted by the allocation's audit registration.
+    pub fn allocated_data_audited(
+        &self,
+        allocation: &crate::auth::native_data::NativeDataAllocation,
+        owner: &crate::teller::native_data_audit::NativeAuditOwner,
+        classes: Arc<[String]>,
+    ) -> Result<Unit, NativeAdmissionError> {
+        if !owner.invocation().same_unit(allocation.context()) || owner.slot().is_none() {
+            return Err(NativeAdmissionError::NotLive);
+        }
+        let mut unit = self.allocated_data(allocation, classes)?;
+        unit.ctx = owner.context().clone();
+        Ok(unit)
+    }
+
     pub fn admit_existing(
         &self,
         request: CommittingRequest,
@@ -144,6 +179,52 @@ impl PortBilling {
         mode: ExhaustionMode,
     ) -> Result<AdmittedRequest, NativeAdmissionError> {
         self.money.admit_existing(request, classes, fee, mode)
+    }
+
+    /// The native ordinary route: the Node-owned original slot must own the admission.
+    pub fn admit_existing_ordinary(
+        &self,
+        request: CommittingRequest,
+        slot: &Arc<NativeOrdinaryTerminalSlot>,
+        classes: Arc<[String]>,
+        fee: FeeRefund,
+        mode: ExhaustionMode,
+    ) -> Result<AdmittedRequest, NativeAdmissionError> {
+        self.money
+            .admit_existing_ordinary(request, slot, classes, fee, mode)
+    }
+
+    /// Bind the native observer owner (the actual Node book) to this GovState's fee producer.
+    /// `Ok(false)` means an owner was already bound; it is never replaced.
+    pub fn bind_fee_debt_owner(
+        &self,
+        owner: std::sync::Weak<dyn crate::governance::fee_debt::FeeDebtAssociate>,
+    ) -> bool {
+        self.gov.bind_fee_debt_owner(owner).is_ok()
+    }
+
+    /// FEE-DEBT r1: resolve this slot's transferred fee obligations against their exact pinned
+    /// owners. Called by the existing native pulse outside every Node, money and budget lock.
+    pub async fn resolve_fee_transfers(&self, slot: &NativeOrdinaryTerminalSlot) {
+        if let Some(observer) = slot.fee_observer() {
+            self.gov.resolve_fee_transfers(&observer).await;
+        }
+    }
+
+    /// Transfer the slot's elected original intent once; `Ok(false)` means no intent yet.
+    pub fn drive_ordinary_terminal(
+        &self,
+        slot: &Arc<NativeOrdinaryTerminalSlot>,
+    ) -> Result<bool, NativeAdmissionError> {
+        self.money.drive_ordinary_terminal(slot)
+    }
+
+    /// Whether the original checkpoint's actual R acknowledgement confirmed this slot's receipt.
+    pub fn ordinary_checkpoint_confirmed(
+        &self,
+        slot: &NativeOrdinaryTerminalSlot,
+    ) -> Result<bool, NativeAdmissionError> {
+        slot.checkpoint_confirmed(&self.money)
     }
 
     pub fn admit_existing_child(

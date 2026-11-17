@@ -247,6 +247,7 @@ impl GovState {
             ticket_operations: tickets::TicketOperations::default(),
             budget_flushes: std::sync::Mutex::new(std::collections::BTreeMap::new()),
             budget_flush_runner: BudgetFlushRunner::default(),
+            fee_debt: super::fee_debt::FeeDebtProducer::default(),
             deleting_budget_buckets: std::sync::Mutex::new(std::collections::BTreeSet::new()),
             pending_metering: PendingMetering::new(),
             unit_checkpoints,
@@ -1503,7 +1504,7 @@ impl GovState {
         pool: &str,
         now: u64,
     ) -> Result<AdmitGrant, LimitBlocked> {
-        self.admit_checked(cost, key, pool, now, None)
+        self.admit_checked(cost, key, pool, now, None, None)
     }
 
     /// Admit a unit on the budget chain its admission already resolved (SINGLE-PATH SP-AD1): it is
@@ -1516,7 +1517,37 @@ impl GovState {
         now: u64,
         chain: Option<&crate::cost::ChainPlan>,
     ) -> Result<AdmitGrant, LimitBlocked> {
-        self.admit_checked(cost, key, pool, now, chain)
+        self.admit_checked(cost, key, pool, now, chain, None)
+    }
+
+    /// FEE-DEBT r1: the native ordinary admission. The funded observer reserves one target per
+    /// original bucket leg before any mutation, then receives each charge marker under the same
+    /// shard lock as that charge. Target refusal leaves the admission gate closed.
+    pub(crate) fn try_admit_observed(
+        &self,
+        cost: &crate::cost::CostModel,
+        key: &VirtualKey,
+        pool: &str,
+        now: u64,
+        chain: Option<&crate::cost::ChainPlan>,
+        observer: &super::fee_debt::FeeDebtObserver,
+    ) -> Result<AdmitGrant, super::fee_debt::ObservedAdmission> {
+        let (_, lane_pool) = split_plane_lane(pool);
+        let resolved = cost
+            .chain_carried(key, chain)
+            .map_err(crate::cold::governance::state::state_missing_group)
+            .map_err(super::fee_debt::ObservedAdmission::Blocked)?;
+        observer
+            .prepare(
+                self,
+                resolved
+                    .iter()
+                    .filter(|b| b.applies_to_pool(lane_pool))
+                    .map(|b| b.bucket_id),
+            )
+            .map_err(super::fee_debt::ObservedAdmission::Observer)?;
+        self.admit_checked(cost, key, pool, now, chain, Some(observer))
+            .map_err(super::fee_debt::ObservedAdmission::Blocked)
     }
 
     fn admit_checked(
@@ -1526,6 +1557,7 @@ impl GovState {
         pool: &str,
         now: u64,
         carried: Option<&crate::cost::ChainPlan>,
+        observer: Option<&super::fee_debt::FeeDebtObserver>,
     ) -> Result<AdmitGrant, LimitBlocked> {
         let (plane, pool) = split_plane_lane(pool);
 
@@ -1754,6 +1786,9 @@ impl GovState {
                 cell.dirty = true;
                 cell.last_touch = now;
             });
+            if let Some(observer) = observer {
+                Self::fee_marker(&self.fee_debt, observer, bi, bucket.bucket_id, cell, true);
+            }
 
             let reached = (bucket.bucket_id.to_string(), cell.window_start);
             grant.charge.cells.push(reached);
@@ -1762,10 +1797,22 @@ impl GovState {
     }
 
     pub fn refund_charge(&self, charge: &FeeCharge) {
+        self.refund_charge_observed(charge, None);
+    }
+
+    /// The actual refund mutations; each publishes its original marker under the same lock.
+    pub(crate) fn refund_charge_observed(
+        &self,
+        charge: &FeeCharge,
+        observer: Option<&super::fee_debt::FeeDebtObserver>,
+    ) {
         let lane = charge.lane.as_deref().map(|l| (l, PER_REQUEST));
         for (bucket_id, window) in &charge.cells {
             let mut map = self.budget.write(bucket_id);
             let Some(cell) = map.get_mut(bucket_id) else {
+                if let Some(observer) = observer {
+                    observer.unresolved();
+                }
                 continue;
             };
             cell.mutate(|cell| {
@@ -1779,13 +1826,25 @@ impl GovState {
                     cell.dirty = true;
                 }
             });
+            Self::fee_refund_marker(observer, bucket_id, *window, cell);
         }
     }
 
     pub fn release_request(&self, charge: &FeeCharge) {
+        self.release_request_observed(charge, None);
+    }
+
+    pub(crate) fn release_request_observed(
+        &self,
+        charge: &FeeCharge,
+        observer: Option<&super::fee_debt::FeeDebtObserver>,
+    ) {
         for (bucket_id, window) in &charge.cells {
             let mut map = self.budget.write(bucket_id);
             let Some(cell) = map.get_mut(bucket_id) else {
+                if let Some(observer) = observer {
+                    observer.unresolved();
+                }
                 continue; // swept: nothing in memory holds the count any more
             };
             cell.mutate(|cell| {
@@ -1803,7 +1862,94 @@ impl GovState {
                     cell.dirty = true;
                 }
             });
+            Self::fee_refund_marker(observer, bucket_id, *window, cell);
         }
+    }
+
+    /// Publish one original marker for an observed mutation, under the caller's shard lock.
+    /// The incarnation is minted here for the actual installed cell; the sequence is checked.
+    /// Correction mirroring receives the same fields through `mutate`, so one logical mutation
+    /// publishes exactly one marker.
+    fn fee_marker(
+        producer: &super::fee_debt::FeeDebtProducer,
+        observer: &super::fee_debt::FeeDebtObserver,
+        leg: usize,
+        bucket: &str,
+        cell: &mut BudgetCell,
+        obligate: bool,
+    ) {
+        let incarnation = match cell.fee_incarnation {
+            0 => producer.next_incarnation(),
+            held => Some(held),
+        };
+        let sequence = cell.fee_sequence.checked_add(1);
+        let obligations = if obligate {
+            cell.fee_obligations.checked_add(1)
+        } else {
+            Some(cell.fee_obligations)
+        };
+        let (Some(incarnation), Some(sequence), Some(obligations)) =
+            (incarnation, sequence, obligations)
+        else {
+            observer.unresolved();
+            return;
+        };
+        cell.mutate(|cell| {
+            cell.fee_incarnation = incarnation;
+            cell.fee_sequence = sequence;
+            cell.fee_obligations = obligations;
+        });
+        observer.mark(leg, bucket, incarnation, cell.window_start, sequence);
+    }
+
+    /// A refund or release marker on the exact original (bucket, window) target. A cell that is
+    /// no longer the charged incarnation, or a target this observer never charged, is unresolved.
+    fn fee_refund_marker(
+        observer: Option<&super::fee_debt::FeeDebtObserver>,
+        bucket: &str,
+        window: u64,
+        cell: &mut BudgetCell,
+    ) {
+        let Some(observer) = observer else {
+            return;
+        };
+        let Some(leg) = observer.leg(bucket, window) else {
+            observer.unresolved();
+            return;
+        };
+        let Some(sequence) = cell.fee_sequence.checked_add(1) else {
+            observer.unresolved();
+            return;
+        };
+        let incarnation = cell.fee_incarnation;
+        if incarnation == 0 {
+            observer.unresolved();
+            return;
+        }
+        cell.mutate(|cell| cell.fee_sequence = sequence);
+        // The marker keeps the original target window even when the debt parked as rolled.
+        observer.mark(leg, bucket, incarnation, window, sequence);
+    }
+
+    /// Release one observer target's eviction obligation on the exact original cell.
+    pub(crate) fn release_fee_obligation(&self, bucket: &str, incarnation: u64) {
+        let mut map = self.budget.write(bucket);
+        let Some(cell) = map.get_mut(bucket) else {
+            return;
+        };
+        if cell.fee_incarnation != incarnation {
+            return;
+        }
+        let obligations = cell.fee_obligations.saturating_sub(1);
+        cell.mutate(|cell| cell.fee_obligations = obligations);
+    }
+
+    /// Bind the trusted native observer owner (the Node book) once, weakly, at assembly.
+    pub fn bind_fee_debt_owner(
+        &self,
+        owner: std::sync::Weak<dyn super::fee_debt::FeeDebtAssociate>,
+    ) -> Result<(), &'static str> {
+        self.fee_debt.bind(owner)
     }
 
     pub fn refund_fee_unit(
@@ -1815,6 +1961,53 @@ impl GovState {
         fee_unit: &str,
     ) {
         self.refund_fee_unit_in_era(cost, key, pool, now, fee_unit, None);
+    }
+
+    /// FEE-DEBT r1: an observed extra fee-unit refund on exactly the legs the original charge
+    /// reached (never a recomputed chain). A leg whose cell is gone or recreated is unresolved.
+    pub(crate) fn refund_fee_unit_observed(
+        &self,
+        pool: &str,
+        fee_unit: &str,
+        era: Option<RawRateEra>,
+        observer: &super::fee_debt::FeeDebtObserver,
+    ) {
+        let (plane, _) = split_plane_lane(pool);
+        if plane.is_empty() {
+            return;
+        }
+        let fee_lane = plane_fee_lane(plane);
+        let mut leg = 0;
+        while let Some((bucket, window, incarnation)) = observer.charged_leg(leg) {
+            leg += 1;
+            let Some(window) = window else {
+                observer.unresolved();
+                continue;
+            };
+            let mut map = self.budget.write(&bucket);
+            let Some(cell) = map.get_mut(&*bucket) else {
+                observer.unresolved();
+                continue;
+            };
+            if cell.fee_incarnation != incarnation || cell.window_start < window {
+                observer.unresolved();
+                continue;
+            }
+            cell.mutate(|cell| {
+                let held = (cell.models.iter_mut())
+                    .filter(|m| {
+                        &*m.model == fee_lane.as_str()
+                            && era.is_none_or(|era| m.era == era)
+                            && m.cur.get(fee_unit).is_some_and(|n| *n >= Count::ONE)
+                    })
+                    .max_by_key(|m| m.era);
+                if let Some(m) = held {
+                    take_one(&mut m.cur, fee_unit);
+                }
+                cell.dirty = true;
+            });
+            Self::fee_refund_marker(Some(observer), &bucket, window, cell);
+        }
     }
 
     pub fn refund_fee_unit_in_era(

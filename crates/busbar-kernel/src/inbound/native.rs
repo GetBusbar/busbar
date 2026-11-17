@@ -26,6 +26,13 @@ use crate::plane_driver::port_routes::Mounted;
 use crate::router::PreparedListener;
 use crate::state::{AdmissionLease, App, AppHandle, InvocationId};
 
+#[path = "native_refusal.rs"]
+mod refusal;
+use refusal::PreparationState;
+pub use refusal::{
+    DataPreparation, DataPreparationDenied, DataPreparationSuccess, PhysicalRefusal,
+};
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BindError {
     Missing,
@@ -381,6 +388,7 @@ impl PhysicalConnection {
             .ok_or(ArrivalRefusal::Capacity)?;
         let state = Arc::new(StreamState {
             phase: Mutex::new(Phase::Pending),
+            preparation: Mutex::new(PreparationState::Unused),
             cancelled: CancellationToken::new(),
             _request: request.clone(),
         });
@@ -466,11 +474,13 @@ enum Phase {
     Pending,
     Completing,
     Admitted,
+    Refusing,
     Executing { deadline: Option<Instant> },
     Cancelled,
 }
 struct StreamState {
     phase: Mutex<Phase>,
+    preparation: Mutex<PreparationState>,
     cancelled: CancellationToken,
     // The response/feed owner may outlive both the Router call and all input backing.
     _request: RequestLease,
@@ -539,6 +549,12 @@ struct PhysicalBody {
     credit: ByteCredit,
 }
 impl RequestBinding {
+    /// Compare the exact retained physical owner, including after cancellation or retirement.
+    /// An equal wire stream number on another connection conveys no matching authority.
+    pub fn owns_stream(&self, owner: &StreamOwner) -> bool {
+        self.stream == owner.stream && Arc::ptr_eq(&self.state, &owner.state)
+    }
+
     /// The originating publication handle; an equal App in another handle is not equivalent.
     pub fn handle(&self) -> &Arc<AppHandle> {
         &self.handle
@@ -548,6 +564,14 @@ impl RequestBinding {
     }
     pub fn prepared(&self) -> &Arc<PreparedListener> {
         &self.prepared
+    }
+    pub fn slot(&self) -> &str {
+        &self
+            .prepared
+            .physical
+            .as_ref()
+            .expect("physical arrival retains its prepared plan")
+            .slot
     }
     pub fn route(&self) -> &Arc<RouteBinding> {
         &self.route
@@ -607,13 +631,14 @@ impl RequestBinding {
         self.state.cancelled.cancelled().await;
     }
     pub fn check_live(&self) -> Result<(), ArrivalRefusal> {
-        if *self
-            .state
-            .phase
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            == Phase::Cancelled
-        {
+        if matches!(
+            *self
+                .state
+                .phase
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner),
+            Phase::Cancelled | Phase::Refusing
+        ) {
             return Err(ArrivalRefusal::Cancelled);
         }
         if self.deadline.is_some_and(|at| Instant::now() >= at) {
@@ -789,7 +814,7 @@ impl CompletingPhysicalRequest {
         self.check_admin_route()?;
         Ok(AdminPhysicalRequest {
             binding: self.binding.clone(),
-            pending: Arc::new(Mutex::new(Some(self))),
+            pending: Arc::new(Mutex::new(AdminCarrierState::Pending(self))),
         })
     }
 
@@ -851,6 +876,9 @@ impl CompletingPhysicalRequest {
         if !Arc::ptr_eq(&self.binding, authorization.binding()) {
             return Err(ArrivalRefusal::ForeignInput);
         }
+        if !Arc::ptr_eq(&self.binding, authorization.preparation().binding()) {
+            return Err(ArrivalRefusal::ForeignInput);
+        }
         {
             let mut phase = self
                 .binding
@@ -859,6 +887,16 @@ impl CompletingPhysicalRequest {
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner);
             if *phase != Phase::Completing {
+                return Err(ArrivalRefusal::Cancelled);
+            }
+            if *self
+                .binding
+                .state
+                .preparation
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                != PreparationState::Authorized
+            {
                 return Err(ArrivalRefusal::Cancelled);
             }
             if self.binding.deadline.is_some_and(|at| Instant::now() >= at) {
@@ -887,21 +925,70 @@ impl Drop for CompletingPhysicalRequest {
 #[derive(Clone)]
 pub struct AdminPhysicalRequest {
     binding: Arc<RequestBinding>,
-    pending: Arc<Mutex<Option<CompletingPhysicalRequest>>>,
+    pending: Arc<Mutex<AdminCarrierState>>,
+}
+enum AdminCarrierState {
+    Pending(CompletingPhysicalRequest),
+    Taken,
+    Refused(PhysicalRefusal),
+    Spent,
+}
+
+/// A denial reuses its original Admin extension allocation, with one final extraction.
+#[derive(Clone)]
+pub struct PhysicalRefusalCarrier {
+    original: AdminPhysicalRequest,
+}
+impl PhysicalRefusalCarrier {
+    pub fn take(&self) -> Result<PhysicalRefusal, ArrivalRefusal> {
+        let mut state = self
+            .original
+            .pending
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        match std::mem::replace(&mut *state, AdminCarrierState::Spent) {
+            AdminCarrierState::Refused(refusal) => Ok(refusal),
+            other => {
+                *state = other;
+                Err(ArrivalRefusal::ForeignInput)
+            }
+        }
+    }
 }
 impl AdminPhysicalRequest {
     pub fn binding(&self) -> &Arc<RequestBinding> {
         &self.binding
     }
     pub fn take(&self) -> Result<CompletingPhysicalRequest, ArrivalRefusal> {
-        let request = self
-            .pending
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .take()
-            .ok_or(ArrivalRefusal::ForeignInput)?;
+        let request = {
+            let mut state = self.pending.lock().unwrap_or_else(PoisonError::into_inner);
+            match std::mem::replace(&mut *state, AdminCarrierState::Taken) {
+                AdminCarrierState::Pending(request) => request,
+                other => {
+                    *state = other;
+                    return Err(ArrivalRefusal::ForeignInput);
+                }
+            }
+        };
         request.check_admin_route()?;
         Ok(request)
+    }
+
+    pub fn retain_refusal(
+        self,
+        refusal: PhysicalRefusal,
+    ) -> Result<PhysicalRefusalCarrier, ArrivalRefusal> {
+        if !Arc::ptr_eq(&self.binding, refusal.binding()) {
+            return Err(ArrivalRefusal::ForeignInput);
+        }
+        {
+            let mut state = self.pending.lock().unwrap_or_else(PoisonError::into_inner);
+            if !matches!(*state, AdminCarrierState::Taken) {
+                return Err(ArrivalRefusal::ForeignInput);
+            }
+            *state = AdminCarrierState::Refused(refusal);
+        }
+        Ok(PhysicalRefusalCarrier { original: self })
     }
 }
 
@@ -934,6 +1021,28 @@ pub struct PhysicalPublicExecution {
     lease: AdmissionLease,
 }
 impl PhysicalPublicExecution {
+    /// Execute only the original public core request against its retained prepared generation.
+    /// No caller-supplied URI, router or replacement request can borrow this execution right.
+    pub async fn http_response(&self) -> Result<axum::response::Response, ArrivalRefusal> {
+        use tower::ServiceExt;
+        self.check_executing()?;
+        let snapshot = self
+            .binding
+            .snapshot()
+            .map_err(|_| ArrivalRefusal::Capacity)?;
+        let mut request = super::http_projection::HttpProjection::from_snapshot(snapshot.clone())
+            .map_err(|_| ArrivalRefusal::Capacity)?
+            .into_request(axum::body::Body::from(snapshot.body_bytes()));
+        request.extensions_mut().insert(self.binding.app.clone());
+        let prepared = &self.binding.prepared;
+        let router = (prepared.dispatch_layer)(prepared.router.clone())
+            .with_state(self.binding.handle.clone());
+        Ok(router
+            .oneshot(request)
+            .await
+            .unwrap_or_else(|never| match never {}))
+    }
+
     pub fn binding(&self) -> &Arc<RequestBinding> {
         &self.binding
     }
