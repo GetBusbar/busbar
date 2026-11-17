@@ -63,6 +63,8 @@ pub struct Selection<'a> {
     pub container: &'a str,
     pub dialect: &'a str,
     pub principal: Option<&'a str>,
+    /// The exact admitted billing key retained by InvocationContext, including external keys.
+    pub key: Option<&'a busbar_contract::records::VirtualKey>,
     pub request_id: u64,
     pub now_s: u64,
 }
