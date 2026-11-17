@@ -250,19 +250,17 @@ used for registry data; it does not restore the retired journal.
 
 1.5.5 booted a configuration with no `auth:` block (or an empty one) as an open relay: every
 caller that could reach the listener used the configured provider credentials, with only a
-banner. 1.6.0 never boots an open relay by omission: a configuration with no `auth:` block is
-refused (BUSBAR-8014).
+banner. 1.6.0 never boots an open relay by omission: it refuses a configuration with no `auth:`
+block (BUSBAR-8014).
 
-The one-time upgrade keeps a 1.5.5 deployment booting as it ran: it writes `auth: { chain: [] }`
-into a 1.5.5 config.yaml that has no `auth:` block, and its report says so. That block is the
-explicit open-relay acknowledgement 1.6.0 reads, and the only one: it is bannered on stderr and
-logged at ERROR at every boot, and named as `open_relay` in the `node.boot` audit event. Only
-the pools (LLM) claim is served without credentials under it; tools, agents, streaming and any
-claim with its own mechanism stay credentialed, and the MCP plane refuses to boot behind it.
+The one-time upgrade does not write an `auth:` block for you. It reports the missing block as an
+action item (BUSBAR-8014) and the first 1.6.0 boot refuses it. Both give the same remedy: add
+`auth: { chain: [] }` explicitly to run an open relay, or configure a chain
+(`auth: { chain: [keys] }` with virtual keys minted through the admin API).
 
-Replace it before exposing busbar: write `auth:` with `chain: [keys]` and mint virtual keys
-through the admin API. A configuration written for 1.6.0 (stamped `config_version: 1`) that
-omits `auth:` is refused; to run it unauthenticated on purpose, write `auth: { chain: [] }`.
+`auth: { chain: [] }` is the one explicit open-relay acknowledgement. It is bannered on stderr and
+logged at ERROR at every boot, and audited as `open_relay` in the `node.boot` event. The MCP
+plane refuses to boot behind it.
 
 ### Grants and hooks
 

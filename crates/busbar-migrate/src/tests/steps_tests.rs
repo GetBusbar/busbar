@@ -92,8 +92,14 @@ fn a_store_less_1_5_5_config_names_the_store_1_5_5_implied() {
         );
     }
     // A config that names its store keeps it, whatever the word.
-    let (written, report) = upgrade("store:\n  module: postgres\n", &facts());
-    assert_eq!(written, "config_version: 1\nstore:\n  module: postgres\n");
+    let (written, report) = upgrade(
+        "auth: {chain: [keys]}\nstore:\n  module: postgres\n",
+        &facts(),
+    );
+    assert_eq!(
+        written,
+        "config_version: 1\nauth: {chain: [keys]}\nstore:\n  module: postgres\n"
+    );
     // 1b always reports the overlay it looked for (package 2); the chain itself changed nothing.
     assert!(
         report.iter().all(|line| line.starts_with("overlay: ")),

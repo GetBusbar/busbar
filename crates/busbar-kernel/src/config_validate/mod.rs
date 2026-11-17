@@ -65,17 +65,23 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
     validate_with_plugins(cfg, unset_env_vars, false)
 }
 
+/// #358: the one-line remedy for a configuration with no `auth:` block, given by the boot refusal
+/// and by the 1.5.5 upgrade's action item alike. `auth: { chain: [] }` is the one explicit
+/// open-relay acknowledgement; nothing writes it for the operator (owner ruling L1: refuse, give
+/// remedy, no auto-write).
+pub const OPEN_RELAY_REMEDY: &str = "add `auth: { chain: [] }` explicitly to run an open relay \
+     (bannered at every boot and audited as `open_relay` in `node.boot`), or configure a chain \
+     (`auth: { chain: [keys] }` with virtual keys minted through the admin API)";
+
 /// #358 (PRD-5: refuse rather than default open): a configuration with no `auth:` block would serve
-/// every caller unauthenticated and spend the configured provider credentials. It is refused; the
-/// open posture boots only when the operator writes it, as `auth: { chain: [] }`.
+/// every caller unauthenticated and spend the configured provider credentials. It is refused with
+/// [`OPEN_RELAY_REMEDY`]; the open posture boots only when the operator writes it.
 #[must_use]
 fn open_relay_by_omission(listen: &str) -> String {
     let code = crate::diagnostics::OPEN_RELAY_NO_AUTH.banner();
     format!(
         "no `auth:` block ({code}): busbar refuses to boot as an open relay that anyone who can \
-         reach {listen} may use to spend the configured provider credentials. Add `auth:` with \
-         `chain: [keys]` and mint virtual keys through the admin API, or, to run unauthenticated \
-         deliberately, write `auth: {{ chain: [] }}`"
+         reach {listen} may use to spend the configured provider credentials; {OPEN_RELAY_REMEDY}"
     )
 }
 
