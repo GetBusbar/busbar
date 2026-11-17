@@ -15,6 +15,9 @@
 // point each; see `boot.rs`.
 
 #![deny(unsafe_code)]
+// Auto-trait proofs walk SeatPool -> MemberRoute -> AuthBinding -> NativeRouteBindings -> nested
+// BTreeMaps -> SelectedCredential -> CredCache deeper than the default 128 (E0275 in govern/plane_driver).
+#![recursion_limit = "256"]
 
 extern crate self as busbar_kernel;
 
