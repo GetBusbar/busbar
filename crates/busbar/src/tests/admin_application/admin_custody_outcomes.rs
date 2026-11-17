@@ -58,6 +58,8 @@ struct Store {
     fail_list: AtomicBool,
     refuse_write: AtomicBool,
     refuse_replay: AtomicBool,
+    pause_replay: AtomicBool,
+    replay_write: Arc<Pause>,
     held_reads: AtomicUsize,
     lose_head_reply: AtomicBool,
     fail_head_read: AtomicBool,
@@ -79,6 +81,8 @@ impl Store {
             fail_list: AtomicBool::new(false),
             refuse_write: AtomicBool::new(false),
             refuse_replay: AtomicBool::new(false),
+            pause_replay: AtomicBool::new(false),
+            replay_write: Arc::new(Pause::default()),
             held_reads: AtomicUsize::new(0),
             lose_head_reply: AtomicBool::new(false),
             fail_head_read: AtomicBool::new(false),
@@ -180,6 +184,12 @@ impl PersistenceBackend for Store {
                 }
                 _ => false,
             });
+            if replay && self.pause_replay.swap(false, Ordering::SeqCst) {
+                self.replay_write.entered.notify_one();
+                while !*self.replay_write.released.lock().unwrap() {
+                    tokio::time::sleep(Duration::from_millis(1)).await;
+                }
+            }
             if replay && self.refuse_replay.load(Ordering::SeqCst) {
                 return Err(Failure::Refused);
             }
@@ -1307,6 +1317,100 @@ async fn failed_answer_persistence_keeps_the_acknowledged_intent() {
     let retry = router.oneshot(request()).await.unwrap();
     assert_eq!(retry.status(), StatusCode::CONFLICT);
     assert_eq!(effects.load(Ordering::SeqCst), 1);
+    println!("custody assertions completed");
+}
+
+fn precondition_request(if_match: &str) -> axum::http::Request<axum::body::Body> {
+    axum::http::Request::builder()
+        .method("PUT")
+        .uri("/api/v1/admin/config/settings")
+        .header("if-match", if_match)
+        .header("idempotency-key", "stale-precondition-release")
+        .body(axum::body::Body::from("exact request"))
+        .unwrap()
+}
+
+fn counted_settings(effects: Arc<AtomicUsize>) -> axum::Router {
+    axum::Router::new().route(
+        "/api/v1/admin/config/settings",
+        axum::routing::put(move || {
+            let effects = effects.clone();
+            async move {
+                effects.fetch_add(1, Ordering::SeqCst);
+                StatusCode::OK
+            }
+        }),
+    )
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn stale_precondition_failed_release_never_dispatches_or_grants_retry() {
+    if isolated() {
+        return;
+    }
+    use tower::ServiceExt as _;
+    let (store, handle, _router, _book) = app().await;
+    let effects = Arc::new(AtomicUsize::new(0));
+    let router = busbar_core_admin::test_support::with_idempotency(
+        counted_settings(effects.clone()),
+        handle.load(),
+    );
+    store.refuse_replay.store(true, Ordering::SeqCst);
+    let refused = router
+        .clone()
+        .oneshot(precondition_request("\"stale\""))
+        .await
+        .unwrap();
+    assert_eq!(refused.status(), StatusCode::CONFLICT);
+    assert_eq!(body(refused).await["error"]["reason"], "stale_if_match");
+    store.refuse_replay.store(false, Ordering::SeqCst);
+    let retry = router.oneshot(precondition_request("*")).await.unwrap();
+    assert_eq!(retry.status(), StatusCode::CONFLICT);
+    assert_eq!(
+        body(retry).await["error"]["reason"],
+        "idempotency_in_flight"
+    );
+    assert_eq!(effects.load(Ordering::SeqCst), 0);
+    println!("custody assertions completed");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn cancelled_stale_precondition_keeps_exclusion_while_release_is_unknown() {
+    if isolated() {
+        return;
+    }
+    use tower::ServiceExt as _;
+    let (store, handle, _router, _book) = app().await;
+    let effects = Arc::new(AtomicUsize::new(0));
+    let router = busbar_core_admin::test_support::with_idempotency(
+        counted_settings(effects.clone()),
+        handle.load(),
+    );
+    let _release = ReleaseOnDrop(store.replay_write.clone());
+    store.pause_replay.store(true, Ordering::SeqCst);
+    let first_router = router.clone();
+    let first = tokio::spawn(async move {
+        first_router
+            .oneshot(precondition_request("\"stale\""))
+            .await
+            .unwrap()
+    });
+    tokio::time::timeout(
+        Duration::from_secs(10),
+        store.replay_write.entered.notified(),
+    )
+    .await
+    .unwrap();
+    first.abort();
+    assert!(first.await.unwrap_err().is_cancelled());
+    let retry = router.oneshot(precondition_request("*")).await.unwrap();
+    assert_eq!(retry.status(), StatusCode::CONFLICT);
+    assert_eq!(
+        body(retry).await["error"]["reason"],
+        "idempotency_in_flight"
+    );
+    assert_eq!(effects.load(Ordering::SeqCst), 0);
+    store.replay_write.release();
     println!("custody assertions completed");
 }
 
