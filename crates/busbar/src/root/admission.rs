@@ -333,10 +333,78 @@ fn inspect_with_policy(
                 Default::default(),
             ),
         };
-    Ok((
-        stated(&unpacked.manifest).map_err(Refusal::Validation)?,
-        judged,
-        verification,
+    let mut stated = stated(&unpacked.manifest).map_err(Refusal::Validation)?;
+    // IF r29 l.2764: a native image's authoritative schema is the D_SCHEMA its describe answers, held to core's
+    // D_SCHEMA validator. A trusted native candidate is admitted and described (the loader's one admission path),
+    // so the inspected schema is its own and a refused describe is the inspect's refusal (#442).
+    if !matches!(judged, Judged::Rejected { .. })
+        && crate::root::loader::pack_native::is_native(&unpacked.lib_bytes)
+            .map_err(Refusal::Validation)?
+    {
+        stated.settings_schema = native_schema(&unpacked.lib_bytes, &unpacked.manifest, policy)?;
+    }
+    Ok((stated, judged, verification))
+}
+
+/// The process's plugin resources for an inspection's describe: the ones `main` installed, else (a test build
+/// with no booted process) one made on first use.
+static PROCESS: std::sync::OnceLock<
+    std::sync::Arc<busbar_plugin_loader::process::ProcessResources>,
+> = std::sync::OnceLock::new();
+
+/// Install the process's plugin resources for inspection (called once by `main`).
+pub(crate) fn install_process(
+    process: &std::sync::Arc<busbar_plugin_loader::process::ProcessResources>,
+) {
+    let _ = PROCESS.set(std::sync::Arc::clone(process));
+}
+
+fn process(
+) -> Result<&'static std::sync::Arc<busbar_plugin_loader::process::ProcessResources>, String> {
+    if let Some(process) = PROCESS.get() {
+        return Ok(process);
+    }
+    let made = busbar_plugin_loader::process::ProcessResources::new()?;
+    Ok(PROCESS.get_or_init(|| std::sync::Arc::new(made)))
+}
+
+/// Admit `lib` under `policy` (the loader's `admit_bytes`) and describe it (`ImagesBuilder::admit`, whose describe
+/// decode holds D_SCHEMA to core's validator): its D_SCHEMA text, or None when it declares none.
+#[cfg(target_os = "linux")]
+fn native_schema(
+    lib: &[u8],
+    manifest: &Manifest,
+    policy: &TrustPolicy,
+) -> Result<Option<String>, Refusal> {
+    use busbar_plugin_loader::instance::{Ceilings, ImagesBuilder};
+    let admitted = busbar_plugin_loader::admit::admit_bytes(lib, manifest, policy)
+        .map_err(|refusal| Refusal::Validation(refusal.to_string()))?;
+    let identity = admitted.identity().to_owned();
+    let process = process().map_err(Refusal::Validation)?;
+    let mut builder = ImagesBuilder::new(
+        &busbar_plugin_abi::host_side::host_vt::HOST,
+        std::sync::Arc::clone(process.slots()),
+        Ceilings::DEFAULT,
+    );
+    builder
+        .admit(admitted)
+        .map_err(|refusal| Refusal::Validation(refusal.to_string()))?;
+    Ok(builder
+        .finish()
+        .described(&identity)
+        .and_then(|described| described.schema)
+        .map(String::from))
+}
+
+/// Native images are staged only where the loader's sealed-memfd admission runs.
+#[cfg(not(target_os = "linux"))]
+fn native_schema(
+    _lib: &[u8],
+    _manifest: &Manifest,
+    _policy: &TrustPolicy,
+) -> Result<Option<String>, Refusal> {
+    Err(Refusal::Validation(
+        "a native plugin is inspected only on Linux, where its image can be admitted".into(),
     ))
 }
 
