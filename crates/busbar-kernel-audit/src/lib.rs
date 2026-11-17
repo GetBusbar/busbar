@@ -172,7 +172,7 @@ pub use link::{line_fingerprint, line_hasher, Fingerprint, LineAt, Linked, Prepa
 pub use recipe::{
     digest_over, digest_record, visit_fields, DigestField, DigestValue, FieldSink, Recipe,
     DIGEST_RECIPE, DIGEST_RECIPE_V2, DIGEST_RECIPE_V4, DIGEST_RECIPE_V6, DIGEST_RECIPE_V7,
-    LINK_RECIPE,
+    LINK_RECIPE, LINK_RECIPE_V2,
 };
 pub use record::{
     attribution, Attempt, AttemptOutcome, Audit, AuditBreak, AuditBreakKind, AuditChain,
