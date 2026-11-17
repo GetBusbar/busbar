@@ -1,0 +1,131 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "busbar.content.v2",
+  "title": "busbar content stream, version 2",
+  "description": "The `content` export stream. Core builds every content record; an export plugin writes each line as it is given. Three closed shapes: a chunk line (`$defs.line`), the completion header written once per object (`$defs.header`), and the exchange document (`$defs.exchange`), carried as part 0. Adding, removing or retyping any member makes the schema `busbar.content.v3`. WRITER RULES: members are written in the order this file declares them, through core's one JSON line writer; every number is an integer; strings are escaped by core's JSON facade; there is no RFC 8785 canonicalization. A captured body is never parsed: utf8 bytes are embedded as a JSON string and binary bytes as base64, and `chunk.sha256` is over the decoded bytes, so a reader verifies byte-exactly whatever a SIEM does to the line. One encoded line is at most CONTENT_LINE_BYTES = 983040 bytes (960 KiB), under the 1 MiB export answer ceiling. IDEMPOTENCE: the key of a line is (object, variant, chunk.part, chunk.index); `delivery` is the core-minted delivery id the line was handed in, and a resend keeps it. CUSTODY: a delivery ACK is custody at the level the sink reports (none, accepted, durable, indexed), not durability. IDENTITY BYTE LAYOUT: be32(n) is n as a 4-byte big-endian unsigned integer; every member is written as be32(byte length) followed by its bytes, the domain tag included; the digest is SHA-256 over the concatenation, and the id is its first 16 bytes as 32 lowercase hex characters. `object` = SHA-256(be32(len T) T be32(len D) D be32(len J) J)[..16] with T = `busbar.content.object.v1`, D = the deployment_id bytes, J = the join id `{node_id}.{incarnation}.{unit_key}` (the correlation_id). `variant` = SHA-256(be32(len T) T, then be32(len m) m for each member in this order)[..16] with T = `busbar.content.variant.v1` and members: destination host; destination path, or bucket and prefix (userinfo and query stripped); projection; records.identity; redaction profile; event_bytes (decimal); parts; custody floor; CONTENT_LINE_BYTES (decimal). A setting at a declared secret position contributes its reference text when it is a `secret://` reference and the fixed marker `literal` otherwise; a resolved secret value is never hashed.",
+  "oneOf": [
+    { "$ref": "#/$defs/line" },
+    { "$ref": "#/$defs/header" }
+  ],
+  "$defs": {
+    "hex128": { "type": "string", "pattern": "^[0-9a-f]{32}$" },
+    "hex256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "custody": { "enum": ["none", "accepted", "durable", "indexed"] },
+    "line": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "correlation_id", "ts", "deployment_id", "node_id", "content_ref", "object", "variant", "delivery", "chunk", "data"],
+      "properties": {
+        "schema": { "const": "busbar.content.v2" },
+        "correlation_id": { "type": "string", "description": "The request id: the node-qualified unit id node_<16 hex>.<32 hex>.<unit key>. Equals the response X-Request-Id." },
+        "ts": { "type": "integer", "minimum": 0, "description": "Unix seconds." },
+        "deployment_id": { "type": "string" },
+        "node_id": { "type": "string" },
+        "content_ref": { "type": "string", "description": "<deployment_id>/<date>/<correlation_id>, derived at read time." },
+        "object": { "$ref": "#/$defs/hex128", "description": "The content object id; see IDENTITY BYTE LAYOUT." },
+        "variant": { "$ref": "#/$defs/hex128", "description": "The sink variant; see IDENTITY BYTE LAYOUT." },
+        "delivery": { "type": "integer", "minimum": 1, "maximum": 18446744073709551615, "description": "The core-minted delivery id (never 0, never time-derived)." },
+        "chunk": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["part", "index", "of", "sha256", "encoding"],
+          "properties": {
+            "part": { "type": "integer", "minimum": 0, "maximum": 255, "description": "Part 0 is the exchange document; parts 1 to 255 are bodies too large to sit inline in it." },
+            "index": { "type": "integer", "minimum": 0, "maximum": 4294967294 },
+            "of": { "type": "integer", "minimum": 1, "maximum": 4294967295, "description": "How many chunks the part has." },
+            "sha256": { "$ref": "#/$defs/hex256", "description": "Over the decoded bytes of this chunk." },
+            "encoding": { "enum": ["utf8", "b64"], "description": "utf8 chunks are cut at code-point boundaries; b64 chunks at multiples of 3 raw bytes." }
+          }
+        },
+        "data": { "type": "string" }
+      }
+    },
+    "header": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "correlation_id", "ts", "deployment_id", "node_id", "object", "variant", "manifest_sha256", "of", "custody_reached", "custody_floor"],
+      "properties": {
+        "schema": { "const": "busbar.content.v2" },
+        "correlation_id": { "type": "string" },
+        "ts": { "type": "integer", "minimum": 0 },
+        "deployment_id": { "type": "string" },
+        "node_id": { "type": "string" },
+        "object": { "$ref": "#/$defs/hex128" },
+        "variant": { "$ref": "#/$defs/hex128" },
+        "manifest_sha256": { "$ref": "#/$defs/hex256", "description": "Over the object's manifest bytes, which travel as their own fragments." },
+        "of": { "type": "integer", "minimum": 1, "maximum": 256, "description": "How many parts the object has, part 0 included." },
+        "custody_reached": { "$ref": "#/$defs/custody", "description": "The lowest custody every piece of the object reached." },
+        "custody_floor": { "$ref": "#/$defs/custody", "description": "The sink's configured custody floor. Reached below the floor reads as custody below floor, never complete." }
+      }
+    },
+    "exchange": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "record_id", "started_at", "ended_at", "plane", "dialect", "pool", "request", "response", "redaction", "sampling"],
+      "properties": {
+        "schema": { "const": "busbar.content.v2" },
+        "record_id": { "type": "string", "description": "Equals the line's correlation_id." },
+        "started_at": { "type": "integer", "minimum": 0 },
+        "ended_at": { "type": "integer", "minimum": 0 },
+        "plane": { "type": "string" },
+        "dialect": { "type": "string" },
+        "pool": { "type": "string" },
+        "key_id": { "type": "string", "description": "Present only when the sink also takes the identity stream." },
+        "groups": { "type": "array", "items": { "type": "string" }, "description": "Present only when the sink also takes the identity stream." },
+        "model_requested": { "type": "string" },
+        "model_served": { "type": "string" },
+        "request": { "$ref": "#/$defs/side" },
+        "response": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["end"],
+          "properties": {
+            "body": { "type": "string", "description": "The captured utf8 body as a string, never parsed." },
+            "parts": { "type": "array", "items": { "$ref": "#/$defs/partRef" } },
+            "assembled": { "type": "string" },
+            "end": { "type": "string" }
+          }
+        },
+        "redaction": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["profile", "scope", "applied"],
+          "properties": {
+            "profile": { "type": "string" },
+            "scope": { "type": "string" },
+            "applied": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["rule", "count"],
+                "properties": {
+                  "rule": { "type": "string" },
+                  "count": { "type": "integer", "minimum": 0 }
+                }
+              }
+            }
+          }
+        },
+        "sampling": { "type": "object" }
+      }
+    },
+    "side": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "body": { "type": "string", "description": "The captured utf8 body as a string, never parsed." },
+        "parts": { "type": "array", "items": { "$ref": "#/$defs/partRef" } }
+      }
+    },
+    "partRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["$part", "sha256"],
+      "properties": {
+        "$part": { "type": "integer", "minimum": 1, "maximum": 255 },
+        "sha256": { "$ref": "#/$defs/hex256", "description": "Over the whole decoded part." }
+      }
+    }
+  }
+}

@@ -135,6 +135,12 @@ If both an ordinary overlay file and a folding copy exist, stop all writers and 
 which snapshot to restore before booting 1.5.5. Prefer restoring the complete backup rather
 than reconstructing the deployment from individual recovery files.
 
+A node refuses an amendment record whose class it does not know: the record, and everything
+that links after it, is set aside and named in the restart findings as
+[BUSBAR-2059](errors/1.6/BUSBAR-2059.md). In a rolling upgrade within 1.6 that is a record a
+newer release wrote, and upgrading the node clears it; when every node runs the same release,
+treat it as tampering.
+
 ## Configuration and persistence
 
 ### The old overlay moves into the Store

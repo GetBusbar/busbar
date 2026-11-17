@@ -879,6 +879,15 @@ diagnostics! {
         "A step of sealing a crashed predecessor's audit tail (fence, tail read, sign or seal write) failed or did not answer within one second. The step is retried on a capped backoff of up to one second, and a write is never dropped mid-flight. An Info line follows once the node is sealed.",
         "Check the store's health and the audit signing key. If the process stops first, the next process on the host seals the node.";
 
+    /// An amendment record names a class this build does not know (DES-EXPORT-1.6 r3 §2).
+    AUDIT_AMEND_CLASS_UNKNOWN = 2059, Audit, Actionable, "audit-amend-class-unknown", "1.6.0", false,
+        "An amendment record names a class this build does not know",
+        "At boot the amendment chain was read back from the store and a record names an amendment class (the word after its hashes) that this build does not know. The record is never taken into the amendment run, and neither is anything that links after it: they are set aside and named in the restart findings. Boot continues. In a rolling upgrade a newer release writes classes an older one cannot read; otherwise the record was damaged or written by something that is not busbar.",
+        "If any node in the deployment runs a newer busbar, upgrade this node (https://getbusbar.com/download). If every node runs this release, treat the amendment chain as tampered until explained: capture the store for forensic review before it is overwritten, then restore from a trusted backup."
+        => audit_amend_class_unknown(word) "unknown amendment class `{word}`: written by a newer busbar, or the chain is damaged; if every node runs this release, treat it as tampering (upgrade: https://getbusbar.com/download)",
+        example "a 1.6.0 node restarts over an amendment chain a later release extended",
+        detail "unknown amendment class `content`: written by a newer busbar, or the chain is damaged; if every node runs this release, treat it as tampering (upgrade: https://getbusbar.com/download)";
+
     TERMINAL_AUDIT_STAGE_FAILED = 2051, Audit, Actionable, "terminal-audit-stage-failed", "1.6.0", false,
         "A request terminal audit original could not be staged",
         "The journal refused the terminal audit original before native confirmation. The request fails instead of reporting success without its audit evidence; an already streaming response terminates with an error. The journal and audit chain positions do not advance for the refused original. The counter busbar_audit_stage_failures_total counts these failures.",
@@ -1593,7 +1602,7 @@ diagnostics! {
     CONFIG_EXPORT_INVALID = 3131, Config, Fatal, "config-export-invalid", "1.6.0", false,
         "An export sink definition is invalid",
         "An entry under `export:` cannot deliver what it promises: an unknown module, settings the module refuses, a stream or field that does not exist, has no producer or that the module cannot carry, a duplicate, an empty list, a pinned field left out, or `durable: true` that this release does not implement.",
-        "Fix the sink the message names; the message lists the valid streams and fields. The `export` section of docs/configuration.md describes the sinks, and docs/export/busbar.content.v1.schema.json is the content schema."
+        "Fix the sink the message names; the message lists the valid streams and fields. The `export` section of docs/configuration.md describes the sinks, and docs/export/busbar.content.v2.schema.json is the content schema."
         => config_export_invalid(detail) "{detail}",
         example "export:\n  siem:\n    module: otlp\n    streams: [audit]",
         detail "export.siem.streams: `audit` is NOT a stream — it was a use case, not a data type";

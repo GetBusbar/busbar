@@ -63,9 +63,9 @@ pub enum ExportStream {
 }
 
 /// The version tag of the pinned `content` line and exchange schema
-/// (`docs/export/busbar.content.v1.schema.json`). The schema is closed, so adding, removing or
+/// (`docs/export/busbar.content.v2.schema.json`). The schema is closed, so adding, removing or
 /// retyping any member bumps this and the schema `$id` together.
-pub const CONTENT_SCHEMA: &str = "busbar.content.v1";
+pub const CONTENT_SCHEMA: &str = "busbar.content.v2";
 
 impl ExportStream {
     /// Every stream in the frozen vocabulary, in ascending sensitivity order — the ONE list every
