@@ -3,10 +3,90 @@
 
 use super::*;
 
-type RetainedAnswer = (
-    AdminAnswer,
-    Option<Arc<busbar_kernel::inbound::native::PhysicalAdminExecution>>,
+enum RetainedAnswer {
+    NonNative(AdminAnswer),
+    Executed {
+        answer: AdminAnswer,
+        physical: Arc<busbar_kernel::inbound::native::PhysicalAdminExecution>,
+    },
+    PendingRefusal {
+        answer: AdminAnswer,
+        pending: busbar_kernel::inbound::native::CompletingPhysicalRequest,
+        carrier: busbar_kernel::inbound::native::AdminPhysicalRequest,
+    },
+    Refused {
+        answer: AdminAnswer,
+        carrier: busbar_kernel::inbound::native::PhysicalRefusalCarrier,
+    },
+    NativeFailed(AdminAnswer),
+}
+
+type SealedAnswer = (
+    RetainedAnswer,
+    Option<AuditRecord>,
+    Option<busbar_kernel::auth::native_admin::AdminCompletionRefused>,
 );
+
+impl RetainedAnswer {
+    fn confirm(self, record: Option<&AuditRecord>) -> Self {
+        match self {
+            Self::PendingRefusal {
+                answer,
+                pending,
+                carrier,
+            } => {
+                match record
+                    .and_then(|record| pending.refuse_admin(record).ok())
+                    .and_then(|physical| carrier.retain_refusal(physical).ok())
+                {
+                    Some(carrier) => Self::Refused { answer, carrier },
+                    None => Self::NativeFailed(unavailable_answer()),
+                }
+            }
+            other => other,
+        }
+    }
+
+    fn publication_failed(self) -> Self {
+        let answer = bound::journal_unavailable(
+            "the administrative result's audit publication is unconfirmed; do not re-submit",
+        );
+        match self {
+            Self::NonNative(_) => Self::NonNative(answer),
+            _ => Self::NativeFailed(answer),
+        }
+    }
+
+    #[cfg(test)]
+    fn into_answer(self) -> AdminAnswer {
+        match self {
+            Self::NonNative(answer)
+            | Self::NativeFailed(answer)
+            | Self::Executed { answer, .. }
+            | Self::PendingRefusal { answer, .. }
+            | Self::Refused { answer, .. } => answer,
+        }
+    }
+
+    fn into_response(self) -> axum::response::Response {
+        match self {
+            Self::NonNative(answer) | Self::NativeFailed(answer) => http_response(answer),
+            Self::Executed { answer, physical } => {
+                busbar_kernel::auth::native_admin::retain_physical_response(
+                    http_response(answer),
+                    physical,
+                )
+            }
+            Self::Refused { answer, carrier } => {
+                let mut response = http_response(answer);
+                response.extensions_mut().insert(carrier);
+                response
+            }
+            // Only confirmed_request's successful result may consume the pending denial.
+            Self::PendingRefusal { .. } => http_response(unavailable_answer()),
+        }
+    }
+}
 
 pub(crate) struct AdminNode {
     pub(super) kernel: busbar_kernel::teller::Kernel,
@@ -28,7 +108,9 @@ impl AdminNode {
 
     #[cfg(test)]
     pub(crate) async fn answer(&self, request: AdminRequest) -> AdminAnswer {
-        self.answer_with_admission(request, None, None).await.0
+        self.answer_with_admission(request, None, None)
+            .await
+            .into_answer()
     }
 
     async fn answer_with_admission(
@@ -37,16 +119,19 @@ impl AdminNode {
         admission: Option<busbar_kernel::inbound::RequestAdmission>,
         physical: Option<busbar_kernel::inbound::native::CompletingPhysicalRequest>,
     ) -> RetainedAnswer {
-        let ((answer, retained), publication) = busbar_kernel::audit::auditlog::confirmed_request(
-            self.answer_confirmed(request, admission, physical),
-        )
-        .await;
+        let ((answer, record, claim_failure), publication) =
+            busbar_kernel::audit::auditlog::confirmed_request(
+                self.answer_confirmed(request, admission, physical),
+            )
+            .await;
         if publication.is_err() {
-            return (bound::journal_unavailable(
-                "the administrative result's audit publication is unconfirmed; do not re-submit",
-            ), retained);
+            return answer.publication_failed();
         }
-        (answer, retained)
+        let answer = answer.confirm(record.as_ref());
+        // Store retains any unresolved operation; keep its original preparation through
+        // this request's audit confirmation without minting response authority.
+        drop(claim_failure);
+        answer
     }
 
     async fn answer_confirmed(
@@ -54,12 +139,21 @@ impl AdminNode {
         request: AdminRequest,
         admission: Option<busbar_kernel::inbound::RequestAdmission>,
         physical: Option<busbar_kernel::inbound::native::CompletingPhysicalRequest>,
-    ) -> RetainedAnswer {
+    ) -> SealedAnswer {
+        let native = physical.is_some() || request.binding.is_some();
         if admission
             .as_ref()
             .is_some_and(|admission| !admission.begin_execution())
         {
-            return (unavailable_answer(), None);
+            return (
+                if native {
+                    RetainedAnswer::NativeFailed(unavailable_answer())
+                } else {
+                    RetainedAnswer::NonNative(unavailable_answer())
+                },
+                None,
+                None,
+            );
         }
         let key = UnitKey::new(request.unit);
 
@@ -74,18 +168,56 @@ impl AdminNode {
             .take()
             .unwrap_or_else(|| refused_answer(ended, &walk.request));
 
-        let retained = walk.request.physical.clone();
-        let answer = if self
+        let record = self
             .seal(key, arrived_at, walk.principal.as_ref(), facts, ended)
-            .await
-        {
-            answer
-        } else {
-            bound::journal_unavailable(
-                "the administrative result's audit publication is unconfirmed; do not re-submit",
-            )
+            .await;
+        let Some(record) = record else {
+            return (
+                if native {
+                    RetainedAnswer::NativeFailed(answer)
+                } else {
+                    RetainedAnswer::NonNative(answer)
+                }
+                .publication_failed(),
+                None,
+                walk.claim_failure.take(),
+            );
         };
-        (answer, retained)
+        if let Some(physical) = walk.request.physical.take() {
+            return (
+                RetainedAnswer::Executed { answer, physical },
+                None,
+                walk.claim_failure.take(),
+            );
+        }
+        if native {
+            if walk.expected_refusal == Some(ended) {
+                if let (Some(pending), Some(carrier)) = (
+                    walk.physical_pending.take(),
+                    walk.request.refusal_carrier.take(),
+                ) {
+                    return (
+                        RetainedAnswer::PendingRefusal {
+                            answer,
+                            pending,
+                            carrier,
+                        },
+                        Some(record),
+                        walk.claim_failure.take(),
+                    );
+                }
+            }
+            return (
+                RetainedAnswer::NativeFailed(answer),
+                None,
+                walk.claim_failure.take(),
+            );
+        }
+        (
+            RetainedAnswer::NonNative(answer),
+            None,
+            walk.claim_failure.take(),
+        )
     }
 
     async fn seal(
@@ -95,7 +227,7 @@ impl AdminNode {
         principal: Option<&PrincipalId>,
         facts: busbar_contract::AuditFacts,
         ended: Outcome,
-    ) -> bool {
+    ) -> Option<AuditRecord> {
         use busbar_kernel_audit::{AuditInputs, Controls, OutcomeFacts, Subject, Usage, What};
         let card = crate::root::kernel::ROOT_CARD.pin();
         let arrived_ms = arrived_at.saturating_mul(1_000);
@@ -155,15 +287,17 @@ impl AdminNode {
             &token,
         )
         .await;
-        if let Err(lost) = sealed {
-            tracing::error!(
-                step = lost.step().as_str(),
-                unit = key.get(),
-                "the journal has not confirmed an admin unit's audit record"
-            );
-            return false;
+        match sealed {
+            Ok(record) => Some(record),
+            Err(lost) => {
+                tracing::error!(
+                    step = lost.step().as_str(),
+                    unit = key.get(),
+                    "the journal has not confirmed an admin unit's audit record"
+                );
+                None
+            }
         }
-        true
     }
 }
 
@@ -645,16 +779,17 @@ pub(crate) fn mount(
                 }
 
                 let (mut parts, body) = req.into_parts();
-                let physical = match parts
-                    .extensions
-                    .remove::<busbar_kernel::inbound::native::AdminPhysicalRequest>(
-                ) {
-                    Some(carrier) => match carrier.take() {
-                        Ok(pending) => Some(pending),
-                        Err(_) => return http_response(door_answer()),
-                    },
-                    None => None,
-                };
+                let (physical, refusal_carrier) =
+                    match parts
+                        .extensions
+                        .remove::<busbar_kernel::inbound::native::AdminPhysicalRequest>()
+                    {
+                        Some(carrier) => match carrier.take() {
+                            Ok(pending) => (Some(pending), Some(carrier)),
+                            Err(_) => return http_response(door_answer()),
+                        },
+                        None => (None, None),
+                    };
                 let admission = parts
                     .extensions
                     .get::<busbar_kernel::inbound::RequestAdmission>()
@@ -717,7 +852,7 @@ pub(crate) fn mount(
                     return http_response(error_answer(400, "invalid_request"));
                 }
                 drop(bytes);
-                let request = match physical.as_ref() {
+                let mut request = match physical.as_ref() {
                     Some(pending) => match AdminRequest::from_binding(pending.binding().clone()) {
                         Ok(request) => request,
                         Err(_) => return http_response(unavailable_answer()),
@@ -730,6 +865,7 @@ pub(crate) fn mount(
                         AdminRequest::from_snapshot(snapshot, unit)
                     }
                 };
+                request.refusal_carrier = refusal_carrier;
                 if physical.is_some() {
                     let projection =
                         match busbar_kernel::inbound::http_projection::HttpProjection::from_parts(
@@ -752,16 +888,9 @@ pub(crate) fn mount(
                         .await
                 })
                 .await
-                .unwrap_or_else(|_| (unavailable_answer(), None));
+                .unwrap_or_else(|_| RetainedAnswer::NativeFailed(unavailable_answer()));
 
-                let (answer, physical) = answer;
-                let response = http_response(answer);
-                let response = match physical {
-                    Some(physical) => busbar_kernel::auth::native_admin::retain_physical_response(
-                        response, physical,
-                    ),
-                    None => response,
-                };
+                let response = answer.into_response();
 
                 drop(exit);
                 response

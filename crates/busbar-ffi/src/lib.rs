@@ -8,7 +8,7 @@
 //! where any other `unsafe` can be parked. A non-plugin need for `unsafe` (allocators, ACLs, `AsyncFd`, OS
 //! calls, anything else) uses a safe crate or goes to the owner; it never comes here. Its `unsafe` total
 //! is pinned in the repository's `unsafe.yaml` and only falls:
-//! - the files are pinned: `src/{lib,raw,header,vt,shim,slots,host,image,lifecycle}.rs` and `tests/loom_slots.rs`;
+//! - the files are pinned: `src/{lib,raw,header,vt,shim,slots,host,image}.rs` and `tests/loom_slots.rs`;
 //!   any other file fails the check;
 //! - every file's own token count is pinned, so `unsafe` cannot move between files to make room;
 //! - the dependencies are pinned: `zerocopy`, and `libloading` and `object` behind feature `host`
@@ -23,8 +23,8 @@
 //! - `vt`: the 7 kind tables, their fn-pointer aliases, the views they name and the sealed `Kind`.
 //! - `shim`: the plugin-side entries and the safe adapter traits `kind!` implements.
 //! - `slots`: the token table, the instance and the chain box.
-//! - `host`, `image` and `lifecycle` (feature `host`): the loader's side: instances, sessions, chains,
-//!   the out lease, the crypto arena, dlopen with its bounds check, and permanent borrowed lifecycle work.
+//! - `host` and `image` (feature `host`): the loader's side: instances, sessions, chains, the out lease,
+//!   the crypto arena, and dlopen with its bounds check.
 //!
 //! Every `unsafe` block carries a `// SAFETY:` comment; `unsafe_op_in_unsafe_fn`,
 //! `clippy::undocumented_unsafe_blocks` and `clippy::multiple_unsafe_ops_per_block` are denied here and
@@ -50,8 +50,6 @@ pub mod header;
 pub mod host;
 #[cfg(feature = "host")]
 pub mod image;
-#[cfg(feature = "host")]
-pub mod lifecycle;
 pub mod raw;
 pub mod shim;
 pub mod slots;
