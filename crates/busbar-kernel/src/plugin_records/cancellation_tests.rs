@@ -13,6 +13,7 @@ enum Crossing {
     Pending,
     LostReply,
     Unavailable,
+    Fenced,
 }
 
 struct Faults {
@@ -62,6 +63,7 @@ impl PersistenceBackend for Faults {
             match step {
                 Some(Crossing::Pending) => std::future::pending().await,
                 Some(Crossing::Unavailable) => Err(Failure::Unavailable),
+                Some(Crossing::Fenced) => Ok(Decision::Fenced),
                 Some(Crossing::LostReply) => {
                     self.backend.commit(candidate, key).await?;
                     Err(Failure::Unavailable)
@@ -190,4 +192,60 @@ async fn resolved_uncollected_record_is_reclaimed_by_its_owner() {
     assert_eq!(store.pending_operations().unwrap(), 0);
     assert_eq!(store.slot_states().unwrap().free, 2);
     backend.same_attempt();
+}
+
+#[tokio::test]
+async fn maintenance_does_not_collect_a_live_foreground_reservation() {
+    let (backend, records) = rig().await;
+    let who = caller("test-plane", "instance");
+    let scoped = records.scoped(&who).unwrap();
+    backend.arm([Crossing::Pending]);
+    assert!(scoped
+        .put(RECORDS, b"key", Secret::new(vec![1]))
+        .now_or_never()
+        .is_none());
+    let store = records.store_for_tests();
+    let ids = store.stop_admission().unwrap();
+    assert_eq!(ids.len(), 1);
+    assert_eq!(
+        records.settle().await,
+        1,
+        "the foreground still owns its answer"
+    );
+    assert_eq!(
+        backend.sent.lock().unwrap().len(),
+        1,
+        "maintenance made no crossing"
+    );
+    assert_eq!(
+        scoped.retry(ids[0]).await.unwrap(),
+        crate::persistence::scoped::Outcome::Applied
+    );
+    assert_eq!(store.pending_operations().unwrap(), 0);
+    assert_eq!(store.slot_states().unwrap().free, 2);
+    backend.same_attempt();
+}
+
+#[tokio::test]
+async fn reconcile_stays_owned_and_is_not_blindly_resubmitted() {
+    let (backend, records) = rig().await;
+    let who = caller("test-plane", "instance");
+    backend.arm([Crossing::Pending]);
+    assert!(records
+        .put(&who, Scope::default(), b"key", b"value", 0)
+        .now_or_never()
+        .is_none());
+    backend.arm([Crossing::Fenced]);
+    assert_eq!(records.settle().await, 1);
+    assert_eq!(
+        records.store_for_tests().slot_states().unwrap().reconcile,
+        1
+    );
+    assert_eq!(records.settle().await, 1);
+    assert_eq!(
+        backend.sent.lock().unwrap().len(),
+        2,
+        "reconciliation is not resubmission permission"
+    );
+    assert_eq!(records.store_for_tests().slot_states().unwrap().free, 1);
 }
