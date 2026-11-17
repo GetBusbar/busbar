@@ -176,6 +176,116 @@ fn answer(
     answers.finish()
 }
 
+// Compare test observations explicitly; production payload owners deliberately have no equality API.
+impl PartialEq for Act {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Write(a), Self::Write(b)) => a.as_slice() == b.as_slice(),
+            (Self::Close { abort: a }, Self::Close { abort: b }) => a == b,
+            (Self::Wake(a), Self::Wake(b))
+            | (Self::End(a), Self::End(b))
+            | (Self::Opened(a), Self::Opened(b))
+            | (Self::Full(a), Self::Full(b))
+            | (Self::Writable(a), Self::Writable(b)) => a == b,
+            (
+                Self::Upgrade {
+                    protocol: a,
+                    leftover: x,
+                },
+                Self::Upgrade {
+                    protocol: b,
+                    leftover: y,
+                },
+            ) => a == b && x.as_slice() == y.as_slice(),
+            (
+                Self::Head {
+                    stream: a,
+                    end_stream: x,
+                    head: p,
+                },
+                Self::Head {
+                    stream: b,
+                    end_stream: y,
+                    head: q,
+                },
+            ) => a == b && x == y && p.as_slice() == q.as_slice(),
+            (
+                Self::Body {
+                    stream: a,
+                    flags: x,
+                    bytes: p,
+                },
+                Self::Body {
+                    stream: b,
+                    flags: y,
+                    bytes: q,
+                },
+            ) => a == b && x == y && p.as_slice() == q.as_slice(),
+            (Self::Reset { stream: a, code: x }, Self::Reset { stream: b, code: y }) => {
+                a == b && x == y
+            }
+            (
+                Self::Trailers {
+                    stream: a,
+                    pairs: x,
+                },
+                Self::Trailers {
+                    stream: b,
+                    pairs: y,
+                },
+            ) => a == b && x.as_slice() == y.as_slice(),
+            (Self::Pause, Self::Pause) | (Self::Resume, Self::Resume) => true,
+            _ => false,
+        }
+    }
+}
+
+impl PartialEq for Inbound {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (
+                Self::Head {
+                    stream: a,
+                    end_stream: x,
+                    head: p,
+                },
+                Self::Head {
+                    stream: b,
+                    end_stream: y,
+                    head: q,
+                },
+            ) => a == b && x == y && p.as_slice() == q.as_slice(),
+            (
+                Self::Body {
+                    stream: a,
+                    flags: x,
+                    bytes: p,
+                },
+                Self::Body {
+                    stream: b,
+                    flags: y,
+                    bytes: q,
+                },
+            ) => a == b && x == y && p.as_slice() == q.as_slice(),
+            (Self::Reset { stream: a, code: x }, Self::Reset { stream: b, code: y }) => {
+                a == b && x == y
+            }
+            (
+                Self::Trailers {
+                    stream: a,
+                    pairs: x,
+                },
+                Self::Trailers {
+                    stream: b,
+                    pairs: y,
+                },
+            ) => a == b && x.as_slice() == y.as_slice(),
+            (Self::End(a), Self::End(b)) | (Self::Stalled(a), Self::Stalled(b)) => a == b,
+            _ => false,
+        }
+    }
+}
+
 fn send_to() -> TransportOut<'static> {
     TransportOut::SendTo {
         path: 1,
@@ -256,6 +366,99 @@ fn dropping_a_queued_native_piece_wipes_its_body() {
     assert_eq!(busbar_contract::secure::wipe_counts().1 - before, 1);
 }
 
+#[test]
+fn upgrade_leftover_stays_in_wiping_custody() {
+    let before = busbar_contract::secure::wipe_counts().1;
+    let mut answers = Answers::new(None, Instant::now());
+    let acts = answer(
+        &mut answers,
+        emit(1, E_HEAD),
+        vec![
+            TransportOut::Upgrade {
+                protocol: "test-protocol",
+            },
+            TransportOut::Leftover(b"first-private-message"),
+        ],
+    )
+    .expect("upgrade output");
+    let [Act::Upgrade { protocol, leftover }] = acts.as_slice() else {
+        panic!("upgrade and leftover stay together");
+    };
+    assert_eq!(protocol.as_ref(), "test-protocol");
+    assert_eq!(leftover.as_slice(), b"first-private-message");
+    drop(acts);
+    assert_eq!(busbar_contract::secure::wipe_counts().1 - before, 1);
+}
+
+struct PendingRead;
+
+impl AsyncRead for PendingRead {
+    fn poll_read(
+        self: std::pin::Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+        out: &mut tokio::io::ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        out.put_slice(b"uncommitted-read");
+        Poll::Pending
+    }
+}
+
+#[tokio::test]
+async fn pending_native_read_wipes_the_abandoned_loan() {
+    use futures::FutureExt;
+    let mut bytes = SecureVec::new();
+    assert!(read_secure(&mut PendingRead, &mut bytes)
+        .now_or_never()
+        .is_none());
+    assert!(bytes.is_empty());
+    assert!(bytes.allocation().iter().all(|byte| *byte == 0));
+}
+
+struct PartialWriteThenPending(bool);
+
+impl AsyncWrite for PartialWriteThenPending {
+    fn poll_write(
+        mut self: std::pin::Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+        bytes: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        if self.0 {
+            Poll::Pending
+        } else {
+            self.0 = true;
+            Poll::Ready(Ok(bytes.len().min(3)))
+        }
+    }
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+    fn poll_shutdown(
+        self: std::pin::Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+}
+
+#[tokio::test]
+async fn partial_native_write_wipes_only_the_accepted_prefix() {
+    use futures::FutureExt;
+    let mut bytes = SecureVec::from(b"abcdef".as_slice());
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
+    assert!(
+        write_bounded(&mut PartialWriteThenPending(false), &mut bytes, deadline)
+            .now_or_never()
+            .is_none()
+    );
+    assert_eq!(bytes.as_slice(), b"def");
+    assert!(bytes.allocation()[..bytes.live_range().start]
+        .iter()
+        .all(|byte| *byte == 0));
+}
+
 // ---- the answer grammar charged to C1 (§11.3) ----
 
 #[test]
@@ -267,7 +470,7 @@ fn stream_full_holds_the_emits_own_stream() {
         vec![TransportOut::Write(b"x"), TransportOut::StreamFull(3)],
     )
     .expect("STREAM_FULL for the emit's own stream");
-    assert_eq!(acts, vec![Act::Write(b"x".to_vec()), Act::Full(3)]);
+    assert_eq!(acts, vec![Act::Write(b"x".as_slice().into()), Act::Full(3)]);
     assert!(answers.is_held(3));
     assert!(!answers.is_held(5));
 }
@@ -381,7 +584,10 @@ fn an_e_close_answer_is_writes_then_at_most_one_close() {
     .expect("WRITE* CLOSE?");
     assert_eq!(
         acts,
-        vec![Act::Write(b"bye".to_vec()), Act::Close { abort: false }]
+        vec![
+            Act::Write(b"bye".as_slice().into()),
+            Act::Close { abort: false }
+        ]
     );
     let bad: Vec<Vec<TransportOut<'static>>> = vec![
         vec![
@@ -583,7 +789,10 @@ fn e_close_is_sent_exactly_once_by_core() {
     let acts = s.conn.close(CR_DRAIN, now).expect("sent").expect("live");
     assert_eq!(
         acts,
-        vec![Act::Write(b"bye".to_vec()), Act::Close { abort: false }]
+        vec![
+            Act::Write(b"bye".as_slice().into()),
+            Act::Close { abort: false }
+        ]
     );
     assert_eq!(
         seen(&s.seen),
@@ -673,7 +882,7 @@ fn core_close_retains_the_handle_until_the_output_owner_is_dropped() {
         0,
         "repeat close cannot cancel pending output"
     );
-    assert_eq!(output, [Act::Write(b"goodbye".to_vec())]);
+    assert_eq!(output, [Act::Write(b"goodbye".as_slice().into())]);
     drop(s.conn);
     assert_eq!(s.dropped.load(Ordering::Relaxed), 1);
 }
@@ -720,7 +929,10 @@ async fn a_framer_close_flush_failure_is_not_clean_completion() {
     let r = rig();
     let outcome = drive(
         s.conn,
-        vec![Act::Write(b"goodbye".to_vec()), Act::Close { abort: false }],
+        vec![
+            Act::Write(b"goodbye".as_slice().into()),
+            Act::Close { abort: false },
+        ],
         FlushFailure,
         r.wiring,
     )
@@ -938,7 +1150,7 @@ fn piece(piece: u32, bytes: &[u8]) -> Piece {
     Piece {
         piece,
         arg: 0,
-        bytes: bytes.to_vec(),
+        bytes: bytes.into(),
     }
 }
 
@@ -955,7 +1167,7 @@ fn head(stream: u64) -> Inbound {
     Inbound::Head {
         stream,
         end_stream: false,
-        head: Vec::new(),
+        head: SecureVec::new(),
     }
 }
 

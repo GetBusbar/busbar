@@ -31,18 +31,20 @@
 
 use std::collections::VecDeque;
 use std::future::poll_fn;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::task::Poll;
 use std::time::{Duration, Instant};
 
+use busbar_contract::secure::{SecureVec, Tail};
 use busbar_plugin_abi::fail::FaultReason;
 use busbar_plugin_abi::records::RecErr;
 use busbar_plugin_abi::transport as wire;
 use busbar_ports::transport::{ConnIn, TransportOut, TransportPort, TransportSession};
 use busbar_ports::PortError;
 use foldhash::HashMap;
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, ReadBuf};
 use tokio::sync::{mpsc, oneshot};
 
 use super::StreamHolds;
@@ -84,10 +86,10 @@ fn protocol_ids(ids: &[Box<str>]) -> Vec<Vec<u8>> {
 
 /// What one transport answer asks of core, owned: a `TransportOut` borrows the framer's buffer, and the
 /// session task acts on it only after the call returned.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
 pub enum Act {
     /// WRITE: bytes for the socket, in order.
-    Write(Vec<u8>),
+    Write(SecureVec),
     /// CLOSE: close the connection (`abort` = without flushing).
     Close {
         /// CLOSE_ABORT rather than CLOSE_GRACEFUL.
@@ -100,7 +102,7 @@ pub enum Act {
         /// The protocol named (e.g. `websocket`).
         protocol: Box<str>,
         /// The bytes the framer read past the head.
-        leftover: Vec<u8>,
+        leftover: SecureVec,
     },
     /// STREAM_HEAD: a stream's head records.
     Head {
@@ -109,7 +111,7 @@ pub enum Act {
         /// SH_END_STREAM: no body follows.
         end_stream: bool,
         /// The nested head records, as written.
-        head: Vec<u8>,
+        head: SecureVec,
     },
     /// STREAM_BODY.
     Body {
@@ -118,7 +120,7 @@ pub enum Act {
         /// MSG_* for a message stream, 0 for a byte stream.
         flags: u32,
         /// The body bytes.
-        bytes: Vec<u8>,
+        bytes: SecureVec,
     },
     /// STREAM_END.
     End(u64),
@@ -134,7 +136,7 @@ pub enum Act {
         /// The stream.
         stream: u64,
         /// The PAIR records, as written.
-        pairs: Vec<u8>,
+        pairs: SecureVec,
     },
     /// STREAM_OPENED: the id the framer gave the stream a ROLE_CLIENT `emit(0, E_HEAD)` opened.
     Opened(u64),
@@ -216,7 +218,7 @@ impl Answers {
         if self.called == Called::Close {
             match out {
                 TransportOut::Write(bytes) if !self.closing => {
-                    self.acts.push(Act::Write(Vec::from(bytes)));
+                    self.acts.push(Act::Write(SecureVec::from(bytes)));
                 }
                 TransportOut::Close { abort } if !self.closing => {
                     self.closing = true;
@@ -227,12 +229,12 @@ impl Answers {
             return;
         }
         match out {
-            TransportOut::Write(bytes) => self.acts.push(Act::Write(Vec::from(bytes))),
+            TransportOut::Write(bytes) => self.acts.push(Act::Write(SecureVec::from(bytes))),
             TransportOut::Close { abort } => self.acts.push(Act::Close { abort }),
             TransportOut::WakeAt(ns) => self.acts.push(Act::Wake(ns)),
             TransportOut::Upgrade { protocol } => self.acts.push(Act::Upgrade {
                 protocol: Box::from(protocol),
-                leftover: Vec::new(),
+                leftover: SecureVec::new(),
             }),
             TransportOut::Leftover(bytes) => match self.acts.last_mut() {
                 Some(Act::Upgrade { leftover, .. }) => leftover.extend_from_slice(bytes),
@@ -245,7 +247,7 @@ impl Answers {
             } => self.acts.push(Act::Head {
                 stream,
                 end_stream,
-                head: Vec::from(head.rest()),
+                head: SecureVec::from(head.rest()),
             }),
             TransportOut::StreamBody {
                 stream,
@@ -254,7 +256,7 @@ impl Answers {
             } => self.acts.push(Act::Body {
                 stream,
                 flags,
-                bytes: Vec::from(bytes),
+                bytes: SecureVec::from(bytes),
             }),
             TransportOut::StreamEnd(stream) => self.acts.push(Act::End(stream)),
             TransportOut::StreamReset { stream, code } => {
@@ -263,7 +265,7 @@ impl Answers {
             }
             TransportOut::StreamTrailers { stream, pairs } => self.acts.push(Act::Trailers {
                 stream,
-                pairs: Vec::from(pairs.rest()),
+                pairs: SecureVec::from(pairs.rest()),
             }),
             TransportOut::StreamOpened(stream) => {
                 if self.opened.replace(stream).is_some() {
@@ -388,7 +390,7 @@ impl std::fmt::Debug for TransportConn {
 }
 
 /// A call's port method, with its arguments.
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy)]
 pub(crate) enum Call<'a> {
     Ingest(&'a [u8]),
     Emit {
@@ -639,7 +641,7 @@ pub struct Piece {
     /// The piece's argument (SH_END_STREAM, MSG_*, a reset code, a refusal status).
     pub arg: u32,
     /// The piece's bytes (head records, body, PAIR records, core text).
-    pub bytes: Vec<u8>,
+    pub bytes: SecureVec,
 }
 
 /// Core's side of one stream: its pieces, in order. A ROLE_SERVER session's core attaches one for each
@@ -658,7 +660,7 @@ pub struct Feed {
 }
 
 /// What the framer handed core for a stream, owned, in order.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
 pub enum Inbound {
     /// STREAM_HEAD.
     Head {
@@ -667,7 +669,7 @@ pub enum Inbound {
         /// No body follows.
         end_stream: bool,
         /// The nested head records.
-        head: Vec<u8>,
+        head: SecureVec,
     },
     /// STREAM_BODY.
     Body {
@@ -676,7 +678,7 @@ pub enum Inbound {
         /// MSG_* or 0.
         flags: u32,
         /// The bytes.
-        bytes: Vec<u8>,
+        bytes: SecureVec,
     },
     /// STREAM_END.
     End(u64),
@@ -685,7 +687,7 @@ pub enum Inbound {
         /// The stream.
         stream: u64,
         /// The PAIR records.
-        pairs: Vec<u8>,
+        pairs: SecureVec,
     },
     /// STREAM_RESET: the far end reset the stream; its feed is dropped.
     Reset {
@@ -740,7 +742,7 @@ pub enum Outcome<S> {
         /// The protocol named.
         protocol: Box<str>,
         /// The bytes read past the head.
-        leftover: Vec<u8>,
+        leftover: SecureVec,
     },
 }
 
@@ -788,7 +790,7 @@ enum Flow {
     Go,
     Closed,
     Lost(std::io::Error),
-    Upgrade(Box<str>, Vec<u8>),
+    Upgrade(Box<str>, SecureVec),
 }
 
 /// The loop's state beside the session.
@@ -811,8 +813,8 @@ impl Task {
         let deadline = tokio::time::Instant::now() + write_timeout;
         for act in acts {
             match act {
-                Act::Write(bytes) => {
-                    if let Err(error) = write_bounded(io, &bytes, deadline).await {
+                Act::Write(mut bytes) => {
+                    if let Err(error) = write_bounded(io, &mut bytes, deadline).await {
                         return Flow::Lost(error);
                     }
                     wrote = true;
@@ -904,12 +906,21 @@ fn timed_out() -> std::io::Error {
 
 async fn write_bounded<S: AsyncWrite + Unpin>(
     io: &mut S,
-    bytes: &[u8],
+    bytes: &mut SecureVec,
     deadline: tokio::time::Instant,
 ) -> std::io::Result<()> {
-    tokio::time::timeout_at(deadline, io.write_all(bytes))
-        .await
-        .unwrap_or_else(|_| Err(timed_out()))
+    tokio::time::timeout_at(deadline, async {
+        while !bytes.is_empty() {
+            let written = io.write(bytes.as_slice()).await?;
+            if written == 0 {
+                return Err(std::io::ErrorKind::WriteZero.into());
+            }
+            bytes.consume(written);
+        }
+        Ok(())
+    })
+    .await
+    .unwrap_or_else(|_| Err(timed_out()))
 }
 
 async fn flush_bounded<S: AsyncWrite + Unpin>(
@@ -960,8 +971,8 @@ async fn close_by_core<S: AsyncWrite + Unpin>(
     let mut abort = false;
     for act in acts {
         match act {
-            Act::Write(bytes) => {
-                if let Err(error) = write_bounded(io, &bytes, deadline).await {
+            Act::Write(mut bytes) => {
+                if let Err(error) = write_bounded(io, &mut bytes, deadline).await {
                     return Ended2::Lost(error);
                 }
             }
@@ -1017,7 +1028,7 @@ where
         reading: true,
         wake_at: None,
     };
-    let mut buf = vec![0u8; READ_CHUNK];
+    let mut buf = SecureVec::new();
     let mut eof = false;
     let mut feeds_open = true;
 
@@ -1074,7 +1085,7 @@ where
                 }
                 Err(_) => Step::Close(wire::CR_NORMAL),
             },
-            read = io.read(&mut buf), if can_read => Step::Read(read),
+            read = read_secure(&mut io, &mut buf), if can_read => Step::Read(read),
             feed = wiring.feeds.recv(), if feeds_open => match feed {
                 Some(feed) => {
                     attach(&mut task.slots, feed);
@@ -1121,7 +1132,11 @@ where
                 eof = true;
                 conn.ingest(&[], now)
             }
-            Step::Read(Ok(n)) => conn.ingest(&buf[..n], now),
+            Step::Read(Ok(n)) => {
+                let answered = conn.ingest(&buf[..n], now);
+                buf.clear();
+                answered
+            }
             Step::Read(Err(error)) => {
                 conn.mark_lost();
                 return Outcome::Lost(error);
@@ -1170,6 +1185,33 @@ enum Step {
     Tick,
     Read(std::io::Result<usize>),
     Feed(Next),
+}
+
+/// A cancelled or pending read leaves no plaintext in the lent scratch region.
+async fn read_secure<S: AsyncRead + Unpin>(
+    io: &mut S,
+    buf: &mut SecureVec,
+) -> std::io::Result<usize> {
+    poll_fn(|cx| {
+        let mut pending = false;
+        let read = buf.read_into(READ_CHUNK, Tail::Wipe, |bytes| {
+            let mut read = ReadBuf::new(bytes);
+            match Pin::new(&mut *io).poll_read(cx, &mut read) {
+                Poll::Ready(Ok(())) => Ok(read.filled().len()),
+                Poll::Ready(Err(error)) => Err(error),
+                Poll::Pending => {
+                    pending = true;
+                    Err(std::io::ErrorKind::WouldBlock.into())
+                }
+            }
+        });
+        if pending {
+            Poll::Pending
+        } else {
+            Poll::Ready(read.unwrap_or_else(|_| Err(std::io::ErrorKind::OutOfMemory.into())))
+        }
+    })
+    .await
 }
 
 fn attach(slots: &mut Slots, feed: Feed) {
