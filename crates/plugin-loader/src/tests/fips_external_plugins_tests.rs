@@ -168,7 +168,8 @@ fn a_fips_backend_refuses_every_drop_in_that_is_not_busbar_s_own_release() {
 #[test]
 fn a_fips_backend_admits_and_opens_busbar_s_own_signed_release() {
     let lib = image();
-    let m = sign(&release(), stated("busbar"), &lib);
+    // Busbar's own release carries a release seal (sign.rs first_party_signer_evidence).
+    let m = crate::sign::seal_test_artifact(&release(), stated("busbar"), &lib);
     let registry = {
         let _fips = FipsBackend::link();
         scan("first-party", &m, &lib, &wide_open())
