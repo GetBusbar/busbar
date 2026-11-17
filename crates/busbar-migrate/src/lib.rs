@@ -30,6 +30,7 @@ mod catalog;
 #[cfg(any(test, feature = "counted"))]
 pub mod counted;
 mod files;
+mod legacy_credentials;
 mod legacy_markers;
 mod listen;
 mod lock;
