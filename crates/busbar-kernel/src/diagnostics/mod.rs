@@ -1986,6 +1986,12 @@ diagnostics! {
         "The start-up pass closes at most 256 expired writers per start, so its cost stays bounded. More remained; the next start of any gateway on this store continues with them.",
         "None if starts continue. Many expired writers point at many processes that did not retire: check why shutdowns are not completing.";
 
+    /// A waiting process sees another owner converting this dataset's record format and waits for it.
+    FORMAT_MIGRATION_WAITING = 9025, Boot, Actionable, "format-migration-waiting", "1.6.0", false,
+        "Waiting on another owner's record-format conversion of this dataset (no listener bound yet)",
+        "This dataset's records are being converted to a newer format by another process (the migration owner the manifest names), and the conversion's rows (dataset root, manifest, step cursor, owner's writer row) changed within the stall window, so this process waits instead of claiming it. It binds no listener while it waits. The line names the owner's writer id, how long ago the conversion last changed and when this process claims it if nothing changes. A restart resets the wait.",
+        "Let it wait: once the owner publishes the new format this process is admitted, and once the owner stops making progress for the window this process claims the conversion and resumes it from the step cursor. A record-format upgrade needs the whole fleet stopped (docs/migration-1.6.md, Shared datasets with a changing core record format): stop any process of the old release that still reaches this store.";
+
     /// A retired 1.5.x launch environment variable is set; 1.6 ignores it.
     RETIRED_ENV_VAR_IGNORED = 3029, Config, Actionable, "retired-env-var-ignored", "1.6.0", false,
         "A retired launch environment variable is set and IGNORED",

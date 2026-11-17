@@ -58,11 +58,17 @@ fn case_spec_preserves_explicit_limits_and_endpoint_observations() {
     drop(h.open_spec(&spec).expect("canonical hook open"));
     spec.name = "missing-config";
     spec.purpose = OpenPurpose::ConvertUnstamped;
-    let error = h
-        .open_spec(&spec)
-        .err()
-        .expect("conversion requires CONFIG");
-    assert!(format!("{error:?}").contains("open CONFIG or CORE_CFG violates its purpose"));
+    // #432: a converting open that answers no CONFIG is "unchanged"; core settles the bag as bound.
+    drop(
+        h.open_spec(&spec)
+            .expect("a converting open with no CONFIG is unchanged"),
+    );
+    let settled = h
+        .settled("missing-config")
+        .expect("core settles the unchanged bag");
+    assert_eq!(settled.config_json.as_slice(), config.as_slice());
+    assert!(settled.core_cfg.is_empty());
+    assert!(!settled.answered, "the plugin answered no CONFIG");
 }
 
 /// One endpoint-declaring fixture per kind, with an instance name of that kind ("no kind changes the verdict").
@@ -97,6 +103,7 @@ fn check_with(
     accept: Accept,
 ) -> Result<Vec<DeclaredEndpoint>, OpenError> {
     let spec = InstanceSpec {
+        store_migration: None,
         purpose: busbar_plugin_loader::instance::OpenPurpose::Canonical,
         identity: h.identity(),
         name,

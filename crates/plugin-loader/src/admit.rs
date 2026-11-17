@@ -136,18 +136,7 @@ pub fn crypto_gate(crypto: &str, out_of_process: bool, facts: &CryptoFacts) -> R
     Ok(())
 }
 
-/// The manifest word for a kind (`sign::KNOWN_KINDS`).
-pub fn kind_word(kind: KindCode) -> &'static str {
-    match kind {
-        KindCode::Store => "store",
-        KindCode::Secret => "secret",
-        KindCode::Auth => "auth",
-        KindCode::Hook => "hook",
-        KindCode::Export => "export",
-        KindCode::Plane => "plane",
-        KindCode::Transport => "transport",
-    }
-}
+pub use busbar_artifact_verifier::kind_word;
 
 /// The fingerprint this engine was built with for a kind (`<kind>::FP`, §7.5).
 fn kind_fp(kind: KindCode) -> u64 {

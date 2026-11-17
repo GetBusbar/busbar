@@ -22,6 +22,8 @@ pub(crate) mod history;
 pub(crate) mod host_records;
 // Staged journal owner; removed with its asynchronous recovery caller port.
 pub mod first_start;
+// The record-format migration owner (#319 r4): the only handle before ordinary admission.
+pub mod format_migration;
 pub mod import_target;
 pub mod journal;
 pub(crate) mod keys;

@@ -152,7 +152,6 @@ fn dropping_the_boot_future_mid_open_cancels_once() {
 }
 
 #[test]
-#[ignore = "owner: W1-H1; blocked (re-checked on the branch 2026-11-16): the case's clause 'a fixture whose open future panics in Drop yields FAULT audited plugin_fault and the open/migrate is refused, nothing quarantined' (shared with C-CANCEL-OPEN) has no host path: busbar-ffi host.rs `impl Drop for Chain` discards `cancel_raw`'s status (`let _ = cancel_raw(..)`), so a FAULT from the plugin's cancel reaches neither driver::report_fault nor the plugin_fault audit; the cancels themselves run in dropping_the_boot_future_mid_open_cancels_once"]
 fn an_open_future_panicking_in_drop_faults_once_and_quarantines_nothing() {
-    todo!("owner: W1-H1 (C-CANCEL-MIGRATE)")
+    crate::c_panic_cancel::assert_open_cancel_fault();
 }

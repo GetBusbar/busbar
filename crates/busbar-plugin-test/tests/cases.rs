@@ -162,6 +162,8 @@ mod c_metric;
 mod c_migrate;
 #[path = "c_migrate_admit.rs"]
 mod c_migrate_admit;
+#[path = "c_migrated_marker.rs"]
+mod c_migrated_marker;
 #[path = "c_mint.rs"]
 mod c_mint;
 #[path = "c_msg_flags.rs"]

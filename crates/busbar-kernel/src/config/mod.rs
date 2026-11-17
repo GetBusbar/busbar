@@ -40,6 +40,7 @@ pub mod secret;
 
 pub mod settings_public;
 
+pub(crate) mod generation;
 pub mod security_policy;
 pub mod transaction;
 

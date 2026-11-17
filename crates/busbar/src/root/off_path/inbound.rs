@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use busbar_kernel::inbound as kin;
 
-use crate::root::inbound::{host, published, staged, Published, ROOT_OWNER};
+use crate::root::inbound::{host, staged, ROOT_OWNER};
 use crate::root::loader::dispatch::auth_handle;
 
 static GENERATION: AtomicU64 = AtomicU64::new(0);
@@ -47,10 +47,6 @@ pub fn publish(app: &Arc<busbar_kernel::state::App>) -> Option<u64> {
         signed_ingress: Arc::new(|_, _| false),
         scope: None,
     };
-    let snapshot = Arc::new(Published {
-        generation,
-        listener: listener.clone(),
-    });
     if let Err(e) = host().install(ROOT_OWNER, generation, listener) {
         tracing::error!(
             generation,
@@ -59,9 +55,7 @@ pub fn publish(app: &Arc<busbar_kernel::state::App>) -> Option<u64> {
         );
         return None;
     }
-    let retired = published().swap(Some(snapshot));
     auth_handle::publish_generation(generation);
     host().retire_before(generation);
-    drop(retired);
     Some(generation)
 }

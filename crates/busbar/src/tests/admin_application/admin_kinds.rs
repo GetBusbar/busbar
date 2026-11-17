@@ -298,6 +298,7 @@ async fn describe_is_closed() {
         "id",
         "labels",
         "links",
+        "management",
         "name",
         "plugin",
         "runtime",
@@ -316,13 +317,22 @@ async fn describe_is_closed() {
         assert_eq!(
             keys(&describe.body),
             closed,
-            "{path} is exactly §5.3's members"
+            "{path} is exactly §5.3 plus the adopted instance-settings management member"
         );
         assert!(
             describe.body["actions"]
                 .as_array()
                 .is_some_and(|a| a.is_empty()),
-            "{path}: actions are empty in 1.6.0"
+            "{path}: this fixture has no captured authoring-source binding or generic core settings wrapper"
+        );
+        assert_eq!(describe.body["management"]["available"], false);
+        assert_eq!(
+            describe.body["management"]["reason"],
+            if path.contains("/kinds/core/") {
+                "source_mapping_unavailable"
+            } else {
+                "source_binding_unavailable"
+            }
         );
         assert!(
             describe.body["state"].is_null() && describe.body["state_schema"].is_null(),
