@@ -91,17 +91,11 @@ pub use far_end::{
     DEFAULT_ERROR_BODY_MAX,
 };
 pub use hooks::{
-    dialect_at, GatedHooks, GatedScan, GenerationHost, HookOrder, HostGatedHooks, PrincipalKeys,
-};
-pub use hooks::{
-    Bind, BoundHooks, CallerFacts, CallerKey, CandidateFacts, Candidates, Constraint, GroupScope,
-    HookBinder, HookJournal, HookRead, HooksRan, HostHooks, Projection, Restrict, RewriteChain,
-    SessionStage, StageTaps, UnitHooks, CONTENT_ROLE, STAGE_GONE,
+    CallerKey, CandidateFacts, Candidates, Constraint, HookJournal, HookRead, HooksRan, Restrict,
 };
 pub use host::{
     engine_host, engine_host_from_handle, engine_host_value, live_host_factory, live_standing,
-    policy_standing, standing_over, CostHandle, EngineHost, EngineHostImpl, GovHandle,
-    LiveHostFactory, MeterPin,
+    policy_standing, standing_over, EngineHost, EngineHostImpl, LiveHostFactory,
 };
 pub use money::{
     EndPost, FeeRefund, MeasurementRequestGuard, MeasurementRequestState, ObservationPolicy,
@@ -120,7 +114,7 @@ use crate::auth::CallerRefKey;
 use crate::host_services::{InstanceFacts, KernelServices};
 use crate::off_path::plane_driver::prepare_admission;
 use crate::slice::GroupLeaseSlip;
-use crate::teller::{Ended, Evidence, RouteAwait, RouteLeg, Screen, UnitCtx, UnitEnds};
+use crate::teller::{Ended, Evidence, RouteAwait, RouteLeg, UnitCtx, UnitEnds};
 use crate::trust::book::{Distrust, TrustFacts};
 
 /// The capacities of the host buffers the driver hands a plane.
@@ -186,10 +180,6 @@ pub type CallerRefs = Arc<std::sync::RwLock<Option<Arc<CallerRefKey>>>>;
 // `DriverConfig::status` (a refusal's status, looked up only when a unit is refused) is in
 // `crate::cold`.
 
-fn is_authentication(reason: ReasonCode) -> bool {
-    class_of(reason) == RefusalClass::Unauthenticated
-}
-
 pub fn refusal_status(reason: ReasonCode) -> u32 {
     class_status(class_of(reason))
 }
@@ -224,8 +214,6 @@ pub struct PlaneDriver {
     services: Arc<KernelServices>,
 
     sessions: Mutex<HashMap<u64, Arc<Notify>>>,
-
-    hooks: Option<Arc<dyn HookBinder>>,
 
     hook_journal: Option<Arc<dyn HookJournal>>,
 
@@ -335,7 +323,6 @@ impl PlaneDriver {
             driver,
             services,
             sessions: Mutex::default(),
-            hooks: None,
             hook_journal: None,
             label: Arc::clone(&d.label),
             audit: Arc::new(CoreAudit),
@@ -350,12 +337,6 @@ impl PlaneDriver {
         section: (&str, &busbar_contract::yaml::Value),
     ) -> Result<PreparedSection<'_>, String> {
         prepare_admission(&self.calls.declared(), &self.services, section)
-    }
-
-    #[must_use]
-    pub fn with_hooks(mut self, binder: Arc<dyn HookBinder>) -> Self {
-        self.hooks = Some(binder);
-        self
     }
 
     #[must_use]
@@ -745,22 +726,6 @@ pub(crate) struct UnitState {
     /// The principal the kernel verified, for the hooks the unit binds and its audit row (never a
     /// plane input).
     principal: Option<PrincipalId>,
-    /// A gate-first plane's hooks screened the unit before the door ([`RouteAwait::screen`]).
-    screened: bool,
-    /// The session open's request hooks passed, either at its opener or its route leg.
-    open_hooks_ran: bool,
-    /// The node was told the unit's end user, or that its first projection stated none
-    /// (`records.user`, ADMIN-API-1.6 §3.5).
-    end_user_noted: bool,
-    /// The body a request-stage rewrite left, kept for every attempt; `None` = the caller's own.
-    body: Option<bytes::Bytes>,
-    /// The unit's hooks and the shape of its effective request (no prompt text), once the request
-    /// stage ran.
-    hooked: Option<(UnitHooks, hooks::ShapeFacts)>,
-    /// The `response` stage tap has fired.
-    responded: bool,
-    /// The pool the unit's hooks were bound over (the walk's, else the plane's).
-    hooked_pool: String,
     /// The hook that ordered or restricted the walk, for the opt-in transparency fields.
     route_policy: Option<std::sync::Arc<str>>,
     /// Why the kernel's Approve did not trust the unit's stated facts, for the plane's rendering.
@@ -982,7 +947,7 @@ impl<S, F, C> PlaneUnits<'_, S, F, C> {
 
 impl<S: DriverSteps, F, C> PlaneUnits<'_, S, F, C> {
     fn render(&self, reason: ReasonCode) -> Rendered {
-        self.render_as(reason, None, None, None, None)
+        self.render_as(reason, None, None, None)
     }
 
     fn render_as(
@@ -991,7 +956,6 @@ impl<S: DriverSteps, F, C> PlaneUnits<'_, S, F, C> {
         walk: Option<(u32, Option<u32>)>,
         said: Option<&str>,
         retry_after: Option<u32>,
-        hook: Option<&str>,
     ) -> Rendered {
         let (unit, dialect, declined, words, refused_wait) = {
             let mut st = self.lock();
@@ -1033,7 +997,7 @@ impl<S: DriverSteps, F, C> PlaneUnits<'_, S, F, C> {
             .as_deref()
             .or(steps_words.as_deref())
             .unwrap_or_else(|| said.unwrap_or(reason.as_str()).as_bytes());
-        let mut input = RefusalIn {
+        let input = RefusalIn {
             cause: if words.is_some() {
                 REFUSAL_ARRIVE
             } else if reason == ReasonCode::HookVeto {
@@ -1059,9 +1023,6 @@ impl<S: DriverSteps, F, C> PlaneUnits<'_, S, F, C> {
             ..blank_in()
         };
 
-        if let Some(hook) = hook {
-            input.hook = AbiStr::over(hook.as_bytes());
-        }
         let principal = self.lock().principal.clone();
         let rendered = self.driver.render_refusal(input, principal.as_ref());
         if words.is_some() {
@@ -1243,63 +1204,9 @@ impl PlaneDriver {
 }
 
 impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> PlaneUnits<'_, S, F, C> {
-    fn stopped(&self, stopped: hooks::Stopped) -> ReasonCode {
-        match stopped {
-            hooks::Stopped::Veto(veto) => {
-                let rendered = self.render_as(
-                    ReasonCode::HookVeto,
-                    Some((veto.status, None)),
-                    Some(veto.text.as_str()),
-                    None,
-                    veto.hook.as_deref(),
-                );
-                self.lock().rendered = Some(rendered);
-                self.response_tap(true, veto.status);
-                ReasonCode::HookVeto
-            }
-            hooks::Stopped::Unreadable | hooks::Stopped::Unparseable { .. } => {
-                let status = self.status_for(ReasonCode::DecodeFailed);
-                self.response_tap(true, status);
-                ReasonCode::DecodeFailed
-            }
-        }
-    }
-
-    async fn stage_before_stop(
-        &self,
-        stage: impl std::future::Future<Output = Result<(), hooks::Stopped>> + Send,
-    ) -> Result<(), ReasonCode> {
-        tokio::select! {
-            biased;
-            cause = self.caller.stopped() => Err(cause),
-            result = stage => result.map_err(|stopped| self.stopped(stopped)),
-        }
-    }
-
-    pub async fn open_hooks(&self, token: &Pass<Route>, ctx: &UnitCtx) -> Result<(), ReasonCode> {
-        if self.lock().open_hooks_ran {
-            return Ok(());
-        }
-        match self.stage_before_stop(self.request_stage(token)).await {
-            Ok(()) => {
-                self.lock().open_hooks_ran = true;
-                Ok(())
-            }
-            Err(reason) => {
-                self.driver.money.finished(ctx);
-                Err(reason)
-            }
-        }
-    }
-
     async fn route_async(&self, token: &Pass<Route>, ctx: &UnitCtx) -> StepAnswer<Route> {
         let d = self.driver;
         d.sweep();
-        self.state_stage(token);
-        if let Err(reason) = self.stage_before_stop(self.request_stage(token)).await {
-            d.money.finished(ctx);
-            return StepAnswer::refuse(token, Refusal::new(reason));
-        }
         let Some(ticket) = d.calls.mint() else {
             return StepAnswer::refuse(token, Refusal::new(ReasonCode::InFlightCap));
         };
@@ -1316,10 +1223,7 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> PlaneUnits<'_, S, F, C> {
             ctx,
             ticket,
             deadline_ns,
-            self.lock()
-                .body
-                .clone()
-                .unwrap_or_else(|| self.arrival.body.clone()),
+            self.arrival.body.clone(),
         );
         {
             let st = self.lock();
@@ -1347,17 +1251,6 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> PlaneUnits<'_, S, F, C> {
             } => end,
         };
 
-        match &end {
-            route::End::Done | route::End::Cancel(ReasonCode::ClientGone, _) => {}
-            route::End::RetiredByCompletion => {
-                self.response_tap(false, self.status_for(ReasonCode::PlanePanic))
-            }
-            route::End::Failed(reason) | route::End::Cancel(reason, _) => {
-                self.response_tap(false, self.status_for(*reason));
-            }
-            route::End::Exhausted(status, ..) => self.response_tap(false, *status),
-            route::End::Vetoed(status, _) => self.response_tap(true, *status),
-        }
         let answer = match end {
             route::End::Done => StepAnswer::proceed(token, RoutePlan::default()),
             // Request units have no sibling: host retirement here is a routing fault.
@@ -1369,7 +1262,6 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> PlaneUnits<'_, S, F, C> {
                     Some((status, retry_after)),
                     Some(detail),
                     None,
-                    None,
                 );
                 self.lock().rendered = Some(rendered);
                 StepAnswer::refuse(token, Refusal::new(ReasonCode::BreakerOpen))
@@ -1379,7 +1271,6 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> PlaneUnits<'_, S, F, C> {
                     ReasonCode::HookVeto,
                     Some((status, None)),
                     Some(&text),
-                    None,
                     None,
                 );
                 self.lock().rendered = Some(rendered);
@@ -1622,11 +1513,7 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> UnitEnds for PlaneUnits<'_,
         let body = match reason {
             Some(reason) if !pending => {
                 let (retry_after, said) = self.steps.refused_words();
-                let rendered = self.render_as(reason, None, said.as_deref(), retry_after, None);
-                if let (Some(binder), true) = (&self.driver.hooks, is_authentication(reason)) {
-                    let dialect = self.lock().decoded.as_ref().map_or(0, |d| d.dialect);
-                    binder.denied(dialect, u16::try_from(rendered.status).unwrap_or(u16::MAX));
-                }
+                let rendered = self.render_as(reason, None, said.as_deref(), retry_after);
                 let body = crate::cold::refusal_frame(&rendered.body);
                 self.lock().rendered = Some(rendered);
                 body
@@ -1788,31 +1675,6 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: SessionCaller> RouteAwait for PlaneUni
                 self.summarize(ctx, &trail, None);
             }
         }
-    }
-
-    fn screen<'a>(&'a self, ctx: &'a UnitCtx) -> Screen<'a> {
-        Box::pin(async move {
-            let Some(binder) = self.driver.hooks.as_ref() else {
-                return Ok(());
-            };
-
-            if binder.order() != hooks::HookOrder::Gated
-                || self.arrival.claim == busbar_contract::abi::plane::CLAIM_PROBE
-                || self.declined_after_admission()
-            {
-                return Ok(());
-            }
-            match self.stage_before_stop(self.gated_stage(&**binder)).await {
-                Ok(()) => {
-                    self.lock().screened = true;
-                    Ok(())
-                }
-                Err(reason) => {
-                    self.driver.money.finished(ctx);
-                    Err(Refusal::new(reason))
-                }
-            }
-        })
     }
 }
 

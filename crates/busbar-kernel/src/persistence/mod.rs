@@ -30,6 +30,7 @@ pub(crate) mod keys;
 pub mod lifecycle;
 pub mod observations;
 pub(crate) mod partition;
+pub mod record_ops;
 pub mod recovery_api;
 pub(crate) mod scan;
 pub mod scoped;

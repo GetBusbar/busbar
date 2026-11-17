@@ -206,8 +206,7 @@ pub struct Candidate {
     /// request path.
     pub disk: bool,
     /// Whether its `decide` may answer an order (`declares.hook.orders`, a `kind: hook` plugin;
-    /// `true` unless declared `false`): a hook that declared it never orders is refused when it
-    /// does ([`crate::hook_door::HookInstance::open_declaring`]).
+    /// `true` unless declared `false`).
     pub orders: bool,
 }
 

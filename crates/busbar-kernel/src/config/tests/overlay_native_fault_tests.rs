@@ -190,10 +190,11 @@ pub(in crate::config) async fn seed_bytes(
         key: HEAD.to_vec(),
         value: Secret::new(head),
     });
+    let op = core.record_op().await.unwrap();
     assert!(matches!(
         scope(core)
             .conditional_native(&Request {
-                op_id: crate::door::op_id().0,
+                op: op.into(),
                 predicates: vec![Predicate {
                     schema: SCHEMA.into(),
                     key: HEAD.to_vec(),

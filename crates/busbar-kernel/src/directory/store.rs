@@ -352,9 +352,13 @@ impl<'s> Tx<'s> {
     /// Ok(true) = applied; Ok(false) = another writer moved something this attempt read; Err(TOO_MANY marker) =
     /// the store refused the commit's size.
     pub async fn commit(self, store: &CoreStore) -> Result<Committed, NeedErr> {
-        let op_id = store.next_id().map_err(|_| NeedErr::Unavailable)?.operation;
+        let op = store
+            .record_op()
+            .await
+            .map_err(|_| NeedErr::Unavailable)?
+            .into();
         let request = Request {
-            op_id,
+            op,
             predicates: self
                 .seen
                 .iter()

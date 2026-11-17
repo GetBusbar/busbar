@@ -648,10 +648,6 @@ pub fn auth_modules_compiled_in() -> Vec<&'static str> {
     modules
 }
 
-pub(crate) fn hook_plugins_compiled_in() -> Vec<&'static str> {
-    busbar_kernel::preflight::root_rows().hook_names.to_vec()
-}
-
 const MAX_PLUGIN_FILENAME_LEN: usize = 256;
 
 fn validate_plugin_filename(app: &App, file: &str) -> Result<String, AdminError> {
@@ -838,31 +834,10 @@ pub fn build_with_hook(current: &App, name: &str, cfg: HookCfg) -> Result<App, A
     } else {
         next.global_hooks.retain(|n| n != name);
     }
-    stage_hook_routes(&mut next)?;
-
-    if let Err(e) = next.hook_env.preopen_gate_hooks(&next.hook_registry) {
-        return Err(AdminError::Validation(e));
-    }
-
-    rebuild_hook_derived(&mut next);
     Arc::clone(&next.root_rules)
         .check_built(&mut next)
         .map_err(AdminError::Validation)?;
     Ok(next)
-}
-
-fn stage_hook_routes(next: &mut App) -> Result<(), AdminError> {
-    let mut env = next.hook_env.clone();
-    let declarations = env
-        .route_decls(&next.hook_registry)
-        .map_err(AdminError::Validation)?;
-    let routes = next
-        .plugin_routes
-        .with_hook_routes(declarations)
-        .map_err(AdminError::Validation)?;
-    next.hook_env = env;
-    next.plugin_routes = std::sync::Arc::new(routes);
-    Ok(())
 }
 
 pub fn build_without_hook(current: &App, name: &str) -> Result<App, AdminError> {
@@ -873,8 +848,6 @@ pub fn build_without_hook(current: &App, name: &str) -> Result<App, AdminError> 
     next.config_version = current.config_version.wrapping_add(1);
     next.hook_registry.remove(name);
     next.global_hooks.retain(|n| n != name);
-    stage_hook_routes(&mut next)?;
-    rebuild_hook_derived(&mut next);
     Arc::clone(&next.root_rules)
         .check_built(&mut next)
         .map_err(AdminError::Validation)?;
@@ -982,12 +955,6 @@ pub(crate) fn build_with_registry(
     next.config_version = current.config_version.wrapping_add(1);
     next.hook_registry = registry;
     next.global_hooks = global_hooks;
-    stage_hook_routes(&mut next)?;
-
-    if let Err(e) = next.hook_env.preopen_gate_hooks(&next.hook_registry) {
-        return Err(AdminError::Validation(e));
-    }
-    rebuild_hook_derived(&mut next);
     Arc::clone(&next.root_rules)
         .check_built(&mut next)
         .map_err(AdminError::Validation)?;
@@ -1284,62 +1251,6 @@ pub(crate) fn project_hook_view(name: &str, cfg: &HookCfg, global_hooks: &[Strin
             default: cfg.default,
             groups: cfg.groups.clone(),
             attachments: Vec::new(),
-        }
-    }
-}
-
-fn rebuild_hook_derived(next: &mut busbar_kernel::state::App) {
-    next.any_content_hook = busbar_kernel::hooks::any_content_hook(&next.hook_registry);
-
-    next.requested_signals = busbar_kernel::hooks::requested_signals(&next.hook_registry);
-
-    next.rewrite_hooks = busbar_kernel::hooks::resolve_rewrite_hooks(
-        &next.hook_registry,
-        &next.global_hooks,
-        &next.hook_env,
-        next.config_version,
-    );
-    next.tap_hooks = busbar_kernel::hooks::resolve_tap_hooks(
-        &next.hook_registry,
-        &next.global_hooks,
-        &next.hook_env,
-        next.config_version,
-        busbar_kernel::config::HookStage::Request,
-    );
-    next.tap_hooks_candidate = busbar_kernel::hooks::resolve_tap_hooks(
-        &next.hook_registry,
-        &next.global_hooks,
-        &next.hook_env,
-        next.config_version,
-        busbar_kernel::config::HookStage::Candidate,
-    );
-    next.tap_hooks_routing = busbar_kernel::hooks::resolve_tap_hooks(
-        &next.hook_registry,
-        &next.global_hooks,
-        &next.hook_env,
-        next.config_version,
-        busbar_kernel::config::HookStage::Routing,
-    );
-    next.tap_hooks_response = busbar_kernel::hooks::resolve_tap_hooks(
-        &next.hook_registry,
-        &next.global_hooks,
-        &next.hook_env,
-        next.config_version,
-        busbar_kernel::config::HookStage::Response,
-    );
-    next.global_gates = busbar_kernel::hooks::resolve_gate_hooks(
-        &next.hook_registry,
-        &next.global_hooks,
-        &next.hook_env,
-        next.config_version,
-    );
-    reresolve_plane_gates(next);
-}
-
-fn reresolve_plane_gates(next: &mut busbar_kernel::state::App) {
-    for decl in busbar_kernel::plane_driver::registry::plane_decls() {
-        if let Some(reresolve) = decl.reresolve_gates {
-            reresolve(decl, next);
         }
     }
 }

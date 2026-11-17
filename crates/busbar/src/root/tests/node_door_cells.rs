@@ -4,17 +4,13 @@
 //! THE NODE'S CELLS ON THE DOOR PATH: what the deleted plane node cells asserted of a unit the
 //! node walked by hand, asserted of a unit a client sends through the router to the linked door.
 //! The audit chain a served and a refused unit seal, the subject a sealed record names, the fee a
-//! caller that hung up keeps paying, the metering row billing on or off writes, a gate that does
-//! not veto, and a rerank's search units on both books.
+//! caller that hung up keeps paying, the metering row billing on or off writes,
+//! and a rerank's search units on both books.
 
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use axum::http::StatusCode;
-use busbar_contract::hooks::{
-    Candidate, PolicyResult, RoutingContext, RoutingDecision, RoutingPolicy, RoutingRequest,
-};
 
 use super::node_rig::{far_end, node_rig, reply, word, NodeRig, NodeRigOpts, LANE, POOL};
 
@@ -410,126 +406,6 @@ async fn the_loop_attributes_the_identity_the_door_resolved_and_invents_none() {
         settled,
         busbar_kernel_audit::Subject::PrincipalId(open.key.id.clone()),
         "{cred:?}: the loop settled on principal {settled:?} for a request the door bound no key to"
-    );
-}
-
-/// A gate that is asked and never vetoes.
-struct StopsNothing(AtomicBool);
-
-#[async_trait::async_trait]
-impl RoutingPolicy for StopsNothing {
-    async fn decide(
-        &self,
-        _req: &RoutingRequest<'_>,
-        _candidates: &[Candidate<'_>],
-        _ctx: &RoutingContext<'_>,
-        _budget: std::time::Duration,
-    ) -> PolicyResult {
-        self.0.store(true, Ordering::SeqCst);
-        Ok(RoutingDecision::Abstain)
-    }
-
-    fn name(&self) -> &str {
-        "gate"
-    }
-}
-
-/// A JSON body with its ids and clock readings blanked, so two units' answers compare.
-fn normalize_body(body: &[u8]) -> String {
-    fn blank(v: &mut serde_json::Value) {
-        match v {
-            serde_json::Value::Object(map) => {
-                for (k, val) in map.iter_mut() {
-                    let is_id = k.ends_with("id") || k.ends_with("Id") || k.ends_with("ID");
-                    let is_clock = matches!(k.as_str(), "created" | "created_at" | "createTime");
-                    if is_id && val.is_string() {
-                        *val = serde_json::Value::String("<id>".to_string());
-                    } else if (is_clock || k == "latencyMs") && val.is_number() {
-                        *val = serde_json::Value::from(0);
-                    } else {
-                        blank(val);
-                    }
-                }
-            }
-            serde_json::Value::Array(items) => items.iter_mut().for_each(blank),
-            _ => {}
-        }
-    }
-    match serde_json::from_slice::<serde_json::Value>(body) {
-        Ok(mut v) => {
-            blank(&mut v);
-            v.to_string()
-        }
-        Err(_) => String::from_utf8_lossy(body).to_string(),
-    }
-}
-
-async fn observe_gated(
-    instance: &'static str,
-    gate: Option<Arc<dyn RoutingPolicy>>,
-) -> Vec<(&'static str, String)> {
-    let rig = node_rig(
-        instance,
-        far_end(answer()).await,
-        NodeRigOpts {
-            fee_cents: FEE_CENTS,
-            gate,
-            ..Default::default()
-        },
-    )
-    .await;
-    let charged_at = now();
-    let (status, body) = drained(rig.open(CHAT_PATH, &chat()).await).await;
-    let rows = settled_rows(&rig, charged_at).await;
-    let (requests, spend, billable) = ledger_after(&rig, 1).await;
-    vec![
-        ("status", status.as_u16().to_string()),
-        ("body", normalize_body(&body)),
-        ("ledger", format!("{requests} {spend} {billable}")),
-        ("metering_rows", rows.join("\n")),
-    ]
-}
-
-fn compare(
-    label: &str,
-    legacy: &[(&'static str, String)],
-    looped: &[(&'static str, String)],
-    failures: &mut Vec<String>,
-) {
-    for ((f, want), (_, got)) in legacy.iter().zip(looped.iter()) {
-        if want != got {
-            failures.push(format!(
-                "{label}: field `{f}` diverges\n  shipped: {want}\n  loop:    {got}"
-            ));
-        }
-    }
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_seated_gate_that_passes_changes_nothing() {
-    let _one = crate::root::PUBLISHING.lock().await;
-    let bare = observe_gated("door-cells-no-gate", None).await;
-    let passing = Arc::new(StopsNothing(AtomicBool::new(false)));
-    let passed = observe_gated(
-        "door-cells-passing-gate",
-        Some(Arc::clone(&passing) as Arc<dyn RoutingPolicy>),
-    )
-    .await;
-
-    let mut failures: Vec<String> = Vec::new();
-    compare("a seat that does not veto", &bare, &passed, &mut failures);
-    if !passing.0.load(Ordering::SeqCst) {
-        failures.push(
-            "the loop never consulted the seated gate, so the pass-through above is an \
-             unwired field rather than a verdict"
-                .to_string(),
-        );
-    }
-    assert!(
-        failures.is_empty(),
-        "{} finding(s) at the approve seat:\n{}",
-        failures.len(),
-        failures.join("\n")
     );
 }
 

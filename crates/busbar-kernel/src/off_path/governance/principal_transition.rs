@@ -18,9 +18,9 @@ use std::sync::Arc;
 
 use crate::hashing::Sha256;
 use crate::persistence::facade::CoreStore;
+use crate::persistence::record_ops::{DerivedOp, Op};
 use busbar_contract::host_records::conditional::{Expected, Mutation, Predicate, Request, VERSION};
 use busbar_contract::ids::RecordSchemaId;
-use busbar_contract::records::OpId;
 use busbar_contract::records::{UsageLedger, VirtualKey};
 use serde::{Deserialize, Serialize};
 
@@ -1475,13 +1475,17 @@ async fn native_receipt_snapshot(
     Ok(ReceiptSnapshot(snapshot))
 }
 
-fn operation(plan_sha256: &str, phase: &str) -> OpId {
+/// The class-D receipt identity (DES-264 §4.1): re-derived from the persisted plan after a
+/// restart, so its receipt is kept for as long as the plan's records exist. The only
+/// constructor of a [`DerivedOp`].
+fn operation(plan_sha256: &str, phase: &str) -> DerivedOp {
     let digest = Sha256::digest(format!("principal-transition:{plan_sha256}:{phase}"));
-    OpId(digest[..16].try_into().expect("SHA256 has sixteen bytes"))
+    DerivedOp::principal_transition(digest[..16].try_into().expect("SHA256 has sixteen bytes"))
 }
 
 async fn transaction(
     core: &CoreStore,
+    op: DerivedOp,
     mut request: Request,
     binding: Option<&WitnessBinding>,
 ) -> Result<(), String> {
@@ -1489,6 +1493,9 @@ async fn transaction(
     use busbar_contract::persistence::{
         ExpectedValue, Mutation as NativeMutation, Predicate as NativePredicate,
     };
+    if request.op_id != op.op_id() {
+        return Err("principal transition request does not carry its derived operation".into());
+    }
     request.encode_held().map_err(|e| error_text(&e))?;
     let owner = HostRecords::host_private(core, NATIVE_INSTANCE, [SCHEMA.as_str()])
         .map_err(|e| format!("principal transaction owner: {e:?}"))?;
@@ -1532,7 +1539,7 @@ async fn transaction(
         })
         .collect::<Result<Vec<_>, String>>()?;
     match owner
-        .conditional_native(request.op_id.0, predicates, mutations)
+        .conditional_native(&Op::Derived(op), predicates, mutations)
         .await
         .map_err(|e| format!("principal transition transaction: {e:?}"))?
     {
@@ -1854,11 +1861,13 @@ pub async fn apply(
             hex::decode(&plan.specification.witness.value_hex).map_err(|_| "invalid witness")?,
         ),
     });
+    let op = operation(&plan_sha256, &format!("begin:{}", attestation.epoch));
     transaction(
         &core,
+        op,
         Request {
             version: VERSION,
-            op_id: operation(&plan_sha256, &format!("begin:{}", attestation.epoch)),
+            op_id: op.op_id(),
             predicates,
             mutations: {
                 mutations.push(Mutation::Put {
@@ -1943,11 +1952,13 @@ pub async fn apply(
         complete: true,
         ..head
     };
+    let op = operation(&plan_sha256, &format!("complete:{}", digest(&complete)?));
     transaction(
         &core,
+        op,
         Request {
             version: VERSION,
-            op_id: operation(&plan_sha256, &format!("complete:{}", digest(&complete)?)),
+            op_id: op.op_id(),
             predicates: vec![Predicate {
                 schema: SCHEMA.as_str().into(),
                 key: HEAD.to_vec(),
@@ -2273,11 +2284,13 @@ pub async fn reauthorize(
         key: epoch_key.clone(),
         value: receipt_digest.as_bytes().to_vec(),
     });
+    let op = operation(&receipt_digest, "reauthorize");
     transaction(
         &core,
+        op,
         Request {
             version: VERSION,
-            op_id: operation(&receipt_digest, "reauthorize"),
+            op_id: op.op_id(),
             predicates: vec![
                 Predicate {
                     schema: SCHEMA.as_str().into(),
@@ -2473,11 +2486,13 @@ async fn initialize_namespace(
     if read_head(&rows)?.is_some() {
         return Err("namespace already has a principal baseline or pending transition".into());
     }
+    let op = operation(&receipt_sha256, "fresh");
     transaction(
         &core,
+        op,
         Request {
             version: VERSION,
-            op_id: operation(&receipt_sha256, "fresh"),
+            op_id: op.op_id(),
             predicates: {
                 predicates.push(Predicate {
                     schema: SCHEMA.as_str().into(),

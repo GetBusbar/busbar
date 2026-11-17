@@ -4326,7 +4326,7 @@ pub(crate) fn source_path(value: impl AsRef<str>) -> config::SecretRef {
 fn source_role(role: &str, value: impl AsRef<str>) -> config::SecretRef {
     use busbar_contract::secret::SecretAxis as _;
     crate::dist_root_install::install();
-    crate::root::linked::secret_rows()
+    crate::root::native_secrets::linked_for_tests()
         .sugars()
         .reference_for_role(role, value.as_ref())
         .expect("the admitted source declares the fixture's role")
