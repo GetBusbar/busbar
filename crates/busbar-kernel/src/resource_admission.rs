@@ -112,6 +112,7 @@ impl AdmittedForwardDescriptor {
 #[derive(Debug)]
 pub struct ResourceInventory {
     instance: Incarnation,
+    namespace: Arc<str>,
     epoch: u64,
     scopes: BTreeSet<(String, String)>,
     descriptors: BTreeMap<u32, Arc<AdmittedForwardDescriptor>>,
@@ -253,6 +254,7 @@ impl ResourceInventory {
         }
         Ok(Arc::new(Self {
             instance: caller.incarnation().clone(),
+            namespace: Arc::clone(caller.namespace()),
             epoch,
             scopes,
             descriptors,
@@ -267,6 +269,39 @@ impl ResourceInventory {
     }
     pub fn descriptor(&self, id: u32) -> Option<&Arc<AdmittedForwardDescriptor>> {
         self.descriptors.get(&id)
+    }
+
+    /// Validate against the actual matched mount before freezing selection. Route metadata
+    /// and this inventory must come from the same retained generation at the composition root.
+    pub fn select_wire(
+        self: &Arc<Self>,
+        request: FrozenRequest,
+        mounted: &crate::plane_driver::port_routes::Mounted,
+        bytes: &[u8],
+    ) -> Result<SelectedResources, ResourceError> {
+        if mounted.route != request.route
+            || mounted.resource_kinds.is_empty()
+            || mounted.resource_kinds.len() > MAX_KINDS
+            || mounted.flags != 0
+        {
+            return Err(ResourceError::Binding);
+        }
+        let scopes = busbar_plugin_abi::resource_admission::decode_selection(bytes)
+            .map_err(|_| ResourceError::Selection)?;
+        if scopes
+            .iter()
+            .any(|s| !mounted.resource_kinds.iter().any(|k| k.as_ref() == s.kind))
+        {
+            return Err(ResourceError::Kind);
+        }
+        let scopes: Vec<ScopeRef> = scopes
+            .into_iter()
+            .map(|s| ScopeRef {
+                kind: s.kind.into(),
+                value: s.value.into(),
+            })
+            .collect();
+        self.select(request, &scopes)
     }
 
     /// Freeze the complete factual all-of set. No role binding or replay is performed here.
@@ -366,6 +401,40 @@ impl FrozenRequest {
     pub fn body(&self) -> &[u8] {
         self.body.as_slice()
     }
+
+    /// Lend the exact frozen bytes to the pure selector without authenticated identity,
+    /// ticket state or session authority. The borrowed input cannot outlive this call.
+    pub fn with_selection_input<R>(
+        &self,
+        f: impl FnOnce(&busbar_ports::plane::PlaneIn<'_>, &[u8]) -> R,
+    ) -> Result<R, ResourceError> {
+        use busbar_plugin_abi::types::{Bytes, Pair, Str};
+        let headers: Vec<Pair<'_>> = self
+            .headers
+            .iter()
+            .map(|(name, value)| {
+                Ok(Pair {
+                    name: Str::new(core::str::from_utf8(name).map_err(|_| ResourceError::Binding)?),
+                    value: Bytes::new(value.as_slice()),
+                })
+            })
+            .collect::<Result<_, ResourceError>>()?;
+        let input = busbar_ports::plane::PlaneIn {
+            route: self.route,
+            flags: 0,
+            auth: 0,
+            method: &self.method,
+            path: &self.path,
+            query: &self.query,
+            headers: &headers,
+            identity: &[],
+            request_id: self.invocation.request_id().get(),
+            carrier: 0,
+            work: "",
+            ticket_record: &[],
+        };
+        Ok(f(&input, self.body()))
+    }
 }
 
 /// Factual selection only. Final publication authorization and replay are separate,
@@ -438,12 +507,47 @@ impl BoundForward {
     pub fn descriptor(&self) -> &AdmittedForwardDescriptor {
         &self.descriptor
     }
-    pub fn echo(&self) -> ForwardEcho {
+    fn echo(&self) -> ForwardEcho {
         ForwardEcho {
             inventory: Arc::clone(&self.inventory),
             request: Arc::clone(&self.request),
             descriptor: self.descriptor.id,
         }
+    }
+
+    /// Supply only this invocation's selected immutable descriptor to the plane encoder.
+    /// Other independently validated admission protocols may append their own records.
+    pub fn write_admission(
+        &self,
+        out: &mut impl busbar_plugin_abi::records::Writer,
+    ) -> Result<(), busbar_plugin_abi::records::Full> {
+        busbar_plugin_abi::resource_admission::write_echo(
+            out,
+            busbar_plugin_abi::resource_admission::DescriptorEcho {
+                invocation: self.request.invocation.request_id().get(),
+                generation: self.inventory.epoch,
+                route: self.request.route,
+                descriptor: self.descriptor.id,
+                instance: &self.inventory.namespace,
+            },
+        )
+    }
+
+    /// Resolve the *actual encoder response* against this exact host selection. Callers
+    /// must retain the decoded echo; regenerating an expected echo is not response validation.
+    pub fn resolve_echo(
+        &self,
+        echo: busbar_plugin_abi::resource_admission::DescriptorEcho<'_>,
+    ) -> Result<ForwardEcho, ResourceError> {
+        if echo.invocation != self.request.invocation.request_id().get()
+            || echo.generation != self.inventory.epoch
+            || echo.route != self.request.route
+            || echo.instance != self.inventory.namespace.as_ref()
+            || echo.descriptor != self.descriptor.id
+        {
+            return Err(ResourceError::Binding);
+        }
+        Ok(self.echo())
     }
 
     /// Validate actual operands and consume the immutable pair. This proves only the

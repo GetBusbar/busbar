@@ -37,6 +37,8 @@ pub enum PlaneOut<'o> {
         carrier: u32,
         outbound: u32,
     },
+    /// Factual echo of the host-selected descriptor; never an execution admission.
+    ResourceEcho(busbar_plugin_abi::resource_admission::DescriptorEcho<'o>),
     UpMethod(&'o str),
     UpPath(&'o str),
     UpScope(&'o str),
