@@ -193,12 +193,11 @@ fn host() -> &'static (Arc<Dispatcher>, Arc<Connector>) {
         })
         .expect("the local IdP destination policy");
         assert_eq!(
-            guard
-                .judge_name(
-                    "https://127.0.0.1:443/jwks",
-                    busbar_contract::abi::host::conn::connector::EGRESS_OPEN_WEB,
-                    true,
-                ),
+            guard.judge_name(
+                "https://127.0.0.1:443/jwks",
+                busbar_contract::abi::host::conn::connector::EGRESS_OPEN_WEB,
+                true,
+            ),
             Err(busbar_contract::abi::host::service::DEST_INTERNAL),
             "UPSTREAMS-DECLARED r3: strict OPEN_WEB never borrows configured route reach"
         );
