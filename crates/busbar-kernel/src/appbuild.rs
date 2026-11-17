@@ -1060,13 +1060,6 @@ pub trait CandidatePreparation: Send + 'static {
 }
 
 pub trait RootRules: Send + Sync {
-    /// The RFC 9728 protected resources oauth_as serves: the audience (`canonical_uri`) of each
-    /// recognized plane instance whose admitted image serves HTTP routes. The reader holds the
-    /// admitted images, so it judges the routes; see [`config::recognizer::plane_audiences`].
-    fn protected_resources(&self, _cfg: &config::RootCfg) -> Vec<String> {
-        Vec::new()
-    }
-
     /// Retain the actual read's native admission. Metadata-only readers need no opaque context.
     fn prepare_read(
         &self,
@@ -2498,8 +2491,12 @@ async fn build_app_native(
                 .collect::<Result<Vec<_>, _>>()?;
 
             // The protected resources are the audiences of the recognized plane instances whose
-            // admitted images serve HTTP routes (r3 section 2.3); the root reader judges the routes.
-            let protected_resources: Vec<String> = rules.protected_resources(&cfg);
+            // admitted images serve HTTP routes (r3 section 2.3); the grammar carries that judgement.
+            let protected_resources: Vec<String> =
+                config::recognizer::plane_audiences(&cfg.instance_sections(), |instance| {
+                    cfg.grammar()
+                        .is_ok_and(|grammar| grammar.serves_http(instance))
+                });
 
             let store = governance
                 .as_ref()

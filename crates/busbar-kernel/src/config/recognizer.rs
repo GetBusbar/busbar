@@ -163,6 +163,13 @@ mod tests {
     }
 
     #[test]
+    fn the_grammar_carries_which_instances_serve_http() {
+        let grammar = Grammar::empty().with_http_instances(["mcp".to_owned()]);
+        assert!(grammar.serves_http("mcp"));
+        assert!(!grammar.serves_http("decisions"));
+    }
+
+    #[test]
     fn core_keys_come_from_the_typed_parse() {
         for key in [
             "listen",

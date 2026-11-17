@@ -69,6 +69,8 @@ pub(crate) fn prepare(
         super::skip_lines(metadata.skipped()),
     )
     .map_err(GrammarRefusal)?;
+    let grammar =
+        with_http_instances(grammar, &aliases, &proofs, &images).map_err(GrammarRefusal)?;
     Ok(FileImages {
         images,
         aliases,
@@ -238,10 +240,43 @@ pub(crate) fn fixture(
         super::classify(&metadata, Some(plugins)),
         super::skip_lines(metadata.skipped()),
     )?;
+    let grammar = with_http_instances(grammar, &aliases, &proofs, &images)?;
     Ok(FileImages {
         images,
         aliases,
         grammar,
         proofs,
     })
+}
+
+/// The recognizer's plane instance names, and which of them serve HTTP routes on the data
+/// listener: oauth_as protects exactly those planes' audiences (WP1-GAP r3, section 2.3).
+fn with_http_instances(
+    grammar: Grammar,
+    aliases: &[(String, String)],
+    proofs: &BTreeMap<String, ImageProof>,
+    images: &Images,
+) -> Result<Grammar, String> {
+    let sections = busbar_plugin_loader::instance::plane_sections::plane_sections(
+        aliases
+            .iter()
+            .filter(|(identity, _)| {
+                proofs
+                    .get(identity)
+                    .is_some_and(|proof| proof.kind == busbar_plugin_abi::types::KindCode::Plane)
+            })
+            .map(|(identity, alias)| (identity.as_str(), alias.as_str())),
+        busbar_kernel::config::recognizer::is_core_key,
+    )
+    .map_err(|refusal| refusal.to_string())?;
+    let serving = sections
+        .names()
+        .filter(|name| {
+            sections
+                .identity_of_section(name)
+                .is_some_and(|identity| images.serves_http(identity))
+        })
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    Ok(grammar.with_http_instances(serving))
 }
