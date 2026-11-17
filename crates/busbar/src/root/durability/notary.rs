@@ -110,10 +110,11 @@ pub(crate) struct NotaryEnd {
     pub(crate) stamped_through: u64,
     /// The last stamp staged (a staged stamp still commits with the journal's final flush).
     pub(crate) committed_through: u64,
-    /// The live signer handle, for the final page.
-    pub(crate) live: SignerHandle<Live>,
     /// Why stamping stopped before `stop()`, if it did.
     pub(crate) halted: Option<String>,
+    /// The final page (SEALING-FIX §3.6.3 step 3): `Some(true)` staged, `Some(false)` its sign failed
+    /// (`audit_final=signer_failed`), `None` when no line was left unstamped or stamping had halted.
+    pub(crate) final_staged: Option<bool>,
 }
 
 /// THE RUNNING NOTARY. The root keeps it to stop it at shutdown and to check it from the
@@ -138,12 +139,6 @@ impl NotaryTask {
     #[must_use]
     pub(crate) fn exited(&self) -> Arc<AtomicBool> {
         Arc::clone(&self.exited)
-    }
-
-    /// Whether the task has ended (a panic, or after `stop`).
-    #[must_use]
-    pub(crate) fn is_finished(&self) -> bool {
-        self.join.is_finished()
     }
 
     /// The age the stall alert fires at: ten pages, at least one second.
@@ -206,6 +201,7 @@ struct Notary {
     parked: bool,
     halted: Option<String>,
     stopping: bool,
+    drain_clock: Option<Arc<busbar_kernel::governance::drain::DrainClock>>,
 }
 
 /// START THE NOTARY on the current runtime (the control runtime, from boot).
@@ -215,6 +211,7 @@ pub(crate) fn spawn(
     journal: Arc<RuntimeJournal>,
     feed: Arc<HeadFeed>,
     live: SignerHandle<Live>,
+    drain_clock: Option<Arc<busbar_kernel::governance::drain::DrainClock>>,
 ) -> NotaryTask {
     let every_ms = cfg.every_ms.clamp(1, 1_000);
     let cfg = NotaryConfig { every_ms, ..cfg };
@@ -251,6 +248,7 @@ pub(crate) fn spawn(
         parked: false,
         halted: None,
         stopping: false,
+        drain_clock,
     };
     let exited = Arc::new(AtomicBool::new(false));
     let flag = ExitFlag(Arc::clone(&exited));
@@ -323,11 +321,118 @@ impl Notary {
         if self.parked {
             self.feed.cell.unpark();
         }
+        let final_staged = self.final_page().await;
         NotaryEnd {
             stamped_through: self.stamped_through,
             committed_through: self.committed_through,
-            live: self.live,
             halted: self.halted,
+            final_staged,
+        }
+    }
+
+    /// THE FINAL PAGE, made by this task on stop (SEALING-FIX §3.6.3 step 3), so the notary's state
+    /// has one stager only. An outstanding live sign is awaited and discarded (it was never staged,
+    /// so `committed_through` does not include it); then, if lines are left unstamped, one `final`
+    /// page `{committed_through + 1 ..= head}` is signed on the notary signer thread under
+    /// [`SIGN_DEADLINE`] and staged. The journal's final flush commits it after every staged page,
+    /// so pages stay contiguous and never overlap. The drain detaches this task at its cut.
+    async fn final_page(&mut self) -> Option<bool> {
+        if let Some(signing) = self.signing.take() {
+            let _ = self.final_sign(signing.deadline, signing.rx).await;
+        }
+        if self.halted.is_some() {
+            return None;
+        }
+        let head = self.feed.head();
+        if head.seq <= self.committed_through {
+            return None;
+        }
+        if self.seal_cut_expired() {
+            return Some(false);
+        }
+        let stamp = Stamp {
+            node: self.cfg.node,
+            from: self.committed_through.saturating_add(1),
+            to: head.seq,
+            fingerprint: Fingerprint(head.fp),
+            kind: StampKind::Final,
+            sealer: self.cfg.node,
+            host: self.cfg.host.clone(),
+            every: self.cfg.every_ms,
+            stamped_ms: busbar_kernel::store::now_ms(),
+            down_from_ms: 0,
+            down_to_ms: 0,
+            crypto: String::new(),
+            sig_alg: String::new(),
+            key_id: String::new(),
+            key_cert: self.cfg.key_cert,
+            signature: Vec::new(),
+        };
+        let signed = match self.live.submit(stamp) {
+            Ok(rx) => match self.final_sign(Instant::now() + SIGN_DEADLINE, rx).await {
+                Some(stamp) => stamp,
+                None => return Some(false),
+            },
+            Err(_) => return Some(false),
+        };
+        let Ok(body) = stamp_body(&signed) else {
+            return Some(false);
+        };
+        let entry = Entry::new(RecordClass::Transaction, body).at(signed.stamped_ms / 1000, 0);
+        if self.seal_cut_expired() {
+            return Some(false);
+        }
+        match self.journal.stage_run(&[entry]) {
+            Ok(_) => {
+                self.committed_through = head.seq;
+                self.publish_progress();
+                Some(true)
+            }
+            Err(refused) => {
+                if refused != RuntimeError::Closed {
+                    busbar_kernel::diag_error!(
+                        busbar_kernel::diagnostics::AUDIT_STAMP_FAILED,
+                        node = self.cfg.node,
+                        reason = %format!("{refused:?}"),
+                        "the final audit page was not staged; the next process on the host seals the tail"
+                    );
+                }
+                Some(false)
+            }
+        }
+    }
+
+    fn seal_cut_expired(&self) -> bool {
+        self.drain_clock.as_ref().is_some_and(|clock| {
+            clock.expired()
+                || clock.armed_at().is_some_and(|at| {
+                    Instant::now() >= clock.limit(at, busbar_kernel::governance::drain::Cut::Seal)
+                })
+        })
+    }
+
+    /// Both the discarded live job and the final job share the seal phase's remaining time.
+    /// A second shutdown signal ends the wait as well; detachment never grants a later stage.
+    async fn final_sign(
+        &self,
+        deadline: Instant,
+        rx: oneshot::Receiver<Result<Stamp, SignFailure>>,
+    ) -> Option<Stamp> {
+        if self.seal_cut_expired() {
+            return None;
+        }
+        if let Some(clock) = &self.drain_clock {
+            let deadline = clock.armed_at().map_or(deadline, |at| {
+                deadline.min(clock.limit(at, busbar_kernel::governance::drain::Cut::Seal))
+            });
+            let mut expired = clock.expired_rx();
+            tokio::select! {
+                biased;
+                _ = expired.wait_for(|value| *value) => None,
+                result = tokio::time::timeout_at(deadline, rx) => result.ok()?.ok()?.ok(),
+            }
+        } else {
+            tokio::time::timeout_at(deadline, rx).await.ok()?.ok()?.ok()
         }
     }
 
