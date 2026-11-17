@@ -133,6 +133,12 @@ impl InvocationContext {
         self.unit
     }
 
+    /// The verified key of the exact record this context checked at admission. A later numeric
+    /// unit lookup cannot replace the principal used by hooks, budgets or nested authorization.
+    pub fn principal(&self) -> Option<&Arc<busbar_contract::records::VirtualKey>> {
+        self.record.principal.as_ref()
+    }
+
     /// Hook child operations carry the same checked parent and generation.
     pub(crate) fn dispatch_hook_child(
         &self,
