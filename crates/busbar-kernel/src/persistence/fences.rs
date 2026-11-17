@@ -59,7 +59,7 @@ fn prepare(id: AttemptId, changes: Vec<Change>) -> Result<PreparedCandidate, Inv
 }
 
 /// Prepare the first authority records for a separately classified fresh dataset.
-/// The backend must still prove the complete logical dataset is empty during COMMIT.
+/// Core supplies the absent-root fence during encoding.
 pub fn initialize(
     dataset: DatasetId,
     writer: [u8; 16],
@@ -69,8 +69,8 @@ pub fn initialize(
 }
 
 /// Initialize authority and its opaque metadata in one atomic candidate. Every
-/// supplied record is guarded Absent; the backend still proves the whole dataset
-/// empty at COMMIT. Opaque values retain wiping custody throughout construction;
+/// supplied record is guarded Absent; core supplies the absent-root fence during
+/// encoding. Opaque values retain wiping custody throughout construction;
 /// this builder grants no additional control authority.
 pub fn initialize_with_records(
     dataset: DatasetId,

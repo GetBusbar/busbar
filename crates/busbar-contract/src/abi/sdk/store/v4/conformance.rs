@@ -72,6 +72,8 @@ pub trait Subject {
 
 const NS: [u8; 16] = *b"conformance.v1\0\0";
 const REGISTRAR: [u8; 16] = [0xA1; 16];
+// The tested writer must be closed by a different, live stamping writer (D299 (iv)).
+const CLOSER: [u8; 16] = [0xA2; 16];
 
 fn seal() -> SlotSeal {
     SlotSeal::acquire_for_tests()
@@ -201,16 +203,13 @@ fn closure(
     };
     candidate(
         backend,
-        writer,
+        CLOSER,
         op(operation),
         vec![Predicate {
             address: writer_at(writer),
             expected: ExpectedValue::Exact(Secret::new(open().encode().expect("open").to_vec())),
         }],
-        vec![Mutation::Put {
-            address: writer_at(writer),
-            value: Secret::new(closed.encode().expect("closed").to_vec()),
-        }],
+        control::writer_put(writer, Some(open()), closed).expect("writer closure effects"),
     )
 }
 
@@ -231,7 +230,7 @@ async fn commit(
 }
 
 async fn bootstrap(backend: &dyn PersistenceBackend) {
-    let init = initialization(backend, REGISTRAR, 1);
+    let init = initialization(backend, CLOSER, 1);
     assert!(
         matches!(
             commit(backend, &init, self_key(&init)).await,
@@ -239,6 +238,20 @@ async fn bootstrap(backend: &dyn PersistenceBackend) {
         ),
         "an empty dataset accepts its initialization"
     );
+    let register = candidate(
+        backend,
+        CLOSER,
+        op(2),
+        vec![Predicate {
+            address: writer_at(REGISTRAR),
+            expected: ExpectedValue::Absent,
+        }],
+        control::writer_put(REGISTRAR, None, open()).expect("tested writer registration effects"),
+    );
+    assert!(matches!(
+        commit(backend, &register, self_key(&register)).await,
+        Decision::Applied(_)
+    ));
 }
 
 async fn value(backend: &dyn PersistenceBackend, address: Address) -> Option<Vec<u8>> {
@@ -279,11 +292,9 @@ pub async fn detached_original_after_reuse(subject: &impl Subject) {
     assert_eq!(value(b, at(b"counter")).await.as_deref(), Some(&b"b"[..]));
 }
 
-/// 8.2 A lost reply on a self-fenced Initialize that applied: its own registrar is
-/// admitted, so the retry passes the fence and fails the root `Absent` predicate
-/// (CONDITION_CONFLICT, §2.5 steps 4-5), never a fresh apply or a refusal. The host
-/// readback then finds its writer row and resolves Applied. A peer's Initialize is
-/// FENCED instead (`initialize_race_lost_reply`).
+/// 8.2 A lost reply on a self-fenced Initialize that applied: its `Absent(root)` fence
+/// fails on retry (D299 §2.5, §8). The host readback finds its writer row and resolves
+/// Applied. A peer's Initialize is FENCED too (`initialize_race_lost_reply`).
 pub async fn initialize_lost_reply(subject: &impl Subject) {
     let b = subject.backend();
     let init = initialization(b, REGISTRAR, 1);
@@ -293,7 +304,7 @@ pub async fn initialize_lost_reply(subject: &impl Subject) {
     ));
     assert!(matches!(
         commit(b, &init, self_key(&init)).await,
-        Decision::ConditionConflict
+        Decision::Fenced
     ));
 }
 
@@ -335,6 +346,9 @@ pub async fn register_race(subject: &impl Subject) {
         Decision::Applied(_)
     ));
     let register = |writer: [u8; 16], n: u64| {
+        let mut mutations =
+            control::writer_put(writer, None, open()).expect("registration effects");
+        mutations.push(put(b"birth", &writer));
         candidate(
             b,
             REGISTRAR,
@@ -349,13 +363,7 @@ pub async fn register_race(subject: &impl Subject) {
                     expected: ExpectedValue::Exact(Secret::new(b"pending".to_vec())),
                 },
             ],
-            vec![
-                Mutation::Put {
-                    address: writer_at(writer),
-                    value: Secret::new(open().encode().expect("open").to_vec()),
-                },
-                put(b"birth", &writer),
-            ],
+            mutations,
         )
     };
     let winner = register([0xC1; 16], 21);
@@ -373,6 +381,11 @@ pub async fn register_race(subject: &impl Subject) {
         Some(&open().encode().expect("open")[..])
     );
     assert_eq!(value(b, writer_at([0xC2; 16])).await, None);
+    assert_eq!(
+        value(b, control::epoch_row([0xC1; 16], 1)).await.as_deref(),
+        Some(control::EPOCH_VALUE)
+    );
+    assert_eq!(value(b, control::epoch_row([0xC2; 16], 1)).await, None);
 }
 
 /// 8.3 Identical resends replay (one effect, including a concurrent race); a
@@ -483,6 +496,12 @@ pub async fn zombie_fenced_in_doubt(subject: &impl Subject) {
         subject.slot_rows(REGISTRAR),
         0,
         "closure deletes the writer's rows"
+    );
+    assert_eq!(value(b, control::epoch_row(REGISTRAR, 1)).await, None);
+    assert_eq!(
+        value(b, control::epoch_row(CLOSER, 1)).await.as_deref(),
+        Some(control::EPOCH_VALUE),
+        "closure preserves the stamping writer's epoch"
     );
     assert!(matches!(commit(b, &x, slot(6, 1)).await, Decision::Fenced));
 }
@@ -599,10 +618,7 @@ pub async fn clean_exit_and_crash(subject: &impl Subject) {
             address: writer_at(crashed),
             expected: ExpectedValue::Absent,
         }],
-        vec![Mutation::Put {
-            address: writer_at(crashed),
-            value: Secret::new(open().encode().expect("open").to_vec()),
-        }],
+        control::writer_put(crashed, None, open()).expect("crashed writer registration effects"),
     );
     assert!(matches!(
         commit(b, &register, self_key(&register)).await,
@@ -639,6 +655,11 @@ pub async fn clean_exit_and_crash(subject: &impl Subject) {
         Decision::Applied(_)
     ));
     assert_eq!(subject.slot_rows(REGISTRAR), 0);
+    assert_eq!(value(b, control::epoch_row(REGISTRAR, 1)).await, None);
+    assert_eq!(
+        value(b, control::epoch_row(crashed, 1)).await.as_deref(),
+        Some(control::EPOCH_VALUE)
+    );
     assert_eq!(
         subject.slot_rows(crashed),
         5,
