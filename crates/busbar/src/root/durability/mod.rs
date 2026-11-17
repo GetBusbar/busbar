@@ -597,3 +597,7 @@ mod notary_tests;
 #[cfg(test)]
 #[path = "../tests/durability_signer.rs"]
 mod signer_tests;
+
+#[cfg(test)]
+#[path = "../tests/response_intent.rs"]
+mod response_intent_tests;

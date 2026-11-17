@@ -7,6 +7,9 @@
 #![deny(missing_docs)]
 #![deny(rustdoc::broken_intra_doc_links)]
 
+#[cfg(test)]
+mod response_intent_tests;
+
 // busbar:request-path
 #[cfg_attr(
     not(test),
