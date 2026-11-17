@@ -26,6 +26,7 @@ pub(crate) async fn serve_admitted(
 ) -> std::io::Result<()> {
     let (stop, stopped) = watch::channel(false);
     let mut connections = JoinSet::new();
+    let mut task_failure = None;
     let mut shutdown = std::pin::pin!(shutdown);
     loop {
         let (admitted, guard) = tokio::select! {
@@ -34,7 +35,8 @@ pub(crate) async fn serve_admitted(
             finished = connections.join_next(), if !connections.is_empty() => {
                 // The connection has already retired its original owners before returning.
                 if let Some(Err(error)) = finished {
-                    return Err(std::io::Error::other(error));
+                    task_failure = Some(std::io::Error::other(error));
+                    break;
                 }
                 continue;
             },
@@ -75,9 +77,14 @@ pub(crate) async fn serve_admitted(
     }
     let _ = stop.send(true);
     while let Some(result) = connections.join_next().await {
-        result.map_err(std::io::Error::other)?;
+        if let Err(error) = result {
+            task_failure.get_or_insert_with(|| std::io::Error::other(error));
+        }
     }
-    Ok(())
+    match task_failure {
+        Some(error) => Err(error),
+        None => Ok(()),
+    }
 }
 
 async fn accepted(

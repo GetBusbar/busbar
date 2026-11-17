@@ -97,14 +97,26 @@ pub(super) async fn prepare(
             }
             RouteTarget::Core(_) => return Err(InputError::Invalid),
         };
-        let registered = RegisteredResponse::register(
+        let registered = match RegisteredResponse::register(
             &connection,
             &registrations,
             authority,
             ready.owner,
             deadline,
         )
-        .await?;
+        .await
+        {
+            Ok(registered) => registered,
+            Err(error) => {
+                // Release the unpublished receiver before joining a bounded producer that may
+                // be waiting to send into it. No registered delivery receipt is invented here.
+                drop(response);
+                if let Some(settlement) = settlement {
+                    settlement.registration_failed().await?;
+                }
+                return Err(error);
+            }
+        };
         Ok(Prepared {
             response,
             registered,
