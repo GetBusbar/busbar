@@ -317,7 +317,8 @@ impl WriterRetirements {
         let body = fence.candidate();
         // Preserve the shared writer transition's epoch and slot cleanup, and retain
         // the predecessor mark in that same exact candidate through every retry.
-        let mut mutations = body.mutations.clone();
+        let mut mutations = control::writer_put(writer, Some(old), permanently_closed)
+            .ok_or("invalid writer retirement transition")?;
         mutations.push(native::Mutation::Put {
             address: mark_address,
             value: Secret::new(
