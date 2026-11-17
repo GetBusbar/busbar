@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::*;
+use busbar_contract::response_delivery::CarrierFault;
 
 fn ledger(spans: usize, responses: usize) -> DeliveryLedger {
     DeliveryLedger::new(

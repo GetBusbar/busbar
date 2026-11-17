@@ -4,14 +4,15 @@
 //! Host-owned response write attribution and bounded lifecycle controls.
 
 use std::collections::VecDeque;
+use std::fmt;
 use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::task::{Context, Poll, Waker};
 
 use busbar_contract::response_delivery::{
-    CarrierFault, CarrierProgress, CompletionRequirement, DeliveryReader, DeliverySnapshot,
-    DeliveryTerminal, ResponseKey, ResponseStop, WireClass,
+    CarrierProgress, CompletionRequirement, DeliveryReader, DeliverySnapshot, DeliveryTerminal,
+    ResponseKey, ResponseStop, WireClass,
 };
 use futures::task::AtomicWaker;
 
@@ -226,6 +227,16 @@ pub struct DeliveryLedger {
     observed: CarrierProgress,
     retired: bool,
     poisoned: bool,
+}
+
+impl fmt::Debug for DeliveryLedger {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DeliveryLedger")
+            .field("pending_spans", &self.spans.len())
+            .field("live_responses", &self.entries.len())
+            .field("retired", &self.retired)
+            .finish_non_exhaustive()
+    }
 }
 
 /// A linear reservation after whole-batch validation; no byte I/O may precede commit.
