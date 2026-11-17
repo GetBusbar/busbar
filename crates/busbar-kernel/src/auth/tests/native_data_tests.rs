@@ -530,28 +530,7 @@ async fn native_data_keeps_gate_closed_until_actual_money_and_physical_join() {
                 .is_none(),
             "direct UnitRecords must enforce the same gate"
         );
-        let ctx = crate::teller::UnitCtx {
-            call: busbar_contract::caps::CallId::UNBOUND,
-            key: admitted.unit(),
-            origin: busbar_contract::caps::OriginKind::Client,
-            session: None,
-            generation: crate::registry::Generation::FIRST,
-            admin_listener: false,
-            kernel_verb_only: false,
-        };
-        Ok(AdmittedUnit {
-            selected: None,
-            request: admitted,
-            unit: crate::plane_driver::port::Unit {
-                ctx,
-                money: crate::plane_driver::port_money::PortMoney::new(
-                    book.clone(),
-                    Arc::from(Vec::<String>::new()),
-                    Arc::new(crate::plane_driver::CoreAudit),
-                ),
-                journal: None,
-            },
-        })
+        Ok(ordinary_unit(&book, admitted))
     });
     let pending = Arc::new(pending);
     let calls = PlaneCalls(AtomicUsize::new(0));
@@ -1029,4 +1008,82 @@ async fn native_data_task_refuses_substituted_physical_request_id() {
     ));
     assert_eq!(calls.0.load(Ordering::SeqCst), 0);
     assert!(pending.execution().is_none());
+}
+
+fn ordinary_unit(book: &Arc<PlaneMoney>, admitted: AdmittedRequest) -> AdmittedUnit {
+    let rollback = book.admission_rollback(&admitted).unwrap();
+    let ctx = crate::teller::UnitCtx {
+        call: busbar_contract::caps::CallId::UNBOUND,
+        key: admitted.unit(),
+        origin: busbar_contract::caps::OriginKind::Client,
+        session: None,
+        generation: crate::registry::Generation::FIRST,
+        admin_listener: false,
+        kernel_verb_only: false,
+    };
+    let unit = crate::plane_driver::port::Unit {
+        ctx,
+        money: crate::plane_driver::port_money::PortMoney::new(
+            book.clone(),
+            Arc::from(Vec::<String>::new()),
+            Arc::new(crate::plane_driver::CoreAudit),
+        ),
+        journal: None,
+    };
+    AdmittedUnit::ordinary(admitted, unit, rollback).unwrap()
+}
+
+#[tokio::test]
+async fn native_data_reset_after_money_rolls_back_exact_open_without_starting() {
+    let f = fixture(true);
+    let (request, selected, cx, owner) = arrival(&f, 1);
+    let binding = request.binding().clone();
+    let authorized = f
+        .route
+        .prepare(request, selected, cx)
+        .await
+        .unwrap()
+        .complete()
+        .await
+        .unwrap();
+    let allocation = NativeDataAllocation::register(authorized).unwrap();
+    let context = allocation.context().clone();
+    let gov = Arc::new(
+        crate::governance::GovState::new_with_core(crate::real_store::core().await, None, None)
+            .await
+            .unwrap(),
+    );
+    let money = Arc::new(PlaneMoney::new(gov, Arc::new(Post)));
+    let book = money.clone();
+    let pending = Arc::new(allocation.into_pending(move |receipt| {
+        let admitted = book
+            .admit_existing(
+                receipt.begin().unwrap(),
+                Arc::from(Vec::<String>::new()),
+                FeeRefund::CallerStatus,
+                ExhaustionMode::FinishUnit,
+            )
+            .unwrap();
+        let admitted = ordinary_unit(&book, admitted);
+        assert_eq!(book.open_units(), 1);
+        drop(owner); // Actual physical reset wins after the grant and before DATA starts.
+        Ok(admitted)
+    }));
+    let calls = PlaneCalls(AtomicUsize::new(0));
+    let task = begin_task(&calls, &pending);
+    let declaration = task.request_declaration().unwrap();
+    assert!(pending.pending().admit(None, None, declaration).is_err());
+    assert_eq!(calls.0.load(Ordering::SeqCst), 1);
+    assert!(pending.execution().is_none());
+    assert!(binding.check_executing().is_err());
+    assert!(!context.effects_allowed());
+    assert!(!context.is_live());
+    assert_eq!(
+        money.open_units(),
+        0,
+        "failed physical start cannot strand its monetary Open"
+    );
+    assert_eq!(f.replay.0.load(Ordering::SeqCst), 1);
+    drop(task);
+    drop(pending);
 }
