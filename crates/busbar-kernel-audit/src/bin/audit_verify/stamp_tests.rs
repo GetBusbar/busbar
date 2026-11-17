@@ -31,6 +31,7 @@ fn lines() -> Vec<Value> {
                     line[name] = json::json!(match kind {
                         Kind::Text => "",
                         Kind::Number => "0",
+                        Kind::Bytes32 => unreachable!("v7 has no raw fingerprint field"),
                     });
                 }
             }
@@ -331,5 +332,19 @@ fn a_mixed_window_preserves_the_legacy_line_signature() {
     assert_eq!(report["authenticated_records"], 2);
     assert_eq!(report["legacy_signed_lines"], 1);
     body["records"][0]["signature"] = json::json!("00".repeat(64));
+    assert!(verify(&keys(), &body, None).is_err());
+}
+
+#[test]
+fn linked_lines_cannot_bypass_page_authority_via_a_legacy_envelope() {
+    let lines = lines();
+    let mut body = range(&lines, vec![]);
+    body["recipe"] = json::json!(DIGEST_RECIPE_V7);
+    body["signature_domain"] = json::json!(SIGNATURE_DOMAIN);
+    for index in 0..2 {
+        let hash = text(&body["records"][index], "hash").unwrap().to_owned();
+        body["records"][index]["signature"] = json::json!(signer().sign_digest(&hash));
+        body["records"][index]["key_id"] = json::json!(signer().key_id());
+    }
     assert!(verify(&keys(), &body, None).is_err());
 }
