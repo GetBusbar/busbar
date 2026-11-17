@@ -219,6 +219,11 @@ async fn commit(
     c: &PreparedCandidate,
     key: CommitKey,
 ) -> Decision {
+    assert_eq!(
+        control::admit(c),
+        Ok(()),
+        "conformance candidates must declare every D299 writer effect before submission"
+    );
     backend
         .commit(c.clone(), key)
         .await
