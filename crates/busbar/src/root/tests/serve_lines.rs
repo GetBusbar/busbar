@@ -740,3 +740,84 @@ async fn an_explicit_zero_inbound_limit_keeps_concurrency_unlimited() {
     release.add_permits(2);
     assert_eq!(service.await.unwrap(), 0);
 }
+
+#[tokio::test]
+async fn network_retirement_wakes_stdio_without_a_local_unit_completion() {
+    let budget = ProcessAdmission::new(2);
+    let network = budget.try_enter(AdmissionClass::Data).unwrap();
+    let operator = budget.try_enter(AdmissionClass::Operator).unwrap();
+    let service_budget = Arc::clone(&budget);
+    let (stop, stopped) = tokio::sync::oneshot::channel();
+    let (started, mut starts) = mpsc::channel(1);
+    let service = tokio::spawn(async move {
+        run_io_with_limits(
+            TEST_CARRIER,
+            &b"one\n"[..],
+            tokio::io::sink(),
+            async { let _ = stopped.await; },
+            move |_| {
+                (
+                    move |line| {
+                        let started = started.clone();
+                        async move { started.send(line).await.unwrap(); }
+                    },
+                    || {},
+                )
+            },
+            1024,
+            service_budget,
+        ).await
+    });
+    assert!(tokio::time::timeout(std::time::Duration::from_millis(10), starts.recv()).await.is_err());
+    drop(network);
+    let line = tokio::time::timeout(std::time::Duration::from_secs(1), starts.recv())
+        .await.unwrap().unwrap();
+    assert_eq!(line.as_ref(), b"one");
+    stop.send(()).unwrap();
+    assert_eq!(service.await.unwrap(), 0);
+    assert!(budget.try_enter(AdmissionClass::Data).is_err(), "retained input outlives the answer task");
+    drop(line);
+    assert!(budget.try_enter(AdmissionClass::Data).is_ok());
+    drop(operator);
+}
+
+#[tokio::test]
+async fn cancelling_a_partial_actual_line_returns_its_payload_credit() {
+    let budget = ProcessAdmission::new(2);
+    let request = budget.try_enter(AdmissionClass::Data).unwrap();
+    let (mut input, reader) = tokio::io::duplex(32);
+    let caller = caller_over(reader);
+    let mut read = Box::pin(caller.read_input(request.clone()));
+    input.write_all(b"abc").await.unwrap();
+    assert!(tokio::time::timeout(std::time::Duration::from_millis(10), &mut read).await.is_err());
+    let remaining = request.try_reserve(224 * 1024 * 1024 - 3).unwrap();
+    assert!(request.try_reserve(1).is_err(), "partial payload is already charged");
+    drop(read);
+    let returned = request.try_reserve(3).expect("cancellation retires the actual partial buffer");
+    drop(returned);
+    drop(remaining);
+}
+
+#[tokio::test]
+async fn stopping_stdio_waiting_on_network_capacity_has_no_local_task_dependency() {
+    let budget = ProcessAdmission::new(2);
+    let network = budget.try_enter(AdmissionClass::Data).unwrap();
+    let service_budget = Arc::clone(&budget);
+    let (stop, stopped) = tokio::sync::oneshot::channel();
+    let service = tokio::spawn(async move {
+        run_io_with_limits(
+            TEST_CARRIER,
+            &b"unread\n"[..],
+            tokio::io::sink(),
+            async { let _ = stopped.await; },
+            |_| (|_| async { panic!("capacity does not admit a line"); }, || {}),
+            1024,
+            service_budget,
+        ).await
+    });
+    tokio::task::yield_now().await;
+    stop.send(()).unwrap();
+    assert_eq!(tokio::time::timeout(std::time::Duration::from_secs(1), service).await.unwrap().unwrap(), 0);
+    drop(network);
+    assert!(budget.try_enter(AdmissionClass::Data).is_ok());
+}

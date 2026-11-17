@@ -487,5 +487,41 @@ async fn configured_exhaustion_reports_one_clear_operator_error_and_takes_no_pre
     assert!(pairing.closed());
 }
 
+#[tokio::test]
+async fn queued_datagram_payload_retains_the_opening_request_until_last_owned_read() {
+    use busbar_kernel::limits::process_admission::{AdmissionClass, ProcessAdmission};
+    use busbar_kernel::plane_driver::SessionCaller;
+    let budget = ProcessAdmission::new(2);
+    let request = budget.try_enter(AdmissionClass::Data).unwrap();
+    let door = ClaimDoor::serve(ReadyPort::open(bind("127.0.0.1:0").unwrap()).unwrap());
+    let from = Messages::new(2);
+    let leg = CallerLeg::new(&door, Arc::clone(&from), request.clone());
+    let pairing = Pairing::new(Arc::clone(&leg) as Arc<dyn busbar_core_connector::datagram::LegSink>, door.local());
+    *lock(&leg.pairing) = Some(Arc::clone(&pairing));
+    leg.take(vec![got(1, b"data", false)], Instant::now());
+    let remaining = request.try_reserve(224 * 1024 * 1024 - 4).unwrap();
+    assert!(request.try_reserve(1).is_err(), "the queue is charged before any receiver reads");
+    let (head, _) = tokio::sync::oneshot::channel();
+    let caller = super::DatagramCaller {
+        leg,
+        from,
+        head: std::sync::Mutex::new(Some(head)),
+        stated: std::sync::atomic::AtomicU32::new(0),
+        opened: std::sync::atomic::AtomicBool::new(true),
+    };
+    assert!(caller.read().await.is_none(), "bare reads cannot strip custody or dequeue");
+    let input = caller.read_owned().await.unwrap();
+    assert_eq!(input.bytes, b"data");
+    pairing.close();
+    drop(caller);
+    drop(pairing);
+    drop(request);
+    drop(remaining);
+    assert!(budget.try_enter(AdmissionClass::Data).is_err(), "transport teardown does not retire retained input");
+    assert!(budget.try_enter(AdmissionClass::Operator).is_ok(), "Data never takes the recovery floor");
+    drop(input);
+    assert!(budget.try_enter(AdmissionClass::Data).is_ok());
+}
+
 include!(concat!(env!("OUT_DIR"), "/context_test_sources.rs"));
 owner_test_sources!(datagram_wire);
