@@ -24,6 +24,17 @@ pub enum Direction {
     Write,
 }
 
+/// Construct a deadline on the supplied runtime, even when the future is polled elsewhere.
+/// The runtime owner must keep its I/O/time drivers alive for the operation's lifetime.
+pub fn timeout_on<F: std::future::Future>(
+    runtime: &tokio::runtime::Handle,
+    duration: std::time::Duration,
+    future: F,
+) -> tokio::time::Timeout<F> {
+    let _entered = runtime.enter();
+    tokio::time::timeout(duration, future)
+}
+
 /// The process's one runtime, as the root installed it at boot.
 static PROCESS_REACTOR: std::sync::OnceLock<tokio::runtime::Handle> = std::sync::OnceLock::new();
 
@@ -43,3 +54,7 @@ pub(crate) fn enter_process_runtime() -> Option<tokio::runtime::EnterGuard<'stat
 #[cfg(test)]
 #[path = "tests/io_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/explicit_runtime_tests.rs"]
+mod explicit_runtime_tests;

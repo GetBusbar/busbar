@@ -206,6 +206,8 @@ impl Table {
 pub struct HostIo {
     handles: Table,
     admitted: Mutex<HashMap<Ticket, Admitted>>,
+    /// Native generation ownership. None is only the existing legacy constructor's policy.
+    runtime: Option<tokio::runtime::Handle>,
 }
 
 impl std::fmt::Debug for HostIo {
@@ -246,6 +248,23 @@ impl HostIo {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Native host I/O registered exclusively on this retained runtime handle.
+    /// The root retains the runtime itself until every generation lease has retired.
+    #[must_use]
+    pub fn new_on(runtime: tokio::runtime::Handle) -> Self {
+        Self {
+            runtime: Some(runtime),
+            ..Self::default()
+        }
+    }
+
+    fn register<T: reactor::Source>(&self, socket: T) -> io::Result<Registered<T>> {
+        match &self.runtime {
+            Some(runtime) => reactor::register_on(runtime, socket),
+            None => reactor::register(socket),
+        }
     }
 
     /// How many handles it holds.
@@ -512,7 +531,7 @@ impl IoHost for HostIo {
                 return Err(IoRefusal::Failed(text));
             }
         };
-        let sock = reactor::register(sock).map_err(|e| {
+        let sock = self.register(sock).map_err(|e| {
             self.record(
                 ticket,
                 None,
@@ -548,7 +567,7 @@ impl IoHost for HostIo {
         let local = l
             .local_addr()
             .map_err(|e| failed_bind("local address", &e))?;
-        let sock = reactor::register(l).map_err(|e| failed_bind("register", &e))?;
+        let sock = self.register(l).map_err(|e| failed_bind("register", &e))?;
         let id = self.handles.make(owner, Kind::Listener(sock))?;
         self.record(ticket, Some(id), None);
         Ok((id, crate::off_path::lines::bound_address(&local)))
@@ -577,7 +596,7 @@ impl IoHost for HostIo {
                         continue;
                     }
                     let _ = stream.set_nodelay(true);
-                    let sock = match reactor::register(Sock::Tcp(stream)) {
+                    let sock = match self.register(Sock::Tcp(stream)) {
                         Ok(s) => s,
                         Err(e) => return Poll::Ready(Err(failed(&e))),
                     };
@@ -770,6 +789,9 @@ impl IoHost for HostIo {
                 "a program working directory must be an unpadded absolute path without NUL".into(),
             ));
         }
+        // Pipe registration and Command::spawn are synchronous. The guard never crosses an await;
+        // it pins both the Unix child driver and Windows overlapped pipes to this generation.
+        let _entered = self.runtime.as_ref().map(tokio::runtime::Handle::enter);
         if tokio::runtime::Handle::try_current().is_err() {
             return Err(IoRefusal::Failed(reactor::NOT_ON_A_WORKER.into()));
         }
