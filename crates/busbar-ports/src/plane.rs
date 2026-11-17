@@ -63,6 +63,11 @@ pub enum PlaneOut<'o> {
     },
     Fact(u32, FactRef<'o>),
     Conversation(&'o [u8]),
+    /// Selected exchange-zero correlation; host authority is retained separately.
+    SelectedResource(busbar_plugin_abi::fallback_usage::SelectedResource<'o>),
+    PreparedEstimates(busbar_plugin_abi::fallback_usage::PreparedEstimates<'o>),
+    AttemptUsage(busbar_plugin_abi::fallback_usage::AttemptUsage<'o>),
+    AttemptUsageEnd(busbar_plugin_abi::fallback_usage::AttemptEnd),
     Usage {
         class: &'o str,
         amount: u64,
@@ -354,6 +359,10 @@ pub trait PlanePort: Send + Sync + 'static {
 
     fn dialects(&self) -> &[Box<str>];
     fn usage_classes(&self) -> &[UsageClass];
+    /// Frozen D_ATTEMPT_CLASS subset. An opted-in image cannot use the legacy empty default.
+    fn attempt_classes(&self) -> &[Box<str>] {
+        &[]
+    }
     fn facts(&self) -> u64;
     /// D_TICK_S, if declared.
     fn tick_s(&self) -> Option<u64>;
@@ -389,6 +398,26 @@ pub trait PlanePort: Send + Sync + 'static {
         bytes: &[u8],
         sink: &mut dyn FnMut(PlaneOut<'_>),
     ) -> Result<(), PortError>;
+    /// Calls piece once using charged caller-owned output, returning its fully validated record length.
+    /// The caller must establish admission and live lease authority before entry, classify the complete
+    /// answer, and acquire any required general capacity before applying effects. No sink runs here.
+    /// Foreign/test ports must opt into this contract; the default never falls back to pooled `piece`.
+    fn piece_fixed(
+        &self,
+        s: &mut PlaneSession,
+        from: u32,
+        exchange: u32,
+        flags: u32,
+        bytes: &[u8],
+        out: &mut [u8],
+    ) -> Result<usize, PortError> {
+        let _ = (s, from, exchange, flags, bytes, out);
+        Err(PortError::Refused {
+            code: busbar_plugin_abi::fail::refused::R_UNSUPPORTED,
+            text: "".into(),
+            error: None,
+        })
+    }
     fn rewrite(
         &self,
         s: &mut PlaneSession,

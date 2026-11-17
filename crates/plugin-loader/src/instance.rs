@@ -50,6 +50,13 @@ use busbar_ports::store::StoreHandle;
 use busbar_ports::transport::TransportPort;
 use busbar_ports::PluginCode;
 
+/// The real native auth instance's settled limits and method table, retained at open.
+pub struct AuthOpening {
+    pub port: Arc<dyn AuthPort>,
+    pub limits: InstanceLimits,
+    pub methods: u64,
+}
+
 /// Admission and description, before any binder, Needs or instance exists (HOST M3a).
 pub struct ImagesBuilder {
     host: &'static Host,
@@ -886,6 +893,16 @@ impl Registry {
         needs: &Arc<N>,
         refs: &Arc<dyn RefSource>,
     ) -> BoxFut<'_, Result<Arc<dyn AuthPort>, OpenError>> {
+        let opened = self.open_auth_reserved_with_metadata(prepared, needs, refs);
+        Box::pin(async move { opened.await.map(|opened| opened.port) })
+    }
+
+    pub fn open_auth_reserved_with_metadata<N: Needs>(
+        &self,
+        prepared: PreparedInstance,
+        needs: &Arc<N>,
+        refs: &Arc<dyn RefSource>,
+    ) -> BoxFut<'_, Result<AuthOpening, OpenError>> {
         let owned = OwnedSpec::new(&prepared.spec());
         let needs = Arc::clone(needs);
         let refs = Arc::clone(refs);
@@ -896,6 +913,8 @@ impl Registry {
                 .await?;
             let proxy =
                 busbar_plugin_abi::auth::Proxy::bind(opened.instance).ok_or_else(not_this_kind)?;
+            let limits = proxy.instance().limits;
+            let methods = proxy.instance().methods;
             let frame = chains::frame(&opened.described.items);
             let adapter = crate::adapters::auth::AuthAdapter::new(
                 proxy,
@@ -910,7 +929,11 @@ impl Registry {
             })?;
             self.remember(&spec, KindCode::Auth, &needs, &refs, None);
             let port: Arc<dyn AuthPort> = Arc::new(adapter);
-            Ok(port)
+            Ok(AuthOpening {
+                port,
+                limits,
+                methods,
+            })
         })
     }
 

@@ -60,7 +60,16 @@ impl Projection {
                 ..=busbar_plugin_abi::fail::fact::PJ_TEXT_COMPLETE)
                 .contains(key)
             {
-                self.facts.retain(|(held, _)| held != key);
+                self.facts.retain_mut(|(held, value)| {
+                    if held != key {
+                        return true;
+                    }
+                    if let FactVal::Text(text) = value {
+                        use zeroize::Zeroize;
+                        text.as_mut().zeroize();
+                    }
+                    false
+                });
                 self.facts.push((*key, value.clone()));
             }
         }
@@ -73,9 +82,9 @@ impl Projection {
         }
     }
 
-    fn rewritten(&mut self, bytes: Vec<u8>, answer: &Answer) {
+    fn rewritten(&mut self, bytes: SecureVec, answer: &Answer) {
         use busbar_plugin_abi::fail::fact::*;
-        self.conversation = Some(SecureVec::from(bytes));
+        self.conversation = Some(bytes);
         self.facts.retain(|(key, _)| {
             !matches!(
                 *key,
@@ -192,3 +201,6 @@ pub trait Binder: Send + Sync {
     fn enforcing(&self, route: u32) -> bool;
     fn select(&self, input: &Selection<'_>) -> Result<Selected, &'static str>;
 }
+
+#[cfg(test)]
+pub(crate) mod tests;

@@ -544,6 +544,14 @@ pub struct GroupView {
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
 pub struct LimitView {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub upstream_resource: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub per_key: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enforcement: Option<&'static str>,
     /// One of `requests` | `tokens` | `budget` | `concurrent`.
     pub metric: &'static str,
     /// The cap amount (requests/tokens/cents, or the in-flight gauge for `concurrent`).
@@ -566,6 +574,10 @@ pub struct LimitView {
 impl LimitView {
     pub fn from_cfg(l: &busbar_kernel::config::LimitCfg) -> Self {
         LimitView {
+            id: l.selected.as_ref().map(|selected| selected.id().to_owned()),
+            upstream_resource: l.selected.as_ref().map(|selected| selected.selector()),
+            per_key: l.selected.as_ref().map(|_| true),
+            enforcement: l.selected.as_ref().map(|_| "process"),
             metric: l.metric.as_str(),
             amount: l.amount,
             per: l.per.map(|w| w.as_str()),

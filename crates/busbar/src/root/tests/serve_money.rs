@@ -311,6 +311,7 @@ async fn governed_full(
     let groups: BTreeMap<String, busbar_kernel::config::GroupCfg> = budget
         .map(|amount| {
             let limit = busbar_kernel::config::groups::LimitCfg {
+                selected: None,
                 metric: busbar_kernel::config::groups::LimitMetric::Budget,
                 amount,
                 per: Some(busbar_kernel::config::groups::LimitWindow::Total),
@@ -1187,6 +1188,9 @@ fn session_custody_routes(g: &mut Governed, pools_plane: bool) -> Arc<super::Dat
 
 fn session_custody_request(g: &Governed, target: &str) -> super::DoorRequest {
     super::DoorRequest {
+        request: busbar_kernel::limits::process_admission::ProcessAdmission::new(0)
+            .try_enter(busbar_kernel::limits::process_admission::AdmissionClass::Data)
+            .unwrap(),
         method: axum::http::Method::POST,
         uri: target.parse().expect("fixture target"),
         headers: Default::default(),
@@ -1711,6 +1715,7 @@ struct ReservedSource {
 async fn reserved_source(g: &Governed, group: &str) -> ReservedSource {
     use busbar_kernel::config::groups::{GroupCfg, LimitCfg, LimitMetric, LimitWindow};
     let limit = |metric, per| LimitCfg {
+        selected: None,
         metric,
         amount: 1,
         per,
@@ -1869,6 +1874,7 @@ async fn assert_concurrent_custody(g: &Governed, group: &str, held: bool, now: u
         GroupCfg {
             enabled: true,
             limits: vec![LimitCfg {
+                selected: None,
                 metric: LimitMetric::Concurrent,
                 amount: 1,
                 per: None,

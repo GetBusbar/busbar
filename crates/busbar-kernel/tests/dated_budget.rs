@@ -86,6 +86,7 @@ fn cost(input_utok: f64, cap: u64) -> CostModel {
         busbar_kernel::config::GroupCfg {
             enabled: true,
             limits: vec![LimitCfg {
+                selected: None,
                 metric: LimitMetric::Budget,
                 amount: cap,
                 per: Some(LimitWindow::Day),
@@ -550,6 +551,7 @@ async fn metered(store: &persistence::facade::CoreStore, key_id: &str, at: u64, 
     store
         .ledger()
         .add_metering(&busbar_contract::records::MeteringDelta {
+            pricing: None,
             scale: 0,
             key_id: key_id.to_string(),
             bucket: busbar_kernel::governance::metering_bucket(at),

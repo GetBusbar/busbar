@@ -29,6 +29,23 @@ pub(crate) fn grammar(plugins: &PluginsCfg) -> Result<busbar_kernel::config::Gra
     super::super::boot::images::fixture(&process()?.resources, plugins).map(|images| images.grammar)
 }
 
+/// Describe an actual admitted image before typing its deployment. Tests use these same
+/// signed-image facts for rate vocabulary and settings; no legacy declaration substitutes.
+pub(crate) fn described(
+    plugins: &PluginsCfg,
+    module: &str,
+) -> Result<busbar_plugin_loader::instance::Described, String> {
+    let admitted = super::super::boot::images::fixture(&process()?.resources, plugins)?;
+    let identity = admitted
+        .images
+        .identity_of(module)
+        .ok_or_else(|| format!("fixture image `{module}` was not admitted"))?;
+    admitted
+        .images
+        .described(&identity)
+        .ok_or_else(|| format!("fixture image `{identity}` has no admitted describe"))
+}
+
 struct Owners {
     built: Built,
     prefix: Arc<BootSecrets>,
@@ -157,11 +174,18 @@ impl PlaneFixture {
             0,
             false,
         );
+        let guests = mounts.data.guests.clone();
+        let refuse_by_path = mounts.refuse_by_path;
+        if let Some(refuse) = &refuse_by_path {
+            handle.bind_door_refuser(Arc::clone(refuse));
+        }
         let workers = workers.start();
         Ok(PublishedFixture {
             data,
             admin,
             handle,
+            guests,
+            refuse_by_path,
             routes: mounts.data,
             workers,
         })
@@ -172,6 +196,8 @@ pub(crate) struct PublishedFixture {
     pub(crate) data: axum::Router,
     pub(crate) admin: axum::Router,
     pub(crate) handle: Arc<busbar_kernel::state::AppHandle>,
+    pub(crate) guests: busbar_kernel::guest::GuestList,
+    pub(crate) refuse_by_path: Option<busbar_kernel::plane_routes::PlaneRefuseByPathFn>,
     pub(crate) routes: Arc<crate::root::serve::DataRoutes>,
     workers: crate::root::boot::workers::RunningWorkers,
 }

@@ -6,6 +6,7 @@
 //! called by the cache at most once and only when it starts the refresh-ahead mint), matching `CredGet::Direct`'s
 //! contract that a per-request call allocates what `AuthPort::outbound` allocates and nothing else.
 
+use busbar_contract::secure::SecureVec;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -16,7 +17,7 @@ use busbar_ports::{CallCx, PortError};
 
 use crate::custody::{CredGet, CredKey, CredentialCache};
 
-type Owned = Vec<(Box<str>, Vec<u8>)>;
+type Owned = Vec<(Box<str>, SecureVec)>;
 
 /// An owned copy of an [`UpstreamIn`], made only for a detached refresh-ahead mint.
 pub struct OwnedUpstreamIn {
@@ -26,14 +27,14 @@ pub struct OwnedUpstreamIn {
     body_sha256: Option<[u8; 32]>,
     caller_cred: Owned,
     scope: Option<Box<str>>,
-    caller_grant: Option<Vec<u8>>,
+    caller_grant: Option<SecureVec>,
     min_valid_s: u32,
 }
 
 fn own(pairs: &[Pair<'_>]) -> Owned {
     pairs
         .iter()
-        .map(|p| (Box::from(p.name.get()), p.value.get().to_vec()))
+        .map(|p| (Box::from(p.name.get()), SecureVec::from(p.value.get())))
         .collect()
 }
 
@@ -58,7 +59,7 @@ impl OwnedUpstreamIn {
             body_sha256: req.body_sha256,
             caller_cred: own(req.caller_cred),
             scope: req.scope.map(Box::from),
-            caller_grant: req.caller_grant.map(<[u8]>::to_vec),
+            caller_grant: req.caller_grant.map(SecureVec::from),
             min_valid_s: req.min_valid_s,
         }
     }

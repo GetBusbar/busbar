@@ -134,6 +134,7 @@ fn public_pool_readback_exposes_typed_routing_without_opaque_tags() {
 #[test]
 fn public_catalog_readback_keeps_urls_references_and_options_hidden() {
     let def = super::super::ProviderDef {
+        authored: Default::default(),
         protocol: "dialect".into(),
         base_url: "https://BASE_SECRET_CANARY".into(),
         error_map: std::collections::HashMap::from([("429".into(), "ERROR_SECRET_CANARY".into())]),

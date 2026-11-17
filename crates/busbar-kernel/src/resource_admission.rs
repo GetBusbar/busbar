@@ -305,6 +305,7 @@ impl ResourceInventory {
                     pool: forward.pool,
                     qualified_member: forward.member,
                     identity: projected.identity,
+                    resource: projected.resource,
                     upstream: forward.upstream,
                     provider: projected.provider,
                     base_path: projected.base_path,

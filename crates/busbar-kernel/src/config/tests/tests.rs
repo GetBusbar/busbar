@@ -69,6 +69,7 @@ const CATALOG_PROTOCOL: &str = "proto-a";
 
 fn provider_def(protocol: &str, base_url: &str) -> ProviderDef {
     ProviderDef {
+        authored: Default::default(),
         protocol: protocol.to_string(),
         base_url: base_url.to_string(),
         error_map: HashMap::new(),
@@ -86,6 +87,7 @@ fn provider_def(protocol: &str, base_url: &str) -> ProviderDef {
 
 fn provider_deploy(env_var: &str) -> ProviderDeploy {
     ProviderDeploy {
+        authored: Default::default(),
         api_key: crate::config::secret::descriptor_reference(env_var),
         protocol: None,
         base_url: None,
@@ -338,7 +340,7 @@ fn removed_pre_release_limits_and_drain_keys_are_refused_as_unknown() {
         ),
         (
             "advanced:\n  shutdown:\n    drain_timeout: 30s\n",
-            "shutdown",
+            "drain_timeout",
         ),
         (
             "advanced:\n  governance:\n    max_pending_checkpoints: 7\n",
@@ -1475,6 +1477,7 @@ fn test_debug_of_full_config_never_shows_resolved_secrets() {
         policy: Default::default(),
         login_limits: Default::default(),
         verdict_cache: Default::default(),
+        outbound: Default::default(),
         unknown_key_refresh_s: 30,
     };
     let mut deploy = base_deploy();
@@ -2722,7 +2725,7 @@ fn auth_refusals_describe_the_current_schema_and_source_location() {
             message,
             format!(
                 "auth.bogus_key: unknown field `bogus_key`, expected one of `unknown_key_refresh_s`, `require_if_match`, `signing_key`, `chain`, \
-                 `admin_auth`, `role_bindings`, `key_ttl`, `policy`, `login_limits`, `verdict_cache` at line {line} \
+                 `admin_auth`, `role_bindings`, `key_ttl`, `policy`, `login_limits`, `verdict_cache`, `outbound` at line {line} \
                  column 3"
             )
         );
@@ -3261,4 +3264,41 @@ fn plugin_trust_has_one_explicit_unverified_optin_and_scoped_keys() {
             busbar_contract::yaml::from_str::<PluginsTrustCfg>(&format!("{old}: true")).is_err()
         );
     }
+}
+
+#[test]
+fn shutdown_deregister_delay_is_a_bounded_document_duration() {
+    let default: AdvancedCfg = busbar_contract::yaml::from_str("{}").unwrap();
+    let view = busbar_contract::json::to_value(&default).unwrap();
+    assert_eq!(view["shutdown"]["deregister_delay"], "5s");
+    for (written, expected) in [("0s", "0s"), ("5s", "5s"), ("300s", "300s"), ("5m", "300s")] {
+        let value: AdvancedCfg =
+            busbar_contract::yaml::from_str(&format!("shutdown:\n  deregister_delay: {written}\n"))
+                .unwrap();
+        let view = busbar_contract::json::to_value(&value).unwrap();
+        assert_eq!(view["shutdown"]["deregister_delay"], expected);
+    }
+    for written in [
+        "301s",
+        "6m",
+        "-1s",
+        "0.5s",
+        "never",
+        "999999999999999999999999s",
+        "5",
+        "null",
+    ] {
+        let error = busbar_contract::yaml::from_str::<AdvancedCfg>(&format!(
+            "shutdown:\n  deregister_delay: {written}\n"
+        ))
+        .unwrap_err();
+        assert!(error.to_string().contains("deregister_delay"), "{error}");
+    }
+    assert!(
+        busbar_contract::yaml::from_str::<crate::config::patch::AdvancedPatch>(
+            "shutdown:\n  deregister_delay: 0s\n"
+        )
+        .is_err(),
+        "the new field is document-editable, not a settings patch"
+    );
 }

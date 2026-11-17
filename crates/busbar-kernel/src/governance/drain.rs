@@ -14,7 +14,7 @@ use tokio::time::Instant;
 
 use super::{GovState, LimitBlocked};
 
-/// The shutdown drain budget, from the first shutdown signal to exit: the 20 s decision 174 set.
+/// The shutdown drain budget, from the transition to Draining to exit: the 20 s decision 174 set.
 /// Fixed; there is no config key for it.
 pub const DRAIN_TIMEOUT: Duration = Duration::from_secs(20);
 
@@ -620,3 +620,50 @@ impl GovState {
 #[cfg(test)]
 #[path = "tests/drain_tests.rs"]
 mod tests;
+
+/// Retained shutdown severity. Later requests can only raise this value.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ShutdownIntent {
+    /// No shutdown requested.
+    #[default]
+    Serving,
+    /// Operator signal or released admin restart; allow deregistration propagation.
+    Operator,
+    /// Persistence failure or natural serving completion; start draining immediately.
+    Safety,
+    /// Second signal; permanently expire the shared drain clock.
+    Force,
+}
+
+/// One process's typed shutdown input, shared by root, admin and safety producers.
+#[derive(Clone)]
+pub struct ShutdownRequest {
+    intent: watch::Sender<ShutdownIntent>,
+}
+
+impl Default for ShutdownRequest {
+    fn default() -> Self {
+        Self {
+            intent: watch::Sender::new(ShutdownIntent::Serving),
+        }
+    }
+}
+
+impl ShutdownRequest {
+    /// Raise severity atomically. Repeated or weaker requests never erase a force request.
+    pub fn request(&self, requested: ShutdownIntent) {
+        self.intent.send_if_modified(|current| {
+            if requested <= *current {
+                return false;
+            }
+            *current = requested;
+            true
+        });
+    }
+
+    /// Subscribe to the retained input, including requests made before assembly completes.
+    #[must_use]
+    pub fn subscribe(&self) -> watch::Receiver<ShutdownIntent> {
+        self.intent.subscribe()
+    }
+}

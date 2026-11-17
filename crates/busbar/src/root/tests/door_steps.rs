@@ -1063,6 +1063,7 @@ async fn a_units_principal_is_recorded_from_authenticate_until_its_steps_drop() 
 fn downgrading(pool: &str, amount: u64, to: &str) -> busbar_kernel::config::groups::LimitCfg {
     use busbar_kernel::config::groups::{LimitCfg, LimitMetric, LimitWindow, OnExhaust};
     LimitCfg {
+        selected: None,
         metric: LimitMetric::Budget,
         amount,
         per: Some(LimitWindow::Day),
@@ -1335,6 +1336,7 @@ async fn a_live_parent_at_the_request_cap_admits_and_ledgers_its_child() {
 
     let (app, key) = downgrade_book(
         vec![LimitCfg {
+            selected: None,
             metric: LimitMetric::Requests,
             amount: 1,
             per: Some(LimitWindow::Day),
@@ -1843,6 +1845,7 @@ async fn exhausted_pool_walk_bills_under_a_member_lane() {
     .collect::<std::collections::BTreeMap<_, _>>();
     let (app, key) = money_book(
         vec![LimitCfg {
+            selected: None,
             metric: LimitMetric::Budget,
             amount: 1_000_000,
             per: Some(LimitWindow::Day),
@@ -2083,6 +2086,7 @@ async fn child_grant_on_a_pooled_llm_target_walks_only_the_target() {
 fn one_request_a_day() -> busbar_kernel::config::groups::LimitCfg {
     use busbar_kernel::config::groups::{LimitCfg, LimitMetric, LimitWindow};
     LimitCfg {
+        selected: None,
         metric: LimitMetric::Requests,
         amount: 1,
         per: Some(LimitWindow::Day),
@@ -2723,7 +2727,11 @@ fn a_members_base_url_userinfo_reaches_its_attempts_only_through_its_binding() {
             .expect("the member resolves");
         let route = &routes["m"];
         assert_eq!(route.base_url, "https://api.example.com/v1");
-        let binding = route.auth.as_ref().expect("its credential is bound");
+        let busbar_kernel::plane_driver::AuthBinding::Configured(binding) =
+            route.auth.as_ref().expect("its credential is bound")
+        else {
+            panic!("configured credential");
+        };
         let Some(Fields::Ready(fields)) = binding
             .auth
             .fields_now(binding.handle, &FieldsRequest::default())
@@ -3552,7 +3560,9 @@ fn presents(
     }
 }
 
-fn refused(bound: Result<Option<busbar_kernel::plane_driver::AuthBinding>, String>) -> String {
+fn refused(
+    bound: Result<Option<busbar_kernel::plane_driver::ConfiguredAuthBinding>, String>,
+) -> String {
     match bound {
         Err(why) => why,
         Ok(_) => panic!("the load was not refused"),
@@ -4619,14 +4629,16 @@ fn a_registration_members_anchors_reach_and_binding_hold_on_every_need_it_rides(
         connection_required: false,
         need: busbar_contract::conn::NeedId(1),
         base_url: "https://far.example".to_string(),
-        auth: Some(AuthBinding {
-            auth: std::sync::Arc::new(Bound),
-            handle: 1,
-            style_flags: 0,
-            points: busbar_contract::abi::auth::AuthPoints(0),
-            passthrough: false,
-            per_request: None,
-        }),
+        auth: Some(AuthBinding::Configured(
+            busbar_kernel::plane_driver::ConfiguredAuthBinding {
+                auth: std::sync::Arc::new(Bound),
+                handle: 1,
+                style_flags: 0,
+                points: busbar_contract::abi::auth::AuthPoints(0),
+                passthrough: false,
+                per_request: None,
+            },
+        )),
         provider: "fs".to_string(),
         keep: ResponseKeep::default(),
         rides: vec![(busbar_contract::conn::NeedId(2), ResponseKeep::default())],
@@ -5328,6 +5340,7 @@ async fn the_doors_admission_check_reads_the_arrival_window_and_not_the_clock() 
             parent: None,
             enabled: true,
             limits: vec![LimitCfg {
+                selected: None,
                 metric: LimitMetric::Budget,
                 amount: 1,
                 per: Some(LimitWindow::Day),
@@ -5877,7 +5890,11 @@ fn resolves_in_one_door_step(
 
 fn bearer_of(route: &busbar_kernel::plane_driver::MemberRoute) -> String {
     use busbar_contract::auth_calls::{Fields, FieldsRequest};
-    let binding = route.auth.as_ref().expect("its credential is bound");
+    let busbar_kernel::plane_driver::AuthBinding::Configured(binding) =
+        route.auth.as_ref().expect("its credential is bound")
+    else {
+        panic!("configured credential");
+    };
     let Some(Fields::Ready(fields)) = binding
         .auth
         .fields_now(binding.handle, &FieldsRequest::default())

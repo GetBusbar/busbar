@@ -503,6 +503,24 @@ fn configured(cfg: &RootCfg, planes: &[PlaneImage]) -> Result<Vec<Configured>, S
         &super::door_steps::raw_sections(cfg),
     )?);
     out.extend(hooks::configured(cfg)?);
+    let mut providers = cfg.identity_providers.iter().collect::<Vec<_>>();
+    providers.sort_by_key(|(name, _)| *name);
+    for (name, provider) in providers {
+        if busbar_kernel::config::is_builtin_identity_module(&provider.module) {
+            continue;
+        }
+        out.push(Configured {
+            kind: KindCode::Auth,
+            identity: provider.module.clone(),
+            name: name.clone(),
+            config: provider
+                .settings
+                .encode()
+                .map_err(|error| format!("identity-providers.{name}: {error}"))?
+                .into_exposed(&seal),
+            limits: instance_limits(cfg, "identity-providers", name),
+        });
+    }
     for (name, def) in &cfg.export_defs {
         out.push(Configured {
             kind: KindCode::Export,
@@ -1054,6 +1072,16 @@ pub(crate) struct ServingReady {
     _bootstrap_registry: Arc<MinRegistry>,
 }
 
+impl ServingReady {
+    /// Reserve the complete candidate before any export pump receives a producer handle.
+    pub(crate) fn export_names(&self) -> impl Iterator<Item = String> + '_ {
+        self.instances
+            .iter()
+            .filter(|instance| instance.kind == KindCode::Export)
+            .map(|instance| instance.name.clone())
+    }
+}
+
 impl BootstrapReady {
     pub(crate) fn converting(&self) -> bool {
         self.converting
@@ -1353,6 +1381,7 @@ pub(crate) async fn finish(
     services: Option<Arc<KernelServices>>,
     work_binder: Arc<WorkBinder>,
     hooks: Option<hooks::Environment<'_>>,
+    export_observers: &super::export_observer::ExportReservation,
 ) -> Result<
     (
         Startup,
@@ -1466,6 +1495,9 @@ pub(crate) async fn finish(
                 Arc::clone(port),
                 disk,
                 &instance.limits,
+                export_observers
+                    .observer(&instance.name)
+                    .ok_or("opened export has no reserved observation owner")?,
             );
             export_doors.push((instance.name.clone(), door));
         }

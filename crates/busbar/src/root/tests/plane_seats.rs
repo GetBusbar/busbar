@@ -402,6 +402,7 @@ async fn a_seat_with_no_connection_table_still_gets_its_carrier_and_walks_nothin
 
 fn stdio(argv: &[&str]) -> UpstreamDef {
     UpstreamDef {
+        resource: None,
         allow_private: false,
         name: "files".into(),
         url: None,

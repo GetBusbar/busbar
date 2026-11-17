@@ -3323,7 +3323,7 @@ pub(crate) fn door_mounts_planned(
         .iter()
         .map(|p| signed_paths(&p.snapshot.claims))
         .collect();
-    let refusals: Vec<PlaneRefusalSpec> = requests
+    let mut refusals: Vec<PlaneRefusalSpec> = requests
         .iter()
         .chain(&session_mounts)
         .filter(|(_, _, auth, _)| matches!(auth, RouteAuth::Key))
@@ -3368,6 +3368,8 @@ pub(crate) fn door_mounts_planned(
         })
         .collect();
 
+    refusals.extend(crate::root::port_mount::refusal_specs(&routes.served.ports));
+
     let refuse_by_path: busbar_kernel::plane_routes::PlaneRefuseByPathFn = {
         let routes = Arc::clone(&routes);
         Arc::new(move |r: &busbar_kernel::plane_routes::KernelRefusal<'_>| {
@@ -3383,6 +3385,30 @@ pub(crate) fn door_mounts_planned(
             let Claimant::Plane(instance) = &line.claimant else {
                 return None;
             };
+            if let Some(seat) = routes
+                .served
+                .ports
+                .iter()
+                .find(|seat| &seat.instance == instance)
+            {
+                if !seat
+                    .driver
+                    .routes()
+                    .data
+                    .iter()
+                    .any(|route| route.route == line.route.rung)
+                {
+                    return None;
+                }
+                let refusal = crate::root::native_refusals::client(r.reason, r.status, r.text);
+                return Some(crate::root::port_mount::render_kernel_refusal(
+                    seat,
+                    line.route.rung,
+                    "",
+                    r.target,
+                    refusal,
+                ));
+            }
             let (plane, _) = *routes.of_line.get(&(instance.clone(), line.route.rung))?;
             let rendered = routes.served.planes[plane].driver.refuse_kernel(
                 r.reason,

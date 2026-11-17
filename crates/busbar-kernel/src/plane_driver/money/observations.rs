@@ -59,6 +59,18 @@ pub(super) struct PendingObservation {
     scope: ScopeId,
 }
 
+fn attempt_owned(open: &Open, class: &str) -> Result<bool, ObservationRuntimeError> {
+    let Some(native) = &open.native else {
+        return Ok(false);
+    };
+    let parts = native
+        .checkpoint()
+        .partitions
+        .as_ref()
+        .ok_or(ObservationRuntimeError::Unauthorized)?;
+    Ok(parts.attempt_classes.contains(class))
+}
+
 impl PlaneMoney {
     fn observation_error(
         &self,
@@ -168,6 +180,18 @@ impl PlaneMoney {
             || policy.accounting_namespace.is_empty()
         {
             return Err(ObservationRuntimeError::Unauthorized);
+        }
+        // Ownership is frozen before effects become available. Refuse before create/resume/
+        // attach can acquire an observation liability, even when no usage has been reported.
+        for &class in &policy.classes {
+            let name = open
+                .money
+                .classes
+                .get(class as usize)
+                .ok_or(ObservationRuntimeError::Unpriced)?;
+            if attempt_owned(open, name)? {
+                return Err(ObservationRuntimeError::LegacyOverlap);
+            }
         }
         let money = open.money.clone();
         let identity = PrincipalBinding {
@@ -354,6 +378,10 @@ impl PlaneMoney {
             if open.money.classes.get(class as usize) != Some(name) || open.money.fee.is_fee(class)
             {
                 return Err(ObservationRuntimeError::Unpriced);
+            }
+            // Stored scope classes, not an attach caller's policy list, decide what is bound.
+            if attempt_owned(open, name)? {
+                return Err(ObservationRuntimeError::LegacyOverlap);
             }
             if open
                 .last

@@ -1168,7 +1168,10 @@ async fn failed_export_read_amendment_reports_integrity_without_line_loss() {
             Arc::from("export.integrity"),
             crate::export::projection::Members::default(),
         )],
-        sinks: vec![sink.clone()],
+        completion: CaptureCompletion {
+            sinks: vec![sink.clone()],
+            ..CaptureCompletion::default()
+        },
         permits: Vec::new(),
     }
     .record("export-integrity-refusal");
@@ -1200,4 +1203,212 @@ async fn saturated_capture_reports_refusal_before_rendering_any_line() {
         vec![ExportLossKind::CaptureRefused]
     );
     assert_eq!(reads_under(&s, "capture-full"), 0);
+}
+
+struct HeldCaptureRead {
+    entered: Arc<tokio::sync::Notify>,
+    release: std::sync::Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
+}
+
+impl busbar_kernel_audit::amend::AmendSink for HeldCaptureRead {
+    fn sealed(
+        &self,
+        _: &busbar_kernel_audit::amend::Amendment,
+    ) -> Result<
+        busbar_kernel_audit::amend::AmendCommit,
+        busbar_kernel_audit::amend::AmendPersistError,
+    > {
+        let release = self.release.lock().unwrap().take().unwrap();
+        let entered = self.entered.clone();
+        Ok(Box::pin(async move {
+            entered.notify_one();
+            release
+                .await
+                .map_err(|_| busbar_kernel_audit::amend::AmendPersistError)
+        }))
+    }
+}
+
+async fn held_capture() -> (
+    Arc<Exports>,
+    Arc<AnsweringSink>,
+    tokio::sync::oneshot::Sender<()>,
+    Arc<tokio::sync::Notify>,
+) {
+    let sink = double(Delivered::Queued, Some((true, 1, String::new())));
+    let (mut s, _) = opened("held-capture", sink.clone()).await;
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let (release, receive) = tokio::sync::oneshot::channel();
+    let reads = Arc::new(crate::audit::amend::NodeAmendments::new());
+    reads
+        .bind(
+            Some(Arc::new(HeldCaptureRead {
+                entered: entered.clone(),
+                release: std::sync::Mutex::new(Some(receive)),
+            })),
+            0,
+            &crate::teller::Kernel::new().durability_token(),
+        )
+        .await
+        .unwrap();
+    s.reads = Some(reads);
+    start_one(&s);
+    let exports = Arc::new(Exports {
+        sinks: vec![s],
+        ..Exports::default()
+    });
+    (exports, sink, release, entered)
+}
+
+#[tokio::test]
+async fn capture_fence_waits_for_admitted_native_read_and_prevents_late_projection() {
+    let (exports, sink, release, entered) = held_capture().await;
+    deliver_to(&exports, ExportStream::Logs, "held-capture", payload);
+    tokio::time::timeout(std::time::Duration::from_secs(1), entered.notified())
+        .await
+        .unwrap();
+    assert!(
+        exports.sinks[0].admission.gate.try_enter().is_none(),
+        "the pending read retains its real admission permit"
+    );
+    exports.close_capture();
+    deliver_to(&exports, ExportStream::Logs, "late-capture", |_, _| {
+        panic!("closed intake must not project")
+    });
+    deliver_on(&exports, ExportStream::Logs, "late-capture", |_| {
+        panic!("closed intake must not project")
+    });
+    let mut drain = Box::pin(exports.drain_capture());
+    assert!(
+        futures::poll!(&mut drain).is_pending(),
+        "a queued line still owes its native read receipt"
+    );
+    assert!(sink.observations.lock().unwrap().is_empty());
+    release.send(()).unwrap();
+    let report = tokio::time::timeout(std::time::Duration::from_secs(1), drain)
+        .await
+        .unwrap();
+    assert!(!report.interrupted);
+    assert!(
+        exports.sinks[0].admission.gate.try_enter().is_some(),
+        "settlement releases the retained permit"
+    );
+    assert!(
+        sink.observations.lock().unwrap().is_empty(),
+        "fenced attempts never call the closed observer"
+    );
+    assert_eq!(reads_under(&exports.sinks[0], "held-capture"), 1);
+    assert_eq!(reads_under(&exports.sinks[0], "late-capture"), 0);
+}
+
+#[tokio::test]
+async fn cancelling_capture_drain_does_not_cancel_the_native_read() {
+    let (exports, sink, release, entered) = held_capture().await;
+    deliver_to(&exports, ExportStream::Logs, "held-capture", payload);
+    tokio::time::timeout(std::time::Duration::from_secs(1), entered.notified())
+        .await
+        .unwrap();
+    let mut drain = Box::pin(exports.drain_capture());
+    assert!(futures::poll!(&mut drain).is_pending());
+    drop(drain);
+    assert!(
+        !release.is_closed(),
+        "caller timeout must not release accepted read custody"
+    );
+    assert!(sink.observations.lock().unwrap().is_empty());
+    release.send(()).unwrap();
+    let report = tokio::time::timeout(std::time::Duration::from_secs(1), exports.drain_capture())
+        .await
+        .unwrap();
+    assert!(!report.interrupted);
+}
+
+#[test]
+fn cancelled_capture_producer_reports_integrity_before_quiescence() {
+    for poll_first in [false, true] {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let (exports, sink, _release) = runtime.block_on(async {
+            let (exports, sink, release, entered) = held_capture().await;
+            deliver_to(&exports, ExportStream::Logs, "cancelled-capture", payload);
+            if poll_first {
+                tokio::time::timeout(std::time::Duration::from_secs(1), entered.notified())
+                    .await
+                    .unwrap();
+            }
+            (exports, sink, release)
+        });
+        drop(runtime); // Cancels the real task, including destruction before its first poll.
+        let report = futures::executor::block_on(exports.drain_capture());
+        assert!(
+            report.interrupted,
+            "task destruction is not successful producer settlement"
+        );
+        assert_eq!(
+            *sink.observations.lock().unwrap(),
+            vec![ExportLossKind::IntegrityFailed]
+        );
+    }
+}
+
+#[tokio::test]
+async fn capture_drain_includes_projection_already_entered_before_fence() {
+    let (exports, _, _, _) = held_capture().await;
+    let (entered, entering) = std::sync::mpsc::channel();
+    let (release, released) = std::sync::mpsc::channel();
+    let worker_exports = exports.clone();
+    let worker = std::thread::spawn(move || {
+        deliver_to(
+            &worker_exports,
+            ExportStream::Logs,
+            "projecting",
+            |p, takes| {
+                entered.send(()).unwrap();
+                released.recv().unwrap();
+                payload(p, takes)
+            },
+        );
+    });
+    entering
+        .recv_timeout(std::time::Duration::from_secs(1))
+        .unwrap();
+    let mut drain = Box::pin(exports.drain_capture());
+    assert!(
+        futures::poll!(&mut drain).is_pending(),
+        "the fence must include an admitted synchronous producer"
+    );
+    release.send(()).unwrap();
+    worker.join().unwrap();
+    let report = drain.await;
+    assert!(!report.interrupted);
+}
+
+#[tokio::test]
+async fn projection_panic_after_an_accepted_sink_keeps_integrity_and_incomplete_capture() {
+    let (mut exports, sink, _, _) = held_capture().await;
+    let second = double(Delivered::Queued, None);
+    let (s, _) = opened("second-capture", second.clone()).await;
+    start_one(&s);
+    Arc::get_mut(&mut exports).unwrap().sinks.push(s);
+    let mut rendered = 0;
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        deliver_to(&exports, ExportStream::Logs, "capture-panic", |p, takes| {
+            rendered += 1;
+            assert_eq!(
+                rendered, 1,
+                "fixture panics while rendering the second sink"
+            );
+            payload(p, takes)
+        });
+    }));
+    assert!(result.is_err());
+    let report = exports.drain_capture().await;
+    assert!(report.interrupted);
+    assert_eq!(
+        *sink.observations.lock().unwrap(),
+        vec![ExportLossKind::IntegrityFailed]
+    );
+    assert!(second.observations.lock().unwrap().is_empty());
 }
