@@ -280,7 +280,7 @@ impl ConcurrencyGauge {
         let mut counts = self.counts.lock().unwrap_or_else(|e| e.into_inner());
         let entry = counts.entry(*bucket).or_insert(0);
         if *entry >= cap {
-            return Err(ReasonCode::OverBudget);
+            return Err(ReasonCode::RateLimited);
         }
         *entry += 1;
         Ok(())
