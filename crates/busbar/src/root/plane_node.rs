@@ -231,7 +231,20 @@ impl Node {
     }
 
     pub(crate) fn arrived(&self) -> Arrived {
-        Arrived::at(self.clock.now(), self.mono.fetch_add(1, Ordering::AcqRel))
+        self.checked_arrived()
+            .expect("node monotonic clock exhausted")
+    }
+
+    /// Response finalization can refuse exhausted identity before publishing any output.
+    /// All node stamps share this allocator, so an ordinary arrival cannot wrap it first.
+    pub(crate) fn checked_arrived(&self) -> Result<Arrived, &'static str> {
+        let mono = self
+            .mono
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
+                value.checked_add(1)
+            })
+            .map_err(|_| "node monotonic clock exhausted")?;
+        Ok(Arrived::at(self.clock.now(), mono))
     }
 
     #[cfg(test)]
