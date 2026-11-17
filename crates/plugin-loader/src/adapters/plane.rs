@@ -219,6 +219,11 @@ pub fn decode_describe(
     {
         return Err(DescribeInvalid("describe.route_resources"));
     }
+    if facts & p::FB_CHANNEL_OPEN != 0
+        && methods & (p::M_CHANNEL | p::M_DEMUX) != (p::M_CHANNEL | p::M_DEMUX)
+    {
+        return Err(DescribeInvalid("describe.channel"));
+    }
     for (route, kinds) in resource_routes {
         let route = d
             .routes
@@ -284,6 +289,7 @@ fn route_rules(r: &p::RouteRec) -> Result<(), DescribeInvalid> {
 pub enum Call {
     Request,
     Upstream,
+    Channel,
     Piece(u32),
     End,
     Rewrite,
@@ -315,6 +321,7 @@ struct Seen {
     attempt_end: bool,
     selected: bool,
     prepared: bool,
+    channel: bool,
 }
 
 /// A misplaced record: FAULT BadRecords naming the tag.
@@ -373,7 +380,7 @@ fn walk(
     };
     for rec in recs {
         let rec = rec.map_err(fault)?;
-        if rec.tag == g::METRIC {
+        if rec.tag == g::METRIC && call != Call::Channel {
             continue;
         }
         if rec.tag == t::CHANNEL && !demux {
@@ -396,6 +403,11 @@ fn walk(
         }
         place(call, &mut s, &rec)?;
         let out = item(&rec).map_err(fault)?;
+        if call == Call::Channel
+            && matches!(&out, PlaneOut::Channel { carrier, .. } if *carrier != p::CARRIER_STDIO)
+        {
+            return Err(misplaced(rec.tag));
+        }
         if let PlaneOut::AttemptUsage(usage) = &out {
             if !declaration.is_attempt_class(usage.class) {
                 return Err(misplaced(rec.tag));
@@ -417,6 +429,9 @@ fn walk(
     if call == Call::Render && s.render != 4 {
         return Err(misplaced(t::END));
     }
+    if call == Call::Channel && !s.channel {
+        return Err(misplaced(t::CHANNEL));
+    }
     Ok(())
 }
 
@@ -424,6 +439,13 @@ fn walk(
 fn place(call: Call, s: &mut Seen, rec: &Rec<'_>) -> Result<(), FaultReason> {
     let tag = rec.tag;
     let bad = Err(misplaced(tag));
+    if call == Call::Channel {
+        match tag {
+            t::CHANNEL if !core::mem::replace(&mut s.channel, true) => {}
+            g::FACT | g::FACT_TEXT => {}
+            _ => return bad,
+        }
+    }
     // After TRAILERS only the trailer PAIRs and END may come (§8.6, round 8).
     if s.trailers && s.render == 3 && tag != g::PAIR && tag != t::END {
         return bad;
@@ -467,7 +489,7 @@ fn place(call: Call, s: &mut Seen, rec: &Rec<'_>) -> Result<(), FaultReason> {
         t::UP_BODY | t::UP_MSG | t::UP_END | t::UP_NEW | t::EX_MSG | t::UP_CUT => upstream || flow,
         g::CONVERSATION => call == Call::Request,
         t::ATTEMPT => call == Call::Upstream || call == Call::Piece(p::FROM_UPSTREAM),
-        t::CHANNEL => flow || call == Call::Probe,
+        t::CHANNEL => flow || call == Call::Probe || call == Call::Channel,
         t::LOOKUP | t::ENTITLE | t::JUDGE | t::MINT | t::SIGN | t::CONNECT | t::TRUST => flow,
         t::WORK | t::RENDEZVOUS | t::OBS_SCOPE | t::CH_READY => flow,
         t::DEMUX => call == Call::Demux && !core::mem::replace(&mut s.demux, true),
@@ -1568,6 +1590,33 @@ impl<N: Needs> PlanePort for PlaneAdapter<N> {
         sync_bufs(max_out, |_, out| {
             let answer = s.upstream(out, &view).map_err(PortError::Call)?;
             self.finish(Call::Upstream, &answer, sink, selected, None)
+        })
+    }
+
+    fn channel(
+        &self,
+        s: &mut PlaneSession,
+        tgt: &TargetIn<'_>,
+        sink: &mut dyn FnMut(PlaneOut<'_>),
+    ) -> Result<(), PortError> {
+        let max_out = self.live()?;
+        if self.facts() & p::FB_CHANNEL_OPEN == 0
+            || self.proxy.instance().methods & (p::M_CHANNEL | p::M_DEMUX)
+                != (p::M_CHANNEL | p::M_DEMUX)
+        {
+            return Err(PortError::Refused {
+                code: busbar_plugin_abi::fail::refused::R_UNSUPPORTED,
+                text: "selected channel preparation is unavailable".into(),
+                error: None,
+            });
+        }
+        if !Arc::ptr_eq(self.proxy.instance(), s.instance()) {
+            return Err(PortError::Call(CallError::Fault(FaultReason::BadInstance)));
+        }
+        let view = target(tgt);
+        sync_bufs(max_out, |_, out| {
+            let answer = s.channel(out, &view).map_err(PortError::Call)?;
+            self.finish(Call::Channel, &answer, sink, None, None)
         })
     }
 
