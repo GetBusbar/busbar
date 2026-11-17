@@ -733,6 +733,37 @@ fn token() -> Pass<Route> {
     Pass::mint(kernel.seal())
 }
 
+#[tokio::test]
+async fn selected_registration_probes_retain_the_exact_pool_and_member() {
+    let mut rig = rig(&[("a.test", Script::Silent)], OnExhausted::Status503, None);
+    let destination = DestinationId::new(1);
+    rig.egress.routes.get_mut(&destination).unwrap().auth = None;
+    let mut other = rig.egress.pools.get(POOL).unwrap().clone();
+    other.name = "other".into();
+    other.members[0].name = "other\u{1f}m0".into();
+    rig.egress.pools.insert("other".into(), other);
+    let far = rig
+        .egress
+        .probe_selected(
+            "other",
+            "other\u{1f}m0",
+            destination,
+            Duration::from_secs(1),
+        )
+        .expect("an explicitly unauthenticated registration is probeable");
+    let token = token();
+    let Pick::Member { name, pool, .. } = far.member(&token, 1).await else {
+        panic!("selected member")
+    };
+    assert_eq!(name, "other\u{1f}m0");
+    assert_eq!(pool, "other");
+    assert!(rig
+        .egress
+        .probe_selected("other", "m0", destination, Duration::from_secs(1))
+        .is_none());
+    assert!(rig.table.opened.lock().unwrap().is_empty());
+}
+
 fn request() -> OutboundRequest {
     OutboundRequest {
         text: false,
