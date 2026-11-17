@@ -5,11 +5,6 @@
 //! struct size and alignment, field offset and constant of `busbar_plugin.h`, each value read from the Rust
 //! item it mirrors (`size_of`, `align_of`, `offset_of!`, the consts, `CORE_FP` and `secret::FP`). Compiled with
 //! the header, any drift on either side is a compile error until both move in one MR.
-//!
-//! Hold (W1-A13 follow-up): `bb_host`'s fn fields, `bb_plugin`'s five entries and `former_names`, and
-//! `bb_secret_vt` have no Rust field yet (UNSAFE-MIN: they land with W1-A2, W1-A4 and busbar-ffi). Until then
-//! they are asserted against their frozen §5/§7.1/§8.2 order in pointer words; each moves to `offset_of!` on
-//! the Rust field when it lands.
 
 use core::mem::{align_of, offset_of, size_of};
 use std::fmt::Write as _;
@@ -33,7 +28,6 @@ pub fn generate() -> String {
     let mut eq = |what: &str, value: u64| {
         writeln!(c, "_Static_assert(({what}) == {value}ull, \"{what}\");").expect("a String");
     };
-    let word = size_of::<usize>() as u64;
 
     macro_rules! layout {
         ($c:literal = $rust:ty { $($cf:ident = $rf:tt),* }) => {
@@ -148,40 +142,53 @@ pub fn generate() -> String {
         "offsetof(bb_plugin, kind_vt)",
         abi::plugin::PLUGIN_KIND_VT_AT as u64,
     );
-    // The hold above: the frozen order, in pointer words.
-    let host = [
-        "ctx",
-        "now",
-        "mono",
-        "random",
-        "crypto",
-        "log",
-        "log_level",
-        "grow",
-        "deployment",
-        "migrate_admit",
-    ];
-    for (i, field) in host.iter().enumerate() {
-        eq(&format!("offsetof(bb_host, {field})"), i as u64 * word);
+    eq(
+        "offsetof(bb_plugin, describe)",
+        abi::plugin::PLUGIN_DESCRIBE_AT as u64,
+    );
+    eq(
+        "offsetof(bb_plugin, open)",
+        abi::plugin::PLUGIN_OPEN_AT as u64,
+    );
+    eq(
+        "offsetof(bb_plugin, resume)",
+        abi::plugin::PLUGIN_RESUME_AT as u64,
+    );
+    eq(
+        "offsetof(bb_plugin, cancel)",
+        abi::plugin::PLUGIN_CANCEL_AT as u64,
+    );
+    eq(
+        "offsetof(bb_plugin, close)",
+        abi::plugin::PLUGIN_CLOSE_AT as u64,
+    );
+    eq(
+        "offsetof(bb_plugin, former_names)",
+        abi::plugin::PLUGIN_FORMER_NAMES_AT as u64,
+    );
+    eq("sizeof(bb_plugin)", size_of::<abi::plugin::Plugin>() as u64);
+    eq("offsetof(bb_host, ctx)", abi::host::HOST_CTX_AT as u64);
+    macro_rules! host_fns {
+        ($($f:ident),*) => {
+            $(eq(
+                concat!("offsetof(bb_host, ", stringify!($f), ")"),
+                (abi::host::HOST_FNS_AT + offset_of!(abi::host::HostFns, $f)) as u64,
+            );)*
+        };
     }
-    eq("sizeof(bb_host)", 10 * word);
-    let entries = [
-        "describe",
-        "open",
-        "resume",
-        "cancel",
-        "close",
-        "former_names",
-    ];
-    for (i, field) in entries.iter().enumerate() {
-        eq(
-            &format!("offsetof(bb_plugin, {field})"),
-            (i as u64 + 2) * word,
-        );
-    }
-    eq("sizeof(bb_plugin)", 9 * word);
-    eq("offsetof(bb_secret_vt, resolve)", 0);
-    eq("sizeof(bb_secret_vt)", word);
+    host_fns!(
+        now,
+        mono,
+        random,
+        crypto,
+        log,
+        log_level,
+        grow,
+        deployment,
+        migrate_admit
+    );
+    eq("sizeof(bb_host)", size_of::<abi::host::Host>() as u64);
+    layout!("bb_secret_vt" = busbar_ffi::vt::secret::Vt { resolve = resolve });
 
     // Constants.
     eq("BB_MECHANISM", versions::MECHANISM.into());
