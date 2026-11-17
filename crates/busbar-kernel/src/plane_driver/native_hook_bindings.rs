@@ -18,7 +18,6 @@ use crate::config::{HookCfg, HookKind, HookStage, PolicyOnError, RootCfg};
 use crate::cost::CostModel;
 use crate::governance::GovState;
 use crate::hooks::RequestedSignals;
-use crate::off_path::hooks::{gate_on_empty, inherited_ordering, policy_timeout};
 
 use super::hooks::{CallerKey, HookRead};
 use super::port_hooks::{Binder, Call, Selected, Selection, Taps};
@@ -696,18 +695,14 @@ impl Attached {
                 return Err(format!("hook attachment `{name}` has no definition"));
             }
         }
-        for (name, hook) in crate::off_path::hooks::decision_definitions(calls.hooks, names) {
+        for (name, hook) in decision_definitions(calls.hooks, names) {
             out.gates.push(Bound::new(
                 calls.named(name, POINT_ROUTE)?,
                 Some(hook),
                 calls.hooks,
             ));
         }
-        for (name, hook) in
-            crate::off_path::hooks::rewrite_definitions(calls.hooks, names, |_, h| {
-                h.prompt.can_rewrite()
-            })
-        {
+        for (name, hook) in rewrite_definitions(calls.hooks, names, |_, h| h.prompt.can_rewrite()) {
             out.rewrites.push(Bound::new(
                 calls.named(name, POINT_REWRITE)?,
                 Some(hook),
@@ -715,7 +710,7 @@ impl Attached {
             ));
         }
         for &stage in crate::config::hooks::CORE_HOOK_PHASES {
-            for (name, hook) in crate::off_path::hooks::tap_definitions(calls.hooks, names, stage) {
+            for (name, hook) in tap_definitions(calls.hooks, names, stage) {
                 if hook.prompt.can_rewrite() {
                     return Err(format!(
                         "tap attachment `{name}` cannot receive a rewrite grant"
@@ -872,6 +867,84 @@ impl WalkTables {
                 .and_then(|b| b.select(group, tree)),
         })
     }
+}
+
+fn policy_timeout(timeout_ms: u64) -> std::time::Duration {
+    let ms = if timeout_ms == 0 {
+        crate::limits::default_policy_timeout_ms()
+    } else {
+        timeout_ms
+    };
+    std::time::Duration::from_millis(ms)
+}
+
+fn inherited_ordering<'a>(
+    cfg: &crate::config::PoolCfg,
+    hooks: &'a crate::config::hooks::HookRegistry,
+    default_hook: Option<&'a str>,
+) -> Option<(&'a str, &'a crate::config::HookCfg)> {
+    if cfg.base_named {
+        return None;
+    }
+    let name = default_hook?;
+    let hook = hooks.get(name)?;
+    if hook.kind == crate::config::HookKind::Gate && !hook.prompt.can_rewrite() {
+        return Some((name, hook));
+    }
+    tracing::warn!(hook = %name,
+        "`default: true` hook is not a decision gate; ignored as the base ordering \
+         (the compiled-in weighted backstop applies)");
+    None
+}
+
+fn decision_definitions<'a>(
+    hooks: &'a crate::config::hooks::HookRegistry,
+    names: &'a [String],
+) -> Vec<(&'a str, &'a crate::config::HookCfg)> {
+    names
+        .iter()
+        .filter_map(|name| {
+            let hook = hooks.get(name)?;
+            (hook.kind == crate::config::HookKind::Gate && !hook.prompt.can_rewrite())
+                .then_some((name.as_str(), hook))
+        })
+        .collect()
+}
+
+fn tap_definitions<'a>(
+    hooks: &'a crate::config::hooks::HookRegistry,
+    names: &'a [String],
+    stage: crate::config::HookStage,
+) -> Vec<(&'a str, &'a crate::config::HookCfg)> {
+    names
+        .iter()
+        .filter_map(|name| {
+            let hook = hooks.get(name)?;
+            (hook.kind == crate::config::HookKind::Tap && hook.fires_at_stage(stage))
+                .then_some((name.as_str(), hook))
+        })
+        .collect()
+}
+
+fn rewrite_definitions<'a>(
+    hooks: &'a crate::config::hooks::HookRegistry,
+    names: &'a [String],
+    mut admitted: impl FnMut(&str, &crate::config::HookCfg) -> bool,
+) -> Vec<(&'a str, &'a crate::config::HookCfg)> {
+    names
+        .iter()
+        .filter_map(|name| {
+            let hook = hooks.get(name)?;
+            (hook.kind == crate::config::HookKind::Gate && admitted(name, hook))
+                .then_some((name.as_str(), hook))
+        })
+        .collect()
+}
+
+fn gate_on_empty(hook: &crate::config::HookCfg) -> crate::config::PolicyOnError {
+    hook.on_empty
+        .clone()
+        .unwrap_or(crate::config::PolicyOnError::Reject)
 }
 
 #[cfg(test)]

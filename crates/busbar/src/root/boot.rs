@@ -345,25 +345,7 @@ fn registry_with_floor(
         remember_native_images(&registry, plugins);
     }
 
-    super::linked::secret_rows().judge_dropped(discovered(&registry, |kind| kind == "secret")?)?;
     Ok(registry)
-}
-
-pub(crate) fn admit_secrets<'a>(
-    rows: &'a Arc<dyn PluginRows>,
-    plugins: &'a PluginsCfg,
-) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
-    Box::pin(async move {
-        hold_plugin_floor(rows.as_ref(), plugins).await?;
-        match super::loader::rows::registry_arc(Arc::clone(rows)) {
-            Some(registry) => admit_dropped_secrets(&registry),
-            None => Ok(()),
-        }
-    })
-}
-
-pub(crate) fn admit_dropped_secrets(registry: &PluginRegistry) -> Result<(), String> {
-    super::linked::secret_rows().admit_dropped(discovered(registry, |kind| kind == "secret")?)
 }
 
 pub(crate) fn registry_rows(
@@ -583,7 +565,7 @@ fn listener_candidates_from(
             .transpose()?
             .unwrap_or_default(),
     );
-    for door in linked.plane_doors.iter().chain(linked.hook_doors) {
+    for door in linked.plane_doors {
         let candidate = Candidate::linked(*door)?;
         if !candidates
             .iter()
@@ -1138,7 +1120,6 @@ pub(crate) struct StartScan {
 /// One scan of `plugins.dir` and the secret modules it admits, judged with the linked rows.
 pub(crate) struct Judged {
     registry: PluginRegistry,
-    secrets: Vec<Candidate>,
     sugars: busbar_contract::secret_ref::Sugars,
 }
 
@@ -1171,20 +1152,16 @@ pub(crate) fn install_start(
         let _ = START_REFUSAL.set(refusal);
         None
     });
-    let (registry, secrets, sugars) = match judged {
-        Some(Judged {
-            registry,
-            secrets,
-            sugars,
-        }) => {
+    let (registry, sugars) = match judged {
+        Some(Judged { registry, sugars }) => {
             let _ = START_SKIPS.set(skip_lines(registry.skipped()));
             if let Some(plugins) = plugins {
                 remember_native_images(&registry, &plugins);
                 let _ = BASE_BOOTSTRAP_PLUGINS.set(plugins);
             }
-            (Some(registry), secrets, Some(sugars))
+            (Some(registry), Some(sugars))
         }
-        None => (None, Vec::new(), None),
+        None => (None, None),
     };
     let grammar = match (START_REFUSAL.get(), sugars) {
         (Some(refusal), _) => Err(busbar_kernel::config::GrammarRefusal(refusal.clone())),
@@ -1195,7 +1172,7 @@ pub(crate) fn install_start(
         )),
         (None, None) => linked_grammar().map_err(busbar_kernel::config::GrammarRefusal),
     };
-    let _ = START_JUDGED.set(StartJudged { secrets, grammar });
+    let _ = START_JUDGED.set(StartJudged { grammar });
     if registry.is_none() && rows.is_empty() {
         return None;
     }
@@ -1233,7 +1210,6 @@ pub(crate) fn bind_start_grammar() {
 /// What start judged: the secret modules its scan found (for `--validate`'s read-scoped view) and
 /// the grammar stage 3 publishes.
 struct StartJudged {
-    secrets: Vec<Candidate>,
     grammar: Result<busbar_kernel::config::Grammar, busbar_kernel::config::GrammarRefusal>,
 }
 
@@ -1253,18 +1229,6 @@ pub(crate) fn start_grammar() -> Result<&'static busbar_kernel::config::Grammar,
     }
 }
 
-/// `--validate`'s read-scoped secret axis: the linked rows plus the secret modules start judged,
-/// none of them admitted. Each module's checker runs as it did when start admitted them; the live
-/// axis is untouched, and the view's checkers are dropped with it.
-pub(crate) fn start_secret_view() -> crate::root::loader::secret_calls::SecretView<'static> {
-    super::linked::secret_rows().view(
-        START_JUDGED
-            .get()
-            .map(|judged| judged.secrets.clone())
-            .unwrap_or_default(),
-    )
-}
-
 /// Phase 1 for one read ([`busbar_kernel::config::grammar::grammar_for`], installed as
 /// `RootInstall.grammar`): the registry build's own scan and judgement of the read's directory
 /// under the read's policy (its `plugins:` block with the read's pins), with the same linked rows
@@ -1280,13 +1244,9 @@ pub(crate) fn phase_one(
 /// it admits judged together with the linked secret rows: one owner per word, name and alias.
 fn judge(linked: Vec<LinkedPlugin>, plugins: &PluginsCfg) -> Result<Judged, String> {
     let registry = scanned_registry(linked, plugins)?;
-    let secrets = discovered(&registry, |kind| kind == "secret")?;
-    let sugars = super::linked::secret_rows().grammar_of(secrets.clone())?;
-    Ok(Judged {
-        registry,
-        secrets,
-        sugars,
-    })
+    // WP3 step 2: the secret words are the native images' (published by the start-stage images prepare).
+    let sugars = crate::root::native_secrets::NATIVE.sugars();
+    Ok(Judged { registry, sugars })
 }
 
 /// The registry build's scan, alone: no data dir (the high-water marks are neither read nor
@@ -1325,7 +1285,7 @@ pub(crate) fn axis_test_grammar() -> busbar_kernel::config::Grammar {
 
 /// The grammar of a read that loads no plugin: the linked secret rows' words alone.
 fn linked_grammar() -> Result<busbar_kernel::config::Grammar, String> {
-    let sugars = super::linked::secret_rows().grammar_of(std::iter::empty())?;
+    let sugars = crate::root::native_secrets::NATIVE.sugars();
     Ok(busbar_kernel::config::Grammar::new(
         sugars,
         std::collections::BTreeMap::new(),
@@ -1577,10 +1537,7 @@ pub(crate) fn admitted_grammar(
     let Some(registry) = super::loader::rows::registry_of(rows) else {
         return Ok(None);
     };
-    let secrets = discovered(registry, |kind| kind == "secret").map_err(refused)?;
-    let sugars = super::linked::secret_rows()
-        .grammar_of(secrets)
-        .map_err(refused)?;
+    let sugars = crate::root::native_secrets::NATIVE.sugars();
     Ok(Some(
         busbar_kernel::config::Grammar::new(sugars, owners_of(registry), Vec::new())
             .with_items(classify(registry, None)),

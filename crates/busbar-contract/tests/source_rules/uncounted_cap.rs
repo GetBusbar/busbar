@@ -26,12 +26,10 @@ const COUNTED: [&str; 4] = [
 ];
 
 /// The files that report every cut they are handed, each with the behaviour test that pins it:
-/// `hooks/text_cut.rs` (its own tests, T3), `plane_driver/hooks/policy.rs` (the gate and transform
-/// reject test in `hooks/tests/gate_tests.rs`, T1) and `observe.rs` (`tests/observe_tests.rs` and
+/// `hooks/text_cut.rs` (its own tests, T3) and `observe.rs` (`tests/observe_tests.rs` and
 /// the root's `root/tests/observe.rs`, T2). Adding a file here needs a test that pins its report.
-const REPORTERS: [&str; 3] = [
+const REPORTERS: [&str; 2] = [
     "crates/busbar-kernel/src/hooks/text_cut.rs",
-    "crates/busbar-kernel/src/plane_driver/hooks/policy.rs",
     "crates/busbar-kernel/src/observe.rs",
 ];
 
@@ -53,8 +51,7 @@ fn findings(sources: &[walk::Source]) -> Vec<String> {
                 if UNCOUNTED.contains(&name) {
                     out.push(format!(
                         "{}:{line}: `{name}` cuts plugin text and drops the cut; use \
-                         `busbar_kernel::hooks::text_cut::parse_hook_status_metrics` or a counted \
-                         form in a reporting file",
+                         a counted form in a reporting file",
                         src.rel
                     ));
                 } else if COUNTED.contains(&name) && !reporter {

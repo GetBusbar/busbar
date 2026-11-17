@@ -341,10 +341,8 @@ pub struct HookCfg {
     /// `deny_unknown_fields`; a typo'd catalog name fails closed at parse, never a silent runtime
     /// no-op) — the "plugin references the typed `Signal` constant" contract, expressed here as
     /// the canonical name of that constant rather than a free-typed string a human could misspell
-    /// undetected. Every hook's declaration is UNIONED once per config generation into the
-    /// process-wide `RequestedSignals` bitmask (`hooks::requested_signals`) that gates every
-    /// compute fn — declaring a signal here is necessary AND sufficient for it to start being
-    /// computed + projected; nothing else (a code change, a recompile) is required.
+    /// undetected. The native binding of this hook carries these signals as its call's `RequestedSignals`;
+    /// declaring a signal here is necessary AND sufficient for it to be projected to this hook.
     #[serde(default)]
     pub signals: Vec<busbar_contract::signal::Signal>,
     /// Fire on EVERY request — inline sugar for adding this name to `global_hooks:`. Default false.
@@ -355,8 +353,7 @@ pub struct HookCfg {
     /// hook becomes the base, so the compiled-in backstop (`weighted`) is not used. Exactly like
     /// `auth: [sso]` means the built-in `tokens` is not loaded. AT MOST ONE hook may set `default:
     /// true` (boot AND every admin apply → error naming both); 0 ⇒ the compiled-in backstop. Only an
-    /// ordering hook (one that returns `order`) is a meaningful default. Default false. Resolution:
-    /// `hooks::resolve_pool_ordering` gives this hook to every pool whose base is unnamed.
+    /// ordering hook (one that returns `order`) is a meaningful default. Default false. The native bindings give this hook to every pool whose base is unnamed.
     #[serde(default)]
     pub default: bool,
     /// 1.5.3 named-hook SCOPE: the caller groups this hook fires for. A hook fires only for a request

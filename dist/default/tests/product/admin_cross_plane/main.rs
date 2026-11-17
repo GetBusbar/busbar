@@ -10,7 +10,6 @@ mod keys;
 #[cfg(feature = "openapi-schema")]
 mod openapi;
 mod served_surface;
-mod service;
 
 use crate::root::test_plugins as plugins;
 

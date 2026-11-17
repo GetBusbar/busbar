@@ -6,16 +6,10 @@
 
 #[test]
 fn the_generated_link_sources_hold_no_tree_wide_lint_escape() {
-    for (rel, text) in [
-        (
-            "OUT_DIR/linked.rs",
-            include_str!(concat!(env!("OUT_DIR"), "/linked.rs")),
-        ),
-        (
-            "OUT_DIR/linked_hook_names.rs",
-            include_str!(concat!(env!("OUT_DIR"), "/linked_hook_names.rs")),
-        ),
-    ] {
+    for (rel, text) in [(
+        "OUT_DIR/linked.rs",
+        include_str!(concat!(env!("OUT_DIR"), "/linked.rs")),
+    )] {
         let file = syn::parse_file(text).unwrap_or_else(|e| panic!("{rel}: {e}"));
         let found = crate::source_escapes::refusals(rel, &file);
         assert!(found.is_empty(), "{}", found.join("\n"));

@@ -480,7 +480,6 @@ pub(crate) async fn compose_served_checked(
     sections: &BTreeMap<&'static str, busbar_contract::yaml::Value>,
     public_url: Option<&str>,
     reach: &crate::root::door_steps::DoorReach<'_>,
-    host: Option<busbar_kernel::plane_driver::GenerationHost>,
     tables: &ServeTables,
     check: &dyn Fn(&Served) -> Result<Vec<crate::root::loader::boot::InboundBind>, String>,
 ) -> Result<Served, String> {
@@ -502,11 +501,7 @@ pub(crate) async fn compose_served_checked(
     let post = Arc::new(crate::root::plane_node::NodeEndPost::new(
         crate::root::plane_node::node(),
     ));
-    let stage = host.map(|host| HookStage {
-        host,
-        gov: Arc::clone(&gov),
-        journal: Some(Arc::clone(&post) as Arc<dyn busbar_kernel::plane_driver::HookJournal>),
-    });
+    let journal = Arc::clone(&post) as Arc<dyn busbar_kernel::plane_driver::HookJournal>;
     let site = Arc::clone(&post);
     let caller_migration = gov.clone();
     let port_billing = busbar_kernel::plane_driver::port_billing::PortBilling::new(
@@ -537,7 +532,7 @@ pub(crate) async fn compose_served_checked(
         public_url,
         &money,
         Some(&egress),
-        stage.as_ref(),
+        Some(&journal),
         tables,
     )
     .await?;
@@ -620,49 +615,6 @@ pub(crate) fn need_binds(
         });
     }
     Ok(binds)
-}
-
-impl HookStage {
-    #[cfg(test)]
-    pub(crate) fn new(
-        host: busbar_kernel::plane_driver::GenerationHost,
-        gov: Arc<busbar_kernel::governance::GovState>,
-    ) -> Self {
-        Self {
-            host,
-            gov,
-            journal: None,
-        }
-    }
-
-    pub(crate) fn routed(
-        &self,
-        plane_key: &str,
-        dialects: &[&str],
-    ) -> Arc<dyn busbar_kernel::plane_driver::HookBinder> {
-        let tail = Arc::new(LiveHooks {
-            host: Arc::clone(&self.host),
-            gov: Arc::clone(&self.gov),
-            dialects: dialects.iter().map(|d| (*d).to_string()).collect(),
-            plane_key: plane_key.to_string(),
-        });
-        tail
-    }
-
-    pub(crate) fn gated(
-        &self,
-        plane_key: &str,
-        dialects: &[&str],
-    ) -> Arc<dyn busbar_kernel::plane_driver::HookBinder> {
-        let gov = Arc::clone(&self.gov);
-        let tail = Arc::new(busbar_kernel::plane_driver::HostGatedHooks {
-            host: Arc::clone(&self.host),
-            plane_key: plane_key.to_string(),
-            keys: Arc::new(move |principal: &str| gov.lookup_by_sub(principal)),
-            dialects: dialects.iter().map(|d| (*d).to_string()).collect(),
-        });
-        tail
-    }
 }
 
 #[must_use]
@@ -859,7 +811,7 @@ pub(crate) async fn compose_planes(
     public_url: Option<&str>,
     money: &dyn Fn() -> Arc<PlaneMoney>,
     egress: Option<&DoorEgress<'_>>,
-    hooks: Option<&HookStage>,
+    journal: Option<&Arc<dyn busbar_kernel::plane_driver::HookJournal>>,
     tables: &ServeTables,
 ) -> Result<Served, String> {
     let scope = busbar_contract::config_time::ConfigScope::config_time();
@@ -875,7 +827,7 @@ pub(crate) async fn compose_planes(
         public_url,
         money,
         egress,
-        hooks,
+        journal,
         &clock,
         &scope,
         tables,
@@ -896,7 +848,7 @@ pub(crate) async fn compose_planes_over(
     public_url: Option<&str>,
     money: &dyn Fn() -> Arc<PlaneMoney>,
     egress: Option<&DoorEgress<'_>>,
-    hooks: Option<&HookStage>,
+    journal: Option<&Arc<dyn busbar_kernel::plane_driver::HookJournal>>,
     clock: &Arc<dyn busbar_kernel_egress::ports::Clock>,
     scope: &busbar_contract::config_time::ConfigScope,
     tables: &ServeTables,
@@ -1078,18 +1030,7 @@ pub(crate) async fn compose_planes_over(
             }
         }
 
-        let driver = match hooks {
-            Some(stage)
-                if served_facts.tail_flags & busbar_contract::abi::plane::TAIL_HOOKS_GATED != 0 =>
-            {
-                driver.with_hooks(stage.gated(plugin.name(), &served_facts.dialects))
-            }
-
-            Some(stage) => driver.with_hooks(stage.routed(plugin.name(), &served_facts.dialects)),
-            None => driver,
-        };
-
-        let driver = match hooks.and_then(|stage| stage.journal.as_ref()) {
+        let driver = match journal {
             Some(journal) => driver.with_hook_journal(Arc::clone(journal)),
             None => driver,
         };

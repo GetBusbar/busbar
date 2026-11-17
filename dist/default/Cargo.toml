@@ -332,8 +332,6 @@ auth-oauth = "auths"
 auth-webhook-signature = "auths"
 store-memory = "stores"
 hooks-ranking = "hooks"
-secret-env = "secret-doors"
-secret-file = "secret-doors"
 transport-tcp = "transport transport-door"
 # `connector-door`: the framer's door is opened on the root's one Connector, so an outbound need on
 # its schemes is served compiled-in (the streaming door's ws needs bind on the ws row). Every
@@ -768,8 +766,8 @@ busbar-export-prometheus-plugin = { git = "https://github.com/GetBusbar/busbar-e
 # The env source's logic crate is also the door the loader's secret conformance suite links; its cdylib
 # crate (`busbar-secret-env-plugin`, same repo) is NOT a dependency: it is built from this pinned
 # checkout by the build:dlopen-cdylibs step and dlopened.
-busbar-secret-env = { git = "https://github.com/GetBusbar/busbar-secret-env", rev = "007554053b92727b5ca71b23c2304c4cf1549a17" }
-busbar-secret-file = { git = "https://github.com/GetBusbar/busbar-secret-file", rev = "81f591ae354391d4c5a4ec31e9b23db345da4019" }
+busbar-secret-env = { git = "https://github.com/GetBusbar/busbar-secret-env", rev = "171ffa824c4e99e0e466c84ada50a74d62cce96b" }
+busbar-secret-file = { git = "https://github.com/GetBusbar/busbar-secret-file", rev = "4360a0ba0dc60a7ade98cd3401ec47495aee73f1" }
 # THE REQUEST-LOG WEBHOOK SINK: the one home of its pinned rev (a rev bump is this one edit). `busbar`
 # links the logic crate; `busbar-plugin-loader`'s conformance test builds the cdylib crate. Same repo,
 # same rev, one resolved copy in Cargo.lock.

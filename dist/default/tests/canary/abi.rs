@@ -9,7 +9,6 @@ use busbar_contract::abi::sdk::door::RawDoorFn;
 use busbar_contract::auth_calls::{FieldsRequest, Verified, VerifyRequest};
 use busbar_contract::conn::admissions::AdmissionAuthority;
 use busbar_contract::plugin_settings::Settings;
-use busbar_contract::secret::SecretAxis as _;
 use busbar_core_connector::{doors::Dispatched, process, registry::Entry, Connector};
 use busbar_kernel::host_services::{DestJudge as _, KernelServices};
 use busbar_plugin_loader::auth_axis::AuthRows;
@@ -269,47 +268,43 @@ fn connections() -> Option<AdmissionAuthority> {
     ))
 }
 
-fn sources() -> &'static busbar_plugin_loader::secret_calls::SecretRows {
-    static SOURCES: OnceLock<busbar_plugin_loader::secret_calls::SecretRows> = OnceLock::new();
-    SOURCES.get_or_init(|| {
-        let mut sources =
-            busbar_plugin_loader::secret_calls::SecretRows::new(dispatcher, connections)
-                .with_disk_lane(|job| {
-                    static DISK: OnceLock<busbar_kernel::host_disk::DiskLane> = OnceLock::new();
-                    DISK.get_or_init(Default::default)
-                        .run(job)
-                        .map_err(str::to_string)
-                });
-        sources
-            .link(busbar_secret_env::door)
-            .expect("the real env source");
-        sources
-            .link(busbar_secret_file::door)
-            .expect("the real file source");
-        sources
-            .declare_linked(busbar_secret_file::door, busbar_secret_file::DECLARES)
-            .expect("the file source's own disk declaration");
-        sources
-    })
+/// The canary's secret material, read as the linked env and file sources read it: the file's text with its
+/// trailing newline trimmed, or the variable's value. WP3 step 2 retired the door secret sources; the canary
+/// asserts where a planted value crosses the ABI, not how a source reads it.
+fn source(role: &str, value: impl Into<String>) -> String {
+    let value = value.into();
+    if role == SUGAR_ROLE_PATH {
+        std::fs::read_to_string(&value)
+            .expect("the canary file")
+            .trim_end_matches(['\r', '\n'])
+            .to_owned()
+    } else {
+        std::env::var(&value).expect("the canary variable")
+    }
 }
 
-fn source(role: &str, value: impl Into<String>) -> String {
-    let reference = sources()
-        .sugars()
-        .reference_for_role(role, value)
-        .expect("the source declares this grammar role");
-    let source = reference.source().expect("a declared source reference");
-    let settings = source.settings.encode().expect("source settings encode");
-    let value = sources()
-        .shared(&source.module)
-        .expect("the actual secret source opens")
-        .resolve_at_config(
-            settings.expose(&busbar_kernel::seal::lend()),
-            &busbar_contract::config_time::ConfigScope::config_time(),
+/// The template filling the linked env source declares (`${NAME}` placeholders filled from the environment).
+fn sugars() -> busbar_contract::secret_ref::Sugars {
+    use busbar_contract::abi::mechanism::door::{
+        REWRITE_SUGAR, REWRITE_SUGAR_NAMES, REWRITE_SUGAR_ROLE, REWRITE_SUGAR_SHOWN,
+    };
+    let mut sugars = busbar_contract::secret_ref::Sugars::default();
+    sugars
+        .declare(
+            "secret-env",
+            &[
+                (REWRITE_SUGAR, "env".to_owned(), "key".to_owned()),
+                (REWRITE_SUGAR_SHOWN, "env".to_owned(), "VAR".to_owned()),
+                (
+                    REWRITE_SUGAR_NAMES,
+                    "env".to_owned(),
+                    "environment variable".to_owned(),
+                ),
+                (REWRITE_SUGAR_ROLE, "env".to_owned(), SUGAR_ROLE_FILL.to_owned()),
+            ],
         )
-        .expect("the actual secret source resolves the canary");
-    String::from_utf8(value.into_exposed(&busbar_kernel::seal::lend()))
-        .expect("the canary source is UTF-8")
+        .expect("the env source's template filling declares");
+    sugars
 }
 
 fn open(
@@ -375,7 +370,7 @@ pub fn run(c: &AbiCanaries) -> (Vec<Sink>, Vec<String>) {
         serde_json::to_value(
             busbar_contract::secret_ref::SecretRef::template(
                 format!("aud-${{{tpl_var}}}"),
-                &sources().sugars(),
+                &sugars(),
             )
             .expect("the source declares template filling")
             .authoring(&busbar_kernel::seal::acquire()),
