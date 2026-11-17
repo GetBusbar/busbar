@@ -60,11 +60,11 @@ crate::kind! {
             pub base_path: crate::types::Str<'a>,
             pub upstream: crate::types::Str<'a>,
             pub provider: crate::types::Str<'a>,
-            /// The `path` parameter is the raw UTF-8 full static request-path override, including
-            /// its configured query. The plane applies it before wire encoding, query precedence
-            /// and signing. `base_path` remains the separate configured path_base.
+            // The `path` parameter is the raw UTF-8 full static request-path override, including
+            // its configured query. The plane applies it before wire encoding, query precedence
+            // and signing. `base_path` remains the separate configured path_base.
             pub params: crate::types::Slice<'a, crate::types::Pair<'a>>,
-            /// Host-prepared admission records; an empty block conveys no resource authority.
+            // Host-prepared admission records; an empty block conveys no resource authority.
             pub admission: crate::types::Bytes<'a>,
         }
         }
@@ -1300,6 +1300,32 @@ crate::kind! {
                     use crate::plugin::__rt::Arg;
                     use crate::types::Bytes;
                     crate::host_side::proxy::sync(&self.inst, crate::host_side::proxy::entry(M_PIECE), buf, |lease| {
+                        self.session.call4(
+                            |vt| &vt.piece,
+                            (
+                                Arg::u32(from),
+                                Arg::u32(exchange),
+                                Arg::u32(flags),
+                                Arg::bytes(Bytes::new(bytes)),
+                            ),
+                            lease,
+                        )
+                    })
+                }
+
+                /// One piece on previously charged fixed output storage. The input is borrowed for this call;
+                /// this does not select a command or establish admission/lease authority.
+                pub fn piece_fixed<'o>(
+                    &mut self,
+                    buf: &'o mut [u8],
+                    from: u32,
+                    exchange: u32,
+                    flags: u32,
+                    bytes: &[u8],
+                ) -> Result<(crate::host_side::answer::Answer<'o>, usize), crate::fail::CallError> {
+                    use crate::plugin::__rt::Arg;
+                    use crate::types::Bytes;
+                    crate::host_side::proxy::sync_fixed(&self.inst, crate::host_side::proxy::entry(M_PIECE), buf, |lease| {
                         self.session.call4(
                             |vt| &vt.piece,
                             (

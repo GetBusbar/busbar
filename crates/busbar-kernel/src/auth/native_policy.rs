@@ -72,6 +72,7 @@ impl BindingsPolicy {
                 ttl_secs: identity.cache_s().map(u64::from),
             },
             resolved: None,
+            signed_authority: None,
         }
     }
 }

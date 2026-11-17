@@ -81,11 +81,33 @@ impl KernelServices {
 pub struct ServingGeneration {
     core: Arc<KernelServices>,
     route: Arc<dyn NestRoute>,
+    routing_generation: Option<crate::registry::Generation>,
 }
 
 impl ServingGeneration {
     pub fn new(core: Arc<KernelServices>, route: Arc<dyn NestRoute>) -> Self {
-        Self { core, route }
+        Self {
+            core,
+            route,
+            routing_generation: None,
+        }
+    }
+
+    /// Native snapshot construction refuses counter exhaustion rather than assigning FIRST or
+    /// borrowing mutable metadata from a later publication.
+    pub fn try_new(
+        core: Arc<KernelServices>,
+        route: Arc<dyn NestRoute>,
+    ) -> Result<Self, crate::registry::GenerationExhausted> {
+        Ok(Self {
+            core,
+            route,
+            routing_generation: Some(crate::registry::Generation::allocate()?),
+        })
+    }
+
+    pub fn routing_generation(&self) -> Option<crate::registry::Generation> {
+        self.routing_generation
     }
 
     pub fn core(&self) -> &Arc<KernelServices> {
@@ -103,6 +125,7 @@ pub struct InvocationContext {
     unit: u64,
     record: Arc<crate::host_units::UnitRecord>,
     phase: Arc<crate::plane_driver::request_admission::AdmissionPhase>,
+    signed_authority: Option<Arc<crate::governance::current_credential::VerifiedKeyAuthority>>,
 }
 
 impl InvocationContext {
@@ -129,6 +152,10 @@ impl InvocationContext {
             .units()
             .invocation_data_gate(unit, &caller, &record)
             .ok_or(NEST_NO_UNIT)?;
+        let signed_authority = generation
+            .core
+            .units()
+            .invocation_signed_authority(unit, &caller, &record);
         Ok(Self {
             data_gate,
 
@@ -137,6 +164,7 @@ impl InvocationContext {
             unit,
             record,
             phase,
+            signed_authority,
         })
     }
 
@@ -152,6 +180,12 @@ impl InvocationContext {
     /// unit lookup cannot replace the principal used by hooks, budgets or nested authorization.
     pub fn principal(&self) -> Option<&Arc<busbar_contract::records::VirtualKey>> {
         self.record.principal.as_ref()
+    }
+
+    pub(crate) fn signed_authority(
+        &self,
+    ) -> Option<&Arc<crate::governance::current_credential::VerifiedKeyAuthority>> {
+        self.signed_authority.as_ref()
     }
 
     pub fn instance(&self) -> &str {
@@ -196,7 +230,7 @@ impl InvocationContext {
     /// Keep hook work on the exact retained generation's bounded executor, including after
     /// the request stops waiting for a tap or an expired call.
     pub(crate) fn offload_hook(&self, job: Box<dyn FnOnce() + Send>) -> Result<(), &'static str> {
-        if !self.effects_allowed() {
+        if self.data_gate.is_some() || !self.effects_allowed() {
             return Err(NEST_NO_UNIT);
         }
         self.generation.core.pool().ok_or(super::NO_POOL)?.run(job);
@@ -209,7 +243,7 @@ impl InvocationContext {
         nest: Nest,
         done: NestDone,
     ) -> Result<(), &'static str> {
-        if nest.parent != self.unit || !self.effects_allowed() {
+        if self.data_gate.is_some() || nest.parent != self.unit || !self.effects_allowed() {
             return Err(NEST_NO_UNIT);
         }
         self.generation
@@ -230,7 +264,7 @@ impl InvocationContext {
     }
 
     pub fn nest(&self, caller: &Caller, ask: NestAsk, done: NestDone) -> Result<(), &'static str> {
-        if !self.accepts(caller) || !self.effects_allowed() {
+        if self.data_gate.is_some() || !self.accepts(caller) || !self.effects_allowed() {
             return Err(NEST_NO_UNIT);
         }
         let retained = self.clone();

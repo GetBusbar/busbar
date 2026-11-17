@@ -328,8 +328,13 @@ pub fn to_string_pretty<T: Serialize + ?Sized>(value: &T) -> Result<String, Erro
     Ok(sonic_rs::to_string_pretty(value)?)
 }
 
-/// [`to_vec`] into any writer, streamed: the document is handed to `writer` in pieces as it is
-/// written, never held whole (a size-bounded or digesting sink sees every byte as it comes).
+/// [`to_vec`] into any writer without serializer-owned heap staging of strings.
+///
+/// The sink is not flushed. It may hold a prefix on failure; discard incomplete owned output or
+/// defer external publication until this returns successfully. A bounded sink controls its own
+/// output growth, not allocations in the input's `Serialize` implementation: native [`Value`]
+/// objects still allocate sorting references under `sort_keys`. Borrowed strings, as used by the
+/// JSON-RPC envelope writer, are emitted directly without those tree allocations.
 ///
 /// # Errors
 /// As [`to_vec`], and `writer`'s own I/O refusal.
@@ -337,10 +342,7 @@ pub fn to_writer<W: std::io::Write, T: Serialize + ?Sized>(
     writer: W,
     value: &T,
 ) -> Result<(), Error> {
-    Ok(sonic_rs::to_writer(
-        sonic_rs::writer::BufferedWriter::new(writer),
-        value,
-    )?)
+    Ok(sonic_rs::to_writer_io(writer, value)?)
 }
 
 /// Build the tree of a serializable value (a number keeps its lexeme when `value` holds one).

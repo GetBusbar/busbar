@@ -4,33 +4,275 @@
 //! Linear input to the selected-resource governor. Selection and preparation minting remain
 //! private to the money consumer; configuration metadata alone cannot authorize an attempt.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use busbar_contract::MeterClassId;
-
-use super::UnitMoney;
-use crate::governance::unit_checkpoint::partitions::{AttemptPartition, Finality, Transport};
+use crate::governance::unit_checkpoint::partitions::{
+    AttemptPartition, Disposition, Finality, TargetKind, Transport, UsagePartition,
+};
 use crate::governance::unit_checkpoint::UnitCheckpoint;
-use crate::governance::AdmitGrant;
-use crate::invocation::InvocationContext;
-use crate::plane_driver::port_session::UpExchange;
+use crate::plane_driver::port_egress::SelectedWalkAttempt;
+use crate::plane_driver::port_session::{PreparedExchange, RequestDeclaration};
+use crate::plane_driver::port_upstream::TargetIdentity;
+use crate::plane_driver::request_admission::AdmittedRequest;
+
+#[derive(Debug)]
+pub(crate) enum NativeAttemptError {
+    Unavailable,
+    Binding,
+    Custody(busbar_contract::records::RecordStoreError),
+    Usage(RecErr),
+    Rate(crate::governance::selected_resource::RateObservationError),
+}
 
 /// The book-accepted complete checkpoint is the runtime's single factual source as well.
 /// Live selection/rate authority is separate and is never reconstructed from these facts.
 pub(super) struct NativeMoney {
     accepted: Arc<UnitCheckpoint>,
+    /// Incurred facts remain owned here if publishing their successor was refused.
+    unpublished: Option<Arc<UnitCheckpoint>>,
+    declaration: Option<RequestDeclaration>,
 }
 
 impl NativeMoney {
-    /// Only the host money owner installs a snapshot returned by stage_selected_checkpoint.
+    /// Factual reader fixtures carry no live task/selection authority.
+    #[cfg(test)]
     pub(super) fn from_accepted(accepted: Arc<UnitCheckpoint>) -> Self {
-        Self { accepted }
+        Self {
+            accepted,
+            unpublished: None,
+            declaration: None,
+        }
+    }
+
+    pub(super) fn admitted(accepted: Arc<UnitCheckpoint>, declaration: RequestDeclaration) -> Self {
+        Self {
+            accepted,
+            unpublished: None,
+            declaration: Some(declaration),
+        }
     }
 
     pub(super) fn checkpoint(&self) -> &Arc<UnitCheckpoint> {
-        &self.accepted
+        self.unpublished.as_ref().unwrap_or(&self.accepted)
     }
+
+    fn publish_incurred(
+        &mut self,
+        gov: &crate::governance::GovState,
+        snapshot: UnitCheckpoint,
+    ) -> Result<(), NativeAttemptError> {
+        match gov.stage_selected_checkpoint(snapshot.clone(), Some(self.accepted.revision)) {
+            Ok(accepted) => {
+                self.accepted = accepted;
+                self.unpublished = None;
+                Ok(())
+            }
+            Err(error) => {
+                self.unpublished = Some(Arc::new(snapshot));
+                Err(NativeAttemptError::Custody(error))
+            }
+        }
+    }
+}
+
+/// The original money service and admitted request, issued only after selected initial custody.
+/// Runtime keeps this with the same allocation; there is no numeric-unit lookup constructor.
+pub struct NativeRequestMoney {
+    pub(super) money: Arc<super::PlaneMoney>,
+    pub(super) request: AdmittedRequest,
+}
+
+impl NativeRequestMoney {
+    pub fn request(&self) -> &AdmittedRequest {
+        &self.request
+    }
+
+    /// Consume both actual producer proofs while checking the original still-live money Open.
+    /// Prepared estimates remain in the owned exchange; they are never incurred quantity facts.
+    pub(crate) fn prepare(
+        &self,
+        selected: SelectedWalkAttempt,
+        prepared: PreparedExchange,
+    ) -> Result<PreparedRateAttempt, NativeAttemptError> {
+        if !self.request.accepts_walk(selected.walk())
+            || !member_granted(
+                self.request.member_grants(),
+                selected.pool(),
+                selected.qualified_member(),
+            )
+            || selected.target() != prepared.target()
+            || selected.preparation() != prepared.attempt()
+        {
+            return Err(NativeAttemptError::Binding);
+        }
+        let mut all = self.money.shard(self.request.unit());
+        let open = all
+            .get_mut(&self.request.unit())
+            .ok_or(NativeAttemptError::Unavailable)?;
+        self.check_open(open)?;
+        let native = open
+            .native
+            .as_mut()
+            .ok_or(NativeAttemptError::Unavailable)?;
+        if native.unpublished.is_some() {
+            return Err(NativeAttemptError::Unavailable);
+        }
+        if !native
+            .declaration
+            .as_ref()
+            .is_some_and(|declaration| declaration.accepts(&prepared))
+        {
+            return Err(NativeAttemptError::Binding);
+        }
+        let before = &native.accepted;
+        let mut snapshot = before.as_ref().clone();
+        let parts = snapshot
+            .partitions
+            .as_mut()
+            .ok_or(NativeAttemptError::Binding)?;
+        if parts.disposition != Disposition::Running
+            || !preparation_follows(parts.attempt_limit, &parts.attempts, prepared.attempt())
+            || parts.routing_generation
+                != self
+                    .request
+                    .context()
+                    .generation()
+                    .routing_generation()
+                    .ok_or(NativeAttemptError::Binding)?
+                    .get()
+        {
+            return Err(NativeAttemptError::Binding);
+        }
+        let physical_classes: Box<[Box<str>]> = prepared
+            .declaration()
+            .physical_classes()
+            .map(Box::<str>::from)
+            .collect();
+        if physical_classes
+            .iter()
+            .map(|class| class.to_string())
+            .collect::<BTreeSet<_>>()
+            != parts.physical_classes
+        {
+            return Err(NativeAttemptError::Binding);
+        }
+        parts.attempts.push(AttemptPartition {
+            preparation: selected.preparation(),
+            dispatch: None,
+            kind: match selected.target().identity {
+                TargetIdentity::Registration => TargetKind::Registration,
+                TargetIdentity::Model { .. } => TargetKind::Model,
+            },
+            instance: self.request.context().instance().to_owned(),
+            selected_pool: selected.pool().to_owned(),
+            resource: selected.resource().map(str::to_owned),
+            usage: UsagePartition {
+                lane: selected.qualified_member().to_owned(),
+                provider: (!selected.provider().is_empty()).then(|| selected.provider().to_owned()),
+                classes: BTreeMap::new(),
+            },
+            transport: Transport::Prepared,
+            finality: Finality::Live,
+        });
+        let accepted = self
+            .money
+            .gov
+            .stage_selected_checkpoint(snapshot, Some(before.revision))
+            .map_err(NativeAttemptError::Custody)?;
+        native.accepted = accepted;
+        Ok(PreparedRateAttempt {
+            request: self.request.clone(),
+            selected,
+            physical_classes,
+            _prepared: prepared,
+        })
+    }
+
+    /// A quota/eligibility refusal consumes the original preparation without creating a dispatch.
+    /// Minute-expired provisional reservations instead return this same token for re-admission.
+    pub(crate) fn no_send(&self, prepared: PreparedRateAttempt) -> Result<(), NativeAttemptError> {
+        let mut all = self.money.shard(self.request.unit());
+        let open = all
+            .get_mut(&self.request.unit())
+            .ok_or(NativeAttemptError::Unavailable)?;
+        self.check_open(open)?;
+        if !prepared.request.matches_money(
+            &self.money.book,
+            &open.identity,
+            open.grant.as_ref().ok_or(NativeAttemptError::Unavailable)?,
+        ) {
+            return Err(NativeAttemptError::Binding);
+        }
+        let native = open
+            .native
+            .as_mut()
+            .ok_or(NativeAttemptError::Unavailable)?;
+        let mut snapshot = native.accepted.as_ref().clone();
+        let attempt = snapshot
+            .partitions
+            .as_mut()
+            .and_then(|parts| parts.attempts.last_mut())
+            .ok_or(NativeAttemptError::Binding)?;
+        if attempt.preparation != prepared.selected.preparation()
+            || attempt.transport != Transport::Prepared
+            || attempt.finality != Finality::Live
+        {
+            return Err(NativeAttemptError::Binding);
+        }
+        attempt.transport = Transport::NoSend;
+        attempt.finality = Finality::Unknown;
+        native.accepted = self
+            .money
+            .gov
+            .stage_selected_checkpoint(snapshot, Some(native.accepted.revision))
+            .map_err(NativeAttemptError::Custody)?;
+        Ok(())
+    }
+
+    fn check_open(&self, open: &super::Open) -> Result<(), NativeAttemptError> {
+        self.check_open_identity(open)?;
+        if !self.request.is_live() {
+            return Err(NativeAttemptError::Unavailable);
+        }
+        Ok(())
+    }
+
+    fn check_open_identity(&self, open: &super::Open) -> Result<(), NativeAttemptError> {
+        if open.finished
+            || open.ledgered
+            || open.abandoned
+            || !self.request.matches_money_identity(
+                &self.money.book,
+                &open.identity,
+                open.grant.as_ref().ok_or(NativeAttemptError::Unavailable)?,
+            )
+            || !self.request.matches_governance(&self.money.gov)
+        {
+            return Err(NativeAttemptError::Unavailable);
+        }
+        Ok(())
+    }
+}
+
+#[path = "native_live.rs"]
+mod live;
+#[cfg(test)]
+use live::effective_tokens;
+pub(crate) use live::{NativeAttempt, NativeCommitError};
+
+fn preparation_follows(limit: u32, attempts: &[AttemptPartition], preparation: u32) -> bool {
+    preparation != 0
+        && preparation <= limit
+        && attempts
+            .last()
+            .is_none_or(|prior| prior.preparation < preparation && prior.finality != Finality::Live)
+}
+
+fn member_granted(grants: &BTreeMap<String, Vec<String>>, pool: &str, member: &str) -> bool {
+    grants
+        .get(pool)
+        .is_some_and(|members| members.iter().any(|held| held == member))
 }
 use busbar_plugin_abi::records::RecErr;
 use busbar_ports::codec::fallback_usage::{
@@ -43,41 +285,56 @@ use busbar_ports::codec::fallback_usage::{
 /// request admission or reconstructs the exchange from its descriptive fields. In particular,
 /// a refusal returns this same value only after releasing its own provisional rate cells.
 ///
-/// There is deliberately no public or crate-wide constructor: the native money consumer must
-/// check the live invocation, original Open identity and selected member before minting it.
-/// Until that producer is integrated this input cannot activate selected-attempt dispatch.
+/// The sole mint consumes the live walk and Task preparation through NativeRequestMoney;
+/// descriptive metadata alone cannot construct this value or authorize a transport handoff.
 pub(crate) struct PreparedRateAttempt {
-    money: Arc<UnitMoney>,
-    instance: Box<str>,
-    resource: Option<Box<str>>,
-    physical_classes: Box<[MeterClassId]>,
-    // Retain actual ownership, not copied identifiers. None of these fields contributes a
-    // second fee participation or admission; the grant is the original Open's shared grant.
-    _invocation: InvocationContext,
-    _book: Arc<()>,
-    _open_identity: Arc<()>,
-    _grant: Arc<AdmitGrant>,
-    _exchange: UpExchange,
+    request: AdmittedRequest,
+    selected: SelectedWalkAttempt,
+    physical_classes: Box<[Box<str>]>,
+    // Retain the whole validated preparation: its exchange cannot be paired with another
+    // target/ordinal or a separately copied estimate/echo view.
+    _prepared: PreparedExchange,
 }
 
 impl PreparedRateAttempt {
     /// The authenticated request payer captured by the original monetary admission.
     pub(crate) fn key_id(&self) -> &str {
-        &self.money.key.id
+        &self.request.key().id
     }
 
     pub(crate) fn instance(&self) -> &str {
-        &self.instance
+        self.request.context().instance()
     }
 
     /// Absent only when the selected-policy resolver produces no resource rule rows.
     pub(crate) fn resource(&self) -> Option<&str> {
-        self.resource.as_deref()
+        self.selected.resource()
     }
 
     /// The frozen, validated physical class set; aggregates must not overlap its classes.
-    pub(crate) fn physical_classes(&self) -> &[MeterClassId] {
+    pub(crate) fn physical_classes(&self) -> &[Box<str>] {
         &self.physical_classes
+    }
+
+    /// Original verified payer/credential restrictions, route domain and live money authority.
+    /// Current-policy resolution must not rebuild these facts from a key id.
+    pub(crate) fn receipt(&self) -> &AdmittedRequest {
+        &self.request
+    }
+
+    /// Actual take-once selected member, bound to the same walk as the admitted request.
+    pub(crate) fn selection(&self) -> &SelectedWalkAttempt {
+        &self.selected
+    }
+
+    pub(crate) fn route(&self) -> u32 {
+        self._prepared.route()
+    }
+
+    pub(crate) fn original_route(
+        &self,
+    ) -> Option<&crate::plane_driver::route_identity::OriginalPlaneRoute> {
+        self._prepared.original_route()
     }
 }
 

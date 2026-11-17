@@ -190,26 +190,53 @@ mod attachments {
     use crate::plugin_records::RecordsDenied;
     use tokio::sync::mpsc;
 
+    fn link(
+        serial: bool,
+    ) -> (
+        super::super::budget::UnitBudget,
+        std::sync::Arc<Link>,
+        mpsc::Receiver<super::super::protected::GuardedWrite>,
+    ) {
+        let instance = super::super::budget::ChannelBudget::new().instance();
+        let unit = instance.unit();
+        let (link, queue) = Link::new(
+            serial,
+            super::super::frame::Framing::Ndjson,
+            instance.link(),
+        );
+        (unit, link, queue)
+    }
+
     fn attach(
+        budget: &super::super::budget::UnitBudget,
         link: &std::sync::Arc<Link>,
         slot: u64,
         greet: bool,
     ) -> (Attachment, mpsc::Sender<ChannelMsg>) {
         let (tx, rx) = mpsc::channel(4);
         (
-            Attachment::linked(link.clone(), 1, slot, greet, Box::new([]), rx),
+            Attachment::linked(
+                link.clone(),
+                budget.clone(),
+                1,
+                slot,
+                greet,
+                Box::new([]),
+                rx,
+            )
+            .unwrap(),
             tx,
         )
     }
 
     #[tokio::test]
     async fn send_writes_in_arrival_order_and_recv_yields_then_ends() {
-        let (link, mut queue) = Link::new(false);
-        let (mut a, tx) = attach(&link, 1, true);
+        let (unit, link, mut queue) = link(false);
+        let (mut a, tx) = attach(&unit, &link, 1, true);
         a.send(b"one", false).await.unwrap();
         a.send(b"two", true).await.unwrap();
-        assert_eq!(&*queue.recv().await.unwrap(), b"one");
-        assert_eq!(&*queue.recv().await.unwrap(), b"two");
+        assert_eq!(queue.recv().await.unwrap().as_bytes(), b"one");
+        assert_eq!(queue.recv().await.unwrap().as_bytes(), b"two");
         tx.send(ChannelMsg::Message(b"in".as_slice().into()))
             .await
             .unwrap();
@@ -220,24 +247,24 @@ mod attachments {
 
     #[tokio::test]
     async fn serial_asks_wait_their_turn_and_detach_hands_on() {
-        let (link, mut queue) = Link::new(true);
-        let (mut a, _ta) = attach(&link, 1, true);
-        let (mut b, _tb) = attach(&link, 2, false);
+        let (unit, link, mut queue) = link(true);
+        let (mut a, _ta) = attach(&unit, &link, 1, true);
+        let (mut b, _tb) = attach(&unit, &link, 2, false);
         a.send(b"a", true).await.unwrap();
         b.send(b"b", true).await.unwrap();
         b.send(b"reply", false).await.unwrap();
-        assert_eq!(&*queue.recv().await.unwrap(), b"a");
-        assert_eq!(&*queue.recv().await.unwrap(), b"reply");
+        assert_eq!(queue.recv().await.unwrap().as_bytes(), b"a");
+        assert_eq!(queue.recv().await.unwrap().as_bytes(), b"reply");
         assert!(queue.try_recv().is_err(), "b's ask waits behind a's");
         drop(a);
-        assert_eq!(&*queue.recv().await.unwrap(), b"b");
+        assert_eq!(queue.recv().await.unwrap().as_bytes(), b"b");
     }
 
     #[tokio::test]
     async fn only_the_greeting_session_readies_and_a_dead_writer_is_unavailable() {
-        let (link, queue) = Link::new(false);
-        let (mut g, _tg) = attach(&link, 1, true);
-        let (mut n, _tn) = attach(&link, 2, false);
+        let (unit, link, queue) = link(false);
+        let (mut g, _tg) = attach(&unit, &link, 1, true);
+        let (mut n, _tn) = attach(&unit, &link, 2, false);
         n.ready(b"no");
         assert!(link.ready_tail().is_none());
         g.ready(b"yes");
@@ -248,8 +275,8 @@ mod attachments {
 
     #[tokio::test]
     async fn a_detaching_greeter_hands_the_greet_on() {
-        let (link, _queue) = Link::new(false);
-        let (g, _tg) = attach(&link, 1, true);
+        let (unit, link, _queue) = link(false);
+        let (g, _tg) = attach(&unit, &link, 1, true);
         drop(g);
         link.greet_released().await;
     }

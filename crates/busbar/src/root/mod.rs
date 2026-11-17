@@ -211,6 +211,7 @@ pub(crate) mod min3_framers;
 pub(crate) mod min3_physical;
 pub(crate) mod min3_provider_catalog;
 pub(crate) mod min3_provider_plan;
+pub(crate) mod min3_selected_policy;
 /// K9: each MIN-3 plane seat's egress walk and channel carrier, composed at boot from the configured upstreams.
 pub(crate) mod plane_seats;
 /// The HTTP mount of the MIN-3 plane instances: their data routes onto `PortDriver::serve`.

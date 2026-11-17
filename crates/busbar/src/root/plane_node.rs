@@ -2414,6 +2414,7 @@ impl Sealing {
             // Recipe v7 (ADMIN-API-1.6 §3.2): copies of what the unit already holds, and the one
             // attribution text its report built.
             unit: busbar_kernel_audit::UnitFacts {
+                billing: None,
                 wall_ms: arrived.ms(),
                 attribution,
                 boot_nonce: busbar_kernel::snapshot::boot_nonce(),

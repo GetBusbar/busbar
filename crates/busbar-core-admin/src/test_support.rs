@@ -65,6 +65,20 @@ pub fn openapi_json() -> String {
     crate::v1::json::openapi_json()
 }
 
+/// Exercise the production replay middleware around a controlled effect handler.
+pub fn with_idempotency(
+    router: axum::Router,
+    app: std::sync::Arc<busbar_kernel::state::App>,
+) -> axum::Router {
+    router
+        .layer(axum::middleware::from_fn(
+            crate::v1::json::generation::preconditions,
+        ))
+        .layer(axum::Extension(std::sync::Arc::new(
+            busbar_kernel::state::AppHandle::new(app),
+        )))
+}
+
 #[cfg(feature = "openapi-schema")]
 pub fn openapi_doc() -> serde_json::Value {
     crate::v1::json::openapi_doc()

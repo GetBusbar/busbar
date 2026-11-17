@@ -47,6 +47,8 @@ pub(crate) fn described(
 }
 
 struct Owners {
+    admitted_images: Arc<crate::root::boot::images::FileImages>,
+    channel_accounts: ChannelAccounts,
     built: Built,
     prefix: Arc<BootSecrets>,
     planes: Vec<PlaneImage>,
@@ -295,10 +297,12 @@ impl ServingFixture {
         let hook_inputs = hooks::Environment::new(hook_plan, app)?;
         hook_inputs.check_pools(&instances)?;
         let steps = Steps {
+            images: &self.owners.admitted_images,
             registry: &built.registry,
             instances: &specs,
             services: Some(services),
             seats: Mutex::default(),
+            inventory_inputs: Mutex::default(),
             invocations: Mutex::default(),
             shared: Arc::clone(&shared),
             directory: provisioning.directory,
@@ -311,6 +315,10 @@ impl ServingFixture {
                     .map(|(name, split)| (name, Arc::new(split.definitions)))
                     .collect(),
                 catalogs: Default::default(),
+                channel_budgets: self
+                    .owners
+                    .channel_accounts
+                    .for_instances(&built.registry, &instances)?,
                 signals: Arc::clone(&shared.signals),
                 secrets: Arc::new(SpawnCustody(Arc::clone(&prefix))),
                 kernel: Arc::new(Kernel::new()),
@@ -368,7 +376,10 @@ pub(crate) async fn open(
     policy: Arc<dyn RootRules>,
 ) -> Result<Fixture, String> {
     let process = process()?;
-    let images = super::super::boot::images::fixture(&process.resources, plugins)?;
+    let images = Arc::new(super::super::boot::images::fixture(
+        &process.resources,
+        plugins,
+    )?);
     let protected = images.protect(cfg)?;
     let planes = images
         .aliases
@@ -388,7 +399,7 @@ pub(crate) async fn open(
         &process.resources,
         Guard::from_config(&cfg.destinations())?,
         cfg,
-        images.images,
+        images.images.clone(),
     )?;
     let configured = configured(cfg, &[])?;
     let specs = specifications(&configured, cfg.public_url.as_deref(), false);
@@ -437,6 +448,8 @@ pub(crate) async fn open(
         super::super::boot::store::bootstrap_config_store(cfg, plugins, &opener, &resolver).await?;
     drop(steps);
     let owners = Arc::new(Owners {
+        admitted_images: images,
+        channel_accounts: ChannelAccounts::new(),
         built,
         prefix,
         planes,
