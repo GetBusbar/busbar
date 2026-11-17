@@ -364,3 +364,6 @@ pub fn bind_providers(plan: &ProviderPlan<'_>) -> Result<ProviderBindings, Vec<S
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod native_tests;
