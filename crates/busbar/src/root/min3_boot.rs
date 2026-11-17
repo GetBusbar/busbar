@@ -1059,6 +1059,8 @@ pub(crate) struct BootstrapReady {
 /// S4b's effective registry and its retained bootstrap leases, before serving opens.
 pub(crate) struct ServingReady {
     hook_plan: hooks::Plan,
+    auth_policy: busbar_kernel::config::min3::Min3Config,
+    request_body_cap: usize,
     built: Built,
     instances: Vec<Configured>,
     declared: std::collections::BTreeMap<String, busbar_kernel::upstreams::Declared>,
@@ -1362,6 +1364,8 @@ pub(crate) fn prepare_serving(
     let hook_plan = hooks::Plan::capture(cfg, &instances)?;
     Ok(ServingReady {
         hook_plan,
+        auth_policy: cfg.min3.clone(),
+        request_body_cap: cfg.limits.request_body_max_bytes,
         built,
         instances,
         declared,
@@ -1378,13 +1382,12 @@ pub(crate) fn prepare_serving(
 }
 
 pub(crate) struct ServingEnvironment<'a> {
-    cfg: &'a RootCfg,
     app: &'a busbar_kernel::state::App,
 }
 
 impl<'a> ServingEnvironment<'a> {
-    pub(crate) fn new(cfg: &'a RootCfg, app: &'a busbar_kernel::state::App) -> Self {
-        Self { cfg, app }
+    pub(crate) fn new(app: &'a busbar_kernel::state::App) -> Self {
+        Self { app }
     }
 }
 
@@ -1407,6 +1410,8 @@ pub(crate) async fn finish(
 > {
     let ServingReady {
         hook_plan,
+        auth_policy,
+        request_body_cap,
         built,
         instances,
         declared,
@@ -1675,7 +1680,7 @@ pub(crate) async fn finish(
     let environment = environment.ok_or("serving composition has no candidate authority")?;
     let owners = super::min3_admin_auth::owners(
         environment.app,
-        &environment.cfg.min3,
+        &auth_policy,
         &opened_auth,
         Arc::clone(&records),
     )?;
@@ -1683,17 +1688,17 @@ pub(crate) async fn finish(
         opened_auth,
         &holds,
         owners,
-        Duration::from_secs(environment.cfg.min3.unknown_key_refresh_s),
+        Duration::from_secs(auth_policy.unknown_key_refresh_s),
     )?);
     let provisioning = super::provisioning::mounts(
-        &environment.cfg.min3,
+        &auth_policy,
         &auth,
         environment.app,
         environment
             .app
             .config_generation
             .load(std::sync::atomic::Ordering::Acquire),
-        environment.cfg.limits.request_body_max_bytes,
+        request_body_cap,
         crate::root::dispatch::dispatcher().budgets().call,
         Arc::clone(&environment.app.request_id_counter),
     )?;

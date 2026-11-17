@@ -1183,7 +1183,6 @@ async fn run(
         root::connector::dest_judge(&cfg).guard().clone(),
     )
     .unwrap_or_else(|error| die(error));
-    let native_config = cfg.clone();
     let preparation = root::boot_app::Preparation {
         secret_resolver,
         startup: store_admission,
@@ -1343,10 +1342,7 @@ async fn run(
             app.governance.clone(),
             app.role_bindings.clone(),
         ),
-        Some(root::min3_boot::ServingEnvironment::new(
-            &native_config,
-            &app,
-        )),
+        Some(root::min3_boot::ServingEnvironment::new(&app)),
         &observation_reservation,
     )
     .await
