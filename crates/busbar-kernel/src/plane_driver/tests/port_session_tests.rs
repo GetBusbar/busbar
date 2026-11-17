@@ -272,6 +272,11 @@ fn a_hook_projection_is_driven_without_exposing_it_to_the_client() {
     let fx = Emitted::default();
     let (task, first) = Task::begin(&script, &request, b"", &fx).unwrap();
     assert!(!first.later, "CONVERSATION is a native hook projection");
+    assert_eq!(
+        first.conversation.as_deref(),
+        Some(br#"{"messages":[{"role":"user","text":"private"}]}"#.as_slice()),
+        "the stage receives the plane's exact projection"
+    );
     assert!(first.client.is_empty(), "projection is never client output");
     assert!(first.forward.is_some());
     assert!(task.open());
