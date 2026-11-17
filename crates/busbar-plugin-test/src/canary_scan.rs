@@ -70,9 +70,20 @@ struct Pattern {
 
 impl Pattern {
     fn random() -> Self {
+        Self::random_mode(false)
+    }
+
+    fn random_mode(text: bool) -> Self {
         let mut plain = [0_u8; CANARY_LEN];
         let mut mask = [0_u8; CANARY_LEN];
         fill_random(&mut plain);
+        if text {
+            const ALPHABET: &[u8; 62] =
+                b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+            for byte in &mut plain {
+                *byte = ALPHABET[usize::from(*byte) % ALPHABET.len()];
+            }
+        }
         fill_random(&mut mask);
         let mut masked = [0_u8; CANARY_LEN];
         for ((m, p), k) in masked.iter_mut().zip(&plain).zip(&mask) {
@@ -168,7 +179,18 @@ impl WipeProof {
     /// (unwiped) control.
     #[must_use]
     pub fn new() -> Self {
-        let canary = Pattern::random();
+        Self::with_canary(Pattern::random())
+    }
+
+    /// An ASCII alphanumeric canary, unchanged by URL/form encoding, using the same masked scanner and
+    /// controls as [`Self::new`]. Write it directly into guarded ASCII staging with [`Self::write_canary`].
+    /// [`Self::payload`] still has binary filler and is not a UTF-8 payload.
+    #[must_use]
+    pub fn new_text() -> Self {
+        Self::with_canary(Pattern::random_mode(true))
+    }
+
+    fn with_canary(canary: Pattern) -> Self {
         let sentinel = Pattern::random();
         let control = Pattern::random();
         // First, so the scan never allocates after a block it must read is freed.

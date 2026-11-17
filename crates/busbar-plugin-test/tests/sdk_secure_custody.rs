@@ -199,7 +199,7 @@ mod fixture {
             #[cfg(target_os = "linux")]
             if reference.with(|bytes| bytes.len() == PAYLOAD_LEN + 1) {
                 let credential = need::secret(SecretHandle(1)).await?;
-                let mut scratch = reference.with(SecureVec::from);
+                let mut scratch = reference.with(|bytes| SecureVec::from(bytes));
                 scratch.extend_from_slice(&credential);
                 let request = need::Fetch {
                     method: "POST",
@@ -313,7 +313,13 @@ fn safe_parked_fetch_checks_lifecycle_and_rejects_counterfeit_cancellation() {
         needs.fetch("POST", fixture::URL, 204, &[], b"");
         let visits = Arc::new(AtomicUsize::new(0));
         let seen = Arc::clone(&visits);
+        let drops_before = fixture::SCRATCH_DROPS.load(Ordering::SeqCst);
         let parked = needs.park_fetch("POST", url, move |request| {
+            assert_eq!(
+                fixture::SCRATCH_DROPS.load(Ordering::SeqCst),
+                drops_before,
+                "scratch is still owned at FETCH"
+            );
             seen.fetch_add(1, Ordering::SeqCst);
             inspect(request);
         });
@@ -425,7 +431,16 @@ fn safe_parked_fetch_wipes_request_and_secret_script_owners() {
     let parked = needs.park_fetch("POST", fixture::URL, |request| {
         assert_eq!(request.body.len(), (PAYLOAD_LEN + 1) * 2);
         assert!(request.body.iter().all(u8::is_ascii_alphanumeric));
-        assert!(request.headers.into_iter().all(|rec| rec.is_ok()));
+        let (input, secret) = request.body.split_at(PAYLOAD_LEN + 1);
+        assert!(input == secret, "SECRET result must match guarded input");
+        let mut headers = request.headers;
+        let header = headers.next().expect("one header").expect("header record");
+        let (name, value) = header.pair().expect("header pair");
+        assert!(
+            name == "authorization" && value == secret,
+            "guarded SECRET header"
+        );
+        assert!(headers.next().is_none());
     });
     let h = Harness::admit(fixture::PLUGIN.plugin(), needs).expect("fixture admission");
     let port = h
