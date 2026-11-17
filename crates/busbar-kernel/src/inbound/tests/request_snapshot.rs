@@ -307,3 +307,26 @@ fn retained_body_bytes_keep_the_complete_snapshot_charge_and_original_admission(
     assert_eq!(budget.used(), (0, 0));
     assert!(budget.try_enter(AdmissionClass::Data).is_ok());
 }
+
+#[test]
+fn http_header_map_capture_preserves_every_duplicate_without_a_preliminary_array() {
+    let budget = ProcessAdmission::with_limits(2, 4096, 0);
+    let request = budget.try_enter(AdmissionClass::Operator).unwrap();
+    let mut headers = http::HeaderMap::new();
+    headers.append("authorization", http::HeaderValue::from_static("first"));
+    headers.append("authorization", http::HeaderValue::from_static("second"));
+    headers.append("x-other", http::HeaderValue::from_static("value"));
+    let snapshot = ChargedRequestSnapshot::capture_header_map(SnapshotInput {
+        method: "POST", path: "/admin", query: "", query_present: false,
+        authority: "admin.example", headers: &headers, peer: "peer",
+        tls_peer_cert: b"cert", body: b"input", now_s: 10,
+    }, &request).unwrap();
+    let expected = headers.iter().map(|(name, value)| (name.as_str(), value.as_bytes())).collect::<Vec<_>>();
+    assert_eq!(snapshot.headers().collect::<Vec<_>>(), expected);
+    assert_eq!(snapshot.headers().count(), 3);
+    snapshot.with_auth_input(|view| {
+        assert_eq!(view.headers.iter().map(|pair| (pair.name.get(), pair.value.get())).collect::<Vec<_>>(), expected);
+    }).unwrap();
+    drop((snapshot, request));
+    assert_eq!(budget.used(), (0, 0));
+}
