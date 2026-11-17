@@ -335,7 +335,9 @@ pub struct SigningKeyRotateView {
 /// are authored through the named exporter routes or source-fenced configuration document edits.
 /// Module-carried streams, produced fields and required pinned fields are published in the export
 /// form schema; lifecycle and restart requirements remain explicit in mutation responses.
-/// `advanced` is live EXCEPT `response_headers`: `response_headers.server_timing` is
+/// The settings endpoint exposes only the patchable advanced fields. The document-only
+/// `advanced.shutdown.deregister_delay` is captured at boot and requires restart.
+/// Within these settings, `advanced` is live EXCEPT `response_headers`: `response_headers.server_timing` is
 /// baked into router middleware state at boot (same "config apply swaps `Arc<App>`, never the
 /// router" freezing as `max_inbound_concurrent`) and `response_headers.route_policy` seeds a
 /// process-global `OnceLock`; neither is rebuilt by an apply.

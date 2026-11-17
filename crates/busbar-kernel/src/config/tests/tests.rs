@@ -311,7 +311,7 @@ fn removed_pre_release_limits_and_drain_keys_are_refused_as_unknown() {
         ),
         (
             "advanced:\n  shutdown:\n    drain_timeout: 30s\n",
-            "shutdown",
+            "drain_timeout",
         ),
         (
             "advanced:\n  governance:\n    max_pending_checkpoints: 7\n",

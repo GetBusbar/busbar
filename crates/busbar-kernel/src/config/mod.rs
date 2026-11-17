@@ -2303,3 +2303,6 @@ impl std::fmt::Debug for FetchTarget {
             .finish()
     }
 }
+
+mod shutdown;
+pub use shutdown::AdvancedShutdownCfg;
