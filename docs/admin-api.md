@@ -6,14 +6,13 @@ Everything Busbar knows about itself (its topology, its hooks, its auth posture,
 
 ## Authentication & scopes
 
-Every `/api/v1/admin` request is authenticated by the **`admin_auth:` chain** (by default the built-in static operator admin token module). Present the credential as either header:
+Every `/api/v1/admin` request is authenticated by the **`admin_auth:` chain** (by default the built-in static operator admin token module). Present the credential as a bearer token, the only scheme:
 
 ```
-x-admin-token: <token>
 Authorization: Bearer <token>
 ```
 
-A missing or wrong credential is `401 unauthorized` (in the same JSON error envelope as every other admin error) on every endpoint. `admin_auth: []` is the explicit open dev posture (anonymous, full authority); external identity providers (SSO/AD, each a `kind: auth` plugin defined under `identity-providers:`) slot into the same chain by name. Admin requests deliberately bypass virtual-key governance: the operator credential manages keys, it is not one.
+A missing or wrong credential is `401 unauthorized` (in the same JSON error envelope as every other admin error) on every endpoint. There is no anonymous admin posture: `admin_auth: []` is refused at boot; external identity providers (SSO/AD, each a `kind: auth` plugin defined under `identity-providers:`) slot into the same chain by name. Admin requests deliberately bypass virtual-key governance: the operator credential manages keys, it is not one.
 
 **Authorization is two scopes** on the authenticated principal, derived from **method + path, never the request body** (a crafted body cannot escalate): `read-only` (reads) and `full` (everything else).
 
@@ -40,6 +39,8 @@ Over-budget is `429 rate_limited` with a **`Retry-After: 60`** header, and the e
 
 **The static admin token is one shared principal.** Per-principal budgeting is only as isolating as the principal identity, and the built-in static-token admin auth module (the default `admin_auth:` entry, linked into the default build) maps *every* successful static-token authentication, regardless of which holder presented it, to the same constant principal id, `"admin"`. So if you hand the one static token to busbar-ui, your CI, your Terraform, and an operator's `curl`, they all collapse onto that single principal and **share one bucket per class** (10/min config-mutation, 60/min CRUD, 30/min plugin-inspect): a script hammering one of them can 429 the others, and the two are indistinguishable from the response alone. Failed attempts also spend budget (deliberate, anti-enumeration), which sharpens this. If you need per-caller isolation and attribution, don't fan the static token out to multiple automations. Authenticate them through a **role-bound external `kind: auth` module** instead (for example an OIDC or SSO provider; see `admin_auth:` above and `auth.role_bindings.<provider>`). Role-carrying principals from an external module get distinct principal ids and therefore distinct rate buckets.
 
+**The static admin token is single-factor.** It is one shared bearer secret: whoever holds it holds `full` scope, and nothing in the request proves a second factor. Wherever the admin plane is reachable beyond a trusted operator network, authenticate people through a **role-bound external `kind: auth` module** (for example an OIDC or SSO provider, listed in `admin_auth:` and bound with `auth.role_bindings.<provider>`) backed by an identity provider that enforces phishing-resistant MFA (FIDO2/WebAuthn passkeys or hardware security keys), and keep the static token for break-glass and automation only. Busbar does not enforce MFA itself: it trusts the identity provider's assertion, so the MFA policy lives in the provider.
+
 ## Security-sensitive config and queued effects
 
 Named edits, whole-config apply, document pointers (including parent replacement and removal),
@@ -52,7 +53,7 @@ from the authenticated grant, never from a subject spelling such as `admin`.
 
 Even a full operator cannot raise an identity-provider ceiling through the API, replace an
 existing hook's immutable kind/prompt/user grants, or change a protected nonempty admin chain to
-an empty one. Configure the intentional open development posture at startup. A chain replacement
+an empty one; an empty chain is refused in every case. A chain replacement
 must preserve this operator's full access under the proposed chain. These checks compare resolved
 candidates before builder plugin/provider opening and generations before persistence and publication, so broader document representations are not an
 alternate permission path. Boot and internal kernel maintenance are not administrative requests.
@@ -396,8 +397,8 @@ operation exists elsewhere.
 
 | Endpoint | Returns |
 |---|---|
-| `GET /info` | This node's identity, readable by every admin credential: `version` (informational), `deployment_id`, `node_id`, `incarnation` (the join-id term: a random 128-bit process generation, stable across reloads), `started_at_ms` (epoch milliseconds of process start; a changed value means a new process), `config_generation` (the durable config generation) and `warnings[]` (`{code, message, since_ms}`; `overlay_ignored` when the process was booted with `--ignore-overlay`). It names no topology and no compiled-in plugin: the node lease rows are the `core/process` view `nodes`, counts come from `/kinds`, whether API config changes survive a restart is the `core/durability` state `store.persistence`, and the `/kinds` ETag is the discovery revision |
-| `GET /whoami` | The caller, as the admin chain identified it: `principal` (`key:<id>` for a key, `anonymous` in the open posture), `credential` (`kind` is `operator`, `key`, `identity_provider` or `open`, plus `id`, `provider` and `expires_at`, each `null` where it does not apply), `scope` (`read-only` or `full`, `null` when the credential earns neither), `verbs` (every closed-table verb the caller may call, sorted) and `verbs_all`, `require_if_match` (whether mutations must carry `If-Match`), and `rate` (the `read`, `config`, `crud` and `plugin_inspect` budgets, each `{limit, window_s, remaining}`; `read.limit` is `0` because reads are not metered). Any identified admin credential may read its own identity, whatever verbs it holds. `read-only` scope, mutates nothing |
+| `GET /info` | This node's identity, readable by every admin credential: `version` (informational), `deployment_id`, `node_id`, `incarnation` (the join-id term: a random 128-bit process generation, stable across reloads), `started_at_ms` (epoch milliseconds of process start; a changed value means a new process), `config_generation` (the durable config generation), `warnings[]` (`{code, message, since_ms}`; `overlay_ignored` when the process was booted with `--ignore-overlay`) and `crypto` (`{validated_mode, validation}`: `validation` is the linked crypto backend's validation statement, a certificate reference, or null, and `validated_mode` is true only when it is stated). It names no topology, no compiled-in plugin and no crypto module: the crypto backend's name, module version and contract version are the `core/process` state `crypto` (`{backend, module, api, validated_mode, validation}`, `GET /kinds/core/instances/process`), the node lease rows are the `core/process` view `nodes`, counts come from `/kinds`, whether API config changes survive a restart is the `core/durability` state `store.persistence`, and the `/kinds` ETag is the discovery revision |
+| `GET /whoami` | The caller, as the admin chain identified it: `principal` (`key:<id>` for a key), `credential` (`kind` is `operator`, `key` or `identity_provider`, plus `id`, `provider` and `expires_at`, each `null` where it does not apply), `scope` (`read-only` or `full`, `null` when the credential earns neither), `verbs` (every closed-table verb the caller may call, sorted) and `verbs_all`, `require_if_match` (whether mutations must carry `If-Match`), and `rate` (the `read`, `config`, `crud` and `plugin_inspect` budgets, each `{limit, window_s, remaining}`; `read.limit` is `0` because reads are not metered). Any identified admin credential may read its own identity, whatever verbs it holds. `read-only` scope, mutates nothing |
 | `GET /records` | The node's per-unit records: the sealed audit chain, one record per unit, oldest first, as a feed. Response `{source, items, next_cursor, complete}`; `next_cursor` is always a string (round-trip it as `?cursor=`) and `complete: true` means the page reached the newest sealed record. Without a cursor the feed starts at the oldest retained record. `?limit=` (default 200), `?wait=<seconds>` (hold the request open when the page would be empty and caught up), `?from_ms=` (a seek to the first record whose `arrived_at_ms` is at least that, ignored with a cursor), `?to_ms=` (only records arriving before it), and exact-match filters `kind`, `instance`, `key`, `group`, `model`, `provider`, `target`, `outcome`, `reason` and `unit`. A request scans at most 10000 sealed records, so a filtered page can be short or empty and still carry a cursor that continues. Records are per node (the `core/process` view `nodes` lists the nodes): a cursor from another node is `400 cursor_mismatch` (`details.cursor_node_id`), an unretained position is `410 cursor_expired` (`details.oldest_available` resumes), and a node that binds no audit chain answers `404 not_found`. Spend is priced at read time by the rule `GET /usage` uses. `read-only` scope |
 | `GET /kinds/core/instances/routing` | Routing configuration (`config.models`, `config.providers`, `config.pools`); its view `pools` serves each pool member's **live** status: `usable` + `cooldown_remaining_seconds` (breaker), `available_concurrency`, `inflight`, `latency_ms` (EWMA), `ok`/`err` tallies, `dead`, and `trip_count` + `last_trip_at`. |
 
@@ -620,12 +621,12 @@ All group mutations honor `If-Match` against the config-plane ETag, are audited 
 
 ```bash
 # Raise one group's limits without touching the rest of its definition
-curl -s -X PATCH -H "x-admin-token: $TOK" -H 'content-type: application/json' \
+curl -s -X PATCH -H "Authorization: Bearer $TOK" -H 'content-type: application/json' \
   --data '{"limits":[{"budget":500000,"per":"month"}]}' \
   http://localhost:8081/api/v1/admin/groups/growth
 
 # How is the team tracking against its caps?
-curl -s -H "x-admin-token: $TOK" http://localhost:8081/api/v1/admin/groups/growth/usage
+curl -s -H "Authorization: Bearer $TOK" http://localhost:8081/api/v1/admin/groups/growth/usage
 ```
 
 ---
@@ -680,15 +681,15 @@ All hook mutations honor `If-Match` against the config-plane ETag, are audited (
 ```bash
 # Register a global compression gate, live immediately (a forwarding `kind: hook` module;
 # `<hook-module>` is a placeholder for its name; requires plugins.enabled: true)
-curl -s -X POST -H "x-admin-token: $TOK" -H 'content-type: application/json' \
+curl -s -X POST -H "Authorization: Bearer $TOK" -H 'content-type: application/json' \
   --data '{"name":"compress","config":{"kind":"gate","module":"<hook-module>","settings":{"url":"https://127.0.0.1:8900/"},"prompt":"rw","global":true}}' \
   http://localhost:8081/api/v1/admin/hooks
 
 # Is it running what we pushed? (desired vs reported, with a drift verdict)
-curl -s -H "x-admin-token: $TOK" http://localhost:8081/api/v1/admin/hooks/compress/status
+curl -s -H "Authorization: Bearer $TOK" http://localhost:8081/api/v1/admin/hooks/compress/status
 
 # Remove it
-curl -s -X DELETE -H "x-admin-token: $TOK" http://localhost:8081/api/v1/admin/hooks/compress
+curl -s -X DELETE -H "Authorization: Bearer $TOK" http://localhost:8081/api/v1/admin/hooks/compress
 ```
 
 ### Named-definition maps: `tools`, `agents`
@@ -744,7 +745,7 @@ Catalog rows with a published schema carry a server-resolved relative `schema_ur
 ```bash
 # Install a signed plugin tarball (takes effect on the next plugin (re)load).
 # <plugin>-<version>.tar.gz is a placeholder for any signed artifact of any kind.
-curl -s -X POST -H "x-admin-token: $TOK" -H 'content-type: application/json' \
+curl -s -X POST -H "Authorization: Bearer $TOK" -H 'content-type: application/json' \
   -d "{\"file\": \"<plugin>-<version>.tar.gz\",
        \"tarball_b64\": \"$(base64 < <plugin>-<version>.tar.gz | tr -d '\n')\"}" \
   http://localhost:8081/api/v1/admin/plugins
@@ -759,10 +760,10 @@ curl -s -X POST -H "x-admin-token: $TOK" -H 'content-type: application/json' \
 #         unverified code"}}
 
 # Inspect the store-kind catalog (manifest-only; never executes plugin code)
-curl -s -H "x-admin-token: $TOK" 'http://localhost:8081/api/v1/admin/plugins?type=store'
+curl -s -H "Authorization: Bearer $TOK" 'http://localhost:8081/api/v1/admin/plugins?type=store'
 
 # Remove it
-curl -s -X DELETE -H "x-admin-token: $TOK" \
+curl -s -X DELETE -H "Authorization: Bearer $TOK" \
   http://localhost:8081/api/v1/admin/plugins/<plugin>-<version>.tar.gz
 ```
 
@@ -770,18 +771,18 @@ curl -s -X DELETE -H "x-admin-token: $TOK" \
 
 ```bash
 # What am I running, and which plugins are compiled in?
-curl -s -H "x-admin-token: $TOK" http://localhost:8081/api/v1/admin/info
+curl -s -H "Authorization: Bearer $TOK" http://localhost:8081/api/v1/admin/info
 
 # The whole topology with live health, in one call
-curl -s -H "x-admin-token: $TOK" http://localhost:8081/api/v1/admin/kinds/core/instances/routing/views/pools
+curl -s -H "Authorization: Bearer $TOK" http://localhost:8081/api/v1/admin/kinds/core/instances/routing/views/pools
 
 # Preview a config change without applying it
-curl -s -X POST -H "x-admin-token: $TOK" -H 'content-type: application/json' \
+curl -s -X POST -H "Authorization: Bearer $TOK" -H 'content-type: application/json' \
   --data @proposed.json http://localhost:8081/api/v1/admin/config/validate
 
 # Guarded apply: read the config ETag, then chain it
-ETAG=$(curl -sI -H "x-admin-token: $TOK" http://localhost:8081/api/v1/admin/config | grep -i ^etag | cut -d' ' -f2)
-curl -s -X POST -H "x-admin-token: $TOK" -H "If-Match: $ETAG" -H 'content-type: application/json' \
+ETAG=$(curl -sI -H "Authorization: Bearer $TOK" http://localhost:8081/api/v1/admin/config | grep -i ^etag | cut -d' ' -f2)
+curl -s -X POST -H "Authorization: Bearer $TOK" -H "If-Match: $ETAG" -H 'content-type: application/json' \
   --data @proposed.json http://localhost:8081/api/v1/admin/config/apply
 ```
 

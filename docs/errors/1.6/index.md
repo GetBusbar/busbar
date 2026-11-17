@@ -63,7 +63,7 @@ The thousands digit is the area.
 | [BUSBAR-3009](/docs/1.6/errors/BUSBAR-3009/) | plugins.first_party_floors floor is not valid semver (plugin refused unconditionally) | 1.6.0 |
 | [BUSBAR-3010](/docs/1.6/errors/BUSBAR-3010/) | Heterogeneous pool (cross-protocol failover may not preserve all features) | 1.6.0 |
 | [BUSBAR-3011](/docs/1.6/errors/BUSBAR-3011/) | auth.chain entry grants max_admin_scope: full | 1.6.0 |
-| [BUSBAR-3012](/docs/1.6/errors/BUSBAR-3012/) | auth.chain names `keys` with an empty admin_auth (anyone can mint virtual keys) | 1.6.0 |
+| [BUSBAR-3012](/docs/1.6/errors/BUSBAR-3012/) | auth.chain names `keys` with an empty admin_auth (refused: no admin credential can mint a key) | 1.6.0 |
 | [BUSBAR-3013](/docs/1.6/errors/BUSBAR-3013/) | passthrough provider has a non-empty api_key that is never forwarded (inert config) | 1.6.0 |
 | [BUSBAR-3014](/docs/1.6/errors/BUSBAR-3014/) | --print-metadata-blocklist printed the built-in denylist only (config unreadable) | 1.6.0 |
 | [BUSBAR-3015](/docs/1.6/errors/BUSBAR-3015/) | --validate rejected the config (load, resolve, semantic, or secret-resolution failure) | 1.6.0 |
@@ -131,6 +131,8 @@ The thousands digit is the area.
 | [BUSBAR-3162](/docs/1.6/errors/BUSBAR-3162/) | A plugin instance runs with insecure_transport accepted | 1.6.0 |
 | [BUSBAR-3163](/docs/1.6/errors/BUSBAR-3163/) | An insecure_transport acceptance is invalid | 1.6.0 |
 | [BUSBAR-3170](/docs/1.6/errors/BUSBAR-3170/) | A configuration word, section or style changed its owner after it was read | 1.6.0 |
+| [BUSBAR-3171](/docs/1.6/errors/BUSBAR-3171/) | A reserved configuration key was written | 1.6.0 |
+| [BUSBAR-3172](/docs/1.6/errors/BUSBAR-3172/) | A listener would serve plaintext without an acceptance | 1.6.0 |
 | [BUSBAR-3401](/docs/1.6/errors/BUSBAR-3401/) | The retired migration command was given no file to migrate — RETIRED *(retired)* | 1.6.0 |
 | [BUSBAR-3402](/docs/1.6/errors/BUSBAR-3402/) | The retired migration command could not read the file it was given — RETIRED *(retired)* | 1.6.0 |
 | [BUSBAR-3403](/docs/1.6/errors/BUSBAR-3403/) | The retired migration command could not resolve its working directory — RETIRED *(retired)* | 1.6.0 |
@@ -172,7 +174,7 @@ The thousands digit is the area.
 | [BUSBAR-4023](/docs/1.6/errors/BUSBAR-4023/) | oauth_as expired-record sweep failed (retrying next tick) | 1.6.0 |
 | [BUSBAR-4024](/docs/1.6/errors/BUSBAR-4024/) | Request-signing HMAC-SHA256 init failed — RETIRED *(retired)* | 1.6.0 |
 | [BUSBAR-4025](/docs/1.6/errors/BUSBAR-4025/) | oauth_as generated an ephemeral ES256 signing key (tokens die on restart) | 1.6.0 |
-| [BUSBAR-4026](/docs/1.6/errors/BUSBAR-4026/) | admin_auth chain is EMPTY (open, anonymous, full-authority dev posture) | 1.6.0 |
+| [BUSBAR-4026](/docs/1.6/errors/BUSBAR-4026/) | admin_auth chain is EMPTY (it identifies no one; 1.6.0 has no open admin posture) | 1.6.0 |
 | [BUSBAR-4027](/docs/1.6/errors/BUSBAR-4027/) | create_key request body failed to parse (client 400) | 1.6.0 |
 | [BUSBAR-4028](/docs/1.6/errors/BUSBAR-4028/) | create_key allowed_pools names an unconfigured pool (key still created) | 1.6.0 |
 | [BUSBAR-4029](/docs/1.6/errors/BUSBAR-4029/) | update_key request body failed to parse (client 400) | 1.6.0 |
@@ -350,6 +352,7 @@ The thousands digit is the area.
 | [BUSBAR-9023](/docs/1.6/errors/BUSBAR-9023/) | An expired writer was not closed (the next start retries) | 1.6.0 |
 | [BUSBAR-9024](/docs/1.6/errors/BUSBAR-9024/) | More expired writers remain than one start closes (the next start continues) | 1.6.0 |
 | [BUSBAR-9025](/docs/1.6/errors/BUSBAR-9025/) | Waiting on another owner's record-format conversion of this dataset (no listener bound yet) | 1.6.0 |
+| [BUSBAR-9026](/docs/1.6/errors/BUSBAR-9026/) | This node is in restore quarantine: the Store was restored and is not yet declared | 1.6.0 |
 | [BUSBAR-9101](/docs/1.6/errors/BUSBAR-9101/) | The command line names an argument busbar does not know | 1.6.0 |
 | [BUSBAR-9102](/docs/1.6/errors/BUSBAR-9102/) | A command's arguments do not fit together | 1.6.0 |
 | [BUSBAR-9103](/docs/1.6/errors/BUSBAR-9103/) | A command-line flag is missing its value | 1.6.0 |

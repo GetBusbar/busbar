@@ -6,6 +6,9 @@ All notable changes to Busbar are documented here. The format is based on
 
 ## [1.6.0], unreleased
 
+- **busbar-crypto-backend API 3: VALIDATION (Option, None until a certificate reference), the checked operations; contract frozen by ci/crypto-api.pin.**
+  1.6.0 Changed: a backend crate swapped in for `busbar-crypto-backend` states `API = 3` and `VALIDATION` (validated mode derives from it alone), and its `Error` and `rsa::Scheme` variants are frozen; any other API fails to compile with "busbar-crypto-backend API must be 3". The backend contract is hashed into `ci/crypto-api.pin` (one line per API); a contract change raises the API. The conformance suite is the facade's `conformance` feature, without `tls` or the backend's `test-support`, and reports the optional refusal sites through `conformance::refusals()` and the pin line as `conformance::CONTRACT_PIN`.
+
 - **`busbar --migrate-config` and `busbar --migrate-overlay` are removed; the first boot migrates.** 1.5.5 operators ran `--migrate-config` to convert a config and `--migrate-overlay` to import a file overlay. 1.6.0 has neither: either name is now the CLI's unknown-option usage error (exit 2). The first boot of a 1.5.5 `config.yaml` (no `config_version`) migrates it once, in place, stamps `config_version: 1`, keeps the original as `config.yaml.1.5.5`, and folds a 1.5.5 overlay file into the same write. BUSBAR-3401 to 3404 are retired and keep their pages.
 
 - **A plane member's upstream credential rides out a source outage until its lease ends.**
@@ -101,6 +104,8 @@ All notable changes to Busbar are documented here. The format is based on
 - `POST /api/v1/admin/ledger/amend-rate-history` needs only a `full` admin grant. `auth.operator_pub` is gone; drop it, and stop signing corrections.
 - `POST /api/v1/admin/keys/{id}/rotate` answers `400 invalid_request` for an id over 64 characters, not `404`.
 - `POST /api/v1/admin/adjust` requires `pool` (a configured pool, else `400`).
+- The admin API reads its credential only from `Authorization: Bearer`; the `x-admin-token` header is no longer read, and the OpenAPI document's `adminToken` security scheme is gone.
+- `admin_auth: []` is refused at boot; delete it and configure the operator token. 1.6.0 has no anonymous admin posture.
 - A fallback, least-bad or queue hop refused upstream with 401/403 is answered in Busbar's ingress-native auth-failure envelope (not the upstream's body) and trips the lane's breaker, as the primary hop already did.
 - A same-dialect Anthropic stream cut mid-flight ends on an `error` event with `error.type: api_error`; a Bedrock ConverseStream ends on `internalServerException`.
 - A request translated between dialects no longer has an unrepresentable value substituted (an unsupported Bedrock image format relabelled `png`, Gemini `thinkingBudget: -1` sent as `medium`): the field is dropped with a warning and audit row, and a wrong-typed one is refused with the caller's own 400.

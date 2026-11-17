@@ -408,7 +408,6 @@ fn zeroed_pending_and_refused_pass_every_op() {
 
 #[test]
 fn the_hook_tail_follows_the_growth_rule() {
-    use crate::dispatch::kinds::hook::HookContext;
     use busbar_contract::abi::hook::{Tail, CLASS_TAP, PROMPT_NO, USER_NO};
     use busbar_contract::abi::sdk::door::statement;
     let bind = |size: usize| {
@@ -420,10 +419,7 @@ fn the_hook_tail_follows_the_growth_rule() {
             kind_tail: std::ptr::from_ref(&leaked[0]).cast(),
             ..statement("t", "1", 0)
         };
-        <Hook as Kind>::context(&st).map(|c| {
-            c.and_then(|c| c.downcast::<HookContext>().ok())
-                .map(|f| f.facts.class)
-        })
+        crate::dispatch::kinds::hook::facts(&st).map(|f| Some(f.class))
     };
     let host = size_of::<Tail>();
     assert_eq!(bind(host), Ok(Some(CLASS_TAP)));
@@ -486,7 +482,6 @@ fn a_hook_tail_admits_valid_routes_and_refuses_malformed_routes_or_requested_sig
 
 #[test]
 fn hook_route_lists_require_alignment_before_copying() {
-    use crate::dispatch::kinds::hook::HookContext;
     use busbar_contract::abi::hook::{Route, Tail, CLASS_GATE, PROMPT_NO, USER_NO};
     use busbar_contract::abi::mechanism::call::AbiStr;
     use busbar_contract::abi::mechanism::door::{KindTailHead, Statement};
@@ -508,21 +503,16 @@ fn hook_route_lists_require_alignment_before_copying() {
             kind_tail: std::ptr::from_ref(tail).cast::<KindTailHead>(),
             ..Statement::ZERO
         };
-        <Hook as Kind>::context(&statement).map(|context| {
-            *context
-                .expect("a hook has a context")
-                .downcast::<HookContext>()
-                .unwrap_or_else(|_| panic!("the hook context has its own type"))
-        })
+        crate::dispatch::kinds::hook::routes(&statement)
     };
     let mut tail = Tail::EMPTY.with_access(CLASS_GATE, PROMPT_NO, USER_NO);
     tail.routes = routes.as_ptr();
     tail.routes_len = 1;
-    let context = bind(&tail).expect("an aligned route list is copied");
-    assert_eq!(context.routes.len(), 1);
-    assert_eq!(context.routes[0].path, "/hooks/alignment/feedback");
-    assert_eq!(context.routes[0].method, RouteMethod::Post);
-    assert_eq!(context.routes[0].auth, RouteAuth::Key);
+    let copied = bind(&tail).expect("an aligned route list is copied");
+    assert_eq!(copied.len(), 1);
+    assert_eq!(copied[0].path, "/hooks/alignment/feedback");
+    assert_eq!(copied[0].method, RouteMethod::Post);
+    assert_eq!(copied[0].auth, RouteAuth::Key);
 
     let misaligned = routes.as_ptr().cast::<u8>().wrapping_add(1).cast::<Route>();
     assert!(!misaligned.is_aligned());
@@ -533,8 +523,8 @@ fn hook_route_lists_require_alignment_before_copying() {
     tail.routes_len = 0;
     for pointer in [std::ptr::null(), misaligned] {
         tail.routes = pointer;
-        let context = bind(&tail).expect("an empty route list ignores its pointer");
-        assert!(context.routes.is_empty());
+        let copied = bind(&tail).expect("an empty route list ignores its pointer");
+        assert!(copied.is_empty());
     }
     tail.routes_len = 1;
     tail.routes = std::ptr::null();

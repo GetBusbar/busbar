@@ -1,12 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! LINKED WINDOWS (SEALING-FIX r20 §3.7): the walked lines, the page stamps and break notices, the
-//! notary key certificates and the node's seal row, checked under one independently trusted
-//! deployment Bootstrap key.
+//! LINKED WINDOWS (SEALING-FIX r20 §3.7): the published range read through the source traits of
+//! [`busbar_kernel_audit::linked_walk`], which holds every rule, and its verdict rendered as the
+//! report. The walked lines, the page stamps and break notices, the notary key certificates and the
+//! node's seal row are checked under one independently trusted deployment Bootstrap key.
 
 use super::*;
-use busbar_contract::crypto::{self, PublicKey, SigAlg};
+use busbar_kernel_audit::linked_walk::{
+    self, Evidence, LinkedRange, SealRow, TrustedHead, Verdict, WalkedLine,
+};
 use busbar_kernel_audit::{
     BreakNotice, BreakReason, NotaryKeyCertificate, NotaryKeyRecord, Stamp, StampKind,
     NOTARY_KEY_RECORD_DOMAIN,
@@ -126,147 +129,182 @@ fn certificate(value: &Value) -> Result<(u64, NotaryKeyRecord)> {
     ))
 }
 
-fn overlaps(a: u64, b: u64, c: u64, d: u64) -> bool {
-    a <= b && c <= d && a <= d && c <= b
-}
+/// One member of the published range: a walked line, a certificate line, a stamp or a break.
+/// Equality is exact JSON equality.
+#[derive(Clone, Copy, PartialEq)]
+struct Json<'a>(&'a Value);
 
-fn explained_gap(from: u64, to: u64, breaks: &BTreeMap<u64, BreakNotice>) -> bool {
-    let mut next = from;
-    for notice in breaks.values() {
-        if notice.unsealed_to < next || notice.unsealed_from > notice.unsealed_to {
-            continue;
-        }
-        if notice.unsealed_from > next {
-            return false;
-        }
-        if notice.unsealed_to >= to {
-            return true;
-        }
-        let Some(after) = notice.unsealed_to.checked_add(1) else {
-            return false;
-        };
-        next = after;
+impl WalkedLine for Json<'_> {
+    fn seq(&self) -> Result<u64> {
+        record_number(self.0, "seq")
     }
-    false
+    fn node(&self) -> Result<u64> {
+        record_number(self.0, "node")
+    }
+    fn prev_hash(&self) -> Result<&str> {
+        text(self.0, "prev_hash")
+    }
+    fn hash(&self) -> Result<&str> {
+        text(self.0, "hash")
+    }
+    fn recipe(&self) -> Result<&str> {
+        text(self.0, "recipe")
+    }
+    fn certificate(&self) -> Result<(u64, NotaryKeyRecord)> {
+        certificate(self.0)
+    }
+    fn digest(&self) -> Result<String> {
+        record_digest(self.0, LINK_RECIPE)
+    }
+    fn signature(&self) -> Result<&str> {
+        text(self.0, "signature")
+    }
+    fn key_id(&self) -> Result<&str> {
+        text(self.0, "key_id")
+    }
 }
 
-/// The break notices seen so far: by `unsealed_from` (non-empty ranges only, which can account
-/// for a missing position) and as reported.
-#[derive(Default)]
-struct Breaks {
-    ranges: BTreeMap<u64, BreakNotice>,
-    rows: Vec<Value>,
+impl Evidence for Json<'_> {
+    fn is_break(&self) -> Result<bool> {
+        Ok(text(self.0, "kind")? == "break")
+    }
+    fn notice(&self) -> Result<BreakNotice> {
+        notice(self.0)
+    }
+    fn node_seq(&self) -> Result<Option<u64>> {
+        node_seq(self.0)
+    }
+    fn stamp(&self) -> Result<Stamp> {
+        stamp(self.0)
+    }
 }
 
-impl Breaks {
-    /// RULE 4: a break notice is signed by the Bootstrap key, names this node and a sane range,
-    /// and overlaps no other.
-    fn add(&mut self, notice: BreakNotice, node: u64, key: &AuditVerifyingKey) -> Result<()> {
-        let empty = notice.unsealed_to.checked_add(1) == Some(notice.unsealed_from);
-        if notice.node != node
-            || notice.unsealed_from == 0
-            || notice.last_good >= notice.unsealed_from
-            || (notice.unsealed_to < notice.unsealed_from && !empty)
-            || (!empty && notice.journal_from > notice.journal_to)
-        {
-            return Err("invalid break range or node");
+/// An array member of the range, as its members.
+fn members<'a>(range: &'a Value, member: &str, absent: &'static str) -> Result<Vec<Json<'a>>> {
+    Ok(range
+        .get(member)
+        .and_then(Value::as_array)
+        .ok_or(absent)?
+        .iter()
+        .map(Json)
+        .collect())
+}
+
+/// The published range of one node.
+struct Range<'a>(&'a Value);
+
+impl<'a> LinkedRange for Range<'a> {
+    type Line = Json<'a>;
+    type Evidence = Json<'a>;
+
+    fn from(&self) -> Result<u64> {
+        number(self.0, "from")
+    }
+    fn to(&self) -> Result<u64> {
+        number(self.0, "to")
+    }
+    fn records(&self) -> Result<Vec<Json<'a>>> {
+        members(self.0, "records", "records are absent")
+    }
+    fn cover(&self) -> Result<Vec<Json<'a>>> {
+        members(self.0, "cover", "cover is absent")
+    }
+    fn certs(&self) -> Result<Option<Vec<Json<'a>>>> {
+        let range: &'a Value = self.0;
+        match range.get("certs") {
+            None => Ok(None),
+            Some(values) => Ok(Some(
+                values
+                    .as_array()
+                    .ok_or("certs is not an array")?
+                    .iter()
+                    .map(Json)
+                    .collect(),
+            )),
         }
-        notice
-            .verify(key)
-            .map_err(|_| "a break signature is invalid")?;
-        if self.ranges.values().any(|prior| {
-            overlaps(
-                prior.unsealed_from,
-                prior.unsealed_to,
-                notice.unsealed_from,
-                notice.unsealed_to,
-            )
-        }) {
-            return Err("break intervals overlap");
-        }
-        self.rows
-            .push(json::json!({"node": notice.node, "sealer": notice.sealer,
+    }
+    fn stamps(&self) -> Result<Vec<Json<'a>>> {
+        members(self.0, "stamps", "stamps are absent")
+    }
+    fn seal_row(&self) -> Result<Option<SealRow>> {
+        let Some(row) = self.0.get("seal_row").filter(|row| !row.is_null()) else {
+            return Ok(None);
+        };
+        Ok(Some(match text(row, "outcome")? {
+            "clean" => SealRow::Clean {
+                sealer: number(row, "sealer")?,
+                through: number(row, "through")?,
+            },
+            "stamp" => SealRow::Stamp {
+                sealer: number(row, "sealer")?,
+                stamp: stamp(row.get("stamp").ok_or("the seal row's stamp is absent")?)?,
+            },
+            "break" => SealRow::Break {
+                sealer: number(row, "sealer")?,
+                notice: notice(row.get("break").ok_or("the seal row's break is absent")?)?,
+            },
+            _ => return Err("the node's seal row does not decode"),
+        }))
+    }
+    fn anchor(&self) -> Result<Option<Json<'a>>> {
+        let range: &'a Value = self.0;
+        let anchor = range.get("anchor").ok_or("range anchor member is absent")?;
+        Ok((!anchor.is_null()).then_some(Json(anchor)))
+    }
+}
+
+/// The independently retained head file.
+struct Head<'a>(&'a Value);
+
+impl TrustedHead for Head<'_> {
+    fn recipe(&self) -> Result<&str> {
+        envelope(self.0)
+    }
+    fn head(&self) -> Result<Stamp> {
+        stamp(self.0.get("head").ok_or("trusted head is empty")?)
+    }
+    fn next_seq(&self) -> Result<u64> {
+        number(self.0, "next_seq")
+    }
+}
+
+/// The report of a verified linked window.
+fn report(verdict: Verdict) -> Value {
+    let to = verdict.to;
+    let restarts: Vec<Value> = verdict
+        .restart_sealed
+        .iter()
+        .map(|page| {
+            json::json!({"from": page.from, "to": page.to,
+            "down_from_ms": page.down_from_ms, "down_to_ms": page.down_to_ms, "sealer": page.sealer})
+        })
+        .collect();
+    let breaks: Vec<Value> = verdict
+        .breaks
+        .iter()
+        .map(|notice| {
+            json::json!({"node": notice.node, "sealer": notice.sealer,
             "last_good": notice.last_good, "unsealed_from": notice.unsealed_from,
             "unsealed_to": notice.unsealed_to, "journal_from": notice.journal_from,
             "journal_to": notice.journal_to, "reason": notice.reason.as_str(),
             "detected_ms": notice.detected_ms, "host": notice.host,
-            "crypto": notice.crypto, "sig_alg": notice.sig_alg, "key_id": notice.key_id}));
-        // Empty intervals remain reported, but cannot account for any missing position.
-        if !empty {
-            self.ranges.insert(notice.unsealed_from, notice);
-        }
-        Ok(())
-    }
-}
-
-/// RULE 3, which key may sign which page (decision 159; CRYPTO-SEAM §2.5 key map), applied in
-/// journal order. A page with `key_cert = 0` verifies under the Bootstrap key. Only a `live` or
-/// `final` page may name a certificate, and then only the current one: the newest valid
-/// certificate read before the page, not ended by a valid `final` or `after_restart` page read
-/// between them. Its key id and algorithm are the certificate's, the certificate's line is at or
-/// before the page's `to`, and the page verifies under the certified key. Evidence with no journal
-/// position (the seal row) comes after every journal row. Returns how many pages a certified key
-/// signed.
-fn check_keys(
-    pages: &[(Option<u64>, Stamp)],
-    certs: &BTreeMap<u64, NotaryKeyRecord>,
-    key: &AuditVerifyingKey,
-) -> Result<usize> {
-    #[derive(Clone, Copy)]
-    enum Event {
-        Cert(u64),
-        Page(usize),
-    }
-    let mut events: Vec<(u64, u8, Event)> = certs
-        .keys()
-        .map(|&at| (at, 0, Event::Cert(at)))
-        .chain(
-            pages
-                .iter()
-                .enumerate()
-                .map(|(index, (at, _))| (at.unwrap_or(u64::MAX), 1, Event::Page(index))),
-        )
+            "crypto": notice.crypto, "sig_alg": notice.sig_alg, "key_id": notice.key_id})
+        })
         .collect();
-    events.sort_by_key(|&(at, rank, _)| (at, rank));
-    let mut current = None;
-    let mut certified = 0;
-    for (_, _, event) in events {
-        let index = match event {
-            Event::Cert(at) => {
-                current = Some(at);
-                continue;
-            }
-            Event::Page(index) => index,
-        };
-        let (at, page) = &pages[index];
-        if page.key_cert == 0 {
-            page.verify(key)
-                .map_err(|_| "a stamp signature is invalid")?;
-        } else {
-            let cert = certs
-                .get(&page.key_cert)
-                .filter(|_| current == Some(page.key_cert))
-                .filter(|_| at.is_some_and(|at| at > page.key_cert))
-                .filter(|cert| {
-                    matches!(page.kind, StampKind::Live | StampKind::Final)
-                        && cert.seq <= page.to
-                        && page.key_id == cert.certificate.key_id
-                        && page.sig_alg == cert.certificate.sig_alg
-                })
-                .ok_or("stamp key not certified")?;
-            let delegated = cert
-                .certificate
-                .key()
-                .map_err(|_| "stamp key not certified")?;
-            crypto::verify(&delegated, &page.preimage(), &page.signature)
-                .map_err(|_| "a stamp signature is invalid")?;
-            certified += 1;
-        }
-        if matches!(page.kind, StampKind::Final | StampKind::AfterRestart) {
-            current = None;
-        }
-    }
-    Ok(certified)
+    json::json!({"result": verdict.standing.map(linked_walk::Standing::as_str),
+    "from": verdict.from, "to": to, "records": verdict.records,
+    "starts_at_genesis": verdict.from == 1, "trusted_terminal_head": verdict.trusted_terminal_head,
+    "source_anchor_is_external_trust": false, "freshness_verified": false,
+    "pages": verdict.live_pages, "final_pages": verdict.final_pages, "restart_sealed": restarts,
+    "breaks": breaks,
+    "unauthenticated_tail": verdict.unauthenticated_tail.map(|start| json::json!({"from": start, "to": to})),
+    "unchecked_stamps": verdict.unchecked_stamps, "legacy_signed_lines": verdict.legacy_signed_lines,
+    "crypto": verdict.crypto,
+    "authenticated_records": verdict.authenticated_records,
+    "all_requested_records_authenticated": verdict.all_requested_records_authenticated,
+    "certified_pages": verdict.certified_pages,
+    "seal_row": verdict.seal_row.map(linked_walk::SealOutcome::as_str),
+    "authority_mode": "caller-trusted-deployment-bootstrap-for-node", "delegated_authority_supported": true})
 }
 
 pub(super) fn verify(
@@ -274,300 +312,6 @@ pub(super) fn verify(
     range: &Value,
     head: Option<&Value>,
 ) -> Result<Value> {
-    if keys.len() != 1 {
-        return Err(
-            "linked verification requires one independently trusted deployment Bootstrap key",
-        );
-    }
-    let key = keys.values().next().ok_or("the trusted key set is empty")?;
-    let bootstrap = PublicKey::new(
-        SigAlg::Ed25519,
-        &hex::decode(key.public_key_hex()).map_err(|_| "invalid audit public key")?,
-    );
-    let from = number(range, "from")?;
-    let to = number(range, "to")?;
-    if from == 0 || to < from {
-        return Err("requested range must start at one or later and end at or after its start");
-    }
-    let records = range
-        .get("records")
-        .and_then(Value::as_array)
-        .ok_or("records are absent")?;
-    if u64::try_from(records.len()).ok() != Some(to - from + 1) {
-        return Err("the requested fetch is incomplete or contains extra records");
-    }
-    let cover = range
-        .get("cover")
-        .and_then(Value::as_array)
-        .ok_or("cover is absent")?;
-    let walked: Vec<_> = records.iter().chain(cover).collect();
-
-    // RULE 1: every walked line recomputes by its own recipe and links to its predecessor.
-    let mut previous = None;
-    let node = record_number(&records[0], "node")?;
-    let mut authenticated = vec![false; records.len()];
-    let mut legacy_signed = 0;
-    let mut walked_certs: BTreeMap<u64, (u64, Fingerprint)> = BTreeMap::new();
-    let mut certs: BTreeMap<u64, NotaryKeyRecord> = BTreeMap::new();
-    for (index, line) in walked.iter().enumerate() {
-        let seq = record_number(line, "seq")?;
-        if from.checked_add(u64::try_from(index).map_err(|_| "record position overflow")?)
-            != Some(seq)
-        {
-            return Err("records and cover are not consecutive");
-        }
-        if record_number(line, "node")? != node {
-            return Err("a line names another node");
-        }
-        let prev = text(line, "prev_hash")?;
-        if let Some(expected) = previous {
-            if prev != expected {
-                return Err("a record does not link to its predecessor");
-            }
-        } else if (seq == 1 && !prev.is_empty()) || (seq > 1 && !hex(prev, 32)) {
-            return Err("the first record's predecessor is invalid");
-        }
-        let hash = text(line, "hash")?;
-        let recipe = text(line, "recipe")?;
-        if recipe == NOTARY_KEY_RECORD_DOMAIN {
-            let (at, cert) = certificate(line)?;
-            if cert.fingerprint != cert.recompute_fingerprint() {
-                return Err("a record does not hash to its published fields");
-            }
-            walked_certs.insert(seq, (at, cert.fingerprint));
-            if certs
-                .insert(at, cert.clone())
-                .is_some_and(|prior| prior != cert)
-            {
-                return Err("a certificate line is reported twice with different content");
-            }
-        } else {
-            if !hex(hash, 32) || record_digest(line, LINK_RECIPE)? != hash {
-                return Err("a record does not hash to its published fields");
-            }
-            if recipe != LINK_RECIPE {
-                signed(line, keys)?;
-                if let Some(checked) = authenticated.get_mut(index) {
-                    *checked = true;
-                    legacy_signed += 1;
-                }
-            }
-        }
-        previous = Some(hash);
-    }
-    let walked_from = from;
-    let walked_to = from + (walked.len() as u64) - 1;
-
-    // The certificates the stamps name. One that fails its own checks certifies nothing: a stamp
-    // naming it is "stamp key not certified", and it ends no other key.
-    if let Some(values) = range.get("certs") {
-        for value in values.as_array().ok_or("certs is not an array")? {
-            let (at, cert) = certificate(value)?;
-            if certs
-                .insert(at, cert.clone())
-                .is_some_and(|prior| prior != cert)
-            {
-                return Err("a certificate line is reported twice with different content");
-            }
-        }
-    }
-    certs.retain(|at, cert| {
-        let in_place = if (walked_from..=walked_to).contains(&cert.seq) {
-            walked_certs.get(&cert.seq) == Some(&(*at, cert.fingerprint))
-        } else {
-            true
-        };
-        in_place && cert.node == node && cert.verify(&bootstrap).is_ok()
-    });
-
-    // RULES 3 AND 4: the stamps and break notices, from the journal and from the seal row.
-    let values = range
-        .get("stamps")
-        .and_then(Value::as_array)
-        .ok_or("stamps are absent")?;
-    let mut pages: Vec<(Option<u64>, Stamp)> = Vec::new();
-    let mut breaks = Breaks::default();
-    let mut admit = |at: Option<u64>, page: Stamp| -> Result<()> {
-        if page.from == 0 || page.to < page.from || page.node != node {
-            return Err("invalid stamp range or node");
-        }
-        if page.kind != StampKind::AfterRestart && page.sealer != page.node {
-            return Err("a live or final stamp names another sealer");
-        }
-        if page.kind == StampKind::AfterRestart && page.key_cert != 0 {
-            return Err("stamp key not certified");
-        }
-        pages.push((at, page));
-        Ok(())
-    };
-    for value in values {
-        if text(value, "kind")? == "break" {
-            breaks.add(notice(value)?, node, key)?;
-            continue;
-        }
-        admit(node_seq(value)?, stamp(value)?)?;
-    }
-    let mut seal_row = None;
-    if let Some(row) = range.get("seal_row").filter(|row| !row.is_null()) {
-        let outcome = text(row, "outcome")?;
-        match outcome {
-            "clean" => {
-                number(row, "sealer")?;
-                number(row, "through")?;
-            }
-            "stamp" => {
-                let sealer = number(row, "sealer")?;
-                let page = stamp(row.get("stamp").ok_or("the seal row's stamp is absent")?)?;
-                if page.kind != StampKind::AfterRestart || page.sealer != sealer {
-                    return Err("the node's seal row does not verify");
-                }
-                admit(None, page)?;
-            }
-            "break" => {
-                let sealer = number(row, "sealer")?;
-                let notice = notice(row.get("break").ok_or("the seal row's break is absent")?)?;
-                if notice.sealer != sealer {
-                    return Err("the node's seal row does not verify");
-                }
-                breaks.add(notice, node, key)?;
-            }
-            _ => return Err("the node's seal row does not decode"),
-        }
-        seal_row = Some(outcome);
-    }
-    let certified = check_keys(&pages, &certs, key)?;
-    let mut pages: Vec<Stamp> = pages.into_iter().map(|(_, page)| page).collect();
-    pages.sort_by_key(|page| (page.from, page.to));
-    if pages.windows(2).any(|pair| pair[1].from <= pair[0].to) {
-        return Err("stamp pages overlap");
-    }
-    let breaks_by_from = breaks.ranges;
-    for page in &pages {
-        if breaks_by_from
-            .values()
-            .any(|notice| overlaps(page.from, page.to, notice.unsealed_from, notice.unsealed_to))
-        {
-            return Err("a break overlaps a signed page");
-        }
-    }
-    for pair in pages.windows(2) {
-        let next = pair[0].to.checked_add(1).ok_or("page position overflow")?;
-        if next < pair[1].from && !explained_gap(next, pair[1].from - 1, &breaks_by_from) {
-            return Err("a gap between stamp pages has no signed break");
-        }
-    }
-    let anchor = range.get("anchor").ok_or("range anchor member is absent")?;
-    if !anchor.is_null() {
-        stamp(anchor)?;
-        if !values.iter().any(|value| value == anchor) {
-            return Err("the source anchor is not an exact supplied page stamp");
-        }
-    }
-
-    // RULE 3 (coverage) AND RULE 5: a page authenticates the walked lines from its `from` to its
-    // `to` when its fingerprint is line `to`'s hash; a page whose `to` is not walked is unchecked.
-    let mut accepted = Vec::new();
-    let mut live = 0;
-    let mut finals = 0;
-    let mut restarts = Vec::new();
-    let mut unchecked = 0;
-    let mut crypto_backends = std::collections::BTreeSet::new();
-    for page in pages {
-        let endpoint = page
-            .to
-            .checked_sub(from)
-            .and_then(|index| usize::try_from(index).ok())
-            .and_then(|index| walked.get(index));
-        let Some(endpoint) = endpoint else {
-            unchecked += 1;
-            continue;
-        };
-        if text(endpoint, "hash")? != page.fingerprint.to_string() {
-            return Err("a stamp fingerprint differs from its endpoint");
-        }
-        for (index, line) in walked.iter().enumerate() {
-            let seq = record_number(line, "seq")?;
-            if page.from <= seq && seq <= page.to {
-                let recipe = text(line, "recipe")?;
-                if recipe != LINK_RECIPE && recipe != NOTARY_KEY_RECORD_DOMAIN {
-                    return Err("a page covers a legacy line");
-                }
-                if let Some(checked) = authenticated.get_mut(index) {
-                    *checked = true;
-                }
-            }
-        }
-        if overlaps(from, to, page.from, page.to) {
-            match page.kind {
-                StampKind::Live => live += 1,
-                StampKind::Final => finals += 1,
-                StampKind::AfterRestart => restarts.push(json::json!({"from": page.from.max(from), "to": page.to.min(to),
-                    "down_from_ms": page.down_from_ms, "down_to_ms": page.down_to_ms, "sealer": page.sealer})),
-            }
-            crypto_backends.insert(page.crypto.clone());
-        }
-        accepted.push(page);
-    }
-    let last_authenticated = accepted.last().map_or(0, |page| page.to);
-    let mut tail_from = None;
-    let mut authenticated_records = 0;
-    for (index, checked) in authenticated.iter().enumerate() {
-        if *checked {
-            authenticated_records += 1;
-            continue;
-        }
-        let seq = record_number(&records[index], "seq")?;
-        if breaks_by_from
-            .values()
-            .any(|notice| notice.unsealed_from <= seq && seq <= notice.unsealed_to)
-        {
-            continue;
-        }
-        if seq <= last_authenticated {
-            return Err("an interior line is covered by neither a stamp nor a signed break");
-        }
-        tail_from.get_or_insert(seq);
-    }
-    let complete = authenticated.iter().all(|checked| *checked)
-        && !breaks_by_from
-            .values()
-            .any(|notice| overlaps(from, to, notice.unsealed_from, notice.unsealed_to))
-        && unchecked == 0;
-
-    // RULE 6: the independently retained head.
-    let trusted = if let Some(head) = head {
-        if envelope(head)? != LINK_RECIPE {
-            return Err("a linked window requires a stamp head");
-        }
-        let terminal = stamp(head.get("head").ok_or("trusted head is empty")?)?;
-        if terminal.to != to
-            || number(head, "next_seq")? != to.checked_add(1).ok_or("head position overflow")?
-        {
-            return Err("the requested range does not end at the independently trusted head");
-        }
-        if !complete || !accepted.iter().any(|page| page == &terminal) {
-            return Err("trusted head has incomplete coverage or is not a checked covering stamp");
-        }
-        true
-    } else {
-        false
-    };
-    let result = if trusted {
-        Some("complete-through-trusted-head")
-    } else if authenticated_records != 0 {
-        Some("signed-consistent-window")
-    } else {
-        None
-    };
-    Ok(
-        json::json!({"result": result, "from": from, "to": to, "records": records.len(),
-        "starts_at_genesis": from == 1, "trusted_terminal_head": trusted,
-        "source_anchor_is_external_trust": false, "freshness_verified": false,
-        "pages": live, "final_pages": finals, "restart_sealed": restarts, "breaks": breaks.rows,
-        "unauthenticated_tail": tail_from.map(|start| json::json!({"from": start, "to": to})),
-        "unchecked_stamps": unchecked, "legacy_signed_lines": legacy_signed, "crypto": crypto_backends,
-        "authenticated_records": authenticated_records, "all_requested_records_authenticated": complete,
-        "certified_pages": certified, "seal_row": seal_row,
-        "authority_mode": "caller-trusted-deployment-bootstrap-for-node", "delegated_authority_supported": true}),
-    )
+    let head = head.map(Head);
+    linked_walk::verify(keys, &Range(range), head.as_ref()).map(report)
 }

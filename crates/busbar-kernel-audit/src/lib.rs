@@ -106,7 +106,8 @@ pub mod journal;
     )
 )]
 pub mod link;
-// The notary key certificate line, read side: decoded for the range read and checked by verify.
+// The notary key certificate line (certificate v2): linked by the Bootstrap signer, decoded for
+// the range read and checked by verify.
 pub mod notary_key;
 // The page stamps and break notices (SEALING-FIX §3.1): built and signed by the notary and the
 // Bootstrap signer threads, never per request.
@@ -116,6 +117,12 @@ pub use restart::{span_ms, walk_tail, BackwardWalk, BreakAt, TailItem, WalkConte
 // The audit signing capabilities (SEALING-FIX §5.3): consumed once at boot, used on the signer
 // threads only.
 pub mod grant;
+/// Common chain decoding and integrity checks, including certificate rows.
+pub mod linked_record;
+// The linked-window rules (SEALING-FIX r20 §3.7) over source traits: the offline verifier reads a
+// published range through them, a declared restore (DES-331 §B3.1) an exported tail. Off the
+// request path.
+pub mod linked_walk;
 // busbar:request-path
 #[cfg_attr(
     not(test),

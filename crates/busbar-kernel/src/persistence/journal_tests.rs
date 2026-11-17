@@ -2,6 +2,9 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::*;
+
+#[path = "journal/conditional_tests.rs"]
+mod conditional_tests;
 use crate::persistence::{commit::SubmitResult, facade::Limits};
 use busbar_contract::persistence::{
     control, BackendInfo, Call, ClockObservation, Decision, Durability, Page, PersistenceBackend,
@@ -82,6 +85,11 @@ struct Backend {
     /// Hold the first commit until `release_first` is notified.
     hold_first: AtomicBool,
     release_first: tokio::sync::Notify,
+    /// Report `Durability::Ephemeral` (SEALING-FIX §3.9: only such a journal is ever cut).
+    ephemeral: AtomicBool,
+    hold_cut: AtomicBool,
+    cut_entered: tokio::sync::Notify,
+    release_cut: tokio::sync::Notify,
 }
 impl PersistenceBackend for Backend {
     fn info(&self) -> BackendInfo {
@@ -90,7 +98,11 @@ impl PersistenceBackend for Backend {
             atomic_domain: [2; 16],
             clock_authority: [3; 16],
             physical_version: busbar_contract::persistence::PHYSICAL_VERSION,
-            durability: Durability::Local,
+            durability: if self.ephemeral.load(Ordering::SeqCst) {
+                Durability::Ephemeral
+            } else {
+                Durability::Local
+            },
         }
     }
     fn read(&self, request: Arc<Read>) -> Call<'_, ReadResult> {
@@ -130,6 +142,12 @@ impl PersistenceBackend for Backend {
             state.sent.len()
         };
         Box::pin(async move {
+            if self.hold_cut.load(Ordering::SeqCst) && prepared.candidate().mutations.iter().any(|m| {
+                matches!(m, Mutation::Put { address, .. } if address.key.get(24) == Some(&b'B'))
+            }) {
+                self.cut_entered.notify_one();
+                self.release_cut.notified().await;
+            }
             let hang_from = self.hang_from.load(Ordering::SeqCst);
             if self.hang.load(Ordering::SeqCst) || (hang_from != 0 && sent >= hang_from) {
                 std::future::pending::<()>().await;
@@ -1834,3 +1852,7 @@ async fn runtime_locates_frames_without_replay_live_and_reopened() {
         assert_eq!(reopened.locate(&proof, sequence).unwrap(), sequence);
     }
 }
+
+/// SEALING-FIX r20 §9 test 30, kernel parts: the Ephemeral journal cut.
+#[path = "tests/journal_cut_tests.rs"]
+mod cut;

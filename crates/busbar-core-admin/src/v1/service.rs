@@ -15,8 +15,8 @@ use busbar_kernel::state::App;
 
 use crate::v1::contract::{
     AdminAuthView, AdminError, AuthView, ClassUsage, ConfigValidateView, EffectiveConfigView,
-    GroupView, HookHealthView, HookTransportView, HookView, InfoView, InfoWarning, KeyUsageView,
-    ModelUsageView, ModelView, NamedDefView, Page, PluginView, PoolDetailView,
+    GroupView, HookHealthView, HookTransportView, HookView, InfoCrypto, InfoView, InfoWarning,
+    KeyUsageView, ModelUsageView, ModelView, NamedDefView, Page, PluginView, PoolDetailView,
     PoolMemberStatusView, PoolMemberView, PoolView, ProviderView, UsageBreakdown, UsageView,
     UsageWindow,
 };
@@ -582,6 +582,30 @@ fn archive_stat_key(_: &std::fs::Metadata) -> Option<String> {
         );
     }
     None
+}
+
+/// One consistent catalog scan (DES-359 r3 L9): the directory fingerprint read before (`before`)
+/// and after `scan` must agree, so the rows describe one directory state. A change between the two
+/// reads retries the scan once; a second change answers 409. A fingerprint that cannot be read
+/// after the scan leaves the rows unproven: they are returned with no settled fingerprint, so the
+/// caller does not cache them.
+fn consistent_scan<T>(
+    before: u64,
+    mut fingerprint: impl FnMut() -> std::io::Result<u64>,
+    mut scan: impl FnMut() -> T,
+) -> Result<(T, Option<u64>), AdminError> {
+    let mut before = before;
+    for _ in 0..2 {
+        let rows = scan();
+        match fingerprint() {
+            Ok(after) if after == before => return Ok((rows, Some(after))),
+            Ok(after) => before = after,
+            Err(_) => return Ok((rows, None)),
+        }
+    }
+    Err(AdminError::Conflict(
+        "the plugins directory changed during the catalog read; retry the read".into(),
+    ))
 }
 
 // Fingerprint only archives the admission scans. Unrelated files (including a Store's journal)

@@ -222,11 +222,17 @@ directly, including when writes block. Normal shutdown and read-drain share a 30
 budget; admission capacity follows actual IO through that drain. These policies do not change
 plugin-framed session upgrades or datagram lifetimes.
 
-**Remaining active-stall limitation (#102):** HTTP/2 keepalive uses a 30-second interval and
-10-second acknowledgement timeout, but the library initiates protocol shutdown rather than a
-guaranteed hard socket close. An active peer that stops reading can block GOAWAY and retain its
-connection slot indefinitely. No hard active-stall or per-stream incomplete-header bound is
-claimed; a live request exempts its connection from the zero-active timer.
+**Active output stall (#102):** the native listener bounds every write it makes. Each batch of
+output a connection's framer answers (response bytes, a flush, a close) has one absolute deadline,
+`limits.upstream_request_timeout_secs` from when the batch starts; partial progress does not extend
+it, so a peer that stops reading, or reads one byte at a time, loses the connection with a timeout
+once the deadline passes. The connection is dropped directly, without a protocol shutdown that a
+stalled peer could block, and its connection slot and admission storage are released with it.
+Core's own close (drain at shutdown or reload) is bounded the same way by the shorter of that
+deadline and the drain grace. Tests: `a_peer_that_stops_reading_is_closed_at_the_write_timeout`,
+`a_slow_reader_cannot_extend_the_write_deadline_with_partial_progress` and
+`a_core_drain_close_to_a_stopped_reader_is_bounded_by_the_drain_grace`
+(`crates/busbar-core-connector/src/tests/transport_session_tests.rs`).
 
 ### T8: Supply-chain tampering (boundary 7)
 A backdoored binary, image or plugin must be detectable. **Mitigation in this tree:** release artifacts are signed by the release pipeline, never by a GitHub workflow or a CI-held key (a source

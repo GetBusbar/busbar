@@ -1,44 +1,37 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE NOTARY KEY CERTIFICATE, READ SIDE (owner ruling 2026-11-16, certificate v2; SEALING-FIX
-//! §3.5 "Reads" `certs`, §3.7 rule 3).
-//!
-//! A `notary_key` line is a linked line of the node's chain whose payload is the Bootstrap key's
-//! certificate for a per-boot notary key. A `live` or `final` stamp whose `key_cert` is that line's
-//! WAL `node_seq` is signed under the certified key. V2 binds the node, the chain sequence and the
-//! predecessor, all taken from the containing record, so a certificate cannot be replayed into
-//! another node's chain or another position. A valid certificate proves delegation at its signed
-//! position, not continued authority after it: supersession (a later certificate, a `final` or an
-//! `after_restart` stamp) is the verifier's chronological rule, not this check's.
-//!
-//! This module decodes and checks certificates; the writer is the delegated-signer lane's.
+//! Bootstrap certificates for per-boot notary keys. V2 binds the node, chain sequence and
+//! predecessor; a genesis certificate cannot be replayed into another node's zero predecessor.
+//! A valid certificate proves delegation at its signed position, not continued authority after
+//! that position. Full authority additionally requires a complete chronological chain walk.
 
 use busbar_contract::crypto::{self, PublicKey, SigAlg};
 
+use crate::journal::{FieldTooLong, Writer};
 use crate::link::Fingerprint;
 use crate::off_path::journal::Reader;
 
-/// The journal discriminator of a certificate line, distinct from unit lines.
+/// The journal discriminator of a linked certificate, distinct from unit records.
 pub const NOTARY_KEY_JOURNAL_TAG: &str = "audit.notary_key.v2";
 const NOTARY_KEY_JOURNAL_PREFIX: &str = "audit.notary_key.";
-/// The certificate signature's domain.
+/// The signature domain approved for node-and-position-bound certificates.
 pub const NOTARY_KEY_DOMAIN: &str = "busbar.audit.notary_key.v2";
-/// The domain of the certificate line's own fingerprint (its link hash).
+/// The domain of the containing linked record's fingerprint.
 pub const NOTARY_KEY_RECORD_DOMAIN: &str = "busbar.audit.notary_key.record.v2";
 
-/// A public delegation, signed only by the node's bound Bootstrap key.
+/// Public delegation, signed only by the node's bound Bootstrap key.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NotaryKeyCertificate {
     /// The delegated public key's derived identifier.
     pub key_id: String,
-    /// The delegated key's algorithm (not the Bootstrap signature's).
+    /// The delegated key's algorithm, not the Bootstrap signature algorithm.
     pub sig_alg: String,
-    /// Raw Ed25519 (32 bytes) or uncompressed SEC 1 P-256 (65 bytes) public key.
+    /// Raw Ed25519 or uncompressed SEC1 P-256 public bytes.
     pub public_key: Vec<u8>,
-    /// The Bootstrap key's identifier.
+    /// The bound Bootstrap key's identifier.
     pub signed_by: String,
-    /// The Bootstrap signature over [`NotaryKeyCertificate::preimage`], 64 raw bytes.
+    /// Raw fixed-width Bootstrap signature.
     pub signature: Vec<u8>,
 }
 
@@ -48,10 +41,8 @@ fn frame(out: &mut Vec<u8>, field: &[u8]) {
 }
 
 impl NotaryKeyCertificate {
-    /// The v2 signing preimage: the domain and a NUL, then node, chain sequence, predecessor,
-    /// key id, algorithm and public key, each framed by its big-endian eight-byte length. A
-    /// verifier takes the three position arguments from the containing record, never from a
-    /// separate caller assertion.
+    /// The fixed v2 signing preimage. Verifiers must take all three position arguments from
+    /// the containing record, never from a separate caller-supplied assertion.
     #[must_use]
     pub fn preimage(&self, node: u64, seq: u64, prev_link: Fingerprint) -> Vec<u8> {
         let mut out = NOTARY_KEY_DOMAIN.as_bytes().to_vec();
@@ -69,8 +60,7 @@ impl NotaryKeyCertificate {
         out
     }
 
-    /// The delegated key, after checking its fixed encoding and that its identifier is the one
-    /// derived from it.
+    /// Decode and validate the delegated key's fixed representation and derived identifier.
     pub fn key(&self) -> Result<PublicKey, crypto::Error> {
         let alg = match self.sig_alg.as_str() {
             "ed25519" => {
@@ -97,27 +87,159 @@ impl NotaryKeyCertificate {
     }
 }
 
-/// One certificate line of a node's chain: it takes a chain `seq` and links like a unit line.
+/// One certificate in the audit chain. Its sequence shares the unit chain, while its journal
+/// tag keeps certificate payloads out of unit facts and preserves existing unit encodings.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NotaryKeyRecord {
     /// The node owning the chain.
     pub node: u64,
-    /// Chain sequence (not the WAL `node_seq` a stamp's `key_cert` names).
+    /// Chain sequence, distinct from the enclosing WAL row position.
     pub seq: u64,
-    /// When it was linked, in milliseconds since the epoch.
+    /// Time of linking in milliseconds.
     pub linked_ms: u64,
-    /// The preceding line's fingerprint (zeros at genesis).
+    /// The preceding linked record's fingerprint.
     pub prev_link: Fingerprint,
-    /// This line's fingerprint, [`NotaryKeyRecord::recompute_fingerprint`].
+    /// This record's fingerprint, including its certificate signature.
     pub fingerprint: Fingerprint,
-    /// The certificate it carries.
+    /// The Bootstrap-certified public key.
     pub certificate: NotaryKeyCertificate,
 }
 
+/// A certificate signed for a snapshotted position, not staged into a journal yet.
+#[derive(Debug)]
+pub struct PreparedNotaryKey {
+    node: u64,
+    seq: u64,
+    prev_link: Fingerprint,
+    certificate: NotaryKeyCertificate,
+}
+
+/// A certificate linked over the current chain tail. Advance only after its journal stage
+/// succeeds, while still holding the same durability lock.
+#[derive(Debug)]
+pub struct LinkedNotaryKey {
+    record: NotaryKeyRecord,
+}
+
+impl LinkedNotaryKey {
+    /// The linked certificate, including its computed fingerprint.
+    #[must_use]
+    pub fn record(&self) -> &NotaryKeyRecord {
+        &self.record
+    }
+
+    /// Move the certificate out after staging and advancing.
+    #[must_use]
+    pub fn into_record(self) -> NotaryKeyRecord {
+        self.record
+    }
+}
+
+impl crate::AuditChain {
+    /// Prepare a signed certificate before the durability lock. The signer must have signed
+    /// exactly these position fields. Linking rechecks them against the live chain.
+    #[must_use]
+    pub fn prepare_notary_key(
+        node: u64,
+        seq: u64,
+        prev_link: Fingerprint,
+        certificate: NotaryKeyCertificate,
+    ) -> PreparedNotaryKey {
+        PreparedNotaryKey {
+            node,
+            seq,
+            prev_link,
+            certificate,
+        }
+    }
+
+    /// Link a certificate without changing the chain. A changed tail or position requires a
+    /// new Bootstrap signature; it is never repaired by relabelling the certificate.
+    pub fn link_notary_key(
+        &self,
+        prepared: PreparedNotaryKey,
+        linked_ms: u64,
+        _token: &busbar_contract::caps::Pass<busbar_contract::caps::Audit>,
+    ) -> Result<LinkedNotaryKey, crypto::Error> {
+        if prepared.node == 0
+            || prepared.node != self.node()
+            || prepared.seq != self.next_seq
+            || self.next_seq == u64::MAX
+            || Some(prepared.prev_link) != Fingerprint::from_hex(&self.tail_hash)
+        {
+            return Err(crypto::Error::Invalid("notary signing position changed"));
+        }
+        let mut record = NotaryKeyRecord {
+            node: prepared.node,
+            seq: prepared.seq,
+            linked_ms,
+            prev_link: prepared.prev_link,
+            fingerprint: Fingerprint::ZERO,
+            certificate: prepared.certificate,
+        };
+        record.fingerprint = record.recompute_fingerprint();
+        Ok(LinkedNotaryKey { record })
+    }
+
+    /// Advance past a successfully staged certificate. Stale or repeated advancement refuses
+    /// rather than creating a chain hole; it must share the staging lock with linking.
+    pub fn advance_notary_key(&mut self, linked: &LinkedNotaryKey) -> Result<(), crypto::Error> {
+        let record = linked.record();
+        let next = self
+            .next_seq
+            .checked_add(1)
+            .ok_or(crypto::Error::Invalid("notary chain sequence overflow"))?;
+        if record.node != self.node()
+            || record.seq != self.next_seq
+            || Some(record.prev_link) != Fingerprint::from_hex(&self.tail_hash)
+        {
+            return Err(crypto::Error::Invalid("notary signing position changed"));
+        }
+        self.tail_hash = record.fingerprint.to_string();
+        self.next_seq = next;
+        self.sealed = self.sealed.saturating_add(1);
+        self.heads.observe_notary_key(record);
+        Ok(())
+    }
+}
+
 impl NotaryKeyRecord {
-    /// The line's fingerprint: SHA-256 over the record domain, node, key id, algorithm, public
-    /// key, signer, signature, `linked_ms`, `seq` and the predecessor, each framed by its
-    /// big-endian eight-byte length.
+    /// Check only a stamp's signature and certificate binding at their original WAL positions.
+    /// This is NOT coverage or continued authority: callers must additionally validate the
+    /// endpoint, chain walk and complete supersession context. A retained certificate copy uses
+    /// its original WAL position, never the base row's position.
+    pub fn verify_stamp_signature(
+        &self,
+        expected_node: u64,
+        certificate_node_seq: u64,
+        stamp_node_seq: u64,
+        stamp: &crate::Stamp,
+        bootstrap: &PublicKey,
+    ) -> Result<(), crypto::Error> {
+        if self.node != expected_node
+            || stamp.node != expected_node
+            || stamp.sealer != expected_node
+            || !matches!(stamp.kind, crate::StampKind::Live | crate::StampKind::Final)
+            || certificate_node_seq == 0
+            || stamp.key_cert != certificate_node_seq
+            || stamp_node_seq <= certificate_node_seq
+            || stamp.to < self.seq
+            || stamp.from == 0
+            || stamp.from > stamp.to
+            || stamp.key_id != self.certificate.key_id
+            || stamp.sig_alg != self.certificate.sig_alg
+        {
+            return Err(crypto::Error::Invalid("stamp key not certified"));
+        }
+        self.verify(bootstrap)?;
+        crypto::verify(
+            &self.certificate.key()?,
+            &stamp.preimage(),
+            &stamp.signature,
+        )
+    }
+
+    /// Recompute the record fingerprint with the independently versioned certificate payload.
     #[must_use]
     pub fn recompute_fingerprint(&self) -> Fingerprint {
         let mut out = Vec::new();
@@ -138,9 +260,8 @@ impl NotaryKeyRecord {
         Fingerprint(crypto::sha256(&out))
     }
 
-    /// Check the line's own digest and the Bootstrap certification under the independently
-    /// bound Bootstrap key. This does not establish the line's place in a walked chain, its WAL
-    /// identity, or that the key was still current at a later stamp.
+    /// Verify the digest and certification under an independently bound Bootstrap key. This
+    /// does not establish predecessor continuity, WAL identity or subsequent key authority.
     pub fn verify(&self, bootstrap: &PublicKey) -> Result<(), crypto::Error> {
         self.certificate.key()?;
         if self.node == 0 || self.seq == 0 || self.fingerprint != self.recompute_fingerprint() {
@@ -161,8 +282,26 @@ impl NotaryKeyRecord {
     }
 }
 
-/// Decode a certificate line. A recognised but malformed line, or one of an unsupported version,
-/// is an error rather than disappearing from the chain; any other tag is `None`.
+/// Encode a certificate row with the existing journal's scalar framing.
+pub fn notary_key_body(record: &NotaryKeyRecord) -> Result<Vec<u8>, FieldTooLong> {
+    let mut w = Writer::within(u32::MAX as usize);
+    w.text(NOTARY_KEY_JOURNAL_TAG);
+    w.text(crate::recipe::LINK_RECIPE);
+    w.num(record.seq);
+    w.bytes(&record.prev_link.0);
+    w.bytes(&record.fingerprint.0);
+    w.num(record.linked_ms);
+    w.num(record.node);
+    w.text(&record.certificate.key_id);
+    w.text(&record.certificate.sig_alg);
+    w.bytes(&record.certificate.public_key);
+    w.text(&record.certificate.signed_by);
+    w.bytes(&record.certificate.signature);
+    w.finish()
+}
+
+/// Decode a certificate row. A recognized but malformed row fails rather than disappearing
+/// from the chain. Unrelated journal tags return None.
 pub fn notary_key_from_journal_body(bytes: &[u8]) -> Result<Option<NotaryKeyRecord>, String> {
     let mut r = Reader::new(bytes);
     match r.text() {

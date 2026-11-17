@@ -385,8 +385,7 @@ pub(crate) const DOOR_STATUS: u16 = 401;
 
 pub(crate) const DOOR_CODE: &str = "unauthorized";
 
-pub(crate) const DOOR_MESSAGE: &str =
-    "missing or invalid admin credential (Bearer or x-admin-token)";
+pub(crate) const DOOR_MESSAGE: &str = "missing or invalid admin credential (Bearer)";
 
 pub(crate) fn door_answer() -> AdminAnswer {
     let mut answer = error_answer_with_message(DOOR_STATUS, DOOR_CODE, DOOR_MESSAGE);
@@ -631,8 +630,6 @@ impl RouterDispatch {
         answer.await.unwrap_or_else(|_| unavailable_answer())
     }
 }
-
-pub(crate) const ADMIN_TOKEN_HEADER: &str = "x-admin-token";
 
 pub(crate) fn header_pairs(headers: &axum::http::HeaderMap) -> Vec<(String, String)> {
     headers

@@ -690,12 +690,6 @@ impl PluginRegistry {
             .map(|row| row.archive_sha256.clone().unwrap_or_default())
     }
 
-    pub fn dropped_hooks(&self) -> impl Iterator<Item = &LoadablePlugin> {
-        self.loadable()
-            .iter()
-            .filter(|p| p.manifest.kind == kind::HOOK && !p.linked())
-    }
-
     pub(crate) fn resolve_kind(
         &self,
         name_or_alias: &str,

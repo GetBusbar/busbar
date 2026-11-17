@@ -281,10 +281,10 @@
         "type": "object"
       },
       "AdminAuthView": {
-        "description": "The admin-plane auth read (`GET /api/v1/admin/admin-auth`): which modules guard the ADMIN surface\n(distinct from the ingress `auth` chain). `modules` is the live `admin_auth` chain (the SAME\nresource `PUT /api/v1/admin/admin-auth` writes), so a read-after-write is coherent. An empty chain is\nthe open (anonymous, full-authority) dev posture, `configured: false`. Never a secret.",
+        "description": "The admin-plane auth read (`GET /api/v1/admin/admin-auth`): which modules guard the ADMIN surface\n(distinct from the ingress `auth` chain). `modules` is the live `admin_auth` chain (the SAME\nresource `PUT /api/v1/admin/admin-auth` writes), so a read-after-write is coherent. An empty chain\nadmits no one (`configured: false`); boot refuses `admin_auth: []`. Never a secret.",
         "properties": {
           "configured": {
-            "description": "Whether an admin credential chain is configured. `false` = the empty chain = open dev posture.",
+            "description": "Whether an admin credential chain is configured. `false`: the empty chain (admits no one).",
             "type": "boolean"
           },
           "default": {
@@ -292,7 +292,7 @@
             "type": "boolean"
           },
           "modules": {
-            "description": "The active admin-plane guard module names, the `admin_auth` chain verbatim, reported in order. Empty when the admin plane is open.",
+            "description": "The active admin-plane guard module names, the `admin_auth` chain verbatim, reported in order. Empty only for the empty chain, which admits no one.",
             "items": {
               "type": "string"
             },
@@ -878,7 +878,7 @@
             "type": "string"
           },
           "principal": {
-            "description": "WHO: the authenticated principal id that attempted the mutation (`admin` for the operator\ntoken; a virtual-key id or an external module's principal id otherwise; `anonymous` for the\nexplicit open admin posture). Attribution, never a credential.",
+            "description": "WHO: the authenticated principal id that attempted the mutation (`admin` for the operator\ntoken; a virtual-key id or an external module's principal id otherwise). Attribution, never a\ncredential.",
             "type": "string"
           },
           "request_id": {
@@ -3517,6 +3517,27 @@
         ],
         "type": "object"
       },
+      "InfoCrypto": {
+        "description": "`InfoView.crypto` (ADMIN-API-1.6-ONE-MODEL §10.1, E-17): the one validated-mode answer, the same\nvalues `core/process` `state.crypto` serves.",
+        "properties": {
+          "validated_mode": {
+            "description": "True only when the linked crypto backend states a validation; derived from that statement\nalone, never from the backend's name, a feature, an entitlement or configuration.",
+            "type": "boolean"
+          },
+          "validation": {
+            "description": "The linked backend's validation statement (a certificate reference), or null.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "validated_mode",
+          "validation"
+        ],
+        "type": "object"
+      },
       "InfoView": {
         "description": "`GET /api/v1/admin/info`: this node's identity and nothing else (ADMIN-API-1.6-ONE-MODEL §10.1).\nEvery admin credential reads it, so it names no topology, no compiled-in plugin and no\nprocess-local counter: node lease rows are the `core/process` view `nodes`, counts come from\n`/kinds`, and the `/kinds` ETag is the discovery revision.",
         "properties": {
@@ -3579,6 +3600,10 @@
               "$ref": "#/components/schemas/InfoWarning"
             },
             "type": "array"
+          },
+          "crypto": {
+            "$ref": "#/components/schemas/InfoCrypto",
+            "description": "Whether this binary runs a validated crypto module, and the linked backend's validation\nstatement (E-17). The backend's name and module version are `core/process` `state.crypto`."
           }
         },
         "required": [
@@ -3586,7 +3611,8 @@
           "incarnation",
           "started_at_ms",
           "config_generation",
-          "warnings"
+          "warnings",
+          "crypto"
         ],
         "type": "object"
       },
@@ -6160,7 +6186,7 @@
         "description": "The `PUT /api/v1/admin/admin-auth` body: the replacement admin auth chain.",
         "properties": {
           "admin_auth": {
-            "description": "The ordered admin auth module chain. Empty is the explicit open dev posture.",
+            "description": "The ordered admin auth module chain. An empty chain is refused.",
             "items": {
               "type": "string"
             },
@@ -7504,11 +7530,11 @@
             ]
           },
           "kind": {
-            "description": "`operator`, `key`, `identity_provider` or `open`.",
+            "description": "`operator`, `key` or `identity_provider`.",
             "type": "string"
           },
           "provider": {
-            "description": "The provider that identified the caller; `null` for a key and for the open posture.",
+            "description": "The provider that identified the caller; `null` for a key.",
             "type": [
               "string",
               "null"
@@ -7588,7 +7614,7 @@
             "$ref": "#/components/schemas/WhoamiCredential"
           },
           "principal": {
-            "description": "The caller's principal id (`key:<id>` for a key; `anonymous` in the open posture).",
+            "description": "The caller's principal id (`key:<id>` for a key).",
             "type": "string"
           },
           "rate": {
@@ -7678,16 +7704,56 @@
           "store"
         ],
         "type": "object"
+      },
+      "CoreState_process": {
+        "description": "The core/process instance's state.",
+        "properties": {
+          "crypto": {
+            "description": "The linked crypto backend.",
+            "properties": {
+              "api": {
+                "description": "The crypto backend contract version (3 in 1.6.0).",
+                "type": "integer"
+              },
+              "backend": {
+                "description": "The linked crypto backend's name (`software` in core; a private build's backend states its own).",
+                "type": "string"
+              },
+              "module": {
+                "description": "The linked crypto module's version.",
+                "type": "string"
+              },
+              "validated_mode": {
+                "description": "True only when the linked backend states a validation; the same value as /info crypto.validated_mode.",
+                "type": "boolean"
+              },
+              "validation": {
+                "description": "The linked backend's validation statement (a certificate reference), or null; the same value as /info crypto.validation.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "backend",
+              "module",
+              "api",
+              "validated_mode",
+              "validation"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "crypto"
+        ],
+        "type": "object"
       }
     },
     "securitySchemes": {
-      "adminToken": {
-        "in": "header",
-        "name": "x-admin-token",
-        "type": "apiKey"
-      },
       "bearerAuth": {
-        "description": "The same operator credential via Authorization: Bearer",
+        "description": "The admin credential via Authorization: Bearer, the only scheme",
         "scheme": "bearer",
         "type": "http"
       }
@@ -7909,13 +7975,6 @@
           "type": "object"
         },
         "noun": "key"
-      },
-      "keyset.rotated": {
-        "data_schema": {
-          "additionalProperties": true,
-          "type": "object"
-        },
-        "noun": "keyset"
       },
       "node.boot": {
         "data_schema": {
@@ -9737,9 +9796,6 @@
         },
         "security": [
           {
-            "adminToken": []
-          },
-          {
             "bearerAuth": []
           }
         ],
@@ -9902,9 +9958,6 @@
           }
         },
         "security": [
-          {
-            "adminToken": []
-          },
           {
             "bearerAuth": []
           }
@@ -10150,9 +10203,6 @@
           }
         },
         "security": [
-          {
-            "adminToken": []
-          },
           {
             "bearerAuth": []
           }
@@ -10411,9 +10461,6 @@
         },
         "security": [
           {
-            "adminToken": []
-          },
-          {
             "bearerAuth": []
           }
         ],
@@ -10550,9 +10597,6 @@
           }
         },
         "security": [
-          {
-            "adminToken": []
-          },
           {
             "bearerAuth": []
           }
@@ -10732,9 +10776,6 @@
           }
         },
         "security": [
-          {
-            "adminToken": []
-          },
           {
             "bearerAuth": []
           }
@@ -10925,9 +10966,6 @@
         },
         "security": [
           {
-            "adminToken": []
-          },
-          {
             "bearerAuth": []
           }
         ],
@@ -11083,9 +11121,6 @@
           }
         },
         "security": [
-          {
-            "adminToken": []
-          },
           {
             "bearerAuth": []
           }
@@ -11297,9 +11332,6 @@
         },
         "security": [
           {
-            "adminToken": []
-          },
-          {
             "bearerAuth": []
           }
         ],
@@ -11474,9 +11506,6 @@
           }
         },
         "security": [
-          {
-            "adminToken": []
-          },
           {
             "bearerAuth": []
           }
@@ -11701,9 +11730,6 @@
         },
         "security": [
           {
-            "adminToken": []
-          },
-          {
             "bearerAuth": []
           }
         ],
@@ -11866,9 +11892,6 @@
           }
         },
         "security": [
-          {
-            "adminToken": []
-          },
           {
             "bearerAuth": []
           }
@@ -12134,9 +12157,6 @@
         },
         "security": [
           {
-            "adminToken": []
-          },
-          {
             "bearerAuth": []
           }
         ],
@@ -12348,9 +12368,6 @@
         },
         "security": [
           {
-            "adminToken": []
-          },
-          {
             "bearerAuth": []
           }
         ],
@@ -12557,9 +12574,6 @@
           }
         },
         "security": [
-          {
-            "adminToken": []
-          },
           {
             "bearerAuth": []
           }
@@ -12827,9 +12841,6 @@
         },
         "security": [
           {
-            "adminToken": []
-          },
-          {
             "bearerAuth": []
           }
         ],
@@ -12991,9 +13002,6 @@
           }
         },
         "security": [
-          {
-            "adminToken": []
-          },
           {
             "bearerAuth": []
           }
@@ -13489,9 +13497,6 @@
         },
         "security": [
           {
-            "adminToken": []
-          },
-          {
             "bearerAuth": []
           }
         ],
@@ -13686,9 +13691,6 @@
           }
         },
         "security": [
-          {
-            "adminToken": []
-          },
           {
             "bearerAuth": []
           }
@@ -13937,9 +13939,6 @@
         },
         "security": [
           {
-            "adminToken": []
-          },
-          {
             "bearerAuth": []
           }
         ],
@@ -14133,9 +14132,6 @@
           }
         },
         "security": [
-          {
-            "adminToken": []
-          },
           {
             "bearerAuth": []
           }
@@ -14340,9 +14336,6 @@
         },
         "security": [
           {
-            "adminToken": []
-          },
-          {
             "bearerAuth": []
           }
         ],
@@ -14546,9 +14539,6 @@
           }
         },
         "security": [
-          {
-            "adminToken": []
-          },
           {
             "bearerAuth": []
           }
@@ -14835,9 +14825,6 @@
         },
         "security": [
           {
-            "adminToken": []
-          },
-          {
             "bearerAuth": []
           }
         ],
@@ -15095,9 +15082,6 @@
         },
         "security": [
           {
-            "adminToken": []
-          },
-          {
             "bearerAuth": []
           }
         ],
@@ -15305,9 +15289,6 @@
           }
         },
         "security": [
-          {
-            "adminToken": []
-          },
           {
             "bearerAuth": []
           }
@@ -15634,9 +15615,6 @@
         },
         "security": [
           {
-            "adminToken": []
-          },
-          {
             "bearerAuth": []
           }
         ],
@@ -15918,9 +15896,6 @@
         },
         "security": [
           {
-            "adminToken": []
-          },
-          {
             "bearerAuth": []
           }
         ],
@@ -16143,9 +16118,6 @@
         },
         "security": [
           {
-            "adminToken": []
-          },
-          {
             "bearerAuth": []
           }
         ],
@@ -16346,9 +16318,6 @@
           }
         },
         "security": [
-          {
-            "adminToken": []
-          },
           {
             "bearerAuth": []
           }
@@ -16635,9 +16604,6 @@
         },
         "security": [
           {
-            "adminToken": []
-          },
-          {
             "bearerAuth": []
           }
         ],
@@ -16895,9 +16861,6 @@
         },
         "security": [
           {
-            "adminToken": []
-          },
-          {
             "bearerAuth": []
           }
         ],
@@ -17105,9 +17068,6 @@
           }
         },
         "security": [
-          {
-            "adminToken": []
-          },
           {
             "bearerAuth": []
           }
@@ -17390,9 +17350,6 @@
         },
         "security": [
           {
-            "adminToken": []
-          },
-          {
             "bearerAuth": []
           }
         ],
@@ -17630,9 +17587,6 @@
           }
         },
         "security": [
-          {
-            "adminToken": []
-          },
           {
             "bearerAuth": []
           }
@@ -17881,9 +17835,6 @@
         },
         "security": [
           {
-            "adminToken": []
-          },
-          {
             "bearerAuth": []
           }
         ],
@@ -18088,9 +18039,6 @@
         },
         "security": [
           {
-            "adminToken": []
-          },
-          {
             "bearerAuth": []
           }
         ],
@@ -18293,9 +18241,6 @@
           }
         },
         "security": [
-          {
-            "adminToken": []
-          },
           {
             "bearerAuth": []
           }
@@ -18635,9 +18580,6 @@
         },
         "security": [
           {
-            "adminToken": []
-          },
-          {
             "bearerAuth": []
           }
         ],
@@ -18841,9 +18783,6 @@
         },
         "security": [
           {
-            "adminToken": []
-          },
-          {
             "bearerAuth": []
           }
         ],
@@ -18998,9 +18937,6 @@
           }
         },
         "security": [
-          {
-            "adminToken": []
-          },
           {
             "bearerAuth": []
           }
@@ -19231,9 +19167,6 @@
           }
         },
         "security": [
-          {
-            "adminToken": []
-          },
           {
             "bearerAuth": []
           }
@@ -19472,9 +19405,6 @@
           }
         },
         "security": [
-          {
-            "adminToken": []
-          },
           {
             "bearerAuth": []
           }
@@ -19733,9 +19663,6 @@
         },
         "security": [
           {
-            "adminToken": []
-          },
-          {
             "bearerAuth": []
           }
         ],
@@ -19943,9 +19870,6 @@
           }
         },
         "security": [
-          {
-            "adminToken": []
-          },
           {
             "bearerAuth": []
           }
@@ -20219,9 +20143,6 @@
         },
         "security": [
           {
-            "adminToken": []
-          },
-          {
             "bearerAuth": []
           }
         ],
@@ -20469,9 +20390,6 @@
           }
         },
         "security": [
-          {
-            "adminToken": []
-          },
           {
             "bearerAuth": []
           }
@@ -20737,9 +20655,6 @@
         },
         "security": [
           {
-            "adminToken": []
-          },
-          {
             "bearerAuth": []
           }
         ],
@@ -20962,9 +20877,6 @@
         },
         "security": [
           {
-            "adminToken": []
-          },
-          {
             "bearerAuth": []
           }
         ],
@@ -21142,9 +21054,6 @@
           }
         },
         "security": [
-          {
-            "adminToken": []
-          },
           {
             "bearerAuth": []
           }
@@ -21325,9 +21234,6 @@
         },
         "security": [
           {
-            "adminToken": []
-          },
-          {
             "bearerAuth": []
           }
         ],
@@ -21465,9 +21371,6 @@
           }
         },
         "security": [
-          {
-            "adminToken": []
-          },
           {
             "bearerAuth": []
           }
@@ -21688,9 +21591,6 @@
         },
         "security": [
           {
-            "adminToken": []
-          },
-          {
             "bearerAuth": []
           }
         ],
@@ -21903,9 +21803,6 @@
         },
         "security": [
           {
-            "adminToken": []
-          },
-          {
             "bearerAuth": []
           }
         ],
@@ -22024,9 +21921,6 @@
           }
         },
         "security": [
-          {
-            "adminToken": []
-          },
           {
             "bearerAuth": []
           }
@@ -22147,9 +22041,6 @@
         },
         "security": [
           {
-            "adminToken": []
-          },
-          {
             "bearerAuth": []
           }
         ],
@@ -22268,9 +22159,6 @@
           }
         },
         "security": [
-          {
-            "adminToken": []
-          },
           {
             "bearerAuth": []
           }
@@ -22464,9 +22352,6 @@
           }
         },
         "security": [
-          {
-            "adminToken": []
-          },
           {
             "bearerAuth": []
           }
@@ -22680,9 +22565,6 @@
         },
         "security": [
           {
-            "adminToken": []
-          },
-          {
             "bearerAuth": []
           }
         ],
@@ -22801,9 +22683,6 @@
           }
         },
         "security": [
-          {
-            "adminToken": []
-          },
           {
             "bearerAuth": []
           }
@@ -22961,9 +22840,6 @@
           }
         },
         "security": [
-          {
-            "adminToken": []
-          },
           {
             "bearerAuth": []
           }
@@ -23140,9 +23016,6 @@
           }
         },
         "security": [
-          {
-            "adminToken": []
-          },
           {
             "bearerAuth": []
           }
@@ -23398,9 +23271,6 @@
         },
         "security": [
           {
-            "adminToken": []
-          },
-          {
             "bearerAuth": []
           }
         ],
@@ -23642,9 +23512,6 @@
         },
         "security": [
           {
-            "adminToken": []
-          },
-          {
             "bearerAuth": []
           }
         ],
@@ -23848,9 +23715,6 @@
           }
         },
         "security": [
-          {
-            "adminToken": []
-          },
           {
             "bearerAuth": []
           }
@@ -24079,9 +23943,6 @@
         },
         "security": [
           {
-            "adminToken": []
-          },
-          {
             "bearerAuth": []
           }
         ],
@@ -24292,9 +24153,6 @@
         },
         "security": [
           {
-            "adminToken": []
-          },
-          {
             "bearerAuth": []
           }
         ],
@@ -24494,9 +24352,6 @@
           }
         },
         "security": [
-          {
-            "adminToken": []
-          },
           {
             "bearerAuth": []
           }
@@ -24764,9 +24619,6 @@
         },
         "security": [
           {
-            "adminToken": []
-          },
-          {
             "bearerAuth": []
           }
         ],
@@ -25018,9 +24870,6 @@
         },
         "security": [
           {
-            "adminToken": []
-          },
-          {
             "bearerAuth": []
           }
         ],
@@ -25265,9 +25114,6 @@
           }
         },
         "security": [
-          {
-            "adminToken": []
-          },
           {
             "bearerAuth": []
           }
@@ -25589,9 +25435,6 @@
         },
         "security": [
           {
-            "adminToken": []
-          },
-          {
             "bearerAuth": []
           }
         ],
@@ -25833,9 +25676,6 @@
         },
         "security": [
           {
-            "adminToken": []
-          },
-          {
             "bearerAuth": []
           }
         ],
@@ -26040,9 +25880,6 @@
         },
         "security": [
           {
-            "adminToken": []
-          },
-          {
             "bearerAuth": []
           }
         ],
@@ -26161,9 +25998,6 @@
           }
         },
         "security": [
-          {
-            "adminToken": []
-          },
           {
             "bearerAuth": []
           }
@@ -26396,9 +26230,6 @@
         },
         "security": [
           {
-            "adminToken": []
-          },
-          {
             "bearerAuth": []
           }
         ],
@@ -26630,9 +26461,6 @@
         },
         "security": [
           {
-            "adminToken": []
-          },
-          {
             "bearerAuth": []
           }
         ],
@@ -26848,9 +26676,6 @@
         },
         "security": [
           {
-            "adminToken": []
-          },
-          {
             "bearerAuth": []
           }
         ],
@@ -26969,9 +26794,6 @@
         },
         "security": [
           {
-            "adminToken": []
-          },
-          {
             "bearerAuth": []
           }
         ],
@@ -26983,7 +26805,7 @@
     },
     "/api/v1/admin/whoami": {
       "get": {
-        "description": "The caller's principal, the credential behind it (`operator`, `key`, `identity_provider` or `open`), its scope, and every verb of the closed table it may call, computed with the gate's own predicate. Any identified admin credential may read its own identity, whatever verbs it holds. A read: it mutates nothing. `rate.read.limit` is `0`: reads are not metered.",
+        "description": "The caller's principal, the credential behind it (`operator`, `key`, `identity_provider`), its scope, and every verb of the closed table it may call, computed with the gate's own predicate. Any identified admin credential may read its own identity, whatever verbs it holds. A read: it mutates nothing. `rate.read.limit` is `0`: reads are not metered.",
         "operationId": "GetWhoami",
         "responses": {
           "200": {
@@ -27090,9 +26912,6 @@
           }
         },
         "security": [
-          {
-            "adminToken": []
-          },
           {
             "bearerAuth": []
           }

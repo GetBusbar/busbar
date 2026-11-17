@@ -36,11 +36,13 @@ async fn a_txn_that_declares_no_plan_swaps_nothing() {
         settings.is_object(),
         "the actual store settings are an object"
     );
+    let operator = crate::root::test_plugins::bind_operator();
     let deploy = busbar_kernel::config::deploy_from_deserializer(
         serde_json::json!({
             "providers": {},
             "models": {},
-            "auth": { "chain": [], "admin_auth": [] },
+            "identity-providers": {(operator): {"module": operator, "settings": {"sha256": crate::root::test_plugins::operator_sha256()}}},
+            "auth": { "chain": [], "admin_auth": [operator] },
             "store": { "module": module, "settings": settings },
             "advanced": {  },
         }),
@@ -121,11 +123,13 @@ async fn a_failed_persist_swaps_nothing() {
         settings.is_object(),
         "the actual store settings are an object"
     );
+    let operator = crate::root::test_plugins::bind_operator();
     let deploy = busbar_kernel::config::deploy_from_deserializer(
         serde_json::json!({
             "providers": {},
             "models": {},
-            "auth": { "chain": [], "admin_auth": [] },
+            "identity-providers": {(operator): {"module": operator, "settings": {"sha256": crate::root::test_plugins::operator_sha256()}}},
+            "auth": { "chain": [], "admin_auth": [operator] },
             "store": { "module": module, "settings": settings },
             "advanced": {  },
         }),
@@ -215,11 +219,13 @@ async fn concurrent_transactions_never_lose_a_swap() {
         settings.is_object(),
         "the actual store settings are an object"
     );
+    let operator = crate::root::test_plugins::bind_operator();
     let deploy = busbar_kernel::config::deploy_from_deserializer(
         serde_json::json!({
             "providers": {},
             "models": {},
-            "auth": { "chain": [], "admin_auth": [] },
+            "identity-providers": {(operator): {"module": operator, "settings": {"sha256": crate::root::test_plugins::operator_sha256()}}},
+            "auth": { "chain": [], "admin_auth": [operator] },
             "store": { "module": module, "settings": settings },
             "advanced": {  },
         }),
@@ -314,11 +320,13 @@ async fn cancelling_a_handler_future_does_not_release_the_mutation_domain() {
         settings.is_object(),
         "the actual store settings are an object"
     );
+    let operator = crate::root::test_plugins::bind_operator();
     let deploy = busbar_kernel::config::deploy_from_deserializer(
         serde_json::json!({
             "providers": {},
             "models": {},
-            "auth": { "chain": [], "admin_auth": [] },
+            "identity-providers": {(operator): {"module": operator, "settings": {"sha256": crate::root::test_plugins::operator_sha256()}}},
+            "auth": { "chain": [], "admin_auth": [operator] },
             "store": { "module": module, "settings": settings },
             "advanced": {  },
         }),
@@ -442,10 +450,12 @@ async fn plugin_install_is_serialized_by_the_mutation_domain() {
         settings.is_object(),
         "the actual store settings are an object"
     );
+    let operator = crate::root::test_plugins::bind_operator();
     let document = serde_json::json!({
         "providers": {},
         "models": {},
-        "auth": { "chain": [], "admin_auth": [] },
+        "identity-providers": {(operator): {"module": operator, "settings": {"sha256": crate::root::test_plugins::operator_sha256()}}},
+        "auth": { "chain": [], "admin_auth": [operator] },
         "store": { "module": module, "settings": settings },
         "advanced": {  },
     });
@@ -524,7 +534,7 @@ async fn plugin_install_is_serialized_by_the_mutation_domain() {
     tokio::time::sleep(Duration::from_millis(80)).await;
     let started = Instant::now();
 
-    let _ = reqwest::Client::new()
+    let _ = crate::root::test_plugins::operator_client()
         .post(format!("http://{addr}/api/v1/admin/plugins"))
         .json(&json::json!({ "file": "x.tar.gz", "tarball_b64": "bm90IGEgdGFyYmFsbA==" }))
         .send()

@@ -30,7 +30,7 @@ async fn a_rebuild_carries_the_session_store_and_defaults_scan_off() {
         serde_json::json!({
             "providers": {},
             "models": {},
-            "auth": { "chain": [], "admin_auth": [] },
+            "auth": { "chain": [] },
             "store": { "module": module, "settings": settings },
             "advanced": {  },
         }),
@@ -115,7 +115,7 @@ async fn an_apply_carries_the_node_amendment_journal_its_governance_owns() {
         serde_json::json!({
             "providers": {},
             "models": {},
-            "auth": { "chain": [], "admin_auth": [] },
+            "auth": { "chain": [] },
             "store": { "module": module, "settings": settings },
             "advanced": {  },
         }),
@@ -209,7 +209,7 @@ async fn a_rejected_config_leaves_no_limits_behind() {
         serde_json::json!({
             "providers": {},
             "models": {},
-            "auth": { "chain": [], "admin_auth": [] },
+            "auth": { "chain": [] },
             "store": { "module": module, "settings": settings },
             "advanced": {  },
         }),

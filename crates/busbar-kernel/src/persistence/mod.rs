@@ -8,6 +8,7 @@
 //! uncertain operation recovery; backend adapters supply atomic opaque storage.
 
 pub mod boot_identity;
+pub(crate) mod caller_intents;
 pub(crate) mod candidate_codec;
 pub mod plugin_floor;
 pub mod undrained;
@@ -32,6 +33,7 @@ pub mod observations;
 pub(crate) mod partition;
 pub mod record_ops;
 pub mod recovery_api;
+pub mod restore;
 pub(crate) mod scan;
 pub mod scoped;
 mod slot_seal;

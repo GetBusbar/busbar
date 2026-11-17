@@ -339,11 +339,11 @@ diagnostics! {
         "An auth chain entry sets `max_admin_scope: full`, so every principal identified by that module can hold FULL admin authority — the default ceiling is read-only. A security advisory: a compromised or over-broad identity source behind that module becomes an admin-authority source.",
         "Confirm the named module's chain is trusted end to end and that granting full admin to everyone it identifies is intended. Lower `max_admin_scope` (or scope the module's principals) if full admin is broader than needed.";
 
-    /// auth.chain names `keys` and auth.admin_auth is explicitly empty — anyone can mint keys.
+    /// auth.chain names `keys` and auth.admin_auth is explicitly empty: refused, no credential mints.
     CONFIG_OPEN_ADMIN_MINT = 3012, Config, Actionable, "config-open-admin-mint", "1.6.0", false,
-        "auth.chain names `keys` with an empty admin_auth (anyone can mint virtual keys)",
-        "The auth chain names the built-in `keys` verifier while `auth.admin_auth` is explicitly empty, so the admin API has no credential gating it — ANYONE can mint virtual keys through it. Acceptable only for local development.",
-        "Configure `auth.admin_auth` (an admin credential entry, or an admin module granting `mint`/`full`) before exposing busbar's admin API to any untrusted network, so key minting is gated by an operator credential.";
+        "auth.chain names `keys` with an empty admin_auth (refused: no admin credential can mint a key)",
+        "The auth chain names the built-in `keys` verifier while `auth.admin_auth` is explicitly empty. 1.6.0 has no open admin posture, so the config is refused: an empty admin chain identifies no one, and no admin credential could mint a key.",
+        "Delete the auth.admin_auth line to use the default chain [<operator>, keys], where <operator> is the name of your identity-providers entry for the first-party operator credential plugin (module: admin-tokens). Give that entry `settings: {sha256: \"<digest>\"}`, where <digest> is the SHA-256 of your admin token as 64 lower-case hex characters. To mint a token and its digest: `token=$(openssl rand -base64 32); printf %s \"$token\" | openssl dgst -sha256 -r | cut -d' ' -f1`. Keep the token as a secret and send it as `Authorization: Bearer` followed by the token. Or list the admin providers you use in auth.admin_auth.";
 
     /// An auth plugin states the operator credential but is not first-party; nothing references it.
     CONFIG_OPERATOR_INERT = 3030, Config, Actionable, "config-operator-inert", "1.6.0", false,
@@ -1035,9 +1035,9 @@ diagnostics! {
         "Investigate the logged context and store backend — a blocking-task panic is a bug or a resource failure. Capture the error and file a bug if it recurs; the request was safely failed.";
 
     ADMIN_AUTH_CHAIN_EMPTY = 4026, Auth, Actionable, "admin-auth-chain-empty", "1.6.0", false,
-        "admin_auth chain is EMPTY (open, anonymous, full-authority dev posture)",
-        "An EMPTY admin_auth chain was seen: the admin API's open dev posture admits every admin request anonymously with FULL authority. The live `PUT /api/v1/admin/admin-auth` applies an empty chain as 1.5.5 did, with this warning, and the open posture is then live until the chain is set again.",
-        "Leave `admin_auth` empty ONLY for local development. To opt into the open posture, set `admin_auth: []` in config.yaml and restart. Otherwise configure a non-empty chain (an admin credential entry, or an admin module) before exposing the admin API to any untrusted network.";
+        "admin_auth chain is EMPTY (it identifies no one; 1.6.0 has no open admin posture)",
+        "An EMPTY admin_auth chain was seen. 1.6.0 has no anonymous admin posture: an empty chain identifies no one, so it admits no admin request and earns no scope. Boot and `busbar --validate` refuse `auth.admin_auth: []`, and the live `PUT /api/v1/admin/admin-auth` refuses an empty chain.",
+        "Delete the auth.admin_auth line to use the default chain [<operator>, keys], where <operator> is the name of your identity-providers entry for the first-party operator credential plugin (module: admin-tokens). Give that entry `settings: {sha256: \"<digest>\"}`, where <digest> is the SHA-256 of your admin token as 64 lower-case hex characters. To mint a token and its digest: `token=$(openssl rand -base64 32); printf %s \"$token\" | openssl dgst -sha256 -r | cut -d' ' -f1`. Keep the token as a secret and send it as `Authorization: Bearer` followed by the token. Or list the admin providers you use in auth.admin_auth.";
 
     ADMIN_CREATEKEY_MALFORMED_BODY = 4027, Auth, BenignRecurring, "admin-createkey-malformed-body", "1.6.0", false,
         "create_key request body failed to parse (client 400)",
@@ -1615,8 +1615,8 @@ diagnostics! {
     /// The admin API error envelope's `diag` for `error.code = unauthorized`.
     ADMIN_UNAUTHORIZED = 8102, Governance, Actionable, "admin-unauthorized", "1.6.0", false,
         "The admin request carries no valid admin credential",
-        "The request reached `/api/v1/admin` without a credential the `admin_auth:` chain accepts: no `Authorization: Bearer` or `x-admin-token` header, an unknown or expired token, or a key that is not an admin credential (`invalid_api_key`).",
-        "Send the operator admin token (or a credential your admin auth plugin accepts) in `Authorization: Bearer <token>` or `x-admin-token`. docs/admin-api.md covers the auth chain.";
+        "The request reached `/api/v1/admin` without a credential the `admin_auth:` chain accepts: no `Authorization: Bearer` header, an unknown or expired token, or a key that is not an admin credential (`invalid_api_key`).",
+        "Send the operator admin token (or a credential your admin auth plugin accepts) in `Authorization: Bearer <token>`. docs/admin-api.md covers the auth chain.";
 
     /// The admin API error envelope's `diag` for `error.code = method_not_allowed`.
     ADMIN_METHOD_NOT_ALLOWED = 8103, Governance, Actionable, "admin-method-not-allowed", "1.6.0", false,
@@ -1911,6 +1911,15 @@ diagnostics! {
         example "plugins:\n  trust:\n    operator: my-publisher",
         detail "plugins.trust.operator: reserved; 1.6.0 operator plugins must be first-party signed (Q13)";
 
+    /// A root listener would serve plaintext without its explicit acceptance (#359 SEC-L1).
+    CONFIG_PLAINTEXT_LISTENER = 3172, Config, Fatal, "config-plaintext-listener", "1.6.0", false,
+        "A listener would serve plaintext without an acceptance",
+        "The data listener (`listen`) or the admin listener (`admin_listen`) has no TLS (`tls:` / `admin_tls:`) and no explicit acceptance to serve in the clear, or an acceptance is written beside TLS. Every listener without TLS needs its acceptance, loopback included, because anything sent to it, credentials included, can be read and altered on the network path. The upgrade from 1.5.x does not write the acceptance for you. A Store overlay cannot set it; an overlay that sets TLS makes a file acceptance inert, and the boot warns that it can be removed.",
+        "Add `tls:` (or `admin_tls:`) with a certificate and key, or, to serve that listener in the clear deliberately, write `listen_insecure_transport: { accept: [plaintext], reason: \"...\" }` (or `admin_listen_insecure_transport:`) with your real reason in config.yaml. A listener that has TLS takes no acceptance."
+        => config_plaintext_listener(detail) "{detail}",
+        example "listen: 0.0.0.0:8080",
+        detail "`listen` 0.0.0.0:8080 has no TLS and no acceptance: it would serve plaintext, so anything sent to it, credentials included, could be read and altered on the network path; add `tls:` (cert and key), or to serve it in the clear deliberately add `listen_insecure_transport: { accept: [plaintext], reason: \"<why>\" }` with your real reason";
+
     /// An outbound dial was refused (destination guard, plaintext rule or trust store).
     EGRESS_DIAL_REFUSED = 5051, Proxy, BenignRecurring, "egress-dial-refused", "1.6.0", false,
         "An outbound dial was refused",
@@ -2013,6 +2022,12 @@ diagnostics! {
         "Waiting on another owner's record-format conversion of this dataset (no listener bound yet)",
         "This dataset's records are being converted to a newer format by another process (the migration owner the manifest names), and the conversion's rows (dataset root, manifest, step cursor, owner's writer row) changed within the stall window, so this process waits instead of claiming it. It binds no listener while it waits. The line names the owner's writer id, how long ago the conversion last changed and when this process claims it if nothing changes. A restart resets the wait.",
         "Let it wait: once the owner publishes the new format this process is admitted, and once the owner stops making progress for the window this process claims the conversion and resumes it from the step cursor. A record-format upgrade needs the whole fleet stopped (docs/migration-1.6.md, Shared datasets with a changing core record format): stop any process of the old release that still reaches this store.";
+
+    /// This process is in restore quarantine (DES-331 §B5, §B10.5).
+    STORE_RESTORED = 9026, Boot, Actionable, "store-restored", "1.6.0", false,
+        "This node is in restore quarantine: the Store was restored and is not yet declared",
+        "This node will not serve the data plane or mutate state, because the Store it opened was restored from a backup or another node began a restore. It entered quarantine because it was started with --restore-quarantine (reason flag), because the Store's restore row says a restore is pending (pending_row), or because a node-lease refresh saw a restore epoch other than the one this process started with (epoch_changed). The line names the reason, the restore epoch and, once a tail is supplied, the covered nodes, the per-node gaps and what was not re-applied. /readyz answers 503 with the reason store_restored; /livez stays up; admin reads are served.",
+        "Finish the restore: verify the exported audit tail with POST /api/v1/admin/store-restore/verify, then declare it with POST /api/v1/admin/store-restore (docs/operations.md, Backup set and order). Start the node launched with --restore-quarantine first and the other nodes only after it reports this line. A node that entered quarantine at a lease refresh restarts after the declaration.";
 
     /// A retired 1.5.x launch environment variable is set; 1.6 ignores it.
     RETIRED_ENV_VAR_IGNORED = 3029, Config, Actionable, "retired-env-var-ignored", "1.6.0", false,

@@ -607,6 +607,10 @@ async fn run(
         busbar_kernel::appbuild::IGNORE_OVERLAY_FLAG
             .store(true, std::sync::atomic::Ordering::Relaxed);
     }
+    if argv.restore_quarantine {
+        busbar_kernel::persistence::restore::LAUNCH_FLAG
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
     let principal_transition =
         root::principal_transition::command(argv).unwrap_or_else(|error| die(error));
     if let Some(command) = principal_transition.as_ref() {
@@ -1046,7 +1050,12 @@ async fn run(
         );
     }
 
-    tracing::info!(version = env!("CARGO_PKG_VERSION"), "busbar starting");
+    tracing::info!(
+        version = env!("CARGO_PKG_VERSION"),
+        crypto_backend = busbar_contract::crypto::BACKEND,
+        crypto_module = busbar_contract::crypto::module_version(),
+        "busbar starting"
+    );
 
     if config_locked {
         tracing::info!(
@@ -1717,8 +1726,23 @@ async fn run(
         control_work.shutdown_rx.clone(),
     );
     // SEALING-FIX §3.3: the audit notary, after `Ready`, on this control runtime.
-    if let Some(audit) = book.as_ref().and_then(|book| book.audit.as_ref()) {
-        audit.start_notary(audit_seal_every, Arc::clone(&drain_clock));
+    if let Some((book, audit)) = book
+        .as_ref()
+        .and_then(|book| book.audit.as_ref().map(|audit| (book, audit)))
+    {
+        // SEALING-FIX §3.9 floor (b): an Ephemeral journal's cut never passes the oldest audit
+        // line a checkpoint in custody names. Weak: governance owns the book's sinks.
+        let floor = governance.as_ref().map(|gov| {
+            let gov = Arc::downgrade(gov);
+            Arc::new(move || gov.upgrade().and_then(|gov| gov.oldest_unit_audit_seq()))
+                as root::durability::notary::FloorHints
+        });
+        audit.start_notary(
+            audit_seal_every,
+            Arc::clone(&drain_clock),
+            floor,
+            Arc::clone(&book.durability),
+        );
     }
 
     let mut threads: Vec<std::thread::JoinHandle<()>> = Vec::new();
@@ -1870,10 +1894,11 @@ async fn run(
     root::exit::exit(code);
 }
 
-/// The start-up predecessor task (SHUTDOWN-HANG F5), after `Ready`, in the background and never
-/// on the request path: it closes writers whose lease expired at least one TTL ago, on any host,
-/// and records those that never retired. `stop` (the first shutdown broadcast) ends it at a step
-/// boundary; the drain joins it and settles its fence in the seal phase.
+/// The start-up predecessor task, after `Ready`, in the background and never on the request path:
+/// it seals the crash tails of this host's dead predecessors (SEALING-FIX §3.6.2), then closes
+/// writers whose lease expired at least one TTL ago, on any host, and records those that never
+/// retired (SHUTDOWN-HANG F5). `stop` (the first shutdown broadcast) ends it at a step boundary;
+/// the drain joins it and settles its fence in the seal phase.
 fn spawn_predecessor_task(
     gov: Option<&Arc<busbar_kernel::governance::GovState>>,
     book: Option<&root::durability::NodeBook>,

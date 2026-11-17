@@ -225,6 +225,22 @@ therefore requires 31 seconds before margin; the Kubernetes example uses 40 seco
 both the allowance and grace if your endpoint/load-balancer propagation needs more time. The
 allowance does not guarantee delivery through an arbitrarily slow external load balancer.
 
+### Exit statuses
+
+Busbar's exit status tells a supervisor whether a restart is safe:
+
+| Status | Meaning | Operator action |
+|---|---|---|
+| 0 | Clean: the writer retired | none |
+| 75 | Spend saved; open streams were cut; the writer was not retired | safe to restart |
+| 70 | Spend not persisted (`unpersisted` or `in_doubt` non-empty at the cut) | investigate the stderr evidence before restarting; money-loss signal |
+| 143 | Signalled before the listener came up | restart |
+
+- **systemd:** set `SuccessExitStatus=75`, never 70, so a 70 exit stays a failure that alerts.
+- **Kubernetes:** a 75 exit shows as `Error`, but the restart is safe. Alert on 70.
+- **Grace period:** size it as described in
+  [Readiness propagation before shutdown](#readiness-propagation-before-shutdown).
+
 ### Certificate rotation
 
 Certs are loaded once at startup, so rotation always needs a restart. It does not, however, need a
@@ -232,12 +248,12 @@ shell. Push the new cert/key/CA through the admin API, then restart in-product:
 
 ```bash
 curl -X PUT http://localhost:8081/api/v1/admin/config/settings \
-  -H "x-admin-token: $ADMIN_TOKEN" -H 'content-type: application/json' \
+  -H "Authorization: Bearer $ADMIN_TOKEN" -H 'content-type: application/json' \
   --data '{"tls": {"cert": {"file": "..."}, "key": {"file": "..."}, "client_ca": {"file": "..."}}}'
 # -> {"reload_to_apply": ["tls"], "note": "... takes effect on the next restart ..."}
 
 curl -X POST http://localhost:8081/api/v1/admin/restart \
-  -H "x-admin-token: $ADMIN_TOKEN"
+  -H "Authorization: Bearer $ADMIN_TOKEN"
 ```
 
 The `PUT` stores the new material durably (overlay-persisted) and reports `tls` under

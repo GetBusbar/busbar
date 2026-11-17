@@ -26,6 +26,7 @@ async fn generation(
         Vec::new(),
         prior.cloned(),
         crate::testkit::memory_store().await,
+        crate::testkit::ADMIN_ORIGIN.to_string(),
     )
     .await
     .expect("the owner's real generation builds");
@@ -114,5 +115,36 @@ async fn a_reload_carries_the_servers_records_sessions_and_key() {
         second.server().jwks(),
         key,
         "the ephemeral key the issued tokens verify against survives the reload"
+    );
+}
+
+/// #140: the admin listener is bound once at boot and the approval pages are published at its
+/// address, so an apply that moves it (a changed `admin_listen` or `admin_tls`) is refused: restart.
+#[tokio::test]
+async fn a_reload_that_moves_the_admin_listener_is_refused() {
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
+    let (boot, _first) = generation(None).await;
+    let config = crate::config::OauthAsCfg {
+        issuer: "https://as.example.com".into(),
+        ..Default::default()
+    };
+    let block = busbar_contract::yaml::to_value(
+        config.authoring(&busbar_kernel::test_hooks::tokens::seal()),
+    )
+    .expect("the owner config serializes");
+    let refused = crate::plane::seam_build::<crate::NoConnections>(
+        block,
+        Vec::new(),
+        Vec::new(),
+        Some(boot),
+        crate::testkit::memory_store().await,
+        "https://127.0.0.1:8081".to_string(),
+    )
+    .await
+    .err()
+    .expect("a generation that moves the admin origin must not build");
+    assert!(
+        refused.contains("Restart busbar") && refused.contains(crate::testkit::ADMIN_ORIGIN),
+        "{refused}"
     );
 }

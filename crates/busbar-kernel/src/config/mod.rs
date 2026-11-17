@@ -408,6 +408,10 @@ pub struct RootCfg {
     pub admin_listen: String,
     /// TLS/mTLS for the admin listener (only meaningful with `admin_listen`).
     pub admin_tls: Option<TlsCfg>,
+    /// The root listeners' plaintext acceptances (`listen_insecure_transport`,
+    /// `admin_listen_insecure_transport`), judged at resolve; validation refuses a listener with neither
+    /// TLS nor its acceptance (#359 SEC-L1).
+    pub listener_acceptances: listener_acceptance::ListenerAcceptances,
     pub auth: Option<AuthCfg>,
     /// The resolved providers: each catalog definition merged with its deployment, the kernel-owned
     /// keys typed and the plane's an opaque table ([`ResolvedProvider`]).
@@ -828,6 +832,10 @@ pub struct DeployCfg {
     /// (`overlay::apply_named_maps_to_deploy`): carried to [`RootCfg::operator_overlay_names`].
     #[serde(skip)]
     pub operator_overlay_names: Vec<String>,
+    /// The root listener acceptances an overlay `tls` superseded ([`listener_acceptance::supersede`]),
+    /// carried to [`RootCfg::listener_acceptances`] so the boot warns they can be removed.
+    #[serde(skip)]
+    pub inert_listener_acceptances: Vec<&'static str>,
     /// The grammar this document was read under ([`deploy_from_deserializer`]); `Unbound` when it was decoded
     /// some other way, which refuses wherever the grammar is needed. Never on the wire.
     #[serde(skip)]
@@ -847,6 +855,10 @@ pub struct DeployCfg {
     /// Optional native inbound TLS / mTLS. Absent ⇒ the unencrypted transport (unchanged default).
     #[serde(default)]
     pub tls: Option<TlsCfg>,
+    /// The data listener's explicit, audited plaintext acceptance (#359 SEC-L1): required when `tls` is
+    /// absent, refused beside it. File-only; see [`listener_acceptance`].
+    #[serde(default, deserialize_with = "busbar_contract::yaml::untyped_option")]
+    pub listen_insecure_transport: Option<busbar_contract::yaml::Value>,
     /// SEPARATE listen address for the management surface (`/api/v1/admin/*`). That surface ALWAYS
     /// runs here and is NEVER mounted on the data `listen` — it stays isolated so it can carry its
     /// own TLS/mTLS, bind, and firewall posture independent of the data plane's own traffic. Defaults
@@ -876,6 +888,10 @@ pub struct DeployCfg {
     /// `client_ca_file` here unless `admin_require_mtls: false`.
     #[serde(default)]
     pub admin_tls: Option<TlsCfg>,
+    /// The admin listener's explicit, audited plaintext acceptance (#359 SEC-L1): required when
+    /// `admin_tls` is absent, refused beside it. File-only; see [`listener_acceptance`].
+    #[serde(default, deserialize_with = "busbar_contract::yaml::untyped_option")]
+    pub admin_listen_insecure_transport: Option<busbar_contract::yaml::Value>,
     /// TOP-LEVEL boot-policy flag: does a network-exposed management surface REQUIRE mTLS?
     /// `true` (the DEFAULT) ⇒ a non-loopback `admin_listen` without `admin_tls.client_ca` REFUSES to
     /// boot. `false` ⇒ the operator deliberately accepts a token-only management surface on an
@@ -1832,6 +1848,11 @@ pub fn resolve_with_provider_planes(
         }
     }
 
+    // #359 SEC-L1: each root listener's plaintext acceptance, judged here so boot, reload, --validate and
+    // admin publication refuse a malformed or contradictory one alike. A listener with neither TLS nor an
+    // acceptance is refused by the validation pass (`listener_acceptance::refusals`).
+    let listener_acceptances = listener_acceptance::resolve(deploy, &mut errors);
+
     {
         let admin_listen = &deploy.admin_listen;
         let exposed = !bind_is_loopback(admin_listen);
@@ -1903,12 +1924,25 @@ pub fn resolve_with_provider_planes(
                         ).into());
                 return None;
             };
-            match (seam.check)(&block) {
-                Ok(secret_refs) => {
-                    Some(crate::oauth_as::seam::CheckedAsBlock { block, secret_refs })
+            let checked = (seam.check)(&block);
+            // #140: the operator approval pages live on the admin listener, and the authorization
+            // server publishes that listener's address, which busbar knows only when it is loopback.
+            let admin_origin = crate::oauth_as::seam::admin_origin(
+                &deploy.admin_listen,
+                deploy.admin_tls.is_some(),
+            );
+            match (checked, admin_origin) {
+                (Ok(secret_refs), Ok(admin_origin)) => {
+                    Some(crate::oauth_as::seam::CheckedAsBlock {
+                        block,
+                        secret_refs,
+                        admin_origin,
+                    })
                 }
-                Err(e) => {
-                    errors.push(coded::config_section_invalid(e).into());
+                (checked, admin_origin) => {
+                    for e in [checked.err(), admin_origin.err()].into_iter().flatten() {
+                        errors.push(coded::config_section_invalid(e).into());
+                    }
                     None
                 }
             }
@@ -1950,6 +1984,7 @@ pub fn resolve_with_provider_planes(
                 tls: deploy.tls.clone(),
                 admin_listen: deploy.admin_listen.clone(),
                 admin_tls: deploy.admin_tls.clone(),
+                listener_acceptances,
                 auth: resolved_auth,
                 providers: resolved_providers,
                 models: deploy.models.clone(),
@@ -2060,6 +2095,7 @@ mod provider_debug_redaction_tests;
 pub mod auth;
 pub mod hooks;
 pub mod limits;
+pub mod listener_acceptance;
 pub mod min3;
 pub mod plane_sections;
 pub mod pools;
@@ -2103,6 +2139,7 @@ impl std::fmt::Debug for RootCfg {
             .field("tls", &self.tls)
             .field("admin_listen", &self.admin_listen)
             .field("admin_tls", &self.admin_tls)
+            .field("listener_acceptances", &self.listener_acceptances)
             .field("auth", &self.auth)
             .field("providers", &self.providers)
             .field("models", &self.models)
@@ -2144,11 +2181,20 @@ impl std::fmt::Debug for DeployCfg {
             .field("listen", &self.listen)
             .field("public_url", &"<redacted>")
             .field("tls", &self.tls)
+            .field("listen_insecure_transport", &self.listen_insecure_transport)
             .field("admin_listen", &self.admin_listen)
             .field("config", &self.config)
             .field("providers_file", &self.providers_file)
             .field("oauth_as", &self.oauth_as)
             .field("admin_tls", &self.admin_tls)
+            .field(
+                "admin_listen_insecure_transport",
+                &self.admin_listen_insecure_transport,
+            )
+            .field(
+                "inert_listener_acceptances",
+                &self.inert_listener_acceptances,
+            )
             .field("admin_require_mtls", &self.admin_require_mtls)
             .field("auth", &self.auth)
             .field("identity_providers", &self.identity_providers)

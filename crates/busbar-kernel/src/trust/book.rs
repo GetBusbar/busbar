@@ -1009,6 +1009,32 @@ impl TrustBook {
     pub fn due(&self, instance: &str) -> Option<Vec<String>> {
         self.lock().get(instance).map(|_| Vec::new())
     }
+
+    /// The counterparties of `instance` whose re-verification is due at `now_ms` (IF §12.14 `due`): never
+    /// sighted, the clock went backwards since the last sighting, or a non-zero `reverify_ttl` has elapsed (a zero
+    /// cadence re-verifies only an unsighted counterparty). `None` for an instance never admitted.
+    #[must_use]
+    pub fn due_at(&self, instance: &str, now_ms: u64) -> Option<Vec<String>> {
+        use super::reverify::{due, Due};
+        let map = self.lock();
+        let book = map.get(instance)?;
+        let mut out = Vec::new();
+        for name in book.entries.keys() {
+            let Some((entry, s)) = book.subject(name) else {
+                continue;
+            };
+            let verdict = due(&s.ledger, &entry.policy, now_ms, false);
+            let is_due = match verdict {
+                Due::NeverChecked | Due::ClockWentBackwards | Due::OperatorSync => true,
+                Due::TtlExpired => entry.policy.ttl_ms > 0,
+                Due::No => false,
+            };
+            if is_due {
+                out.push(name.clone());
+            }
+        }
+        Some(out)
+    }
 }
 
 fn row_of(
