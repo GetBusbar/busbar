@@ -10,6 +10,7 @@ use busbar_ports::transport::TransportPort;
 /// Start the prepared workers only after publishing the complete physical routes.
 pub(crate) struct TransportFixture {
     pub(crate) port: Arc<dyn TransportPort>,
+    pub(crate) holds: Arc<busbar_kernel::directory::Holds>,
     pub(crate) workers: crate::root::boot::workers::PreparedWorkers,
     _owners: Arc<Owners>,
     _needs: Arc<Needs>,
@@ -48,6 +49,7 @@ impl ServingFixture {
             Vec::new(),
         )
         .await?;
+        let holds = Arc::clone(&provisioning.holds);
         let needs = built.needs_for(
             Arc::clone(&self.owners.prefix),
             Arc::new(StoreRecords::new(Arc::clone(&self.core))),
@@ -63,6 +65,7 @@ impl ServingFixture {
         workers.push(provisioning.refresh.run());
         Ok(TransportFixture {
             port,
+            holds,
             workers,
             _owners: Arc::clone(&self.owners),
             _needs: needs,
