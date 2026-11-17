@@ -333,7 +333,7 @@ async fn native_refusal_confirmation_tracks_original_unknown_operation() {
         .try_enqueue_background(event(74, "request.refused"))
         .is_err());
     assert!(!confirmed.load(Ordering::Acquire));
-    let waiting = super::native_refusal::wait_confirmation(&log, &confirmed);
+    let waiting = super::native_refusal::wait_confirmation(&log, &confirmed, || Ok(()));
     tokio::pin!(waiting);
     assert!(
         tokio::time::timeout(std::time::Duration::from_millis(1), &mut waiting)
@@ -350,4 +350,58 @@ async fn native_refusal_confirmation_tracks_original_unknown_operation() {
     assert_eq!(sent[1].candidate().id, original.candidate().id);
     assert_eq!(sent[1].fingerprint(), original.fingerprint());
     assert_eq!(log.list_filtered(0, 10, None, None).len(), 1);
+}
+
+#[tokio::test]
+async fn native_refusal_full_queue_retains_and_transfers_only_its_frozen_original() {
+    let (backend, _, native, log) = fixture().await;
+    let queue = PendingAuditQueue::new(1);
+    queue.try_enqueue_background(event(90, "occupied")).unwrap();
+    let confirmed = Arc::new(AtomicBool::new(false));
+    let mut pending = event(91, "request.refused");
+    pending.confirmation = Some(confirmed.clone());
+    let suffix = pending.suffix.clone();
+    let mut held = Some(pending);
+    assert!(super::native_refusal::transfer_original(&queue, &mut held).is_err());
+    assert_eq!(held.as_ref().unwrap().operation, [91; 16]);
+    assert_eq!(held.as_ref().unwrap().suffix, suffix);
+    assert_eq!(queue.len(), 1);
+    let waiting = super::native_refusal::wait_confirmation(&log, &confirmed, || {
+        super::native_refusal::transfer_original(&queue, &mut held)
+    });
+    tokio::pin!(waiting);
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(1), &mut waiting)
+            .await
+            .is_err()
+    );
+    // The background row has no confirmation observer; its actual removal still wakes capacity.
+    drain_native(&queue, &log, native.clone()).await.unwrap();
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(1), &mut waiting)
+            .await
+            .is_err()
+    );
+    {
+        let rows = queue.rows.lock().unwrap();
+        let transferred = rows.queued.front().unwrap();
+        assert_eq!(transferred.operation, [91; 16]);
+        assert_eq!(transferred.suffix, suffix);
+        assert!(Arc::ptr_eq(
+            transferred.confirmation.as_ref().unwrap(),
+            &confirmed
+        ));
+    }
+    backend.lose_reply.store(true, Ordering::SeqCst);
+    assert!(drain_native(&queue, &log, native.clone()).await.is_err());
+    assert!(!confirmed.load(Ordering::Acquire));
+    let original = backend.state.lock().unwrap().sent.last().unwrap().clone();
+    drain_native(&queue, &log, native).await.unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(1), &mut waiting)
+        .await
+        .unwrap();
+    let replay = backend.state.lock().unwrap().sent.last().unwrap().clone();
+    assert_eq!(original.candidate().id, replay.candidate().id);
+    assert_eq!(original.fingerprint(), replay.fingerprint());
+    assert_eq!(log.list_filtered(0, 10, None, None).len(), 2);
 }
