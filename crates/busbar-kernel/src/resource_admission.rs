@@ -542,6 +542,33 @@ impl SelectedResources {
             .iter()
             .all(|(kind, value)| key.scope_allowed(kind, value))
     }
+    /// Resolve the actual host-selected target before the plane encodes exchange zero.
+    /// Method/path cannot select authority: two admitted descriptors with the same
+    /// complete target inputs are ambiguous and refuse, even if their endpoints agree.
+    pub fn forward_for_target(
+        &self,
+        candidate: &Candidate,
+        dialect: &str,
+        model: &str,
+    ) -> Result<BoundForward, ResourceError> {
+        let mut found = None;
+        for descriptor in self.inventory.descriptors.values() {
+            if descriptor.candidate != *candidate
+                || descriptor.dialect.as_ref() != dialect
+                || descriptor.model.as_ref() != model
+                || !self.scopes.contains(&(
+                    descriptor.scope.kind.clone(),
+                    descriptor.scope.value.clone(),
+                ))
+            {
+                continue;
+            }
+            if found.replace(descriptor.id).is_some() {
+                return Err(ResourceError::Selection);
+            }
+        }
+        self.forward(found.ok_or(ResourceError::NotSelected)?)
+    }
     pub fn forward(&self, id: u32) -> Result<BoundForward, ResourceError> {
         let descriptor = self
             .inventory
