@@ -126,6 +126,9 @@ impl<'a> Observed<'a> {
     }
 }
 impl Effects for Observed<'_> {
+    fn admission(&self) -> Option<&super::super::port_admission::Pending> {
+        self.inner.admission()
+    }
     fn invocation(&self) -> Option<&InvocationContext> {
         self.inner.invocation()
     }

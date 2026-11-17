@@ -86,6 +86,7 @@ fn cost(input_utok: f64, cap: u64) -> CostModel {
         busbar_kernel::config::GroupCfg {
             enabled: true,
             limits: vec![LimitCfg {
+                selected: None,
                 metric: LimitMetric::Budget,
                 amount: cap,
                 per: Some(LimitWindow::Day),

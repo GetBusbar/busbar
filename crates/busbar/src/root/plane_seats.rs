@@ -577,9 +577,9 @@ fn probes_of(
     let probers: Vec<ProbeMember> = members
         .iter()
         .enumerate()
-        .map(|(index, (_, name))| ProbeMember {
+        .map(|(index, member)| ProbeMember {
             index,
-            name: name.clone(),
+            name: member.name().to_owned(),
             cfg: ProbeCfg::resolve(
                 HealthModeInput::Dead,
                 None,

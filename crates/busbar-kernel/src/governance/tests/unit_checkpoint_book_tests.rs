@@ -123,6 +123,7 @@ fn cost(groups: &[&str]) -> crate::cost::CostModel {
                 crate::config::GroupCfg {
                     enabled: true,
                     limits: vec![LimitCfg {
+                        selected: None,
                         metric: LimitMetric::Budget,
                         amount: u64::MAX / 4,
                         per: Some(LimitWindow::Total),
@@ -452,6 +453,7 @@ fn chain_cost() -> crate::cost::CostModel {
         parent: parent.map(String::from),
         enabled: true,
         limits: vec![LimitCfg {
+            selected: None,
             metric: LimitMetric::Budget,
             amount: u64::MAX / 4,
             per: Some(LimitWindow::Total),

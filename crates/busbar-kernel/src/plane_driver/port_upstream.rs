@@ -88,6 +88,8 @@ pub struct Candidate {
     pub pool: Box<str>,
     pub qualified_member: Box<str>,
     pub identity: TargetIdentity,
+    /// Frozen configured rate-resource label; descriptive data, never admission authority.
+    pub resource: Option<Box<str>>,
     /// The configured upstream (member) name.
     pub upstream: Box<str>,
     /// The plane-owned provider keys as one canonical JSON object (`{}` when none).
@@ -106,6 +108,17 @@ impl Candidate {
         attempt: u32,
         dialect: &str,
         model: &str,
+        f: impl FnOnce(&TargetIn<'_>) -> R,
+    ) -> R {
+        self.with_admission_target(attempt, dialect, model, &[], f)
+    }
+
+    pub(crate) fn with_admission_target<R>(
+        &self,
+        attempt: u32,
+        dialect: &str,
+        model: &str,
+        admission: &[u8],
         f: impl FnOnce(&TargetIn<'_>) -> R,
     ) -> R {
         let (dialect, model) = match &self.identity {
@@ -129,7 +142,7 @@ impl Candidate {
             upstream: &self.upstream,
             provider: &self.provider,
             params: &params,
-            admission: &[],
+            admission,
         })
     }
 }
@@ -147,6 +160,19 @@ pub struct Failure {
 /// The member walk: candidates in the walk's order, and what each attempt taught it. The egress walk and its
 /// breaker implement it.
 pub trait Members {
+    fn request_walk(&self) -> Option<&super::request_admission::RequestWalk> {
+        None
+    }
+    fn select_request(
+        &mut self,
+        _receipt: &super::request_admission::RequestPoolReceipt,
+        _wants: &Wants,
+    ) -> bool {
+        false
+    }
+    fn admit_request(&mut self, _request: &super::request_admission::AdmittedRequest) -> bool {
+        false
+    }
     fn hook_remaining(&self) -> Option<usize> {
         None
     }
@@ -405,6 +431,11 @@ pub fn run_attempts<K: Calls + ?Sized>(
     send: &mut dyn UpSend,
     effects: &dyn Effects,
 ) -> Result<Attempted, SessionError> {
+    // The borrowed legacy sender cannot own a selected-attempt partition or its transport
+    // reservation. Only the separate owned preparation/money handoff may enable that cohort.
+    if task.selected_attempts() {
+        return Err(SessionError::NotDriven);
+    }
     let mut attempts = 0_u32;
     loop {
         let Some(member) = members.next(wants) else {

@@ -44,6 +44,7 @@ fn cost_model(budget_cents: Option<u64>, fee: i64) -> CostModel {
     let limits = budget_cents
         .map(|amount| {
             vec![LimitCfg {
+                selected: None,
                 metric: LimitMetric::Budget,
                 amount,
                 per: Some(LimitWindow::Month),
@@ -1781,6 +1782,7 @@ async fn the_real_governor_concurrency_grant_lives_through_child_and_parent_auth
         GroupCfg {
             enabled: true,
             limits: vec![LimitCfg {
+                selected: None,
                 metric: LimitMetric::Concurrent,
                 amount: 1,
                 per: None,
@@ -2130,6 +2132,7 @@ async fn the_actual_reservation_grant_holds_concurrency_across_settled_mint_and_
             GroupCfg {
                 enabled: true,
                 limits: vec![LimitCfg {
+                    selected: None,
                     metric: LimitMetric::Concurrent,
                     amount: 1,
                     per: None,
