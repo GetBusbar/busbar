@@ -134,6 +134,9 @@ pub struct PortSeat {
     pub instance: String,
     /// Exact catalog and registration request domains retained by this serving generation.
     pub request_routes: Arc<super::request_admission::RequestRoutes>,
+    /// The same stable instance capacity used by this seat's channel driver.
+    /// Original unit allocation derives one unit account here and retains it through every attach.
+    pub channel_budget: crate::channels::budget::InstanceBudget,
     pub driver: Arc<PortDriver>,
     pub audience: Option<String>,
     /// What this instance's intents (records, push, signals, WORK) run against: [`PortDriver::serve`]'s `intents`.

@@ -133,6 +133,8 @@ pub(crate) struct SeatShared {
 pub(crate) struct SeatWiring {
     /// The exact registration and catalog inventory used for this generation's request admission.
     pub(crate) request_routes: Arc<RequestRoutes>,
+    /// Shared with the channel driver; original unit admission derives its account exactly once.
+    pub(crate) channel_budget: InstanceBudget,
     /// `None` = no connection table: a FORWARD fails `NotDriven`.
     pub(crate) upstream: Option<Arc<dyn PortUpstream>>,
     pub(crate) carrier: Arc<PortCarrier>,
@@ -856,7 +858,7 @@ pub(crate) fn compose(
         }
         None => (None, None, None),
     };
-    let channels = channels_of(shared, channel_budget, who, port, held);
+    let channels = channels_of(shared, channel_budget.clone(), who, port, held);
     let clock: Arc<dyn Fn() -> u64 + Send + Sync> =
         Arc::new(busbar_plugin_abi::host_side::host_vt::vt::mono);
     let carrier = PortCarrier::new(
@@ -869,6 +871,7 @@ pub(crate) fn compose(
     );
     Ok(SeatWiring {
         request_routes,
+        channel_budget,
         upstream,
         carrier: Arc::new(carrier),
         probes,

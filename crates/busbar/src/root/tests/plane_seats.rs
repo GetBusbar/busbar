@@ -760,6 +760,55 @@ async fn a_seat_without_its_retained_channel_account_refuses_before_declaring_ro
     assert!(table.declared.lock().unwrap().is_empty());
 }
 
+#[tokio::test]
+async fn the_seat_exposes_the_same_instance_account_to_original_unit_admission() {
+    let shared = shared(None);
+    let wiring = compose(
+        &shared,
+        "mcp",
+        Accept::default(),
+        &who(7),
+        Arc::new(Quiet),
+        Handle::current(),
+    )
+    .unwrap();
+    let budget = &shared.channel_budgets["mcp"];
+    let held: Vec<_> = (0..32)
+        .map(|_| {
+            budget
+                .unit()
+                .reserve(
+                    Claim {
+                        leases: 8,
+                        ..Claim::default()
+                    },
+                    None,
+                )
+                .unwrap()
+        })
+        .collect();
+    let original_unit = wiring.channel_budget.unit();
+    assert!(original_unit
+        .reserve(
+            Claim {
+                leases: 1,
+                ..Claim::default()
+            },
+            None
+        )
+        .is_err());
+    drop(held);
+    assert!(original_unit
+        .reserve(
+            Claim {
+                leases: 1,
+                ..Claim::default()
+            },
+            None
+        )
+        .is_ok());
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn channel_drivers_across_generations_share_the_retained_instance_account() {
