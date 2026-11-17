@@ -17,6 +17,7 @@ pub mod recovery;
 use exact_debt::{BudgetFlushFlight, BudgetFlushRunner, ExactUsageDelta};
 mod metering_flush;
 pub(crate) mod raw_recovery;
+pub mod selected_policy;
 pub(crate) mod selected_resource;
 pub mod unit_checkpoint;
 mod unit_checkpoint_counts;
@@ -1322,6 +1323,7 @@ pub use busbar_kernel_ledger::cost::PLANE_LANE_SEP;
 /// this key before the next flush.
 #[derive(Default, Clone)]
 pub struct MeterCounts {
+    pub pricing: Option<busbar_contract::records::MeteringPricingV1>,
     pub requests: u64,
     pub tokens_input: Count,
     pub tokens_output: Count,
@@ -1335,6 +1337,7 @@ impl MeterCounts {
         let [input, output, cache_read, cache_write] = busbar_contract::records::RESERVED_UNITS
             .map(|class| units.get(class).copied().unwrap_or_default());
         Self {
+            pricing: None,
             requests: 1,
             tokens_input: input,
             tokens_output: output,
@@ -1345,6 +1348,11 @@ impl MeterCounts {
     }
     pub(crate) fn try_merge(&mut self, other: &Self) -> Result<(), CountError> {
         other.validate()?;
+        let pricing = match (&self.pricing, &other.pricing) {
+            (None, None) => None,
+            (Some(before), Some(add)) => Some(before.checked_add(add)?),
+            _ => return Err(CountError::Malformed),
+        };
         // Every sum is checked before any field changes, so a refused merge leaves `self` exactly
         // as it was without copying it first.
         let requests = self
@@ -1363,6 +1371,7 @@ impl MeterCounts {
             let held = self.usage_units.get(class).copied().unwrap_or_default();
             held.checked_add(*n)?;
         }
+        self.pricing = pricing;
         self.requests = requests;
         self.tokens_input = tokens_input;
         self.tokens_output = tokens_output;
@@ -1385,6 +1394,17 @@ impl MeterCounts {
             .expect("metering count accumulation exceeds Count range");
     }
     fn validate(&self) -> Result<(), CountError> {
+        if let Some(pricing) = &self.pricing {
+            pricing.validate_counts(
+                self.requests,
+                self.requests,
+                !self.tokens_input.is_zero()
+                    || !self.tokens_output.is_zero()
+                    || !self.tokens_cache_read.is_zero()
+                    || !self.tokens_cache_write.is_zero()
+                    || has_units(&self.usage_units),
+            )?;
+        }
         if [
             self.tokens_input,
             self.tokens_output,
@@ -1402,6 +1422,10 @@ impl MeterCounts {
     }
     pub fn is_zero(&self) -> bool {
         self.requests == 0
+            && !self
+                .pricing
+                .as_ref()
+                .is_some_and(|pricing| pricing.has_fee_evidence())
             && self.tokens_input.is_zero()
             && self.tokens_output.is_zero()
             && self.tokens_cache_read.is_zero()
@@ -1411,6 +1435,30 @@ impl MeterCounts {
 }
 
 pub type MeterKey = (String, u64, String, String, u64, String, String);
+
+/// Full pending identity; the unchanged common tuple remains the legacy public accrual API.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct MeterIdentity {
+    pub common: MeterKey,
+    pub role: Option<busbar_contract::records::MeteringRole>,
+}
+
+impl From<MeterKey> for MeterIdentity {
+    fn from(common: MeterKey) -> Self {
+        Self { common, role: None }
+    }
+}
+impl std::ops::Deref for MeterIdentity {
+    type Target = MeterKey;
+    fn deref(&self) -> &Self::Target {
+        &self.common
+    }
+}
+impl std::ops::DerefMut for MeterIdentity {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.common
+    }
+}
 
 pub const MAX_PENDING_METERING: usize = 262_144;
 
@@ -1435,8 +1483,9 @@ pub(crate) struct MeterKeyRef<'a> {
 impl MeterKeyRef<'_> {
     /// Write this identity into `probe`, reusing its buffers (`version` as
     /// `EntryId::metering_version` spells it).
-    fn fill(self, probe: &mut MeterKey) {
+    fn fill(self, probe: &mut MeterIdentity) {
         use std::fmt::Write as _;
+        probe.role = None;
         probe.0.clear();
         probe.0.push_str(self.key_id);
         probe.1 = self.bucket;
@@ -1457,34 +1506,40 @@ impl MeterKeyRef<'_> {
 /// The key an accrual looks its cell up by: an owned key, or the thread's reused probe, which is
 /// copied only when its cell is first created.
 enum PendingKey<'a> {
-    Owned(MeterKey),
-    Probe(&'a MeterKey),
+    Owned(MeterIdentity),
+    Probe(&'a MeterIdentity),
 }
 
 impl PendingKey<'_> {
-    fn get(&self) -> &MeterKey {
+    fn get(&self) -> &MeterIdentity {
         match self {
             Self::Owned(key) => key,
             Self::Probe(key) => key,
         }
     }
 
-    fn into_key(self) -> MeterKey {
+    fn into_key(self) -> MeterIdentity {
         match self {
             Self::Owned(key) => key,
-            Self::Probe(key) => crate::cold::governance::state::mod_meter_key_first(key),
+            Self::Probe(key) => MeterIdentity {
+                common: crate::cold::governance::state::mod_meter_key_first(&key.common),
+                role: key.role.clone(),
+            },
         }
     }
 }
 
 fn accrue_pending_checked(
-    pending: &mut HashMap<MeterKey, MeterCounts>,
+    pending: &mut HashMap<MeterIdentity, MeterCounts>,
     key: PendingKey<'_>,
     add: MeterCounts,
     cap: usize,
     warn: &CoalesceWarn,
 ) -> Result<(), CountError> {
     add.validate()?;
+    if key.get().role != add.pricing.as_ref().map(|pricing| pricing.identity()) {
+        return Err(CountError::Malformed);
+    }
     if let Some(cell) = pending.get_mut(key.get()) {
         cell.try_merge(&add)?;
         return Ok(());
@@ -1496,7 +1551,11 @@ fn accrue_pending_checked(
     let key = key.get();
 
     // The accumulator is at cap (a store outage): coalesce into the bucket's overflow sentinel.
-    let sentinel = crate::cold::governance::state::mod_overflow_sentinel(key);
+    if key.role.is_some() {
+        return Err(CountError::OutOfRange);
+    }
+    let sentinel: MeterIdentity =
+        crate::cold::governance::state::mod_overflow_sentinel(&key.common).into();
     pending.entry(sentinel).or_default().try_merge(&add)?;
     metrics::counter!(crate::snapshot::METERING_PENDING_COALESCED_TOTAL).increment(1);
 
@@ -1536,7 +1595,7 @@ impl CoalesceWarn {
 }
 
 pub struct PendingMetering {
-    shards: Box<[std::sync::Mutex<HashMap<MeterKey, MeterCounts>>; GOV_SHARDS]>,
+    shards: Box<[std::sync::Mutex<HashMap<MeterIdentity, MeterCounts>>; GOV_SHARDS]>,
     coalesce_warn: CoalesceWarn,
 
     flight: std::sync::Mutex<std::collections::VecDeque<metering_flush::MeteringWrite>>,
@@ -1550,6 +1609,44 @@ impl Default for PendingMetering {
 }
 
 impl PendingMetering {
+    /// All rows of one selected unit, staged before any mutation. Selected attribution never
+    /// enters the overflow sentinel; the caller retains the whole terminal on refusal.
+    fn try_accrue_selected(
+        &self,
+        principal: &str,
+        additions: &[(MeterIdentity, MeterCounts)],
+    ) -> Result<std::sync::MutexGuard<'_, HashMap<MeterIdentity, MeterCounts>>, CountError> {
+        let mut map = self
+            .shard_for(principal)
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let mut staged = std::collections::BTreeMap::<MeterIdentity, MeterCounts>::new();
+        for (key, add) in additions {
+            if key.0 != principal
+                || key.role != add.pricing.as_ref().map(|pricing| pricing.identity())
+            {
+                return Err(CountError::Malformed);
+            }
+            let value = staged.entry(key.clone()).or_insert_with(|| {
+                map.get(key).cloned().unwrap_or_else(|| MeterCounts {
+                    pricing: add.pricing.as_ref().map(|pricing| pricing.zeroed()),
+                    ..Default::default()
+                })
+            });
+            value.try_merge(add)?;
+        }
+        let added = staged.keys().filter(|key| !map.contains_key(*key)).count();
+        if map
+            .len()
+            .checked_add(added)
+            .is_none_or(|count| count > MAX_PENDING_METERING_PER_SHARD)
+        {
+            return Err(CountError::OutOfRange);
+        }
+        map.extend(staged);
+        Ok(map)
+    }
+
     pub fn new() -> Self {
         Self {
             shards: Box::new(std::array::from_fn(|_| {
@@ -1562,7 +1659,7 @@ impl PendingMetering {
     }
 
     #[inline]
-    fn shard_for(&self, key_id: &str) -> &std::sync::Mutex<HashMap<MeterKey, MeterCounts>> {
+    fn shard_for(&self, key_id: &str) -> &std::sync::Mutex<HashMap<MeterIdentity, MeterCounts>> {
         &self.shards[(busbar_kernel::store::key_hash_u64(key_id) as usize) & (GOV_SHARDS - 1)]
     }
 
@@ -1578,7 +1675,7 @@ impl PendingMetering {
             .unwrap_or_else(|e| e.into_inner());
         accrue_pending_checked(
             &mut map,
-            PendingKey::Owned(key),
+            PendingKey::Owned(key.into()),
             add,
             MAX_PENDING_METERING_PER_SHARD,
             &self.coalesce_warn,
@@ -1593,8 +1690,8 @@ impl PendingMetering {
         add: MeterCounts,
     ) -> Result<(), CountError> {
         thread_local! {
-            static PROBE: std::cell::RefCell<MeterKey> = const {
-                std::cell::RefCell::new((
+            static PROBE: std::cell::RefCell<MeterIdentity> = const {
+                std::cell::RefCell::new(MeterIdentity { common: (
                     String::new(),
                     0,
                     String::new(),
@@ -1602,7 +1699,7 @@ impl PendingMetering {
                     0,
                     String::new(),
                     String::new(),
-                ))
+                ), role: None })
             };
         }
         PROBE.with(|probe| {
@@ -1624,7 +1721,7 @@ impl PendingMetering {
 
     /// Take every shard's pending counts, one shard at a time as the caller consumes them, so
     /// they move straight into the caller's flight without an intermediate list.
-    pub fn drain(&self) -> impl Iterator<Item = (MeterKey, MeterCounts)> + '_ {
+    pub fn drain(&self) -> impl Iterator<Item = (MeterIdentity, MeterCounts)> + '_ {
         self.shards.iter().flat_map(|shard| {
             let mut map = shard.lock().unwrap_or_else(|e| e.into_inner());
             if map.is_empty() {

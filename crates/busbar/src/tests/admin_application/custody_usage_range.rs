@@ -140,6 +140,7 @@ impl Fixture {
         let day = busbar_kernel::governance::metering_bucket(now);
         core.ledger()
             .add_metering(&MeteringDelta {
+                pricing: None,
                 scale: 0,
                 key_id: KEY.into(),
                 bucket: day,

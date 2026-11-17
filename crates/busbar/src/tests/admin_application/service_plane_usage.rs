@@ -349,6 +349,7 @@ async fn an_old_served_entry_prices_both_the_row_and_its_itemized_classes() {
         .unwrap()
         .ledger()
         .add_metering(&busbar_contract::records::MeteringDelta {
+            pricing: None,
             scale: 0,
             key_id: KEY.to_string(),
             bucket,

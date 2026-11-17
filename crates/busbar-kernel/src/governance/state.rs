@@ -767,6 +767,7 @@ impl GovState {
             MeterCounts::request(exact)
         } else {
             MeterCounts {
+                pricing: None,
                 requests: 1,
                 tokens_input: whole_count(usage.map(|u| u.input).unwrap_or(0)),
                 tokens_output: whole_count(usage.map(|u| u.output).unwrap_or(0)),
