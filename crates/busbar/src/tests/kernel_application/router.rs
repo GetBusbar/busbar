@@ -38,7 +38,7 @@ async fn a_door_route_installed_at_construction_is_answered_ahead_of_the_fallbac
             "models": {},
             "auth": { "chain": [], "admin_auth": [] },
             "store": { "module": module, "settings": settings },
-            "advanced": { "allow_destinations": ["127.0.0.1"] },
+            "advanced": {  },
         }),
         &crate::root::boot::axis_test_grammar(),
     )

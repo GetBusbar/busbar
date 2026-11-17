@@ -173,6 +173,16 @@ pub trait ExportCalls: Send + Sync {
         &[]
     }
 
+    /// The immutable MIN-3 snapshot scope served at this exact declared path, if any.
+    fn scope(&self, _path: &str) -> Option<u32> {
+        None
+    }
+
+    /// Render a declared MIN-3 scope from a snapshot collected by the owning kernel.
+    fn render_scope(&self, _scope: u32, _families: &[Family]) -> Result<Served, String> {
+        Err("this export instance declares no snapshot scopes".into())
+    }
+
     /// Hand one already-projected JSON line for `stream` to the instance, OFF the request path:
     fn deliver(&self, stream: u8, line: Vec<u8>, hold: Box<dyn Send>) -> Delivered;
 

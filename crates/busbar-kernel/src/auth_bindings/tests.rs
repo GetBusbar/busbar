@@ -317,3 +317,105 @@ fn upstream_credentials_must_agree_with_the_binding() {
     assert_eq!(ok("u", None, Some(true), true), Ok(()));
     assert_eq!(ok("u", Some(Own), None, false), Ok(()));
 }
+
+#[test]
+fn scoped_upstream_bindings_use_collision_free_reserved_identity() {
+    let cfg = connection_form();
+    let resolve = |instance: &str, name: &str| {
+        bind_upstreams_for(
+            instance,
+            &[UpstreamView {
+                name,
+                auth: Some(&cfg),
+                upstream_credentials: Some(UpstreamCreds::Connection),
+                stdio: false,
+            }],
+            &styles(),
+            &[],
+            &flags,
+        )
+        .unwrap()
+    };
+    let left = resolve("a-b", "c");
+    let right = resolve("a", "b-c");
+    let left = left[0].auth.as_ref().unwrap();
+    let right = right[0].auth.as_ref().unwrap();
+    assert_ne!(left.instance, right.instance);
+    assert_eq!(&*left.instance, "\0upstream:3:a-b1:c");
+    assert_eq!(&*right.instance, "\0upstream:1:a3:b-c");
+    assert!(left.caller && right.caller);
+    assert_eq!(left.connect_callback.as_deref(), Some("/connect/cb"));
+}
+
+#[test]
+fn scoped_bindings_preserve_explicit_own_bindings_and_do_not_reserve_legacy_names() {
+    let form = connection_form();
+    let explicit = UpstreamAuthCfg {
+        form: UpstreamAuthForm::Instance("upstream-c-outbound".into()),
+        cache_max_s: Some(17),
+    };
+    let op = [OperatorAuth {
+        name: "upstream-c-outbound",
+        module: "oauth",
+        style: Some("oauth-token-exchange"),
+        settings_keys: Vec::new(),
+    }];
+    let views = [
+        UpstreamView {
+            name: "c",
+            auth: Some(&form),
+            upstream_credentials: Some(UpstreamCreds::Connection),
+            stdio: false,
+        },
+        UpstreamView {
+            name: "explicit",
+            auth: Some(&explicit),
+            upstream_credentials: Some(UpstreamCreds::Own),
+            stdio: false,
+        },
+    ];
+    let mask = |module: &str, style: &str| {
+        flags(module, style) | busbar_plugin_abi::auth::STYLE_PER_REQUEST
+    };
+    let got = bind_upstreams_for("plane", &views, &styles(), &op, &mask).unwrap();
+    assert!(got[0].implicit.is_some());
+    let own = got[1].auth.as_ref().unwrap();
+    assert!(got[1].implicit.is_none());
+    assert_eq!(&*own.instance, "upstream-c-outbound");
+    assert!(!own.caller && own.scoped && own.per_request);
+    assert_eq!(own.cache_max_s, Some(17));
+}
+
+#[test]
+fn scoped_bindings_refuse_operator_names_in_the_internal_namespace() {
+    let operator = [OperatorAuth {
+        name: "\0upstream:1:a1:b",
+        module: "oauth",
+        style: Some("oauth-connection"),
+        settings_keys: Vec::new(),
+    }];
+    let refused = bind_upstreams_for("plane", &[], &styles(), &operator, &flags)
+        .err()
+        .expect("reserved operator name");
+    assert!(refused.iter().any(|message| message.contains("reserved")));
+    assert!(refused.iter().all(|message| !message.contains('\0')));
+}
+
+#[test]
+fn scoped_bindings_keep_credential_mode_and_stdio_refusals() {
+    let cfg = connection_form();
+    let own = [UpstreamView {
+        name: "c",
+        auth: Some(&cfg),
+        upstream_credentials: Some(UpstreamCreds::Own),
+        stdio: false,
+    }];
+    assert!(bind_upstreams_for("plane", &own, &styles(), &[], &flags).is_err());
+    let stdio = [UpstreamView {
+        name: "c",
+        auth: Some(&cfg),
+        upstream_credentials: None,
+        stdio: true,
+    }];
+    assert!(bind_upstreams_for("plane", &stdio, &styles(), &[], &flags).is_err());
+}

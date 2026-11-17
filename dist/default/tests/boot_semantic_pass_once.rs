@@ -44,8 +44,6 @@ fn a_fresh_instance_transition_that_serves_judges_its_configuration_once() {
             r#"listen: "127.0.0.1:{data_port}"
 admin_listen: "127.0.0.1:{admin_port}"
 admin_require_mtls: false
-advanced:
-  allow_destinations: ["127.0.0.1"]
 store: {{module: memory}}
 auth:
   chain: []

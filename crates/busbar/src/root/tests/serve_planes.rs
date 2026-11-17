@@ -13,7 +13,7 @@ use busbar_kernel::plane_driver::{EndPost, PlaneMoney};
 use crate::root::plane_node::NodeEndPost;
 use crate::root::test_plugins::{missing, BUILD_BUSBAR_EXAMPLES};
 
-use super::{compose_planes, LateServices};
+use super::{compose_planes, Services};
 use crate::root::loader::dispatch::{
     load_dropped, rendering_of_library, Bind, DispatchConfig, Dispatcher, NoSink,
 };
@@ -74,12 +74,8 @@ pub(super) fn bound(instance: &str, dispatcher: &Arc<Dispatcher>) -> crate::root
     )
 }
 
-pub(crate) fn composed_services() -> Arc<LateServices> {
-    let late = LateServices::new();
-    let kernel = Arc::new(KernelServices::new());
-    late.install_kernel(Arc::clone(&kernel), kernel)
-        .expect("installed once");
-    late
+pub(crate) fn composed_services() -> Arc<Services> {
+    Services::serving(Arc::new(KernelServices::new()))
 }
 
 async fn admin(
@@ -240,7 +236,7 @@ async fn no_door_plane_composes_nothing_and_needs_no_services() {
     let served = compose_planes(
         &[],
         &dispatcher,
-        &LateServices::new(),
+        &Services::bootstrap(),
         &BTreeMap::new(),
         None,
         &money,

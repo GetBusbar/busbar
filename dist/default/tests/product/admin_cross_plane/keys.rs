@@ -228,7 +228,7 @@ async fn drive_unpriced_usage_reads() -> Vec<(String, u16, json::Value)> {
         document["identity-providers"] = serde_json::json!({"admin-tokens": {
             "module": "admin-tokens", "token": {"file": directory.join("admin.token")}
         }});
-        document["advanced"] = serde_json::json!({"allow_destinations": ["127.0.0.1"]});
+        document["advanced"] = serde_json::json!({});
         let deploy = busbar_kernel::config::deploy_from_deserializer(
             document,
             &crate::root::boot::axis_test_grammar(),
@@ -400,7 +400,7 @@ async fn config_apply_accepts_a_plane_section_and_moves_that_planes_own_fee() {
         document["identity-providers"] = serde_json::json!({"admin-tokens": {
             "module": "admin-tokens", "token": {"file": directory.join("admin.token")}
         }});
-        document["advanced"] = serde_json::json!({"allow_destinations": ["127.0.0.1"]});
+        document["advanced"] = serde_json::json!({});
         let deploy = busbar_kernel::config::deploy_from_deserializer(
             document,
             &crate::root::boot::axis_test_grammar(),
@@ -547,7 +547,7 @@ async fn test_admin_v1_openapi_is_identity_json_for_every_client() {
         document["identity-providers"] = serde_json::json!({"admin-tokens": {
             "module": "admin-tokens", "token": {"file": directory.join("admin.token")}
         }});
-        document["advanced"] = serde_json::json!({"allow_destinations": ["127.0.0.1"]});
+        document["advanced"] = serde_json::json!({});
         let deploy = busbar_kernel::config::deploy_from_deserializer(
             document,
             &crate::root::boot::axis_test_grammar(),
@@ -747,7 +747,7 @@ async fn drive_key_cap_and_delegation_errors() {
         document["identity-providers"] = serde_json::json!({"admin-tokens": {
             "module": "admin-tokens", "token": {"file": directory.join("admin.token")}
         }});
-        document["advanced"] = serde_json::json!({"allow_destinations": ["127.0.0.1"]});
+        document["advanced"] = serde_json::json!({});
         let deploy = busbar_kernel::config::deploy_from_deserializer(
             document,
             &crate::root::boot::axis_test_grammar(),
@@ -983,7 +983,7 @@ async fn test_admin_v1_overlay_reset_unknown_section_keeps_1_5_5_sentence_shape(
         document["identity-providers"] = serde_json::json!({"admin-tokens": {
             "module": "admin-tokens", "token": {"file": directory.join("admin.token")}
         }});
-        document["advanced"] = serde_json::json!({"allow_destinations": ["127.0.0.1"]});
+        document["advanced"] = serde_json::json!({});
         let deploy = busbar_kernel::config::deploy_from_deserializer(
             document,
             &crate::root::boot::axis_test_grammar(),
@@ -1101,7 +1101,7 @@ async fn serve_keys_fixture(
                 document["identity-providers"] = serde_json::json!({"admin-tokens": {
                     "module": "admin-tokens", "token": {"file": directory.join("admin.token")}
                 }});
-                document["advanced"] = serde_json::json!({"allow_destinations": ["127.0.0.1"]});
+                document["advanced"] = serde_json::json!({});
                 let deploy = busbar_kernel::config::deploy_from_deserializer(
                     document,
                     &crate::root::boot::axis_test_grammar(),
@@ -1189,7 +1189,7 @@ async fn serve_keys_fixture(
                 document["identity-providers"] = serde_json::json!({"admin-tokens": {
                     "module": "admin-tokens", "token": {"file": directory.join("admin.token")}
                 }});
-                document["advanced"] = serde_json::json!({"allow_destinations": ["127.0.0.1"]});
+                document["advanced"] = serde_json::json!({});
                 let deploy = busbar_kernel::config::deploy_from_deserializer(
                     document,
                     &crate::root::boot::axis_test_grammar(),
@@ -1269,7 +1269,7 @@ async fn serve_keys_fixture(
             document["identity-providers"] = serde_json::json!({"admin-tokens": {
                 "module": "admin-tokens", "token": {"file": directory.join("admin.token")}
             }});
-            document["advanced"] = serde_json::json!({"allow_destinations": ["127.0.0.1"]});
+            document["advanced"] = serde_json::json!({});
             let deploy = busbar_kernel::config::deploy_from_deserializer(
                 document,
                 &crate::root::boot::axis_test_grammar(),
@@ -1902,7 +1902,7 @@ async fn admin_error_fixture() -> (std::net::SocketAddr, tokio::task::JoinHandle
             "settings": crate::test_common::credentials::settings("admin-lockout-witness"),
             "max_admin_scope": "full",
         });
-        document["advanced"] = serde_json::json!({"allow_destinations": ["127.0.0.1"]});
+        document["advanced"] = serde_json::json!({});
         let deploy = busbar_kernel::config::deploy_from_deserializer(
             document,
             &crate::root::boot::axis_test_grammar(),
@@ -2824,7 +2824,7 @@ async fn drive_plugin_reload_errors() {
         document["identity-providers"] = serde_json::json!({"admin-tokens": {
             "module": "admin-tokens", "token": {"file": directory.join("admin.token")}
         }});
-        document["advanced"] = serde_json::json!({"allow_destinations": ["127.0.0.1"]});
+        document["advanced"] = serde_json::json!({});
         let deploy = busbar_kernel::config::deploy_from_deserializer(
             document,
             &crate::root::boot::axis_test_grammar(),
@@ -2950,7 +2950,7 @@ async fn drive_plugin_rollback_errors() {
         document["identity-providers"] = serde_json::json!({"admin-tokens": {
             "module": "admin-tokens", "token": {"file": directory.join("admin.token")}
         }});
-        document["advanced"] = serde_json::json!({"allow_destinations": ["127.0.0.1"]});
+        document["advanced"] = serde_json::json!({});
         let deploy = busbar_kernel::config::deploy_from_deserializer(
             document,
             &crate::root::boot::axis_test_grammar(),
@@ -3194,7 +3194,7 @@ async fn drive_plugin_inspect_errors() {
         document["identity-providers"] = serde_json::json!({"admin-tokens": {
             "module": "admin-tokens", "token": {"file": directory.join("admin.token")}
         }});
-        document["advanced"] = serde_json::json!({"allow_destinations": ["127.0.0.1"]});
+        document["advanced"] = serde_json::json!({});
         let deploy = busbar_kernel::config::deploy_from_deserializer(
             document,
             &crate::root::boot::axis_test_grammar(),
@@ -3689,19 +3689,16 @@ async fn try_publish_door(
 
     let store = crate::root::real_store::core().await;
     let gov = gov_with_signer(store.clone(), None).await;
-    let services = crate::root::serve::LateServices::new();
     let kernel = Arc::new(
         busbar_kernel::host_services::KernelServices::new()
             .with_signer(gov.clone())
+            .with_persistence(store)
             .with_pool(Arc::new(busbar_kernel::host_services::BlockingPool::new(
                 tokio::runtime::Handle::current(),
                 busbar_kernel::host_records::QUEUE_CAP,
             ))),
     );
-    assert!(kernel.attach_persistence(store));
-    services
-        .install_kernel(kernel.clone(), kernel.clone())
-        .unwrap();
+    let services = crate::root::serve::Services::serving(kernel.clone());
     let dispatcher = Arc::new(Dispatcher::with_services(
         DispatchConfig::default(),
         services.served(),
@@ -4305,7 +4302,7 @@ async fn drive_named_map_errors() {
             document["identity-providers"] = serde_json::json!({"admin-tokens": {
                 "module": "admin-tokens", "token": {"file": directory.join("admin.token")}
             }});
-            document["advanced"] = serde_json::json!({"allow_destinations": ["127.0.0.1"]});
+            document["advanced"] = serde_json::json!({});
             let deploy = busbar_kernel::config::deploy_from_deserializer(
                 document,
                 &crate::root::boot::axis_test_grammar(),

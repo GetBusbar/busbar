@@ -707,11 +707,17 @@ impl PlaneAuditLog {
         if query.descending {
             return self.list_after(query);
         }
-        let Some(native) = native_owner(self.kind_id).filter(|n| n.ready.load(Ordering::Acquire))
+        let Some(native) =
+            native_owner(self.kind_id).filter(|n| n.storage.ready.load(Ordering::Acquire))
         else {
             return self.list_after(query);
         };
-        let Ok(records) = native.history.list(KIND_AUDIT, &PlaneSelector::All).await else {
+        let Ok(records) = native
+            .storage
+            .history
+            .list(KIND_AUDIT, &PlaneSelector::All)
+            .await
+        else {
             return self.list_after(query);
         };
         let mut rows: Vec<AuditEntry> = records
@@ -1224,7 +1230,7 @@ fn drain_pending_audit() {
     let Some(native) = native_owner(KIND_ID_AUDIT) else {
         return;
     };
-    if !native.ready.load(Ordering::Acquire) {
+    if !native.storage.ready.load(Ordering::Acquire) {
         return;
     }
     {
@@ -1282,10 +1288,10 @@ pub fn has_unsettled_audit() -> bool {
     !queue.queued.is_empty()
 }
 
-fn deliver_audit_event(entry: &AuditEntry) {
+fn deliver_audit_event(exports: &crate::export::plugin::Exports, entry: &AuditEntry) {
     use busbar_contract::export_stream::ExportStream;
 
-    crate::export::plugin::deliver(ExportStream::Events, &entry.action, |projection| {
+    crate::export::plugin::deliver_on(exports, ExportStream::Events, &entry.action, |projection| {
         project_audit_event(projection, entry)
     });
 }
@@ -1316,11 +1322,11 @@ pub(crate) async fn register_and_restore(
 ) -> RecordStoreResult<()> {
     register_audit_stream(app);
     let native = install_native(KIND_ID_AUDIT, store)?;
-    if native.ready.load(Ordering::Acquire) {
+    if native.storage.ready.load(Ordering::Acquire) {
         return drain_native(&PENDING_AUDIT, &AUDIT_LOG, native).await;
     }
     let restored = restore_native(&AUDIT_LOG, &native).await?;
-    native.ready.store(true, Ordering::Release);
+    native.storage.ready.store(true, Ordering::Release);
     if restored.records == 0 && restored.unreadable == 0 && restored.chain_breaks.is_empty() {
         tracing::debug!(
             records = restored.records,
@@ -1678,7 +1684,7 @@ pub async fn register_test_audit_stream(app: &Arc<crate::state::App>) {
         .core_store_handle()
         .expect("native audit test Store");
     if let Some(previous) = native_owner(KIND_ID_AUDIT) {
-        if !Arc::ptr_eq(&previous.store, &store) {
+        if !Arc::ptr_eq(&previous.storage.store, &store) {
             // A test's new deployment must finish the prior deployment's real
             // native queue before replacing its global test registration.
             flush_pending()
@@ -1718,11 +1724,11 @@ pub async fn ensure_global_audit_stream_registered() {
                 None => install_native(KIND_ID_AUDIT, crate::real_store::core().await)
                     .expect("native audit test owner"),
             };
-            if !native.ready.load(Ordering::Acquire) {
+            if !native.storage.ready.load(Ordering::Acquire) {
                 restore_native(&AUDIT_LOG, &native)
                     .await
                     .expect("native audit test restore");
-                native.ready.store(true, Ordering::Release);
+                native.storage.ready.store(true, Ordering::Release);
             }
             open_plugin_refusals();
         })
@@ -1737,6 +1743,13 @@ pub async fn ensure_global_audit_stream_registered() {
 mod tests;
 
 struct NativeAudit {
+    storage: Arc<NativeAuditStorage>,
+    exports: Option<Arc<crate::export::plugin::Exports>>,
+}
+
+/// The attachment identity and durable state survive bootstrap-to-serving observer assembly.
+/// A pending original always retains this exact owner, never a newly opened attachment.
+struct NativeAuditStorage {
     store: Arc<CoreStore>,
     history: AsyncHistory,
     heads: Mutex<std::collections::BTreeMap<String, (u64, String)>>,
@@ -1745,7 +1758,7 @@ struct NativeAudit {
 }
 #[derive(Clone)]
 struct PreparedAudit {
-    native: Arc<NativeAudit>,
+    native: Arc<NativeAuditStorage>,
     envelope: PlaneRecord,
     entry: AuditEntry,
 }
@@ -1766,7 +1779,7 @@ fn install_native(kind: u32, store: Arc<CoreStore>) -> RecordStoreResult<Arc<Nat
         .lock()
         .unwrap_or_else(|error| error.into_inner());
     if let Some(held) = owners.get(&kind) {
-        if !Arc::ptr_eq(&held.store, &store) {
+        if !Arc::ptr_eq(&held.storage.store, &store) {
             return Err(RecordStoreError(
                 "audit owner cannot retarget retained operations to another CoreStore attachment"
                     .into(),
@@ -1786,15 +1799,62 @@ fn install_native(kind: u32, store: Arc<CoreStore>) -> RecordStoreResult<Arc<Nat
     )
     .map_err(native_error)?;
     let native = Arc::new(NativeAudit {
-        store,
-        history,
-        heads: Mutex::default(),
-        driving: tokio::sync::Mutex::new(()),
-        ready: AtomicBool::new(false),
+        storage: Arc::new(NativeAuditStorage {
+            store,
+            history,
+            heads: Mutex::default(),
+            driving: tokio::sync::Mutex::new(()),
+            ready: AtomicBool::new(false),
+        }),
+        exports: None,
     });
     owners.insert(kind, native.clone());
     Ok(native)
 }
+/// Publish completed audit observers without retargeting any durable original. Bootstrap
+/// owners and already-running drains retain the same storage, locks, heads and operation IDs.
+pub(crate) fn publish_export_observers(app: &crate::state::App) -> Result<(), String> {
+    let Some(governance) = &app.governance else {
+        return Ok(());
+    };
+    let store = governance
+        .core_store_handle()
+        .map_err(|error| error.to_string())?;
+    let mut owners = native_owners()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    publish_export_observers_on(&mut owners, &store, &app.exports)
+}
+
+fn publish_export_observers_on(
+    owners: &mut std::collections::HashMap<u32, Arc<NativeAudit>>,
+    store: &Arc<CoreStore>,
+    exports: &Arc<crate::export::plugin::Exports>,
+) -> Result<(), String> {
+    for native in owners
+        .values()
+        .filter(|native| Arc::ptr_eq(&native.storage.store, store))
+    {
+        if native
+            .exports
+            .as_ref()
+            .is_some_and(|held| !Arc::ptr_eq(held, exports))
+        {
+            return Err("audit export observers already belong to another serving registry".into());
+        }
+    }
+    for native in owners
+        .values_mut()
+        .filter(|native| Arc::ptr_eq(&native.storage.store, store))
+    {
+        *native = Arc::new(NativeAudit {
+            storage: Arc::clone(&native.storage),
+            exports: Some(Arc::clone(exports)),
+        });
+    }
+    Ok(())
+}
+
 fn native_error(error: crate::host_records_async::HistoryError) -> RecordStoreError {
     RecordStoreError(format!("native audit persistence: {error:?}"))
 }
@@ -1808,10 +1868,11 @@ async fn restore_native(
 ) -> RecordStoreResult<AuditRestored> {
     let mut scopes: std::collections::BTreeMap<String, Vec<Vec<u8>>> =
         std::collections::BTreeMap::new();
-    let legacy = crate::persistence::history::Audit::authorized(&native.store, PERSISTENCE_OWNER)
-        .list()
-        .await
-        .map_err(native_error)?;
+    let legacy =
+        crate::persistence::history::Audit::authorized(&native.storage.store, PERSISTENCE_OWNER)
+            .list()
+            .await
+            .map_err(native_error)?;
     for record in legacy {
         scopes
             .entry(ADMIN_LOG.into())
@@ -1830,6 +1891,7 @@ async fn restore_native(
             })?);
     }
     for record in native
+        .storage
         .history
         .list(KIND_AUDIT, &PlaneSelector::All)
         .await
@@ -1900,6 +1962,7 @@ async fn restore_native(
         return Err(RecordStoreError("canonical audit evidence has ambiguous positions or unreadable bodies; continuation requires explicit recovery".into()));
     }
     *native
+        .storage
         .heads
         .lock()
         .unwrap_or_else(|error| error.into_inner()) = heads;
@@ -1911,6 +1974,7 @@ fn prepare_native(
     native: Arc<NativeAudit>,
 ) -> RecordStoreResult<PreparedAudit> {
     let (previous, prev_hash) = native
+        .storage
         .heads
         .lock()
         .unwrap_or_else(|error| error.into_inner())
@@ -1939,7 +2003,7 @@ fn prepare_native(
         content: pending.suffix.clone(),
     })?;
     Ok(PreparedAudit {
-        native,
+        native: Arc::clone(&native.storage),
         envelope: PlaneRecord {
             kind: KIND_AUDIT.into(),
             id: pending.scope.clone(),
@@ -1957,8 +2021,8 @@ async fn drain_native(
     log: &PlaneAuditLog,
     native: Arc<NativeAudit>,
 ) -> RecordStoreResult<()> {
-    let _driving = native.driving.lock().await;
-    if !native.ready.load(Ordering::Acquire) {
+    let _driving = native.storage.driving.lock().await;
+    if !native.storage.ready.load(Ordering::Acquire) {
         return Err(RecordStoreError(
             "canonical audit restore has not completed".into(),
         ));
@@ -1987,12 +2051,13 @@ async fn drain_native(
             first.prepared.clone_from(&pending.prepared);
         }
         let prepared = pending.prepared.as_ref().expect("retained audit original");
-        if !Arc::ptr_eq(&prepared.native, &native) {
+        if !Arc::ptr_eq(&prepared.native, &native.storage) {
             return Err(RecordStoreError(
                 "audit attempt belongs to another native attachment".into(),
             ));
         }
         let outcome = native
+            .storage
             .history
             .append_with_id(pending.operation, prepared.envelope.view())
             .await;
@@ -2028,6 +2093,7 @@ async fn drain_native(
             Err(error) => return Err(native_error(error)),
         }
         native
+            .storage
             .heads
             .lock()
             .unwrap_or_else(|error| error.into_inner())
@@ -2042,7 +2108,19 @@ async fn drain_native(
             false,
         );
         if pending.origin.redispatch() {
-            deliver_audit_event(&prepared.entry);
+            // A drain may have captured its bootstrap wrapper before S9. Resolve only an
+            // observer published over the exact same durable attachment; never retarget it.
+            let exports = native.exports.clone().or_else(|| {
+                native_owners()
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .values()
+                    .find(|owner| Arc::ptr_eq(&owner.storage, &native.storage))
+                    .and_then(|owner| owner.exports.clone())
+            });
+            if let Some(exports) = exports {
+                deliver_audit_event(&exports, &prepared.entry);
+            }
         }
         {
             let mut held = queue.rows.lock().unwrap_or_else(|error| error.into_inner());

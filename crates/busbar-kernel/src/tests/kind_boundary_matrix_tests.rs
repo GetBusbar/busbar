@@ -94,8 +94,8 @@ struct Transcript {
 
 async fn exercise(backend: Arc<dyn PersistenceBackend>) -> Transcript {
     let store = attach(backend.clone()).await;
-    let host = KernelServices::new();
-    assert!(host.attach_persistence(store.clone()));
+    let mut host = KernelServices::new();
+    host = host.with_persistence(store.clone());
     let callers = crate::host_services::caller_binding();
     let planes = ["neutral-alpha", "neutral-beta"];
     let legacy_keys: [&[u8]; 2] = [b"\x00\x0dneutral-alphan0", b"\x00\x0cneutral-betan0"];

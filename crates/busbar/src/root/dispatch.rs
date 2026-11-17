@@ -4,7 +4,7 @@
 use std::sync::{Arc, OnceLock};
 
 use crate::root::loader::dispatch::{DispatchConfig, Dispatcher};
-use crate::root::serve::LateServices;
+use crate::root::serve::Services;
 
 // The boot-time auth axis (its rows are opened and its styles bound off the request path).
 pub(crate) use crate::root::off_path::dispatch::auth_axis;
@@ -19,12 +19,12 @@ pub fn config(workers: usize) -> DispatchConfig {
     }
 }
 
-pub fn boot(workers: usize, services: &LateServices) -> Arc<Dispatcher> {
+pub fn boot(workers: usize, services: &Services) -> Arc<Dispatcher> {
     Arc::clone(DISPATCHER.get_or_init(|| Arc::new(build(workers, services))))
 }
 
 #[must_use]
-pub fn build(workers: usize, services: &LateServices) -> Dispatcher {
+pub fn build(workers: usize, services: &Services) -> Dispatcher {
     let dispatcher = Dispatcher::with_slot(
         config(workers),
         services.slot(),
@@ -42,7 +42,7 @@ pub fn build(workers: usize, services: &LateServices) -> Dispatcher {
 
 #[must_use]
 pub fn dispatcher() -> Arc<Dispatcher> {
-    boot(1, &LateServices::new())
+    boot(1, &Services::bootstrap())
 }
 
 #[cfg(test)]

@@ -315,7 +315,13 @@ fn finish_inner(
         .export_projections
         .wants_stream(busbar_contract::export_stream::ExportStream::Logs)
     {
-        export_request_log(ingress_protocol, pool, outcome, elapsed.as_millis() as u64);
+        export_request_log(
+            &app.exports,
+            ingress_protocol,
+            pool,
+            outcome,
+            elapsed.as_millis() as u64,
+        );
     }
 
     let status = resp.status().as_u16();
@@ -330,15 +336,24 @@ fn finish_inner(
 }
 
 /// The request-log export record, dated by the wall clock when a sink wants it.
-fn export_request_log(ingress_protocol: &str, pool: &str, outcome: &str, latency_ms: u64) {
-    crate::export::deliver_request_log(&crate::export::RequestLogFacts {
-        correlation_id: None,
-        ts: busbar_kernel::store::now(),
-        ingress_protocol,
-        pool,
-        outcome,
-        latency_ms,
-    });
+fn export_request_log(
+    exports: &crate::export::plugin::Exports,
+    ingress_protocol: &str,
+    pool: &str,
+    outcome: &str,
+    latency_ms: u64,
+) {
+    crate::export::deliver_request_log(
+        exports,
+        &crate::export::RequestLogFacts {
+            correlation_id: None,
+            ts: busbar_kernel::store::now(),
+            ingress_protocol,
+            pool,
+            outcome,
+            latency_ms,
+        },
+    );
 }
 
 pub fn ingress_error(proto: &str, status: StatusCode, kind: &str, message: &str) -> Response {

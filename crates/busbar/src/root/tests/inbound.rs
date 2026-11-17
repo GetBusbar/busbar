@@ -114,7 +114,7 @@ async fn app_generation(
         "auth": { "chain": ["keys"], "admin_auth": [operator], "signing_key": {"file": signing} },
         "identity-providers": {},
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
     });
     document["identity-providers"][operator] = json::json!({
         "module": operator, "token": {"file": operator_token},
@@ -194,41 +194,35 @@ async fn app_generation(
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let boot_store = if let Some(prior) = &prior {
-        Some(
+    let (core, rules) = if let Some(prior) = &prior {
+        (
             prior
                 .governance
                 .as_ref()
                 .expect("prior governance")
                 .core_store_handle()
                 .expect("prior admitted CoreStore"),
+            crate::root::min3_boot::fixture::carry(prior.root_rules.clone(), rules),
         )
     } else if reader {
-        Some(
-            crate::root::test_plugins::bootstrap_fresh_application_store(
-                &config,
-                &plugin_config,
-                &directory,
-            )
-            .await
-            .expect("provision the actual new marked-auth fixture Store"),
-        )
-    } else {
-        None
-    };
-    let core = if let Some(core) = boot_store {
-        core
-    } else {
-        crate::root::real_store::core_over(
-            busbar_kernel::appbuild::bootstrap_config_store(
-                &config,
-                &plugin_config,
-                &busbar_kernel::preflight::Unopened,
-            )
-            .await
-            .expect("actual native backend"),
+        let opened = crate::root::test_plugins::bootstrap_fresh_application_store(
+            &config,
+            &plugin_config,
+            &directory,
         )
         .await
+        .expect("provision the actual new marked-auth fixture Store");
+        (
+            opened.core,
+            crate::root::min3_boot::fixture::carry(opened.rules, rules),
+        )
+    } else {
+        let opened = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules)
+            .await
+            .expect("actual native backend")
+            .admit()
+            .await;
+        (opened.core, opened.rules)
     };
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,

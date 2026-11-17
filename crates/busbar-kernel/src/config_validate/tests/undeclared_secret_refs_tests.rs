@@ -92,6 +92,7 @@ fn identity_provider_reference_fields_require_the_owners_declaration() {
             .unwrap(),
             limits: None,
             insecure_transport: None,
+            provisioning: None,
         },
     );
     let e = check(&cfg, &["credential"], &[]).expect_err("refused");

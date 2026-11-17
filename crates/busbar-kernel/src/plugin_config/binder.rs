@@ -9,6 +9,7 @@
 //! order of the declared D_SECRET_PATH pointers, a `*` pointer in ascending array index, then (`bind_any` only)
 //! every other reference in document order; trust and dest handles likewise in their own declared order.
 
+use busbar_ports::binder::RefSource;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
 
@@ -33,23 +34,10 @@ const SECRET: &str = "$secret";
 const TRUST: &str = "$trust";
 const DEST: &str = "$dest";
 
-/// What `resolve_refs` resolves a D_REF_PATH reference through: custody (`SecretCustody`, IF §12.2), which
-/// registers the value in `instance`'s scrub set before it returns it. The registry supplies it; the binder
-/// never reaches a secret instance itself.
-pub trait RefSource: Send + Sync + 'static {
-    /// The value of `reference` for `instance`; None = the resolve failed (no text: the binder writes core's).
-    fn resolve<'a>(
-        &'a self,
-        instance: u64,
-        reference: &'a SecretRef,
-    ) -> BoxFut<'a, Option<SecureVec>>;
-}
-
-/// Core's config binder. One per process; every instance of every kind binds through it.
+/// A generation's complete config binder; every instance opened in that generation binds through it.
 pub struct Binder {
-    source: Arc<dyn RefSource>,
-    sugars: RwLock<Option<Arc<Sugars>>>,
-    schemas: RwLock<HashMap<Arc<str>, Option<SchemaCheck>>>,
+    sugars: Arc<Sugars>,
+    schemas: HashMap<Arc<str>, Option<SchemaCheck>>,
     instances: RwLock<HashMap<u64, Arc<Entry>>>,
 }
 
@@ -79,11 +67,14 @@ struct RefEntry {
 
 impl Binder {
     #[must_use]
-    pub fn new(source: Arc<dyn RefSource>) -> Self {
+    pub fn new(sugars: Arc<Sugars>, schemas: Vec<(Arc<str>, Box<str>)>) -> Self {
+        let schemas = schemas
+            .into_iter()
+            .map(|(name, schema)| (name, SchemaCheck::new(schema.as_bytes()).ok()))
+            .collect();
         Self {
-            source,
-            sugars: RwLock::new(None),
-            schemas: RwLock::new(HashMap::new()),
+            sugars,
+            schemas,
             instances: RwLock::new(HashMap::new()),
         }
     }
@@ -96,23 +87,6 @@ impl Binder {
             .cloned()
     }
 
-    fn installed_sugars(&self) -> Result<Arc<Sugars>, BindError> {
-        let held = self
-            .sugars
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone();
-        debug_assert!(
-            held.is_some(),
-            "ConfigBinder::bind before set_sugars is a core bug"
-        );
-        held.ok_or_else(|| BindError::BadReference {
-            pointer: "".into(),
-            text: "the config binder has no shorthand table yet (core bug: bind before set_sugars)"
-                .into(),
-        })
-    }
-
     fn bind_mode(
         &self,
         instance: u64,
@@ -120,7 +94,7 @@ impl Binder {
         paths: Paths<'_>,
         any: bool,
     ) -> Result<Vec<u8>, BindError> {
-        let sugars = self.installed_sugars()?;
+        let sugars = Arc::clone(&self.sugars);
         let mut doc: Value = crate::json::parse(config)
             .map_err(|_| BindError::NotAReference { pointer: "".into() })?;
 
@@ -293,11 +267,7 @@ impl Binder {
         } else {
             return Ok(());
         };
-        let schemas = self
-            .schemas
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let Some(check) = schemas.get(key) else {
+        let Some(check) = self.schemas.get(key) else {
             return Ok(());
         };
         let valid = match check {
@@ -622,24 +592,6 @@ fn restore(node: &mut Value, at: &mut String, entry: &Entry) -> Result<(), BindE
 }
 
 impl ConfigBinder for Binder {
-    fn set_sugars(&self, sugars: Arc<Sugars>) {
-        *self
-            .sugars
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(sugars);
-    }
-
-    fn set_ref_schemas(&self, schemas: Vec<(Arc<str>, Box<str>)>) {
-        let mut compiled = HashMap::with_capacity(schemas.len());
-        for (name, schema) in schemas {
-            compiled.insert(name, SchemaCheck::new(schema.as_bytes()).ok());
-        }
-        *self
-            .schemas
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = compiled;
-    }
-
     fn bind(
         &self,
         instance: u64,
@@ -661,7 +613,9 @@ impl ConfigBinder for Binder {
     fn resolve_refs<'a>(
         &'a self,
         instance: u64,
+        slot: u32,
         bound: Vec<u8>,
+        source: &'a dyn RefSource,
     ) -> BoxFut<'a, Result<SecureVec, BindError>> {
         Box::pin(async move {
             let Some(entry) = self.entry(instance).filter(|e| !e.refs.is_empty()) else {
@@ -671,7 +625,7 @@ impl ConfigBinder for Binder {
                 .map_err(|_| BindError::NotAReference { pointer: "".into() })?;
             let mut written: Vec<&str> = Vec::with_capacity(entry.refs.len());
             let mut result = Ok(());
-            for r in &entry.refs {
+            for (binding, r) in entry.refs.iter().enumerate() {
                 let refused = |why: &str| {
                     let mut text = String::new();
                     {
@@ -687,7 +641,12 @@ impl ConfigBinder for Binder {
                         text: text.into(),
                     }
                 };
-                let Some(value) = self.source.resolve(instance, &r.reference).await else {
+                let Ok(binding) = u32::try_from(binding) else {
+                    result = Err(BindError::TooMany);
+                    break;
+                };
+                let Some(value) = source.resolve(instance, slot, binding, &r.reference).await
+                else {
                     result = Err(refused("could not be resolved"));
                     break;
                 };

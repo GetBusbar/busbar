@@ -7,8 +7,6 @@ use busbar_ports::binder::{BindError, DestDef, TrustAnchor};
 
 struct Binder;
 impl ConfigBinder for Binder {
-    fn set_sugars(&self, _: Arc<Sugars>) {}
-    fn set_ref_schemas(&self, _: Vec<(Arc<str>, Box<str>)>) {}
     fn bind(
         &self,
         _: u64,
@@ -34,7 +32,9 @@ impl ConfigBinder for Binder {
     fn resolve_refs<'a>(
         &'a self,
         _: u64,
+        _: u32,
         bound: Vec<u8>,
+        _: &'a dyn RefSource,
     ) -> BoxFut<'a, Result<SecureVec, BindError>> {
         Box::pin(async move { Ok(SecureVec::from(bound)) })
     }
@@ -84,6 +84,7 @@ fn registry(ids: Arc<crate::process::InstanceIds>, slots: Arc<SlotTable>) -> Reg
 
 fn spec(name: &str) -> InstanceSpec<'_> {
     InstanceSpec {
+        purpose: OpenPurpose::Canonical,
         identity: "test-secret",
         name,
         config_json: b"{}",
@@ -123,7 +124,13 @@ async fn failed_reopen_preserves_version_and_bound_needs_lifetime() {
     );
     let needs = Arc::new(crate::chains::DeniedNeeds);
     let weak = Arc::downgrade(&needs);
-    registry.remember(&spec("bound"), KindCode::Secret, &needs, None);
+    registry.remember(
+        &spec("bound"),
+        KindCode::Secret,
+        &needs,
+        &(Arc::new(crate::chains::DeniedRefs) as Arc<dyn RefSource>),
+        None,
+    );
     registry
         .applied
         .lock()
@@ -152,4 +159,37 @@ async fn failed_reopen_preserves_version_and_bound_needs_lifetime() {
         weak.upgrade().is_none(),
         "no registry/Needs cycle survives drop"
     );
+}
+
+#[test]
+fn secret_dependency_names_never_fall_back_to_an_image_identity() {
+    let registry = registry(
+        Arc::new(crate::process::InstanceIds::default()),
+        Arc::new(SlotTable::new()),
+    );
+    let instances = [
+        (KindCode::Secret, spec("primary")),
+        (KindCode::Secret, spec("test-secret")),
+    ];
+    assert_eq!(
+        registry.secret_index("test-secret", &instances, &Sugars::default()),
+        Some(1)
+    );
+    let only_primary = [(KindCode::Secret, spec("primary"))];
+    assert_eq!(
+        registry.secret_index("test-secret", &only_primary, &Sugars::default()),
+        None
+    );
+}
+
+#[test]
+fn a_missing_core_secret_dependency_refuses_before_the_store_walk() {
+    let registry = registry(
+        Arc::new(crate::process::InstanceIds::default()),
+        Arc::new(SlotTable::new()),
+    );
+    let instances = [(KindCode::Secret, spec("primary"))];
+    assert!(registry
+        .boot_plan_with_core(&instances, &Sugars::default(), &["missing"])
+        .is_err());
 }

@@ -7,14 +7,13 @@ use std::sync::Arc;
 use busbar_contract::abi::mechanism::door::DoorFn;
 use busbar_contract::conn::{ConnWake, DeclaredConns, PollConns};
 use busbar_contract::secret::SecretResolve;
-use busbar_contract::services::HostServices;
 use busbar_contract::transport::TransportSettings;
 use busbar_kernel::governance::GovState;
-use busbar_kernel::host_services::{DestJudge, SignKey};
+use busbar_kernel::host_services::DestJudge;
 use busbar_kernel::plane_driver::{GenerationHost, PlaneMoney};
 use busbar_kernel_egress::ports::Journal;
 
-use super::{DoorEgress, HookStage, LateServices, Served, StreamFramers};
+use super::{DoorEgress, HookStage, Served, Services, StreamFramers};
 use crate::root::boot::DoorPlane;
 use crate::root::door_steps::{DoorReach, OutboundAuths, ProviderRoute};
 use crate::root::durability::NodeBook;
@@ -128,25 +127,11 @@ pub(crate) fn install_root_auth() {
     crate::dist_root_install::install();
 }
 
-pub(crate) fn late_services(dest: Arc<dyn DestJudge>) -> Arc<LateServices> {
-    let late = LateServices::new();
-    let kernel = Arc::new(super::kernel_services(dest));
-    late.install_kernel(Arc::clone(&kernel), kernel as Arc<dyn HostServices>)
-        .expect("a fresh LateServices takes its first install");
-    late
+pub(crate) fn late_services(dest: Arc<dyn DestJudge>) -> Arc<Services> {
+    Services::serving(Arc::new(super::kernel_services(dest)))
 }
 
-pub(crate) fn attach_late(late: &LateServices, gov: &Arc<GovState>) {
-    super::attach(
-        late,
-        Some(gov),
-        Some(Arc::clone(gov) as Arc<dyn SignKey>),
-        &Arc::new(busbar_kernel::trust::DemotionRecord::default()),
-        &[],
-    );
-}
-
-pub(crate) fn dispatcher(workers: usize, late: &Arc<LateServices>) -> Arc<Dispatcher> {
+pub(crate) fn dispatcher(workers: usize, late: &Arc<Services>) -> Arc<Dispatcher> {
     Arc::new(crate::root::dispatch::build(workers, late))
 }
 
@@ -318,7 +303,7 @@ impl EgressRig {
 pub(crate) struct DoorCompose<'a> {
     doors: Vec<(String, DoorPlane)>,
     dispatcher: &'a Arc<Dispatcher>,
-    late: &'a LateServices,
+    late: &'a Services,
     sections: &'a BTreeMap<&'static str, busbar_contract::yaml::Value>,
     money: &'a dyn Fn() -> Arc<PlaneMoney>,
     public_url: Option<&'a str>,
@@ -333,7 +318,7 @@ impl<'a> DoorCompose<'a> {
     pub(crate) fn new(
         doors: Vec<(String, DoorPlane)>,
         dispatcher: &'a Arc<Dispatcher>,
-        late: &'a LateServices,
+        late: &'a Services,
         sections: &'a BTreeMap<&'static str, busbar_contract::yaml::Value>,
         money: &'a dyn Fn() -> Arc<PlaneMoney>,
     ) -> Self {
@@ -489,7 +474,7 @@ pub(crate) fn mount_node_admin(
     handle: &Arc<busbar_kernel::state::AppHandle>,
     core: Arc<busbar_kernel::persistence::facade::CoreStore>,
     book: &NodeBook,
-    late: &Arc<LateServices>,
+    late: &Arc<Services>,
 ) -> axum::Router {
     crate::root::units_admin::mount_node(
         admin,

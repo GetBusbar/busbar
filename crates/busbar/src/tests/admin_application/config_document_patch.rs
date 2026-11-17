@@ -156,7 +156,7 @@ async fn document_patch_is_durable_conditional_and_preserves_hidden_base_configu
         "store": {"module": module, "settings": plugins::application_store_settings(&directory)},
         "plugins": plugins::config_document(&plugin_config),
         "limits": {"request_body_max_bytes": BASE_CAP},
-        "advanced": {"allow_destinations": ["127.0.0.1"]},
+        "advanced": {},
     });
     if phase == "sequences" || phase.starts_with("source-") {
         let key = directory.join("hidden-provider-key");
@@ -210,13 +210,12 @@ async fn document_patch_is_durable_conditional_and_preserves_hidden_base_configu
     let config = busbar_kernel::config::resolve(&deploy, &defs).unwrap();
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let anchor = busbar_kernel::appbuild::bootstrap_config_store(
-        &config,
-        &plugin_config,
-        &busbar_kernel::preflight::Unopened,
-    )
-    .await
-    .expect("the actual configured Store opens");
+    let crate::root::min3_boot::fixture::Fixture {
+        backend: anchor,
+        rules,
+    } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
+        .await
+        .expect("the actual configured Store opens");
     let anchor = crate::root::real_store::core_over(anchor).await;
     let overlay = OverlayStore::from_core(anchor.clone())
         .expect("the actual Store supports conditional config persistence");
@@ -912,7 +911,7 @@ pub(super) async fn ephemeral_admin(
         "store": {"module": module, "settings": plugins::application_store_settings(&directory)},
         "plugins": plugins::config_document(&plugin_config),
         "limits": {"request_body_max_bytes": BASE_CAP},
-        "advanced": {"allow_destinations": ["127.0.0.1"]},
+        "advanced": {},
     });
     let config_path = directory.join("config.yaml");
     let providers_path = directory.join("providers.yaml");
@@ -939,13 +938,12 @@ pub(super) async fn ephemeral_admin(
     let config = busbar_kernel::config::resolve(&deploy, &defs).unwrap();
     let boot_rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let opened = busbar_kernel::appbuild::bootstrap_config_store(
-        &config,
-        &plugin_config,
-        &busbar_kernel::preflight::Unopened,
-    )
-    .await
-    .expect("the actual configured Store opens");
+    let crate::root::min3_boot::fixture::Fixture {
+        backend: opened,
+        rules: boot_rules,
+    } = crate::root::min3_boot::fixture::open(&config, &plugin_config, boot_rules.clone())
+        .await
+        .expect("the actual configured Store opens");
     let anchor = crate::root::real_store::core_over(Arc::new(
         crate::root::real_store::EphemeralInfo(opened),
     ))
@@ -1067,7 +1065,7 @@ impl busbar_kernel::appbuild::RootRules for PlaneOnMarker {
     fn check(&self, cfg: &busbar_kernel::config::RootCfg) -> Result<(), String> {
         self.inner.check(cfg)
     }
-    fn check_built(&self, app: &busbar_kernel::state::App) -> Result<(), String> {
+    fn check_built(&self, app: &mut busbar_kernel::state::App) -> Result<(), String> {
         self.inner.check_built(app)
     }
     fn mounted_plugin_paths(

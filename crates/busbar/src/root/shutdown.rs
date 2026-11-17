@@ -34,7 +34,7 @@ use tokio::time::Instant;
 pub(crate) use busbar_kernel::governance::drain::{Cut, DrainClock};
 
 use crate::root::durability::NodeBook;
-use crate::root::serve::{drain_records, LateServices, RECORD_DRAIN};
+use crate::root::serve::{drain_records, Services, RECORD_DRAIN};
 
 /// Obtained only by a successful semantic drain and consumed by retirement.
 /// Retaining the actual owners binds the final check to the drained generation.
@@ -145,7 +145,7 @@ const PROGRESS_EVERY: Duration = Duration::from_secs(1);
 /// The owners the progress line reads, registered once as `finish` takes them.
 struct ProgressSources {
     gov: Option<Arc<GovState>>,
-    late: Arc<LateServices>,
+    late: Arc<Services>,
     journal: Option<Arc<RuntimeJournal>>,
     fence: Option<Arc<PredecessorFence>>,
 }
@@ -378,13 +378,15 @@ pub(crate) struct PostServe<'a> {
     /// Data runtimes and transport-plugin listener threads: requests like any other.
     pub(crate) threads: Vec<std::thread::JoinHandle<()>>,
     pub(crate) work_recovery: JoinHandle<()>,
+    pub(crate) generation_workers: super::boot::workers::RunningWorkers,
+    pub(crate) exports: super::exports::ports::Exports,
     /// The control runtime's detached-task drain.
     pub(crate) control_drain: Pin<Box<dyn Future<Output = ()> + 'a>>,
     pub(crate) node_lease: Option<crate::root::boot::NodeLeaseTask>,
     /// The flusher: in drain mode it is the money driver [M].
     pub(crate) flusher: Option<JoinHandle<()>>,
     pub(crate) governance: Option<Arc<GovState>>,
-    pub(crate) late: Arc<LateServices>,
+    pub(crate) late: Arc<Services>,
     pub(crate) book: Option<NodeBook>,
     pub(crate) startup: busbar_kernel::persistence::startup::Startup,
     pub(crate) shutdown_tx: tokio::sync::broadcast::Sender<()>,
@@ -417,6 +419,8 @@ pub(crate) async fn finish(post: PostServe<'_>, drain: &ShutdownDrain) -> i32 {
         lines,
         threads,
         work_recovery,
+        generation_workers,
+        exports,
         control_drain,
         node_lease,
         flusher,
@@ -457,6 +461,13 @@ pub(crate) async fn finish(post: PostServe<'_>, drain: &ShutdownDrain) -> i32 {
 
     // [1] Requests, all under C1: every request-serving join, then plane cleanup.
     drain.enter(Phase::Requests);
+    match drain.wait_requests(generation_workers.stop()).await {
+        Outcome::Done(Ok(())) => {}
+        Outcome::Done(Err(error)) => {
+            failures.push(format!("generation workers did not stop: {error}"))
+        }
+        _ => failures.push("generation workers did not stop by the request cut".into()),
+    }
     let mut detached_joins: Vec<DrainHandle<Result<(), JoinError>>> = Vec::new();
     let threads = DrainHandle::spawn(tokio::task::spawn_blocking(move || {
         for handle in threads {
@@ -668,6 +679,35 @@ pub(crate) async fn finish(post: PostServe<'_>, drain: &ShutdownDrain) -> i32 {
         }
     }
 
+    // Stop export intake and observe its concrete workers before closing native audit staging.
+    // Reuse the original shutdown deadline; no exporter receives a fresh budget.
+    let export_deadline = drain
+        .until(Cut::Deadline)
+        .unwrap_or_else(Instant::now)
+        .into_std();
+    match drain
+        .bounded(
+            Phase::Audit,
+            DrainHandle::adopt(tokio::task::spawn_blocking(move || {
+                exports.stop_until(export_deadline)
+            })),
+            Cut::Deadline,
+        )
+        .await
+    {
+        Joined::Done(Ok(reports)) => {
+            for (name, report) in reports {
+                if !report.clean() {
+                    failures.push(format!("export.{name} did not drain cleanly: {report:?}"));
+                }
+            }
+        }
+        Joined::Done(Err(error)) => failures.push(format!("export stop driver failed: {error}")),
+        Joined::Detached(_) => {
+            failures.push("export workers did not quiesce by the shutdown deadline".into())
+        }
+    }
+
     // [5] Close staging, flush the journal, drain the admin audit queue, then the checks.
     drain.enter(Phase::Journal);
     let runtime = book.as_ref().map(|book| book.runtime_journal.clone());
@@ -807,7 +847,7 @@ pub(crate) async fn finish(post: PostServe<'_>, drain: &ShutdownDrain) -> i32 {
 fn incomplete(
     drain: &ShutdownDrain,
     gov: Option<&Arc<GovState>>,
-    late: &LateServices,
+    late: &Services,
     cause: &'static str,
     failures: &[String],
 ) -> i32 {
@@ -860,7 +900,7 @@ fn incomplete(
 /// checkpoint book by checkpoint id (a unit with no checkpoint reads `none`), then the
 /// admissions alive without an open unit (SHUTDOWN-HANG F4 "Running requests at exit"). One
 /// walk, at exit; a running unit never changes the exit code.
-fn open_at_exit_lines(gov: Option<&Arc<GovState>>, late: &LateServices) -> Vec<String> {
+fn open_at_exit_lines(gov: Option<&Arc<GovState>>, late: &Services) -> Vec<String> {
     use std::fmt::Write as _;
     let Some(gov) = gov else {
         return Vec::new();

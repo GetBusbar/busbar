@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::*;
+use busbar_contract::json::JsonValueTrait as _;
 use busbar_plugin_abi::host_side::caller::Accept;
 
 fn transport(yaml: &str) -> Result<InsecureTransport, String> {
@@ -180,9 +181,9 @@ upstreams:
 /// IF §12.1, §12.18: the top-level `upstreams:` section is config grammar, and each entry's `auth` and
 /// `upstream_credentials` are parsed into the upstream's binding (the rest of the entry is W1-K1's).
 #[test]
-fn the_upstreams_section_carries_each_upstream_s_binding() {
-    let min3 = parse_min3(&deploy(UPSTREAMS)).expect("parses");
-    let docs = &min3.upstreams["docs"];
+fn declared_registration_entries_carry_their_binding() {
+    let upstreams = parsed_registrations(UPSTREAMS).expect("parses");
+    let docs = &upstreams["docs"];
     assert!(
         matches!(
             &docs.auth,
@@ -193,21 +194,21 @@ fn the_upstreams_section_carries_each_upstream_s_binding() {
     );
     assert_eq!(docs.upstream_credentials, Some(UpstreamCreds::Passthrough));
     assert!(matches!(
-        &min3.upstreams["agent"].auth,
+        &upstreams["agent"].auth,
         Some(UpstreamAuthCfg {
             form: UpstreamAuthForm::Bearer(SecretRef::Source(_)),
             cache_max_s: Some(300)
         })
     ));
     assert!(matches!(
-        &min3.upstreams["search"].auth,
+        &upstreams["search"].auth,
         Some(UpstreamAuthCfg {
             form: UpstreamAuthForm::ApiKey { header, secret: SecretRef::Source(_) },
             cache_max_s: None
         }) if &**header == "X-Api-Key"
     ));
     assert!(
-        !min3.upstreams.contains_key("local"),
+        upstreams["local"].auth.is_none(),
         "an upstream with neither key has no binding"
     );
 }
@@ -216,7 +217,7 @@ fn the_upstreams_section_carries_each_upstream_s_binding() {
 /// the upstream.
 #[test]
 fn an_upstream_auth_with_two_forms_or_an_unknown_one_is_refused() {
-    let refused = parse_min3(&deploy(
+    let refused = parsed_registrations(
         r#"
 providers: {}
 models: {}
@@ -231,7 +232,7 @@ upstreams:
     url: https://creds.example
     upstream_credentials: borrowed
 "#,
-    ))
+    )
     .err()
     .expect("refused");
     for want in [
@@ -249,15 +250,49 @@ upstreams:
 /// IF §12.1: a bad `upstreams.<name>` entry refuses the config at load (and so at `--validate`), not first at boot.
 #[test]
 fn a_bad_upstream_entry_refuses_the_config_at_load() {
-    let deploy = deploy("providers: {}\nmodels: {}\nupstreams:\n  nowhere: {}\n");
-    let refused = crate::config::resolve(&deploy, &std::collections::HashMap::new())
-        .expect_err("refused at load");
+    let refused = crate::upstreams::declared(
+        "plane",
+        &busbar_contract::json::json!({"servers":{"nowhere":{}}}),
+        &["/servers/*"],
+        &crate::plugin_config::upstream_anchor,
+    )
+    .err()
+    .expect("refused at load");
     assert!(
         refused
             .iter()
-            .any(|r| r.contains("upstreams.nowhere") && r.contains("url:")),
+            .any(|r| r.contains("plane/servers/nowhere") && r.contains("url:")),
         "{refused:?}"
     );
+}
+
+// These fixtures exercise core entry grammar; the former top-level section is no longer admitted.
+fn parsed_registrations(yaml: &str) -> Result<BTreeMap<Box<str>, UpstreamCfg>, Vec<String>> {
+    let doc: busbar_contract::yaml::Value = busbar_contract::yaml::from_str(yaml).unwrap();
+    let section = busbar_contract::json::to_value(doc.get("upstreams").unwrap()).unwrap();
+    let mut out = BTreeMap::new();
+    let mut refused = Vec::new();
+    for (name, entry) in section.as_object().unwrap() {
+        match parse_upstream_entry(&format!("upstreams.{name}"), entry) {
+            Ok(cfg) => {
+                out.insert(Box::<str>::from(name), cfg);
+            }
+            Err(mut errors) => refused.append(&mut errors),
+        }
+    }
+    if refused.is_empty() {
+        Ok(out)
+    } else {
+        Err(refused)
+    }
+}
+
+#[test]
+fn top_level_upstreams_is_refused_with_registration_guidance() {
+    let errors = crate::config::deploy_from_yaml_str(UPSTREAMS, &crate::config::Grammar::empty())
+        .err()
+        .expect("retired core key");
+    assert!(errors.to_string().contains("registration"));
 }
 
 /// PRD-4: a 1.5.5-shaped config (every instance block with only its 1.5.5 keys) parses unchanged and carries no
@@ -358,4 +393,75 @@ hooks:
         (0, 0, 0),
         "0 is the kind's default in every number"
     );
+}
+
+fn provisioning_deploy(block: &str) -> crate::config::DeployCfg {
+    deploy(&format!(
+        "identity-providers:\n  scim:\n    module: directory\n    provisioning: {block}\n"
+    ))
+}
+
+#[test]
+fn provisioning_reads_clients_link_and_guard_outside_plugin_settings() {
+    let deploy = provisioning_deploy("{clients: ['Client A'], link: {index: email, auth: [corp], refresh_ms: 1000}, guard: {max: 50, window_s: 3600}}");
+    let parsed = parse_provisioning(&deploy).expect("approved provisioning grammar");
+    assert_eq!(parsed.len(), 1);
+    let cfg = parsed.get("scim").expect("configured instance");
+    assert_eq!(cfg.clients, vec![Box::<str>::from("Client A")]);
+    assert_eq!(
+        cfg.guard,
+        ProvisioningGuard {
+            max: 50,
+            window_s: 3600
+        }
+    );
+    assert_eq!(
+        cfg.link,
+        Some(ProvisioningLink {
+            index: "email".into(),
+            auth: vec!["corp".into()],
+            refresh_ms: 1000
+        })
+    );
+    assert!(deploy.identity_providers["scim"].settings.is_empty());
+}
+
+#[test]
+fn provisioning_without_link_is_explicitly_unlinked() {
+    let parsed = parse_provisioning(&provisioning_deploy(
+        "{clients: [client], guard: {max: 1, window_s: 60}}",
+    ))
+    .expect("link is optional");
+    assert!(parsed["scim"].link.is_none());
+}
+
+#[test]
+fn provisioning_refuses_invalid_policy_with_the_configured_key() {
+    for (block, key) in [
+        ("{clients: [], guard: {max: 1, window_s: 60}}", "clients"),
+        ("{clients: [''], guard: {max: 1, window_s: 60}}", "clients[0]"),
+        ("{clients: [client], guard: {max: 0, window_s: 60}}", "guard.max"),
+        ("{clients: [client], guard: {max: 1, window_s: 59}}", "guard.window_s"),
+        ("{clients: [client], link: {index: email, auth: [], refresh_ms: 1000}, guard: {max: 1, window_s: 60}}", "link.auth"),
+        ("{clients: [client], link: {index: email, auth: [corp], refresh_ms: 249}, guard: {max: 1, window_s: 60}}", "link.refresh_ms"),
+    ] {
+        let why = parse_provisioning(&provisioning_deploy(block)).expect_err("invalid policy");
+        let path = format!("identity-providers.scim.provisioning.{key}");
+        assert!(why.iter().any(|reason| reason.contains(&path)), "{why:?}");
+    }
+}
+
+#[test]
+fn provisioning_rejects_unknown_keys_and_missing_required_fields() {
+    for block in [
+        "{clients: [client], surprise: true, guard: {max: 1, window_s: 60}}",
+        "{clients: [client], guard: {max: 1, window_s: 60, enabled: false}}",
+        "{clients: [client], link: {index: email, auth: [corp], refresh_ms: 1000, extra: true}, guard: {max: 1, window_s: 60}}",
+        "{guard: {max: 1, window_s: 60}}",
+        "{clients: [client]}",
+        "null",
+    ] {
+        let why = parse_provisioning(&provisioning_deploy(block)).expect_err("invalid grammar");
+        assert!(why.iter().all(|reason| reason.contains("identity-providers.scim.provisioning")), "{why:?}");
+    }
 }

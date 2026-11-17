@@ -91,7 +91,7 @@ async fn build_with_hook_makes_a_plane_attach_live() {
         document["identity-providers"] = serde_json::json!({"admin-tokens": {
             "module": "admin-tokens", "token": {"file": directory.join("admin.token")}
         }});
-        document["advanced"] = serde_json::json!({"allow_destinations": ["127.0.0.1"]});
+        document["advanced"] = serde_json::json!({});
         let deploy = busbar_kernel::config::deploy_from_deserializer(
             document,
             &crate::root::boot::axis_test_grammar(),

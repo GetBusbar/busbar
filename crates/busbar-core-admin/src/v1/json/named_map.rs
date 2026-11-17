@@ -170,6 +170,7 @@ async fn get_one(
         paths.sort();
         paths.dedup();
         let exports = if busbar_kernel::export::plugin::requires_restart(
+            &current.exports,
             &name,
             current.export_defs.get(&name),
         ) {
@@ -628,6 +629,7 @@ async fn apply(
 
             let export_restart = if txn_section == NamedMapSection::Export
                 && busbar_kernel::export::plugin::requires_restart(
+                    &installed.exports,
                     &txn_name,
                     installed.export_defs.get(&txn_name),
                 )

@@ -56,7 +56,10 @@ fn the_id_never_equals_a_run_of_the_keyset_seed() {
     todo!("owner: W1-K9 (C-DEPLOYMENT-ID)")
 }
 
-/// (f), over the kernel's boot walk (`busbar_kernel::appbuild::boot_walk::walk` with its `RegistryBoot`, the
+#[path = "../../busbar/src/root/boot/walk.rs"]
+mod root_boot_walk;
+
+/// (f), over the root-owned boot walk and its RegistryBoot, the
 /// steps the root's boot runs) and a real registry: a 2a secret probe, the 2b inline store and a 2c secret probe,
 /// each recording what `Host::deployment_id` answered in `open` and in `check`. The 2a and 2b opens see None;
 /// after the walk publishes the id (`set_deployment`), the re-check of 2a then 2b sees Some(id), and only then
@@ -70,9 +73,7 @@ fn the_id_never_equals_a_run_of_the_keyset_seed() {
 fn the_2a_and_2b_recheck_sees_the_id_before_any_2c_open() {
     use std::sync::Mutex;
 
-    use busbar_kernel::appbuild::boot_walk::{
-        walk, BootRefused, BootSteps, DeploymentRead, RegistryBoot,
-    };
+    use self::root_boot_walk::{walk, BootRefused, BootSteps, DeploymentRead, RegistryBoot};
     use busbar_plugin_abi::fail::refused::R_CONFIG;
     use busbar_plugin_abi::host_side::caller::BoxFut;
     use busbar_plugin_abi::types::KindCode;
@@ -151,9 +152,6 @@ fn the_2a_and_2b_recheck_sees_the_id_before_any_2c_open() {
         FakeNeeds::new(),
     )
     .unwrap_or_else(|r| panic!("{r:?}"));
-    h.registry().set_store_seal(Box::new(|| {
-        Box::new(busbar_contract::plugin::TestKernelSeal)
-    }));
     let inline = "fixture-store-inline";
     assert_eq!(vt::deployment().0, [0; 16], "no id before the walk");
 
@@ -182,6 +180,9 @@ fn the_2a_and_2b_recheck_sees_the_id_before_any_2c_open() {
     let steps = Watched {
         inner: RegistryBoot {
             registry: h.registry(),
+            needs: &h.needs_arc(),
+            refs: &h.refs_arc(),
+            store_seal: Arc::new(|| Box::new(busbar_contract::plugin::TestKernelSeal)),
             instances: &instances,
             deployment: read,
         },
@@ -238,6 +239,9 @@ fn the_2a_and_2b_recheck_sees_the_id_before_any_2c_open() {
     let steps = Watched {
         inner: RegistryBoot {
             registry: h.registry(),
+            needs: &h.needs_arc(),
+            refs: &h.refs_arc(),
+            store_seal: Arc::new(|| Box::new(busbar_contract::plugin::TestKernelSeal)),
             instances: &instances,
             deployment: read,
         },

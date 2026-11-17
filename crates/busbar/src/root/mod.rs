@@ -46,6 +46,8 @@ pub mod cli;
 pub(crate) mod cold;
 pub mod connector;
 pub mod credentials;
+pub(crate) mod provisioning;
+pub(crate) mod provisioning_mount;
 // busbar:request-path
 #[cfg_attr(
     not(test),
@@ -170,6 +172,7 @@ pub mod inbound;
 #[cfg(all(test, linked_every_plane_door))]
 #[path = "tests/inbound.rs"]
 mod inbound_tests;
+pub(crate) mod ingress_context;
 pub mod kernel;
 pub mod keyset;
 pub mod linked;
@@ -267,6 +270,7 @@ pub mod registry;
 /// The launch variables 1.6.0 retired: the BUSBAR-3029 "set but ignored" notice.
 pub(crate) mod retired_env;
 pub(crate) mod secret_custody;
+pub(crate) mod secret_grammar;
 #[cfg_attr(
     not(test),
     deny(

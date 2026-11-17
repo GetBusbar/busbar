@@ -46,7 +46,7 @@ fn secrets_block_rejects_builtin_resolver_names() {
         "models": {},
         "auth": { "chain": [], "admin_auth": [] },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
     }), &crate::root::boot::axis_test_grammar())
     .expect("the product deployment parses");
         let mut cfg = busbar_kernel::config::resolve(&deploy, &provider_defs)
@@ -136,7 +136,7 @@ fn one_validator_refuses_in_one_order() {
         "models": {},
         "auth": { "chain": [], "admin_auth": [] },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
     }), &crate::root::boot::axis_test_grammar())
     .expect("the product deployment parses");
     let mut cfg = busbar_kernel::config::resolve(&deploy, &provider_defs)

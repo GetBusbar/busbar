@@ -34,8 +34,8 @@ use std::sync::Arc;
 
 use busbar_contract::secret_ref::SecretRef;
 use busbar_plugin_abi::host_side::scrub::mask_url;
-use serde::Deserialize;
-use serde_json::{Map, Value};
+
+use busbar_contract::json::{self, JsonContainerTrait as _, JsonValueTrait as _, Map, Value};
 
 use super::{ProgramPin, StdioCommand, UpstreamAuth, UpstreamDef, UpstreamTls};
 use crate::config::min3::{UpstreamAuthCfg, UpstreamAuthForm, UpstreamCfg};
@@ -46,7 +46,14 @@ pub const DEFAULT_IDLE_S: u64 = 300;
 /// The longest upstream name: the CORE_CFG name grammar `[a-z0-9_.-]{1,64}` (§3 `CoreCfgRec`).
 pub const MAX_NAME: usize = 64;
 
-const KEYS: &[&str] = &["url", "command", "tls", "auth", "upstream_credentials"];
+const KEYS: &[&str] = &[
+    "url",
+    "command",
+    "tls",
+    "auth",
+    "upstream_credentials",
+    "allow_private",
+];
 const COMMAND_KEYS: &[&str] = &["argv", "env", "cwd", "pin", "idle_s"];
 const TLS_KEYS: &[&str] = &["pin_spki", "client_identity", "trust"];
 const PIN_KEYS: &[&str] = &["mechanism", "key"];
@@ -67,7 +74,19 @@ impl UpstreamDef {
         cfg: &UpstreamCfg,
         anchor: &dyn Fn(&str) -> Result<Arc<TrustAnchor>, String>,
     ) -> Result<Self, Vec<String>> {
-        let at = format!("`upstreams.{name}`");
+        Self::from_config_at(name, &format!("upstreams.{name}"), entry, cfg, anchor)
+    }
+
+    /// Types an entry with a caller-supplied instance/registration path for safe refusal diagnostics.
+    pub fn from_config_at(
+        name: &str,
+        diagnostic_path: &str,
+        entry: &Value,
+        cfg: &UpstreamCfg,
+        anchor: &dyn Fn(&str) -> Result<Arc<TrustAnchor>, String>,
+    ) -> Result<Self, Vec<String>> {
+        let at = format!("`{diagnostic_path}`");
+
         let mut refused = Vec::new();
         if !valid_name(name) {
             refused.push(format!(
@@ -83,6 +102,17 @@ impl UpstreamDef {
         };
         unknown_keys(&at, "", map, KEYS, &mut refused);
 
+        let allow_private = match map.get(&"allow_private") {
+            None => false,
+            Some(value) => match value.as_bool() {
+                Some(value) => value,
+                None => {
+                    refused.push(format!("{at}: `allow_private` must be a boolean"));
+                    false
+                }
+            },
+        };
+
         let url_given = given(map, "url");
         let command_given = given(map, "command");
         match (url_given, command_given) {
@@ -97,21 +127,26 @@ impl UpstreamDef {
             _ => {}
         }
         let url = map
-            .get("url")
+            .get(&"url")
             .filter(|v| !v.is_null())
             .and_then(|v| url(&at, v, &mut refused));
         let command = map
-            .get("command")
+            .get(&"command")
             .filter(|v| !v.is_null())
             .and_then(|v| command(&at, v, &mut refused));
         let tls_given = given(map, "tls");
-        let tls = match map.get("tls").filter(|v| !v.is_null()) {
+        let tls = match map.get(&"tls").filter(|v| !v.is_null()) {
             Some(v) => tls(&at, v, anchor, &mut refused),
             None => no_tls(),
         };
 
         if command_given {
             stdio_refusals(&at, map, cfg, tls_given, &mut refused);
+            if map.contains_key(&"allow_private") {
+                refused.push(format!(
+                    "{at}: `allow_private` is inapplicable to a stdio upstream (`command:`)"
+                ));
+            }
         } else if let Some(url) = url.as_deref() {
             if is_plain_http(url) {
                 for (key, set) in [
@@ -142,6 +177,7 @@ impl UpstreamDef {
             command,
             tls,
             auth,
+            allow_private,
         })
     }
 }
@@ -181,19 +217,13 @@ fn valid_name(name: &str) -> bool {
 }
 
 /// The key is present with a value (an explicit `null` is absent).
-fn given(map: &Map<String, Value>, key: &str) -> bool {
-    map.get(key).is_some_and(|v| !v.is_null())
+fn given(map: &Map, key: &str) -> bool {
+    map.get(&key).is_some_and(|v| !v.is_null())
 }
 
-fn unknown_keys(
-    at: &str,
-    prefix: &str,
-    map: &Map<String, Value>,
-    known: &[&str],
-    refused: &mut Vec<String>,
-) {
-    for key in map.keys() {
-        if !known.contains(&key.as_str()) {
+fn unknown_keys(at: &str, prefix: &str, map: &Map, known: &[&str], refused: &mut Vec<String>) {
+    for (key, _) in map {
+        if !known.contains(&key) {
             refused.push(format!(
                 "{at}: `{prefix}{key}` is not an upstream key; the keys are {}",
                 known
@@ -295,8 +325,9 @@ fn command(at: &str, value: &Value, refused: &mut Vec<String>) -> Option<StdioCo
     let before = refused.len();
     unknown_keys(at, "command.", map, COMMAND_KEYS, refused);
 
-    let argv: Vec<Box<str>> = match map.get("argv") {
-        Some(Value::Array(items)) if !items.is_empty() => {
+    let argv: Vec<Box<str>> = match map.get(&"argv") {
+        Some(value) if value.as_array().is_some_and(|items| !items.is_empty()) => {
+            let items = value.as_array().expect("array guard");
             let mut argv = Vec::with_capacity(items.len());
             for (i, item) in items.iter().enumerate() {
                 match item.as_str() {
@@ -327,9 +358,11 @@ fn command(at: &str, value: &Value, refused: &mut Vec<String>) -> Option<StdioCo
     }
 
     let mut env = Vec::new();
-    match map.get("env") {
-        None | Some(Value::Null) => {}
-        Some(Value::Object(vars)) => {
+    match map.get(&"env") {
+        None => {}
+        Some(value) if value.is_null() => {}
+        Some(value) if value.is_object() => {
+            let vars = value.as_object().expect("object guard");
             for (var, reference) in vars {
                 if var.is_empty() || var.contains('=') || var.contains('\0') {
                     refused.push(format!(
@@ -338,8 +371,8 @@ fn command(at: &str, value: &Value, refused: &mut Vec<String>) -> Option<StdioCo
                     ));
                     continue;
                 }
-                match SecretRef::deserialize(reference) {
-                    Ok(reference) => env.push((var.as_str().into(), reference)),
+                match json::from_value::<SecretRef>(reference) {
+                    Ok(reference) => env.push((var.into(), reference)),
                     Err(e) => refused.push(format!(
                         "{at}: `command.env.{var}` must be a secret reference: {e}"
                     )),
@@ -351,16 +384,18 @@ fn command(at: &str, value: &Value, refused: &mut Vec<String>) -> Option<StdioCo
         )),
     }
 
-    let cwd: Option<Box<str>> = match map.get("cwd") {
-        None | Some(Value::Null) => None,
-        Some(Value::String(dir)) => {
+    let cwd: Option<Box<str>> = match map.get(&"cwd") {
+        None => None,
+        Some(value) if value.is_null() => None,
+        Some(value) if value.is_str() => {
+            let dir = value.as_str().expect("string guard");
             if let Err(why) = absolute_path(dir) {
                 refused.push(format!(
                     "{at}: `command.cwd: {dir}` {why}; a relative one is resolved against whatever directory \
                      busbar was started in, which is not a thing this file can see"
                 ));
             }
-            Some(dir.as_str().into())
+            Some(dir.into())
         }
         Some(_) => {
             refused.push(format!("{at}: `command.cwd:` must be a string"));
@@ -370,14 +405,15 @@ fn command(at: &str, value: &Value, refused: &mut Vec<String>) -> Option<StdioCo
 
     let pin = pin(
         at,
-        map.get("pin"),
+        map.get(&"pin"),
         argv.first().map(|p| &**p),
         cwd.as_deref(),
         refused,
     );
 
-    let idle_s = match map.get("idle_s") {
-        None | Some(Value::Null) => DEFAULT_IDLE_S,
+    let idle_s = match map.get(&"idle_s") {
+        None => DEFAULT_IDLE_S,
+        Some(value) if value.is_null() => DEFAULT_IDLE_S,
         Some(v) => match v.as_u64() {
             Some(s) if s > 0 => s,
             _ => {
@@ -411,8 +447,9 @@ fn pin(
     refused: &mut Vec<String>,
 ) -> Option<ProgramPin> {
     let map = match value {
-        None | Some(Value::Null) => return Some(ProgramPin::Unpinned),
-        Some(Value::Object(map)) => map,
+        None => return Some(ProgramPin::Unpinned),
+        Some(value) if value.is_null() => return Some(ProgramPin::Unpinned),
+        Some(value) if value.is_object() => value.as_object().expect("object guard"),
         Some(_) => {
             refused.push(format!(
                 "{at}: `command.pin:` must be a map with `mechanism:` (`local_program` or `unpinned`)"
@@ -421,8 +458,8 @@ fn pin(
         }
     };
     unknown_keys(at, "command.pin.", map, PIN_KEYS, refused);
-    let key = map.get("key").filter(|v| !v.is_null());
-    match map.get("mechanism").and_then(Value::as_str) {
+    let key = map.get(&"key").filter(|v| !v.is_null());
+    match map.get(&"mechanism").and_then(Value::as_str) {
         Some("unpinned") => {
             if key.is_some() {
                 refused.push(format!(
@@ -489,9 +526,11 @@ fn tls(
         return tls;
     };
     unknown_keys(at, "tls.", map, TLS_KEYS, refused);
-    match map.get("pin_spki") {
-        None | Some(Value::Null) => {}
-        Some(Value::Array(pins)) => {
+    match map.get(&"pin_spki") {
+        None => {}
+        Some(value) if value.is_null() => {}
+        Some(value) if value.is_array() => {
+            let pins = value.as_array().expect("array guard");
             for (i, pin) in pins.iter().enumerate() {
                 match pin.as_str().and_then(spki_digest) {
                     Some(digest) if !tls.pin_spki.contains(&digest) => tls.pin_spki.push(digest),
@@ -507,9 +546,10 @@ fn tls(
             "{at}: `tls.pin_spki:` must be a list of SHA-256 digests"
         )),
     }
-    match map.get("client_identity") {
-        None | Some(Value::Null) => {}
-        Some(reference) => match SecretRef::deserialize(reference) {
+    match map.get(&"client_identity") {
+        None => {}
+        Some(value) if value.is_null() => {}
+        Some(reference) => match json::from_value::<SecretRef>(reference) {
             Ok(SecretRef::None) => {}
             Ok(reference) => tls.client_identity = Some(reference),
             Err(e) => refused.push(format!(
@@ -517,12 +557,15 @@ fn tls(
             )),
         },
     }
-    match map.get("trust") {
-        None | Some(Value::Null) => {}
-        Some(Value::String(pem)) if !pem.trim().is_empty() => match anchor(pem) {
-            Ok(trust) => tls.trust = Some(trust),
-            Err(e) => refused.push(format!("{at}: `tls.trust:` {e}")),
-        },
+    match map.get(&"trust") {
+        None => {}
+        Some(value) if value.is_null() => {}
+        Some(value) if value.as_str().is_some_and(|pem| !pem.trim().is_empty()) => {
+            match anchor(value.as_str().expect("string guard")) {
+                Ok(trust) => tls.trust = Some(trust),
+                Err(e) => refused.push(format!("{at}: `tls.trust:` {e}")),
+            }
+        }
         Some(_) => refused.push(format!(
             "{at}: `tls.trust:` must be a non-empty PEM certificate bundle"
         )),
@@ -553,7 +596,7 @@ fn spki_digest(text: &str) -> Option<[u8; 32]> {
 /// handshake and no network hop, so `auth`, `upstream_credentials` and `tls` have nothing to act on.
 fn stdio_refusals(
     at: &str,
-    map: &Map<String, Value>,
+    map: &Map,
     cfg: &UpstreamCfg,
     tls_given: bool,
     refused: &mut Vec<String>,

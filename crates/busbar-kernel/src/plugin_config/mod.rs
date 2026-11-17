@@ -10,7 +10,7 @@ mod pointer;
 #[cfg(test)]
 mod tests;
 
-pub use binder::{Binder, RefSource, MAX_BINDINGS, MAX_UNIX_PATHS};
+pub use binder::{Binder, MAX_BINDINGS, MAX_UNIX_PATHS};
 
 use busbar_plugin_abi::host_side::caller::BoxFut;
 
@@ -37,4 +37,4 @@ pub struct Bindings {
 
 // ROOT-BOOT: the interface is the loader's (IF §12.7, round 35 R7b): `Registry::new` names it and the Need
 // handlers take it, so there is one `ConfigBinder`, and this module re-exports it with its types.
-pub use busbar_ports::binder::{BindError, ConfigBinder, DestDef, TrustAnchor};
+pub use busbar_ports::binder::{BindError, ConfigBinder, DestDef, RefSource, TrustAnchor};

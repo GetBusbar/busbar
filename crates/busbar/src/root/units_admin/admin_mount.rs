@@ -635,7 +635,7 @@ pub(crate) fn mount_node(
     core: Arc<busbar_kernel::persistence::facade::CoreStore>,
     book: &crate::root::durability::NodeBook,
     retired_operator_key: Option<[u8; 32]>,
-    late: &Arc<crate::root::serve::LateServices>,
+    late: &Arc<crate::root::serve::Services>,
     retired_breaker: crate::root::adapters::BreakerPolicy,
 ) -> Result<axum::Router, busbar_kernel::persistence::scoped::Error> {
     let _ = (retired_operator_key, retired_breaker);

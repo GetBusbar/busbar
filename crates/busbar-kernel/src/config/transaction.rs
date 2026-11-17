@@ -338,7 +338,7 @@ where
             .await;
             drop(secrets);
             drop(guard);
-            crate::export::plugin::refresh_pending();
+            crate::export::plugin::refresh_pending(&handle.load().exports);
             result
         }),
     ))

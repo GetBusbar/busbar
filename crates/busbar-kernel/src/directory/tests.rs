@@ -55,12 +55,12 @@ fn every_refusal_names_the_instance_and_the_key() {
     };
     let refused = check_provisioning("scim", &bad, facts, &|_| false).unwrap_err();
     for key in [
-        "auth.scim.provisioning:",
-        "auth.scim.provisioning.clients",
-        "auth.scim.provisioning.link.refresh_ms",
-        "auth.scim.provisioning.link.auth[0]",
-        "auth.scim.provisioning.guard.max",
-        "auth.scim.provisioning.guard.window_s",
+        "identity-providers.scim.provisioning:",
+        "identity-providers.scim.provisioning.clients",
+        "identity-providers.scim.provisioning.link.refresh_ms",
+        "identity-providers.scim.provisioning.link.auth[0]",
+        "identity-providers.scim.provisioning.guard.max",
+        "identity-providers.scim.provisioning.guard.window_s",
     ] {
         assert!(
             refused.iter().any(|r| r.starts_with(key)),
@@ -135,11 +135,41 @@ mod two_replicas {
             },
             link_auth_ids: vec![INBOUND],
         };
-        let (_dir, holds) =
-            KernelDirectory::build(Arc::clone(store), Arc::new(LogEvents), vec![spec])
+        let (_dir, holds, refresh) =
+            KernelDirectory::prepare(Arc::clone(store), Arc::new(LogEvents), vec![spec])
                 .await
                 .expect("the replica loads its (empty) hold set");
+        refresh.start();
         holds
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn candidate_directory_does_not_refresh_before_publication() {
+        let store = crate::real_store::core().await;
+        let spec = ProvisioningInstance {
+            plugin: "scim".into(),
+            name: "scim".into(),
+            cfg: cfg(),
+            link_auth_ids: vec![INBOUND],
+        };
+        let (_directory, holds_index, workers) =
+            KernelDirectory::prepare(Arc::clone(&store), Arc::new(LogEvents), vec![spec])
+                .await
+                .expect("prepare candidate");
+        commit_held(&store, "ann").await;
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        assert!(
+            !holds(&holds_index, "ann"),
+            "unpublished candidate must not run refresh workers"
+        );
+        workers.start();
+        for _ in 0..10 {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            if holds(&holds_index, "ann") {
+                return;
+            }
+        }
+        panic!("published directory did not refresh");
     }
 
     fn holds(h: &super::super::Holds, principal: &str) -> bool {

@@ -104,8 +104,6 @@ fn boot(tag: &str, with_planes: bool) -> Booted {
         format!(
             r#"listen: "127.0.0.1:{data_port}"
 admin_listen: "127.0.0.1:{admin_port}"
-advanced:
-  allow_destinations: ["127.0.0.1"]
 store: {{module: memory}}
 public_url: "http://127.0.0.1:{data_port}"
 identity-providers:
@@ -358,8 +356,6 @@ fn boot_181_output(extra: &str) -> String {
         format!(
             r#"listen: "127.0.0.1:{port}"
 admin_listen: "127.0.0.1:0"
-advanced:
-  allow_destinations: ["127.0.0.1"]
 store: {{module: memory}}
 tls:
   cert: {{ env: LAW7_TLS_CERT }}

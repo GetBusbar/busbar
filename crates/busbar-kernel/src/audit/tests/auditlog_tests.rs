@@ -67,7 +67,7 @@ async fn native_harness() -> (Arc<NativeAudit>, PlaneAuditLog) {
     let native = install_native(kind, crate::real_store::core().await).unwrap();
     let log = PlaneAuditLog::with_kind_id(kind);
     restore_native(&log, &native).await.unwrap();
-    native.ready.store(true, Ordering::Release);
+    native.storage.ready.store(true, Ordering::Release);
     (native, log)
 }
 async fn native_emit(
@@ -113,11 +113,14 @@ pub(super) async fn native_over(store: Arc<CoreStore>) -> NativeHarness {
 impl NativeHarness {
     pub(super) async fn restore(&self) -> RecordStoreResult<AuditRestored> {
         let result = restore_native(&self.log, &self.native).await;
-        self.native.ready.store(result.is_ok(), Ordering::Release);
+        self.native
+            .storage
+            .ready
+            .store(result.is_ok(), Ordering::Release);
         result
     }
     pub(super) async fn emit(&self, scope: &str, suffix: Vec<u8>) -> (u64, String, String) {
-        if !self.native.ready.load(Ordering::Acquire) {
+        if !self.native.storage.ready.load(Ordering::Acquire) {
             self.restore().await.expect("native restore before append");
         }
         let mut operation = [0; 16];
@@ -622,6 +625,7 @@ async fn a_safe_suffix_record_restores_with_exact_fields_despite_embedded_pipes(
     assert_eq!(seq, 1);
 
     let rows = native
+        .storage
         .history
         .list(KIND_AUDIT, &PlaneSelector::Parent(ADMIN_LOG.into()))
         .await
@@ -1831,4 +1835,36 @@ async fn a_request_refuses_an_unconfirmed_enqueue_even_when_the_caller_ignores_i
         "the request retains its enqueue failure: {refused}"
     );
     assert_eq!(queue.len(), 0);
+}
+
+#[tokio::test]
+async fn serving_observers_keep_the_bootstrap_audit_original_on_its_exact_attachment() {
+    let (bootstrap, log) = native_harness().await;
+    let mut pending = pending_audit(
+        ADMIN_LOG,
+        audit_suffix(17, "generation.publish", "root", "applied", "admin"),
+        EventOrigin::Mutation,
+    )
+    .unwrap();
+    let prepared = prepare_native(&pending, bootstrap.clone()).unwrap();
+    let expected = (prepared.entry.seq, prepared.entry.hash.clone());
+    pending.prepared = Some(prepared);
+    let queue = PendingAuditQueue::new(1);
+    queue.enqueue(pending);
+    let serving = Arc::new(NativeAudit {
+        storage: Arc::clone(&bootstrap.storage),
+        exports: Some(Arc::default()),
+    });
+    drain_native(&queue, &log, serving).await.unwrap();
+    assert_eq!(
+        queue.len(),
+        0,
+        "the original remains drainable after S9 assembly"
+    );
+    let actual = log.list_filtered(0, 1, None, None).remove(0);
+    assert_eq!(
+        (actual.seq, actual.hash),
+        expected,
+        "publication cannot reframe a retained original"
+    );
 }

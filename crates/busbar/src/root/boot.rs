@@ -1298,29 +1298,10 @@ pub(crate) fn start_secret_view() -> crate::root::loader::secret_calls::SecretVi
 /// under the read's policy (its `plugins:` block with the read's pins), with the same linked rows
 /// the build links. Pure: no dlopen, no high-water write, no axis mutation, no fetch.
 pub(crate) fn phase_one(
+    process: &busbar_plugin_loader::process::ProcessResources,
     input: &busbar_kernel::config::grammar::PhaseOneIn<'_>,
 ) -> Result<busbar_kernel::config::Grammar, busbar_kernel::config::GrammarRefusal> {
-    let refused = busbar_kernel::config::GrammarRefusal;
-    let mut pinned = input.plugins.clone();
-    pinned.dir = input.dir.to_string_lossy().into_owned();
-    for (name, version) in input.pins {
-        pinned.min_versions.insert(name.clone(), version.clone());
-        pinned
-            .first_party_floors
-            .insert(name.clone(), version.clone());
-    }
-    let mut linked: Vec<_> = busbar_kernel::preflight::linked_rows()
-        .iter()
-        .map(linked_row)
-        .collect();
-    linked.extend(linked_exports(crate::LINKED.export_doors).map_err(refused)?);
-    let judged = judge(linked, &pinned).map_err(refused)?;
-    let report = skip_lines(judged.registry.skipped());
-    let items = classify(&judged.registry, Some(&pinned));
-    Ok(
-        busbar_kernel::config::Grammar::new(judged.sugars, owners_of(&judged.registry), report)
-            .with_items(items),
-    )
+    images::prepare(process, input).map(|prepared| prepared.grammar)
 }
 
 /// The scan of `plugins`' directory under its trust policy, with `linked`, and the secret modules
@@ -1363,11 +1344,11 @@ fn scanned_registry(
 /// declares (the linked rows, plus whatever a test admitted), passed explicitly.
 #[cfg(test)]
 pub(crate) fn axis_test_grammar() -> busbar_kernel::config::Grammar {
-    busbar_kernel::config::Grammar::new(
-        busbar_contract::secret::SecretAxis::sugars(super::linked::secret_rows()),
-        std::collections::BTreeMap::new(),
-        Vec::new(),
-    )
+    crate::root::min3_boot::fixture::grammar(&PluginsCfg {
+        enabled: false,
+        ..Default::default()
+    })
+    .expect("the actual linked images describe the fixture grammar")
 }
 
 /// The grammar of a read that loads no plugin: the linked secret rows' words alone.
@@ -2538,3 +2519,27 @@ pub(crate) fn walk_admission<T>(
             .to_owned()
     })
 }
+
+#[cfg(test)]
+#[path = "tests/boot_walk.rs"]
+mod boot_walk_tests;
+
+/// Root-owned registry opening and boot planning.
+pub(crate) mod registry;
+/// Root-owned deployment ordering and instance opening.
+pub(crate) mod walk;
+
+pub(crate) mod images;
+
+pub(crate) mod store;
+
+pub(crate) mod process;
+
+pub(crate) mod inputs;
+
+pub(crate) mod restricted;
+pub(crate) mod workers;
+
+#[cfg(test)]
+#[path = "tests/generation_workers.rs"]
+mod generation_workers_tests;

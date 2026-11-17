@@ -200,8 +200,9 @@ impl AuthMiddleware {
         )
     }
 
-    /// [`Self::new`] over the build's shared `instances` (WASTE-AUTH-SECRETS W1).
-    pub(crate) fn build_on(
+    /// Build over explicit root-owned auth instances and their complete service-bound axis.
+    /// The same instance map is shared by all roles in this generation.
+    pub fn build_on(
         cfg: &AuthCfg,
         registry: &dyn busbar_contract::plugin_rows::PluginRows,
         secret_resolver: &crate::config::secret::SecretResolver,

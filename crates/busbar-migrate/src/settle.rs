@@ -7,9 +7,7 @@
 //! index (never the plugin's identity). On an unstamped boot this is step 5; on a stamped boot or a
 //! reload it is the seam's patch-writer edit of the same answer.
 //!
-//! Filing rules: UPSTREAM files `upstreams.<name>`; a name two instances state with equal values is one entry, a
-//! different value or a clash with what the operator wrote refuses CONFIG naming the instance
-//! indices. LIMITS (empty name, once) is validated and filed nowhere (the plugin's answer is applied in
+//! UPSTREAM fragments are retired by UPSTREAMS-DECLARED r3. LIMITS (empty name, once) is validated and filed nowhere (the plugin's answer is applied in
 //! memory at its open); TRUST_APPROVAL and ROUTE_MEDIA are filed nowhere either (no key in the grammar). LIFT (empty name, one JSON pointer, once per
 //! pointer) moves a literal secret out of the settings bag into a planned 0600 secret file under the
 //! config directory and leaves a `{file: <path>}` reference; the value never enters a report. Any
@@ -30,10 +28,10 @@ use crate::patch::{rewrite, schema_insert};
 use crate::templates::Template;
 use crate::{Env, Refusal};
 
-/// `abi::core_cfg::*` (IF §8.8): the sections a plugin's `open` may hand back. 5 and 6 are retired
+/// `abi::core_cfg::*` (IF §8.8): the sections a plugin's `open` may hand back. 1, 5 and 6 are retired
 /// and never reused.
 pub mod section {
-    pub const UPSTREAM: u32 = 1;
+    // Section 1 (host-global upstream) is retired by UPSTREAMS-DECLARED r3.
     pub const TRUST_APPROVAL: u32 = 2;
     pub const ROUTE_MEDIA: u32 = 3;
     pub const LIMITS: u32 = 4;
@@ -57,6 +55,17 @@ pub struct Settled {
     pub path: Vec<String>,
     pub settings: Option<SecureString>,
     pub core_cfg: Vec<CoreCfg>,
+    /// Exact pointers authorized by core from admitted describe paths and typed core leaves.
+    /// Never infer this set from CONFIG strings or from requested LIFT fragments.
+    pub allowed_lifts: std::collections::BTreeSet<String>,
+    pub placement: BagPlacement,
+}
+
+/// Core's authored location of the config bag, never chosen by the plugin.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BagPlacement {
+    Settings,
+    Block,
 }
 
 /// A planned 0600 secret file: a lifted literal. The bytes are wiped on drop and never printed.
@@ -150,7 +159,18 @@ fn pointer_mut<'v>(root: &'v mut Value, pointer: &str) -> Option<&'v mut Value> 
     }
     let mut at = root;
     for raw in pointer.strip_prefix('/')?.split('/') {
-        let step = raw.replace("~1", "/").replace("~0", "~");
+        let mut step = String::new();
+        let mut chars = raw.chars();
+        while let Some(ch) = chars.next() {
+            step.push(match ch {
+                '~' => match chars.next()? {
+                    '0' => '~',
+                    '1' => '/',
+                    _ => return None,
+                },
+                other => other,
+            });
+        }
         at = match at {
             Value::Map(entries) => {
                 let found = entries
@@ -158,75 +178,19 @@ fn pointer_mut<'v>(root: &'v mut Value, pointer: &str) -> Option<&'v mut Value> 
                     .position(|(key, _)| key.as_text() == Some(step.as_str()))?;
                 &mut entries[found].1
             }
-            Value::Array(items) => items.get_mut(step.parse::<usize>().ok()?)?,
+            Value::Array(items) => {
+                if step.is_empty()
+                    || !step.bytes().all(|b| b.is_ascii_digit())
+                    || (step.len() > 1 && step.starts_with('0'))
+                {
+                    return None;
+                }
+                items.get_mut(step.parse::<usize>().ok()?)?
+            }
             _ => return None,
         };
     }
     Some(at)
-}
-
-fn valid_name(name: &str) -> bool {
-    (1..=64).contains(&name.len())
-        && name.bytes().all(|b| {
-            b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'_' | b'.' | b'-')
-        })
-}
-
-/// Where a named fragment lands: the document path, the section's word for the report.
-fn target(frag: &CoreCfg, index: u32) -> Result<Vec<String>, Refusal> {
-    let (head, ok): (Vec<&str>, bool) = match frag.section {
-        section::UPSTREAM => (vec!["upstreams"], valid_name(&frag.name)),
-        _ => (Vec::new(), false),
-    };
-    if !ok {
-        return Err(refuse(
-            index,
-            &format!(
-                "core config section {} carries the name `{}`, which that section does not accept",
-                frag.section, frag.name
-            ),
-        ));
-    }
-    let mut path: Vec<String> = head.into_iter().map(str::to_owned).collect();
-    path.push(frag.name.clone());
-    Ok(path)
-}
-
-/// Put `value` at `path`, creating the mappings on the way; `Ok(false)` when an equal value is
-/// already there; CONFIG when the operator's value differs.
-fn put(root: &mut Pairs, path: &[String], value: &Value, index: u32) -> Result<bool, Refusal> {
-    let shown = path.join(".");
-    let clash = || {
-        refuse(
-            index,
-            &format!("`{shown}` is already written by the operator with another value"),
-        )
-    };
-    let Some((last, parents)) = path.split_last() else {
-        return Ok(false);
-    };
-    let mut at: &mut Pairs = root;
-    for (depth, key) in parents.iter().enumerate() {
-        if at.get_key(key.as_str()).is_none() {
-            if depth == 0 {
-                schema_insert(at, key, Value::Map(Pairs::new()));
-            } else {
-                at.insert_key(key.as_str(), Value::Map(Pairs::new()));
-            }
-        }
-        at = match at.get_key_mut(key.as_str()) {
-            Some(Value::Map(inner)) => inner,
-            _ => return Err(clash()),
-        };
-    }
-    match at.get_key(last.as_str()) {
-        Some(existing) if yaml::same_tree(existing, value) => Ok(false),
-        Some(_) => Err(clash()),
-        None => {
-            at.insert_key(last.as_str(), value.clone());
-            Ok(true)
-        }
-    }
 }
 
 /// The directory beside config.yaml that lifted secrets are written in.
@@ -265,6 +229,23 @@ fn settle_block(
     report: &mut Vec<String>,
     secrets: &mut Vec<SecretFile>,
 ) -> Result<(), Refusal> {
+    if answer.placement == BagPlacement::Block {
+        let mut wrapped = vec![(Value::from("settings"), Value::Map(block.clone()))];
+        let mut nested = answer.clone();
+        nested.placement = BagPlacement::Settings;
+        settle_block(&mut wrapped, &nested, dir, report, secrets)?;
+        let Some(Value::Map(bag)) = wrapped.get_key("settings") else {
+            return Err(refuse(
+                answer.index,
+                "a whole-block CONFIG must be an object",
+            ));
+        };
+        *block = bag.clone();
+        if let Some(limits) = wrapped.get_key("limits") {
+            block.insert_key("limits", limits.clone());
+        }
+        return Ok(());
+    }
     let index = answer.index;
     let shown = answer.path.join(".");
     if let Some(settings) = &answer.settings {
@@ -303,6 +284,12 @@ fn settle_block(
                         "a lift carries an empty name and one JSON pointer string",
                     ));
                 };
+                if !answer.allowed_lifts.contains(pointer) {
+                    return Err(refuse(
+                        index,
+                        "a lift names a slot not authorized by its admitted secret grammar",
+                    ));
+                }
                 if lifted.contains(&pointer) {
                     return Err(refuse(
                         index,
@@ -347,32 +334,6 @@ fn settle_block(
     Ok(())
 }
 
-/// File one named fragment (UPSTREAM) of `index`: one entry when another
-/// instance stated it with an equal value, CONFIG naming both indices when the values differ.
-fn file_named(
-    root: &mut Pairs,
-    filed: &mut Vec<(String, Value, u32)>,
-    frag: &CoreCfg,
-    index: u32,
-    report: &mut Vec<String>,
-) -> Result<(), Refusal> {
-    let path = target(frag, index)?;
-    let id = path.join(".");
-    if let Some((_, held, other)) = filed.iter().find(|(held_id, _, _)| *held_id == id) {
-        if yaml::same_tree(held, &frag.value) {
-            return Ok(());
-        }
-        return Err(Refusal::Config(format!(
-            "instance {other} and instance {index} state `{id}` with different values"
-        )));
-    }
-    if put(root, &path, &frag.value, index)? {
-        report.push(format!("{id}: filed from instance {index}'s old settings"));
-    }
-    filed.push((id, frag.value.clone(), index));
-    Ok(())
-}
-
 /// Apply `settled` to `text` (config.yaml, after the chain): each instance's bag replaced, its
 /// CORE_CFG filed, its LIFT pointers lifted. `stamped` is a stamped boot or a reload: no fragment is
 /// then accepted. Nothing is written; the secret files are the caller's to write ([`write_secrets`]).
@@ -413,7 +374,6 @@ pub fn apply_settled(
             secrets,
         });
     };
-    let mut filed: Vec<(String, Value, u32)> = Vec::new();
     for answer in settled {
         let index = answer.index;
         if stamped && !answer.core_cfg.is_empty() {
@@ -424,6 +384,12 @@ pub fn apply_settled(
             ));
         }
         let shown = answer.path.join(".");
+        if answer.placement == BagPlacement::Block
+            && answer.path.len() == 1
+            && root.get_key(answer.path[0].as_str()).is_none()
+        {
+            schema_insert(root, &answer.path[0], Value::Map(Vec::new()));
+        }
         let block = block_mut(root, &answer.path).ok_or_else(|| {
             refuse(
                 index,
@@ -440,9 +406,6 @@ pub fn apply_settled(
                          the grammar has no key for it",
                         frag.section
                     ));
-                }
-                section::UPSTREAM => {
-                    file_named(root, &mut filed, frag, index, &mut report)?;
                 }
                 other => {
                     return Err(refuse(
