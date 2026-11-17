@@ -90,6 +90,20 @@ pub(crate) struct BootImages {
 }
 
 impl FileImages {
+    /// Publish these images' hook facts (WP3 hook step): the one source config validation reads hook names,
+    /// linkage and ranking words from. Called by the stage that prepares the images it serves or validates, never
+    /// by a per-read phase one (which mutates nothing).
+    pub(crate) fn publish_hooks(&self) {
+        crate::root::hooks::NATIVE.publish_images(
+            &self.images,
+            &self.aliases,
+            self.proofs
+                .iter()
+                .filter(|(_, proof)| proof.digest.is_none())
+                .map(|(identity, _)| identity.as_str()),
+        );
+    }
+
     pub(crate) fn protect(
         &self,
         cfg: &busbar_kernel::config::RootCfg,

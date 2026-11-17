@@ -144,3 +144,16 @@ pub trait HookAxis: Send + Sync {
     /// Whether `module` names a FIRST-PARTY row: linked, or dropped in signed by the release key.
     fn first_party(&self, module: &str) -> bool;
 }
+
+/// THE NATIVE HOOK IMAGES' FACTS, as config validation asks them (WP3 hook step). Native hooks open only in the
+/// serving walk and bind to native planes there; validation reads only what the admitted images declare.
+pub trait HookImageFacts: Send + Sync {
+    /// Whether an admitted hook image answers to `module` (its identity, a name or an alias).
+    fn answers(&self, module: &str) -> bool;
+
+    /// Whether `module` names a hook image this build LINKS (as opposed to one dropped in).
+    fn linked(&self, module: &str) -> bool;
+
+    /// Whether some admitted hook image declares `word` (a D_WORD item): a pool ranking strategy's spelling.
+    fn declares_word(&self, word: &str) -> bool;
+}

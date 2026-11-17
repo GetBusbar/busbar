@@ -334,7 +334,8 @@ pub fn register_stores(linked: &Linked) {
             registry_build: Some(crate::root::boot::registry_rows),
             endpoint_locate: Some(crate::root::boot::locate_provider_destination),
             plugins_fetch: Some(crate::root::boot::plugins_fetch),
-            hook_axis: Some(crate::root::hooks::axis),
+            // WP3 hook step: native hooks open only in the serving walk; the kernel opens none.
+            hook_axis: None,
             hook_names: crate::LINKED_HOOK_NAMES,
             store_axis: Some(store_axis),
             secret_axis: Some(secrets),
@@ -346,7 +347,7 @@ pub fn register_stores(linked: &Linked) {
             export_axis: Some(&crate::root::exports::EXPORTS),
             admission: Some(&crate::root::admission::ADMISSION),
             durable: Some(&crate::root::admission::DURABLE),
-            hook_answers: Some(crate::root::admission::hook_answers),
+            hook_facts: Some(&crate::root::hooks::NATIVE),
             auth_chain_module: Some(crate::root::admission::auth_chain_module),
             dispatch_latched: Some(crate::root::admission::dispatch_latched),
             auth_axis: Some(crate::root::dispatch::auth_axis),

@@ -218,10 +218,10 @@ pub struct RootInstall {
     /// The ONE durable-write primitive ([`crate::durable`]). `None` = no durable write: every write
     /// through the seam answers an error naming the missing root.
     pub durable: Option<&'static dyn crate::durable::DurableFs>,
-    /// Whether a DROPPED-IN `kind: hook` row of a registry answers a word by the rule the hook axis
-    /// opens it by (its signed Statement's names and hook words beside the manifest's). `None` =
-    /// only the registry's own words answer.
-    pub hook_answers: Option<HookAnswers>,
+    /// The admitted native hook images' facts (WP3 hook step): what config validation reads of hooks (the names
+    /// and aliases a hook image answers to, which are linked, and the D_WORD words they declare). `None` = no hook
+    /// image is admitted.
+    pub hook_facts: Option<&'static dyn busbar_contract::hook_calls::HookImageFacts>,
     /// Whether a linked auth door's Statement declares an INBOUND auth-chain module.
     /// `None` = no linked row is an auth-chain module.
     pub auth_chain_module: Option<AuthChainModule>,
@@ -256,8 +256,6 @@ pub type SecretRestoreFn = Box<dyn FnOnce() + Send>;
 
 /// Takes the live dropped-in secret set and returns what puts it back ([`SecretRestoreFn`]).
 pub type SecretSnapshotTake = fn() -> SecretRestoreFn;
-
-pub type HookAnswers = fn(&dyn PluginRows, &str) -> bool;
 
 pub type AuthChainModule = fn(busbar_contract::abi::mechanism::door::DoorFn) -> bool;
 
@@ -393,8 +391,14 @@ fn linked_hook_axis() -> Option<std::sync::Arc<dyn busbar_contract::hook_calls::
     build(&linked().ok()?).ok()
 }
 
+/// The admitted native hook images' facts (WP3 hook step).
+fn hook_facts() -> Option<&'static dyn busbar_contract::hook_calls::HookImageFacts> {
+    root_rows().hook_facts
+}
+
+/// Whether `name` is a ranking strategy: a D_WORD some admitted native hook image declares.
 pub(crate) fn builtin_ranking_known(name: &str) -> bool {
-    linked_hook_axis().is_some_and(|axis| ranking_settings(axis.as_ref(), name).is_ok())
+    hook_facts().is_some_and(|facts| facts.declares_word(name))
 }
 
 fn ranking_settings(
@@ -477,32 +481,23 @@ pub(crate) fn open_ranked<T>(
     open(name, name, settings, budget).map(|opened| (opened, budget))
 }
 
-pub(crate) fn validate_pool_strategies(
-    cfg: &config::RootCfg,
-    registry: &Arc<dyn PluginRows>,
-) -> Result<(), String> {
-    if !cfg
-        .pools
-        .values()
-        .any(|pool| pool.policy.native_name().is_some())
-    {
-        return Ok(());
-    }
-    let build = root_rows()
-        .hook_axis
-        .ok_or("no hook axis is installed for pool strategies")?;
-    let axis = build(registry)?;
+/// Every pool ranking strategy is a D_WORD of an admitted native hook image.
+pub(crate) fn validate_pool_strategies(cfg: &config::RootCfg) -> Result<(), String> {
     for (pool_name, pool) in &cfg.pools {
         if let Some(name) = pool.policy.native_name() {
-            ranking_settings(axis.as_ref(), name)
-                .map_err(|e| format!("pool '{pool_name}': {e}"))?;
+            if !builtin_ranking_known(name) {
+                return Err(format!(
+                    "pool '{pool_name}': ranking strategy '{name}' has no admitted hook plugin"
+                ));
+            }
         }
     }
     Ok(())
 }
 
+/// Whether `module` names a linked native hook image.
 pub(crate) fn linked_hook_answers(module: &str) -> bool {
-    linked_hook_axis().is_some_and(|axis| axis.linked(module))
+    hook_facts().is_some_and(|facts| facts.linked(module))
 }
 
 pub(crate) fn builtin_ranking(
@@ -760,10 +755,7 @@ pub fn plugins_preflight(
     }
 
     for hook_ref in &hook_plugin_refs {
-        if root_rows()
-            .hook_answers
-            .is_some_and(|answers| answers(rows, hook_ref))
-        {
+        if hook_facts().is_some_and(|facts| facts.answers(hook_ref)) {
             continue;
         }
         require_plugin(
