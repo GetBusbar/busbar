@@ -12,6 +12,18 @@ fn signer() -> AuditSigningKey {
     AuditSigningKey::from_seed(&[42; 32])
 }
 
+/// The link page's content rows: every field but the optional records tail and the link trailer.
+fn content() -> Vec<(&'static str, Kind)> {
+    layout(LINK)
+        .unwrap()
+        .into_iter()
+        .filter(|&(name, _, optional)| {
+            !optional && !matches!(name, "linked_ms" | "seq" | "prev_hash")
+        })
+        .map(|(name, kind, _)| (name, kind))
+        .collect()
+}
+
 fn keys() -> Value {
     let mut keys = AuditKeySet::new();
     keys.insert(AuditVerifyingKey::from_hex(&signer().public_key_hex()).unwrap());
@@ -19,14 +31,14 @@ fn keys() -> Value {
 }
 
 fn lines() -> Vec<Value> {
-    let order = fields(V7).unwrap();
+    let order = content();
     let mut previous = String::new();
     (1u64..=3)
         .map(|seq| {
             let mut line = json::json!({"recipe": LINK_RECIPE,
                 "linked_ms": "1700000000000", "seq": seq.to_string(), "prev_hash": previous,
                 "lines": [], "hooks": [], "children": [], "attempts": []});
-            for &(name, kind) in order.iter().skip(2) {
+            for &(name, kind) in order.iter() {
                 if !name.contains("[]") {
                     line[name] = json::json!(match kind {
                         Kind::Text => "",
@@ -38,7 +50,7 @@ fn lines() -> Vec<Value> {
             line["node"] = json::json!("21");
             line["rate_card_key_present"] = json::json!("0");
             let mut digest = Digest::new(Framing::LengthPrefixed);
-            for &(name, kind) in order.iter().skip(2) {
+            for &(name, kind) in order.iter() {
                 if !name.contains("[]") {
                     feed(&mut digest, &line[name], kind).unwrap();
                 }
@@ -251,7 +263,7 @@ fn linked_records_keep_the_optional_records_tail_in_the_fingerprint() {
     line["labels_count"] = json::json!("1");
     line["labels"] = json::json!([{"name": "team", "value": "support"}]);
     let mut digest = Digest::new(Framing::LengthPrefixed);
-    for &(name, kind) in fields(V7).unwrap().iter().skip(2) {
+    for &(name, kind) in content().iter() {
         if !name.contains("[]") {
             feed(&mut digest, &line[name], kind).unwrap();
         }
@@ -326,7 +338,7 @@ fn a_mixed_window_preserves_the_legacy_line_signature() {
     for index in 1..3 {
         lines[index]["prev_hash"] = lines[index - 1]["hash"].clone();
         let mut digest = Digest::new(Framing::LengthPrefixed);
-        for &(name, kind) in fields(V7).unwrap().iter().skip(2) {
+        for &(name, kind) in content().iter() {
             if !name.contains("[]") {
                 feed(&mut digest, &lines[index][name], kind).unwrap();
             }
@@ -455,14 +467,14 @@ fn bootstrap() -> busbar_contract::crypto::LocalSigner {
 
 /// Unit lines `from .. from + count` of node 21, linked after `prev` (hex; empty at genesis).
 fn units_after(prev: &str, from: u64, count: u64) -> Vec<Value> {
-    let order = fields(V7).unwrap();
+    let order = content();
     let mut previous = prev.to_owned();
     (from..from + count)
         .map(|seq| {
             let mut line = json::json!({"recipe": LINK_RECIPE,
                 "linked_ms": "1700000000000", "seq": seq.to_string(), "prev_hash": previous,
                 "lines": [], "hooks": [], "children": [], "attempts": []});
-            for &(name, kind) in order.iter().skip(2) {
+            for &(name, kind) in order.iter() {
                 if !name.contains("[]") {
                     line[name] = json::json!(match kind {
                         Kind::Text => "",
@@ -474,7 +486,7 @@ fn units_after(prev: &str, from: u64, count: u64) -> Vec<Value> {
             line["node"] = json::json!("21");
             line["rate_card_key_present"] = json::json!("0");
             let mut digest = Digest::new(Framing::LengthPrefixed);
-            for &(name, kind) in order.iter().skip(2) {
+            for &(name, kind) in order.iter() {
                 if !name.contains("[]") {
                     feed(&mut digest, &line[name], kind).unwrap();
                 }
