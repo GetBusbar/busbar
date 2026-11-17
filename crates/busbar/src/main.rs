@@ -667,6 +667,7 @@ async fn run(
     let LoadedConfig {
         deploy,
         defs,
+        resource_ownership: _,
         providers_path,
         overlay_path: _,
         config_locked,
@@ -858,10 +859,13 @@ async fn run(
             eprintln!("[info] {notice}");
         }
 
-        let base_hook_names: std::collections::HashSet<String> = deploy.hooks.keys().cloned().collect();
-        let base_group_names: std::collections::HashSet<String> =
-            deploy.groups.keys().cloned().collect();
+        let resource_ownership = config::ResourceOwnership::capture(&deploy);
+        let base_hook_names = resource_ownership.hook_names().clone();
+        let base_group_names = resource_ownership.group_names().clone();
         if let Some(doc) = overlay_doc.as_ref() {
+            resource_ownership.validate_named_maps(doc).unwrap_or_else(|error| {
+                die(boot_error("Store overlay refused", error))
+            });
             config::overlay::apply_root_to_deploy(&mut deploy, doc).unwrap_or_else(|error| {
                 die(boot_error(
                     "Store overlay refused",
