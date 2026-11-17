@@ -492,7 +492,7 @@ async fn settle(
     settled: &Settled,
 ) {
     if let Err(why) = durable::settle(store, claim, busbar_kernel::store::now(), settled).await {
-        tracing::warn!(error = %why, "the Store did not confirm an Idempotency-Key's outcome; its held intent continues to exclude retries");
+        tracing::warn!(error = %why, "the Store did not confirm an Idempotency-Key's outcome; its held exclusion continues to prevent retries");
     }
 }
 
