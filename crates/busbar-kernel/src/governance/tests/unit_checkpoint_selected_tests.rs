@@ -208,8 +208,8 @@ async fn selected_dispatch_commit_refusal_retains_predecessor_and_retry_commits_
         accepted.partitions.as_ref().unwrap().attempts[0].dispatch,
         Some(1)
     );
-    let duplicate: Result<_, SelectedCommitError<()>> =
-        gov.commit_selected_checkpoint((*accepted).clone(), accepted.revision, || {
+    let duplicate: Result<(Arc<UnitCheckpoint>, ()), SelectedCommitError<()>> = gov
+        .commit_selected_checkpoint((*accepted).clone(), accepted.revision, || {
             panic!("duplicate committed attempt")
         });
     assert!(matches!(duplicate, Err(SelectedCommitError::Custody(_))));
