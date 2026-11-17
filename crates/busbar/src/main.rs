@@ -1841,6 +1841,7 @@ async fn run(
     }
 
     let post = root::shutdown::PostServe {
+        app: Arc::clone(&app_handle),
         admin,
         lines,
         threads,
