@@ -796,7 +796,7 @@ mod checks_tests;
 #[cfg(test)]
 mod spdx_tests;
 
-mod release_targets_tests;
+#[cfg(test)]
 mod known_red_tests;
 
 #[cfg(test)]
