@@ -498,6 +498,17 @@ fn row_allocation_failure_clears_dirty_input_and_emits_nothing() {
 
 struct FailingRowWriter(bool);
 impl Writer for FailingRowWriter {
+    fn put_parts(&mut self, _: u16, _: &[&[u8]]) -> Result<(), crate::records::Full> {
+        unreachable!()
+    }
+    fn put_pod_nested<T: crate::records::Pod>(
+        &mut self,
+        _: u16,
+        _: &T,
+        _: impl FnOnce(&mut crate::records::Nested<'_>) -> Result<(), crate::records::Full>,
+    ) -> Result<(), crate::records::Full> {
+        unreachable!()
+    }
     fn put(&mut self, _: u16, _: &[u8]) -> Result<(), crate::records::Full> {
         unreachable!()
     }
