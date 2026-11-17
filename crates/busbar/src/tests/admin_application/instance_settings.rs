@@ -26,6 +26,175 @@ fn edit(action: &Value, value: u64) -> String {
 }
 
 #[tokio::test]
+async fn instance_settings_survives_a_cold_sqlite_reopen() {
+    const CHILD: &str = "BUSBAR_INSTANCE_SETTINGS_RESTART_CHILD";
+    const DIRECTORY: &str = "BUSBAR_INSTANCE_SETTINGS_RESTART_DIRECTORY";
+    const WITNESS: &str = "actual SQLite instance setting cold reopen completed";
+    let Ok(phase) = std::env::var(CHILD) else {
+        struct Directory(std::path::PathBuf);
+        impl Drop for Directory {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        struct Child(std::process::Child);
+        impl Drop for Child {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let directory = Directory(crate::root::test_plugins::scratch(
+            "instance-settings-restart",
+        ));
+        let name = std::thread::current().name().unwrap().to_owned();
+        for phase in ["first", "restart"] {
+            let mut process = Child(
+                std::process::Command::new(std::env::current_exe().unwrap())
+                    .args(["--exact", &name, "--nocapture"])
+                    .env(CHILD, phase)
+                    .env(DIRECTORY, &directory.0)
+                    .env_remove("BUSBAR_WORKER_THREADS")
+                    .stdout(std::process::Stdio::piped())
+                    .spawn()
+                    .expect("start the isolated persistent setting phase"),
+            );
+            let until = std::time::Instant::now() + std::time::Duration::from_secs(90);
+            loop {
+                if let Some(status) = process.0.try_wait().unwrap() {
+                    use std::io::Read;
+                    let mut output = String::new();
+                    process
+                        .0
+                        .stdout
+                        .take()
+                        .unwrap()
+                        .read_to_string(&mut output)
+                        .unwrap();
+                    assert!(
+                        status.success(),
+                        "cold SQLite {phase} failed: {status}: {output}"
+                    );
+                    assert!(
+                        output.contains(WITNESS),
+                        "cold SQLite {phase} did not finish"
+                    );
+                    break;
+                }
+                assert!(
+                    std::time::Instant::now() < until,
+                    "cold SQLite {phase} timed out"
+                );
+                std::thread::park_timeout(std::time::Duration::from_millis(5));
+            }
+        }
+        return;
+    };
+    let directory = std::path::PathBuf::from(std::env::var_os(DIRECTORY).unwrap());
+    if phase == "first" {
+        let mut fixture = super::config_document_patch::durable_admin_in_directory(directory).await;
+        // The parent owns the directory even if an assertion fails in either child.
+        fixture.retain_files_for_restart();
+        let description = describe(&fixture).await;
+        let action = &description["actions"][0];
+        let client = reqwest::Client::new();
+        let endpoint = format!(
+            "http://{}{}",
+            fixture.addr,
+            action["href"].as_str().unwrap()
+        );
+        let first = client
+            .put(&endpoint)
+            .header("If-Match", action["etag"].as_str().unwrap())
+            .header("Idempotency-Key", "instance-cold-reopen")
+            .header("Content-Type", "application/json")
+            .body(edit(action, 4321))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(first.status(), StatusCode::OK);
+        let outcome: Value = first.json().await.unwrap();
+        assert_eq!(outcome["persisted"], true);
+        let installed = fixture.handle.load();
+        let stored = fixture.overlay.read_bytes_async().await.unwrap();
+        // A fresh key with the old precondition must not change either authority.
+        let stale = client
+            .put(&endpoint)
+            .header("If-Match", action["etag"].as_str().unwrap())
+            .header("Idempotency-Key", "instance-cold-stale")
+            .header("Content-Type", "application/json")
+            .body(edit(action, 9999))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(stale.status(), StatusCode::CONFLICT);
+        assert!(std::sync::Arc::ptr_eq(&installed, &fixture.handle.load()));
+        assert_eq!(fixture.overlay.read_bytes_async().await.unwrap(), stored);
+        std::fs::write(
+            fixture.directory.join("committed-overlay.json"),
+            stored.unwrap(),
+        )
+        .unwrap();
+    } else {
+        assert_eq!(phase, "restart");
+        crate::dist_root_install::install();
+        let config_path = directory.join("config.yaml");
+        let base = std::fs::read_to_string(&config_path).unwrap();
+        let deploy = busbar_kernel::config::deploy_from_yaml_str(
+            &base,
+            &crate::root::boot::axis_test_grammar(),
+        )
+        .unwrap();
+        let catalog = std::fs::read_to_string(directory.join("providers.yaml")).unwrap();
+        let defs = busbar_kernel::config::providers::catalog_from_str(
+            &catalog,
+            &crate::root::boot::axis_test_grammar(),
+        )
+        .unwrap();
+        let config = busbar_kernel::config::resolve(&deploy, &defs).unwrap();
+        let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
+            as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
+        let plugins = crate::root::test_plugins::trusted_config(&directory);
+        let opened = crate::root::min3_boot::fixture::open(&config, &plugins, rules.clone())
+            .await
+            .expect("a new process opens the same actual SQLite database");
+        let core = crate::root::real_store::core_over(opened.backend).await;
+        assert_ne!(
+            core.info().durability,
+            busbar_contract::persistence::Durability::Ephemeral
+        );
+        let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(core).unwrap();
+        assert_eq!(
+            overlay.read_bytes_async().await.unwrap().unwrap(),
+            std::fs::read(directory.join("committed-overlay.json")).unwrap(),
+            "the new process reads the exact durable authority left after the stale refusal"
+        );
+        let mut loaded = busbar_kernel::load_config_from_disk_with_store(
+            &config_path,
+            None,
+            false,
+            busbar_kernel::config::EnvSubst::Strict,
+            &*opened.rules,
+            Some(overlay),
+        )
+        .await
+        .unwrap();
+        let recovered = loaded.disk_candidate().unwrap();
+        let store = recovered.store.unwrap();
+        let seal = busbar_kernel::seal::acquire();
+        let settings = store.settings.authoring(&seal);
+        let settings = serde_json::to_value(settings).unwrap();
+        assert_eq!(settings["busy_timeout_ms"], 4321);
+        assert_eq!(
+            settings["db_path"],
+            directory.join("application.sqlite").to_str().unwrap()
+        );
+        assert_eq!(std::fs::read_to_string(config_path).unwrap(), base);
+    }
+    println!("{WITNESS}");
+}
+
+#[tokio::test]
 async fn instance_settings_uses_one_config_transaction_and_retains_exact_replay() {
     const CHILD: &str = "BUSBAR_INSTANCE_SETTINGS_REPLAY_CHILD";
     const WITNESS: &str = "instance settings actual Store replay completed";
