@@ -14,7 +14,6 @@ use busbar_plugin_abi::auth::{FB_NEEDS_BODY_HASH, STYLE_CALLER, STYLE_PER_REQUES
 use busbar_plugin_abi::host_side::caller::BoxFut;
 use busbar_ports::auth::{AuthPort, OutboundAnswer, UpstreamIn};
 use busbar_ports::{CallCx, PortError};
-use sha2::{Digest, Sha256};
 
 use super::OwnedUpstreamIn;
 use crate::custody::{CredCache, CredGet, CredKey, CredentialCache};
@@ -92,7 +91,7 @@ impl NativeBinding {
             upstream: self.spec.credential_namespace,
             scope: if self.scoped() {
                 scope
-                    .map(|s| Sha256::digest(s.as_bytes()).into())
+                    .map(|s| busbar_contract::crypto::sha256(s.as_bytes()))
                     .unwrap_or([0; 32])
             } else {
                 [0; 32]

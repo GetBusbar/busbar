@@ -1434,7 +1434,6 @@ impl EgressFarEnd<'_> {
         defaults: &[(Vec<u8>, Vec<u8>)],
     ) -> Result<crate::auth_bindings::native::NativeCredential, busbar_ports::PortError> {
         use busbar_plugin_abi::types::{Bytes, Pair, Str};
-        use sha2::{Digest, Sha256};
         fn pairs(rows: &[(Vec<u8>, Vec<u8>)]) -> Vec<Pair<'_>> {
             rows.iter()
                 .filter_map(|(name, value)| {
@@ -1468,7 +1467,7 @@ impl EgressFarEnd<'_> {
             headers: &headers,
             body_sha256: binding
                 .needs_body_hash()
-                .then(|| Sha256::digest(&request.body).into()),
+                .then(|| busbar_contract::crypto::sha256(&request.body)),
             caller_cred: &[],
             scope,
             caller_grant: None,
