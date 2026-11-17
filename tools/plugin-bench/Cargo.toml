@@ -4,6 +4,9 @@ version = "1.6.0"
 publish = false
 edition = "2021"
 rust-version = "1.97"
+# The tool is the `busbar-plugin-bench` example below (built with its dev-dependencies); cargo must not also
+# auto-discover src/main.rs as a bin (pipeline 19356: "present in multiple build targets").
+autobins = false
 description = "Load ONE busbar plugin (a dropped-in cdylib or a linked door) through the loader's own door discovery and hammer its kind slots inline, with no dispatcher, sealing, HTTP or router. Reports ns p50/p99, allocations, RSS growth and contention per op; never a gate."
 license = "Apache-2.0"
 

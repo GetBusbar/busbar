@@ -30,7 +30,13 @@ pub(crate) fn in_scope(path: &str) -> bool {
 pub(crate) fn header_finding(path: &str, text: &str) -> Option<String> {
     let mut found = false;
     for line in text.lines().take(HEAD_LINES) {
-        if let Some((_, id)) = line.split_once(TAG) {
+        // A header is a comment whose text is the tag (`// `, `# `, `/* `, `<!-- `); prose that quotes the tag
+        // (this module's own doc) is not one.
+        let payload = line
+            .trim_start()
+            .trim_start_matches(['/', '#', '*', '!', '<', '-'])
+            .trim_start();
+        if let Some(id) = payload.strip_prefix(TAG) {
             found = true;
             let id = id
                 .trim()
