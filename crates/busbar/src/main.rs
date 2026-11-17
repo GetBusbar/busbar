@@ -1729,8 +1729,11 @@ async fn run(
             ),
         ))
     });
-    let work_recovery =
-        recovery_served.spawn_work_recovery(app_handle.clone(), shutdown_tx.subscribe());
+    let work_recovery = recovery_served.spawn_work_recovery(
+        app_handle.clone(),
+        Arc::clone(&request_admission),
+        shutdown_tx.subscribe(),
+    );
     drop(recovery_served);
 
     busbar_kernel::boot::start_planes(&app_handle).unwrap_or_else(|e| die(e));
@@ -1764,6 +1767,7 @@ async fn run(
                 &listener_plan,
                 "listen",
                 max_inbound,
+                &request_admission,
             )
         });
         let mut plugin_listeners = Vec::new();
@@ -1774,6 +1778,7 @@ async fn run(
                 &listener_plan,
                 &bind.at,
                 max_inbound,
+                &request_admission,
             );
             let tls = bind.tls.clone();
             let addr = bind.listen.to_string();
@@ -2049,6 +2054,7 @@ fn listener_framer(
     plan: &Arc<root::serve::ListenerPlan>,
     at: &str,
     max_inbound: usize,
+    admission: &Arc<busbar_kernel::limits::process_admission::ProcessAdmission>,
 ) -> root::listener::framed::DataFramer {
     let framer = root::listener::framed::listener_framer(
         Arc::new(|scheme: &str| root::connector::the().framer_for(scheme)),
@@ -2076,6 +2082,7 @@ fn listener_framer(
                 .ok()
         }))
         .with_inbound_limit(max_inbound)
+        .with_process_admission(Arc::clone(admission))
 }
 
 async fn recv_shutdown(mut rx: tokio::sync::broadcast::Receiver<()>) {

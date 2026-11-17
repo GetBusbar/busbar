@@ -145,7 +145,7 @@ impl IntentHost for NoIntents {
     fn lookup(&self, _: Scope, _: u32, _: u32, _: &[u8]) -> Result<Looked, RecordsDenied> {
         Err(RecordsDenied::Unavailable)
     }
-    fn store(&self, _: Scope, _: u32, _: u32, _: &[u8], _: &[u8]) -> Result<(), RecordsDenied> {
+    fn store(&self, _: Scope, _: u32, _: u64, _: &[u8], _: &[u8]) -> Result<(), RecordsDenied> {
         Err(RecordsDenied::Unavailable)
     }
     fn delete(&self, _: Scope, _: &[u8]) -> Result<(), RecordsDenied> {
@@ -154,7 +154,7 @@ impl IntentHost for NoIntents {
     fn commit(&self, _: Scope, _: &[CommitOp<'_>]) -> Result<CommitOutcome, RecordsDenied> {
         Err(RecordsDenied::Unavailable)
     }
-    fn push(&self, _: u32, _: &[u8]) -> Result<(), RecordsDenied> {
+    fn push(&self, _: u64, _: &[u8]) -> Result<(), RecordsDenied> {
         Err(RecordsDenied::Unavailable)
     }
     fn signal(&self, _: &[u8], _: Option<[u8; 32]>) {}
@@ -192,6 +192,7 @@ async fn blocking_input_lifetime(payload: &[u8], cancel: bool) {
             .serve(ServeIn {
                 invocation: None,
                 request,
+                admission: None,
                 route: 1,
                 http: HttpIn {
                     method: "GET".into(),
