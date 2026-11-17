@@ -989,6 +989,7 @@ async fn run(
         selected
     };
 
+    let deregister_delay = deploy.advanced.shutdown.deregister_delay;
     let response_headers_cfg = deploy.advanced.response_headers.clone();
     // `audit.seal_every` (SEALING-FIX §3.4): the notary's stamp cadence, validated 1-1000 ms.
     let audit_seal_every = deploy.audit.seal_every;
@@ -1657,56 +1658,35 @@ async fn run(
         app_handle.attach_on_swap(spawn);
     }
 
-    // SHUTDOWN-HANG F4: one drain owner holds the fixed budget from the first broadcast to exit.
+    // The fixed drain starts after operator deregistration; Safety and Force bypass it.
     let drain_clock = busbar_kernel::governance::drain::DrainClock::new(
         busbar_kernel::governance::drain::DRAIN_TIMEOUT,
     );
     let drain = root::shutdown::ShutdownDrain::new(Arc::clone(&drain_clock));
     let (shutdown_tx, _keep_open) = tokio::sync::broadcast::channel::<()>(1);
-    // Persistence failure can request shutdown before a listener exists. A watch
-    // receiver carries that level into the listener's broadcast shutdown path.
-    {
-        let mut stop = control_work.shutdown_rx.clone();
-        let shutdown = shutdown_tx.clone();
-        let probes = probes.clone();
-        tokio::spawn(async move {
-            if !*stop.borrow_and_update() {
-                let _ = stop.wait_for(|stopping| *stopping).await;
-            }
-            probes.begin_stopping();
-            let _ = shutdown.send(());
-        });
-    }
-    let worker_shutdown_rx = control_work.shutdown_rx.clone();
-    // The first broadcast, from any sender, arms the drain clock.
-    {
-        let rx = shutdown_tx.subscribe();
-        let shutdown_level = control_work.shutdown_tx.clone();
-        let clock = Arc::clone(&drain_clock);
-        let probes = probes.clone();
-        tokio::spawn(async move {
-            recv_shutdown(rx).await;
-            probes.begin_stopping();
-            clock.arm(tokio::time::Instant::now() + clock.budget());
-            let _ = shutdown_level.send(true);
-        });
-    }
-
+    let (worker_shutdown_tx, worker_shutdown_rx) = tokio::sync::watch::channel(false);
+    // Keep persistence's safety input distinct from the delayed listener/data-worker stop level.
+    let shutdown_request = drain.start_deregister(
+        deregister_delay,
+        probes.clone(),
+        root::shutdown::ShutdownSignals {
+            safety: control_work.shutdown_rx.clone(),
+            support: control_work.shutdown_tx.clone(),
+            workers: worker_shutdown_tx,
+            listeners: shutdown_tx.clone(),
+        },
+    );
+    busbar_kernel::detached::set_worker_shutdown(worker_shutdown_rx.clone());
     let line_shutdown = line_served.as_ref().map(|_| shutdown_tx.subscribe());
-
-    busbar_core_admin::restart::publish_shutdown(shutdown_tx.clone(), probes.clone());
-    // The first signal starts the drain; a second one ends it at once (the deadline branch).
+    busbar_core_admin::restart::publish_shutdown(shutdown_request.clone());
     {
-        let shutdown_tx = shutdown_tx.clone();
-        let clock = Arc::clone(&drain_clock);
-        let probes = probes.clone();
         tokio::spawn(async move {
+            use busbar_kernel::governance::drain::ShutdownIntent;
             shutdown_signal().await;
-            probes.begin_stopping();
-            let _ = shutdown_tx.send(());
+            shutdown_request.request(ShutdownIntent::Operator);
             shutdown_signal().await;
             tracing::warn!("second shutdown signal: the drain deadline is now");
-            clock.expire_now();
+            shutdown_request.request(ShutdownIntent::Force);
         });
     }
     // The listener's handler drains on a signal from here on.
@@ -1903,7 +1883,6 @@ async fn run(
         late: Arc::clone(&services),
         book,
         startup: store_admission,
-        shutdown_tx: shutdown_tx.clone(),
         predecessor,
     };
     let code = root::shutdown::finish(post, &drain).await;
@@ -2388,11 +2367,7 @@ async fn shutdown_signal() {
         _ = ctrl_c => {}
         _ = terminate => {}
     }
-    // The drain has begun: the refresher starts nothing more, and a refresh in flight commits
-    // nothing and reports at debug (a renewal failing because the process is stopping is not an
-    // outage).
-    busbar_kernel::refresh::begin_stopping();
-    tracing::info!("shutdown signal received; draining in-flight requests");
+    tracing::info!("shutdown signal received");
 }
 
 mod root;
