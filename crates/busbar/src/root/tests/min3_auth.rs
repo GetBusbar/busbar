@@ -329,6 +329,10 @@ async fn admin_fixture() -> (
     )
 }
 
+pub(crate) async fn physical_app() -> Arc<busbar_kernel::state::App> {
+    admin_fixture().await.1
+}
+
 fn admin_invocation(
     handle: &Arc<busbar_kernel::state::AppHandle>,
     app: &Arc<busbar_kernel::state::App>,
@@ -830,6 +834,10 @@ async fn admin_physical_fixture() -> AdminPhysicalFixture {
 }
 
 async fn admin_physical_fixture_with_native(native: bool) -> AdminPhysicalFixture {
+    admin_physical_fixture_at(native, "/api/v1/admin/audit").await
+}
+
+async fn admin_physical_fixture_at(native: bool, path: &str) -> AdminPhysicalFixture {
     use busbar_contract::abi::mechanism::route::RouteAuth;
     use busbar_contract::abi::transport::route::{METHOD_GET, PATH_EXACT};
     use busbar_kernel::guest::{Claimant, GuestList, Line, LineAuth, Route};
@@ -855,7 +863,7 @@ async fn admin_physical_fixture_with_native(native: bool) -> AdminPhysicalFixtur
         route: Route {
             methods: METHOD_GET,
             path_form: PATH_EXACT,
-            path: "/api/v1/admin/audit".into(),
+            path: path.into(),
             fields: Vec::new(),
             rung: 0,
         },
@@ -915,7 +923,7 @@ async fn admin_physical_fixture_with_native(native: bool) -> AdminPhysicalFixtur
             1,
             busbar_kernel::inbound::Head {
                 method: "GET".into(),
-                target: "/api/v1/admin/audit".into(),
+                target: path.into(),
                 ..Default::default()
             },
             lease,
@@ -1088,7 +1096,7 @@ fn physical_admin_http(
 async fn physical_admin_root_router_retains_exact_owner_through_response_body_drop() {
     use busbar_kernel::inbound::native::PhysicalAdminExecution;
     use tower::ServiceExt;
-    let mut f = admin_physical_fixture().await;
+    let mut f = admin_physical_fixture_at(true, "/api/v1/admin/info").await;
     let router = physical_admin_router(&f).await;
     let (request, carrier) = physical_admin_http(&mut f);
     let response = router.oneshot(request).await.unwrap();
@@ -1122,7 +1130,7 @@ async fn physical_admin_root_router_retains_exact_owner_through_response_body_dr
 #[tokio::test]
 async fn physical_admin_root_consumes_carrier_before_await_and_reset_prevents_execution() {
     use tower::ServiceExt;
-    let mut f = admin_physical_fixture().await;
+    let mut f = admin_physical_fixture_at(true, "/api/v1/admin/info").await;
     let router = physical_admin_router(&f).await;
     let (request, carrier) = physical_admin_http(&mut f);
     let mut response = std::pin::pin!(router.oneshot(request));
@@ -1175,7 +1183,7 @@ async fn physical_admin_effect_keeps_owner_and_rechecks_reset_before_mutation() 
 #[tokio::test]
 async fn physical_admin_root_rejects_legacy_open_verdict_without_native_proof() {
     use tower::ServiceExt;
-    let mut f = admin_physical_fixture_with_native(false).await;
+    let mut f = admin_physical_fixture_at(false, "/api/v1/admin/info").await;
     let router = physical_admin_router(&f).await;
     let (request, carrier) = physical_admin_http(&mut f);
     let response = router.oneshot(request).await.unwrap();

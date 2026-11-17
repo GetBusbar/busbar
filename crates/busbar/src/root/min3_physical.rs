@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use busbar_contract::abi::mechanism::route::{RouteAuth, RouteMethod};
-use busbar_contract::abi::transport::route::{method_bit, PATH_EXACT, PATH_PATTERN};
+use busbar_contract::abi::transport::route::{method_bit, METHOD_HEAD, PATH_EXACT, PATH_PATTERN};
 use busbar_kernel::auth::native_data::{DataRouteOwners, NativeDataRoute};
 use busbar_kernel::door::UnitKeyMint;
 use busbar_kernel::guest::{Claimant, GuestList, Line, LineAuth};
@@ -103,7 +103,13 @@ pub(crate) fn build_inventories(
 ) -> Result<Inventories, String> {
     let mut inventories = BTreeMap::new();
     for seat in seats {
-        if seat.driver.routes().data.is_empty() {
+        if !seat
+            .driver
+            .routes()
+            .data
+            .iter()
+            .any(|route| !route.resource_kinds.is_empty())
+        {
             continue;
         }
         let source = inputs.get(&seat.instance).ok_or_else(|| {
@@ -113,6 +119,9 @@ pub(crate) fn build_inventories(
             )
         })?;
         for route in &seat.driver.routes().data {
+            if route.resource_kinds.is_empty() {
+                continue;
+            }
             let inventory = build_inventory(&seat.driver, route, epoch, source)?;
             if inventories
                 .insert((seat.instance.clone(), route.route), inventory)
@@ -141,6 +150,14 @@ pub(crate) struct NativeSlot {
     slot: Box<str>,
     prepared: Arc<PreparedListener>,
     data: Vec<(Arc<RouteBinding>, Arc<NativeDataRoute>)>,
+}
+impl std::fmt::Debug for NativeSlot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NativeSlot")
+            .field("slot", &self.slot)
+            .field("data_routes", &self.data.len())
+            .finish_non_exhaustive()
+    }
 }
 impl NativeSlot {
     pub(crate) fn slot(&self) -> &str {
@@ -187,8 +204,8 @@ fn declared_core_auth(
         if path != &line.route.path {
             continue;
         }
-        let bit = method_bit(method.as_str());
-        if line.route.methods & bit == 0 {
+        let bit = core_method_mask(*method) & line.route.methods;
+        if bit == 0 {
             continue;
         }
         if methods & bit != 0 || auth.is_some_and(|old| old != *class) {
@@ -206,6 +223,16 @@ fn declared_core_auth(
     }
 }
 
+fn core_method_mask(method: RouteMethod) -> u32 {
+    // CoreRouter and axum resolve HEAD onto GET. Keep that actual public/admin behavior.
+    method_bit(method.as_str())
+        | if method == RouteMethod::Get {
+            METHOD_HEAD
+        } else {
+            0
+        }
+}
+
 /// Assemble only after the actual DoorMounts and candidate inventories exist. Every sealed
 /// guest must have a supported complete class; unsupported guests refuse the whole candidate.
 pub(crate) fn assemble_slot(
@@ -216,7 +243,40 @@ pub(crate) fn assemble_slot(
     mounts: DoorMounts,
     owners: &SlotOwners,
 ) -> Result<Arc<NativeSlot>, String> {
-    let seats = &mounts.data.served.ports;
+    let DoorMounts {
+        data: dispatch,
+        routes,
+        sessions,
+        refusals,
+        refuse_by_path,
+    } = mounts;
+    let plugins = app.plugin_routes.for_listener(&guests);
+    let prepared = PreparedListener::new(
+        app,
+        &plugins,
+        routes,
+        sessions,
+        refusals,
+        refuse_by_path,
+        slot == "listen",
+    )?
+    .with_data(dispatch.clone())
+    .with_dispatch_layer(super::listener::deferred_dispatch_layer);
+    let prepared = if slot == "listen" {
+        match dispatch.served.native.as_ref() {
+            Some(native) => prepared.with_core_routes(|routes| {
+                super::provisioning::mount_routes(routes, &native.provisioning)
+            }),
+            None => prepared,
+        }
+    } else {
+        prepared
+    };
+    let actual_core: Vec<_> = prepared
+        .core_lines()
+        .map(|(path, method, auth)| (path.to_owned(), method, auth))
+        .collect();
+    let seats = &dispatch.served.ports;
     let mut bindings = Vec::with_capacity(guests.lines().len());
     for line in guests.lines() {
         if line.upgrade.is_some() {
@@ -254,7 +314,13 @@ pub(crate) fn assemble_slot(
                 )
             }
             Claimant::Clean(_) => {
-                RouteBinding::core(line.clone(), declared_core_auth(line, &owners.core)?)
+                let actual = declared_core_auth(line, &actual_core)?;
+                if declared_core_auth(line, &owners.core)? != actual {
+                    return Err(
+                        "candidate core policy disagrees with its actual mounted handler".into(),
+                    );
+                }
+                RouteBinding::core(line.clone(), actual)
             }
             Claimant::Need(_, _) => {
                 return Err("native inbound Need route has no complete physical producer".into())
@@ -263,7 +329,6 @@ pub(crate) fn assemble_slot(
         .map_err(|_| "native physical line does not match its actual route owner".to_string())?;
         bindings.push(binding);
     }
-    let plugins = app.plugin_routes.for_listener(&guests);
     let plan = PhysicalPlan::new(slot.into(), transport, guests, bindings)
         .map_err(|_| "native physical plan does not cover the complete slot".to_string())?;
     let mut data = Vec::new();
@@ -275,8 +340,7 @@ pub(crate) fn assemble_slot(
             .iter()
             .find(|seat| seat.driver.caller().same_incarnation(target.caller()))
             .ok_or_else(|| "native physical route lost its plane incarnation".to_string())?;
-        let generation = mounts
-            .data
+        let generation = dispatch
             .generation
             .as_ref()
             .ok_or_else(|| "native DATA route has no actual serving generation".to_string())?;
@@ -304,30 +368,84 @@ pub(crate) fn assemble_slot(
         })?;
         data.push((Arc::clone(binding), native));
     }
-    let DoorMounts {
-        data: dispatch,
-        routes,
-        sessions,
-        refusals,
-        refuse_by_path,
-    } = mounts;
-    let prepared = PreparedListener::new(
-        app,
-        &plugins,
-        routes,
-        sessions,
-        refusals,
-        refuse_by_path,
-        slot == "listen",
-    )?
-    .with_data(dispatch)
-    .with_dispatch_layer(super::listener::deferred_dispatch_layer)
-    .with_physical(plan)
-    .map_err(|_| "native physical plan was already attached".to_string())?;
+    let prepared = prepared
+        .with_physical(plan)
+        .map_err(|_| "native physical plan was already attached".to_string())?;
     Ok(Arc::new(NativeSlot {
         slot: slot.into(),
         prepared: Arc::new(prepared),
         data,
+    }))
+}
+
+/// The dedicated operator slot is built from the existing real admin mount and its own
+/// declaration table. A data router or caller-supplied route list cannot stand in for it.
+pub(crate) fn assemble_admin_slot(
+    app: &App,
+    slot: &str,
+    transport: Arc<dyn TransportPort>,
+) -> Result<Arc<NativeSlot>, String> {
+    if app.native_admin.is_none() {
+        return Err("operator slot has no actual native admin authority".into());
+    }
+    if app
+        .plugin_routes
+        .descriptors()
+        .iter()
+        .any(|route| route.auth == RouteAuth::Admin)
+    {
+        return Err("native plugin admin Need routes have no complete physical producer".into());
+    }
+    let prepared = PreparedListener::new_admin(app)?
+        .with_dispatch_layer(super::listener::deferred_dispatch_layer);
+    let core: Vec<_> = prepared
+        .core_lines()
+        .map(|(path, method, auth)| (path.to_owned(), method, auth))
+        .collect();
+    if !core.iter().any(|(_, _, auth)| *auth == RouteAuth::Admin) {
+        return Err("operator slot has no actual mounted admin handlers".into());
+    }
+    let mut lines = Vec::with_capacity(core.len());
+    let mut bindings = Vec::with_capacity(core.len());
+    for (at, (path, method, auth)) in core.into_iter().enumerate() {
+        if auth == RouteAuth::Key {
+            return Err("operator core key route has no completed native class producer".into());
+        }
+        let line = Line {
+            route: busbar_kernel::guest::Route {
+                methods: core_method_mask(method),
+                path_form: if path.contains('{') {
+                    PATH_PATTERN
+                } else {
+                    PATH_EXACT
+                },
+                path,
+                fields: Vec::new(),
+                rung: u32::try_from(at).map_err(|_| "too many operator routes")?,
+            },
+            claimant: Claimant::Clean("core/admin".into()),
+            dialect: 0,
+            auth: LineAuth::None,
+            upgrade: None,
+            offered: busbar_contract::abi::auth::AuthPoints::EMPTY,
+        };
+        bindings.push(
+            RouteBinding::core(line.clone(), auth)
+                .map_err(|_| "operator route does not match its actual declaration")?,
+        );
+        lines.push(line);
+    }
+    let guests = GuestList::seal(lines)
+        .map_err(|_| "actual operator routes cannot share one physical slot")?;
+    let plan = PhysicalPlan::new(slot.into(), transport, guests, bindings)
+        .map_err(|_| "operator physical plan does not cover its complete declaration table")?;
+    let prepared = prepared
+        .with_physical(plan)
+        .map_err(|_| "operator physical plan was already attached")?;
+    Ok(Arc::new(NativeSlot {
+        slot: slot.into(),
+        prepared: Arc::new(prepared),
+        data: Vec::new(),
     }))
 }
 

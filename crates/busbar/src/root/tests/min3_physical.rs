@@ -271,3 +271,73 @@ fn core_coverage_requires_exact_declared_path_methods_and_class() {
     assert!(declared_core_auth(&line, &protected).is_err());
     assert!(declared_core_auth(&line, &[]).is_err());
 }
+
+#[tokio::test]
+async fn operator_slot_is_built_from_actual_admin_handlers_and_preserves_head_health() {
+    use busbar_kernel::inbound::native::{AcceptedConnection, PhysicalListener, RouteTarget};
+    use busbar_kernel::limits::process_admission::{AdmissionClass, ProcessAdmission};
+    busbar_core_admin::install();
+    let app = crate::root::min3_auth::tests::physical_app().await;
+    let transport = crate::root::min3_transports::tests::framer(&["http"]);
+    let slot = assemble_admin_slot(&app, "admin_listen", transport.clone()).unwrap();
+    assert!(slot
+        .prepared()
+        .core_lines()
+        .any(|(_, _, auth)| auth == RouteAuth::Admin));
+    let selected = slot.clone();
+    let handle = Arc::new(busbar_kernel::state::AppHandle::new(app));
+    let listener = PhysicalListener::new(
+        handle,
+        "admin_listen".into(),
+        transport,
+        AdmissionClass::Operator,
+        Arc::new(move |_, name| (name == selected.slot()).then(|| selected.prepared().clone())),
+    )
+    .unwrap();
+    let budget = ProcessAdmission::new(4);
+    let connection = listener.connect(
+        AcceptedConnection::capture(
+            &budget.connection_storage(AdmissionClass::Operator),
+            "192.0.2.1",
+            "192.0.2.2",
+            "http/1.1",
+            &[],
+        )
+        .unwrap(),
+    );
+    let (request, _owner) = connection
+        .head(
+            1,
+            busbar_kernel::inbound::Head {
+                method: "HEAD".into(),
+                target: busbar_kernel::auth::HEALTHZ_PATH.into(),
+                ..Default::default()
+            },
+            budget.try_enter(AdmissionClass::Operator).unwrap(),
+            None,
+        )
+        .unwrap();
+    assert!(matches!(
+        request.binding().route().target(),
+        RouteTarget::Core(RouteAuth::None)
+    ));
+    assert!(slot.data_for(request.binding()).is_err());
+    let credit = request.binding().request().try_reserve(0).unwrap();
+    let execution = request
+        .finish_input(busbar_contract::secure::SecureVec::new(), credit)
+        .unwrap()
+        .begin_completion()
+        .unwrap()
+        .complete_public()
+        .unwrap();
+    assert!(execution.check_executing().is_ok());
+}
+
+#[tokio::test]
+async fn operator_slot_refuses_missing_actual_admin_authority() {
+    busbar_core_admin::install();
+    let app = crate::root::inbound_tests::app(false).await.0;
+    assert!(app.native_admin.is_none());
+    let transport = crate::root::min3_transports::tests::framer(&["http"]);
+    assert!(assemble_admin_slot(&app, "admin_listen", transport).is_err());
+}

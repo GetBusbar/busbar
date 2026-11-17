@@ -23,6 +23,9 @@ pub(crate) struct AdminRequest {
     pub unit: u64,
 }
 
+#[derive(Debug)]
+pub(crate) struct AdminHeadersInvalid;
+
 impl AdminRequest {
     pub(crate) fn from_snapshot(
         snapshot: Arc<busbar_kernel::inbound::request_snapshot::ChargedRequestSnapshot>,
@@ -37,8 +40,8 @@ impl AdminRequest {
     }
     pub(crate) fn from_binding(
         binding: Arc<busbar_kernel::inbound::native::RequestBinding>,
-    ) -> Result<Self, ()> {
-        let snapshot = binding.snapshot().map_err(|_| ())?;
+    ) -> Result<Self, busbar_kernel::inbound::request_snapshot::SnapshotError> {
+        let snapshot = binding.snapshot()?;
         Ok(Self {
             snapshot,
             unit: binding.invocation().request_id().get(),
@@ -105,12 +108,13 @@ impl AdminRequest {
                     .filter(|credential| !credential.is_empty())
             })
     }
-    pub(crate) fn http_headers(&self) -> Result<axum::http::HeaderMap, ()> {
+    pub(crate) fn http_headers(&self) -> Result<axum::http::HeaderMap, AdminHeadersInvalid> {
         let mut headers = axum::http::HeaderMap::new();
         for (name, value) in self.headers() {
             headers.append(
-                axum::http::HeaderName::from_bytes(name.as_bytes()).map_err(|_| ())?,
-                axum::http::HeaderValue::from_bytes(value).map_err(|_| ())?,
+                axum::http::HeaderName::from_bytes(name.as_bytes())
+                    .map_err(|_| AdminHeadersInvalid)?,
+                axum::http::HeaderValue::from_bytes(value).map_err(|_| AdminHeadersInvalid)?,
             );
         }
         Ok(headers)

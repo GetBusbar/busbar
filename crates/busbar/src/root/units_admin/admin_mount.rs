@@ -708,7 +708,7 @@ pub(crate) fn mount(
                 let request = match physical.as_ref() {
                     Some(pending) => match AdminRequest::from_binding(pending.binding().clone()) {
                         Ok(request) => request,
-                        Err(()) => return http_response(unavailable_answer()),
+                        Err(_) => return http_response(unavailable_answer()),
                     },
                     None => {
                         let unit = admission.as_ref().map_or_else(

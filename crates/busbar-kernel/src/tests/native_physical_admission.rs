@@ -16,6 +16,10 @@ fn unsupported<T>() -> Result<T, PortError> {
     })
 }
 impl TransportPort for Transport {
+    fn listener_slots(&self) -> &[Box<str>] {
+        static SLOTS: OnceLock<[Box<str>; 1]> = OnceLock::new();
+        SLOTS.get_or_init(|| ["listen".into()])
+    }
     fn alpn(&self, _: u32) -> &[Box<str>] {
         &[]
     }
@@ -752,4 +756,16 @@ fn native_physical_public_completion_cannot_follow_reset() {
         pending.complete_public(),
         Err(ArrivalRefusal::Cancelled)
     ));
+}
+
+#[test]
+fn native_operator_prepared_routes_use_the_actual_admin_mount_surface() {
+    let prepared = PreparedListener::new_admin(&app()).unwrap();
+    let lines: Vec<_> = prepared.core_lines().collect();
+    assert!(lines
+        .iter()
+        .any(|(path, method, auth)| *path == crate::auth::HEALTHZ_PATH
+            && *method == busbar_contract::abi::mechanism::route::RouteMethod::Get
+            && *auth == RouteAuth::None));
+    assert!(!lines.iter().any(|(path, _, _)| *path == "/stats"));
 }
