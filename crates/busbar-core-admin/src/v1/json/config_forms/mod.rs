@@ -44,9 +44,20 @@ pub(super) fn schema_document() -> Value {
     secret["writeOnly"] = json!(true);
     secret["description"] = json!("Core user-input SecretRef grammar. Plugin-declared shorthand is resolved separately; use explicit module/settings for portable forms. Never an inline credential.");
     definitions.insert("SecretRef".into(), secret);
+    let accept = json!({"enum":["plaintext","unverified_tls"]});
+    let mut insecure = object(json!({
+        "accept":{"oneOf":[accept.clone(),{"type":"array","items":accept}]},
+        "reason":nullable(json!({"type":"string"}))
+    }));
+    insecure["required"] = json!(["accept"]);
+    insecure["description"] = json!("TRANSPORT-SECURITY-POLICY §4: the insecure transports this instance accepts, beside its module. Absent or null: verified TLS only.");
+    insecure["x-busbar-runtime-validation"] =
+        json!(["the accepted list and its reason are judged at load (BUSBAR-3163)"]);
+    definitions.insert("InsecureTransport".into(), insecure);
     let store_object = object(json!({
         "module":{"type":"string","default":""},
-        "settings":{"type":"object","default":{},"x-busbar-module-settings":true}
+        "settings":{"type":"object","default":{},"x-busbar-module-settings":true},
+        "insecure_transport":nullable(reference("InsecureTransport"))
     }));
     let mut store = json!({"oneOf":[store_object,{
         "type":"array","prefixItems":[{"type":"string"},{"type":"object","x-busbar-module-settings":true}],
@@ -62,7 +73,8 @@ pub(super) fn schema_document() -> Value {
     definitions.insert("Store".into(), store);
     let mut secret_module_object = object(json!({
         "module":{"type":"string"},
-        "settings":{"type":"object","default":{},"x-busbar-module-settings":true}
+        "settings":{"type":"object","default":{},"x-busbar-module-settings":true},
+        "insecure_transport":nullable(reference("InsecureTransport"))
     }));
     secret_module_object["required"] = json!(["module"]);
     let mut secret_module = json!({"oneOf":[secret_module_object,{
@@ -93,7 +105,8 @@ pub(super) fn schema_document() -> Value {
         "module":{"type":"string"}, "max_admin_scope":scope,
         "token":nullable(reference("SecretRef")),
         "browser_login":nullable(reference("BrowserLogin")),
-        "settings":{"type":"object","default":{},"x-busbar-module-settings":true}
+        "settings":{"type":"object","default":{},"x-busbar-module-settings":true},
+        "insecure_transport":nullable(reference("InsecureTransport"))
     }));
     identity["required"] = json!(["module"]);
     identity["x-busbar-runtime-validation"] = json!([
