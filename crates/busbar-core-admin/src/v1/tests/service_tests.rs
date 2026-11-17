@@ -1746,7 +1746,6 @@ static CLASS_PARENT_PLANE: busbar_kernel::plane_driver::registry::PlaneDecl =
         named_def_list: None,
         named_def_get: None,
         registry_contains: None,
-        reresolve_gates: None,
         openapi_schemas: None,
         on_swap: None,
         parse_section: None,
@@ -2066,4 +2065,50 @@ async fn a_reload_class_read_behind_a_held_scan_gate_is_unavailable() {
         "a held scan gate answers the retryable Unavailable"
     );
     drop(held);
+}
+
+/// #359 SEC-L9 (DES-359 r3): a catalog scan answers only one directory state. A swap between the
+/// before and after fingerprint reads retries the scan once; a settled retry answers its rows.
+#[test]
+fn a_catalog_swap_between_fingerprint_reads_retries_once() {
+    let mut reads = [2u64, 2].into_iter();
+    let mut scans = 0;
+    let (rows, settled) = consistent_scan(
+        1,
+        || Ok(reads.next().expect("two fingerprint reads")),
+        || {
+            scans += 1;
+            scans
+        },
+    )
+    .expect("the retry settles");
+    assert_eq!(scans, 2, "one retry after the swap");
+    assert_eq!(rows, 2, "the answer is the retry's scan, not the torn one");
+    assert_eq!(settled, Some(2));
+}
+
+/// #359 SEC-L9: a second swap answers 409, never a torn catalog.
+#[test]
+fn a_second_catalog_swap_answers_conflict() {
+    let mut reads = [2u64, 3].into_iter();
+    let mut scans = 0;
+    let refused = consistent_scan(
+        1,
+        || Ok(reads.next().expect("two fingerprint reads")),
+        || scans += 1,
+    );
+    assert!(matches!(refused, Err(AdminError::Conflict(_))));
+    assert_eq!(scans, 2, "exactly one retry");
+}
+
+/// #359 SEC-L9: an unchanged directory scans once and settles on its fingerprint; an unreadable
+/// after-read returns the rows unsettled (uncached), as before.
+#[test]
+fn a_stable_catalog_scans_once() {
+    let mut scans = 0;
+    let (_, settled) = consistent_scan(7, || Ok(7), || scans += 1).unwrap();
+    assert_eq!((scans, settled), (1, Some(7)));
+    let (_, unproven) =
+        consistent_scan(7, || Err(std::io::Error::other("unreadable")), || ()).unwrap();
+    assert_eq!(unproven, None);
 }

@@ -159,7 +159,7 @@ async fn post(
 ) -> (u16, json::Value) {
     let response = reqwest::Client::new()
         .post(format!("http://{}/api/v1/admin/{path}", served.addr))
-        .header("x-admin-token", token)
+        .header("authorization", format!("Bearer {}", token))
         .header("content-type", "application/json")
         .body(body.to_string())
         .send()

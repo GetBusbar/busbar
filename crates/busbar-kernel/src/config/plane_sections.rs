@@ -109,57 +109,10 @@ fn default_plane_section(config_section: &str) -> Box<dyn PlaneCfg> {
     }
 }
 
-fn deserialize_plane_section<'de, D>(
-    config_section: &str,
-    deserializer: D,
-) -> Result<Box<dyn PlaneCfg>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let value = busbar_contract::yaml::untyped(deserializer)?;
-    let decl = crate::plane_driver::registry::plane_decl_for_config_section(config_section);
-    match decl.and_then(|d| d.parse_section.map(|parse| (d, parse))) {
-        Some((d, parse)) => {
-            validate_plane_section(
-                config_section,
-                &value,
-                d.trust_keys,
-                d.caller_credential_refusal,
-                &config_sections(),
-            )
-            .map_err(serde::de::Error::custom)?;
-            parse(d, &value).map_err(serde::de::Error::custom)
-        }
-        None => {
-            let raw = if value.is_null() { None } else { Some(value) };
-            Ok(Box::new(RawPlaneSection { raw }))
-        }
-    }
-}
-
-fn deserialize_plane_endpoint<'de, D>(
-    config_section: &str,
-    deserializer: D,
-) -> Result<Option<Box<dyn PlaneEndpointCfg>>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let value = busbar_contract::yaml::untyped(deserializer)?;
-    if value.is_null() {
-        return Ok(None);
-    }
-    match crate::plane_driver::registry::plane_decl_for_config_section(config_section)
-        .and_then(|d| d.parse_endpoint.map(|parse| (d, parse)))
-    {
-        Some((d, parse)) => parse(d, &value).map(Some).map_err(serde::de::Error::custom),
-        None => Ok(Some(Box::new(RawPlaneSection { raw: Some(value) }))),
-    }
-}
-
 /// THE DECLARED SECTIONS as they land in `DeployCfg`: every declaring section a REGISTERED plane
 /// parses (its own `parse_section` hook) and either OWNS the grammar of
 /// (`PlaneDeclaration::owned_config_sections` lists its own `config_section`) or writes as one of the
-/// frozen named-definition maps ([`NAMED_MAP_SECTIONS`]), keyed by that section and type-erased behind [`PlaneCfg`] — the one map carrier, so `DeployCfg`
+/// frozen named-definition maps, keyed by that section and type-erased behind [`PlaneCfg`] — the one map carrier, so `DeployCfg`
 /// names no plane section and no plane-local type (#47/#49). Each entry is parsed by its plane's own
 /// `parse_section` hook; an absent section has no entry. `busbar-kernel` has no dependency on any
 /// plane crate (#40), which is why the plane's typed section is reached only through this seam.
@@ -167,15 +120,6 @@ where
 pub struct DeclaredSections(pub std::collections::BTreeMap<&'static str, Box<dyn PlaneCfg>>);
 
 impl DeclaredSections {
-    pub(crate) fn holds(decl: &crate::plane_driver::registry::PlaneDeclaration) -> bool {
-        decl.owned_config_sections.contains(&decl.config_section)
-            || (NAMED_MAP_SECTIONS[2..].contains(&decl.config_section)
-                && crate::plane_driver::registry::plane_decl_for_config_section(
-                    decl.config_section,
-                )
-                .is_some_and(|d| d.parse_section.is_some()))
-    }
-
     #[must_use]
     pub fn get(&self, section: &str) -> Option<&dyn PlaneCfg> {
         self.0.get(section).map(|b| &**b)
@@ -190,33 +134,6 @@ impl DeclaredSections {
                 .entry(key)
                 .or_insert_with(|| default_plane_section(key)),
         )
-    }
-
-    pub(crate) fn parse(
-        section: &'static str,
-        value: Value,
-    ) -> Result<Self, busbar_contract::yaml::Error> {
-        let cfg = deserialize_plane_section(section, busbar_contract::yaml::deserializer(value))?;
-        Ok(DeclaredSections([(section, cfg)].into_iter().collect()))
-    }
-}
-
-/// THE ENDPOINT BLOCK as it lands in `DeployCfg`, type-erased behind [`PlaneEndpointCfg`] — the
-/// neutral seam the owning plane's own endpoint-config type deserializes through. Absent/null ⇒
-/// `None` (endpoint not configured), byte-identical to the pre-seam typed field's `Default`.
-#[derive(Debug, Default)]
-pub struct EndpointSection(pub Option<Box<dyn PlaneEndpointCfg>>);
-
-impl EndpointSection {
-    pub(crate) const OWNER: &'static str = NAMED_MAP_SECTIONS[2];
-}
-
-impl<'de> serde::Deserialize<'de> for EndpointSection {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        deserialize_plane_endpoint(Self::OWNER, deserializer).map(EndpointSection)
     }
 }
 
@@ -537,8 +454,7 @@ pub fn refuse_cross_plane_reference(
     judge_hook_ref(hook, sections).map_err(|err| Refusal { at, err }.into())
 }
 
-pub const NAMED_MAP_SECTIONS: [&str; 4] =
-    [Kind::Auth.root(), Kind::Export.root(), "tools", "agents"];
+pub const NAMED_MAP_SECTIONS: [&str; 2] = [Kind::Auth.root(), Kind::Export.root()];
 
 pub fn attach_list(section: &[String], own: &[String]) -> Vec<String> {
     let mut out: Vec<String> = Vec::with_capacity(section.len() + own.len());

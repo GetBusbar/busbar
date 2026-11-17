@@ -37,11 +37,12 @@ pub(crate) const STEPS: [Step; 1] = [v0];
 /// 1.5.5 -> 1, in §A3's order: 1t reads the template and its interpolation; 1a refuses a pre-1.5.5
 /// document; 1b and 1c fold the 1.5.5 overlay 1b read into the operator's text (itself a patch
 /// edit, checked by proof one), so core's passes read the folded document as template and
-/// interpolation alike; 1d runs core's own passes and writes the store 1.5.5 implied; 1k plans the
-/// providers catalog. The result is the patch writer's, over the operator's text, checked by proof
-/// one (in the writer) and proof two (interpolation parity); the boot's strict parse (proof three)
-/// judges it after the stamp. A document that is not a mapping passes as written, and the stamp
-/// and the strict parse refuse it in their own words.
+/// interpolation alike; 1d runs core's own passes, writes the store 1.5.5 implied and reports a
+/// missing `auth:` block without writing one (#358); 1k plans the providers catalog. The result is
+/// the patch writer's, over the operator's text, checked by proof one (in the writer) and proof two
+/// (interpolation parity); the boot's strict parse (proof three) judges it after the stamp. A
+/// document that is not a mapping passes as written, and the stamp and the strict parse refuse it
+/// in their own words.
 fn v0(text: &str, work: &mut Work<'_>) -> Result<String, Refusal> {
     let template = Template::read(text, work.facts.env, "config.yaml")?;
     legacy_markers::refuse(template.resolved())?;
@@ -70,6 +71,7 @@ fn v0(text: &str, work: &mut Work<'_>) -> Result<String, Refusal> {
         }
         None => absent_store::name_the_implied_store(root, template.resolved(), work.report),
     }
+    migrate_1_6::report_absent_auth(template.resolved(), work.report);
     work.catalog = catalog::plan(
         work.path,
         root,

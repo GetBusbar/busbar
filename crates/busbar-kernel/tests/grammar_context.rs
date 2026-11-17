@@ -65,7 +65,7 @@ fn named_secret_is_bound_before_the_document_reads_shorthand() {
         )]),
     );
     let deploy = busbar_kernel::config::deploy_from_yaml_str(
-        "secrets:\n  selected:\n    module: fixture-secret\n    settings: {}\nauth:\n  admin_auth: []\n  signing_key: {fixture-word: signing}\n",
+        "secrets:\n  selected:\n    module: fixture-secret\n    settings: {}\nauth:\n  signing_key: {fixture-word: signing}\n",
         &grammar,
     ).expect("shorthand is parsed after its named instance is known");
     let bound = deploy.grammar.get().unwrap();
@@ -88,7 +88,7 @@ fn an_admission_with_no_secret_images_refuses_explicit_instances() {
 #[tokio::test]
 async fn a_reader_without_boot_owners_cannot_open_configured_secrets() {
     let deploy = busbar_kernel::config::deploy_from_yaml_str(
-        "providers: {}\nmodels: {}\nauth:\n  admin_auth: []\nsecrets:\n  selected:\n    module: fixture-secret\n    settings: {}\n",
+        "providers: {}\nmodels: {}\nsecrets:\n  selected:\n    module: fixture-secret\n    settings: {}\n",
         &Grammar::empty(),
     ).expect("fixture configuration");
     let root =

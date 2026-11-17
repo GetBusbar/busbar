@@ -155,8 +155,7 @@ fn stream_bit(stream: ExportStream) -> u16 {
 /// The config generation's UNION-OF-PROJECTIONS — "what does ANYTHING configured on this generation
 /// want". Computed ONCE per config apply, read per request.
 ///
-/// THE COMPUTE GATE. This is the SAME mechanism `crate::hooks::requested_signals` already uses for
-/// hook signals, at stream+field granularity: the read runs ONLY when declared, never
+/// THE COMPUTE GATE, at stream+field granularity: the read runs ONLY when declared, never
 /// call-then-discard. It supersedes the one-off `export::request_log_configured()` boolean — one
 /// mechanism, not two. If no sink's projection includes a stream, core never assembles a payload for
 /// it and there is no hot-path cost.

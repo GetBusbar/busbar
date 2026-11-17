@@ -822,14 +822,20 @@ impl Drop for ChainBufs {
     /// I11: an argument buffer can hold a credential (the host copies its request in), so each is zeroed before
     /// it is freed, the way the pooled buffers are.
     fn drop(&mut self) {
+        self.zero();
+    }
+}
+
+impl ChainBufs {
+    /// Zero every kept buffer in place, lengths unchanged (I11; IF §6.1). `Drop` runs it before the buffers
+    /// are freed; `black_box` keeps the stores from being elided as dead.
+    fn zero(&mut self) {
         for buf in &mut self.0 {
             buf.fill(0);
             core::hint::black_box(&*buf);
         }
     }
-}
 
-impl ChainBufs {
     pub fn new() -> Self {
         ChainBufs(Vec::new())
     }
@@ -1677,6 +1683,25 @@ mod tests {
             2,
             "one insert CAS and one remove CAS at its cancel"
         );
+    }
+
+    /// #271 (I11; IF §6.1, §10.1): a chain's argument buffers and NEED_RES results (SECRET values, FETCH
+    /// bodies, RECORD values) are zeroed in place, every byte and every buffer, before they are freed.
+    #[test]
+    fn chain_buffers_are_zeroed_before_they_are_freed() {
+        let mut bufs = ChainBufs::new();
+        let request = bufs.push(b"Authorization: Bearer sk-live-request".to_vec());
+        let secret = bufs.push(b"SECRET value: hunter2-hunter2-hunter2".to_vec());
+        let empty = bufs.push(Vec::new());
+        bufs.zero();
+        for (at, len) in [(request, 37), (secret, 37), (empty, 0)] {
+            let kept = &bufs.0[at];
+            assert_eq!(kept.len(), len, "buffer {at} keeps its length");
+            assert!(
+                kept.iter().all(|b| *b == 0),
+                "buffer {at} still holds plaintext after zeroing"
+            );
+        }
     }
 }
 

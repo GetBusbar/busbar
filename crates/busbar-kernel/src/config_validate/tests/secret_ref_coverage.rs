@@ -330,7 +330,6 @@ identity-providers:
     token: { module: fixture-source, settings: { slot: BUSBAR_TEST_NEVER_SET_ORACLE_UNUSED_TOKEN } }
 auth:
   chain: [keys]
-  admin_auth: []
 "#;
     let deploy: crate::config::DeployCfg =
         busbar_contract::yaml::from_str(yaml).expect("the fixture DeployCfg yaml must parse");
@@ -408,7 +407,6 @@ identity-providers:
       client_secret: { module: fixture-source, settings: { slot: BUSBAR_TEST_OIDC_CLIENT_SECRET } }
 auth:
   chain: []
-  admin_auth: []
 "#;
     let deploy: crate::config::DeployCfg =
         busbar_contract::yaml::from_str(yaml).expect("the fixture DeployCfg yaml must parse");

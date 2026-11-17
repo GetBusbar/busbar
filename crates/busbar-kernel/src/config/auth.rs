@@ -525,7 +525,7 @@ pub struct AuthDeployCfg {
     #[serde(default)]
     pub chain: Vec<String>,
     /// The ADMIN auth chain gating `/api/v1/admin/*`, as ordered PROVIDER NAMES. Default
-    /// [`default_admin_auth_names`]. `[]` = OPEN admin (dev only; loud boot warning).
+    /// [`default_admin_auth_names`]. `[]` is refused (1.6.0 has no open admin posture).
     #[serde(default = "default_admin_auth_names")]
     pub admin_auth: Vec<String>,
     /// Role → policy bindings, NESTED BY PROVIDER NAME (see [`RoleBindingCfg`]).
@@ -718,7 +718,7 @@ pub struct AuthCfg {
     /// open front door.
     pub chain: Vec<AuthChainEntry>,
     /// The ADMIN auth chain gating `/api/v1/admin/*` (the parallel of `chain` for the operator
-    /// surface). Default [`default_admin_auth`]. `[]` = OPEN admin (dev only; loud boot warning).
+    /// surface). Default [`default_admin_auth`]. `[]` is refused (1.6.0 has no open admin posture).
     pub admin_auth: Vec<AuthChainEntry>,
     /// Role -> policy bindings, NESTED BY PROVIDER NAME (see [`RoleBindingCfg`]).
     pub role_bindings: RoleBindings,
@@ -819,9 +819,6 @@ impl AuthCfg {
     }
 
     pub fn usable_mint_path(&self) -> bool {
-        if self.admin_auth.is_empty() {
-            return true;
-        }
         self.admin_auth.iter().any(|e| {
             let operator = names_operator(&e.module);
             (operator && !e.settings.is_empty())

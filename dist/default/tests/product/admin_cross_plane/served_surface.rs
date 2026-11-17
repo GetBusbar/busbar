@@ -317,7 +317,7 @@ async fn admin_corpus_reconciles_with_the_served_router() {
         let method = reqwest::Method::from_bytes(method.as_bytes()).unwrap();
         let req = client
             .request(method.clone(), format!("http://{addr}{path}"))
-            .header("x-admin-token", TOKEN);
+            .header("authorization", format!("Bearer {}", TOKEN));
 
         let req = if method == reqwest::Method::GET {
             req
@@ -558,7 +558,7 @@ async fn served_openapi(app: std::sync::Arc<busbar_kernel::state::App>) -> json:
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
     let resp = reqwest::Client::new()
         .get(format!("http://{addr}{}", abs("/openapi.json")))
-        .header("x-admin-token", "served-openapi-token")
+        .header("authorization", "Bearer served-openapi-token")
         .send()
         .await
         .unwrap();
@@ -851,7 +851,7 @@ async fn named_map_section_routes_answer_wrong_method_unknown_name_and_bad_body(
     let ask = |method: reqwest::Method, path: &str, body: &'static str| {
         let req = client
             .request(method, format!("http://{addr}{path}"))
-            .header("x-admin-token", TOKEN)
+            .header("authorization", format!("Bearer {}", TOKEN))
             .header("content-type", "application/json")
             .body(body);
         async move { req.send().await.unwrap().status().as_u16() }

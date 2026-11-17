@@ -411,8 +411,8 @@ pub struct HookView {
     ///
     /// This used to be the bag itself, under a doc comment claiming hook settings are "never a
     /// secret by contract". That claim was retracted for `NamedDefView` and it is no more true here:
-    /// a hook's settings bag is a `SecretRef` carrier by design (`hooks::HookEnv::resolve_hook_settings`
-    /// resolves it before every configure push), and `config::secret::resolve_settings` forwards a
+    /// a hook's settings bag is a `SecretRef` carrier by design (resolved before the native hook opens),
+    /// and `config::secret::resolve_settings` forwards a
     /// non-object bag verbatim, so a literal credential is fully supported too. `GET /hooks` and
     /// `GET /hooks/{name}` serve this at READ-ONLY admin scope. The values are readable only where
     /// they are writable: the config file and the config overlay.
@@ -1173,15 +1173,15 @@ impl SeriesUsage {
 
 /// The admin-plane auth read (`GET /api/v1/admin/admin-auth`): which modules guard the ADMIN surface
 /// (distinct from the ingress `auth` chain). `modules` is the live `admin_auth` chain (the SAME
-/// resource `PUT /api/v1/admin/admin-auth` writes), so a read-after-write is coherent. An empty chain is
-/// the open (anonymous, full-authority) dev posture, `configured: false`. Never a secret.
+/// resource `PUT /api/v1/admin/admin-auth` writes), so a read-after-write is coherent. An empty chain
+/// admits no one (`configured: false`); boot refuses `admin_auth: []`. Never a secret.
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
 pub struct AdminAuthView {
-    /// Whether an admin credential chain is configured. `false` = the empty chain = open dev posture.
+    /// Whether an admin credential chain is configured. `false`: the empty chain (admits no one).
     pub configured: bool,
     /// The active admin-plane guard module names, the `admin_auth` chain verbatim, reported in order.
-    /// Empty when the admin plane is open.
+    /// Empty only for the empty chain, which admits no one.
     #[cfg_attr(feature = "openapi-schema", schemars(description = modules_description()))]
     pub modules: Vec<String>,
     /// Whether the chain is the default one (`auth.admin_auth` absent): the operator credential
@@ -1195,7 +1195,7 @@ pub struct AdminAuthView {
 fn modules_description() -> String {
     String::from(
         "The active admin-plane guard module names, the `admin_auth` chain verbatim, reported in \
-         order. Empty when the admin plane is open.",
+         order. Empty only for the empty chain, which admits no one.",
     )
 }
 

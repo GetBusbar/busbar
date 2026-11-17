@@ -348,7 +348,7 @@ fn counted_raw_fault_crosses_the_dispatcher_and_sets_the_generic_login_call_flag
 #[test]
 fn every_direct_contract_kind_refuses_the_previous_host_table_cohort_before_operations() {
     use crate::dispatch::kinds::{
-        auth::Auth, export::Export, hook::Hook, plane::Plane, secret::Secret, store_v4::StoreV4,
+        auth::Auth, export::Export, hook::Hook, plane::Plane, store_v4::StoreV4,
     };
     use crate::dispatch::Kind;
 
@@ -379,7 +379,6 @@ fn every_direct_contract_kind_refuses_the_previous_host_table_cohort_before_oper
         );
     }
     rejects::<StoreV4>(0x5f47532174fb052b);
-    rejects::<Secret>(0x305714fde3324815);
     rejects::<Auth>(0x5b57a4ca0d0cd422);
     rejects::<Hook>(0x554fa343936df174);
     rejects::<Export>(0xfe016c85b529734e);

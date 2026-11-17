@@ -19,6 +19,14 @@
 # ── Listen address ───────────────────────────────────────────────────────────────────────────────
 listen: "0.0.0.0:8080"
 
+# A listener without TLS refuses to boot unless its plaintext is accepted explicitly, loopback included
+# (BUSBAR-3172). This example serves plaintext; for production add `tls:` (cert and key) and remove the
+# acceptance:
+#   tls:
+#     cert: { file: /etc/busbar/cert.pem }
+#     key:  { file: /etc/busbar/key.pem }
+listen_insecure_transport: { accept: [plaintext], reason: "example config: TLS terminated by the fronting proxy" }
+
 # ── Admin plane (always its own listener) ──────────────────────────────────────────────────────────
 # The admin API (/api/v1/admin/…) ALWAYS runs on its OWN listener — it is never served on the data
 # `listen` above. The management plane is privileged, so it stays isolated with its own TLS/mTLS,
@@ -36,6 +44,10 @@ listen: "0.0.0.0:8080"
 #   key:       { file: /etc/busbar/admin-key.pem }
 #   client_ca: { file: /etc/busbar/admin-client-ca.pem }   # present ⇒ mTLS required on the admin plane
 # admin_require_mtls: true                               # false ⇒ waive the exposed-admin mTLS guard
+#
+# The admin listener without `admin_tls` serves plaintext and needs its own explicit acceptance, loopback
+# included (BUSBAR-3172). Remove it once `admin_tls` is set.
+admin_listen_insecure_transport: { accept: [plaintext], reason: "loopback-only admin plane on this host" }
 
 # ── busbar AS an OAuth 2.1 authorization server (oauth_as:) ──────────────────────────────────────
 # ABSENT BY DEFAULT, and absent means nothing is built: no server, no store, no signing key, no
@@ -48,13 +60,17 @@ listen: "0.0.0.0:8080"
 #
 # oauth_as:
 #   # RFC 8414 `issuer`: this authorization server's identity, and the base every endpoint is
-#   # derived from - `{issuer}/authorize`, `{issuer}/token`, `{issuer}/jwks`, `{issuer}/consent`,
-#   # and `/.well-known/oauth-authorization-server` with the issuer's PATH appended AFTER it
+#   # derived from - `{issuer}/authorize`, `{issuer}/token`, `{issuer}/jwks`, and
+#   # `/.well-known/oauth-authorization-server` with the issuer's PATH appended AFTER it
 #   # (RFC 8414 s3.1 puts the well-known segment first; RFC 9728 puts it last - the two documents
 #   # this deployment serves build their paths in opposite orders).
 #   # No trailing slash, no query, no fragment: all three are boot refusals, because RFC 9207 has
 #   # clients compare this value byte-for-byte.
 #   issuer: "https://gw.example.com"
+#   # The operator approval pages (`/oauth/device`, `/oauth/consent`) are NOT under the issuer:
+#   # they live on the admin listener, whose address busbar publishes, so `oauth_as:` requires a
+#   # loopback `admin_listen` (the default `127.0.0.1:8081`). Reach it with `ssh -L` or
+#   # `kubectl port-forward`.
 #
 #   # The ES256 signing key: base64 of a PKCS#8 v1 DER P-256 private key. Produce one with
 #   #   openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -outform DER | base64
@@ -474,8 +490,10 @@ store:
 #   trust:
 #     publishers:                            # third-party ed25519 signing keys (allowlist)
 #       - name: acme
-#         public_key: "<64-hex ed25519 public key>"
-#     allow_unsigned: false                  # explicit opt-in for unsigned plugins (default false)
-#     allow_third_party: false               # explicit opt-in for non-allowlisted publishers
+#         plugins: [acme-store-dynamo]        # the exact canonical names this publisher may sign
+#         keys:
+#           - { public_key: "<64-hex ed25519 public key>", revoked: false }
+#     allow_untrusted: false                 # explicit opt-in for unsigned or unknown-publisher code,
+#                                            # always labelled unverified (default false)
 #   min_versions:                            # anti-downgrade floors by manifest name (third-party;
 #     acme-store-dynamo: "2.0.0"             # first-party is auto-floored at the binary version)

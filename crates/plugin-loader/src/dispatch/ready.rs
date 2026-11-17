@@ -56,7 +56,3 @@ impl<K: Kind> Plugin<K> {
 #[cfg(test)]
 #[path = "../../tests/fixtures/ready_plugins.rs"]
 pub(crate) mod ready_plugins;
-
-#[cfg(test)]
-#[path = "../tests/ready_tests.rs"]
-mod tests;

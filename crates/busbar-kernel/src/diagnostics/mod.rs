@@ -339,11 +339,11 @@ diagnostics! {
         "An auth chain entry sets `max_admin_scope: full`, so every principal identified by that module can hold FULL admin authority — the default ceiling is read-only. A security advisory: a compromised or over-broad identity source behind that module becomes an admin-authority source.",
         "Confirm the named module's chain is trusted end to end and that granting full admin to everyone it identifies is intended. Lower `max_admin_scope` (or scope the module's principals) if full admin is broader than needed.";
 
-    /// auth.chain names `keys` and auth.admin_auth is explicitly empty — anyone can mint keys.
+    /// auth.chain names `keys` and auth.admin_auth is explicitly empty: refused, no credential mints.
     CONFIG_OPEN_ADMIN_MINT = 3012, Config, Actionable, "config-open-admin-mint", "1.6.0", false,
-        "auth.chain names `keys` with an empty admin_auth (anyone can mint virtual keys)",
-        "The auth chain names the built-in `keys` verifier while `auth.admin_auth` is explicitly empty, so the admin API has no credential gating it — ANYONE can mint virtual keys through it. Acceptable only for local development.",
-        "Configure `auth.admin_auth` (an admin credential entry, or an admin module granting `mint`/`full`) before exposing busbar's admin API to any untrusted network, so key minting is gated by an operator credential.";
+        "auth.chain names `keys` with an empty admin_auth (refused: no admin credential can mint a key)",
+        "The auth chain names the built-in `keys` verifier while `auth.admin_auth` is explicitly empty. 1.6.0 has no open admin posture, so the config is refused: an empty admin chain identifies no one, and no admin credential could mint a key.",
+        "Delete the auth.admin_auth line to use the default chain [<operator>, keys], where <operator> is the name of your identity-providers entry for the first-party operator credential plugin (module: admin-tokens). Give that entry `settings: {sha256: \"<digest>\"}`, where <digest> is the SHA-256 of your admin token as 64 lower-case hex characters. To mint a token and its digest: `token=$(openssl rand -base64 32); printf %s \"$token\" | openssl dgst -sha256 -r | cut -d' ' -f1`. Keep the token as a secret and send it as `Authorization: Bearer` followed by the token. Or list the admin providers you use in auth.admin_auth.";
 
     /// An auth plugin states the operator credential but is not first-party; nothing references it.
     CONFIG_OPERATOR_INERT = 3030, Config, Actionable, "config-operator-inert", "1.6.0", false,
@@ -739,11 +739,12 @@ diagnostics! {
         "A unit's drained usage report named a class that no installed plane declares as billable, no configured `units:` entry names, and is not one of the reserved four. The unit's one line is still written with every count, but its money is REFUSED rather than priced: a class nobody declared is never billed at zero and never dropped. Every read of the balance the line sits on refuses until it is explained.",
         "The plane that served the unit reported a class outside its declaration, which is a plugin defect: upgrade or fix the plane so it declares every class it reports, or configure the class under the lane's `units:` if it is an operator-priced open class.";
 
-    /// auth.chain is empty (open relay) — emitted at error so RUST_LOG=error cannot mask it.
+    /// auth.chain is written empty (open relay) — emitted at error so RUST_LOG=error cannot mask it.
+    /// A configuration with no `auth:` block is refused with it at validation (#358).
     OPEN_RELAY_NO_AUTH = 8014, Governance, Actionable, "open-relay-no-auth", "1.6.0", false,
         "auth.chain is empty — OPEN RELAY (every request admitted unauthenticated)",
-        "The auth chain is empty (either explicitly, or because the `auth:` block is absent and serde-defaults to none), so every data-plane request is admitted unauthenticated — an OPEN RELAY forwarding anyone's traffic on your upstream credentials. Emitted at ERROR (not warn, which RUST_LOG=error would suppress) and unconditionally on stderr so the state cannot be masked by log configuration. Acceptable only for local development.",
-        "Configure `auth.chain` (a `keys` verifier and/or an auth plugin) before exposing busbar to any untrusted network. This is the same open-relay condition as BUSBAR-4004, surfaced at boot.";
+        "The auth chain is written empty (`auth: { chain: [] }`, the operator's explicit open-relay acknowledgement), so every data-plane request is admitted unauthenticated — an OPEN RELAY forwarding anyone's traffic on your upstream credentials. Emitted at ERROR (not warn, which RUST_LOG=error would suppress) and unconditionally on stderr so the state cannot be masked by log configuration. A configuration with no `auth:` block is refused with this code instead of booting: busbar never runs an open relay by omission, and the 1.5.5 upgrade writes no `auth:` block for you (it reports the missing block as an action item with the same remedy). Acceptable only for local development.",
+        "Add `auth: { chain: [] }` explicitly to run an open relay (bannered at every boot and audited as `open_relay` in `node.boot`), or configure a chain (`auth: { chain: [keys] }` with virtual keys minted through the admin API, and/or an auth plugin) before exposing busbar to any untrusted network. This is the same open-relay condition as BUSBAR-4004, surfaced at boot.";
 
     /// A stored recoverable credential opens under neither at-rest key, so it does not authenticate.
     CREDENTIAL_AT_REST_UNOPENABLE = 8023, Governance, Actionable, "credential-at-rest-unopenable", "1.6.0", false,
@@ -1034,9 +1035,9 @@ diagnostics! {
         "Investigate the logged context and store backend — a blocking-task panic is a bug or a resource failure. Capture the error and file a bug if it recurs; the request was safely failed.";
 
     ADMIN_AUTH_CHAIN_EMPTY = 4026, Auth, Actionable, "admin-auth-chain-empty", "1.6.0", false,
-        "admin_auth chain is EMPTY (open, anonymous, full-authority dev posture)",
-        "An EMPTY admin_auth chain was seen: the admin API's open dev posture admits every admin request anonymously with FULL authority. The live `PUT /api/v1/admin/admin-auth` applies an empty chain as 1.5.5 did, with this warning, and the open posture is then live until the chain is set again.",
-        "Leave `admin_auth` empty ONLY for local development. To opt into the open posture, set `admin_auth: []` in config.yaml and restart. Otherwise configure a non-empty chain (an admin credential entry, or an admin module) before exposing the admin API to any untrusted network.";
+        "admin_auth chain is EMPTY (it identifies no one; 1.6.0 has no open admin posture)",
+        "An EMPTY admin_auth chain was seen. 1.6.0 has no anonymous admin posture: an empty chain identifies no one, so it admits no admin request and earns no scope. Boot and `busbar --validate` refuse `auth.admin_auth: []`, and the live `PUT /api/v1/admin/admin-auth` refuses an empty chain.",
+        "Delete the auth.admin_auth line to use the default chain [<operator>, keys], where <operator> is the name of your identity-providers entry for the first-party operator credential plugin (module: admin-tokens). Give that entry `settings: {sha256: \"<digest>\"}`, where <digest> is the SHA-256 of your admin token as 64 lower-case hex characters. To mint a token and its digest: `token=$(openssl rand -base64 32); printf %s \"$token\" | openssl dgst -sha256 -r | cut -d' ' -f1`. Keep the token as a secret and send it as `Authorization: Bearer` followed by the token. Or list the admin providers you use in auth.admin_auth.";
 
     ADMIN_CREATEKEY_MALFORMED_BODY = 4027, Auth, BenignRecurring, "admin-createkey-malformed-body", "1.6.0", false,
         "create_key request body failed to parse (client 400)",
@@ -1614,8 +1615,8 @@ diagnostics! {
     /// The admin API error envelope's `diag` for `error.code = unauthorized`.
     ADMIN_UNAUTHORIZED = 8102, Governance, Actionable, "admin-unauthorized", "1.6.0", false,
         "The admin request carries no valid admin credential",
-        "The request reached `/api/v1/admin` without a credential the `admin_auth:` chain accepts: no `Authorization: Bearer` or `x-admin-token` header, an unknown or expired token, or a key that is not an admin credential (`invalid_api_key`).",
-        "Send the operator admin token (or a credential your admin auth plugin accepts) in `Authorization: Bearer <token>` or `x-admin-token`. docs/admin-api.md covers the auth chain.";
+        "The request reached `/api/v1/admin` without a credential the `admin_auth:` chain accepts: no `Authorization: Bearer` header, an unknown or expired token, or a key that is not an admin credential (`invalid_api_key`).",
+        "Send the operator admin token (or a credential your admin auth plugin accepts) in `Authorization: Bearer <token>`. docs/admin-api.md covers the auth chain.";
 
     /// The admin API error envelope's `diag` for `error.code = method_not_allowed`.
     ADMIN_METHOD_NOT_ALLOWED = 8103, Governance, Actionable, "admin-method-not-allowed", "1.6.0", false,
@@ -1910,11 +1911,26 @@ diagnostics! {
         example "plugins:\n  trust:\n    operator: my-publisher",
         detail "plugins.trust.operator: reserved; 1.6.0 operator plugins must be first-party signed (Q13)";
 
+    /// A root listener would serve plaintext without its explicit acceptance (#359 SEC-L1).
+    CONFIG_PLAINTEXT_LISTENER = 3172, Config, Fatal, "config-plaintext-listener", "1.6.0", false,
+        "A listener would serve plaintext without an acceptance",
+        "The data listener (`listen`) or the admin listener (`admin_listen`) has no TLS (`tls:` / `admin_tls:`) and no explicit acceptance to serve in the clear, or an acceptance is written beside TLS. Every listener without TLS needs its acceptance, loopback included, because anything sent to it, credentials included, can be read and altered on the network path. The upgrade from 1.5.x does not write the acceptance for you. A Store overlay cannot set it; an overlay that sets TLS makes a file acceptance inert, and the boot warns that it can be removed.",
+        "Add `tls:` (or `admin_tls:`) with a certificate and key, or, to serve that listener in the clear deliberately, write `listen_insecure_transport: { accept: [plaintext], reason: \"...\" }` (or `admin_listen_insecure_transport:`) with your real reason in config.yaml. A listener that has TLS takes no acceptance."
+        => config_plaintext_listener(detail) "{detail}",
+        example "listen: 0.0.0.0:8080",
+        detail "`listen` 0.0.0.0:8080 has no TLS and no acceptance: it would serve plaintext, so anything sent to it, credentials included, could be read and altered on the network path; add `tls:` (cert and key), or to serve it in the clear deliberately add `listen_insecure_transport: { accept: [plaintext], reason: \"<why>\" }` with your real reason";
+
     /// An outbound dial was refused (destination guard, plaintext rule or trust store).
     EGRESS_DIAL_REFUSED = 5051, Proxy, BenignRecurring, "egress-dial-refused", "1.6.0", false,
         "An outbound dial was refused",
         "busbar refused an outbound connection: the destination guard refused the host or an address it answered, plaintext was not admitted to it (BUSBAR-3141), or no trust anchor applies (BUSBAR-3140). The line carries the verdict, the class, the host, the owning plugin and need; it is rate-limited per host and reason, and each refusal writes one `egress.dial_refused` audit record.",
         "For a private registration target, set allow_private on that declared registration. Configured provider reach applies only to its own selected base/token origins. Use TLS and configure its CA under advanced.tls when needed; metadata and strict OPEN_WEB checks remain enforced.";
+
+    /// The host's own outbound framer could not render the request before any answer.
+    EGRESS_LOCAL_FRAMER_FAILED = 5052, Proxy, Actionable, "egress-local-framer-failed", "1.6.0", false,
+        "The local egress framer failed",
+        "The engine's local outbound framer could not render the request before any answer. The log identifies the pool, member and framing fault. The request is refused as an internal error without charging member health.",
+        "Inspect the framing fault and the named pool and member in the log. Report a reproducible local framing failure with the engine version and request shape, excluding credentials and secret content.";
 
     /// An `advanced.tls` trust anchor expired at runtime and was withdrawn.
     EGRESS_TLS_ANCHOR_EXPIRED_WITHDRAWN = 5048, Proxy, Actionable, "egress-tls-anchor-expired-withdrawn", "1.6.0", false,

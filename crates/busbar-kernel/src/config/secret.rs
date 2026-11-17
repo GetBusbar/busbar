@@ -150,7 +150,9 @@ impl SecretResolver {
                 ),
             )
         };
-        if let Some(axis) = axis().filter(|a| a.linked(module)) {
+        // WP3 step 2: a resolver's own native source (the root's custody) answers first; the axis serves a
+        // resolver bound to no source of its own.
+        if let Some(axis) = axis().filter(|a| self.plugin.is_none() && a.answers(module)) {
             let settings = source.settings.encode().map_err(|_| {
                 refusal(
                     ERROR_KIND_INVALID,

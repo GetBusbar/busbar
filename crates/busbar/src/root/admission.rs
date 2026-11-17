@@ -676,14 +676,6 @@ fn document_replace(
     })
 }
 
-pub(crate) fn hook_answers(
-    rows: &dyn busbar_contract::plugin_rows::PluginRows,
-    module: &str,
-) -> bool {
-    crate::root::loader::rows::registry_of(rows)
-        .is_some_and(|registry| crate::root::loader::hook_door::dropped_answers(registry, module))
-}
-
 pub(crate) fn auth_chain_module(door: busbar_contract::abi::mechanism::door::DoorFn) -> bool {
     crate::root::loader::dispatch::kinds::auth::declares_chain_module(door)
 }

@@ -370,9 +370,10 @@ fn entry_of(
 
 /// Every action the engine writes to the admin audit (ADMIN-API-1.6 section 7.2). The set is closed:
 /// `action=` matches these names and their nouns, and `components.x-busbar-audit-actions` publishes
-/// it. Sorted by byte order. `keyset.rotated`, `plugin.health`, `plugin.reloaded`, `store.connected`
-/// and `store.disconnected` are the engine events section 17 writes; they are published ahead of
-/// their emitters.
+/// it. Sorted by byte order. `plugin.health`, `plugin.reloaded`, `store.connected` and
+/// `store.disconnected` are the engine events section 17 writes; they are published ahead of their
+/// emitters. `keyset.rotated` is not: 1.6.0 has no keyset rotation, so nothing could write it
+/// (DES-I-3-376).
 pub const AUDIT_ACTIONS: &[&str] = &[
     "admin.forbidden",
     "admin.rate_limited",
@@ -406,7 +407,6 @@ pub const AUDIT_ACTIONS: &[&str] = &[
     "key.patch",
     "key.revoke",
     "key.rotate",
-    "keyset.rotated",
     "node.boot",
     "node.drain",
     "overlay.reset",
