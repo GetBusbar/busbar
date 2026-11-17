@@ -601,7 +601,15 @@ pub(crate) fn convert_and_write(
     config: &Path,
     stamped: bool,
 ) -> Result<busbar_migrate::Written, String> {
-    run_blocking(store, keys, config, stamped)?;
+    // Every refusal of step 5 is judged first, read-only, so it changes nothing (#328).
+    busbar_migrate::check_settled(plan, settled, check).map_err(|refusal| refusal.to_string())?;
+    if let Some(report) = run_blocking(store, keys, config, stamped)? {
+        tracing::info!(
+            target: "busbar::migrate",
+            "the 1.5.5 records were migrated: {}",
+            report_line(&report)
+        );
+    }
     write_with_attempt(store, plan, settled, check, config).map_err(|refusal| refusal.to_string())
 }
 
