@@ -1649,3 +1649,29 @@ async fn registered_http_listener_accepts_only_its_planes_registered_upgrade() {
         "ordinary matching physical framing retains its existing path"
     );
 }
+
+#[tokio::test]
+async fn listener_mount_candidates_do_not_publish_into_the_shared_topology() {
+    let topology = topology();
+    let plan = plan(topology.clone());
+    let first = projection_boundary_app(
+        topology.clone(),
+        vec![route("private", "/exports/private/scrape", RouteAuth::None)],
+        1,
+    )
+    .await;
+    let second = projection_boundary_app(
+        topology,
+        vec![route("private", "/exports/private/scrape", RouteAuth::None)],
+        2,
+    )
+    .await;
+    assert!(plan
+        .mount_planes(&super::Served::default(), &first, &[])
+        .is_ok());
+    assert!(
+        plan.mount_planes(&super::Served::default(), &second, &[])
+            .is_ok(),
+        "constructing one candidate must not fill another generation's listener slots"
+    );
+}
