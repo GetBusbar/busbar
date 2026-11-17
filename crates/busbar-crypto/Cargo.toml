@@ -34,6 +34,9 @@ test-support = ["tls", "busbar-crypto-backend/test-support"]
 [dev-dependencies]
 # The suite runs against the facade as every crate sees it (busbar_contract::crypto, test-support on).
 busbar-contract = { path = "../busbar-contract", features = ["test-support"] }
+# tests/contract_pin.rs hashes contract.rs by item kind (DES crypto-seam r3 §4.2).
+syn = { version = "2", default-features = false, features = ["full", "parsing", "printing"] }
+quote = { version = "1", default-features = false }
 
 [lints]
 workspace = true

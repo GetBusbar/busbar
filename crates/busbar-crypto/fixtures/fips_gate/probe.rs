@@ -21,4 +21,12 @@ fn main() {
     println!("checked_hash={:?}", busbar_crypto::verification::Context::unrestricted().sha256(b"abc"));
     println!("validation={:?}", busbar_crypto::VALIDATION);
     println!("validated_mode={}", busbar_crypto::VALIDATED_MODE);
+    #[cfg(feature = "conformance")]
+    {
+        // SHA-1 is refused (site 5), then HMAC-SHA1's unwrap fails the check: the refusal is kept.
+        let failed = std::panic::catch_unwind(busbar_crypto::conformance::legacy_algs).is_err();
+        assert!(failed, "the stub performs no crypto, so legacy_algs cannot pass");
+        println!("refusals={:?}", busbar_crypto::conformance::refusals());
+        println!("contract_pin={}", busbar_crypto::conformance::CONTRACT_PIN);
+    }
 }
