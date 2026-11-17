@@ -4,7 +4,7 @@
 use busbar_kernel::config;
 use std::sync::Arc;
 
-/// Root-only store opener with complete per-open custody and store authority.
+/// Fixture store opener with complete per-open custody and store authority.
 pub(crate) struct RegistryStore<N: busbar_plugin_abi::host_side::needs::Needs> {
     pub(crate) registry: Arc<busbar_plugin_loader::instance::Registry>,
     pub(crate) needs: Arc<N>,
@@ -25,8 +25,8 @@ impl<N: busbar_plugin_abi::host_side::needs::Needs> StoreOpener for RegistryStor
     }
 }
 
-/// The store's MIN-3 open (W2-SW-STORE; IF §11.2 `Registry::open_store`, §11.3): the one way the kernel's store
-/// boot opens its configured store. The answer's backend is the store adapter, the kernel's own
+/// The fixture's MIN-3 store open (W2-SW-STORE; IF §11.2 `Registry::open_store`, §11.3).
+/// The answer's backend is the store adapter, the kernel's own
 /// `PersistenceBackend` over the proxy (on the store lane for a blocking-file store); there is no other store
 /// port. The store converts its own bag in that `open` (WBS rule 12): no migrate call is made here.
 pub trait StoreOpener: Send + Sync {
@@ -38,26 +38,6 @@ pub trait StoreOpener: Send + Sync {
         'a,
         Result<busbar_ports::store::StoreHandle, busbar_plugin_loader::instance::OpenError>,
     >;
-}
-
-/// The opener of a caller that holds no MIN-3 registry (a tool, a fixture): every open refuses, so a store is
-/// never opened through a registry that was not handed over.
-pub struct Unopened;
-
-impl StoreOpener for Unopened {
-    fn open_store<'a>(
-        &'a self,
-        _spec: &'a busbar_plugin_loader::instance::InstanceSpec<'a>,
-    ) -> busbar_plugin_abi::host_side::caller::BoxFut<
-        'a,
-        Result<busbar_ports::store::StoreHandle, busbar_plugin_loader::instance::OpenError>,
-    > {
-        Box::pin(core::future::ready(Err(
-            busbar_plugin_loader::instance::OpenError::Unknown(
-                "no store registry is installed".into(),
-            ),
-        )))
-    }
 }
 
 pub async fn bootstrap_config_store(
@@ -86,6 +66,7 @@ async fn open_config_store(
         .map_err(|error| failed(error.to_string()))?
         .into_exposed(&busbar_kernel::seal::lend());
     let spec = busbar_plugin_loader::instance::InstanceSpec {
+        store_migration: None,
         purpose: busbar_plugin_loader::instance::OpenPurpose::Canonical,
         identity: &store.module,
         name: busbar_kernel::appbuild::STORE_INSTANCE,

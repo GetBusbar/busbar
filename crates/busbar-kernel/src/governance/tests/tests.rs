@@ -186,6 +186,7 @@ fn budget_group_cfg(cap: i64, period: &str, parent: Option<&str>) -> crate::conf
         parent: parent.map(String::from),
         enabled: true,
         limits: vec![LimitCfg {
+            selected: None,
             metric: LimitMetric::Budget,
             amount: u64::try_from(cap).unwrap_or(0),
             per: Some(per),
@@ -431,6 +432,7 @@ async fn test_metering_accumulates_split_per_key_model_and_bucket() {
     let day = metering_bucket(1_700_000_123);
     assert_eq!(day % METERING_BUCKET_SECS, 0);
     let d = |model: &str, input: u64, output: u64| MeteringDelta {
+        pricing: None,
         scale: 0,
         usage_units: Default::default(),
         key_id: "vk_a".into(),
@@ -454,6 +456,7 @@ async fn test_metering_accumulates_split_per_key_model_and_bucket() {
 
     s.ledger()
         .add_metering(&MeteringDelta {
+            pricing: None,
             scale: 0,
             bucket: day + METERING_BUCKET_SECS,
             ..d("gpt-x", 999, 999)
@@ -1558,6 +1561,7 @@ async fn test_rate_headroom_reports_fraction_remaining() {
                 parent: None,
                 enabled: true,
                 limits: vec![LimitCfg {
+                    selected: None,
                     metric: LimitMetric::Requests,
                     amount: 0,
                     per: Some(LimitWindow::Minute),
@@ -1585,6 +1589,7 @@ async fn test_rate_headroom_reports_fraction_remaining() {
                 enabled: true,
                 limits: vec![
                     LimitCfg {
+                        selected: None,
                         metric: LimitMetric::Requests,
                         amount: 4,
                         per: Some(LimitWindow::Minute),
@@ -1593,6 +1598,7 @@ async fn test_rate_headroom_reports_fraction_remaining() {
                         downgrade_to: None,
                     },
                     LimitCfg {
+                        selected: None,
                         metric: LimitMetric::Tokens,
                         amount: 100_000,
                         per: Some(LimitWindow::Minute),
@@ -1655,6 +1661,10 @@ async fn test_budget_sweep_is_window_agnostic_across_cotenants() {
         rolled_eras: Vec::new(),
         dirty,
         last_touch: now,
+        fee_incarnation: 0,
+        fee_sequence: 0,
+        fee_captured: 0,
+        fee_obligations: 0,
     };
 
     {
@@ -1732,6 +1742,10 @@ async fn test_budget_sweep_staleness_boundary_is_exact() {
         rolled_eras: Vec::new(),
         dirty: false,
         last_touch,
+        fee_incarnation: 0,
+        fee_sequence: 0,
+        fee_captured: 0,
+        fee_obligations: 0,
     };
 
     {
@@ -1810,6 +1824,10 @@ async fn test_budget_sweep_cadence_post_increment_no_off_by_one() {
         rolled_eras: Vec::new(),
         dirty: false,
         last_touch: now,
+        fee_incarnation: 0,
+        fee_sequence: 0,
+        fee_captured: 0,
+        fee_obligations: 0,
     };
 
     {
@@ -3305,6 +3323,10 @@ async fn test_budget_sweep_evicts_idle_attribution_cells_but_never_group_caps() 
         rolled_eras: Vec::new(),
         dirty,
         last_touch,
+        fee_incarnation: 0,
+        fee_sequence: 0,
+        fee_captured: 0,
+        fee_obligations: 0,
     };
 
     {
@@ -4456,6 +4478,10 @@ async fn test_budget_sweep_only_exempts_group_cells_that_still_enforce_a_cap() {
         rolled_eras: Vec::new(),
         dirty: false,
         last_touch: now - max_window - 1,
+        fee_incarnation: 0,
+        fee_sequence: 0,
+        fee_captured: 0,
+        fee_obligations: 0,
     };
     {
         let mut map = gov.budget.write("survivor3");
@@ -4523,6 +4549,10 @@ async fn test_reclaim_group_cells_drops_every_window_and_scope_of_that_group() {
         rolled_eras: Vec::new(),
         dirty: false,
         last_touch: now,
+        fee_incarnation: 0,
+        fee_sequence: 0,
+        fee_captured: 0,
+        fee_obligations: 0,
     };
 
     for id in [
@@ -4576,6 +4606,7 @@ async fn test_reclaim_group_cells_drops_the_per_group_concurrent_gauge() {
     let concurrent_group = || crate::config::GroupCfg {
         enabled: true,
         limits: vec![LimitCfg {
+            selected: None,
             metric: LimitMetric::Concurrent,
             amount: 4,
             per: None,
@@ -4676,6 +4707,10 @@ async fn test_sweep_exemption_survives_a_group_name_containing_the_id_delimiters
         rolled_eras: Vec::new(),
         dirty: false,
         last_touch: now - max_window - 1,
+        fee_incarnation: 0,
+        fee_sequence: 0,
+        fee_captured: 0,
+        fee_obligations: 0,
     };
     {
         let mut map = gov.budget.write("survivor-delim");
@@ -4729,6 +4764,10 @@ async fn test_reclaim_group_cells_never_takes_a_longer_name_that_shares_the_at_p
         rolled_eras: Vec::new(),
         dirty: false,
         last_touch: now,
+        fee_incarnation: 0,
+        fee_sequence: 0,
+        fee_captured: 0,
+        fee_obligations: 0,
     };
     for (id, owner) in [
         ("group:user:alice@total", "user:alice"),
@@ -6451,6 +6490,7 @@ fn exhausted_unit(
         audit: None,
         measurement: None,
         unread: None,
+        partitions: None,
     }
 }
 

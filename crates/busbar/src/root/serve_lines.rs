@@ -3,11 +3,14 @@
 
 use std::sync::Arc;
 
+use busbar_kernel::limits::process_admission::{
+    AdmissionClass, OwnedInput, ProcessAdmission, RequestLease,
+};
 use busbar_kernel::plane_driver::{CallerEnd, HeadFields, SessionCaller};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::sync::{mpsc, Mutex as AsyncMutex};
 
-use super::{DoorRequest, Served};
+use super::Served;
 
 pub(crate) use crate::root::off_path::serve_lines::session;
 pub(crate) use crate::root::off_path::serve_lines::{env_credential, line_carrier};
@@ -21,27 +24,6 @@ fn installed() -> &'static Result<Option<&'static str>, String> {
 #[must_use]
 pub(crate) fn carrier() -> Option<&'static str> {
     installed().as_ref().ok().copied().flatten()
-}
-
-#[must_use]
-pub(crate) fn refusal() -> Option<&'static str> {
-    installed().as_ref().err().map(String::as_str)
-}
-
-#[must_use]
-pub(crate) fn line_claim(served: &Served) -> Option<(usize, u32)> {
-    let carrier = carrier()?;
-    served.planes.iter().enumerate().find_map(|(p, plane)| {
-        plane
-            .snapshot
-            .claims
-            .iter()
-            .position(|c| {
-                c.carrier == carrier && c.flags & busbar_contract::abi::plane::CLAIM_RAW_AFFIX == 0
-            })
-            .and_then(|i| u32::try_from(i).ok())
-            .map(|claim| (p, claim))
-    })
 }
 
 pub(crate) fn refuse(plane: &str, carrier: &str, sentence: &str) {
@@ -169,10 +151,17 @@ fn terminated(bytes: &[u8]) -> Vec<u8> {
 }
 
 impl<R: AsyncRead + Unpin + Send> SessionCaller for LineCaller<R> {
+    /// The line loop admits and owns each read explicitly; a bare read cannot bypass admission.
     async fn read(&self) -> Option<Vec<u8>> {
+        None
+    }
+}
+
+impl<R: AsyncRead + Unpin + Send> LineCaller<R> {
+    async fn read_input(&self, request: RequestLease) -> Option<OwnedInput> {
         let mut reader = self.lines.lock().await;
         // A handed-back line buffer when one is spare; a blank line reuses it for the next read.
-        let mut buf = self.spare.take();
+        let mut buf = request.adopt_input(self.spare.take()).ok()?;
         loop {
             buf.clear();
             match read_line(&mut *reader, &mut buf, self.max_line).await {
@@ -183,7 +172,7 @@ impl<R: AsyncRead + Unpin + Send> SessionCaller for LineCaller<R> {
                 }
                 Ok(_) => {}
             }
-            let line = trim(&buf).len();
+            let line = trim(buf.as_ref()).len();
             if line != 0 {
                 buf.truncate(line);
                 return Some(buf);
@@ -195,15 +184,15 @@ impl<R: AsyncRead + Unpin + Send> SessionCaller for LineCaller<R> {
 pub(crate) async fn serve_lines(
     served: Served,
     app: Arc<busbar_kernel::state::AppHandle>,
-    pin: fn() -> Option<crate::root::kernel::PinnedHistory>,
+    admission: Arc<ProcessAdmission>,
     stop: impl std::future::Future<Output = ()>,
 ) -> i32 {
     serve_lines_over(
         served,
         app,
-        pin,
         tokio::io::stdin(),
         tokio::io::stdout(),
+        admission,
         stop,
     )
     .await
@@ -212,9 +201,9 @@ pub(crate) async fn serve_lines(
 pub(crate) async fn serve_lines_over<R, W, S>(
     served: Served,
     app: Arc<busbar_kernel::state::AppHandle>,
-    pin: fn() -> Option<crate::root::kernel::PinnedHistory>,
     reader: R,
     writer: W,
+    admission: Arc<ProcessAdmission>,
     stop: S,
 ) -> i32
 where
@@ -230,110 +219,22 @@ where
     match one_line_plane(&serving) {
         Ok(Some(at)) => {
             let seat = served.ports[at].clone();
-            return serve_port_lines(seat, app, reader, writer, stop).await;
+            serve_port_lines(seat, app, reader, writer, admission, stop).await
         }
-        Ok(None) => {}
+        // Boot judged `--stdio` before any instance opened (WP1-GAP r3 §1.3); a generation that
+        // lost its one line plane since is refused the same way, never served elsewhere.
+        Ok(None) => {
+            eprintln!(
+                "busbar: {}",
+                busbar_plugin_loader::instance::plane_sections::StdioRefusal::None
+            );
+            1
+        }
         Err(refusal) => {
             eprintln!("busbar: {PORT_LINE_CARRIER} serve refused to start: {refusal}");
-            return 1;
+            1
         }
     }
-    let Some(carrier) = carrier() else {
-        eprintln!("busbar: no linked transport carries lines: nothing to serve on stdin");
-        return 1;
-    };
-    let Some((plane, claim)) = line_claim(&served) else {
-        eprintln!(
-            "busbar: no served plane claims the {carrier} transport: nothing to serve on stdin"
-        );
-        return 1;
-    };
-    let instance = served.planes[plane].instance.as_str();
-    let target = served.planes[plane].snapshot.claims[claim as usize]
-        .target
-        .clone();
-    let audience = served.planes[plane].snapshot.audience.clone();
-    let kernel = Arc::clone(&served.planes[plane].kernel);
-    let driver = Arc::clone(&served.planes[plane].driver);
-    let credential = std::env::var(env_credential(instance, carrier))
-        .ok()
-        .filter(|c| !c.is_empty());
-    let gov = match session(
-        app.load(),
-        instance,
-        carrier,
-        audience.as_deref(),
-        credential.as_deref(),
-    )
-    .await
-    {
-        Ok(gov) => gov,
-        Err(sentence) => {
-            refuse(instance, carrier, &sentence);
-            return 1;
-        }
-    };
-    tracing::info!(
-        governed = gov.is_governed(),
-        "{carrier} serve: session bound; serving on stdin/stdout"
-    );
-    let routes = match super::line_routes(served, pin) {
-        Ok(routes) => routes,
-        Err(e) => {
-            eprintln!("busbar: {carrier} serve refused to start: {e}");
-            return 1;
-        }
-    };
-    // The session's credential, moved into the one shared zeroising buffer each line's request
-    // clones (SP-AU6), never copied per line.
-    let credential = credential.map(|c| {
-        busbar_kernel::auth::CallerCredential::adopted(busbar_contract::Secret::new(c.into_bytes()))
-    });
-    run_io(carrier, reader, writer, stop, move |caller| {
-        let principal = crate::root::off_path::serve_lines::session_principal(&gov);
-        let sink = Arc::clone(&caller);
-        let session = std::num::NonZeroU64::new(
-            driver
-                .open_carrier_session(&principal, Arc::new(move |bytes: &[u8]| sink.emit(bytes)))
-                .expect("served plane holds its core caller binding"),
-        )
-        .expect("kernel carrier sessions are minted above zero");
-        let answer = move |line: Vec<u8>| {
-            let headers = axum::http::HeaderMap::new();
-            let req = DoorRequest {
-                method: axum::http::Method::POST,
-                uri: axum::http::Uri::try_from(target.as_str())
-                    .unwrap_or_else(|_| axum::http::Uri::from_static("/")),
-                headers,
-                body: axum::body::Bytes::from(line),
-                gov: gov.clone(),
-
-                credential: credential.clone(),
-
-                ticket: None,
-                host_ticket_admission: None,
-                app: app.load(),
-
-                scheme: busbar_contract::abi::host::service::SCHEME_PLAIN,
-                consumed_fields: Vec::new(),
-            };
-            let routes = Arc::clone(&routes);
-            let caller = Arc::clone(&caller);
-            async move {
-                let response = routes.answer_on_line(plane, claim, req, session).await;
-                let mut line = caller.spare.take();
-                collect(response, &mut line).await;
-                if line.is_empty() {
-                    caller.spare.give(line);
-                } else {
-                    terminate(&mut line);
-                    let _ = caller.out.send(line).await;
-                }
-            }
-        };
-        (answer, move || kernel.close_carrier_session(session.get()))
-    })
-    .await
 }
 
 /// The label a MIN-3 line session is bound and logged under: the process's own stdin/stdout (IF §12.23).
@@ -360,6 +261,7 @@ async fn serve_port_lines<R, W, S>(
     app: Arc<busbar_kernel::state::AppHandle>,
     reader: R,
     writer: W,
+    admission: Arc<ProcessAdmission>,
     stop: S,
 ) -> i32
 where
@@ -395,38 +297,47 @@ where
     let opened_here = Arc::clone(&opened);
     let open_driver = Arc::clone(&driver);
     let answer_seat = seat.clone();
-    let code = run_io(PORT_LINE_CARRIER, reader, writer, stop, move |caller| {
-        let principal = crate::root::off_path::serve_lines::session_principal(&gov);
-        let line_caller = busbar_kernel::plane_driver::port::LineCaller {
-            principal: Arc::from(principal.as_str()),
-            authenticated: gov.key().is_some(),
-        };
-        let sink = Arc::clone(&caller);
-        let carrier =
-            open_driver.open_carrier(&principal, Arc::new(move |bytes: &[u8]| sink.emit(bytes)));
-        let _ = opened_here.set(carrier);
-        let requests = std::sync::atomic::AtomicU64::new(1);
-        let answer = move |line: Vec<u8>| {
-            let request_id = requests.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            let seat = answer_seat.clone();
-            let caller = Arc::clone(&caller);
-            let line_caller = line_caller.clone();
-            async move {
-                match seat
-                    .answer_line(carrier, request_id, line, &line_caller)
-                    .await
-                {
-                    Ok(mut body) if !body.is_empty() => {
-                        terminate(&mut body);
-                        let _ = caller.out.send(body).await;
+    let code = run_io(
+        PORT_LINE_CARRIER,
+        reader,
+        writer,
+        admission,
+        stop,
+        move |caller| {
+            let principal = crate::root::off_path::serve_lines::session_principal(&gov);
+            let line_caller = busbar_kernel::plane_driver::port::LineCaller {
+                principal: Arc::from(principal.as_str()),
+                authenticated: gov.key().is_some(),
+            };
+            let sink = Arc::clone(&caller);
+            let carrier = open_driver
+                .open_carrier(&principal, Arc::new(move |bytes: &[u8]| sink.emit(bytes)));
+            let _ = opened_here.set(carrier);
+            let requests = std::sync::atomic::AtomicU64::new(1);
+            let answer = move |line: OwnedInput| {
+                let request_id = requests.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let seat = answer_seat.clone();
+                let caller = Arc::clone(&caller);
+                let line_caller = line_caller.clone();
+                async move {
+                    match seat
+                        .answer_line(carrier, request_id, line.into_session_input(), &line_caller)
+                        .await
+                    {
+                        Ok(mut body) if !body.is_empty() => {
+                            terminate(&mut body);
+                            let _ = caller.out.send(body).await;
+                        }
+                        Ok(_) => {}
+                        Err(refused) => {
+                            tracing::warn!(?refused, "a line got no answer from its plane")
+                        }
                     }
-                    Ok(_) => {}
-                    Err(refused) => tracing::warn!(?refused, "a line got no answer from its plane"),
                 }
-            }
-        };
-        (answer, move || open_driver.close_carrier(carrier))
-    })
+            };
+            (answer, move || open_driver.close_carrier(carrier))
+        },
+    )
     .await;
     if let Some(carrier) = opened.get() {
         driver.carrier_ended(*carrier).await;
@@ -438,6 +349,7 @@ async fn run_io<R, W, S, Open, Answer, Unit, Close>(
     carrier: &str,
     reader: R,
     writer: W,
+    admission: Arc<ProcessAdmission>,
     stop: S,
     open: Open,
 ) -> i32
@@ -446,7 +358,7 @@ where
     W: AsyncWrite + Unpin + Send + 'static,
     S: std::future::Future<Output = ()>,
     Open: FnOnce(Arc<LineCaller<R>>) -> (Answer, Close),
-    Answer: Fn(Vec<u8>) -> Unit,
+    Answer: Fn(OwnedInput) -> Unit,
     Unit: std::future::Future<Output = ()> + Send + 'static,
     Close: FnOnce(),
 {
@@ -455,11 +367,7 @@ where
         busbar_kernel::config::limits::default_request_body_max_bytes,
         |l| l.request_body_max_bytes,
     );
-    let max_inbound = limits.as_ref().map_or_else(
-        busbar_kernel::config::limits::default_max_inbound_concurrent,
-        |l| l.max_inbound_concurrent,
-    );
-    run_io_with_limits(carrier, reader, writer, stop, open, max_line, max_inbound).await
+    run_io_with_limits(carrier, reader, writer, stop, open, max_line, admission).await
 }
 
 async fn run_io_with_limits<R, W, S, Open, Answer, Unit, Close>(
@@ -469,14 +377,14 @@ async fn run_io_with_limits<R, W, S, Open, Answer, Unit, Close>(
     stop: S,
     open: Open,
     max_line: usize,
-    max_inbound: usize,
+    admission: Arc<ProcessAdmission>,
 ) -> i32
 where
     R: AsyncRead + Unpin + Send + 'static,
     W: AsyncWrite + Unpin + Send + 'static,
     S: std::future::Future<Output = ()>,
     Open: FnOnce(Arc<LineCaller<R>>) -> (Answer, Close),
-    Answer: Fn(Vec<u8>) -> Unit,
+    Answer: Fn(OwnedInput) -> Unit,
     Unit: std::future::Future<Output = ()> + Send + 'static,
     Close: FnOnce(),
 {
@@ -518,21 +426,25 @@ where
         // Reap only between reads: cancelling caller.read() on a unit completion
         // would discard a partially read line.
         while units.try_join_next().is_some() {}
-        if max_inbound != 0 && units.len() >= max_inbound {
-            tokio::select! {
-                biased;
-                () = &mut stop => break,
-                () = failure.1.notified() => break,
-                result = &mut written => {
-                    writer_ended = true;
-                    if let Err(error) = result {
-                        failure.record("output", std::io::Error::other(error));
-                    }
+        let request = tokio::select! {
+            biased;
+            () = &mut stop => break,
+            () = failure.1.notified() => break,
+            result = &mut written => {
+                writer_ended = true;
+                if let Err(error) = result {
+                    failure.record("output", std::io::Error::other(error));
+                }
+                break;
+            }
+            request = admission.enter(AdmissionClass::Data) => match request {
+                Ok(request) => request,
+                Err(_) => {
+                    failure.record("input", std::io::Error::new(std::io::ErrorKind::WouldBlock, "the gateway is at input capacity"));
                     break;
                 }
-                _ = units.join_next() => continue,
-            }
-        }
+            },
+        };
         let line = tokio::select! {
             biased;
             () = failure.1.notified() => break,
@@ -543,10 +455,15 @@ where
                 }
                 break;
             }
-            line = next_line(&*caller, stop.as_mut()) => line,
+            line = next_line(&*caller, request, stop.as_mut()) => line,
         };
         let Some(line) = line else { break };
-        units.spawn(answer(line));
+        let request = line.request().clone();
+        let answer = answer(line);
+        units.spawn(async move {
+            let _request = request;
+            answer.await;
+        });
 
         while units.try_join_next().is_some() {}
     }
@@ -593,7 +510,11 @@ where
     i32::from(failure.report())
 }
 
-async fn next_line<R, S>(caller: &LineCaller<R>, stop: std::pin::Pin<&mut S>) -> Option<Vec<u8>>
+async fn next_line<R, S>(
+    caller: &LineCaller<R>,
+    request: RequestLease,
+    stop: std::pin::Pin<&mut S>,
+) -> Option<OwnedInput>
 where
     R: AsyncRead + Unpin + Send,
     S: std::future::Future<Output = ()>,
@@ -601,7 +522,7 @@ where
     tokio::select! {
         biased;
         () = stop => None,
-        line = caller.read() => line,
+        line = caller.read_input(request) => line,
     }
 }
 
@@ -622,23 +543,9 @@ async fn drain_units(
     ended
 }
 
-/// The answer's body, appended to `all`.
-async fn collect(response: axum::response::Response, all: &mut Vec<u8>) {
-    use http_body::Body as _;
-    let mut body = response.into_body();
-    while let Some(frame) =
-        std::future::poll_fn(|cx| std::pin::Pin::new(&mut body).poll_frame(cx)).await
-    {
-        let Ok(frame) = frame else { break };
-        if let Ok(data) = frame.into_data() {
-            all.extend_from_slice(&data);
-        }
-    }
-}
-
 async fn read_line<R: AsyncBufReadExt + Unpin>(
     reader: &mut R,
-    buf: &mut Vec<u8>,
+    buf: &mut OwnedInput,
     max: usize,
 ) -> std::io::Result<usize> {
     let mut total = 0usize;
@@ -656,11 +563,17 @@ async fn read_line<R: AsyncBufReadExt + Unpin>(
             None => (chunk.len(), false),
         };
         if !over && take <= max.saturating_add(2).saturating_sub(buf.len()) {
-            buf.extend_from_slice(&chunk[..take]);
+            buf.try_extend_from_slice(&chunk[..take]).map_err(|_| {
+                std::io::Error::new(
+                    std::io::ErrorKind::WouldBlock,
+                    "the gateway is at input capacity",
+                )
+            })?;
             let fits = if done {
-                trim(buf).len() <= max
+                trim(buf.as_ref()).len() <= max
             } else {
-                buf.len() <= max || (buf.len() == max.saturating_add(1) && buf.ends_with(b"\r"))
+                buf.len() <= max
+                    || (buf.len() == max.saturating_add(1) && buf.as_ref().ends_with(b"\r"))
             };
             if !fits {
                 over = true;

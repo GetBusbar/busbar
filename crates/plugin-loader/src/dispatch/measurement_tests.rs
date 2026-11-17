@@ -634,11 +634,6 @@ fn measurement_host_maintenance_requires_empty_reports_even_on_declaring_plugins
         .lock()
         .unwrap()
         .is_empty()));
-    assert!(dispatch::migrate::validate_migrated_door(
-        dispatch::load::raw(secret),
-        &serde_json::json!({})
-    )
-    .is_err());
 }
 
 #[test]

@@ -56,6 +56,42 @@ fn invocation_refuses_missing_unit_and_another_instance() {
 }
 
 #[test]
+fn native_invocation_requires_exact_opened_owner_without_legacy_service_grants() {
+    let core = Arc::new(KernelServices::new());
+    let generation = Arc::new(ServingGeneration::new(
+        Arc::clone(&core),
+        Arc::new(HeldRoute::default()),
+    ));
+    let owner = caller("native");
+    core.units()
+        .admitted_for(17, &owner, crate::host_units::UnitRecord::default());
+    assert!(InvocationContext::new(Arc::clone(&generation), owner.clone(), 17).is_err());
+    let admission = core.admit_native_invocation(&owner).unwrap();
+    assert!(
+        core.admit_native_invocation(&owner).is_err(),
+        "one live lease owns each incarnation"
+    );
+    assert!(
+        core.facts(&owner).is_none(),
+        "native execution admission grants no legacy services"
+    );
+    let context = InvocationContext::new(Arc::clone(&generation), owner.clone(), 17).unwrap();
+    assert!(context.accepts(&owner));
+    assert!(!context.accepts(&caller("native")));
+    let other_core = Arc::new(KernelServices::new());
+    let other_generation = Arc::new(ServingGeneration::new(
+        other_core,
+        Arc::new(HeldRoute::default()),
+    ));
+    assert!(InvocationContext::new(other_generation, owner.clone(), 17).is_err());
+    drop(admission);
+    assert!(
+        !context.accepts(&owner),
+        "retired instance admission cannot be reconstructed from a number"
+    );
+}
+
+#[test]
 fn pending_nested_dispatch_keeps_its_original_generation_until_reply() {
     let core = Arc::new(KernelServices::new());
     core.admit("plane", InstanceFacts::default())
@@ -97,4 +133,15 @@ fn pending_nested_dispatch_keeps_its_original_generation_until_reply() {
         "completed child releases its generation"
     );
     assert_eq!(Arc::strong_count(&replacement), 1);
+}
+
+#[test]
+fn native_generation_metadata_stays_with_its_retained_snapshot() {
+    let core = Arc::new(KernelServices::new());
+    let first = ServingGeneration::try_new(core.clone(), Arc::new(HeldRoute::default())).unwrap();
+    let retained = first.routing_generation().unwrap();
+    let next = ServingGeneration::try_new(core, Arc::new(HeldRoute::default())).unwrap();
+    assert_ne!(retained, crate::registry::Generation::FIRST);
+    assert!(next.routing_generation().unwrap() > retained);
+    assert_eq!(first.routing_generation(), Some(retained));
 }

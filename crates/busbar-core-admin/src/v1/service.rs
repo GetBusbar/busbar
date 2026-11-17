@@ -14,11 +14,11 @@ use busbar_kernel::diagnostics::{
 use busbar_kernel::state::App;
 
 use crate::v1::contract::{
-    AdminAuthView, AdminError, AuthView, BuildInfo, ClassUsage, ConfigValidateView,
-    EffectiveConfigView, GroupView, HookHealthView, HookTransportView, HookView, InfoView,
-    KeyUsageView, ModelUsageView, ModelView, NamedDefView, NodeView, Page, PluginView,
-    PoolDetailView, PoolMemberStatusView, PoolMemberView, PoolView, ProviderView, TopologyInfo,
-    UsageBreakdown, UsageView, UsageWindow,
+    AdminAuthView, AdminError, AuthView, ClassUsage, ConfigValidateView, EffectiveConfigView,
+    GroupView, HookHealthView, HookTransportView, HookView, InfoView, InfoWarning, KeyUsageView,
+    ModelUsageView, ModelView, NamedDefView, Page, PluginView, PoolDetailView,
+    PoolMemberStatusView, PoolMemberView, PoolView, ProviderView, UsageBreakdown, UsageView,
+    UsageWindow,
 };
 use busbar_kernel::config::named_map::NamedMapSection;
 use busbar_kernel::config::{HookCfg, HookKind, HookStage, PromptAccess, UserAccess};
@@ -342,18 +342,21 @@ pub mod read_path_money {
     pub use crate::v1::contract::UsageBreakdown;
 }
 
-static PROCESS_START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
-
-static PROCESS_START_EPOCH: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+/// Epoch milliseconds the process started, stamped once by [`mark_start`].
+static PROCESS_START_MS: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
 
 pub fn mark_start() {
-    let _ = PROCESS_START.set(std::time::Instant::now());
-    let _ = PROCESS_START_EPOCH.set(busbar_kernel::store::now());
+    let _ = PROCESS_START_MS.set(busbar_kernel::store::now_ms());
 }
 
 /// Epoch seconds the process started, once [`mark_start`] ran.
 pub(crate) fn started_at() -> Option<u64> {
-    PROCESS_START_EPOCH.get().copied()
+    started_at_ms().map(|ms| ms / 1000)
+}
+
+/// Epoch milliseconds the process started, once [`mark_start`] ran (`/info.started_at_ms`).
+pub(crate) fn started_at_ms() -> Option<u64> {
+    PROCESS_START_MS.get().copied()
 }
 
 struct CatalogCacheEntry {
@@ -432,7 +435,7 @@ pub(crate) async fn read_grammar(
     blocked_metadata_hosts: Vec<String>,
     fetch: busbar_kernel::config::grammar::Fetch,
     operation: &'static str,
-) -> Result<busbar_kernel::config::Grammar, AdminError> {
+) -> Result<Arc<busbar_kernel::config::grammar::PreparedConfigRead>, AdminError> {
     let joined = |join_err: tokio::task::JoinError| {
         diag_error!(
             ADMIN_STORE_TASK_JOIN_FAILED,
@@ -467,15 +470,16 @@ pub(crate) fn phase_one(
     fetch: busbar_kernel::config::grammar::Fetch,
     operation: &'static str,
     rules: &dyn busbar_kernel::appbuild::RootRules,
-) -> Result<busbar_kernel::config::Grammar, AdminError> {
+) -> Result<Arc<busbar_kernel::config::grammar::PreparedConfigRead>, AdminError> {
     let pins = std::collections::BTreeMap::new();
-    busbar_kernel::config::grammar::grammar_for(&busbar_kernel::config::grammar::PhaseOneIn {
+    busbar_kernel::config::grammar::prepare_read_for(&busbar_kernel::config::grammar::PhaseOneIn {
         plugins,
         dir: Path::new(&plugins.dir),
         pins: &pins,
         fetch,
     }, rules)
-    .map(busbar_kernel::config::Grammar::trimmed)
+    .map(busbar_kernel::config::grammar::PreparedConfigRead::trimmed)
+    .map(Arc::new)
     .map_err(|refusal| {
         tracing::warn!(operation, refusal = %refusal, "the plugins: block's modules cannot be judged");
         AdminError::Validation(format!(
@@ -526,12 +530,12 @@ pub(crate) async fn read_disk_generation(
         operation,
     )
     .await?;
-    read.typed(
+    read.typed_prepared(
         config_path,
         current.providers_override.as_deref(),
         env,
         &*current.root_rules,
-        &grammar,
+        grammar,
     )
     .map_err(AdminError::Validation)
 }
@@ -1229,6 +1233,8 @@ pub(crate) struct AdminService {
 
 #[path = "service_operations.rs"]
 mod operations;
+#[cfg(test)]
+pub(crate) use operations::refused as admission_refused;
 pub(crate) use operations::{parse_utc_day, SeriesSpec, UsageDim};
 
 pub(crate) fn project_hook_view(name: &str, cfg: &HookCfg, global_hooks: &[String]) -> HookView {

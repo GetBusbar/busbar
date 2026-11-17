@@ -31,20 +31,7 @@ use busbar_contract::abi::mechanism::kind;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-/// The ONE abi_version this binary loads for `kind` (LINT-RULES R21: exact match, never a range
-/// or a set); `None` for a kind it does not know.
-pub fn supported_abi(kind: &str) -> Option<u32> {
-    match kind {
-        kind::STORE => Some(busbar_contract::abi::store::ABI_VERSION),
-        kind::SECRET => Some(busbar_contract::abi::secret::ABI_VERSION),
-        kind::AUTH => Some(busbar_contract::abi::auth::ABI_VERSION),
-        kind::HOOK => Some(busbar_contract::abi::hook::ABI_VERSION),
-        kind::EXPORT => Some(busbar_contract::abi::export::ABI_VERSION),
-        kind::PLANE => Some(busbar_contract::abi::plane::ABI_VERSION),
-        kind::TRANSPORT => Some(busbar_contract::abi::transport::ABI_VERSION),
-        _ => None,
-    }
-}
+pub use busbar_artifact_verifier::supported_abi;
 
 /// ONE ROW of the registry: a plugin it resolves by name or alias, loaded through the one loading
 /// path (`load_linked` / `load_dropped`). A DROPPED-IN row passed phases 1 + 2 — its signed
@@ -197,56 +184,6 @@ impl LoadablePlugin {
                     ..
                 }
             )
-    }
-
-    pub fn validate_migrated(&self, settings: &serde_json::Value) -> Result<(), String> {
-        use crate::dispatch::migrate::{validate_migrated_door, validate_migrated_library};
-        match self.door() {
-            Some(door) => validate_migrated_door(door, settings),
-            None => validate_migrated_library(&self.lib_bytes, &self.file, settings),
-        }
-    }
-
-    /// Discover credential references in a registered owner's borrowed source sections.
-    pub fn migrate_references(
-        &self,
-        settings: &serde_json::Value,
-        from: &str,
-    ) -> Result<Option<busbar_contract::abi::sdk::migrate::MigrationAnswer>, String> {
-        use crate::dispatch::migrate::{migrate_references_door, migrate_references_library};
-        match self.door() {
-            Some(door) => migrate_references_door(door, settings, from),
-            None => migrate_references_library(&self.lib_bytes, &self.file, settings, from),
-        }
-    }
-
-    /// Route guarded credential custody through the receiving owner's migration door.
-    pub fn migrate_credential(
-        &self,
-        credential: &busbar_contract::Secret<String>,
-        from: &str,
-        seal: &dyn busbar_contract::plugin::KernelSeal,
-    ) -> Result<busbar_contract::abi::sdk::migrate::MigratedCredential, String> {
-        use crate::dispatch::migrate::{migrate_credential_door, migrate_credential_library};
-        match self.door() {
-            Some(door) => migrate_credential_door(door, credential, from, seal),
-            None => migrate_credential_library(&self.lib_bytes, &self.file, credential, from, seal),
-        }
-    }
-
-    pub fn migrate(
-        &self,
-        settings: &serde_json::Value,
-        from: &str,
-    ) -> Result<Option<busbar_contract::abi::sdk::migrate::MigrationAnswer>, String> {
-        use crate::dispatch::migrate::{migrate_door, migrate_library};
-        match &self.entry {
-            Some(LinkedEntry::Store { door }) => {
-                migrate_door(crate::dispatch::load::raw(*door), settings, from)
-            }
-            Some(LinkedEntry::Door(door)) => migrate_door(*door, settings, from),
-            None => migrate_library(&self.lib_bytes, &self.file, settings, from),
-        }
     }
 }
 
@@ -520,6 +457,7 @@ impl SkippedPlugin {
             .into_iter()
             .find(|k| *k == self.manifest.kind)?;
         let why = match self.kind {
+            RejectKind::VerificationUnavailable => "verification unavailable",
             RejectKind::Unsigned => "unsigned",
             RejectKind::Tampered => "tampered",
             RejectKind::UnknownPublisher => "unknown publisher",
@@ -789,39 +727,6 @@ impl PluginRegistry {
             ));
         }
         Ok(p)
-    }
-
-    fn resolve_store(&self, name_or_alias: &str) -> Result<&LoadablePlugin, String> {
-        self.resolve_kind(name_or_alias, "store", "back the governance store")
-    }
-
-    pub fn store_door(
-        &self,
-        name_or_alias: &str,
-    ) -> Result<busbar_contract::persistence::axis::StoreDoor, String> {
-        use busbar_contract::persistence::axis::StoreDoor;
-        let p = self.resolve_store(name_or_alias)?;
-        let no_door = || {
-            format!(
-                "plugin '{}' states no store door: rebuild the plugin against the 1.6.0 SDK",
-                p.key()
-            )
-        };
-        if let Some(entry) = p.entry {
-            return match entry {
-                LinkedEntry::Store { door } => Ok(StoreDoor::Linked(door)),
-                LinkedEntry::Door(_) => Err(no_door()),
-            };
-        }
-        let named = |e: String| format!("plugin '{}': {e}", p.key());
-        match p.manifest.stated_rendering().map_err(named)? {
-            Some(stated) => Ok(StoreDoor::Dropped {
-                file: p.file.clone(),
-                bytes: std::sync::Arc::clone(&p.lib_bytes),
-                stated,
-            }),
-            None => Err(no_door()),
-        }
     }
 
     #[must_use]
@@ -1430,6 +1335,7 @@ pub fn inventory(dir: &Path, policy: &TrustPolicy) -> Vec<InventoryEntry> {
                     RejectKind::UnknownPublisher => "unknown-publisher",
                     RejectKind::PublisherScope => "publisher-scope",
                     RejectKind::Tampered => "tampered",
+                    RejectKind::VerificationUnavailable => "verification unavailable",
                     RejectKind::Unsigned => "unsigned",
                     RejectKind::ExternalCrypto => "not first-party (FIPS backend)",
                     RejectKind::Superseded => "superseded",

@@ -41,6 +41,18 @@ notes = "DEP-5: this exact Git revision requires imported coverage or a separate
 [policy.h2]
 audit-as-crates-io = true
 
+[policy.http]
+audit-as-crates-io = true
+notes = "Exact-revision adopted native HTTP fork; its explicit exemption is not an imported or self-authored audit."
+
+[policy.hyper]
+audit-as-crates-io = true
+notes = "Exact-revision adopted native HTTP fork; its explicit exemption is not an imported or self-authored audit."
+
+[policy.hyper-util]
+audit-as-crates-io = true
+notes = "Exact-revision adopted native HTTP fork; its explicit exemption is not an imported or self-authored audit."
+
 [policy.jobserver]
 audit-as-crates-io = true
 notes = "DEP-5: this exact Git revision requires imported coverage or a separately justified exemption. Superseded local reviews are historical evidence only; they do not attest the Git revision or its registry base. See supply-chain/history/README.md at the repository root."
@@ -48,6 +60,10 @@ notes = "DEP-5: this exact Git revision requires imported coverage or a separate
 [policy.olpc-cjson]
 audit-as-crates-io = true
 notes = "Exact-revision Git fork of the published 0.1.4; see its exemption."
+
+[policy.rustls]
+audit-as-crates-io = true
+notes = "Exact-revision adopted funded TLS output/ticket source; its explicit exemption is not an imported or self-authored audit."
 
 [policy.serde-saphyr]
 audit-as-crates-io = true
@@ -106,6 +122,11 @@ criteria = "safe-to-deploy"
 version = "1.5.1"
 criteria = "safe-to-deploy"
 
+[[exemptions.aws-lc-sys]]
+version = "0.47.0@git:3469edb189e0cc2fab40e88f551713a828a5d867"
+criteria = "safe-to-deploy"
+notes = "DEP-5 coordinator exemption for the allow-listed MattJackson/aws-lc-sys fork revision used by aws-lc-rs; AWS-LC is the house crypto through busbar-crypto-backend (ARC-6). Imported audits do not cover this Git revision. Tracking: GetBusbar/busbar#429. No self-audit is claimed."
+
 [[exemptions.axum]]
 version = "0.8.9"
 criteria = "safe-to-deploy"
@@ -113,6 +134,11 @@ criteria = "safe-to-deploy"
 [[exemptions.axum-core]]
 version = "0.5.6"
 criteria = "safe-to-deploy"
+
+[[exemptions.backon]]
+version = "1.6.0"
+criteria = "safe-to-deploy"
+notes = "DEP-5 coordinator exemption: retry/backoff used by busbar-kernel and busbar-core-connector; no imported audit covers 1.6.0. Tracking: GetBusbar/busbar#429. No self-audit is claimed."
 
 [[exemptions.base64]]
 version = "0.23.1"
@@ -157,6 +183,11 @@ notes = "busbar-contract's CBOR codec; the imported google audit of 0.2.2 is saf
 version = "0.3.2"
 criteria = "safe-to-deploy"
 notes = "CLOEXEC ruling (AGREED 2026-11-16T00:19Z, BLD-3/DEP-5 routine exemption, not a self-audit): no imported audit covers it and no maintained safe crate marks arbitrary descriptors close-on-exec. Unmaintained (last release 2021-06). Its DirFdIter (/dev/fd and /proc/self/fd walk) builds an out-of-bounds &dirent and is unsound; busbar calls only CloseFdsBuilder::new().allow_filesystem(false).cloexecfrom(3), which never constructs it (Linux >= 5.11: close_range CLOSE_RANGE_CLOEXEC; else an fcntl loop bounded at 65536). Defence in depth behind closing every plugin instance before the migrate re-exec."
+
+[[exemptions.cmake]]
+version = "0.1.58"
+criteria = "safe-to-deploy"
+notes = "DEP-5 coordinator exemption: build-time only, drives the AWS-LC C build for aws-lc-sys; no imported audit covers 0.1.58. Tracking: GetBusbar/busbar#429. No self-audit is claimed."
 
 [[exemptions.const-oid]]
 version = "0.10.3"
@@ -227,6 +258,11 @@ criteria = "safe-to-deploy"
 version = "0.2.6"
 criteria = "safe-to-deploy"
 
+[[exemptions.dunce]]
+version = "1.0.5@git:bb4757b8dffd9bdc619ce1fda1a147bd53e7b29d"
+criteria = "safe-to-deploy"
+notes = "DEP-5 coordinator exemption for the allow-listed MattJackson/dunce fork revision; build-time path handling for aws-lc-sys. Tracking: GetBusbar/busbar#429. No self-audit is claimed."
+
 [[exemptions.dyn-clone]]
 version = "1.0.20"
 criteria = "safe-to-deploy"
@@ -281,6 +317,11 @@ criteria = "safe-to-deploy"
 version = "0.15.4"
 criteria = "safe-to-deploy"
 
+[[exemptions.fs_extra]]
+version = "1.3.0@git:70f47864db8ae763979f47cde6785449cd790dad"
+criteria = "safe-to-deploy"
+notes = "DEP-5 coordinator exemption for the allow-listed MattJackson/fs_extra fork revision; build-time copy helper for aws-lc-sys. Tracking: GetBusbar/busbar#429. No self-audit is claimed."
+
 [[exemptions.futures-task]]
 version = "0.3.34"
 criteria = "safe-to-deploy"
@@ -305,9 +346,20 @@ criteria = "safe-to-deploy"
 version = "2.1.0"
 criteria = "safe-to-deploy"
 
-[[exemptions.h2]]
-version = "0.4.18"
+[[exemptions.granit-parser]]
+version = "2.1.0@git:d31e9292a0be49de7d3a85ee07555bb9d0afce20"
 criteria = "safe-to-deploy"
+notes = "DEP-5 coordinator exemption for the allow-listed MattJackson/granit-parser fork revision under serde-saphyr (the settled YAML stack, DEP-3), carrying the opt-in serde_yaml-compatibility patches offered upstream. Tracking: GetBusbar/busbar#429. No self-audit is claimed."
+
+[[exemptions.h2]]
+version = "0.4.18@git:6bdbf046878247aebe9138f37f32d2665b54bdd9"
+criteria = "safe-to-deploy"
+notes = "DEP-5 coordinator exemption for this exact adopted fork revision: HTTP/2 serializer attribution and release barriers retain the adopted native delivery contract. Trusted imported audits do not cover these local deltas. Source selection and approval are recorded in house-recovery-execution/w07/SOURCE.md; remote qualification and owner-reviewed upstream publication remain required. No self-audit is claimed."
+
+[[exemptions.h2]]
+version = "0.4.18@git:d6146a5c425e55653cdfebc5660e52d87430c588"
+criteria = "safe-to-deploy"
+notes = "DEP-5 coordinator exemption for the allow-listed MattJackson/h2 fork revision (upstream hyperium/h2#996) used by hyper and busbar-plugin-loader. Tracking: GetBusbar/busbar#429. No self-audit is claimed."
 
 [[exemptions.half]]
 version = "2.7.1"
@@ -323,8 +375,9 @@ version = "0.5.2"
 criteria = "safe-to-deploy"
 
 [[exemptions.http]]
-version = "1.4.1"
+version = "1.4.1@git:904f4519b5f27a0424b121a4828640c741efcd95"
 criteria = "safe-to-deploy"
+notes = "DEP-5 coordinator exemption for this exact adopted fork revision: HTTP-PROJECTION-PRODUCER r2 requires library-owned allocation quotation and shared method/header backing; full-map replacement regressions are included. Trusted imported audits do not cover these local deltas. Source selection and approval are recorded in house-recovery-execution/w07/SOURCE.md; remote qualification and owner-reviewed upstream publication remain required. No self-audit is claimed."
 
 [[exemptions.http-body]]
 version = "1.1.0"
@@ -343,12 +396,14 @@ version = "0.4.15"
 criteria = "safe-to-deploy"
 
 [[exemptions.hyper]]
-version = "1.11.1"
+version = "1.11.1@git:c140435f43477ca3ffbdb2078a5994e9dfb11969"
 criteria = "safe-to-deploy"
+notes = "DEP-5 coordinator exemption for the adopted fork successor c140435f: exactly 5b1c5189 plus one compile-only commit in src/proto/h1/encode.rs (chunked serialization spans read through the bytes Chain accessors); hyper manifest unchanged. Same source record as 5b1c5189 (house-recovery-execution/w07/SOURCE.md); remote qualification and owner-reviewed upstream publication remain required. No self-audit is claimed."
 
 [[exemptions.hyper-util]]
-version = "0.1.20"
+version = "0.1.20@git:b4c554c133c7fc83ee55a9ce0271849f7387994d"
 criteria = "safe-to-deploy"
+notes = "DEP-5 coordinator exemption for this exact adopted fork revision: Carries the same adopted serializer provenance through the connection builder. Trusted imported audits do not cover these local deltas. Source selection and approval are recorded in house-recovery-execution/w07/SOURCE.md; remote qualification and owner-reviewed upstream publication remain required. No self-audit is claimed."
 
 [[exemptions.idna]]
 version = "1.1.0"
@@ -374,6 +429,11 @@ criteria = "safe-to-deploy"
 version = "1.0.18"
 criteria = "safe-to-deploy"
 
+[[exemptions.jobserver]]
+version = "0.1.35@git:fbe3efc1acc11add04854cc093f97876e439e129"
+criteria = "safe-to-deploy"
+notes = "DEP-5 coordinator exemption for the allow-listed MattJackson/jobserver-rs fork revision; build-time, via cc. Tracking: GetBusbar/busbar#429. No self-audit is claimed."
+
 [[exemptions.js-sys]]
 version = "0.3.107"
 criteria = "safe-to-deploy"
@@ -389,6 +449,11 @@ criteria = "safe-to-deploy"
 [[exemptions.jsonschema-value]]
 version = "0.49.9"
 criteria = "safe-to-deploy"
+
+[[exemptions.lexopt]]
+version = "0.3.2"
+criteria = "safe-to-deploy"
+notes = "DEP-5 coordinator exemption: command-line argument parsing for busbar and busbar-kernel-audit; no imported audit covers 0.3.2. Tracking: GetBusbar/busbar#429. No self-audit is claimed."
 
 [[exemptions.libc]]
 version = "0.2.191"
@@ -646,8 +711,9 @@ version = "1.1.6"
 criteria = "safe-to-deploy"
 
 [[exemptions.rustls]]
-version = "0.23.46"
+version = "0.23.46@git:02181ad51e81f9cb33a0648117b03039274716a3"
 criteria = "safe-to-deploy"
+notes = "DEP-5 coordinator exemption for the adopted fork successor 02181ad5: exactly a33d40bc plus one compile fix (rustls/src/client/ech.rs propagates the fallible PSK binder; rustls/src/server/server_conn.rs restores the server builder); manifest unchanged. Same TLS-OUTPUT-STORAGE-392-r2 / TLS-TICKET-STORAGE-392-r2 source record as a33d40bc; remote qualification and owner-reviewed upstream publication remain required. No self-audit is claimed."
 
 [[exemptions.rustls-pki-types]]
 version = "1.15.1"
@@ -688,6 +754,11 @@ criteria = "safe-to-deploy"
 [[exemptions.serde-saphyr]]
 version = "2.1.1"
 criteria = "safe-to-deploy"
+
+[[exemptions.serde-saphyr]]
+version = "2.1.1@git:a94d2da01a448d348b5d14945e29192e511b8452"
+criteria = "safe-to-deploy"
+notes = "DEP-5 coordinator exemption for the allow-listed MattJackson/serde-saphyr fork revision used by busbar-contract (the settled YAML stack, DEP-3), with the opt-in serde_yaml-compatibility patches offered upstream. Tracking: GetBusbar/busbar#429. No self-audit is claimed."
 
 [[exemptions.serde_core]]
 version = "1.0.229"
@@ -741,19 +812,39 @@ criteria = "safe-to-deploy"
 version = "0.1.3@git:10b80cdcbfb07c0edc6535df28f7b248dc4f5223"
 criteria = "safe-to-deploy"
 
+[[exemptions.sonic-number]]
+version = "0.1.3@git:1241c129cef83686109f820825206f56ff470f67"
+criteria = "safe-to-deploy"
+notes = "Unchanged sonic-number from the MattJackson/sonic-rs fork revision 1241c129; see the sonic-rs exemption. Tracking: GetBusbar/busbar#429. No self-audit is claimed."
+
 [[exemptions.sonic-rs]]
 version = "0.5.11@git:10b80cdcbfb07c0edc6535df28f7b248dc4f5223"
 criteria = "safe-to-deploy"
 notes = "MattJackson fork of sonic-rs 0.5.11 (upstream c99df02) plus the SERDE-NUMBERS r17 P0-P3 patch, offered upstream to cloudwego/sonic-rs; sonic-number and sonic-simd ride unchanged in the same repository. No imported audit covers a Git revision and busbar writes no audits of its own (DEP-5): exempted until upstream releases the patch or an imported audit covers it."
 
+[[exemptions.sonic-rs]]
+version = "0.5.11@git:1241c129cef83686109f820825206f56ff470f67"
+criteria = "safe-to-deploy"
+notes = "DEP-5 coordinator exemption for the allow-listed MattJackson/sonic-rs fork revision 1241c129 (SERDE-NUMBERS r17 line, offered upstream to cloudwego/sonic-rs) used by busbar-contract, busbar-kernel and busbar-plugin-loader. Tracking: GetBusbar/busbar#429. No self-audit is claimed."
+
 [[exemptions.sonic-simd]]
 version = "0.1.4@git:10b80cdcbfb07c0edc6535df28f7b248dc4f5223"
 criteria = "safe-to-deploy"
+
+[[exemptions.sonic-simd]]
+version = "0.1.4@git:1241c129cef83686109f820825206f56ff470f67"
+criteria = "safe-to-deploy"
+notes = "Unchanged sonic-simd from the MattJackson/sonic-rs fork revision 1241c129; see the sonic-rs exemption. Tracking: GetBusbar/busbar#429. No self-audit is claimed."
 
 [[exemptions.spki]]
 version = "0.8.1"
 criteria = "safe-to-deploy"
 notes = "SubjectPublicKeyInfo types under x509-cert (decoding only, no fingerprint/digest features); no imported audit from the trusted registries covers it."
+
+[[exemptions.sseer]]
+version = "0.3.1"
+criteria = "safe-to-deploy"
+notes = "DEP-5 coordinator exemption: server-sent-events parsing in busbar-contract; no imported audit covers 0.3.1. Tracking: GetBusbar/busbar#429. No self-audit is claimed."
 
 [[exemptions.stats_alloc]]
 version = "0.1.10"
@@ -864,6 +955,11 @@ criteria = "safe-to-deploy"
 [[exemptions.tungstenite]]
 version = "0.29.0"
 criteria = "safe-to-run"
+
+[[exemptions.tungstenite]]
+version = "0.29.0@git:893a21f1f98011a2665840231330c473836c9a0a"
+criteria = "safe-to-run"
+notes = "DEP-5 coordinator exemption for the allow-listed MattJackson/tungstenite-rs fork revision (1014 fix plus streaming diagnostic formatting), required safe-to-run via busbar-plugin-loader. Tracking: GetBusbar/busbar#429. No self-audit is claimed."
 
 [[exemptions.typenum]]
 version = "1.20.1"

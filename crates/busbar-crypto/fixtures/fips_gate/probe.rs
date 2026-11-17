@@ -18,4 +18,5 @@ fn main() {
         busbar_crypto::supports(busbar_crypto::alg::MD5)
     );
     println!("backend={}", busbar_crypto::BACKEND);
+    println!("checked_hash={:?}", busbar_crypto::verification::Context::unrestricted().sha256(b"abc"));
 }

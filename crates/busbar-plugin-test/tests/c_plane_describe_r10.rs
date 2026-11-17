@@ -37,6 +37,9 @@ fn answer(call: Call, r: &Reply) -> Result<(), FaultReason> {
     decode_answer(
         call,
         true,
+        busbar_ports::codec::fallback_usage::Declaration::legacy(),
+        None,
+        None,
         Records::new(r.as_bytes()),
         &mut |_: PlaneOut<'_>| {},
     )

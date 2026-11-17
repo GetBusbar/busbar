@@ -351,11 +351,52 @@ fn read_document<'de, M: MapAccess<'de>, T: Deserialize<'de>>(
     Ok((deploy, lifted))
 }
 
+/// A key busbar reserves or has retired: its path from the document root, and why it is refused.
+/// The table is read before the typed parse, so a refusal names the key and its reason with a
+/// coded error instead of the generic unknown-field text. It adds no schema field (DES-359 r3 L10).
+pub(crate) struct ReservedKey {
+    pub(crate) path: &'static [&'static str],
+    pub(crate) reason: &'static str,
+}
+
+pub(crate) const RESERVED_KEYS: &[ReservedKey] = &[ReservedKey {
+    path: &["plugins", "trust", "operator"],
+    reason: "reserved; 1.6.0 operator plugins must be first-party signed (Q13)",
+}];
+
+/// The coded refusal for the first reserved key `document` writes, if any.
+pub(crate) fn reserved_key_refusal(document: &busbar_contract::yaml::Value) -> Option<String> {
+    use busbar_contract::yaml::ValueExt as _;
+    RESERVED_KEYS.iter().find_map(|reserved| {
+        reserved
+            .path
+            .iter()
+            .try_fold(document, |value, key| value.get(*key))?;
+        let detail = format!("{}: {}", reserved.path.join("."), reserved.reason);
+        Some(crate::diagnostics::coded::config_reserved_key(detail).into())
+    })
+}
+
+fn reserved_key_error(
+    document: &busbar_contract::yaml::Value,
+) -> Result<(), busbar_contract::yaml::Error> {
+    match reserved_key_refusal(document) {
+        Some(refusal) => Err(<busbar_contract::yaml::Error as serde::de::Error>::custom(
+            refusal,
+        )),
+        None => Ok(()),
+    }
+}
+
 /// Read a deployment document under `grammar`: the grammar of this read (§3.4).
 pub fn deploy_from_yaml_str(
     text: &str,
     grammar: &Grammar,
 ) -> Result<DeployCfg, busbar_contract::yaml::Error> {
+    // A document the plain reader cannot read is left to the typed reader's own error.
+    if let Ok(document) = busbar_contract::yaml::from_str::<busbar_contract::yaml::Value>(text) {
+        reserved_key_error(&document)?;
+    }
     let mut deploy =
         busbar_contract::yaml::with_deserializer(text, |d| deploy_from_deserializer(d, grammar))?;
     deploy.authored_routing = super::authored_routing::capture(text, &deploy.pools);
@@ -422,6 +463,7 @@ pub fn deploy_from_yaml_value(
     value: busbar_contract::yaml::Value,
     grammar: &Grammar,
 ) -> Result<DeployCfg, busbar_contract::yaml::Error> {
+    reserved_key_error(&value)?;
     deploy_from_deserializer(busbar_contract::yaml::deserializer(value), grammar)
 }
 
@@ -436,3 +478,7 @@ mod document_metadata_tests;
 #[cfg(test)]
 #[path = "tests/prepass_tests.rs"]
 mod source_declarations_tests;
+
+#[cfg(test)]
+#[path = "tests/reserved_key_tests.rs"]
+mod reserved_key_tests;

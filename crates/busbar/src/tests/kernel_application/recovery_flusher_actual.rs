@@ -188,6 +188,7 @@ fn group_cfg(parent: Option<&str>, enabled: bool, limits: Vec<LimitCfg>) -> Grou
 }
 fn limit(metric: LimitMetric, amount: u64, per: Option<LimitWindow>) -> LimitCfg {
     LimitCfg {
+        selected: None,
         metric,
         amount,
         per,
@@ -223,6 +224,7 @@ async fn metered(store: &CoreStore, key_id: &str, model: &str, n: u64, now: u64)
     store
         .ledger()
         .add_metering(&MeteringDelta {
+            pricing: None,
             scale: 0,
             key_id: key_id.into(),
             bucket: busbar_kernel::governance::metering_bucket(now),
@@ -275,14 +277,9 @@ async fn actual_root_flusher_resumes_not_landed_using_the_current_cost_without_b
         .expect("the isolated flusher child owns its diagnostic subscriber");
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest("store", &module, "third-party");
-    manifest.statement = Some(hex::encode(statement));
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest =
+        crate::root::test_plugins::native_manifest("store", &library_path, "third-party");
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch("actual-recovery-flusher");
     let archive = plugins::signed(&plugins::key(0x33), manifest, &library);

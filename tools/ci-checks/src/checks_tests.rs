@@ -482,6 +482,38 @@ fn d(v: &Value) -> bool { v.get("module") == Some("env") }
 }
 
 #[test]
+fn a_module_key_in_config_text_is_a_hit_but_prose_naming_one_is_not() {
+    // Real config uses: YAML block, list item, flow mapping, JSON key.
+    assert_eq!(
+        module_values("export:\n  metrics:\n    module: memory\n"),
+        ["memory"]
+    );
+    assert_eq!(module_values("stores:\n  - module: env\n"), ["env"]);
+    assert_eq!(module_values("store: {module: memory}"), ["memory"]);
+    assert_eq!(module_values("[{\"module\": \"env\"}]"), ["env"]);
+    // The verbatim 1.5.5 remedy prose (busbar-migrate legacy markers) names a config line; it is not one.
+    assert_eq!(
+        module_values("an `export:` instance with `module: memory` and `settings.url`"),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        module_values("a `module: env` / `module: memory` instance"),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        module_values("submodule: env\nfoo-module: env"),
+        Vec::<String>::new()
+    );
+    let source = r#"
+fn a() -> &'static str { "export:\n  m:\n    module: memory\n" }
+const REMEDY: &str = "the `export:` map, a `module: memory` / `module: env` instance";
+fn b() -> &'static str { "store:\n  - module: env\n" }
+"#;
+    let lines: Vec<usize> = hits(source).iter().map(|(line, _)| *line).collect();
+    assert_eq!(lines, [2, 4], "{:?}", hits(source));
+}
+
+#[test]
 fn a_word_elsewhere_and_test_code_are_not_hits() {
     let source = r#"
 /// the env plugin, "memory" in a doc comment

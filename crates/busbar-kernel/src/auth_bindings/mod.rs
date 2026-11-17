@@ -13,6 +13,7 @@ use busbar_contract::config::dialect_styles::{self as styles, Row, Settings};
 use busbar_contract::config::outbound_owner;
 use busbar_ports::codec::plane::{DialectAuthOwned, PresentationOwned};
 
+pub mod native;
 mod outbound;
 mod upstream;
 
@@ -109,6 +110,8 @@ pub struct MemberView<'a> {
     /// The identity of `v`'s image (selects its D_DIALECT_AUTH rows).
     pub image: &'a str,
     pub provider: &'a str,
+    /// The model's override, if configured; resolution remains image-local.
+    pub dialect: Option<&'a str>,
 }
 
 /// Everything one load's provider bindings read.
@@ -223,7 +226,7 @@ pub fn bind_providers(plan: &ProviderPlan<'_>) -> Result<ProviderBindings, Vec<S
         let Some(p) = plan.providers.iter().find(|p| p.name == m.provider) else {
             continue;
         };
-        let d = p.protocol;
+        let d = m.dialect.unwrap_or(p.protocol);
         let attempt = (Box::from(m.plane), Box::from(p.name), Box::from(d));
         match p.auth {
             ProviderAuth::None => {
@@ -364,3 +367,6 @@ pub fn bind_providers(plan: &ProviderPlan<'_>) -> Result<ProviderBindings, Vec<S
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+pub(crate) mod native_tests;

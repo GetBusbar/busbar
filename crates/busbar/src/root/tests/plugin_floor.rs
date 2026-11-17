@@ -598,12 +598,6 @@ impl PluginRows for Scanned {
     fn skipped(&self) -> Vec<Skipped> {
         Vec::new()
     }
-    fn store_door(
-        &self,
-        name: &str,
-    ) -> Result<busbar_contract::persistence::axis::StoreDoor, String> {
-        Err(format!("no store `{name}`"))
-    }
     fn secret_refusal(&self, name: &str) -> String {
         format!("no secret `{name}`")
     }

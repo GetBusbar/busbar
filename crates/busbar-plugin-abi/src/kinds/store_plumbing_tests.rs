@@ -446,7 +446,7 @@ fn fallible_namespace_plan_keeps_lock_order_and_mutation_only_generations() {
     let plan = try_prelude_order(items).unwrap();
     assert_eq!(plan, prelude_order(items));
     let mut expected = vec![b, wire::SLOT_NS];
-    expected.sort_unstable();
+    expected.sort();
     assert_eq!(
         plan.iter()
             .filter_map(|(ns, exclusive)| exclusive.then_some(*ns))
@@ -498,6 +498,17 @@ fn row_allocation_failure_clears_dirty_input_and_emits_nothing() {
 
 struct FailingRowWriter(bool);
 impl Writer for FailingRowWriter {
+    fn put_parts(&mut self, _: u16, _: &[&[u8]]) -> Result<(), crate::records::Full> {
+        unreachable!()
+    }
+    fn put_pod_nested<T: crate::records::Pod>(
+        &mut self,
+        _: u16,
+        _: &T,
+        _: impl FnOnce(&mut crate::records::Nested<'_>) -> Result<(), crate::records::Full>,
+    ) -> Result<(), crate::records::Full> {
+        unreachable!()
+    }
     fn put(&mut self, _: u16, _: &[u8]) -> Result<(), crate::records::Full> {
         unreachable!()
     }

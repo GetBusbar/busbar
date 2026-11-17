@@ -259,6 +259,7 @@ fn walk_secret_refs_with_boot_token<'a>(
             settings: _,
             insecure_transport: _,
             provisioning: _,
+            issued_kinds: _,
         } = def;
 
         if let (Some(tok), TokenRefs::Every) = (token, tokens) {
@@ -274,6 +275,9 @@ fn walk_secret_refs_with_boot_token<'a>(
     if let Some(auth) = auth {
         let crate::config::AuthCfg {
             verdict_cache: _,
+            outbound: _,
+            unknown_key_refresh_s: _,
+            require_if_match: _,
             signing_key,
             chain,
             admin_auth,
@@ -421,6 +425,23 @@ pub(crate) const SECRET_BEARING_TYPES: &[(&str, SecretBearing)] = &[
             "the boot walk's step table (busbar::root::min3_boot): it holds a clone of `auth.signing_key`, \
              copied from `AuthCfg`, which IS walked, so the reference is already enumerated and validated; \
              `Steps` is built from a loaded `RootCfg` and is never part of it.",
+        ),
+    ),
+    (
+        "BootstrapSteps",
+        SecretBearing::NotInResolvedConfig(
+            "the bootstrap (S5/S6) step owner in busbar::root::min3_boot: `at_rest` is a clone of \
+             `auth.signing_key`, copied from `AuthCfg`, which IS walked, so the reference is already \
+             enumerated and validated; `BootstrapSteps` is built from a loaded `RootCfg` and is \
+             never part of it.",
+        ),
+    ),
+    (
+        "DeclaredAuth",
+        SecretBearing::NotInResolvedConfig(
+            "a runtime CARRIER (upstreams::declared): `Declared::resolve_bindings` builds it at \
+             bind time from an `upstreams.<name>.auth` form already parsed into `UpstreamCfg`, \
+             copying that form's reference; it is never part of `RootCfg`.",
         ),
     ),
     (

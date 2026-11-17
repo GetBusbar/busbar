@@ -38,15 +38,12 @@ async fn build_with_hook_makes_a_plane_attach_live() {
             busbar_kernel::door::op_id().counter()
         ));
         let library_path = crate::root::test_plugins::application_store_library();
-        let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-            .expect("the actual Store statement reads")
-            .expect("the actual Store states itself");
-        let facts = busbar_contract::abi::mechanism::rendering::read(&statement)
-            .expect("the actual Store statement parses");
-        let mut manifest =
-            super::plugins::manifest("store", &facts.name, super::plugins::FIXTURE_PUBLISHER);
-        manifest.version = facts.version;
-        manifest.statement = Some(hex::encode(statement));
+        let facts = crate::root::test_plugins::native_image(&library_path);
+        let manifest = crate::root::test_plugins::native_manifest(
+            "store",
+            &library_path,
+            super::plugins::FIXTURE_PUBLISHER,
+        );
         let archive = super::plugins::signed(
             &crate::dist_root_install::release_key(),
             manifest,

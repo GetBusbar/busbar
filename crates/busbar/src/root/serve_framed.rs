@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! HTTP response compatibility for the fixed router adapter. Admitted plane data uses
-//! `serve_neutral::FramedOutput`; only the stream custody primitives below are shared.
+//! HTTP response compatibility for the fixed router adapter and its stream custody primitives.
 
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 

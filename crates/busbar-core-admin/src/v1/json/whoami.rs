@@ -156,7 +156,7 @@ pub(crate) fn view_of(app: &busbar_kernel::state::App, who: &AdminWho, now: u64)
         scope: scope_of(door),
         verbs,
         verbs_all: matches!(door, AdminDoor::Open | AdminDoor::Identified(..)),
-        require_if_match: false,
+        require_if_match: app.require_if_match,
     }
 }
 
@@ -176,7 +176,7 @@ pub(crate) async fn who_of(
 pub(super) async fn get(
     State(handle): State<Arc<AppHandle>>,
     slot: Option<axum::Extension<AdminWhoSlot>>,
-    headers: axum::http::HeaderMap,
+    headers: busbar_kernel::inbound::http_projection::AdminHeaders,
 ) -> Response {
     let app = handle.load();
     let who = who_of(&app, slot.map(|s| s.0), &headers).await;

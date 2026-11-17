@@ -29,7 +29,7 @@ fn family(name: &str, help: Option<&str>, kind: u8, samples: Vec<Sample>) -> Fam
 
 fn text(families: &[Family], format: Format) -> String {
     let mut out = String::new();
-    encode(&mut out, families, format);
+    encode(&mut out, families, format).unwrap();
     out
 }
 
@@ -201,7 +201,7 @@ fn metrics_text_appends_and_never_shrinks_the_buffer() {
     let mut out = String::with_capacity(1024);
     out.push_str("keep\n");
     let before = out.capacity();
-    encode(&mut out, &f, Format::Prometheus);
+    encode(&mut out, &f, Format::Prometheus).unwrap();
     assert!(out.starts_with("keep\n# HELP g \n"));
     assert_eq!(
         out.capacity(),

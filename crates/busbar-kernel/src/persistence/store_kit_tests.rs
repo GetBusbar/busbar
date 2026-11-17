@@ -47,6 +47,9 @@ struct Rows {
 struct Mock {
     state: Mutex<Rows>,
     blind_initialize: bool,
+    /// The second defect: the dataset epoch is not part of the fence, so a writer of an epoch the
+    /// record-format opening retired still applies (#319 r4 §6).
+    ignore_epoch: bool,
 }
 
 const DATASET: DatasetId = DatasetId([1; 16]);
@@ -98,6 +101,7 @@ impl PersistenceBackend for Mock {
     }
     fn commit(&self, prepared: PreparedCandidate, key: CommitKey) -> Call<'_, Decision> {
         Box::pin(async move {
+            control::admit(&prepared)?;
             let mut state = self.state.lock().unwrap();
             let digest = prepared.fingerprint();
             let candidate = prepared.candidate();
@@ -138,7 +142,7 @@ impl PersistenceBackend for Mock {
                     .rows
                     .get(&startup::writer_address(candidate.id.writer))
                     .and_then(|v| control::Writer::decode(v.expose(&seal)));
-                if root.writer_epoch != candidate.id.writer_epoch
+                if (!self.ignore_epoch && root.writer_epoch != candidate.id.writer_epoch)
                     || !writer.is_some_and(|w| w.admits(candidate.id.execution_epoch))
                 {
                     return Ok(Decision::Fenced);
@@ -169,6 +173,15 @@ impl PersistenceBackend for Mock {
                     Mutation::Delete(address) => {
                         state.rows.remove(address);
                     }
+                    Mutation::DeleteRange {
+                        namespace,
+                        prefix,
+                        exact_key_length,
+                    } if *namespace == control::SLOT_NS && *exact_key_length == 20 => {
+                        let writer: [u8; 16] =
+                            prefix.as_slice().try_into().map_err(|_| Failure::Refused)?;
+                        state.receipts.retain(|(id, _)| id.writer != writer);
+                    }
                     Mutation::DeleteRange { .. } => return Err(Failure::Refused),
                 }
             }
@@ -180,8 +193,10 @@ impl PersistenceBackend for Mock {
     }
 }
 
+#[derive(Default)]
 struct Mocks {
     blind_initialize: bool,
+    ignore_epoch: bool,
 }
 
 #[async_trait::async_trait]
@@ -191,6 +206,7 @@ impl Fixture for Mocks {
         Arc::new(Mock {
             state: Mutex::default(),
             blind_initialize: self.blind_initialize,
+            ignore_epoch: self.ignore_epoch,
         })
     }
     async fn open(&self, dataset: &Self::Dataset) -> Arc<dyn PersistenceBackend> {
@@ -273,29 +289,21 @@ async fn the_memory_product_store_passes_the_kit() {
 
 #[tokio::test]
 async fn a_correct_store_passes_the_kit() {
-    run(&Mocks {
-        blind_initialize: false,
-    })
-    .await;
-    run_durable(&Mocks {
-        blind_initialize: false,
-    })
-    .await;
+    run(&Mocks::default()).await;
+    run_durable(&Mocks::default()).await;
 }
 
 /// T11 alone over the correct mock store, so its red-before-green proof names one test.
 #[tokio::test]
 async fn a_correct_store_hands_over_at_once_after_abandon() {
-    t11_abandon_hands_over(&Mocks {
-        blind_initialize: false,
-    })
-    .await;
+    t11_abandon_hands_over(&Mocks::default()).await;
 }
 
 #[tokio::test]
 async fn the_kit_fails_a_store_that_applies_initialize_blindly() {
     let blind = Mocks {
         blind_initialize: true,
+        ..Mocks::default()
     };
     assert!(
         fails(k3_racing_initialize(&blind)).await,
@@ -309,4 +317,27 @@ async fn the_kit_fails_a_store_that_misreports_reads() {
         fails(k1_first_start_publication(&MisreportingMemory)).await,
         "K1 must fail a store that answers every read with absent values"
     );
+}
+
+/// #319 r4 §6 negative control: a store whose fence ignores the dataset epoch lets a writer of the
+/// retired epoch commit after the record-format opening, and F1 fails it.
+#[tokio::test]
+async fn the_kit_fails_a_store_that_ignores_the_dataset_epoch() {
+    let stale = Mocks {
+        ignore_epoch: true,
+        ..Mocks::default()
+    };
+    assert!(
+        fails(f1_format_opening_fences_the_old_epoch(&stale)).await,
+        "F1 must fail a store that lets an old-epoch writer commit after the opening"
+    );
+}
+
+/// F1-F3 alone over the correct mock store, so a red-before-green proof can name one test.
+#[tokio::test]
+async fn a_correct_store_serializes_record_format_migration() {
+    let store = Mocks::default();
+    f1_format_opening_fences_the_old_epoch(&store).await;
+    f2_racing_openings_have_one_owner(&store).await;
+    f3_pages_and_final_publication(&store).await;
 }

@@ -33,7 +33,7 @@ pub use aead::{aes_block_encrypt, aes_ctr, Aes128Gcm, Aes256Gcm};
 #[cfg(feature = "tls")]
 pub use dtls::{dtls_provider, dtls_self_signed, DtlsCert};
 pub use ecdh::ecdh_p256;
-pub use hash::{sha256, sha384, sha512, Sha256State};
+pub use hash::{sha256_checked, sha256, sha384, sha512, Sha256State};
 pub use mac::{ct_eq, hmac_sha256, hmac_sha256_verify, hmac_sha384, hmac_sha512, HmacSha256Key};
 pub use rand::{fill, hkdf_sha256, pbkdf2_hmac_sha256, u64};
 pub use sig::{ecdsa_p256, ecdsa_p384, ed25519, rsa};
@@ -46,7 +46,7 @@ pub use tls::{
 /// The backend contract version `busbar-crypto` asserts. Raised on any breaking change to this API.
 /// 2 (MIN-3 H0b): `EXTERNAL_PLUGINS`, `hmac_sha384`, `aes_ctr::apply`, `ecdsa_p384`, the SPKI
 /// verification forms and `ed25519::SigningKey::from_pkcs8`.
-pub const API: u32 = 2;
+pub const API: u32 = 3;
 
 /// Whether a plugin that brings its own crypto (stamp `crypto = "external"`) may load under this
 /// backend. Required, with no default (IF §5.2 round 13): a backend that never states it fails the
@@ -74,6 +74,8 @@ pub enum Error {
     Mismatch,
     /// A start-up self-test failed.
     SelfTest(&'static str),
+    /// The selected provider cannot perform the operation.
+    ProviderUnavailable,
 }
 
 /// The module identity: `/healthz` `crypto_module` and the boot log.

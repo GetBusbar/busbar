@@ -109,6 +109,8 @@ const SESSION_STORE_TTL_MS: u64 = 60 * 60 * 1_000;
 
 pub struct LoadedConfig {
     pub deploy: config::DeployCfg,
+    /// Names in the composed source before any typed overlay is applied.
+    pub resource_ownership: config::ResourceOwnership,
     pub defs: HashMap<String, config::ProviderDef>,
 
     pub providers_path: std::path::PathBuf,
@@ -133,12 +135,13 @@ impl LoadedConfig {
     /// `POST /plugins/rollback`): the overlay's root applied to config.yaml's deploy, then resolved.
     /// A disk rebuild re-reads config.yaml, so config.yaml's operator definitions, before any
     /// patch, become the file-policy reference (OPERATOR-FROM-ADMITTED-AUTH §3.6.1): editing them
-    /// and reloading is how the operator credential rotates. The caller merges the overlay's named
-    /// maps after it records the base names.
+    /// and reloading is how the operator credential rotates. Resource ownership was captured before
+    /// typed overlays; callers carry those names and merge the resolved hook/group overlay.
     #[cold]
     #[inline(never)]
     pub fn disk_candidate(&mut self) -> Result<config::RootCfg, String> {
         if let Some(doc) = self.overlay_doc.as_ref() {
+            self.resource_ownership.validate_named_maps(doc)?;
             config::overlay::apply_root_to_deploy(&mut self.deploy, doc)?;
         }
         let mut cfg = config::resolve(&self.deploy, &self.defs)
@@ -268,8 +271,8 @@ pub fn load_config_from_disk_compacting_document_patches(
         rules,
         edits,
     )?;
-    let grammar = raw.own_grammar()?;
-    raw.typed(&grammar)
+    let read = Arc::new(raw.own_read()?);
+    raw.typed_prepared(read)
 }
 
 /// THE BOOT POST-STORE RECOMPUTE (SECRET-SHORTHAND-BOOT §3.7): once the Store is open, the
@@ -298,8 +301,8 @@ pub fn load_config_under_store(
             admission: None,
         },
     )?;
-    let grammar = raw.grammar_with_pins(&doc.plugin_versions)?;
-    raw.typed(&grammar)
+    let read = Arc::new(raw.read_with_pins(&doc.plugin_versions)?);
+    raw.typed_prepared(read)
 }
 
 /// The deployment document as one read sees it before its typed parse: read, normalized,
@@ -333,6 +336,38 @@ struct ReadInputs<'a> {
 }
 
 impl RawDocuments<'_> {
+    /// The complete admission of this effective document, before parsing its typed fields.
+    pub fn own_read(&self) -> Result<config::grammar::PreparedConfigRead, String> {
+        self.read_with_pins(&Default::default())
+    }
+
+    pub fn read_with_pins(
+        &self,
+        pins: &std::collections::BTreeMap<String, String>,
+    ) -> Result<config::grammar::PreparedConfigRead, String> {
+        let plugins = self.plugins_block()?;
+        config::grammar::prepare_read_for(
+            &config::grammar::PhaseOneIn {
+                plugins: &plugins,
+                dir: std::path::Path::new(&plugins.dir),
+                pins,
+                fetch: config::grammar::Fetch::None,
+            },
+            self.inputs.rules,
+        )
+        .map_err(|refusal| format!("config.yaml: {refusal}"))
+    }
+
+    /// Parse and retain the exact image/descriptor owner. No admission is repeated here.
+    pub fn typed_prepared(
+        self,
+        read: Arc<config::grammar::PreparedConfigRead>,
+    ) -> Result<LoadedConfig, String> {
+        read.check_plugins(&self.plugins_block()?)?;
+        let mut loaded = self.typed(read.grammar())?;
+        read.attach(&mut loaded.deploy)?;
+        Ok(loaded)
+    }
     /// The read's effective `plugins:` block, typed without a grammar: it holds no secret
     /// reference (G18). An absent block is the default (`enabled: false`). A document that does not
     /// read as YAML at all has no block here; the typed parse reports it.
@@ -355,25 +390,6 @@ impl RawDocuments<'_> {
         let plugins = self.plugins_block()?;
         config::grammar::grammar_for(
             &config::grammar::PhaseOneIn::of(&plugins),
-            self.inputs.rules,
-        )
-        .map_err(|refusal| format!("config.yaml: {refusal}"))
-    }
-
-    /// Phase 1 over this read's own block with the Store's plugin version pins: the boot
-    /// post-Store recompute (SECRET-SHORTHAND-BOOT §3.7). No fetch: bootstrap already fetched.
-    pub(crate) fn grammar_with_pins(
-        &self,
-        pins: &std::collections::BTreeMap<String, String>,
-    ) -> Result<config::Grammar, String> {
-        let plugins = self.plugins_block()?;
-        config::grammar::grammar_for(
-            &config::grammar::PhaseOneIn {
-                plugins: &plugins,
-                dir: std::path::Path::new(&plugins.dir),
-                pins,
-                fetch: config::grammar::Fetch::None,
-            },
             self.inputs.rules,
         )
         .map_err(|refusal| format!("config.yaml: {refusal}"))
@@ -428,8 +444,10 @@ impl RawDocuments<'_> {
             &bound_grammar,
         )?;
         let resolution = config::overlay::resolve_backend(&deploy.config);
+        let resource_ownership = config::ResourceOwnership::capture(&deploy);
         Ok(LoadedConfig {
             deploy,
+            resource_ownership,
             defs,
             providers_path,
             overlay_path: None,
@@ -771,6 +789,26 @@ pub async fn read_disk_candidate(
 }
 
 impl DiskRead {
+    /// Carry the exact admission through the second document read. Changed plugin inputs refuse.
+    pub fn typed_prepared(
+        self,
+        config_path: &std::path::Path,
+        providers_override: Option<&std::path::Path>,
+        env_mode: config::EnvSubst,
+        rules: &dyn RootRules,
+        read: Arc<config::grammar::PreparedConfigRead>,
+    ) -> Result<LoadedConfig, String> {
+        let grammar = read.grammar().clone();
+        self.typed_inner(
+            config_path,
+            providers_override,
+            env_mode,
+            rules,
+            &grammar,
+            Some(read),
+        )
+    }
+
     /// The documents typed under `grammar` (the read's phase 1), with the Store's durable patches
     /// applied and its overlay attached, as [`load_config_from_disk_with_store`] reads them.
     pub fn typed(
@@ -780,6 +818,25 @@ impl DiskRead {
         env_mode: config::EnvSubst,
         rules: &dyn RootRules,
         grammar: &config::Grammar,
+    ) -> Result<LoadedConfig, String> {
+        self.typed_inner(
+            config_path,
+            providers_override,
+            env_mode,
+            rules,
+            grammar,
+            None,
+        )
+    }
+
+    fn typed_inner(
+        self,
+        config_path: &std::path::Path,
+        providers_override: Option<&std::path::Path>,
+        env_mode: config::EnvSubst,
+        rules: &dyn RootRules,
+        grammar: &config::Grammar,
+        read: Option<Arc<config::grammar::PreparedConfigRead>>,
     ) -> Result<LoadedConfig, String> {
         let DiskRead {
             overlay, mut doc, ..
@@ -798,7 +855,10 @@ impl DiskRead {
                 admission: None,
             },
         )?;
-        let mut loaded = raw.typed(grammar)?;
+        let mut loaded = match read {
+            Some(read) => raw.typed_prepared(read)?,
+            None => raw.typed(grammar)?,
+        };
         // A stored patch from an earlier binary that moves the operator credential is refused at
         // every re-read, as at boot: never applied or dropped silently.
         if let Some(patch) = doc.as_ref().and_then(|doc| doc.document_patch.as_ref()) {
@@ -988,7 +1048,49 @@ pub(crate) fn plane_is_open_for_build(
     (fallback || written.contains(section)) && (fallback || !awaiting_restart.contains(&section))
 }
 
+/// Root-owned early resolver and late completion of one unpublished candidate.
+/// The containing transaction owns this object across awaits; response detachment does not abort it.
+pub trait CandidatePreparation: Send + 'static {
+    fn secret_resolver(&self) -> Arc<config::secret::SecretResolver>;
+
+    fn finish<'a>(
+        self: Box<Self>,
+        app: &'a mut App,
+    ) -> busbar_plugin_abi::host_side::caller::BoxFut<'a, Result<(), String>>;
+}
+
 pub trait RootRules: Send + Sync {
+    /// Retain the actual read's native admission. Metadata-only readers need no opaque context.
+    fn prepare_read(
+        &self,
+        input: &config::grammar::PhaseOneIn<'_>,
+    ) -> Result<config::grammar::PreparedConfigRead, config::grammar::GrammarRefusal> {
+        self.grammar(input)
+            .map(config::grammar::PreparedConfigRead::new)
+    }
+
+    /// Capture the candidate before its fields move and before any dependent secret resolution.
+    /// Native reads must supply a real producer; an absent implementation cannot reuse old ports.
+    fn prepare_candidate<'a>(
+        &'a self,
+        cfg: &'a config::RootCfg,
+        _plugins: &'a config::PluginsCfg,
+    ) -> busbar_plugin_abi::host_side::caller::BoxFut<
+        'a,
+        Result<Option<Box<dyn CandidatePreparation>>, String>,
+    > {
+        Box::pin(async move {
+            if cfg
+                .grammar
+                .prepared()
+                .is_some_and(|read| read.has_context() || !read.provider_planes().is_empty())
+            {
+                Err("the native read has no candidate preparation producer".into())
+            } else {
+                Ok(None)
+            }
+        })
+    }
     /// Phase one uses this reader's owned process and image admission context.
     fn grammar(
         &self,
@@ -1075,24 +1177,6 @@ impl RootRules for AcceptAll {
     fn check(&self, _cfg: &config::RootCfg) -> Result<(), String> {
         Ok(())
     }
-}
-
-/// Inspect a configured Store before ordinary OPEN can initialize or select its dataset.
-/// Historical transformation is supplied by the composition root, not this projection.
-pub async fn prepare_config_store(
-    cfg: &config::RootCfg,
-    plugins: &config::PluginsCfg,
-    resolver: &config::secret::SecretResolver,
-) -> Result<busbar_contract::persistence::lifecycle::axis::Prepared, String> {
-    let registry = bootstrap_store_inputs(cfg, plugins, resolver).await?;
-    let (door, label, settings) = config_store_inputs(cfg.store.as_ref(), &registry, resolver)?;
-    let axis = crate::preflight::root_rows()
-        .store_axis
-        .ok_or("no Store axis is installed")?;
-    axis()
-        .prepare(door, &label, settings.as_bytes())
-        .await
-        .map_err(|_| format!("Store '{label}' native preparation refused"))
 }
 
 pub async fn bootstrap_store_inputs(
@@ -1419,44 +1503,6 @@ pub fn instance_limits(
     limits
 }
 
-fn config_store_inputs(
-    store: Option<&config::StoreCfg>,
-    registry: &Arc<dyn busbar_contract::plugin_rows::PluginRows>,
-    resolver: &config::secret::SecretResolver,
-) -> Result<
-    (
-        busbar_contract::persistence::axis::StoreDoor,
-        String,
-        busbar_contract::secure::SecureString,
-    ),
-    String,
-> {
-    let store = store.ok_or_else(config::store_required)?;
-    let row = registry.resolve(&store.module);
-    let resolved = if row.as_ref().is_some_and(|row| row.in_process) {
-        Default::default()
-    } else {
-        config::secret::resolve_settings(
-            &store.settings,
-            &registry.secret_slots(&store.module),
-            &registry.reference_slots(&store.module),
-            &store.module,
-            resolver,
-            &busbar_contract::config_time::ConfigScope::config_time(),
-        )
-        .map_err(|error| format!("store '{}' settings: {error}", store.module))?
-    };
-    let bytes = resolved.encode().map_err(|error| error.to_string())?;
-    let settings = busbar_contract::secure::SecureString::from(
-        String::from_utf8(bytes.into_exposed(&crate::seal::lend()))
-            .map_err(|_| "settings encoding was not UTF-8")?,
-    );
-    drop(resolved);
-    let failed = |error: String| format!("store '{}' plugin load failed: {error}", store.module);
-    let door = registry.store_door(&store.module).map_err(failed)?;
-    Ok((door, store.module.clone(), settings))
-}
-
 /// The 1.5.5 `plugins.fetch` refusal: a header line, then one `  - ` bullet per failed target.
 fn plugins_fetch_refusal<S: AsRef<str>>(errors: &[S]) -> String {
     let mut out = String::from("plugins.fetch failed:");
@@ -1662,6 +1708,9 @@ async fn build_app_native(
     judged: Option<config_validate::Judged>,
     opened_secrets: Option<Arc<config::secret::SecretResolver>>,
 ) -> Result<(state::App, Option<GovCredentialRotation>, InstalledLimits), String> {
+    if let Some(read) = cfg.grammar.prepared() {
+        read.check_plugins(&plugins_cfg)?;
+    }
     config::security_policy::check_candidate(prior, &cfg, &plugins_cfg)?;
     // The operator file-policy reference (§3.6.1): a disk read sets it on the candidate; every
     // other build carries the running generation's unchanged.
@@ -1758,9 +1807,31 @@ async fn build_app_native(
     let transition_requirements =
         governance::principal_transition::requirements(&cfg, plugin_registry.as_ref())?;
 
-    let secret_resolver = match opened_secrets {
-        Some(resolver) => resolver,
-        None => rules.secret_resolver(&cfg, &plugins_cfg).await?,
+    let publication_generation = config::generation::reserve(prior).await?;
+    // Only build_boot_app supplies opened_secrets: its retained root preparation owns
+    // the exact already-opened bootstrap prefix and ServingReady. Full initial native
+    // completion remains after NodeBook confirms the boot generation. Every runtime
+    // rebuild instead requires its real early/late candidate producer here.
+    let preparation = if opened_secrets.is_some() {
+        if prior.is_some() || boot_store.is_none() {
+            return Err("initial secret ownership requires the admitted boot Store".into());
+        }
+        None
+    } else {
+        rules.prepare_candidate(&cfg, &plugins_cfg).await?
+    };
+    let prepared_resolver = preparation
+        .as_ref()
+        .map(|preparation| preparation.secret_resolver());
+    let secret_resolver = match (prepared_resolver, opened_secrets) {
+        (Some(resolver), opened) => {
+            if opened.is_some_and(|opened| !Arc::ptr_eq(&opened, &resolver)) {
+                return Err("the candidate resolver differs from its opened secret owner".into());
+            }
+            resolver
+        }
+        (None, Some(resolver)) => resolver,
+        (None, None) => rules.secret_resolver(&cfg, &plugins_cfg).await?,
     };
 
     let mut lanes_data = Vec::new();
@@ -2632,6 +2703,14 @@ async fn build_app_native(
     if let Some(prior) = prior {
         app.config_generation = Arc::clone(&prior.config_generation);
     }
+    app.publication_generation = publication_generation;
+    app.selected_predecessor = prior.and_then(|prior| prior.selected_policy.clone());
+    app.configured_view = Some(configured_view);
+    app.operator_file_defs = operator_file_defs;
+    app.grammar = grammar;
+    if let Some(preparation) = preparation {
+        preparation.finish(&mut app).await?;
+    }
     rules.check_built(&mut app)?;
     if let Some(paths) = rules.mounted_plugin_paths(&app) {
         app.boot_route_paths = Arc::new(paths);
@@ -2643,9 +2722,6 @@ async fn build_app_native(
         }
     }
 
-    app.configured_view = Some(configured_view);
-    app.operator_file_defs = operator_file_defs;
-    app.grammar = grammar;
     // Existing direct builders pass an explicit providers path. The executable replaces this
     // initial default with its actual CLI/env provenance; subsequent generations inherit it.
     if let Some(prior) = prior {
@@ -2654,6 +2730,10 @@ async fn build_app_native(
     app.config_pending_restart = prior
         .map(|app| app.config_pending_restart.clone())
         .unwrap_or_default();
+    // Export membership is restart-only: recompute its markers against the retained boot
+    // instances, so a reverted or withdrawn candidate cannot leave a stale requirement.
+    app.config_pending_restart
+        .retain(|path| !path.starts_with("export."));
     app.boot_restart_root = prior.and_then(|app| app.boot_restart_root.clone());
     app.boot_restart_source = prior.and_then(|app| app.boot_restart_source.clone());
     if let Some(boot) = &app.boot_restart_root {
@@ -2672,7 +2752,7 @@ async fn build_app_native(
         let exports: std::collections::BTreeSet<_> = app
             .export_defs
             .keys()
-            .chain(prior.export_defs.keys())
+            .chain(app.exports.sinks.iter().map(|sink| &sink.name))
             .cloned()
             .collect();
         for name in exports {
@@ -2690,7 +2770,7 @@ async fn build_app_native(
     app.require_if_match = cfg
         .auth
         .as_ref()
-        .and_then(|a| a.policy.require_if_match)
+        .and_then(|a| a.require_if_match)
         .unwrap_or(false);
     Ok((
         app,

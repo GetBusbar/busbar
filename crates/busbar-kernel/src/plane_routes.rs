@@ -144,6 +144,9 @@ impl PlaneRouteSpec {
 }
 
 pub struct PlaneReqCtx {
+    pub request: crate::limits::process_admission::RequestLease,
+    /// The actual live handle serving this request, distinct from its pinned engine snapshot.
+    pub handle: Arc<crate::state::AppHandle>,
     pub path: String,
 
     pub uri: axum::http::Uri,
@@ -155,6 +158,8 @@ pub struct PlaneReqCtx {
     pub body: Bytes,
 
     pub gov: Option<busbar_contract::records::PlaneRequestCtx>,
+
+    pub signed_authority: Option<crate::auth::SignedRequestAuthority>,
 
     pub principal: Option<busbar_contract::auth::AuthPrincipal>,
 
@@ -196,7 +201,7 @@ pub struct SessionOut {
 #[derive(Debug)]
 pub struct SessionPipe {
     /// The caller's messages, one per message, text or binary, as bytes.
-    pub from_caller: tokio::sync::mpsc::Sender<Vec<u8>>,
+    pub from_caller: tokio::sync::mpsc::Sender<crate::plane_driver::SessionInput>,
     /// The frames toward the caller.
     pub to_caller: tokio::sync::mpsc::Receiver<SessionOut>,
 }
@@ -228,7 +233,7 @@ pub struct FramedSession {
 impl FramedSession {
     #[cfg(test)]
     #[must_use]
-    fn with_admission(
+    pub(crate) fn with_admission(
         sender: tokio::sync::mpsc::UnboundedSender<SessionAdmission>,
         stream: u64,
     ) -> Self {

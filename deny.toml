@@ -95,13 +95,13 @@ deny = [
     # one; core's own graph builds no ring, held by tools/ci-checks crypto-graph), `aes`/`cipher`
     # (transport-webrtc), `sha2` (busbar-auth-oauth) and `getrandom`/`rand_core` (busbar-store-memory,
     # -postgres, -sqlite): core is clean since oauth-as 1.1 (decision 228), these plugins move in §8 5-7.
-    { crate = "aws-lc-rs", wrappers = ["busbar-crypto-backend", "quinn-proto", "rcgen", "rustls", "rustls-webpki", "x509-parser"], reason = "AWS-LC only through the crypto backend" },
+    { crate = "aws-lc-rs", wrappers = ["busbar-crypto-backend", "busbar-system-hammer", "quinn-proto", "rcgen", "rustls", "rustls-webpki", "x509-parser"], reason = "AWS-LC only through the crypto backend" },
     { crate = "aws-lc-sys", wrappers = ["busbar-crypto-backend", "aws-lc-rs"], reason = "AWS-LC only through the crypto backend" },
     { crate = "aws-lc-fips-sys", wrappers = ["aws-lc-rs"], reason = "the private FIPS build only" },
     { crate = "ed25519-dalek", wrappers = ["busbar-crypto-backend"], reason = "Ed25519 is AWS-LC's, through the facade" },
     { crate = "ed25519", wrappers = ["busbar-crypto-backend", "ed25519-dalek"], reason = "Ed25519 is AWS-LC's, through the facade" },
     { crate = "curve25519-dalek", wrappers = ["busbar-crypto-backend", "ed25519-dalek"], reason = "the backend's pinned-key point check only (QE-BOOT-KEYCHECK); Ed25519 signing and verification are AWS-LC's" },
-    { crate = "rcgen", wrappers = ["busbar-crypto-backend"], reason = "certificates are minted by the crypto backend" },
+    { crate = "rcgen", wrappers = ["busbar-crypto-backend", "busbar-system-hammer"], reason = "certificates are minted by the crypto backend; busbar-system-hammer, the test-only hammer, mints its mock TLS and card certificates on AWS-LC (#247, busbar#429)" },
     { crate = "x509-parser", wrappers = ["busbar-crypto-backend", "rcgen"], reason = "only rcgen's verifier carries it" },
     { crate = "der-parser", wrappers = ["x509-parser"], reason = "only x509-parser carries it" },
     { crate = "num-bigint", wrappers = ["der-parser", "num", "num-rational"], reason = "no bignum outside protocol parsers (224: BigUint RSA-OAEP deleted)" },
@@ -171,6 +171,7 @@ skip = [
     { crate = "crypto-common@0.2", reason = "follows digest 0.11 (ed25519-dalek 3, postgres-types)" },
     { crate = "cpufeatures@0.3", reason = "sha2 0.11 and curve25519-dalek 5 (ed25519-dalek 3), chacha20 0.10 in dist/default" },
     { crate = "base64@0.23", reason = "pem 4 via rcgen's `pem` feature, which only the tests enable" },
+    { crate = "windows-link@0.100", reason = "windows-core/windows-result/windows-strings in testing/oracle only; windows targets only, never built on linux/macOS (busbar#429)" },
 ]
 
 [sources]
@@ -216,8 +217,14 @@ allow-git = [
     "https://github.com/GetBusbar/busbar-store-sqlite",
     "https://github.com/GetBusbar/busbar-store-postgres",
     # Authorized release-line fixes; exact revisions remain in root/dist manifests and locks.
-    # h2 d6146a5c425e55653cdfebc5660e52d87430c588 (upstream hyperium/h2#996).
+    # h2 retains upstream sensitive-field fixes plus adopted native serializer provenance.
     "https://github.com/MattJackson/h2",
+    # Adopted HTTP-PROJECTION-PRODUCER r2 and native serializer cohort; exact revs in locks.
+    "https://github.com/MattJackson/http",
+    "https://github.com/MattJackson/hyper",
+    "https://github.com/MattJackson/hyper-util",
+    # Adopted TLS output/ticket storage r2; immutable revision in consuming locks.
+    "https://github.com/MattJackson/rustls",
     # tungstenite 893a21f1f98011a2665840231330c473836c9a0a (1014 fix plus streaming diagnostic formatting).
     "https://github.com/MattJackson/tungstenite-rs",
     "https://github.com/MattJackson/jobserver-rs",
@@ -233,4 +240,13 @@ allow-git = [
     # root/dist [patch.crates-io] rows and locks.
     "https://github.com/MattJackson/sonic-rs",
     "https://github.com/MattJackson/olpc-cjson",
+    # dist/default resolves these first-party plane plugins from the canonical GitLab host at their pinned revs
+    # (the github.com rows above are the mirror URLs); busbar#429.
+    "https://github.com/GetBusbar/busbar-plane-a2a",
+    "https://github.com/GetBusbar/busbar-plane-decisions",
+    "https://github.com/GetBusbar/busbar-plane-llm",
+    "https://github.com/GetBusbar/busbar-plane-mcp",
+    "https://github.com/GetBusbar/busbar-plane-streaming",
+    # postgres-protocol fork at its exact rev, via busbar-store-postgres in dist/default (busbar#429).
+    "https://github.com/MattJackson/rust-postgres",
 ]

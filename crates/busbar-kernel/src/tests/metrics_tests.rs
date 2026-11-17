@@ -195,6 +195,7 @@ async fn test_scrape_gauges_uncapped_group_bucket_no_remaining() {
                 parent: None,
                 enabled: true,
                 limits: vec![crate::config::groups::LimitCfg {
+                    selected: None,
                     metric: crate::config::groups::LimitMetric::Requests,
                     amount: 100,
                     per: Some(crate::config::groups::LimitWindow::Minute),
@@ -258,6 +259,7 @@ async fn test_scrape_gauges_bucket_model_tier_and_key_labels() {
             parent: None,
             enabled: true,
             limits: vec![crate::config::groups::LimitCfg {
+                selected: None,
                 metric: crate::config::groups::LimitMetric::Budget,
                 amount: 1_000,
                 per: Some(crate::config::groups::LimitWindow::Total),
@@ -602,8 +604,78 @@ fn local_source(
     impl Fn() -> Vec<busbar_contract::export_calls::Family>,
 ) {
     let width = Duration::from_secs(1);
-    let source: &'static Source = Box::leak(Box::new(Source::new(width, SUMMARY_BUCKETS, idle)));
-    (source, move || source.snapshot())
+    let source: &'static Source =
+        Box::leak(Box::new(Source::isolated(width, SUMMARY_BUCKETS, idle)));
+    (source, move || source.snapshot().unwrap())
+}
+
+#[test]
+fn phase_cells_survive_actual_pending_and_failed_recorder_installation() {
+    const CHILD: &str = "BUSBAR_TEST_PHASE_INSTALLATION";
+    let Some(mode) = std::env::var_os(CHILD) else {
+        let full = concat!(
+            module_path!(),
+            "::phase_cells_survive_actual_pending_and_failed_recorder_installation"
+        );
+        let (_, name) = full.split_once("::").unwrap();
+        for mode in ["success", "failure"] {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", name, "--nocapture"])
+                .env(CHILD, mode)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        return;
+    };
+    let failing = mode == "failure";
+    if failing {
+        metrics::set_global_recorder(metrics::NoopRecorder).unwrap();
+    }
+    let phase = crate::telemetry::histogram_slot(
+        crate::telemetry::REQUEST_PHASE_DURATION,
+        &[
+            ("plane", "synthetic"),
+            ("phase", "MountedResponseReady"),
+            ("pool", "installation"),
+            ("ingress_protocol", "test-wire"),
+            ("outcome", "ok"),
+        ],
+    );
+    assert!(phase.is_valid());
+    phase.record(0.5); // The effective policy is not enabled yet.
+    crate::snapshot::request_store::refused(5);
+    assert!(INSTALL_TEST_GATE
+        .set((std::sync::Barrier::new(2), std::sync::Barrier::new(2)))
+        .is_ok());
+    let (entered, release) = INSTALL_TEST_GATE.get().unwrap();
+    configure(Some(Duration::from_secs(3600)));
+    entered.wait();
+    phase.record(0.001);
+    assert!(request_snapshot(32).is_none());
+    release.wait();
+    init_with(Duration::from_secs(3600)); // Wait on the real initialization OnceLock, not a timer.
+    phase.record(0.005);
+    if failing {
+        assert!(!recorder_installed());
+        assert!(request_snapshot(32).is_none());
+        assert!(snapshot().is_none());
+    } else {
+        assert!(recorder_installed());
+        assert_eq!(request_snapshot(32).unwrap().identities[0].count, 2);
+        assert!(snapshot().is_some());
+    }
+    // Read the real process arena even when public readout is permanently unavailable.
+    let source = Source::new(Duration::from_secs(1), SUMMARY_BUCKETS, GAUGE_IDLE_TIMEOUT);
+    let captured = source.request_snapshot(32).unwrap();
+    assert_eq!(captured.identities[0].count, 2);
+    assert_eq!(captured.identities[0].sum_us, 6000);
+    assert_eq!(captured.dropped, [0; 6]);
 }
 
 #[test]

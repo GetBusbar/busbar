@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (C) 2026 Matthew Jackson
+#
 # The providers catalog beside `config.yaml`, as a 1.5.5 operator extended it: the public entries
 # a release shipped, one the deployment overrides to a private `base_url` (`lab-vllm`), one private
 # entry only this catalog states (`in-rack`) and one whose OAuth `token_url` is private

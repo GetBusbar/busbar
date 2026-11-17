@@ -53,6 +53,11 @@ pub(super) struct Pending {
     recovered: bool,
     /// The unit's live audit line, carried from the root's seal (SHUTDOWN-HANG F1a). RAM only.
     audit: Option<Carried>,
+    memory_selected: bool,
+    fee_completion: Option<Arc<dyn super::partitions::SelectedFeeCompletion>>,
+    awaiting_terminal_reader: bool,
+    terminal_signal: Option<Arc<super::TerminalSignal>>,
+    ordinary_signal: Option<Arc<super::ordinary_completion::OrdinarySignal>>,
 }
 
 /// One entry's custody facts at a non-retired exit (SHUTDOWN-HANG §5).
@@ -94,7 +99,50 @@ impl Pending {
             persisted,
             recovered,
             audit: None,
+            memory_selected: false,
+            fee_completion: None,
+            awaiting_terminal_reader: false,
+            terminal_signal: None,
+            ordinary_signal: None,
         }
+    }
+
+    pub(super) fn with_ordinary_signal(
+        mut self,
+        signal: Arc<super::ordinary_completion::OrdinarySignal>,
+    ) -> Self {
+        self.ordinary_signal = Some(signal);
+        self
+    }
+
+    pub(super) fn ordinary_signal(
+        &self,
+    ) -> Option<&Arc<super::ordinary_completion::OrdinarySignal>> {
+        self.ordinary_signal.as_ref()
+    }
+
+    pub(super) fn selected(snapshot: UnitCheckpoint, durable: bool, pending_hot: bool) -> Self {
+        let mut entry = Self::new(snapshot, None, pending_hot);
+        entry.memory_selected = !durable;
+        entry
+    }
+
+    pub(super) fn is_memory_selected(&self) -> bool {
+        self.memory_selected
+    }
+
+    pub(super) fn with_fee_completion(
+        mut self,
+        completion: Option<Arc<dyn super::partitions::SelectedFeeCompletion>>,
+    ) -> Self {
+        self.fee_completion = completion;
+        self.awaiting_terminal_reader = true;
+        self
+    }
+
+    pub(super) fn require_terminal_reader(mut self) -> Self {
+        self.awaiting_terminal_reader = true;
+        self
     }
 
     pub(super) fn snapshot(&self) -> &UnitCheckpoint {
@@ -382,10 +430,22 @@ impl PendingGuard<'_> {
     /// A running entry whose revision is persisted needs no store call and is skipped.
     pub(super) fn flush_order(&self) -> Vec<Id> {
         crate::off_path::governance::runtime::unit_checkpoint_book_flush_order(
-            self.inner.entries.iter(),
+            self.inner
+                .entries
+                .iter()
+                .filter(|(_, entry)| !entry.memory_selected),
             |e: &Pending| e.snapshot.ended,
             |e: &Pending| !e.snapshot.ended && e.persisted != Some(e.snapshot.revision),
         )
+    }
+
+    pub(super) fn memory_order(&self) -> Vec<Id> {
+        self.inner
+            .entries
+            .iter()
+            .filter(|(_, entry)| entry.memory_selected && entry.snapshot.ended)
+            .map(|(id, _)| *id)
+            .collect()
     }
 
     /// Every entry's custody facts at exit: id, ended, persisted revision, staged revision,
@@ -422,6 +482,80 @@ pub(super) struct PendingEdit<'a> {
 }
 
 impl PendingEdit<'_> {
+    pub(super) fn terminal_signal(&mut self) -> Arc<super::TerminalSignal> {
+        self.entry
+            .terminal_signal
+            .get_or_insert_with(Default::default)
+            .clone()
+    }
+    pub(super) fn matches_terminal_signal(
+        &self,
+        expected: Option<&Arc<super::TerminalSignal>>,
+    ) -> bool {
+        match expected {
+            Some(expected) => self
+                .entry
+                .terminal_signal
+                .as_ref()
+                .is_some_and(|actual| Arc::ptr_eq(actual, expected)),
+            None => self
+                .entry
+                .terminal_signal
+                .as_ref()
+                .is_none_or(|signal| !signal.claimed.load(Ordering::Acquire)),
+        }
+    }
+    pub(super) fn notify_terminal(&self) {
+        if let Some(signal) = &self.entry.terminal_signal {
+            signal.notify();
+        }
+    }
+    pub(super) fn awaiting_terminal_reader(&self) -> bool {
+        self.entry.awaiting_terminal_reader
+    }
+    pub(super) fn terminal_reader_accepted(&mut self) {
+        self.entry.awaiting_terminal_reader = false;
+    }
+    pub(super) fn is_memory_selected(&self) -> bool {
+        self.entry.memory_selected
+    }
+    pub(super) fn resolve_fee(&mut self) -> Result<bool, super::RecordStoreError> {
+        let result = self.resolve_fee_inner();
+        if !matches!(result, Ok(false)) {
+            self.notify_terminal();
+        }
+        result
+    }
+    fn resolve_fee_inner(&mut self) -> Result<bool, super::RecordStoreError> {
+        let Some(parts) = self.entry.snapshot.partitions.as_ref() else {
+            return Ok(true);
+        };
+        if !parts.fee.pending() {
+            return Ok(true);
+        }
+        let Some(result) = self
+            .entry
+            .fee_completion
+            .as_ref()
+            .and_then(|observer| observer.observe())
+        else {
+            return Ok(false);
+        };
+        let mut snapshot = self.entry.snapshot.clone();
+        snapshot.revision = snapshot
+            .revision
+            .checked_add(1)
+            .ok_or_else(|| super::error("selected fee revision exhausted"))?;
+        let parts = snapshot.partitions.as_mut().expect("selected fee owner");
+        parts.fee = super::partitions::CapturedFee::ResolvedOwner {
+            basis: parts.fee.basis().clone(),
+            result,
+        };
+        super::partitions::validate_successor(&self.entry.snapshot, &snapshot)?;
+        self.replace_snapshot(snapshot);
+        self.entry.fee_completion = None;
+        Ok(true)
+    }
     pub(super) fn snapshot(&self) -> &UnitCheckpoint {
         &self.entry.snapshot
     }
@@ -457,6 +591,36 @@ impl PendingEdit<'_> {
     }
 
     /// Selects the terminal operations. Neither the unit nor the targets change.
+    pub(super) fn ordinary_signal(
+        &self,
+    ) -> Option<&Arc<super::ordinary_completion::OrdinarySignal>> {
+        self.entry.ordinary_signal.as_ref()
+    }
+
+    pub(super) fn confirm_ordinary(
+        &mut self,
+        flushed: &UnitCheckpoint,
+        original: Option<&Arc<super::ordinary_completion::OrdinarySignal>>,
+    ) -> super::RecordStoreResult<()> {
+        match (&self.entry.ordinary_signal, original) {
+            (None, None) => Ok(()),
+            (Some(current), Some(original))
+                if Arc::ptr_eq(current, original) && self.entry.snapshot == *flushed =>
+            {
+                current.confirm(&mut self.entry.snapshot)
+            }
+            _ => Err(super::error(
+                "ordinary checkpoint R acknowledged a different original source",
+            )),
+        }
+    }
+
+    /// Test-only: replace the exact pending snapshot between a flush capture and its R ACK.
+    #[cfg(test)]
+    pub(super) fn stale_for_test(&mut self) {
+        self.entry.snapshot.revision = self.entry.snapshot.revision.saturating_add(1);
+    }
+
     pub(super) fn set_terminal(&mut self, events: Vec<RecoveryEvent>, revision: u64) {
         self.entry.snapshot.terminal = Some(events);
         self.entry.snapshot.revision = revision;

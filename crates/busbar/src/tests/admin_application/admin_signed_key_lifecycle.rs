@@ -631,16 +631,16 @@ async fn test_signed_mint_expiry_parsing_matrix() {
     println!("{WITNESS}");
 }
 
+/// ADMIN-API-1.6-ONE-MODEL §2 row 68: `POST /signing-key/rotate` reported intent and changed nothing,
+/// so 1.6.0 deletes it; a real rotation action is 1.6.x.
 #[tokio::test]
-async fn test_signing_key_rotate_reports_kid_and_revoke_all() {
+async fn signing_key_rotate_is_gone() {
     const CHILD: &str = "BUSBAR_ADMIN_BOOT_800A98AB78DB";
-    const WITNESS: &str =
-        "actual root case test_signing_key_rotate_reports_kid_and_revoke_all completed";
+    const WITNESS: &str = "actual root case signing_key_rotate_is_gone completed";
     isolated!(CHILD, WITNESS);
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    let (module, directory, settings) = crate::distribution::rig::actual_store(
-        "test_signing_key_rotate_reports_kid_and_revoke_all-actual-store",
-    );
+    let (module, directory, settings) =
+        crate::distribution::rig::actual_store("signing_key_rotate_is_gone-actual-store");
     assert!(
         settings.is_object(),
         "the actual Store settings are an object"
@@ -713,29 +713,18 @@ async fn test_signing_key_rotate_reports_kid_and_revoke_all() {
     let client = reqwest::Client::new();
     let url = format!("http://{addr}/api/v1/admin/signing-key/rotate");
 
-    let unauth = client.post(&url).send().await.unwrap();
-    assert_eq!(
-        unauth.status().as_u16(),
-        401,
-        "signing-key rotate is admin-guarded"
-    );
-
     let r = client
         .post(&url)
         .header("x-admin-token", "admintok")
         .send()
         .await
         .unwrap();
-    assert_eq!(r.status().as_u16(), 200);
-    let body = r.bytes().await.unwrap();
-    let body = json::parse_value(&body).unwrap();
     assert_eq!(
-        body["current_kid"],
-        busbar_kernel::governance::signing::DEFAULT_KID,
-        "reports the current signing-key id: {body}"
+        r.status().as_u16(),
+        404,
+        "the deleted route is not served: {:?}",
+        r.text().await
     );
-    assert_eq!(body["revoke_all"], true, "rotation is revoke-all by design");
-
     let rows = busbar_kernel::audit::auditlog::AUDIT_LOG.list_filtered(
         0,
         audit_ring::MAX_AUDIT_ENTRIES,
@@ -743,13 +732,8 @@ async fn test_signing_key_rotate_reports_kid_and_revoke_all() {
         Some("signing-key"),
     );
     assert!(
-        rows.iter()
-            .any(|e| e.action == "signing_key.report" && e.outcome == audit_ring::OUTCOME_APPLIED),
-        "the report is recorded under a verb that does not claim a mutation"
-    );
-    assert!(
-        !rows.iter().any(|e| e.action == "signing_key.rotate"),
-        "and never under a verb asserting key material changed"
+        !rows.iter().any(|e| e.action.starts_with("signing_key.")),
+        "nothing is recorded for a route that does not exist"
     );
 
     handle.abort();

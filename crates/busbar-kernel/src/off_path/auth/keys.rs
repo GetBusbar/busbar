@@ -418,7 +418,7 @@ pub(crate) mod instances {
 /// An admin change's effect context (`auth::effect`): built once per admitted admin verb, and
 /// rechecked only by that verb's effect admission.
 pub(crate) mod effect {
-    use crate::auth::effect::{actor, Context};
+    use crate::auth::effect::Context;
     use crate::auth::AdminDoor;
     use axum::http::HeaderMap;
 
@@ -439,13 +439,7 @@ pub(crate) mod effect {
         headers: HeaderMap,
         admitted: &AdminDoor,
     ) -> Context {
-        Context {
-            method: method.into(),
-            target: target.into(),
-            headers,
-            actor: actor(admitted).map(str::to_owned),
-            roles: roles(admitted),
-        }
+        Context::legacy(method, target, headers, admitted)
     }
 
     impl crate::inbound::RequestAdmission {

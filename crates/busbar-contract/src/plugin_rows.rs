@@ -6,34 +6,7 @@
 use std::any::Any;
 use std::sync::Arc;
 
-/// One axis of a hook manifest's declared intent — the SAME `no ⊂ ro ⊂ rw` ladder the operator
-/// grant uses, so the core can compare "declared" against "granted" directly. `rw` is meaningful
-/// only on the `prompt` axis (identity is never rewritten); on `user` it reads as "at least ro".
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum NeedLevel {
-    /// Declares no need for this content (the default).
-    #[default]
-    No,
-    /// Asks to READ this content.
-    Ro,
-    /// Asks to read AND rewrite (prompt axis only).
-    Rw,
-}
-
-impl NeedLevel {
-    /// Whether the plugin declared it needs to READ this axis (`ro` or `rw`).
-    #[must_use]
-    pub fn wants_read(self) -> bool {
-        !matches!(self, NeedLevel::No)
-    }
-
-    /// Whether the plugin declared it needs to REWRITE (prompt axis; `rw`).
-    #[must_use]
-    pub fn wants_rewrite(self) -> bool {
-        matches!(self, NeedLevel::Rw)
-    }
-}
+pub use busbar_artifact_metadata::rows::NeedLevel;
 
 /// How a row came to be admitted: a valid signature from a trusted key, or an explicit operator
 /// opt-in (`plugins.trust`) for one that is not.
@@ -55,17 +28,7 @@ pub enum Trust {
     },
 }
 
-/// Cryptographic facts retained from the successful admission attempt. Declared publisher
-/// names and unverified signature text never populate this proof.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Verification {
-    /// Canonical key id of the embedded root that authenticated the keys document.
-    pub root: Option<String>,
-    /// Canonical key ids of the actual satisfying artifact signers.
-    pub signers: Vec<String>,
-    /// Authenticated keys-document version, absent for configured bare signatures.
-    pub keys_version: Option<u64>,
-}
+pub use busbar_artifact_metadata::rows::Verification;
 
 /// One admitted row, as its signed manifest states it (a linked row states what a release-signed
 /// tarball of it would).
@@ -154,12 +117,6 @@ pub trait PluginRows: Send + Sync + std::fmt::Debug {
 
     /// Every skipped plugin.
     fn skipped(&self) -> Vec<Skipped>;
-
-    /// THE DOOR the store `name_or_alias` resolves to opens through
-    fn store_door(
-        &self,
-        name_or_alias: &str,
-    ) -> Result<crate::persistence::axis::StoreDoor, String>;
 
     /// Why no secret plugin answers `name_or_alias` on the secret axis, in the registry's words.
     fn secret_refusal(&self, name_or_alias: &str) -> String;

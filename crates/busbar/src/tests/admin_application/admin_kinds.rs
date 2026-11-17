@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! ADMIN-API-1.6 section 5 over the real root: the kind-generic discovery surface (`/kinds`, a
-//! kind's instances, describe, views), `/info.kinds_revision`, and the removal of the 1.5.5
+//! kind's instances, describe, views), the `/kinds` ETag, and the removal of the 1.5.5
 //! per-kind paths and `/plane-facts` (section 0.2, CON-6).
 
 use std::collections::HashSet;
@@ -298,6 +298,7 @@ async fn describe_is_closed() {
         "id",
         "labels",
         "links",
+        "management",
         "name",
         "plugin",
         "runtime",
@@ -316,13 +317,22 @@ async fn describe_is_closed() {
         assert_eq!(
             keys(&describe.body),
             closed,
-            "{path} is exactly §5.3's members"
+            "{path} is exactly §5.3 plus the adopted instance-settings management member"
         );
         assert!(
             describe.body["actions"]
                 .as_array()
                 .is_some_and(|a| a.is_empty()),
-            "{path}: actions are empty in 1.6.0"
+            "{path}: this fixture has no captured authoring-source binding or generic core settings wrapper"
+        );
+        assert_eq!(describe.body["management"]["available"], false);
+        assert_eq!(
+            describe.body["management"]["reason"],
+            if path.contains("/kinds/core/") {
+                "source_mapping_unavailable"
+            } else {
+                "source_binding_unavailable"
+            }
         );
         assert!(
             describe.body["state"].is_null() && describe.body["state_schema"].is_null(),
@@ -383,20 +393,14 @@ async fn describe_is_closed() {
 async fn kinds_revision_moves_on_instance_change() {
     isolated!(CHILD, WITNESS, witness = "kinds");
     let s = serve("kinds-revision").await;
-    let info = s.get("/info").await;
-    assert_eq!(info.status, 200, "{}", info.text);
-    let before = info.body["kinds_revision"]
-        .as_str()
-        .expect("/info carries kinds_revision")
-        .to_owned();
     let kinds = s.get("/kinds").await;
+    assert_eq!(kinds.status, 200, "{}", kinds.text);
+    let before = kinds
+        .etag
+        .clone()
+        .expect("/kinds carries its ETag, the discovery revision");
     assert_eq!(
-        kinds.etag.as_deref(),
-        Some(format!("\"{before}\"").as_str()),
-        "kinds_revision is the /kinds ETag"
-    );
-    assert_eq!(
-        s.get("/info").await.body["kinds_revision"].as_str(),
+        s.get("/kinds").await.etag.as_deref(),
         Some(before.as_str()),
         "a read moves nothing"
     );
@@ -411,17 +415,10 @@ async fn kinds_revision_moves_on_instance_change() {
         )
         .await;
     assert!(wrote.status < 300, "{}: {}", wrote.status, wrote.text);
-    let after = s.get("/info").await.body["kinds_revision"]
-        .as_str()
-        .map(str::to_owned)
-        .expect("kinds_revision");
+    let after = s.get("/kinds").await.etag.expect("/kinds carries its ETag");
     assert_ne!(
         before, after,
-        "reconfiguring an instance moves kinds_revision"
-    );
-    assert_eq!(
-        s.get("/kinds").await.etag.as_deref(),
-        Some(format!("\"{after}\"").as_str())
+        "reconfiguring an instance moves the /kinds ETag"
     );
     let etag_of = |read: &Read, id: &str| {
         items(read)

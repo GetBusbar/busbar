@@ -85,6 +85,9 @@ fn frozen_record() -> busbar_kernel_audit::record::AuditRecord {
         with_payloads,
         &Pass::<AuditStep>::mint(&crate::seal::acquire()),
     );
+    // An older recipe carries no link date (SEALING-FIX §3.1: `linked_ms` is 0 on every recipe
+    // before the link line), so the frozen v4 record is the one its fixed journal bytes decode to.
+    record.linked_ms = 0;
     record.usage.rate_card_version = None;
     record.recipe = busbar_kernel_audit::recipe::Recipe::V4 {
         legacy_rate_card_version: 3,
@@ -196,7 +199,7 @@ fn a_record_names_the_node_that_sealed_it_in_its_digest_and_its_range_read() {
         "a record relabelled to another node still verifies"
     );
 
-    let raw = busbar_kernel_audit::expose::range_body(&chain_a, std::slice::from_ref(&a), 1, 1);
+    let raw = busbar_kernel_audit::expose::range_body(std::slice::from_ref(&a), 1, 1);
     assert!(
         raw.contains("\"mono\":\"1000\",\"node\":\"11\","),
         "the range read does not publish the node, as its decimal text, straight after mono: {raw}"
@@ -464,7 +467,7 @@ fn a_plane_contributes_exactly_two_identifiers() {
 
     assert_eq!(record.what.op_class.as_str(), "tool.call");
     assert_eq!(record.outcome.finish, FinishClass::TurnComplete);
-    assert_eq!(record.recipe, busbar_kernel_audit::recipe::Recipe::V7);
+    assert_eq!(record.recipe, busbar_kernel_audit::recipe::Recipe::V8);
     assert!(record.controls.hold_ref.is_some());
 }
 
@@ -641,7 +644,7 @@ fn v5_key_presence_and_every_key_byte_survive_seal_journal_and_publication() {
         input.usage.rate_card_version = key;
         let mut chain = AuditChain::new();
         let record = chain.seal(input, &Pass::<AuditStep>::mint(&crate::seal::acquire()));
-        assert_eq!(record.recipe, Recipe::V7);
+        assert_eq!(record.recipe, Recipe::V8);
         assert!(
             hashes.insert(record.hash.clone()),
             "None, zero, writer and counter must differ"
@@ -651,10 +654,9 @@ fn v5_key_presence_and_every_key_byte_survive_seal_journal_and_publication() {
             .unwrap()
             .unwrap();
         assert_eq!(back, record);
-        let exposed: json::Value = json::parse_value(
-            busbar_kernel_audit::expose::range_body(&chain, &[record], 1, 1).as_bytes(),
-        )
-        .unwrap();
+        let exposed: json::Value =
+            json::parse_value(busbar_kernel_audit::expose::range_body(&[record], 1, 1).as_bytes())
+                .unwrap();
         assert_eq!(
             exposed["records"][0]["rate_card_key_present"],
             if key.is_some() { "1" } else { "0" }
@@ -712,7 +714,7 @@ fn a_mixed_old_and_keyed_chain_preserves_original_old_heads() {
     let third = chain.seal(inputs(3), &Pass::<AuditStep>::mint(&crate::seal::acquire()));
     let records = [first, second, third];
     assert_eq!(records[0].hash, FROZEN_V2);
-    assert_eq!(records[2].recipe, Recipe::V7);
+    assert_eq!(records[2].recipe, Recipe::V8);
     assert!(AuditChain::verify_chain(&records).is_ok());
     for record in &records {
         let bytes = busbar_kernel_audit::journal_body(record).unwrap();

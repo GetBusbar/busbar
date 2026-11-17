@@ -99,3 +99,18 @@ fn native_operator_policy_reuses_scopes_and_refuses_an_external_operator_subject
         "an external provider cannot manufacture the operator principal"
     );
 }
+
+#[test]
+fn frozen_chain_policy_never_borrows_another_instance_or_generation() {
+    let req = request("GET", "/resource");
+    let alice = identity("alice", &["reader"]);
+    let admitted = policy(Surface::Data);
+    let current = Arc::clone(&admitted.current_epoch);
+    let chain = ChainPolicy::new(7, vec![admitted]);
+    assert_eq!(chain.authorize(41, &alice, &req), Ok(()));
+    assert_eq!(chain.authorize(42, &alice, &req), Err(R_POLICY));
+    current.store(8, Ordering::Release);
+    assert_eq!(chain.authorize(41, &alice, &req), Err(R_POLICY));
+    let mismatched = ChainPolicy::new(8, vec![policy(Surface::Data)]);
+    assert_eq!(mismatched.authorize(41, &alice, &req), Err(R_POLICY));
+}

@@ -25,9 +25,16 @@ use busbar_contract::persistence::{
     control, Address, NamespaceId, PersistenceBackend, Read, ReadResult,
 };
 
+use busbar_contract::secure::SecureVec;
+
 use super::facade::{CoreStore, Limits};
 use super::first_start::{self, Abandoned, Binding, FirstStart};
-use super::startup::{manifest_address, root_address, writer_address, Error, Progress, Startup};
+use super::format_migration::MigrationOwner;
+use super::import_target::r0::{Access, Commit, Outcome};
+use super::startup::{
+    classify, cursor_address, manifest_address, root_address, writer_address, Error, Format,
+    FormatChain, Progress, Startup, RECORD_FORMAT,
+};
 
 /// Every drive-to-state loop is bounded; overrun is a failure naming the case and step.
 const STEPS: usize = 32;
@@ -54,6 +61,9 @@ pub const CASES: &[&str] = &[
     "t1_staggered_boot",
     "t2_waiter_restart",
     "t11_abandon_hands_over",
+    "f1_format_opening_fences_the_old_epoch",
+    "f2_racing_openings_have_one_owner",
+    "f3_pages_and_final_publication",
 ];
 
 /// The prefix of the lines `run` and each case print: `cases <n>` once, `passed <case>` per case.
@@ -68,6 +78,9 @@ pub async fn run<F: Fixture>(fixture: &F) {
     t1_staggered_boot(fixture).await;
     t2_waiter_restart(fixture).await;
     t11_abandon_hands_over(fixture).await;
+    f1_format_opening_fences_the_old_epoch(fixture).await;
+    f2_racing_openings_have_one_owner(fixture).await;
+    f3_pages_and_final_publication(fixture).await;
 }
 
 /// A store that holds its data across processes can also seed a raw record with its own driver,
@@ -521,6 +534,267 @@ impl Side {
             Ok(other) => panic!("{case}: {} answered {other:?} during admission", self.name),
         }
     }
+}
+
+// ---- #319 r4: record-format migration over the store's own serialization -------------------
+
+/// The kit's synthetic record-format step 0 -> 1 (this kernel writes format 1). No production
+/// step exists in 1.6.0; the cases prove the store serializes the kernel's opening, pages and
+/// final publication exactly as the reference store does.
+struct KitChain;
+
+impl FormatChain for KitChain {
+    fn has_step(&self, from: u32) -> bool {
+        from == 0
+    }
+    fn initial_cursor(&self, from: u32) -> Option<Vec<u8>> {
+        (from == 0).then(|| b"kit-cursor@0".to_vec())
+    }
+}
+
+fn converting(case: &str, backend: &Arc<dyn PersistenceBackend>) -> Startup {
+    startup(case, backend, false).with_format_chain(Arc::new(KitChain))
+}
+
+/// One business row, as any writer of the old epoch would put it.
+fn business_row() -> Commit {
+    Commit {
+        put: vec![(
+            Address {
+                namespace: *b"busbar.kit.other",
+                key: b"late".to_vec(),
+            },
+            SecureVec::from(b"late".to_vec()),
+        )],
+        ..Commit::default()
+    }
+}
+
+/// A dataset whose first start published and whose manifest its own writer then rewrote to the
+/// synthetic older format 0. That writer stays open: a process of the old epoch.
+async fn older_dataset<F: Fixture>(fixture: &F, case: &str) -> (F::Dataset, Arc<CoreStore>) {
+    let dataset = fixture.fresh().await;
+    let h = fixture.open(&dataset).await;
+    let old = admitted(case, "the old writer", &mut startup(case, &h, true)).await;
+    publish(case, "the old writer", &owner(case, "the old writer", &old)).await;
+    let current = rows(case, &h, vec![manifest_address()]).await[0]
+        .clone()
+        .unwrap_or_else(|| panic!("{case}: the admitted dataset has no manifest"));
+    let mut older = current.clone();
+    for at in [8, 12, 16, 20] {
+        older[at..at + 4].copy_from_slice(&0u32.to_le_bytes());
+    }
+    let rewrite = Commit {
+        expect: vec![(manifest_address(), Some(SecureVec::from(current)))],
+        put: vec![(manifest_address(), SecureVec::from(older))],
+        ..Commit::default()
+    };
+    assert_eq!(
+        Access::new(old.clone()).commit(rewrite).await,
+        Ok(Outcome::Applied),
+        "{case}: the old writer could not rewrite the manifest to format 0"
+    );
+    (dataset, old)
+}
+
+async fn epoch(case: &str, backend: &Arc<dyn PersistenceBackend>) -> u64 {
+    rows(case, backend, vec![root_address()]).await[0]
+        .as_deref()
+        .and_then(control::Dataset::decode)
+        .unwrap_or_else(|| panic!("{case}: the dataset root is absent or undecodable"))
+        .writer_epoch
+}
+
+/// Drive `startup` until it owns the conversion.
+async fn migrating(case: &str, step: &str, startup: &mut Startup) -> Arc<MigrationOwner> {
+    for _ in 0..STEPS {
+        match startup.advance().await {
+            Ok(Progress::Migrate) => return startup.migration().expect("migration owner"),
+            Ok(Progress::Advanced) => {}
+            other => panic!("{case}: {step}: admission answered {other:?}, not Migrate"),
+        }
+    }
+    panic!("{case}: {step}: no migration owner within {STEPS} steps")
+}
+
+/// Drive `startup` until it either owns the conversion or waits on another owner.
+async fn opened_or_waiting(case: &str, startup: &mut Startup) -> Progress {
+    for _ in 0..STEPS {
+        match startup.advance().await {
+            Ok(progress @ (Progress::Migrate | Progress::Pending)) => return progress,
+            Ok(Progress::Advanced) => {}
+            other => panic!("{case}: a contender answered {other:?}"),
+        }
+    }
+    panic!("{case}: a contender settled on neither Migrate nor Pending within {STEPS} steps")
+}
+
+/// F1 (#319 r4 §6, §10): the opening advances the dataset epoch, names a fresh owner with the
+/// tail and writes the cursor at one serialization point; a writer of the old epoch is fenced by
+/// the store at its next commit and its row never lands.
+pub async fn f1_format_opening_fences_the_old_epoch<F: Fixture>(fixture: &F) {
+    const CASE: &str = "f1_format_opening_fences_the_old_epoch";
+    let (dataset, old) = older_dataset(fixture, CASE).await;
+    let h = fixture.open(&dataset).await;
+    assert_eq!(epoch(CASE, &h).await, 1, "{CASE}: the fixture's epoch");
+    let mut opener = converting(CASE, &h);
+    let owner = migrating(CASE, "the opener", &mut opener).await;
+    assert!(
+        opener.store().is_none(),
+        "{CASE}: a serving store was handed out while the tail is nonzero"
+    );
+    assert_eq!(epoch(CASE, &h).await, 2, "{CASE}: the opening's epoch");
+    let observed = rows(CASE, &h, vec![manifest_address(), cursor_address()]).await;
+    let manifest = observed[0].clone().expect("manifest");
+    assert_eq!(
+        classify(&manifest, |f| f == 0),
+        Format::Migrating { from: 0, to: 1 },
+        "{CASE}: the opened manifest"
+    );
+    assert_eq!(manifest.as_slice(), owner.manifest_bytes());
+    assert_eq!(
+        observed[1].as_deref(),
+        Some(b"kit-cursor@0".as_slice()),
+        "{CASE}: the opening's cursor"
+    );
+    assert_eq!(
+        Access::new(old).commit(business_row()).await,
+        Ok(Outcome::Fenced),
+        "{CASE}: the old-epoch writer was not fenced"
+    );
+    let late = business_row().put[0].0.clone();
+    assert_eq!(
+        rows(CASE, &h, vec![late]).await,
+        vec![None],
+        "{CASE}: the old-epoch writer's row landed after the opening"
+    );
+    passed(CASE);
+}
+
+/// F2 (#319 r4 §6, §8): two processes open the same older dataset at once. Exactly one opening
+/// applies (the epoch advances once); the other loses and waits on that owner, never adopting it.
+pub async fn f2_racing_openings_have_one_owner<F: Fixture>(fixture: &F) {
+    const CASE: &str = "f2_racing_openings_have_one_owner";
+    let (dataset, _old) = older_dataset(fixture, CASE).await;
+    let (ha, hb) = (fixture.open(&dataset).await, fixture.open(&dataset).await);
+    let (mut a, mut b) = (converting(CASE, &ha), converting(CASE, &hb));
+    let (pa, pb) = tokio::join!(
+        opened_or_waiting(CASE, &mut a),
+        opened_or_waiting(CASE, &mut b)
+    );
+    let owners = [pa, pb]
+        .iter()
+        .filter(|progress| **progress == Progress::Migrate)
+        .count();
+    assert_eq!(
+        owners, 1,
+        "{CASE}: {pa:?} and {pb:?}: not exactly one owner"
+    );
+    assert_eq!(
+        epoch(CASE, &ha).await,
+        2,
+        "{CASE}: more than one opening applied"
+    );
+    let (winner, waiter) = if pa == Progress::Migrate {
+        (&a, &b)
+    } else {
+        (&b, &a)
+    };
+    let waiting = waiter
+        .waiting_on()
+        .unwrap_or_else(|| panic!("{CASE}: the losing contender is not waiting"));
+    assert!(
+        waiting.migrating,
+        "{CASE}: the wait is not a migration wait"
+    );
+    let manifest = rows(CASE, &ha, vec![manifest_address()]).await[0]
+        .clone()
+        .expect("manifest");
+    assert_eq!(
+        manifest.as_slice(),
+        winner.migration().expect("owner").manifest_bytes(),
+        "{CASE}: the manifest does not name the winning owner"
+    );
+    passed(CASE);
+}
+
+/// F3 (#319 r4 §7, §9): the owner commits a page under its own authority; the final publication
+/// advances the epoch past it, names a fresh registrar and the Current manifest and deletes the
+/// cursor in one transaction; reinspection then admits ordinarily at the new epoch, and both the
+/// finished owner and the old-epoch writer are fenced.
+pub async fn f3_pages_and_final_publication<F: Fixture>(fixture: &F) {
+    const CASE: &str = "f3_pages_and_final_publication";
+    let (dataset, old) = older_dataset(fixture, CASE).await;
+    let h = fixture.open(&dataset).await;
+    let mut converter = converting(CASE, &h);
+    let owner = migrating(CASE, "the converter", &mut converter).await;
+    let manifest = SecureVec::from(owner.manifest_bytes().to_vec());
+    let page = Commit {
+        expect: vec![
+            (manifest_address(), Some(manifest.clone())),
+            (
+                cursor_address(),
+                Some(SecureVec::from(b"kit-cursor@0".to_vec())),
+            ),
+        ],
+        put: vec![(
+            cursor_address(),
+            SecureVec::from(b"kit-cursor@end".to_vec()),
+        )],
+        ..Commit::default()
+    };
+    assert_eq!(
+        owner.access().commit(page).await,
+        Ok(Outcome::Applied),
+        "{CASE}: the owner's page"
+    );
+    let completion = Commit {
+        expect: vec![
+            (manifest_address(), Some(manifest)),
+            (
+                cursor_address(),
+                Some(SecureVec::from(b"kit-cursor@end".to_vec())),
+            ),
+        ],
+        delete: vec![cursor_address()],
+        ..Commit::default()
+    };
+    assert_eq!(
+        owner.finalize(completion, RECORD_FORMAT).await,
+        Ok(Outcome::Applied),
+        "{CASE}: the final publication"
+    );
+    assert_eq!(epoch(CASE, &h).await, 3, "{CASE}: the publication's epoch");
+    let observed = rows(CASE, &h, vec![manifest_address(), cursor_address()]).await;
+    assert_eq!(
+        classify(observed[0].as_deref().expect("manifest"), |_| false),
+        Format::Current,
+        "{CASE}: the published manifest"
+    );
+    assert_eq!(
+        observed[1], None,
+        "{CASE}: the cursor outlived the publication"
+    );
+    converter
+        .migration_finished()
+        .unwrap_or_else(|e| panic!("{CASE}: finishing the conversion: {e:?}"));
+    let store = admitted(CASE, "after the publication", &mut converter).await;
+    assert_eq!(
+        store.authority().expect("authority").writer_epoch,
+        3,
+        "{CASE}: ordinary admission's epoch"
+    );
+    assert_eq!(
+        owner.access().commit(business_row()).await,
+        Ok(Outcome::Fenced),
+        "{CASE}: the finished owner was not fenced"
+    );
+    assert_eq!(
+        Access::new(old).commit(business_row()).await,
+        Ok(Outcome::Fenced),
+        "{CASE}: the old-epoch writer was not fenced"
+    );
+    passed(CASE);
 }
 
 fn limits() -> Limits {

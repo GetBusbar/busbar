@@ -57,6 +57,9 @@ pub struct UnitRecord {
 /// the unit runs and dropped (zeroised) at its end.
 #[derive(Default)]
 struct UnitEntry {
+    signed_authority: Option<Arc<crate::governance::current_credential::VerifiedKeyAuthority>>,
+    data_gate: Option<Arc<crate::auth::native_data::NativeDataEffectGate>>,
+    admission_phase: Option<Arc<crate::plane_driver::request_admission::AdmissionPhase>>,
     invocation_owner: Option<busbar_contract::services::Incarnation>,
     child_ancestry: Vec<Arc<str>>,
     children: HashMap<String, Arc<crate::hook_child::Memo>>,
@@ -69,6 +72,22 @@ struct UnitEntry {
     /// the gate spent admitting it, `Some(None)` a key; `None` never stated, or taken. The unit's
     /// end drops what was never taken.
     ticket: Option<Option<Vec<u8>>>,
+}
+
+impl UnitEntry {
+    fn generic_effects_allowed(&self) -> bool {
+        self.data_gate.is_none() && self.effects_allowed()
+    }
+
+    fn effects_allowed(&self) -> bool {
+        self.admission_phase
+            .as_ref()
+            .is_some_and(|phase| phase.effects_allowed())
+            && self
+                .data_gate
+                .as_ref()
+                .is_none_or(|gate| gate.effects_allowed())
+    }
 }
 
 pub struct UnitRecords {
@@ -99,7 +118,12 @@ impl UnitRecords {
     pub fn admitted(&self, unit: u64, record: UnitRecord) {
         let mut units = self.lock(unit);
         let entry = units.entry(unit).or_default();
+        entry.signed_authority = None;
+        entry.data_gate = None;
         entry.invocation_owner = None;
+        entry.admission_phase = Some(Arc::new(
+            crate::plane_driver::request_admission::AdmissionPhase::admitted(),
+        ));
         entry.record = Some(Arc::new(record));
     }
 
@@ -112,8 +136,149 @@ impl UnitRecords {
     ) {
         let mut units = self.lock(unit);
         let entry = units.entry(unit).or_default();
+        entry.signed_authority = None;
+        entry.data_gate = None;
         entry.invocation_owner = Some(caller.incarnation().clone());
+        entry.admission_phase = Some(Arc::new(
+            crate::plane_driver::request_admission::AdmissionPhase::admitted(),
+        ));
         entry.record = Some(Arc::new(record));
+    }
+
+    /// Allocate invocation identity without granting monetary or effectful execution authority.
+    /// Existing entries are never replaced, including a reused numeric unit identifier.
+    pub fn pre_admitted_for(
+        &self,
+        unit: u64,
+        caller: &busbar_contract::services::Caller,
+        record: UnitRecord,
+    ) -> bool {
+        if unit == 0 || record.principal.is_none() {
+            return false;
+        }
+        let mut units = self.lock(unit);
+        let std::collections::hash_map::Entry::Vacant(slot) = units.entry(unit) else {
+            return false;
+        };
+        slot.insert(UnitEntry {
+            invocation_owner: Some(caller.incarnation().clone()),
+            admission_phase: Some(Arc::new(
+                crate::plane_driver::request_admission::AdmissionPhase::pending(),
+            )),
+            record: Some(Arc::new(record)),
+            ..Default::default()
+        });
+        true
+    }
+
+    /// DATA registration installs its closed physical gate in the same vacant-entry transaction.
+    pub(crate) fn pre_admitted_data(
+        &self,
+        unit: u64,
+        caller: &busbar_contract::services::Caller,
+        record: UnitRecord,
+        gate: Arc<crate::auth::native_data::NativeDataEffectGate>,
+    ) -> Option<Arc<UnitRecord>> {
+        if unit == 0 || record.principal.is_none() {
+            return None;
+        }
+        let mut units = self.lock(unit);
+        let std::collections::hash_map::Entry::Vacant(slot) = units.entry(unit) else {
+            return None;
+        };
+        let record = Arc::new(record);
+        slot.insert(UnitEntry {
+            invocation_owner: Some(caller.incarnation().clone()),
+            admission_phase: Some(Arc::new(
+                crate::plane_driver::request_admission::AdmissionPhase::pending(),
+            )),
+            record: Some(record.clone()),
+            data_gate: Some(gate),
+            ..Default::default()
+        });
+        Some(record)
+    }
+
+    pub(crate) fn invocation_data_gate(
+        &self,
+        unit: u64,
+        caller: &busbar_contract::services::Caller,
+        record: &Arc<UnitRecord>,
+    ) -> Option<Option<Arc<crate::auth::native_data::NativeDataEffectGate>>> {
+        let units = self.lock(unit);
+        let entry = units.get(&unit)?;
+        if entry.invocation_owner.as_ref()? != caller.incarnation()
+            || !Arc::ptr_eq(entry.record.as_ref()?, record)
+        {
+            return None;
+        }
+        Some(entry.data_gate.clone())
+    }
+
+    /// Consume one actual signed verification into a fresh unit, deriving its principal here.
+    /// No caller-supplied key or existing context may be paired with this authority.
+    pub fn pre_admitted_signed_for(
+        &self,
+        unit: u64,
+        caller: &busbar_contract::services::Caller,
+        authority: crate::auth::SignedRequestAuthority,
+        depth: u32,
+    ) -> bool {
+        if unit == 0 {
+            return false;
+        }
+        let mut units = self.lock(unit);
+        let std::collections::hash_map::Entry::Vacant(slot) = units.entry(unit) else {
+            return false;
+        };
+        let Some(authority) = authority.claim() else {
+            return false;
+        };
+        slot.insert(UnitEntry {
+            record: Some(Arc::new(UnitRecord {
+                principal: Some(authority.original_key().clone()),
+                depth,
+            })),
+            signed_authority: Some(authority),
+            invocation_owner: Some(caller.incarnation().clone()),
+            admission_phase: Some(Arc::new(
+                crate::plane_driver::request_admission::AdmissionPhase::pending(),
+            )),
+            ..Default::default()
+        });
+        true
+    }
+
+    pub(crate) fn invocation_signed_authority(
+        &self,
+        unit: u64,
+        caller: &busbar_contract::services::Caller,
+        record: &Arc<UnitRecord>,
+    ) -> Option<Arc<crate::governance::current_credential::VerifiedKeyAuthority>> {
+        let units = self.lock(unit);
+        let entry = units.get(&unit)?;
+        if entry.invocation_owner.as_ref()? != caller.incarnation()
+            || !Arc::ptr_eq(entry.record.as_ref()?, record)
+        {
+            return None;
+        }
+        entry.signed_authority.clone()
+    }
+
+    pub(crate) fn invocation_phase(
+        &self,
+        unit: u64,
+        caller: &busbar_contract::services::Caller,
+        record: &Arc<UnitRecord>,
+    ) -> Option<Arc<crate::plane_driver::request_admission::AdmissionPhase>> {
+        let units = self.lock(unit);
+        let entry = units.get(&unit)?;
+        if entry.invocation_owner.as_ref()? != caller.incarnation()
+            || !Arc::ptr_eq(entry.record.as_ref()?, record)
+        {
+            return None;
+        }
+        entry.admission_phase.clone()
     }
 
     pub(crate) fn invocation_record(
@@ -144,7 +309,9 @@ impl UnitRecords {
         create: impl FnOnce() -> Arc<crate::hook_child::Memo>,
     ) -> Option<Arc<crate::hook_child::Memo>> {
         let mut shard = self.lock(unit);
-        let entry = shard.get_mut(&unit).filter(|e| e.record.is_some())?;
+        let entry = shard
+            .get_mut(&unit)
+            .filter(|e| e.record.is_some() && e.generic_effects_allowed())?;
         Some(
             entry
                 .children
@@ -154,15 +321,58 @@ impl UnitRecords {
         )
     }
     pub fn ended(&self, unit: u64) {
-        self.lock(unit).remove(&unit);
+        let removed = self.lock(unit).remove(&unit);
+        if let Some(entry) = removed {
+            if let Some(phase) = entry.admission_phase {
+                phase.end();
+            }
+        }
+    }
+
+    /// Retire only the captured allocation, never a later record reusing its numeric key.
+    pub(crate) fn ended_if_record(&self, unit: u64, record: &Arc<UnitRecord>) {
+        let removed = {
+            let mut units = self.lock(unit);
+            if units
+                .get(&unit)
+                .and_then(|entry| entry.record.as_ref())
+                .is_some_and(|current| Arc::ptr_eq(current, record))
+            {
+                units.remove(&unit)
+            } else {
+                None
+            }
+        };
+        if let Some(entry) = removed {
+            if let Some(phase) = entry.admission_phase {
+                phase.end();
+            }
+        }
+    }
+
+    /// Generic host effects cannot borrow a descriptor-only DATA admission.
+    pub(crate) fn generic_effects_allowed(
+        &self,
+        unit: u64,
+        caller: &busbar_contract::services::Caller,
+    ) -> bool {
+        let units = self.lock(unit);
+        units.get(&unit).is_some_and(|entry| {
+            entry.generic_effects_allowed()
+                && entry.record.is_some()
+                && entry
+                    .invocation_owner
+                    .as_ref()
+                    .is_none_or(|owner| owner == caller.incarnation())
+        })
     }
 
     pub fn prepare_outbound(&self, unit: u64, prepared: crate::host_outbound::Prepared) -> bool {
         let mut shard = self.lock(unit);
-        let Some(entry) = shard
-            .get_mut(&unit)
-            .filter(|entry| entry.record.as_ref().is_some_and(|r| r.principal.is_some()))
-        else {
+        let Some(entry) = shard.get_mut(&unit).filter(|entry| {
+            entry.generic_effects_allowed()
+                && entry.record.as_ref().is_some_and(|r| r.principal.is_some())
+        }) else {
             return false;
         };
         if entry.prepared.is_some() {
@@ -174,16 +384,20 @@ impl UnitRecords {
     }
 
     pub fn take_prepared(&self, unit: u64) -> Option<crate::host_outbound::Prepared> {
-        self.lock(unit).get_mut(&unit)?.prepared.take()
+        self.lock(unit)
+            .get_mut(&unit)
+            .filter(|entry| entry.generic_effects_allowed())?
+            .prepared
+            .take()
     }
 
     /// Retain a binding only while this authenticated unit is live.
     pub fn bind_outbound(&self, unit: u64, bound: crate::host_outbound::Bound) -> bool {
         let mut shard = self.lock(unit);
-        let Some(entry) = shard
-            .get_mut(&unit)
-            .filter(|entry| entry.record.as_ref().is_some_and(|r| r.principal.is_some()))
-        else {
+        let Some(entry) = shard.get_mut(&unit).filter(|entry| {
+            entry.generic_effects_allowed()
+                && entry.record.as_ref().is_some_and(|r| r.principal.is_some())
+        }) else {
             return false;
         };
         entry.outbound = Some(bound);
@@ -191,7 +405,11 @@ impl UnitRecords {
     }
 
     pub fn outbound(&self, unit: u64) -> Option<crate::host_outbound::Bound> {
-        self.lock(unit).get(&unit)?.outbound.clone()
+        self.lock(unit)
+            .get(&unit)
+            .filter(|entry| entry.generic_effects_allowed())?
+            .outbound
+            .clone()
     }
 
     pub fn ticketed(&self, unit: u64, ticket: Option<Vec<u8>>) -> bool {
@@ -205,7 +423,11 @@ impl UnitRecords {
     }
 
     pub fn take_ticket(&self, unit: u64) -> Option<Option<Vec<u8>>> {
-        self.lock(unit).get_mut(&unit)?.ticket.take()
+        self.lock(unit)
+            .get_mut(&unit)
+            .filter(|entry| entry.generic_effects_allowed())?
+            .ticket
+            .take()
     }
 
     pub fn lend(&self, unit: u64, credential: crate::auth::CallerCredential) {
@@ -214,7 +436,7 @@ impl UnitRecords {
 
     pub fn staged(&self, unit: u64, stage: Arc<dyn UnitHookStage>) -> bool {
         match self.lock(unit).get_mut(&unit) {
-            Some(entry) if entry.record.is_some() => {
+            Some(entry) if entry.record.is_some() && entry.generic_effects_allowed() => {
                 entry.stage.get_or_insert(stage);
                 true
             }
@@ -225,7 +447,9 @@ impl UnitRecords {
     #[must_use]
     pub fn stage(&self, unit: u64) -> Option<Arc<dyn UnitHookStage>> {
         let shard = self.lock(unit);
-        let entry = shard.get(&unit).filter(|e| e.record.is_some())?;
+        let entry = shard
+            .get(&unit)
+            .filter(|e| e.record.is_some() && e.generic_effects_allowed())?;
         entry.stage.clone()
     }
 
@@ -238,7 +462,8 @@ impl UnitRecords {
 impl busbar_contract::conn::LendCredential for UnitRecords {
     fn lent(&self, unit: u64) -> Option<busbar_contract::SharedSecret> {
         self.lock(unit)
-            .get(&unit)?
+            .get(&unit)
+            .filter(|entry| entry.generic_effects_allowed())?
             .lent
             .as_ref()
             .map(crate::auth::CallerCredential::lend)

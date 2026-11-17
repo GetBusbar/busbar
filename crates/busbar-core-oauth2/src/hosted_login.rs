@@ -5,7 +5,9 @@ use std::sync::Arc;
 
 use axum::body::Body;
 use axum::http::{header, Request, StatusCode};
-use axum::response::{Html, IntoResponse, Response};
+use axum::response::{IntoResponse, Response};
+
+use crate::page::Page;
 use base64::Engine as _;
 
 use busbar_contract::auth::{BeginLogin, CompleteLogin, LoginOutcome, Principal};
@@ -590,7 +592,7 @@ fn parse_query(q: &str) -> Vec<(String, String)> {
 }
 
 fn html_no_store(body: String) -> Response {
-    ([(header::CACHE_CONTROL, "no-store")], Html(body)).into_response()
+    ([(header::CACHE_CONTROL, "no-store")], Page(body)).into_response()
 }
 
 fn security_check_failed() -> Response {
@@ -690,7 +692,7 @@ fn error_page(status: StatusCode, heading: &str, message: &str) -> Response {
         heading = esc(heading),
         message = esc(message),
     ));
-    (status, [(header::CACHE_CONTROL, "no-store")], Html(body)).into_response()
+    (status, [(header::CACHE_CONTROL, "no-store")], Page(body)).into_response()
 }
 
 fn signed_out() -> Response {

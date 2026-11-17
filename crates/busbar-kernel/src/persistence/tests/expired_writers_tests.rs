@@ -347,6 +347,7 @@ impl Store {
     }
 
     fn decide(&self, prepared: &PreparedCandidate, fence: bool) -> Result<Decision, Failure> {
+        control::admit(prepared)?;
         let hook = if fence { self.armed_hook() } else { None };
         let mut state = self.lock();
         let candidate = prepared.candidate();
@@ -416,6 +417,18 @@ impl Store {
                     exact_key_length,
                 } => {
                     state.bump(namespace.0);
+                    if *namespace == control::SLOT_NS {
+                        let writer: [u8; 16] = prefix.as_slice().try_into().unwrap();
+                        assert_eq!(*exact_key_length, 20);
+                        let State { receipts, sent, .. } = &mut *state;
+                        receipts.retain(|operation, _| {
+                            !sent.iter().any(|prepared| {
+                                let id = prepared.candidate().id;
+                                id.writer == writer && id.operation == *operation
+                            })
+                        });
+                        continue;
+                    }
                     state.rows.retain(|at, _| {
                         !(at.namespace == namespace.0
                             && at.key.starts_with(prefix)
@@ -597,6 +610,86 @@ pub(super) async fn durable_records() -> BTreeMap<String, Vec<String>> {
 
 pub(super) fn records_for(records: &BTreeMap<String, Vec<String>>, writer: [u8; 16]) -> usize {
     records.get(&hex::encode(writer)).map_or(0, Vec::len)
+}
+
+#[tokio::test]
+async fn adoption_retirement_preserves_every_declared_epoch_and_slot_effect() {
+    for (retired_through, admitted_through) in [(0, 1), (0, 2), (1, 2), (2, 2)] {
+        let store = Store::new();
+        store.now.store(1_000, Ordering::SeqCst);
+        let core = attach(&store, OWN).await;
+        let target = writer_id();
+        store.open_writer(target, 100_000, "adopted-writer", 77);
+        let old = control::Writer {
+            retired_through,
+            admitted_through,
+        };
+        store.put(control_address(target), old.encode().unwrap().to_vec());
+        store.put(control::epoch_row(OWN, 1), control::EPOCH_VALUE.to_vec());
+        for epoch in old.live() {
+            store.put(
+                control::epoch_row(target, epoch),
+                control::EPOCH_VALUE.to_vec(),
+            );
+        }
+        let retirements = WriterRetirements::default();
+        assert!(matches!(
+            retirements.retire(&core, EPOCH, target).await.unwrap(),
+            WriterRetirement::Pending
+        ));
+        let candidates = store.fence_candidates();
+        assert_eq!(candidates.len(), 1);
+        let prepared = &candidates[0];
+        assert_eq!(
+            control::admit(prepared),
+            Ok(()),
+            "actual adoption retirement must satisfy native admission for {old:?}"
+        );
+        let candidate = prepared.candidate();
+        assert_ne!(candidate.id.writer, target);
+        // The live epochs, the slot range and the control row, plus the predecessor mark the
+        // same candidate retains through every retry (851dbfd6d8, decision 193 test 4(c')).
+        assert_eq!(candidate.mutations.len(), old.live().count() + 3);
+        let mark = crate::persistence::scoped::migration_address(
+            true,
+            INSTANCE,
+            NODE_SCHEMA,
+            &super::predecessor_seal::fenced_key(EPOCH, target),
+        )
+        .unwrap();
+        assert!(
+            candidate.mutations.iter().any(
+                |mutation| matches!(mutation, Mutation::Put { address, .. } if *address == mark)
+            ),
+            "the adoption retirement carries its predecessor mark"
+        );
+        assert!(candidate.mutations.iter().any(|mutation| matches!(
+            mutation,
+            Mutation::DeleteRange { namespace, prefix, exact_key_length }
+                if *namespace == control::SLOT_NS && prefix.as_slice() == target.as_slice() && *exact_key_length == 20
+        )));
+        for epoch in old.live() {
+            let address = control::epoch_row(target, epoch);
+            assert!(candidate
+                .mutations
+                .iter()
+                .any(|mutation| { matches!(mutation, Mutation::Delete(at) if *at == address) }));
+            assert!(
+                store.row(&address).is_none(),
+                "retired epoch remains present"
+            );
+        }
+        assert_eq!(store.control(target), Some(CLOSED));
+        assert_eq!(
+            store.row(&control::epoch_row(OWN, 1)).as_deref(),
+            Some(control::EPOCH_VALUE),
+            "the stamping writer remains admitted"
+        );
+        assert!(matches!(
+            retirements.retire(&core, EPOCH, target).await.unwrap(),
+            WriterRetirement::Retired(_)
+        ));
+    }
 }
 
 fn stop_flag() -> (

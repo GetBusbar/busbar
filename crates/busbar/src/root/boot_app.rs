@@ -43,6 +43,13 @@ pub(crate) struct ConfigRules {
 }
 
 impl RootRules for ConfigRules {
+    fn prepare_read(
+        &self,
+        input: &config::grammar::PhaseOneIn<'_>,
+    ) -> Result<config::grammar::PreparedConfigRead, config::GrammarRefusal> {
+        crate::root::boot::images::prepare(&self.process, input)?.prepared_read(input)
+    }
+
     fn grammar(
         &self,
         input: &config::grammar::PhaseOneIn<'_>,
@@ -93,23 +100,31 @@ impl ProtectedRules {
             },
         )?;
         let plugins = raw.plugins_block()?;
-        let images = crate::root::boot::images::prepare(
-            &self.reader.process,
-            &config::grammar::PhaseOneIn {
-                plugins: &plugins,
-                dir: Path::new(&plugins.dir),
-                pins: &doc.plugin_versions,
-                fetch: config::grammar::Fetch::None,
-            },
-        )
-        .map_err(|error| error.0)?;
+        let input = config::grammar::PhaseOneIn {
+            plugins: &plugins,
+            dir: Path::new(&plugins.dir),
+            pins: &doc.plugin_versions,
+            fetch: config::grammar::Fetch::None,
+        };
+        let images = crate::root::boot::images::prepare(&self.reader.process, &input)
+            .map_err(|error| error.0)?;
         self.images.check(&images).map_err(|error| error.0)?;
-        let loaded = raw.typed(&images.grammar)?;
+        let read = images.prepared_read(&input).map_err(|error| error.0)?;
+        let loaded = raw.typed_prepared(Arc::new(read))?;
         Ok((loaded, images))
     }
 }
 
 impl RootRules for ProtectedRules {
+    fn prepare_read(
+        &self,
+        input: &config::grammar::PhaseOneIn<'_>,
+    ) -> Result<config::grammar::PreparedConfigRead, config::GrammarRefusal> {
+        let candidate = crate::root::boot::images::prepare(&self.reader.process, input)?;
+        self.images.check(&candidate)?;
+        candidate.prepared_read(input)
+    }
+
     fn grammar(
         &self,
         input: &config::grammar::PhaseOneIn<'_>,

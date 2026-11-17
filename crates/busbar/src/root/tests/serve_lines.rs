@@ -4,13 +4,20 @@
 use super::*;
 use crate::root::linked::LinkedTransport;
 
-fn row(claims: fn() -> Vec<&'static str>, lines: fn() -> Vec<&'static str>) -> LinkedTransport {
+fn request() -> RequestLease {
+    ProcessAdmission::new(0)
+        .try_enter(AdmissionClass::Data)
+        .unwrap()
+}
+
+fn owned_input() -> OwnedInput {
+    request().adopt_input(Vec::new()).unwrap()
+}
+
+fn row(_claims: fn() -> Vec<&'static str>, lines: fn() -> Vec<&'static str>) -> LinkedTransport {
     LinkedTransport {
-        composes_over: || &[],
-        claims,
         upgrades: Vec::new,
         lines,
-        offered: crate::root::doors::offers_unstated,
     }
 }
 
@@ -50,30 +57,39 @@ fn the_builds_carrier_is_read_off_its_linked_rows() {
 fn the_credential_variable_is_spelled_from_the_plane_and_the_carrier() {
     assert_eq!(
         env_credential("tool-door", "pipe"),
-        "BUSBAR_TOOL-DOOR_PIPE_CREDENTIAL"
+        "BUSBAR_TOOL_DOOR_PIPE_CREDENTIAL"
     );
     assert_eq!(env_credential("x", "y"), "BUSBAR_X_Y_CREDENTIAL");
+    // B-N11: an identity-named instance still spells a name a shell can export.
+    assert_eq!(
+        env_credential("busbar-plane-mcp.v2", "stdio"),
+        "BUSBAR_BUSBAR_PLANE_MCP_V2_STDIO_CREDENTIAL"
+    );
 }
 
 #[tokio::test]
 async fn a_line_past_the_bound_is_dropped_with_its_tail() {
     let input: &[u8] = b"aaaaaaaaaaaabb\nok\n";
     let mut reader = tokio::io::BufReader::with_capacity(4, input);
-    let mut over = Vec::new();
+    let mut over = owned_input();
     let read = read_line(&mut reader, &mut over, 8)
         .await
         .expect("the over-long line reads");
     assert_eq!(read, 15, "the whole over-long line is consumed");
     assert!(
-        trim(&over).is_empty(),
+        trim(over.as_ref()).is_empty(),
         "nothing of the over-long line is kept: {:?}",
-        String::from_utf8_lossy(&over)
+        String::from_utf8_lossy(over.as_ref())
     );
-    let mut next = Vec::new();
+    let mut next = owned_input();
     read_line(&mut reader, &mut next, 8)
         .await
         .expect("the next line reads");
-    assert_eq!(trim(&next), b"ok", "the session goes on at the next line");
+    assert_eq!(
+        trim(next.as_ref()),
+        b"ok",
+        "the session goes on at the next line"
+    );
 }
 
 #[tokio::test]
@@ -81,13 +97,13 @@ async fn a_full_payload_has_the_same_bound_with_lf_crlf_or_eof() {
     for input in [&b"abcd\n"[..], &b"abcd\r\n"[..], &b"abcd"[..]] {
         for capacity in 1..=input.len() {
             let mut reader = tokio::io::BufReader::with_capacity(capacity, input);
-            let mut bytes = Vec::new();
+            let mut bytes = owned_input();
             assert_eq!(
                 read_line(&mut reader, &mut bytes, 4).await.unwrap(),
                 input.len()
             );
             assert_eq!(
-                trim(&bytes),
+                trim(bytes.as_ref()),
                 b"abcd",
                 "capacity={capacity}, input={input:?}"
             );
@@ -95,11 +111,11 @@ async fn a_full_payload_has_the_same_bound_with_lf_crlf_or_eof() {
     }
     for input in [&b"abcde\nnext\n"[..], &b"abcde\r\nnext\n"[..]] {
         let mut reader = tokio::io::BufReader::with_capacity(1, input);
-        let mut bytes = Vec::new();
+        let mut bytes = owned_input();
         read_line(&mut reader, &mut bytes, 4).await.unwrap();
         assert!(bytes.is_empty());
         read_line(&mut reader, &mut bytes, 4).await.unwrap();
-        assert_eq!(trim(&bytes), b"next");
+        assert_eq!(trim(bytes.as_ref()), b"next");
     }
 }
 
@@ -118,14 +134,17 @@ async fn the_shutdown_signal_ends_the_read_with_no_line() {
     let (_held, reader) = tokio::io::duplex(64);
     let caller = caller_over(reader);
     let stop = std::pin::pin!(std::future::ready(()));
-    assert_eq!(next_line(&caller, stop).await, None);
+    assert!(next_line(&caller, request(), stop).await.is_none());
 }
 
 #[tokio::test]
 async fn with_no_signal_the_next_line_is_read() {
     let caller = caller_over(&b"one\n"[..]);
     let stop = std::pin::pin!(std::future::pending::<()>());
-    assert_eq!(next_line(&caller, stop).await, Some(b"one".to_vec()));
+    assert_eq!(
+        next_line(&caller, request(), stop).await.unwrap().as_ref(),
+        b"one"
+    );
 }
 
 #[tokio::test(start_paused = true)]
@@ -289,16 +308,23 @@ async fn eof_and_stop_retire_a_writer_stuck_in_write_or_flush() {
             let mut failure = None;
             let observed_failure = &mut failure;
             let started = tokio::time::Instant::now();
-            let code = shutdown_result(run_io(TEST_CARRIER, reader, writer, stop, move |caller| {
-                *observed_failure = Some(Arc::clone(&caller.failure));
-                caller.out.try_send(terminated(QUEUED_LINE)).unwrap();
-                (
-                    |_| std::future::ready(()),
-                    move || {
-                        *close_flag = true;
-                    },
-                )
-            }))
+            let code = shutdown_result(run_io(
+                TEST_CARRIER,
+                reader,
+                writer,
+                ProcessAdmission::new(0),
+                stop,
+                move |caller| {
+                    *observed_failure = Some(Arc::clone(&caller.failure));
+                    caller.out.try_send(terminated(QUEUED_LINE)).unwrap();
+                    (
+                        |_| std::future::ready(()),
+                        move || {
+                            *close_flag = true;
+                        },
+                    )
+                },
+            ))
             .await;
             assert_ne!(code, 0);
             assert_eq!(
@@ -328,15 +354,16 @@ async fn queued_lines_and_a_units_answer_drain_whole_and_in_order() {
         TEST_CARRIER,
         &b"answer\n"[..],
         writer,
+        ProcessAdmission::new(0),
         std::future::pending::<()>(),
         |caller| {
             caller.out.try_send(terminated(b"first")).unwrap();
             caller.out.try_send(terminated(b"second\n")).unwrap();
             (
-                move |line: Vec<u8>| {
+                move |line: OwnedInput| {
                     let caller = Arc::clone(&caller);
                     async move {
-                        assert!(caller.write(&line).await);
+                        assert!(caller.write(line.as_ref()).await);
                     }
                 },
                 || {},
@@ -361,15 +388,16 @@ async fn units_and_output_share_one_shutdown_deadline() {
         TEST_CARRIER,
         &b"answer\n"[..],
         writer,
+        ProcessAdmission::new(0),
         std::future::pending::<()>(),
         |caller| {
             (
-                move |line: Vec<u8>| {
+                move |line: OwnedInput| {
                     let caller = Arc::clone(&caller);
                     let flag = Arc::clone(&flag);
                     async move {
                         tokio::time::sleep(busbar_kernel::detached::DETACHED_DRAIN_GRACE / 2).await;
-                        assert!(caller.write(&line).await);
+                        assert!(caller.write(line.as_ref()).await);
                         flag.store(true, std::sync::atomic::Ordering::SeqCst);
                     }
                 },
@@ -426,6 +454,7 @@ async fn writer_errors_and_panics_end_the_serve_without_repolling_a_finished_joi
                 TEST_CARRIER,
                 reader,
                 writer,
+                ProcessAdmission::new(0),
                 std::future::pending::<()>(),
                 |caller| {
                     failure = Some(Arc::clone(&caller.failure));
@@ -467,6 +496,7 @@ async fn an_existing_input_error_survives_the_output_drain_timeout() {
         TEST_CARRIER,
         FailedReader,
         writer,
+        ProcessAdmission::new(0),
         std::future::pending::<()>(),
         |caller| {
             failure = Some(Arc::clone(&caller.failure));
@@ -513,16 +543,17 @@ async fn a_blocked_output_backpressures_answer_futures() {
             TEST_CARRIER,
             std::io::Cursor::new(input),
             writer,
+            ProcessAdmission::new(0),
             async {
                 let _ = stopped.await;
             },
             |caller| {
                 (
-                    move |line: Vec<u8>| {
+                    move |line: OwnedInput| {
                         let caller = Arc::clone(&caller);
                         let completed = completed.clone();
                         async move {
-                            if caller.write(&line).await {
+                            if caller.write(line.as_ref()).await {
                                 let _ = completed.send(()).await;
                             }
                         }
@@ -589,11 +620,11 @@ async fn inbound_capacity_blocks_the_next_line_until_a_unit_finishes() {
             },
             move |_| {
                 (
-                    move |line: Vec<u8>| {
+                    move |line: OwnedInput| {
                         let started = started.clone();
                         let permits = Arc::clone(&permits);
                         async move {
-                            started.send(line).await.unwrap();
+                            started.send(line.as_ref().to_vec()).await.unwrap();
                             permits.acquire().await.unwrap().forget();
                         }
                     },
@@ -601,7 +632,7 @@ async fn inbound_capacity_blocks_the_next_line_until_a_unit_finishes() {
                 )
             },
             1024,
-            2,
+            ProcessAdmission::new(3),
         )
         .await
     });
@@ -648,7 +679,7 @@ async fn stop_wakes_an_input_loop_waiting_for_capacity() {
                 )
             },
             1024,
-            1,
+            ProcessAdmission::new(2),
         )
         .await
     });
@@ -676,7 +707,7 @@ async fn callback_overflow_ends_the_line_session_with_failure() {
             (|_| std::future::ready(()), || {})
         },
         1024,
-        1,
+        ProcessAdmission::new(2),
     )
     .await;
     assert_ne!(code, 0);
@@ -727,7 +758,7 @@ async fn an_explicit_zero_inbound_limit_keeps_concurrency_unlimited() {
                 )
             },
             1024,
-            0,
+            ProcessAdmission::new(0),
         )
         .await
     });
@@ -739,4 +770,243 @@ async fn an_explicit_zero_inbound_limit_keeps_concurrency_unlimited() {
     .expect("both units start before either finishes");
     release.add_permits(2);
     assert_eq!(service.await.unwrap(), 0);
+}
+
+#[tokio::test]
+async fn network_retirement_wakes_stdio_without_a_local_unit_completion() {
+    let budget = ProcessAdmission::new(2);
+    let network = budget.try_enter(AdmissionClass::Data).unwrap();
+    let operator = budget.try_enter(AdmissionClass::Operator).unwrap();
+    let service_budget = Arc::clone(&budget);
+    let (stop, stopped) = tokio::sync::oneshot::channel();
+    let (started, mut starts) = mpsc::channel(1);
+    let service = tokio::spawn(async move {
+        run_io_with_limits(
+            TEST_CARRIER,
+            &b"one\n"[..],
+            tokio::io::sink(),
+            async {
+                let _ = stopped.await;
+            },
+            move |_| {
+                (
+                    move |line| {
+                        let started = started.clone();
+                        async move {
+                            started.send(line).await.unwrap();
+                        }
+                    },
+                    || {},
+                )
+            },
+            1024,
+            service_budget,
+        )
+        .await
+    });
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(10), starts.recv())
+            .await
+            .is_err()
+    );
+    drop(network);
+    let line = tokio::time::timeout(std::time::Duration::from_secs(1), starts.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(line.as_ref(), b"one");
+    stop.send(()).unwrap();
+    assert_eq!(service.await.unwrap(), 0);
+    assert!(
+        budget.try_enter(AdmissionClass::Data).is_err(),
+        "retained input outlives the answer task"
+    );
+    drop(line);
+    assert!(budget.try_enter(AdmissionClass::Data).is_ok());
+    drop(operator);
+}
+
+#[tokio::test]
+async fn cancelling_a_partial_actual_line_returns_its_payload_credit() {
+    let budget = ProcessAdmission::new(2);
+    let request = budget.try_enter(AdmissionClass::Data).unwrap();
+    let (mut input, reader) = tokio::io::duplex(32);
+    let caller = caller_over(reader);
+    let mut read = Box::pin(caller.read_input(request.clone()));
+    input.write_all(b"abc").await.unwrap();
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(10), &mut read)
+            .await
+            .is_err()
+    );
+    let remaining = request.try_reserve(224 * 1024 * 1024 - 3).unwrap();
+    assert!(
+        request.try_reserve(1).is_err(),
+        "partial payload is already charged"
+    );
+    drop(read);
+    let returned = request
+        .try_reserve(3)
+        .expect("cancellation retires the actual partial buffer");
+    drop(returned);
+    drop(remaining);
+}
+
+#[tokio::test]
+async fn stopping_stdio_waiting_on_network_capacity_has_no_local_task_dependency() {
+    let budget = ProcessAdmission::new(2);
+    let network = budget.try_enter(AdmissionClass::Data).unwrap();
+    let service_budget = Arc::clone(&budget);
+    let (stop, stopped) = tokio::sync::oneshot::channel();
+    let service = tokio::spawn(async move {
+        run_io_with_limits(
+            TEST_CARRIER,
+            &b"unread\n"[..],
+            tokio::io::sink(),
+            async {
+                let _ = stopped.await;
+            },
+            |_| {
+                (
+                    |_| async {
+                        panic!("capacity does not admit a line");
+                    },
+                    || {},
+                )
+            },
+            1024,
+            service_budget,
+        )
+        .await
+    });
+    tokio::task::yield_now().await;
+    stop.send(()).unwrap();
+    assert_eq!(
+        tokio::time::timeout(std::time::Duration::from_secs(1), service)
+            .await
+            .unwrap()
+            .unwrap(),
+        0
+    );
+    drop(network);
+    assert!(budget.try_enter(AdmissionClass::Data).is_ok());
+}
+
+#[tokio::test]
+async fn one_slot_stdio_refuses_data_without_an_immortal_waiter() {
+    let budget = ProcessAdmission::new(1);
+    let code = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        run_io_with_limits(
+            TEST_CARRIER,
+            &b"unread\n"[..],
+            tokio::io::sink(),
+            std::future::pending::<()>(),
+            |_| {
+                (
+                    |_| async {
+                        panic!("one-slot capacity belongs to the operator");
+                    },
+                    || {},
+                )
+            },
+            1024,
+            Arc::clone(&budget),
+        ),
+    )
+    .await
+    .unwrap();
+    assert_ne!(code, 0);
+    assert!(budget.try_enter(AdmissionClass::Operator).is_ok());
+}
+
+#[tokio::test]
+async fn a_unit_completion_does_not_discard_an_actual_partial_line() {
+    let budget = ProcessAdmission::new(3);
+    let (mut input, reader) = tokio::io::duplex(64);
+    let (stop, stopped) = tokio::sync::oneshot::channel();
+    let (started, mut starts) = mpsc::channel(2);
+    let release = Arc::new(tokio::sync::Notify::new());
+    let release_first = Arc::clone(&release);
+    let service = tokio::spawn(async move {
+        run_io_with_limits(
+            TEST_CARRIER,
+            reader,
+            tokio::io::sink(),
+            async {
+                let _ = stopped.await;
+            },
+            move |_| {
+                (
+                    move |line: OwnedInput| {
+                        let started = started.clone();
+                        let release_first = Arc::clone(&release_first);
+                        async move {
+                            let first = line.as_ref() == b"first";
+                            started.send(line.as_ref().to_vec()).await.unwrap();
+                            if first {
+                                release_first.notified().await;
+                            }
+                        }
+                    },
+                    || {},
+                )
+            },
+            1024,
+            budget,
+        )
+        .await
+    });
+    input.write_all(b"first\npart").await.unwrap();
+    assert_eq!(starts.recv().await.unwrap(), b"first");
+    // Ensure the second read is pending with a nonempty buffer before the first unit ends.
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(10), starts.recv())
+            .await
+            .is_err()
+    );
+    release.notify_one();
+    tokio::task::yield_now().await;
+    input.write_all(b"ial\n").await.unwrap();
+    assert_eq!(starts.recv().await.unwrap(), b"partial");
+    stop.send(()).unwrap();
+    assert_eq!(service.await.unwrap(), 0);
+}
+
+#[tokio::test]
+async fn output_failure_cancels_a_global_waiter_without_local_units() {
+    let budget = ProcessAdmission::new(2);
+    let network = budget.try_enter(AdmissionClass::Data).unwrap();
+    let probe = Arc::new(OutputProbe::default());
+    let writer = ProbeWriter::new(&probe, IoOutcome::Error, IoOutcome::Ready);
+    let code = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        run_io_with_limits(
+            TEST_CARRIER,
+            &b"unread\n"[..],
+            writer,
+            std::future::pending::<()>(),
+            |caller| {
+                caller.out.try_send(terminated(QUEUED_LINE)).unwrap();
+                (
+                    |_| async {
+                        panic!("a network-owned slot does not admit stdio");
+                    },
+                    || {},
+                )
+            },
+            1024,
+            Arc::clone(&budget),
+        ),
+    )
+    .await
+    .unwrap();
+    assert_ne!(code, 0);
+    assert!(probe.dropped.load(std::sync::atomic::Ordering::SeqCst));
+    assert!(budget.try_enter(AdmissionClass::Data).is_err());
+    drop(network);
+    assert!(
+        budget.try_enter(AdmissionClass::Data).is_ok(),
+        "the cancelled waiter retained no permit"
+    );
 }

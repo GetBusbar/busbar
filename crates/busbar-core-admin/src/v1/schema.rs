@@ -255,8 +255,6 @@ pub struct ConfigReloadView {
 #[derive(Serialize, JsonSchema)]
 pub struct RestartView {
     pub restarting: bool,
-    /// Whether a process supervisor was detected. False means the caller confirmed explicitly.
-    pub supervisor_detected: bool,
     pub note: String,
 }
 
@@ -295,18 +293,6 @@ pub struct RevokeView {
     pub revoked: String,
 }
 
-/// `POST /signing-key/rotate`: the current key-signing key id plus the REVOKE-ALL warning. 1.5.0 is
-/// single-key: the actual swap is an operator action, so this reports intent, not an in-process swap.
-#[derive(Serialize, JsonSchema)]
-pub struct SigningKeyRotateView {
-    /// The current signing-key id (`kid`) that tokens are minted under.
-    pub current_kid: String,
-    /// Always `true`: rotating the signing key revokes every outstanding key (all must be re-minted).
-    pub revoke_all: bool,
-    /// Human-readable guidance for the operator-driven lockstep rotation.
-    pub message: String,
-}
-
 /// `GET`/`PUT /config/settings` (1.5.0 full-config coverage): the API-settable single-value config
 /// overlay (`root` section) and, on a PUT, the apply metadata. `settings` is the CURRENT effective
 /// root override (the merge of prior overlay + this request). It is overlay-persisted so it survives
@@ -335,7 +321,9 @@ pub struct SigningKeyRotateView {
 /// are authored through the named exporter routes or source-fenced configuration document edits.
 /// Module-carried streams, produced fields and required pinned fields are published in the export
 /// form schema; lifecycle and restart requirements remain explicit in mutation responses.
-/// `advanced` is live EXCEPT `response_headers`: `response_headers.server_timing` is
+/// The settings endpoint exposes only the patchable advanced fields. The document-only
+/// `advanced.shutdown.deregister_delay` is captured at boot and requires restart.
+/// Within these settings, `advanced` is live EXCEPT `response_headers`: `response_headers.server_timing` is
 /// baked into router middleware state at boot (same "config apply swaps `Arc<App>`, never the
 /// router" freezing as `max_inbound_concurrent`) and `response_headers.route_policy` seeds a
 /// process-global `OnceLock`; neither is rebuilt by an apply.
@@ -579,6 +567,7 @@ fn _error_taxonomy_is_referenced(e: &AdminError) {
         | AdminError::RateLimited
         | AdminError::Internal
         | AdminError::Unavailable(_)
+        | AdminError::RetryLater { .. }
         | AdminError::UnpricedClass { .. }
         | AdminError::PluginText { .. } => {}
     }
