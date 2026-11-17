@@ -67,3 +67,19 @@ fn the_real_tree_is_clean() {
     let findings = spdx_headers(&repo_root()).expect("git checkout");
     assert!(findings.is_empty(), "{findings:#?}");
 }
+
+#[test]
+fn a_comment_quoting_the_tag_is_not_a_header() {
+    // spdx.rs's own module doc quotes the tag in backticks within its first lines (pipeline 19356): prose that
+    // mentions the identifier is not a header naming another licence.
+    let doc = "// SPDX-License-Identifier: Apache-2.0\n// Copyright (C) 2026 Busbar Inc\n\n//! every file carries `SPDX-License-Identifier: Apache-2.0` in its first lines\n";
+    assert_eq!(header_finding("tools/ci-checks/src/spdx.rs", doc), None);
+    // A real header naming another licence is still found, in any comment syntax.
+    for other in [
+        "// SPDX-License-Identifier: MIT\n",
+        "# SPDX-License-Identifier: AGPL-3.0-only\n",
+        "/* SPDX-License-Identifier: MIT */\n",
+    ] {
+        assert!(header_finding("a.rs", other).is_some(), "{other:?}");
+    }
+}
