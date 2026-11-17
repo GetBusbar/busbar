@@ -126,7 +126,10 @@ impl Stage {
                 let selection = held.selection();
                 let input = held.input(&selection, &facts);
                 let result = call::one(&call, abi::POINT_NOTIFY, &input).await;
-                held.report(vec![call::record(&call, result.as_ref().ok())]);
+                held.report(vec![call::record(
+                    &call,
+                    result.as_ref().ok().map(|reply| &**reply),
+                )]);
             });
         }
     }
@@ -273,7 +276,7 @@ pub(crate) fn enforce<K: Calls + ?Sized>(
         for rewrite in stage.selected.rewrites.clone() {
             let selection = stage.selection();
             let input = stage.input(&selection, &[]);
-            let (called, answer) = handle
+            let (called, mut answer) = handle
                 .block_on(call::chain(&rewrite, abi::POINT_REWRITE, &input, &mut ran))
                 .map_err(|_| unavailable(req.route, drive.refusals))?;
             if answer.verb == abi::VERB_REJECT {
@@ -287,7 +290,7 @@ pub(crate) fn enforce<K: Calls + ?Sized>(
             if answer.verb != abi::VERB_REWRITE || !called.prompt.can_rewrite() {
                 continue;
             }
-            if let Some(bytes) = answer.rewrite {
+            if let Some(bytes) = answer.rewrite.take() {
                 let bytes = busbar_contract::secure::SecureVec::from(bytes);
                 match task.rewrite(&bytes, effects) {
                     Ok(answer) => {

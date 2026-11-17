@@ -67,7 +67,7 @@ impl Fixture {
         &self,
         call: &Arc<Call>,
         projection: &Projection,
-    ) -> Result<HookAnswer, call::Failed> {
+    ) -> Result<call::Reply, call::Failed> {
         let selection = self.selection();
         let input = call::Input {
             projection,

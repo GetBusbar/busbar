@@ -60,7 +60,16 @@ impl Projection {
                 ..=busbar_plugin_abi::fail::fact::PJ_TEXT_COMPLETE)
                 .contains(key)
             {
-                self.facts.retain(|(held, _)| held != key);
+                self.facts.retain_mut(|(held, value)| {
+                    if held != key {
+                        return true;
+                    }
+                    if let FactVal::Text(text) = value {
+                        use zeroize::Zeroize;
+                        text.as_mut().zeroize();
+                    }
+                    false
+                });
                 self.facts.push((*key, value.clone()));
             }
         }

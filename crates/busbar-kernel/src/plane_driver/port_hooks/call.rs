@@ -22,6 +22,28 @@ pub(super) struct Input<'a> {
     pub context: &'a crate::host_services::InvocationContext,
 }
 
+/// Plugin rewrite bytes remain wiping-owned even when an abandoned worker or a gate drops its reply.
+pub(super) struct Reply(HookAnswer);
+impl std::ops::Deref for Reply {
+    type Target = HookAnswer;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+impl std::ops::DerefMut for Reply {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+impl Drop for Reply {
+    fn drop(&mut self) {
+        use zeroize::Zeroize;
+        if let Some(bytes) = self.0.rewrite.as_mut() {
+            bytes.zeroize();
+        }
+    }
+}
+
 pub(super) enum Failed {
     Unconfirmed,
     Unprojected,
@@ -36,15 +58,11 @@ fn ppm(value: f64) -> u32 {
 }
 
 /// Each actual call has its own grants and confirmed content read, including fallbacks.
-pub(super) async fn one(
-    call: &Arc<Call>,
-    point: u32,
-    input: &Input<'_>,
-) -> Result<HookAnswer, Failed> {
+pub(super) async fn one(call: &Arc<Call>, point: u32, input: &Input<'_>) -> Result<Reply, Failed> {
     prepare(call, point, input).await
 }
 
-async fn prepare(call: &Arc<Call>, point: u32, input: &Input<'_>) -> Result<HookAnswer, Failed> {
+async fn prepare(call: &Arc<Call>, point: u32, input: &Input<'_>) -> Result<Reply, Failed> {
     let deadline = Instant::now() + call.timeout;
     if call.port.points() & (1 << point) == 0 {
         return Err(Failed::Port);
@@ -138,7 +156,7 @@ async fn prepare(call: &Arc<Call>, point: u32, input: &Input<'_>) -> Result<Hook
         .map_err(|_| Failed::Port)?
 }
 
-async fn invoke(call: &Call, point: u32, input: &Input<'_>) -> Result<HookAnswer, Failed> {
+async fn invoke(call: &Call, point: u32, input: &Input<'_>) -> Result<Reply, Failed> {
     let facts = call.port.facts();
     let content =
         input.stage.is_empty() && call.prompt.sends_prompt() && facts & abi::FB_WANTS_PROMPT != 0;
@@ -299,6 +317,7 @@ async fn invoke(call: &Call, point: u32, input: &Input<'_>) -> Result<HookAnswer
         HookCall::Done(result) => result,
         HookCall::Io(future) => future.await,
     }
+    .map(Reply)
     .map_err(|_| Failed::Port);
     answer
 }
@@ -323,10 +342,13 @@ pub(super) async fn chain(
     point: u32,
     input: &Input<'_>,
     ran: &mut Vec<HookApplied>,
-) -> Result<(Arc<Call>, HookAnswer), Failed> {
+) -> Result<(Arc<Call>, Reply), Failed> {
     for attempted in std::iter::once(call).chain(call.fallbacks.iter()) {
         let answer = one(attempted, point, input).await;
-        ran.push(record(attempted, answer.as_ref().ok()));
+        ran.push(record(
+            attempted,
+            answer.as_ref().ok().map(|reply| &**reply),
+        ));
         if let Ok(answer) = answer {
             return Ok((Arc::clone(attempted), answer));
         }
@@ -348,13 +370,13 @@ pub(super) async fn chain(
     };
     Ok((
         Arc::clone(call),
-        HookAnswer {
+        Reply(HookAnswer {
             verb,
             reject_status: None,
             order,
             restrict: Vec::new(),
             message: None,
             rewrite: None,
-        },
+        }),
     ))
 }
