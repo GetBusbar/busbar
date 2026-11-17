@@ -386,11 +386,8 @@ fn main() {
     for w in warnings {
         eprintln!("{w}");
     }
-    // Retired 1.5.x launch variables are never read; a set one is reported (BUSBAR-3029) here, where
-    // 1.5.5 printed its deprecation line, before the config load that can refuse.
-    for w in root::retired_env::ignored_launch_env(|n| std::env::var_os(n)) {
-        eprintln!("{w}");
-    }
+    // Refuse retired launch inputs before migration or any configuration is read.
+    root::retired_env::check_launch_env(|n| std::env::var_os(n)).unwrap_or_else(|error| die(error));
     // Migrate-on-boot step 1 (MIGRATE-ON-BOOT r42 §3): config.yaml's one field, before anything else
     // reads it. An unstamped config is planned in memory here and written at step 5.
     {
