@@ -64,3 +64,115 @@ fn native_input_window_is_not_a_total_body_limit_and_replacement_overlaps() {
     assert_eq!(body.bytes.as_slice(), b"123456");
     assert_eq!(small.used(), (6, 6));
 }
+
+async fn ingress_fixture() -> (NativeIngress, busbar_contract::storage::StorageSource) {
+    use busbar_kernel::inbound::native::{AcceptedConnection, PhysicalListener};
+    busbar_core_admin::install();
+    let app = crate::root::min3_auth::tests::physical_app().await;
+    let transport = crate::root::min3_transports::tests::framer(&["http"]);
+    let slot =
+        crate::root::min3_physical::assemble_admin_slot(&app, "admin_listen", transport.clone())
+            .unwrap();
+    let listener = PhysicalListener::new(
+        Arc::new(busbar_kernel::state::AppHandle::new(app)),
+        "admin_listen".into(),
+        transport,
+        AdmissionClass::Operator,
+        Arc::new(move |_, name| (name == slot.slot()).then(|| slot.prepared().clone())),
+    )
+    .unwrap();
+    let budget = ProcessAdmission::with_limits(256, 32 * 1024 * 1024, 32 * 1024 * 1024);
+    let source = budget.connection_storage(AdmissionClass::Operator);
+    let facts =
+        AcceptedConnection::capture(&source, "192.0.2.1", "192.0.2.2", "http/1.1", &[]).unwrap();
+    (
+        NativeIngress::new(
+            listener.connect(facts),
+            budget,
+            AdmissionClass::Operator,
+            &source,
+            1024 * 1024,
+        )
+        .unwrap(),
+        source,
+    )
+}
+
+fn public_head(
+    source: &busbar_contract::storage::StorageSource,
+    stream: u64,
+    end_stream: bool,
+) -> Inbound {
+    let mut wire = Reply::new();
+    wire.put_text(tag::H_METHOD, "GET").unwrap();
+    wire.put_text(tag::H_PATH, busbar_kernel::auth::HEALTHZ_PATH)
+        .unwrap();
+    Inbound::Head {
+        stream,
+        end_stream,
+        head: busbar_core_connector::framed_stream::session::Payload::copy(source, wire.as_bytes())
+            .unwrap(),
+    }
+}
+
+#[tokio::test]
+async fn native_input_eof_keeps_reset_bound_to_the_original_physical_owner() {
+    let (mut ingress, source) = ingress_fixture().await;
+    assert!(ingress
+        .accept(public_head(&source, 1, false), None)
+        .unwrap()
+        .is_none());
+    let ready = ingress.accept(Inbound::End(1), None).unwrap().unwrap();
+    let binding = ready.request.binding().clone();
+    assert!(binding.check_live().is_ok());
+    assert!(Arc::ptr_eq(&ingress.slots[0].owner, &ready.owner));
+    let execution = ready.request.complete_public().unwrap();
+    assert!(execution.check_executing().is_ok());
+    ingress
+        .accept(Inbound::Reset { stream: 1, code: 0 }, None)
+        .unwrap();
+    assert!(execution.check_executing().is_err());
+    ingress.retire(&ready.owner).unwrap();
+    assert!(ingress.accept(public_head(&source, 1, true), None).is_err());
+}
+
+#[tokio::test]
+async fn native_root_shape_retains_all_200_response_slots_until_actual_retirement() {
+    let (mut ingress, source) = ingress_fixture().await;
+    let mut ready = Vec::new();
+    for stream in 1..=LIVE_RESPONSES as u64 {
+        ready.push(
+            ingress
+                .accept(public_head(&source, stream, true), None)
+                .unwrap()
+                .unwrap(),
+        );
+    }
+    assert!(matches!(
+        ingress.accept(public_head(&source, 201, true), None),
+        Err(InputError::Capacity)
+    ));
+    ingress.retire(&ready.remove(0).owner).unwrap();
+    assert!(ingress
+        .accept(public_head(&source, 202, true), None)
+        .unwrap()
+        .is_some());
+
+    use busbar_contract::response_delivery::ResponseKey;
+    let mut ledger = delivery_ledger(&source).unwrap();
+    let mut handles = Vec::new();
+    let key = |stream| ResponseKey {
+        node: 1,
+        incarnation: 1,
+        unit: None,
+        connection_generation: 1,
+        stream,
+    };
+    for stream in 1..=LIVE_RESPONSES as u64 {
+        handles.push(ledger.admit(key(stream)).unwrap());
+    }
+    assert!(ledger.admit(key(201)).is_err());
+    // Dropping external handles alone does not erase owner-side response cells.
+    drop(handles);
+    assert!(ledger.admit(key(202)).is_err());
+}
