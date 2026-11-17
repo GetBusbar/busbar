@@ -472,8 +472,8 @@ fn invoke5<K: Kind, A1: RawArg, A2: RawArg, A3: RawArg, A4: RawArg, A5: RawArg>(
 fn cancel_raw(header: &Plugin, inst: *const c_void, tok: Token) -> Status {
     match header.entries().3 {
         // SAFETY: `cancel` is the image's own header entry; `inst` is null (the image's open slab) or the
-        // image's live instance; the token belongs to the one `Chain` or `Session` calling this from its
-        // `Drop`, so no other entry for it can run (I6). Unknown or stale tokens are a no-op.
+        // image's live instance; the token belongs to the one `Chain` cancelling itself or the `Session`
+        // being dropped, so no other entry for it can run (I6). Unknown or stale tokens are a no-op.
         Some(f) => unsafe { f(inst, tok) },
         None => Status::FAULT,
     }
@@ -893,14 +893,27 @@ impl<K: Kind> Chain<'_, K> {
     pub fn token(&self) -> Token {
         self.tok
     }
+
+    /// Cancel this parked chain, retaining its owner and borrowed buffers until the entry returns.
+    /// The token is retired before entry, so the following Drop cannot cancel it a second time.
+    /// Hosts with caller attribution and fault reporting run this inside their cancellation scope.
+    pub fn cancel(mut self) -> Status {
+        self.cancel_once()
+    }
+
+    fn cancel_once(&mut self) -> Status {
+        let token = core::mem::replace(&mut self.tok, 0);
+        if token == 0 {
+            return Status::OK;
+        }
+        let (header, inst, _) = self.parts();
+        cancel_raw(header, inst, token)
+    }
 }
 
 impl<K: Kind> Drop for Chain<'_, K> {
     fn drop(&mut self) {
-        if self.tok != 0 {
-            let (header, inst, _) = self.parts();
-            let _ = cancel_raw(header, inst, self.tok);
-        }
+        let _ = self.cancel_once();
     }
 }
 
