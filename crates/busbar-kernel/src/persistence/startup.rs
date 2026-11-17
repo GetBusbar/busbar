@@ -31,6 +31,11 @@ const KEY: &[u8] = b"active";
 /// The record-format cursor's key (`busbar_migrate::records::CURSOR_KEY` names the same bytes).
 const CURSOR_KEY: &[u8] = b"step";
 const FORMAT: u32 = 1;
+/// Record format 1 plus the declared-restore row (DES-331 §B10.4): no record converts. The
+/// restore's pending marker raises a dataset to it so that a build that predates the restore row
+/// classifies the dataset [`Format::Newer`] and refuses it; this build admits it as current and
+/// keeps it. A later record-format step must start from it.
+pub const RESTORED_FORMAT: u32 = 2;
 
 /// Base stall window: longer than the longest legitimate gap between two progress writes of an
 /// owner that resumes nothing: one READY plus margin for opens, driver builds and the
@@ -221,6 +226,9 @@ pub fn classify(bytes: &[u8], has_step: impl Fn(u32) -> bool) -> Format {
         return Format::Corrupt;
     }
     let tail = word(72);
+    if format == RESTORED_FORMAT && tail == 0 {
+        return Format::Current;
+    }
     if format > RECORD_FORMAT || tail > RECORD_FORMAT {
         return Format::Newer;
     }
@@ -239,11 +247,14 @@ pub fn classify(bytes: &[u8], has_step: impl Fn(u32) -> bool) -> Format {
 pub(crate) struct Manifest {
     pub(crate) dataset: DatasetId,
     pub(crate) registrar: WriterAuthority,
+    /// The record format the manifest names: [`RECORD_FORMAT`], or [`RESTORED_FORMAT`] once the
+    /// dataset entered a restore. Re-encoding keeps it, so exact manifest predicates still match.
+    pub(crate) format: u32,
 }
 
 impl Manifest {
     pub(crate) fn encode(self) -> [u8; 80] {
-        self.encode_at(FORMAT, 0)
+        self.encode_at(self.format, 0)
     }
 
     /// This manifest with its records at `format` and a step under way to `tail` (0 = none).
@@ -288,6 +299,7 @@ impl Manifest {
                     bytes[64..72].try_into().map_err(|_| Error::Corrupt)?,
                 ),
             },
+            format: u32::from_le_bytes(bytes[8..12].try_into().map_err(|_| Error::Corrupt)?),
         };
         if value.dataset.0 == [0; 16]
             || value.registrar.writer == [0; 16]
@@ -727,6 +739,7 @@ impl Startup {
                         writer: random_id()?,
                         execution_epoch: 1,
                     },
+                    format: FORMAT,
                 };
                 let candidate = fences::initialize_with_records(
                     info.dataset,
@@ -995,6 +1008,7 @@ impl Startup {
         let opened = Manifest {
             dataset,
             registrar: owner,
+            format: manifest.format,
         };
         let predicates = vec![
             exact(root_address(), root_bytes.to_vec()),
@@ -1116,6 +1130,7 @@ impl Startup {
         let claimed = Manifest {
             dataset,
             registrar: owner,
+            format: manifest.format,
         };
         let predicates = vec![
             exact(root_address(), root_bytes.to_vec()),

@@ -2558,7 +2558,8 @@ async fn a_lost_opening_reply_resolves_by_its_owner_witness() {
         converting.migration().unwrap().manifest_bytes().to_vec(),
         Manifest {
             dataset: DatasetId([1; 16]),
-            registrar
+            registrar,
+            format: RECORD_FORMAT,
         }
         .encode_at(0, 1)
         .to_vec()
