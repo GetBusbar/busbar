@@ -313,6 +313,27 @@ fn resident() -> &'static Mutex<HashMap<[u8; 32], Resident>> {
     TABLE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+/// The resident image with this SHA-256, if any: its admitted header and the `former_names` it was admitted under.
+/// The table lock is released before this returns (DES-443 r2 §3.1: inspect never holds it across a call).
+#[cfg(unix)]
+pub(crate) fn resident_header(sha256: &[u8; 32]) -> Option<(Header, String)> {
+    resident()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(sha256)
+        .map(|r| (r.plugin, r.former_names.clone()))
+}
+
+/// Whether the image with this SHA-256 is resident: admitted, and never unloaded (I13).
+#[cfg(unix)]
+#[must_use]
+pub fn is_resident(sha256: &[u8; 32]) -> bool {
+    resident()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .contains_key(sha256)
+}
+
 /// The manifest's signed `former_names`, joined as the header states them.
 #[cfg(unix)]
 fn joined(manifest: &SignedManifest) -> String {
@@ -429,6 +450,19 @@ pub fn admit_bytes(
     admit(fd, manifest, trust)
 }
 
+/// Steps 1-7, shared by install and inspection (DES-443 r3 §3.1, B-M2): the read, sha256 against the manifest,
+/// the trust evaluation, the stamp scan, `compatible` and `manifest_matches`. Nothing is opened before all of them
+/// pass, in either mode.
+#[cfg(unix)]
+pub(crate) struct Verified {
+    pub(crate) bytes: Vec<u8>,
+    pub(crate) sha256: [u8; 32],
+    pub(crate) stamp: Stamp,
+    pub(crate) kind: KindCode,
+    pub(crate) name: String,
+    pub(crate) former_names: String,
+}
+
 #[cfg(unix)]
 fn admit_with(
     fd: std::os::fd::OwnedFd,
@@ -436,6 +470,57 @@ fn admit_with(
     trust: &TrustConfig,
     facts: &CryptoFacts,
 ) -> Result<Admitted, Refusal> {
+    let v = verify(fd, manifest, trust, facts)?;
+    let mut table = resident().lock().unwrap_or_else(|p| p.into_inner());
+    if let Some(r) = table.get(&v.sha256) {
+        if r.former_names != v.former_names {
+            return Err(Refusal::new(
+                RefusalCode::DoorStampMismatch,
+                "former_names",
+                r.former_names.clone(),
+                v.former_names,
+            )
+            .named(&v.name));
+        }
+        return Ok(Admitted {
+            stamp: v.stamp,
+            image: Arc::clone(&r.image),
+            plugin: r.plugin,
+        });
+    }
+    let (opened, staged) = open_checked(&v)?;
+    let plugin = match opened.admit() {
+        Ok(plugin) => plugin,
+        Err((opened, e)) => {
+            crate::stage::close_on_worker(opened);
+            drop(staged);
+            return Err(image_refusal(&e).named(&v.name));
+        }
+    };
+    let image = Arc::new(Image::Loaded(LoadedImage::new(v.sha256, Box::new(staged))));
+    table.insert(
+        v.sha256,
+        Resident {
+            image: Arc::clone(&image),
+            plugin,
+            former_names: v.former_names,
+        },
+    );
+    Ok(Admitted {
+        stamp: v.stamp,
+        image,
+        plugin,
+    })
+}
+
+/// Steps 1-7 over `fd` (see [`Verified`]).
+#[cfg(unix)]
+pub(crate) fn verify(
+    fd: std::os::fd::OwnedFd,
+    manifest: &SignedManifest,
+    trust: &TrustConfig,
+    facts: &CryptoFacts,
+) -> Result<Verified, Refusal> {
     use std::io::Read as _;
     let manifest_name = manifest.name.as_str();
     // 1: one regular file of at most 256 MiB, read once.
@@ -512,25 +597,25 @@ fn admit_with(
     let kind = compatible(&stamp, facts)?;
     manifest_matches(&stamp, kind, manifest)?;
     let former_names = joined(manifest);
-    let mut table = resident().lock().unwrap_or_else(|p| p.into_inner());
-    if let Some(r) = table.get(&sha256) {
-        if r.former_names != former_names {
-            return Err(Refusal::new(
-                RefusalCode::DoorStampMismatch,
-                "former_names",
-                r.former_names.clone(),
-                former_names,
-            )
-            .named(&name));
-        }
-        return Ok(Admitted {
-            stamp,
-            image: Arc::clone(&r.image),
-            plugin: r.plugin,
-        });
-    }
+    Ok(Verified {
+        bytes,
+        sha256,
+        stamp,
+        kind,
+        name,
+        former_names,
+    })
+}
+
+/// Steps 8-9, shared by install and inspection: stage and open the verified bytes on a permanent worker, then
+/// check the header's stamp, `former_names` and null entries on the borrowed `Opened` (no admission). A refusal
+/// closes the image on a worker before it returns.
+#[cfg(unix)]
+pub(crate) fn open_checked(
+    v: &Verified,
+) -> Result<(busbar_ffi::image::Opened, crate::stage::Staged), Refusal> {
     // 8: stage and open on the permanent worker (busbar-ffi runs dlopen, `busbar_plugin()` and the H4 checks).
-    let (opened, staged) = crate::stage::open_image(&bytes, &name).map_err(|e| {
+    let (opened, staged) = crate::stage::open_image(&v.bytes, &v.name).map_err(|e| {
         match e {
             crate::stage::Unopened::Stage(why) => Refusal::new(
                 RefusalCode::Integrity,
@@ -546,10 +631,10 @@ fn admit_with(
                 "an image that loads",
             ),
         }
-        .named(&name)
+        .named(&v.name)
     })?;
-    // 9: the header presents the verified stamp and the signed former names; then exit a (or exit b).
-    let refused = if opened.stamp().0 != stamp_bytes(&stamp) {
+    // 9: the header presents the verified stamp and the signed former names, and no entry is null.
+    let refused = if opened.stamp().0 != stamp_bytes(&v.stamp) {
         Some(Refusal::new(
             RefusalCode::DoorStampMismatch,
             "stamp",
@@ -558,48 +643,29 @@ fn admit_with(
         ))
     } else {
         match opened.former_names() {
-            Ok(names) if names == former_names => None,
+            Ok(names) if names == v.former_names => opened
+                .null_field()
+                .map(|field| image_refusal(&ImageError::Null(field))),
             Ok(names) => Some(Refusal::new(
                 RefusalCode::DoorStampMismatch,
                 "former_names",
                 printable_names(names),
-                former_names.clone(),
+                v.former_names.clone(),
             )),
             Err(_) => Some(Refusal::new(
                 RefusalCode::DoorStampMismatch,
                 "former_names",
                 "not UTF-8",
-                former_names.clone(),
+                v.former_names.clone(),
             )),
         }
     };
     if let Some(refusal) = refused {
         crate::stage::close_on_worker(opened);
         drop(staged);
-        return Err(refusal.named(&name));
+        return Err(refusal.named(&v.name));
     }
-    let plugin = match opened.admit() {
-        Ok(plugin) => plugin,
-        Err((opened, e)) => {
-            crate::stage::close_on_worker(opened);
-            drop(staged);
-            return Err(image_refusal(&e).named(&name));
-        }
-    };
-    let image = Arc::new(Image::Loaded(LoadedImage::new(sha256, Box::new(staged))));
-    table.insert(
-        sha256,
-        Resident {
-            image: Arc::clone(&image),
-            plugin,
-            former_names,
-        },
-    );
-    Ok(Admitted {
-        stamp,
-        image,
-        plugin,
-    })
+    Ok((opened, staged))
 }
 
 /// A header's `former_names` as a refusal may print it: only when every word passes `valid_name`.

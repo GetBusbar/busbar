@@ -269,6 +269,15 @@ fn operation_store(app: &App) -> Option<busbar_kernel::persistence::scoped::Scop
     durable::scoped_store(core).ok()
 }
 
+/// The id of the operation `principal`'s request with `Idempotency-Key` `key` creates: served by
+/// `GET /operations/{key}` and sealed on the request's audit rows.
+fn operation_id(principal: &str, key: &str) -> String {
+    format!(
+        "op_{}",
+        &busbar_contract::redacted::sha256_hex(format!("{principal}\0{key}").as_bytes())[..32]
+    )
+}
+
 fn principal_of(req: &Request) -> String {
     req.extensions()
         .get::<busbar_kernel::auth::AuthPrincipal>()
@@ -297,6 +306,7 @@ async fn idempotent(req: Request, next: Next, app: &Arc<App>, key: String) -> Re
         );
     };
     let principal = principal_of(&req);
+    let operation = operation_id(&principal, &key);
     let (parts, body) = req.into_parts();
     let Ok(bytes) = axum::body::to_bytes(body, BODY_CAP).await else {
         return gate::admin_error_envelope(
@@ -358,6 +368,7 @@ async fn idempotent(req: Request, next: Next, app: &Arc<App>, key: String) -> Re
         }
         Ok(Ok(claim)) => claim,
     };
+    busbar_kernel::audit::auditlog::note_operation_id(&operation);
     let response = next
         .run(Request::from_parts(parts, Body::from(bytes)))
         .await;
@@ -514,10 +525,7 @@ pub(crate) async fn get_operation(
             );
         }
     };
-    let operation_id = format!(
-        "op_{}",
-        &busbar_contract::redacted::sha256_hex(format!("{actor}\0{key}").as_bytes())[..32]
-    );
+    let operation_id = operation_id(&actor, &key);
     let body = match looked {
         Looked::InFlight {
             request_sha256,

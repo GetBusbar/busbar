@@ -152,12 +152,6 @@ impl busbar_contract::plugin_rows::PluginRows for Rows {
     fn skipped(&self) -> Vec<busbar_contract::plugin_rows::Skipped> {
         Vec::new()
     }
-    fn store_door(
-        &self,
-        name: &str,
-    ) -> Result<busbar_contract::persistence::axis::StoreDoor, String> {
-        Err(format!("no store '{name}'"))
-    }
     fn secret_refusal(&self, name: &str) -> String {
         format!("no secret '{name}'")
     }
@@ -563,12 +557,6 @@ mod operator_instance {
         }
         fn skipped(&self) -> Vec<busbar_contract::plugin_rows::Skipped> {
             Vec::new()
-        }
-        fn store_door(
-            &self,
-            name: &str,
-        ) -> Result<busbar_contract::persistence::axis::StoreDoor, String> {
-            Err(format!("no store '{name}'"))
         }
         fn secret_refusal(&self, name: &str) -> String {
             format!("no secret '{name}'")

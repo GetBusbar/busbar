@@ -336,7 +336,6 @@ pub fn register_stores(linked: &Linked) {
             plugins_fetch: Some(crate::root::boot::plugins_fetch),
             hook_axis: Some(crate::root::hooks::axis),
             hook_names: crate::LINKED_HOOK_NAMES,
-            store_axis: Some(store_axis),
             secret_axis: Some(secrets),
             secret_admit: Some(crate::root::boot::admit_secrets),
             secret_snapshot: Some(secret_snapshot),
@@ -360,25 +359,6 @@ pub fn register_stores(linked: &Linked) {
             crate::root::exit::exit(2);
         }
     }
-}
-
-fn store_axis() -> std::sync::Arc<dyn busbar_contract::persistence::axis::PersistenceAxis> {
-    let conns: std::sync::Arc<dyn busbar_contract::conn::DeclaredConns> =
-        crate::root::connector::the().clone();
-    std::sync::Arc::new(crate::root::loader::store_v4::DoorPersistenceAxis {
-        dispatcher: crate::root::dispatch::dispatcher(),
-        logs: crate::root::boot::plugin_logs().clone(),
-        conns: crate::root::loader::dispatch::ConnTable::Host(crate::root::connector::admit(conns)),
-        // Resource admission for one crossing, not a persisted-record or transaction limit.
-        // Includes descriptor overhead above the existing raw conditional carrier.
-        limits: crate::root::loader::store_v4::Limits {
-            descriptor_bytes: 512 * 1024 * 1024,
-            output_items: (512 * 1024 * 1024)
-                / std::mem::size_of::<busbar_contract::abi::store::v4::ReadValue>(),
-            output_bytes: 512 * 1024 * 1024,
-            decode_bytes: 512 * 1024 * 1024,
-        },
-    })
 }
 
 static SECRETS: std::sync::OnceLock<crate::root::loader::secret_calls::SecretRows> =
@@ -658,6 +638,8 @@ pub(crate) const HOST_SERIES: &[&str] = &[
     busbar_kernel::snapshot::BILLING_TRUNCATED_TOTAL,
     busbar_kernel::snapshot::PLUGIN_OBSERVATIONS_DROPPED_TOTAL,
     busbar_kernel::snapshot::PLUGIN_TEXT_CUT_TOTAL,
+    busbar_kernel::snapshot::PLUGIN_INSPECT_CAP_REFUSALS_TOTAL,
+    busbar_kernel::snapshot::PLUGIN_INSPECT_SLOT_HELD_SECONDS,
     busbar_kernel::snapshot::JOURNAL_QUARANTINED_TOTAL,
     busbar_kernel::snapshot::STORE_SLOTS,
     busbar_kernel::snapshot::UNIT_CHECKPOINTS_TERMINAL,

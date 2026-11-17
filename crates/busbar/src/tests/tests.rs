@@ -971,7 +971,7 @@ fn no_dead_code_escape_outside_the_listed_test_only_sites() {
 }
 
 /// BOOT-130: the `store.module` plugin-preflight refusal, built once in
-/// `busbar-kernel` preflight, as `prepare_config_store` returns it.
+/// `busbar-kernel` preflight, as `bootstrap_store_inputs` returns it.
 const STORE_MODULE_SQLITE_REFUSAL: &str = "store.module: 'sqlite' requires the plugin subsystem, \
      but plugins.enabled is false (the default). Set plugins.enabled: true and place the signed \
      'sqlite' store plugin tarball in the plugins directory ('plugins'). The published binary links no store of its own: store.module selects a plugin of kind store by name.";

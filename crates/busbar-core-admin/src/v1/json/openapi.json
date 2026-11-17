@@ -7929,6 +7929,13 @@
         },
         "noun": "plugin"
       },
+      "plugin.inspect": {
+        "data_schema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "noun": "plugin"
+      },
       "plugin.install": {
         "data_schema": {
           "additionalProperties": true,
