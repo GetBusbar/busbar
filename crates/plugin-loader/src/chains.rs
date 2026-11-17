@@ -243,9 +243,15 @@ pub(crate) fn decode_described(
                 }
             }
             tag::D_SCHEMA => {
-                let text = rec
-                    .text()
-                    .map_err(|_| invalid("describe.schema", "not UTF-8", "UTF-8 JSON"))?;
+                // IF r29 l.2764: core's D_SCHEMA validator holds the schema to the authoritative-schema rules.
+                let text = crate::settings_schema::authoritative_schema(rec.body, "D_SCHEMA")
+                    .map_err(|why| {
+                        invalid(
+                            "describe.schema",
+                            why,
+                            "a JSON Schema object or boolean of at most 262144 bytes",
+                        )
+                    })?;
                 if schema.replace(Box::<str>::from(text)).is_some() {
                     return Err(invalid("describe.schema", "a second schema", "at most one"));
                 }
