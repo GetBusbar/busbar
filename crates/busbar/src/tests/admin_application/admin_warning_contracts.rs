@@ -134,7 +134,7 @@ async fn test_create_key_unconfigured_allowed_pool_is_nonfatal_and_quiet() {
     let client = reqwest::Client::new();
     let unknown_status = client
         .post(format!("http://{addr}/api/v1/admin/keys"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .json(&json::json!({"name":"k-typo","allowed_pools":["smart","smrt"]}))
         .send()
         .await
@@ -143,7 +143,7 @@ async fn test_create_key_unconfigured_allowed_pool_is_nonfatal_and_quiet() {
         .as_u16();
     let known_status = client
         .post(format!("http://{addr}/api/v1/admin/keys"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .json(&json::json!({"name":"k-ok","allowed_pools":["smart"]}))
         .send()
         .await
@@ -277,7 +277,7 @@ async fn test_get_config_settings_warns_when_overlay_is_unreadable() {
     );
     let resp = reqwest::Client::new()
         .get(format!("http://{addr}/api/v1/admin/config/settings"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap();

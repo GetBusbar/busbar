@@ -89,7 +89,7 @@ async fn test_admin_v1_auth_read_keys_chain_reports_closed() {
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
     let body = reqwest::Client::new()
         .get(format!("http://{addr}/api/v1/admin/auth"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap()
@@ -187,7 +187,7 @@ async fn test_admin_v1_get_single_key() {
     let client = reqwest::Client::new();
     let created = client
         .post(format!("http://{addr}/api/v1/admin/keys"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .json(&json::json!({"name":"svc"}))
         .send()
         .await
@@ -208,7 +208,7 @@ async fn test_admin_v1_get_single_key() {
         .to_string();
     let resp = client
         .get(format!("http://{addr}/api/v1/admin/keys/{}", minted.id))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap();
@@ -228,7 +228,7 @@ async fn test_admin_v1_get_single_key() {
 
     let missing = client
         .get(format!("http://{addr}/api/v1/admin/keys/vk_doesnotexist"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap();
@@ -327,7 +327,7 @@ async fn minting_a_recoverable_credential_without_a_signing_key_is_refused_and_s
 
     let refused = client
         .post(format!("http://{addr}/api/v1/admin/keys"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .json(&json::json!({"name": "no-at-rest", "issue_aws_credential": true}))
         .send()
         .await
@@ -363,7 +363,7 @@ async fn minting_a_recoverable_credential_without_a_signing_key_is_refused_and_s
 
     let plain = client
         .post(format!("http://{addr}/api/v1/admin/keys"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .json(&json::json!({"name": "bearer-only"}))
         .send()
         .await

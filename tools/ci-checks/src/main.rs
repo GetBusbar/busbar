@@ -71,7 +71,7 @@ mod record_op_source;
 mod spdx;
 
 /// Checks over core's own tree: with no argument every one runs.
-const CHECKS: [&str; 18] = [
+const CHECKS: [&str; 19] = [
     "no-getrandom",
     "no-known-red",
     "spdx-headers",

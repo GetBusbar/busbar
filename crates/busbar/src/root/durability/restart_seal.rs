@@ -12,14 +12,16 @@
 //! staged and confirmed before the notary starts. The notary starts after the tail either way,
 //! so a live page never vouches for a line this phase did not seal.
 
+use busbar_kernel_audit::linked_record::{linked_record_from_journal_body, AuditLinkedRecord};
 use busbar_kernel_audit::{
     break_body, stamp_body, stamp_from_journal_body, walk_tail, AuditVerifyingKey, BreakAt,
     BreakNotice, Fingerprint, Stamp, StampKind, TailItem, WalkContext, WalkOutcome,
 };
 use busbar_kernel_wal::{Entry, JournalRecord, RecordClass};
 
+use super::boot_jobs::PendingBootJob;
 use super::signer::{Seal, SignFailure, SignerHandle};
-use super::{decode_audit, Durability};
+use super::Durability;
 
 /// Why a node's records cannot be walked by this build.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -35,9 +37,16 @@ pub(crate) fn tail_items(records: &[JournalRecord]) -> Result<Vec<TailItem>, Rec
         if record.class != RecordClass::Transaction {
             continue;
         }
-        match decode_audit(record) {
-            Ok(Some(line)) => items.push(TailItem::Line {
-                record: line,
+        match linked_record_from_journal_body(
+            &record.body,
+            &busbar_kernel::Registration::meter_class,
+        ) {
+            Ok(Some(AuditLinkedRecord::Unit(line))) => items.push(TailItem::Line {
+                record: *line,
+                node_seq: record.node_seq,
+            }),
+            Ok(Some(AuditLinkedRecord::NotaryKey(line))) => items.push(TailItem::Certificate {
+                record: *line,
                 node_seq: record.node_seq,
             }),
             Ok(None) => match stamp_from_journal_body(&record.body) {
@@ -138,14 +147,28 @@ pub(crate) enum OwnSeal {
     Refused(String),
 }
 
-/// THE OWN-NODE RESTART SEAL (`BookPhase::SealAfterRestart`, §3.6.1): walk the records the book read
-/// at reopen, sign on the Bootstrap thread through `handle`, stage and confirm. Never fails boot.
-pub(crate) async fn seal_own_node(
+/// Transfer own-node work to the ordered boot gate before its certificate is signed.
+pub(crate) async fn prepare_own_node(
     durability: &mut Durability,
     records: &[JournalRecord],
     handle: &SignerHandle<Seal>,
     key: &AuditVerifyingKey,
     host: &str,
+) -> (OwnSeal, Option<PendingBootJob>) {
+    let mut pending = None;
+    let outcome = seal_own_node(durability, records, handle, key, host, &mut pending).await;
+    (outcome, pending)
+}
+
+/// THE OWN-NODE RESTART SEAL (`BookPhase::SealAfterRestart`, §3.6.1): walk the records the book read
+/// at reopen, sign on the Bootstrap thread through `handle`, stage and confirm. Never fails boot.
+async fn seal_own_node(
+    durability: &mut Durability,
+    records: &[JournalRecord],
+    handle: &SignerHandle<Seal>,
+    key: &AuditVerifyingKey,
+    host: &str,
+    pending: &mut Option<PendingBootJob>,
 ) -> OwnSeal {
     let node = durability.record.node();
     let items = match tail_items(records) {
@@ -207,8 +230,9 @@ pub(crate) async fn seal_own_node(
                 down_from_ms,
             };
             let page = restart_page(node, node, host, tail, now_ms);
+            *pending = Some(PendingBootJob::Restart(page.clone()));
             match handle.submit_restart(page).await {
-                Ok(signed) => match stage_stamp(durability, &signed).await {
+                Ok(signed) => match stage_stamp(durability, &signed, pending).await {
                     Ok(()) => {
                         tracing::info!(
                             diag = %busbar_kernel::diagnostics::AUDIT_SEALED_AFTER_RESTART.banner(),
@@ -225,9 +249,10 @@ pub(crate) async fn seal_own_node(
         }
         WalkOutcome::Break(at) => {
             let notice = break_notice(node, node, host, &at, now_ms);
+            *pending = Some(PendingBootJob::Break(notice.clone()));
             match handle.submit_break(notice).await {
                 Ok(signed) => {
-                    let staged = stage_break(durability, &signed).await;
+                    let staged = stage_break(durability, &signed, pending).await;
                     let finding = broken_finding(node, &at);
                     durability.restart_findings.push(finding);
                     if let Err(why) = staged {
@@ -270,7 +295,7 @@ fn sign_failed(durability: &mut Durability, node: u64, failure: SignFailure) -> 
         node,
         reason = "signer",
         cause = %failure,
-        "the restart page or break notice could not be signed; the next re-take of this node re-walks it"
+        "the restart page or break notice could not be signed; the ordered boot queue retains it before live signing"
     );
     refuse(
         durability,
@@ -278,34 +303,51 @@ fn sign_failed(durability: &mut Durability, node: u64, failure: SignFailure) -> 
     )
 }
 
-async fn stage_stamp(durability: &Durability, stamp: &Stamp) -> Result<(), String> {
+async fn stage_stamp(
+    durability: &Durability,
+    stamp: &Stamp,
+    pending: &mut Option<PendingBootJob>,
+) -> Result<(), String> {
     let body = stamp_body(stamp).map_err(|_| "a restart page exceeds the journal field bound")?;
     stage_one(
         durability,
         Entry::new(RecordClass::Transaction, body).at(stamp.stamped_ms / 1000, 0),
+        pending,
     )
     .await
 }
 
-async fn stage_break(durability: &Durability, notice: &BreakNotice) -> Result<(), String> {
+async fn stage_break(
+    durability: &Durability,
+    notice: &BreakNotice,
+    pending: &mut Option<PendingBootJob>,
+) -> Result<(), String> {
     let body = break_body(notice).map_err(|_| "a break notice exceeds the journal field bound")?;
     stage_one(
         durability,
         Entry::new(RecordClass::Transaction, body).at(notice.detected_ms / 1000, 0),
+        pending,
     )
     .await
 }
 
-async fn stage_one(durability: &Durability, entry: Entry) -> Result<(), String> {
+async fn stage_one(
+    durability: &Durability,
+    entry: Entry,
+    pending: &mut Option<PendingBootJob>,
+) -> Result<(), String> {
     let run = durability
         .journal
         .stage_run(&[entry])
         .map_err(|e| format!("audit restart seal: staging refused: {e:?}"))?;
+    *pending = Some(PendingBootJob::Staged(run.clone()));
     durability
         .journal
         .confirm(&run)
         .await
-        .map_err(|e| format!("audit restart seal: not confirmed: {e:?}"))
+        .map_err(|e| format!("audit restart seal: not confirmed: {e:?}"))?;
+    *pending = None;
+    Ok(())
 }
 
 impl Durability {

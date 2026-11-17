@@ -520,6 +520,8 @@ pub fn build_router_with_limits(
         true,
     );
     let handle = std::sync::Arc::new(state::AppHandle::new(app));
+    // One listener serving both planes: the admin listener's operator approval pages too.
+    let router = crate::oauth_as::seam::mount_operator(router);
     let (router, core_routes) = crate::admin::seam::mount_admin(router).into_parts();
     let router = crate::plugin_routes::mount_plugin_routes(router, &plugin_routes, true);
     let router = apply_common_layers(

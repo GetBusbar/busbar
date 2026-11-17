@@ -76,9 +76,7 @@ impl ApiError {
     pub fn message(&self) -> String {
         match self {
             ApiError::NotFound => format!("{} not found", Self::NOT_FOUND_SUBJECT),
-            ApiError::Unauthorized => {
-                "missing or invalid admin credential (Bearer or x-admin-token)".to_string()
-            }
+            ApiError::Unauthorized => "missing or invalid admin credential (Bearer)".to_string(),
             ApiError::MethodNotAllowed => "method not allowed for this resource".to_string(),
             ApiError::RateLimited => {
                 "admin mutation rate limit exceeded; retry next minute".to_string()
@@ -518,7 +516,7 @@ pub fn unauthorized_for(reason: &str) -> Response {
         401,
         "unauthorized",
         Some(reason),
-        "missing or invalid admin credential (Bearer or x-admin-token)",
+        "missing or invalid admin credential (Bearer)",
         &serde_json::json!({}),
     )
 }

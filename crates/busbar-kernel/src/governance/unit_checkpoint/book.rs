@@ -339,6 +339,15 @@ impl PendingGuard<'_> {
         self.inner.entries.len()
     }
 
+    /// The lowest audit line `node_seq` noted on any entry (SEALING-FIX §3.9 floor (b)).
+    pub(super) fn oldest_audit_seq(&self) -> Option<u64> {
+        self.inner
+            .entries
+            .values()
+            .filter_map(Pending::audit_seq)
+            .min()
+    }
+
     pub(super) fn insert(&mut self, id: Id, entry: Pending) -> Option<Pending> {
         // Index the new entry before unindexing the one it replaces, so a target that stays
         // recovered never reads as unblocked in between.

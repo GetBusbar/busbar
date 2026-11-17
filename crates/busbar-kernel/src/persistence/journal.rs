@@ -36,15 +36,21 @@ pub(crate) mod historical;
 mod transfer;
 #[cfg(test)]
 pub(crate) use transfer::Handover;
-mod tail;
-pub use tail::TailView;
 mod foreign;
 pub(crate) use foreign::{ForeignJournal, OwnHistory};
 mod recovery_hooks;
 pub(crate) use recovery_hooks::{RowChange, Selection};
+mod base;
+pub(crate) use base::Base;
+pub(crate) use base::{count_walk_restart, WALK_RESTART_LIMIT};
+pub use base::{
+    journal_walk_restarts, AuditTail, NodeRecords, Pin, CUT_BATCH, KEEP_MAX, RETAIN_TAIL,
+};
 pub mod head_cell;
 pub mod runtime;
-pub use runtime::{BufferBudget, RuntimeError, RuntimeJournal, StagedRun};
+pub(crate) mod tail;
+pub use runtime::{BufferBudget, CutProgress, JournalCut, RuntimeError, RuntimeJournal, StagedRun};
+pub use tail::TailView;
 
 #[derive(Debug)]
 pub(crate) enum Error {
@@ -60,6 +66,14 @@ pub(crate) enum Error {
     /// A frame failed WAL verification; callers fold it to corruption, so the break itself is not kept.
     Verification(()),
     IncompleteReplay,
+    /// The rows asked for lie below this Ephemeral journal's replay base `B@0` (SEALING-FIX §3.9):
+    /// they were cut, which is never corruption.
+    Truncated,
+    /// A cut moved the base past this cursor's next row after the cursor began; a walk restarts
+    /// from the new base (§3.9 "The restart rule").
+    Rebased,
+    /// A walk was rebased more than `WALK_RESTART_LIMIT` times; retried as any busy store.
+    Busy,
 }
 type Result<T> = std::result::Result<T, Error>;
 impl From<AccessError> for Error {
@@ -157,6 +171,14 @@ impl VerifiedHead {
     pub(crate) fn hash(&self) -> [u8; 32] {
         self.head.hash
     }
+    #[cfg(test)]
+    pub(crate) fn same_head(&self, other: &Self) -> bool {
+        self.head == other.head
+    }
+    #[cfg(test)]
+    pub(crate) fn records_seal(&self) -> [u8; 32] {
+        self.records_seal
+    }
 }
 
 #[cfg(test)]
@@ -252,12 +274,21 @@ impl<'a> StoreJournal<'a> {
     }
 
     /// Select one head and then walk immutable records with constant retained
-    /// state. Concurrent appends cannot change this cursor's selected prefix.
+    /// state. Concurrent appends cannot change this cursor's selected prefix; a
+    /// concurrent cut removes only rows below a newer base, which `walk`
+    /// restarts from (SEALING-FIX §3.9). `H@0`, `O@0` and `B@0` are read in one
+    /// read, and the cursor starts at the base: `observed` is the base head and
+    /// the seal is the base's original-byte seal.
     pub(crate) async fn replay(&self) -> Result<Replay<'_, 'a>> {
         count_replay();
         let mut rows = self
-            .read(vec![self.address(b'H', 0), self.address(b'O', 0)])
+            .read(vec![
+                self.address(b'H', 0),
+                self.address(b'O', 0),
+                self.address(b'B', 0),
+            ])
             .await?;
+        let base = rows.pop().ok_or(Error::Corrupt)?;
         let owner = rows.pop().ok_or(Error::Corrupt)?;
         let selected = rows.pop().ok_or(Error::Corrupt)?;
         if owner.is_some() != selected.is_some() || owner.as_ref().is_some_and(|v| !valid_owner(v))
@@ -269,6 +300,21 @@ impl<'a> StoreJournal<'a> {
             .map(Head::decode)
             .transpose()?
             .unwrap_or_default();
+        let base = base
+            .as_ref()
+            .map(|raw| Base::decode(self.node, raw))
+            .transpose()?;
+        if base
+            .as_ref()
+            .is_some_and(|base| owner.is_none() || base.head.count > head.count)
+        {
+            return Err(Error::Corrupt);
+        }
+        let base_tail = base.as_ref().map(Base::tail);
+        let (observed, records_seal, kept) = match base {
+            Some(base) => (base.head, base.records_seal, base.keep),
+            None => (Head::default(), [0; 32], Vec::new()),
+        };
         Ok(Replay {
             journal: self,
             target: VerifiedHead {
@@ -279,12 +325,87 @@ impl<'a> StoreJournal<'a> {
                 owner,
                 records_seal: [0; 32],
             },
-            observed: Head::default(),
+            observed,
             failed: false,
             historical: false,
-            records_seal: [0; 32],
+            records_seal,
             ahead: Ahead::default(),
+            floor: observed.count,
+            kept,
+            base_tail,
         })
+    }
+
+    /// This journal's replay base, if a cut ever moved one (Ephemeral stores only).
+    pub(crate) async fn base(&self) -> Result<Option<Base>> {
+        self.read(vec![self.address(b'B', 0)])
+            .await?
+            .pop()
+            .ok_or(Error::Corrupt)?
+            .as_ref()
+            .map(|raw| Base::decode(self.node, raw))
+            .transpose()
+    }
+
+    /// Why row `ordinal` is missing (§3.9 "The restart rule"): rows are deleted only after the
+    /// base has moved past them, so a row at or below the current base was cut (`Rebased`); a
+    /// missing row above it is `Corrupt`, as before.
+    pub(super) async fn missing(&self, ordinal: u64) -> Error {
+        match self.base().await {
+            Ok(Some(base)) if base.head.count >= ordinal => Error::Rebased,
+            Ok(_) => Error::Corrupt,
+            Err(error) => error,
+        }
+    }
+
+    /// THE ONE WALKER (§3.9 "One walker", "Kept rows first"): `each` is fed the base's kept copies
+    /// first (`kept == true`, `node_seq` order; context only, never chain lines), then every
+    /// verified row after the base. When a cut moves the base past the walk's next row, the
+    /// partial state is dropped and the walk restarts from the new base, at most
+    /// `WALK_RESTART_LIMIT` times, then answers `Busy`. Returns the walk's state and its proof.
+    pub(crate) async fn walk<S>(
+        &self,
+        mut fresh: impl FnMut() -> S,
+        each: impl FnMut(&mut S, &Record, bool) -> Result<()>,
+    ) -> Result<(S, VerifiedHead)> {
+        self.walk_from_base(|_| fresh(), each).await
+    }
+
+    /// Like `walk`, with audit context from the same snapshot as the rows. A retry drops both
+    /// together so a concurrent base move cannot pair a new tail with an old retained prefix.
+    pub(crate) async fn walk_from_base<S>(
+        &self,
+        mut fresh: impl FnMut(Option<base::AuditTail>) -> S,
+        mut each: impl FnMut(&mut S, &Record, bool) -> Result<()>,
+    ) -> Result<(S, VerifiedHead)> {
+        let mut restarts = 0u32;
+        loop {
+            match self.walk_once(&mut fresh, &mut each).await {
+                Ok(done) => return Ok(done),
+                Err(Error::Rebased) if restarts < base::WALK_RESTART_LIMIT => {
+                    restarts += 1;
+                    base::count_walk_restart();
+                }
+                Err(Error::Rebased) => return Err(Error::Busy),
+                Err(error) => return Err(error),
+            }
+        }
+    }
+
+    async fn walk_once<S>(
+        &self,
+        fresh: &mut impl FnMut(Option<base::AuditTail>) -> S,
+        each: &mut impl FnMut(&mut S, &Record, bool) -> Result<()>,
+    ) -> Result<(S, VerifiedHead)> {
+        let mut replay = self.historical_replay().await?;
+        let mut state = fresh(replay.base_tail);
+        for kept in std::mem::take(&mut replay.kept) {
+            each(&mut state, &kept, true)?;
+        }
+        while let Some(record) = replay.next().await? {
+            each(&mut state, &record, false)?;
+        }
+        Ok((state, replay.finish()?))
     }
 
     #[cfg(test)]
@@ -297,7 +418,12 @@ impl<'a> StoreJournal<'a> {
         &self,
         budget: historical::SnapshotBudget,
     ) -> Result<VerifiedSnapshot> {
-        let mut target = self.replay().await?.target;
+        let replay = self.replay().await?;
+        // A snapshot reads `1..=count`: a journal with a base has no such prefix (§3.9).
+        if replay.floor > 0 {
+            return Err(Error::Truncated);
+        }
+        let mut target = replay.target;
         let count = usize::try_from(target.head.count).map_err(|_| Error::Budget)?;
         if count == 0 {
             return Err(Error::Invalid);
@@ -311,12 +437,17 @@ impl<'a> StoreJournal<'a> {
             .map_err(|_| Error::Budget)?;
         let mut total = 0usize;
         for ordinal in 1..=target.head.count {
-            let bytes = self
+            let Some(bytes) = self
                 .read(vec![self.address(b'R', ordinal)])
                 .await?
                 .pop()
                 .flatten()
-                .ok_or(Error::Corrupt)?;
+            else {
+                return Err(match self.missing(ordinal).await {
+                    Error::Rebased => Error::Truncated,
+                    other => other,
+                });
+            };
             let bytes = bytes.expose(&crate::seal::lend());
             total = total.checked_add(bytes.len()).ok_or(Error::Overflow)?;
             if total > budget.bytes {
@@ -543,6 +674,11 @@ pub(crate) struct Replay<'j, 's> {
     /// Originals already read for the ordinals right after `observed`, oldest first. Each is
     /// checked only when it is consumed, exactly as a one-row read of it would be.
     ahead: Ahead,
+    /// The base count this cursor started at (0 without a base): no row at or below it is read.
+    floor: u64,
+    /// The base's kept copies (§3.9 "Kept rows first"); `walk` feeds them before the rows.
+    kept: Vec<Record>,
+    base_tail: Option<base::AuditTail>,
 }
 
 /// Read-ahead for a replay. The proven prefix is immutable, so reading the next few ordinals in
@@ -611,12 +747,9 @@ impl Replay<'_, '_> {
             let rows = self.journal.read(addresses).await?;
             self.ahead.fill(rows);
         }
-        let bytes = self
-            .ahead
-            .rows
-            .pop_front()
-            .flatten()
-            .ok_or(Error::Corrupt)?;
+        let Some(bytes) = self.ahead.rows.pop_front().flatten() else {
+            return Err(self.journal.missing(ordinal).await);
+        };
         let bytes = bytes.expose(&crate::seal::lend());
         if bytes.len() > self.journal.store.limits().scan_bytes {
             return Err(Error::Budget);
@@ -628,7 +761,7 @@ impl Replay<'_, '_> {
                     || self.observed.sequence.checked_add(1) != Some(decoded.node_seq))
                 && !self
                     .journal
-                    .bridge_covers(&self.target, self.observed, &decoded)
+                    .bridge_covers(&self.target, self.floor, self.observed, &decoded)
                     .await?
             {
                 return Err(Error::UnsupportedHistory);
@@ -645,6 +778,11 @@ impl Replay<'_, '_> {
         self.records_seal = extend_records_seal(self.records_seal, bytes);
         self.observed = next;
         Ok(Some(record))
+    }
+    /// Read every remaining original, then [`Self::finish`].
+    pub(crate) async fn to_end(mut self) -> Result<VerifiedHead> {
+        while self.next().await?.is_some() {}
+        self.finish()
     }
     pub(crate) fn finish(mut self) -> Result<VerifiedHead> {
         if self.failed || self.observed != self.target.head {
