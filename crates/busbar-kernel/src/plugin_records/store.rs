@@ -118,8 +118,8 @@ impl StoreRecords {
         .map_err(denied)
     }
 
-    pub(super) fn operation(&self) -> Result<[u8; 16], RecordsDenied> {
-        operation(&self.store)
+    pub(super) async fn operation(&self) -> Result<scoped::Op, RecordsDenied> {
+        operation(&self.store).await
     }
 
     /// Ok(true) = applied, Ok(false) = a native predicate failed and nothing applied.
@@ -209,7 +209,7 @@ impl StoreRecords {
                     return Ok(CommitOutcome::Applied);
                 }
                 Request {
-                    op_id: self.operation()?,
+                    op: self.operation().await?,
                     predicates: seen
                         .iter()
                         .zip(&observed)
@@ -376,7 +376,7 @@ impl StoreRecords {
                 Some(raw) => {
                     let entries = super::chain::entries_prefix(scope, key);
                     let request = Request {
-                        op_id: self.operation()?,
+                        op: self.operation().await?,
                         predicates: vec![Predicate {
                             schema: CHAINS.to_string(),
                             key: head.clone(),
@@ -699,10 +699,12 @@ pub(crate) fn denied(error: scoped::Error) -> RecordsDenied {
     }
 }
 
-pub(crate) fn operation(store: &CoreStore) -> Result<[u8; 16], RecordsDenied> {
+/// One request's receipt identity: held by the request until it drops (DES-264).
+pub(crate) async fn operation(store: &CoreStore) -> Result<scoped::Op, RecordsDenied> {
     store
-        .next_id()
-        .map(|id| id.operation)
+        .record_op()
+        .await
+        .map(scoped::Op::from)
         .map_err(|_| RecordsDenied::Unavailable)
 }
 
@@ -742,7 +744,7 @@ pub(crate) async fn sweep(
     }
     let deleted = u32::try_from(expired.len()).unwrap_or(u32::MAX);
     let request = Request {
-        op_id: operation(store)?,
+        op: operation(store).await?,
         predicates: expired
             .iter()
             .map(|(key, raw)| Predicate {

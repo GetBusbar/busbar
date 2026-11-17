@@ -64,10 +64,11 @@ mod oracle;
 mod oracle_judge;
 mod oracle_run;
 mod oracle_selftest;
+mod record_op_source;
 mod spdx;
 
 /// Checks over core's own tree: with no argument every one runs.
-const CHECKS: [&str; 17] = [
+const CHECKS: [&str; 18] = [
     "no-getrandom",
     "spdx-headers",
     "no-serde-json",
@@ -85,6 +86,7 @@ const CHECKS: [&str; 17] = [
     "migrate-overlay-keys",
     "migrate-overlay-docs",
     "migrate-size",
+    "record-op-source",
 ];
 /// Checks that take arguments (a plugin repo, files). Named first, the rest of the command line is theirs.
 const ARG_CHECKS: [&str; 7] = [
@@ -148,6 +150,7 @@ fn main() -> ExitCode {
             "migrate-overlay-keys" => migrate_overlay::hook_keys(&root),
             "migrate-overlay-docs" => migrate_overlay::docs(&root),
             "migrate-size" => migrate_size::run(&root),
+            "record-op-source" => record_op_source::record_op_source(&root),
             "fleet-manifest" => fleet::fleet_manifest(&root),
             "c-alias" => fleet::c_alias(&root, rest),
             "c-transport" => core_src::c_transport(&root),

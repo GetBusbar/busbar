@@ -2386,9 +2386,18 @@ impl KernelServices {
             }
             Ok(schema)
         };
+        // On CoreStore the receipt identity is a held class-M op (DES-264 §4.1): the request's
+        // `op_id` is derived from it and the write keeps it until its definitive outcome. A
+        // record store plugin dedupes on its own receipts, so it takes a plain kernel op id.
+        let held = native
+            .map(|store| store.try_record_op())
+            .transpose()
+            .map_err(|_| QUEUE_FULL)?;
         let mut request = Request {
             version: VERSION,
-            op_id: crate::door::op_id(),
+            op_id: held
+                .as_ref()
+                .map_or_else(crate::door::op_id, |held| held.op_id()),
             predicates: Vec::new(),
             mutations: Vec::new(),
         };
@@ -2477,6 +2486,7 @@ impl KernelServices {
         let write = ConditionalWrite::new(
             Arc::clone(caller.namespace()),
             request,
+            held,
             chains,
             ConditionalOwed::new(candidate.correlation, acked),
             unit,

@@ -443,6 +443,11 @@ impl Startup {
                 let store = CoreStore::attach(self.backend.clone(), authority, self.limits)
                     .await
                     .map_err(Error::Access)?;
+                // DES-264 §3.2: generation 0's owner row exists before any receipt can.
+                store
+                    .open_record_generation()
+                    .await
+                    .map_err(Error::Access)?;
                 if let Some(birth) = birth {
                     store
                         .first_start

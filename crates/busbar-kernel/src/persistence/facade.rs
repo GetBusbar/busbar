@@ -116,6 +116,8 @@ pub struct CoreStore {
     exhausted: AtomicBool,
     pub(super) claim_maintenance: Mutex<super::claims::Maintenance>,
     pub(super) first_start: std::sync::OnceLock<Arc<super::first_start::FirstStart>>,
+    /// Receipt identities in generations, and their sweeps (DES-264).
+    pub(super) record_ops: super::record_ops::RecordOps,
 }
 
 impl CoreStore {
@@ -195,6 +197,7 @@ impl CoreStore {
             limits,
             claim_maintenance: Mutex::default(),
             first_start: std::sync::OnceLock::new(),
+            record_ops: super::record_ops::RecordOps::default(),
             exhausted: AtomicBool::new(false),
             pending: Mutex::new(Pending {
                 authority,

@@ -125,9 +125,9 @@ pub(crate) async fn attach(backend: Arc<Backend>, writer: u8) -> Arc<CoreStore> 
         .unwrap(),
     )
 }
-fn request() -> Request {
+fn request(op: crate::persistence::scoped::Op) -> Request {
     Request {
-        op_id: [9; 16],
+        op,
         predicates: vec![],
         mutations: vec![ScopedMutation::Put {
             schema: "ticket".into(),
@@ -142,7 +142,7 @@ async fn timed_logical_receipt_replays_after_expiry_and_changed_interval_conflic
     let store =
         ScopedStore::host_private(attach(backend.clone(), 4).await, "timed", ["ticket".into()])
             .unwrap();
-    let request = request();
+    let request = request(store.record_op().await.unwrap());
     let time = Some(TimeGuard {
         not_before: None,
         before: Some(11),
@@ -192,7 +192,7 @@ async fn expired_native_guard_applies_no_record_or_logical_receipt() {
     let store =
         ScopedStore::host_private(attach(backend.clone(), 4).await, "timed", ["ticket".into()])
             .unwrap();
-    let request = request();
+    let request = request(store.record_op().await.unwrap());
     assert_eq!(
         store
             .conditional_native_timed(

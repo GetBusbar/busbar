@@ -558,16 +558,13 @@ pub mod durable {
                     if held == generation && bytes == retained =>
                 {
                     let body = encode(generation, now, settled);
-                    let mut identity = b"busbar.admin.held-settle.v1\0".to_vec();
-                    identity.extend_from_slice(row.as_bytes());
-                    identity.push(0);
-                    identity.extend_from_slice(&busbar_contract::abi::sdk::digest::sha256(&body));
-                    let digest = busbar_contract::abi::sdk::digest::sha256(&identity);
                     use busbar_kernel::persistence::scoped::{
                         Expected, Mutation, Predicate, Request,
                     };
+                    // A held class-M identity (DES-264): the Exact predicate on the held row
+                    // stays this settle's guard.
                     let request = Request {
-                        op_id: digest[..16].try_into().expect("fixed digest length"),
+                        op: store.record_op().await.map_err(|e| format!("{e:?}"))?,
                         predicates: vec![Predicate {
                             schema: REPLAY_KIND.into(),
                             key: row.clone().into_bytes(),
@@ -655,7 +652,7 @@ pub mod durable {
                     })
                 };
                 if expired {
-                    match store.prepare_delete_exact(REPLAY_KIND, &key, bytes) {
+                    match store.prepare_delete_exact(REPLAY_KIND, &key, bytes).await {
                         Ok(request) => match store.conditional_native(&request).await {
                             Ok(Outcome::Applied | Outcome::ConditionConflict) => {}
                             other => {

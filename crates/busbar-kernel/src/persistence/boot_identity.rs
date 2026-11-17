@@ -561,7 +561,7 @@ impl BootRecords {
         mutations: Vec<Mutation>,
     ) -> Result<bool, String> {
         let request = Arc::new(Request {
-            op_id: crate::door::op_id().0,
+            op: self.records.record_op().await.map_err(error)?,
             predicates,
             mutations,
         });
