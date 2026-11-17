@@ -4,6 +4,51 @@
 use super::*;
 
 #[test]
+fn writer_transitions_declare_every_native_control_effect() {
+    let id = AttemptId {
+        dataset: DatasetId([1; 16]),
+        writer: [2; 16],
+        operation: [3; 16],
+        writer_epoch: 1,
+        execution_epoch: 1,
+    };
+    let row = |retired_through, admitted_through| control::Writer {
+        retired_through,
+        admitted_through,
+    };
+    for (current, next) in [
+        (None, row(0, 1)),
+        (Some(row(0, 1)), row(0, 2)),
+        (Some(row(0, 2)), row(1, 2)),
+        (Some(row(1, 2)), row(2, 2)),
+        (Some(row(2, 2)), row(2, 2)),
+    ] {
+        let prepared = writer(id, [4; 16], current, next).unwrap();
+        assert_eq!(control::admit(&prepared), Ok(()), "{current:?} -> {next:?}");
+        let mut mutations = control::writer_put([4; 16], current, next).unwrap();
+        assert!(mutations.pop().is_some());
+        let missing_effect = PreparedCandidate::new(Candidate {
+            id,
+            codec: CANDIDATE_VERSION,
+            predicates: vec![Predicate {
+                address: address(control::writer_key([4; 16]).to_vec()),
+                expected: current.map_or(ExpectedValue::Absent, |value| {
+                    ExpectedValue::Exact(Secret::new(value.encode().unwrap().to_vec()))
+                }),
+            }],
+            mutations,
+            time: None,
+            result: Secret::new(Vec::new()),
+        })
+        .unwrap();
+        assert_eq!(
+            control::admit(&missing_effect),
+            Err(busbar_contract::persistence::Failure::Refused)
+        );
+    }
+}
+
+#[test]
 fn initialization_records_are_absent_puts_outside_reserved_namespaces() {
     let dataset = DatasetId([1; 16]);
     let at = Address {
