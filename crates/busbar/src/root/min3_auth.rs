@@ -74,6 +74,20 @@ impl AuthSet {
         self.instances.get(name)
     }
 
+    /// Names have already been resolved by the selected route's effective_chain rule.
+    /// The kernel retains actual opened reservations; no operator policy is reused.
+    pub(crate) fn data_chain(&self, epoch: u64, names: &[Box<str>]) -> Result<NativeChain, String> {
+        let instances = names
+            .iter()
+            .map(|name| {
+                self.get(name).cloned().ok_or_else(|| {
+                    format!("data auth: '{name}' has no opened native auth instance")
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        NativeChain::data(epoch, instances, Arc::clone(&self.owners)).map_err(str::to_owned)
+    }
+
     /// The configured operator chain under the candidate's frozen bindings and current generation.
     pub(crate) fn operator_chain(
         &self,

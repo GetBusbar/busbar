@@ -48,6 +48,7 @@ pub struct NativeChain {
     instances: Vec<Arc<AuthInstance>>,
     policy: ChainPolicy,
     owners: Arc<AuthOwners>,
+    data: bool,
 }
 
 impl NativeChain {
@@ -61,7 +62,58 @@ impl NativeChain {
             instances,
             policy,
             owners,
+            data: false,
         }
+    }
+
+    /// Assemble one explicit DATA chain from the actual opened reservations. This is
+    /// preparation ownership, never a final route/resource authorization decision.
+    pub fn data(
+        epoch: u64,
+        instances: Vec<Arc<AuthInstance>>,
+        owners: Arc<AuthOwners>,
+    ) -> Result<Self, &'static str> {
+        let mut ids = std::collections::BTreeSet::new();
+        let mut names = std::collections::BTreeSet::new();
+        if instances.is_empty() {
+            return Err("native principal data requires an explicit auth chain");
+        }
+        for instance in &instances {
+            let opened = &instance.opened;
+            if opened.who.instance == 0
+                || opened.who.name.as_ref() == crate::config::KEYS_MODULE
+                || !ids.insert(opened.who.instance)
+                || !names.insert(opened.who.name.as_ref())
+                || opened.methods
+                    & (busbar_plugin_abi::auth::M_VERIFY | busbar_plugin_abi::auth::M_VERIFY_IO)
+                    == 0
+            {
+                return Err("native data chain has an unsupported or duplicate reservation");
+            }
+        }
+        Ok(Self {
+            instances,
+            policy: ChainPolicy::new(epoch, Vec::new()),
+            owners,
+            data: true,
+        })
+    }
+
+    pub fn is_data(&self) -> bool {
+        self.data
+    }
+
+    pub fn epoch(&self) -> u64 {
+        self.policy.epoch()
+    }
+
+    pub fn matches_names(&self, names: &[Box<str>]) -> bool {
+        self.instances.len() == names.len()
+            && self
+                .instances
+                .iter()
+                .zip(names)
+                .all(|(instance, name)| instance.opened.who.name.as_ref() == name.as_ref())
     }
 
     pub async fn prepare(
