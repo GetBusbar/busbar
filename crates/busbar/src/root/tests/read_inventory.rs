@@ -119,6 +119,7 @@ async fn check_retained(process: &ProcessResources, files: &FileImages) {
     );
     registry
         .check(&InstanceSpec {
+            store_migration: None,
             purpose: OpenPurpose::Canonical,
             identity: NAME,
             name: "read-owned-secret",
