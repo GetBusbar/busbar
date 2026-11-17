@@ -989,6 +989,17 @@ impl RawWrite for Fixed<'_> {
     }
 }
 impl Writer for Fixed<'_> {
+    fn put_parts(&mut self, tag: u16, parts: &[&[u8]]) -> Result<(), Full> {
+        put_parts(self, tag, parts)
+    }
+    fn put_pod_nested<T: Pod>(
+        &mut self,
+        tag: u16,
+        prefix: &T,
+        fill: impl FnOnce(&mut Nested<'_>) -> Result<(), Full>,
+    ) -> Result<(), Full> {
+        put_prefixed_nested_in(self, tag, prefix.as_bytes(), fill)
+    }
     fn put(&mut self, tag: u16, body: &[u8]) -> Result<(), Full> {
         put_parts(self, tag, &[body])
     }

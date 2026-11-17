@@ -195,7 +195,6 @@ impl GovState {
 
     fn from_identity_cache(
         core: Arc<crate::persistence::facade::CoreStore>,
-        admin_token: Option<String>,
         signer: Option<crate::governance::signing::TokenSigner>,
         caches: Arc<RwLock<GovCaches>>,
         refresh_order: Arc<CacheOrder>,
@@ -219,9 +218,6 @@ impl GovState {
             identity_claims: claims::AsyncClaimSet::new(),
             caches,
             concurrent: RwLock::default(),
-            admin_token_hash: RwLock::new(
-                admin_token.map(|t| busbar_contract::redacted::sha256_hex(t.as_bytes())),
-            ),
             budget: Sharded::new(),
             selected_rates: Arc::new(super::selected_resource::SelectedRates::new()),
             recovery_book: recovery::RecoveryBook::default(),
@@ -999,21 +995,6 @@ impl GovState {
 
     fn caches_write(&self) -> std::sync::RwLockWriteGuard<'_, GovCaches> {
         self.caches.write().unwrap_or_else(|p| p.into_inner())
-    }
-
-    pub fn admin_token_hash(&self) -> Option<String> {
-        self.admin_token_hash
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone()
-    }
-
-    pub fn set_admin_token(&self, token: Option<&str>) {
-        let hash = token.map(|t| busbar_contract::redacted::sha256_hex(t.as_bytes()));
-        *self
-            .admin_token_hash
-            .write()
-            .unwrap_or_else(|e| e.into_inner()) = hash;
     }
 
     pub fn set_signing_key(&self, signer: Option<crate::governance::signing::TokenSigner>) {

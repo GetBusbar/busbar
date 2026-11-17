@@ -125,6 +125,7 @@ pub fn begin(store: &dyn RecordStore, attempt: &Attempt) -> Result<(), Refusal> 
         Committed::Conflict => Err(Refusal::Verify(
             "this upgrade attempt's key is already recorded; nothing was written".to_owned(),
         )),
+        other => Err(other.unapplied("the upgrade attempt's record")),
     }
 }
 
@@ -134,7 +135,11 @@ fn consume(store: &dyn RecordStore, attempt: &Attempt, settled: Settled) -> Resu
     c.exact.push((IMPORT_NS, attempt.key(), attempt.value()));
     c.delete.push((IMPORT_NS, attempt.key()));
     c.audit.push(Audit::Attempt(settled));
-    Ok(store.commit(c)? == Committed::Applied)
+    match store.commit(c)? {
+        Committed::Applied => Ok(true),
+        Committed::Conflict => Ok(false),
+        other => Err(other.unapplied("the upgrade attempt's settlement")),
+    }
 }
 
 /// 5C: config.yaml is renamed into place; MIGRATION_COMPLETED, the attempt consumed.
