@@ -213,6 +213,64 @@ pub struct EgressWalk<'a, F: FarEnd> {
     shared: Shared<'a, F>,
 }
 
+/// Test orchestration over the real request, walk, admission and preparation producers.
+/// It does not construct any selection or money token, and returns the still-live Task.
+#[cfg(test)]
+pub(crate) fn prepare_fixture<'k, K: super::port_session::Calls + ?Sized, F: FarEnd>(
+    calls: &'k K,
+    request: &busbar_ports::plane::PlaneIn<'_>,
+    body: &[u8],
+    effects: &dyn super::port_session::Effects,
+    pending: Arc<super::port_admission::Pending>,
+    walk: EgressWalk<'_, F>,
+    dialect: &str,
+    model: &str,
+) -> Result<
+    (super::port_session::Task<'k, K>, super::PreparedRateAttempt),
+    super::port_session::SessionError,
+> {
+    use super::port_session::{Buffered, SessionError, Task};
+    let walk = walk
+        .pending(Arc::clone(&pending))
+        .map_err(|_| SessionError::NotDriven)?;
+    let held = Buffered::new(effects);
+    let (mut task, first) = Task::begin(calls, request, body, &held)?;
+    if !first.intents.is_empty() || !first.ex_msgs.is_empty() {
+        return Err(SessionError::NotDriven);
+    }
+    let forward = first.forward.ok_or(SessionError::NotDriven)?;
+    let wants = Wants::from_facts(&forward.wants);
+    let mut members = walk.members();
+    pending.admit(
+        Some(&mut members),
+        Some(&wants),
+        task.request_declaration()?,
+    )?;
+    task.bind_admission(&pending)?;
+    held.release();
+    let target = members.next(&wants).ok_or(SessionError::NotDriven)?;
+    let prepared = task
+        .prepare_selected(&target, 1, dialect, model, effects)?
+        .ok_or(SessionError::NotDriven)?;
+    let selection = walk
+        .sender()
+        .take_selected(&target, prepared.attempt())
+        .ok_or(SessionError::NotDriven)?;
+    let prepared = if let Some(data) = task.data() {
+        prepared.bind_resource(&selection, Arc::clone(data))?
+    } else {
+        prepared
+    };
+    let money = pending
+        .admitted()
+        .and_then(|admitted| admitted.selected.as_ref())
+        .ok_or(SessionError::NotDriven)?;
+    let prepared = money
+        .prepare(selection, prepared)
+        .map_err(|_| SessionError::NotDriven)?;
+    Ok((task, prepared))
+}
+
 impl<'a, F: FarEnd> EgressWalk<'a, F> {
     /// `make` builds the far end from the session's wants, at the first pick.
     pub fn new(
