@@ -84,6 +84,15 @@ impl NativeSecrets {
         })));
     }
 
+    /// The owned I/O executor custody resolves on, once the opened prefix is published (DES-454: the rotation
+    /// pool's reads run their custody calls there).
+    pub(crate) fn runtime(&self) -> Option<tokio::runtime::Handle> {
+        self.opened
+            .load()
+            .as_ref()
+            .map(|opened| opened.runtime.clone())
+    }
+
     /// The shorthand the admitted native secret images declare.
     pub(crate) fn sugars(&self) -> Sugars {
         self.admitted

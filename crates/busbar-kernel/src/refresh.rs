@@ -87,6 +87,24 @@ impl Refresher {
         self.inner.woken.notify_all();
     }
 
+    /// Make every idle live item `pick` chooses due now (a config apply, DES-454 I4). An item that is running is
+    /// left alone: it schedules itself when it ends.
+    pub fn due_now(&self, pick: &dyn Fn(&Arc<dyn Refreshable>) -> bool) {
+        let now = Instant::now();
+        let mut book = self
+            .inner
+            .book
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        for kept in book.kept.iter_mut().filter(|k| !k.running) {
+            if kept.item.upgrade().is_some_and(|item| pick(&item)) {
+                kept.due = now;
+            }
+        }
+        drop(book);
+        self.inner.woken.notify_all();
+    }
+
     /// How many live items are kept (a test's view).
     #[must_use]
     pub fn live(&self) -> usize {

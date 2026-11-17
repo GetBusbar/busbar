@@ -596,3 +596,30 @@ fn a_stalled_or_starved_poll_shows_deadline_and_clears_after() {
     });
     assert_eq!(health("export.t13-wait"), None);
 }
+
+/// I4: a config apply makes the picked kept items due now on the refresher; others keep their time.
+#[test]
+fn the_refresher_makes_picked_items_due_now() {
+    struct Counted(AtomicUsize);
+    impl Refreshable for Counted {
+        fn refresh(&self, now: Instant) -> Instant {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            now + Duration::from_secs(3_600)
+        }
+    }
+    let refresher = crate::refresh::Refresher::start("due-now-test", 1).expect("starts");
+    let picked = Arc::new(Counted(AtomicUsize::new(0)));
+    let other = Arc::new(Counted(AtomicUsize::new(0)));
+    let (picked_dyn, other_dyn): (Arc<dyn Refreshable>, Arc<dyn Refreshable>) =
+        (Arc::clone(&picked) as _, Arc::clone(&other) as _);
+    let later = Instant::now() + Duration::from_secs(3_600);
+    refresher.keep(Arc::downgrade(&picked_dyn), later);
+    refresher.keep(Arc::downgrade(&other_dyn), later);
+    let target = Arc::as_ptr(&picked).cast::<()>();
+    refresher.due_now(&|item| Arc::as_ptr(item).cast::<()>() == target);
+    wait_until("the picked item ran", || {
+        picked.0.load(Ordering::SeqCst) == 1
+    });
+    std::thread::sleep(Duration::from_millis(100));
+    assert_eq!(other.0.load(Ordering::SeqCst), 0);
+}

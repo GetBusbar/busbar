@@ -601,6 +601,22 @@ fn status_of(app: &App, trust: Option<&TrustReadout>, instance: &Instance) -> Va
         reason.insert("text", Value::new_null());
         reason.insert("plugin_diag", Value::new_null());
         state.insert("reason", Value::from(reason));
+    } else if let Some(rotation) =
+        busbar_kernel::rotation::health(&format!("{}.{}", instance.category, instance.id))
+    {
+        // DES-454 §6 (I11): a credential rotation the instance has not taken. Core's words only.
+        state.insert("status", Value::from("degraded"));
+        state.insert("since", Value::from(rotation.since_ms / 1000));
+        let mut reason = Map::new();
+        reason.insert("code", Value::from("BUSBAR-8028"));
+        reason.insert("cause", Value::from(rotation.cause.as_str()));
+        reason.insert(
+            "message",
+            Value::from(busbar_kernel::rotation::text(rotation.cause)),
+        );
+        reason.insert("text", Value::new_null());
+        reason.insert("plugin_diag", Value::new_null());
+        state.insert("reason", Value::from(reason));
     } else {
         state.insert("reason", Value::new_null());
     }
