@@ -16,6 +16,7 @@ pub enum NativeAdmissionError {
     Phase(AdmissionError),
     Parent(ReasonCode),
     Declaration,
+    SelectedTerminalRequired,
     Custody(busbar_contract::records::RecordStoreError),
 }
 
