@@ -682,7 +682,7 @@ mod config_forms;
 #[cfg(feature = "openapi-schema")]
 mod contract_metadata;
 pub(crate) mod cursor;
-mod generation;
+pub(crate) mod generation;
 mod hook_attachments;
 pub(crate) use hook_attachments::attachments_of;
 mod handlers;

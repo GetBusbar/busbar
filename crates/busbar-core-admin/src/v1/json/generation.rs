@@ -364,25 +364,22 @@ async fn idempotent(req: Request, next: Next, app: &Arc<App>, key: String) -> Re
         return gate::admin_error_envelope(500, "internal", "response could not be read");
     };
     let status = rparts.status;
-    let settled = if status.is_server_error() || status == StatusCode::TOO_MANY_REQUESTS {
-        // Not applied, or not known to be: the next claim under this key may run.
-        Settled::Released
-    } else {
-        let content_type = rparts
-            .headers
-            .get(header::CONTENT_TYPE)
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("");
-        Settled::Answer(encode_answer(
-            status.as_u16(),
-            now,
-            app.config_generation
-                .load(std::sync::atomic::Ordering::Acquire),
-            &fingerprint,
-            content_type,
-            &rbytes,
-        ))
-    };
+    // Dispatch may have committed an effect even when its public reply is 5xx or 429.
+    // A response status cannot authorize another execution of the same action.
+    let content_type = rparts
+        .headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    let settled = Settled::Answer(encode_answer(
+        status.as_u16(),
+        now,
+        app.config_generation
+            .load(std::sync::atomic::Ordering::Acquire),
+        &fingerprint,
+        content_type,
+        &rbytes,
+    ));
     settle(&store, &claim, &settled).await;
     Response::from_parts(rparts, Body::from(rbytes))
 }
