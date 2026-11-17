@@ -108,7 +108,6 @@ pub const REASONS: &[ReasonRow] = &[
         also & [("invalid_request", 400)]
     ),
     row!("overlong", "invalid_request", 400),
-    row!("nothing_to_rotate", "conflict", 409),
     row!("no_supervisor", "conflict", 409),
     row!("not_restartable", "conflict", 409),
     row!("unknown_section", "invalid_request", 400),

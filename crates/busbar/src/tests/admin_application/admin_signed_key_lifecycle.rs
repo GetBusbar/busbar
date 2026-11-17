@@ -632,7 +632,7 @@ async fn test_signed_mint_expiry_parsing_matrix() {
 }
 
 /// ADMIN-API-1.6-ONE-MODEL §2 row 68: `POST /signing-key/rotate` reported intent and changed nothing,
-/// so 1.6.0 deletes it. The current key id is `core/credentials` state; a real rotation is 1.6.x.
+/// so 1.6.0 deletes it; a real rotation action is 1.6.x.
 #[tokio::test]
 async fn signing_key_rotate_is_gone() {
     const CHILD: &str = "BUSBAR_ADMIN_BOOT_800A98AB78DB";

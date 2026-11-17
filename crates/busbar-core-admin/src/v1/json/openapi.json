@@ -6643,29 +6643,6 @@
         ],
         "type": "object"
       },
-      "SigningKeyRotateView": {
-        "description": "`POST /signing-key/rotate`: the current key-signing key id plus the REVOKE-ALL warning. 1.5.0 is\nsingle-key: the actual swap is an operator action, so this reports intent, not an in-process swap.",
-        "properties": {
-          "current_kid": {
-            "description": "The current signing-key id (`kid`) that tokens are minted under.",
-            "type": "string"
-          },
-          "message": {
-            "description": "Human-readable guidance for the operator-driven lockstep rotation.",
-            "type": "string"
-          },
-          "revoke_all": {
-            "description": "Always `true`: rotating the signing key revokes every outstanding key (all must be re-minted).",
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "current_kid",
-          "revoke_all",
-          "message"
-        ],
-        "type": "object"
-      },
       "StateView": {
         "enum": [
           "intent",
@@ -8580,15 +8557,6 @@
         "retryable": false
       },
       "not_restartable": {
-        "code": "conflict",
-        "details_schema": {
-          "additionalProperties": false,
-          "type": "object"
-        },
-        "http": 409,
-        "retryable": false
-      },
-      "nothing_to_rotate": {
         "code": "conflict",
         "details_schema": {
           "additionalProperties": false,
@@ -26079,209 +26047,6 @@
         "x-busbar-verb": "post_restart"
       }
     },
-    "/api/v1/admin/signing-key/rotate": {
-      "post": {
-        "operationId": "PostSigningKeyRotate",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SigningKeyRotateView"
-                }
-              }
-            },
-            "description": "`{current_kid, revoke_all, message}`: the rotation intent + revoke-all warning",
-            "headers": {
-              "Cache-Control": {
-                "description": "Administrative responses, including credential issuance and replay, must not be stored.",
-                "schema": {
-                  "const": "no-store",
-                  "type": "string"
-                }
-              }
-            }
-          },
-          "401": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "Missing/invalid admin credential (error code `unauthorized`)",
-            "headers": {
-              "Cache-Control": {
-                "description": "Administrative responses, including credential issuance and replay, must not be stored.",
-                "schema": {
-                  "const": "no-store",
-                  "type": "string"
-                }
-              }
-            }
-          },
-          "403": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "Authenticated but under-scoped: requires `full` (error code `forbidden`)",
-            "headers": {
-              "Cache-Control": {
-                "description": "Administrative responses, including credential issuance and replay, must not be stored.",
-                "schema": {
-                  "const": "no-store",
-                  "type": "string"
-                }
-              }
-            }
-          },
-          "409": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "`conflict`: governance is not enabled on this server, no signing key is configured; nothing to rotate",
-            "headers": {
-              "Cache-Control": {
-                "description": "Administrative responses, including credential issuance and replay, must not be stored.",
-                "schema": {
-                  "const": "no-store",
-                  "type": "string"
-                }
-              }
-            }
-          },
-          "413": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "Admin request exceeds the listener body limit (request_too_large)",
-            "headers": {
-              "Cache-Control": {
-                "description": "Administrative responses, including credential issuance and replay, must not be stored.",
-                "schema": {
-                  "const": "no-store",
-                  "type": "string"
-                }
-              }
-            }
-          },
-          "429": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "Per-principal mutation budget exhausted (error code `rate_limited`; `Retry-After` header)",
-            "headers": {
-              "Cache-Control": {
-                "description": "Administrative responses, including credential issuance and replay, must not be stored.",
-                "schema": {
-                  "const": "no-store",
-                  "type": "string"
-                }
-              },
-              "Retry-After": {
-                "description": "Delay in seconds when supplied by the listener's rate/backpressure refusal; absence makes no retry promise.",
-                "schema": {
-                  "minimum": 0,
-                  "type": "integer"
-                }
-              }
-            }
-          },
-          "500": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned",
-            "headers": {
-              "Cache-Control": {
-                "description": "Administrative responses, including credential issuance and replay, must not be stored.",
-                "schema": {
-                  "const": "no-store",
-                  "type": "string"
-                }
-              }
-            }
-          },
-          "503": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "The node could not take the request into its administrative loop, or could not record what the operation would do (error code `unavailable`)",
-            "headers": {
-              "Cache-Control": {
-                "description": "Administrative responses, including credential issuance and replay, must not be stored.",
-                "schema": {
-                  "const": "no-store",
-                  "type": "string"
-                }
-              },
-              "Retry-After": {
-                "description": "Delay in seconds when supplied by the listener's rate/backpressure refusal; absence makes no retry promise.",
-                "schema": {
-                  "minimum": 0,
-                  "type": "integer"
-                }
-              }
-            }
-          },
-          "default": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "Other typed administrative refusal. Branch on known codes while preserving unknown strings; retry depends on operation semantics.",
-            "headers": {
-              "Cache-Control": {
-                "description": "Administrative responses, including credential issuance and replay, must not be stored.",
-                "schema": {
-                  "const": "no-store",
-                  "type": "string"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "adminToken": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "summary": "ROTATE the busbar key-signing key. Rotation is REVOKE-ALL by design: a new signing key means every token minted under the OLD key stops verifying, so every outstanding key must be re-minted. 1.5.0 is single-key, so this reports the intent + current kid; the actual swap is an operator action (replace auth.signing_key / the persisted key file and restart/reload every node in lockstep) (1.5.0)",
-        "x-busbar-required-scope": "full",
-        "x-busbar-verb": "post_signing_key_rotate"
-      }
-    },
     "/api/v1/admin/store-restore": {
       "post": {
         "description": "Refused, always: the configured store has no restore operation, so this node restores nothing, records nothing and changes nothing. Restores happen off-node, with the store's own tooling. A body that names no `backup_ref` is refused 400 before anything else; an admitted call is refused 503 `unavailable`, and the node logs one error line naming the verb.",
@@ -27792,11 +27557,6 @@
       {
         "bound": true,
         "name": "post_restart",
-        "scope": "full"
-      },
-      {
-        "bound": true,
-        "name": "post_signing_key_rotate",
         "scope": "full"
       },
       {
@@ -31123,7 +30883,6 @@
                       "delete_plugins_file",
                       "get_plugins_file_schema",
                       "post_restart",
-                      "post_signing_key_rotate",
                       "get_usage",
                       "verify",
                       "plane_record_write",
