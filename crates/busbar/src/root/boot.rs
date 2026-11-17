@@ -91,6 +91,20 @@ pub(crate) async fn admit_format(
     backend: busbar_contract::persistence::axis::OpenedBackend,
     initialize_empty: bool,
 ) -> Result<busbar_kernel::persistence::startup::Startup, String> {
+    admit_format_with(
+        backend,
+        initialize_empty,
+        busbar_migrate::records::RECORD_STEPS,
+    )
+    .await
+}
+
+/// [`admit_format`] converting older record formats with `steps` (#319 r4 §5).
+pub(crate) async fn admit_format_with(
+    backend: busbar_contract::persistence::axis::OpenedBackend,
+    initialize_empty: bool,
+    steps: &'static [busbar_migrate::records::RecordStep],
+) -> Result<busbar_kernel::persistence::startup::Startup, String> {
     use busbar_kernel::persistence::{
         facade::Limits,
         startup::{Progress, Startup},
@@ -109,7 +123,10 @@ pub(crate) async fn admit_format(
         // dataset. An existing legacy or incomplete dataset is never relabelled.
         initialize_empty,
     )
-    .map_err(|error| format!("Store format admission refused: {error:?}"))?;
+    .map_err(|error| format!("Store format admission refused: {error:?}"))?
+    // An older record format this release converts is opened and converted here, before any
+    // ordinary admission, overlay read, hydration or listener (#319 r4 §5).
+    .with_format_chain(Arc::new(super::migrate_records::Chain(steps)));
     let mut waits = 0u32;
     loop {
         let advanced = match startup.advance().await {
@@ -141,6 +158,24 @@ pub(crate) async fn admit_format(
             Progress::Draining | Progress::Retired => {
                 return Err("Store admission entered an invalid boot state".into());
             }
+            Progress::Migrate => {
+                let owner = startup
+                    .migration()
+                    .ok_or("Store admission lost its record-format migration owner")?;
+                tracing::info!(
+                    target: "busbar::migrate",
+                    "converting this store's records from format {} (the whole fleet must be stopped)",
+                    owner.format()
+                );
+                let rows = super::migrate_records::evolve(owner, steps).await?;
+                tracing::info!(
+                    target: "busbar::migrate",
+                    "the store's records were converted ({rows} rows); admitting"
+                );
+                startup
+                    .migration_finished()
+                    .map_err(|error| format!("Store format admission refused: {error:?}"))?;
+            }
         }
     }
 }
@@ -152,7 +187,8 @@ const _: () = assert!(
             + busbar_plugin_loader::dispatch::ready::CANCEL_GRACE.as_secs()
 );
 
-/// The first-start wait line (FIRST-START-TAKEOVER §2.2): on the first wait and every 10 s after.
+/// The wait line (FIRST-START-TAKEOVER §2.2; #319 r4 §8 for a record-format conversion): on the
+/// first wait and every 10 s after.
 fn log_first_start_wait(waiting: busbar_kernel::persistence::startup::Waiting) {
     let owner = busbar_kernel::persistence::startup::writer_hex(&waiting.owner);
     let since = waiting.since_change.as_secs();
@@ -160,6 +196,18 @@ fn log_first_start_wait(waiting: busbar_kernel::persistence::startup::Waiting) {
         .window
         .saturating_sub(waiting.since_change)
         .as_secs();
+    if waiting.migrating {
+        tracing::warn!(
+            diag = %busbar_kernel::diagnostics::FORMAT_MIGRATION_WAITING.banner(),
+            owner = %owner,
+            since_change_s = since,
+            claim_in_s = left,
+            "waiting on the record-format conversion of this dataset by writer {owner}: last change \
+             {since} s ago, claimed in {left} s if it stays unchanged. A record-format upgrade \
+             needs the whole fleet stopped (docs/migration-1.6.md)."
+        );
+        return;
+    }
     tracing::warn!(
         diag = %busbar_kernel::diagnostics::FIRST_START_WAITING.banner(),
         owner = %owner,
@@ -183,8 +231,21 @@ static PLUGIN_FLOOR: std::sync::OnceLock<PluginFloorAuthority> = std::sync::Once
 pub(crate) async fn bind_plugin_floor(
     core: Arc<busbar_kernel::persistence::facade::CoreStore>,
 ) -> Result<(), String> {
-    let owner = busbar_kernel::persistence::plugin_floor::PluginFloor::new(core)?;
-    let host = super::durability::host_identity();
+    let owner = busbar_kernel::persistence::plugin_floor::PluginFloor::new(core.clone())?;
+    // The floor is scoped to the deployment, not the host: a rollout's fresh pod name must find
+    // the floor its predecessors raised, and rows must not pile up per pod name (UPG-7).
+    let host = busbar_kernel::persistence::boot_identity::BootIdentity::new(core)?
+        .keep_deployment_id()
+        .await?;
+    // Migrate-on-boot (PRD-4/ARC-5): floors an earlier 1.6 build kept under host names move into
+    // the deployment slot, folding several hosts into the highest floor.
+    let carried = owner.adopt_host_floors(&host).await?;
+    if carried > 0 {
+        tracing::info!(
+            carried,
+            "carried host-keyed plugin floors into the deployment floor"
+        );
+    }
     let release_keys = owner.release_keys_floor(&host).await?;
     PLUGIN_FLOOR
         .set(PluginFloorAuthority {

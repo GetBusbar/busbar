@@ -207,9 +207,17 @@ fn test_extract_admin_header_token_empty_filtered() {
     crate::dist_root_install::install();
     let registry =
         busbar_kernel::preflight::linked().expect("the actual root registry is installed");
-    let operator = busbar_kernel::auth::open_operator(&registry, None, &Default::default())
-        .expect("the actual operator row opens without a configured credential");
-    let carriers: Vec<HeaderName> = operator
+    // The admin chain the app build makes opens the operator credential and takes its row's
+    // carriers: the linked operator is bound first, so the default admin chain names it.
+    busbar_kernel::preflight::install_operator(crate::root::auth_bindings::operator_binding(None));
+    let admin = busbar_kernel::auth::AdminAuthChain::build(
+        &busbar_kernel::config::AuthCfg::default_none(),
+        &registry,
+        &busbar_kernel::config::secret::SecretResolver::builtins_only(),
+    )
+    .expect("the actual operator row opens without a configured credential");
+    let carriers: Vec<HeaderName> = admin
+        .operator
         .carriers()
         .iter()
         .map(|name| {

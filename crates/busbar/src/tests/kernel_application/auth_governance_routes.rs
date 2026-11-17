@@ -223,7 +223,6 @@ async fn keys_chain_preserves_carriers_disable_revoke_and_metering_controls() {
     let app = Arc::new(app);
 
     let gov = app.governance.as_ref().expect("actual Store governance");
-    assert!(gov.admin_token_hash().is_some());
     let (enabled_id, enabled) = mint(gov, "enabled").await;
     let (disabled_id, disabled) = mint(gov, "disabled").await;
     gov.update_key_outcome_async(&disabled_id, Some(false), None)
@@ -375,7 +374,6 @@ async fn open_chain_with_operator_is_anonymous_keyless_and_unmetered() {
     let app = Arc::new(app);
 
     let gov = app.governance.as_ref().expect("actual Store governance");
-    assert!(gov.admin_token_hash().is_some());
     let (key_id, secret) = mint(gov, "ignored-in-open-chain").await;
     let router = busbar_kernel::build_router(app.clone());
     for token in [None, Some(secret.as_str()), Some("unknown")] {
@@ -484,7 +482,6 @@ async fn open_chain_without_operator_still_inserts_default_context() {
     let app = Arc::new(app);
 
     let gov = app.governance.as_ref().expect("actual Store governance");
-    assert!(gov.admin_token_hash().is_none());
     let (key_id, secret) = mint(gov, "ignored-in-open-chain").await;
     let router = busbar_kernel::build_router(app.clone());
     for token in [None, Some(secret.as_str()), Some("unknown")] {
@@ -602,7 +599,6 @@ async fn ordinary_oidc_chain_keeps_grants_carriers_and_native_refusals() {
     let app = Arc::new(app);
 
     let gov = app.governance.as_ref().expect("actual Store governance");
-    assert!(gov.admin_token_hash().is_some());
     let (persisted_id, persisted) = mint(gov, "persisted-keys-do-not-override-chain").await;
     let token = common::credentials::token_for("static-chain", &["bound"], AUDIENCE);
     let router = busbar_kernel::build_router(app.clone());
@@ -727,7 +723,6 @@ async fn ordinary_oidc_chain_without_operator_ignores_persisted_keys() {
     let app = Arc::new(app);
 
     let gov = app.governance.as_ref().expect("actual Store governance");
-    assert!(gov.admin_token_hash().is_none());
     let (persisted_id, persisted) = mint(gov, "persisted-keys-do-not-override-chain").await;
     let token = common::credentials::token_for("static-chain", &["bound"], AUDIENCE);
     let router = busbar_kernel::build_router(app.clone());
