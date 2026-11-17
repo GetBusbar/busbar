@@ -1276,7 +1276,7 @@ checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
 [[package]]
 name = "http"
 version = "1.4.1"
-source = "git+https://github.com/MattJackson/http?rev=25b3a147c65045c7b3c883754463206c928cf840#25b3a147c65045c7b3c883754463206c928cf840"
+source = "git+https://github.com/MattJackson/http?rev=904f4519b5f27a0424b121a4828640c741efcd95#904f4519b5f27a0424b121a4828640c741efcd95"
 dependencies = [
  "bytes",
  "itoa",
