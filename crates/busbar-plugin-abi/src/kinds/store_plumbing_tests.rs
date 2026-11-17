@@ -489,3 +489,72 @@ fn row_allocation_failure_clears_dirty_input_and_emits_nothing() {
     assert!(out.as_bytes().is_empty());
     write_row(&mut out, &mut scratch, b"key", b"value").unwrap();
 }
+
+struct FailingRowWriter(bool);
+impl Writer for FailingRowWriter {
+    fn put(&mut self, _: u16, _: &[u8]) -> Result<(), crate::records::Full> {
+        unreachable!()
+    }
+    fn put_pod<T: crate::records::Pod>(
+        &mut self,
+        _: u16,
+        _: &T,
+    ) -> Result<(), crate::records::Full> {
+        unreachable!()
+    }
+    fn put_pod_tail<T: crate::records::Pod>(
+        &mut self,
+        _: u16,
+        _: &T,
+        tail: &[u8],
+    ) -> Result<(), crate::records::Full> {
+        assert_eq!(tail, b"keyvalue");
+        assert!(!self.0, "writer panic after observing the assembled row");
+        Err(crate::records::Full)
+    }
+    fn put_text(&mut self, _: u16, _: &str) -> Result<(), crate::records::Full> {
+        unreachable!()
+    }
+    fn put_pair(&mut self, _: u16, _: &str, _: &[u8]) -> Result<(), crate::records::Full> {
+        unreachable!()
+    }
+    fn put_fact(&mut self, _: u32, _: u64) -> Result<(), crate::records::Full> {
+        unreachable!()
+    }
+    fn put_fact_text(&mut self, _: u32, _: &str) -> Result<(), crate::records::Full> {
+        unreachable!()
+    }
+    fn put_metric(
+        &mut self,
+        _: u32,
+        _: u32,
+        _: f64,
+        _: &[&str],
+    ) -> Result<(), crate::records::Full> {
+        unreachable!()
+    }
+    fn put_nested(
+        &mut self,
+        _: u16,
+        _: impl FnOnce(&mut crate::records::Nested<'_>) -> Result<(), crate::records::Full>,
+    ) -> Result<(), crate::records::Full> {
+        unreachable!()
+    }
+}
+
+#[test]
+fn row_full_and_writer_panic_leave_reusable_empty_scratch() {
+    let mut scratch = crate::secure::SecureVec::from(b"old".as_slice());
+    assert!(matches!(
+        write_row(&mut FailingRowWriter(false), &mut scratch, b"key", b"value"),
+        Err(RowErr::Full(_))
+    ));
+    assert!(scratch.is_empty());
+    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = write_row(&mut FailingRowWriter(true), &mut scratch, b"key", b"value");
+    }));
+    assert!(panic.is_err());
+    assert!(scratch.is_empty());
+    write_row(&mut Reply::new(), &mut scratch, b"next", b"row").unwrap();
+    assert!(scratch.is_empty());
+}
