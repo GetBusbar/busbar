@@ -1006,6 +1006,7 @@ dependencies = [
  "arc-swap",
  "busbar-contract",
  "busbar-ffi",
+ "busbar-kernel-breaker",
  "busbar-plugin-abi",
  "busbar-ports",
  "flate2",
