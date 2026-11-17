@@ -1334,13 +1334,18 @@ async fn run(catalogue: busbar_kernel::diagnostics::Catalogue, control_work: Con
     .await
     .unwrap_or_else(|error| die(error));
 
-    export::plugin::open_prepared(&export_config, &exports.calls())
-        .unwrap_or_else(|error| die_list("config errors", [error]));
+    let export_registry = export::plugin::open_prepared(
+        &export_config,
+        &exports.calls(),
+        Arc::clone(&app.amendments),
+    )
+    .unwrap_or_else(|error| die_list("config errors", [error]));
     let app = Arc::new(
         export::plugin::assemble_routes(
             Arc::unwrap_or_clone(app),
             &export_config,
             native.seats.clone(),
+            export_registry,
         )
         .unwrap_or_else(|error| die_list("config errors", [error])),
     );
@@ -1497,9 +1502,11 @@ async fn run(catalogue: busbar_kernel::diagnostics::Catalogue, control_work: Con
         root::inbound::stage(guests, refusals);
     }
     let _ = root::inbound::publish(&app_handle.load());
+    export::plugin::publish_observers(&app_handle.load()).unwrap_or_else(|e| die(e));
     // Start serving maintenance only after the physical routes and application owner exist.
     recovery_served.spawn_ticks();
-    export::plugin::start().unwrap_or_else(|e| die_list("config errors", [e]));
+    export::plugin::start(&app_handle.load().exports)
+        .unwrap_or_else(|e| die_list("config errors", [e]));
     exports.start().unwrap_or_else(|error| die(error));
     let on_host = LINKED.on_host;
     let boot_host =

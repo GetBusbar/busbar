@@ -1476,7 +1476,7 @@ pub struct ExportCfg {
     pub recorder: Option<busbar_contract::export_calls::RecorderRequirements>,
     /// Every instance whose `module:` names an export module registered on the EXPORT AXIS
     /// ([`crate::export::plugin::register_module`]) — a plugin sink, compiled in or dropped in — in
-    /// config order. Opened once at boot ([`crate::export::plugin::open`]).
+    /// config order. Opened once at boot ([`crate::export::plugin::open_prepared`]).
     pub plugins: Vec<PluginExportSettings>,
 }
 

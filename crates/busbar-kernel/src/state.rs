@@ -53,6 +53,7 @@ pub struct App {
     pub serve_tables: crate::plane_driver::serve::ServeTables,
     /// Native admin routes retained with this complete application generation.
     pub port_seats: Arc<[crate::plane_driver::port::PortSeat]>,
+    pub exports: Arc<crate::export::plugin::Exports>,
     /// The composition root's rules this generation was built under
     /// ([`crate::appbuild::RootRules`]): every build after it (an apply, a rebuild, a
     /// dry run) is judged by them.
@@ -461,6 +462,7 @@ pub struct AppParts {
     pub serve_tables: crate::plane_driver::serve::ServeTables,
     /// Native admin routes retained with this complete application generation.
     pub port_seats: Arc<[crate::plane_driver::port::PortSeat]>,
+    pub exports: Arc<crate::export::plugin::Exports>,
 
     pub root_rules: Arc<dyn crate::appbuild::RootRules>,
 
@@ -650,6 +652,7 @@ impl App {
             fallback_runtime_key,
             serve_tables,
             port_seats,
+            exports,
             root_rules,
             config_projection,
             config_tables,
@@ -734,6 +737,7 @@ impl App {
             fallback_runtime_key,
             serve_tables,
             port_seats,
+            exports,
             root_rules,
             config_projection,
             configured_view: None,
@@ -1199,7 +1203,7 @@ impl AppHandle {
         next.plane_refresh.begin();
         self.current.store(next.clone());
         *published = true;
-        crate::export::plugin::queue_refresh(&next.export_defs, next.config_version);
+        crate::export::plugin::queue_refresh(&next.exports, &next.export_defs, next.config_version);
         if let Some(committed) = committed {
             committed.notify();
         }

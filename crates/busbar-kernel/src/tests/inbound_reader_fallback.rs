@@ -218,6 +218,7 @@ fn mixed_bound(
         fallback_runtime_key: "",
         serve_tables: Default::default(),
         port_seats: Default::default(),
+        exports: Default::default(),
         root_rules: Arc::new(crate::appbuild::AcceptAll),
         config_projection: Default::default(),
         config_tables: Default::default(),

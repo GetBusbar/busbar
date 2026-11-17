@@ -2260,7 +2260,8 @@ async fn build_app_native(
         );
     }
 
-    let (mut route_decls, withheld_public_exports) = crate::export::route_projection(&cfg_export);
+    let (mut route_decls, withheld_public_exports) =
+        crate::export::route_projection(&cfg_export, prior.map(|app| app.exports.as_ref()));
     route_decls.extend(hook_route_decls);
     let plugin_routes = std::sync::Arc::new(
         crate::plugin_routes::build_route_table(route_decls)?
@@ -2399,9 +2400,6 @@ async fn build_app_native(
         (None, Some(g)) => Arc::clone(g.amendments()),
         (None, None) => Arc::new(crate::audit::amend::NodeAmendments::new()),
     };
-    if prior.is_none() {
-        crate::export::plugin::record_reads_on(&amendments);
-    }
 
     let limits = Some(limits_resolved.clone());
 
@@ -2547,6 +2545,9 @@ async fn build_app_native(
             limits,
             serve_tables,
             port_seats: prior.map(|app| app.port_seats.clone()).unwrap_or_default(),
+            exports: prior
+                .map(|app| Arc::clone(&app.exports))
+                .unwrap_or_default(),
             root_rules,
             config_projection,
             plane_sections,
@@ -2659,7 +2660,11 @@ async fn build_app_native(
             .cloned()
             .collect();
         for name in exports {
-            if crate::export::plugin::requires_restart(&name, app.export_defs.get(&name)) {
+            if crate::export::plugin::requires_restart(
+                &app.exports,
+                &name,
+                app.export_defs.get(&name),
+            ) {
                 app.config_pending_restart.push(format!("export.{name}"));
             }
         }

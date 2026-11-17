@@ -89,8 +89,9 @@ fn only_a_wholly_withheld_opened_public_surface_retires_its_listener_need() {
             scrape,
             projection: Projection::for_test(&[ExportStream::Metrics], &[]),
             span_record: false,
-            admission: OnceLock::new(),
-            reads: OnceLock::new(),
+            admission: Admission::of("fixture", None),
+            started: std::sync::atomic::AtomicBool::new(false),
+            reads: None,
         };
         let boot = if opened { vec![sink] } else { Vec::new() };
         let (routes, withheld) = project_routes(&cfg, &boot);
@@ -174,8 +175,9 @@ fn replacement_export_cannot_lend_its_grant_to_the_old_named_instance() {
             scrape,
             projection: Projection::for_test(&[ExportStream::Metrics], &[]),
             span_record: false,
-            admission: OnceLock::new(),
-            reads: OnceLock::new(),
+            admission: Admission::of("fixture", None),
+            started: std::sync::atomic::AtomicBool::new(false),
+            reads: None,
         };
         let cfg = ExportCfg {
             plugins: vec![crate::config::PluginExportSettings {
@@ -280,8 +282,9 @@ fn declared_listener_policy_preserves_boot_routes_but_removes_config_routes() {
             scrape: true,
             projection: Projection::for_test(&[ExportStream::Metrics], &[]),
             span_record: false,
-            admission: OnceLock::new(),
-            reads: OnceLock::new(),
+            admission: Admission::of("fixture", None),
+            started: std::sync::atomic::AtomicBool::new(false),
+            reads: None,
         };
         let mut cfg = ExportCfg {
             plugins: vec![crate::config::PluginExportSettings {
@@ -522,12 +525,13 @@ async fn opened(
         PluginSink {
             name: module.to_string(),
             module: module.into(),
+            admission: Admission::of(module, double.admission()),
             sink: double,
             scrape: false,
             projection: Projection::for_test(&[ExportStream::Logs], &[]),
             span_record: false,
-            admission: OnceLock::new(),
-            reads: OnceLock::from(reads),
+            started: std::sync::atomic::AtomicBool::new(false),
+            reads: Some(reads),
         },
         confirmed,
     )
@@ -543,7 +547,7 @@ fn double(answer: Delivered, stated: Option<(bool, u64, String)>) -> Arc<Answeri
 
 fn reads_under(s: &PluginSink, op: &str) -> usize {
     s.reads
-        .get()
+        .as_ref()
         .map(|journal| journal.recent())
         .unwrap_or_default()
         .into_iter()
@@ -1091,8 +1095,9 @@ async fn export_three_sinks_one_commit_per_event() {
             scrape: false,
             projection: Projection::for_test(&[ExportStream::Logs], &[]),
             span_record: false,
-            admission: OnceLock::new(),
-            reads: OnceLock::from(Arc::clone(&reads)),
+            admission: Admission::of("fixture", None),
+            started: std::sync::atomic::AtomicBool::new(false),
+            reads: Some(Arc::clone(&reads)),
         })
         .collect();
     for s in &sinks {

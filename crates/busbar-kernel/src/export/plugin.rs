@@ -24,7 +24,7 @@ use crate::off_path::export::{
     declared_streams, definition_requires_restart, instance_opened, project_routes,
     route_decls_from, sink_settings_with_resolver, start_one, word_one_instance,
 };
-pub use crate::off_path::export::{open, open_prepared, requires_restart, start};
+pub use crate::off_path::export::{open_prepared, requires_restart, start};
 #[cfg(test)]
 use busbar_contract::abi::mechanism::route::Route;
 
@@ -44,9 +44,10 @@ pub(crate) struct PluginSink {
 
     pub(crate) span_record: bool,
 
-    pub(crate) admission: OnceLock<Admission>,
+    pub(crate) admission: Admission,
+    pub(crate) started: std::sync::atomic::AtomicBool,
 
-    pub(crate) reads: OnceLock<Arc<crate::audit::amend::NodeAmendments>>,
+    pub(crate) reads: Option<Arc<crate::audit::amend::NodeAmendments>>,
 }
 
 pub(crate) struct Admission {
@@ -54,10 +55,30 @@ pub(crate) struct Admission {
     pub(crate) gate: AdmissionGate,
 }
 
-pub(crate) static SINKS: OnceLock<Vec<PluginSink>> = OnceLock::new();
+/// The opened exports retained by an application generation. All dependencies are present
+/// before this owner is returned; starting a pump only changes its lifecycle state.
+#[derive(Default)]
+pub struct Exports {
+    pub(crate) sinks: Vec<PluginSink>,
+    pub(crate) refreshes: std::sync::Mutex<crate::off_path::export::Refreshes>,
+    pub(crate) status_at: std::sync::Mutex<Option<std::time::Instant>>,
+}
+
+// The early process tracing subscriber and durable audit drain still use this observer.
+// It receives only the complete application's registry, after AppHandle construction.
+pub(crate) static SINKS: OnceLock<Arc<Exports>> = OnceLock::new();
+
+pub fn publish_observers(app: &crate::state::App) -> Result<(), String> {
+    SINKS
+        .set(Arc::clone(&app.exports))
+        .map_err(|_| "export observers already belong to a serving generation".to_string())?;
+    crate::export::traces::sinks_fixed();
+    tracing::callsite::rebuild_interest_cache();
+    Ok(())
+}
 
 pub(crate) fn sinks() -> impl Iterator<Item = &'static PluginSink> {
-    SINKS.get().into_iter().flatten()
+    SINKS.get().into_iter().flat_map(|exports| &exports.sinks)
 }
 
 /// Once OPEN completes, reloads cannot resize the live recorder's projection budget.
@@ -66,16 +87,11 @@ pub(crate) fn boot_recorder_requirements(
 ) -> Option<Option<busbar_contract::export_calls::RecorderRequirements>> {
     SINKS.get().map(|sinks| {
         sinks
+            .sinks
             .iter()
             .find(|sink| sink.scrape)
             .and_then(|sink| sink.sink.recorder_requirements())
     })
-}
-
-pub(crate) fn record_reads_on(amendments: &Arc<crate::audit::amend::NodeAmendments>) {
-    for s in sinks() {
-        let _ = s.reads.set(Arc::clone(amendments));
-    }
 }
 
 /// Hand each sink subscribed to `stream` its own record, rendered to its projection by `f`.
@@ -91,6 +107,28 @@ pub(super) fn deliver_to(
     let mut handed = Handed::default();
     for s in sinks().filter(|s| s.projection.wants_stream(stream)) {
         deliver_one(s, stream, &mut f, &mut handed);
+    }
+    handed.record(op);
+}
+
+pub(crate) fn deliver_on(
+    exports: &Exports,
+    stream: ExportStream,
+    op: &str,
+    mut f: impl FnMut(Projection) -> Rendered,
+) {
+    let mut handed = Handed::default();
+    for sink in exports
+        .sinks
+        .iter()
+        .filter(|s| s.projection.wants_stream(stream))
+    {
+        deliver_one(
+            sink,
+            stream,
+            &mut |projection, _| f(projection),
+            &mut handed,
+        );
     }
     handed.record(op);
 }
@@ -146,10 +184,11 @@ fn deliver_one(
     f: &mut impl FnMut(Projection, bool) -> Rendered,
     handed: &mut Handed,
 ) {
-    let Some(admission) = s.admission.get() else {
+    if !s.started.load(std::sync::atomic::Ordering::Acquire) {
         s.sink.shed();
         return;
-    };
+    }
+    let admission = &s.admission;
     if !admission.live {
         return;
     }
@@ -158,7 +197,7 @@ fn deliver_one(
         return;
     };
     let Rendered { line, members } = f(s.projection, s.span_record);
-    let amendments = s.reads.get().cloned();
+    let amendments = s.reads.clone();
     let runtime = if amendments.is_some() {
         match handed
             .runtime
@@ -196,8 +235,6 @@ fn deliver_one(
 /// seconds per scraper and its answer is not read here, so crossing on every scrape is waste.
 pub(crate) const STATUS_REFRESH: std::time::Duration = std::time::Duration::from_secs(15);
 
-static STATUS_AT: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
-
 /// Whether a STATUS round is due at `now` given the last one in `at`; marks `now` when it is.
 fn status_due(at: &std::sync::Mutex<Option<std::time::Instant>>, now: std::time::Instant) -> bool {
     let mut at = at.lock().unwrap_or_else(|p| p.into_inner());
@@ -209,13 +246,13 @@ fn status_due(at: &std::sync::Mutex<Option<std::time::Instant>>, now: std::time:
 }
 
 /// Cross every export sink's STATUS, at most once per [`STATUS_REFRESH`].
-pub(crate) fn status_if_stale() {
+pub(crate) fn status_if_stale(exports: &Exports) {
     // The host monotonic clock's one reading for this scrape, as the Instant the window compares.
     let now = busbar_contract::mono_instant::instant_at(crate::store::monotonic_ns());
-    if !status_due(&STATUS_AT, now) {
+    if !status_due(&exports.status_at, now) {
         return;
     }
-    sinks().for_each(|s| {
+    exports.sinks.iter().for_each(|s| {
         let _ = s.sink.status();
     });
 }
@@ -330,8 +367,9 @@ pub fn assemble_routes(
     mut app: crate::state::App,
     cfg: &crate::config::ExportCfg,
     seats: Vec<crate::plane_driver::port::PortSeat>,
+    exports: Exports,
 ) -> Result<crate::state::App, String> {
-    let (routes, withheld) = crate::off_path::export::route_projection(cfg);
+    let (routes, withheld) = crate::off_path::export::project_routes(cfg, &exports.sinks);
     let routes = app
         .plugin_routes
         .with_export_routes(routes)?
@@ -339,6 +377,7 @@ pub fn assemble_routes(
     app.boot_route_paths = Arc::new(routes.paths());
     app.plugin_routes = Arc::new(routes);
     app.port_seats = seats.into();
+    app.exports = Arc::new(exports);
     Ok(app)
 }
 
