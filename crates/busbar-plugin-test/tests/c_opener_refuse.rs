@@ -416,7 +416,7 @@ pub(crate) mod fixture {
                 use busbar_plugin_abi::{
                     host::HostExt,
                     plane,
-                    records::{generic, Reply, TokenRec},
+                    records::{tag as generic, Reply, TokenRec},
                 };
                 super::CHANNELS.set(super::CHANNELS.get() + 1);
                 if target.attempt == 3 {
