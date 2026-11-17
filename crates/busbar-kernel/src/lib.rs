@@ -559,6 +559,7 @@ pub mod port_call;
 pub mod push;
 pub mod recorder;
 pub mod refusal;
+pub mod resource_admission;
 pub mod sessions;
 pub mod upstreams;
 
