@@ -296,15 +296,8 @@ impl GovState {
         now: u64,
         expected_aud: Option<&str>,
     ) -> Option<Arc<VirtualKey>> {
-        let material = self.signing_material()?;
-        let claims = match material.verifier.verify(token, now, expected_aud) {
-            Ok(c) => c,
-            Err(e) => {
-                tracing::debug!(reason = %e, "signed-token verify rejected");
-                return None;
-            }
-        };
-        self.standing_key(&claims, now)
+        self.verify_token_authority(token, now, expected_aud)
+            .map(super::current_credential::VerifiedKeyAuthority::into_original_key)
     }
 
     /// WHY `verify_token` refused `token`, as the closed admin 401 reason (ADMIN-API r5 section
@@ -333,7 +326,22 @@ impl GovState {
         claims: &super::signing::TokenClaims,
         now: u64,
     ) -> Option<Arc<VirtualKey>> {
+        self.prepare_current_credentials(now);
+        self.standing_key_cached(claims, now)
+    }
+
+    /// Schedule the existing refresh outside the publication admission guard. A refresh failure
+    /// retains the existing confirmed cache; this does not promise synchronous fleet freshness.
+    pub fn prepare_current_credentials(&self, now: u64) {
         self.sync_revocations_if_stale(now);
+    }
+
+    /// The standing-key policy over already hydrated authority. No refresh is scheduled here.
+    pub(super) fn standing_key_cached(
+        &self,
+        claims: &super::signing::TokenClaims,
+        now: u64,
+    ) -> Option<Arc<VirtualKey>> {
         if self.denylist.contains(&claims.sub) {
             tracing::debug!(sub = %claims.sub, "signed-token rejected: subject is revoked");
             return None;
