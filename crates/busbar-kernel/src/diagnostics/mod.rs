@@ -1917,6 +1917,12 @@ diagnostics! {
         "busbar refused an outbound connection: the destination guard refused the host or an address it answered, plaintext was not admitted to it (BUSBAR-3141), or no trust anchor applies (BUSBAR-3140). The line carries the verdict, the class, the host, the owning plugin and need; it is rate-limited per host and reason, and each refusal writes one `egress.dial_refused` audit record.",
         "For a private registration target, set allow_private on that declared registration. Configured provider reach applies only to its own selected base/token origins. Use TLS and configure its CA under advanced.tls when needed; metadata and strict OPEN_WEB checks remain enforced.";
 
+    /// The host's own outbound framer could not render the request before any answer.
+    EGRESS_LOCAL_FRAMER_FAILED = 5052, Proxy, Actionable, "egress-local-framer-failed", "1.6.0", false,
+        "The local egress framer failed",
+        "The engine's local outbound framer could not render the request before any answer. The log identifies the pool, member and framing fault. The request is refused as an internal error without charging member health.",
+        "Inspect the framing fault and the named pool and member in the log. Report a reproducible local framing failure with the engine version and request shape, excluding credentials and secret content.";
+
     /// An `advanced.tls` trust anchor expired at runtime and was withdrawn.
     EGRESS_TLS_ANCHOR_EXPIRED_WITHDRAWN = 5048, Proxy, Actionable, "egress-tls-anchor-expired-withdrawn", "1.6.0", false,
         "An expired trust anchor was withdrawn",
