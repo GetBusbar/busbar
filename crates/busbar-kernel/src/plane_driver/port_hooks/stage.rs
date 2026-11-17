@@ -115,24 +115,20 @@ impl Stage {
         }
     }
     fn taps(&self, calls: &[Arc<super::Call>], facts: Vec<(u32, FactVal)>) {
-        if calls.is_empty() {
-            return;
-        }
-        let mut held = self.clone();
-        if !facts.is_empty() {
-            held.projection = held.projection.shape();
-        }
-        let calls = calls.to_vec();
-        crate::hooks::taps::spawn_bounded_tap(async move {
-            let selection = held.selection();
-            let input = held.input(&selection, &facts);
-            let mut ran = Vec::new();
-            for call in calls {
-                let result = call::one(&call, abi::POINT_NOTIFY, &input).await;
-                ran.push(call::record(&call, result.as_ref().ok()));
+        for call in calls {
+            let mut held = self.clone();
+            if !facts.is_empty() {
+                held.projection = held.projection.shape();
             }
-            held.report(ran);
-        });
+            let facts = facts.clone();
+            let call = Arc::clone(call);
+            crate::hooks::taps::spawn_bounded_tap(async move {
+                let selection = held.selection();
+                let input = held.input(&selection, &facts);
+                let result = call::one(&call, abi::POINT_NOTIFY, &input).await;
+                held.report(vec![call::record(&call, result.as_ref().ok())]);
+            });
+        }
     }
 }
 

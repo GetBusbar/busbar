@@ -72,7 +72,21 @@ async fn prepare(call: &Arc<Call>, point: u32, input: &Input<'_>) -> Result<Hook
     }
     // Both synchronous and I/O hooks run off the calling executor. The owned input retains
     // wiping content and its exact generation until a timed-out worker actually returns.
-    let projection = input.projection.clone();
+    let projection = Projection {
+        facts: input
+            .projection
+            .facts
+            .iter()
+            .filter(|(key, _)| identity || *key != busbar_plugin_abi::fail::fact::PJ_END_USER)
+            .cloned()
+            .collect(),
+        conversation: if content {
+            input.projection.conversation.clone()
+        } else {
+            None
+        },
+        expects: Vec::new(),
+    };
     let selected = input.selected.clone();
     let pool = input.selection.pool.to_owned();
     let container = input.selection.container.to_owned();
@@ -81,7 +95,11 @@ async fn prepare(call: &Arc<Call>, point: u32, input: &Input<'_>) -> Result<Hook
     let route = input.selection.route;
     let request_id = input.selection.request_id;
     let now_s = input.selection.now_s;
-    let identity = busbar_contract::secure::SecureVec::from(input.identity.to_vec());
+    let identity = if identity {
+        busbar_contract::secure::SecureVec::from(input.identity.to_vec())
+    } else {
+        Default::default()
+    };
     let candidates = input.candidates.to_vec();
     let quantities = input.quantities.to_vec();
     let stage = input.stage.to_vec();
