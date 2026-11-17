@@ -853,7 +853,7 @@ impl World {
         let mut cmd = Command::new(common::boot::exe());
         cmd.args(args)
             .env("BUSBAR_CONFIG", self.dir.join("config.yaml"))
-            .env("BUSBAR_PROVIDERS", self.dir.join("providers.yaml"))
+            .env_remove("BUSBAR_PROVIDERS")
             .env(
                 common::credentials::HARNESS_FIRST_PARTY_KEY_ENV,
                 common::credentials::harness_release_key_hex(),

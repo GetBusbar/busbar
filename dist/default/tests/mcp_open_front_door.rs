@@ -92,10 +92,7 @@ fn busbar(cfg: &Path, args: &[&str]) -> Command {
     let mut c = Command::new(common::boot::exe());
     c.args(args)
         .env("BUSBAR_CONFIG", cfg)
-        .env(
-            "BUSBAR_PROVIDERS",
-            cfg.parent().unwrap().join("providers.yaml"),
-        )
+        .env_remove("BUSBAR_PROVIDERS")
         .env("BUSBAR_ADMIN_TOKEN", "front-door-test-admin-token")
         .env(
             "BUSBAR_SIGNING_KEY",

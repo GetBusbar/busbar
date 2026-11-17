@@ -170,7 +170,7 @@ fn boot(dir: &Path, data: u16, admin: u16, run: &str) -> Booted {
     let out = std::fs::File::create(&log).unwrap();
     let child = Command::new(common::boot::exe())
         .env("BUSBAR_CONFIG", dir.join("config.yaml"))
-        .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
+        .env_remove("BUSBAR_PROVIDERS")
         .env("MOCK_KEY", "x")
         .env("BUSBAR_ADMIN_TOKEN", ADMIN_TOKEN)
         .stdout(out.try_clone().unwrap())

@@ -83,7 +83,7 @@ fn cap_perf_streams_2000_body() {
     let mut child = common::boot::Reap(
         Command::new(common::boot::exe())
             .env("BUSBAR_CONFIG", dir.join("config.yaml"))
-            .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
+            .env_remove("BUSBAR_PROVIDERS")
             .env("MOCK_KEY", "x")
             .env("RUST_LOG", "warn")
             .stdout(log)

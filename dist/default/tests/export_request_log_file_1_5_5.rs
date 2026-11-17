@@ -189,7 +189,7 @@ fn the_request_log_file_holds_the_1_5_5_line_byte_for_byte() {
     let mut child = Reap(
         Command::new(common::boot::exe())
             .env("BUSBAR_CONFIG", dir.join("config.yaml"))
-            .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
+            .env_remove("BUSBAR_PROVIDERS")
             .env("CAP_KEY", "oracle-cred-export-file-0001")
             .env("RUST_LOG", "warn")
             .stdout(log.try_clone().unwrap())
@@ -284,7 +284,7 @@ fn config_reload_moves_the_open_file_exporter_and_can_move_it_back() {
     let mut child = Reap(
         Command::new(common::boot::exe())
             .env("BUSBAR_CONFIG", &config_path)
-            .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
+            .env_remove("BUSBAR_PROVIDERS")
             .env("BUSBAR_ADMIN_TOKEN", TOKEN)
             .env("CAP_KEY", "export-reload-provider")
             .env("RUST_LOG", "warn")

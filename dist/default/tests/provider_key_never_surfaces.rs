@@ -196,7 +196,7 @@ fn a_provider_key_never_appears_in_logs_errors_or_stats() {
     let log_err = log.try_clone().unwrap();
     let mut child = Command::new(common::boot::exe())
         .env("BUSBAR_CONFIG", dir.join("config.yaml"))
-        .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
+        .env_remove("BUSBAR_PROVIDERS")
         .env("LEAKCHECK_KEY", PROVIDER_KEY)
         .env("BUSBAR_ADMIN_TOKEN", ADMIN_TOKEN)
         .env("RUST_LOG", "debug")

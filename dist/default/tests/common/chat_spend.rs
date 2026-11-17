@@ -120,7 +120,8 @@ impl Drop for Gateway {
 }
 
 impl Gateway {
-    /// Start the binary on `config` and `providers` with `env`; nothing is awaited.
+    /// Start the binary on `config` and its adjacent `providers` with `env`; nothing is awaited.
+    /// Keep default catalog discovery so unstamped configs still exercise migrate-on-boot.
     pub fn spawn(
         dir: &Path,
         config: &Path,
@@ -129,12 +130,17 @@ impl Gateway {
         admin: u16,
         env: &[(&str, &str)],
     ) -> Gateway {
+        assert_eq!(
+            providers,
+            config.with_file_name("providers.yaml").as_path(),
+            "migration fixtures use the default catalog beside config.yaml"
+        );
         let log = dir.join("gateway.log");
         let out = std::fs::File::create(&log).unwrap();
         let mut command = Command::new(super::boot::exe());
         command
             .env("BUSBAR_CONFIG", config)
-            .env("BUSBAR_PROVIDERS", providers)
+            .env_remove("BUSBAR_PROVIDERS")
             .env("BUSBAR_ADMIN_TOKEN", ADMIN_TOKEN)
             .env("MOCK_KEY", "k")
             .env("RUST_LOG", "warn")

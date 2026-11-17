@@ -90,7 +90,7 @@ impl Node {
         let out = std::fs::File::create(&log).unwrap();
         let child = Command::new(common::boot::exe())
             .env("BUSBAR_CONFIG", dir.join("config.yaml"))
-            .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
+            .env_remove("BUSBAR_PROVIDERS")
             .env("BUSBAR_ADMIN_TOKEN", ADMIN_TOKEN)
             .env(OBSOLETE_ENV, "unused-by-sqlite")
             .env("RUST_LOG", "info")

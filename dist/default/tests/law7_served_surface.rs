@@ -129,7 +129,7 @@ models:
     let log = std::fs::File::create(&log_path).unwrap();
     let child = Command::new(common::boot::exe())
         .env("BUSBAR_CONFIG", dir.join("config.yaml"))
-        .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
+        .env_remove("BUSBAR_PROVIDERS")
         .env("MOCK_KEY", "x")
         .env("BUSBAR_ADMIN_TOKEN", ADMIN_TOKEN)
         .stdout(log.try_clone().unwrap())
@@ -373,7 +373,7 @@ models:
     .unwrap();
     let out = Command::new(common::boot::exe())
         .env("BUSBAR_CONFIG", dir.join("config.yaml"))
-        .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
+        .env_remove("BUSBAR_PROVIDERS")
         .env("MOCK_KEY", "x")
         .env("LAW7_TLS_CERT", "not-a-pem-certificate")
         .env("LAW7_TLS_KEY", "not-a-pem-key")

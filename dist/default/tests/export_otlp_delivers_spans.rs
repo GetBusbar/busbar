@@ -116,7 +116,7 @@ fn otlp_linked(dir: &Path) -> bool {
     let out = Command::new(common::boot::exe())
         .arg("--validate")
         .env("BUSBAR_CONFIG", dir.join("config.yaml"))
-        .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
+        .env_remove("BUSBAR_PROVIDERS")
         .env("MOCK_KEY", "x")
         .output()
         .expect("run busbar");
@@ -146,7 +146,7 @@ fn the_shipped_binary_posts_its_spans_to_an_otlp_collector() {
         Command::new(common::boot::exe())
             .current_dir(&dir)
             .env("BUSBAR_CONFIG", dir.join("config.yaml"))
-            .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
+            .env_remove("BUSBAR_PROVIDERS")
             .env("MOCK_KEY", "x")
             .env("RUST_LOG", "info")
             .stdout(log.try_clone().unwrap())
@@ -411,7 +411,7 @@ fn the_request_paths_spans_reach_the_collector_as_1_5_5_named_them() {
     let mut child = Reap(
         Command::new(common::boot::exe())
             .env("BUSBAR_CONFIG", dir.join("config.yaml"))
-            .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
+            .env_remove("BUSBAR_PROVIDERS")
             .env("MOCK_KEY", "x")
             .env("RUST_LOG", "info")
             .stdout(log.try_clone().unwrap())

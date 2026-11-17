@@ -708,7 +708,7 @@ fn ignore_overlay_reports_overlay_ignored_on_info() {
     let mut cmd = Command::new(common::boot::exe());
     cmd.arg("--ignore-overlay")
         .env("BUSBAR_CONFIG", dir.join("config.yaml"))
-        .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
+        .env_remove("BUSBAR_PROVIDERS")
         .env("IGNORE_OVERLAY_ADMIN_TOKEN", TOKEN)
         .env("RUST_LOG", "info")
         .stdout(log.try_clone().expect("the log twice"))

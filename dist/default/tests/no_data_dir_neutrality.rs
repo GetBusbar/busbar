@@ -122,7 +122,7 @@ fn no_ledger_series_and_no_keyset_lines_without_data_dir() {
     let mut child = Command::new(common::boot::exe())
         .current_dir(&dir)
         .env("BUSBAR_CONFIG", dir.join("config.yaml"))
-        .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
+        .env_remove("BUSBAR_PROVIDERS")
         .env("MOCK_KEY", "x")
         .env("BUSBAR_ADMIN_TOKEN", ADMIN_TOKEN)
         .env("RUST_LOG", "info")

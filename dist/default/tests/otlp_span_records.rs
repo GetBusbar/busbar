@@ -142,7 +142,7 @@ fn real_producer_span_records_survive_both_otlp_doors() {
     let busbar = || {
         let mut c = Command::new(common::boot::exe());
         c.env("BUSBAR_CONFIG", dir.join("config.yaml"))
-            .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
+            .env_remove("BUSBAR_PROVIDERS")
             .env("MOCK_KEY", "x")
             .env("RUST_LOG", "info");
         c

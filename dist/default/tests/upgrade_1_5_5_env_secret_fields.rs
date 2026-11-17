@@ -78,7 +78,7 @@ models:
 fn busbar(dir: &Path, collector: u16) -> Command {
     let mut cmd = Command::new(common::boot::exe());
     cmd.env("BUSBAR_CONFIG", dir.join("config.yaml"))
-        .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
+        .env_remove("BUSBAR_PROVIDERS")
         .env("MOCK_KEY", "x")
         .env(OTLP_URL, format!("http://127.0.0.1:{collector}/v1/traces"))
         .env(HOOK_URL, "https://siem.example/in")

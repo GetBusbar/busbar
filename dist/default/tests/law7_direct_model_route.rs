@@ -156,7 +156,7 @@ fn direct_route_answer(tag: &str, upstream: u16, pools: &str) -> (u16, String) {
     let log_err = log.try_clone().unwrap();
     let mut child = Command::new(common::boot::exe())
         .env("BUSBAR_CONFIG", dir.join("config.yaml"))
-        .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
+        .env_remove("BUSBAR_PROVIDERS")
         .env("MOCK_KEY", "x")
         .env("BUSBAR_ADMIN_TOKEN", ADMIN_TOKEN)
         .stdout(log)

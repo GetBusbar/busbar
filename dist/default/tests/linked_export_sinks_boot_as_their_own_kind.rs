@@ -89,7 +89,7 @@ models:
 fn busbar(dir: &Path) -> Command {
     let mut cmd = Command::new(common::boot::exe());
     cmd.env("BUSBAR_CONFIG", dir.join("config.yaml"))
-        .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
+        .env_remove("BUSBAR_PROVIDERS")
         .env("MOCK_KEY", "x")
         .env("RUST_LOG", "warn");
     cmd

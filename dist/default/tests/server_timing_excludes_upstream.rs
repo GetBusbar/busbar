@@ -101,7 +101,7 @@ impl Gateway {
         let log_err = log.try_clone().unwrap();
         let child = Command::new(common::boot::exe())
             .env("BUSBAR_CONFIG", dir.join("config.yaml"))
-            .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
+            .env_remove("BUSBAR_PROVIDERS")
             .env("MOCK_KEY", "x")
             .env("RUST_LOG", "warn")
             .stdout(log)

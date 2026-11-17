@@ -116,7 +116,7 @@ fn a_loopback_webhook_refusal_at_boot_is_one_audit_record() {
     let mut child = Reap(
         Command::new(common::boot::exe())
             .env("BUSBAR_CONFIG", dir.join("config.yaml"))
-            .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
+            .env_remove("BUSBAR_PROVIDERS")
             .env("MOCK_KEY", "x")
             .env("BUSBAR_ADMIN_TOKEN", ADMIN_TOKEN)
             .env("RUST_LOG", "warn")
