@@ -16,13 +16,38 @@ use busbar_core_connector::response_delivery::{
 };
 use busbar_kernel::persistence::journal::runtime::{Carried, RuntimeJournal, StagedRun};
 use busbar_kernel_audit::response_intent::{
-    verify_response_intent, PreparedResponseIntent, ResponseIntentStamp,
+    is_response_intent, verify_response_intent, PreparedResponseIntent, ResponseIntentStamp,
 };
 use busbar_kernel_audit::AuditKeySet;
 use busbar_kernel_wal::journal::{Entry, RecordClass};
 use tokio::time::Instant;
 
 use super::signer::{ResponseIntent, SignerHandle};
+
+/// Validate matching historical records already read by boot under the verified persisted key.
+/// This performs no journal scan and can never construct a live response or permit.
+pub(crate) fn verify_history(
+    book: &super::Durability,
+    keys: &AuditKeySet,
+) -> Result<(), FinalIntentError> {
+    for record in &book.boot_records {
+        if !is_response_intent(&record.body) {
+            continue;
+        }
+        if record.class != RecordClass::Checkpoint {
+            return Err(FinalIntentError::Integrity);
+        }
+        let header = ResponseIntentStamp {
+            lease_epoch: record.lease_epoch,
+            policy_epoch: record.policy_epoch,
+            wall: record.wall,
+            mono: record.mono,
+        };
+        verify_response_intent(&record.body, record.node, header, keys)
+            .map_err(|_| FinalIntentError::Integrity)?;
+    }
+    Ok(())
+}
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|poison| poison.into_inner())
