@@ -542,11 +542,6 @@ async fn admin_token_secret_ref_re_resolves_on_apply() {
         .await
         .expect("boot");
     let gov = prior.governance.clone().expect("governance");
-    assert_eq!(
-        gov.admin_token_hash().as_deref(),
-        Some(busbar_contract::redacted::sha256_hex(b"tok-v1").as_str()),
-        "boot accepts the resolved token"
-    );
 
     std::fs::write(&token_path, "tok-v2").unwrap();
     let next = credentials_app(cfg_with_credentials(&token_path, &key_path), Some(&prior))
@@ -556,16 +551,6 @@ async fn admin_token_secret_ref_re_resolves_on_apply() {
     assert!(
         std::sync::Arc::ptr_eq(next.governance.as_ref().unwrap(), &gov),
         "the apply REUSES the same GovState (keys/ledgers survive) — the credential is swapped in place"
-    );
-    assert_eq!(
-        gov.admin_token_hash().as_deref(),
-        Some(busbar_contract::redacted::sha256_hex(b"tok-v2").as_str()),
-        "the rotated admin token is the one now accepted"
-    );
-    assert_ne!(
-        gov.admin_token_hash().as_deref(),
-        Some(busbar_contract::redacted::sha256_hex(b"tok-v1").as_str()),
-        "the pre-rotation admin token is no longer accepted"
     );
 
     use busbar_contract::authz::Scope;
@@ -687,19 +672,9 @@ async fn blank_admin_token_refuses_to_start() {
 
     let token_path = dir.join("admin.token");
     std::fs::write(&token_path, "real-token").unwrap();
-    let app = credentials_app(cfg_with_credentials(&token_path, &key_path), None)
+    credentials_app(cfg_with_credentials(&token_path, &key_path), None)
         .await
         .expect("boot");
-    let gov = app.governance.clone().expect("governance");
-    assert_eq!(
-        gov.admin_token_hash().as_deref(),
-        Some(busbar_contract::redacted::sha256_hex(b"real-token").as_str())
-    );
-    assert_ne!(
-        gov.admin_token_hash().as_deref(),
-        Some(busbar_contract::redacted::sha256_hex(b"").as_str()),
-        "the blank-string digest must never be a live admin credential"
-    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 

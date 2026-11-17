@@ -1968,12 +1968,11 @@ async fn real_admin_dispatch() -> RouterDispatch {
     if let Some(rotate) = rotate {
         rotate.await;
     }
-    let digest = gov.admin_token_hash();
     built.governance = Some(gov);
     built.admin_chain = vec![busbar_kernel::config::operator_provider().to_string()];
     let operator = busbar_kernel::auth::open_operator(
         &built.hook_env.registry,
-        digest,
+        Some(busbar_contract::redacted::sha256_hex(b"admin-token")),
         &built.identity_providers,
     )
     .expect("the actual operator auth plugin opens with the configured digest");
