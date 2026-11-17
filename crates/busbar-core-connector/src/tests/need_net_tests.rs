@@ -29,6 +29,7 @@ async fn listener() -> (TcpListener, SocketAddr) {
 
 fn plain(addrs: &[SocketAddr]) -> Dial<'_> {
     Dial {
+        instance: 7,
         dest: "upstream.test:443",
         route: super::super::judge::Route {
             addrs: addrs.to_vec(),
@@ -230,6 +231,7 @@ async fn a_tls_dial_trusts_the_anchor_the_need_binds_and_negotiates_its_alpn() {
     let addrs = [addr];
     let mut d = io
         .dial(Dial {
+            instance: 7,
             dest: "upstream.test:443",
             route: super::super::judge::Route {
                 addrs: addrs.to_vec(),
@@ -257,6 +259,7 @@ async fn a_tls_dial_without_the_anchor_does_not_trust_a_private_ca() {
     let addrs = [addr];
     let got = io
         .dial(Dial {
+            instance: 7,
             dest: "upstream.test:443",
             route: super::super::judge::Route {
                 addrs: addrs.to_vec(),
@@ -279,6 +282,7 @@ async fn a_tls_dial_is_verified_against_the_name_it_asked_for() {
     let addrs = [addr];
     let got = io
         .dial(Dial {
+            instance: 7,
             dest: "upstream.test:443",
             route: super::super::judge::Route {
                 addrs: addrs.to_vec(),
@@ -301,6 +305,7 @@ async fn only_a_held_accept_waives_verification() {
     let addrs = [addr];
     let mut d = io
         .dial(Dial {
+            instance: 7,
             dest: "upstream.test:443",
             route: super::super::judge::Route {
                 addrs: addrs.to_vec(),
@@ -327,6 +332,7 @@ async fn a_peer_that_does_not_speak_tls_is_a_tls_failure() {
     let addrs = [addr];
     let got = io
         .dial(Dial {
+            instance: 7,
             dest: "upstream.test:443",
             route: super::super::judge::Route {
                 addrs: addrs.to_vec(),
@@ -372,6 +378,7 @@ async fn a_conn_that_is_already_tls_cannot_be_upgraded_again() {
     let addrs = [addr];
     let secured = io
         .dial(Dial {
+            instance: 7,
             dest: "upstream.test:443",
             route: super::super::judge::Route {
                 addrs: addrs.to_vec(),
@@ -516,6 +523,12 @@ async fn configured_operator_trust_carries_native_open_write_read_by_logical_hos
         Some(NeedErr::Tls),
         "offered SNI never selects the logical host's policy"
     );
+    let observed = io.state.observations.drain();
+    assert!(observed
+        .facts
+        .iter()
+        .any(|fact| fact.owner == Some(7)
+            && fact.outcome == super::super::observations::Outcome::Tls));
 }
 
 #[tokio::test]
@@ -558,6 +571,7 @@ async fn native_proxy_open_preserves_tunnel_prefix_and_confines_credentials() {
     };
     let mut held = io
         .dial(Dial {
+            instance: 7,
             dest: "origin.example:1234",
             route,
             unix: None,
@@ -625,6 +639,7 @@ async fn proxied_ip_literal_verifies_the_origin_address_without_sni() {
     };
     let mut held = io
         .dial(Dial {
+            instance: 7,
             dest: "93.184.216.34:443",
             route,
             unix: None,

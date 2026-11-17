@@ -140,6 +140,7 @@ impl Reply for Got {
 
 fn req<'a>(method: &'a str, url: &'a str, body: &'a [u8]) -> FetchReq<'a> {
     FetchReq {
+        instance: 7,
         need: FetchNeed {
             method,
             url,
