@@ -206,6 +206,22 @@ fn check_if_match(req: &mut Request, app: &App, rel: &str) -> Result<(), Box<Res
     Ok(())
 }
 
+fn check_new_dispatch(
+    req: &mut Request,
+    app: &App,
+    rel: &str,
+    strong_required: bool,
+) -> Result<(), Box<Response>> {
+    if strong_required {
+        let original = req
+            .extensions()
+            .get::<OriginalConfigPrecondition>()
+            .ok_or_else(|| Box::new(err_json(&AdminError::Internal)))?;
+        original.require_strong()?;
+    }
+    check_if_match(req, app, rel)
+}
+
 fn if_none_match(req: &Request, etag: &str) -> bool {
     req.headers()
         .get(header::IF_NONE_MATCH)
@@ -427,9 +443,14 @@ async fn idempotent(
         }
         Ok(claim) => claim,
     };
+    // The typed settings mode strengthens only NEW dispatch. An identical retained reply
+    // above uses the original request fingerprint and performs no new mutation.
+    let strong_required = parts.method == Method::PUT
+        && rel == "/config/settings"
+        && super::instance_settings::is_request(&bytes);
     let mut req = Request::from_parts(parts, Body::from(bytes));
     if config_resource(&rel) {
-        if let Err(response) = check_if_match(&mut req, app, &rel) {
+        if let Err(response) = check_new_dispatch(&mut req, app, &rel, strong_required) {
             // This is the only release here: no handler or intent has been dispatched.
             // A failed acknowledgement cannot turn this refusal into an execution.
             settle(&store, &claim, &Settled::Released).await;
