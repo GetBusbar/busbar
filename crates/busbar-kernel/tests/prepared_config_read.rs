@@ -227,7 +227,7 @@ fn resolution_retains_the_catalog_from_this_reads_descriptors() {
         }]),
     );
     let mut deploy = config::deploy_from_yaml_str(
-        "providers:\n  p: {}\nmodels:\n  logical:\n    provider: p\n    upstream_model: actual-wire\n", read.grammar(),
+        "providers:\n  p: {api_key: none}\nmodels:\n  logical:\n    provider: p\n    upstream_model: actual-wire\n", read.grammar(),
     ).unwrap();
     read.attach(&mut deploy).unwrap();
     let defs = config::providers::catalog_from_str(

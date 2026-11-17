@@ -164,7 +164,7 @@ fn catalog_routes() -> RequestRoutes {
         &grammar,
     )
     .unwrap();
-    let deployment = config::deploy_from_yaml_str("providers:\n  provider: {}\nmodels:\n  m:\n    provider: provider\n    upstream_model: wire-m\npools:\n  p: {members: [m]}\n  q: {members: [m]}\n", &grammar).unwrap();
+    let deployment = config::deploy_from_yaml_str("providers:\n  provider: {api_key: none}\nmodels:\n  m:\n    provider: provider\n    upstream_model: wire-m\npools:\n  p: {members: [m]}\n  q: {members: [m]}\n", &grammar).unwrap();
     let mut resolved = config::resolve_with_provider_planes(
         &deployment,
         &definitions,
