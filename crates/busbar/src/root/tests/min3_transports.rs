@@ -13,7 +13,7 @@ use super::*;
 /// A framer that declares `protocols` and answers nothing (the table reads only `protocols`).
 struct Framer(Box<[Box<str>]>);
 
-fn framer(protocols: &[&str]) -> Arc<dyn TransportPort> {
+pub(crate) fn framer(protocols: &[&str]) -> Arc<dyn TransportPort> {
     Arc::new(Framer(protocols.iter().map(|p| Box::from(*p)).collect()))
 }
 
