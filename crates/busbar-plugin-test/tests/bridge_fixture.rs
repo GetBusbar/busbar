@@ -102,13 +102,13 @@ struct ToVec<F>(F);
 impl<F, Z> Future for ToVec<F>
 where
     F: Future<Output = Result<Z, NeedErr>> + Unpin,
-    Z: core::ops::Deref<Target = Vec<u8>>,
+    Z: AsRef<[u8]>,
 {
     type Output = Result<Vec<u8>, NeedErr>;
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         Pin::new(&mut self.0)
             .poll(cx)
-            .map(|value| value.map(|value| value.to_vec()))
+            .map(|value| value.map(|value| value.as_ref().to_vec()))
     }
 }
 

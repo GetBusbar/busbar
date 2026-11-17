@@ -307,15 +307,14 @@ impl fmt::Debug for SecretBytes {
     }
 }
 
-/// The plaintext `aead_open` returns. It stands where the IF writes `zeroize::Zeroizing<Vec<u8>>`, which core
-/// bans (LR-094, BLD-9); `busbar_contract::secure` sits above this crate (IF §16.23) and a plugin links only this
-/// crate, so the value keeps that module's rule itself, as `host_side::scrub::Needle` does: allocated once at its
-/// exact length, never grown, wiped before it is freed. `Debug` prints the length only (W1-A2 ruling).
-pub struct Plaintext(Box<[u8]>);
+/// Owned plaintext returned by `aead_open`, copied before the host scratch can be reused.
+/// The shared secure byte owner wipes its allocation; this public wrapper remains read-only
+/// and Debug prints only the length.
+pub struct Plaintext(crate::secure::SecureVec);
 
 impl Plaintext {
     fn copied(bytes: &[u8]) -> Plaintext {
-        Plaintext(Box::from(bytes))
+        Plaintext(crate::secure::SecureVec::from(bytes))
     }
 }
 
@@ -323,12 +322,6 @@ impl Deref for Plaintext {
     type Target = [u8];
     fn deref(&self) -> &[u8] {
         &self.0
-    }
-}
-
-impl Drop for Plaintext {
-    fn drop(&mut self) {
-        self.0.zeroize();
     }
 }
 

@@ -18,6 +18,8 @@ path = "tests/fixtures/sdk_door_baseline.rs"
 crate-type = ["cdylib"]
 
 [dependencies]
+# SDK-SECRET-BUFFER: one shared byte owner, exposed only through the producer facades.
+busbar-secure = { path = "../busbar-secure" }
 # The crypto facade, re-exported whole as `busbar_contract::crypto`.
 busbar-crypto = { path = "../busbar-crypto" }
 # Calendar dates and RFC 3339 (`civil`).
@@ -53,6 +55,7 @@ tracing-core = { workspace = true }
 tracing-log = { workspace = true }
 
 [dev-dependencies]
+busbar-secure = { path = "../busbar-secure", features = ["test-support"] }
 libc = { workspace = true }
 stats_alloc = { workspace = true }
 serde_json = { workspace = true }
@@ -75,7 +78,7 @@ test-seal = ["test-support"]
 # Ordinary ABI test support (`abi::sdk::test_support`): the all-zero value of a reviewed ABI
 # struct, `Default` on it, and the lending pairs. It forges nothing; sealed credentials stay
 # behind the dev-dependency-only `test-seal` feature.
-test-support = ["busbar-crypto/test-support"]
+test-support = ["busbar-crypto/test-support", "busbar-secure/test-support"]
 
 # R131 `test-unsafe-outside-boundary` (`abi_scan`): test-reachable files, scanned as tokens. Test-only
 # (it rides `test-support`); called from core's tests and the plugin template's `tests/abi_scan.rs`.
