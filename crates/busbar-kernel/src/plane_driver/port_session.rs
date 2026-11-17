@@ -300,6 +300,8 @@ pub struct Answer {
     pub client: Vec<ToClient>,
     pub forward: Option<Forward>,
     pub facts: Vec<(u32, FactVal)>,
+    /// The plane's generic hook projection, kept in wiping custody until its hook stage ends.
+    pub conversation: Option<busbar_contract::secure::SecureVec>,
     pub finish: bool,
     /// An item a later slice drives (intents, accounting, upstream exchanges, records).
     pub later: bool,
@@ -538,6 +540,9 @@ impl Answer {
                 }
             }
             PlaneOut::Fact(key, value) => self.facts.push((key, fact_val(value))),
+            PlaneOut::Conversation(bytes) => {
+                self.conversation = Some(busbar_contract::secure::SecureVec::from(bytes));
+            }
             PlaneOut::Emit { carrier, bytes } => effects.emit(carrier, bytes),
             PlaneOut::Finish => self.finish = true,
             PlaneOut::UpCarrier { carrier, outbound } => {
@@ -1042,6 +1047,17 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
         let called = calls.rewrite(session, conversation, &mut |out| {
             answer.take(out, Origin::Rewrite, once, effects);
         });
+        // IF §8.6: a rewrite that does not fit leaves the original request usable.
+        // This exception belongs only to rewrite; other failed operations cancel the session.
+        if let Err(
+            error @ PortError::Refused {
+                code: busbar_plugin_abi::fail::refused::R_INVALID,
+                ..
+            },
+        ) = called
+        {
+            return Err(SessionError::Port(error));
+        }
         self.settle(called, answer)
     }
 
