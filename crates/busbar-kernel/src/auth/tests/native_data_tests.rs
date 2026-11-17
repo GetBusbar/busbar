@@ -398,6 +398,19 @@ fn arrival(
     CallCx,
     StreamOwner,
 ) {
+    arrival_with_fields(f, stream, Vec::new())
+}
+
+fn arrival_with_fields(
+    f: &Fixture,
+    stream: u64,
+    fields: Vec<(String, Vec<u8>)>,
+) -> (
+    CompletingPhysicalRequest,
+    SelectedResources,
+    CallCx,
+    StreamOwner,
+) {
     let deadline = Instant::now() + Duration::from_secs(30);
     let (request, owner) = f
         .connection
@@ -406,6 +419,7 @@ fn arrival(
             crate::inbound::Head {
                 method: "POST".into(),
                 target: "/resource".into(),
+                fields,
                 ..Default::default()
             },
             f.budget.try_enter(AdmissionClass::Data).unwrap(),
@@ -707,4 +721,48 @@ async fn native_data_final_physical_join_refuses_foreign_request() {
         Err(crate::inbound::native::ArrivalRefusal::ForeignInput)
     ));
     assert!(binding.check_executing().is_err());
+}
+
+#[tokio::test]
+async fn native_data_scans_later_duplicate_bound_carrier_before_verification() {
+    for token in [
+        "DPoP opaque",
+        "Bearer eyJhbGciOiJub25lIn0.eyJjbmYiOnsiamt0IjoieCJ9fQ.x",
+        "Bearer bbk_not_an_external_provider_credential",
+    ] {
+        let f = fixture(true);
+        let (request, selected, cx, _owner) = arrival_with_fields(
+            &f,
+            1,
+            vec![
+                ("Authorization".into(), b"Bearer harmless-decoy".to_vec()),
+                ("authorization".into(), token.as_bytes().to_vec()),
+            ],
+        );
+        assert!(matches!(
+            f.route.prepare(request, selected, cx).await,
+            Err(DataRefused::Credential)
+        ));
+        assert_eq!(f.calls.calls.load(Ordering::SeqCst), 0);
+        assert_eq!(f.replay.0.load(Ordering::SeqCst), 0);
+    }
+}
+
+#[tokio::test]
+async fn native_data_pending_liveness_tracks_physical_reset_before_task() {
+    let f = fixture(true);
+    let (request, selected, cx, owner) = arrival(&f, 1);
+    let authorized = f
+        .route
+        .prepare(request, selected, cx)
+        .await
+        .unwrap()
+        .complete()
+        .await
+        .unwrap();
+    let allocation = NativeDataAllocation::register(authorized).unwrap();
+    let pending = allocation.into_pending(|_| panic!("cancelled before request"));
+    assert!(pending.is_live());
+    assert!(f.connection.cancel(&owner));
+    assert!(!pending.is_live());
 }
