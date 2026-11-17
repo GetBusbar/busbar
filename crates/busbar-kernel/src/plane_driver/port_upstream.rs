@@ -149,6 +149,19 @@ pub struct Failure {
 /// The member walk: candidates in the walk's order, and what each attempt taught it. The egress walk and its
 /// breaker implement it.
 pub trait Members {
+    fn request_walk(&self) -> Option<&super::request_admission::RequestWalk> {
+        None
+    }
+    fn select_request(
+        &mut self,
+        _receipt: &super::request_admission::RequestPoolReceipt,
+        _wants: &Wants,
+    ) -> bool {
+        false
+    }
+    fn admit_request(&mut self, _request: &super::request_admission::AdmittedRequest) -> bool {
+        false
+    }
     fn hook_remaining(&self) -> Option<usize> {
         None
     }

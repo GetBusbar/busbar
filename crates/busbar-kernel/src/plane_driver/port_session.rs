@@ -214,6 +214,8 @@ pub enum Violation {
 /// Why a session call produced no usable answer.
 #[derive(Debug)]
 pub enum SessionError {
+    /// The original request's one monetary admission refused before effects.
+    AdmissionRefused(crate::refusal::ClientRefusal),
     /// Enforcement cannot discover its scope without first performing an effect.
     HookPrerequisite,
     /// A completed native hook stage refused this unit before any provider effect.
@@ -369,6 +371,9 @@ pub struct Answer {
 
 /// Effects the plane's answer has outside the client, applied at once, in sink order.
 pub trait Effects {
+    fn admission(&self) -> Option<&super::port_admission::Pending> {
+        None
+    }
     fn hooks(&self) -> Option<&super::port_hooks::Invocation> {
         None
     }
@@ -438,6 +443,9 @@ impl<'a> Buffered<'a> {
 }
 
 impl Effects for Buffered<'_> {
+    fn admission(&self) -> Option<&super::port_admission::Pending> {
+        self.inner.admission()
+    }
     fn invocation(&self) -> Option<&crate::host_services::InvocationContext> {
         self.inner.invocation()
     }

@@ -16,6 +16,7 @@ pub mod native_hook_bindings;
 pub mod plane_judge;
 pub mod port;
 pub mod port_admin;
+pub mod port_admission;
 pub mod port_auth;
 pub mod port_billing;
 pub mod port_carrier;
