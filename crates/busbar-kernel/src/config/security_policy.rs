@@ -406,7 +406,11 @@ fn admit_fields(
     hooks: &std::collections::HashMap<String, super::HookCfg>,
 ) -> Result<(), TxnError> {
     if !current.admin_chain.is_empty() && chain.is_empty() {
-        return Err(TxnError::Conflict("a protected deployment cannot clear admin_auth through the admin API; select open development posture at startup".into()));
+        return Err(TxnError::Conflict(
+            "admin_auth cannot be empty: 1.6.0 has no open admin posture, and the admin API always \
+             needs a credential"
+                .into(),
+        ));
     }
     // A provider ceiling is immutable upward through EVERY API representation, including full
     // operators. Removing a definition cannot smuggle a higher ceiling in under the same name.

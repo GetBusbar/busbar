@@ -132,7 +132,7 @@ async fn proof_role_binding_mode_ceiling_bounds_a_delegated_admin() {
     let client = reqwest::Client::new();
     let resp = client
         .post(format!("http://{addr}/api/v1/admin/keys"))
-        .header("x-admin-token", &delegated_token)
+        .header("authorization", format!("Bearer {}", &delegated_token))
         .json(&json::json!({ "name": "svc" }))
         .send()
         .await
@@ -277,7 +277,7 @@ async fn proof_role_binding_mode_ceiling_bounds_a_delegated_admin_allowed() {
     let client = reqwest::Client::new();
     let resp = client
         .post(format!("http://{addr}/api/v1/admin/keys"))
-        .header("x-admin-token", &delegated_token)
+        .header("authorization", format!("Bearer {}", &delegated_token))
         .json(&json::json!({ "name": "svc" }))
         .send()
         .await
@@ -394,7 +394,7 @@ async fn proof_max_ttl_ceiling_refuses_overask_and_clamps_default() {
     let client = reqwest::Client::new();
     let resp = client
         .post(format!("http://{addr}/api/v1/admin/keys"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .json(&body)
         .send()
         .await
@@ -504,7 +504,7 @@ async fn proof_max_ttl_ceiling_refuses_overask_and_clamps_default_default_clampe
     let client = reqwest::Client::new();
     let resp = client
         .post(format!("http://{addr}/api/v1/admin/keys"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .json(&body)
         .send()
         .await
@@ -649,7 +649,7 @@ async fn proof_role_mint_ceiling_bounds_a_delegated_admin() {
     let client = reqwest::Client::new();
     let resp = client
         .post(format!("http://{addr}/api/v1/admin/keys"))
-        .header("x-admin-token", &delegated_token)
+        .header("authorization", format!("Bearer {}", &delegated_token))
         .json(&body)
         .send()
         .await
@@ -797,7 +797,7 @@ async fn proof_role_mint_ceiling_bounds_a_delegated_admin_over_ttl() {
     let client = reqwest::Client::new();
     let resp = client
         .post(format!("http://{addr}/api/v1/admin/keys"))
-        .header("x-admin-token", &delegated_token)
+        .header("authorization", format!("Bearer {}", &delegated_token))
         .json(&body)
         .send()
         .await
@@ -945,7 +945,7 @@ async fn proof_role_mint_ceiling_bounds_a_delegated_admin_allowed() {
     let client = reqwest::Client::new();
     let resp = client
         .post(format!("http://{addr}/api/v1/admin/keys"))
-        .header("x-admin-token", &delegated_token)
+        .header("authorization", format!("Bearer {}", &delegated_token))
         .json(&body)
         .send()
         .await

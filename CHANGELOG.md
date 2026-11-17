@@ -101,6 +101,8 @@ All notable changes to Busbar are documented here. The format is based on
 - `POST /api/v1/admin/ledger/amend-rate-history` needs only a `full` admin grant. `auth.operator_pub` is gone; drop it, and stop signing corrections.
 - `POST /api/v1/admin/keys/{id}/rotate` answers `400 invalid_request` for an id over 64 characters, not `404`.
 - `POST /api/v1/admin/adjust` requires `pool` (a configured pool, else `400`).
+- The admin API reads its credential only from `Authorization: Bearer`; the `x-admin-token` header is no longer read, and the OpenAPI document's `adminToken` security scheme is gone.
+- `admin_auth: []` is refused at boot; delete it and configure the operator token. 1.6.0 has no anonymous admin posture.
 - A fallback, least-bad or queue hop refused upstream with 401/403 is answered in Busbar's ingress-native auth-failure envelope (not the upstream's body) and trips the lane's breaker, as the primary hop already did.
 - A same-dialect Anthropic stream cut mid-flight ends on an `error` event with `error.type: api_error`; a Bedrock ConverseStream ends on `internalServerException`.
 - A request translated between dialects no longer has an unrepresentable value substituted (an unsupported Bedrock image format relabelled `png`, Gemini `thinkingBudget: -1` sent as `medium`): the field is dropped with a warning and audit row, and a wrong-typed one is refused with the caller's own 400.

@@ -1,5 +1,5 @@
 ---
-title: "BUSBAR-3012: auth.chain names `keys` with an empty admin_auth (anyone can mint virtual keys)"
+title: "BUSBAR-3012: auth.chain names `keys` with an empty admin_auth (refused: no admin credential can mint a key)"
 description: "What Busbar error BUSBAR-3012 means, why it happens, and how to fix it."
 slug: docs/1.6/errors/BUSBAR-3012
 ---
@@ -8,11 +8,11 @@ slug: docs/1.6/errors/BUSBAR-3012
 
 ## What it means
 
-The auth chain names the built-in `keys` verifier while `auth.admin_auth` is explicitly empty, so the admin API has no credential gating it — ANYONE can mint virtual keys through it. Acceptable only for local development.
+The auth chain names the built-in `keys` verifier while `auth.admin_auth` is explicitly empty. 1.6.0 has no open admin posture, so the config is refused: an empty admin chain identifies no one, and no admin credential could mint a key.
 
 ## How to fix it
 
-Configure `auth.admin_auth` (an admin credential entry, or an admin module granting `mint`/`full`) before exposing busbar's admin API to any untrusted network, so key minting is gated by an operator credential.
+Delete the auth.admin_auth line to use the default chain [<operator>, keys], where <operator> is the name of your identity-providers entry for the first-party operator credential plugin (module: admin-tokens). Give that entry `settings: {sha256: "<digest>"}`, where <digest> is the SHA-256 of your admin token as 64 lower-case hex characters. To mint a token and its digest: `token=$(openssl rand -base64 32); printf %s "$token" | openssl dgst -sha256 -r | cut -d' ' -f1`. Keep the token as a secret and send it as `Authorization: Bearer` followed by the token. Or list the admin providers you use in auth.admin_auth.
 
 ---
 

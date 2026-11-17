@@ -102,6 +102,7 @@ impl KitStore {
             limits: InstanceLimits::default(),
             public_url: None,
             caller_upstreams: &[],
+            store_migration: None,
         };
         let needs = self
             .built
