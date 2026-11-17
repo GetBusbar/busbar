@@ -102,7 +102,13 @@ pub(crate) fn run_in(
         return Ok(());
     };
     for line in plan.report() {
-        tracing::info!(target: "busbar::migrate", "{line}");
+        // A line that carries a BUSBAR code is one the operator must act on or know about (the
+        // retired cloud-metadata carve-outs, BUSBAR-3411): a warning, not information.
+        if line.starts_with("BUSBAR-") {
+            tracing::warn!(target: "busbar::migrate", "{line}");
+        } else {
+            tracing::info!(target: "busbar::migrate", "{line}");
+        }
     }
     for line in plan.warnings() {
         tracing::warn!(target: "busbar::migrate", "{line}");
@@ -201,27 +207,37 @@ pub(crate) async fn finish(
     finish_settled(Vec::new(), core).await
 }
 
+/// LEGACY-KEYFILE-MARKER r2 §3: the held plan's side-table marks, by auth instance name: the pointers
+/// whose slot carries its 1.5.5 value on this one converting open. Never a value. A stamped boot has none.
+///
+/// # Errors
+/// CONFIG when a mark names an instance path other than `auth.<name>`.
+pub(crate) fn legacy_marks() -> Result<Vec<(String, Vec<String>)>, String> {
+    let Some(plan) = PENDING.get() else {
+        return Ok(Vec::new());
+    };
+    let mut by_name: std::collections::BTreeMap<String, Vec<String>> = Default::default();
+    for mark in plan.legacy_marks() {
+        let [kind, name] = mark.instance.as_slice() else {
+            return Err("CONFIG: a 1.5.5 credential mark names no instance".to_owned());
+        };
+        if kind != "auth" {
+            return Err(format!(
+                "CONFIG: a 1.5.5 credential mark names `{kind}`, which has no marked settlement"
+            ));
+        }
+        by_name
+            .entry(name.clone())
+            .or_default()
+            .push(mark.pointer.clone());
+    }
+    Ok(by_name.into_iter().collect())
+}
+
 /// Whether this boot runs a stamped config.yaml (or none): no plan is held. Step 4's final records
 /// commit then carries MIGRATION_COMPLETED, else RECORDS_MIGRATED (§3 4b).
 pub(crate) fn stamped() -> bool {
     PENDING.get().is_none()
-}
-
-/// Step 4 (§3 4a, 4b) over the store FST admission handed the boot, before step 5 and before anything
-/// serves: the 1.5.5 rows a store's data step left under IMPORT become native records.
-///
-/// # Errors
-/// The records step's refusal text; the boot refuses with it.
-#[cold]
-#[inline(never)]
-pub(crate) async fn records(
-    core: std::sync::Arc<busbar_kernel::persistence::facade::CoreStore>,
-) -> Result<(), String> {
-    let config = CONFIG_PATH
-        .get()
-        .cloned()
-        .unwrap_or_else(|| PathBuf::from(crate::root::cli::resolve_config_path(None)));
-    crate::root::migrate_records::step4(core, config, stamped()).await
 }
 
 /// Step 4 using the secrets already resolved by the pre-publication boot stages.
@@ -283,6 +299,37 @@ pub(crate) async fn finish_settled_checked(
     .map_err(|error| format!("the config.yaml upgrade did not finish its write: {error}"))?
     .map(Some)
     .map_err(text_of)
+}
+
+/// Steps 4 and 5 together for a converting boot: step 5's refusals are judged before the store is
+/// converted (#328), then the records are converted and config.yaml is written.
+///
+/// # Errors
+/// The records step's refusal, or CONFIG text for a refused document.
+pub(crate) async fn convert_and_finish_checked(
+    core: std::sync::Arc<busbar_kernel::persistence::facade::CoreStore>,
+    keys: crate::root::migrate_records::Keys,
+    settled: Vec<busbar_migrate::Settled>,
+    candidate: std::sync::Arc<dyn Fn(&str) -> Result<(), String> + Send + Sync>,
+) -> Result<Option<Written>, String> {
+    let Some(plan) = PENDING.get() else {
+        return Ok(None);
+    };
+    let runtime = tokio::runtime::Handle::current();
+    let config = CONFIG_PATH.get().cloned().unwrap_or_default();
+    tokio::task::spawn_blocking(move || {
+        let check = |text: &str, catalog: Option<&str>| {
+            strict_parse(text, catalog)?;
+            candidate(text)
+        };
+        let store = crate::root::migrate_records::Store::new(core, runtime);
+        crate::root::migrate_records::convert_and_write(
+            &store, &keys, plan, &settled, &check, &config, false,
+        )
+        .map(Some)
+    })
+    .await
+    .map_err(|error| format!("the config.yaml upgrade did not finish its write: {error}"))?
 }
 
 /// 5W (MIGRATE-ON-BOOT r42 §3): on a stamped boot and on a reload, write what the instances settled back into
@@ -359,6 +406,19 @@ pub(crate) fn admit_for_host(n: u64) -> Result<(), String> {
         .cloned()
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")));
     admit_answer(n, busbar_kernel::appbuild::bootstrap_at_rest(), &dir)
+}
+
+/// The native Store-open operation's exact core-owned refusal, using its retained resolution verdict.
+pub(crate) fn native_admission_refusal(n: u64, verdict: Result<bool, String>) -> String {
+    let dir = CONFIG_DIR
+        .get()
+        .cloned()
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")));
+    admit_answer(n, Some(verdict), &dir)
+        .err()
+        .unwrap_or_else(|| {
+            "CONFIG: Store recovery admission refused; nothing was written".to_owned()
+        })
 }
 
 /// The gate's verdict for `n` rows, from the bootstrap's at-rest verdict `keys` (`None` = no
@@ -515,6 +575,33 @@ fn read_config(config: &Path) -> Result<Option<String>, String> {
 
 fn text_of(refusal: Refusal) -> String {
     refusal.to_string()
+}
+
+/// After step 5 wrote config.yaml: one audit record per security-relevant change the plan reported
+/// under a BUSBAR code (the retired cloud-metadata carve-outs, BUSBAR-3411). The record names the
+/// removed paths and never a value; it is written only for a write this process made, never for a
+/// peer's stamp (#293, via the #291 settled write path).
+pub(crate) fn record_completed_changes(written: &Written) {
+    if !matches!(written, Written::Stamped) {
+        return;
+    }
+    let Some(plan) = PENDING.get() else {
+        return;
+    };
+    for line in plan.report() {
+        if let Some(paths) = line
+            .strip_prefix("BUSBAR-3411: removed the retired cloud-metadata carve-out key(s) ")
+            .and_then(|rest| rest.split_once(';'))
+            .map(|(paths, _)| paths)
+        {
+            busbar_kernel::audit_ring::AUDIT.record_by(
+                "migrate.metadata_carve_out_removed",
+                paths,
+                busbar_kernel::audit_ring::OUTCOME_APPLIED,
+                "system",
+            );
+        }
+    }
 }
 
 /// Replace this process with a fresh image of itself: the same executable and argv, with

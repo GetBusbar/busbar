@@ -133,14 +133,12 @@ async fn document_patch_is_durable_conditional_and_preserves_hidden_base_configu
     }
     let _scratch = Scratch(directory.clone());
     let library_path = plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual Store statement reads")
-        .expect("the actual Store declares its mechanism");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual Store statement parses")
-        .name;
-    let mut manifest = plugins::manifest("store", &module, plugins::FIXTURE_PUBLISHER);
-    manifest.statement = Some(hex::encode(statement));
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
+        "store",
+        &library_path,
+        plugins::FIXTURE_PUBLISHER,
+    );
     let archive = plugins::signed(
         &crate::dist_root_install::release_key(),
         manifest,
@@ -872,12 +870,22 @@ pub(super) struct EphemeralAdmin {
     pub(super) directory: std::path::PathBuf,
     pub(super) document: serde_json::Value,
     server: tokio::task::JoinHandle<()>,
+    retain_files: bool,
+}
+
+impl EphemeralAdmin {
+    /// The parent restart test owns removal after both isolated processes finish.
+    pub(super) fn retain_files_for_restart(&mut self) {
+        self.retain_files = true;
+    }
 }
 
 impl Drop for EphemeralAdmin {
     fn drop(&mut self) {
         self.server.abort();
-        let _ = std::fs::remove_dir_all(&self.directory);
+        if !self.retain_files {
+            let _ = std::fs::remove_dir_all(&self.directory);
+        }
     }
 }
 
@@ -887,17 +895,42 @@ pub(super) async fn ephemeral_admin(
         Arc<dyn busbar_kernel::appbuild::RootRules>,
     ) -> Arc<dyn busbar_kernel::appbuild::RootRules>,
 ) -> EphemeralAdmin {
+    configured_admin(tag, rules, true).await
+}
+
+pub(super) async fn durable_admin(tag: &str) -> EphemeralAdmin {
+    configured_admin(tag, |rules| rules, false).await
+}
+
+pub(super) async fn durable_admin_in_directory(directory: std::path::PathBuf) -> EphemeralAdmin {
+    configured_admin_in_directory(directory, |rules| rules, false).await
+}
+
+async fn configured_admin(
+    tag: &str,
+    rules: impl FnOnce(
+        Arc<dyn busbar_kernel::appbuild::RootRules>,
+    ) -> Arc<dyn busbar_kernel::appbuild::RootRules>,
+    ephemeral: bool,
+) -> EphemeralAdmin {
+    configured_admin_in_directory(plugins::scratch(tag), rules, ephemeral).await
+}
+
+async fn configured_admin_in_directory(
+    directory: std::path::PathBuf,
+    rules: impl FnOnce(
+        Arc<dyn busbar_kernel::appbuild::RootRules>,
+    ) -> Arc<dyn busbar_kernel::appbuild::RootRules>,
+    ephemeral: bool,
+) -> EphemeralAdmin {
     crate::dist_root_install::install();
-    let directory = plugins::scratch(tag);
     let library_path = plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual Store statement reads")
-        .expect("the actual Store declares its mechanism");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual Store statement parses")
-        .name;
-    let mut manifest = plugins::manifest("store", &module, plugins::FIXTURE_PUBLISHER);
-    manifest.statement = Some(hex::encode(statement));
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
+        "store",
+        &library_path,
+        plugins::FIXTURE_PUBLISHER,
+    );
     let archive = plugins::signed(
         &crate::dist_root_install::release_key(),
         manifest,
@@ -944,16 +977,25 @@ pub(super) async fn ephemeral_admin(
     } = crate::root::min3_boot::fixture::open(&config, &plugin_config, boot_rules.clone())
         .await
         .expect("the actual configured Store opens");
-    let anchor = crate::root::real_store::core_over(Arc::new(
-        crate::root::real_store::EphemeralInfo(opened),
-    ))
-    .await;
+    let anchor = if ephemeral {
+        crate::root::real_store::core_over(Arc::new(crate::root::real_store::EphemeralInfo(opened)))
+            .await
+    } else {
+        crate::root::real_store::core_over(opened).await
+    };
     let overlay = OverlayStore::from_core(anchor.clone())
         .expect("the in-memory Store still carries the config overlay");
-    assert_eq!(
-        overlay.core_store_handle().unwrap().info().durability,
-        busbar_contract::persistence::Durability::Ephemeral
-    );
+    if ephemeral {
+        assert_eq!(
+            overlay.core_store_handle().unwrap().info().durability,
+            busbar_contract::persistence::Durability::Ephemeral
+        );
+    } else {
+        assert_ne!(
+            overlay.core_store_handle().unwrap().info().durability,
+            busbar_contract::persistence::Durability::Ephemeral
+        );
+    }
     let (mut app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
         plugin_config,
@@ -996,6 +1038,7 @@ pub(super) async fn ephemeral_admin(
         directory,
         document,
         server,
+        retain_files: false,
     }
 }
 

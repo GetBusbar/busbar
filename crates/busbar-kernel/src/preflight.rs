@@ -65,9 +65,6 @@ impl StoreRow<LinkedStoreDoor> {
     }
 }
 
-pub type StoreAxisOf =
-    fn() -> std::sync::Arc<dyn busbar_contract::persistence::axis::PersistenceAxis>;
-
 use busbar_contract::plugin_rows::PluginRows;
 pub use busbar_kernel_identity::operator::LinkedAuth;
 
@@ -186,8 +183,6 @@ pub struct RootInstall {
     /// `linked-name` row per `hooks`-axis row): what the operator surface lists as the compiled-in
     /// hook plugins. The root's data; the kernel and the admin crate spell none of them.
     pub hook_names: &'static [&'static str],
-    /// The root's store axis: what boot opens the configured store through.
-    pub store_axis: Option<StoreAxisOf>,
     /// The root's secret axis: every secret plugin it admitted, linked or dropped in, over the
     /// process's one dispatcher (`None`: only a cold-lane plugin resolves).
     pub secret_axis: Option<&'static dyn busbar_contract::secret::SecretAxis>,

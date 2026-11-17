@@ -65,14 +65,7 @@ pub(crate) fn make_root_cfg(
         store: Some(config::StoreCfg {
             module: {
                 let path = crate::root::test_plugins::application_store_library();
-                let statement = busbar_plugin_loader::dispatch::rendering_of_library(
-                    std::path::Path::new(&path),
-                )
-                .expect("the actual store statement reads")
-                .expect("the actual store exports its statement");
-                busbar_contract::abi::mechanism::rendering::read(&statement)
-                    .expect("the actual store statement is valid")
-                    .name
+                crate::root::test_plugins::native_image(&path).name
             },
             settings: Default::default(),
             insecure_transport: None,
@@ -157,6 +150,8 @@ fn make_model(provider: &str, max_concurrent: usize) -> config::ModelCfg {
 
 fn make_model_unbounded(provider: &str) -> config::ModelCfg {
     config::ModelCfg {
+        resource: None,
+        protocol: None,
         reasoning: None,
         prompt_caching: None,
         max_requests: -1,
@@ -3598,6 +3593,7 @@ fn group(
 
 fn limit_requests_per_minute(amount: u64) -> busbar_kernel::config::groups::LimitCfg {
     busbar_kernel::config::groups::LimitCfg {
+        selected: None,
         metric: busbar_kernel::config::groups::LimitMetric::Requests,
         amount,
         per: Some(busbar_kernel::config::groups::LimitWindow::Minute),

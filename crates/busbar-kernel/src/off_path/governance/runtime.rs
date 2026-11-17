@@ -457,6 +457,9 @@ use busbar_contract::records::{RecordStoreError, RecordStoreResult};
 /// checkpoint Store).
 pub(crate) fn unit_checkpoint_validate(snapshot: &UnitCheckpoint) -> RecordStoreResult<()> {
     let error = |message: &str| RecordStoreError(message.to_owned());
+    if let Some(partitions) = &snapshot.partitions {
+        partitions.validate(snapshot)?;
+    }
     if let Some(evidence) = &snapshot.measurement {
         evidence
             .validate(snapshot)

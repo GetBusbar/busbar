@@ -3,6 +3,7 @@
 
 use super::{plane_record_write_effect, PlaneRecordSink};
 use crate::root::units_admin::AdminAnswer;
+use busbar_contract::json::{self, JsonValueTrait as _};
 use busbar_contract::plane::PlaneDeclaration;
 use busbar_contract::records::{PlaneDisposition, PlaneRecord, PlaneSelector};
 use busbar_kernel::host_records_async::AsyncHistory;
@@ -45,18 +46,18 @@ const KERNEL_KINDS: &[&str] = &[
 ];
 
 async fn write(
-    body: &serde_json::Value,
+    body: &json::Value,
     planes: &[PlaneDeclaration],
     sink: &PlaneRecordSink,
 ) -> AdminAnswer {
     let lookup = |key: &str| planes.iter().find(|p| p.key == key).copied();
-    plane_record_write_effect(&serde_json::to_vec(body).unwrap(), 100, &lookup, Some(sink))
+    plane_record_write_effect(&json::to_vec(body).unwrap(), 100, &lookup, Some(sink))
         .await
         .expect("effect answers")
         .answer
 }
 fn refusal(answer: &AdminAnswer) -> (u16, String) {
-    let body: serde_json::Value = serde_json::from_slice(&answer.body).unwrap();
+    let body: json::Value = json::parse_value(&answer.body).unwrap();
     (
         answer.status,
         body["error"]["code"]
@@ -84,16 +85,14 @@ async fn an_admin_record_write_naming_mcp_cannot_alter_a_kernel_demotion_row() {
         seq: 0,
         ts: 100,
         disposition: PlaneDisposition::Active,
-        body: serde_json::to_vec(
-            &serde_json::json!({"server":key,"reason":"drifted","recorded_at":100}),
-        )
-        .unwrap(),
+        body: json::to_vec(&json::json!({"server":key,"reason":"drifted","recorded_at":100}))
+            .unwrap(),
     };
     kernel.upsert(kept.view()).await.unwrap();
     let mcp = plane("mcp", MCP_KINDS);
     for attempt in [
-        serde_json::json!({"plane":"mcp","kind":"demotion","id":key,"body":{"nope":true}}),
-        serde_json::json!({"plane":"mcp","kind":"demotion","id":key,"terminal":true,"body":{}}),
+        json::json!({"plane":"mcp","kind":"demotion","id":key,"body":{"nope":true}}),
+        json::json!({"plane":"mcp","kind":"demotion","id":key,"terminal":true,"body":{}}),
     ] {
         assert_eq!(
             refusal(&write(&attempt, &[mcp], &sink).await),
@@ -103,7 +102,7 @@ async fn an_admin_record_write_naming_mcp_cannot_alter_a_kernel_demotion_row() {
     assert_eq!(kernel.get(KIND_DEMOTION, &key).await.unwrap(), Some(kept));
     let squatter = plane("squatter", KERNEL_KINDS);
     for kind in KERNEL_KINDS {
-        let attempt = serde_json::json!({"plane":"squatter","kind":kind,"id":"x","body":{}});
+        let attempt = json::json!({"plane":"squatter","kind":kind,"id":"x","body":{}});
         assert_eq!(
             refusal(&write(&attempt, &[squatter], &sink).await),
             (403, "forbidden".into())
@@ -119,7 +118,7 @@ async fn two_planes_declaring_one_kind_neither_see_nor_overwrite_each_others_row
     let planes = [plane("alpha", &["note"]), plane("beta", &["note"])];
     for (key, text) in [("alpha", "alpha's"), ("beta", "beta's")] {
         let answer = write(
-            &serde_json::json!({"plane":key,"kind":"note","id":"n-1","body":{"text":text}}),
+            &json::json!({"plane":key,"kind":"note","id":"n-1","body":{"text":text}}),
             &planes,
             &sink,
         )
@@ -174,13 +173,12 @@ async fn an_unknown_plane_write_keeps_its_exact_record_and_never_repeats_the_ups
             })
         })
     };
-    let mut request = AdminRequest {
-        method: "POST".into(), path: "/api/v1/admin/plane-record-write".into(),
+    let mut request = AdminRequest::test_fixture(crate::root::units_admin::TestAdminRequest { method: "POST".into(), path: "/api/v1/admin/plane-record-write".into(),
         credential: None,
         headers: vec![("idempotency-key".into(), "unknown-record".into())],
         body: br#"{"plane":"alpha","kind":"note","id":"n1","parent":"p1","terminal":true,"body":{"n":7}}"#.to_vec(),
         at: 1_700_000_000, unit: 1,
-    };
+    });
     let cache = super::ReplayCache::new();
     let lookup = |key: &str| (key == "alpha").then_some(plane("alpha", &["note"]));
     async fn ask(
@@ -198,9 +196,10 @@ async fn an_unknown_plane_write_keeps_its_exact_record_and_never_repeats_the_ups
                 actor: "admin",
             },
             request,
-            &request.body,
+            request.body(),
             None,
-            || plane_record_write_effect(&request.body, request.at, lookup, Some(sink)),
+            super::ReplayContext::None,
+            || plane_record_write_effect(request.body(), request.at(), lookup, Some(sink)),
         )
         .await
         .expect("the write answers")
@@ -215,7 +214,7 @@ async fn an_unknown_plane_write_keeps_its_exact_record_and_never_repeats_the_ups
             id: "n1".into(),
             parent: Some("p1".into()),
             seq: 0,
-            ts: request.at,
+            ts: request.at(),
             disposition: PlaneDisposition::Terminal,
             body: br#"{"n":7}"#.to_vec(),
         }
@@ -223,13 +222,13 @@ async fn an_unknown_plane_write_keeps_its_exact_record_and_never_repeats_the_ups
     let name =
         busbar_core_admin::verb_name(busbar_core_admin::KernelVerb::PlaneRecordWrite).unwrap();
     let replay_key = ("admin".to_string(), format!("{name}:unknown-record"));
-    let kept = match durable::claim_held(&store, &replay_key, request.at).await {
+    let kept = match durable::claim_held(&store, &replay_key, request.at()).await {
         Err(Refused::Retained(bytes)) => super::kept_answer(&bytes).expect("readable receipt"),
         other => panic!("the exact unknown receipt must be durable: {other:?}"),
     };
     assert_eq!(
         kept.digest,
-        busbar_contract::abi::sdk::digest::sha256(&request.body)
+        busbar_contract::abi::sdk::digest::sha256(request.body())
     );
     assert_eq!(kept.answer, first);
     assert_eq!(
@@ -251,12 +250,14 @@ async fn an_unknown_plane_write_keeps_its_exact_record_and_never_repeats_the_ups
     );
     assert_eq!(
         ask(&cache, &request, &replay_store, &sink, &lookup).await,
-        first
+        as_replayed(&first)
     );
-    request.at += busbar_core_admin::idempotency::IDEMPOTENCY_TTL_SECS + 1;
+    request.edit_for_test(|draft| {
+        draft.at += busbar_core_admin::idempotency::IDEMPOTENCY_TTL_SECS + 1
+    });
     assert_eq!(
         ask(&cache, &request, &replay_store, &sink, &lookup).await,
-        first,
+        as_replayed(&first),
         "local custody outlives the replay window"
     );
     assert_eq!(
@@ -268,7 +269,7 @@ async fn an_unknown_plane_write_keeps_its_exact_record_and_never_repeats_the_ups
             &lookup
         )
         .await,
-        first,
+        as_replayed(&first),
         "restart replays the durable receipt"
     );
     assert_eq!(
@@ -276,7 +277,9 @@ async fn an_unknown_plane_write_keeps_its_exact_record_and_never_repeats_the_ups
         vec![original],
         "no retry changed metadata or repeated the upsert"
     );
-    request.body = br#"{"plane":"alpha","kind":"note","id":"other","body":{}}"#.to_vec();
+    request.edit_for_test(|draft| {
+        draft.body = br#"{"plane":"alpha","kind":"note","id":"other","body":{}}"#.to_vec()
+    });
     assert_eq!(
         ask(
             &super::ReplayCache::new(),
@@ -293,15 +296,42 @@ async fn an_unknown_plane_write_keeps_its_exact_record_and_never_repeats_the_ups
     assert_eq!(submitted.lock().unwrap().len(), 1);
 }
 
+/// A kernel with native trust custody: its decision record bound to a real Store and a pool for
+/// the durable trust effects (TRUST-ADMIN-PRODUCER-DESIGN r3 §6, condition A-C1).
+pub(crate) async fn bound_kernel() -> busbar_kernel::host_services::KernelServices {
+    use busbar_kernel::host_services::{BlockingPool, KernelServices};
+    let record = Arc::new(busbar_kernel::trust::DemotionRecord::default());
+    record
+        .set_store(crate::root::real_store::core().await)
+        .expect("the native Store keeps trust decisions");
+    KernelServices::new()
+        .with_demotions(record, "")
+        .with_pool(Arc::new(BlockingPool::new(
+            tokio::runtime::Handle::current(),
+            busbar_kernel::host_records::QUEUE_CAP,
+        )))
+}
+
+/// The first answer as a replay returns it: the same status and body, and the same headers plus
+/// the replay marker (r3 §4.6, condition A-C2).
+fn as_replayed(first: &AdminAnswer) -> AdminAnswer {
+    let mut replayed = first.clone();
+    replayed
+        .headers
+        .push((super::REPLAYED_HEADER.to_string(), "true".to_string()));
+    replayed
+}
+
 #[tokio::test]
 async fn trust_digest_guard_rejects_stale_and_malformed_reviews_at_the_admin_boundary() {
-    use super::{trust_decide_effect, trust_list_effect, TrustDesk};
+    use super::{trust_decide_effect, trust_list_effect};
     use busbar_contract::services::{Caller, HostServices, Ran};
-    use busbar_kernel::host_services::{InstanceFacts, KernelServices};
+    use busbar_kernel::host_services::InstanceFacts;
     use busbar_kernel::trust::book::Ruling;
     use busbar_kernel::trust::reverify::Policy;
     use busbar_kernel::trust::section::TrustEntry;
-    let kernel = Arc::new(KernelServices::new());
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let kernel = Arc::new(bound_kernel().await);
     kernel
         .admit(
             "inst",
@@ -322,58 +352,83 @@ async fn trust_digest_guard_rejects_stale_and_malformed_reviews_at_the_admin_bou
         )
         .await
         .unwrap();
-    let desk: TrustDesk = {
-        let kernel = Arc::clone(&kernel);
-        Arc::new(move || Some(Arc::clone(&kernel)))
-    };
     let caller = Caller::for_test(
         Arc::from("inst"),
         busbar_contract::abi::mechanism::KindCode::Plane,
     );
-    let sight = |digest| {
-        assert!(matches!(
-            kernel.trust_sight(&caller, "cp", digest, Box::new(|_| {})),
-            Ran::Now(_)
-        ))
+    // A sighting that moves an approved key is a durable trust effect: it may settle later.
+    let sight = async |digest| {
+        let (sent, settled) = tokio::sync::oneshot::channel();
+        match kernel.trust_sight(
+            &caller,
+            "cp",
+            digest,
+            Box::new(move |stored| {
+                let _ = sent.send(stored);
+            }),
+        ) {
+            Ran::Now(_) => {}
+            Ran::Later => {
+                settled.await.expect("the sighting settles");
+            }
+        }
     };
+    let audited = AtomicBool::new(false);
     let decide = async |ruling, body| {
-        trust_decide_effect(&serde_json::to_vec(&body).unwrap(), ruling, &desk)
-            .await
-            .unwrap()
+        trust_decide_effect(
+            &json::to_vec(&body).unwrap(),
+            ruling,
+            Some(&*kernel),
+            "op",
+            None,
+            &audited,
+        )
+        .await
+        .unwrap()
     };
-    sight("reviewed");
+    let reason =
+        |answer: &AdminAnswer| json::parse_value(&answer.body).unwrap()["error"]["reason"].clone();
+    sight("reviewed").await;
     assert_eq!(
         decide(
             Ruling::Approve,
-            serde_json::json!({"key":"inst/cp","expected_digest":"reviewed"})
+            json::json!({"key":"inst/cp","expected_digest":"reviewed"})
         )
         .await
         .status,
         200
     );
-    sight("changed");
+    assert!(
+        audited.load(Ordering::SeqCst),
+        "the kernel wrote the request's typed row"
+    );
+    sight("changed").await;
     let before = kernel.trust_rows();
     for ruling in [Ruling::Approve, Ruling::Revoke] {
         let stale = decide(
             ruling,
-            serde_json::json!({"key":"inst/cp","expected_digest":"reviewed"}),
+            json::json!({"key":"inst/cp","expected_digest":"obsolete"}),
         )
         .await;
         assert_eq!(stale.status, 409);
         assert_eq!(
-            serde_json::from_slice::<serde_json::Value>(&stale.body).unwrap()["error"]["code"],
+            json::parse_value(&stale.body).unwrap()["error"]["code"],
             "conflict"
         );
-        for guard in [
-            serde_json::Value::Null,
-            serde_json::json!(7),
-            serde_json::json!(""),
-            serde_json::json!(" "),
-        ] {
+        assert_eq!(reason(&stale), "reviewed_digest_stale");
+        // `null` is a review of a never-sighted key: this key was sighted, so it is stale.
+        let unsighted = decide(
+            ruling,
+            json::json!({"key":"inst/cp","expected_digest":null}),
+        )
+        .await;
+        assert_eq!(unsighted.status, 409);
+        assert_eq!(reason(&unsighted), "reviewed_digest_stale");
+        for guard in [json::json!(7), json::json!(""), json::json!(" ")] {
             assert_eq!(
                 decide(
                     ruling,
-                    serde_json::json!({"key":"inst/cp","expected_digest":guard})
+                    json::json!({"key":"inst/cp","expected_digest":guard})
                 )
                 .await
                 .status,
@@ -382,26 +437,23 @@ async fn trust_digest_guard_rejects_stale_and_malformed_reviews_at_the_admin_bou
         }
         assert_eq!(kernel.trust_rows(), before);
     }
-    let listed: serde_json::Value =
-        serde_json::from_slice(&trust_list_effect(&desk).unwrap().body).unwrap();
+    let listed: json::Value =
+        json::parse_value(&trust_list_effect(Some(&kernel)).unwrap().body).unwrap();
     assert_eq!(listed["keys"][0]["approved"], "reviewed");
     assert_eq!(listed["keys"][0]["seen"], "changed");
     let revoked = decide(
         Ruling::Revoke,
-        serde_json::json!({"key":"inst/cp","expected_digest":"changed"}),
+        json::json!({"key":"inst/cp","expected_digest":"changed"}),
     )
     .await;
     assert_eq!(revoked.status, 200);
-    assert_eq!(
-        serde_json::from_slice::<serde_json::Value>(&revoked.body).unwrap()["seen"],
-        "changed"
-    );
-    let legacy = decide(Ruling::Approve, serde_json::json!({"key":"inst/cp"})).await;
-    assert_eq!(legacy.status, 200);
-    assert_eq!(
-        serde_json::from_slice::<serde_json::Value>(&legacy.body).unwrap()["approved"],
-        "changed"
-    );
+    assert_eq!(json::parse_value(&revoked.body).unwrap()["seen"], "changed");
+    // r3 §4.1: there is no key-only decision; an omitted review is 428 and changes nothing.
+    let after = kernel.trust_rows();
+    let omitted = decide(Ruling::Approve, json::json!({"key":"inst/cp"})).await;
+    assert_eq!(omitted.status, 428);
+    assert_eq!(reason(&omitted), "reviewed_digest_required");
+    assert_eq!(kernel.trust_rows(), after);
 }
 
 #[test]
@@ -430,4 +482,618 @@ fn a_native_pending_identity_survives_the_durable_effect_receipt() {
     assert_eq!(decoded.digest, value.digest);
     assert_eq!(decoded.answer, value.answer);
     assert_eq!(decoded.receipt, value.receipt);
+}
+
+/// The `error` object of an admin answer's envelope.
+fn error_of(answer: &AdminAnswer) -> json::Value {
+    json::parse_value(&answer.body).expect("the answer is JSON")["error"].clone()
+}
+
+fn header_of<'a>(answer: &'a AdminAnswer, name: &str) -> Option<&'a str> {
+    answer
+        .headers
+        .iter()
+        .find(|(header, _)| header == name)
+        .map(|(_, value)| value.as_str())
+}
+
+/// TRUST-ADMIN-PRODUCER-DESIGN r3 §10.2 R1: no native custody is 503, never a 404 or an approval.
+#[tokio::test]
+async fn trust_verbs_refuse_unavailable_without_native_custody() {
+    use busbar_kernel::trust::book::Ruling;
+    let audited = std::sync::atomic::AtomicBool::new(false);
+    for ruling in [Ruling::Approve, Ruling::Revoke] {
+        let answer = super::trust_decide_effect(
+            br#"{"key":"inst/cp","expected_digest":"d1"}"#,
+            ruling,
+            None,
+            "op",
+            None,
+            &audited,
+        )
+        .await
+        .unwrap();
+        assert_eq!(answer.status, 503);
+        let error = error_of(&answer);
+        assert_eq!(error["code"], "unavailable");
+        assert_eq!(error["reason"], "service_unavailable");
+        assert_eq!(error["retryable"], true);
+        assert_eq!(
+            header_of(&answer, super::TRUST_EFFECT_HEADER),
+            Some("not_applied")
+        );
+    }
+    assert!(
+        !audited.load(std::sync::atomic::Ordering::SeqCst),
+        "no kernel ran, so the generic row records the refusal"
+    );
+}
+
+/// R2: `GET /trust` without custody is 503, never an empty success.
+#[test]
+fn get_trust_without_custody_is_unavailable() {
+    let answer = super::trust_list_effect(None).unwrap();
+    assert_eq!(answer.status, 503);
+    assert_eq!(error_of(&answer)["reason"], "service_unavailable");
+}
+
+/// G15: the trust decision reasons are stable closed reasons with their codes and statuses.
+#[test]
+fn trust_reason_codes_are_stable() {
+    for (reason, code, http) in [
+        ("reviewed_digest_required", "invalid_request", 428),
+        ("reviewed_digest_stale", "conflict", 409),
+        ("decision_in_progress", "conflict", 409),
+        ("outcome_not_applied", "conflict", 409),
+        ("action_in_flight", "conflict", 409),
+        ("service_unavailable", "unavailable", 503),
+    ] {
+        let row = busbar_kernel::admin::reasons::row(reason)
+            .unwrap_or_else(|| panic!("{reason} is a closed reason"));
+        assert_eq!((row.code, row.http), (code, http), "{reason}");
+    }
+}
+
+fn trust_request(key: &str, body: &[u8]) -> crate::root::units_admin::AdminRequest {
+    crate::root::units_admin::AdminRequest::test_fixture(
+        crate::root::units_admin::TestAdminRequest {
+            method: "POST".into(),
+            path: "/api/v1/admin/trust/approve".into(),
+            credential: None,
+            headers: vec![("idempotency-key".into(), key.into())],
+            body: body.to_vec(),
+            at: 1_700_000_000,
+            unit: 1,
+        },
+    )
+}
+
+/// R6 and condition B-C4: a decision under an `Idempotency-Key` runs once; the same key and bytes
+/// answer the original answer marked as replayed, audited by one typed replay row; an invalid key
+/// is refused before any claim or effect.
+#[tokio::test]
+async fn trust_approve_honours_idempotency_key() {
+    use busbar_contract::services::{Caller, HostServices};
+    use busbar_core_admin::KernelVerb;
+    use busbar_kernel::host_services::InstanceFacts;
+    use busbar_kernel::trust::book::Ruling;
+    use busbar_kernel::trust::reverify::Policy;
+    use busbar_kernel::trust::section::TrustEntry;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    let kernel = Arc::new(bound_kernel().await);
+    kernel
+        .admit(
+            "inst",
+            InstanceFacts {
+                trust: vec![(
+                    "cp".into(),
+                    TrustEntry {
+                        pin: None,
+                        policy: Policy {
+                            ttl_ms: 0,
+                            recovery_backoff_ms: 0,
+                        },
+                        approved: Default::default(),
+                    },
+                )],
+                ..InstanceFacts::default()
+            },
+        )
+        .await
+        .unwrap();
+    let caller = Caller::for_test(
+        Arc::from("inst"),
+        busbar_contract::abi::mechanism::KindCode::Plane,
+    );
+    let _ = kernel.trust_sight(&caller, "cp", "d1", Box::new(|_| {}));
+    let store = crate::root::real_store::admin_scoped().await;
+    let replay_store: super::ReplayStore = Arc::new(move || Some(Arc::clone(&store)));
+    let cache = super::ReplayCache::new();
+    let ran = AtomicUsize::new(0);
+    let body = br#"{"key":"inst/cp","expected_digest":"d1"}"#;
+    let ask = async |request: &crate::root::units_admin::AdminRequest, audited: &AtomicBool| {
+        super::replayable(
+            &cache,
+            Some(&replay_store),
+            super::ReplayScope {
+                verb: KernelVerb::TrustApprove,
+                actor: "op",
+            },
+            request,
+            request.body(),
+            None,
+            super::ReplayContext::Trust {
+                kernel: Some(&*kernel),
+                audited,
+            },
+            || async {
+                ran.fetch_add(1, Ordering::SeqCst);
+                super::trust_decide_effect(
+                    request.body(),
+                    Ruling::Approve,
+                    Some(&*kernel),
+                    "op",
+                    super::idempotency_key(request),
+                    audited,
+                )
+                .await
+            },
+        )
+        .await
+        .expect("the decision answers")
+    };
+    let request = trust_request("review-1", body);
+    let first = ask(&request, &AtomicBool::new(false)).await;
+    assert_eq!(first.status, 200);
+    assert_eq!(
+        header_of(&first, super::TRUST_EFFECT_HEADER),
+        Some("applied")
+    );
+    let rows = kernel.trust_rows();
+    let replay_audited = AtomicBool::new(false);
+    let again = ask(&request, &replay_audited).await;
+    assert_eq!(again, as_replayed(&first));
+    assert!(
+        replay_audited.load(Ordering::SeqCst),
+        "the replay wrote its typed row"
+    );
+    assert_eq!(ran.load(Ordering::SeqCst), 1, "the decision ran once");
+    assert_eq!(kernel.trust_rows(), rows);
+
+    let invalid = ask(&trust_request("two words", body), &AtomicBool::new(false)).await;
+    assert_eq!(invalid.status, 400);
+    assert_eq!(error_of(&invalid)["code"], "invalid_request");
+    assert_eq!(ran.load(Ordering::SeqCst), 1, "an invalid key runs nothing");
+
+    let mismatch = ask(
+        &trust_request("review-1", br#"{"key":"inst/cp","expected_digest":null}"#),
+        &AtomicBool::new(false),
+    )
+    .await;
+    assert_eq!(mismatch.status, 409);
+    assert_eq!(error_of(&mismatch)["reason"], "idempotency_mismatch");
+    assert_eq!(ran.load(Ordering::SeqCst), 1);
+}
+
+/// G18: a retained trust receipt this build cannot read is answered truthfully, never "nothing
+/// was done", and runs nothing.
+#[tokio::test]
+async fn unreadable_receipt_is_answered_truthfully() {
+    let held = super::HeldReplay {
+        value: super::ReplayValue {
+            digest: [1; 32],
+            answer: AdminAnswer {
+                status: 503,
+                headers: vec![],
+                body: b"original".to_vec(),
+            },
+            receipt: Some(super::EffectReceipt::TrustDecision {
+                version: 2,
+                attempt_op_id: [9; 16],
+                key: "inst/cp".into(),
+                ruling: "approve".into(),
+                decided_at: 1,
+                operation: Some("review-1".into()),
+            }),
+        },
+        settlement: None,
+    };
+    let audited = std::sync::atomic::AtomicBool::new(false);
+    let replayed = held
+        .replay(
+            None,
+            super::ReplayContext::Trust {
+                kernel: None,
+                audited: &audited,
+            },
+        )
+        .await;
+    assert_eq!(replayed.answer.status, 503);
+    assert!(replayed.terminal.is_none(), "nothing resolves it");
+    let message = error_of(&replayed.answer)["message"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(
+        message.contains("cannot be read back by this build; do not re-submit"),
+        "{message}"
+    );
+    assert!(!message.contains("nothing was done"), "{message}");
+}
+
+const PIN_CANARY: &str = "pin-material-canary-5c3e";
+
+/// A bound-custody kernel admitting `inst/cp`, declared under a pin whose operator material is the
+/// canary and sighted at its declared fingerprint `fp`.
+async fn pinned_kernel() -> Arc<busbar_kernel::host_services::KernelServices> {
+    use busbar_contract::services::{Caller, HostServices};
+    use busbar_kernel::host_services::InstanceFacts;
+    use busbar_kernel::trust::reverify::Policy;
+    use busbar_kernel::trust::section::{DeclaredPin, TrustEntry};
+    let kernel = Arc::new(bound_kernel().await);
+    kernel
+        .admit(
+            "inst",
+            InstanceFacts {
+                trust: vec![(
+                    "cp".into(),
+                    TrustEntry {
+                        pin: Some(DeclaredPin {
+                            mechanism: "fingerprint".into(),
+                            root: false,
+                            peer_key: false,
+                            key: Some(PIN_CANARY.into()),
+                            fingerprint: Some("fp".into()),
+                        }),
+                        policy: Policy {
+                            ttl_ms: 0,
+                            recovery_backoff_ms: 0,
+                        },
+                        approved: Default::default(),
+                    },
+                )],
+                ..InstanceFacts::default()
+            },
+        )
+        .await
+        .unwrap();
+    let caller = Caller::for_test(
+        Arc::from("inst"),
+        busbar_contract::abi::mechanism::KindCode::Plane,
+    );
+    let _ = kernel.trust_sight(&caller, "cp", "fp", Box::new(|_| {}));
+    kernel
+}
+
+async fn decide_directly(
+    kernel: &busbar_kernel::host_services::KernelServices,
+    body: &[u8],
+    operation: Option<&str>,
+    audited: &std::sync::atomic::AtomicBool,
+) -> AdminAnswer {
+    super::trust_decide_effect(
+        body,
+        busbar_kernel::trust::book::Ruling::Approve,
+        Some(kernel),
+        "op",
+        operation,
+        audited,
+    )
+    .await
+    .expect("the decision answers")
+    .answer
+}
+
+/// G3: a stale review is refused as `reviewed_digest_stale`, changes nothing, keeps nothing, and is
+/// audited by the kernel's typed row (the host flag is set).
+#[tokio::test]
+async fn stale_review_refuses_without_mutation_and_names_the_key() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let kernel = pinned_kernel().await;
+    let before = kernel.trust_rows();
+    let audited = AtomicBool::new(false);
+    let answer = decide_directly(
+        &kernel,
+        br#"{"key":"inst/cp","expected_digest":"not-current"}"#,
+        None,
+        &audited,
+    )
+    .await;
+    assert_eq!(answer.status, 409);
+    assert_eq!(error_of(&answer)["reason"], "reviewed_digest_stale");
+    assert_eq!(
+        kernel.trust_rows(),
+        before,
+        "a stale review changes nothing"
+    );
+    assert!(
+        busbar_kernel::trust::TrustReadout::over(Arc::clone(&kernel))
+            .kept_decisions()
+            .await
+            .expect("custody is bound")
+            .decisions
+            .is_empty(),
+        "nothing was kept"
+    );
+    assert!(
+        audited.load(Ordering::SeqCst),
+        "the kernel wrote the typed row"
+    );
+}
+
+/// G16: the kept decision echoes the request's `Idempotency-Key` and its principal.
+#[tokio::test]
+async fn decision_row_echoes_the_operation_id() {
+    use busbar_kernel::trust::book::DecidedBy;
+    let kernel = pinned_kernel().await;
+    let audited = std::sync::atomic::AtomicBool::new(false);
+    let answer = decide_directly(
+        &kernel,
+        br#"{"key":"inst/cp","expected_digest":"fp"}"#,
+        Some("op-123"),
+        &audited,
+    )
+    .await;
+    assert_eq!(
+        answer.status,
+        200,
+        "{}",
+        String::from_utf8_lossy(&answer.body)
+    );
+    let kept = busbar_kernel::trust::TrustReadout::over(Arc::clone(&kernel))
+        .kept_decisions()
+        .await
+        .expect("custody is bound");
+    assert_eq!(kept.decisions.len(), 1);
+    assert_eq!(kept.decisions[0].operation.as_deref(), Some("op-123"));
+    assert_eq!(
+        kept.decisions[0].decided_by,
+        Some(DecidedBy::Principal { id: "op".into() })
+    );
+}
+
+/// G9 (root carriers): the operator's pin material never appears in a decision answer, a refusal,
+/// `GET /trust`, or the redacted kept decisions.
+#[tokio::test]
+async fn no_pin_material_anywhere() {
+    let kernel = pinned_kernel().await;
+    let audited = std::sync::atomic::AtomicBool::new(false);
+    let refused = decide_directly(
+        &kernel,
+        br#"{"key":"inst/cp","expected_digest":"other"}"#,
+        None,
+        &audited,
+    )
+    .await;
+    let decided = decide_directly(
+        &kernel,
+        br#"{"key":"inst/cp","expected_digest":"fp"}"#,
+        Some("op-9"),
+        &audited,
+    )
+    .await;
+    let listed = super::trust_list_effect(Some(&kernel)).expect("listed");
+    let kept = busbar_kernel::trust::TrustReadout::over(Arc::clone(&kernel))
+        .kept_decisions()
+        .await
+        .expect("custody is bound");
+    for (carrier, bytes) in [
+        ("refusal", refused.body),
+        ("decision", decided.body),
+        ("GET /trust", listed.body),
+        ("kept decisions", format!("{kept:?}").into_bytes()),
+    ] {
+        assert!(
+            !String::from_utf8_lossy(&bytes).contains(PIN_CANARY),
+            "{carrier} carries pin material"
+        );
+    }
+}
+
+/// A kernel whose trust decisions write through the in-memory test backend `backend` (so a test
+/// can lose a reply or prove a write never applied), admitting `inst/cp` sighted at `d1`.
+async fn backend_kernel(
+    backend: &Arc<busbar_kernel::persistence::test_backend::Backend>,
+) -> Arc<busbar_kernel::host_services::KernelServices> {
+    use busbar_contract::services::{Caller, HostServices};
+    use busbar_kernel::host_services::{BlockingPool, InstanceFacts, KernelServices};
+    use busbar_kernel::trust::reverify::Policy;
+    use busbar_kernel::trust::section::TrustEntry;
+    let record = Arc::new(busbar_kernel::trust::DemotionRecord::default());
+    record
+        .set_store(Arc::new(
+            busbar_kernel::persistence::test_backend::attach(Arc::clone(backend)).await,
+        ))
+        .expect("a fresh record attaches");
+    let kernel = Arc::new(
+        KernelServices::new()
+            .with_demotions(record, "")
+            .with_pool(Arc::new(BlockingPool::new(
+                tokio::runtime::Handle::current(),
+                busbar_kernel::host_records::QUEUE_CAP,
+            ))),
+    );
+    kernel
+        .admit(
+            "inst",
+            InstanceFacts {
+                trust: vec![(
+                    "cp".into(),
+                    TrustEntry {
+                        pin: None,
+                        policy: Policy {
+                            ttl_ms: 0,
+                            recovery_backoff_ms: 0,
+                        },
+                        approved: Default::default(),
+                    },
+                )],
+                ..InstanceFacts::default()
+            },
+        )
+        .await
+        .unwrap();
+    let caller = Caller::for_test(
+        Arc::from("inst"),
+        busbar_contract::abi::mechanism::KindCode::Plane,
+    );
+    let _ = kernel.trust_sight(&caller, "cp", "d1", Box::new(|_| {}));
+    kernel
+}
+
+/// One replay-wrapped approve of `inst/cp` reviewed at `d1` under `Idempotency-Key: review-7`.
+async fn wrapped_approve(
+    kernel: &busbar_kernel::host_services::KernelServices,
+    cache: &super::ReplayCache,
+    replay_store: &super::ReplayStore,
+    ran: &std::sync::atomic::AtomicUsize,
+) -> AdminAnswer {
+    use busbar_core_admin::KernelVerb;
+    use busbar_kernel::trust::book::Ruling;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let request = trust_request("review-7", br#"{"key":"inst/cp","expected_digest":"d1"}"#);
+    let audited = AtomicBool::new(false);
+    let answer = super::replayable(
+        cache,
+        Some(replay_store),
+        super::ReplayScope {
+            verb: KernelVerb::TrustApprove,
+            actor: "op",
+        },
+        &request,
+        request.body(),
+        None,
+        super::ReplayContext::Trust {
+            kernel: Some(kernel),
+            audited: &audited,
+        },
+        || async {
+            ran.fetch_add(1, Ordering::SeqCst);
+            super::trust_decide_effect(
+                request.body(),
+                Ruling::Approve,
+                Some(kernel),
+                "op",
+                super::idempotency_key(&request),
+                &audited,
+            )
+            .await
+        },
+    )
+    .await
+    .expect("the decision answers");
+    assert!(
+        audited.load(Ordering::SeqCst),
+        "every answer is audited by one typed row"
+    );
+    answer
+}
+
+fn approved_at(kernel: &busbar_kernel::host_services::KernelServices) -> Option<String> {
+    kernel
+        .trust_rows()
+        .into_iter()
+        .find(|row| row.key() == "inst/cp")
+        .and_then(|row| row.approved)
+}
+
+/// R7 and G22 (root): a lost reply answers the unknown 503 with the attempt in `details`; the same
+/// key replays it, the attempt is found landed, applied in the book, and answered 200, terminally.
+#[tokio::test]
+async fn ambiguous_trust_write_is_unknown_then_resolves_applied() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let backend = Arc::new(busbar_kernel::persistence::test_backend::Backend::default());
+    let kernel = backend_kernel(&backend).await;
+    let store = crate::root::real_store::admin_scoped().await;
+    let replay_store: super::ReplayStore = Arc::new(move || Some(Arc::clone(&store)));
+    let cache = super::ReplayCache::new();
+    let ran = AtomicUsize::new(0);
+
+    backend.lose_reply.store(true, Ordering::SeqCst);
+    let first = wrapped_approve(&kernel, &cache, &replay_store, &ran).await;
+    assert_eq!(first.status, 503);
+    let error = error_of(&first);
+    assert_eq!(error["reason"], "service_unavailable");
+    assert_eq!(error["details"]["operation"], "review-7");
+    assert!(error["details"]["decided_at"].as_u64().is_some());
+    assert_eq!(
+        header_of(&first, super::TRUST_EFFECT_HEADER),
+        Some("unknown")
+    );
+    assert_eq!(approved_at(&kernel), None, "unknown is not applied in RAM");
+
+    let resolved = wrapped_approve(&kernel, &cache, &replay_store, &ran).await;
+    assert_eq!(
+        resolved.status,
+        200,
+        "{}",
+        String::from_utf8_lossy(&resolved.body)
+    );
+    assert_eq!(
+        approved_at(&kernel).as_deref(),
+        Some("d1"),
+        "answered applied only once in force"
+    );
+    let again = wrapped_approve(&kernel, &cache, &replay_store, &ran).await;
+    assert_eq!(again.status, 200, "the resolution is terminal");
+    assert_eq!(ran.load(Ordering::SeqCst), 1, "the decision ran once");
+}
+
+/// G20 (root): a write the store proves never applied resolves to 409 `outcome_not_applied`,
+/// terminally, and nothing is approved.
+#[tokio::test]
+async fn trust_write_proven_absent_is_terminal_not_applied() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let backend = Arc::new(busbar_kernel::persistence::test_backend::Backend::default());
+    let kernel = backend_kernel(&backend).await;
+    let store = crate::root::real_store::admin_scoped().await;
+    let replay_store: super::ReplayStore = Arc::new(move || Some(Arc::clone(&store)));
+    let cache = super::ReplayCache::new();
+    let ran = AtomicUsize::new(0);
+
+    backend.never_applies.store(true, Ordering::SeqCst);
+    assert_eq!(
+        wrapped_approve(&kernel, &cache, &replay_store, &ran)
+            .await
+            .status,
+        503
+    );
+    let resolved = wrapped_approve(&kernel, &cache, &replay_store, &ran).await;
+    assert_eq!(resolved.status, 409);
+    let error = error_of(&resolved);
+    assert_eq!(error["reason"], "outcome_not_applied");
+    assert_eq!(error["details"]["operation"], "review-7");
+    let again = wrapped_approve(&kernel, &cache, &replay_store, &ran).await;
+    assert_eq!(
+        (again.status, error_of(&again)["reason"].clone()),
+        (409, error["reason"].clone()),
+        "the not-applied answer is terminal"
+    );
+    assert_eq!(approved_at(&kernel), None);
+    assert_eq!(ran.load(Ordering::SeqCst), 1, "nothing is decided again");
+}
+
+/// G21 (root): after a restart (a new kernel and a cold replay cache over the same stores) nothing
+/// proves either outcome, so the replay stays the unknown 503 and decides nothing.
+#[tokio::test]
+async fn unknown_trust_write_without_proof_stays_503() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let backend = Arc::new(busbar_kernel::persistence::test_backend::Backend::default());
+    let store = crate::root::real_store::admin_scoped().await;
+    let replay_store: super::ReplayStore = Arc::new(move || Some(Arc::clone(&store)));
+    let ran = AtomicUsize::new(0);
+    {
+        let kernel = backend_kernel(&backend).await;
+        backend.never_applies.store(true, Ordering::SeqCst);
+        let first = wrapped_approve(&kernel, &super::ReplayCache::new(), &replay_store, &ran).await;
+        assert_eq!(first.status, 503);
+    }
+    let restarted = backend_kernel(&backend).await;
+    let replayed =
+        wrapped_approve(&restarted, &super::ReplayCache::new(), &replay_store, &ran).await;
+    assert_eq!(replayed.status, 503);
+    assert_eq!(error_of(&replayed)["reason"], "service_unavailable");
+    assert_eq!(approved_at(&restarted), None);
+    assert_eq!(ran.load(Ordering::SeqCst), 1, "nothing is decided again");
 }

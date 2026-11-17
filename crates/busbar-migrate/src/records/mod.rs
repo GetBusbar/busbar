@@ -5,12 +5,13 @@
 //! 1.5.5 logical rows a store's data step left under IMPORT (R0, `persistence::cells`) into native
 //! records, and the record-format chain ([`evolve`]).
 //!
-//! The crate reaches the store only through [`RecordStore`]: three calls (scan, commit, register)
-//! that the gateway's seam implements over the opened store under the boot's owner authority, with
-//! the kernel's own candidate encoders. It links no loader, no store driver and no kernel. Every
-//! page is one commit: exact predicates on every IMPORT row it consumes and on SUMMARY, an absent
-//! predicate on every native record it writes, so a page applies exactly once, a crash resumes
-//! where IMPORT still has rows, and a stale or concurrent owner loses on the predicates.
+//! The crate reaches the store only through [`RecordStore`]: four calls (scan, read, commit,
+//! register) that the gateway's seam implements over the opened store under the boot's owner
+//! authority, with the kernel's own candidate encoders. It links no loader, no store driver and no
+//! kernel. Every page is one commit: exact predicates on every IMPORT row it consumes and on
+//! SUMMARY, an absent predicate on every native record it writes, so a page applies exactly once, a
+//! crash resumes where IMPORT still has rows, and a stale or concurrent owner loses on the
+//! predicates.
 //!
 //! Cold code: a stamped boot whose IMPORT is empty and whose manifest is current enters none of it.
 
@@ -28,7 +29,8 @@ pub mod self_keys;
 
 pub use convert::{scale6, MAX_WHOLE_UNITS};
 pub use evolve::{
-    evolve, evolve_with, has_step, Manifest, RecordStep, CURSOR_KEY, RECORD_FORMAT, RECORD_STEPS,
+    evolve_with, has_step, initial_cursor, Manifest, RecordStep, CURSOR_KEY, RECORD_FORMAT,
+    RECORD_STEPS,
 };
 
 /// The most rows one page (one commit) carries.
@@ -52,6 +54,24 @@ pub enum Committed {
     /// A predicate failed (a row changed, a native record exists, another owner moved first);
     /// nothing applied.
     Conflict,
+    /// The store fenced this writer: another owner advanced the dataset epoch. Nothing applied,
+    /// and nothing this writer sends will.
+    Fenced,
+    /// The store refused this commit, which had no earlier uncertain send: nothing applied, and a
+    /// smaller candidate may pass (#319 r4 §7.2).
+    Refused,
+}
+
+impl Committed {
+    /// The refusal for an outcome that applied nothing and is not a predicate conflict.
+    pub(crate) fn unapplied(self, what: &str) -> Refusal {
+        match self {
+            Self::Fenced => Refusal::Verify(format!(
+                "{what} was fenced: another busbar owns this store now; nothing was written"
+            )),
+            _ => Refusal::Store(format!("the store refused {what}; nothing was written")),
+        }
+    }
 }
 
 /// One commit, built by the records step and executed by the seam.
@@ -72,28 +92,54 @@ pub struct Candidate {
     pub audit: Vec<Audit>,
 }
 
+/// One page of a scan: its rows in key order and the store's own continuation. A page may hold
+/// fewer rows than asked (a byte or item bound) and still not be the namespace's end: only an
+/// absent [`Page::next`] says no row follows (#319 r4 §7.3).
+#[derive(Debug, Default)]
+pub struct Page {
+    /// The rows, in key order.
+    pub rows: Vec<(Vec<u8>, SecureVec)>,
+    /// `Some(key)`: more rows may follow; the next page starts after `key`, the last row's key.
+    /// `None`: no row of the namespace follows this page.
+    pub next: Option<Vec<u8>>,
+}
+
 /// THE STORE, as the records step reaches it.
 pub trait RecordStore {
-    /// Up to `limit` rows of `ns` whose keys sort after `after`, in key order.
+    /// Up to `limit` rows of `ns` whose keys sort after `after` (`None`: from the first; `Some`
+    /// may name the empty key), in key order, with the store's continuation.
     ///
     /// # Errors
     /// The store's failure.
-    fn scan(
-        &self,
-        ns: NamespaceId,
-        after: &[u8],
-        limit: u32,
-    ) -> Result<Vec<(Vec<u8>, SecureVec)>, StoreFail>;
+    fn scan(&self, ns: NamespaceId, after: Option<&[u8]>, limit: u32) -> Result<Page, StoreFail>;
+    /// The record at `(ns, key)`, `None` when absent.
+    ///
+    /// # Errors
+    /// The store's failure.
+    fn read(&self, ns: NamespaceId, key: &[u8]) -> Result<Option<SecureVec>, StoreFail>;
     /// Apply `c` atomically, or nothing.
     ///
     /// # Errors
     /// The store's failure (the outcome is then unknown; the next boot resumes).
     fn commit(&self, c: Candidate) -> Result<Committed, StoreFail>;
-    /// Register a new writer authority, fencing every earlier writer at its next commit.
+    /// Prove this boot's writer authority still holds (the records step's pages commit under
+    /// it). It fences nobody: an ordinary registration keeps the dataset epoch.
     ///
     /// # Errors
-    /// The store's failure.
+    /// The store's failure, or an authority no longer admitted.
     fn register(&self) -> Result<(), StoreFail>;
+}
+
+/// THE STORE, as the record-format chain reaches it (#319 r4 §7, §9): a [`RecordStore`] under
+/// the migration owner's authority, which the kernel's opening or claim installed.
+pub trait FormatStore: RecordStore {
+    /// THE FINAL PUBLICATION: apply `c` (the last step's zero-payload completion: exact on the
+    /// manifest and the cursor, the cursor deleted, its evidence) atomically with the manifest at
+    /// `(format, 0)` under a fresh registrar and the dataset epoch advanced past this owner.
+    ///
+    /// # Errors
+    /// The store's failure (the outcome is then unknown; the next boot reinspects).
+    fn finalize(&self, c: Candidate, format: u32) -> Result<Committed, StoreFail>;
 }
 
 /// The counters of one R0 row: request counts whole, token counts in scale 6 (whole units ×
@@ -421,6 +467,23 @@ fn is_row(key: &[u8]) -> bool {
         && !key.starts_with(ATTEMPT_PREFIX)
 }
 
+/// Where the scan after `page` starts: `None` at the namespace's explicit end. A continuation must
+/// be the page's last row key, so a page that names one always progresses.
+///
+/// # Errors
+/// VERIFY for an empty page that is not the end, or a continuation that is not its last row.
+pub(crate) fn continuation(page: &Page) -> Result<Option<Vec<u8>>, Refusal> {
+    match (&page.next, page.rows.last()) {
+        (None, _) => Ok(None),
+        (Some(next), Some((last, _))) if next == last => Ok(Some(next.clone())),
+        (Some(_), _) => Err(Refusal::Verify(
+            "the store answered a scan page that does not progress (its continuation is not its \
+             last row)"
+                .to_owned(),
+        )),
+    }
+}
+
 /// The closure pre-check (§A6): one read-only pass over IMPORT, before any core write, on the
 /// first run and on every resume. Every row is converted (without sealing) so a value 1.5.5 could
 /// not have returned, or a counter 1.6.0 cannot store, refuses here and not mid-way.
@@ -432,14 +495,10 @@ fn pass(store: &dyn RecordStore) -> Result<Survey, Refusal> {
         audit_breaks: 0,
     };
     let mut chain: std::collections::BTreeMap<i64, (String, String)> = Default::default();
-    let mut after: Vec<u8> = Vec::new();
+    let mut after: Option<Vec<u8>> = None;
     loop {
-        let page = store.scan(IMPORT_NS, &after, PAGE)?;
-        let Some((last, _)) = page.last() else {
-            break;
-        };
-        let next = last.clone();
-        for (key, value) in &page {
+        let page = store.scan(IMPORT_NS, after.as_deref(), PAGE)?;
+        for (key, value) in &page.rows {
             if key.as_slice() == SUMMARY_KEY {
                 found.summary = Some((Summary::decode(value)?, value.clone()));
             } else if is_row(key) {
@@ -453,10 +512,10 @@ fn pass(store: &dyn RecordStore) -> Result<Survey, Refusal> {
                 }
             }
         }
-        if page.len() < PAGE as usize {
-            break;
-        }
-        after = next;
+        after = match continuation(&page)? {
+            Some(next) => Some(next),
+            None => break,
+        };
     }
     found.audit_breaks = chain
         .iter()
@@ -516,7 +575,8 @@ pub fn run(store: &dyn RecordStore, inputs: &Inputs<'_>) -> Result<Option<Report
     };
     loop {
         let page: Vec<(Vec<u8>, SecureVec)> = store
-            .scan(IMPORT_NS, SUMMARY_KEY, PAGE)?
+            .scan(IMPORT_NS, Some(SUMMARY_KEY), PAGE)?
+            .rows
             .into_iter()
             .filter(|(key, _)| is_row(key))
             .collect();
@@ -575,6 +635,7 @@ fn commit(store: &dyn RecordStore, c: Candidate) -> Result<(), Refusal> {
              written"
                 .to_owned(),
         )),
+        other => Err(other.unapplied("a page of the records step")),
     }
 }
 

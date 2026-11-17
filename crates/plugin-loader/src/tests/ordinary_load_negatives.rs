@@ -355,6 +355,8 @@ fn every_direct_contract_kind_refuses_the_previous_host_table_cohort_before_oper
     fn rejects<K: Kind>(previous: u64) {
         let real = witness_parts();
         let statement = Box::leak(Box::new(Statement {
+            // A whole Statement, so the old cohort is judged at its layout, not refused for size.
+            size: std::mem::size_of::<Statement>() as u32,
             kind: K::CODE as u32,
             kind_abi: K::ABI_VERSION,
             ..busbar_contract::abi::sdk::door::statement("previous-host-table", "1.6.0", 1)

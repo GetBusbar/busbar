@@ -4,7 +4,7 @@
 //! In-process logical planning ownership. Durable logical receipts remain domain
 //! records committed with effects; this map is neither a journal nor a receipt.
 
-use super::{AccessError, CoreStore, PendingId, PreparedCandidate, Submission};
+use super::{domain, AccessError, CoreStore, DomainCall, PendingId, PreparedCandidate, Submission};
 use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -17,6 +17,7 @@ pub(super) struct Entry {
     pub digest: [u8; 32],
     pub token: Arc<()>,
     pub pending: Option<PendingId>,
+    pub domain: Option<Arc<()>>,
 }
 
 pub(crate) enum LogicalClaim<'a> {
@@ -31,6 +32,7 @@ pub(crate) struct LogicalPermit<'a> {
     store: &'a CoreStore,
     pub(super) id: LogicalId,
     pub(super) token: Arc<()>,
+    pub(super) domain: Option<DomainCall>,
 }
 
 impl CoreStore {
@@ -39,13 +41,44 @@ impl CoreStore {
         id: LogicalId,
         digest: [u8; 32],
     ) -> Result<LogicalClaim<'_>, AccessError> {
+        self.claim_logical_owned(id, digest, None)
+    }
+
+    pub(crate) fn claim_logical_owned(
+        &self,
+        id: LogicalId,
+        digest: [u8; 32],
+        domain: Option<&DomainCall>,
+    ) -> Result<LogicalClaim<'_>, AccessError> {
+        if domain.is_some_and(|call| !call.belongs_to(self)) {
+            return Err(AccessError::Authority);
+        }
         let mut pending = self.lock()?;
         if let Some(entry) = pending.logical.get(&id) {
-            if entry.digest != digest {
+            if entry.digest != digest
+                || !domain::same_owner(entry.domain.as_ref(), domain.map(|call| &call.owner.id))
+            {
                 return Err(AccessError::OperationConflict);
             }
             return Ok(match entry.pending {
-                Some(id) => LogicalClaim::Retained(id),
+                Some(id) => {
+                    if let Some(call) = domain {
+                        let held = pending.attempts.get_mut(&id).ok_or(AccessError::Corrupt)?;
+                        let owner = held.domain.as_mut().ok_or(AccessError::Corrupt)?;
+                        if !Arc::ptr_eq(&owner.owner, &call.owner.id) {
+                            return Err(AccessError::Corrupt);
+                        }
+                        if owner
+                            .foreground
+                            .upgrade()
+                            .is_some_and(|active| !Arc::ptr_eq(&active, &call.foreground))
+                        {
+                            return Ok(LogicalClaim::Busy);
+                        }
+                        owner.foreground = Arc::downgrade(&call.foreground);
+                    }
+                    LogicalClaim::Retained(id)
+                }
                 None => LogicalClaim::Busy,
             });
         }
@@ -68,12 +101,14 @@ impl CoreStore {
                 digest,
                 token: token.clone(),
                 pending: None,
+                domain: domain.map(|call| call.owner.id.clone()),
             },
         );
         Ok(LogicalClaim::Prepare(LogicalPermit {
             store: self,
             id,
             token,
+            domain: domain.cloned(),
         }))
     }
 }
@@ -84,7 +119,13 @@ impl LogicalPermit<'_> {
         candidate: PreparedCandidate,
     ) -> Result<Submission, AccessError> {
         let (id, attempt) = self.store.register(candidate, Some(&self))?;
-        self.store.drive(id, attempt).await
+        self.store
+            .drive_with(
+                id,
+                attempt,
+                self.domain.as_ref().map(|call| &call.foreground),
+            )
+            .await
     }
 }
 

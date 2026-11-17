@@ -1,0 +1,19 @@
+[package]
+name = "busbar-openapi-diff"
+version = "1.6.0"
+publish = false            # internal workspace tool; never goes to crates.io
+edition = "2021"
+rust-version = "1.97"
+description = "The additive-only gate for the admin OpenAPI document (#309): `openapi-diff --base <old openapi.json> --head <new openapi.json> [--advisory]`. Exit 0: additive only; 1: a breaking change (findings on stdout); 3: a breaking change under --advisory; 2: usage or read error."
+license = "Apache-2.0"
+
+[[bin]]
+name = "openapi-diff"
+path = "src/main.rs"
+bench = false
+
+[dependencies]
+busbar-contract = { workspace = true }
+
+[lints]
+workspace = true

@@ -5,6 +5,64 @@ use super::*;
 use crate::sign::{sign, SigningKey};
 
 #[test]
+fn native_archives_are_not_legacy_supersession_candidates() {
+    use busbar_plugin_abi::stamp::{emit, Spec};
+    let bytes = emit(&Spec {
+        kind: busbar_plugin_abi::types::KindCode::Store,
+        kind_abi: busbar_plugin_abi::versions::STORE,
+        layout: busbar_plugin_abi::store::FP,
+        out_of_process: false,
+        engine_min: None,
+        engine_max: None,
+        name: "busbar-store-alpha",
+        version: "1.6.0",
+        build_id: None,
+        crypto: "host",
+    })
+    .0
+    .to_vec();
+    let release = key(1);
+    let mut native = manifest("busbar-store-alpha", "alpha", "busbar");
+    native.version = "1.6.0".into();
+    native.abi_version = busbar_plugin_abi::versions::STORE;
+    native.former_names = vec!["alpha".into()];
+    let native = crate::sign::seal_test_artifact(&release, native, &bytes);
+    let mut legacy = manifest("busbar-store-alpha", "alpha", "busbar");
+    legacy.version = "1.6.0".into();
+    let legacy = stating(legacy, Some("1.6.0"));
+    let legacy_bytes = b"legacy store artifact";
+    let legacy = crate::sign::seal_test_artifact(&release, legacy, legacy_bytes);
+    for (native_file, legacy_file) in [("a.tar.gz", "z.tar.gz"), ("z.tar.gz", "a.tar.gz")] {
+        let dir = tmpdir("native-no-supersession");
+        write_tarball(&dir, native_file, &native, &bytes);
+        write_tarball(&dir, legacy_file, &legacy, legacy_bytes);
+        let rows = inventory(&dir, &policy(&release));
+        assert!(rows.iter().all(|r| r.signature != "superseded"));
+        assert!(
+            rows.iter()
+                .any(|r| r.file == native_file && r.status.starts_with("CONFLICT:")),
+            "native archive reaches duplicate conflict handling"
+        );
+        assert!(scan_and_validate(&dir, &policy(&release)).is_err());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+    let dir = tmpdir("native-invalid-is-not-outdated");
+    let mut invalid = native;
+    invalid.abi_version += 1;
+    let invalid = crate::sign::seal_test_artifact(&release, invalid, &bytes);
+    write_tarball(&dir, "native.tar.gz", &invalid, &bytes);
+    write_tarball(&dir, "legacy.tar.gz", &legacy, legacy_bytes);
+    assert!(matches!(
+        examine(&dir.join("native.tar.gz"), &policy(&release)),
+        FileOutcome::Invalid { .. }
+    ));
+    assert!(inventory(&dir, &policy(&release))
+        .iter()
+        .all(|row| row.signature != "superseded"));
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn two_linked_rows_cannot_claim_one_canonical_name() {
     let first = renamed("hook", "acme-one", "one", &[]);
     for mut second in [
@@ -446,7 +504,7 @@ fn untrusted_is_skipped_not_fatal_but_reference_fails_loud() {
         reg.resolve("dynamo").is_none(),
         "a skipped plugin never resolves"
     );
-    let err = reg.store_door("dynamo").map(|_| ()).unwrap_err();
+    let err = reg.kind_refusal("store", "back the governance store", "dynamo");
     assert!(err.contains("was not loaded"), "got {err}");
     assert!(
         err.contains("allow_untrusted"),
@@ -563,7 +621,7 @@ fn open_store_refuses_non_store_kind() {
     let m = crate::sign::seal_test_artifact(&release, m, b"hook lib");
     write_tarball(&dir, "hook.tar.gz", &m, b"hook lib");
     let reg = scan_and_validate(&dir, &policy(&release)).expect("scan");
-    let err = reg.store_door("ranker").map(|_| ()).unwrap_err();
+    let err = reg.kind_refusal("store", "back the governance store", "ranker");
     assert!(err.contains("kind 'hook'"), "got {err}");
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -591,7 +649,7 @@ fn open_secret_refuses_non_secret_kind_and_vice_versa() {
     let err = reg.secret_refusal("gamma");
     assert!(err.contains("kind 'store'"), "got {err}");
 
-    let err = reg.store_door("delta").map(|_| ()).unwrap_err();
+    let err = reg.kind_refusal("store", "back the governance store", "delta");
     assert!(err.contains("kind 'secret'"), "got {err}");
 
     let err = reg.secret_refusal("nope");
@@ -1084,9 +1142,11 @@ fn a_1_5_5_name_resolves_to_the_1_6_0_plugin_dropped_in_and_linked() {
         "alpha",
         &["busbar-store-alpha-plugin"],
     ));
-    let refusal = reg
-        .store_door("busbar-store-alpha-plugin")
-        .expect_err("a door row of a store is not the store kind's linked row");
+    let refusal = reg.kind_refusal(
+        "store",
+        "back the governance store",
+        "busbar-store-alpha-plugin",
+    );
     assert!(
         refusal.contains("busbar-store-alpha") && !refusal.contains("no plugin named"),
         "the former name resolved to the plugin: {refusal}"
@@ -1394,11 +1454,9 @@ fn a_linked_built_in_answers_its_canonical_name_and_prints_its_key() {
         let p = reg.resolve(word).expect("resolves");
         assert_eq!(p.key(), key, "{word}");
     }
-    assert!(reg.store_door("busbar-store-mem").is_ok() && reg.store_door("mem").is_ok());
-
     assert_eq!(
-        reg.store_door("busbar-auth-tok").err().as_deref(),
-        Some("plugin 'tok' has kind 'auth', not 'store' - it cannot back the governance store")
+        reg.kind_refusal("store", "back the governance store", "busbar-auth-tok"),
+        "plugin 'tok' has kind 'auth', not 'store' - it cannot back the governance store"
     );
     assert_eq!(
         reg.secret_refusal("tok"),

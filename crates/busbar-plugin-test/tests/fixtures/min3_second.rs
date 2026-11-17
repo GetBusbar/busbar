@@ -724,11 +724,10 @@ impl core::future::Future for Park {
 /// of `plugins` admitted, in order.
 pub fn registry<N: Needs>(_needs: Arc<N>, max_steps: u32, plugins: &[&'static Plugin]) -> Registry {
     let binder: Arc<dyn ConfigBinder> = Arc::new(MemBinder::new());
-    let slots = Arc::new(busbar_plugin_loader::instance::SlotTable::new());
-    busbar_plugin_loader::instance::install_sinks(&slots);
+    let process = crate::process_resources();
     let mut images = busbar_plugin_loader::instance::ImagesBuilder::new(
         &HOST,
-        slots,
+        Arc::clone(process.slots()),
         Ceilings {
             max_steps,
             ..Ceilings::DEFAULT
@@ -740,16 +739,13 @@ pub fn registry<N: Needs>(_needs: Arc<N>, max_steps: u32, plugins: &[&'static Pl
             .admit(admitted)
             .unwrap_or_else(|r| panic!("add: {r:?}"));
     }
-    Registry::new(
-        images.finish(),
-        binder,
-        Arc::new(busbar_plugin_loader::process::InstanceIds::default()),
-    )
+    Registry::new(images.finish(), binder, Arc::clone(process.ids()))
 }
 
 /// The spec of instance `name` of the image `module` names, with `config` and no limits.
 pub fn spec<'a>(module: &'a str, name: &'a str, config: &'a [u8]) -> InstanceSpec<'a> {
     InstanceSpec {
+        store_migration: None,
         purpose: busbar_plugin_loader::instance::OpenPurpose::Canonical,
         identity: module,
         name,

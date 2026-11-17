@@ -395,7 +395,7 @@ mod stack_tests {
             .collect();
         let mut all: Vec<u64> = ids.into_iter().flatten().collect();
         let n = all.len();
-        all.sort_unstable();
+        all.sort();
         all.dedup();
         assert_eq!(all.len(), n, "every chain id is unique");
         assert!(

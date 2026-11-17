@@ -13,7 +13,7 @@ use busbar_contract::persistence::{
     ReadResult, MAX_SLOTS,
 };
 
-use super::commit::{Attempt, State, SubmitResult};
+use super::commit::{Attempt, NoEffectCause, State, SubmitResult};
 
 /// At most this many in-doubt attempts are resubmitted per settle tick.
 pub const SETTLE_PER_TICK: usize = 64;
@@ -32,6 +32,10 @@ pub struct SlotStates {
 #[path = "logical.rs"]
 mod logical;
 pub(crate) use logical::{LogicalClaim, LogicalId, LogicalPermit};
+
+#[path = "domain.rs"]
+mod domain;
+pub(crate) use domain::{DomainCall, DomainOwner};
 
 /// An already registered writer incarnation. Attachment validates these facts
 /// against one coherent backend observation; it does not mint a grant.
@@ -87,6 +91,7 @@ struct PendingEntry {
     driving: bool,
     logical: Option<LogicalId>,
     identity_owned: bool,
+    domain: Option<domain::Entry>,
     /// The queue slot this entry holds for its whole lifetime.
     slot: u32,
 }
@@ -448,12 +453,43 @@ impl CoreStore {
         self.drive(id, attempt).await
     }
 
+    /// [`CoreStore::submit`], also answering why a [`SubmitResult::NoEffect`] applied nothing
+    /// (#319 r4 §7.1): the record-format driver may shrink a page only for a backend refusal of a
+    /// send with no earlier uncertainty, never for a fence or a slot invariant the facade reports
+    /// as the same `Failure::Refused`.
+    pub(crate) async fn submit_traced(
+        &self,
+        candidate: PreparedCandidate,
+    ) -> Result<(Submission, Option<NoEffectCause>), AccessError> {
+        let (id, attempt) = self.register(candidate, None)?;
+        let submission = self.drive(id, attempt.clone()).await?;
+        let cause = match submission.result {
+            SubmitResult::NoEffect(_) => attempt.no_effect_cause(),
+            _ => None,
+        };
+        Ok((submission, cause))
+    }
+
+    /// [`CoreStore::submit`] for a plain write made under `domain`: the attempt is registered
+    /// with the domain's owner and this call's foreground reservation before the first crossing,
+    /// so a canceled caller leaves it discoverable to that owner's maintenance, exactly as a
+    /// logical (conditional) write does.
+    pub(crate) async fn submit_in(
+        &self,
+        candidate: PreparedCandidate,
+        domain: Option<&DomainCall>,
+    ) -> Result<Submission, AccessError> {
+        let (id, attempt) = self.register_owned(candidate, None, false, domain)?;
+        self.drive_with(id, attempt, domain.map(|call| &call.foreground))
+            .await
+    }
+
     /// Identity's canonical owner marks custody before its first native crossing.
     pub(crate) async fn submit_identity(
         &self,
         candidate: PreparedCandidate,
     ) -> Result<Submission, AccessError> {
-        let (id, attempt) = self.register_owned(candidate, None, true)?;
+        let (id, attempt) = self.register_owned(candidate, None, true, None)?;
         self.drive(id, attempt).await
     }
 
@@ -494,7 +530,7 @@ impl CoreStore {
         candidate: PreparedCandidate,
         logical: Option<&LogicalPermit<'_>>,
     ) -> Result<(PendingId, Arc<Attempt>), AccessError> {
-        self.register_owned(candidate, logical, false)
+        self.register_owned(candidate, logical, false, None)
     }
 
     fn register_owned(
@@ -502,7 +538,13 @@ impl CoreStore {
         candidate: PreparedCandidate,
         logical: Option<&LogicalPermit<'_>>,
         identity_owned: bool,
+        domain: Option<&DomainCall>,
     ) -> Result<(PendingId, Arc<Attempt>), AccessError> {
+        // The owning domain: a logical permit carries its own; a plain write names it directly.
+        let owned_by = logical.and_then(|permit| permit.domain.as_ref()).or(domain);
+        if owned_by.is_some_and(|call| !call.belongs_to(self)) {
+            return Err(AccessError::Authority);
+        }
         let id = candidate.candidate().id;
         let pending_id = PendingId(id.operation);
         let attempt = {
@@ -531,6 +573,10 @@ impl CoreStore {
                 if held.attempt.candidate().fingerprint() != candidate.fingerprint()
                     || held.logical != logical.map(|permit| permit.id)
                     || held.identity_owned != identity_owned
+                    || !domain::same_owner(
+                        held.domain.as_ref().map(|entry| &entry.owner),
+                        owned_by.map(|call| &call.owner.id),
+                    )
                 {
                     return Err(AccessError::OperationConflict);
                 }
@@ -569,6 +615,10 @@ impl CoreStore {
                         driving: false,
                         logical: logical.map(|permit| permit.id),
                         identity_owned,
+                        domain: owned_by.map(|call| domain::Entry {
+                            owner: call.owner.id.clone(),
+                            foreground: Arc::downgrade(&call.foreground),
+                        }),
                         slot,
                     },
                 );
@@ -600,6 +650,15 @@ impl CoreStore {
     }
 
     async fn drive(&self, id: PendingId, attempt: Arc<Attempt>) -> Result<Submission, AccessError> {
+        self.drive_with(id, attempt, None).await
+    }
+
+    async fn drive_with(
+        &self,
+        id: PendingId,
+        attempt: Arc<Attempt>,
+        foreground: Option<&Arc<()>>,
+    ) -> Result<Submission, AccessError> {
         {
             let mut pending = self.lock()?;
             let entry = pending
@@ -609,7 +668,12 @@ impl CoreStore {
             if !Arc::ptr_eq(&entry.attempt, &attempt) {
                 return Err(AccessError::OperationConflict);
             }
-            if entry.driving {
+            let reserved_elsewhere = entry.domain.as_ref().is_some_and(|domain| {
+                foreground.is_none_or(|held| {
+                    !std::sync::Weak::ptr_eq(&domain.foreground, &Arc::downgrade(held))
+                })
+            });
+            if entry.driving || reserved_elsewhere {
                 return Ok(Submission {
                     id,
                     result: SubmitResult::Busy,

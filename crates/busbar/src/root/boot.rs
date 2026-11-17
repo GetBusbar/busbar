@@ -87,79 +87,23 @@ fn authorize_native_image(bytes: &[u8], display: &str) -> Result<(), String> {
     }
 }
 
-/// THE OLD ABI STORE'S OPEN (until #274 deletes that ABI): inspect the prepared native store and OPEN an empty or
-/// current dataset, then admit its format. 1.6.0 converts a 1.5.5 store only inside a MIN-3 store's own open, so
-/// any other inspected state is refused before the store is opened or written.
-pub(crate) async fn open_current_store(
-    prepared: &busbar_contract::persistence::lifecycle::axis::Prepared,
-    bounds: busbar_contract::persistence::lifecycle::Bounds,
-    shutdown: &tokio::sync::watch::Receiver<bool>,
-) -> Result<busbar_kernel::persistence::startup::Startup, String> {
-    use busbar_contract::persistence::lifecycle::{
-        Error, InspectionState, OpenBinding, Request, Response,
-    };
-    const RETRY: std::time::Duration = std::time::Duration::from_millis(250);
-    let request = Arc::new(Request::Inspect { bounds });
-    let binding = loop {
-        if *shutdown.borrow() {
-            return Err("shutdown requested during native Store inspection".into());
-        }
-        let inspected = match prepared.bootstrap(Arc::clone(&request)).await {
-            Ok(inspected) => inspected,
-            Err(Error::Pending | Error::Busy | Error::Unknown) => {
-                tokio::time::sleep(RETRY).await;
-                continue;
-            }
-            Err(error) => return Err(format!("Store inspection refused: {error:?}")),
-        };
-        let Response::Inspected(inspection) = &*inspected else {
-            return Err("Store inspection answered with something other than an inspection".into());
-        };
-        match inspection.state {
-            InspectionState::Empty => break OpenBinding::Empty,
-            InspectionState::Current => {
-                let source = inspection
-                    .source
-                    .clone()
-                    .ok_or("a current Store answered no source identity")?;
-                let marker = inspection
-                    .admission_marker
-                    .as_ref()
-                    .ok_or("a current Store answered no admission marker")?;
-                break OpenBinding::Current {
-                    source,
-                    admission_marker_digest: busbar_contract::crypto::sha256(
-                        marker.expose(&busbar_kernel::seal::lend()),
-                    ),
-                };
-            }
-            InspectionState::Busy => tokio::time::sleep(RETRY).await,
-            _ => {
-                return Err(
-                    "UNSUPPORTED: this store holds data this store plugin's old ABI build cannot open \
-                     as 1.6.0; install the plugin's 1.6.0 (MIN-3) build, whose own open upgrades it. \
-                     Nothing was written"
-                        .into(),
-                )
-            }
-        }
-    };
-    let backend = loop {
-        if *shutdown.borrow() {
-            return Err("shutdown requested during native Store open".into());
-        }
-        match prepared.open(binding.clone()).await {
-            Ok(backend) => break backend,
-            Err(Error::Pending | Error::Busy | Error::Unknown) => tokio::time::sleep(RETRY).await,
-            Err(error) => return Err(format!("Store open refused: {error:?}")),
-        }
-    };
-    admit_format(backend, true).await
-}
-
 pub(crate) async fn admit_format(
     backend: busbar_contract::persistence::axis::OpenedBackend,
     initialize_empty: bool,
+) -> Result<busbar_kernel::persistence::startup::Startup, String> {
+    admit_format_with(
+        backend,
+        initialize_empty,
+        busbar_migrate::records::RECORD_STEPS,
+    )
+    .await
+}
+
+/// [`admit_format`] converting older record formats with `steps` (#319 r4 §5).
+pub(crate) async fn admit_format_with(
+    backend: busbar_contract::persistence::axis::OpenedBackend,
+    initialize_empty: bool,
+    steps: &'static [busbar_migrate::records::RecordStep],
 ) -> Result<busbar_kernel::persistence::startup::Startup, String> {
     use busbar_kernel::persistence::{
         facade::Limits,
@@ -179,7 +123,10 @@ pub(crate) async fn admit_format(
         // dataset. An existing legacy or incomplete dataset is never relabelled.
         initialize_empty,
     )
-    .map_err(|error| format!("Store format admission refused: {error:?}"))?;
+    .map_err(|error| format!("Store format admission refused: {error:?}"))?
+    // An older record format this release converts is opened and converted here, before any
+    // ordinary admission, overlay read, hydration or listener (#319 r4 §5).
+    .with_format_chain(Arc::new(super::migrate_records::Chain(steps)));
     let mut waits = 0u32;
     loop {
         let advanced = match startup.advance().await {
@@ -211,6 +158,24 @@ pub(crate) async fn admit_format(
             Progress::Draining | Progress::Retired => {
                 return Err("Store admission entered an invalid boot state".into());
             }
+            Progress::Migrate => {
+                let owner = startup
+                    .migration()
+                    .ok_or("Store admission lost its record-format migration owner")?;
+                tracing::info!(
+                    target: "busbar::migrate",
+                    "converting this store's records from format {} (the whole fleet must be stopped)",
+                    owner.format()
+                );
+                let rows = super::migrate_records::evolve(owner, steps).await?;
+                tracing::info!(
+                    target: "busbar::migrate",
+                    "the store's records were converted ({rows} rows); admitting"
+                );
+                startup
+                    .migration_finished()
+                    .map_err(|error| format!("Store format admission refused: {error:?}"))?;
+            }
         }
     }
 }
@@ -222,7 +187,8 @@ const _: () = assert!(
             + busbar_plugin_loader::dispatch::ready::CANCEL_GRACE.as_secs()
 );
 
-/// The first-start wait line (FIRST-START-TAKEOVER §2.2): on the first wait and every 10 s after.
+/// The wait line (FIRST-START-TAKEOVER §2.2; #319 r4 §8 for a record-format conversion): on the
+/// first wait and every 10 s after.
 fn log_first_start_wait(waiting: busbar_kernel::persistence::startup::Waiting) {
     let owner = busbar_kernel::persistence::startup::writer_hex(&waiting.owner);
     let since = waiting.since_change.as_secs();
@@ -230,6 +196,18 @@ fn log_first_start_wait(waiting: busbar_kernel::persistence::startup::Waiting) {
         .window
         .saturating_sub(waiting.since_change)
         .as_secs();
+    if waiting.migrating {
+        tracing::warn!(
+            diag = %busbar_kernel::diagnostics::FORMAT_MIGRATION_WAITING.banner(),
+            owner = %owner,
+            since_change_s = since,
+            claim_in_s = left,
+            "waiting on the record-format conversion of this dataset by writer {owner}: last change \
+             {since} s ago, claimed in {left} s if it stays unchanged. A record-format upgrade \
+             needs the whole fleet stopped (docs/migration-1.6.md)."
+        );
+        return;
+    }
     tracing::warn!(
         diag = %busbar_kernel::diagnostics::FIRST_START_WAITING.banner(),
         owner = %owner,
@@ -672,25 +650,6 @@ pub(crate) fn configured_root_binds(
         }
     }
     Ok(binds)
-}
-
-pub(crate) fn candidate_listener_needs(
-    app: &busbar_kernel::state::App,
-    sections: &std::collections::BTreeMap<&'static str, busbar_contract::yaml::Value>,
-    root: Vec<InboundBind>,
-) -> Option<Result<ListenerNeeds, String>> {
-    let registry = super::loader::rows::registry_of(app.hook_env.registry.as_ref())?;
-    Some(
-        listener_candidates_from(&crate::LINKED, Some(registry)).and_then(|candidates| {
-            listener_projection(
-                candidates,
-                &app.hook_registry,
-                &app.export_defs,
-                sections,
-                root,
-            )
-        }),
-    )
 }
 
 fn listener_projection(
@@ -1905,17 +1864,11 @@ pub(crate) fn open_dropped_transports(
                             .ok_or_else(|| format!("`{}` states no transport tail", plugin.name()))?;
                         #[cfg(test)]
                         let key = facts.claims.first().copied().unwrap_or_default();
-                        let claims = facts.claims;
-                        let composes_over = facts.composes_over;
-                        let offered = facts.offered;
                         let upgrades = facts.upgrades;
                         let door = crate::root::doors::served(plugin, settings)?;
                         Ok(crate::root::registry::DroppedDoor {
                             #[cfg(test)]
                             key,
-                            claims,
-                            composes_over,
-                            offered,
                             upgrades,
                             door,
                         })
@@ -2028,6 +1981,7 @@ enum BookPhase {
     BuildDurability,
     BootPrices,
     BindKeyset,
+    SealAfterRestart,
     RestoreAmendments,
     AttachRecovery,
     Hydrate,
@@ -2209,13 +2163,26 @@ impl BookPreparation {
             now,
         )
         .await?;
-        // SEALING-FIX §3.3, §5.3: the key's signing power goes to the two signer threads; the book
-        // keeps only the public half. The notary starts from the resumed head, read before any
-        // recovery line is appended, once serving begins (`main`).
+        // Preserve the genuinely verified Bootstrap public half before transferring signing
+        // authority. The exact live Notary key selects it; no active-key/cardinality fallback.
+        let notary = busbar_kernel_audit::Notary::new(bound.notary);
+        let trusted_bootstrap_key = bound
+            .verification_keys
+            .get(notary.key_id())
+            .cloned()
+            .ok_or("the live Notary has no verified Bootstrap public key")?;
+        // Signer threads may serve boot recovery; the live notary baseline is bound only
+        // after all recovery appends below and before NodeBook can be published.
+        let audit_verification_keys = Arc::new(bound.verification_keys);
+        super::durability::response_intent::verify_history(
+            self.durability.as_ref().unwrap(),
+            audit_verification_keys.as_ref(),
+        )
+        .map_err(|error| format!("response intent history: {error}"))?;
         let (audit, checkpoint) = {
             let durability = self.durability.as_ref().unwrap();
             let (services, checkpoint) = super::durability::audit_services::AuditServices::spawn(
-                busbar_kernel_audit::Notary::new(bound.notary),
+                notary,
                 busbar_kernel_audit::BootstrapSigner::new(bound.bootstrap),
                 durability.record.node(),
                 durability.journal.clone(),
@@ -2225,6 +2192,48 @@ impl BookPreparation {
             .map_err(|error| format!("the audit signer threads did not start: {error}"))?;
             (Arc::new(services), checkpoint)
         };
+        self.phase = BookPhase::SealAfterRestart;
+        {
+            let durability = self.durability.as_mut().unwrap();
+            let records = durability.take_boot_records();
+            let key_hex = durability.record.public_key_hex();
+            let key = key_hex
+                .as_deref()
+                .and_then(|hex| busbar_kernel_audit::AuditVerifyingKey::from_hex(hex).ok());
+            if let (Some(handle), Some(key)) = (audit.take_boot_handle(), key) {
+                let sealed = super::durability::restart_seal::seal_own_node(
+                    durability, &records, &handle, &key, &host,
+                )
+                .await;
+                match sealed {
+                    super::durability::restart_seal::OwnSeal::Nothing => {
+                        tracing::debug!(node, "own-node audit tail already sealed");
+                    }
+                    super::durability::restart_seal::OwnSeal::Sealed { from, to } => {
+                        tracing::debug!(node, from, to, "own-node audit restart page committed");
+                    }
+                    super::durability::restart_seal::OwnSeal::Broken(at) => {
+                        tracing::debug!(
+                            node,
+                            last_good = at.last_good,
+                            reason = at.reason.as_str(),
+                            "own-node audit break recorded"
+                        );
+                    }
+                    super::durability::restart_seal::OwnSeal::Refused(cause) => {
+                        tracing::debug!(node, %cause, "own-node audit tail left unsealed");
+                    }
+                }
+            }
+            drop(records);
+            if let Some(key_hex) = key_hex {
+                audit.set_predecessor_inputs(super::durability::predecessor::PredecessorInputs {
+                    own: node,
+                    taken_at_ms: self.taken.as_ref().map_or(0, |taken| taken.taken_at_ms),
+                    key_hex,
+                });
+            }
+        }
         self.phase = BookPhase::RestoreAmendments;
         let durability = self.durability.as_mut().unwrap();
         durability
@@ -2267,16 +2276,44 @@ impl BookPreparation {
         }
         super::durability::bind_amendments(shared, &app.amendments).await?;
         super::measurements::install(app)?;
+        {
+            let recovered = shared.lock().unwrap_or_else(|poison| poison.into_inner());
+            audit
+                .bind_original_bootstrap(&recovered, trusted_bootstrap_key)
+                .map_err(|error| format!("original audit binding: {error}"))?;
+        }
         let token = self.token.take().unwrap();
         let verb_store = super::durability::node_verb_store(shared.clone(), token, store);
-        self.phase = BookPhase::Ready;
-        Ok(super::durability::NodeBook {
+        let mut book = super::durability::NodeBook {
+            audit_verification_keys,
+            response_intents: None,
             durability: self.shared.take().unwrap(),
             runtime_journal: self.journal.take().unwrap(),
             node_lease: self.node_lease.take(),
             verb_store,
-            audit: Some(audit),
-        })
+            audit: Some(Arc::clone(&audit)),
+        };
+        if !book.runtime_journal.is_bound_to(&self.core) {
+            return Err("response intent journal belongs to another Store attachment".into());
+        }
+        let incarnation = book
+            .durability
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .incarnation;
+        book.response_intents = Some(
+            super::durability::response_intent::ResponseIntentService::new(
+                Arc::clone(&book.runtime_journal),
+                incarnation,
+                book.audit_verification_keys.as_ref().clone(),
+                audit
+                    .take_response_intent_handle()
+                    .ok_or("response intent signer was already transferred")?,
+            )
+            .map_err(|error| error.to_string())?,
+        );
+        self.phase = BookPhase::Ready;
+        Ok(book)
     }
 }
 async fn bind_boot_keyset(
@@ -2507,6 +2544,7 @@ pub(crate) async fn stored_format_refusal(
 ///
 /// # Errors
 /// The walk reported a store it did not admit.
+#[cfg(test)]
 pub(crate) fn walk_admission<T>(
     walked: bool,
     take: impl FnOnce() -> Option<T>,
@@ -2524,13 +2562,13 @@ pub(crate) fn walk_admission<T>(
 #[path = "tests/boot_walk.rs"]
 mod boot_walk_tests;
 
-/// Root-owned registry opening and boot planning.
-pub(crate) mod registry;
 /// Root-owned deployment ordering and instance opening.
 pub(crate) mod walk;
 
 pub(crate) mod images;
 
+/// Store opening for the root's integration fixtures. Production opens through MIN-3 bootstrap.
+#[cfg(test)]
 pub(crate) mod store;
 
 pub(crate) mod process;

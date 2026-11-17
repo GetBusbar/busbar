@@ -44,6 +44,9 @@ the upgrade.
    writer; they are not a substitute for stopping the old deployment.
 2. Back up the complete Store and configuration directory, including the old file overlay,
    providers catalog and any credential files. Retain the old launch environment for rollback.
+   Take the whole set in the documented order, with the Store backup and the exported audit
+   stream taken at the same point in time: see
+   [backup set and order](operations.md#backup-set-and-order).
 3. Install the intended 1.6.0 executable and compatible external artifacts. Where native
    bootstrap, check or migration code requires authorization, put the selected archive's
    complete SHA-256 in the operator base `plugins.fetch` entry. A downloaded release index
@@ -118,12 +121,16 @@ interruption, recovery and rollback evidence before this procedure is qualified.
 
 Stop every 1.6.0 process. Restore the complete pre-upgrade Store backup and configuration
 snapshot together, including the providers catalog, credential files, overlay and old launch
-settings. Then start 1.5.5. Changes made after the upgrade are not carried back.
+settings. Then start 1.5.5. Changes made after the upgrade are not carried back; this
+includes key revocations and trust demotions made under 1.6.0, which must be re-applied (see
+[backup set and order](operations.md#backup-set-and-order)).
 
 Restoring only `config.yaml.1.5.5` does **not** undo Store migrations. Restore the old overlay
 path too: the upgrader may have replaced it with a directory containing `busbar-1.6-folded`.
 An interrupted fold can leave the original bytes at `<overlay>.busbar-folding`; a completed
 fold keeps them at `<overlay>.1.5.5`. Preserve these recovery files until rollback is complete.
+To restore the overlay path by hand, writing `<o>` for the overlay path: move `<o>.busbar-folding` back to `<o>` if it exists, else move `<o>.1.5.5` back.
+A rollback that moves only `<o>.1.5.5` back loses the overlay a crash left at `<o>.busbar-folding`.
 If both an ordinary overlay file and a folding copy exist, stop all writers and reconcile
 which snapshot to restore before booting 1.5.5. Prefer restoring the complete backup rather
 than reconstructing the deployment from individual recovery files.
@@ -156,7 +163,7 @@ the key, matching the old reader's behavior. This does not relax validation of r
 current YAML or plugin settings. Invalid overlay JSON and unsupported overlay versions refuse
 the upgrade; review the report and retained original before accepting the fold.
 
-A stamped boot does not read that old overlay file or its environment selector. The CLI option
+1.6.0 checks the overlay only on this one upgrade boot. A stamped boot does not read that old overlay file or its environment selector. The CLI option
 `--safe-mode` is removed and returns a usage error. After migration, `--ignore-overlay` boots
 from the base configuration alone and leaves the **Store** overlay untouched; boot without it
 to apply the stored configuration again.
@@ -175,12 +182,13 @@ backup or recovery procedure.
 
 ### Environment inputs
 
-Serving no longer uses these launch overrides. Before the first development upgrade boot, write
-their intended values into configuration; there is no separate conversion command to run.
-The current boot reports ignored launch variables with `BUSBAR-3029`, but neither imports their
-values nor refuses startup solely because they are set. In particular,
-an HTTP/1-only upstream setting can otherwise be lost. Automatic capture or an explained refusal
-remains required before the final upgrade procedure is qualified.
+Serving no longer uses these launch overrides. Boot and `--validate` refuse them with
+`BUSBAR-3029` before configuration migration or validation, naming each replacement without
+echoing its value. Write their intended values into configuration, then remove the variables
+from the launcher and validate. No automatic environment capture or separate conversion command
+is provided. An empty `BUSBAR_PROVIDERS` counts as unset; all other retired variables refuse
+even when empty. This refusal prevents an HTTP/1-only or worker setting from silently changing
+on upgrade; exact-artifact upgrade qualification remains required.
 
 | Retired variable | Current configuration |
 |---|---|
@@ -209,7 +217,9 @@ spellings; for example, `at: response` becomes `phase: [response]`. Read `fires_
 stages. An omitted phase list selects the four core phases, not every future phase.
 
 Cloud-metadata exceptions `security.allow_metadata_hosts`, `security.allow_all_metadata` and
-`providers.<name>.allow_metadata_hosts` are removed and reported. No configuration admits
+`providers.<name>.allow_metadata_hosts` (and the same key in a providers catalog) are removed with one
+warning (BUSBAR-3411) that names every removed path and never an entry value, and an audit record
+of the removed paths is written once the upgrade completes. No configuration admits
 cloud-metadata destinations. `security.blocked_metadata_hosts` still extends the denylist;
 entries that name no usable host are removed and reported.
 
@@ -260,6 +270,39 @@ Add it after stopping 1.5.5, which does not understand the new field. Store DSN 
 implementation-specific error codes belong to the selected kind's own documentation; do not
 assume a code emitted by one implementation applies to another.
 
+## HTTP endpoints and spend refusals
+
+Configure clients to call a declared endpoint, including any explicitly configured prefix.
+1.6.0 does not infer an inference endpoint from an arbitrary path suffix or an Anthropic
+header. For example, `/v1/chat/completions` is declared; `/x/v1/chat/completions` returns 404
+when `/x` is not configured. Unknown paths return the ordinary audited 404 without an
+upstream request. Deliberately declared named-pool and provider/model paths remain routes;
+their path parameters do not establish a general catch-all. A missing model or price on a
+declared route remains a separate request error.
+
+When an operator-configured monetary spend cap is exhausted, the LLM plane uses the caller's
+native error contract:
+
+| Caller API | HTTP status | Error body |
+|---|---:|---|
+| Anthropic Messages | 400 | `invalid_request_error` |
+| OpenAI Chat Completions | 429 | `insufficient_quota` |
+| OpenAI Responses | 429 | `insufficient_quota` |
+| Gemini | 429 | `RESOURCE_EXHAUSTED` |
+| Cohere | 402 | Native message envelope |
+| Bedrock Runtime | 400 | `ServiceQuotaExceededException` |
+
+Anthropic's spend-cap status changes from 429 to 400 and Cohere's from 429 to 402. The
+Anthropic error type is `invalid_request_error`; a local operator cap is distinct from an
+upstream payment failure. These are caller API conventions: HTTP itself reserves 402 for
+future use and does not require it for every monetary limit.
+
+Request/token/concurrency quota limits remain 429. For a spend refusal, review the configured
+limit and its reset period before retrying. Busbar supplies `Retry-After` only when the
+policy provides a known wait; a 429 alone does not promise that a short retry will succeed.
+Refusals retain the normal audit and no-upstream-call behavior. This change adds no proprietary
+client fields exposing internal policy identifiers.
+
 ## Administrative clients
 
 Paths below are relative to `/api/v1/admin`, unless written in full. Use the running
@@ -273,6 +316,7 @@ build. Update clients before accepting the upgrade.
 | `/export`, `/export/{name}` | `/kinds/export/instances[/{name}]` |
 | `/identity-providers`, `/identity-providers/{name}` | `/kinds/auth/instances[/{name}]` |
 | Plane-specific `/tools…` and `/agents…` admin paths | The selected plane kind instance's advertised operations under `/kinds/{kind}/instances/{id}/ops/…` |
+| `POST /signing-key/rotate` (it reported the key id and changed nothing) | None. Rotating the signing key is an operator action: replace `auth.signing_key`, restart every node in lockstep, and re-mint every key |
 
 Start with `GET /kinds`, then `GET /kinds/{kind}/instances`, then the instance and its advertised
 views and operations. Do not infer a kind name or operation from an artifact filename.
@@ -292,8 +336,28 @@ Errors have a top-level diagnostic `code` and an `error` object containing `code
 `error.message` can continue to do so. Core diagnostic codes use `BUSBAR-NNNN`; implementation
 codes use `BUSBAR-<implementation>-NNNN`. Update log matching to accept the diagnostic prefix.
 
+The engine always mints `X-Request-Id`, whatever the client sends. A valid
+client id (1 to 128 of `[A-Za-z0-9._:-]`) comes back in `X-Client-Request-Id` and is kept on the
+audit rows as `client_request_id`. Join on that, or on `trace_id` when you send a W3C `traceparent`.
+
+`POST /restart` answers `{restarting, note}`; `supervisor_detected` is removed. `POST /adjust` answers carry the outcome in the body (`effect`, `receipt_durable`); the `x-busbar-adjust-effect` and `x-busbar-receipt-durable` response headers are removed.
+
 Instance names must be unique across configuration sections and must not collide with core
 instance IDs. Resolve a reported collision and update clients that select by instance name.
+
+`GET /info` is this node's identity only. Its removed members and their replacements:
+
+| Removed `/info` member | Replacement |
+|---|---|
+| `nodes[]` | The `core/process` view `nodes` (`/kinds/core/instances/process/views/nodes`), times in `*_ms` |
+| `build` (`auth_modules`, `hook_plugins`, `weighted_floor`) | `/plugins` and `/kinds` show what is installed and running |
+| `topology` | `/kinds` (`instance_count`) and the `core/routing` instance |
+| `process_boot_nonce` | `incarnation` (same value) |
+| `started_at`, `uptime_seconds` | `started_at_ms` |
+| `config_version` | `config_generation` |
+| `config_persistence` | The `core/durability` instance's `state.store.persistence` (`/kinds/core/instances/durability`) |
+| `kinds_revision` | The `/kinds` ETag |
+| `overlay_ignored` | A `warnings[]` entry with `code: "overlay_ignored"` |
 
 ## Usage and rate cards
 
@@ -313,13 +377,19 @@ rely on the retired host journal for rate-card recovery.
 
 ## Release-candidate checks
 
+- Exercise the HTTP spend-cap matrix above through the actual listener and live policy.
+  Confirm declared routes and configured prefixes, unknown/unconfigured paths returning 404,
+  and refusal audit/no-upstream-call behavior. Renderer-only tests do not establish these
+  end-to-end guarantees.
+
 This section records required checks while 1.6.0 is in development. These are **not instructions
 to add pre-release keys**. Replace this section with verified final behavior before release:
 
 - Confirm the removal of core `upstreams` and `advanced.allow_destinations`, and the restored
   per-registration `allow_private` shape, including automatic migration and private-host policy.
-- Confirm `auth.policy.require_if_match` becomes `auth.require_if_match`, and list the removed
-  `auth.policy` keys and fixed engine constants against the final strict schema.
+- `auth.require_if_match` is the 1.6.0 spelling; `auth.policy.require_if_match` is refused as an
+  unknown field (the kernel parser and the admin config form both place it at the auth level). List
+  the removed `auth.policy` keys and fixed engine constants against the final strict schema.
 - Confirm the removals of pool-level legacy fields, browser-login tuning, plugin log settings,
   credential-at-rest configuration and the remaining retired settings; distinguish automatic
   rewrites from required operator edits.

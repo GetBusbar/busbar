@@ -9,6 +9,7 @@ use busbar_kernel::governance::NewKeySpec;
 
 fn budget_limit(cents: u64) -> busbar_kernel::config::groups::LimitCfg {
     busbar_kernel::config::groups::LimitCfg {
+        selected: None,
         metric: busbar_kernel::config::groups::LimitMetric::Budget,
         amount: cents,
         per: Some(busbar_kernel::config::groups::LimitWindow::Month),
@@ -29,6 +30,7 @@ async fn test_create_key_budget_group_and_labels_roundtrip_and_missing_group_400
             parent: None,
             enabled: true,
             limits: vec![busbar_kernel::config::groups::LimitCfg {
+                selected: None,
                 metric: busbar_kernel::config::groups::LimitMetric::Budget,
                 amount: 1_000_000,
                 per: Some(busbar_kernel::config::groups::LimitWindow::Month),

@@ -6,8 +6,8 @@
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use busbar_contract::json::{self, json, Value};
 use busbar_plugin_loader::dispatch::{Diagnostic, Dropped, EnvelopeSink, Metric};
-use serde_json::{json, Value};
 
 use crate::stats::{OpStats, RSS_AT, WINDOWS};
 use crate::{Config, Outcome, Target};
@@ -183,7 +183,7 @@ pub fn write_json(
                         "bytes_per_call": counting.then(|| per(s.bytes, s.all.n)),
                         "rss_bytes_after_calls": s.rss.iter().map(|(c, b)| json!({"calls": c, "rss_bytes": b})).collect::<Vec<_>>(),
                         "p50_ns_by_call_window": s.windows.iter().zip(WINDOWS).map(|(w, upto)| json!({
-                            "below_call": if upto == u64::MAX { Value::Null } else { json!(upto) },
+                            "below_call": if upto == u64::MAX { Value::new() } else { json!(upto) },
                             "calls": w.n,
                             "p50_ns": w.quantile(0.5),
                             "p99_ns": w.quantile(0.99),
@@ -219,7 +219,7 @@ pub fn write_json(
     if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
         std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     }
-    let text = serde_json::to_string_pretty(&doc).map_err(|e| e.to_string())?;
+    let text = json::to_string_pretty(&doc).map_err(|e| e.to_string())?;
     std::fs::write(path, text).map_err(|e| format!("{}: {e}", path.display()))
 }
 

@@ -5,7 +5,9 @@ use super::projection::{Projection, Rendered};
 use crate::limits::admission::AdmissionGate;
 use crate::plugin_routes::PluginHttpDispatch;
 use busbar_contract::abi::mechanism::endpoint::*;
-use busbar_contract::export_calls::{Delivered, ExportAxis, ExportCalls, ServeRequest};
+use busbar_contract::export_calls::{
+    Delivered, ExportAxis, ExportCalls, ExportLossKind, ServeRequest,
+};
 use busbar_contract::export_stream::ExportStream;
 use std::sync::Arc;
 
@@ -62,6 +64,96 @@ pub struct Exports {
     pub(crate) sinks: Vec<PluginSink>,
     pub(crate) refreshes: std::sync::Mutex<crate::off_path::export::Refreshes>,
     pub(crate) status_at: std::sync::Mutex<Option<std::time::Instant>>,
+    pub(crate) captures: Arc<Captures>,
+}
+
+/// Completion of the actual admitted capture producers, including native read confirmations.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CaptureReport {
+    /// A producer was destroyed or panicked before it completed its work.
+    pub interrupted: bool,
+}
+
+#[derive(Default)]
+struct CaptureState {
+    closed: bool,
+    active: usize,
+    interrupted: bool,
+}
+
+#[derive(Default)]
+pub(crate) struct Captures {
+    state: std::sync::Mutex<CaptureState>,
+    settled: tokio::sync::Notify,
+}
+
+impl Captures {
+    fn enter(self: &Arc<Self>) -> Option<CapturePermit> {
+        let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+        if state.closed {
+            return None;
+        }
+        let Some(active) = state.active.checked_add(1) else {
+            state.interrupted = true;
+            return None;
+        };
+        state.active = active;
+        Some(CapturePermit {
+            owner: self.clone(),
+            completed: false,
+        })
+    }
+}
+
+struct CapturePermit {
+    owner: Arc<Captures>,
+    completed: bool,
+}
+
+impl Drop for CapturePermit {
+    fn drop(&mut self) {
+        let mut state = self.owner.state.lock().unwrap_or_else(|p| p.into_inner());
+        state.interrupted |= !self.completed;
+        state.active -= 1;
+        drop(state);
+        self.owner.settled.notify_waiters();
+    }
+}
+
+impl Exports {
+    /// Fence capture before projection or enqueue, while retaining every previously admitted producer.
+    /// This does not stop pumps or close the bound observer; root does those after capture settlement.
+    pub fn close_capture(&self) {
+        self.captures
+            .state
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .closed = true;
+    }
+
+    /// Close intake and await all admitted capture work, including detached native read confirmations.
+    /// Cancelling this waiter never cancels a producer. Root supplies its existing shutdown deadline.
+    pub async fn drain_capture(&self) -> CaptureReport {
+        self.close_capture();
+        loop {
+            let settled = self.captures.settled.notified();
+            tokio::pin!(settled);
+            settled.as_mut().enable();
+            {
+                let state = self
+                    .captures
+                    .state
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner());
+                if state.active == 0 {
+                    return CaptureReport {
+                        interrupted: state.interrupted,
+                    };
+                }
+            }
+            settled.await;
+        }
+    }
 }
 
 /// Connect the complete generation's audit observer after AppHandle and routes exist.
@@ -75,7 +167,17 @@ pub(super) fn deliver_to(
     op: &str,
     mut f: impl FnMut(Projection, bool) -> Rendered,
 ) {
-    let mut handed = Handed::default();
+    let Some(capture) = exports.captures.enter() else {
+        return;
+    };
+    let mut handed = Handed {
+        completion: CaptureCompletion {
+            capture: Some(capture),
+            sinks: Vec::new(),
+            finished: false,
+        },
+        ..Handed::default()
+    };
     for s in exports
         .sinks
         .iter()
@@ -92,7 +194,17 @@ pub(crate) fn deliver_on(
     op: &str,
     mut f: impl FnMut(Projection) -> Rendered,
 ) {
-    let mut handed = Handed::default();
+    let Some(capture) = exports.captures.enter() else {
+        return;
+    };
+    let mut handed = Handed {
+        completion: CaptureCompletion {
+            capture: Some(capture),
+            sinks: Vec::new(),
+            finished: false,
+        },
+        ..Handed::default()
+    };
     for sink in exports
         .sinks
         .iter()
@@ -115,40 +227,66 @@ struct Handed {
     amendments: Option<Arc<crate::audit::amend::NodeAmendments>>,
     runtime: Option<tokio::runtime::Handle>,
     reads: Vec<(Arc<str>, crate::export::projection::Members)>,
-    sinks: Vec<Arc<dyn ExportCalls>>,
     permits: Vec<Arc<tokio::sync::OwnedSemaphorePermit>>,
+    // Last: callbacks and permit custody are released before the capture count reaches zero.
+    completion: CaptureCompletion,
+}
+
+#[derive(Default)]
+struct CaptureCompletion {
+    sinks: Vec<Arc<dyn ExportCalls>>,
+    capture: Option<CapturePermit>,
+    finished: bool,
+}
+
+impl CaptureCompletion {
+    fn finish(&mut self, integrity_failed: bool) {
+        if integrity_failed {
+            for sink in &self.sinks {
+                sink.shed(ExportLossKind::IntegrityFailed);
+            }
+        }
+        self.finished = true;
+        if let Some(capture) = &mut self.capture {
+            capture.completed = true;
+        }
+    }
+}
+
+impl Drop for CaptureCompletion {
+    fn drop(&mut self) {
+        if !self.finished {
+            // Covers panic, runtime shutdown, and destruction before the task's first poll.
+            // The callback precedes capture permit release, so drain cannot race past evidence.
+            for sink in &self.sinks {
+                sink.shed(ExportLossKind::IntegrityFailed);
+            }
+        }
+        self.sinks.clear();
+    }
 }
 
 impl Handed {
-    fn record(self, op: &str) {
-        let Handed {
-            amendments,
-            runtime,
-            reads,
-            sinks,
-            permits,
-        } = self;
-        let (Some(amendments), Some(runtime)) = (amendments, runtime) else {
-            return;
-        };
-        if reads.is_empty() {
+    fn record(mut self, op: &str) {
+        if self.reads.is_empty() {
+            self.completion.finish(false);
             return;
         }
+        let Some(runtime) = self.runtime.clone() else {
+            return; // CaptureCompletion records any already accepted read as interrupted.
+        };
         let op = op.to_owned();
+        // The future owns the complete work object before spawning, including its final release
+        // guard. Even destruction before its first poll reports integrity and releases ownership.
         runtime.spawn(async move {
-            // Retain every sink's admission through its durable access amendment, even if the
-            // sink releases its delivery permit immediately.
-            let _permits = permits;
-            if crate::audit::amend::export_reads(&amendments, &op, &reads)
-                .await
-                .is_err()
-            {
-                // The original access facts remain in the shared native owner's queue; do not
-                // report a durable audit success for any sink of the set.
-                for sink in sinks {
-                    sink.shed();
-                }
-            }
+            let mut work = self;
+            let failed = match &work.amendments {
+                Some(amendments) => crate::audit::amend::export_reads(amendments, &op, &work.reads)
+                    .await
+                    .is_err(),
+                None => true,
+            };
+            work.completion.finish(failed);
         });
     }
 }
@@ -160,7 +298,7 @@ fn deliver_one(
     handed: &mut Handed,
 ) {
     if !s.started.load(std::sync::atomic::Ordering::Acquire) {
-        s.sink.shed();
+        s.sink.shed(ExportLossKind::CaptureRefused);
         return;
     }
     let admission = &s.admission;
@@ -168,7 +306,7 @@ fn deliver_one(
         return;
     }
     let Some(permit) = admission.gate.try_enter() else {
-        s.sink.shed();
+        s.sink.shed(ExportLossKind::CaptureRefused);
         return;
     };
     let Rendered { line, members } = f(s.projection, s.span_record);
@@ -181,7 +319,7 @@ fn deliver_one(
         {
             Ok(runtime) => Some(runtime),
             Err(_) => {
-                s.sink.shed();
+                s.sink.shed(ExportLossKind::CaptureRefused);
                 return;
             }
         }
@@ -199,10 +337,10 @@ fn deliver_one(
             handed.amendments.get_or_insert(amendments);
             handed.runtime.get_or_insert(runtime);
             handed.reads.push((Arc::clone(&s.module), members));
-            handed.sinks.push(s.sink.clone());
+            handed.completion.sinks.push(s.sink.clone());
             handed.permits.push(permit);
         }
-        Delivered::Shed => s.sink.shed(),
+        Delivered::Shed => {} // The adapter already reported its exact refusal or loss.
     }
 }
 

@@ -23,7 +23,7 @@ use busbar_contract::{
 
 use super::{
     commit::SubmitResult,
-    facade::{AccessError, CoreStore, LogicalClaim, PendingId, Submission},
+    facade::{AccessError, CoreStore, DomainCall, LogicalClaim, PendingId, Submission},
     keys, partition,
 };
 
@@ -90,6 +90,7 @@ pub(crate) struct HostRecords<'a> {
     namespace: NamespaceId,
     scope: Vec<u8>,
     schemas: BTreeSet<&'a str>,
+    domain: Option<&'a DomainCall>,
 }
 
 impl<'a> HostRecords<'a> {
@@ -123,7 +124,16 @@ impl<'a> HostRecords<'a> {
             namespace,
             scope: crate::host_records::record_key(instance, &[]),
             schemas: schemas.into_iter().collect(),
+            domain: None,
         })
+    }
+
+    pub(crate) fn in_domain(mut self, domain: Option<&'a DomainCall>) -> Result<Self> {
+        if domain.is_some_and(|call| !call.belongs_to(self.store)) {
+            return Err(Error::Unauthorized);
+        }
+        self.domain = domain;
+        Ok(self)
     }
 
     fn frame(&self, schema: &str) -> Result<Vec<u8>> {
@@ -288,7 +298,9 @@ impl<'a> HostRecords<'a> {
 
     async fn write(&self, mutation: Mutation) -> Result<Outcome> {
         let candidate = self.candidate(vec![], vec![mutation])?;
-        outcome(self.store.submit(candidate).await?)
+        // Owned by this handle's domain (if bound) before the first crossing: a canceled plain
+        // write stays discoverable to its owner's maintenance, as a conditional one does.
+        outcome(self.store.submit_in(candidate, self.domain).await?)
     }
 
     fn candidate(
@@ -454,12 +466,13 @@ impl<'a> HostRecords<'a> {
         receipt.extend_from_slice(&self.namespace.0);
         receipt.extend_from_slice(&fingerprint);
         let digest = Sha256::digest(&receipt);
-        let claim = self.store.claim_logical(
+        let claim = self.store.claim_logical_owned(
             super::facade::LogicalId {
                 namespace: RECORD_OPERATIONS.0,
                 operation,
             },
             digest,
+            self.domain,
         );
         let permit = match claim {
             Err(AccessError::OperationConflict) => return Ok(Outcome::OpIdConflict),
@@ -539,12 +552,16 @@ impl<'a> HostRecords<'a> {
         outcome(submission)
     }
     async fn retry_timed(&self, id: PendingId, time: Option<TimeGuard>) -> Result<Outcome> {
-        self.timed_outcome(self.store.retry(id).await?, time)
+        let submission = match self.domain {
+            Some(call) => call.retry(id).await?,
+            None => self.store.retry(id).await?,
+        };
+        self.timed_outcome(submission, time)
     }
 
     /// Uses CoreStore's original candidate and original backend, including after close.
     pub(crate) async fn retry(&self, id: PendingId) -> Result<Outcome> {
-        outcome(self.store.retry(id).await?)
+        self.retry_timed(id, None).await
     }
 }
 

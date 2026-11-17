@@ -98,6 +98,7 @@ impl Drop for Live {
 
 #[derive(Default)]
 struct Plane {
+    selected: bool,
     request: Vec<It>,
     upstream: Mutex<VecDeque<Vec<It>>>,
     pieces: Mutex<VecDeque<Vec<It>>>,
@@ -118,6 +119,18 @@ fn nope() -> PortError {
 
 impl Calls for Plane {
     type Session = Live;
+
+    fn usage_metadata(&self) -> (u64, &[busbar_ports::plane::UsageClass], &[Box<str>]) {
+        (
+            if self.selected {
+                busbar_plugin_abi::plane::FB_PREPARED_ESTIMATES
+            } else {
+                0
+            },
+            &[],
+            &[],
+        )
+    }
 
     fn request(
         &self,
@@ -188,6 +201,21 @@ impl Calls for Plane {
             .unwrap()
             .pop_front()
             .unwrap_or_default();
+        if self.selected
+            && !items
+                .iter()
+                .any(|item| matches!(item, It::Attempt(ATT_DECLINE, _, _)))
+        {
+            use busbar_plugin_abi::fallback_usage as wire;
+            let selected = wire::selected_from_admission(t.admission).unwrap().unwrap();
+            sink(PlaneOut::SelectedResource(selected));
+            let mut records = busbar_plugin_abi::records::Reply::new();
+            wire::write_prepared_estimates(&mut records, selected, &[]).unwrap();
+            let record = Records::new(records.as_bytes()).next().unwrap().unwrap();
+            sink(PlaneOut::PreparedEstimates(
+                wire::decode_prepared(record).unwrap(),
+            ));
+        }
         play(&items, sink);
         Ok(())
     }
@@ -231,6 +259,10 @@ fn req() -> PlaneIn<'static> {
 
 fn candidate(name: &str) -> Candidate {
     Candidate {
+        pool: "pool".into(),
+        qualified_member: "fixture-member".into(),
+        identity: crate::plane_driver::port_upstream::TargetIdentity::Registration,
+        resource: None,
         upstream: name.into(),
         provider: "{}".into(),
         base_path: "/v1".into(),
@@ -320,6 +352,68 @@ fn reply(status: u16, body: &[u8]) -> Result<UpReply, SendFailed> {
     })
 }
 
+#[test]
+fn selected_quota_skips_do_not_damage_the_breaker_and_infrastructure_stops() {
+    use crate::plane_driver::port_egress::{
+        OwnedPreparation, SelectedFailure, SelectedOpen, SelectedSendError,
+    };
+    struct Refuse(bool);
+    impl UpSend for Refuse {
+        fn send(&mut self, _: &Candidate, _: &UpExchange) -> Result<UpReply, SendFailed> {
+            panic!("no legacy send")
+        }
+        fn open_selected<'a>(
+            &'a mut self,
+            _: OwnedPreparation,
+        ) -> Result<SelectedOpen<'a>, SelectedSendError> {
+            Err(SelectedSendError(if self.0 {
+                SelectedFailure::Quota
+            } else {
+                SelectedFailure::Backend
+            }))
+        }
+    }
+    for quota in [true, false] {
+        let plane = Plane {
+            selected: true,
+            request: vec![It::Forward],
+            upstream: Mutex::new(VecDeque::from([
+                vec![It::Attempt(ATT_DECLINE, 0, 0)],
+                vec![It::UpMethod("POST"), It::UpPath("/"), It::UpEnd],
+                vec![It::UpMethod("POST"), It::UpPath("/"), It::UpEnd],
+            ])),
+            ..Plane::default()
+        };
+        let mut members = walk(&["declined", "blocked", "later"]);
+        let (mut task, _) = Task::begin(&plane, &req(), b"", &Quiet).unwrap();
+        let result = run_attempts(
+            &mut task,
+            &Wants::default(),
+            "chat",
+            "m",
+            &mut members,
+            &mut Refuse(quota),
+            &Quiet,
+        );
+        if quota {
+            assert!(matches!(
+                result,
+                Ok(Attempted::Exhausted {
+                    attempts: 3,
+                    local_quota: true
+                })
+            ));
+            assert_eq!(members.declined, ["declined", "blocked", "later"]);
+        } else {
+            assert!(matches!(result, Err(SessionError::SelectedRefused(_))));
+            assert_eq!(members.declined, ["declined"]);
+            assert_eq!(members.queue.len(), 1);
+        }
+        assert!(members.failed.is_empty());
+        assert!(members.served.is_empty());
+    }
+}
+
 fn target() -> TargetIn<'static> {
     TargetIn {
         attempt: 1,
@@ -330,6 +424,7 @@ fn target() -> TargetIn<'static> {
         upstream: "u",
         provider: "{}",
         params: &[],
+        admission: &[],
     }
 }
 
@@ -713,7 +808,13 @@ fn an_empty_walk_is_exhaustion() {
         &Quiet,
     )
     .unwrap();
-    assert!(matches!(out, Attempted::Exhausted { attempts: 0 }));
+    assert!(matches!(
+        out,
+        Attempted::Exhausted {
+            attempts: 0,
+            local_quota: false
+        }
+    ));
 }
 
 #[test]

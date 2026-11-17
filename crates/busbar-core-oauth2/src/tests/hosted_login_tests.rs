@@ -666,3 +666,32 @@ fn the_callback_query_reads_as_a_form() {
     .collect();
     assert_eq!(pairs, expected);
 }
+
+/// #359 SEC-L8: the cookie-bound hosted login page refuses to render inside another origin's frame.
+#[test]
+fn credential_prompt_refuses_framing() {
+    use busbar_contract::auth::{FieldKind, LoginField, LoginForm};
+    let response = begin_outcome(
+        &seal(),
+        "unrelated-instance",
+        None,
+        "https://host.example",
+        String::new(),
+        "state".into(),
+        String::new(),
+        false,
+        LoginOutcome::Prompt(LoginForm {
+            fields: vec![LoginField {
+                name: "password".into(),
+                label: "Password".into(),
+                kind: FieldKind::Password,
+                required: true,
+            }],
+        }),
+    );
+    assert_eq!(response.headers()[header::X_FRAME_OPTIONS], "DENY");
+    assert_eq!(
+        response.headers()[header::CONTENT_SECURITY_POLICY],
+        "frame-ancestors 'none'"
+    );
+}

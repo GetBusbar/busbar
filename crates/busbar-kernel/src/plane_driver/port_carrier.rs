@@ -126,6 +126,13 @@ impl<'a> Mapped<'a> {
 }
 
 impl Members for Mapped<'_> {
+    fn hook_remaining(&self) -> Option<usize> {
+        self.inner.hook_remaining()
+    }
+    fn hook_failure(&self) -> Option<&str> {
+        self.inner.hook_failure()
+    }
+
     fn next(&mut self, wants: &Wants) -> Option<Candidate> {
         let picked = self.inner.next(wants)?;
         self.map.point(&picked.upstream);
@@ -184,6 +191,13 @@ impl PortCarrier {
     /// One request's carrier: its own exchange map and the host its CHANNEL intents attach through.
     #[must_use]
     pub fn session(&self) -> CarrierSession {
+        self.session_with_budget(None)
+    }
+
+    pub fn session_with_budget(
+        &self,
+        budget: Option<crate::channels::budget::UnitBudget>,
+    ) -> CarrierSession {
         let map = Arc::new(ExchangeUpstreams::new(Arc::clone(&self.upstreams)));
         let of = Arc::clone(&map);
         let host = UpstreamHost::new(
@@ -191,7 +205,8 @@ impl PortCarrier {
             self.who.clone(),
             Box::new(move |exchange| of.of(exchange)),
             self.rt.clone(),
-        );
+        )
+        .with_budget(budget);
         CarrierSession {
             host,
             map,
@@ -280,17 +295,29 @@ pub(super) fn write_channels<K: Calls + ?Sized>(
 }
 
 impl CarrierSession {
+    pub(crate) fn with_admission(
+        mut self,
+        pending: Option<Arc<super::port_admission::Pending>>,
+    ) -> Self {
+        self.host = self.host.with_admission(pending);
+        self
+    }
     fn register(
         &self,
         detach: &Detach,
         subject: Option<[u8; 32]>,
-    ) -> (Registered, mpsc::Receiver<Signalled>) {
+    ) -> Result<(Registered, mpsc::Receiver<Signalled>), SessionError> {
         let (tx, rx) = mpsc::channel(SIGNAL_QUEUE);
-        (
-            self.registry
+        let registered = match self.host.command().map_err(|_| SessionError::NotDriven)? {
+            Some(authority) => self
+                .registry
+                .register_command(self.instance, &authority, &detach.key, tx)
+                .map_err(|_| SessionError::NotDriven)?,
+            None => self
+                .registry
                 .register(self.instance, &detach.key, subject, tx),
-            rx,
-        )
+        };
+        Ok((registered, rx))
     }
 
     /// The next event of a held session, blocking on the runtime.
@@ -383,7 +410,7 @@ impl CarrierSession {
             if let (false, Some(detach)) = (registered, ran.detach.clone()) {
                 registered = true;
                 expires = started + Duration::from_secs(detach.ttl_s).min(HELD_MAX);
-                signals = Some(self.register(&detach, resolver.subject()));
+                signals = Some(self.register(&detach, resolver.subject())?);
             }
             if task.held.is_empty() && ran.wake_at.is_none() && signals.is_none() {
                 return Ok(());
@@ -416,6 +443,7 @@ impl CarrierSession {
                 }
             };
             Self::apply(task, answer, ran, resolver, effects, books)?;
+            effects.observed_usage(task.usage());
             if !hand_out(effects, &mut ran.client) {
                 if ran.detach.is_none() {
                     return Ok(());

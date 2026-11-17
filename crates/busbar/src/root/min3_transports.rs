@@ -23,7 +23,6 @@ use std::sync::Arc;
 use busbar_kernel::config::limits::LimitsResolved;
 use busbar_kernel::config::RootCfg;
 use busbar_plugin_abi::types::KindCode;
-use busbar_plugin_loader::admit::Admitted;
 use busbar_plugin_loader::instance::{BootPhase, InstanceSpec, OpenedPort};
 use busbar_ports::transport::TransportPort;
 
@@ -62,15 +61,6 @@ pub(crate) fn declaring<'t>(
             .iter()
             .any(|declared| declared.eq_ignore_ascii_case(protocol))
     })
-}
-
-/// The identity of every admitted MIN-3 transport image, in admission order.
-pub(super) fn identities<'i>(images: impl IntoIterator<Item = &'i Admitted>) -> Vec<String> {
-    images
-        .into_iter()
-        .filter(|image| image.kind() == KindCode::Transport)
-        .map(|image| image.identity().to_owned())
-        .collect()
 }
 
 /// One transport instance per identity, with the settings its D_SCHEMA names and the kind's limits.
@@ -173,4 +163,4 @@ pub(super) fn table(served: Vec<ServedTransport>) -> Result<Vec<ServedTransport>
 
 #[cfg(test)]
 #[path = "tests/min3_transports.rs"]
-mod tests;
+pub(crate) mod tests;

@@ -58,15 +58,19 @@ fn dropping_the_boot_future_mid_open_cancels_once() {
         "migrate-deadline",
         br#"{"id":"migrate-deadline","secret":"the operator's reference","hold":true}"#,
     );
-    let timed_out = rt.block_on(tokio::time::timeout(
-        Duration::from_millis(200),
-        registry.open_store(
-            &spec,
-            &needs,
-            &busbar_plugin_test::suites::harness::no_refs(),
-            Arc::new(|| Box::new(busbar_contract::plugin::TestKernelSeal)),
-        ),
-    ));
+    // The timer is made inside the runtime: tokio's timeout needs the runtime when it is built.
+    let timed_out = rt.block_on(async {
+        tokio::time::timeout(
+            Duration::from_millis(200),
+            registry.open_store(
+                &spec,
+                &needs,
+                &busbar_plugin_test::suites::harness::no_refs(),
+                Arc::new(|| Box::new(busbar_contract::plugin::TestKernelSeal)),
+            ),
+        )
+        .await
+    });
     assert!(timed_out.is_err(), "the parked open never finished");
     assert_eq!(needs.parked(), 1, "the open parked on its SECRET");
     cancelled_once("migrate-deadline");
@@ -148,7 +152,6 @@ fn dropping_the_boot_future_mid_open_cancels_once() {
 }
 
 #[test]
-#[ignore = "owner: W1-H1; blocked (re-checked on the branch 2026-11-16): the case's clause 'a fixture whose open future panics in Drop yields FAULT audited plugin_fault and the open/migrate is refused, nothing quarantined' (shared with C-CANCEL-OPEN) has no host path: busbar-ffi host.rs `impl Drop for Chain` discards `cancel_raw`'s status (`let _ = cancel_raw(..)`), so a FAULT from the plugin's cancel reaches neither driver::report_fault nor the plugin_fault audit; the cancels themselves run in dropping_the_boot_future_mid_open_cancels_once"]
 fn an_open_future_panicking_in_drop_faults_once_and_quarantines_nothing() {
-    todo!("owner: W1-H1 (C-CANCEL-MIGRATE)")
+    crate::c_panic_cancel::assert_open_cancel_fault();
 }

@@ -6,15 +6,14 @@ use busbar_contract::json;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 fn request(action: &str) -> super::super::super::AdminRequest {
-    super::super::super::AdminRequest {
-        method: "POST".into(), path: "/api/v1/admin/adjust".into(), credential: None,
+    super::super::super::AdminRequest::test_fixture(crate::root::units_admin::TestAdminRequest { method: "POST".into(), path: "/api/v1/admin/adjust".into(), credential: None,
         headers: vec![("idempotency-key".into(), action.into())],
         body: json::to_vec(&json::json!({
             "key": "key", "lane": "lane", "entry": busbar_kernel::cost::EntryKey::new(300, [7; 8], 1).hex(),
             "card_epoch_ms": 350, "pool": "pool", "delta": {"input": "-0.000001"},
             "reason": "private operator explanation"
         })).unwrap(), at: busbar_kernel::store::now(), unit: 1,
-    }
+    })
 }
 
 #[tokio::test]
@@ -43,7 +42,7 @@ async fn adjustment_lost_response_replays_durable_action_without_second_delta() 
     let ask = async |unit: &super::super::super::AdminRequest, actor: &str| {
         adjust_request(
             unit,
-            &unit.body,
+            unit.body(),
             busbar_contract::authz::Scope::Full,
             actor,
             Some(&replay_store),
@@ -55,7 +54,7 @@ async fn adjustment_lost_response_replays_durable_action_without_second_delta() 
     };
     let discarded = ask(&unit, "actor-a").await;
     assert_eq!(discarded.status, 200);
-    unit.at += 86_400;
+    unit.edit_for_test(|draft| draft.at += 86_400);
     let replay = ask(&unit, "actor-a").await;
     assert_eq!(replay.body, discarded.body);
     assert_eq!(calls.load(Ordering::SeqCst), 1);
@@ -70,12 +69,12 @@ async fn adjustment_lost_response_replays_durable_action_without_second_delta() 
     assert!(!String::from_utf8(replay.body)
         .unwrap()
         .contains("private operator explanation"));
-    let original = unit.body.clone();
-    unit.body = b"{".to_vec();
+    let original = unit.body().to_vec();
+    unit.edit_for_test(|draft| draft.body = b"{".to_vec());
     assert_eq!(ask(&unit, "actor-a").await.status, 409);
     assert_eq!(calls.load(Ordering::SeqCst), 1);
-    unit.body = original;
-    unit.headers[0].1 = "intentional-second-action".into();
+    unit.edit_for_test(|draft| draft.body = original);
+    unit.edit_for_test(|draft| draft.headers[0].1 = "intentional-second-action".into());
     assert_eq!(ask(&unit, "actor-a").await.status, 200);
     assert_eq!(calls.load(Ordering::SeqCst), 2);
     assert_eq!(ask(&unit, "actor-b").await.status, 200);
@@ -99,12 +98,15 @@ async fn adjustment_unknown_effect_remains_in_custody_without_reapplying() {
         })
     };
     let mut unit = request("unknown-effect");
-    unit.headers
-        .push(("x-busbar-adjust-effect".into(), "applied".into()));
+    unit.edit_for_test(|draft| {
+        draft
+            .headers
+            .push(("x-busbar-adjust-effect".into(), "applied".into()))
+    });
     for _ in 0..2 {
         let answer = adjust_request(
             &unit,
-            &unit.body,
+            unit.body(),
             busbar_contract::authz::Scope::Full,
             "actor",
             Some(&replay_store),
@@ -127,7 +129,7 @@ async fn adjustment_unknown_effect_remains_in_custody_without_reapplying() {
 #[test]
 fn exact_adjustment_rejects_excess_precision_and_blank_reason_before_effect() {
     let unit = request("precision");
-    let mut body: json::Value = json::parse_value(&unit.body).unwrap();
+    let mut body: json::Value = json::parse_value(unit.body()).unwrap();
     body["delta"]["input"] = json::json!("0.0000001");
     assert!(parse_correction(&json::to_vec(&body).unwrap(), &|_| true, true).is_err());
     body["delta"]["input"] = json::json!("-0.000001");
@@ -155,4 +157,32 @@ fn adjustment_audit_reads_host_answer_only_and_preserves_known_applied() {
         super::super::super::adjustment_audit_outcome(Some(&response), false),
         busbar_kernel::audit_ring::OUTCOME_APPLIED
     );
+}
+
+/// ADMIN-API-1.6-ONE-MODEL §10.2 (Console M-31): the adjust outcome is in the body only. No
+/// `x-busbar-adjust-effect` or `x-busbar-receipt-durable` response header; the body carries
+/// `effect` and `receipt_durable`.
+#[test]
+fn adjust_outcome_is_in_the_body_not_in_headers() {
+    let receipt = Receipt {
+        operation_id: "action".into(),
+        actor: "actor".into(),
+        target: "key".into(),
+        fingerprint: "digest".into(),
+        reason_hash: "digest".into(),
+        effect: "applied".into(),
+        status: 200,
+    };
+    let response = answer(&receipt).unwrap();
+    assert!(
+        !response
+            .headers
+            .iter()
+            .any(|(name, _)| name.starts_with("x-busbar-")),
+        "the outcome rides no x-busbar header: {:?}",
+        response.headers
+    );
+    let doc: json::Value = json::parse_value(&response.body).unwrap();
+    assert_eq!(doc["effect"], "applied");
+    assert_eq!(doc["receipt_durable"], true);
 }

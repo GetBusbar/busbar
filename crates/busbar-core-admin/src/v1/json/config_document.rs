@@ -6,17 +6,14 @@
 
 use std::sync::Arc;
 
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::StatusCode;
 use axum::response::Response;
 use busbar_kernel::config::document_patch::DocumentPatch;
 use busbar_kernel::config::overlay::OverlayDoc;
 use busbar_kernel::state::{App, AppHandle};
 use serde_json::json;
 
-use super::{
-    config_transaction, err_json, if_match_version, ok_json, stale_if_match, with_config_etag,
-    Outcome,
-};
+use super::{config_transaction, err_json, if_match_version, ok_json, stale_if_match, Outcome};
 use crate::admin_state::AppAdmin as _;
 use crate::v1::contract::AdminError;
 
@@ -124,10 +121,48 @@ pub(super) struct EditAudit {
 pub(super) type Planner =
     Box<dyn FnOnce(&App) -> Result<Option<DocumentRequest>, AdminError> + Send>;
 
+/// Frozen while the config transaction still owns the writer lock. The App's generation
+/// counter is shared, so reading it after returning would let a later publication rewrite
+/// this operation's receipt identity and readback.
+pub(super) struct DocumentCommit {
+    pub(super) installed: Arc<App>,
+    pub(super) etag: super::generation::ConfigResponseEtag,
+    configuration: serde_json::Value,
+    reload_to_apply: Vec<String>,
+}
+
+impl DocumentCommit {
+    fn capture(installed: Arc<App>) -> Self {
+        let etag = super::generation::ConfigResponseEtag::capture(&installed);
+        let (mut configuration, reload_to_apply) = configuration_and_restart(&installed);
+        configuration["config_generation"] = json!(etag.generation());
+        Self {
+            installed,
+            etag,
+            configuration,
+            reload_to_apply,
+        }
+    }
+
+    pub(super) fn response(self) -> Response {
+        self.etag.attach(ok_json(
+            StatusCode::OK,
+            &json!({
+                "applied": true,
+                "persisted": true,
+                "config_version": self.installed.config_version,
+                "configuration": self.configuration,
+                "reload_to_apply": self.reload_to_apply,
+                "note": "stored and installed as configuration; reload_to_apply paths require a process restart. plane_refresh observes only synchronous ordinary door callbacks; it does not acknowledge listener, model, credential, fallback, transport, or asynchronous plugin activation",
+            }),
+        ))
+    }
+}
+
 pub(super) async fn put(
     handle: Arc<AppHandle>,
     principal: busbar_kernel::auth::AuthPrincipal,
-    headers: HeaderMap,
+    headers: busbar_kernel::inbound::http_projection::AdminHeaders,
     body: axum::body::Bytes,
 ) -> Response {
     let expected = match if_match_version(&headers) {
@@ -150,7 +185,7 @@ pub(super) async fn put(
         origin: format!("config/settings document patch by {actor}"),
         note: "config.document (Store document overlay)".into(),
     };
-    let installed = match apply(
+    let committed = match apply(
         &handle,
         &actor,
         expected,
@@ -159,36 +194,21 @@ pub(super) async fn put(
     )
     .await
     {
-        Ok((installed, _)) => installed,
+        Ok(committed) => committed,
         Err(response) => return *response,
     };
-    let (configuration, reload_to_apply) = configuration_and_restart(&installed);
-    with_config_etag(
-        ok_json(
-            StatusCode::OK,
-            &json!({
-                "applied": true,
-                "persisted": true,
-                "config_version": installed.config_version,
-                "configuration": configuration,
-                "reload_to_apply": reload_to_apply,
-                "note": "stored and installed as configuration; reload_to_apply paths require a process restart. plane_refresh observes only synchronous ordinary door callbacks; it does not acknowledge listener, model, credential, fallback, transport, or asynchronous plugin activation",
-            }),
-        ),
-        installed.config_version,
-    )
+    committed.response()
 }
 
-/// One durable document edit through the config transaction. `Ok((app, false))` is a plan that
-/// found nothing to change: no publication, no audit row. Every refusal is already audited and
-/// rendered as the `Err` response.
+/// One durable document edit through the config transaction. A plan that finds nothing to
+/// change does not publish or audit. Every refusal is already audited and rendered.
 pub(super) async fn apply(
     handle: &Arc<AppHandle>,
     actor: &str,
     expected: Option<u64>,
     audit: EditAudit,
     plan: Planner,
-) -> Result<(Arc<App>, bool), Box<Response>> {
+) -> Result<DocumentCommit, Box<Response>> {
     let EditAudit {
         action,
         resource,
@@ -202,7 +222,7 @@ pub(super) async fn apply(
             return Err(error);
         }
         let Some(request) = plan(snapshot.as_ref())? else {
-            return Ok(Outcome::Value(Ok((snapshot, false))));
+            return Ok(Outcome::Value(Ok((DocumentCommit::capture(snapshot), false))));
         };
         let changed: Vec<String> = request
             .document_patch
@@ -276,15 +296,21 @@ pub(super) async fn apply(
                     patch: doc.document_patch.as_mut(), providers_patch: doc.providers_patch.as_mut(),
                     admission: source_admission.as_mut(),
                 },
-            ).map_err(|error| if source_admission.as_ref().is_some_and(|admission| admission.drifted()) {
+            ).map_err(|_| if source_admission.as_ref().is_some_and(|admission| admission.drifted()) {
                 AdminError::Conflict("operator source changed since the installed generation; reload and refresh before document edits".into())
-            } else { AdminError::Validation(error) })?;
+            } else {
+                // Loader errors may quote malformed private settings. This public boundary
+                // reports validation, never the original source excerpt.
+                AdminError::Validation("patched configuration failed document validation".into())
+            })?;
             if let Some(rejection) = doc.document_patch.as_ref().and_then(|patch| document_patch_rejection(patch, Some(&loaded))) {
                 return Ok(Outcome::Value(Err(rejection)));
             }
             if loaded.deploy.advanced.worker_threads == Some(0) {
                 return Err(AdminError::Validation("advanced.worker_threads must be positive".into()));
             }
+            loaded.resource_ownership.validate_named_maps(&doc)
+                .map_err(AdminError::Validation)?;
             busbar_kernel::config::overlay::apply_root_to_deploy(&mut loaded.deploy, &doc)
                 .map_err(AdminError::Validation)?;
             if let Some(patch) = request.providers_patch.as_ref() {
@@ -298,8 +324,8 @@ pub(super) async fn apply(
             }
             let mut cfg = busbar_kernel::config::resolve(&loaded.deploy, &loaded.defs)
                 .map_err(|_| AdminError::Validation("patched configuration failed resolution".into()))?;
-            let base_hook_names = cfg.hooks.keys().cloned().collect();
-            let base_group_names = cfg.groups.keys().cloned().collect();
+            let base_hook_names = loaded.resource_ownership.hook_names().clone();
+            let base_group_names = loaded.resource_ownership.group_names().clone();
             busbar_kernel::config::overlay::merge_into(&mut cfg, doc.clone());
             if let Some(rejection) =
                 trust_ceiling_rejection(&snapshot.identity_providers, &cfg.identity_providers, &ceiling_actor)
@@ -359,13 +385,13 @@ pub(super) async fn apply(
                 origin,
                 async move {
                     if let Some(rotate) = rotate { rotate.await; }
-                    Ok(Outcome::Value(Ok((installed, true))))
+                    Ok(Outcome::Value(Ok((DocumentCommit::capture(installed), true))))
                 },
             ))
         }))
     }).await;
     match out {
-        Ok(Ok((installed, changed))) => {
+        Ok(Ok((committed, changed))) => {
             if changed {
                 super::audit::AUDIT.record_by(
                     action,
@@ -373,9 +399,9 @@ pub(super) async fn apply(
                     super::audit::OUTCOME_APPLIED,
                     actor,
                 );
-                installed.record_version(actor, &note);
+                committed.installed.record_version(actor, &note);
             }
-            Ok((installed, changed))
+            Ok(committed)
         }
         Ok(Err((error, cond))) => {
             super::audit::AUDIT.record_by(action, &resource, super::audit::OUTCOME_REJECTED, actor);
@@ -576,6 +602,7 @@ fn restart_paths(paths: &[String]) -> Vec<String> {
         "/limits/max_inbound_concurrent",
         "/advanced/response_headers",
         "/advanced/worker_threads",
+        "/advanced/shutdown/deregister_delay",
         "/advanced/upstream_http1_only",
         "/advanced/upstream_h2_prior_knowledge",
     ];
@@ -808,13 +835,17 @@ mod tests {
         for path in [
             "/advanced/shutdown/drain_timeout",
             "/advanced/governance/max_pending_checkpoints",
-            "/advanced/shutdown",
             "/advanced/governance",
         ] {
             assert!(
                 restart_paths(&[path.to_owned()]).is_empty(),
                 "retired configuration cannot become restart state: {path}"
             );
+        }
+        // #323: `advanced.shutdown.deregister_delay` is boot-scoped and restart-only, so the
+        // shutdown block that holds it is restart state; its retired drain cap stays out.
+        for path in ["/advanced/shutdown/deregister_delay", "/advanced/shutdown"] {
+            assert_eq!(restart_paths(&[path.to_owned()]), [path]);
         }
         assert_eq!(
             restart_paths(&["/advanced/worker_threads".to_owned()]),
@@ -872,5 +903,24 @@ mod tests {
                 .get("configuration")
                 .is_some()
         );
+    }
+}
+
+#[cfg(test)]
+mod shutdown_restart_tests {
+    use super::restart_paths;
+
+    #[test]
+    fn document_deregister_delay_and_ancestor_edits_require_restart() {
+        for path in [
+            "/advanced/shutdown/deregister_delay",
+            "/advanced/shutdown",
+            "/advanced",
+            "",
+        ] {
+            let paths = vec![path.to_owned()];
+            assert_eq!(restart_paths(&paths), paths, "add/change/remove at {path}");
+        }
+        assert!(restart_paths(&["/advanced/rate_sweep_interval".to_owned()]).is_empty());
     }
 }

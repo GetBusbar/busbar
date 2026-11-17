@@ -10,6 +10,10 @@ members = [
     "crates/busbar-core-admin",
     "crates/busbar-core-oauth2",
     "crates/busbar-contract",
+    "crates/busbar-count",
+    "crates/busbar-json",
+    "crates/busbar-artifact-metadata",
+    "crates/busbar-artifact-verifier",
     "crates/busbar-secure",
     "crates/busbar-crypto",
     "crates/busbar-kernel",
@@ -28,6 +32,8 @@ members = [
     "crates/busbar-plugin-test",
     # Core's repository checks (no-getrandom, crypto-graph), one CI job line each.
     "tools/ci-checks",
+    # The additive-only gate for the admin OpenAPI document (#309), one CI job line.
+    "tools/openapi-diff",
     # ci/hop: no thread hop around a plugin entry (IF §15 rule 10), one CI job line.
     "ci/hop",
 ]
@@ -35,6 +41,8 @@ members = [
 # Each version is written once here; members inherit with `workspace = true` and may add features.
 # `default-features = false` must be set here: a member cannot turn workspace defaults off.
 [workspace.dependencies]
+# Existing fleet HTTP envelope parser, also used by native test-host subjects.
+httparse = { version = "1", default-features = false }
 busbar-contract = { path = "crates/busbar-contract" }
 # The one crypto backend: busbar-crypto names it by this URL; a private build patches its own in.
 busbar-crypto-backend = { path = "crates/busbar-crypto-backend" }
@@ -210,17 +218,24 @@ large_futures = "deny"
 # Plugins that name busbar-contract by git resolve to this tree, so exactly one copy links.
 [patch.'https://github.com/GetBusbar/busbar']
 busbar-contract = { path = "crates/busbar-contract" }
+
 # The one crypto backend: busbar-crypto names it by this URL; a private build patches its own in.
 busbar-crypto-backend = { path = "crates/busbar-crypto-backend" }
 
 # Pinned dependency fixes: h2 sensitive fields, WebSocket 1014 and bounded frame diagnostics.
 [patch.crates-io]
+# Adopted funded TLS output/ticket storage and actual wire provenance.
+rustls = { git = "https://github.com/MattJackson/rustls", rev = "02181ad51e81f9cb33a0648117b03039274716a3" }
 # Dependency patches are effective only at the consuming workspace root.
 aws-lc-sys = { git = "https://github.com/MattJackson/aws-lc-sys", rev = "3469edb189e0cc2fab40e88f551713a828a5d867" }
 jobserver = { git = "https://github.com/MattJackson/jobserver-rs", rev = "fbe3efc1acc11add04854cc093f97876e439e129" }
 dunce = { git = "https://github.com/MattJackson/dunce", rev = "bb4757b8dffd9bdc619ce1fda1a147bd53e7b29d" }
 fs_extra = { git = "https://github.com/MattJackson/fs_extra", rev = "70f47864db8ae763979f47cde6785449cd790dad" }
-h2 = { git = "https://github.com/MattJackson/h2", rev = "d6146a5c425e55653cdfebc5660e52d87430c588" }
+# Native HTTP allocation projection and serializer provenance (adopted transport cohort).
+http = { git = "https://github.com/MattJackson/http", rev = "904f4519b5f27a0424b121a4828640c741efcd95" }
+h2 = { git = "https://github.com/MattJackson/h2", rev = "6bdbf046878247aebe9138f37f32d2665b54bdd9" }
+hyper = { git = "https://github.com/MattJackson/hyper", rev = "c140435f43477ca3ffbdb2078a5994e9dfb11969" }
+hyper-util = { git = "https://github.com/MattJackson/hyper-util", rev = "b4c554c133c7fc83ee55a9ce0271849f7387994d" }
 tungstenite = { git = "https://github.com/MattJackson/tungstenite-rs", rev = "893a21f1f98011a2665840231330c473836c9a0a" }
 # YAML: serde-saphyr and granit-parser carry busbar's opt-in serde_yaml-compatibility options
 # (null_scalars_as_text, lowercase_radix_prefixes_only, bom_inside_document_as_content), offered
@@ -229,7 +244,7 @@ serde-saphyr = { git = "https://github.com/MattJackson/serde-saphyr", rev = "a94
 granit-parser = { git = "https://github.com/MattJackson/granit-parser", rev = "d31e9292a0be49de7d3a85ee07555bb9d0afce20" }
 # JSON (SERDE-NUMBERS r17 P0-P3): sonic-rs 0.5.11 plus exact numbers through foreign deserializers
 # (serde buffering, YAML) and an authenticated Value hand-off, offered upstream (cloudwego/sonic-rs).
-sonic-rs = { git = "https://github.com/MattJackson/sonic-rs", rev = "10b80cdcbfb07c0edc6535df28f7b248dc4f5223" }
+sonic-rs = { git = "https://github.com/MattJackson/sonic-rs", rev = "1241c129cef83686109f820825206f56ff470f67" }
 # Canonical JSON: olpc-cjson 0.1.4 with serde_json optional and a sonic-rs Formatter, offered upstream
 # (awslabs/tough). busbar's workspace row turns its default (serde_json) off and takes the sonic-rs formatter.
 olpc-cjson = { git = "https://github.com/MattJackson/olpc-cjson", rev = "0a96a65b1122a2bbb93fd36cae3b36dd2b045c7e" }

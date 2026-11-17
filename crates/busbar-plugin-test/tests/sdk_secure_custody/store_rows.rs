@@ -17,7 +17,25 @@ enum Outcome {
 /// Observe the borrowed tail without making another payload copy or retaining a response buffer.
 struct RowObserver(Outcome);
 impl Writer for RowObserver {
+    fn put_parts(&mut self, _: u16, _: &[&[u8]]) -> Result<(), Full> {
+        unreachable!()
+    }
+    fn put_pod_nested<T: Pod>(
+        &mut self,
+        _: u16,
+        _: &T,
+        _: impl FnOnce(&mut Nested<'_>) -> Result<(), Full>,
+    ) -> Result<(), Full> {
+        unreachable!()
+    }
     fn put(&mut self, _: u16, _: &[u8]) -> Result<(), Full> {
+        unreachable!()
+    }
+    fn put_u32s(
+        &mut self,
+        _: u16,
+        _: impl FnOnce(&mut busbar_plugin_abi::records::U32s<'_>) -> Result<(), Full>,
+    ) -> Result<(), Full> {
         unreachable!()
     }
     fn put_pod<T: Pod>(&mut self, _: u16, _: &T) -> Result<(), Full> {

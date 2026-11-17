@@ -514,6 +514,11 @@ impl IntentHost for Host {
         ));
     }
 
+    fn signal_command(&self, authority: &crate::channels::authority::ChannelAuthority, key: &[u8]) {
+        assert!(authority.is_live());
+        self.note(format!("command signal {}", String::from_utf8_lossy(key)));
+    }
+
     fn entitle(&self, identity: &[u8], grant: &str) -> bool {
         self.note(format!(
             "entitle {grant} identity={}",
@@ -844,6 +849,61 @@ fn a_store_that_is_not_applied_is_a_store_failed_piece_naming_the_key() {
 }
 
 #[test]
+fn an_enforcing_hook_holds_a_mutation_before_a_local_response() {
+    let script = Script {
+        request: vec![
+            It::Store {
+                flags: 0,
+                ttl_s: 30,
+                key: b"s".to_vec(),
+                value: b"secret".to_vec(),
+            },
+            It::Respond(200),
+        ],
+        ..Script::default()
+    };
+    let host = Host::default();
+    let (mut task, first) = Task::begin(&script, &req(), b"", &Quiet).unwrap();
+    let held = task
+        .resolve_before_hooks(first, &Resolver::new(&host, None), &Quiet)
+        .unwrap();
+    assert!(
+        host.seen().is_empty(),
+        "a hook refusal must leave the Store untouched"
+    );
+    assert_eq!(
+        held[0].intents.len(),
+        1,
+        "the accepted stage releases the original intent once"
+    );
+}
+
+#[test]
+fn a_hook_prerequisite_never_reads_before_its_held_mutation() {
+    let script = Script {
+        request: vec![
+            It::Store {
+                flags: 0,
+                ttl_s: 30,
+                key: b"s".to_vec(),
+                value: b"new".to_vec(),
+            },
+            lookup(b"s"),
+        ],
+        ..Script::default()
+    };
+    let host = Host::default();
+    let (mut task, first) = Task::begin(&script, &req(), b"", &Quiet).unwrap();
+    assert!(task
+        .resolve_before_hooks(first, &Resolver::new(&host, None), &Quiet)
+        .is_err());
+    assert!(
+        host.seen().is_empty(),
+        "neither mutation nor stale read may escape the barrier"
+    );
+}
+
+#[test]
 fn a_commit_answers_applied_conflict_or_a_refusal_in_committed() {
     let mut ops = Reply::new();
     ops.put_pod_tail(
@@ -1039,6 +1099,40 @@ fn a_signal_goes_to_the_host_scoped_to_the_subject_only_when_asked() {
         host.seen(),
         ["signal all subject=false", "signal mine subject=true"]
     );
+}
+
+#[tokio::test]
+async fn admitted_command_signal_never_falls_back_to_subject_or_instance_broadcast() {
+    use crate::upstreams::{ProgramPin, StdioCommand, UpstreamDef, UpstreamTls};
+    let definition = Arc::new(UpstreamDef {
+        name: "tool".into(),
+        resource: None,
+        allow_private: false,
+        url: None,
+        auth: None,
+        tls: UpstreamTls {
+            pin_spki: Vec::new(),
+            client_identity: None,
+            trust: None,
+        },
+        command: Some(StdioCommand {
+            argv: vec!["unused-fixture-command".into()],
+            env: Vec::new(),
+            cwd: None,
+            pin: ProgramPin::Unpinned,
+            idle_s: 300,
+        }),
+    });
+    let fixture =
+        crate::plane_driver::request_admission::CommandAdmissionFixture::new(definition).await;
+    let host = Host::default();
+    for flags in [0, LK_CALLER] {
+        super::signal_admitted(&host, &fixture.request, flags, b"key", Some([3; 32]));
+    }
+    assert_eq!(host.seen(), ["command signal key", "command signal key"]);
+    fixture.request.context().retire();
+    super::signal_admitted(&host, &fixture.request, 0, b"late", None);
+    assert_eq!(host.seen().len(), 2);
 }
 
 #[test]
@@ -1620,9 +1714,13 @@ fn a_host_with_no_service_installed_answers_fail_closed() {
         CONN_REFUSED
     );
     assert_ne!(host.trust_serves("github", None), DISTRUST_NONE);
-    let (verdict, _, items) = host.trust_state("github");
+    let (verdict, root, items) = host.trust_state("github");
     assert_ne!(verdict, DISTRUST_NONE);
     assert!(items.is_empty());
+    assert!(
+        root.is_none(),
+        "a missing trust service cannot supply a root"
+    );
     assert_ne!(host.trust_verify("github", b"d", b"[]").0, SIGNED_VERIFIED);
     assert!(host.sight("github", None, &[]).is_err());
 }

@@ -28,7 +28,6 @@
 //! }
 //! ```
 
-use crate::plugin::KindMarker;
 use std::ffi::c_void;
 use std::marker::PhantomData;
 
@@ -86,10 +85,6 @@ pub enum MigrateNeed {
     /// The owner cannot decide safely without additional original source evidence.
     /// The reason must contain no secret values.
     Review { path: Vec<String>, reason: String },
-    /// Ask the named auth owner to migrate a credential at an authored root path.
-    /// Only the original deployment reference is eligible; borrowed catalog values
-    /// never supply a credential. No credential material belongs in this need.
-    MigrateCredential { path: Vec<String>, module: String },
 }
 
 /// A plugin's migrated settings section: the new section, a report line per change, and the needs
@@ -255,198 +250,6 @@ impl Serialize for MigrationAuthoring<'_> {
     }
 }
 
-/// A resolved credential lent only to its receiving migration owner. It cannot be
-/// constructed by callers, serialized, or logged. The borrow expires with MIGRATE.
-///
-/// ```compile_fail,E0277
-/// fn serialize(value: busbar_contract::abi::sdk::migrate::MigrationCredential<'_, busbar_contract::plugin::markers::AuthKind>) {
-///     let _ = serde_json::to_value(value);
-/// }
-/// ```
-/// ```compile_fail,E0277
-/// fn inspect(value: busbar_contract::abi::sdk::migrate::MigrationFile<'_>) { println!("{value:?}"); }
-/// ```
-///
-/// ```compile_fail,E0451
-/// let credential = busbar_contract::abi::sdk::migrate::MigrationCredential {
-///     text: "secret", file: None, kind: std::marker::PhantomData::<busbar_contract::plugin::markers::AuthKind>,
-/// };
-/// ```
-#[expect(
-    missing_debug_implementations,
-    reason = "holds secret bytes: no Debug, so none can print"
-)]
-pub struct MigrationCredential<'a, K: crate::plugin::KindMarker> {
-    text: &'a str,
-    file: Option<&'a [u8]>,
-    kind: PhantomData<K>,
-}
-
-impl<K: crate::plugin::KindMarker> MigrationCredential<'_, K> {
-    /// Inspect the historical text inside its receiving owner's migration entry.
-    pub fn text(&self) -> &str {
-        self.text
-    }
-    /// Request one host-mediated read of exactly this credential's filename.
-    /// The owner cannot substitute a path or repeat a read after continuation.
-    /// ```compile_fail,E0061
-    /// fn substitute(value: busbar_contract::abi::sdk::migrate::MigrationCredential<'_, busbar_contract::plugin::markers::AuthKind>) {
-    ///     let _ = value.request_file("/unrelated-file");
-    /// }
-    /// ```
-    pub fn request_file(&self) -> Result<CredentialMigration, CredentialRefusal> {
-        if self.file.is_some() {
-            return Err(CredentialRefusal);
-        }
-        Ok(CredentialMigration {
-            action: CredentialMigrationStep::ReadFile,
-        })
-    }
-    /// The guarded file bytes supplied by the host on the single continuation.
-    pub fn file(&self) -> Option<MigrationFile<'_>> {
-        self.file.map(|bytes| MigrationFile { bytes })
-    }
-}
-
-/// File bytes lent only to the receiving migration owner for format validation.
-#[expect(
-    missing_debug_implementations,
-    reason = "holds secret bytes: no Debug, so none can print"
-)]
-pub struct MigrationFile<'a> {
-    bytes: &'a [u8],
-}
-impl MigrationFile<'_> {
-    /// Inspect the supplied file inside the receiving owner's migration entry.
-    pub fn bytes(&self) -> &[u8] {
-        self.bytes
-    }
-    /// Approve the host's already-read filename for configuration authoring.
-    pub fn accept(self) -> CredentialMigration {
-        CredentialMigration {
-            action: CredentialMigrationStep::UseFile,
-        }
-    }
-}
-
-/// A fixed refusal; neither credentials nor parser/filesystem details escape the owner.
-#[derive(Debug, Clone, Copy)]
-pub struct CredentialRefusal;
-
-/// The bounded credential migration protocol. No action carries a path or secret.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum CredentialMigrationStep {
-    /// Preserve the original source reference.
-    Unchanged,
-    /// Ask the host to read the original credential as an exact filename once.
-    ReadFile,
-    /// Approve the file lent on that continuation.
-    UseFile,
-}
-
-/// Owner-side answer; a file approval is valid only after the host supplied that file.
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct CredentialMigration {
-    action: CredentialMigrationStep,
-}
-impl CredentialMigration {
-    /// Preserve the original source reference.
-    pub fn unchanged() -> Self {
-        Self {
-            action: CredentialMigrationStep::Unchanged,
-        }
-    }
-    /// The generic protocol action, never a credential or filename.
-    pub fn step(&self) -> CredentialMigrationStep {
-        self.action
-    }
-    /// Complete only with the host's actual read path, under its sealed custody.
-    pub fn finish(
-        self,
-        path: Option<&crate::Secret<String>>,
-        seal: &dyn crate::plugin::KernelSeal,
-    ) -> Result<MigratedCredential, CredentialRefusal> {
-        let path = match self.action {
-            CredentialMigrationStep::Unchanged => None,
-            CredentialMigrationStep::UseFile => Some(SecureString::from(
-                path.ok_or(CredentialRefusal)?.expose(seal).as_str(),
-            )),
-            CredentialMigrationStep::ReadFile => return Err(CredentialRefusal),
-        };
-        Ok(MigratedCredential { path })
-    }
-}
-
-/// Host custody of an approved credential source, with no plaintext path accessor.
-/// ```compile_fail,E0616
-/// fn inspect(answer: busbar_contract::abi::sdk::migrate::MigratedCredential) { let _ = answer.path; }
-/// ```
-pub struct MigratedCredential {
-    path: Option<SecureString>,
-}
-impl std::fmt::Debug for MigratedCredential {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("MigratedCredential([REDACTED])")
-    }
-}
-impl MigratedCredential {
-    /// Author the approved filename using the admitted source owner's path role.
-    pub fn into_reference(
-        self,
-        sources: &crate::secret_ref::Sugars,
-    ) -> Result<Option<crate::secret_ref::SecretRef>, String> {
-        self.path
-            .map(|path| {
-                sources
-                    .reference_for_role(crate::abi::mechanism::door::SUGAR_ROLE_PATH, path.as_str())
-            })
-            .transpose()
-    }
-}
-
-/// Encode a guarded credential and optional guarded file loan for MIGRATE.
-/// The length-prefixed binary frame is parsed by borrowing, so no plaintext parse tree exists.
-pub fn encode_credential_input(
-    credential: &crate::Secret<String>,
-    file: Option<&crate::Secret<Vec<u8>>>,
-    seal: &dyn crate::plugin::KernelSeal,
-) -> crate::Secret<Vec<u8>> {
-    let credential = credential.expose(seal).as_bytes();
-    let mut bytes = Vec::new();
-    bytes.push(u8::from(file.is_some()));
-    bytes.extend_from_slice(&(credential.len() as u64).to_le_bytes());
-    bytes.extend_from_slice(credential);
-    if let Some(file) = file {
-        bytes.extend_from_slice(file.expose(seal));
-    }
-    crate::Secret::new(bytes)
-}
-
-fn credential_input<K: crate::plugin::KindMarker>(
-    bytes: &[u8],
-) -> Result<MigrationCredential<'_, K>, CredentialRefusal> {
-    let header = bytes.get(..9).ok_or(CredentialRefusal)?;
-    let len = usize::try_from(u64::from_le_bytes(
-        header[1..9].try_into().map_err(|_| CredentialRefusal)?,
-    ))
-    .map_err(|_| CredentialRefusal)?;
-    let end = 9usize.checked_add(len).ok_or(CredentialRefusal)?;
-    let text = std::str::from_utf8(bytes.get(9..end).ok_or(CredentialRefusal)?)
-        .map_err(|_| CredentialRefusal)?;
-    let file = match header[0] {
-        0 if end == bytes.len() => None,
-        1 => Some(&bytes[end..]),
-        _ => return Err(CredentialRefusal),
-    };
-    Ok(MigrationCredential {
-        text,
-        file,
-        kind: PhantomData,
-    })
-}
-
 /// A plugin's own migration of its settings section.
 pub trait Migrate {
     /// Kind whose settings are being migrated.
@@ -457,13 +260,6 @@ pub trait Migrate {
     /// Default owners have no reference discovery. The host ignores settings edits and other needs.
     fn migrate_references(settings: serde_json::Value, _from: &str) -> Migrated {
         Migrated::unchanged(settings)
-    }
-    /// Optional cold credential conversion. Unsupported owners refuse without exposing input.
-    fn migrate_credential(
-        _credential: MigrationCredential<'_, Self::Kind>,
-        _from: &str,
-    ) -> Result<CredentialMigration, CredentialRefusal> {
-        Err(CredentialRefusal)
     }
 }
 
@@ -487,30 +283,13 @@ impl<M: Migrate> RawSlot for Migrator<M> {
                 lent(input.head.extensions.ptr, input.head.extensions.len),
             )
         };
-        let (outcome, answer) = if input.settings.fmt == crate::abi::mechanism::call::BLOB_OCTETS {
-            if M::Kind::KIND != crate::plugin::Kind::Auth
-                || input.settings.flags & crate::abi::mechanism::call::BLOB_SECRET == 0
-            {
-                return Outcome::Refused;
-            }
-            let result = credential_input::<M::Kind>(settings)
-                .and_then(|credential| {
-                    M::migrate_credential(credential, &String::from_utf8_lossy(from))
-                })
-                .and_then(|answer| {
-                    // Encoded in custody: every growth on the way wipes the block it leaves.
-                    let mut bytes = SecureVec::new();
-                    serde_json::to_writer(&mut bytes, &answer).map_err(|_| CredentialRefusal)?;
-                    Ok(bytes)
-                });
-            match result {
-                Ok(bytes) => (Outcome::Ready, bytes),
-                Err(_) => (
-                    Outcome::Refused,
-                    SecureVec::from(b"credential migration refused".as_slice()),
-                ),
-            }
-        } else {
+        // An octet (credential) input is not a settings section: the credential conversion
+        // channel is retired (MIGRATE-ON-BOOT r41 §A4: the deferred style binding and the owner's own open
+        // replace it).
+        if input.settings.fmt == crate::abi::mechanism::call::BLOB_OCTETS {
+            return Outcome::Refused;
+        }
+        let (outcome, answer) = {
             match parse(settings) {
                 Ok(section) => {
                     let from = String::from_utf8_lossy(from);

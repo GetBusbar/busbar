@@ -13,9 +13,12 @@
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
+pub mod protected_reply;
+
 use busbar_plugin_abi::fail::fact::{FACT_BACKEND_STATUS, FACT_RETRY_AFTER_S};
 use busbar_plugin_abi::fail::refused::R_INVALID;
 use busbar_plugin_abi::fail::{failed, CallError, FaultReason};
+use busbar_plugin_abi::fallback_usage::{self as attempt_wire, SelectedResource};
 use busbar_plugin_abi::host_side::answer::Answer;
 use busbar_plugin_abi::host_side::caller::{BoxFut, Caller};
 use busbar_plugin_abi::host_side::driver::Driver;
@@ -30,6 +33,7 @@ use busbar_plugin_abi::records::{
 use busbar_plugin_abi::types::{Bytes, Slice, Status, Str};
 
 use crate::instance::ErrorBook;
+use busbar_ports::codec::fallback_usage::Declaration;
 use busbar_ports::codec::plane::decode_provider_schema;
 use busbar_ports::plane::{
     PlaneIn, PlaneOut, PlanePort, PlaneSession, RouteInfo, TargetIn, UsageClass,
@@ -59,6 +63,7 @@ pub struct PlaneDescribe {
     pub routes: Vec<RouteInfo>,
     pub dialects: Vec<Box<str>>,
     pub usage_classes: Vec<UsageClass>,
+    pub attempt_classes: Vec<Box<str>>,
     pub tick_s: Option<u64>,
     /// D_ADMIN_OPENAPI: the OpenAPI fragment of the ROUTE_ADMIN routes, for K8's admin document merge (round 8).
     pub admin_openapi: Option<Box<str>>,
@@ -77,6 +82,7 @@ pub fn decode_describe(
 ) -> Result<PlaneDescribe, DescribeInvalid> {
     let mut d = PlaneDescribe::default();
     let mut headers: Vec<(u32, &str)> = Vec::new();
+    let mut resource_routes: Vec<(u32, Vec<Box<str>>)> = Vec::new();
     for rec in describe {
         let rec = rec.map_err(|_| DescribeInvalid("describe"))?;
         match rec.tag {
@@ -99,7 +105,33 @@ pub fn decode_describe(
                     auth: r.auth,
                     pattern: pattern.into(),
                     cred_header: None,
+                    resource_kinds: Vec::new(),
                 });
+            }
+            t::D_ROUTE_RESOURCES => {
+                let bad = DescribeInvalid("describe.route_resources");
+                let (h, tail) = rec.pod_tail::<p::RouteHeaderRec>().map_err(|_| bad)?;
+                if h._r != 0 || resource_routes.iter().any(|(r, _)| *r == h.route) {
+                    return Err(bad);
+                }
+                let mut kinds: Vec<Box<str>> = Vec::new();
+                for kind in Records::new(tail) {
+                    let kind = kind.map_err(|_| bad)?;
+                    if kind.tag != g::TEXT || kinds.len() == 8 {
+                        return Err(bad);
+                    }
+                    let k = kind.text().map_err(|_| bad)?;
+                    if !busbar_plugin_abi::resource_admission::valid_kind(k)
+                        || kinds.iter().any(|s| s.as_ref() == k)
+                    {
+                        return Err(bad);
+                    }
+                    kinds.push(k.into());
+                }
+                if kinds.is_empty() {
+                    return Err(bad);
+                }
+                resource_routes.push((h.route, kinds));
             }
             t::D_ROUTE_CRED_HEADER => {
                 let bad = DescribeInvalid("describe.route_cred_header");
@@ -132,6 +164,11 @@ pub fn decode_describe(
             }
             t::D_USAGE_CLASS => {
                 let bad = DescribeInvalid("describe.usage_class");
+                if facts & (p::FB_ATTEMPT_USAGE | p::FB_PREPARED_ESTIMATES) != 0
+                    && d.usage_classes.len() >= attempt_wire::MAX_CLASSES
+                {
+                    return Err(bad);
+                }
                 let (u, tail) = rec.pod_tail::<p::UsageClassRec>().map_err(|_| bad)?;
                 let class = class_text(tail).map_err(|_| bad)?;
                 let e = u.expected_units;
@@ -147,6 +184,14 @@ pub fn decode_describe(
                     unit: u.unit,
                     expected_units: (!e.is_nan()).then_some(e),
                 });
+            }
+            t::D_ATTEMPT_CLASS => {
+                let class = attempt_wire::class_text(rec.body)
+                    .map_err(|_| DescribeInvalid("describe.attempt_class"))?;
+                if d.attempt_classes.len() >= attempt_wire::MAX_CLASSES {
+                    return Err(DescribeInvalid("describe.attempt_class"));
+                }
+                d.attempt_classes.push(class.into());
             }
             t::D_ADMIN_OPENAPI => {
                 let bad = DescribeInvalid("describe.admin_openapi");
@@ -169,6 +214,27 @@ pub fn decode_describe(
             _ => return Err(DescribeInvalid("describe.route_cred_header")),
         }
     }
+    if (!resource_routes.is_empty() && facts & p::FB_RESOURCE_ADMISSION == 0)
+        || (facts & p::FB_RESOURCE_ADMISSION != 0 && methods & p::M_SELECT_RESOURCES == 0)
+    {
+        return Err(DescribeInvalid("describe.route_resources"));
+    }
+    if facts & p::FB_CHANNEL_OPEN != 0
+        && methods & (p::M_CHANNEL | p::M_DEMUX) != (p::M_CHANNEL | p::M_DEMUX)
+    {
+        return Err(DescribeInvalid("describe.channel"));
+    }
+    for (route, kinds) in resource_routes {
+        let route = d
+            .routes
+            .iter_mut()
+            .find(|r| r.route == route)
+            .ok_or(DescribeInvalid("describe.route_resources"))?;
+        if route.flags != 0 || route.auth != p::AUTH_PRINCIPAL {
+            return Err(DescribeInvalid("describe.route_resources"));
+        }
+        route.resource_kinds = kinds;
+    }
     let any = |bit: u32| d.routes.iter().any(|r| r.flags & bit != 0);
     if any(p::ROUTE_ADMIN) != d.admin_openapi.is_some() {
         return Err(DescribeInvalid("describe.admin_openapi"));
@@ -178,6 +244,12 @@ pub fn decode_describe(
     }
     if facts & p::FB_PROBES != 0 && methods & p::M_PROBE == 0 {
         return Err(DescribeInvalid("describe.probes"));
+    }
+    Declaration::new(facts, &d.usage_classes, &d.attempt_classes)
+        .map_err(|_| DescribeInvalid("describe.attempt_class"))?;
+    if facts & (p::FB_ATTEMPT_USAGE | p::FB_PREPARED_ESTIMATES) != 0 && methods & p::M_UPSTREAM == 0
+    {
+        return Err(DescribeInvalid("describe.attempt_upstream"));
     }
     decode_provider_schema(describe).map_err(|_| DescribeInvalid("describe.provider_schema"))?;
     Ok(d)
@@ -217,6 +289,7 @@ fn route_rules(r: &p::RouteRec) -> Result<(), DescribeInvalid> {
 pub enum Call {
     Request,
     Upstream,
+    Channel,
     Piece(u32),
     End,
     Rewrite,
@@ -244,6 +317,11 @@ struct Seen {
     /// Render grammar: 0 = before RESPOND, 1 = head, 2 = after BODY, 3 = trailers, 4 = after END.
     render: u8,
     demux: bool,
+    resource_echo: bool,
+    attempt_end: bool,
+    selected: bool,
+    prepared: bool,
+    channel: bool,
 }
 
 /// A misplaced record: FAULT BadRecords naming the tag.
@@ -264,16 +342,35 @@ fn fault(e: RecErr) -> FaultReason {
 pub fn decode_answer(
     call: Call,
     demux: bool,
+    declaration: Declaration<'_>,
+    selected: Option<SelectedResource<'_>>,
+    exchange: Option<u32>,
     recs: Records<'_>,
     sink: &mut dyn FnMut(PlaneOut<'_>),
 ) -> Result<(), FaultReason> {
-    walk(call, demux, recs, &mut |_: PlaneOut<'_>| {})?;
-    walk(call, demux, recs, sink)
+    walk(
+        call,
+        demux,
+        declaration,
+        exchange,
+        recs,
+        &mut |_: PlaneOut<'_>| {},
+    )?;
+    if call == Call::Upstream
+        && declaration.facts() & (p::FB_ATTEMPT_USAGE | p::FB_PREPARED_ESTIMATES) != 0
+    {
+        declaration
+            .validate_preparation(selected, recs)
+            .map_err(fault)?;
+    }
+    walk(call, demux, declaration, exchange, recs, sink)
 }
 
 fn walk(
     call: Call,
     demux: bool,
+    declaration: Declaration<'_>,
+    exchange: Option<u32>,
     recs: Records<'_>,
     sink: &mut dyn FnMut(PlaneOut<'_>),
 ) -> Result<(), FaultReason> {
@@ -283,17 +380,47 @@ fn walk(
     };
     for rec in recs {
         let rec = rec.map_err(fault)?;
-        if rec.tag == g::METRIC {
+        if rec.tag == g::METRIC && call != Call::Channel {
             continue;
         }
         if rec.tag == t::CHANNEL && !demux {
             return Err(FaultReason::UnknownTag(t::CHANNEL));
         }
+        let feature = match rec.tag {
+            t::SELECTED_RESOURCE => p::FB_ATTEMPT_USAGE | p::FB_PREPARED_ESTIMATES,
+            t::PREPARED_ESTIMATES => p::FB_PREPARED_ESTIMATES,
+            t::ATTEMPT_USAGE | t::ATTEMPT_USAGE_END => p::FB_ATTEMPT_USAGE,
+            _ => 0,
+        };
+        if feature != 0 && declaration.facts() & feature == 0 {
+            return Err(misplaced(rec.tag));
+        }
+        if matches!(rec.tag, t::ATTEMPT_USAGE | t::ATTEMPT_USAGE_END)
+            && matches!(call, Call::Piece(_))
+            && exchange != Some(0)
+        {
+            return Err(misplaced(rec.tag));
+        }
         place(call, &mut s, &rec)?;
-        sink(item(&rec).map_err(fault)?);
+        let out = item(&rec).map_err(fault)?;
+        if call == Call::Channel
+            && matches!(&out, PlaneOut::Channel { carrier, .. } if *carrier != p::CARRIER_STDIO)
+        {
+            return Err(misplaced(rec.tag));
+        }
+        if let PlaneOut::AttemptUsage(usage) = &out {
+            if !declaration.is_attempt_class(usage.class) {
+                return Err(misplaced(rec.tag));
+            }
+        }
+        sink(out);
     }
     let late = s.forward && (s.intent || s.client);
-    if late || (s.expect && !s.forward) || (s.no_client && s.client) || (s.decline && s.up) {
+    if late
+        || (s.expect && !s.forward)
+        || (s.no_client && s.client)
+        || (s.decline && (s.up || s.selected || s.prepared))
+    {
         return Err(misplaced(t::FORWARD));
     }
     if s.trailers && s.render != 4 {
@@ -302,6 +429,9 @@ fn walk(
     if call == Call::Render && s.render != 4 {
         return Err(misplaced(t::END));
     }
+    if call == Call::Channel && !s.channel {
+        return Err(misplaced(t::CHANNEL));
+    }
     Ok(())
 }
 
@@ -309,6 +439,13 @@ fn walk(
 fn place(call: Call, s: &mut Seen, rec: &Rec<'_>) -> Result<(), FaultReason> {
     let tag = rec.tag;
     let bad = Err(misplaced(tag));
+    if call == Call::Channel {
+        match tag {
+            t::CHANNEL if !core::mem::replace(&mut s.channel, true) => {}
+            g::FACT | g::FACT_TEXT => {}
+            _ => return bad,
+        }
+    }
     // After TRAILERS only the trailer PAIRs and END may come (§8.6, round 8).
     if s.trailers && s.render == 3 && tag != g::PAIR && tag != t::END {
         return bad;
@@ -331,6 +468,10 @@ fn place(call: Call, s: &mut Seen, rec: &Rec<'_>) -> Result<(), FaultReason> {
         g::METRIC => true,
         g::FACT | g::FACT_TEXT => call != Call::Demux && call != Call::Tick,
         t::USAGE | t::AUDIT => session,
+        t::SELECTED_RESOURCE | t::PREPARED_ESTIMATES => call == Call::Upstream,
+        t::ATTEMPT_USAGE | t::ATTEMPT_USAGE_END => {
+            call == Call::Piece(p::FROM_UPSTREAM) || call == Call::End
+        }
         t::STORE | t::DELETE => flow || call == Call::End,
         t::PUSH => flow || call == Call::End || call == Call::Tick,
         t::EMIT => session || call == Call::Tick,
@@ -340,12 +481,15 @@ fn place(call: Call, s: &mut Seen, rec: &Rec<'_>) -> Result<(), FaultReason> {
         t::RESPOND | t::BODY | t::MSG | t::END | t::TRAILERS => flow,
         t::FORWARD | t::EXPECT => call == Call::Request || call == Call::Piece(p::FROM_CORE),
         t::UP_CARRIER => upstream,
+        t::RESOURCE_ECHO => {
+            call == Call::Upstream && !core::mem::replace(&mut s.resource_echo, true)
+        }
         g::H_METHOD | g::H_PATH | t::UP_SCOPE => s.head && (upstream || flow),
         g::PAIR => upstream || flow,
         t::UP_BODY | t::UP_MSG | t::UP_END | t::UP_NEW | t::EX_MSG | t::UP_CUT => upstream || flow,
         g::CONVERSATION => call == Call::Request,
         t::ATTEMPT => call == Call::Upstream || call == Call::Piece(p::FROM_UPSTREAM),
-        t::CHANNEL => flow || call == Call::Probe,
+        t::CHANNEL => flow || call == Call::Probe || call == Call::Channel,
         t::LOOKUP | t::ENTITLE | t::JUDGE | t::MINT | t::SIGN | t::CONNECT | t::TRUST => flow,
         t::WORK | t::RENDEZVOUS | t::OBS_SCOPE | t::CH_READY => flow,
         t::DEMUX => call == Call::Demux && !core::mem::replace(&mut s.demux, true),
@@ -373,13 +517,37 @@ fn place(call: Call, s: &mut Seen, rec: &Rec<'_>) -> Result<(), FaultReason> {
             }
         }
         t::EXPECT => s.expect = true,
+        t::SELECTED_RESOURCE => {
+            if core::mem::replace(&mut s.selected, true) {
+                return bad;
+            }
+        }
+        t::PREPARED_ESTIMATES => {
+            if core::mem::replace(&mut s.prepared, true) {
+                return bad;
+            }
+        }
+        t::ATTEMPT_USAGE => {
+            if s.attempt_end {
+                return bad;
+            }
+        }
+        t::ATTEMPT_USAGE_END => {
+            if core::mem::replace(&mut s.attempt_end, true) {
+                return bad;
+            }
+        }
         t::UP_NEW => {
             s.head = true;
             s.up = true;
         }
-        t::UP_CARRIER | g::H_METHOD | g::H_PATH | t::UP_SCOPE | t::UP_BODY | t::UP_MSG => {
-            s.up = true
-        }
+        t::RESOURCE_ECHO
+        | t::UP_CARRIER
+        | g::H_METHOD
+        | g::H_PATH
+        | t::UP_SCOPE
+        | t::UP_BODY
+        | t::UP_MSG => s.up = true,
         t::UP_END | t::UP_CUT | t::EX_MSG => s.up = true,
         t::LOOKUP | t::ENTITLE | t::JUDGE | t::MINT | t::SIGN | t::CONNECT | t::TRUST => {
             s.intent = true
@@ -424,6 +592,9 @@ fn item<'o>(rec: &Rec<'o>) -> Result<PlaneOut<'o>, RecErr> {
         }
     };
     Ok(match rec.tag {
+        t::RESOURCE_ECHO => PlaneOut::ResourceEcho(
+            busbar_plugin_abi::resource_admission::echo_record(*rec).map_err(|_| RecErr::Size)?,
+        ),
         t::RESPOND => {
             let r: p::Respond = rec.pod()?;
             let status = u16::try_from(r.status).map_err(|_| RecErr::Size)?;
@@ -504,6 +675,10 @@ fn item<'o>(rec: &Rec<'o>) -> Result<PlaneOut<'o>, RecErr> {
             }
         }
         g::CONVERSATION => PlaneOut::Conversation(body),
+        t::SELECTED_RESOURCE => PlaneOut::SelectedResource(attempt_wire::decode_selected(*rec)?),
+        t::PREPARED_ESTIMATES => PlaneOut::PreparedEstimates(attempt_wire::decode_prepared(*rec)?),
+        t::ATTEMPT_USAGE => PlaneOut::AttemptUsage(attempt_wire::decode_attempt_usage(*rec)?),
+        t::ATTEMPT_USAGE_END => PlaneOut::AttemptUsageEnd(attempt_wire::decode_attempt_end(*rec)?),
         t::USAGE | t::EXPECT => {
             let (u, tail) = rec.pod_tail::<p::UsageRec>()?;
             let class = class_text(tail)?;
@@ -1192,17 +1367,36 @@ impl<N: Needs> PlaneAdapter<N> {
         ))
     }
 
+    fn declaration(&self) -> Result<Declaration<'_>, PortError> {
+        Declaration::new(
+            self.proxy.instance().facts,
+            &self.describe.usage_classes,
+            &self.describe.attempt_classes,
+        )
+        .map_err(|r| PortError::Call(CallError::Fault(fault(r))))
+    }
+
     /// An answer of `call` into the sink, whole or not at all.
     fn finish(
         &self,
         call: Call,
         answer: &Answer<'_>,
         sink: &mut dyn FnMut(PlaneOut<'_>),
+        selected: Option<SelectedResource<'_>>,
+        exchange: Option<u32>,
     ) -> Result<(), PortError> {
         self.failure(answer)?;
         let demux = self.proxy.instance().methods & p::M_DEMUX != 0;
-        decode_answer(call, demux, answer.records(), sink)
-            .map_err(|r| PortError::Call(CallError::Fault(r)))
+        decode_answer(
+            call,
+            demux,
+            self.declaration()?,
+            selected,
+            exchange,
+            answer.records(),
+            sink,
+        )
+        .map_err(|r| PortError::Call(CallError::Fault(r)))
     }
 }
 
@@ -1234,6 +1428,7 @@ fn target<'a>(x: &'a TargetIn<'a>) -> Target<'a> {
         upstream: Str::new(x.upstream),
         provider: Str::new(x.provider),
         params: Slice::new(x.params),
+        admission: Bytes::new(x.admission),
     }
 }
 
@@ -1274,8 +1469,16 @@ impl<N: Needs> PlanePort for PlaneAdapter<N> {
         &self.describe.usage_classes
     }
 
+    fn attempt_classes(&self) -> &[Box<str>] {
+        &self.describe.attempt_classes
+    }
+
     fn facts(&self) -> u64 {
         self.proxy.instance().facts
+    }
+
+    fn has_demux(&self) -> bool {
+        self.proxy.instance().methods & p::M_DEMUX != 0
     }
 
     fn tick_s(&self) -> Option<u64> {
@@ -1288,6 +1491,66 @@ impl<N: Needs> PlanePort for PlaneAdapter<N> {
 
     fn charge(&self, reason: FaultReason) {
         let _ = self.proxy.instance().charge(reason);
+    }
+
+    fn resource_facts(
+        &self,
+        mode: u32,
+        req: &PlaneIn<'_>,
+        body: &[u8],
+        byte_limit: usize,
+    ) -> Result<Vec<u8>, PortError> {
+        use busbar_plugin_abi::resource_admission as resources;
+        let kinds = self.resource_kinds(req.route);
+        if self.facts() & p::FB_RESOURCE_ADMISSION == 0
+            || kinds.is_empty()
+            || req.auth != 0
+            || !req.identity.is_empty()
+            || !req.ticket_record.is_empty()
+            || req.carrier != 0
+            || !req.work.is_empty()
+            || !matches!(mode, p::RESOURCE_INVENTORY | p::RESOURCE_SELECT)
+        {
+            return Err(PortError::Refused {
+                code: R_INVALID,
+                text: "resource selection is unavailable".into(),
+                error: None,
+            });
+        }
+        let max_out = self.live()?.min(byte_limit);
+        let max_out = if mode == p::RESOURCE_SELECT {
+            max_out.min(resources::MAX_SELECTION_BYTES)
+        } else {
+            max_out
+        };
+        let req = plane_req(req);
+        sync_bufs(max_out, |_, out| {
+            let answer = self
+                .proxy
+                .select_resources(out, mode, &req, body)
+                .map_err(PortError::Call)?;
+            self.failure(&answer)?;
+            let bytes = answer.records().rest();
+            let valid = if mode == p::RESOURCE_SELECT {
+                resources::decode_selection(bytes).map(|scopes| {
+                    scopes
+                        .iter()
+                        .all(|s| kinds.iter().any(|k| k.as_ref() == s.kind))
+                })
+            } else {
+                resources::decode_inventory(bytes, byte_limit).map(|entries| {
+                    entries
+                        .iter()
+                        .all(|r| kinds.iter().any(|k| k.as_ref() == r.scope.kind))
+                })
+            };
+            if valid != Ok(true) {
+                return Err(PortError::Call(CallError::Fault(FaultReason::BadRecords(
+                    RecErr::Size,
+                ))));
+            }
+            Ok(bytes.to_vec())
+        })
     }
 
     fn request(
@@ -1303,7 +1566,7 @@ impl<N: Needs> PlanePort for PlaneAdapter<N> {
                 .proxy
                 .request(out, &req, body)
                 .map_err(PortError::Call)?;
-            self.finish(Call::Request, &answer, sink)?;
+            self.finish(Call::Request, &answer, sink, None, None)?;
             session.ok_or_else(no_token)
         })
     }
@@ -1316,9 +1579,51 @@ impl<N: Needs> PlanePort for PlaneAdapter<N> {
     ) -> Result<(), PortError> {
         let max_out = self.live()?;
         let view = target(tgt);
+        let enabled =
+            self.proxy.instance().facts & (p::FB_ATTEMPT_USAGE | p::FB_PREPARED_ESTIMATES) != 0;
+        let selected = if enabled {
+            attempt_wire::selected_from_admission(tgt.admission)
+                .map_err(|r| PortError::Call(CallError::Fault(fault(r))))?
+        } else {
+            None
+        };
+        if (enabled && selected.is_none())
+            || selected.is_some_and(|selected| selected.attempt != tgt.attempt)
+        {
+            return Err(PortError::Call(CallError::Fault(misplaced(
+                t::SELECTED_RESOURCE,
+            ))));
+        }
         sync_bufs(max_out, |_, out| {
             let answer = s.upstream(out, &view).map_err(PortError::Call)?;
-            self.finish(Call::Upstream, &answer, sink)
+            self.finish(Call::Upstream, &answer, sink, selected, None)
+        })
+    }
+
+    fn channel(
+        &self,
+        s: &mut PlaneSession,
+        tgt: &TargetIn<'_>,
+        sink: &mut dyn FnMut(PlaneOut<'_>),
+    ) -> Result<(), PortError> {
+        let max_out = self.live()?;
+        if self.facts() & p::FB_CHANNEL_OPEN == 0
+            || self.proxy.instance().methods & (p::M_CHANNEL | p::M_DEMUX)
+                != (p::M_CHANNEL | p::M_DEMUX)
+        {
+            return Err(PortError::Refused {
+                code: busbar_plugin_abi::fail::refused::R_UNSUPPORTED,
+                text: "selected channel preparation is unavailable".into(),
+                error: None,
+            });
+        }
+        if !Arc::ptr_eq(self.proxy.instance(), s.instance()) {
+            return Err(PortError::Call(CallError::Fault(FaultReason::BadInstance)));
+        }
+        let view = target(tgt);
+        sync_bufs(max_out, |_, out| {
+            let answer = s.channel(out, &view).map_err(PortError::Call)?;
+            self.finish(Call::Channel, &answer, sink, None, None)
         })
     }
 
@@ -1336,8 +1641,55 @@ impl<N: Needs> PlanePort for PlaneAdapter<N> {
             let answer = s
                 .piece(out, from, exchange, flags, bytes)
                 .map_err(PortError::Call)?;
-            self.finish(Call::Piece(from), &answer, sink)
+            self.finish(Call::Piece(from), &answer, sink, None, Some(exchange))
         })
+    }
+
+    fn piece_fixed(
+        &self,
+        s: &mut PlaneSession,
+        from: u32,
+        exchange: u32,
+        flags: u32,
+        bytes: &[u8],
+        out: &mut [u8],
+    ) -> Result<usize, PortError> {
+        self.live()?;
+        if !Arc::ptr_eq(self.proxy.instance(), s.instance()) {
+            return Err(PortError::Call(CallError::Fault(FaultReason::BadInstance)));
+        }
+        let (answer, len) = s
+            .piece_fixed(out, from, exchange, flags, bytes)
+            .map_err(PortError::Call)?;
+        // Same whole-answer validation and failure translation as pooled piece. No effect escapes
+        // until the caller classifies the validated fixed backing and admits its complete answer.
+        self.finish(
+            Call::Piece(from),
+            &answer,
+            &mut |_| {},
+            None,
+            Some(exchange),
+        )?;
+        Ok(len)
+    }
+
+    fn decode_fixed_piece(
+        &self,
+        from: u32,
+        exchange: u32,
+        bytes: &[u8],
+        sink: &mut dyn FnMut(PlaneOut<'_>),
+    ) -> Result<(), PortError> {
+        let max_out = self.live()?;
+        if bytes.len() > max_out || Records::new(bytes).any(|r| r.is_ok_and(|r| r.tag == g::TOKEN))
+        {
+            return Err(PortError::Call(CallError::Fault(FaultReason::BadRecords(
+                RecErr::Reserved,
+            ))));
+        }
+        let answer = Answer::parse(Status::OK, bytes)
+            .map_err(|reason| PortError::Call(CallError::Fault(reason)))?;
+        self.finish(Call::Piece(from), &answer, sink, None, Some(exchange))
     }
 
     fn rewrite(
@@ -1349,7 +1701,7 @@ impl<N: Needs> PlanePort for PlaneAdapter<N> {
         let max_out = self.live()?;
         sync_bufs(max_out, |_, out| {
             let answer = s.rewrite(out, conversation).map_err(PortError::Call)?;
-            self.finish(Call::Rewrite, &answer, sink)
+            self.finish(Call::Rewrite, &answer, sink, None, None)
         })
     }
 
@@ -1357,7 +1709,7 @@ impl<N: Needs> PlanePort for PlaneAdapter<N> {
         let max_out = self.live()?;
         sync_bufs(max_out, |_, out| {
             let answer = s.end(out).map_err(PortError::Call)?;
-            self.finish(Call::End, &answer, sink)
+            self.finish(Call::End, &answer, sink, None, None)
         })
     }
 
@@ -1375,7 +1727,7 @@ impl<N: Needs> PlanePort for PlaneAdapter<N> {
                 .proxy
                 .render(out, &req, what, arg)
                 .map_err(PortError::Call)?;
-            self.finish(Call::Render, &answer, sink)
+            self.finish(Call::Render, &answer, sink, None, None)
         })
     }
 
@@ -1388,7 +1740,7 @@ impl<N: Needs> PlanePort for PlaneAdapter<N> {
         let view = target(tgt);
         sync_bufs(max_out, |_, out| {
             let (session, answer) = self.proxy.probe(out, &view).map_err(PortError::Call)?;
-            self.finish(Call::Probe, &answer, sink)?;
+            self.finish(Call::Probe, &answer, sink, None, None)?;
             session.ok_or_else(no_token)
         })
     }
@@ -1405,7 +1757,7 @@ impl<N: Needs> PlanePort for PlaneAdapter<N> {
                 .proxy
                 .demux(out, key, message)
                 .map_err(PortError::Call)?;
-            self.finish(Call::Demux, &answer, sink)
+            self.finish(Call::Demux, &answer, sink, None, None)
         })
     }
 
@@ -1428,7 +1780,8 @@ impl<N: Needs> PlanePort for PlaneAdapter<N> {
             let answer = owned.answer();
             self.failure(&answer)?;
             let recs = answer.records();
-            admin_answer(op, recs).map_err(|r| PortError::Call(CallError::Fault(r)))?;
+            admin_answer(op, self.declaration()?, recs)
+                .map_err(|r| PortError::Call(CallError::Fault(r)))?;
             let mut copy = Reply::new();
             for rec in recs {
                 let rec = rec.map_err(|e| PortError::Call(CallError::Fault(fault(e))))?;
@@ -1451,9 +1804,20 @@ fn no_room() -> PortError {
 
 /// ADMIN_TICK answers PUSH* and EMIT* only; ADMIN_CARRIER_END answers nothing; EMIT and PUSH are BadRecords in any
 /// other admin answer (§8.6). CATALOG and HYDRATE answers go to core as they are.
-fn admin_answer(op: u32, recs: Records<'_>) -> Result<(), FaultReason> {
+fn admin_answer(
+    op: u32,
+    declaration: Declaration<'_>,
+    recs: Records<'_>,
+) -> Result<(), FaultReason> {
     if op == p::ADMIN_TICK {
-        return walk(Call::Tick, false, recs, &mut |_: PlaneOut<'_>| {});
+        return walk(
+            Call::Tick,
+            false,
+            declaration,
+            None,
+            recs,
+            &mut |_: PlaneOut<'_>| {},
+        );
     }
     for rec in recs {
         let rec = rec.map_err(fault)?;
@@ -1469,6 +1833,64 @@ fn admin_answer(op: u32, recs: Records<'_>) -> Result<(), FaultReason> {
 mod tests {
     use super::*;
     use busbar_plugin_abi::records::{Reply, Writer};
+
+    #[test]
+    fn resource_echo_is_unique_upstream_only_and_checked_before_delivery() {
+        use busbar_plugin_abi::resource_admission::{write_echo, DescriptorEcho};
+        let describe = PlaneDescribe::default();
+        let declaration =
+            Declaration::new(0, &describe.usage_classes, &describe.attempt_classes).unwrap();
+        let mut out = Reply::new();
+        let echo = DescriptorEcho {
+            invocation: 1,
+            generation: 7,
+            route: 3,
+            descriptor: 9,
+            instance: "plane/test",
+        };
+        write_echo(&mut out, echo).unwrap();
+        out.put(g::H_METHOD, b"POST").unwrap();
+        out.put(g::H_PATH, b"/generate").unwrap();
+        out.put(t::UP_BODY, b"{}").unwrap();
+        let mut delivered = false;
+        decode_answer(
+            Call::Upstream,
+            false,
+            declaration,
+            None,
+            None,
+            Records::new(out.as_bytes()),
+            &mut |item| {
+                if let PlaneOut::ResourceEcho(got) = item {
+                    assert_eq!(got, echo);
+                    delivered = true;
+                }
+            },
+        )
+        .unwrap();
+        assert!(delivered);
+        assert!(decode_answer(
+            Call::Request,
+            false,
+            declaration,
+            None,
+            None,
+            Records::new(out.as_bytes()),
+            &mut |_| panic!("partial delivery")
+        )
+        .is_err());
+        write_echo(&mut out, echo).unwrap();
+        assert!(decode_answer(
+            Call::Upstream,
+            false,
+            declaration,
+            None,
+            None,
+            Records::new(out.as_bytes()),
+            &mut |_| panic!("partial delivery")
+        )
+        .is_err());
+    }
 
     fn route(r: &mut Reply, route: u32, methods: u32, flags: u32, auth: u32, pattern: &str) {
         let rec = p::RouteRec {
@@ -1526,6 +1948,9 @@ mod tests {
         decode_answer(
             call,
             true,
+            Declaration::legacy(),
+            None,
+            None,
             Records::new(r.as_bytes()),
             &mut |o: PlaneOut<'_>| seen.push(label(&o)),
         )?;
@@ -1747,6 +2172,9 @@ mod tests {
         let got = decode_answer(
             Call::Request,
             true,
+            Declaration::legacy(),
+            None,
+            None,
             Records::new(r.as_bytes()),
             &mut |_: PlaneOut<'_>| calls += 1,
         );
@@ -1814,21 +2242,24 @@ mod tests {
 
     #[test]
     fn emit_is_for_session_answers_and_the_tick() {
+        let describe = PlaneDescribe::default();
+        let declaration =
+            Declaration::new(0, &describe.usage_classes, &describe.attempt_classes).unwrap();
         let mut r = Reply::new();
         emit(&mut r);
         assert_eq!(run(Call::Request, &r).unwrap(), ["emit 7 line"]);
         assert!(run(Call::End, &r).is_ok());
-        assert!(admin_answer(p::ADMIN_TICK, Records::new(r.as_bytes())).is_ok());
+        assert!(admin_answer(p::ADMIN_TICK, declaration, Records::new(r.as_bytes())).is_ok());
         assert_eq!(run(Call::Rewrite, &r), Err(bad(t::EMIT)));
         assert_eq!(run(Call::Render, &r), Err(bad(t::EMIT)));
         assert_eq!(
-            admin_answer(p::ADMIN_CATALOG, Records::new(r.as_bytes())),
+            admin_answer(p::ADMIN_CATALOG, declaration, Records::new(r.as_bytes())),
             Err(bad(t::EMIT))
         );
         let mut r = Reply::new();
         r.put_fact(p::F_MODEL, 1).unwrap();
         assert_eq!(
-            admin_answer(p::ADMIN_TICK, Records::new(r.as_bytes())),
+            admin_answer(p::ADMIN_TICK, declaration, Records::new(r.as_bytes())),
             Err(bad(g::FACT))
         );
     }
@@ -1873,7 +2304,15 @@ mod tests {
             .unwrap();
         let recs = Records::new(r.as_bytes());
         assert_eq!(
-            decode_answer(Call::Request, false, recs, &mut |_: PlaneOut<'_>| {}),
+            decode_answer(
+                Call::Request,
+                false,
+                Declaration::legacy(),
+                None,
+                None,
+                recs,
+                &mut |_: PlaneOut<'_>| {}
+            ),
             Err(FaultReason::UnknownTag(t::CHANNEL))
         );
         assert_eq!(run(Call::Request, &r).unwrap(), ["channel 5 tools"]);
@@ -1958,6 +2397,72 @@ mod tests {
     }
 
     #[test]
+    fn selected_channel_requires_one_complete_channel_and_only_facts() {
+        let channel = |out: &mut Reply| {
+            let mut key = Reply::new();
+            key.put_text(g::TEXT, "member").unwrap();
+            out.put_pod_tail(
+                t::CHANNEL,
+                &p::ChanRec {
+                    exchange: 7,
+                    flags: 0,
+                    carrier: p::CARRIER_STDIO,
+                    framing: p::CH_FRAME_NDJSON,
+                },
+                key.as_bytes(),
+            )
+            .unwrap();
+        };
+        let mut valid = Reply::new();
+        channel(&mut valid);
+        assert!(run(Call::Channel, &valid).is_ok());
+        assert!(run(Call::Upstream, &valid).is_err());
+        assert!(run(Call::Channel, &Reply::new()).is_err());
+        for extra in [
+            t::CHANNEL,
+            t::EX_MSG,
+            g::METRIC,
+            t::UP_BODY,
+            t::ATTEMPT,
+            t::STORE,
+        ] {
+            let mut answer = Reply::new();
+            channel(&mut answer);
+            if extra == t::CHANNEL {
+                channel(&mut answer);
+            } else {
+                answer.put(extra, b"").unwrap();
+            }
+            let mut delivered = 0;
+            assert!(decode_answer(
+                Call::Channel,
+                true,
+                Declaration::legacy(),
+                None,
+                None,
+                Records::new(answer.as_bytes()),
+                &mut |_| delivered += 1
+            )
+            .is_err());
+            assert_eq!(delivered, 0, "whole-answer validation precedes publication");
+        }
+        let mut malformed = Reply::new();
+        malformed
+            .put_pod_tail(
+                t::CHANNEL,
+                &p::ChanRec {
+                    exchange: 7,
+                    flags: 0,
+                    carrier: p::CARRIER_STDIO,
+                    framing: p::CH_FRAME_NDJSON,
+                },
+                b"member",
+            )
+            .unwrap();
+        assert!(run(Call::Channel, &malformed).is_err());
+    }
+
+    #[test]
     fn the_admin_argument_is_copied_record_for_record() {
         let mut arg = Reply::new();
         arg.put_pod(g::TEXT, &U64Rec { value: 9 }).unwrap();
@@ -1975,3 +2480,7 @@ mod tests {
         ));
     }
 }
+
+#[cfg(test)]
+#[path = "plane_fallback_tests.rs"]
+mod fallback_tests;

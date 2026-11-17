@@ -88,6 +88,7 @@ async fn inherited_peer_positions_keep_the_exact_replay_authority_and_provider_o
         )
         .unwrap(),
         won: tokio::sync::OnceCell::new(),
+        execution: std::sync::OnceLock::new(),
     });
     let providers = vec![
         "request".to_string(),

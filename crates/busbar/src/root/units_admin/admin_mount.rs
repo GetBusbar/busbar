@@ -3,6 +3,91 @@
 
 use super::*;
 
+enum RetainedAnswer {
+    NonNative(AdminAnswer),
+    Executed {
+        answer: AdminAnswer,
+        physical: Arc<busbar_kernel::inbound::native::PhysicalAdminExecution>,
+    },
+    PendingRefusal {
+        answer: AdminAnswer,
+        pending: busbar_kernel::inbound::native::CompletingPhysicalRequest,
+        carrier: busbar_kernel::inbound::native::AdminPhysicalRequest,
+    },
+    Refused {
+        answer: AdminAnswer,
+        carrier: busbar_kernel::inbound::native::PhysicalRefusalCarrier,
+    },
+    NativeFailed(AdminAnswer),
+}
+
+type SealedAnswer = (
+    RetainedAnswer,
+    Option<AuditRecord>,
+    Option<busbar_kernel::auth::native_admin::AdminCompletionRefused>,
+);
+
+impl RetainedAnswer {
+    fn confirm(self, record: Option<&AuditRecord>) -> Self {
+        match self {
+            Self::PendingRefusal {
+                answer,
+                pending,
+                carrier,
+            } => {
+                match record
+                    .and_then(|record| pending.refuse_admin(record).ok())
+                    .and_then(|physical| carrier.retain_refusal(physical).ok())
+                {
+                    Some(carrier) => Self::Refused { answer, carrier },
+                    None => Self::NativeFailed(unavailable_answer()),
+                }
+            }
+            other => other,
+        }
+    }
+
+    fn publication_failed(self) -> Self {
+        let answer = bound::journal_unavailable(
+            "the administrative result's audit publication is unconfirmed; do not re-submit",
+        );
+        match self {
+            Self::NonNative(_) => Self::NonNative(answer),
+            _ => Self::NativeFailed(answer),
+        }
+    }
+
+    #[cfg(test)]
+    fn into_answer(self) -> AdminAnswer {
+        match self {
+            Self::NonNative(answer)
+            | Self::NativeFailed(answer)
+            | Self::Executed { answer, .. }
+            | Self::PendingRefusal { answer, .. }
+            | Self::Refused { answer, .. } => answer,
+        }
+    }
+
+    fn into_response(self) -> axum::response::Response {
+        match self {
+            Self::NonNative(answer) | Self::NativeFailed(answer) => http_response(answer),
+            Self::Executed { answer, physical } => {
+                busbar_kernel::auth::native_admin::retain_physical_response(
+                    http_response(answer),
+                    physical,
+                )
+            }
+            Self::Refused { answer, carrier } => {
+                let mut response = http_response(answer);
+                response.extensions_mut().insert(carrier);
+                response
+            }
+            // Only confirmed_request's successful result may consume the pending denial.
+            Self::PendingRefusal { .. } => http_response(unavailable_answer()),
+        }
+    }
+}
+
 pub(crate) struct AdminNode {
     pub(super) kernel: busbar_kernel::teller::Kernel,
     pub(super) units: crate::root::kernel::ProductionUnits,
@@ -23,23 +108,29 @@ impl AdminNode {
 
     #[cfg(test)]
     pub(crate) async fn answer(&self, request: AdminRequest) -> AdminAnswer {
-        self.answer_with_admission(request, None).await
+        self.answer_with_admission(request, None, None)
+            .await
+            .into_answer()
     }
 
     async fn answer_with_admission(
         &self,
         request: AdminRequest,
         admission: Option<busbar_kernel::inbound::RequestAdmission>,
-    ) -> AdminAnswer {
-        let (answer, publication) = busbar_kernel::audit::auditlog::confirmed_request(
-            self.answer_confirmed(request, admission),
-        )
-        .await;
+        physical: Option<busbar_kernel::inbound::native::CompletingPhysicalRequest>,
+    ) -> RetainedAnswer {
+        let ((answer, record, claim_failure), publication) =
+            busbar_kernel::audit::auditlog::confirmed_request(
+                self.answer_confirmed(request, admission, physical),
+            )
+            .await;
         if publication.is_err() {
-            return bound::journal_unavailable(
-                "the administrative result's audit publication is unconfirmed; do not re-submit",
-            );
+            return answer.publication_failed();
         }
+        let answer = answer.confirm(record.as_ref());
+        // Store retains any unresolved operation; keep its original preparation through
+        // this request's audit confirmation without minting response authority.
+        drop(claim_failure);
         answer
     }
 
@@ -47,18 +138,29 @@ impl AdminNode {
         &self,
         request: AdminRequest,
         admission: Option<busbar_kernel::inbound::RequestAdmission>,
-    ) -> AdminAnswer {
+        physical: Option<busbar_kernel::inbound::native::CompletingPhysicalRequest>,
+    ) -> SealedAnswer {
+        let native = physical.is_some() || request.binding.is_some();
         if admission
             .as_ref()
             .is_some_and(|admission| !admission.begin_execution())
         {
-            return unavailable_answer();
+            return (
+                if native {
+                    RetainedAnswer::NativeFailed(unavailable_answer())
+                } else {
+                    RetainedAnswer::NonNative(unavailable_answer())
+                },
+                None,
+                None,
+            );
         }
         let key = UnitKey::new(request.unit);
 
-        let arrived_at = request.at;
+        let arrived_at = request.at();
         let mut walk = AdminWalk::new(request);
         walk.admission = admission;
+        walk.physical_pending = physical;
         let ended = decide(&self.units, &mut walk).await;
         let facts = audit(&walk, &ended);
         let answer = walk
@@ -66,16 +168,56 @@ impl AdminNode {
             .take()
             .unwrap_or_else(|| refused_answer(ended, &walk.request));
 
-        if self
+        let record = self
             .seal(key, arrived_at, walk.principal.as_ref(), facts, ended)
-            .await
-        {
-            answer
-        } else {
-            bound::journal_unavailable(
-                "the administrative result's audit publication is unconfirmed; do not re-submit",
-            )
+            .await;
+        let Some(record) = record else {
+            return (
+                if native {
+                    RetainedAnswer::NativeFailed(answer)
+                } else {
+                    RetainedAnswer::NonNative(answer)
+                }
+                .publication_failed(),
+                None,
+                walk.claim_failure.take(),
+            );
+        };
+        if let Some(physical) = walk.request.physical.take() {
+            return (
+                RetainedAnswer::Executed { answer, physical },
+                None,
+                walk.claim_failure.take(),
+            );
         }
+        if native {
+            if walk.expected_refusal == Some(ended) {
+                if let (Some(pending), Some(carrier)) = (
+                    walk.physical_pending.take(),
+                    walk.request.refusal_carrier.take(),
+                ) {
+                    return (
+                        RetainedAnswer::PendingRefusal {
+                            answer,
+                            pending,
+                            carrier,
+                        },
+                        Some(record),
+                        walk.claim_failure.take(),
+                    );
+                }
+            }
+            return (
+                RetainedAnswer::NativeFailed(answer),
+                None,
+                walk.claim_failure.take(),
+            );
+        }
+        (
+            RetainedAnswer::NonNative(answer),
+            None,
+            walk.claim_failure.take(),
+        )
     }
 
     async fn seal(
@@ -85,7 +227,7 @@ impl AdminNode {
         principal: Option<&PrincipalId>,
         facts: busbar_contract::AuditFacts,
         ended: Outcome,
-    ) -> bool {
+    ) -> Option<AuditRecord> {
         use busbar_kernel_audit::{AuditInputs, Controls, OutcomeFacts, Subject, Usage, What};
         let card = crate::root::kernel::ROOT_CARD.pin();
         let arrived_ms = arrived_at.saturating_mul(1_000);
@@ -145,15 +287,17 @@ impl AdminNode {
             &token,
         )
         .await;
-        if let Err(lost) = sealed {
-            tracing::error!(
-                step = lost.step().as_str(),
-                unit = key.get(),
-                "the journal has not confirmed an admin unit's audit record"
-            );
-            return false;
+        match sealed {
+            Ok(record) => Some(record),
+            Err(lost) => {
+                tracing::error!(
+                    step = lost.step().as_str(),
+                    unit = key.get(),
+                    "the journal has not confirmed an admin unit's audit record"
+                );
+                None
+            }
         }
-        true
     }
 }
 
@@ -225,7 +369,8 @@ pub(crate) fn rate_limited_answer() -> AdminAnswer {
 }
 
 pub(crate) fn scope_answer(request: &AdminRequest) -> AdminAnswer {
-    let needed = busbar_kernel::admin::scope::admin_required_scope(&request.method, &request.path);
+    let needed =
+        busbar_kernel::admin::scope::admin_required_scope(request.method(), request.path());
     error_answer_with_message(
         403,
         "forbidden",
@@ -317,8 +462,8 @@ pub(crate) fn explained_answer(request: &AdminRequest, outcome: Outcome) -> Opti
         Outcome::Refused(_, reason) | Outcome::Failed(_, reason)
             if class_of(reason) == RefusalClass::Unreadable
     );
-    let path = request.path.split('?').next().unwrap_or("");
-    (unreadable && request.method == "POST" && path == AMEND_RATE_HISTORY_PATH)
+    let path = request.path().split('?').next().unwrap_or("");
+    (unreadable && request.method() == "POST" && path == AMEND_RATE_HISTORY_PATH)
         .then(|| error_answer_with_message(400, "invalid_request", AMEND_RATE_HISTORY_SHAPE))
 }
 
@@ -329,6 +474,7 @@ pub(crate) fn unavailable_answer() -> AdminAnswer {
 pub(crate) type Errand = (
     AdminRequest,
     Option<busbar_kernel::inbound::RequestAdmission>,
+    Option<Arc<busbar_kernel::auth::native_admin::ExecutionAdmission>>,
     tokio::sync::oneshot::Sender<AdminAnswer>,
 );
 
@@ -347,14 +493,14 @@ impl RouterDispatch {
     ) -> Self {
         let (errands, mut inbox) = tokio::sync::mpsc::unbounded_channel::<Errand>();
         runtime.spawn(async move {
-            while let Some((request, admission, reply)) = inbox.recv().await {
+            while let Some((request, admission, execution, reply)) = inbox.recv().await {
                 let inner = inner.clone();
                 let replays = replays.clone();
 
                 tokio::spawn(async move {
                     let unit = request.unit;
                     let answer = busbar_core_admin::restart::UnitDrain::of_unit(unit)
-                        .scoping(call(inner, &request, &replays, admission))
+                        .scoping(call(inner, &request, &replays, admission, execution))
                         .await;
                     let _ = reply.send(answer);
                 });
@@ -369,23 +515,64 @@ async fn call(
     request: &AdminRequest,
     replays: &Arc<KeyReplayCache>,
     admission: Option<busbar_kernel::inbound::RequestAdmission>,
+    execution: Option<Arc<busbar_kernel::auth::native_admin::ExecutionAdmission>>,
 ) -> AdminAnswer {
     use tower::ServiceExt;
 
-    let mut builder = axum::http::Request::builder()
-        .method(request.method.as_str())
-        .uri(request.path.as_str());
-    for (name, value) in &request.headers {
-        builder = builder.header(name.as_str(), value.as_str());
-    }
-    builder = builder.extension(Arc::clone(replays));
-    if let Some(admission) = admission {
-        builder = builder.extension(admission);
-    }
-    let Ok(http) = builder.body(axum::body::Body::from(request.body.clone())) else {
-        return error_answer(400, "invalid_request");
+    let projection = request
+        .projection
+        .lock()
+        .ok()
+        .and_then(|mut slot| slot.take());
+    let mut http = if let Some(projection) = projection {
+        let Ok(projection) = Arc::try_unwrap(projection) else {
+            return unavailable_answer();
+        };
+        projection.into_request(axum::body::Body::from(request.snapshot().body_bytes()))
+    } else {
+        if request.binding.is_some() {
+            return unavailable_answer();
+        }
+        // The explicit legacy path still obtains its own funded projection from the
+        // actual retained request. It cannot enter native dispatch without its carrier.
+        let Ok(projection) = busbar_kernel::inbound::http_projection::HttpProjection::from_snapshot(
+            Arc::clone(request.snapshot()),
+        ) else {
+            return unavailable_answer();
+        };
+        projection.into_request(axum::body::Body::from(request.snapshot().body_bytes()))
     };
-
+    http.extensions_mut().insert(Arc::clone(replays));
+    http.extensions_mut().insert(Arc::clone(request.snapshot()));
+    http.extensions_mut()
+        .insert(request.snapshot().request().clone());
+    if let Some(admission) = admission {
+        http.extensions_mut().insert(admission);
+    }
+    if let Some(physical) = &request.physical {
+        if physical.check_executing().is_err() {
+            return door_answer();
+        }
+        if !execution
+            .as_ref()
+            .is_some_and(|execution| Arc::ptr_eq(execution, physical.admission()))
+        {
+            return door_answer();
+        }
+        http.extensions_mut().insert(physical.clone());
+    }
+    if let Some(execution) = execution {
+        if let Some((lease, prepared)) = execution.native() {
+            if request.physical.is_none()
+                || lease.invocation().request_id().get() != request.unit
+                || !Arc::ptr_eq(prepared.request(), request.snapshot())
+            {
+                return door_answer();
+            }
+            http.extensions_mut().insert(Arc::clone(lease.generation()));
+            http.extensions_mut().insert(execution);
+        }
+    }
     let response = inner.oneshot(http).await.unwrap_or_else(|e| match e {});
     let (parts, body) = response.into_parts();
 
@@ -402,7 +589,7 @@ async fn call(
 #[async_trait::async_trait]
 impl AdminDispatch for RouterDispatch {
     async fn execute(&self, _verb: KernelVerb, request: &AdminRequest) -> AdminAnswer {
-        self.dispatch(request, None).await
+        self.dispatch(request, None, None).await
     }
 
     async fn execute_admitted(
@@ -411,7 +598,18 @@ impl AdminDispatch for RouterDispatch {
         request: &AdminRequest,
         admission: &busbar_kernel::inbound::RequestAdmission,
     ) -> AdminAnswer {
-        self.dispatch(request, Some(admission.clone())).await
+        self.dispatch(request, Some(admission.clone()), None).await
+    }
+
+    async fn execute_authorized(
+        &self,
+        _verb: KernelVerb,
+        request: &AdminRequest,
+        admission: Option<&busbar_kernel::inbound::RequestAdmission>,
+        execution: Option<&Arc<busbar_kernel::auth::native_admin::ExecutionAdmission>>,
+    ) -> AdminAnswer {
+        self.dispatch(request, admission.cloned(), execution.cloned())
+            .await
     }
 }
 
@@ -420,11 +618,12 @@ impl RouterDispatch {
         &self,
         request: &AdminRequest,
         admission: Option<busbar_kernel::inbound::RequestAdmission>,
+        execution: Option<Arc<busbar_kernel::auth::native_admin::ExecutionAdmission>>,
     ) -> AdminAnswer {
         let (reply, answer) = tokio::sync::oneshot::channel();
         if self
             .errands
-            .send((request.clone(), admission, reply))
+            .send((request.clone(), admission, execution, reply))
             .is_err()
         {
             return unavailable_answer();
@@ -434,30 +633,6 @@ impl RouterDispatch {
 }
 
 pub(crate) const ADMIN_TOKEN_HEADER: &str = "x-admin-token";
-
-pub(crate) fn presented_credential(headers: &axum::http::HeaderMap) -> Option<String> {
-    let authorization = headers
-        .get(axum::http::header::AUTHORIZATION)
-        .and_then(|value| value.to_str().ok())
-        .map(|value| {
-            let trimmed = value.trim_start();
-            match trimmed.split_once(' ') {
-                Some((scheme, rest)) if scheme.eq_ignore_ascii_case("bearer") => {
-                    rest.trim_start().to_string()
-                }
-                _ => trimmed.to_string(),
-            }
-        })
-        .filter(|credential| !credential.is_empty());
-
-    authorization.or_else(|| {
-        headers
-            .get(ADMIN_TOKEN_HEADER)
-            .and_then(|value| value.to_str().ok())
-            .map(str::to_string)
-            .filter(|credential| !credential.is_empty())
-    })
-}
 
 pub(crate) fn header_pairs(headers: &axum::http::HeaderMap) -> Vec<(String, String)> {
     headers
@@ -555,11 +730,11 @@ pub(crate) fn mount(
             async move {
                 use tower::ServiceExt;
 
-                let path = req.uri().path().to_string();
+                let path = req.uri().path();
                 let claimed = path.starts_with(busbar_contract::surface::ADMIN_PREFIX);
 
                 let declared =
-                    busbar_core_admin::admin_codec::verbs::resolve(req.method().as_str(), &path)
+                    busbar_core_admin::admin_codec::verbs::resolve(req.method().as_str(), path)
                         .is_some_and(|resolved| served_here(&resolved));
                 if !claimed || !declared {
                     return inner.oneshot(req).await.unwrap_or_else(|e| match e {});
@@ -570,55 +745,128 @@ pub(crate) fn mount(
                     .get(axum::http::header::CONTENT_LENGTH)
                     .and_then(|value| value.to_str().ok())
                     .and_then(|value| value.parse::<usize>().ok());
-                if declared.is_some_and(|len| len > request_body_max_bytes) {
+                if declared.is_some_and(|len| len > request_body_max_bytes)
+                    && req
+                        .extensions()
+                        .get::<busbar_kernel::inbound::native::AdminPhysicalRequest>()
+                        .is_none()
+                {
                     return inner.oneshot(req).await.unwrap_or_else(|e| match e {});
                 }
 
-                let (parts, body) = req.into_parts();
+                let (mut parts, body) = req.into_parts();
+                let (physical, refusal_carrier) =
+                    match parts
+                        .extensions
+                        .remove::<busbar_kernel::inbound::native::AdminPhysicalRequest>()
+                    {
+                        Some(carrier) => match carrier.take() {
+                            Ok(pending) => (Some(pending), Some(carrier)),
+                            Err(_) => return http_response(door_answer()),
+                        },
+                        None => (None, None),
+                    };
                 let admission = parts
                     .extensions
                     .get::<busbar_kernel::inbound::RequestAdmission>()
                     .cloned();
 
-                let Ok(bytes) = axum::body::to_bytes(body, request_body_max_bytes).await else {
-                    if let Some(admission) = &admission {
-                        admission.refuse(
-                            busbar_contract::caps::StepName::Decode,
-                            ReasonCode::DecodeFailed,
-                        );
+                use busbar_kernel::inbound::request_snapshot::ChargedRequestSnapshot;
+                use busbar_kernel::limits::{input_body, process_admission::RequestLease};
+                // The transport owns the original admission and complete peer/TLS/head facts.
+                // Neither a new count permit nor a reconstructed empty transport view can replace it.
+                let Some(lease) = parts.extensions.get::<RequestLease>().cloned() else {
+                    return http_response(unavailable_answer());
+                };
+                let Some(snapshot) = parts
+                    .extensions
+                    .get::<Arc<ChargedRequestSnapshot>>()
+                    .cloned()
+                else {
+                    return http_response(unavailable_answer());
+                };
+                if !snapshot.request().same_request(&lease)
+                    || physical.as_ref().is_some_and(|pending| {
+                        admission.is_some()
+                            || !pending.binding().request().same_request(&lease)
+                            || !pending
+                                .binding()
+                                .snapshot()
+                                .is_ok_and(|original| Arc::ptr_eq(&original, &snapshot))
+                    })
+                {
+                    return http_response(unavailable_answer());
+                }
+                let bytes = match input_body::gather(body, &lease, request_body_max_bytes).await {
+                    Ok(bytes) => bytes,
+                    Err(input_body::GatherError::Capacity(_)) => {
+                        return http_response(unavailable_answer())
                     }
+                    Err(error) => {
+                        if let Some(admission) = &admission {
+                            admission.refuse(
+                                busbar_contract::caps::StepName::Decode,
+                                ReasonCode::DecodeFailed,
+                            );
+                        }
+                        let _ = error;
+                        let status = 400;
+                        return http_response(error_answer(status, "invalid_request"));
+                    }
+                };
+                let target = parts
+                    .uri
+                    .path_and_query()
+                    .map_or(parts.uri.path(), |v| v.as_str());
+                if !busbar_kernel::auth::native_admin::snapshot_matches_http(
+                    &snapshot,
+                    parts.method.as_str(),
+                    target,
+                    &parts.headers,
+                    &bytes,
+                ) {
                     return http_response(error_answer(400, "invalid_request"));
+                }
+                drop(bytes);
+                let mut request = match physical.as_ref() {
+                    Some(pending) => match AdminRequest::from_binding(pending.binding().clone()) {
+                        Ok(request) => request,
+                        Err(_) => return http_response(unavailable_answer()),
+                    },
+                    None => {
+                        let unit = admission.as_ref().map_or_else(
+                            || node.next_unit(),
+                            |admission| admission.unit_key().get(),
+                        );
+                        AdminRequest::from_snapshot(snapshot, unit)
+                    }
                 };
-
-                let unit = admission
-                    .as_ref()
-                    .map_or_else(|| node.next_unit(), |admission| admission.unit_key().get());
-                let request = AdminRequest {
-                    method: parts.method.as_str().to_string(),
-                    path: parts
-                        .uri
-                        .path_and_query()
-                        .map_or_else(|| parts.uri.path().to_string(), ToString::to_string),
-                    credential: presented_credential(&parts.headers),
-                    headers: header_pairs(&parts.headers),
-                    body: bytes.to_vec(),
-                    at: std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map_or(0, |d| d.as_secs()),
-                    unit,
-                };
+                request.refusal_carrier = refusal_carrier;
+                if physical.is_some() {
+                    let projection =
+                        match busbar_kernel::inbound::http_projection::HttpProjection::from_parts(
+                            parts,
+                        ) {
+                            Ok(projection) => projection,
+                            Err(_) => return http_response(unavailable_answer()),
+                        };
+                    if request.attach_projection(projection).is_err() {
+                        return http_response(unavailable_answer());
+                    }
+                }
+                let unit = request.unit;
 
                 let exit = ExitPath { unit };
                 // The operation keeps custody through client cancellation, including
                 // publishing its durable replay receipt after a native write.
-                let answer =
-                    tokio::spawn(
-                        async move { node.answer_with_admission(request, admission).await },
-                    )
-                    .await
-                    .unwrap_or_else(|_| unavailable_answer());
+                let answer = tokio::spawn(async move {
+                    node.answer_with_admission(request, admission, physical)
+                        .await
+                })
+                .await
+                .unwrap_or_else(|_| RetainedAnswer::NativeFailed(unavailable_answer()));
 
-                let response = http_response(answer);
+                let response = answer.into_response();
 
                 drop(exit);
                 response
@@ -635,7 +883,7 @@ pub(crate) fn mount_node(
     core: Arc<busbar_kernel::persistence::facade::CoreStore>,
     book: &crate::root::durability::NodeBook,
     retired_operator_key: Option<[u8; 32]>,
-    late: &Arc<crate::root::serve::Services>,
+    trust: Option<Arc<busbar_kernel::host_services::KernelServices>>,
     retired_breaker: crate::root::adapters::BreakerPolicy,
 ) -> Result<axum::Router, busbar_kernel::persistence::scoped::Error> {
     let _ = (retired_operator_key, retired_breaker);
@@ -677,8 +925,7 @@ pub(crate) fn mount_node(
 
             units.admin.replay_store = Some(Arc::clone(&replay_store));
 
-            let late = Arc::clone(late);
-            units.admin.trust = Arc::new(move || late.kernel());
+            units.admin.trust = trust.clone();
 
             match app.load().governance.clone() {
                 Some(gov) => {

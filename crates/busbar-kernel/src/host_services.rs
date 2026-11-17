@@ -30,7 +30,7 @@ pub const QUEUE_FULL: &str = "the record write queue is full";
 
 #[path = "invocation.rs"]
 mod invocation;
-pub use invocation::{InvocationContext, ServingGeneration};
+pub use invocation::{InvocationContext, NativeInvocationAdmission, ServingGeneration};
 
 #[cfg(test)]
 #[path = "tests/invocation_context_tests.rs"]
@@ -45,9 +45,10 @@ use crate::host_work::{
     WorkBounds, WORK_SCHEMA,
 };
 use crate::trust::book::{
-    Distrust, Effect, KeyRow, KeyState, Ruling, Sight, TrustBook, TrustFacts, Undecided, Unjudged,
+    DecidedBy, Distrust, Effect, KeyRow, KeyState, Reviewed, Ruling, Sight, TrustBook, TrustFacts,
+    Undecided, Unjudged,
 };
-use crate::trust::demotion::DemotionRecord;
+use crate::trust::demotion::{DemotionRecord, Verdict, WriteFailure};
 use crate::trust::section::TrustEntry;
 use crate::trust::signed;
 
@@ -919,6 +920,30 @@ const NO_TRUST_DECISION_GRANT: &str = "this call has no core-issued trust decisi
 struct GrantedCounterparty {
     facts: Arc<InstanceFacts>,
     index: usize,
+    authority: TrustDecisionAuthority,
+    request_id: Option<String>,
+}
+
+/// THE ADMIN AUTHORITY a plane-relayed trust decision runs under (r3 §4.2a, condition B-C1).
+/// Built only by the admin gate from its own admission verdict and the caller's verb grant, never
+/// from request headers or from a principal alone. Absent: the plane may not decide.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrustDecisionAuthority {
+    /// The resolved principal, or `anonymous` only under an open admin door.
+    pub principal: String,
+    /// The grant admits `trust_approve`.
+    pub approve: bool,
+    /// The grant admits `trust_revoke`.
+    pub revoke: bool,
+}
+
+impl TrustDecisionAuthority {
+    fn admits(&self, ruling: Ruling) -> bool {
+        match ruling {
+            Ruling::Approve => self.approve,
+            Ruling::Revoke => self.revoke,
+        }
+    }
 }
 impl GrantedCounterparty {
     fn name(&self) -> &str {
@@ -953,6 +978,7 @@ pub struct KernelServices {
 
     mono_ns: Option<MonoNs>,
     instances: Mutex<HashMap<Arc<str>, Arc<InstanceFacts>>>,
+    native_invocations: Mutex<std::collections::HashSet<busbar_contract::services::Incarnation>>,
     trust_decisions: Mutex<HashMap<TrustDecisionKey, GrantedCounterparty>>,
     record_bootstrap: Mutex<Option<crate::host_record_bootstrap::Bootstrap>>,
     native_record_bootstrap: Mutex<HashMap<Arc<str>, crate::host_record_bootstrap::Bootstrap>>,
@@ -1015,22 +1041,169 @@ pub(crate) const SESSION_EMIT_ACTION: &str = "session.emit";
 
 pub(crate) const SESSION_NOT_OPEN: &str = "no such carrier session is open for this instance";
 
+/// ONE DECISION ATTEMPT, as either path builds it (r3 §4.2). Request context is captured here, at
+/// build time, because the durable write may run on the host pool (condition B-C2).
+pub(crate) struct DecisionAttempt {
+    pub(crate) instance: String,
+    pub(crate) counterparty: String,
+    pub(crate) item: Option<String>,
+    pub(crate) ruling: Ruling,
+    /// The reviewed digest as text for the audit row; `None` = the plane path's unconditional revoke.
+    pub(crate) reviewed: Option<Option<String>>,
+    pub(crate) actor: DecidedBy,
+    pub(crate) operation: Option<String>,
+    pub(crate) request_id: Option<String>,
+    /// The route the decision arrived on: the audit row's `resource`.
+    pub(crate) resource: String,
+}
+
+/// What one decision attempt came to, and whether its typed audit row was written (r3 §5.2).
+#[derive(Debug)]
+pub struct Decided {
+    pub result: Result<KeyRow, TrustRefused>,
+    /// The typed trust row was emitted for this attempt (the host-side flag, condition A-C4b).
+    pub audited: bool,
+}
+
 struct TrustDecision {
     permit: crate::trust::book::DecisionPermit,
     fact: crate::trust::book::RulingRow,
-    record: Option<Arc<DemotionRecord>>,
+    record: Arc<DemotionRecord>,
     clear: Vec<String>,
 }
 impl TrustDecision {
     async fn finish(self) -> Result<KeyRow, TrustRefused> {
-        if let Some(record) = &self.record {
-            record
-                .keep_decision_clearing(&self.fact, &self.clear)
-                .await
-                .map_err(TrustRefused::Store)?;
+        match self
+            .record
+            .keep_decision_attempt(&self.fact, &self.clear)
+            .await
+        {
+            Ok(()) => self.permit.apply(&self.fact).map_err(trust_refused),
+            Err(WriteFailure::Earlier(_)) => Err(TrustRefused::Earlier),
+            Err(WriteFailure::NotApplied(why)) => Err(TrustRefused::Store(why)),
+            Err(WriteFailure::Unknown { op_id }) => Err(TrustRefused::Unknown {
+                op_id,
+                decided_at: self.fact.decided_at.unwrap_or_default(),
+            }),
         }
-        self.permit.apply(&self.fact).map_err(trust_refused)
     }
+}
+
+/// Step 7: the one typed trust row for this attempt, whatever it came to (r3 §5.2).
+fn audit_decision(
+    attempt: &DecisionAttempt,
+    key: &str,
+    result: Result<KeyRow, TrustRefused>,
+) -> Decided {
+    let (outcome, reason) = decision_outcome(&result);
+    let action = match attempt.ruling {
+        Ruling::Approve => "trust_approve",
+        Ruling::Revoke => "trust_revoke",
+    };
+    let (decided_at, op_id) = match &result {
+        Err(TrustRefused::Unknown { op_id, decided_at }) => {
+            (Some(*decided_at), Some(hex::encode(op_id)))
+        }
+        _ => (None, None),
+    };
+    let data = busbar_contract::json::json!({
+        "key": key,
+        "instance": attempt.instance,
+        "counterparty": attempt.counterparty,
+        "item": attempt.item,
+        "ruling": action,
+        "reviewed": attempt.reviewed,
+        "approved": result.as_ref().ok().and_then(|row| row.approved.clone()),
+        "decided_by": attempt.actor,
+        "decided_at": decided_at,
+        "attempt": op_id,
+        "reason": reason,
+    });
+    crate::audit_ring::AUDIT.record_row(trust_audit_row(
+        action,
+        &attempt.resource,
+        outcome,
+        &attempt.actor,
+        attempt.request_id.clone(),
+        attempt.operation.clone(),
+        &data,
+    ));
+    Decided {
+        result,
+        audited: true,
+    }
+}
+
+/// The audit `outcome` and `reason` of one attempt's result.
+fn decision_outcome(result: &Result<KeyRow, TrustRefused>) -> (&'static str, &'static str) {
+    use crate::audit_ring::{OUTCOME_APPLIED, OUTCOME_DEGRADED, OUTCOME_REJECTED};
+    match result {
+        Ok(_) => (OUTCOME_APPLIED, ""),
+        Err(TrustRefused::Unknown { .. }) => (OUTCOME_DEGRADED, "outcome_unknown"),
+        Err(why) => (OUTCOME_REJECTED, why.reason()),
+    }
+}
+
+/// The typed trust audit row (r3 §5.2): fixed members only, never pin material.
+fn trust_audit_row(
+    action: &str,
+    resource: &str,
+    outcome: &str,
+    actor: &DecidedBy,
+    request_id: Option<String>,
+    operation: Option<String>,
+    data: &busbar_contract::json::Value,
+) -> crate::audit::auditlog::AuditRowInput {
+    crate::audit::auditlog::AuditRowInput {
+        action: action.to_string(),
+        resource: resource.to_string(),
+        outcome: outcome.to_string(),
+        principal: actor.principal().to_string(),
+        request_id,
+        idempotency_key: operation,
+        kind: Some("core".to_string()),
+        instance: Some("trust".to_string()),
+        data: busbar_contract::json::to_string(data)
+            .ok()
+            .and_then(|text| crate::audit_ring::AuditData::from_json(&text).ok())
+            .unwrap_or_default(),
+        ..Default::default()
+    }
+}
+
+fn trust_key(instance: &str, counterparty: &str, item: Option<&str>) -> String {
+    match item {
+        Some(item) => format!("{instance}/{counterparty}/{item}"),
+        None => format!("{instance}/{counterparty}"),
+    }
+}
+
+/// Emit the kernel's own trust event (a drift demotion, a quarantine or its clear) as a typed row
+/// with `principal = kernel` (r3 §5.2, condition B-C3). Request context is `None`: kernel events
+/// carry none (condition B-C2).
+fn kernel_trust_row(
+    action: &str,
+    (instance, counterparty, item): (&str, &str, Option<&str>),
+    outcome: &'static str,
+    reason: &str,
+) {
+    let data = busbar_contract::json::json!({
+        "key": trust_key(instance, counterparty, item),
+        "instance": instance,
+        "counterparty": counterparty,
+        "item": item,
+        "decided_by": DecidedBy::Kernel,
+        "reason": reason,
+    });
+    crate::audit_ring::AUDIT.record_row(trust_audit_row(
+        action,
+        "kernel:trust",
+        outcome,
+        &DecidedBy::Kernel,
+        None,
+        None,
+        &data,
+    ));
 }
 fn trust_refused(why: Undecided) -> TrustRefused {
     match why {
@@ -1038,6 +1211,7 @@ fn trust_refused(why: Undecided) -> TrustRefused {
         Undecided::NothingSighted => TrustRefused::NothingSighted,
         Undecided::Rootless => TrustRefused::Rootless,
         Undecided::Stale => TrustRefused::Stale,
+        Undecided::InProgress => TrustRefused::InProgress,
         Undecided::Unverified => TrustRefused::Unverified,
     }
 }
@@ -1048,7 +1222,11 @@ fn trust_decision_answer(result: Result<KeyRow, TrustRefused>) -> Stored {
         Err(TrustRefused::NothingSighted | TrustRefused::Unverified) => svc::UNDECIDED_UNPINNED,
         Err(TrustRefused::Stale) => svc::UNDECIDED_STALE,
         Err(TrustRefused::Rootless) => svc::UNDECIDED_ROOTLESS,
-        Err(TrustRefused::Store(_)) => return failed(DECISION_UNKEPT),
+        Err(TrustRefused::Store(_) | TrustRefused::Unknown { .. }) => {
+            return failed(DECISION_UNKEPT)
+        }
+        Err(TrustRefused::Unavailable) => return failed(DECISION_UNKEPT),
+        Err(TrustRefused::Earlier | TrustRefused::InProgress) => svc::UNDECIDED_STALE,
     })
 }
 
@@ -1088,6 +1266,7 @@ impl KernelServices {
             wall_ms: Arc::new(crate::store::now_ms),
             mono_ns: None,
             instances: Mutex::default(),
+            native_invocations: Mutex::default(),
             trust_decisions: Mutex::default(),
             record_bootstrap: Mutex::default(),
             native_record_bootstrap: Mutex::default(),
@@ -1134,6 +1313,7 @@ impl KernelServices {
             wall_ms: Arc::new(crate::store::now_ms),
             mono_ns: None,
             instances: Mutex::default(),
+            native_invocations: Mutex::default(),
             trust_decisions: Mutex::default(),
             record_bootstrap: Mutex::default(),
             native_record_bootstrap: Mutex::default(),
@@ -1176,6 +1356,7 @@ impl KernelServices {
         caller: &Caller,
         ticket: busbar_contract::abi::mechanism::ticket::Ticket,
         counterparty: &str,
+        authority: TrustDecisionAuthority,
     ) -> Option<TrustDecisionGrant<'_>> {
         if caller.kind() != busbar_contract::abi::mechanism::KindCode::Plane || ticket.is_none() {
             return None;
@@ -1193,7 +1374,15 @@ impl KernelServices {
         if grants.contains_key(&key) {
             return None;
         }
-        grants.insert(key.clone(), GrantedCounterparty { facts, index });
+        grants.insert(
+            key.clone(),
+            GrantedCounterparty {
+                facts,
+                index,
+                authority,
+                request_id: crate::admin::gate::request_id_in_scope(),
+            },
+        );
         Some(TrustDecisionGrant {
             services: self,
             key,
@@ -1746,66 +1935,107 @@ impl KernelServices {
         self.trust.rows()
     }
 
-    pub async fn trust_rule(&self, key: &str, ruling: Ruling) -> Result<KeyRow, TrustRefused> {
-        self.trust_rule_if_seen(key, ruling, None).await
+    /// Every admitted counterparty's trust facts (r3 §3.4 `subjects`).
+    #[must_use]
+    pub fn trust_counterparties(&self) -> Vec<crate::trust::book::CounterpartyFacts> {
+        self.trust.counterparties()
     }
 
-    /// Decide only if the current sighting equals the digest the operator reviewed. The check
-    /// runs inside the existing decision permit, before any durable write, for both rulings.
-    /// Absence retains the key-only operation's behavior.
-    pub async fn trust_rule_if_seen(
+    /// Whether the live standing re-check is attached (r3 §3.4 `state.standing.attached`).
+    #[must_use]
+    pub fn standing_attached(&self) -> bool {
+        self.standing.is_some()
+    }
+
+    /// THE DECISION CUSTODY (r3 §4.2 step 1): the durable decision record, only when it is present
+    /// and bound to a Store. Without it no decision can be kept, so none is made.
+    #[must_use]
+    pub fn trust_decision_record(&self) -> Option<Arc<DemotionRecord>> {
+        self.demotions
+            .as_ref()
+            .filter(|d| d.record.bound())
+            .map(|d| Arc::clone(&d.record))
+    }
+
+    /// THE ADMIN DECISION (`POST /trust/approve|revoke`, r3 §4.1–§4.2). `reviewed` is what the
+    /// operator reviewed; there is no key-only path. Exactly one typed audit row is written for
+    /// every call (r3 §5.2), and [`Decided::audited`] says so.
+    pub async fn trust_rule_by(
         &self,
         key: &str,
         ruling: Ruling,
-        expected_digest: Option<&str>,
-    ) -> Result<KeyRow, TrustRefused> {
-        let mut matching = self.trust.rows().into_iter().filter(|r| r.key() == key);
-        let found = matching.next().ok_or(TrustRefused::NoSuchKey)?;
-        // A flattened key that names two rows (a registration name holding `/`) decides nothing:
-        // the first match would let an upstream choose the row by naming a tool.
-        if matching.next().is_some() {
-            return Err(TrustRefused::Ambiguous);
-        }
-        self.decide_key(
-            &found.instance,
-            &found.counterparty,
-            found.item.as_deref(),
+        reviewed: Reviewed<'_>,
+        actor: &str,
+        operation: Option<&str>,
+    ) -> Decided {
+        let resource = match ruling {
+            Ruling::Approve => "/api/v1/admin/trust/approve",
+            Ruling::Revoke => "/api/v1/admin/trust/revoke",
+        };
+        let mut attempt = DecisionAttempt {
+            instance: String::new(),
+            counterparty: String::new(),
+            item: None,
             ruling,
-            expected_digest,
-        )
-        .await
+            reviewed: Some(match reviewed {
+                Reviewed::Seen(digest) => Some(digest.to_string()),
+                Reviewed::Unsighted => None,
+            }),
+            actor: DecidedBy::Principal {
+                id: actor.to_string(),
+            },
+            operation: operation.map(str::to_string),
+            request_id: crate::admin::gate::request_id_in_scope(),
+            resource: resource.to_string(),
+        };
+        // Step 1 before any book access: custody is process-global, so a refusal here says nothing
+        // about any key.
+        let Some(record) = self.trust_decision_record() else {
+            return audit_decision(&attempt, key, Err(TrustRefused::Unavailable));
+        };
+        // Step 2: a flattened key must name exactly one row; the first of two matches would let an
+        // upstream choose the row by naming a tool.
+        let mut matching = self.trust.rows().into_iter().filter(|r| r.key() == key);
+        let Some(found) = matching.next() else {
+            return audit_decision(&attempt, key, Err(TrustRefused::NoSuchKey));
+        };
+        if matching.next().is_some() {
+            return audit_decision(&attempt, key, Err(TrustRefused::Ambiguous));
+        }
+        attempt.instance = found.instance;
+        attempt.counterparty = found.counterparty;
+        attempt.item = found.item;
+        let result = match self.prepare_decision(&attempt, Some(reviewed), record) {
+            Ok(decision) => decision.finish().await,
+            Err(why) => Err(why),
+        };
+        audit_decision(&attempt, key, result)
     }
 
-    pub async fn decide_key(
-        &self,
-        instance: &str,
-        counterparty: &str,
-        item: Option<&str>,
-        ruling: Ruling,
-        expected: Option<&str>,
-    ) -> Result<KeyRow, TrustRefused> {
-        self.prepare_decision(instance, counterparty, item, ruling, expected)?
-            .finish()
-            .await
-    }
-
+    /// Steps 3–4: the permit, the review check under it, and the stamp.
     fn prepare_decision(
         &self,
-        instance: &str,
-        counterparty: &str,
-        item: Option<&str>,
-        ruling: Ruling,
-        expected: Option<&str>,
+        attempt: &DecisionAttempt,
+        reviewed: Option<Reviewed<'_>>,
+        record: Arc<DemotionRecord>,
     ) -> Result<TrustDecision, TrustRefused> {
+        let (instance, counterparty, item) = (
+            attempt.instance.as_str(),
+            attempt.counterparty.as_str(),
+            attempt.item.as_deref(),
+        );
         let permit = self
             .trust
             .begin_decision(instance, counterparty, item)
             .map_err(trust_refused)?;
-        let fact = self
+        let mut fact = self
             .trust
-            .rule(instance, counterparty, item, ruling, expected)
+            .rule(instance, counterparty, item, attempt.ruling, reviewed)
             .map_err(trust_refused)?;
-        let clear = if fact.item.is_none() && ruling == Ruling::Approve {
+        fact.decided_by = Some(attempt.actor.clone());
+        fact.decided_at = Some((self.wall_ms)() / 1000);
+        fact.operation = attempt.operation.clone();
+        let clear = if fact.item.is_none() && attempt.ruling == Ruling::Approve {
             let default = self
                 .demotions
                 .as_ref()
@@ -1822,8 +2052,51 @@ impl KernelServices {
             permit,
             fact,
             clear,
-            record: self.demotions.as_ref().map(|d| Arc::clone(&d.record)),
+            record,
         })
+    }
+
+    /// RESOLVE AN UNKNOWN DECISION on a same-key replay (r3 §4.6, conditions B-C5 and A-C4a). It
+    /// plans no new decision: it asks the record what its own settlement proves about the attempt,
+    /// and answers `Applied` only once the kept row is in force in this node's book.
+    pub async fn trust_resolve_attempt(
+        &self,
+        op_id: [u8; 16],
+        key: &str,
+        decided_at: u64,
+        operation: Option<&str>,
+    ) -> Resolution {
+        let Some(record) = self.trust_decision_record() else {
+            return Resolution::Unknown;
+        };
+        match record.attempt_verdict(op_id).await {
+            Verdict::NotApplied => return Resolution::NotApplied,
+            Verdict::Landed | Verdict::Unknown => {}
+        }
+        let Ok(kept) = record.kept().await else {
+            return Resolution::Unknown;
+        };
+        let Some(row) = kept.decisions.into_iter().find(|row| {
+            trust_key(&row.instance, &row.counterparty, row.item.as_deref()) == key
+                && row.decided_at == Some(decided_at)
+                && row.operation.as_deref() == operation
+                && !row.demoted
+        }) else {
+            return Resolution::Unknown;
+        };
+        let snapshot = self.trust.decision_snapshot();
+        self.trust
+            .resync_decided(&snapshot, std::slice::from_ref(&row));
+        let in_force = self.trust.rows().into_iter().find(|current| {
+            current.key() == key
+                && match &row.approved {
+                    Some(at) => {
+                        current.approved.as_ref() == Some(at) && current.state != KeyState::New
+                    }
+                    None => current.state == KeyState::New,
+                }
+        });
+        in_force.map_or(Resolution::Unknown, Resolution::Applied)
     }
 
     #[must_use]
@@ -2611,8 +2884,49 @@ pub enum TrustRefused {
     /// The key's current sighting failed its verification
     /// ([`crate::trust::book::UNVERIFIED_SIGHTING`]): nothing verified to approve.
     Unverified,
-    /// The decision could not be kept; the store's words, for the node's log.
+    /// The decision could not be kept: the store decided it did not apply. The store's words, for
+    /// the node's log.
     Store(String),
+    /// Another local decision currently owns this key (r3 §4.5, `decision_in_progress`).
+    InProgress,
+    /// No bound durable decision record: no decision can be kept (r3 §4.2 step 1).
+    Unavailable,
+    /// An earlier unsettled write for the same key could not be settled first; nothing was
+    /// submitted (r3 §4.4).
+    Earlier,
+    /// The durable write was submitted and its outcome is unknown; its exact attempt is retained
+    /// and may still land (r3 §4.4). `op_id` identifies that attempt for replay resolution.
+    Unknown { op_id: [u8; 16], decided_at: u64 },
+}
+
+impl TrustRefused {
+    /// The closed audit/HTTP reason word for this refusal (r3 §4.5).
+    #[must_use]
+    pub fn reason(&self) -> &'static str {
+        match self {
+            TrustRefused::NoSuchKey => "unknown_resource",
+            TrustRefused::Ambiguous
+            | TrustRefused::NothingSighted
+            | TrustRefused::Rootless
+            | TrustRefused::Unverified => "state_conflict",
+            TrustRefused::Stale => "reviewed_digest_stale",
+            TrustRefused::Earlier => "action_in_flight",
+            TrustRefused::InProgress => "decision_in_progress",
+            TrustRefused::Store(_) | TrustRefused::Unavailable => "service_unavailable",
+            TrustRefused::Unknown { .. } => "service_unavailable",
+        }
+    }
+}
+
+/// What a same-key replay can say about an earlier unknown decision (r3 §4.6).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Resolution {
+    /// The attempt landed and is now in force in the book: the key's current row.
+    Applied(KeyRow),
+    /// The store proved the attempt never applied and never can.
+    NotApplied,
+    /// Nothing proves either; or it landed but is not (yet) in force here.
+    Unknown,
 }
 
 pub const DEMOTION_SEP: char = '\u{1f}';
@@ -3115,6 +3429,8 @@ impl HostServices for KernelServices {
 
         let record = Arc::clone(&d.record);
         let key = demotion_key(caller.namespace(), counterparty);
+        let (audit_instance, audit_counterparty) =
+            (caller.namespace().to_string(), counterparty.to_string());
 
         let unprefixed = (d.default_instance.as_ref() == Some(caller.namespace()))
             .then(|| crate::cold::host::services_counterparty_row(counterparty));
@@ -3145,10 +3461,20 @@ impl HostServices for KernelServices {
                     (result, _) => result,
                 }
             };
+            // The kernel's own trust events are audited like an operator's (conditions B-N3,
+            // B-C3): the quarantine, and the automatic clear that restores the counterparty.
+            let action = if effect == Effect::Demote {
+                "trust_quarantine"
+            } else {
+                "trust_unquarantine"
+            };
+            let at = (audit_instance.as_str(), audit_counterparty.as_str(), None);
             if let Err(error) = settled {
                 tracing::error!(%error,"the durable trust demotion could not be settled");
+                kernel_trust_row(action, at, crate::audit_ring::OUTCOME_DEGRADED, "not_kept");
                 owed.answer(failed(DECISION_UNKEPT));
             } else {
+                kernel_trust_row(action, at, crate::audit_ring::OUTCOME_APPLIED, "");
                 owed.answer(answer);
             }
         }));
@@ -3229,6 +3555,9 @@ impl HostServices for KernelServices {
         let Some(unit) = unit else {
             return refused();
         };
+        if !self.units.generic_effects_allowed(unit, caller) {
+            return refused();
+        }
         let Some(principal) = self.units.get(unit).and_then(|r| r.principal.clone()) else {
             return refused();
         };
@@ -3367,40 +3696,66 @@ impl HostServices for KernelServices {
         if self.facts(caller).is_none() {
             return Ran::Now(Stored::refused(NOT_ADMITTED));
         }
-        let authorized = self
-            .trust_decisions
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(&(caller.incarnation().clone(), ticket))
-            .is_some_and(|granted| granted.name() == key.counterparty);
-        if !authorized {
-            return Ran::Now(Stored::refused(NO_TRUST_DECISION_GRANT));
-        }
         let ruling = if approve {
             Ruling::Approve
         } else {
             Ruling::Revoke
         };
-        let work = match self.prepare_decision(
-            caller.namespace(),
-            key.counterparty,
-            key.item,
-            ruling,
-            expected.filter(|_| approve),
-        ) {
-            Ok(work) => work,
-            Err(why) => return Ran::Now(trust_decision_answer(Err(why))),
+        // The grant carries the admin authority it was lent under (condition B-C1): no grant, a
+        // grant for another counterparty, or one whose verbs do not admit this ruling decides
+        // nothing.
+        let granted = self
+            .trust_decisions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&(caller.incarnation().clone(), ticket))
+            .filter(|granted| granted.name() == key.counterparty)
+            .map(|granted| (granted.authority.clone(), granted.request_id.clone()));
+        let Some((authority, request_id)) = granted.filter(|(a, _)| a.admits(ruling)) else {
+            return Ran::Now(Stored::refused(NO_TRUST_DECISION_GRANT));
         };
-        if work.record.is_none() {
-            return Ran::Now(trust_decision_answer(
-                work.permit.apply(&work.fact).map_err(trust_refused),
-            ));
-        }
+        let key_text = trust_key(caller.namespace(), key.counterparty, key.item);
+        let attempt = DecisionAttempt {
+            instance: caller.namespace().to_string(),
+            counterparty: key.counterparty.to_string(),
+            item: key.item.map(str::to_string),
+            ruling,
+            reviewed: expected.map(|d| Some(d.to_string())),
+            actor: DecidedBy::Instance {
+                instance: caller.namespace().to_string(),
+                principal: authority.principal,
+            },
+            operation: None,
+            request_id,
+            resource: format!("plane:{}", caller.namespace()),
+        };
+        // No key-only approve through the plugin interface either (r3 §4.2c). A revoke without a
+        // reviewed digest stays unconditional: it can never trust anything.
+        let reviewed = match (ruling, expected) {
+            (Ruling::Approve, None) => {
+                let decided = audit_decision(&attempt, &key_text, Err(TrustRefused::Stale));
+                return Ran::Now(trust_decision_answer(decided.result));
+            }
+            (_, Some(digest)) => Some(Reviewed::Seen(digest)),
+            (Ruling::Revoke, None) => None,
+        };
+        let Some(record) = self.trust_decision_record() else {
+            let decided = audit_decision(&attempt, &key_text, Err(TrustRefused::Unavailable));
+            return Ran::Now(trust_decision_answer(decided.result));
+        };
+        let work = match self.prepare_decision(&attempt, reviewed, record) {
+            Ok(work) => work,
+            Err(why) => {
+                let decided = audit_decision(&attempt, &key_text, Err(why));
+                return Ran::Now(trust_decision_answer(decided.result));
+            }
+        };
         let Some(pool) = self.pool() else {
             return Ran::Now(Stored::refused(NO_POOL));
         };
         submit_async(pool, later, async move {
-            trust_decision_answer(work.finish().await)
+            let result = work.finish().await;
+            trust_decision_answer(audit_decision(&attempt, &key_text, result).result)
         })
     }
 
@@ -3488,10 +3843,29 @@ impl HostServices for KernelServices {
                 let now = (self.wall_ms)() / 1000;
                 submit_async(pool, later, async move {
                     let _permit = permit;
+                    let at = (
+                        fact.instance.as_str(),
+                        fact.counterparty.as_str(),
+                        fact.item.as_deref(),
+                    );
                     match record.keep_decision(&fact, now).await {
-                        Ok(()) => Stored::ready(sight_code(sight)),
+                        Ok(()) => {
+                            kernel_trust_row(
+                                "trust_demote",
+                                at,
+                                crate::audit_ring::OUTCOME_APPLIED,
+                                "",
+                            );
+                            Stored::ready(sight_code(sight))
+                        }
                         Err(error) => {
                             tracing::error!(%error,"an item's drift demotion could not be kept; it holds in this process");
+                            kernel_trust_row(
+                                "trust_demote",
+                                at,
+                                crate::audit_ring::OUTCOME_DEGRADED,
+                                "not_kept",
+                            );
                             failed(DECISION_UNKEPT)
                         }
                     }
@@ -4031,6 +4405,14 @@ mod trust_verify_tests;
 mod trust_rule_tests;
 
 #[cfg(test)]
+#[path = "tests/trust_admin_custody_tests.rs"]
+mod trust_admin_custody_tests;
+
+#[cfg(test)]
+#[path = "tests/trust_resolution_tests.rs"]
+mod trust_resolution_tests;
+
+#[cfg(test)]
 #[path = "tests/host_nest_tests.rs"]
 mod host_nest_tests;
 
@@ -4119,4 +4501,54 @@ fn is_loopback_text(host: &str) -> bool {
             .and_then(|at| h.get(at..))
             .is_some_and(|tail| tail.eq_ignore_ascii_case(UNDER_LOCALHOST))
         || h.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback())
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl TrustDecisionAuthority {
+    /// An authority admitting both rulings, as the admin gate builds one for a full grant.
+    #[must_use]
+    pub fn for_test() -> Self {
+        Self {
+            principal: "op".to_string(),
+            approve: true,
+            revoke: true,
+        }
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl KernelServices {
+    /// An operator who reviews the key's current state and then decides: the admin decision with
+    /// the key's present `seen` as the review (TRUST-ADMIN-PRODUCER-DESIGN r3 §10.1 (R)).
+    pub async fn trust_rule_reviewed(
+        &self,
+        key: &str,
+        ruling: Ruling,
+    ) -> Result<KeyRow, TrustRefused> {
+        let seen = self
+            .trust_rows()
+            .into_iter()
+            .find(|row| row.key() == key)
+            .and_then(|row| row.seen);
+        let reviewed = seen.as_deref().map_or(Reviewed::Unsighted, Reviewed::Seen);
+        self.trust_rule_by(key, ruling, reviewed, "op", None)
+            .await
+            .result
+    }
+
+    /// This kernel with trust custody: a decision record bound to an in-memory test Store
+    /// (TRUST-ADMIN-PRODUCER-DESIGN r3 §6, condition A-C1).
+    #[must_use]
+    pub async fn with_test_custody(self) -> Self {
+        let record = Arc::new(DemotionRecord::new());
+        record
+            .set_store(Arc::new(
+                crate::persistence::test_backend::attach(Arc::new(
+                    crate::persistence::test_backend::Backend::default(),
+                ))
+                .await,
+            ))
+            .expect("a fresh record attaches");
+        self.with_demotions(record, "")
+    }
 }

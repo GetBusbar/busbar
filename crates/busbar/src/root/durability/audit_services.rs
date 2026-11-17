@@ -18,7 +18,7 @@ use busbar_kernel::persistence::journal::runtime::RuntimeJournal;
 use busbar_kernel_audit::{BootstrapSigner, Notary};
 
 use super::notary::{self, HeadFeed, NotaryConfig, NotaryStart, NotaryTask};
-use super::signer::{self, Checkpoint, Live, Seal, SignerHandle, SignerThreads};
+use super::signer::{self, Checkpoint, Live, ResponseIntent, Seal, SignerHandle, SignerThreads};
 
 /// The handles and threads before their owners take them.
 struct Unstarted {
@@ -32,11 +32,16 @@ pub(crate) struct AuditServices {
     journal: Arc<RuntimeJournal>,
     feed: Arc<HeadFeed>,
     start: NotaryStart,
+    original_start: OnceLock<NotaryStart>,
+    notary_key_id: String,
+    bootstrap_key_id: String,
     clock: Arc<OnceLock<Arc<DrainClock>>>,
     unstarted: Mutex<Option<Unstarted>>,
     boot: Mutex<Option<SignerHandle<Seal>>>,
     sealer: Mutex<Option<SignerHandle<Seal>>>,
+    response_intent: Mutex<Option<SignerHandle<ResponseIntent>>>,
     notary: Mutex<Option<NotaryTask>>,
+    predecessor: Mutex<Option<super::predecessor::PredecessorInputs>>,
     stopping: Arc<AtomicBool>,
 }
 
@@ -63,12 +68,17 @@ impl AuditServices {
         start: NotaryStart,
     ) -> std::io::Result<(Self, CheckpointHandle)> {
         let clock = Arc::new(OnceLock::new());
+        let notary_key_id = notary.key_id().to_owned();
+        let bootstrap_key_id = bootstrap.key_id().to_owned();
         let signers = signer::spawn(notary, bootstrap, Arc::clone(&clock))?;
         let services = AuditServices {
             node,
             journal,
             feed,
             start,
+            original_start: OnceLock::new(),
+            notary_key_id,
+            bootstrap_key_id,
             clock,
             unstarted: Mutex::new(Some(Unstarted {
                 live: signers.live,
@@ -76,7 +86,9 @@ impl AuditServices {
             })),
             boot: Mutex::new(Some(signers.boot)),
             sealer: Mutex::new(Some(signers.sealer)),
+            response_intent: Mutex::new(Some(signers.response_intent)),
             notary: Mutex::new(None),
+            predecessor: Mutex::new(None),
             stopping: Arc::new(AtomicBool::new(false)),
         };
         Ok((services, signers.checkpoint))
@@ -86,7 +98,30 @@ impl AuditServices {
     /// `audit.seal_every` and SHUTDOWN-HANG's drain clock, and its 1 s watch. Returns whether this
     /// call started it.
     pub(crate) fn start_notary(&self, every_ms: u64, clock: Arc<DrainClock>) -> bool {
-        let _ = self.clock.set(clock);
+        let _ = self.clock.set(Arc::clone(&clock));
+        let host = super::host_identity();
+        let template = busbar_kernel_audit::Stamp {
+            node: self.node,
+            from: 0,
+            to: 0,
+            fingerprint: busbar_kernel_audit::Fingerprint::ZERO,
+            kind: busbar_kernel_audit::StampKind::Live,
+            sealer: self.node,
+            host: host.clone(),
+            every: every_ms.clamp(1, 1_000),
+            stamped_ms: 0,
+            down_from_ms: 0,
+            down_to_ms: 0,
+            crypto: busbar_contract::crypto::BACKEND.into(),
+            sig_alg: busbar_kernel_audit::SIGNATURE_ALGORITHM.into(),
+            key_id: self.notary_key_id.clone(),
+            key_cert: 0,
+            signature: vec![0; 64],
+        };
+        if let Err(error) = self.feed.configure_original(&template) {
+            tracing::error!(reason = error, "original notary storage bound unavailable");
+            return false;
+        }
         let Some(Unstarted { live, threads }) = self
             .unstarted
             .lock()
@@ -98,14 +133,15 @@ impl AuditServices {
         let task = notary::spawn(
             NotaryConfig {
                 node: self.node,
-                host: super::host_identity(),
+                host,
                 every_ms,
                 key_cert: 0,
             },
-            self.start,
+            self.original_start.get().copied().unwrap_or(self.start),
             Arc::clone(&self.journal),
             Arc::clone(&self.feed),
             live,
+            Some(clock),
         );
         let progress = Arc::clone(task.progress());
         let stall_after_ms = task.stall_after_ms();
@@ -122,10 +158,38 @@ impl AuditServices {
         true
     }
 
+    /// Bind only the genuinely verified Bootstrap public half, after all boot recovery.
+    /// No key-set cardinality, active-key fallback, or recovered tuple establishes authority.
+    pub(crate) fn bind_original_bootstrap(
+        &self,
+        book: &super::Durability,
+        trusted_key: busbar_kernel_audit::AuditVerifyingKey,
+    ) -> Result<(), &'static str> {
+        if self.original_start.get().is_some()
+            || !Arc::ptr_eq(&self.journal, &book.journal)
+            || !Arc::ptr_eq(&self.feed, &book.head)
+            || self.node != book.record.node()
+            || trusted_key.key_id() != self.bootstrap_key_id
+            || trusted_key.key_id() != self.notary_key_id
+            || self
+                .unstarted
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .is_none()
+        {
+            return Err("original notary does not match its verified Bootstrap and book");
+        }
+        self.feed.bind_original(self.journal.clone(), trusted_key)?;
+        self.original_start
+            .set(book.notary_start())
+            .map_err(|_| "original notary baseline already bound")
+    }
+
     /// TAKE THE NOTARY for the shutdown drain's seal phase. The watch stops alerting once it is
     /// taken.
     pub(crate) fn take_notary(&self) -> Option<NotaryTask> {
         self.stopping.store(true, Ordering::Release);
+        self.feed.stop_original();
         self.notary.lock().unwrap_or_else(|p| p.into_inner()).take()
     }
 
@@ -137,6 +201,32 @@ impl AuditServices {
     /// The predecessor sealer's Bootstrap handle (taken once).
     pub(crate) fn take_sealer_handle(&self) -> Option<SignerHandle<Seal>> {
         self.sealer.lock().unwrap_or_else(|p| p.into_inner()).take()
+    }
+
+    /// Take the one approved fixed-domain response handle for the bound root service.
+    pub(crate) fn take_response_intent_handle(&self) -> Option<SignerHandle<ResponseIntent>> {
+        self.response_intent
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take()
+    }
+    /// What the boot book knows that the predecessor sealer needs (this node, its take time and
+    /// the bound key), set once at boot.
+    pub(crate) fn set_predecessor_inputs(&self, inputs: super::predecessor::PredecessorInputs) {
+        *self.predecessor.lock().unwrap_or_else(|p| p.into_inner()) = Some(inputs);
+    }
+
+    /// THE PREDECESSOR SEALER'S INPUTS and its Bootstrap handle, taken once by `main` after
+    /// `Ready`.
+    pub(crate) fn take_predecessor(
+        &self,
+    ) -> Option<(super::predecessor::PredecessorInputs, SignerHandle<Seal>)> {
+        let inputs = self
+            .predecessor
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take()?;
+        Some((inputs, self.take_sealer_handle()?))
     }
 }
 

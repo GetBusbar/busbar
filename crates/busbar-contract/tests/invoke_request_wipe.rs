@@ -1,104 +1,67 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Observe only registered, initialized request strings before their allocation is released.
+//! Owned invoke-request strings, JSON member names and extras included, are wiped on every exit
+//! (Q24, UNSAFE-MIN §4.4). Each string in turn carries a fresh canary; the request leaves by return,
+//! failure, cancellation, a clone's drop, its last shared owner or a transfer to a final owner; then
+//! a scan of this process's memory must not find the canary. Wherever an owner is still alive
+//! part-way, the canary must still be found. Linux only (A23).
+#![cfg(target_os = "linux")]
+#![forbid(unsafe_code)]
 
-use std::alloc::{GlobalAlloc, Layout, System};
-use std::cell::Cell;
 use std::future::Future;
 use std::sync::Arc;
 use std::task::{Context, Poll, Waker};
 
 use busbar_contract::ir::invoke::InvokeReq;
-use serde_json::{json, Value};
+use serde_json::{Map, Value};
 
-thread_local! {
-    static WATCH: Cell<Option<(usize, usize)>> = const { Cell::new(None) };
-    static WIPED: Cell<Option<bool>> = const { Cell::new(None) };
-}
+#[allow(dead_code)]
+#[path = "../../busbar-plugin-test/src/canary_scan.rs"]
+mod canary_scan;
 
-struct InspectBeforeFree;
+use canary_scan::WipeProof;
 
-// SAFETY: allocations are forwarded unchanged to System. Only the initialized string prefix
-// registered by this thread is observed, while its matching allocation still belongs to it.
-unsafe impl GlobalAlloc for InspectBeforeFree {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        // SAFETY: the allocator caller supplies a valid layout.
-        unsafe { System.alloc(layout) }
-    }
-
-    unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
-        let _ = WATCH.try_with(|watch| {
-            if let Some((_, len)) = watch
-                .get()
-                .filter(|(address, _)| *address == pointer.addr())
-            {
-                watch.set(None);
-                let wiped = len <= layout.size()
-                    && (0..len).all(|index| {
-                        // SAFETY: these bytes were initialized String contents when registered,
-                        // and the matching live allocation has not yet reached System.dealloc.
-                        // Read through dealloc's current owning pointer, not the shared
-                        // registration borrow. No spare capacity, padding, or freed memory is read.
-                        unsafe { pointer.add(index).read_volatile() == 0 }
-                    });
-                let _ = WIPED.try_with(|result| result.set(Some(wiped)));
-            }
-        });
-        // SAFETY: pointer and layout match the allocator caller's live allocation.
-        unsafe { System.dealloc(pointer, layout) }
-    }
-}
-
+/// The shipped allocator, so the scan reads what production would leave behind.
 #[global_allocator]
-static ALLOCATOR: InspectBeforeFree = InspectBeforeFree;
+static ALLOCATOR: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
-fn watch(bytes: &[u8]) {
-    assert!(!bytes.is_empty());
-    WATCH.with(|watched| watched.set(Some((bytes.as_ptr().addr(), bytes.len()))));
-    WIPED.with(|result| result.set(None));
-}
-
-fn request() -> InvokeReq {
+/// A request whose string `field` holds `secret` (its only copy); every other string is plain.
+fn request(field: &str, secret: &str) -> InvokeReq {
+    let pick = |name: &str, plain: &str| {
+        if field == name {
+            secret.to_owned()
+        } else {
+            plain.to_owned()
+        }
+    };
+    let mut nested = Map::new();
+    nested.insert(
+        pick("nested-name", "private-nested-name"),
+        Value::String(pick("nested-value", "private-nested-value")),
+    );
+    let mut arguments = Map::new();
+    arguments.insert(
+        pick("argument-name", "private-argument-name"),
+        Value::Array(vec![
+            Value::String(pick("argument-value", "private-argument-value")),
+            Value::Object(nested),
+        ]),
+    );
     InvokeReq {
-        tool: "private-tool".to_string(),
-        arguments: json!({
-            "private-argument-name": [
-                "private-argument-value",
-                {"private-nested-name": "private-nested-value"}
-            ]
-        }),
+        tool: pick("tool", "private-tool"),
+        arguments: Value::Object(arguments),
         extra: [(
-            "private-source".to_string(),
+            pick("extra-source", "private-source"),
             [(
-                "private-extra-name".to_string(),
-                Value::String("private-extra-value".to_string()),
+                pick("extra-name", "private-extra-name"),
+                Value::String(pick("extra-value", "private-extra-value")),
             )]
             .into_iter()
             .collect(),
         )]
         .into_iter()
         .collect(),
-    }
-}
-
-fn field<'a>(request: &'a InvokeReq, name: &str) -> &'a [u8] {
-    let arguments = request.arguments.as_object().unwrap();
-    let nested = arguments["private-argument-name"][1].as_object().unwrap();
-    let extras = &request.extra["private-source"];
-    match name {
-        "tool" => request.tool.as_bytes(),
-        "argument-name" => arguments.keys().next().unwrap().as_bytes(),
-        "argument-value" => arguments["private-argument-name"][0]
-            .as_str()
-            .unwrap()
-            .as_bytes(),
-        "nested-name" => nested.keys().next().unwrap().as_bytes(),
-        "nested-value" => nested["private-nested-name"].as_str().unwrap().as_bytes(),
-        "extra-source" => request.extra.keys().next().unwrap().as_bytes(),
-        "extra-name" => extras.keys().next().unwrap().as_bytes(),
-        "extra-value" => extras["private-extra-name"].as_str().unwrap().as_bytes(),
-        _ => unreachable!(),
     }
 }
 
@@ -111,17 +74,20 @@ fn returned(_request: InvokeReq, fail: bool) -> Result<(), ()> {
 }
 
 #[test]
-fn the_registered_payload_witness_distinguishes_plain_and_wiped_strings() {
-    let plain = "plain-initialized-control".to_string();
-    watch(plain.as_bytes());
+fn the_scan_distinguishes_plain_and_wiped_strings() {
+    let proof = WipeProof::text();
+    let plain = proof.text_payload().as_str().to_owned();
     drop(plain);
-    assert_eq!(WIPED.with(Cell::get), Some(false));
+    assert!(
+        proof.canary_copies("a plain string") >= 1,
+        "a plain string's freed bytes must be found"
+    );
 
+    let proof = WipeProof::text();
     let wiped =
-        busbar_contract::secure::SecureString::from("wiped-initialized-control".to_string());
-    watch(wiped.as_bytes());
+        busbar_contract::secure::SecureString::from(proof.text_payload().as_str().to_owned());
     drop(wiped);
-    assert_eq!(WIPED.with(Cell::get), Some(true));
+    proof.assert_absent("a SecureString");
 }
 
 #[test]
@@ -137,13 +103,16 @@ fn invoke_request_strings_are_wiped_on_return_failure_cancel_and_last_owner_drop
         "extra-value",
     ] {
         for exit in ["return", "failure", "cancel", "clone", "shared", "transfer"] {
-            let mut request = request();
+            let what = format!("{name} on {exit}");
+            let mut proof = WipeProof::text();
+            let staging = proof.text_payload();
+            let mut request = request(name, &staging);
+            drop(staging);
             if exit == "clone" {
                 let clone = request.clone();
                 drop(request);
                 request = clone;
             }
-            watch(field(&request, name));
             match exit {
                 "cancel" => {
                     let mut pending = Box::pin(async move {
@@ -157,14 +126,14 @@ fn invoke_request_strings_are_wiped_on_return_failure_cancel_and_last_owner_drop
                             .poll(&mut Context::from_waker(Waker::noop())),
                         Poll::Pending
                     );
-                    assert_eq!(WIPED.with(Cell::get), None);
+                    proof.assert_held("the pending future still owns the request");
                     drop(pending);
                 }
                 "shared" => {
                     let shared = Arc::new(request);
                     let last = Arc::clone(&shared);
                     drop(shared);
-                    assert_eq!(WIPED.with(Cell::get), None);
+                    proof.assert_held("the last shared owner still holds the request");
                     drop(last);
                 }
                 "transfer" => {
@@ -174,7 +143,7 @@ fn invoke_request_strings_are_wiped_on_return_failure_cancel_and_last_owner_drop
                         extra: std::mem::take(&mut request.extra),
                     };
                     drop(request);
-                    assert_eq!(WIPED.with(Cell::get), None);
+                    proof.assert_held("the final owner still holds the request");
                     drop(final_owner);
                 }
                 _ => {
@@ -184,7 +153,7 @@ fn invoke_request_strings_are_wiped_on_return_failure_cancel_and_last_owner_drop
                     );
                 }
             }
-            assert_eq!(WIPED.with(Cell::get), Some(true), "{name} on {exit}");
+            proof.assert_absent(&what);
         }
     }
 }

@@ -242,7 +242,7 @@ fn openapi_documents_the_loops_503_on_every_operation_it_walks() {
             let loop_walks =
                 crate::admin_codec::verbs::resolve(&method.to_ascii_uppercase(), path).is_some();
             let documented = &op[OAS_OPERATION_STATUSES]["503"];
-            if loop_walks || op.get("x-busbar-plane").is_some() {
+            if loop_walks {
                 walked += 1;
                 let expected_schema = if method == "post"
                     && path == &format!("{}/adjust", crate::v1::contract::ADMIN_PREFIX)
@@ -366,7 +366,7 @@ fn served_openapi_equals_committed_file() {
         .unwrap_or_else(|| std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target"));
     let artifact = target.join("openapi.generated.json");
     // The facade has no pretty printer, so the artifact is written as the emit path writes the
-    // committed file (`emit_openapi_artifact`, `openapi_for_configured_planes`: serde_json's pretty
+    // committed file (`emit_openapi_artifact`: serde_json's pretty
     // form), byte for byte what to copy over it. Those two paths name serde_json directly (DEP-3);
     // this line follows them and moves with them when the facade grows a pretty writer.
     let pretty = serde_json::to_string_pretty(&generated).expect("pretty openapi");
@@ -704,7 +704,7 @@ async fn worker_was_free_during<Fut: std::future::Future<Output = Response>>(
 
 #[tokio::test(flavor = "current_thread")]
 async fn openapi_builds_the_served_document_off_the_async_worker() {
-    let (free, resp) = worker_was_free_during(super::handlers::render_openapi(|_| false)).await;
+    let (free, resp) = worker_was_free_during(super::handlers::render_openapi()).await;
     assert_eq!(resp.status(), StatusCode::OK);
     assert!(
         free,
@@ -713,30 +713,16 @@ async fn openapi_builds_the_served_document_off_the_async_worker() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn openapi_still_serves_the_document_filtered_to_the_configured_planes() {
-    // The generating test binary installs no plane, so the committed document marks none; mark one
-    // operation as a plane's, exactly as the generator marks an installed plane's operations.
-    fn marked() -> String {
-        let mut doc: serde_json::Value =
-            serde_json::from_str(&super::handlers::openapi_json()).unwrap();
-        doc["paths"]["/api/v1/admin/info"]["get"]["x-busbar-plane"] = json!("examples");
-        serde_json::to_string_pretty(&doc).unwrap()
-    }
-    let expected = super::handlers::openapi_for_configured_planes(&marked(), |_| false)
-        .expect("a document that marks a plane operation is filtered");
-    let doc: serde_json::Value = serde_json::from_str(&expected).unwrap();
-    assert!(doc["paths"].get("/api/v1/admin/keys").is_some());
-    assert!(doc["paths"].get("/api/v1/admin/info").is_none());
-    assert!(
-        super::handlers::openapi_for_configured_planes(&marked(), |section| section == "examples")
-            .is_none(),
-        "a configured plane keeps its operations"
-    );
-    let resp = super::handlers::render_openapi_of(marked, |_| false).await;
+async fn openapi_serves_the_one_document_unfiltered() {
+    let resp = super::handlers::render_openapi().await;
     assert_eq!(resp.status(), StatusCode::OK);
     use http_body_util::BodyExt;
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();
-    assert_eq!(std::str::from_utf8(&bytes).unwrap(), expected.as_str());
+    assert_eq!(
+        std::str::from_utf8(&bytes).unwrap(),
+        super::handlers::openapi_json(),
+        "the served document is the generated one, byte for byte"
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -1247,5 +1233,19 @@ fn admin_decode_errors_go_through_the_renderer() {
     assert!(
         mod_rs[start..end].contains("describe_body_error(&e)"),
         "json_body must render its decode error through describe_body_error"
+    );
+}
+
+/// ADMIN-API-1.6-ONE-MODEL §6.4 (Console M-31): `RestartView.supervisor_detected` is a mechanism
+/// detail the restart answer does not carry; the confirm gate stays.
+#[cfg(feature = "openapi-schema")]
+#[test]
+fn restart_answer_does_not_carry_supervisor_detected() {
+    let doc = openapi_doc();
+    let view = &doc["components"]["schemas"]["RestartView"];
+    assert!(view.is_object(), "RestartView is documented");
+    assert!(
+        view["properties"].get("supervisor_detected").is_none(),
+        "RestartView still documents supervisor_detected: {view:?}"
     );
 }

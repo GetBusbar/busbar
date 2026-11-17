@@ -104,18 +104,12 @@ fn planes() -> &'static PlaneKeys {
 async fn app(cost: CostModel) -> busbar_kernel::state::App {
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual Store statement reads")
-        .expect("the actual Store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual Store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    manifest.statement = Some(hex::encode(statement));
     let directory = plugins::scratch(&format!(
         "admin-plane-usage-{}",
         busbar_kernel::door::op_id().counter()
@@ -349,6 +343,7 @@ async fn an_old_served_entry_prices_both_the_row_and_its_itemized_classes() {
         .unwrap()
         .ledger()
         .add_metering(&busbar_contract::records::MeteringDelta {
+            pricing: None,
             scale: 0,
             key_id: KEY.to_string(),
             bucket,

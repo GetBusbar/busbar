@@ -2,12 +2,16 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE SHUTDOWN DRAIN (SHUTDOWN-HANG F4). One owner, [`ShutdownDrain`], holds the budget from the
-//! first shutdown broadcast and bounds every wait on the way out; nothing in flight is ever
+//! transition to Draining and bounds every wait on the way out; nothing in flight is ever
 //! aborted (an overrun detaches it and the process exits through `process::exit`, as after
 //! SIGKILL). Money is persisted from the first broadcast, beside the request drain, until just
 //! before the seal phase. The exit is 0 when the writer retired, otherwise 75 (spend saved,
 //! streams cut) or 70 (spend unsaved) by one classification of custody at that moment, with the
 //! evidence on stderr; never 1 from the drain itself.
+//!
+//! Operator intent first marks readiness false and allows the boot-captured deregistration
+//! interval. The same owner keeps its full fixed drain budget for the subsequent transition;
+//! Safety skips the interval and Force also expires the clock permanently.
 //!
 //! Phases, in order: [1] requests (cut C1), [S] settle (C2), [3] plane records and the admin
 //! audit queue (C3), [2] the money driver's join (C3), [4] the seal phase (C3; SEALING-FIX adds
@@ -36,11 +40,16 @@ pub(crate) use busbar_kernel::governance::drain::{Cut, DrainClock};
 use crate::root::durability::NodeBook;
 use crate::root::serve::{drain_records, Services, RECORD_DRAIN};
 
+#[path = "export_shutdown.rs"]
+mod export_settlement;
+pub(crate) use export_settlement::ExportRetry;
+
 /// Obtained only by a successful semantic drain and consumed by retirement.
 /// Retaining the actual owners binds the final check to the drained generation.
 pub(crate) struct Drained {
     governance: Option<Arc<GovState>>,
     runtime: Option<Arc<RuntimeJournal>>,
+    export_observers: Arc<super::export_observer::ExportObservers>,
 }
 
 /// The phase a bounded wait belongs to, for the progress line and the detach count.
@@ -138,6 +147,132 @@ impl<T> Future for DrainHandle<T> {
     }
 }
 
+/// Persistence supplies the safety input. Worker/listener stops are published only at Draining.
+pub(crate) struct ShutdownSignals {
+    pub(crate) safety: tokio::sync::watch::Receiver<bool>,
+    pub(crate) workers: tokio::sync::watch::Sender<bool>,
+    pub(crate) support: tokio::sync::watch::Sender<bool>,
+    pub(crate) listeners: tokio::sync::broadcast::Sender<()>,
+}
+
+impl ShutdownDrain {
+    /// Start the sole pre-drain coordinator. Native writer renewal still follows retirement.
+    pub(crate) fn start_deregister(
+        &self,
+        delay: Duration,
+        probes: Arc<busbar_kernel::endpoints::ProbeState>,
+        signals: ShutdownSignals,
+    ) -> busbar_kernel::governance::drain::ShutdownRequest {
+        self.start_deregister_with(
+            delay,
+            probes,
+            signals,
+            busbar_kernel::refresh::begin_stopping,
+        )
+    }
+
+    fn start_deregister_with(
+        &self,
+        delay: Duration,
+        probes: Arc<busbar_kernel::endpoints::ProbeState>,
+        signals: ShutdownSignals,
+        stop_refresh: impl FnOnce() + Send + 'static,
+    ) -> busbar_kernel::governance::drain::ShutdownRequest {
+        assert!(
+            !self.coordinating.swap(true, Ordering::AcqRel),
+            "one shutdown coordinator per drain"
+        );
+        assert!(
+            delay <= Duration::from_secs(300),
+            "validated deregistration delay"
+        );
+        let request = self.request.clone();
+        let task_request = request.clone();
+        let clock = Arc::clone(&self.clock);
+        tokio::spawn(async move {
+            use busbar_kernel::governance::drain::ShutdownIntent;
+            let ShutdownSignals {
+                mut safety,
+                workers,
+                support,
+                listeners,
+            } = signals;
+            let mut intent = task_request.subscribe();
+            let mut deregister_at = None;
+            loop {
+                if *safety.borrow_and_update() {
+                    task_request.request(ShutdownIntent::Safety);
+                }
+                let level = *intent.borrow_and_update();
+                if level != ShutdownIntent::Serving {
+                    probes.begin_stopping();
+                }
+                match level {
+                    ShutdownIntent::Force => {
+                        clock.expire_now();
+                        break;
+                    }
+                    ShutdownIntent::Safety => break,
+                    ShutdownIntent::Operator => {
+                        let at = *deregister_at.get_or_insert_with(|| Instant::now() + delay);
+                        if Instant::now() >= at {
+                            break;
+                        }
+                    }
+                    ShutdownIntent::Serving => {}
+                }
+                let delay_elapsed = async {
+                    if let Some(at) = deregister_at {
+                        tokio::time::sleep_until(at).await;
+                    } else {
+                        std::future::pending::<()>().await;
+                    }
+                };
+                tokio::select! {
+                    biased;
+                    changed = safety.changed() => {
+                        if changed.is_err() { task_request.request(ShutdownIntent::Safety); }
+                    }
+                    _ = intent.changed() => {}
+                    () = delay_elapsed => {}
+                }
+            }
+            // This synchronous transition alone owns stopping refresh, arming, and publication.
+            // Stop reading safety before publishing workers: even a shared legacy sender cannot
+            // feed this output back into the earlier operator propagation interval.
+            drop(safety);
+            stop_refresh();
+            clock.arm(Instant::now() + clock.budget());
+            support.send_replace(true);
+            workers.send_replace(true);
+            let _ = listeners.send(());
+            let mut expired = clock.expired_rx();
+            loop {
+                if *intent.borrow_and_update() == ShutdownIntent::Force {
+                    clock.expire_now();
+                    return;
+                }
+                if clock.expired() {
+                    return;
+                }
+                tokio::select! {
+                    biased;
+                    _ = intent.changed() => {}
+                    _ = expired.wait_for(|expired| *expired) => return,
+                }
+            }
+        });
+        request
+    }
+
+    pub(crate) fn request_shutdown(
+        &self,
+        intent: busbar_kernel::governance::drain::ShutdownIntent,
+    ) {
+        self.request.request(intent);
+    }
+}
+
 /// The progress line's period (SHUTDOWN-HANG F4 "Progress": once per second and on every phase
 /// change).
 const PROGRESS_EVERY: Duration = Duration::from_secs(1);
@@ -223,6 +358,8 @@ impl Progress {
 
 /// The drain owner: the clock and the counts the exit reports.
 pub(crate) struct ShutdownDrain {
+    request: busbar_kernel::governance::drain::ShutdownRequest,
+    coordinating: AtomicBool,
     clock: Arc<DrainClock>,
     progress: Arc<Progress>,
 }
@@ -230,6 +367,8 @@ pub(crate) struct ShutdownDrain {
 impl ShutdownDrain {
     pub(crate) fn new(clock: Arc<DrainClock>) -> Self {
         Self {
+            request: Default::default(),
+            coordinating: AtomicBool::new(false),
             progress: Arc::new(Progress {
                 clock: Arc::clone(&clock),
                 phase: AtomicU8::new(0),
@@ -378,8 +517,11 @@ pub(crate) struct PostServe<'a> {
     /// Data runtimes and transport-plugin listener threads: requests like any other.
     pub(crate) threads: Vec<std::thread::JoinHandle<()>>,
     pub(crate) work_recovery: JoinHandle<()>,
-    pub(crate) generation_workers: super::boot::workers::RunningWorkers,
+    pub(crate) generation_workers: Arc<super::min3_candidate::Workers>,
     pub(crate) exports: super::exports::ports::Exports,
+    pub(crate) export_captures: Arc<busbar_kernel::export::plugin::Exports>,
+    pub(crate) export_observers: Arc<super::export_observer::ExportObservers>,
+    pub(crate) export_observer_retry: ExportRetry,
     /// The control runtime's detached-task drain.
     pub(crate) control_drain: Pin<Box<dyn Future<Output = ()> + 'a>>,
     pub(crate) node_lease: Option<crate::root::boot::NodeLeaseTask>,
@@ -389,7 +531,6 @@ pub(crate) struct PostServe<'a> {
     pub(crate) late: Arc<Services>,
     pub(crate) book: Option<NodeBook>,
     pub(crate) startup: busbar_kernel::persistence::startup::Startup,
-    pub(crate) shutdown_tx: tokio::sync::broadcast::Sender<()>,
     /// The start-up predecessor task (F5) and its fence owner, joined and settled in [4].
     pub(crate) predecessor: Option<(JoinHandle<()>, Arc<PredecessorFence>)>,
 }
@@ -421,6 +562,9 @@ pub(crate) async fn finish(post: PostServe<'_>, drain: &ShutdownDrain) -> i32 {
         work_recovery,
         generation_workers,
         exports,
+        export_captures,
+        export_observers,
+        export_observer_retry,
         control_drain,
         node_lease,
         flusher,
@@ -428,7 +572,6 @@ pub(crate) async fn finish(post: PostServe<'_>, drain: &ShutdownDrain) -> i32 {
         late,
         book,
         startup,
-        shutdown_tx,
         predecessor,
     } = post;
     drain.report_to(ProgressSources {
@@ -438,24 +581,30 @@ pub(crate) async fn finish(post: PostServe<'_>, drain: &ShutdownDrain) -> i32 {
         fence: predecessor.as_ref().map(|(_, fence)| Arc::clone(fence)),
     });
     let mut failures: Vec<String> = Vec::new();
+    let mut capture_quiescent = true;
 
     // Serving: before the first broadcast these are ordinary awaits of the serve futures.
     let mut line_code = 0;
     if let Some(lines) = lines {
         match drain.wait_requests(lines).await {
             Outcome::Done(code) => line_code = code,
-            _ => failures.push("line serving did not end by the request cut".into()),
+            _ => {
+                capture_quiescent = false;
+                failures.push("line serving did not end by the request cut".into());
+            }
         }
+        drain.request_shutdown(busbar_kernel::governance::drain::ShutdownIntent::Safety);
     }
     if let Some(admin) = admin {
         let served = drain.wait_requests(admin).await;
         if !matches!(served, Outcome::Done(())) {
+            capture_quiescent = false;
             failures.push("admin listener did not drain by the request cut".into());
         }
     }
     busbar_kernel::audit::events::engine_event(busbar_kernel::audit::events::node_drain());
-    let _ = shutdown_tx.send(());
-    drain.clock().arm(Instant::now() + drain.clock().budget());
+    drain.request_shutdown(busbar_kernel::governance::drain::ShutdownIntent::Safety);
+    let _ = drain.wait_requests(drain.clock().armed()).await;
     drain.start_progress();
     let gov = governance.as_ref();
 
@@ -464,9 +613,13 @@ pub(crate) async fn finish(post: PostServe<'_>, drain: &ShutdownDrain) -> i32 {
     match drain.wait_requests(generation_workers.stop()).await {
         Outcome::Done(Ok(())) => {}
         Outcome::Done(Err(error)) => {
+            capture_quiescent = false;
             failures.push(format!("generation workers did not stop: {error}"))
         }
-        _ => failures.push("generation workers did not stop by the request cut".into()),
+        _ => {
+            capture_quiescent = false;
+            failures.push("generation workers did not stop by the request cut".into());
+        }
     }
     let mut detached_joins: Vec<DrainHandle<Result<(), JoinError>>> = Vec::new();
     let threads = DrainHandle::spawn(tokio::task::spawn_blocking(move || {
@@ -477,16 +630,25 @@ pub(crate) async fn finish(post: PostServe<'_>, drain: &ShutdownDrain) -> i32 {
     let recovery = DrainHandle::adopt(work_recovery);
     let controlled = drain.wait_requests(control_drain).await;
     if !matches!(controlled, Outcome::Done(())) {
+        capture_quiescent = false;
         failures.push("control tasks did not drain by the request cut".into());
     }
     match drain.bounded_requests(threads).await {
-        Joined::Done(_) => {}
+        Joined::Done(Ok(Ok(()))) => {}
+        Joined::Done(_) => {
+            capture_quiescent = false;
+            failures.push("request thread join driver did not complete".into());
+        }
         Joined::Detached(handle) => detached_joins.push(handle),
     }
     match drain.bounded_requests(recovery).await {
         Joined::Done(Ok(())) => {}
-        Joined::Done(Err(error)) => failures.push(format!("work recovery did not stop: {error}")),
+        Joined::Done(Err(error)) => {
+            capture_quiescent = false;
+            failures.push(format!("work recovery did not stop: {error}"));
+        }
         Joined::Detached(_) => {
+            capture_quiescent = false;
             failures.push("work recovery did not stop by the request cut".into())
         }
     }
@@ -516,8 +678,14 @@ pub(crate) async fn finish(post: PostServe<'_>, drain: &ShutdownDrain) -> i32 {
         )
         .await;
     match cleanup {
-        Outcome::Done(failed) => failures.extend(failed),
-        _ => failures.push("plane cleanup did not finish by the request cut".into()),
+        Outcome::Done(failed) => {
+            capture_quiescent &= failed.is_empty();
+            failures.extend(failed);
+        }
+        _ => {
+            capture_quiescent = false;
+            failures.push("plane cleanup did not finish by the request cut".into());
+        }
     }
     drain.note_open_joins(detached_joins.len());
     drain.clock().set_requests_done();
@@ -558,6 +726,7 @@ pub(crate) async fn finish(post: PostServe<'_>, drain: &ShutdownDrain) -> i32 {
         )
         .await;
     let settled = matches!(settle, Outcome::Done(()));
+    capture_quiescent &= settled;
     if !settled {
         failures.push("requests or governed units still running at the settle cut".into());
     }
@@ -590,6 +759,29 @@ pub(crate) async fn finish(post: PostServe<'_>, drain: &ShutdownDrain) -> i32 {
             .await,
     ) {
         failures.push(error);
+    }
+    // Native DATA audit r2: Node drives its own installed native entries before the journal
+    // and notary close. An entry still unresolved at the cut stays installed and is reported.
+    match drain
+        .bounded(
+            Phase::Audit,
+            DrainHandle::spawn(drain_native_custody()),
+            Cut::Seal,
+        )
+        .await
+    {
+        Joined::Done(Ok(())) => {}
+        Joined::Done(Err(error)) => {
+            failures.push(format!("native DATA custody driver failed: {error}"))
+        }
+        Joined::Detached(_) => {
+            let node = super::plane_node::node();
+            failures.push(format!(
+                "native DATA custody unresolved at the cut: {} native of {} retained terminal entries",
+                node.native_pending(),
+                node.terminal_pending(),
+            ));
+        }
     }
 
     // [2] money_stop, then the money driver's join, until C3. A panicked driver is replaced by
@@ -647,6 +839,13 @@ pub(crate) async fn finish(post: PostServe<'_>, drain: &ShutdownDrain) -> i32 {
             .await
         {
             Joined::Done(Ok(end)) => {
+                eprintln!(
+                    "busbar: shutdown audit_stamped_through={} audit_committed_through={}",
+                    end.stamped_through, end.committed_through
+                );
+                if end.final_staged == Some(false) {
+                    eprintln!("busbar: shutdown audit_final=signer_failed");
+                }
                 if let Some(why) = end.halted {
                     eprintln!("busbar: shutdown audit_notary=halted:{why}");
                 }
@@ -679,12 +878,32 @@ pub(crate) async fn finish(post: PostServe<'_>, drain: &ShutdownDrain) -> i32 {
         }
     }
 
+    // Fence the actual generation's capture intake, then join every accepted read amendment.
+    // A cancelled notification wait leaves the capture task and its native write owned.
+    export_captures.close_capture();
+    match drain
+        .wait(Phase::Audit, export_captures.drain_capture(), Cut::Deadline)
+        .await
+    {
+        Outcome::Done(report) => {
+            if report.interrupted {
+                failures.push("export capture amendment work was interrupted".into());
+            }
+        }
+        _ => {
+            capture_quiescent = false;
+            failures
+                .push("export capture producers did not quiesce by the shutdown deadline".into());
+        }
+    }
+
     // Stop export intake and observe its concrete workers before closing native audit staging.
     // Reuse the original shutdown deadline; no exporter receives a fresh budget.
     let export_deadline = drain
         .until(Cut::Deadline)
         .unwrap_or_else(Instant::now)
         .into_std();
+    let mut pumps_quiescent = false;
     match drain
         .bounded(
             Phase::Audit,
@@ -696,6 +915,9 @@ pub(crate) async fn finish(post: PostServe<'_>, drain: &ShutdownDrain) -> i32 {
         .await
     {
         Joined::Done(Ok(reports)) => {
+            pumps_quiescent = reports.iter().all(|(_, report)| {
+                report.worker_stopped && report.queued == 0 && report.in_flight == 0
+            });
             for (name, report) in reports {
                 if !report.clean() {
                     failures.push(format!("export.{name} did not drain cleanly: {report:?}"));
@@ -706,6 +928,58 @@ pub(crate) async fn finish(post: PostServe<'_>, drain: &ShutdownDrain) -> i32 {
         Joined::Detached(_) => {
             failures.push("export workers did not quiesce by the shutdown deadline".into())
         }
+    }
+
+    // A failed join is not evidence that its capture callbacks stopped. Preserve intake and
+    // the native journal owner for such producers; never seal underneath a detached pump.
+    if !capture_quiescent || !pumps_quiescent {
+        failures.extend(export_settlement::failures(&export_observers));
+        return incomplete(drain, gov, &late, "export_producers", &failures);
+    }
+    export_observers.stop_intake();
+    let mut observations_confirmed = false;
+    match drain
+        .bounded(
+            Phase::Audit,
+            DrainHandle::spawn(settle_export_observations(
+                Arc::clone(&export_observers),
+                Arc::clone(drain.clock()),
+            )),
+            Cut::Deadline,
+        )
+        .await
+    {
+        Joined::Done(Ok(Ok(()))) => observations_confirmed = true,
+        Joined::Done(Ok(Err(error))) => failures.push(error),
+        Joined::Done(Err(error)) => {
+            failures.push(format!(
+                "export observation settlement driver failed: {error}"
+            ));
+        }
+        Joined::Detached(_) => {
+            failures.push("export loss receipts remain unresolved at the shutdown deadline".into());
+        }
+    }
+    let mut retry_stopped = false;
+    match drain
+        .bounded(
+            Phase::Audit,
+            DrainHandle::adopt(export_observer_retry.stop()),
+            Cut::Deadline,
+        )
+        .await
+    {
+        Joined::Done(Ok(())) => retry_stopped = true,
+        Joined::Done(Err(error)) => {
+            failures.push(format!("export observation retry worker failed: {error}"));
+        }
+        Joined::Detached(_) => {
+            failures.push("export observation retry worker did not stop by the deadline".into());
+        }
+    }
+    if !observations_confirmed || !retry_stopped || !export_observers.is_settled() {
+        failures.extend(export_settlement::failures(&export_observers));
+        return incomplete(drain, gov, &late, "export_observations", &failures);
     }
 
     // [5] Close staging, flush the journal, drain the admin audit queue, then the checks.
@@ -786,6 +1060,9 @@ pub(crate) async fn finish(post: PostServe<'_>, drain: &ShutdownDrain) -> i32 {
     if gov.is_some_and(|gov| gov.has_unsettled_persistence()) {
         failures.push("governance still owns unsettled persistence".into());
     }
+    if !export_observers.is_settled() {
+        failures.extend(export_settlement::failures(&export_observers));
+    }
     if drain.clock().expired() {
         return incomplete(drain, gov, &late, "deadline", &failures);
     }
@@ -798,6 +1075,7 @@ pub(crate) async fn finish(post: PostServe<'_>, drain: &ShutdownDrain) -> i32 {
     let drained = Drained {
         governance: governance.clone(),
         runtime,
+        export_observers,
     };
     match drain
         .bounded(
@@ -1039,6 +1317,60 @@ impl PacedHalt {
     }
 }
 
+/// Runs as a drain-owned task: an in-flight native write is detached, never cancelled, at
+/// the caller's cut. Checking that same clock between attempts prevents a new retry budget.
+async fn settle_export_observations(
+    observers: Arc<super::export_observer::ExportObservers>,
+    clock: Arc<DrainClock>,
+) -> Result<(), String> {
+    let deadline = clock
+        .armed_at()
+        .ok_or("export settlement requires the armed shutdown clock")?;
+    let mut last_error = None;
+    loop {
+        if clock.expired() || tokio::time::Instant::now() >= deadline {
+            return Err(last_error.unwrap_or_else(|| {
+                "export observation settlement reached the shutdown deadline".into()
+            }));
+        }
+        observers.step();
+        if observers.late_callbacks() != 0 {
+            return Err("export producer callback arrived after intake closure".into());
+        }
+        if observers.is_settled() {
+            if clock.expired() || tokio::time::Instant::now() >= deadline {
+                return Err("export observation pass completed after the shutdown deadline".into());
+            }
+            return Ok(());
+        }
+        if let Err(error) = busbar_kernel::audit::auditlog::flush_pending().await {
+            last_error = Some(format!("export loss audit remains unresolved: {error}"));
+        }
+        observers.step();
+        if observers.is_settled() {
+            // Confirmation after the shared cut cannot establish a timely clean shutdown.
+            if clock.expired() || tokio::time::Instant::now() >= deadline {
+                return Err("export loss confirmation arrived after the shutdown deadline".into());
+            }
+            return Ok(());
+        }
+        tokio::time::sleep(busbar_kernel::governance::DRAIN_PASS_IDLE).await;
+    }
+}
+
+/// Drive the process Node's installed native DATA entries until none remains. A pass that
+/// retires nothing waits one idle interval; the caller's cut bounds the whole drain.
+async fn drain_native_custody() {
+    let node = super::plane_node::node();
+    let mut cursor = None;
+    while node.native_pending() != 0 {
+        let retired = node.drive_native(&mut cursor).await;
+        if retired == 0 && cursor.is_none() {
+            tokio::time::sleep(DRAIN_PASS_IDLE).await;
+        }
+    }
+}
+
 async fn drain_audit_queue() -> Result<(), String> {
     if !busbar_kernel::audit::auditlog::has_unsettled_audit() {
         return Ok(());
@@ -1061,6 +1393,9 @@ async fn retire_storage(
     drained: Drained,
 ) -> Result<(), String> {
     use busbar_kernel::persistence::startup::Progress;
+    if !drained.export_observers.is_settled() {
+        return Err("export observers changed after their final drain".into());
+    }
     let core = startup
         .store()
         .ok_or("Store was not admitted for retirement")?;
@@ -1097,6 +1432,9 @@ async fn retire_storage(
     if busbar_kernel::audit::auditlog::has_unsettled_audit() {
         return Err("administrative audit acquired originals after its final drain".into());
     }
+    if !drained.export_observers.is_settled() {
+        return Err("export producer callback arrived before writer retirement".into());
+    }
     startup
         .begin_retirement()
         .map_err(|error| format!("Store writer retirement refused: {error:?}"))?;
@@ -1120,3 +1458,11 @@ mod tests;
 #[cfg(test)]
 #[path = "tests/shutdown_drain.rs"]
 mod drain_tests;
+
+#[cfg(test)]
+#[path = "tests/export_shutdown.rs"]
+mod export_tests;
+
+#[cfg(test)]
+#[path = "tests/shutdown_deregister.rs"]
+mod deregister_tests;

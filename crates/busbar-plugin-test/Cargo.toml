@@ -11,11 +11,11 @@ license = "Apache-2.0"
 # `cases.rs` fails if a file under `tests/` is wired nowhere.
 autotests = false
 
-# The host's own fixtures: one store and one transport, SDK-authored; each test pulls in its
-# linked twin with #[path].
+# The host's own fixtures: a MIN-3 store (plugin!) and an SDK-authored transport; each test pulls in
+# its linked twin with #[path].
 [[example]]
-name = "store_fixture"
-path = "tests/fixtures/store_fixture.rs"
+name = "native_store_fixture"
+path = "tests/fixtures/native_store_fixture.rs"
 crate-type = ["cdylib"]
 
 [[example]]
@@ -100,6 +100,7 @@ path = "tests/cases.rs"
 # its test caller binding). `target-http` adds the carrier: hyper and hyper-util, no hand-written codec,
 # no direct h2, no tonic. Every crate here is already in core's lock.
 target = ["dep:sonic-rs"]
+target-native-stream = ["dep:httparse"]
 target-sockets = ["tokio/net", "tokio/io-util", "tokio/macros", "busbar-contract/tls", "dep:rustls", "dep:tokio-rustls"]
 target-http = ["target", "dep:hyper", "dep:hyper-util", "dep:http-body-util", "tokio/net"]
 # STH-ROWS D-7: the contract's caller seal for a plugin repository's test host, a loud dev-only opt-in on
@@ -107,6 +108,7 @@ target-http = ["target", "dep:hyper", "dep:hyper-util", "dep:http-body-util", "t
 test-seal = ["busbar-contract/test-seal"]
 
 [dependencies]
+httparse = { workspace = true, optional = true }
 busbar-ports = { path = "../busbar-ports" }
 zeroize = { workspace = true }
 rustls = { workspace = true, optional = true }
@@ -126,6 +128,8 @@ tracing = { workspace = true }
 tikv-jemallocator = { workspace = true }
 
 [dev-dependencies]
+# C-DEPLOYMENT-ID includes the root boot walker and its deployment-ID decoder.
+hex = { workspace = true }
 # W1-K8B: the head-authority and card-redirect arms build URLs.
 url = { workspace = true }
 # The bridge fixture image (W1-A3, `tests/bridge_fixture.rs`) is wired by hand over busbar-ffi's safe adapter and host
@@ -142,7 +146,7 @@ axum = { workspace = true }
 # The facade's own tests drive its targets; CI's test and red-proof jobs pass none of its features.
 # W1-A12: the case files drive MemIo (IF §9, feature `memio`).
 busbar-plugin-abi = { path = "../busbar-plugin-abi", features = ["memio"] }
-busbar-plugin-test = { path = ".", features = ["target-http", "target-sockets", "test-seal"] }
+busbar-plugin-test = { path = ".", features = ["target-http", "target-sockets", "target-native-stream", "test-seal"] }
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time", "sync"] }
 
 [lints]

@@ -28,6 +28,41 @@ fn owner(name: &str) -> Incarnation {
         .clone()
 }
 
+#[test]
+fn selected_current_refusals_keep_auth_expiry_and_group_policy_distinct() {
+    use crate::governance::current_credential::CurrentCredentialRefusal as Credential;
+    use crate::governance::selected_policy::SelectedPolicyRefusal as Policy;
+    use crate::plane_driver::port_egress::SelectedFailure;
+    use busbar_contract::caps::ReasonCode;
+    use busbar_plugin_abi::fail::{failed::F_INTERNAL, refused::*};
+
+    let refusals = CoreRefusals::default();
+    for (reason, code) in [
+        (Policy::CurrentAuthority(Credential::Expired), R_EXPIRED),
+        (Policy::CurrentAuthority(Credential::KeyExpired), R_EXPIRED),
+        (
+            Policy::CurrentAuthority(Credential::Revoked),
+            R_BAD_CREDENTIAL,
+        ),
+        (
+            Policy::CurrentAuthority(Credential::SigningUnavailable),
+            R_BAD_CREDENTIAL,
+        ),
+        (Policy::CurrentGroup(ReasonCode::GroupFrozen), R_POLICY),
+        (Policy::CurrentGroup(ReasonCode::ScopeDenied), R_POLICY),
+        (Policy::InvalidBinding, F_INTERNAL),
+        (
+            Policy::CurrentAuthority(Credential::ForeignAuthority),
+            F_INTERNAL,
+        ),
+    ] {
+        assert_eq!(
+            super::selected_refusal(7, &SelectedFailure::Policy(reason), &refusals).code,
+            code
+        );
+    }
+}
+
 fn recording() -> (CarrierSink, Arc<Mutex<Vec<Vec<u8>>>>) {
     let seen: Arc<Mutex<Vec<Vec<u8>>>> = Arc::default();
     let into = Arc::clone(&seen);

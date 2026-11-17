@@ -240,13 +240,21 @@ mod ordinary_load_negatives;
 #[path = "tests/sdk_registration_tests.rs"]
 mod sdk_registration_tests;
 
+#[cfg(test)]
+#[path = "tests/artifact_verifier_parity.rs"]
+mod artifact_verifier_parity;
 #[cfg(feature = "pack")]
 #[deny(unsafe_code)]
 pub mod integer_token;
+#[cfg(feature = "pack")]
+#[deny(unsafe_code)]
+pub mod pack_native;
 #[deny(unsafe_code)]
 pub mod settings_schema;
 pub mod sign;
 mod stage;
+/// Authority-bound canonical release verification.
+pub mod verification;
 // busbar:request-path
 #[cfg_attr(
     not(test),
@@ -277,6 +285,9 @@ pub mod admit;
 #[deny(unsafe_code)]
 pub mod answer;
 mod chains;
+#[cfg(target_os = "linux")]
+#[deny(unsafe_code)]
+pub mod inspect;
 #[deny(unsafe_code)]
 #[deny(unsafe_code)]
 pub mod instance;

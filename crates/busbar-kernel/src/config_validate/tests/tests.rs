@@ -990,7 +990,7 @@ fn an_empty_protocol_set_refuses_every_provider_naming_the_build() {
 }
 
 #[test]
-fn an_empty_protocol_set_refuses_every_provider_through_the_real_sweep() {
+fn provider_core_sweep_leaves_dialect_authority_to_the_native_resolver() {
     let mut providers = HashMap::new();
     providers.insert(
         "prov-a".to_string(),
@@ -998,74 +998,34 @@ fn an_empty_protocol_set_refuses_every_provider_through_the_real_sweep() {
     );
     providers.insert(
         "prov-b".to_string(),
-        make_provider("no-such-protocol", "https://b.example.com", "KEY_B"),
+        make_provider("native-only-dialect", "https://b.example.com", "KEY_B"),
     );
     let cfg = make_root_cfg(providers, HashMap::new(), HashMap::new());
-
-    let mut errors = Vec::new();
-    super::validate_providers_with(&[], &cfg, &[], &mut errors);
-
-    for prov in ["prov-a", "prov-b"] {
-        let hits: Vec<&String> = errors.iter().filter(|e| e.contains(prov)).collect();
-        assert_eq!(
-            hits.len(),
-            1,
-            "an empty protocol set must refuse '{prov}' exactly once, got: {hits:?}"
-        );
+    for historical in [vec![], vec![proto_a(), proto_b()]] {
+        let mut errors = Vec::new();
+        super::validate_providers_with(&historical, &cfg, &[], &mut errors);
         assert!(
-            hits[0].contains("NO protocol") && hits[0].contains("compiled in"),
-            "the refusal must name the BUILD as the cause: {}",
-            hits[0]
+            errors.is_empty(),
+            "core destination checks must not replace native descriptor validation: {errors:?}"
         );
     }
-    assert!(
-        !errors.iter().any(|e| e.contains("must be one of")),
-        "the empty set must never render the unknown-protocol arm with an empty tail: {errors:?}"
-    );
-
-    let mut errors = Vec::new();
-    super::validate_providers_with(&[proto_a(), proto_b()], &cfg, &[], &mut errors);
-    assert!(
-        !errors.iter().any(|e| e.contains("prov-a")),
-        "a provider naming a compiled-in protocol validates: {errors:?}"
-    );
-    let hits: Vec<&String> = errors.iter().filter(|e| e.contains("prov-b")).collect();
-    assert_eq!(hits.len(), 1, "one refusal for the stranger: {hits:?}");
-    assert!(
-        hits[0].contains(&format!("must be one of: {}, {}", proto_a(), proto_b())),
-        "the populated set names the choices: {}",
-        hits[0]
-    );
 }
 
 #[test]
-fn the_empty_set_the_validator_refuses_is_the_one_an_empty_registry_produces() {
-    let known = crate::plane_driver::dispatch::provider_dialects();
-    assert!(
-        known.is_empty(),
-        "the premise of this test: a registry with no declarations knows no protocols"
-    );
-
+fn native_provider_core_sweep_preserves_metadata_destination_refusal() {
     let mut providers = HashMap::new();
     providers.insert(
         "prov-a".to_string(),
-        make_provider(proto_a(), "https://a.example.com", "KEY_A"),
+        make_provider("native-only-dialect", "https://169.254.169.254", "KEY_A"),
     );
     let cfg = make_root_cfg(providers, HashMap::new(), HashMap::new());
-
     let mut errors = Vec::new();
-    super::validate_providers_with(&known, &cfg, &[], &mut errors);
-    assert_eq!(
-        errors.len(),
-        1,
-        "the registry-derived empty set refuses the provider, once: {errors:?}"
-    );
+    super::validate_providers_with(&[], &cfg, &[], &mut errors);
     assert!(
-        errors[0].contains("prov-a")
-            && errors[0].contains("NO protocol")
-            && errors[0].contains("compiled in"),
-        "and names the build: {}",
-        errors[0]
+        errors
+            .iter()
+            .any(|error| error.contains("blocked cloud-metadata host")),
+        "{errors:?}"
     );
 }
 

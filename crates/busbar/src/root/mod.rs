@@ -46,6 +46,11 @@ pub mod cli;
 pub(crate) mod cold;
 pub mod connector;
 pub mod credentials;
+pub(crate) mod export_observer;
+pub(crate) mod min3_admin_auth;
+pub(crate) mod min3_auth;
+pub(crate) mod min3_outbound_auth;
+pub(crate) mod native_refusals;
 pub(crate) mod provisioning;
 pub(crate) mod provisioning_mount;
 // busbar:request-path
@@ -193,6 +198,7 @@ pub mod linked;
     )
 )]
 pub mod listener;
+pub(crate) mod listener_native;
 pub(crate) mod loader;
 pub(crate) mod measurements;
 /// The migrate-on-boot seam: step 1 (the stamp) and step 5 (the write and re-exec).
@@ -201,6 +207,15 @@ pub(crate) mod migrate;
 pub(crate) mod migrate_records;
 /// The boot's MIN-3 registry: Need handlers, image admission, the boot walk (ROOT-BOOT).
 pub(crate) mod min3_boot;
+/// Native lifetime custody attached to the exact published App.
+pub(crate) mod min3_candidate;
+pub(crate) mod min3_candidate_secrets;
+pub(crate) mod min3_framers;
+pub(crate) mod min3_listener_plan;
+pub(crate) mod min3_physical;
+pub(crate) mod min3_provider_catalog;
+pub(crate) mod min3_provider_plan;
+pub(crate) mod min3_selected_policy;
 /// K9: each MIN-3 plane seat's egress walk and channel carrier, composed at boot from the configured upstreams.
 pub(crate) mod plane_seats;
 /// The HTTP mount of the MIN-3 plane instances: their data routes onto `PortDriver::serve`.
@@ -358,3 +373,7 @@ include!(concat!(env!("OUT_DIR"), "/context_test_sources.rs"));
 owner_test_sources!(root_stdio);
 #[cfg(test)]
 owner_test_sources!(root_http);
+
+pub(crate) mod selected_report;
+#[cfg(test)]
+mod selected_report_tests;

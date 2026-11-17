@@ -6,6 +6,9 @@ use crate::config::min3::{ProvisioningCfg, ProvisioningGuard, ProvisioningLink};
 use super::holds::{empty, Held};
 use super::{check_provisioning, HoldSet, ProvisioningFacts};
 
+#[path = "tests/epoch.rs"]
+mod epoch;
+
 fn cfg() -> ProvisioningCfg {
     ProvisioningCfg {
         clients: vec!["scim-client".into()],

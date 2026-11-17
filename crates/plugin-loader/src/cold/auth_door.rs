@@ -17,9 +17,12 @@ use crate::dispatch::Plugin;
 pub(crate) fn note_declined(plugin: &Plugin<Auth>, severity: u8, what: &str, reason: &str) {
     let line = format!("{what}: {reason}");
     plugin.note(severity, &line);
+    // The reason is plugin text: the plain `text` field, never the message (IF §12.16). A routine
+    // decline is per-request, so it is debug, not one INFO line per rejected credential.
+    let text = reason;
     match severity {
-        0 => tracing::info!(plugin = %plugin.name(), "{line}"),
-        _ => tracing::warn!(plugin = %plugin.name(), "{line}"),
+        0 => tracing::debug!(plugin = %plugin.name(), text, "{what}"),
+        _ => tracing::warn!(plugin = %plugin.name(), text, "{what}"),
     }
 }
 

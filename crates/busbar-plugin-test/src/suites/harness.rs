@@ -872,6 +872,18 @@ impl Harness {
         self.rt.block_on(future)
     }
 
+    /// Poll an owned operation once to its scripted FETCH, then drop it through the real loader cancellation
+    /// path. All preceding Needs must complete synchronously. Panics on early completion, an unrelated wait,
+    /// an already-used gate, or a gate not cancelled by dropping this operation.
+    ///
+    /// Move the operation itself (`port.login(cx, input)`), not a borrowed pinned future or a wrapper retaining
+    /// its owner elsewhere. The generic Future bound cannot enforce ownership: a borrowed operation is rejected
+    /// but its external owner still needs explicit cleanup. Borrowed inputs remain caller-owned; drop them,
+    /// the port, harness and any guarded inspector captures before a custody scan. No request bytes are copied.
+    pub fn cancel_at_fetch<F: Future>(&self, parked: &crate::fake_needs::ParkedFetch, future: F) {
+        self.block_on(async { parked.cancel(future) });
+    }
+
     /// The spec for instance `name` of the admitted image, opened with `config` (operator form, secret
     /// references included) and no limits, no `public_url`, no caller upstreams.
     pub fn spec<'a>(&'a self, name: &'a str, config: &'a [u8]) -> InstanceSpec<'a> {
@@ -888,6 +900,7 @@ impl Harness {
     ) -> InstanceSpec<'a> {
         InstanceSpec {
             purpose: OpenPurpose::Canonical,
+            store_migration: None,
             identity: module,
             name,
             config_json: config,
@@ -955,7 +968,7 @@ impl Harness {
         self.open_spec(&self.spec(name, config))
     }
 
-    /// Open an unstamped legacy bag; CONFIG is required even when its contents are unchanged.
+    /// Open an unstamped legacy bag. No CONFIG answer means unchanged: core settles the bag as bound (#432).
     pub fn open_converting(&self, name: &str, config: &[u8]) -> Result<OpenedPort, OpenError> {
         let mut spec = self.spec(name, config);
         spec.purpose = OpenPurpose::ConvertUnstamped;
@@ -1063,6 +1076,13 @@ impl Harness {
     /// The settled answer of instance `name`'s last `open`, once (`Registry::take_settled`).
     pub fn settled(&self, name: &str) -> Option<Settled> {
         self.registry.take_settled(name)
+    }
+
+    /// Mark instance `name`'s next (converting) open as carrying 1.5.5 values at `pointers`, as core's migration
+    /// plan does (`Registry::mark_legacy`): the open sees `"$migrated": {"legacy": [..]}` in its bag, and the
+    /// settled answer is stripped of it.
+    pub fn mark_legacy(&self, name: &str, pointers: &[&str]) {
+        self.registry.mark_legacy(name, pointers);
     }
 
     /// Every line the plugin logged since the harness was built, in order.

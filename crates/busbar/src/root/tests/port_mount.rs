@@ -251,6 +251,14 @@ mod signed_ingress {
 
     struct Guard(AtomicBool);
     impl ReplayGuard for Guard {
+        fn claim_until<'a>(
+            &'a self,
+            _: &'a Caller<'_>,
+            _: &'a [u8],
+            _: u64,
+        ) -> BoxFut<'a, Result<bool, RecordsDenied>> {
+            panic!("mounted eager fixture must use its original relative replay policy")
+        }
         fn claim<'a>(
             &'a self,
             _: &'a Caller<'_>,
@@ -272,6 +280,7 @@ mod signed_ingress {
             effective,
             pattern: "/hooks/in".into(),
             cred_header: None,
+            resource_kinds: Vec::new(),
             catalog: false,
         }
     }

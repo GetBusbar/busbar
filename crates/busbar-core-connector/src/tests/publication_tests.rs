@@ -108,3 +108,71 @@ async fn receiver_cancellation_retires_its_active_handoff_without_dropping_queue
     );
     assert_eq!(memory.used(), 0);
 }
+
+#[test]
+fn attached_owner_survives_queue_and_partial_consumption() {
+    let (memory, reader) = full_reader(Leg::Caller);
+    let owner = Arc::new(());
+    let weak = Arc::downgrade(&owner);
+    let queue = Messages::new(1);
+    queue
+        .send(Message {
+            bytes: vec![1, 2, 3],
+            end: true,
+            consumed: 0,
+            custody: reader.with_owner(owner).unwrap(),
+        })
+        .unwrap();
+    assert!(
+        weak.upgrade().is_some(),
+        "enqueue already retains external custody"
+    );
+    let mut message = queue.try_recv().unwrap();
+    message.consumed = 1;
+    let copying = message.custody.copying();
+    assert!(weak.upgrade().is_some());
+    assert!(memory.used() > 0);
+    drop(copying);
+    assert!(weak.upgrade().is_some());
+    drop(message);
+    assert!(weak.upgrade().is_none());
+    assert_eq!(memory.used(), 0);
+}
+
+#[test]
+fn attaching_twice_preserves_existing_owner_until_reader_retires() {
+    let (_, reader) = full_reader(Leg::Caller);
+    let first = Arc::new(());
+    let first_weak = Arc::downgrade(&first);
+    let second = Arc::new(());
+    let second_weak = Arc::downgrade(&second);
+    let reader = reader.with_owner(first).unwrap();
+    let reader = reader.with_owner(second).unwrap_err();
+    assert!(first_weak.upgrade().is_some());
+    assert!(second_weak.upgrade().is_none());
+    drop(reader);
+    assert!(first_weak.upgrade().is_none());
+}
+
+#[test]
+fn rejected_and_abandoned_queues_release_attached_owners() {
+    for closed in [false, true] {
+        let (_, reader) = full_reader(Leg::Caller);
+        let owner = Arc::new(());
+        let weak = Arc::downgrade(&owner);
+        let queue = Messages::new(1);
+        if closed {
+            queue.close();
+        }
+        let sent = queue.send(Message {
+            bytes: vec![1],
+            end: true,
+            consumed: 0,
+            custody: reader.with_owner(owner).unwrap(),
+        });
+        assert_eq!(sent.is_err(), closed);
+        drop(sent);
+        drop(queue);
+        assert!(weak.upgrade().is_none());
+    }
+}

@@ -50,6 +50,13 @@ use busbar_ports::store::StoreHandle;
 use busbar_ports::transport::TransportPort;
 use busbar_ports::PluginCode;
 
+/// The real native auth instance's settled limits and method table, retained at open.
+pub struct AuthOpening {
+    pub port: Arc<dyn AuthPort>,
+    pub limits: InstanceLimits,
+    pub methods: u64,
+}
+
 /// Admission and description, before any binder, Needs or instance exists (HOST M3a).
 pub struct ImagesBuilder {
     host: &'static Host,
@@ -195,57 +202,11 @@ impl ImagesBuilder {
     pub fn admit(&mut self, admitted: Admitted) -> Result<(), Refusal> {
         let identity = admitted.identity().to_owned();
         let (header, kind) = (admitted.plugin(), admitted.kind());
-        let named = |r: Refusal| r.named(&identity);
-        let lease = self.slots.alloc(
-            SlotRecord {
-                kind,
-                name: Arc::from(identity.as_str()),
-                scrub: Arc::new(Scrub::new()),
-                errors: &ErrorBook::None,
-                undeclared_warned: AtomicBool::new(false),
-            },
-            &crate::watchdog::describe_row(),
-        );
-        let mut buf = Pool::global().acquire(self.ceilings.max_out);
         let host = self.host;
-        let status = entry::guard(lease.slot(), ENTRY_DESCRIBE, &mut buf, |out| {
-            header.describe(host, out)
-        })
-        .ok_or_else(|| {
-            named(Refusal::new(
-                RefusalCode::DescribeInvalid,
-                "describe",
-                "the entry stack is full",
-                "a describe entry",
-            ))
-        })?;
-        if !lease.is_live() {
-            return Err(named(Refusal::new(
-                RefusalCode::DescribeInvalid,
-                "describe.ceiling",
-                "the describe entry passed its ceiling",
-                "an answer within 5 s",
-            )));
-        }
-        let answer = Answer::parse(status, buf.bytes()).map_err(|reason| {
-            named(Refusal::new(
-                RefusalCode::DescribeInvalid,
-                "describe",
-                format!("{reason:?}"),
-                "a well-formed describe answer",
-            ))
-        })?;
-        if !answer.is_ok() {
-            return Err(named(Refusal::new(
-                RefusalCode::DescribeInvalid,
-                "describe",
-                format!("status {}", status.0),
-                "OK",
-            )));
-        }
-        let described = chains::decode_described(kind, answer.records()).map_err(named)?;
-        let kind_items =
-            decode_kind_items(&described, answer.records(), &identity).map_err(named)?;
+        let (described, kind_items) =
+            describe_with(&self.slots, self.ceilings.max_out, &identity, kind, |out| {
+                header.describe(host, out)
+            })?;
         let former: Vec<&str> = header
             .former_names()
             .split(',')
@@ -446,6 +407,8 @@ pub struct Registry {
     applied: Mutex<HashMap<(KindCode, Box<str>), Applied>>,
     /// Round 31: each instance's settled answer from its last `open`, by configured name, until taken once.
     settled: Mutex<HashMap<Box<str>, Settled>>,
+    /// LEGACY-KEYFILE-MARKER r2 section 3: the marked D_SECRET_PATH pointers of an instance's next converting open.
+    legacy: Mutex<HashMap<Box<str>, Vec<Box<str>>>>,
 }
 
 /// One admitted image as `add` left it: the verified identity, its `former_names` words, whether it is
@@ -526,6 +489,8 @@ pub enum OpenPurpose {
 
 pub struct InstanceSpec<'a> {
     pub purpose: OpenPurpose,
+    /// One Store-open recovery verdict. Never copied to Applied or a serving/reopen context.
+    pub store_migration: Option<Arc<busbar_plugin_abi::host_side::entry::StoreMigrationAdmission>>,
     pub identity: &'a str,
     pub name: &'a str,
     pub config_json: &'a [u8],
@@ -581,6 +546,7 @@ impl Registry {
             ids,
             applied: Mutex::new(HashMap::new()),
             settled: Mutex::new(HashMap::new()),
+            legacy: Mutex::new(HashMap::new()),
         }
     }
 
@@ -886,6 +852,16 @@ impl Registry {
         needs: &Arc<N>,
         refs: &Arc<dyn RefSource>,
     ) -> BoxFut<'_, Result<Arc<dyn AuthPort>, OpenError>> {
+        let opened = self.open_auth_reserved_with_metadata(prepared, needs, refs);
+        Box::pin(async move { opened.await.map(|opened| opened.port) })
+    }
+
+    pub fn open_auth_reserved_with_metadata<N: Needs>(
+        &self,
+        prepared: PreparedInstance,
+        needs: &Arc<N>,
+        refs: &Arc<dyn RefSource>,
+    ) -> BoxFut<'_, Result<AuthOpening, OpenError>> {
         let owned = OwnedSpec::new(&prepared.spec());
         let needs = Arc::clone(needs);
         let refs = Arc::clone(refs);
@@ -896,6 +872,8 @@ impl Registry {
                 .await?;
             let proxy =
                 busbar_plugin_abi::auth::Proxy::bind(opened.instance).ok_or_else(not_this_kind)?;
+            let limits = proxy.instance().limits;
+            let methods = proxy.instance().methods;
             let frame = chains::frame(&opened.described.items);
             let adapter = crate::adapters::auth::AuthAdapter::new(
                 proxy,
@@ -910,7 +888,11 @@ impl Registry {
             })?;
             self.remember(&spec, KindCode::Auth, &needs, &refs, None);
             let port: Arc<dyn AuthPort> = Arc::new(adapter);
-            Ok(port)
+            Ok(AuthOpening {
+                port,
+                limits,
+                methods,
+            })
         })
     }
 
@@ -932,6 +914,18 @@ impl Registry {
         needs: &Arc<N>,
         refs: &Arc<dyn RefSource>,
     ) -> BoxFut<'_, Result<Arc<dyn HookPort>, OpenError>> {
+        let opened = self.open_hook_reserved_with_limits(prepared, needs, refs);
+        Box::pin(async move { opened.await.map(|(port, _)| port) })
+    }
+
+    /// The root freezes hook policy after open, including the instance's settled call limit.
+    /// Return that immutable metadata with the port rather than a later registry lookup.
+    pub fn open_hook_reserved_with_limits<N: Needs>(
+        &self,
+        prepared: PreparedInstance,
+        needs: &Arc<N>,
+        refs: &Arc<dyn RefSource>,
+    ) -> BoxFut<'_, Result<(Arc<dyn HookPort>, InstanceLimits), OpenError>> {
         let owned = OwnedSpec::new(&prepared.spec());
         let needs = Arc::clone(needs);
         let refs = Arc::clone(refs);
@@ -942,6 +936,7 @@ impl Registry {
                 .await?;
             let proxy =
                 busbar_plugin_abi::hook::Proxy::bind(opened.instance).ok_or_else(not_this_kind)?;
+            let limits = proxy.instance().limits;
             let points = opened
                 .described
                 .items
@@ -960,7 +955,7 @@ impl Registry {
                 points,
                 opened.errors,
             ));
-            Ok(port)
+            Ok((port, limits))
         })
     }
 
@@ -1100,9 +1095,24 @@ impl Registry {
                 .filter_map(|(_, b)| core::str::from_utf8(b).ok())
                 .map(Box::from)
                 .collect();
-            let adapter =
-                crate::adapters::transport::TransportAdapter::open(proxy, opened.errors, protocols)
-                    .map_err(crate::answer::open_error)?;
+            let listener_slots = busbar_ports::codec::transport::decode_listener_slots(
+                opened.described.facts,
+                opened
+                    .described
+                    .items
+                    .iter()
+                    .map(|(tag, body)| (*tag, body.as_slice())),
+            )
+            .map_err(|_| {
+                OpenError::Unknown(format!("{}: invalid initial listener slots", spec.name))
+            })?;
+            let adapter = crate::adapters::transport::TransportAdapter::open(
+                proxy,
+                opened.errors,
+                protocols,
+                listener_slots,
+            )
+            .map_err(crate::answer::open_error)?;
             self.remember(&spec, KindCode::Transport, &needs, &refs, None);
             let port: Arc<dyn TransportPort> = Arc::new(adapter);
             Ok(port)
@@ -1167,6 +1177,29 @@ impl Registry {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .remove(name)
+    }
+
+    /// LEGACY-KEYFILE-MARKER r2 §3: the D_SECRET_PATH pointers of instance `name` whose slot carries its 1.5.5
+    /// value, from the migration plan's side table (`busbar_migrate::Plan::legacy_marks`). The instance's next
+    /// open takes them and must be converting: core checks each against the image's D_SECRET_PATH items, writes
+    /// `"$migrated": {"legacy": [..]}` into the bound bag it hands `open`, and strips it from the settled answer.
+    pub fn mark_legacy(&self, name: &str, pointers: &[&str]) {
+        self.legacy
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(
+                Box::from(name),
+                pointers.iter().map(|p| Box::from(*p)).collect(),
+            );
+    }
+
+    /// The marks [`Registry::mark_legacy`] left for instance `name`, once.
+    pub(crate) fn take_legacy(&self, name: &str) -> Vec<Box<str>> {
+        self.legacy
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(name)
+            .unwrap_or_default()
     }
 
     /// Round 6, boot only: the r6 §3 step 2 order, computed generically. `instances[i]` is configured instance i
@@ -1262,6 +1295,7 @@ impl Registry {
                 })?;
             let spec = InstanceSpec {
                 purpose: OpenPurpose::Canonical,
+                store_migration: None,
                 identity: &stored.identity,
                 name: &name,
                 config_json: &merged,
@@ -1308,6 +1342,7 @@ impl Registry {
             })?;
             let spec = InstanceSpec {
                 purpose: OpenPurpose::Canonical,
+                store_migration: None,
                 identity: &stored.identity,
                 name: &name,
                 config_json: &stored.config,
@@ -1526,6 +1561,8 @@ pub enum BootPhase {
 pub struct Settled {
     pub config_json: busbar_contract::secure::SecureVec,
     pub core_cfg: Vec<CoreCfg>,
+    /// False when a converting open answered no CONFIG (#432): `config_json` is then the bag as bound, unchanged.
+    pub answered: bool,
 }
 
 /// section = abi::core_cfg::*; value_json in that section's grammar.
@@ -2251,7 +2288,7 @@ mod l2_tests {
 
 /// What `add` decodes from the kind's own describe items (validated: a bad item is `DescribeInvalid`), kept only
 /// once the image is admitted.
-struct KindItems {
+pub(crate) struct KindItems {
     sugars: Vec<SugarDecl>,
     issued: Vec<(Box<str>, IssuedShape)>,
     dialect_auth: Vec<plane::DialectAuthOwned>,
@@ -2537,5 +2574,108 @@ mod endpoint_decode_tests {
 #[path = "tests/transport_endpoint_tests.rs"]
 mod transport_endpoint_tests;
 
+/// The recognizer's plane instance names and the `--stdio` judgement (WP1-GAP r3).
+pub mod plane_sections;
+
 #[cfg(test)]
 mod needs_tests;
+
+/// The one describe sequence (DES-443 r3 §3.3), for an admitted image (`ImagesBuilder::admit`) and an opened one
+/// under inspection alike: a slot leased on the describe row, the crossing `cross` inside `entry::guard`, the
+/// ceiling liveness check, the answer parse and `decode_described` (D_SCHEMA held to core's validator) and the
+/// kind items. `cross` is the only difference: `Admitted::describe` or `Opened::describe`.
+pub(crate) fn describe_with(
+    slots: &Arc<SlotTable>,
+    max_out: usize,
+    identity: &str,
+    kind: KindCode,
+    cross: impl FnOnce(&mut busbar_ffi::host::OutLease) -> busbar_ffi::raw::Status,
+) -> Result<(Described, KindItems), Refusal> {
+    let named = |r: Refusal| r.named(identity);
+    let lease = slots.alloc(
+        SlotRecord {
+            kind,
+            name: Arc::from(identity),
+            scrub: Arc::new(Scrub::new()),
+            errors: &ErrorBook::None,
+            undeclared_warned: AtomicBool::new(false),
+        },
+        &crate::watchdog::describe_row(),
+    );
+    let mut buf = Pool::global().acquire(max_out);
+    let status = entry::guard(lease.slot(), ENTRY_DESCRIBE, &mut buf, cross).ok_or_else(|| {
+        named(Refusal::new(
+            RefusalCode::DescribeInvalid,
+            "describe",
+            "the entry stack is full",
+            "a describe entry",
+        ))
+    })?;
+    if !lease.is_live() {
+        return Err(named(Refusal::new(
+            RefusalCode::DescribeInvalid,
+            "describe.ceiling",
+            "the describe entry passed its ceiling",
+            "an answer within 5 s",
+        )));
+    }
+    let answer = Answer::parse(status, buf.bytes()).map_err(|reason| {
+        named(Refusal::new(
+            RefusalCode::DescribeInvalid,
+            "describe",
+            format!("{reason:?}"),
+            "a well-formed describe answer",
+        ))
+    })?;
+    if !answer.is_ok() {
+        return Err(named(Refusal::new(
+            RefusalCode::DescribeInvalid,
+            "describe",
+            format!("status {}", status.0),
+            "OK",
+        )));
+    }
+    let described = chains::decode_described(kind, answer.records()).map_err(named)?;
+    let kind_items = decode_kind_items(&described, answer.records(), identity).map_err(named)?;
+    Ok((described, kind_items))
+}
+
+/// The checks `admit_described` applies after describe that read only the decoded describe, for an inspection
+/// (DES-443 r3 §3.3): D_ERRORS decoded into an owned book and dropped (no `Box::leak`), and the §10.6 ceiling
+/// row. NameConflict is not an inspection's concern (no configuration is admitted).
+pub(crate) fn inspect_checks(
+    identity: &str,
+    stamp_name: &[u8; 64],
+    described: &Described,
+) -> Result<(), Refusal> {
+    let bodies: Vec<&[u8]> = described
+        .items
+        .iter()
+        .filter(|(t, _)| *t == tag::D_ERRORS)
+        .map(|(_, b)| b.as_slice())
+        .collect();
+    drop(decode_errors(&bodies, || {
+        crate::scan::error_identity(stamp_name)
+    }));
+    let declared: Vec<(u64, u64)> = described
+        .items
+        .iter()
+        .filter(|(t, _)| *t == tag::D_CEILING)
+        .filter_map(|(t, b)| {
+            let rec = busbar_plugin_abi::records::Rec { tag: *t, body: b };
+            rec.pod::<CeilingRec>().ok().map(|c| (c.method, c.micros))
+        })
+        .collect();
+    let blocking = described.kind == KindCode::Store
+        && described.facts & busbar_plugin_abi::store::F_BLOCKING_FILE != 0;
+    crate::watchdog::ceiling_row(&declared, blocking)
+        .map(drop)
+        .map_err(|have| Refusal {
+            code: RefusalCode::DescribeInvalid,
+            field: "describe.ceiling",
+            plugin: Some(identity.to_owned()),
+            have,
+            want: "one CeilingRec per kind method bit 0..=55 or CEIL_OPEN".to_owned(),
+            link: None,
+        })
+}

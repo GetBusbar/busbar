@@ -787,7 +787,11 @@ fn declared_client_identity_is_bound_and_verified_without_exposing_its_key() {
             )
             .unwrap();
         let mut needs = FakeNeeds::new();
-        needs.secret("/identity", format!("{client_pem}{client_key}").as_bytes());
+        FakeNeeds::secret(
+            &mut needs,
+            "/identity",
+            format!("{client_pem}{client_key}").as_bytes(),
+        );
         let needs = Arc::new(needs.with_sockets(targets).unwrap());
         let binder = MemBinder::over(needs.clone());
         binder

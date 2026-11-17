@@ -41,6 +41,7 @@ const INSTANCE: u64 = 7;
 
 fn def(name: &str) -> Arc<UpstreamDef> {
     Arc::new(UpstreamDef {
+        resource: None,
         allow_private: false,
         name: name.into(),
         url: None,
@@ -76,6 +77,10 @@ fn table(names: &[&str]) -> Arc<Table> {
 
 fn candidate(name: &str) -> Candidate {
     Candidate {
+        pool: "pool".into(),
+        qualified_member: "fixture-member".into(),
+        identity: crate::plane_driver::port_upstream::TargetIdentity::Registration,
+        resource: None,
         upstream: name.into(),
         provider: "{}".into(),
         base_path: "".into(),
@@ -353,9 +358,10 @@ impl IntentHost for Store {
 /// back from `writes`; `refuse_writes` closes the writer so a send fails.
 #[derive(Default)]
 struct FakeChannels {
+    budget: Option<crate::channels::budget::InstanceBudget>,
     preload: Mutex<Vec<ChannelMsg>>,
     refuse_writes: bool,
-    writes: Mutex<Vec<mpsc::UnboundedReceiver<Box<[u8]>>>>,
+    writes: Mutex<Vec<mpsc::Receiver<crate::channels::protected::GuardedWrite>>>,
     senders: Mutex<Vec<mpsc::Sender<ChannelMsg>>>,
     upstreams: Mutex<Vec<String>>,
     attached: AtomicUsize,
@@ -374,7 +380,11 @@ impl UpstreamChannels for FakeChannels {
                 .lock()
                 .unwrap()
                 .push(upstream.name.to_string());
-            let (link, queue) = Link::new(false);
+            let (link, queue) = Link::new(
+                false,
+                crate::channels::frame::Framing::Ndjson,
+                self.budget.as_ref().unwrap().link(),
+            );
             let (tx, rx) = mpsc::channel(8);
             for message in self.preload.lock().unwrap().drain(..) {
                 tx.try_send(message).ok().unwrap();
@@ -383,27 +393,31 @@ impl UpstreamChannels for FakeChannels {
                 self.writes.lock().unwrap().push(queue);
             }
             self.senders.lock().unwrap().push(tx);
-            Ok(Attachment::linked(
+            Attachment::linked(
                 link,
+                req.budget.clone(),
                 1,
                 u64::from(req.exchange),
                 true,
-                Box::default(),
+                bytes::Bytes::new(),
                 rx,
-            ))
+            )
         })
     }
 }
 
 struct Rig {
+    budget: crate::channels::budget::InstanceBudget,
     rt: tokio::runtime::Runtime,
     channels: Arc<FakeChannels>,
     registry: Arc<SignalRegistry>,
     carrier: PortCarrier,
 }
 
-fn rig(channels: FakeChannels, upstreams: &[&str]) -> Rig {
+fn rig(mut channels: FakeChannels, upstreams: &[&str]) -> Rig {
     let rt = tokio::runtime::Runtime::new().unwrap();
+    let budget = crate::channels::budget::ChannelBudget::new().instance();
+    channels.budget = Some(budget.clone());
     let channels = Arc::new(channels);
     let registry = SignalRegistry::new();
     let carrier = PortCarrier::new(
@@ -420,6 +434,7 @@ fn rig(channels: FakeChannels, upstreams: &[&str]) -> Rig {
         rt.handle().clone(),
     );
     Rig {
+        budget,
         rt,
         channels,
         registry,
@@ -446,7 +461,7 @@ fn req() -> PlaneIn<'static> {
 
 /// Runs `plane` as one session on this thread, the carrier aimed at upstream `member`.
 fn run(rig: &Rig, plane: &Plane, point: Option<&str>) -> Result<Ran, SessionError> {
-    let session = rig.carrier.session();
+    let session = rig.carrier.session_with_budget(Some(rig.budget.unit()));
     if let Some(member) = point {
         session.map.point(member);
     }
@@ -531,7 +546,11 @@ fn a_channel_message_reaches_the_plane_as_a_from_upstream_piece_and_its_write_re
         "the CHANNEL attached the current target's upstream"
     );
     let written = rig.channels.writes.lock().unwrap()[0].try_recv().unwrap();
-    assert_eq!(&*written, b"hello", "the EX_MSG was written to the channel");
+    assert_eq!(
+        written.as_bytes(),
+        b"hello",
+        "the EX_MSG was written to the channel"
+    );
 }
 
 #[test]

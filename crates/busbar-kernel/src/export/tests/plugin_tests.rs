@@ -454,10 +454,14 @@ fn each_plugin_sink_instance_gets_its_own_admission_gate() {
     );
 }
 
+use busbar_contract::export_calls::{ExportDropReason, ExportLossKind};
+
 struct AnsweringSink {
     answer: Delivered,
     stated: Option<(bool, u64, String)>,
     sheds: std::sync::atomic::AtomicU64,
+    observations: std::sync::Mutex<Vec<ExportLossKind>>,
+    observed: tokio::sync::Notify,
 }
 
 impl ExportCalls for AnsweringSink {
@@ -468,6 +472,9 @@ impl ExportCalls for AnsweringSink {
         &[]
     }
     fn deliver(&self, _: u8, _: Vec<u8>, _: Box<dyn Send>) -> Delivered {
+        if self.answer == Delivered::Shed {
+            self.shed(ExportLossKind::Dropped(ExportDropReason::QueueFull));
+        }
         self.answer
     }
     fn scrape(&self, _: &[busbar_contract::export_calls::Family]) -> Result<Vec<u8>, String> {
@@ -485,7 +492,9 @@ impl ExportCalls for AnsweringSink {
     fn admission(&self) -> Option<(bool, u64, String)> {
         self.stated.clone()
     }
-    fn shed(&self) {
+    fn shed(&self, kind: ExportLossKind) {
+        self.observations.lock().unwrap().push(kind);
+        self.observed.notify_one();
         self.sheds
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
@@ -542,6 +551,8 @@ fn double(answer: Delivered, stated: Option<(bool, u64, String)>) -> Arc<Answeri
         answer,
         stated,
         sheds: std::sync::atomic::AtomicU64::new(0),
+        observations: std::sync::Mutex::new(Vec::new()),
+        observed: tokio::sync::Notify::new(),
     })
 }
 
@@ -602,6 +613,10 @@ async fn a_shed_line_is_not_audited_as_read_and_a_queued_one_is() {
         "a shed line is no read"
     );
     assert_eq!(shedding.sheds.load(std::sync::atomic::Ordering::Relaxed), 1);
+    assert_eq!(
+        *shedding.observations.lock().unwrap(),
+        vec![ExportLossKind::Dropped(ExportDropReason::QueueFull)]
+    );
 
     let queueing = double(Delivered::Queued, None);
     let (s, confirmed) = opened("q128b-u31-36-queued", Arc::clone(&queueing)).await;
@@ -629,6 +644,10 @@ async fn a_delivery_before_start_never_overrides_the_sinks_stated_admission() {
         "nothing is fed before start"
     );
     assert_eq!(paused.sheds.load(std::sync::atomic::Ordering::Relaxed), 1);
+    assert_eq!(
+        *paused.observations.lock().unwrap(),
+        vec![ExportLossKind::CaptureRefused]
+    );
     start_one(&s);
     deliver_event(&s, ExportStream::Logs, "q128b-u31-37-late", &mut payload);
     assert_eq!(
@@ -656,14 +675,6 @@ impl ExportAxis for DeclaringAxis {
         _: &[(String, &busbar_contract::plugin_settings::ResolvedSettings)],
     ) -> Option<Vec<String>> {
         None
-    }
-    fn open(
-        &self,
-        module: &str,
-        _: &str,
-        _: &busbar_contract::export_calls::PreparedExport,
-    ) -> Result<Arc<dyn ExportCalls>, String> {
-        Err(format!("{module} opens nothing here"))
     }
     fn linked(&self, _: &str) -> bool {
         true
@@ -1135,4 +1146,262 @@ fn scrape_status_crossings_are_once_per_refresh() {
         .count();
     assert_eq!(due, 1, "ten scrapes in 10 s cross STATUS once");
     assert!(status_due(&at, start + STATUS_REFRESH));
+}
+
+#[tokio::test]
+async fn failed_export_read_amendment_reports_integrity_without_line_loss() {
+    let sink = double(Delivered::Queued, None);
+    // An unbound native amendment owner refuses the transfer; queued delivery is independent.
+    let journal = Arc::new(crate::audit::amend::NodeAmendments::new());
+    Handed {
+        amendments: Some(journal),
+        runtime: Some(tokio::runtime::Handle::current()),
+        reads: vec![(
+            Arc::from("export.integrity"),
+            crate::export::projection::Members::default(),
+        )],
+        completion: CaptureCompletion {
+            sinks: vec![sink.clone()],
+            capture: None,
+            finished: false,
+        },
+        permits: Vec::new(),
+    }
+    .record("export-integrity-refusal");
+    tokio::time::timeout(std::time::Duration::from_secs(1), sink.observed.notified())
+        .await
+        .unwrap();
+    assert_eq!(
+        *sink.observations.lock().unwrap(),
+        vec![ExportLossKind::IntegrityFailed]
+    );
+    assert_eq!(
+        sink.answer,
+        Delivered::Queued,
+        "integrity failure does not invent delivery loss"
+    );
+}
+
+#[tokio::test]
+async fn saturated_capture_reports_refusal_before_rendering_any_line() {
+    let sink = double(Delivered::Queued, Some((true, 1, String::new())));
+    let (s, _) = opened("capture-full", sink.clone()).await;
+    start_one(&s);
+    let _permit = s.admission.gate.try_enter().unwrap();
+    deliver_event(&s, ExportStream::Logs, "capture-full", &mut |_, _| {
+        panic!("admission precedes rendering")
+    });
+    assert_eq!(
+        *sink.observations.lock().unwrap(),
+        vec![ExportLossKind::CaptureRefused]
+    );
+    assert_eq!(reads_under(&s, "capture-full"), 0);
+}
+
+struct HeldCaptureRead {
+    entered: Arc<tokio::sync::Notify>,
+    release: std::sync::Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
+}
+
+impl busbar_kernel_audit::amend::AmendSink for HeldCaptureRead {
+    fn sealed(
+        &self,
+        _: &busbar_kernel_audit::amend::Amendment,
+    ) -> Result<
+        busbar_kernel_audit::amend::AmendCommit,
+        busbar_kernel_audit::amend::AmendPersistError,
+    > {
+        let release = self.release.lock().unwrap().take().unwrap();
+        let entered = self.entered.clone();
+        Ok(Box::pin(async move {
+            entered.notify_one();
+            release
+                .await
+                .map_err(|_| busbar_kernel_audit::amend::AmendPersistError)
+        }))
+    }
+}
+
+async fn held_capture() -> (
+    Arc<Exports>,
+    Arc<AnsweringSink>,
+    tokio::sync::oneshot::Sender<()>,
+    Arc<tokio::sync::Notify>,
+) {
+    let sink = double(Delivered::Queued, Some((true, 1, String::new())));
+    let (mut s, _) = opened("held-capture", sink.clone()).await;
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let (release, receive) = tokio::sync::oneshot::channel();
+    let reads = Arc::new(crate::audit::amend::NodeAmendments::new());
+    reads
+        .bind(
+            Some(Arc::new(HeldCaptureRead {
+                entered: entered.clone(),
+                release: std::sync::Mutex::new(Some(receive)),
+            })),
+            0,
+            &crate::teller::Kernel::new().durability_token(),
+        )
+        .await
+        .unwrap();
+    s.reads = Some(reads);
+    start_one(&s);
+    let exports = Arc::new(Exports {
+        sinks: vec![s],
+        ..Exports::default()
+    });
+    (exports, sink, release, entered)
+}
+
+#[tokio::test]
+async fn capture_fence_waits_for_admitted_native_read_and_prevents_late_projection() {
+    let (exports, sink, release, entered) = held_capture().await;
+    deliver_to(&exports, ExportStream::Logs, "held-capture", payload);
+    tokio::time::timeout(std::time::Duration::from_secs(1), entered.notified())
+        .await
+        .unwrap();
+    assert!(
+        exports.sinks[0].admission.gate.try_enter().is_none(),
+        "the pending read retains its real admission permit"
+    );
+    exports.close_capture();
+    deliver_to(&exports, ExportStream::Logs, "late-capture", |_, _| {
+        panic!("closed intake must not project")
+    });
+    deliver_on(&exports, ExportStream::Logs, "late-capture", |_| {
+        panic!("closed intake must not project")
+    });
+    let mut drain = Box::pin(exports.drain_capture());
+    assert!(
+        futures::poll!(&mut drain).is_pending(),
+        "a queued line still owes its native read receipt"
+    );
+    assert!(sink.observations.lock().unwrap().is_empty());
+    release.send(()).unwrap();
+    let report = tokio::time::timeout(std::time::Duration::from_secs(1), drain)
+        .await
+        .unwrap();
+    assert!(!report.interrupted);
+    assert!(
+        exports.sinks[0].admission.gate.try_enter().is_some(),
+        "settlement releases the retained permit"
+    );
+    assert!(
+        sink.observations.lock().unwrap().is_empty(),
+        "fenced attempts never call the closed observer"
+    );
+    assert_eq!(reads_under(&exports.sinks[0], "held-capture"), 1);
+    assert_eq!(reads_under(&exports.sinks[0], "late-capture"), 0);
+}
+
+#[tokio::test]
+async fn cancelling_capture_drain_does_not_cancel_the_native_read() {
+    let (exports, sink, release, entered) = held_capture().await;
+    deliver_to(&exports, ExportStream::Logs, "held-capture", payload);
+    tokio::time::timeout(std::time::Duration::from_secs(1), entered.notified())
+        .await
+        .unwrap();
+    let mut drain = Box::pin(exports.drain_capture());
+    assert!(futures::poll!(&mut drain).is_pending());
+    drop(drain);
+    assert!(
+        !release.is_closed(),
+        "caller timeout must not release accepted read custody"
+    );
+    assert!(sink.observations.lock().unwrap().is_empty());
+    release.send(()).unwrap();
+    let report = tokio::time::timeout(std::time::Duration::from_secs(1), exports.drain_capture())
+        .await
+        .unwrap();
+    assert!(!report.interrupted);
+}
+
+#[test]
+fn cancelled_capture_producer_reports_integrity_before_quiescence() {
+    for poll_first in [false, true] {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let (exports, sink, _release) = runtime.block_on(async {
+            let (exports, sink, release, entered) = held_capture().await;
+            deliver_to(&exports, ExportStream::Logs, "cancelled-capture", payload);
+            if poll_first {
+                tokio::time::timeout(std::time::Duration::from_secs(1), entered.notified())
+                    .await
+                    .unwrap();
+            }
+            (exports, sink, release)
+        });
+        drop(runtime); // Cancels the real task, including destruction before its first poll.
+        let report = futures::executor::block_on(exports.drain_capture());
+        assert!(
+            report.interrupted,
+            "task destruction is not successful producer settlement"
+        );
+        assert_eq!(
+            *sink.observations.lock().unwrap(),
+            vec![ExportLossKind::IntegrityFailed]
+        );
+    }
+}
+
+#[tokio::test]
+async fn capture_drain_includes_projection_already_entered_before_fence() {
+    let (exports, _, _, _) = held_capture().await;
+    let (entered, entering) = std::sync::mpsc::channel();
+    let (release, released) = std::sync::mpsc::channel();
+    let worker_exports = exports.clone();
+    let worker = std::thread::spawn(move || {
+        deliver_to(
+            &worker_exports,
+            ExportStream::Logs,
+            "projecting",
+            |p, takes| {
+                entered.send(()).unwrap();
+                released.recv().unwrap();
+                payload(p, takes)
+            },
+        );
+    });
+    entering
+        .recv_timeout(std::time::Duration::from_secs(1))
+        .unwrap();
+    let mut drain = Box::pin(exports.drain_capture());
+    assert!(
+        futures::poll!(&mut drain).is_pending(),
+        "the fence must include an admitted synchronous producer"
+    );
+    release.send(()).unwrap();
+    worker.join().unwrap();
+    let report = drain.await;
+    assert!(!report.interrupted);
+}
+
+#[tokio::test]
+async fn projection_panic_after_an_accepted_sink_keeps_integrity_and_incomplete_capture() {
+    let (mut exports, sink, _, _) = held_capture().await;
+    let second = double(Delivered::Queued, None);
+    let (s, _) = opened("second-capture", second.clone()).await;
+    start_one(&s);
+    Arc::get_mut(&mut exports).unwrap().sinks.push(s);
+    let mut rendered = 0;
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        deliver_to(&exports, ExportStream::Logs, "capture-panic", |p, takes| {
+            rendered += 1;
+            assert_eq!(
+                rendered, 1,
+                "fixture panics while rendering the second sink"
+            );
+            payload(p, takes)
+        });
+    }));
+    assert!(result.is_err());
+    let report = exports.drain_capture().await;
+    assert!(report.interrupted);
+    assert_eq!(
+        *sink.observations.lock().unwrap(),
+        vec![ExportLossKind::IntegrityFailed]
+    );
+    assert!(second.observations.lock().unwrap().is_empty());
 }

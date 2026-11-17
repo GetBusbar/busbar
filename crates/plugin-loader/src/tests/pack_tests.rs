@@ -2,6 +2,79 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::*;
+use busbar_plugin_loader::sign::HookNeeds;
+
+static PACK_ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn native_library() -> std::path::PathBuf {
+    let executable = std::env::current_exe().unwrap();
+    let path = executable
+        .parent()
+        .and_then(std::path::Path::parent)
+        .unwrap()
+        .join("examples")
+        .join(busbar_plugin_loader::plugin_library_filename(
+            "native_pack_fixture",
+        ));
+    assert!(
+        path.is_file(),
+        "the native_pack_fixture example must be built by CI"
+    );
+    path
+}
+
+fn native_args(library: &std::path::Path, output: &std::path::Path) -> Vec<String> {
+    [
+        "--lib",
+        library.to_str().unwrap(),
+        "--name",
+        "native-pack-fixture",
+        "--alias",
+        "native",
+        "--kind",
+        "secret",
+        "--publisher",
+        "fixture",
+        "--out",
+        output.to_str().unwrap(),
+    ]
+    .map(str::to_owned)
+    .into()
+}
+
+#[test]
+fn pack_refuses_unstamped_images_without_a_native_flag_or_output() {
+    let dir = std::env::temp_dir().join(format!("plugin-pack-unstamped-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let library = dir.join("legacy.so");
+    let output = dir.join("legacy.tar.gz");
+    std::fs::write(&library, b"not a native image").unwrap();
+    let _ = std::fs::remove_file(&output);
+    let args = [
+        "--lib",
+        library.to_str().unwrap(),
+        "--name",
+        "legacy",
+        "--alias",
+        "old",
+        "--kind",
+        "secret",
+        "--version",
+        "1.6.0",
+        "--publisher",
+        "fixture",
+        "--out",
+        output.to_str().unwrap(),
+        "--allow-unsigned",
+    ]
+    .map(str::to_owned);
+    assert_eq!(pack(&args), ExitCode::FAILURE);
+    assert!(
+        !output.exists(),
+        "an unstamped image must never be packaged"
+    );
+    std::fs::remove_dir_all(dir).unwrap();
+}
 
 #[test]
 fn pack_refuses_unknown_and_duplicate_scalar_flags() {
@@ -11,6 +84,7 @@ fn pack_refuses_unknown_and_duplicate_scalar_flags() {
         vec!["--name", "first", "--name", "second"],
         vec!["--schema-derived", "--schema-derived"],
         vec!["--allow-unsigned", "--allow-unsigned"],
+        vec!["--native", "--native"],
     ] {
         let args: Vec<String> = args.into_iter().map(str::to_owned).collect();
         assert!(parse_flags(&args).is_err(), "{args:?}");
@@ -26,6 +100,7 @@ fn pack_refuses_unknown_and_duplicate_scalar_flags() {
     let flags = parse_flags(&args.map(str::to_owned)).unwrap();
     assert_eq!(flags.map["needs-prompt"], "rw");
     assert_eq!(flags.former_names, ["old-a", "old-b"]);
+    assert!(parse_flags(&["--native".into()]).unwrap().native);
 }
 
 #[test]
@@ -92,41 +167,23 @@ fn packed_tarball_verifies_end_to_end() {
 
 #[test]
 fn pack_cli_respects_allow_untrusted_and_returns_the_right_exit_code() {
+    let _environment = PACK_ENV.lock().unwrap();
     std::env::remove_var(SIGN_KEY_ENV);
     let dir = std::env::temp_dir().join(format!("plugin-pack-cli-test-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
-    let lib_path = dir.join("lib.so");
-    std::fs::write(&lib_path, b"pretend cdylib").unwrap();
+    let lib_path = native_library();
     let out_path = dir.join("out.tar.gz");
-
     let args = |out: &std::path::Path, extra: &[&str]| -> Vec<String> {
-        let mut v = vec![
-            "--lib".to_string(),
-            lib_path.to_string_lossy().to_string(),
-            "--name".to_string(),
-            "n".to_string(),
-            "--alias".to_string(),
-            "n".to_string(),
-            "--kind".to_string(),
-            "store".to_string(),
-            "--version".to_string(),
-            "1.0.0".to_string(),
-            "--publisher".to_string(),
-            "p".to_string(),
-            "--out".to_string(),
-            out.to_string_lossy().to_string(),
-        ];
-        v.extend(extra.iter().map(|s| s.to_string()));
-        v
+        let mut args = native_args(&lib_path, out);
+        args.extend(extra.iter().map(|s| s.to_string()));
+        args
     };
-
     let _ = std::fs::remove_file(&out_path);
     assert_eq!(pack(&args(&out_path, &[])), ExitCode::FAILURE);
     assert!(
         !out_path.exists(),
         "a failed pack must not leave a tarball behind"
     );
-
     assert_eq!(
         pack(&args(&out_path, &["--allow-unsigned"])),
         ExitCode::SUCCESS
@@ -140,7 +197,22 @@ fn pack_cli_respects_allow_untrusted_and_returns_the_right_exit_code() {
         up.manifest.signature.is_empty(),
         "--allow-unsigned must produce an UNSIGNED manifest"
     );
-
+    assert_eq!(up.lib_bytes, std::fs::read(&lib_path).unwrap());
+    assert_eq!(up.manifest.sha256, sha256_hex(&up.lib_bytes));
+    assert_eq!(up.manifest.version, env!("CARGO_PKG_VERSION"));
+    assert!(up.manifest.statement.is_none());
+    assert!(
+        busbar_plugin_loader::sign::evaluate(&up.lib_bytes, &up.manifest, &Default::default())
+            .is_err()
+    );
+    let policy = busbar_plugin_loader::sign::TrustPolicy {
+        allow_untrusted: true,
+        ..Default::default()
+    };
+    assert!(matches!(
+        busbar_plugin_loader::sign::evaluate(&up.lib_bytes, &up.manifest, &policy).unwrap(),
+        busbar_plugin_loader::sign::Verdict::Allowed { .. }
+    ));
     {
         use std::os::unix::ffi::OsStringExt;
         let bad_out = dir.join("bad-key.tar.gz");
@@ -154,206 +226,149 @@ fn pack_cli_respects_allow_untrusted_and_returns_the_right_exit_code() {
         );
         assert!(!bad_out.exists(), "no tarball for an unreadable key");
     }
-
-    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::remove_dir_all(dir).unwrap();
 }
 
 #[test]
-fn pack_cli_embeds_the_declares_file() {
+fn pack_cli_refuses_external_operational_metadata() {
     let dir = std::env::temp_dir().join(format!("plugin-pack-declares-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
-    let lib_path = dir.join("lib.so");
-    std::fs::write(&lib_path, b"pretend cdylib").unwrap();
-    let declares = serde_json::json!({
-        "metrics": [{"name": "busbar_x_total", "type": "counter", "shed": true}],
-        "diagnostics": [{"code": 7999, "slug": "x", "title": "X", "severity": "actionable",
-                          "summary": "s", "action": "a", "since": "1.6.0"}],
-        "destinations": ["path"],
-    });
-    let pack_with = |file: &str| {
-        let path = dir.join("declares.json");
-        std::fs::write(&path, file).unwrap();
-        let out = dir.join("out.tar.gz");
-        let _ = std::fs::remove_file(&out);
-        let args: Vec<String> = [
-            "--lib",
-            &lib_path.to_string_lossy(),
-            "--name",
-            "n",
-            "--alias",
-            "n",
-            "--kind",
-            "export",
-            "--version",
-            "1.0.0",
-            "--publisher",
-            "p",
-            "--out",
-            &out.to_string_lossy(),
-            "--declares-file",
-            &path.to_string_lossy(),
-            "--allow-unsigned",
-        ]
-        .iter()
-        .map(|s| s.to_string())
-        .collect();
-        let code = pack(&args);
-        let unpacked = std::fs::read(&out).ok().map(|t| {
-            busbar_plugin_loader::tarball::unpack(&t)
-                .unwrap()
-                .manifest
-                .declares
-        });
-        (code, unpacked)
-    };
-    let (code, packed) = pack_with(&declares.to_string());
-    assert_eq!(code, ExitCode::SUCCESS);
-    assert_eq!(
-        serde_json::to_value(packed.expect("the tarball was written")).unwrap(),
-        declares
+    let library = native_library();
+    let output = dir.join("out.tar.gz");
+    let _ = std::fs::remove_file(&output);
+    let declares = dir.join("declares.json");
+    std::fs::write(
+        &declares,
+        serde_json::json!({
+            "metrics": [{"name": "busbar_x_total", "type": "counter", "shed": true}],
+            "diagnostics": [{"code": 7999, "slug": "x", "title": "X", "severity": "actionable",
+                              "summary": "s", "action": "a", "since": "1.6.0"}],
+            "destinations": ["path"],
+        })
+        .to_string(),
+    )
+    .unwrap();
+    for extra in [
+        vec!["--declares-file", declares.to_str().unwrap()],
+        vec![
+            "--settings-schema-file",
+            "a-file-that-must-not-be-read.json",
+        ],
+        vec!["--schema-derived"],
+        vec!["--needs-prompt", "rw"],
+        vec!["--needs-user", "ro"],
+    ] {
+        let mut args = native_args(&library, &output);
+        args.push("--allow-unsigned".into());
+        args.extend(extra.iter().map(|flag| (*flag).to_owned()));
+        assert_eq!(pack(&args), ExitCode::FAILURE, "{extra:?}");
+        assert!(!output.exists(), "a refused pack must not leave a tarball");
+    }
+    std::fs::write(&declares, r#"{"metrics": [], "series": []}"#).unwrap();
+    let mut args = native_args(&library, &output);
+    args.extend([
+        "--declares-file".into(),
+        declares.to_str().unwrap().into(),
+        "--allow-unsigned".into(),
+    ]);
+    assert_eq!(pack(&args), ExitCode::FAILURE);
+    assert!(
+        !output.exists(),
+        "a malformed external declaration cannot produce a tarball"
     );
-
-    let (code, packed) = pack_with(r#"{"metrics": [], "series": []}"#);
-    assert_eq!(code, ExitCode::FAILURE);
-    assert!(packed.is_none(), "a refused pack must not leave a tarball");
-    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::remove_dir_all(dir).unwrap();
 }
 
 #[test]
-fn pack_cli_leaves_the_declares_needs_out_of_the_manifest() {
+fn pack_cli_leaves_operational_metadata_in_the_signed_image() {
+    let _environment = PACK_ENV.lock().unwrap();
     let dir = std::env::temp_dir().join(format!("plugin-pack-needs-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
-    let lib_path = dir.join("lib.so");
-    std::fs::write(&lib_path, b"pretend cdylib").unwrap();
-    let pack_with = |file: &str| {
-        let path = dir.join("declares.json");
-        std::fs::write(&path, file).unwrap();
-        let out = dir.join("out.tar.gz");
-        let _ = std::fs::remove_file(&out);
-        let args: Vec<String> = [
-            "--lib",
-            &lib_path.to_string_lossy(),
-            "--name",
-            "n",
-            "--alias",
-            "n",
-            "--kind",
-            "export",
-            "--version",
-            "1.0.0",
-            "--publisher",
-            "p",
-            "--out",
-            &out.to_string_lossy(),
-            "--declares-file",
-            &path.to_string_lossy(),
-            "--allow-unsigned",
-        ]
-        .iter()
-        .map(|s| s.to_string())
-        .collect();
-        let code = pack(&args);
-        let manifest = std::fs::read(&out)
-            .ok()
-            .map(|t| busbar_plugin_loader::tarball::unpack(&t).unwrap().manifest);
-        (code, manifest)
-    };
-    let declared = serde_json::json!({"destinations": ["url"]});
-    let mut with_needs = declared.clone();
-    with_needs["needs"] = serde_json::json!(["scheme-a", "scheme-b"]);
-    let (code, manifest) = pack_with(&with_needs.to_string());
-    assert_eq!(code, ExitCode::SUCCESS);
-    let manifest = manifest.expect("the tarball was written");
-    assert_eq!(serde_json::to_value(&manifest.declares).unwrap(), declared);
+    let library = native_library();
+    let output = dir.join("out.tar.gz");
+    let _ = std::fs::remove_file(&output);
+    let mut args = native_args(&library, &output);
+    args.push("--allow-unsigned".into());
+    assert_eq!(pack(&args), ExitCode::SUCCESS);
+    let unpacked = busbar_plugin_loader::tarball::unpack(&std::fs::read(&output).unwrap()).unwrap();
+    let manifest = unpacked.manifest;
+    assert_eq!(manifest.declares, Default::default());
+    assert_eq!(manifest.needs, Default::default());
+    assert!(manifest.settings_schema.is_none());
+    assert!(!manifest.schema_derived);
+    assert!(manifest.statement.is_none());
+    assert_eq!(unpacked.lib_bytes, std::fs::read(&library).unwrap());
+    assert_eq!(manifest.sha256, sha256_hex(&unpacked.lib_bytes));
     let signed = serde_json::to_value(&manifest).unwrap();
     assert!(
         signed["declares"].get("needs").is_none(),
         "the signed manifest carries no needs: {signed}"
     );
-
-    for bad in [
-        r#"{"needs": "scheme-a"}"#,
-        r#"{"needs": [7]}"#,
-        r#"{"needs": [""]}"#,
+    std::fs::remove_file(&output).unwrap();
+    let declarations = dir.join("declares.json");
+    for value in [
+        r#"{"destinations":["url"],"needs":["scheme-a","scheme-b"]}"#,
+        r#"{"needs":"scheme-a"}"#,
+        r#"{"needs":[7]}"#,
+        r#"{"needs":[""]}"#,
+        r#"{"needs":["scheme-a"],"series":[]}"#,
     ] {
-        let (code, manifest) = pack_with(bad);
-        assert_eq!(code, ExitCode::FAILURE, "{bad} must be refused");
+        std::fs::write(&declarations, value).unwrap();
+        let mut overridden = args.clone();
+        overridden.extend([
+            "--declares-file".into(),
+            declarations.to_str().unwrap().into(),
+        ]);
+        assert_eq!(
+            pack(&overridden),
+            ExitCode::FAILURE,
+            "{value} must be refused"
+        );
         assert!(
-            manifest.is_none(),
-            "{bad}: a refused pack must not leave a tarball"
+            !output.exists(),
+            "{value}: a refused pack must not leave a tarball"
         );
     }
-
-    let (code, manifest) = pack_with(r#"{"needs": ["scheme-a"], "series": []}"#);
-    assert_eq!(code, ExitCode::FAILURE);
-    assert!(
-        manifest.is_none(),
-        "a refused pack must not leave a tarball"
-    );
-    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::remove_dir_all(dir).unwrap();
 }
 
 #[test]
 fn pack_cli_signs_the_former_names() {
+    let _environment = PACK_ENV.lock().unwrap();
     let dir = std::env::temp_dir().join(format!("plugin-pack-former-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
-    let lib_path = dir.join("lib.so");
-    std::fs::write(&lib_path, b"pretend cdylib").unwrap();
+    let library = native_library();
     let pack_with = |former: &[&str]| {
-        let out = dir.join("out.tar.gz");
-        let _ = std::fs::remove_file(&out);
-        let mut args: Vec<String> = [
-            "--lib",
-            &lib_path.to_string_lossy(),
-            "--name",
-            "busbar-hook-sample-hook",
-            "--alias",
-            "sample-hook",
-            "--kind",
-            "hook",
-            "--version",
-            "1.0.0",
-            "--publisher",
-            "p",
-            "--out",
-            &out.to_string_lossy(),
-            "--allow-unsigned",
-        ]
-        .iter()
-        .map(|s| s.to_string())
-        .collect();
-        for f in former {
-            args.extend(["--former-name".to_string(), (*f).to_string()]);
+        let output = dir.join("out.tar.gz");
+        let _ = std::fs::remove_file(&output);
+        let mut args = native_args(&library, &output);
+        args.push("--allow-unsigned".into());
+        for word in former {
+            args.extend(["--former-name".into(), (*word).into()]);
         }
         let code = pack(&args);
-        let unpacked = std::fs::read(&out)
-            .ok()
-            .map(|t| busbar_plugin_loader::tarball::unpack(&t).unwrap().manifest);
+        let unpacked = std::fs::read(&output).ok().map(|bytes| {
+            busbar_plugin_loader::tarball::unpack(&bytes)
+                .unwrap()
+                .manifest
+        });
         (code, unpacked)
     };
-    let (code, packed) = pack_with(&["busbar-sample-hook", "busbar-sample-hook-hook"]);
-    assert_eq!(code, ExitCode::SUCCESS);
-    let m = packed.expect("the tarball was written");
-    assert_eq!(
-        m.former_names,
-        ["busbar-sample-hook", "busbar-sample-hook-hook"]
-    );
-    assert!(m.answers_to("busbar-sample-hook") && m.answers_to("sample-hook"));
-
-    let (code, packed) = pack_with(&[]);
-    assert_eq!(code, ExitCode::SUCCESS);
-    let m = packed.expect("the tarball was written");
-    assert!(m.former_names.is_empty());
-    assert!(
-        !String::from_utf8(busbar_plugin_loader::sign::canonical_manifest_bytes(&m))
+    for former in [&["old-native"][..], &[]] {
+        let (code, packed) = pack_with(former);
+        assert_eq!(code, ExitCode::SUCCESS);
+        let manifest = packed.expect("the tarball was written");
+        assert_eq!(manifest.former_names, ["old-native", "native"]);
+        assert!(manifest.answers_to("old-native") && manifest.answers_to("native"));
+        assert!(String::from_utf8(canonical_manifest_bytes(&manifest))
             .unwrap()
-            .contains("former_names")
-    );
-
+            .contains("former_names"));
+    }
     for bad in [
-        "Busbar_SampleHook",
-        "busbar-hook-sample-hook",
-        "sample-hook",
+        "Old_Native",
+        "native-pack-fixture",
+        "native",
+        "other-native",
     ] {
         let (code, packed) = pack_with(&[bad]);
         assert_eq!(code, ExitCode::FAILURE, "{bad}");
@@ -362,7 +377,15 @@ fn pack_cli_signs_the_former_names() {
             "a refused pack must not leave a tarball ({bad})"
         );
     }
-    let _ = std::fs::remove_dir_all(&dir);
+    for bad in [&["old-native", "native"][..], &["old-native", "old-native"]] {
+        let (code, packed) = pack_with(bad);
+        assert_eq!(code, ExitCode::FAILURE, "{bad:?}");
+        assert!(
+            packed.is_none(),
+            "a refused pack must not leave a tarball ({bad:?})"
+        );
+    }
+    std::fs::remove_dir_all(dir).unwrap();
 }
 
 #[test]
@@ -438,9 +461,11 @@ fn flag_parsing() {
         allow_unsigned: unsigned,
         schema_derived,
         former_names,
+        native,
     } = parse_flags(&args).unwrap();
     assert!(unsigned);
     assert!(!schema_derived);
+    assert!(!native);
     assert!(former_names.is_empty());
     assert_eq!(flags["lib"], "a.so");
     assert_eq!(flags["name"], "n");
@@ -1120,28 +1145,60 @@ fn the_ref_resolver_caps_its_own_depth() {
 }
 
 #[test]
-fn pack_refuses_a_version_the_statement_does_not_state() {
-    let st = busbar_contract::abi::sdk::door::statement("pack-version-witness", "1.5.0", 1);
-    // SAFETY: `st` is a well-formed Statement of 'static strings and empty lists.
-    let stated =
-        unsafe { busbar_contract::abi::mechanism::rendering::render(&st) }.expect("it renders");
-    let r = busbar_contract::abi::mechanism::rendering::read(&stated).expect("it reads back");
-    super::statement_version_is(&stated, &r.version).expect("its own version packs");
-    assert_eq!(
-        super::stated_version(&stated).as_deref(),
-        Ok(r.version.as_str()),
-        "an absent --version is the Statement's"
-    );
-    let refused =
-        super::statement_version_is(&stated, "999.0.0").expect_err("another version is refused");
+fn pack_refuses_a_version_the_native_stamp_does_not_state() {
+    let _environment = PACK_ENV.lock().unwrap();
+    let dir = std::env::temp_dir().join(format!("plugin-pack-version-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let library = native_library();
+    let output = dir.join("out.tar.gz");
+    for version in [None, Some(env!("CARGO_PKG_VERSION"))] {
+        let mut args = native_args(&library, &output);
+        args.push("--allow-unsigned".into());
+        if let Some(version) = version {
+            args.extend(["--version".into(), version.into()]);
+        }
+        assert_eq!(pack(&args), ExitCode::SUCCESS, "its own version packs");
+        let unpacked =
+            busbar_plugin_loader::tarball::unpack(&std::fs::read(&output).unwrap()).unwrap();
+        assert_eq!(
+            unpacked.manifest.version,
+            env!("CARGO_PKG_VERSION"),
+            "an absent --version is the stamp's"
+        );
+        std::fs::remove_file(&output).unwrap();
+    }
+    let mut args = native_args(&library, &output);
+    args.extend([
+        "--version".into(),
+        "999.0.0".into(),
+        "--allow-unsigned".into(),
+    ]);
+    assert_eq!(pack(&args), ExitCode::FAILURE, "another version is refused");
+    assert!(!output.exists());
+    let manifest = Manifest {
+        name: "native-pack-fixture".into(),
+        alias: "native".into(),
+        kind: "secret".into(),
+        version: "999.0.0".into(),
+        publisher: "fixture".into(),
+        ..Default::default()
+    };
+    let refusal = busbar_plugin_loader::pack_native::complete(
+        &std::fs::read(&library).unwrap(),
+        manifest.clone(),
+        None,
+    )
+    .unwrap_err();
     assert!(
-        refused.contains("--version 999.0.0") && refused.contains(&format!("({})", r.version)),
-        "names both versions: {refused}"
+        refusal.contains("--version 999.0.0")
+            && refusal.contains(&format!("({})", env!("CARGO_PKG_VERSION"))),
+        "names both versions: {refusal}"
     );
     assert!(
-        super::statement_version_is(b"not a rendering", &r.version).is_err(),
-        "an unreadable rendering is refused, never passed"
+        busbar_plugin_loader::pack_native::complete(b"not a native image", manifest, None).is_err(),
+        "an unreadable native stamp is refused, never passed"
     );
+    std::fs::remove_dir_all(dir).unwrap();
 }
 
 #[test]
@@ -1568,19 +1625,15 @@ fn pack_schema_accepts_opaque_secret_slots_without_weakening_privacy() {
 }
 
 #[test]
-fn pack_checks_the_settings_profile_in_the_actual_statement() {
-    use busbar_contract::abi::mechanism::call::Blob;
+fn the_settings_validator_preserves_profile_refusals() {
     for (schema, accepted) in [
         (&br#"{"x-busbar-settings-profile":"integer-token-v1","type":"integer","x-busbar-integer-token":"unsigned"}"#[..], true),
         (&br#"{"type":"integer","x-busbar-integer-token":"unsigned"}"#[..], false),
         (&br#"{"x-busbar-settings-profile":"future"}"#[..], false),
         (&br#"{"x-busbar-settings-profile":"integer-token-v1","type":"integer","x-busbar-integer-token":true}"#[..], false),
     ] {
-        let mut statement = busbar_contract::abi::sdk::door::statement("profile-witness", "1.6.0", 1);
-        statement.settings_schema = Blob::json(schema);
-        // SAFETY: the Statement contains static strings and static schema bytes.
-        let rendering = unsafe { busbar_contract::abi::mechanism::rendering::render(&statement) }.unwrap();
-        assert_eq!(read_rendering(&rendering).is_ok(), accepted);
+        let schema = serde_json::from_slice(schema).unwrap();
+        assert_eq!(busbar_plugin_loader::integer_token::validator(&schema).is_ok(), accepted);
     }
 }
 
@@ -1915,4 +1968,25 @@ fn a_tuple_form_items_array_is_scanned_element_by_element() {
     });
     let err = validate_secret_fields(&bad).unwrap_err();
     assert!(err.contains("token"), "got {err}");
+}
+
+fn read_and_validate_settings_schema(path: &str) -> Result<String, String> {
+    let text = std::fs::read_to_string(path)
+        .map_err(|e| format!("cannot read --settings-schema-file '{path}': {e}"))?;
+    let value: serde_json::Value = serde_json::from_str(&text)
+        .map_err(|e| format!("--settings-schema-file '{path}' is not valid JSON: {e}"))?;
+
+    let schema_uri = value.get("$schema").and_then(|s| s.as_str());
+    if schema_uri != Some(SCHEMA_2020_12) {
+        return Err(format!(
+            "--settings-schema-file '{path}': \"$schema\" must be exactly \"{SCHEMA_2020_12}\" \
+             (found {schema_uri:?}) — busbar-ui's form renderer only understands JSON Schema \
+             2020-12, an older/missing draft can silently misrender"
+        ));
+    }
+    busbar_plugin_loader::integer_token::validator(&value).map_err(|e| {
+        format!("--settings-schema-file '{path}' is not a valid JSON Schema document: {e}")
+    })?;
+    validate_secret_fields(&value).map_err(|e| format!("--settings-schema-file '{path}': {e}"))?;
+    Ok(text)
 }
