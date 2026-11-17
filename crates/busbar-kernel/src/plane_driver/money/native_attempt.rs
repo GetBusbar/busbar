@@ -255,7 +255,7 @@ impl NativeRequestMoney {
 mod live;
 #[cfg(test)]
 use live::effective_tokens;
-pub(crate) use live::NativeAttempt;
+pub(crate) use live::{NativeAttempt, NativeCommitError};
 
 fn preparation_follows(limit: u32, attempts: &[AttemptPartition], preparation: u32) -> bool {
     preparation != 0

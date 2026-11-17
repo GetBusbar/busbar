@@ -3,9 +3,124 @@
 
 use super::*;
 use crate::governance::selected_resource::{
-    CommittedRate, EffectiveToken, EffectiveTokenView, RateFinalSnapshot, TokenCoverage,
+    CommittedRate, EffectiveToken, EffectiveTokenView, RateFinalSnapshot, RateRejected,
+    RateReservation, TokenCoverage,
 };
 use crate::governance::unit_checkpoint::partitions::ValidatedSelectedCheckpoint;
+
+pub(crate) enum NativeCommitError {
+    Before {
+        error: NativeAttemptError,
+        reservation: RateReservation,
+    },
+    Rate(RateRejected),
+}
+
+enum CommitFailure {
+    Before(NativeAttemptError),
+    Rate(RateRejected),
+}
+impl From<NativeAttemptError> for CommitFailure {
+    fn from(error: NativeAttemptError) -> Self {
+        Self::Before(error)
+    }
+}
+
+impl NativeRequestMoney {
+    /// Called only at the real connector handoff, after authorization/local refusal checks.
+    /// A custody refusal returns the still-provisional reservation; no irrevocable RPM was taken.
+    pub(crate) fn commit(
+        &self,
+        reservation: RateReservation,
+    ) -> Result<NativeAttempt, NativeCommitError> {
+        let mut held = Some(reservation);
+        self.commit_inner(&mut held).map_err(|error| match error {
+            CommitFailure::Before(error) => NativeCommitError::Before {
+                error,
+                reservation: held.take().expect("preflight never consumes reservation"),
+            },
+            CommitFailure::Rate(error) => NativeCommitError::Rate(error),
+        })
+    }
+
+    fn commit_inner(
+        &self,
+        held: &mut Option<RateReservation>,
+    ) -> Result<NativeAttempt, CommitFailure> {
+        use crate::governance::unit_checkpoint::SelectedCommitError;
+        let prepared = held
+            .as_ref()
+            .expect("original provisional reservation")
+            .prepared();
+        let mut all = self.money.shard(self.request.unit());
+        let open = all
+            .get_mut(&self.request.unit())
+            .ok_or(NativeAttemptError::Unavailable)?;
+        self.check_open(open)?;
+        if !prepared.request.matches_money(
+            &self.money.book,
+            &open.identity,
+            open.grant.as_ref().ok_or(NativeAttemptError::Unavailable)?,
+        ) {
+            return Err(NativeAttemptError::Binding.into());
+        }
+        let native = open
+            .native
+            .as_mut()
+            .ok_or(NativeAttemptError::Unavailable)?;
+        if native.unpublished.is_some() {
+            return Err(NativeAttemptError::Unavailable.into());
+        }
+        let mut snapshot = native.accepted.as_ref().clone();
+        let parts = snapshot
+            .partitions
+            .as_mut()
+            .ok_or(NativeAttemptError::Binding)?;
+        let next = parts
+            .attempts
+            .iter()
+            .filter_map(|attempt| attempt.dispatch)
+            .max()
+            .unwrap_or(0)
+            .checked_add(1)
+            .ok_or(NativeAttemptError::Binding)?;
+        let attempt = parts
+            .attempts
+            .last_mut()
+            .ok_or(NativeAttemptError::Binding)?;
+        if attempt.preparation != prepared.selection().preparation()
+            || attempt.transport != Transport::Prepared
+            || attempt.finality != Finality::Live
+        {
+            return Err(NativeAttemptError::Binding.into());
+        }
+        attempt.transport = Transport::Committed;
+        attempt.dispatch = Some(next);
+        let (accepted, rate) = self
+            .money
+            .gov
+            .commit_selected_checkpoint(snapshot, native.accepted.revision, || {
+                held.take()
+                    .expect("callback runs at most once")
+                    .try_commit()
+            })
+            .map_err(|error| match error {
+                SelectedCommitError::Custody(error) => {
+                    CommitFailure::Before(NativeAttemptError::Custody(error))
+                }
+                SelectedCommitError::Commit(error) => CommitFailure::Rate(error),
+            })?;
+        // Everything after irrevocable rate commitment is an infallible ownership transfer.
+        native.accepted = accepted;
+        Ok(NativeAttempt::new(
+            NativeRequestMoney {
+                money: self.money.clone(),
+                request: self.request.clone(),
+            },
+            rate,
+        ))
+    }
+}
 
 /// Task owns this guard only after the original preparation's actual connector handoff.
 /// It cannot be cloned or reconstructed from an attempt number or plugin report.
@@ -20,6 +135,16 @@ impl NativeAttempt {
             service,
             rate: Some(rate),
         }
+    }
+
+    /// The immutable exchange retained by the same committed preparation.
+    pub(crate) fn exchange(&self) -> &crate::plane_driver::port_session::UpExchange {
+        self.rate
+            .as_ref()
+            .expect("live guard retains committed rate")
+            .prepared()
+            ._prepared
+            .exchange()
     }
 
     /// Validate the complete answer before any effect, then retain all actual source facts.
