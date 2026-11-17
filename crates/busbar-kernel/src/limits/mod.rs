@@ -3,6 +3,7 @@
 
 pub(crate) mod admission;
 pub mod output;
+pub mod process_admission;
 
 use crate::config::{
     LimitsResolved, DEFAULT_KEY_GAUGE_LIMIT, DEFAULT_POLICY_TIMEOUT_MS,
