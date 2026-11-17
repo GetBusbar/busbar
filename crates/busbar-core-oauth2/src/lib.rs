@@ -8,6 +8,14 @@ pub mod cimd;
 pub mod config;
 pub mod consent;
 pub mod crypto_provider;
+/// Core's PKCE/state/nonce minting (IF §12.12 round 22, C-LOGIN-PKCE): the one definition, called by the hosted login
+/// and by the caller-connection BEGIN. It lives in `busbar_kernel::connections::pkce` (this crate depends on the
+/// kernel, never the reverse); this is the IF's path to it.
+pub mod pkce {
+    pub use busbar_kernel::connections::pkce::{
+        code_challenge_s256, random_b64url, STATE_BYTES, VERIFIER_BYTES,
+    };
+}
 
 mod cold;
 mod hosted_login;
