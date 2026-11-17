@@ -58,7 +58,8 @@ pub(super) async fn prepare(
                     (native.select)(binding.app(), &native.slot).ok_or(InputError::Invalid)?;
                 // Lend the same HEAD-created physical owner to Node before Task admission.
                 // Node retains it independently through registration and audit failures.
-                let prepared = data::prepare(ready.request, slot, node, ready.owner.clone()).await?;
+                let prepared =
+                    data::prepare(ready.request, slot, node, ready.owner.clone()).await?;
                 (
                     prepared.response,
                     ResponseAuthority::Data(prepared.authority),
