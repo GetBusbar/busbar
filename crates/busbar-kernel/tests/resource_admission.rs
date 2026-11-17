@@ -51,9 +51,11 @@ fn fact(value: &str, descriptor: u32) -> ResourceFact {
         },
         forwards: vec![ForwardFact {
             descriptor,
+            pool: value.into(),
+            member: "plane/test\u{1f}shared".into(),
             upstream: "shared".into(),
-            dialect: "fixture".into(),
-            model: value.into(),
+            dialect: "".into(),
+            model: "".into(),
             method: "POST".into(),
             target: "/generate".into(),
         }],
@@ -67,7 +69,15 @@ fn build(
     let upstreams: Arc<dyn Upstreams> = Arc::new(ConfiguredUpstreams::from_definitions(
         BTreeMap::from([("shared".into(), upstream())]),
     ));
-    let targets: Targets = Arc::new(|name| (name == "shared").then(MemberTarget::bare));
+    let targets: Targets = Arc::new(|pool, member| {
+        if !matches!(pool, "chat" | "secret") || member != "plane/test\u{1f}shared" {
+            return None;
+        }
+        let mut target = MemberTarget::bare();
+        target.registered_upstream = Some("shared".into());
+        Some(target)
+    });
+
     ResourceInventory::build(
         owner,
         7,
@@ -77,6 +87,34 @@ fn build(
         targets,
         1 << 20,
     )
+}
+
+fn select(
+    inventory: &Arc<ResourceInventory>,
+    request: FrozenRequest,
+    scopes: &[ScopeRef],
+) -> Result<busbar_kernel::resource_admission::SelectedResources, ResourceError> {
+    let mounted = busbar_kernel::plane_driver::port_routes::Mounted {
+        route: 3,
+        methods: 4,
+        flags: 0,
+        auth: busbar_plugin_abi::plane::AUTH_PRINCIPAL,
+        effective: busbar_plugin_abi::plane::AUTH_PRINCIPAL,
+        pattern: "/requests".into(),
+        cred_header: None,
+        catalog: false,
+        resource_kinds: vec!["pool".into()],
+    };
+    let mut out = busbar_plugin_abi::records::Reply::new();
+    let scopes: Vec<_> = scopes
+        .iter()
+        .map(|s| busbar_plugin_abi::resource_admission::Scope {
+            kind: &s.kind,
+            value: &s.value,
+        })
+        .collect();
+    busbar_plugin_abi::resource_admission::write_selection(&mut out, &scopes).unwrap();
+    inventory.select_wire(request, &mounted, out.as_bytes())
 }
 
 fn request(n: u64) -> FrozenRequest {
@@ -114,9 +152,7 @@ fn exchange() -> UpExchange {
 #[test]
 fn wire_echo_cannot_rebind_instance_route_generation_or_invocation() {
     let inventory = build(&caller(), vec![fact("chat", 1)]).unwrap();
-    let selected = inventory
-        .select(request(1), &[ScopeRef::pool("chat")])
-        .unwrap();
+    let selected = select(&inventory, request(1), &[ScopeRef::pool("chat")]).unwrap();
     let bound = selected.forward(1).unwrap();
     let mut out = busbar_plugin_abi::records::Reply::new();
     bound.write_admission(&mut out).unwrap();
@@ -202,9 +238,7 @@ fn selection_is_bound_to_actual_mounted_route_kinds_and_frozen_body() {
 fn valid_chat_reference_cannot_authorize_secret_at_the_same_endpoint() {
     let owner = caller();
     let inventory = build(&owner, vec![fact("chat", 1), fact("secret", 2)]).unwrap();
-    let selected = inventory
-        .select(request(1), &[ScopeRef::pool("chat")])
-        .unwrap();
+    let selected = select(&inventory, request(1), &[ScopeRef::pool("chat")]).unwrap();
     let chat = selected.forward(1).unwrap();
     assert!(matches!(
         selected.forward(2),
@@ -229,9 +263,7 @@ fn valid_chat_reference_cannot_authorize_secret_at_the_same_endpoint() {
 fn permitted_descriptor_moves_exact_exchange_into_validated_custody() {
     let owner = caller();
     let inventory = build(&owner, vec![fact("chat", 1)]).unwrap();
-    let selected = inventory
-        .select(request(2), &[ScopeRef::pool("chat")])
-        .unwrap();
+    let selected = select(&inventory, request(2), &[ScopeRef::pool("chat")]).unwrap();
     let forward = selected.forward(1).unwrap();
     let descriptor = forward.descriptor();
     let candidate = descriptor.candidate();
@@ -253,12 +285,8 @@ fn permitted_descriptor_moves_exact_exchange_into_validated_custody() {
 fn echo_is_bound_to_invocation_and_inventory_not_just_numeric_descriptor() {
     let owner = caller();
     let inventory = build(&owner, vec![fact("chat", 1)]).unwrap();
-    let first = inventory
-        .select(request(3), &[ScopeRef::pool("chat")])
-        .unwrap();
-    let other = inventory
-        .select(request(4), &[ScopeRef::pool("chat")])
-        .unwrap();
+    let first = select(&inventory, request(3), &[ScopeRef::pool("chat")]).unwrap();
+    let other = select(&inventory, request(4), &[ScopeRef::pool("chat")]).unwrap();
     let forward = first.forward(1).unwrap();
     let descriptor = forward.descriptor();
     assert!(matches!(
@@ -278,9 +306,7 @@ fn echo_is_bound_to_invocation_and_inventory_not_just_numeric_descriptor() {
 fn actual_method_path_upstream_or_secondary_exchange_cannot_override_descriptor() {
     let owner = caller();
     let inventory = build(&owner, vec![fact("chat", 1)]).unwrap();
-    let selected = inventory
-        .select(request(5), &[ScopeRef::pool("chat")])
-        .unwrap();
+    let selected = select(&inventory, request(5), &[ScopeRef::pool("chat")]).unwrap();
     let forward = selected.forward(1).unwrap();
     let descriptor = forward.descriptor();
     for changed in [
@@ -333,12 +359,12 @@ fn actual_method_path_upstream_or_secondary_exchange_cannot_override_descriptor(
 fn exact_all_of_scopes_keep_empty_grants_and_kind_collisions_closed() {
     let owner = caller();
     let inventory = build(&owner, vec![fact("chat", 1), fact("secret", 2)]).unwrap();
-    let selected = inventory
-        .select(
-            request(6),
-            &[ScopeRef::pool("chat"), ScopeRef::pool("secret")],
-        )
-        .unwrap();
+    let selected = select(
+        &inventory,
+        request(6),
+        &[ScopeRef::pool("chat"), ScopeRef::pool("secret")],
+    )
+    .unwrap();
     let mut key = VirtualKey::default();
     key.allowed_scopes = Some(vec![ScopeRef::pool("chat")]);
     assert!(!selected.scope_allowed(&key));
@@ -352,7 +378,7 @@ fn exact_all_of_scopes_keep_empty_grants_and_kind_collisions_closed() {
     key.allowed_scopes = None;
     assert!(selected.scope_allowed(&key));
     assert!(matches!(
-        inventory.select(request(7), &[]),
+        select(&inventory, request(7), &[]),
         Err(ResourceError::Selection)
     ));
 }
