@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::*;
+use crate::persistence::import_target::r0::{Access, Commit, Outcome};
 use busbar_contract::persistence::{BackendInfo, Call, ClockObservation, Durability, Page, Scan};
 use futures::FutureExt;
 use std::time::Duration;
@@ -2400,4 +2401,305 @@ async fn a_current_manifest_with_a_migration_cursor_is_refused() {
     );
     assert_eq!(backend.0.lock().unwrap().sends.len(), before);
     assert!(backend.0.lock().unwrap().rows.contains_key(&cursor));
+}
+
+// #319 r4 §5-§9 over the seam: a synthetic step 0 -> 1 (the kernel writes format 1), never a
+// production step.
+struct ZeroToOne;
+impl FormatChain for ZeroToOne {
+    fn has_step(&self, from: u32) -> bool {
+        from == 0
+    }
+    fn initial_cursor(&self, from: u32) -> Option<Vec<u8>> {
+        (from == 0).then(|| b"cursor@0".to_vec())
+    }
+}
+
+fn converting(backend: &Arc<Backend>) -> Startup {
+    startup(backend, false).with_format_chain(Arc::new(ZeroToOne))
+}
+
+fn row(backend: &Backend, address: &Address) -> Option<Vec<u8>> {
+    backend
+        .0
+        .lock()
+        .unwrap()
+        .rows
+        .get(address)
+        .map(|value| value.expose(&crate::seal::lend()).clone())
+}
+
+fn dataset_epoch(backend: &Backend) -> u64 {
+    control::Dataset::decode(&row(backend, &root_address()).unwrap())
+        .unwrap()
+        .writer_epoch
+}
+
+/// Rewrite the manifest's four format copies, keeping its registrar.
+fn set_format(backend: &Backend, format: u32) {
+    let mut bytes = row(backend, &manifest_address()).unwrap();
+    for at in [8, 12, 16, 20] {
+        bytes[at..at + 4].copy_from_slice(&format.to_le_bytes());
+    }
+    backend
+        .0
+        .lock()
+        .unwrap()
+        .rows
+        .insert(manifest_address(), Secret::new(bytes));
+}
+
+/// A dataset at the synthetic older format 0 with its first start published away (absent), and
+/// a process admitted under the old epoch that may still try to write.
+async fn format_zero(backend: &Arc<Backend>) -> Arc<CoreStore> {
+    let old = admitted(&mut startup(backend, true)).await;
+    backend
+        .0
+        .lock()
+        .unwrap()
+        .rows
+        .remove(&first_start::address());
+    set_format(backend, 0);
+    old
+}
+
+/// Advance until `want`, within a few bounded steps.
+async fn until(startup: &mut Startup, want: Progress) {
+    for _ in 0..6 {
+        if startup.advance().await.unwrap() == want {
+            return;
+        }
+    }
+    panic!("startup did not reach {want:?}");
+}
+
+/// One business row, as any old-epoch writer would put it.
+fn old_write() -> Commit {
+    Commit {
+        put: vec![(
+            Address {
+                namespace: [7; 16],
+                key: vec![9],
+            },
+            busbar_contract::secure::SecureVec::from(vec![9]),
+        )],
+        ..Commit::default()
+    }
+}
+
+fn secure(bytes: Vec<u8>) -> busbar_contract::secure::SecureVec {
+    busbar_contract::secure::SecureVec::from(bytes)
+}
+
+/// #319 r4 §5-§6: an older format this chain converts is opened in one transaction: the dataset
+/// epoch advances (every old-epoch writer is fenced at its next commit, reported as a fence and
+/// never as a refusal a smaller page could pass), the manifest names a fresh owner with the tail,
+/// and the step's cursor exists. No ordinary store is handed out while the tail is nonzero.
+#[tokio::test]
+async fn an_older_format_is_opened_atomically_and_fences_the_old_epoch() {
+    let backend = Arc::new(Backend::default());
+    let old = format_zero(&backend).await;
+    assert_eq!(dataset_epoch(&backend), 1);
+    let mut converting = converting(&backend);
+    until(&mut converting, Progress::Migrate).await;
+    assert!(converting.store().is_none());
+    let owner = converting.migration().unwrap();
+    assert_eq!((owner.format(), owner.migrating_to()), (0, 1));
+    assert_eq!(dataset_epoch(&backend), 2);
+    let manifest = row(&backend, &manifest_address()).unwrap();
+    assert_eq!(manifest, owner.manifest_bytes());
+    assert_eq!(
+        classify(&manifest, |f| f == 0),
+        Format::Migrating { from: 0, to: 1 }
+    );
+    let registrar = Manifest::identities(&manifest).unwrap().registrar;
+    assert_eq!((registrar.writer_epoch, registrar.execution_epoch), (2, 1));
+    assert!(writer_row(&backend, registrar.writer).admits(1));
+    assert_eq!(row(&backend, &cursor_address()), Some(b"cursor@0".to_vec()));
+    // The process admitted under epoch 1 is fenced; its row never lands.
+    assert_eq!(
+        Access::new(old.clone()).commit(old_write()).await,
+        Ok(Outcome::Fenced)
+    );
+    assert_eq!(
+        row(
+            &backend,
+            &Address {
+                namespace: [7; 16],
+                key: vec![9]
+            }
+        ),
+        None
+    );
+}
+
+/// #319 r4 §6: the opening's reply is lost after it applied. The same attempt is sent again, is
+/// fenced by the epoch it advanced, and its fresh owner's writer row resolves it as applied: one
+/// opening, one owner, never a second transition.
+#[tokio::test]
+async fn a_lost_opening_reply_resolves_by_its_owner_witness() {
+    let backend = Arc::new(Backend::default());
+    format_zero(&backend).await;
+    let mut converting = converting(&backend);
+    assert_eq!(converting.advance().await.unwrap(), Progress::Advanced);
+    let applied = {
+        let mut native = backend.0.lock().unwrap();
+        native.lose_reply = true;
+        native.applied
+    };
+    assert_eq!(converting.advance().await.unwrap(), Progress::Pending);
+    until(&mut converting, Progress::Migrate).await;
+    assert_eq!(backend.0.lock().unwrap().applied, applied + 1);
+    assert_eq!(dataset_epoch(&backend), 2);
+    let registrar = Manifest::identities(&row(&backend, &manifest_address()).unwrap())
+        .unwrap()
+        .registrar;
+    assert_eq!(
+        converting.migration().unwrap().manifest_bytes().to_vec(),
+        Manifest {
+            dataset: DatasetId([1; 16]),
+            registrar
+        }
+        .encode_at(0, 1)
+        .to_vec()
+    );
+}
+
+/// #319 r4 §7, §9: the owner commits pages under its own authority, then the final publication
+/// advances the epoch past it, names a fresh registrar and the Current manifest and deletes the
+/// cursor, atomically. Reinspection then admits ordinarily, and the finished owner is fenced.
+#[tokio::test]
+async fn the_final_publication_admits_ordinarily_and_fences_the_owner() {
+    let backend = Arc::new(Backend::default());
+    format_zero(&backend).await;
+    let mut converting = converting(&backend);
+    until(&mut converting, Progress::Migrate).await;
+    let owner = converting.migration().unwrap();
+    let manifest = owner.manifest_bytes().to_vec();
+    let page = Commit {
+        expect: vec![
+            (manifest_address(), Some(secure(manifest.clone()))),
+            (cursor_address(), Some(secure(b"cursor@0".to_vec()))),
+        ],
+        put: vec![(cursor_address(), secure(b"cursor@end".to_vec()))],
+        ..Commit::default()
+    };
+    assert_eq!(owner.access().commit(page).await, Ok(Outcome::Applied));
+    // The completion may not write the manifest itself: the publication does.
+    let rogue = Commit {
+        put: vec![(manifest_address(), secure(manifest.clone()))],
+        ..Commit::default()
+    };
+    assert!(owner.finalize(rogue, RECORD_FORMAT).await.is_err());
+    let completion = || Commit {
+        expect: vec![
+            (manifest_address(), Some(secure(manifest.clone()))),
+            (cursor_address(), Some(secure(b"cursor@end".to_vec()))),
+        ],
+        delete: vec![cursor_address()],
+        ..Commit::default()
+    };
+    assert_eq!(
+        owner.finalize(completion(), RECORD_FORMAT).await,
+        Ok(Outcome::Applied)
+    );
+    assert_eq!(dataset_epoch(&backend), 3);
+    assert_eq!(row(&backend, &cursor_address()), None);
+    let published = row(&backend, &manifest_address()).unwrap();
+    assert_eq!(classify(&published, |_| false), Format::Current);
+    let registrar = Manifest::identities(&published).unwrap().registrar;
+    assert_eq!(registrar.writer_epoch, 3);
+    assert!(writer_row(&backend, registrar.writer).admits(1));
+    // A second publication of the same completion cannot apply: the owner is fenced.
+    assert_eq!(
+        owner.finalize(completion(), RECORD_FORMAT).await,
+        Ok(Outcome::Fenced)
+    );
+    converting.migration_finished().unwrap();
+    let store = admitted(&mut converting).await;
+    let process = store.authority().unwrap();
+    assert_eq!(process.writer_epoch, 3);
+    assert_ne!(process.writer, registrar.writer);
+    assert_eq!(
+        owner.access().commit(old_write()).await,
+        Ok(Outcome::Fenced)
+    );
+}
+
+/// #319 r4 §8: another process's conversion is watched, not adopted. Only after its whole tuple
+/// stays unchanged for the window is it claimed, in one transaction that advances the epoch and
+/// installs a fresh owner; a page by the old owner within the window resets the wait; once
+/// claimed, the old owner is fenced.
+#[tokio::test(start_paused = true)]
+async fn a_stalled_conversion_is_claimed_after_the_window_and_its_owner_fenced() {
+    let backend = Arc::new(Backend::default());
+    format_zero(&backend).await;
+    let mut first = converting(&backend);
+    until(&mut first, Progress::Migrate).await;
+    let stalled = first.migration().unwrap();
+    let manifest = stalled.manifest_bytes().to_vec();
+    drop(first);
+    let mut next = converting(&backend);
+    assert_eq!(next.advance().await.unwrap(), Progress::Pending);
+    let waiting = next.waiting_on().unwrap();
+    assert!(waiting.migrating);
+    assert_eq!(waiting.window, FIRST_START_STALL);
+    tokio::time::advance(Duration::from_secs(60)).await;
+    // The owner still progresses: its page changes the cursor, so the window starts again.
+    let page = Commit {
+        expect: vec![
+            (manifest_address(), Some(secure(manifest.clone()))),
+            (cursor_address(), Some(secure(b"cursor@0".to_vec()))),
+        ],
+        put: vec![(cursor_address(), secure(b"cursor@1".to_vec()))],
+        ..Commit::default()
+    };
+    assert_eq!(stalled.access().commit(page).await, Ok(Outcome::Applied));
+    assert_eq!(next.advance().await.unwrap(), Progress::Pending);
+    tokio::time::advance(Duration::from_secs(89)).await;
+    assert_eq!(next.advance().await.unwrap(), Progress::Pending);
+    assert_eq!(dataset_epoch(&backend), 2);
+    tokio::time::advance(Duration::from_secs(1)).await;
+    until(&mut next, Progress::Migrate).await;
+    assert_eq!(dataset_epoch(&backend), 3);
+    let claimed = next.migration().unwrap();
+    assert_eq!((claimed.format(), claimed.migrating_to()), (0, 1));
+    assert_eq!(row(&backend, &cursor_address()), Some(b"cursor@1".to_vec()));
+    assert_eq!(
+        stalled.access().commit(old_write()).await,
+        Ok(Outcome::Fenced)
+    );
+}
+
+/// #319 r4 §5: an older format with a first start still pending is refused (first-start and
+/// format takeover never both acquire the dataset), and without a chain an older format is refused
+/// as before; neither writes.
+#[tokio::test]
+async fn an_older_format_with_a_pending_first_start_or_no_chain_is_refused() {
+    let backend = Arc::new(Backend::default());
+    admitted(&mut startup(&backend, true)).await;
+    set_format(&backend, 0);
+    let before = backend.0.lock().unwrap().sends.len();
+    assert_eq!(
+        converting(&backend).advance().await,
+        Err(Error::IncompleteInitialization)
+    );
+    assert_eq!(
+        startup(&backend, false).advance().await,
+        Err(Error::UnsupportedFormat)
+    );
+    assert_eq!(backend.0.lock().unwrap().sends.len(), before);
+}
+
+/// #319 r4 §7.1: a backend refusal of a send with no earlier uncertainty is reported as one a
+/// smaller candidate may pass; the facade's shared `NoEffect(Refused)` does not erase that.
+#[tokio::test]
+async fn a_backend_refusal_is_reported_as_resizable() {
+    let backend = Arc::new(Backend::default());
+    let store = admitted(&mut startup(&backend, true)).await;
+    backend.0.lock().unwrap().force = Some(Err(Failure::Refused));
+    assert_eq!(
+        Access::new(store).commit(old_write()).await,
+        Ok(Outcome::Refused)
+    );
 }

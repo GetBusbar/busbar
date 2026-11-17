@@ -790,7 +790,7 @@ fn evolve_once(mem: &Mem, steps: &[RecordStep], current: u32) -> Result<Option<u
 /// last page; see `the_final_publication_is_an_empty_commit_after_the_payload`.)
 #[test]
 fn the_record_format_chain_converts_in_pages_and_flips_atomically() {
-    let mem = evolve_store(9000, 1, 0);
+    let mem = opened_store(9000);
     assert_eq!(evolve_once(&mem, FIXTURE, 2), Ok(Some(9000)));
     assert_eq!(manifest_of(&mem), manifest_bytes(2, 0));
     assert!(mem
@@ -813,8 +813,8 @@ fn the_record_format_chain_converts_in_pages_and_flips_atomically() {
         .contains_key(&(MANIFEST_NS.0, CURSOR_KEY.to_vec())));
 
     // Killed after the first page: manifest (1, 2) and a cursor; the next boot resumes.
-    let mem = evolve_store(9000, 1, 0);
-    mem.crash_at.set(Some(3));
+    let mem = opened_store(9000);
+    mem.crash_at.set(Some(2));
     assert!(evolve_once(&mem, FIXTURE, 2).is_err());
     assert_eq!(manifest_of(&mem), manifest_bytes(1, 2));
     mem.crash_at.set(None);
@@ -829,8 +829,8 @@ fn the_record_format_chain_converts_in_pages_and_flips_atomically() {
     );
 
     // A fault in the last payload page: manifest still (1, 2), the last page unconverted.
-    let mem = evolve_store(9000, 1, 0);
-    mem.crash_at.set(Some(4));
+    let mem = opened_store(9000);
+    mem.crash_at.set(Some(3));
     assert!(evolve_once(&mem, FIXTURE, 2).is_err());
     assert_eq!(manifest_of(&mem), manifest_bytes(1, 2));
     assert_eq!(
@@ -1013,7 +1013,7 @@ impl RecordStore for Capped<'_> {
 }
 
 fn evolve_through(
-    store: &dyn RecordStore,
+    store: &dyn FormatStore,
     mem: &Mem,
     steps: &[RecordStep],
     current: u32,
@@ -1047,7 +1047,7 @@ fn data_values(mem: &Mem) -> Vec<Vec<u8>> {
 /// two per page are all converted before the manifest reads Current, and the audit counts nine.
 #[test]
 fn record_format_short_page_cannot_publish_current_with_unconverted_rows() {
-    let mem = evolve_store(9, 1, 0);
+    let mem = opened_store(9);
     let store = Capped::new(&mem, 2);
     assert_eq!(evolve_through(&store, &mem, FIXTURE, 2), Ok(Some(9)));
     assert_eq!(manifest_of(&mem), manifest_bytes(2, 0));
@@ -1088,7 +1088,7 @@ const CHAIN: &[RecordStep] = &[
 /// would admit ordinary serving mid-chain); the dataset stays closed until format 3, tail 0.
 #[test]
 fn record_format_chain_never_publishes_intermediate_current() {
-    let mem = evolve_store(3, 1, 0);
+    let mem = opened_store(3);
     let mut store = Capped::new(&mem, PAGE);
     store.intermediate = Some(2);
     assert_eq!(evolve_through(&store, &mem, CHAIN, 3), Ok(Some(6)));
@@ -1120,9 +1120,9 @@ fn record_format_chain_never_publishes_intermediate_current() {
 /// tail; the next run publishes once, with one audit, converting nothing twice.
 #[test]
 fn the_final_publication_is_an_empty_commit_after_the_payload() {
-    // 9,000 rows: opening, three pages, then the completion (commit 5).
-    let mem = evolve_store(9000, 1, 0);
-    mem.crash_at.set(Some(5));
+    // 9,000 rows, the step opened by admission: three pages, then the completion (commit 4).
+    let mem = opened_store(9000);
+    mem.crash_at.set(Some(4));
     assert!(evolve_once(&mem, FIXTURE, 2).is_err());
     assert_eq!(manifest_of(&mem), manifest_bytes(1, 2));
     assert!(data_values(&mem).iter().all(|v| v.as_slice() == b"2:v"));
@@ -1190,6 +1190,7 @@ fn initial_cursor_bytes() -> Vec<u8> {
 /// A format-1 store the kernel's admission already opened for the step to 2: manifest (1, 2) and
 /// the step's initial cursor (#319 r4 §6).
 fn opened_store(rows: usize) -> Mem {
+    assert_eq!(initial_cursor(FIXTURE, 1), Some(initial_cursor_bytes()));
     let mem = evolve_store(rows, 1, 2);
     mem.put(MANIFEST_NS, CURSOR_KEY.to_vec(), initial_cursor_bytes());
     mem
@@ -1308,12 +1309,36 @@ impl RecordStore for Refusing<'_> {
             self.sizes.borrow_mut().push(rows);
         }
         if rows > self.max {
-            return Err(StoreFail("refused".to_owned()));
+            return Ok(Committed::Refused);
         }
         self.mem.commit(c)
     }
 
     fn register(&self) -> Result<(), StoreFail> {
         self.mem.register()
+    }
+}
+
+/// The final publication as the kernel applies it: the completion with the Current manifest.
+impl FormatStore for Mem {
+    fn finalize(&self, mut c: Candidate, format: u32) -> Result<Committed, StoreFail> {
+        c.put.push((
+            MANIFEST_NS,
+            b"active".to_vec(),
+            SecureVec::from(manifest_bytes(format, 0)),
+        ));
+        self.commit(c)
+    }
+}
+
+impl FormatStore for Capped<'_> {
+    fn finalize(&self, c: Candidate, format: u32) -> Result<Committed, StoreFail> {
+        self.mem.finalize(c, format)
+    }
+}
+
+impl FormatStore for Refusing<'_> {
+    fn finalize(&self, c: Candidate, format: u32) -> Result<Committed, StoreFail> {
+        self.mem.finalize(c, format)
     }
 }
