@@ -191,7 +191,11 @@ fn refused(env: &[(&str, &str)]) -> String {
     let dir = fixture_dir();
     write_configs(&dir, 0, 0, Some(WORKERS));
     let config = dir.join("config.yaml");
-    let original = std::fs::read(&config).unwrap();
+    let mut original = std::fs::read(&config).unwrap();
+    // The old warning-only implementation must terminate too: its strict config reader
+    // refuses this typo, while the wanted refusal happens before that reader or migrator.
+    original.extend_from_slice(b"goovernance: {}\n");
+    std::fs::write(&config, &original).unwrap();
     let mut command = Command::new(common::boot::exe());
     command.env("BUSBAR_CONFIG", &config).env("MOCK_KEY", "x");
     for name in ["BUSBAR_PROVIDERS", "BUSBAR_WORKER_THREADS", "BUSBAR_UPSTREAM_HTTP1_ONLY", "BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE"] {

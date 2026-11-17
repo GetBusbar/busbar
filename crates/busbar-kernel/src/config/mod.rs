@@ -636,6 +636,7 @@ pub fn resolve_auth(
         .collect();
 
     AuthCfg {
+        require_if_match: auth.require_if_match,
         signing_key: auth.signing_key.clone(),
         chain,
         admin_auth,

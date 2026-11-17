@@ -273,6 +273,7 @@ fn walk_secret_refs_with_boot_token<'a>(
 
     if let Some(auth) = auth {
         let crate::config::AuthCfg {
+            require_if_match: _,
             signing_key,
             chain,
             admin_auth,
