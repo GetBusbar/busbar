@@ -312,6 +312,12 @@ async fn attempt_owned_scope_class_refuses_before_paid_observation_create_or_att
             .await,
         Err(ObservationRuntimeError::LegacyOverlap),
     ));
+    assert!(matches!(
+        money
+            .attach_observation_scope(UnitKey::new(1), &policy, [0; 32])
+            .await,
+        Err(ObservationRuntimeError::LegacyOverlap),
+    ));
     assert!(money.observation_scope(UnitKey::new(1)).is_none());
     assert_eq!(totals(&gov, &unit).await, (1, 5));
 }
