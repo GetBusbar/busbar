@@ -57,6 +57,13 @@ pub(crate) struct Script {
     respond: Respond,
     seen: Arc<Mutex<Vec<Seen>>>,
     charges: Arc<Mutex<Vec<FaultReason>>>,
+    dropped: Arc<AtomicU64>,
+}
+
+impl Drop for Script {
+    fn drop(&mut self) {
+        self.dropped.fetch_add(1, Ordering::Relaxed);
+    }
 }
 
 impl Script {
@@ -120,21 +127,25 @@ struct Scripted {
     conn: TransportConn,
     seen: Arc<Mutex<Vec<Seen>>>,
     charges: Arc<Mutex<Vec<FaultReason>>>,
+    dropped: Arc<AtomicU64>,
 }
 
 fn scripted(respond: Respond, stall_ms: Option<u32>, quarantined: bool) -> Scripted {
     let seen = Arc::new(Mutex::new(Vec::new()));
     let charges = Arc::new(Mutex::new(Vec::new()));
+    let dropped = Arc::new(AtomicU64::new(0));
     let script = Script {
         quarantined,
         respond,
         seen: Arc::clone(&seen),
         charges: Arc::clone(&charges),
+        dropped: Arc::clone(&dropped),
     };
     Scripted {
         conn: TransportConn::scripted(script, stall_ms, Instant::now()),
         seen,
         charges,
+        dropped,
     }
 }
 
@@ -548,6 +559,112 @@ fn no_e_close_after_close_eof_a_lost_socket_or_quarantine() {
     let mut quarantined = scripted(Box::new(|_: &Seen| Vec::new()), None, true);
     assert_eq!(quarantined.conn.close(CR_DRAIN, now), Ok(None));
     assert_eq!(closes(&quarantined.seen), 0);
+}
+
+#[test]
+fn a_terminal_session_never_calls_the_framer_again() {
+    let now = Instant::now();
+    for lost in [false, true] {
+        let mut s = scripted(Box::new(|_| vec![Out::Close(false)]), None, false);
+        if lost {
+            s.conn.mark_lost();
+        } else {
+            s.conn.ingest(b"close", now).expect("framer close");
+        }
+        let before = seen(&s.seen);
+        assert!(!s.conn.is_live());
+        assert!(matches!(s.conn.timer(now), Err(Ended::Misuse(_))));
+        assert!(matches!(s.conn.ingest(b"late", now), Err(Ended::Misuse(_))));
+        assert!(matches!(
+            s.conn.emit(1, E_BODY, 0, b"late", now),
+            Err(Ended::Misuse(_))
+        ));
+        assert_eq!(seen(&s.seen), before);
+    }
+}
+
+#[test]
+fn core_close_retains_the_handle_until_the_output_owner_is_dropped() {
+    let mut s = scripted(Box::new(|_| vec![Out::Write(b"goodbye")]), None, false);
+    let now = Instant::now();
+    let output = s.conn.close(CR_DRAIN, now).expect("close").expect("output");
+    assert!(!s.conn.is_live());
+    assert_eq!(
+        s.dropped.load(Ordering::Relaxed),
+        0,
+        "close output still owns session custody"
+    );
+    assert!(matches!(s.conn.timer(now), Err(Ended::Misuse(_))));
+    assert_eq!(s.conn.close(CR_DRAIN, now), Ok(None));
+    assert_eq!(
+        s.dropped.load(Ordering::Relaxed),
+        0,
+        "repeat close cannot cancel pending output"
+    );
+    assert_eq!(output, [Act::Write(b"goodbye".to_vec())]);
+    drop(s.conn);
+    assert_eq!(s.dropped.load(Ordering::Relaxed), 1);
+}
+
+struct FlushFailure;
+
+impl AsyncRead for FlushFailure {
+    fn poll_read(
+        self: std::pin::Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+        _: &mut tokio::io::ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Poll::Pending
+    }
+}
+
+impl AsyncWrite for FlushFailure {
+    fn poll_write(
+        self: std::pin::Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+        bytes: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        Poll::Ready(Ok(bytes.len()))
+    }
+
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Poll::Ready(Err(std::io::ErrorKind::BrokenPipe.into()))
+    }
+
+    fn poll_shutdown(
+        self: std::pin::Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+}
+
+#[tokio::test]
+async fn a_framer_close_flush_failure_is_not_clean_completion() {
+    let s = scripted(Box::new(|_| Vec::new()), None, false);
+    let r = rig();
+    let outcome = drive(
+        s.conn,
+        vec![Act::Write(b"goodbye".to_vec()), Act::Close { abort: false }],
+        FlushFailure,
+        r.wiring,
+    )
+    .await;
+    assert!(matches!(outcome, Outcome::Lost(ref e) if e.kind() == std::io::ErrorKind::BrokenPipe));
+    assert_eq!(s.dropped.load(Ordering::Relaxed), 1);
+}
+
+#[tokio::test]
+async fn a_core_close_flush_failure_is_not_clean_completion() {
+    let s = scripted(Box::new(|_| vec![Out::Write(b"goodbye")]), None, false);
+    let r = rig();
+    r.close.send(CR_DRAIN).expect("drain");
+    let outcome = drive(s.conn, Vec::new(), FlushFailure, r.wiring).await;
+    assert!(matches!(outcome, Outcome::Lost(ref e) if e.kind() == std::io::ErrorKind::BrokenPipe));
+    assert_eq!(s.dropped.load(Ordering::Relaxed), 1);
 }
 
 #[test]
