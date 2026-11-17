@@ -1551,6 +1551,7 @@ pub(crate) type DataMounts = (
 );
 
 pub(crate) struct DoorRequest {
+    pub(crate) request: busbar_kernel::limits::process_admission::RequestLease,
     pub(crate) method: axum::http::Method,
 
     pub(crate) uri: axum::http::Uri,
@@ -1659,6 +1660,7 @@ impl DoorRequest {
         let mut headers = ctx.headers;
         headers.remove(busbar_contract::abi::host::service::CARRIER_SESSION_FIELD);
         Some(DoorRequest {
+            request: ctx.request,
             method: axum::http::Method::from_bytes(ctx.method.as_str().as_bytes()).ok()?,
             uri: ctx.uri,
             headers,
@@ -1983,7 +1985,12 @@ impl DataRoutes {
             );
             return self.refused_open(&door, &arrival, carrier, ReasonCode::NoDestination, &text);
         };
-        let opened = match serve_datagram::Opened::open(&claim_door, framer, &arrival.body) {
+        let opened = match serve_datagram::Opened::open(
+            &claim_door,
+            framer,
+            &arrival.body,
+            door.request.clone(),
+        ) {
             Ok(o) => o,
             Err(why) => {
                 let text = crate::root::cold::media_unopened(&why);
@@ -2058,6 +2065,7 @@ impl DataRoutes {
 
     fn arrived(&self, plane: usize, claim: u32, req: DoorRequest) -> (SessionDoor, Arrival, Bytes) {
         let DoorRequest {
+            request,
             method,
             uri,
             headers,
@@ -2101,6 +2109,7 @@ impl DataRoutes {
                 .is_some_and(|c| c.flags & CLAIM_OPEN != 0);
         let key = gov.key;
         let door = SessionDoor {
+            request,
             admission: None,
             plane,
             app,
@@ -2181,6 +2190,7 @@ impl DataRoutes {
             return self.open_datagram_framed(framer, door, arrival).await;
         }
         let SessionDoor {
+            request,
             app,
             principal,
             key,
@@ -2220,7 +2230,12 @@ impl DataRoutes {
                     };
                 }
             };
-            let (arrival, inner, reply) = deframed_arrival(arrival, messages);
+            let Ok((arrival, inner, reply)) = deframed_arrival(arrival, messages, &request) else {
+                return stated(
+                    (refusal_status(ReasonCode::InFlightCap), Vec::new()),
+                    Body::empty(),
+                );
+            };
             let stream = serve_framed::shared(stream);
             let (trailers, trailed) = oneshot::channel();
             let caller = serve_framed::FramedCaller::new(inner, Arc::clone(&stream), trailers);
@@ -2235,6 +2250,7 @@ impl DataRoutes {
                     arrival,
                     None,
                     None,
+                    &request,
                 )
                 .await
             };
@@ -2257,6 +2273,7 @@ impl DataRoutes {
                 arrival,
                 None,
                 None,
+                &request,
             )
             .await
         };
@@ -2974,6 +2991,7 @@ impl Attach {
 }
 
 pub(crate) struct SessionDoor {
+    pub(crate) request: busbar_kernel::limits::process_admission::RequestLease,
     pub(crate) admission: Option<busbar_kernel::inbound::RequestAdmission>,
     pub(crate) plane: usize,
     pub(crate) app: Arc<busbar_kernel::state::App>,
@@ -3054,7 +3072,7 @@ impl<C: SessionCaller> SessionCaller for ClosingCaller<C> {
 }
 
 pub(crate) struct PipeCaller {
-    pub(crate) from: tokio::sync::Mutex<mpsc::Receiver<Vec<u8>>>,
+    pub(crate) from: tokio::sync::Mutex<mpsc::Receiver<busbar_kernel::plane_driver::SessionInput>>,
     pub(crate) to: mpsc::Sender<busbar_kernel::plane_routes::SessionOut>,
 }
 
@@ -3079,7 +3097,12 @@ impl CallerEnd for PipeCaller {
 }
 
 impl busbar_kernel::plane_driver::SessionCaller for PipeCaller {
+    /// Budgeted callers require owned reads; bare reads must not dequeue or strip custody.
     async fn read(&self) -> Option<Vec<u8>> {
+        None
+    }
+
+    async fn read_owned(&self) -> Option<busbar_kernel::plane_driver::SessionInput> {
         self.from.lock().await.recv().await
     }
 }
@@ -3088,23 +3111,34 @@ impl busbar_kernel::plane_driver::SessionCaller for PipeCaller {
 /// several are joined.
 fn deframed_arrival(
     arrival: Arrival,
-    mut messages: Vec<Vec<u8>>,
-) -> (Arrival, IngressCaller, IngressReply) {
-    let deframed = if messages.len() == 1 {
-        Bytes::from(messages.swap_remove(0))
-    } else {
-        let mut joined = bytes::BytesMut::with_capacity(messages.iter().map(Vec::len).sum());
-        for message in &messages {
-            joined.extend_from_slice(message);
-        }
-        joined.freeze()
-    };
+    messages: Vec<Vec<u8>>,
+    request: &busbar_kernel::limits::process_admission::RequestLease,
+) -> Result<
+    (Arrival, IngressCaller, IngressReply),
+    busbar_kernel::limits::process_admission::CapacityDenied,
+> {
+    let deframed = gathered_input(messages, request)?;
     let arrival = Arrival {
         body: deframed.clone(),
         ..arrival
     };
     let (caller, reply) = IngressCaller::arriving(deframed);
-    (arrival, caller, reply)
+    Ok((arrival, caller, reply))
+}
+
+fn gathered_input(
+    messages: Vec<Vec<u8>>,
+    request: &busbar_kernel::limits::process_admission::RequestLease,
+) -> Result<Bytes, busbar_kernel::limits::process_admission::CapacityDenied> {
+    let mut messages = messages.into_iter();
+    let mut joined = request.adopt_input(messages.next().unwrap_or_default())?;
+    for message in messages {
+        let input = request.adopt_input(message)?;
+        joined
+            .try_append(input)
+            .map_err(|_| busbar_kernel::limits::process_admission::CapacityDenied)?;
+    }
+    Ok(joined.into_bytes())
 }
 
 /// THE CALLER'S SIDE OF A DRIVEN UNIT over today's hyper ingress.

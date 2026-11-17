@@ -1187,6 +1187,9 @@ fn session_custody_routes(g: &mut Governed, pools_plane: bool) -> Arc<super::Dat
 
 fn session_custody_request(g: &Governed, target: &str) -> super::DoorRequest {
     super::DoorRequest {
+        request: busbar_kernel::limits::process_admission::ProcessAdmission::new(0)
+            .try_enter(busbar_kernel::limits::process_admission::AdmissionClass::Data)
+            .unwrap(),
         method: axum::http::Method::POST,
         uri: target.parse().expect("fixture target"),
         headers: Default::default(),

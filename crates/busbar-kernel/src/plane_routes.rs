@@ -144,6 +144,7 @@ impl PlaneRouteSpec {
 }
 
 pub struct PlaneReqCtx {
+    pub request: crate::limits::process_admission::RequestLease,
     pub path: String,
 
     pub uri: axum::http::Uri,
@@ -196,7 +197,7 @@ pub struct SessionOut {
 #[derive(Debug)]
 pub struct SessionPipe {
     /// The caller's messages, one per message, text or binary, as bytes.
-    pub from_caller: tokio::sync::mpsc::Sender<Vec<u8>>,
+    pub from_caller: tokio::sync::mpsc::Sender<crate::plane_driver::SessionInput>,
     /// The frames toward the caller.
     pub to_caller: tokio::sync::mpsc::Receiver<SessionOut>,
 }
