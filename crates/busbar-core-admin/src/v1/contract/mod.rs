@@ -262,11 +262,6 @@ pub struct InfoView {
     /// publication, so it never repeats across restarts. The ETag of every config resource is
     /// `"<deployment_id>.<config_generation>"`.
     pub config_generation: u64,
-    /// Whether config-overlay persistence is enabled, i.e. the config is MUTABLE with a writable
-    /// `config.overlay` backend: `true` = API-applied config changes are durable across restarts;
-    /// `false` = the config is LOCKED (`config.locked: true`) and admin-API config mutations are
-    /// refused. Lets tooling tell an operator whether runtime changes are accepted and durable.
-    pub config_persistence: bool,
     /// Conditions an operator should know about this process, oldest first; empty normally.
     pub warnings: Vec<InfoWarning>,
 }

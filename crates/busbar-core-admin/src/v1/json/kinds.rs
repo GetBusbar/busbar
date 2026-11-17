@@ -843,6 +843,20 @@ fn list_row(app: &App, trust: Option<&TrustReadout>, instance: &Instance) -> Val
 /// The `core/trust` state schema's component name in the embedded document (r3 §3.3).
 pub(crate) const CORE_STATE_TRUST: &str = "CoreState_trust";
 
+/// The `core/durability` state schema's component name in the embedded document.
+pub(crate) const CORE_STATE_DURABILITY: &str = "CoreState_durability";
+
+/// The `core/durability` state (ADMIN-API-1.6-ONE-MODEL section 10.1): `store.persistence` is whether
+/// configuration changes made through the API are kept in the Store and survive a restart (`false`
+/// when the configuration is locked and API configuration changes are refused).
+fn durability_state(app: &App) -> Value {
+    let mut store = Map::new();
+    store.insert("persistence", Value::from(app.overlay_path.is_some()));
+    let mut state = Map::new();
+    state.insert("store", Value::from(store));
+    Value::from(state)
+}
+
 /// One component schema of the embedded `openapi.json`, with its `$ref`s to other components
 /// inlined so a Describe `state_schema` stands alone (r5 §5.5); `null` when the embedded document
 /// does not carry it.
@@ -912,6 +926,9 @@ pub(crate) fn describe_of(app: &App, trust: Option<&TrustReadout>, instance: &In
     if instance.category == "core" && instance.id == "trust" {
         members.insert("state", super::trust_inventory::state(trust));
         members.insert("state_schema", embedded_schema(CORE_STATE_TRUST));
+    } else if instance.category == "core" && instance.id == "durability" {
+        members.insert("state", durability_state(app));
+        members.insert("state_schema", embedded_schema(CORE_STATE_DURABILITY));
     } else {
         members.insert("state", Value::new_null());
         members.insert("state_schema", Value::new_null());
