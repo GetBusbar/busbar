@@ -2643,6 +2643,7 @@ async fn build_app_native(
                 &app.exports,
                 &name,
                 app.export_defs.get(&name),
+                app.grammar.read_context().as_deref(),
             ) {
                 app.config_pending_restart.push(format!("export.{name}"));
             }

@@ -270,3 +270,150 @@ mod dropped {
         assert_eq!(refusal.have, "not a regular file");
     }
 }
+
+/// DES-NATIVE-FIRST-PARTY r3 §2.1-§2.2 and §5 L1, L2: an admitted image carries this admission's signer and its
+/// proof, from `evaluate_with_verification` over these bytes, on both the fresh load and the resident hit.
+#[cfg(target_os = "linux")]
+mod signer {
+    use super::*;
+    use crate::sign::{AllowReason, Manifest, TrustPolicy, Verdict, FIRST_PARTY_PUBLISHER};
+
+    /// The native secret fixture, its manifest completed from its own stamp and header.
+    fn fixture(publisher: &str) -> (Vec<u8>, Manifest) {
+        let bytes = crate::test_host::cdylib_bytes("native_pack_fixture");
+        let manifest = crate::pack_native::complete(
+            &bytes,
+            Manifest {
+                name: "native-pack-fixture".into(),
+                alias: "native".into(),
+                kind: "secret".into(),
+                publisher: publisher.into(),
+                ..Manifest::default()
+            },
+            None,
+        )
+        .expect("the native fixture packs");
+        (bytes, manifest)
+    }
+
+    /// The fixture sealed as busbar ships it, and the policy whose release roots verify that seal.
+    fn first_party() -> (Vec<u8>, Manifest, TrustPolicy) {
+        let (bytes, manifest) = fixture(FIRST_PARTY_PUBLISHER);
+        let (sealed, roots) = crate::both_ways::sealed_first_party(manifest, &bytes);
+        let policy = TrustPolicy {
+            first_party_keys: roots,
+            release_clock: Some(crate::release_trust::tests::NOW),
+            binary_version: sealed.version.clone(),
+            ..TrustPolicy::default()
+        };
+        (bytes, sealed, policy)
+    }
+
+    /// L1: release-sealed, an allowlisted third party, `allow_untrusted`, and compiled in.
+    #[test]
+    fn an_admission_carries_its_signer_and_the_proof_behind_it() {
+        let (bytes, sealed, policy) = first_party();
+        let admitted = admit_bytes(&bytes, &sealed, &policy).expect("the sealed fixture admits");
+        assert!(admitted.first_party() && admitted.trusted());
+        match admitted.signer() {
+            Signer::Dropped {
+                verdict:
+                    Verdict::Trusted {
+                        first_party: true, ..
+                    },
+                proof,
+            } => assert!(
+                !proof.signers.is_empty(),
+                "the proof names the signer: {proof:?}"
+            ),
+            other => panic!("a release-sealed image is first party: {other:?}"),
+        }
+
+        let (bytes, manifest) = fixture(crate::test_host::TEST_PUBLISHER);
+        let signed = crate::test_host::test_sign(manifest, &bytes);
+        let admitted = admit_bytes(
+            &bytes,
+            &signed,
+            &crate::test_host::test_trust("native-pack-fixture"),
+        )
+        .expect("the allowlisted third party admits");
+        assert!(admitted.trusted() && !admitted.first_party());
+        match admitted.signer() {
+            Signer::Dropped {
+                verdict:
+                    Verdict::Trusted {
+                        first_party: false, ..
+                    },
+                proof,
+            } => assert!(
+                !proof.signers.is_empty(),
+                "the publisher key is named: {proof:?}"
+            ),
+            other => panic!("an allowlisted publisher is trusted, not first party: {other:?}"),
+        }
+
+        let (bytes, unsigned) = fixture("someone-else");
+        let admitted = admit_bytes(
+            &bytes,
+            &unsigned,
+            &TrustPolicy {
+                allow_untrusted: true,
+                ..TrustPolicy::default()
+            },
+        )
+        .expect("allow_untrusted admits the unsigned fixture");
+        assert!(!admitted.trusted() && !admitted.first_party());
+        assert!(
+            matches!(
+                admitted.signer(),
+                Signer::Dropped {
+                    verdict: Verdict::Allowed {
+                        allow: AllowReason::Untrusted,
+                        ..
+                    },
+                    ..
+                }
+            ),
+            "{:?}",
+            admitted.signer()
+        );
+
+        let linked = admit_linked(&REGISTERED).expect("the engine's own fingerprints admit");
+        assert_eq!(linked.signer(), &Signer::Linked);
+        assert!(linked.first_party() && linked.trusted());
+    }
+
+    /// L2: the same bytes admitted twice. The seal is never corrupted: the second policy drops the publisher
+    /// (the design's fallback form, since a known publisher with an invalid proof is a hard refusal) and opts in
+    /// to `allow_untrusted`. The second admission is a resident hit and carries its own signer, never the first's.
+    #[test]
+    fn the_resident_cache_never_replays_a_signer() {
+        let (bytes, manifest) = fixture(crate::test_host::TEST_PUBLISHER);
+        let signed = crate::test_host::test_sign(manifest, &bytes);
+        let first = admit_bytes(
+            &bytes,
+            &signed,
+            &crate::test_host::test_trust("native-pack-fixture"),
+        )
+        .expect("the allowlisted publisher admits");
+        assert!(first.trusted());
+        let second = admit_bytes(
+            &bytes,
+            &signed,
+            &TrustPolicy {
+                allow_untrusted: true,
+                ..TrustPolicy::default()
+            },
+        )
+        .expect("allow_untrusted admits the same bytes once the publisher is dropped");
+        assert!(
+            Arc::ptr_eq(&first.image, &second.image),
+            "the second admission is a resident hit"
+        );
+        assert!(
+            !second.trusted() && !second.first_party(),
+            "{:?}",
+            second.signer()
+        );
+    }
+}

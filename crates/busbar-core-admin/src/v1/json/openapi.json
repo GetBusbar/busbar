@@ -7997,6 +7997,13 @@
         },
         "noun": "overlay"
       },
+      "plugin.admitted.untrusted": {
+        "data_schema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "noun": "plugin"
+      },
       "plugin.health": {
         "data_schema": {
           "additionalProperties": true,

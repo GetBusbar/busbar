@@ -1244,7 +1244,12 @@ impl AppHandle {
         self.current.store(next.clone());
         *published = true;
         drop(admission);
-        crate::export::plugin::queue_refresh(&next.exports, &next.export_defs, next.config_version);
+        crate::export::plugin::queue_refresh(
+            &next.exports,
+            &next.export_defs,
+            next.config_version,
+            crate::config::ExportRead(next.grammar.read_context()),
+        );
         if let Some(committed) = committed {
             committed.notify();
         }

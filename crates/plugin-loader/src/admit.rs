@@ -38,11 +38,55 @@ pub type TrustConfig = crate::sign::TrustPolicy;
 /// The largest image admit reads (step 1).
 pub const MAX_IMAGE_BYTES: u64 = 256 << 20;
 
-/// An admitted image: its verified stamp, the image that keeps it mapped, and its header.
+/// Who vouches for an admitted image (DES-NATIVE-FIRST-PARTY r3 §2.2): compiled into this build, or exactly
+/// what `sign::evaluate_with_verification` returned over a dropped image's bytes in this admission.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Signer {
+    /// Compiled into this build (`admit_linked` / `admit_header`).
+    Linked,
+    /// Dropped in: this admission's verdict and the proof behind it.
+    Dropped {
+        verdict: crate::sign::Verdict,
+        proof: busbar_artifact_metadata::rows::Verification,
+    },
+}
+
+impl Signer {
+    /// Linked, or verified against an embedded release key (AGREED:156 diagnostics and reserved `busbar_*`
+    /// metrics). Never taken from the self-declared publisher text.
+    #[must_use]
+    pub fn first_party(&self) -> bool {
+        match self {
+            Signer::Linked => true,
+            Signer::Dropped {
+                verdict: crate::sign::Verdict::Trusted { first_party, .. },
+                ..
+            } => *first_party,
+            Signer::Dropped { .. } => false,
+        }
+    }
+
+    /// Linked, or any verified `Trusted` verdict (busbar or an operator-trusted publisher). Never `Allowed`.
+    #[must_use]
+    pub fn trusted(&self) -> bool {
+        matches!(
+            self,
+            Signer::Linked
+                | Signer::Dropped {
+                    verdict: crate::sign::Verdict::Trusted { .. },
+                    ..
+                }
+        )
+    }
+}
+
+/// An admitted image: its verified stamp, the image that keeps it mapped, its header, and who vouched for it.
 #[derive(Clone)]
 pub struct Admitted {
     pub stamp: Stamp,
     pub image: Arc<Image>,
+    /// This admission's signer (§2.1): never cached with the mapped image.
+    signer: Signer,
     /// The header inside `image` (busbar-ffi's checked address of an immutable `'static` header: a
     /// `LinkedPlugin`, or the header of a dropped-in image whose library is never unloaded, I13).
     plugin: Header,
@@ -52,6 +96,24 @@ impl Admitted {
     /// The header, for the registry's describe/open and every instance built over this image.
     pub fn plugin(&self) -> Header {
         self.plugin
+    }
+
+    /// Who vouched for this image in this admission.
+    #[must_use]
+    pub fn signer(&self) -> &Signer {
+        &self.signer
+    }
+
+    /// Linked, or verified against an embedded release key.
+    #[must_use]
+    pub fn first_party(&self) -> bool {
+        self.signer.first_party()
+    }
+
+    /// Linked, or any verified `Trusted` verdict; never `Allowed`.
+    #[must_use]
+    pub fn trusted(&self) -> bool {
+        self.signer.trusted()
     }
 
     /// The verified stamp name (the plugin identity).
@@ -450,6 +512,8 @@ pub(crate) struct Verified {
     pub(crate) kind: KindCode,
     pub(crate) name: String,
     pub(crate) former_names: String,
+    /// This call's verdict and proof (DES-NATIVE-FIRST-PARTY r3 §2.1).
+    pub(crate) signer: Signer,
 }
 
 #[cfg(unix)]
@@ -475,6 +539,7 @@ fn admit_with(
             stamp: v.stamp,
             image: Arc::clone(&r.image),
             plugin: r.plugin,
+            signer: v.signer,
         });
     }
     let (opened, staged) = open_checked(&v)?;
@@ -499,6 +564,7 @@ fn admit_with(
         stamp: v.stamp,
         image,
         plugin,
+        signer: v.signer,
     })
 }
 
@@ -570,15 +636,19 @@ pub(crate) fn verify(
         )
         .named(manifest_name));
     }
-    if let Err(rejected) = crate::sign::evaluate(&bytes, manifest, trust) {
-        return Err(Refusal::new(
-            RefusalCode::Signature,
-            "signature",
-            rejected.reason,
-            "a signature plugins.trust accepts",
-        )
-        .named(manifest_name));
-    }
+    // The one evaluation over these bytes; its verdict and proof are this admission's signer (§2.1).
+    let (verdict, proof) = match crate::sign::evaluate_with_verification(&bytes, manifest, trust) {
+        Ok(judged) => judged,
+        Err(rejected) => {
+            return Err(Refusal::new(
+                RefusalCode::Signature,
+                "signature",
+                rejected.reason,
+                "a signature plugins.trust accepts",
+            )
+            .named(manifest_name));
+        }
+    };
     // 3: exactly one stamp, every field checked.
     let stamp = scan::stamp(&bytes).map_err(|e| e.refusal().named(manifest_name))?;
     let name = scan::text(&stamp.name).to_string();
@@ -593,6 +663,7 @@ pub(crate) fn verify(
         kind,
         name,
         former_names,
+        signer: Signer::Dropped { verdict, proof },
     })
 }
 
@@ -727,6 +798,7 @@ fn admit_header_with(
         stamp,
         image: Arc::new(Image::Linked),
         plugin: header,
+        signer: Signer::Linked,
     })
 }
 

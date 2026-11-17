@@ -477,6 +477,7 @@ fn projection_union_is_the_compute_gate() {
         })
         .collect();
     let cfg = crate::config::ExportCfg {
+        read: Default::default(),
         recorder: None,
         plugins,
     };
