@@ -81,6 +81,17 @@ fn confirm_and_delivery_describe_rules() {
     assert!(run(&describe(&content, &[4], false), M_DELIVER).is_err());
     // pending_capacity 0.
     assert!(run(&describe(&content, &[0], false), M_DELIVER | M_CONFIRM).is_err());
+    // #236 (DES-EXPORT-1.6 r3): the ceiling, 4096, is admitted; above it is refused, never clamped.
+    assert_eq!(
+        run(&describe(&content, &[4096], false), M_DELIVER | M_CONFIRM).unwrap(),
+        Some(4096)
+    );
+    assert!(run(&describe(&content, &[4097], false), M_DELIVER | M_CONFIRM).is_err());
+    assert!(run(
+        &describe(&content, &[u64::MAX], false),
+        M_DELIVER | M_CONFIRM
+    )
+    .is_err());
     // Two D_DELIVERY.
     assert!(run(&describe(&content, &[4, 4], false), M_DELIVER | M_CONFIRM).is_err());
     // M_CONFIRM without STREAM_CONTENT.
