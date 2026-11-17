@@ -529,6 +529,7 @@ pub struct Admitted {
     /// The governance key the `keys` arm resolved (the one verdict that carries one, as 1.5.5's
     /// chain did); `None` for every plugin position.
     pub resolved: Option<Arc<crate::governance::VirtualKey>>,
+    pub signed_authority: Option<crate::auth::SignedRequestAuthority>,
 }
 
 /// A host-claimed request admission. Only a successful hand-in can create one; plugins never
@@ -809,6 +810,7 @@ fn admitted_identity(
     provider: String,
     mut identity: VerifiedIdentity,
     resolved: Option<Arc<crate::governance::VirtualKey>>,
+    signed_authority: Option<crate::auth::SignedRequestAuthority>,
 ) -> (Admitted, Option<Secret<String>>) {
     let credential = identity.credential.take();
     (
@@ -816,6 +818,7 @@ fn admitted_identity(
             provider,
             identity,
             resolved,
+            signed_authority,
         },
         credential,
     )
@@ -836,6 +839,7 @@ fn admission_verdict(admitted: Option<&Admitted>) -> crate::auth::ChainVerdict {
                 |key| crate::auth::principal_from_vkey(key),
             ),
             resolved: admitted.resolved.clone(),
+            signed_authority: admitted.signed_authority.clone(),
         },
     }
 }
@@ -993,6 +997,7 @@ struct UnitState {
     signed_pending: bool,
 
     resolved: Option<Arc<crate::governance::VirtualKey>>,
+    signed_authority: Option<crate::auth::SignedRequestAuthority>,
 }
 
 impl Drop for UnitState {
@@ -1037,6 +1042,7 @@ impl UnitState {
             signed: false,
             signed_pending: false,
             resolved: None,
+            signed_authority: None,
         }
     }
 
@@ -1051,18 +1057,26 @@ impl UnitState {
                     } else {
                         None
                     };
-                    let (admitted, credential) = admitted_identity(provider, id, resolved);
+                    let authority = if provider == crate::config::KEYS_MODULE {
+                        self.signed_authority.take()
+                    } else {
+                        None
+                    };
+                    let (admitted, credential) =
+                        admitted_identity(provider, id, resolved, authority);
                     self.credential = credential;
                     self.admitted = Some(admitted);
                 }
                 self.identities.clear();
                 self.replays.clear();
                 self.resolved = None;
+                self.signed_authority = None;
             }
             Some(Fixed::Denied | Fixed::Overloaded) => {
                 self.identities.clear();
                 self.replays.clear();
                 self.resolved = None;
+                self.signed_authority = None;
             }
             _ => {}
         }
@@ -1542,6 +1556,7 @@ fn signed_then_keys(
     Option<VerifiedIdentity>,
     Vec<Strip>,
     Option<Arc<crate::governance::VirtualKey>>,
+    Option<crate::auth::SignedRequestAuthority>,
 ) {
     // The signed answer's own strips are moved, never copied; the keys arm's follow them.
     let signed_strips = match signed {
@@ -1576,18 +1591,22 @@ fn signed_then_keys(
                             }),
                             named,
                             Some(key),
+                            None,
                         ),
-                        None => (Judged::Denied, None, named, None),
+                        None => (Judged::Denied, None, named, None, None),
                     };
                 }
                 Verified::Pass => Some(named),
-                Verified::Reject | Verified::Failed => return (Judged::Denied, None, named, None),
-                Verified::Overloaded => return (Judged::Overloaded, None, named, None),
+                Verified::Reject | Verified::Failed => {
+                    return (Judged::Denied, None, named, None, None)
+                }
+                Verified::Overloaded => return (Judged::Overloaded, None, named, None, None),
             }
         }
         None => None,
     };
-    let (judged, identity, strips, resolved) = keys_judged(app, gov, candidate, now, expected_aud);
+    let (judged, identity, strips, resolved, authority) =
+        keys_judged(app, gov, candidate, now, expected_aud);
     let named = match signed_strips {
         Some(mut named) => {
             named.extend(strips);
@@ -1595,7 +1614,7 @@ fn signed_then_keys(
         }
         None => strips,
     };
-    (judged, identity, named, resolved)
+    (judged, identity, named, resolved, authority)
 }
 
 fn keys_judged(
@@ -1609,6 +1628,7 @@ fn keys_judged(
     Option<VerifiedIdentity>,
     Vec<Strip>,
     Option<Arc<crate::governance::VirtualKey>>,
+    Option<crate::auth::SignedRequestAuthority>,
 ) {
     let carriers = app.auth.carriers();
     let strips = carriers
@@ -1624,6 +1644,7 @@ fn keys_judged(
         crate::auth::ChainVerdict::Identified {
             principal,
             resolved,
+            signed_authority,
             ..
         } => (
             Judged::Identity,
@@ -1635,8 +1656,9 @@ fn keys_judged(
             }),
             strips,
             resolved,
+            signed_authority,
         ),
-        _ => (Judged::Denied, None, strips, None),
+        _ => (Judged::Denied, None, strips, None, None),
     }
 }
 
@@ -2648,6 +2670,7 @@ impl Inbound {
                                         ..VerifiedIdentity::default()
                                     },
                                     resolved: Some(key),
+                                    signed_authority: None,
                                 });
                                 u.admitted = admitted;
                                 for carrier in table.listener.app.auth.carriers() {
@@ -2798,8 +2821,8 @@ impl Inbound {
             _ => None,
         };
         let replay_provider = signed_provider.as_deref().unwrap_or(provider);
-        let (judged, identity, strips, resolved) = match judging {
-            Judging::Nothing => (Judged::Denied, None, Vec::new(), None),
+        let (judged, identity, strips, resolved, authority) = match judging {
+            Judging::Nothing => (Judged::Denied, None, Vec::new(), None, None),
             Judging::Keys(head, derived, signed) => signed_then_keys(
                 &table.listener.app,
                 gov,
@@ -2812,7 +2835,7 @@ impl Inbound {
             ),
             Judging::Answer(a) => {
                 let (judged, identity, strips) = judged_answer(a);
-                (judged, identity, strips, None)
+                (judged, identity, strips, None, None)
             }
         };
         let replay = identity.as_ref().and_then(|id| {
@@ -2849,6 +2872,7 @@ impl Inbound {
             }
             if resolved.is_some() {
                 u.resolved = resolved;
+                u.signed_authority = authority;
             }
 
             if matches!(target, Target::Unit(_)) {

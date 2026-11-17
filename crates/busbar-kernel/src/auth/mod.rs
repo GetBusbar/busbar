@@ -51,6 +51,9 @@ pub use busbar_contract::auth::CallerToken;
 
 pub use busbar_contract::auth::{AuthVerdict, Principal};
 
+mod signed_request;
+pub use signed_request::SignedRequestAuthority;
+
 /// The whole CHAIN's verdict for one request: admitted-with-identity, admitted-anonymously (the
 /// empty-chain open front door), or denied. Distinct from the per-module [`AuthVerdict`] so the
 /// middleware can attach the principal (or its absence) to the request.
@@ -77,6 +80,8 @@ pub enum ChainVerdict {
         /// construct a `VirtualKey`. When `Some`, enforcement rides it directly and the role-binding
         /// synth is skipped (`resolved.or_else(synth)`). This field is never plugin-facing.
         resolved: Option<std::sync::Arc<crate::governance::VirtualKey>>,
+        /// Only the real signed keys arm can mint this take-once request occurrence.
+        signed_authority: Option<SignedRequestAuthority>,
     },
     Open,
     Denied,
@@ -131,6 +136,7 @@ fn chain_position_verdict(module: &str, verdict: AuthVerdict) -> Option<ChainVer
             module: module.to_string(),
             principal,
             resolved: None,
+            signed_authority: None,
         }),
         AuthVerdict::Reject => Some(ChainVerdict::Denied),
         AuthVerdict::Pass => None,
@@ -953,11 +959,12 @@ pub(crate) fn keys_arm_verdict(
         return ChainVerdict::Denied;
     };
 
-    match gov.verify_token(token, now, expected_aud) {
-        Some(key) => ChainVerdict::Identified {
+    match gov.verify_token_authority(token, now, expected_aud) {
+        Some(authority) => ChainVerdict::Identified {
             module: crate::config::KEYS_MODULE.to_string(),
-            principal: principal_from_vkey(&key),
-            resolved: Some(key),
+            principal: principal_from_vkey(authority.original_key()),
+            resolved: Some(authority.original_key().clone()),
+            signed_authority: Some(SignedRequestAuthority::verified(authority)),
         },
         None => ChainVerdict::Denied,
     }
@@ -1524,6 +1531,7 @@ fn admin_door_from_bindings(
             module,
             principal,
             resolved: Some(key),
+            ..
         } if module == crate::config::KEYS_MODULE && key.admin.is_some() => {
             admin_door_of_key(principal, &key, &rung_of)
         }
@@ -2058,6 +2066,7 @@ async fn claimed_ticket_verdict(
                     module: crate::config::KEYS_MODULE.to_string(),
                     principal: principal_from_vkey(&key),
                     resolved: Some(key),
+                    signed_authority: None,
                 },
                 record,
                 admission,
@@ -2498,6 +2507,7 @@ pub(crate) async fn auth_middleware(
                             module: crate::config::KEYS_MODULE.to_string(),
                             principal: principal_from_vkey(&key),
                             resolved: Some(std::sync::Arc::new(key)),
+                            signed_authority: None,
                         }),
                         None => return Err(unauthorized_response(&app, path, door().as_ref())),
                     }
@@ -2589,6 +2599,12 @@ pub(crate) async fn auth_middleware(
         }
     };
 
+    let signed_authority = match &verdict {
+        ChainVerdict::Identified {
+            signed_authority, ..
+        } => signed_authority.clone(),
+        _ => None,
+    };
     let resolved = match resolve_data_plane_identity(&app, verdict) {
         Ok(admitted)
             if match &inbound {
@@ -2605,6 +2621,9 @@ pub(crate) async fn auth_middleware(
         Ok((principal, gov)) => {
             req.extensions_mut().insert(principal);
             req.extensions_mut().insert(gov);
+            if let Some(authority) = signed_authority {
+                req.extensions_mut().insert(authority);
+            }
             strike_named(
                 &mut req,
                 &mut consumed,
@@ -2648,6 +2667,7 @@ fn resolve_identity_from_bindings(
             module,
             principal,
             resolved,
+            ..
         } => {
             let gov_key = resolved.or_else(|| {
                 crate::governance::synthesize_bound_key(&module, &principal, role_bindings)

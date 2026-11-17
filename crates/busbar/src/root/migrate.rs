@@ -207,23 +207,6 @@ pub(crate) fn stamped() -> bool {
     PENDING.get().is_none()
 }
 
-/// Step 4 (§3 4a, 4b) over the store FST admission handed the boot, before step 5 and before anything
-/// serves: the 1.5.5 rows a store's data step left under IMPORT become native records.
-///
-/// # Errors
-/// The records step's refusal text; the boot refuses with it.
-#[cold]
-#[inline(never)]
-pub(crate) async fn records(
-    core: std::sync::Arc<busbar_kernel::persistence::facade::CoreStore>,
-) -> Result<(), String> {
-    let config = CONFIG_PATH
-        .get()
-        .cloned()
-        .unwrap_or_else(|| PathBuf::from(crate::root::cli::resolve_config_path(None)));
-    crate::root::migrate_records::step4(core, config, stamped()).await
-}
-
 /// Step 4 using the secrets already resolved by the pre-publication boot stages.
 pub(crate) async fn records_with_keys(
     core: std::sync::Arc<busbar_kernel::persistence::facade::CoreStore>,

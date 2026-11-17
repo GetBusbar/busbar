@@ -367,7 +367,7 @@ fn host_admission_keeps_credential_separate_from_the_principal_and_wire_answer()
         credential: Some(Secret::new(secret.to_owned())),
         ..Default::default()
     };
-    let (admitted, credential) = admitted_identity("provider".into(), identity, None);
+    let (admitted, credential) = admitted_identity("provider".into(), identity, None, None);
     assert!(admitted.identity.credential.is_none());
     assert_eq!(
         credential.as_ref().unwrap().expose(&crate::seal::lend()),
@@ -378,6 +378,7 @@ fn host_admission_keeps_credential_separate_from_the_principal_and_wire_answer()
         module,
         principal,
         resolved,
+        ..
     } = admission_verdict(Some(&admitted))
     else {
         panic!("identity remains identified");

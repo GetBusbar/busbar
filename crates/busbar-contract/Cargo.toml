@@ -18,6 +18,7 @@ path = "tests/fixtures/sdk_door_baseline.rs"
 crate-type = ["cdylib"]
 
 [dependencies]
+busbar-count = { path = "../busbar-count" }
 # SDK-SECRET-BUFFER: one shared byte owner, exposed only through the producer facades.
 busbar-secure = { path = "../busbar-secure" }
 # The crypto facade, re-exported whole as `busbar_contract::crypto`.
