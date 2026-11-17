@@ -84,6 +84,9 @@ impl PlaneMoney {
         {
             return Err(NativeAdmissionError::NotLive);
         }
+        if !request.accepts_governance(&self.gov) {
+            return Err(NativeAdmissionError::Phase(AdmissionError::Principal));
+        }
         if !declaration.selected() || attempt_limit.get() as usize > MAX_PREPARATIONS {
             return Err(NativeAdmissionError::Declaration);
         }
@@ -194,6 +197,9 @@ impl PlaneMoney {
         if !request.is_live() {
             return Err(NativeAdmissionError::NotLive);
         }
+        if !request.accepts_governance(&self.gov) {
+            return Err(NativeAdmissionError::Phase(AdmissionError::Principal));
+        }
         let unit = request.unit();
         let lane = format!("{}{PLANE_LANE_SEP}", request.context().instance());
         self.install_child_with(
@@ -228,6 +234,9 @@ impl PlaneMoney {
     ) -> Result<AdmittedRequest, NativeAdmissionError> {
         if !request.is_live() {
             return Err(NativeAdmissionError::NotLive);
+        }
+        if !request.accepts_governance(&self.gov) {
+            return Err(NativeAdmissionError::Phase(AdmissionError::Principal));
         }
         let plan = request
             .cost()
