@@ -407,6 +407,8 @@ pub struct Registry {
     applied: Mutex<HashMap<(KindCode, Box<str>), Applied>>,
     /// Round 31: each instance's settled answer from its last `open`, by configured name, until taken once.
     settled: Mutex<HashMap<Box<str>, Settled>>,
+    /// LEGACY-KEYFILE-MARKER r2 section 3: the marked D_SECRET_PATH pointers of an instance's next converting open.
+    legacy: Mutex<HashMap<Box<str>, Vec<Box<str>>>>,
 }
 
 /// One admitted image as `add` left it: the verified identity, its `former_names` words, whether it is
@@ -487,6 +489,8 @@ pub enum OpenPurpose {
 
 pub struct InstanceSpec<'a> {
     pub purpose: OpenPurpose,
+    /// One Store-open recovery verdict. Never copied to Applied or a serving/reopen context.
+    pub store_migration: Option<Arc<busbar_plugin_abi::host_side::entry::StoreMigrationAdmission>>,
     pub identity: &'a str,
     pub name: &'a str,
     pub config_json: &'a [u8],
@@ -542,6 +546,7 @@ impl Registry {
             ids,
             applied: Mutex::new(HashMap::new()),
             settled: Mutex::new(HashMap::new()),
+            legacy: Mutex::new(HashMap::new()),
         }
     }
 
@@ -1090,9 +1095,24 @@ impl Registry {
                 .filter_map(|(_, b)| core::str::from_utf8(b).ok())
                 .map(Box::from)
                 .collect();
-            let adapter =
-                crate::adapters::transport::TransportAdapter::open(proxy, opened.errors, protocols)
-                    .map_err(crate::answer::open_error)?;
+            let listener_slots = busbar_ports::codec::transport::decode_listener_slots(
+                opened.described.facts,
+                opened
+                    .described
+                    .items
+                    .iter()
+                    .map(|(tag, body)| (*tag, body.as_slice())),
+            )
+            .map_err(|_| {
+                OpenError::Unknown(format!("{}: invalid initial listener slots", spec.name))
+            })?;
+            let adapter = crate::adapters::transport::TransportAdapter::open(
+                proxy,
+                opened.errors,
+                protocols,
+                listener_slots,
+            )
+            .map_err(crate::answer::open_error)?;
             self.remember(&spec, KindCode::Transport, &needs, &refs, None);
             let port: Arc<dyn TransportPort> = Arc::new(adapter);
             Ok(port)
@@ -1157,6 +1177,29 @@ impl Registry {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .remove(name)
+    }
+
+    /// LEGACY-KEYFILE-MARKER r2 §3: the D_SECRET_PATH pointers of instance `name` whose slot carries its 1.5.5
+    /// value, from the migration plan's side table (`busbar_migrate::Plan::legacy_marks`). The instance's next
+    /// open takes them and must be converting: core checks each against the image's D_SECRET_PATH items, writes
+    /// `"$migrated": {"legacy": [..]}` into the bound bag it hands `open`, and strips it from the settled answer.
+    pub fn mark_legacy(&self, name: &str, pointers: &[&str]) {
+        self.legacy
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(
+                Box::from(name),
+                pointers.iter().map(|p| Box::from(*p)).collect(),
+            );
+    }
+
+    /// The marks [`Registry::mark_legacy`] left for instance `name`, once.
+    pub(crate) fn take_legacy(&self, name: &str) -> Vec<Box<str>> {
+        self.legacy
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(name)
+            .unwrap_or_default()
     }
 
     /// Round 6, boot only: the r6 §3 step 2 order, computed generically. `instances[i]` is configured instance i
@@ -1252,6 +1295,7 @@ impl Registry {
                 })?;
             let spec = InstanceSpec {
                 purpose: OpenPurpose::Canonical,
+                store_migration: None,
                 identity: &stored.identity,
                 name: &name,
                 config_json: &merged,
@@ -1298,6 +1342,7 @@ impl Registry {
             })?;
             let spec = InstanceSpec {
                 purpose: OpenPurpose::Canonical,
+                store_migration: None,
                 identity: &stored.identity,
                 name: &name,
                 config_json: &stored.config,
@@ -1516,6 +1561,8 @@ pub enum BootPhase {
 pub struct Settled {
     pub config_json: busbar_contract::secure::SecureVec,
     pub core_cfg: Vec<CoreCfg>,
+    /// False when a converting open answered no CONFIG (#432): `config_json` is then the bag as bound, unchanged.
+    pub answered: bool,
 }
 
 /// section = abi::core_cfg::*; value_json in that section's grammar.

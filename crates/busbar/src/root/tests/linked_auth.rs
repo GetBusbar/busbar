@@ -852,15 +852,17 @@ async fn through_the_loop(
         .map(|(n, v)| (n.parse().unwrap(), v.parse().unwrap()))
         .collect();
     let answer = node
-        .answer(crate::root::units_admin::AdminRequest {
-            method: method.to_string(),
-            path: path.to_string(),
-            credential: crate::root::units_admin::presented_credential(&map),
-            headers,
-            body: Vec::new(),
-            at: 1_700_000_000,
-            unit: node.next_unit(),
-        })
+        .answer(crate::root::units_admin::AdminRequest::test_fixture(
+            crate::root::units_admin::TestAdminRequest {
+                method: method.to_string(),
+                path: path.to_string(),
+                credential: fixture_credential(&map),
+                headers,
+                body: Vec::new(),
+                at: 1_700_000_000,
+                unit: node.next_unit(),
+            },
+        ))
         .await;
     (answer.status, String::from_utf8(answer.body).unwrap())
 }
@@ -957,15 +959,17 @@ async fn a_swapped_admin_chain_is_the_loops_next_door() {
     .await;
     let node = crate::root::units_admin::AdminNode::new(crate::root::kernel::new_kernel(), units);
     async fn ask(node: &crate::root::units_admin::AdminNode) -> u16 {
-        node.answer(crate::root::units_admin::AdminRequest {
-            method: INFO.0.to_string(),
-            path: INFO.1.to_string(),
-            credential: None,
-            headers: Vec::new(),
-            body: Vec::new(),
-            at: 1_700_000_000,
-            unit: node.next_unit(),
-        })
+        node.answer(crate::root::units_admin::AdminRequest::test_fixture(
+            crate::root::units_admin::TestAdminRequest {
+                method: INFO.0.to_string(),
+                path: INFO.1.to_string(),
+                credential: None,
+                headers: Vec::new(),
+                body: Vec::new(),
+                at: 1_700_000_000,
+                unit: node.next_unit(),
+            },
+        ))
         .await
         .status
     }
@@ -1253,4 +1257,29 @@ fn env_ref(var: &str) -> SecretRef {
         .get("env")
         .expect("the linked env source declares the `env:` sugar")
         .reference(var)
+}
+
+/// The fixture request's presented credential: an `authorization` value (a `Bearer` scheme
+/// stripped) or else the `x-admin-token` value; empty values present nothing.
+fn fixture_credential(headers: &axum::http::HeaderMap) -> Option<String> {
+    let authorization = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .map(|value| {
+            let trimmed = value.trim_start();
+            match trimmed.split_once(' ') {
+                Some((scheme, rest)) if scheme.eq_ignore_ascii_case("bearer") => {
+                    rest.trim_start().to_string()
+                }
+                _ => trimmed.to_string(),
+            }
+        })
+        .filter(|credential| !credential.is_empty());
+    authorization.or_else(|| {
+        headers
+            .get(crate::root::units_admin::ADMIN_TOKEN_HEADER)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string)
+            .filter(|credential| !credential.is_empty())
+    })
 }

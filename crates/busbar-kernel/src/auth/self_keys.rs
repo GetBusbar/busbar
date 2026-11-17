@@ -331,6 +331,7 @@ pub(crate) fn resolve_exchange<'a>(
             module,
             principal,
             resolved,
+            ..
         } => {
             if self_mint == Some(false) {
                 return Err(ExchangeError::SelfMintDisabled);

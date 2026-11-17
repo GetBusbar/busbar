@@ -92,13 +92,17 @@ pub(crate) async fn adjust_request(
     if scope != busbar_contract::authz::Scope::Full {
         return Err(GovernanceError::Validation);
     }
-    let keys: Vec<_> = unit
-        .headers
-        .iter()
-        .filter(|(name, _)| name == "idempotency-key")
+    // The original request's header fields; HTTP field names are case-insensitive.
+    let keys: Vec<&[u8]> = unit
+        .headers()
+        .filter(|(name, _)| name.eq_ignore_ascii_case("idempotency-key"))
+        .map(|(_, value)| value)
         .collect();
-    let Some((_, action)) = keys.first() else {
+    let Some(action) = keys.first() else {
         return adjust_effect(body, scope, pool_known, adjuster).await;
+    };
+    let Ok(action) = std::str::from_utf8(action) else {
+        return Err(GovernanceError::Validation);
     };
     if keys.len() != 1
         || action.is_empty()

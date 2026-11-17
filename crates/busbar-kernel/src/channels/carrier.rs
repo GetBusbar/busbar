@@ -30,13 +30,16 @@ use busbar_plugin_abi::plane::{
     CARRIER_HTTP, CARRIER_STDIO, CH_PER_CALLER, CH_SERIAL, DX_BROADCAST, DX_FINAL, DX_OUTSTANDING,
     DX_RESIGHT, P_SIGNAL, P_TEXT,
 };
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
 use tokio::sync::{mpsc, Notify};
 
-use super::frame::{frame, Framer, Framing};
+use super::budget::{Charge, Claim as BudgetClaim, InstanceBudget, UnitBudget};
+use super::frame::{Framer, Framing};
 use super::link::{Claim, Link};
+use super::protected::GuardedWrite;
 use super::respawn::{Respawn, Spawn};
 use super::{Attachment, ChannelMsg, ChannelReq, SessionSignals, UpstreamChannels};
+use crate::limits::output::OutputBuffer;
 use crate::plane_driver::port_channels::Demuxed;
 use crate::plugin_records::RecordsDenied;
 use crate::upstreams::{UpstreamDef, DEFAULT_IDLE_S};
@@ -67,9 +70,9 @@ pub trait Wires: Send + Sync + 'static {
 }
 
 /// The plane's sessionless `demux` (§8.6 DemuxRec): where one framed inbound message goes. `None` = the plane wrote
-/// no DEMUX (slot 0, dropped and audited at debug), or refused (the port handled the image).
+/// no DEMUX (slot 0, dropped and audited at debug). A native port error ends this generation.
 pub trait Demuxer: Send + Sync + 'static {
-    fn demux(&self, key: &str, message: &[u8]) -> Option<Demuxed>;
+    fn demux(&self, key: &str, message: &[u8]) -> Result<Option<Demuxed>, busbar_ports::PortError>;
 }
 
 /// What the driver says happened, for the audit chain and the sighting scheduler.
@@ -117,6 +120,8 @@ impl Counts {
 /// What the generation tasks share with the driver.
 struct Shared {
     instance: u64,
+    owner: busbar_contract::services::Caller,
+    budget: InstanceBudget,
     demuxer: Arc<dyn Demuxer>,
     signals: Arc<dyn SessionSignals>,
     events: Arc<dyn Events>,
@@ -125,6 +130,7 @@ struct Shared {
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct ChanKey {
+    command: Option<super::authority::ChannelAuthority>,
     upstream: Box<str>,
     key: Box<str>,
     subject: Option<[u8; 32]>,
@@ -132,6 +138,15 @@ struct ChanKey {
 
 struct Channel {
     state: tokio::sync::Mutex<ChanState>,
+    _key: Charge,
+    policy: JoinPolicy,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct JoinPolicy {
+    carrier: u32,
+    flags: u32,
+    framing: u32,
 }
 
 #[derive(Default)]
@@ -143,11 +158,13 @@ struct ChanState {
 
 /// One incarnation of a channel: a child or a request, until it ends.
 struct Generation {
+    command: Option<super::authority::ChannelAuthority>,
     number: u64,
     link: Arc<Link>,
     slots: Mutex<HashMap<u64, mpsc::Sender<ChannelMsg>>>,
     next_slot: AtomicU64,
     alive: AtomicBool,
+    stopping: AtomicBool,
     /// Ends the generation (the writer failed): one stored permit is enough.
     stop: Notify,
     upstream: Box<str>,
@@ -174,6 +191,8 @@ impl ChannelDriver {
     #[must_use]
     pub fn new(
         instance: u64,
+        owner: busbar_contract::services::Caller,
+        budget: InstanceBudget,
         wires: Arc<dyn Wires>,
         demuxer: Arc<dyn Demuxer>,
         signals: Arc<dyn SessionSignals>,
@@ -182,6 +201,8 @@ impl ChannelDriver {
         Self {
             shared: Arc::new(Shared {
                 instance,
+                owner,
+                budget,
                 demuxer,
                 signals,
                 events,
@@ -196,6 +217,22 @@ impl ChannelDriver {
     #[must_use]
     pub fn counts(&self) -> Arc<Counts> {
         Arc::clone(&self.shared.counts)
+    }
+
+    fn check_command(
+        &self,
+        req: &ChannelReq<'_>,
+        upstream: &UpstreamDef,
+    ) -> Result<(), RecordsDenied> {
+        req.check_command(upstream)?;
+        if req.carrier == CARRIER_STDIO
+            && !req
+                .command
+                .is_some_and(|proof| proof.accepts(&self.shared.owner))
+        {
+            return Err(RecordsDenied::Invalid);
+        }
+        Ok(())
     }
 
     /// `upstream` was declared anew (config reload or admin reconfigure): a tripped channel of it may spawn again and
@@ -214,13 +251,40 @@ impl ChannelDriver {
         }
     }
 
-    fn channel(&self, key: ChanKey) -> Arc<Channel> {
+    fn channel(
+        &self,
+        key: ChanKey,
+        budget: &UnitBudget,
+        policy: JoinPolicy,
+    ) -> Result<Arc<Channel>, RecordsDenied> {
         let mut channels = self.channels.lock().unwrap_or_else(PoisonError::into_inner);
-        Arc::clone(channels.entry(key).or_insert_with(|| {
-            Arc::new(Channel {
-                state: tokio::sync::Mutex::new(ChanState::default()),
-            })
-        }))
+        channels.retain(|key, _| key.command.as_ref().is_none_or(|proof| proof.is_live()));
+        if let Some(channel) = channels.get(&key) {
+            return if channel.policy == policy {
+                Ok(channel.clone())
+            } else {
+                Err(RecordsDenied::Invalid)
+            };
+        }
+        if channels.len() >= 64 {
+            return Err(RecordsDenied::Unavailable);
+        }
+        let charge = budget
+            .reserve(
+                BudgetClaim {
+                    keys: 1,
+                    ..BudgetClaim::default()
+                },
+                None,
+            )
+            .map_err(|_| RecordsDenied::Unavailable)?;
+        let channel = Arc::new(Channel {
+            state: tokio::sync::Mutex::new(ChanState::default()),
+            _key: charge,
+            policy,
+        });
+        channels.insert(key, channel.clone());
+        Ok(channel)
     }
 
     /// The live generation of `channel`, or a new one: a stdio child waits out its respawn delay and refuses
@@ -235,7 +299,11 @@ impl ChannelDriver {
     ) -> Result<Arc<Generation>, RecordsDenied> {
         let stdio = req.carrier == CARRIER_STDIO;
         let mut state = channel.state.lock().await;
+        self.check_command(req, upstream)?;
         if let Some(live) = &state.live {
+            if live.stopping.load(Ordering::Acquire) {
+                return Err(RecordsDenied::Unavailable);
+            }
             if live.alive.load(Ordering::Acquire) {
                 return Ok(Arc::clone(live));
             }
@@ -250,6 +318,12 @@ impl ChannelDriver {
                 }
             }
         }
+        self.check_command(req, upstream)?;
+        let source = req.budget.storage();
+        let framer =
+            Framer::new(framing, source.clone()).map_err(|_| RecordsDenied::Unavailable)?;
+        let read_buffer = OutputBuffer::with_source(&source, 16 * 1024)
+            .map_err(|_| RecordsDenied::Unavailable)?;
         let wire = match self.wires.open(upstream, req).await {
             Ok(wire) => wire,
             Err(denied) => {
@@ -259,14 +333,24 @@ impl ChannelDriver {
                 return Err(denied);
             }
         };
-        let (link, queue) = Link::new(req.flags & CH_SERIAL != 0);
-        state.generations += 1;
+        self.check_command(req, upstream)?;
+        let (link, queue) = Link::new(
+            req.flags & CH_SERIAL != 0,
+            framing,
+            self.shared.budget.link(),
+        );
+        state.generations = state
+            .generations
+            .checked_add(1)
+            .ok_or(RecordsDenied::Unavailable)?;
         let generation = Arc::new(Generation {
+            command: key.command.clone(),
             number: state.generations,
             link,
             slots: Mutex::new(HashMap::new()),
             next_slot: AtomicU64::new(1),
             alive: AtomicBool::new(true),
+            stopping: AtomicBool::new(false),
             stop: Notify::new(),
             upstream: key.upstream.clone(),
             key: req.key.into(),
@@ -289,7 +373,7 @@ impl ChannelDriver {
             stdio,
             idle,
         };
-        tokio::spawn(run.run(wire, queue));
+        tokio::spawn(run.run(wire, queue, framer, read_buffer));
         Ok(generation)
     }
 
@@ -301,14 +385,36 @@ impl ChannelDriver {
         framing: Framing,
         key: &ChanKey,
     ) -> Result<Attachment, RecordsDenied> {
+        // Reserve before a child/request can open or a greeting can be claimed. The same actual
+        // unit owns this lease while waiting and after publication; cancellation drops it.
+        let lease = req
+            .budget
+            .reserve(
+                BudgetClaim {
+                    leases: 1,
+                    ..BudgetClaim::default()
+                },
+                None,
+            )
+            .map_err(|_| RecordsDenied::Unavailable)?;
         'generations: loop {
+            self.check_command(req, upstream)?;
             let generation = self
                 .generation(channel, upstream, req, framing, key)
                 .await?;
-            let slot = generation.next_slot.fetch_add(1, Ordering::Relaxed);
+            let slot = generation
+                .next_slot
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |next| {
+                    next.checked_add(1)
+                })
+                .map_err(|_| RecordsDenied::Unavailable)?;
             let (greet, ready_tail) = loop {
+                if let Err(denied) = self.check_command(req, upstream) {
+                    generation.link.release_greet(slot);
+                    return Err(denied);
+                }
                 match generation.link.claim_greet(slot) {
-                    Claim::Greeter => break (true, Box::<[u8]>::default()),
+                    Claim::Greeter => break (true, bytes::Bytes::new()),
                     Claim::Ready(tail) => {
                         generation.link.pass_on();
                         break (false, tail);
@@ -327,6 +433,10 @@ impl ChannelDriver {
                 }
             };
             let (tx, rx) = mpsc::channel(SLOT_QUEUE);
+            if let Err(denied) = self.check_command(req, upstream) {
+                generation.link.release_greet(slot);
+                return Err(denied);
+            }
             {
                 let mut slots = generation.slots();
                 if !generation.alive.load(Ordering::Acquire) {
@@ -334,16 +444,28 @@ impl ChannelDriver {
                     generation.link.pass_on();
                     continue 'generations;
                 }
+                slots.retain(|_, tx| !tx.is_closed());
+                if slots.len() >= 256 {
+                    generation.link.release_greet(slot);
+                    return Err(RecordsDenied::Unavailable);
+                }
                 slots.insert(slot, tx);
             }
-            return Ok(Attachment::linked(
+            let attached = Attachment::linked_reserved(
                 Arc::clone(&generation.link),
+                req.budget.clone(),
+                lease,
                 generation.number,
                 slot,
                 greet,
                 ready_tail,
                 rx,
-            ));
+            );
+            if attached.is_err() {
+                generation.slots().remove(&slot);
+                generation.link.release_greet(slot);
+            }
+            return attached;
         }
     }
 }
@@ -357,7 +479,8 @@ impl UpstreamChannels for ChannelDriver {
     ) -> BoxFut<'a, Result<Attachment, RecordsDenied>> {
         let (deadline, instance) = (plane.deadline, plane.instance);
         Box::pin(async move {
-            if instance != self.shared.instance {
+            self.check_command(&req, upstream)?;
+            if instance != self.shared.instance || !self.shared.budget.accepts_unit(req.budget) {
                 return Err(RecordsDenied::Invalid);
             }
             let framing = Framing::of(req.framing).ok_or(RecordsDenied::Invalid)?;
@@ -370,11 +493,19 @@ impl UpstreamChannels for ChannelDriver {
                 None
             };
             let key = ChanKey {
+                command: (req.carrier == CARRIER_STDIO)
+                    .then(|| req.command.cloned())
+                    .flatten(),
                 upstream: upstream.name.clone(),
                 key: req.key.into(),
                 subject,
             };
-            let channel = self.channel(key.clone());
+            let policy = JoinPolicy {
+                carrier: req.carrier,
+                flags: req.flags,
+                framing: req.framing,
+            };
+            let channel = self.channel(key.clone(), req.budget, policy)?;
             let until = tokio::time::Instant::from_std(deadline);
             match tokio::time::timeout_at(until, self.join(&channel, upstream, &req, framing, &key))
                 .await
@@ -405,30 +536,45 @@ struct Run {
 }
 
 impl Run {
-    async fn run(self, wire: Wire, queue: mpsc::UnboundedReceiver<Box<[u8]>>) {
+    async fn run(
+        self,
+        wire: Wire,
+        queue: mpsc::Receiver<GuardedWrite>,
+        mut framer: Framer,
+        mut buf: OutputBuffer,
+    ) {
         let Wire {
             mut read,
             write,
             hold,
         } = wire;
         let writer = tokio::spawn(write_loop(Arc::clone(&self.generation), write, queue));
-        let mut framer = Framer::new(self.generation.framing);
-        let mut buf = vec![0u8; 16 * 1024];
         let poll = self.idle.map_or(Duration::from_secs(3600), |idle| {
             (idle / 4).clamp(Duration::from_millis(10), Duration::from_secs(5))
         });
         let mut check = tokio::time::Instant::now() + poll;
-        let end = loop {
+        let mut discard_tail = false;
+        let end = 'reads: loop {
+            if self.generation.stopping.load(Ordering::Acquire) {
+                break End::Wire;
+            }
+            let loan = match buf.read_loan() {
+                Ok(loan) => loan,
+                Err(_) => break End::Wire,
+            };
             tokio::select! {
-                got = read.read(&mut buf) => match got {
+                got = read.read(loan) => match got {
                     Ok(0) | Err(_) => break End::Wire,
-                    Ok(n) => match framer.push(&buf[..n]) {
-                        Ok(messages) => {
-                            for message in messages {
-                                self.deliver(message).await;
+                    Ok(n) => {
+                        buf.truncate(n);
+                        let mut bytes = buf.as_ref();
+                        loop {
+                            match framer.feed(&mut bytes) {
+                                Ok(Some(message)) => self.deliver(message).await,
+                                Ok(None) => break,
+                                Err(_) => { discard_tail = true; break 'reads End::Wire; }
                             }
                         }
-                        Err(_) => break End::Wire,
                     },
                 },
                 () = self.generation.stop.notified() => break End::Wire,
@@ -440,20 +586,24 @@ impl Run {
                 }
             }
         };
-        if end == End::Wire {
-            if let Some(last) = framer.finish() {
+        if end == End::Wire && !discard_tail {
+            if let Ok(Some(last)) = framer.finish() {
                 self.deliver(last).await;
             }
         }
-        writer.abort();
         drop(read);
         let mut state = self.channel.state.lock().await;
         if self.stdio && end == End::Wire && state.respawn.ended(Instant::now()) {
             self.shared.events.tripped(&self.generation.upstream);
         }
         self.generation.alive.store(false, Ordering::Release);
-        self.generation.slots().clear();
+        self.generation.stopping.store(true, Ordering::Release);
         let _ = self.generation.link.ended();
+        writer.abort();
+        // The state lock prevents a replacement generation from opening until the writer's
+        // actual future has dropped every queued/in-progress payload and its account guards.
+        let _ = writer.await;
+        self.generation.slots().clear();
         self.generation.link.pass_on();
         if state
             .live
@@ -463,13 +613,16 @@ impl Run {
             state.live = None;
         }
         // The wire goes last: whoever sees the child gone finds its generation already ended.
-        drop(state);
         drop(hold);
+        drop(state);
     }
 
     /// One framed inbound message: asks the plane where it goes and routes it.
-    async fn deliver(&self, message: Box<[u8]>) {
+    async fn deliver(&self, message: bytes::Bytes) {
         let generation = &self.generation;
+        if generation.stopping.load(Ordering::Acquire) {
+            return;
+        }
         let demuxer = Arc::clone(&self.shared.demuxer);
         let key = generation.key.clone();
         let routed = tokio::task::spawn_blocking(move || {
@@ -477,9 +630,18 @@ impl Run {
             (message, routed)
         })
         .await;
-        let Ok((message, routed)) = routed else {
-            return;
+        let (message, routed) = match routed {
+            Ok((message, Ok(routed))) => (message, routed),
+            Ok((_, Err(_))) | Err(_) => {
+                generation.stopping.store(true, Ordering::Release);
+                generation.stop.notify_one();
+                return;
+            }
         };
+        if !generation.alive.load(Ordering::Acquire) || generation.stopping.load(Ordering::Acquire)
+        {
+            return;
+        }
         let Some(demuxed) = routed else {
             tracing::debug!(
                 upstream = &*generation.upstream,
@@ -505,17 +667,40 @@ impl Run {
                         .fetch_add(1, Ordering::Relaxed);
                 }
                 None => {
-                    let _ = generation.link.write(demuxed.tail.into());
+                    let sent = GuardedWrite::fallback(
+                        &self.shared.budget,
+                        generation.link.budget(),
+                        generation.framing,
+                        &demuxed.tail,
+                    )
+                    .ok()
+                    .is_some_and(|message| generation.link.write(message).is_ok());
+                    if !sent {
+                        self.shared
+                            .counts
+                            .unattributed
+                            .fetch_add(1, Ordering::Relaxed);
+                    }
                 }
             }
         } else if demuxed.flags & DX_BROADCAST != 0 {
-            let reached = self.shared.signals.signal(
-                self.shared.instance,
-                &demuxed.tail,
-                generation.subject,
-                P_SIGNAL | P_TEXT,
-                &message,
-            );
+            let reached = if let Some(authority) = &generation.command {
+                self.shared.signals.signal_command(
+                    self.shared.instance,
+                    authority,
+                    &demuxed.tail,
+                    P_SIGNAL | P_TEXT,
+                    &message,
+                )
+            } else {
+                self.shared.signals.signal(
+                    self.shared.instance,
+                    &demuxed.tail,
+                    generation.subject,
+                    P_SIGNAL | P_TEXT,
+                    &message,
+                )
+            };
             tracing::debug!(reached, "a channel message was broadcast");
         } else {
             tracing::debug!(
@@ -525,7 +710,7 @@ impl Run {
         }
     }
 
-    fn to_slot(&self, slot: u64, message: Box<[u8]>) {
+    fn to_slot(&self, slot: u64, message: bytes::Bytes) {
         let tx = self.generation.slots().get(&slot).cloned();
         match tx {
             Some(tx) => {
@@ -542,15 +727,15 @@ impl Run {
 async fn write_loop(
     generation: Arc<Generation>,
     write: Option<Box<dyn AsyncWrite + Send + Unpin>>,
-    mut queue: mpsc::UnboundedReceiver<Box<[u8]>>,
+    mut queue: mpsc::Receiver<GuardedWrite>,
 ) {
     let Some(mut write) = write else {
         drop(queue);
         return;
     };
     while let Some(message) = queue.recv().await {
-        let bytes = frame(generation.framing, &message);
-        if write.write_all(&bytes).await.is_err() || write.flush().await.is_err() {
+        if message.write(&mut write).await.is_err() {
+            generation.stopping.store(true, Ordering::Release);
             generation.stop.notify_one();
             return;
         }

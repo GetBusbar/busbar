@@ -32,6 +32,42 @@ use crate::vt::{
     Plain, Starts, VtEntry,
 };
 
+#[cfg(all(test, not(loom)))]
+#[path = "tests/fixed_loan_tests.rs"]
+mod fixed_loan_tests;
+
+std::thread_local! {
+    static TEARDOWN: Cell<bool> = const { Cell::new(false) };
+}
+
+/// True while a native cancel or close is executing, including implicit Drop and raw fallbacks.
+/// An unavailable thread-local is denied; hosts must never inherit an enclosing open's authority.
+pub fn teardown_active() -> bool {
+    TEARDOWN.try_with(Cell::get).unwrap_or(true)
+}
+
+struct Teardown {
+    previous: Option<bool>,
+    _thread: PhantomData<std::rc::Rc<()>>,
+}
+
+impl Teardown {
+    fn enter() -> Self {
+        Self {
+            previous: TEARDOWN.try_with(|active| active.replace(true)).ok(),
+            _thread: PhantomData,
+        }
+    }
+}
+
+impl Drop for Teardown {
+    fn drop(&mut self) {
+        if let Some(previous) = self.previous {
+            let _ = TEARDOWN.try_with(|active| active.set(previous));
+        }
+    }
+}
+
 // ---- answers ----
 
 /// A record head (IF §3): tag, reserved, body length; the body is padded to 8.
@@ -84,29 +120,86 @@ struct Active {
     serial: u64,
     identity: usize,
     max_out: usize,
-    buf: Vec<u8>,
+    buf: ActiveBuffer,
+}
+
+enum ActiveBuffer {
+    Owned(Vec<u8>),
+    Fixed,
+}
+
+struct ActiveStack {
+    entries: [Option<Active>; DEPTH],
+    len: usize,
+}
+
+impl ActiveStack {
+    const fn new() -> Self {
+        Self {
+            entries: [const { None }; DEPTH],
+            len: 0,
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.len
+    }
+
+    fn push(&mut self, active: Active) -> bool {
+        let Some(entry) = self.entries.get_mut(self.len) else {
+            return false;
+        };
+        *entry = Some(active);
+        self.len += 1;
+        true
+    }
+
+    fn last_mut(&mut self) -> Option<&mut Active> {
+        self.entries.get_mut(self.len.checked_sub(1)?)?.as_mut()
+    }
+
+    fn get(&self, serial: u64) -> Option<&Active> {
+        self.entries
+            .iter()
+            .flatten()
+            .find(|entry| entry.serial == serial)
+    }
+
+    fn remove(&mut self, serial: u64) -> Option<ActiveBuffer> {
+        let at = self
+            .entries
+            .iter()
+            .position(|entry| entry.as_ref().is_some_and(|entry| entry.serial == serial))?;
+        let removed = self.entries[at].take()?;
+        for index in at..self.len - 1 {
+            self.entries[index] = self.entries[index + 1].take();
+        }
+        self.len -= 1;
+        Some(removed.buf)
+    }
 }
 
 std::thread_local! {
-    static ACTIVE: RefCell<Vec<Active>> = const { RefCell::new(Vec::new()) };
+    static ACTIVE: RefCell<ActiveStack> = const { RefCell::new(ActiveStack::new()) };
     static NEXT_LEASE: Cell<u64> = const { Cell::new(0) };
 }
 
-/// One entry's out buffer: a pooled `Vec` (zero-filled here) on this thread's ACTIVE stack, and the
-/// `RawOut` the plugin writes through. `!Send`: it belongs to this thread's stack.
-pub struct OutLease {
+/// One entry's owned output or fixed borrowed backing. `!Send`: its ACTIVE registration is
+/// thread-local. A borrowed lease cannot outlive the slice lent by [`Self::with_fixed`].
+pub struct OutLease<'buf> {
     raw: RawOut,
     serial: u64,
+    fixed: Option<&'buf mut [u8]>,
     _thread: PhantomData<*mut ()>,
 }
 
-impl OutLease {
+impl OutLease<'static> {
     /// Lease `buf` (any content; it is zero-filled) for one entry, growing up to `max_out`. None: the
     /// ACTIVE stack is `DEPTH` deep.
-    pub fn new(mut buf: Vec<u8>, max_out: usize) -> Option<OutLease> {
+    pub fn new(mut buf: Vec<u8>, max_out: usize) -> Option<Self> {
         buf.fill(0);
         let raw = RawOut::over(&mut buf);
-        let serial = NEXT_LEASE.get().wrapping_add(1);
+        let serial = NEXT_LEASE.get().checked_add(1)?;
         NEXT_LEASE.set(serial);
         let pushed = ACTIVE.with_borrow_mut(|stack| {
             if stack.len() >= DEPTH {
@@ -116,17 +209,71 @@ impl OutLease {
                 serial,
                 identity: 0,
                 max_out,
-                buf,
-            });
-            true
+                buf: ActiveBuffer::Owned(buf),
+            })
         });
         pushed.then_some(OutLease {
             raw,
             serial,
+            fixed: None,
             _thread: PhantomData,
         })
     }
 
+    /// Lend already charged, caller-owned backing to one synchronous entry. The ACTIVE stack
+    /// stores metadata only: no allocation, copy, growth or pooled retention occurs here. A full
+    /// stack refuses before touching `buf`. Output remains in `buf` when the closure returns;
+    /// the caller's guarded owner is responsible for wiping/freeing it before retiring its charge.
+    ///
+    /// The higher-ranked closure cannot return a lease into the lender:
+    /// ```compile_fail
+    /// use busbar_ffi::host::OutLease;
+    /// let mut bytes = [0; 32];
+    /// let escaped = OutLease::with_fixed(&mut bytes, |lease| {
+    ///     std::mem::replace(lease, OutLease::new(Vec::new(), 0).unwrap())
+    /// });
+    /// ```
+    pub fn with_fixed<R>(
+        buf: &mut [u8],
+        call: impl for<'loan> FnOnce(&mut OutLease<'loan>) -> R,
+    ) -> Option<R> {
+        let serial = NEXT_LEASE.get().checked_add(1)?;
+        let pushed = ACTIVE.with_borrow_mut(|stack| {
+            stack.push(Active {
+                serial,
+                identity: 0,
+                max_out: buf.len(),
+                buf: ActiveBuffer::Fixed,
+            })
+        });
+        if !pushed {
+            return None;
+        }
+        NEXT_LEASE.set(serial);
+        // This guard also removes the registration if the closure replaces and forgets its
+        // lease. The fixed ACTIVE entry contains no pointer into the lender.
+        let _registration = FixedRegistration(serial);
+        buf.fill(0);
+        let raw = RawOut::over(buf);
+        let mut lease = OutLease {
+            raw,
+            serial,
+            fixed: Some(buf),
+            _thread: PhantomData,
+        };
+        Some(call(&mut lease))
+    }
+}
+
+struct FixedRegistration(u64);
+
+impl Drop for FixedRegistration {
+    fn drop(&mut self) {
+        let _ = take_lease(self.0);
+    }
+}
+
+impl OutLease<'_> {
     /// Bytes the plugin wrote.
     pub fn len(&self) -> usize {
         self.raw.len()
@@ -153,40 +300,47 @@ impl OutLease {
     /// Read the answer, `[0, len)`.
     pub fn with_answer<R>(&self, f: impl FnOnce(&[u8]) -> R) -> R {
         let len = self.raw.len();
+        if let Some(buf) = &self.fixed {
+            return f(buf.get(..len).unwrap_or(&[]));
+        }
         ACTIVE.with_borrow(|stack| {
             let answer = stack
-                .iter()
-                .rev()
-                .find(|active| active.serial == self.serial)
-                .and_then(|active| active.buf.get(..len))
+                .get(self.serial)
+                .and_then(|active| match &active.buf {
+                    ActiveBuffer::Owned(buf) => buf.get(..len),
+                    ActiveBuffer::Fixed => None,
+                })
                 .unwrap_or(&[]);
             f(answer)
         })
     }
 
-    /// Give the buffer back to the pool (which zeroes it); `[0, len)` is the answer.
+    /// Give an owned buffer back to the pool (which zeroes it); `[0, len)` is the answer.
+    /// A fixed loan never transfers its caller's backing: it returns an empty buffer and zero.
     pub fn into_buf(self) -> (Vec<u8>, usize) {
         let len = self.raw.len();
-        let buf = take_lease(self.serial).unwrap_or_default();
+        let (buf, len) = match take_lease(self.serial) {
+            Some(ActiveBuffer::Owned(buf)) => (buf, len),
+            Some(ActiveBuffer::Fixed) | None => (Vec::new(), 0),
+        };
         core::mem::forget(self);
         (buf, len)
     }
 }
 
-fn take_lease(serial: u64) -> Option<Vec<u8>> {
+fn take_lease(serial: u64) -> Option<ActiveBuffer> {
     ACTIVE
         .try_with(|stack| {
             let mut stack = stack.borrow_mut();
-            let at = stack.iter().rposition(|active| active.serial == serial)?;
-            Some(stack.remove(at).buf)
+            stack.remove(serial)
         })
         .ok()
         .flatten()
 }
 
-impl Drop for OutLease {
+impl Drop for OutLease<'_> {
     fn drop(&mut self) {
-        if let Some(mut buf) = take_lease(self.serial) {
+        if let Some(ActiveBuffer::Owned(mut buf)) = take_lease(self.serial) {
             buf.fill(0);
             core::hint::black_box(&buf);
         }
@@ -211,18 +365,22 @@ pub fn grow(raw: &mut RawOut, need: usize) -> bool {
         if want > top.max_out {
             return false;
         }
-        if want <= top.buf.len() {
+        let ActiveBuffer::Owned(buf) = &mut top.buf else {
+            // The lender's pointer and capacity stay unchanged for the complete entry.
+            return true;
+        };
+        if want <= buf.len() {
             return true;
         }
-        let cap = want.max(top.buf.len().saturating_mul(2)).min(top.max_out);
+        let cap = want.max(buf.len().saturating_mul(2)).min(top.max_out);
         let mut next = vec![0u8; cap];
-        if let (Some(dst), Some(src)) = (next.get_mut(..len), top.buf.get(..len)) {
+        if let (Some(dst), Some(src)) = (next.get_mut(..len), buf.get(..len)) {
             dst.copy_from_slice(src);
         }
-        top.buf.fill(0);
-        core::hint::black_box(&top.buf);
+        buf.fill(0);
+        core::hint::black_box(&*buf);
         raw.repoint(&mut next);
-        top.buf = next;
+        *buf = next;
         true
     })
 }
@@ -344,10 +502,11 @@ fn invoke5<K: Kind, A1: RawArg, A2: RawArg, A3: RawArg, A4: RawArg, A5: RawArg>(
 
 /// `cancel(inst, tok)` through the image's header.
 fn cancel_raw(header: &Plugin, inst: *const c_void, tok: Token) -> Status {
+    let _teardown = Teardown::enter();
     match header.entries().3 {
         // SAFETY: `cancel` is the image's own header entry; `inst` is null (the image's open slab) or the
-        // image's live instance; the token belongs to the one `Chain` or `Session` calling this from its
-        // `Drop`, so no other entry for it can run (I6). Unknown or stale tokens are a no-op.
+        // image's live instance; the token belongs to the one `Chain` cancelling itself or the `Session`
+        // being dropped, so no other entry for it can run (I6). Unknown or stale tokens are a no-op.
         Some(f) => unsafe { f(inst, tok) },
         None => Status::FAULT,
     }
@@ -538,6 +697,7 @@ impl<K: Kind> Instance<K> {
 
 impl<K: Kind> Drop for Instance<K> {
     fn drop(&mut self) {
+        let _teardown = Teardown::enter();
         if let Some(close) = self.image.header().entries().4 {
             // SAFETY: `close` is the image's own header entry and `inst` its live INSTANCE address. This is
             // the last use: every `Session` holds an `Arc` of this instance and every `Chain` borrows it, so
@@ -767,14 +927,27 @@ impl<K: Kind> Chain<'_, K> {
     pub fn token(&self) -> Token {
         self.tok
     }
+
+    /// Cancel this parked chain, retaining its owner and borrowed buffers until the entry returns.
+    /// The token is retired before entry, so the following Drop cannot cancel it a second time.
+    /// Hosts with caller attribution and fault reporting run this inside their cancellation scope.
+    pub fn cancel(mut self) -> Status {
+        self.cancel_once()
+    }
+
+    fn cancel_once(&mut self) -> Status {
+        let token = core::mem::replace(&mut self.tok, 0);
+        if token == 0 {
+            return Status::OK;
+        }
+        let (header, inst, _) = self.parts();
+        cancel_raw(header, inst, token)
+    }
 }
 
 impl<K: Kind> Drop for Chain<'_, K> {
     fn drop(&mut self) {
-        if self.tok != 0 {
-            let (header, inst, _) = self.parts();
-            let _ = cancel_raw(header, inst, self.tok);
-        }
+        let _ = self.cancel_once();
     }
 }
 
@@ -1059,6 +1232,18 @@ mod tests {
             Status::OK
         }
     }
+    /// `channel` (slot 10): answers REFUSED so a test can tell it apart from `upstream` (slot 1, OK).
+    impl Session1<TargetRef, 10> for Fx {
+        fn on(
+            _p: &(),
+            _h: &'static Host,
+            _s: &mut Sess,
+            _a1: Arg<'_, TargetRef>,
+            _out: &mut Out<'_>,
+        ) -> Status {
+            Status::REFUSED
+        }
+    }
 
     // ---- the transport table ----
 
@@ -1187,7 +1372,7 @@ mod tests {
     };
 
     /// A fresh out lease (one per entry, so an opener's TOKEN is the answer's first record).
-    fn lease() -> OutLease {
+    fn lease() -> OutLease<'static> {
         let Some(lease) = OutLease::new(vec![0; 256], 4096) else {
             panic!("the ACTIVE stack is full");
         };
@@ -1369,6 +1554,22 @@ mod tests {
     /// lookup is one Acquire load and a compare); a session opener (`request`, `probe`, `begin`) makes one
     /// CAS on the session table's free list and its end (`end`, or the handle's drop) one; the handle holds
     /// the instance's `Arc` (strong count +1 from open to end). Steady state: the free list holds a slot.
+    /// The appended plane `channel` entry (slot 10, M_CHANNEL) is a session method on a target,
+    /// built from the image's own slot-10 shim: it reaches that shim, not `upstream`'s (slot 1),
+    /// and makes no slot-table RMW.
+    #[test]
+    fn plane_channel_is_the_appended_session_entry_at_slot_ten() {
+        let plane = open_fixture::<kind::Plane>(&PLANE);
+        let mut session = open_probe(&plane);
+        let upstream = session.call1(|vt| &vt.upstream, Arg::view(&TARGET), &mut lease());
+        assert_eq!(upstream, Status::OK);
+        let rmw = counting::rmw();
+        let channel = session.call1(|vt| &vt.channel, Arg::view(&TARGET), &mut lease());
+        assert_eq!(channel, Status::REFUSED);
+        assert_eq!(counting::rmw(), rmw, "no RMW per channel call");
+        assert_eq!(session.end(|vt| &vt.end, &mut lease()), Status::OK);
+    }
+
     #[test]
     fn session_methods_make_no_slot_rmw_and_open_and_end_one_cas_each() {
         let plane = open_fixture::<kind::Plane>(&PLANE);

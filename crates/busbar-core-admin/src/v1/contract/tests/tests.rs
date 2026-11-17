@@ -5,6 +5,25 @@ use super::*;
 use axum::http::Method;
 
 #[test]
+fn group_read_preserves_selected_policy_and_ordinary_limit_shape() {
+    let group: busbar_kernel::config::GroupCfg = busbar_contract::yaml::from_str("limits:\n  - {requests: 9, per: minute}\n  - {id: selected, upstream_resource: plane/shared, tokens: 7, per: minute, per_key: true, enforcement: process}\nchild_default:\n  limits:\n    - {id: child, upstream_resource: plane/shared, requests: 2, per: minute, per_key: true, enforcement: process}\n").unwrap();
+    let value = serde_json::to_value(GroupView::from_cfg("team", &group)).unwrap();
+    assert_eq!(
+        value["limits"][0],
+        serde_json::json!({"metric":"requests","amount":9,"per":"minute"})
+    );
+    assert_eq!(
+        value["limits"][1],
+        serde_json::json!({"id":"selected","upstream_resource":"plane/shared","metric":"tokens","amount":7,"per":"minute","per_key":true,"enforcement":"process"})
+    );
+    assert_eq!(value["child_default"][0]["id"], "child");
+    assert_eq!(
+        value["child_default"][0]["upstream_resource"],
+        "plane/shared"
+    );
+}
+
+#[test]
 fn mount_constants_are_the_frozen_wire_literals() {
     assert_eq!(API_ROOT, "/api");
     assert_eq!(ADMIN_PREFIX, "/api/v1/admin");

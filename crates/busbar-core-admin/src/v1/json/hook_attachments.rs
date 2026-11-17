@@ -13,17 +13,14 @@
 use std::sync::Arc;
 
 use axum::extract::{Path, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::StatusCode;
 use axum::response::Response;
 use busbar_kernel::config::document_patch::DocumentPatch;
 use busbar_kernel::state::{App, AppHandle};
 use serde_json::{json, Value};
 
 use super::config_document::{apply, DocumentRequest, EditAudit, Planner};
-use super::{
-    err_json, err_json_cond, if_match_version, json_body, respond, response_snapshot,
-    with_config_etag,
-};
+use super::{err_json, err_json_cond, if_match_version, json_body, respond, response_snapshot};
 use crate::v1::contract::taxonomy::Cond;
 use crate::v1::contract::{
     AdminError, HookAttachRequest, HookAttachment, HookPosition, HookPositionWord,
@@ -308,7 +305,7 @@ fn refuse(
 async fn edit(
     handle: Arc<AppHandle>,
     principal: busbar_kernel::auth::AuthPrincipal,
-    headers: HeaderMap,
+    headers: busbar_kernel::inbound::http_projection::AdminHeaders,
     name: String,
     target: String,
     action: &'static str,
@@ -350,20 +347,16 @@ async fn edit(
         };
         next.map(|next| whole_list(&point, &next)).transpose()
     });
-    let installed = match apply(&handle, &actor, expected, audit, plan).await {
-        Ok((installed, _)) => installed,
+    let committed = match apply(&handle, &actor, expected, audit, plan).await {
+        Ok(committed) => committed,
         Err(response) => return *response,
     };
-    let version = installed.config_version;
-    with_config_etag(
-        respond(
-            StatusCode::OK,
-            AdminService::new(response_snapshot(installed).await)
-                .get_hook(&name)
-                .await,
-        ),
-        version,
-    )
+    committed.etag.attach(respond(
+        StatusCode::OK,
+        AdminService::new(response_snapshot(committed.installed).await)
+            .get_hook(&name)
+            .await,
+    ))
 }
 
 fn target_of(point: &Point) -> String {
@@ -380,7 +373,7 @@ pub(crate) async fn put_attachment(
     State(handle): State<Arc<AppHandle>>,
     axum::Extension(principal): axum::Extension<busbar_kernel::auth::AuthPrincipal>,
     Path((name, target)): Path<(String, String)>,
-    headers: HeaderMap,
+    headers: busbar_kernel::inbound::http_projection::AdminHeaders,
     body: axum::body::Bytes,
 ) -> Response {
     let request: HookAttachRequest = match json_body(&body, "hook attachment") {
@@ -404,7 +397,7 @@ pub(crate) async fn delete_attachment(
     State(handle): State<Arc<AppHandle>>,
     axum::Extension(principal): axum::Extension<busbar_kernel::auth::AuthPrincipal>,
     Path((name, target)): Path<(String, String)>,
-    headers: HeaderMap,
+    headers: busbar_kernel::inbound::http_projection::AdminHeaders,
 ) -> Response {
     edit(
         handle,

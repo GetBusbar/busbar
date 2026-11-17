@@ -1460,3 +1460,35 @@ impl GovState {
             .await
     }
 }
+
+impl GovState {
+    /// FEE-DEBT r1: resolve an observer's transferred obligations against their exact pinned
+    /// owners. Applied requires the owner's own selected event Settled at or above the
+    /// transferred revision with the same body, AND its whole existing handoff graph settled.
+    /// Driven by the existing native pulse; no timer, queue or replacement operation.
+    pub(crate) async fn resolve_fee_transfers(&self, observer: &super::fee_debt::FeeDebtObserver) {
+        let mut index = 0;
+        while let Some(capture) = observer.transferred(index) {
+            let Some((operation_id, revision, body)) = capture.transfer_owner() else {
+                index += 1;
+                continue;
+            };
+            let settled = match self.recovery_event(operation_id) {
+                Some(owner)
+                    if owner.state == RecoveryState::Settled
+                        && owner.revision >= revision
+                        && owner.body_fingerprint == body =>
+                {
+                    self.recovery_children_settled(&owner)
+                        .await
+                        .unwrap_or(false)
+                }
+                _ => false,
+            };
+            match settled.then(|| capture.settle_transfer()).flatten() {
+                Some(pinned) => self.fee_release(pinned),
+                None => index += 1,
+            }
+        }
+    }
+}
