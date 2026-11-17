@@ -176,3 +176,134 @@ async fn native_root_shape_retains_all_200_response_slots_until_actual_retiremen
     drop(handles);
     assert!(ledger.admit(key(202)).is_err());
 }
+
+struct ObservedBegin {
+    inner: Arc<dyn TransportPort>,
+    slots: [Box<str>; 1],
+    seen: std::sync::Mutex<Option<(String, String, u64)>>,
+}
+impl TransportPort for ObservedBegin {
+    fn listener_slots(&self) -> &[Box<str>] {
+        &self.slots
+    }
+    fn alpn(&self, role: u32) -> &[Box<str>] {
+        self.inner.alpn(role)
+    }
+    fn defaults(&self, role: u32) -> &[(Box<str>, Box<str>)] {
+        self.inner.defaults(role)
+    }
+    fn protocols(&self) -> &[Box<str>] {
+        self.inner.protocols()
+    }
+    fn facts(&self) -> u64 {
+        busbar_plugin_abi::transport::FB_SERVER | busbar_plugin_abi::transport::FB_WIRE_PROVENANCE
+    }
+    fn begin(
+        &self,
+        input: &ConnIn<'_>,
+        sink: &mut dyn FnMut(busbar_ports::transport::TransportOut<'_>),
+    ) -> Result<busbar_ports::transport::TransportSession, busbar_ports::PortError> {
+        assert_eq!(input.role, busbar_plugin_abi::transport::ROLE_SERVER);
+        assert_eq!(input.flags, busbar_plugin_abi::transport::CONN_ACCEPT);
+        assert!(input.alpn.is_empty() && input.sni.is_empty() && input.tls_peer_cert.is_empty());
+        assert!(
+            input.head.is_empty()
+                && input.leftover.is_empty()
+                && input.local_fingerprint.is_empty()
+        );
+        *self.seen.lock().unwrap() =
+            Some((input.peer.to_owned(), input.local.to_owned(), input.mono_ns));
+        self.inner.begin(input, sink)
+    }
+    fn ingest(
+        &self,
+        s: &mut busbar_ports::transport::TransportSession,
+        bytes: &[u8],
+        sink: &mut dyn FnMut(busbar_ports::transport::TransportOut<'_>),
+    ) -> Result<(), busbar_ports::PortError> {
+        self.inner.ingest(s, bytes, sink)
+    }
+    fn emit(
+        &self,
+        s: &mut busbar_ports::transport::TransportSession,
+        stream: u64,
+        piece: u32,
+        arg: u32,
+        bytes: &[u8],
+        sink: &mut dyn FnMut(busbar_ports::transport::TransportOut<'_>),
+    ) -> Result<(), busbar_ports::PortError> {
+        self.inner.emit(s, stream, piece, arg, bytes, sink)
+    }
+    fn timer(
+        &self,
+        s: &mut busbar_ports::transport::TransportSession,
+        sink: &mut dyn FnMut(busbar_ports::transport::TransportOut<'_>),
+    ) -> Result<(), busbar_ports::PortError> {
+        self.inner.timer(s, sink)
+    }
+    fn datagram(
+        &self,
+        s: &mut busbar_ports::transport::TransportSession,
+        path: u32,
+        secured: bool,
+        bytes: &[u8],
+        sink: &mut dyn FnMut(busbar_ports::transport::TransportOut<'_>),
+    ) -> Result<(), busbar_ports::PortError> {
+        self.inner.datagram(s, path, secured, bytes, sink)
+    }
+    fn event(
+        &self,
+        s: &mut busbar_ports::transport::TransportSession,
+        event: busbar_ports::transport::TransportEvent<'_>,
+        sink: &mut dyn FnMut(busbar_ports::transport::TransportOut<'_>),
+    ) -> Result<(), busbar_ports::PortError> {
+        self.inner.event(s, event, sink)
+    }
+}
+
+#[tokio::test]
+async fn actual_tcp_accept_passes_real_socket_facts_and_host_clock_to_native_begin() {
+    busbar_core_admin::install();
+    let app = crate::root::min3_auth::tests::physical_app().await;
+    let port = Arc::new(ObservedBegin {
+        inner: crate::root::min3_transports::tests::framer(&["http"]),
+        slots: ["admin_listen".into()],
+        seen: Default::default(),
+    });
+    let slot = crate::root::min3_physical::assemble_admin_slot(&app, "admin_listen", port.clone())
+        .unwrap();
+    let budget = ProcessAdmission::with_limits(2, 16 * 1024 * 1024, 16 * 1024 * 1024);
+    let native = NativeListener::new(
+        Arc::new(busbar_kernel::state::AppHandle::new(app)),
+        "admin_listen".into(),
+        port.clone(),
+        budget.clone(),
+        AdmissionClass::Operator,
+        Arc::new(move |_, name| (name == slot.slot()).then(|| slot.clone())),
+        NativeLimits {
+            body_bytes: 1024,
+            stall_ms: None,
+            handshake_timeout: Duration::from_secs(5),
+        },
+    )
+    .unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let server_address = listener.local_addr().unwrap();
+    let client = tokio::net::TcpStream::connect(server_address)
+        .await
+        .unwrap();
+    let client_address = client.local_addr().unwrap();
+    let (stream, _) = listener.accept().await.unwrap();
+    let before = crate::root::loader::dispatch::now_ns();
+    assert!(matches!(
+        native.accepted(stream, None).await,
+        Err(InputError::Transport(_))
+    ));
+    let after = crate::root::loader::dispatch::now_ns();
+    let seen = port.seen.lock().unwrap().take().unwrap();
+    assert_eq!(seen.0, client_address.to_string());
+    assert_eq!(seen.1, server_address.to_string());
+    assert!((before..=after).contains(&seen.2));
+    // The deliberate begin refusal leaves neither connection backing nor request count retained.
+    assert_eq!(budget.used(), (0, 0));
+}
