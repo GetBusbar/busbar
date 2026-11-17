@@ -64,6 +64,10 @@ name = "r131_core_7"
 path = "tests/r131_core_7.rs"
 
 [[test]]
+name = "sdk_secure_custody"
+path = "tests/sdk_secure_custody.rs"
+
+[[test]]
 name = "sdk_surface"
 path = "tests/sdk_surface.rs"
 
