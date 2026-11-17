@@ -97,14 +97,29 @@ fn defs_for(
         .collect()
 }
 
+/// The admitted provider plane serving `proto-a`: every configured model and pool must be served
+/// by a configured provider plane (native provider catalog), so the read reaches the operator check.
+fn provider_plane() -> busbar_kernel::plane_driver::provider_catalog::ProviderPlane {
+    busbar_kernel::plane_driver::provider_catalog::ProviderPlane {
+        instance: "chat".into(),
+        image: "admitted-plane".into(),
+        dialects: ["proto-a".into()].into(),
+        schema: r#"{"type":"object","properties":{},"additionalProperties":false}"#.into(),
+    }
+}
+
 #[test]
 fn a_normalized_1_5_5_token_config_is_refused_with_its_named_remedy() {
     publish_planes(&[&FALLBACK_PLANE]);
     let deploy = busbar_kernel::config::deploy_from_yaml_str(FIXTURE, &fixture_grammar())
         .expect("the fixture parses");
-    let errors = match busbar_kernel::config::resolve(&deploy, &defs_for(&deploy)) {
+    let errors = match busbar_kernel::config::resolve_with_provider_planes(
+        &deploy,
+        &defs_for(&deploy),
+        &[provider_plane()],
+    ) {
         Err(errors) => errors,
-        Ok(cfg) => busbar_kernel::config_validate::validate(&cfg)
+        Ok(resolved) => busbar_kernel::config_validate::validate(&resolved.config)
             .err()
             .unwrap_or_default(),
     };

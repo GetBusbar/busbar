@@ -66,7 +66,7 @@ fn fetch_only_module_at_first_boot_is_refused_naming_the_fetch() {
     let plugins = config.parent().expect("scratch dir").join("plugins");
     let mut text = std::fs::read_to_string(&config).expect("config");
     text.push_str(&format!(
-        "  signing_key: {{{WORD}: signing}}\nplugins:\n  enabled: true\n  dir: {plugins:?}\n  \
+        "auth:\n  signing_key: {{{WORD}: signing}}\nplugins:\n  enabled: true\n  dir: {plugins:?}\n  \
          fetch:\n    - url: https://fixtures.example/{FILE}\n      sha256: \"{}\"\n",
         "0".repeat(64)
     ));

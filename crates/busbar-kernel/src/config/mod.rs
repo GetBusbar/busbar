@@ -725,14 +725,21 @@ pub struct PoolsCfg {
     pub pools: HashMap<String, PoolCfg>,
 }
 
+/// The core `pools:` section's key and the noun its refusals name an entry by.
+const POOLS_SECTION: &str = "pools";
+const POOL_NOUN: &str = "pool";
+
 impl<'de> Deserialize<'de> for PoolsCfg {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
     {
-        let section = crate::config::plane_sections::split_section_for_plane::<D, PoolCfg>(
+        // `pools:` is a core section (WP1-GAP-plane-sections r3 §2.2 rule 1): core types it with
+        // no plane registered, and the native provider catalog resolves its members.
+        let section = busbar_contract::section::split_section::<D, PoolCfg>(
             deserializer,
-            crate::plane_driver::dispatch::fallback_key(),
+            POOLS_SECTION,
+            POOL_NOUN,
             |_, _| Ok(()),
         )?;
         Ok(PoolsCfg {
