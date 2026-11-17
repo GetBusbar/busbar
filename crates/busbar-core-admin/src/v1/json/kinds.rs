@@ -1319,11 +1319,9 @@ pub(crate) mod doc {
     documented!(KindsPage, {
         "type": "object",
         "required": ["items", "next_cursor"],
-        "additionalProperties": false,
         "properties": {
             "items": {"type": "array", "items": {
                 "type": "object",
-                "additionalProperties": false,
                 "required": ["kind", "category", "display", "instance_count", "views", "record_attributes", "descriptors_uniform", "etag"],
                 "properties": {
                     "kind": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,31}$"},
@@ -1343,11 +1341,9 @@ pub(crate) mod doc {
     documented!(InstancesPage, {
         "type": "object",
         "required": ["items", "next_cursor"],
-        "additionalProperties": false,
         "properties": {
             "items": {"type": "array", "items": {
                 "type": "object",
-                "additionalProperties": false,
                 "required": ["id", "name", "plugin", "state", "labels", "etag"],
                 "properties": {
                     "id": {"type": "string"},
@@ -1368,7 +1364,6 @@ pub(crate) mod doc {
 
     documented!(Describe, {
         "type": "object",
-        "additionalProperties": false,
         "required": ["id", "name", "plugin", "labels", "etag", "config", "config_schema", "state", "state_schema", "runtime", "health", "links", "views", "actions"],
         "properties": {
             "id": {"type": "string"},
@@ -1390,7 +1385,6 @@ pub(crate) mod doc {
 
     documented!(ViewPage, {
         "type": "object",
-        "additionalProperties": false,
         "required": ["fields", "rows", "next_cursor", "as_of"],
         "properties": {
             "fields": {"type": "array", "items": {"type": "object"}},
