@@ -25,9 +25,15 @@ impl Reservation {
         !self.published.load(Ordering::Acquire)
     }
 
-    pub(crate) fn check(&self, prior: &Arc<App>) -> Result<(), String> {
+    pub(crate) fn check(&self, handle: &AppHandle, prior: &Arc<App>) -> Result<(), String> {
+        let owner = self
+            .owner
+            .upgrade()
+            .and_then(|owner| owner.handle.upgrade());
         if !self.pending()
-            || self.owner.upgrade().is_none()
+            || owner
+                .as_ref()
+                .is_none_or(|owner| !std::ptr::eq(owner.as_ref(), handle))
             || !self.prior.ptr_eq(&Arc::downgrade(prior))
         {
             return Err(
@@ -66,7 +72,7 @@ impl Context {
         }
         let mut held = self.reservation.lock().await;
         if let Some(reservation) = held.as_ref().filter(|reservation| reservation.pending()) {
-            reservation.check(&expected)?;
+            reservation.check(&handle, &expected)?;
             return Ok(Arc::clone(reservation));
         }
         let epoch = handle.reserve_generation().await?;
@@ -230,6 +236,26 @@ mod tests {
             .is_err());
         assert!(Arc::ptr_eq(&replacement, &handle.load()));
         assert_eq!(replacement.config_generation.load(Ordering::Acquire), epoch);
+    }
+
+    #[tokio::test]
+    async fn reservation_cannot_publish_through_another_handle_of_the_same_app() {
+        let handle = handle();
+        let prior = handle.load();
+        let other = Arc::new(AppHandle::new(Arc::clone(&prior)));
+        let context = Context::new(&handle);
+        let reserved = scoped_async(Some(Arc::clone(&context)), reserve(Some(&prior)))
+            .await
+            .unwrap()
+            .unwrap();
+        let mut next = (*prior).clone();
+        next.publication_generation = Some(reserved);
+        assert!(other
+            .commit_and_swap(Arc::new(next), || Ok(()))
+            .await
+            .is_err());
+        assert!(Arc::ptr_eq(&prior, &handle.load()));
+        assert!(Arc::ptr_eq(&prior, &other.load()));
     }
 
     #[tokio::test]

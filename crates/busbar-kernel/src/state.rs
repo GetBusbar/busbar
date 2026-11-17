@@ -1273,7 +1273,7 @@ impl AppHandle {
             .as_ref()
             .filter(|held| held.pending())
         {
-            held.check(&prior)?;
+            held.check(self, &prior)?;
             if generation != Some(held.epoch()) {
                 return Err("candidate publication epoch differs from its prepared owners".into());
             }
@@ -1348,7 +1348,7 @@ impl AppHandle {
             .filter(|held| held.pending())
         {
             Some(held) => {
-                held.check(&self.load())?;
+                held.check(self, &self.load())?;
                 Ok(held.epoch())
             }
             None => self.reserve_generation().await,
