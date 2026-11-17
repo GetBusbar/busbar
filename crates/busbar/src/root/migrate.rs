@@ -344,6 +344,19 @@ pub(crate) fn admit_for_host(n: u64) -> Result<(), String> {
     admit_answer(n, busbar_kernel::appbuild::bootstrap_at_rest(), &dir)
 }
 
+/// The native Store-open operation's exact core-owned refusal, using its retained resolution verdict.
+pub(crate) fn native_admission_refusal(n: u64, verdict: Result<bool, String>) -> String {
+    let dir = CONFIG_DIR
+        .get()
+        .cloned()
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")));
+    admit_answer(n, Some(verdict), &dir)
+        .err()
+        .unwrap_or_else(|| {
+            "CONFIG: Store recovery admission refused; nothing was written".to_owned()
+        })
+}
+
 /// The gate's verdict for `n` rows, from the bootstrap's at-rest verdict `keys` (`None` = no
 /// bootstrap resolved one) and the config directory `dir`.
 pub(crate) fn admit_answer(

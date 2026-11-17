@@ -19,6 +19,8 @@ use crate::host_services::InvocationContext;
 #[path = "request_registration.rs"]
 mod registration;
 use registration::SelectedCommand;
+#[path = "request_current.rs"]
+mod current;
 
 const REGISTERED: u8 = 0;
 const RESOLVING: u8 = 1;
@@ -577,3 +579,7 @@ mod credential_tests;
 mod registration_support;
 #[cfg(test)]
 pub(crate) use registration_support::CommandAdmissionFixture;
+
+#[cfg(test)]
+#[path = "tests/request_current_tests.rs"]
+mod current_tests;

@@ -17,7 +17,8 @@ fn ledger(spans: usize, responses: usize) -> DeliveryLedger {
         &source(),
         NonZeroUsize::new(spans).unwrap(),
         NonZeroUsize::new(responses).unwrap(),
-    ).unwrap()
+    )
+    .unwrap()
 }
 
 fn key(stream: u64) -> ResponseKey {
@@ -46,7 +47,10 @@ fn part(stream: u64, class: WireClass, len: usize) -> WireEvent {
 fn release(ledger: &mut DeliveryLedger, response: &ResponseHandles, stream: u64) {
     response.release.freeze(key(stream), 1).unwrap();
     response.release.publish(key(stream), 1).unwrap();
-    assert_eq!(ledger.next_control(), Some(DeliveryControl::Release { stream }));
+    assert_eq!(
+        ledger.next_control(),
+        Some(DeliveryControl::Release { stream })
+    );
 }
 
 #[test]
@@ -54,23 +58,32 @@ fn real_partial_prefix_is_attributed_once_before_later_io_failure() {
     let mut ledger = ledger(8, 2);
     let first = ledger.admit(key(1)).unwrap();
     let second = ledger.admit(key(2)).unwrap();
-    ledger.adopt_batch(&[
-        part(1, WireClass::Control, 3),
-        part(2, WireClass::Payload, 2),
-        part(1, WireClass::Payload, 4),
-    ]).unwrap();
+    ledger
+        .adopt_batch(&[
+            part(1, WireClass::Control, 3),
+            part(2, WireClass::Payload, 2),
+            part(1, WireClass::Payload, 4),
+        ])
+        .unwrap();
     ledger.observe(progress(9, 3, 0)).unwrap();
     assert!(!first.watch.snapshot().first_payload_written);
     assert!(!second.watch.snapshot().first_payload_written);
     let mut last = progress(9, 4, 0);
     last.fault = Some(CarrierFault::Io);
-    assert_eq!(ledger.observe(last), Err(ResponseStop::Carrier(CarrierFault::Io)));
+    assert_eq!(
+        ledger.observe(last),
+        Err(ResponseStop::Carrier(CarrierFault::Io))
+    );
     assert!(!first.watch.snapshot().first_payload_written);
     assert!(second.watch.snapshot().first_payload_written);
     assert!(second.watch.snapshot().terminal.is_none());
     ledger.retire_carrier(last, ResponseStop::Carrier(CarrierFault::Io));
-    assert_eq!(second.watch.snapshot().terminal,
-        Some(DeliveryTerminal::Failed(ResponseStop::Carrier(CarrierFault::Io))));
+    assert_eq!(
+        second.watch.snapshot().terminal,
+        Some(DeliveryTerminal::Failed(ResponseStop::Carrier(
+            CarrierFault::Io
+        )))
+    );
 }
 
 #[test]
@@ -78,10 +91,15 @@ fn wire_ready_waits_for_ordered_producer_end_and_reader_eof() {
     let mut ledger = ledger(3, 1);
     let response = ledger.admit(key(1)).unwrap();
     release(&mut ledger, &response, 1);
-    ledger.adopt_batch(&[
-        part(1, WireClass::Control, 2),
-        WireEvent::End { stream: 1, requirement: CompletionRequirement::Flush },
-    ]).unwrap();
+    ledger
+        .adopt_batch(&[
+            part(1, WireClass::Control, 2),
+            WireEvent::End {
+                stream: 1,
+                requirement: CompletionRequirement::Flush,
+            },
+        ])
+        .unwrap();
     ledger.observe(progress(2, 2, 1)).unwrap();
     assert!(ledger.complete_flush(2).is_err());
     ledger.observe(progress(2, 2, 2)).unwrap();
@@ -90,12 +108,18 @@ fn wire_ready_waits_for_ordered_producer_end_and_reader_eof() {
     ledger.producer_ended(1).unwrap();
     assert!(response.watch.snapshot().terminal.is_none());
     ledger.reader_eof(1).unwrap();
-    assert_eq!(response.watch.snapshot(), DeliverySnapshot {
-        first_payload_written: false,
-        terminal: Some(DeliveryTerminal::Complete),
-    });
+    assert_eq!(
+        response.watch.snapshot(),
+        DeliverySnapshot {
+            first_payload_written: false,
+            terminal: Some(DeliveryTerminal::Complete),
+        }
+    );
     ledger.stop(1, ResponseStop::Protocol).unwrap();
-    assert_eq!(response.watch.snapshot().terminal, Some(DeliveryTerminal::Complete));
+    assert_eq!(
+        response.watch.snapshot().terminal,
+        Some(DeliveryTerminal::Complete)
+    );
 }
 
 #[test]
@@ -106,25 +130,34 @@ fn pending_cancel_dominates_release_without_inventing_a_terminal() {
     assert!(response.release.publish(key(1), 2).is_err());
     response.release.publish(key(1), 1).unwrap();
     response.cancel.cancel(ResponseStop::Cancelled);
-    assert_eq!(ledger.next_control(), Some(DeliveryControl::Cancel {
-        stream: 1, reason: ResponseStop::Cancelled,
-    }));
+    assert_eq!(
+        ledger.next_control(),
+        Some(DeliveryControl::Cancel {
+            stream: 1,
+            reason: ResponseStop::Cancelled,
+        })
+    );
     assert_eq!(ledger.next_control(), None);
     assert!(response.watch.snapshot().terminal.is_none());
     assert!(ledger.settle_stopped(1).is_err());
     ledger.quiescent(1).unwrap();
     ledger.settle_stopped(1).unwrap();
-    assert_eq!(response.watch.snapshot().terminal,
-        Some(DeliveryTerminal::Failed(ResponseStop::Cancelled)));
+    assert_eq!(
+        response.watch.snapshot().terminal,
+        Some(DeliveryTerminal::Failed(ResponseStop::Cancelled))
+    );
 }
 
 #[test]
 fn invalid_answer_does_not_adopt_even_its_valid_prefix() {
     let mut ledger = ledger(3, 1);
     ledger.admit(key(1)).unwrap();
-    assert!(ledger.adopt_batch(&[
-        part(1, WireClass::Payload, 1), part(99, WireClass::Payload, 1),
-    ]).is_err());
+    assert!(ledger
+        .adopt_batch(&[
+            part(1, WireClass::Payload, 1),
+            part(99, WireClass::Payload, 1),
+        ])
+        .is_err());
     assert_eq!(ledger.adopted_prefix(), 0);
     assert!(ledger.observe(progress(1, 1, 1)).is_err());
 }
@@ -134,22 +167,31 @@ fn response_retirement_requires_protocol_input_and_settlement_ack() {
     let mut ledger = ledger(2, 1);
     let response = ledger.admit(key(1)).unwrap();
     release(&mut ledger, &response, 1);
-    ledger.adopt_batch(&[WireEvent::End {
-        stream: 1, requirement: CompletionRequirement::Shutdown,
-    }]).unwrap();
+    ledger
+        .adopt_batch(&[WireEvent::End {
+            stream: 1,
+            requirement: CompletionRequirement::Shutdown,
+        }])
+        .unwrap();
     ledger.complete_flush(0).unwrap();
     ledger.producer_ended(1).unwrap();
     ledger.reader_eof(1).unwrap();
     assert!(response.watch.snapshot().terminal.is_none());
     ledger.complete_shutdown(0).unwrap();
     assert!(ledger.retire_response(1).is_err());
-    assert_eq!(ledger.next_control(), Some(DeliveryControl::Settled { stream: 1 }));
+    assert_eq!(
+        ledger.next_control(),
+        Some(DeliveryControl::Settled { stream: 1 })
+    );
     ledger.settled_ack(1).unwrap();
     assert!(ledger.retire_response(1).is_err());
     ledger.quiescent(1).unwrap();
     ledger.retire_response(1).unwrap();
     assert!(ledger.admit(key(1)).is_err());
-    assert!(ledger.admit(key(2)).is_err(), "retained handles still own cell capacity");
+    assert!(
+        ledger.admit(key(2)).is_err(),
+        "retained handles still own cell capacity"
+    );
     drop(response);
     ledger.admit(key(2)).unwrap();
 }
@@ -161,12 +203,49 @@ fn failed_response_retires_after_cancelled_input_is_joined_without_faking_eof() 
     ledger.stop(1, ResponseStop::Cancelled).unwrap();
     ledger.quiescent(1).unwrap();
     ledger.settle_stopped(1).unwrap();
-    assert_eq!(ledger.next_control(), Some(DeliveryControl::Settled { stream: 1 }));
+    assert_eq!(
+        ledger.next_control(),
+        Some(DeliveryControl::Settled { stream: 1 })
+    );
     ledger.settled_ack(1).unwrap();
     assert!(ledger.retire_response(1).is_err());
     ledger.input_retired(1).unwrap();
     ledger.retire_response(1).unwrap();
-    assert_eq!(response.watch.snapshot().terminal, Some(DeliveryTerminal::Failed(ResponseStop::Cancelled)));
+    assert_eq!(
+        response.watch.snapshot().terminal,
+        Some(DeliveryTerminal::Failed(ResponseStop::Cancelled))
+    );
+}
+
+#[test]
+fn idle_wait_retains_binding_until_actual_failed_input_retirement() {
+    let mut ledger = ledger(2, 1);
+    let response = ledger.admit(key(1)).unwrap();
+    ledger.stop(1, ResponseStop::Cancelled).unwrap();
+    ledger.quiescent(1).unwrap();
+    ledger.settle_stopped(1).unwrap();
+    assert_eq!(
+        ledger.next_control(),
+        Some(DeliveryControl::Settled { stream: 1 })
+    );
+    ledger.settled_ack(1).unwrap();
+    let waker = futures::task::noop_waker();
+    let mut cx = Context::from_waker(&waker);
+    assert!(ledger.poll_idle(&mut cx).is_pending());
+    assert!(ledger.has_responses());
+    response.input.retired();
+    assert!(ledger.poll_idle(&mut cx).is_ready());
+    assert!(!ledger.has_responses());
+    assert_eq!(
+        response.watch.snapshot().terminal,
+        Some(DeliveryTerminal::Failed(ResponseStop::Cancelled))
+    );
+    assert!(
+        ledger.admit(key(2)).is_err(),
+        "external handles still retain real slot debt"
+    );
+    drop(response);
+    ledger.admit(key(2)).unwrap();
 }
 
 #[test]
@@ -184,11 +263,17 @@ fn dropped_prepared_answer_does_not_consume_offset_or_capacity() {
 fn span_capacity_is_returned_by_actual_write_not_plaintext_acceptance() {
     let mut ledger = ledger(1, 1);
     ledger.admit(key(1)).unwrap();
-    ledger.adopt_batch(&[part(1, WireClass::Payload, 2)]).unwrap();
+    ledger
+        .adopt_batch(&[part(1, WireClass::Payload, 2)])
+        .unwrap();
     ledger.observe(progress(2, 0, 0)).unwrap();
-    assert!(ledger.adopt_batch(&[part(1, WireClass::Control, 1)]).is_err());
+    assert!(ledger
+        .adopt_batch(&[part(1, WireClass::Control, 1)])
+        .is_err());
     ledger.observe(progress(2, 2, 0)).unwrap();
-    ledger.adopt_batch(&[part(1, WireClass::Control, 1)]).unwrap();
+    ledger
+        .adopt_batch(&[part(1, WireClass::Control, 1)])
+        .unwrap();
 }
 
 #[test]
@@ -197,11 +282,16 @@ fn later_carrier_failure_does_not_rewrite_a_completed_sibling() {
     let first = ledger.admit(key(1)).unwrap();
     let second = ledger.admit(key(2)).unwrap();
     release(&mut ledger, &first, 1);
-    ledger.adopt_batch(&[
-        part(1, WireClass::Control, 2),
-        WireEvent::End { stream: 1, requirement: CompletionRequirement::Flush },
-        part(2, WireClass::Payload, 2),
-    ]).unwrap();
+    ledger
+        .adopt_batch(&[
+            part(1, WireClass::Control, 2),
+            WireEvent::End {
+                stream: 1,
+                requirement: CompletionRequirement::Flush,
+            },
+            part(2, WireClass::Payload, 2),
+        ])
+        .unwrap();
     assert_eq!(ledger.next_fence(), Some((2, CompletionRequirement::Flush)));
     ledger.observe(progress(2, 2, 2)).unwrap();
     ledger.complete_flush(2).unwrap();
@@ -210,11 +300,18 @@ fn later_carrier_failure_does_not_rewrite_a_completed_sibling() {
     let mut last = progress(4, 3, 2);
     last.fault = Some(CarrierFault::WriteZero);
     ledger.retire_carrier(last, ResponseStop::Carrier(CarrierFault::WriteZero));
-    assert_eq!(first.watch.snapshot().terminal, Some(DeliveryTerminal::Complete));
+    assert_eq!(
+        first.watch.snapshot().terminal,
+        Some(DeliveryTerminal::Complete)
+    );
     assert!(!first.watch.snapshot().first_payload_written);
     assert!(second.watch.snapshot().first_payload_written);
-    assert_eq!(second.watch.snapshot().terminal,
-        Some(DeliveryTerminal::Failed(ResponseStop::Carrier(CarrierFault::WriteZero))));
+    assert_eq!(
+        second.watch.snapshot().terminal,
+        Some(DeliveryTerminal::Failed(ResponseStop::Carrier(
+            CarrierFault::WriteZero
+        )))
+    );
 }
 
 #[test]
@@ -222,9 +319,12 @@ fn shutdown_does_not_stand_in_for_a_checked_flush() {
     let mut ledger = ledger(1, 1);
     let response = ledger.admit(key(1)).unwrap();
     release(&mut ledger, &response, 1);
-    ledger.adopt_batch(&[WireEvent::End {
-        stream: 1, requirement: CompletionRequirement::Shutdown,
-    }]).unwrap();
+    ledger
+        .adopt_batch(&[WireEvent::End {
+            stream: 1,
+            requirement: CompletionRequirement::Shutdown,
+        }])
+        .unwrap();
     ledger.producer_ended(1).unwrap();
     ledger.reader_eof(1).unwrap();
     ledger.complete_shutdown(0).unwrap();
@@ -232,24 +332,32 @@ fn shutdown_does_not_stand_in_for_a_checked_flush() {
     ledger.complete_flush(0).unwrap();
     assert!(response.watch.snapshot().terminal.is_none());
     ledger.complete_shutdown(0).unwrap();
-    assert_eq!(response.watch.snapshot().terminal, Some(DeliveryTerminal::Complete));
+    assert_eq!(
+        response.watch.snapshot().terminal,
+        Some(DeliveryTerminal::Complete)
+    );
 }
 
 #[test]
 fn abort_and_quiescence_keep_queued_spans_until_actual_retirement() {
     let mut ledger = ledger(2, 1);
     let response = ledger.admit(key(1)).unwrap();
-    ledger.adopt_batch(&[
-        part(1, WireClass::Payload, 4),
-        WireEvent::Abort { stream: 1 },
-        WireEvent::Quiescent { stream: 1 },
-    ]).unwrap();
+    ledger
+        .adopt_batch(&[
+            part(1, WireClass::Payload, 4),
+            WireEvent::Abort { stream: 1 },
+            WireEvent::Quiescent { stream: 1 },
+        ])
+        .unwrap();
     ledger.observe(progress(4, 1, 0)).unwrap();
     assert!(ledger.settle_stopped(1).is_err());
     assert!(response.watch.snapshot().terminal.is_none());
     ledger.retire_carrier(progress(4, 1, 0), ResponseStop::CarrierRetired);
     assert!(response.watch.snapshot().first_payload_written);
-    assert_eq!(response.watch.snapshot().terminal, Some(DeliveryTerminal::Failed(ResponseStop::Protocol)));
+    assert_eq!(
+        response.watch.snapshot().terminal,
+        Some(DeliveryTerminal::Failed(ResponseStop::Protocol))
+    );
 }
 
 #[test]
@@ -263,9 +371,12 @@ fn input_observers_wake_the_owner_but_cannot_publish_terminal_receipts() {
     let mut ledger = ledger(1, 1);
     let response = ledger.admit(key(1)).unwrap();
     release(&mut ledger, &response, 1);
-    ledger.adopt_batch(&[WireEvent::End {
-        stream: 1, requirement: CompletionRequirement::Flush,
-    }]).unwrap();
+    ledger
+        .adopt_batch(&[WireEvent::End {
+            stream: 1,
+            requirement: CompletionRequirement::Flush,
+        }])
+        .unwrap();
     ledger.complete_flush(0).unwrap();
     let wakeups = Arc::new(Wakeups(AtomicUsize::new(0)));
     let waker = futures::task::waker_ref(&wakeups);
@@ -275,8 +386,14 @@ fn input_observers_wake_the_owner_but_cannot_publish_terminal_receipts() {
     response.input.reader_eof();
     assert!(wakeups.0.load(Ordering::Acquire) > 0);
     assert!(response.watch.snapshot().terminal.is_none());
-    assert_eq!(ledger.poll_control(&mut cx), Poll::Ready(DeliveryControl::Settled { stream: 1 }));
-    assert_eq!(response.watch.snapshot().terminal, Some(DeliveryTerminal::Complete));
+    assert_eq!(
+        ledger.poll_control(&mut cx),
+        Poll::Ready(DeliveryControl::Settled { stream: 1 })
+    );
+    assert_eq!(
+        response.watch.snapshot().terminal,
+        Some(DeliveryTerminal::Complete)
+    );
 }
 
 #[test]
@@ -292,15 +409,24 @@ fn carrier_fault_prevents_new_admission_and_pending_release_before_retirement() 
     assert_eq!(ledger.next_control(), None);
     assert!(response.watch.snapshot().terminal.is_none());
     ledger.retire_carrier(last, ResponseStop::Carrier(CarrierFault::Io));
-    assert_eq!(ledger.next_control(), Some(DeliveryControl::Settled { stream: 1 }));
+    assert_eq!(
+        ledger.next_control(),
+        Some(DeliveryControl::Settled { stream: 1 })
+    );
 }
 
 #[test]
 fn metadata_quote_refuses_overflow_before_any_allocation() {
     let one = NonZeroUsize::new(1).unwrap();
     let huge = NonZeroUsize::new(usize::MAX).unwrap();
-    assert_eq!(DeliveryLedger::required_storage(huge, one), Err(ResponseStop::Capacity));
-    assert_eq!(DeliveryLedger::required_storage(one, huge), Err(ResponseStop::Capacity));
+    assert_eq!(
+        DeliveryLedger::required_storage(huge, one),
+        Err(ResponseStop::Capacity)
+    );
+    assert_eq!(
+        DeliveryLedger::required_storage(one, huge),
+        Err(ResponseStop::Capacity)
+    );
 }
 
 #[test]
@@ -312,14 +438,22 @@ fn ledger_backing_competes_in_the_real_process_account_until_storage_drop() {
     let data_capacity = (BODY_BYTES - OPERATOR_BODY_BYTES) as usize;
     let mut ledger = DeliveryLedger::new(&source, spans, responses).unwrap();
     let response = ledger.admit(key(1)).unwrap();
-    ledger.adopt_batch(&[part(1, WireClass::Payload, 1)]).unwrap();
+    ledger
+        .adopt_batch(&[part(1, WireClass::Payload, 1)])
+        .unwrap();
     ledger.observe(progress(1, 1, 1)).unwrap();
     let rest = source.try_reserve(data_capacity - quote).unwrap();
-    assert!(source.try_reserve(1).is_err(), "consuming spans retains array capacity");
+    assert!(
+        source.try_reserve(1).is_err(),
+        "consuming spans retains array capacity"
+    );
     drop(ledger);
     let reclaimed = source.try_reserve(quote).unwrap();
     assert!(response.watch.snapshot().first_payload_written);
-    assert!(response.watch.snapshot().terminal.is_none(), "owner drop is not a receipt");
+    assert!(
+        response.watch.snapshot().terminal.is_none(),
+        "owner drop is not a receipt"
+    );
     // Fixed read/control cells use the named control-layout exclusion, not array-byte credit.
     drop((reclaimed, rest, response));
     source.try_reserve(data_capacity).unwrap();
@@ -331,7 +465,10 @@ fn unfunded_ledger_refuses_atomically_before_request_exposure() {
     let one = NonZeroUsize::new(1).unwrap();
     let data_capacity = (BODY_BYTES - OPERATOR_BODY_BYTES) as usize;
     let occupied = source.try_reserve(data_capacity).unwrap();
-    assert!(matches!(DeliveryLedger::new(&source, one, one), Err(ResponseStop::Capacity)));
+    assert!(matches!(
+        DeliveryLedger::new(&source, one, one),
+        Err(ResponseStop::Capacity)
+    ));
     drop(occupied);
     let ledger = DeliveryLedger::new(&source, one, one).unwrap();
     drop(ledger);
@@ -345,7 +482,9 @@ fn anonymous_security_keeps_the_exact_storage_origin_and_progress_reader() {
 
     struct TestReader;
     impl CarrierProgressReader for TestReader {
-        fn snapshot(&self) -> CarrierProgress { progress(0, 0, 0) }
+        fn snapshot(&self) -> CarrierProgress {
+            progress(0, 0, 0)
+        }
     }
     let source = source();
     let reader: Arc<dyn CarrierProgressReader> = Arc::new(TestReader);
@@ -357,8 +496,16 @@ fn anonymous_security_keeps_the_exact_storage_origin_and_progress_reader() {
     assert!(Arc::ptr_eq(&reader, &secured.progress));
     assert!(secured.peer_certificate.is_empty());
     let mut original = source.try_reserve(1).unwrap();
-    original.try_merge(secured.storage.try_reserve(1).unwrap()).unwrap();
+    original
+        .try_merge(secured.storage.try_reserve(1).unwrap())
+        .unwrap();
     assert_eq!(original.len(), 2);
-    assert!(original.try_merge(ProcessAdmission::new(0)
-        .connection_storage(AdmissionClass::Data).try_reserve(1).unwrap()).is_err());
+    assert!(original
+        .try_merge(
+            ProcessAdmission::new(0)
+                .connection_storage(AdmissionClass::Data)
+                .try_reserve(1)
+                .unwrap()
+        )
+        .is_err());
 }

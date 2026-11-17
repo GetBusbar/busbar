@@ -37,6 +37,10 @@ use std::sync::Arc;
 use std::task::Poll;
 use std::time::{Duration, Instant};
 
+use crate::response_delivery::{DeliveryControl, DeliveryLedger, ResponseHandles};
+use busbar_contract::response_delivery::{
+    CarrierProgressReader, CompletionRequirement, ResponseKey, ResponseStop, WireClass,
+};
 use busbar_contract::secure::{SecureVec, Tail};
 use busbar_plugin_abi::fail::FaultReason;
 use busbar_plugin_abi::records::RecErr;
@@ -49,8 +53,12 @@ use tokio::sync::{mpsc, oneshot};
 
 use super::StreamHolds;
 
+#[path = "session_delivery.rs"]
+mod delivery;
 #[path = "session_storage.rs"]
 mod storage;
+pub use delivery::Delivery;
+use delivery::DeliveryIo;
 pub use storage::{Name, Payload};
 /// A complete callback answer whose backing charge follows its consumer.
 pub type Actions = storage::Items<Act>;
@@ -96,6 +104,21 @@ fn protocol_ids(ids: &[Box<str>]) -> Vec<Vec<u8>> {
 pub enum Act {
     /// WRITE: bytes for the socket, in order.
     Write(Payload),
+    /// Serializer-attributed ordered wire bytes, retaining their charged backing.
+    WirePart {
+        stream: u64,
+        class: WireClass,
+        bytes: Payload,
+    },
+    /// A finite response wire prefix requiring an actual carrier operation.
+    WireEnd {
+        stream: u64,
+        requirement: CompletionRequirement,
+    },
+    /// Protocol abort; its opaque protocol code grants no host reason authority.
+    Abort(u64),
+    /// The serializer cannot publish further bytes for this response.
+    Quiescent(u64),
     /// CLOSE: close the connection (`abort` = without flushing).
     Close {
         /// CLOSE_ABORT rather than CLOSE_GRACEFUL.
@@ -181,6 +204,7 @@ pub(crate) struct Answers {
     acts: Actions,
     source: busbar_contract::storage::StorageSource,
     capacity_failed: bool,
+    provenance: bool,
     /// STREAM_FULL streams of this answer, judged at its end (STREAM_OPENED may come later in it).
     full: storage::Items<u64>,
     opened: Option<u64>,
@@ -203,6 +227,7 @@ impl Answers {
             full: storage::Items::new(&source)?,
             source,
             capacity_failed: false,
+            provenance: false,
             opened: None,
             closing: false,
             broke: None,
@@ -250,6 +275,10 @@ impl Answers {
         if self.broke.is_some() || self.capacity_failed {
             return Ok(());
         }
+        if self.provenance && matches!(out, TransportOut::Write(_)) {
+            self.breach();
+            return Ok(());
+        }
         if self.called == Called::Close {
             match out {
                 TransportOut::Write(bytes) if !self.closing => {
@@ -260,11 +289,62 @@ impl Answers {
                     self.closing = true;
                     self.acts.push(Act::Close { abort })?;
                 }
+                TransportOut::WirePart {
+                    stream,
+                    class,
+                    bytes,
+                } if !self.closing => self.acts.push(Act::WirePart {
+                    stream,
+                    class,
+                    bytes: Payload::copy(&self.source, bytes)?,
+                })?,
+                TransportOut::WireEnd {
+                    stream,
+                    requirement,
+                } if !self.closing => self.acts.push(Act::WireEnd {
+                    stream,
+                    requirement,
+                })?,
+                TransportOut::ResponseAbort { stream, .. } if !self.closing => {
+                    self.acts.push(Act::Abort(stream))?
+                }
+                TransportOut::ResponseQuiescent(stream) if !self.closing => {
+                    self.acts.push(Act::Quiescent(stream))?
+                }
                 _ => self.breach(),
             }
             return Ok(());
         }
+        if matches!(
+            self.called,
+            Called::Emit {
+                piece: wire::E_DELIVERY_SETTLED,
+                ..
+            }
+        ) && !matches!(out, TransportOut::ResponseQuiescent(_))
+        {
+            self.breach();
+            return Ok(());
+        }
         match out {
+            TransportOut::WirePart {
+                stream,
+                class,
+                bytes,
+            } => self.acts.push(Act::WirePart {
+                stream,
+                class,
+                bytes: Payload::copy(&self.source, bytes)?,
+            })?,
+            TransportOut::WireEnd {
+                stream,
+                requirement,
+            } => self.acts.push(Act::WireEnd {
+                stream,
+                requirement,
+            })?,
+            TransportOut::ResponseAbort { stream, .. } => self.acts.push(Act::Abort(stream))?,
+            TransportOut::ResponseQuiescent(stream) => self.acts.push(Act::Quiescent(stream))?,
             TransportOut::Write(bytes) => self
                 .acts
                 .push(Act::Write(Payload::copy(&self.source, bytes)?))?,
@@ -315,11 +395,20 @@ impl Answers {
             TransportOut::Pause => self.acts.push(Act::Pause)?,
             TransportOut::Resume => self.acts.push(Act::Resume)?,
             TransportOut::StreamFull(stream) => match self.called {
-                Called::Emit { .. } => self.full.push(stream)?,
+                Called::Emit { piece, .. }
+                    if !matches!(piece, wire::E_RELEASE | wire::E_DELIVERY_SETTLED) =>
+                {
+                    self.full.push(stream)?
+                }
                 _ => self.breach(),
             },
             TransportOut::StreamWritable(stream) => match self.called {
-                Called::Ingest | Called::Timer => {
+                Called::Ingest
+                | Called::Timer
+                | Called::Emit {
+                    piece: wire::E_RELEASE,
+                    ..
+                } => {
                     if self.holds.release(stream) {
                         self.acts.push(Act::Writable(stream))?;
                     }
@@ -456,6 +545,21 @@ pub(crate) enum Call<'a> {
 }
 
 impl TransportConn {
+    fn reject_output(&mut self, reason: ResponseStop) -> Ended {
+        if reason == ResponseStop::Capacity {
+            self.backend = None;
+            return Ended::Capacity;
+        }
+        match self.backend.take() {
+            Some(Backend::Port { handle, .. }) => {
+                let _ = handle.instance().charge(GRAMMAR);
+            }
+            #[cfg(test)]
+            Some(Backend::Script(script)) => script.charged(GRAMMAR),
+            None => {}
+        }
+        Ended::Fault(GRAMMAR)
+    }
     /// The immutable admitted connection account; upgrades retain this origin rather than
     /// constructing another process budget or selecting a class from protocol input.
     #[must_use]
@@ -476,6 +580,7 @@ impl TransportConn {
     ) -> Result<(Self, Actions), Ended> {
         let mut answers =
             Answers::with_source(stall_ms, now, storage).map_err(|_| Ended::Capacity)?;
+        answers.provenance = port.facts() & wire::FB_WIRE_PROVENANCE != 0;
         answers.start(Called::Begin, now);
         let handle = port
             .begin(conn, &mut |out| answers.take(out))
@@ -548,7 +653,17 @@ impl TransportConn {
         if piece == wire::E_CLOSE {
             return Err(Ended::Misuse("E_CLOSE goes through TransportConn::close"));
         }
-        if self.answers.is_held(stream) && !matches!(piece, wire::E_RESET | wire::E_REFUSE) {
+        if matches!(piece, wire::E_RELEASE | wire::E_DELIVERY_SETTLED)
+            && (arg != 0 || !bytes.is_empty())
+        {
+            return Err(Ended::Misuse("delivery controls carry no protocol payload"));
+        }
+        if self.answers.is_held(stream)
+            && !matches!(
+                piece,
+                wire::E_RESET | wire::E_REFUSE | wire::E_RELEASE | wire::E_DELIVERY_SETTLED
+            )
+        {
             return Err(Ended::Misuse("an emit on a held stream"));
         }
         let call = Call::Emit {
@@ -631,7 +746,16 @@ impl TransportConn {
     }
 
     fn call(&mut self, called: Called, call: Call<'_>, now: Instant) -> Result<Actions, Ended> {
-        if !self.is_live() {
+        let settlement = matches!(
+            called,
+            Called::Emit {
+                piece: wire::E_DELIVERY_SETTLED,
+                ..
+            }
+        );
+        if !self.is_live()
+            && !(settlement && self.backend.is_some() && !self.lost && !self.core_closed)
+        {
             return Err(Ended::Misuse("a call after the session was over"));
         }
         let Self {
@@ -727,6 +851,21 @@ pub struct Feed {
     pub opened: Option<oneshot::Sender<u64>>,
 }
 
+/// A reserved registration command, sent in original host-head order before exposing a response.
+pub struct RegisterResponse {
+    /// The original admitted response identity; host stream numbers are never reused.
+    pub key: ResponseKey,
+    /// Receipt of the actual bounded ledger admission, including scoped finalizer handles.
+    pub admitted: oneshot::Sender<Result<ResponseHandles, ResponseStop>>,
+}
+impl std::fmt::Debug for RegisterResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RegisterResponse")
+            .field("key", &self.key)
+            .finish_non_exhaustive()
+    }
+}
+
 /// What the framer handed core for a stream, owned, in order.
 #[derive(Debug)]
 pub enum Inbound {
@@ -772,6 +911,10 @@ pub enum Inbound {
 /// What [`drive`] is given beside the session and the connection.
 #[derive(Debug)]
 pub struct Wiring {
+    /// Required funded response ledger, created from the same trusted account with explicit bounds.
+    pub delivery: DeliveryLedger,
+    /// Dedicated bounded admission queue, independent of held or full body feeds.
+    pub registrations: mpsc::Receiver<RegisterResponse>,
     /// Feeds core attaches as streams appear (and, ROLE_CLIENT, as it opens them).
     pub feeds: mpsc::Receiver<Feed>,
     /// Where the framer's stream items go. When it is full the task stops reading the connection.
@@ -803,6 +946,8 @@ pub enum Outcome<S> {
     /// session (which still owns the response until the next transport's `begin` returns OK), the protocol
     /// and the leftover bytes go back to core.
     Upgraded {
+        /// Original progress and response ownership survive the transport handoff.
+        delivery: Delivery,
         /// The HTTP session.
         conn: TransportConn,
         /// The connection.
@@ -857,6 +1002,8 @@ fn next_piece(slots: &mut Slots) -> impl std::future::Future<Output = Next> + '_
 enum Flow {
     Go,
     Closed,
+    Aborted,
+    Rejected(ResponseStop),
     Lost(std::io::Error),
     Upgrade(Name, Payload),
 }
@@ -874,31 +1021,45 @@ impl Task {
     async fn apply<S: AsyncWrite + Unpin>(
         &mut self,
         acts: Actions,
-        io: &mut S,
+        io: &mut DeliveryIo<S>,
         write_timeout: Duration,
     ) -> Flow {
+        let mut prefix = io.ledger().adopted_prefix();
+        if let Err(reason) = io.prepare(&acts) {
+            return Flow::Rejected(reason);
+        }
         let mut wrote = false;
         let deadline = tokio::time::Instant::now() + write_timeout;
         for act in acts {
             match act {
-                Act::Write(mut bytes) => {
+                Act::Write(mut bytes) | Act::WirePart { mut bytes, .. } => {
+                    prefix += bytes.len() as u64; // checked by whole-answer preparation
                     if let Err(error) = write_bounded(io, &mut bytes, deadline).await {
                         return Flow::Lost(error);
                     }
                     wrote = true;
                 }
+                Act::WireEnd { requirement, .. } => {
+                    if let Err(error) = finish_prefix(io, prefix, requirement, deadline).await {
+                        return Flow::Lost(error);
+                    }
+                    wrote = false;
+                }
+                Act::Abort(_) => {}
+                Act::Quiescent(stream) => {
+                    // Only succeeds for stopped responses whose indivisible bytes have settled.
+                    let _ = io.ledger().settle_stopped(stream);
+                }
                 Act::Close { abort } => {
                     if !abort {
-                        if wrote {
-                            if let Err(error) = flush_bounded(io, deadline).await {
-                                return Flow::Lost(error);
-                            }
-                        }
-                        if let Err(error) = shut_bounded(io, deadline).await {
+                        if let Err(error) =
+                            finish_prefix(io, prefix, CompletionRequirement::Shutdown, deadline)
+                                .await
+                        {
                             return Flow::Lost(error);
                         }
                     }
-                    return Flow::Closed;
+                    return if abort { Flow::Aborted } else { Flow::Closed };
                 }
                 Act::Wake(ns) => {
                     let (now, mono) = crate::off_path::framing::session_clock();
@@ -1009,38 +1170,62 @@ async fn shut_bounded<S: AsyncWrite + Unpin>(
         .unwrap_or_else(|_| Err(timed_out()))
 }
 
+async fn finish_prefix<S: AsyncWrite + Unpin>(
+    io: &mut DeliveryIo<S>,
+    prefix: u64,
+    requirement: CompletionRequirement,
+    deadline: tokio::time::Instant,
+) -> std::io::Result<()> {
+    flush_bounded(io, deadline).await?;
+    io.complete_flush(prefix)?;
+    if requirement == CompletionRequirement::Shutdown {
+        shut_bounded(io, deadline).await?;
+        io.complete_shutdown(prefix)?;
+    }
+    Ok(())
+}
+
 /// Core closes the session with `reason`: E_CLOSE once (or skipped and counted), its bytes written under
 /// the write timeout (the drain grace for CR_DRAIN), its CLOSE applied; the handle drops when `conn` does,
 /// after the bytes are out.
 async fn close_by_core<S: AsyncWrite + Unpin>(
     mut conn: TransportConn,
-    io: &mut S,
+    io: &mut DeliveryIo<S>,
     reason: u32,
-    wiring: &Wiring,
+    write_timeout: Duration,
+    drain_grace: Duration,
+    counters: &SessionCounters,
 ) -> Ended2 {
     let limit = if reason == wire::CR_DRAIN {
-        wiring.drain_grace.min(wiring.write_timeout)
+        drain_grace.min(write_timeout)
     } else {
-        wiring.write_timeout
+        write_timeout
     };
     let deadline = tokio::time::Instant::now() + limit;
     let (now, _) = crate::off_path::framing::session_clock();
     let acts = match conn.close(reason, now) {
         Ok(Some(acts)) => acts,
         Ok(None) => {
-            wiring
-                .counters
-                .close_skipped
-                .fetch_add(1, Ordering::Relaxed);
+            counters.close_skipped.fetch_add(1, Ordering::Relaxed);
             return Ended2::Core(reason);
         }
         Err(ended) => return Ended2::Ended(ended),
     };
+    let mut prefix = io.ledger().adopted_prefix();
+    if let Err(reason) = io.prepare(&acts) {
+        return Ended2::Ended(conn.reject_output(reason));
+    }
     let mut abort = false;
     for act in acts {
         match act {
-            Act::Write(mut bytes) => {
+            Act::Write(mut bytes) | Act::WirePart { mut bytes, .. } => {
+                prefix += bytes.len() as u64;
                 if let Err(error) = write_bounded(io, &mut bytes, deadline).await {
+                    return Ended2::Lost(error);
+                }
+            }
+            Act::WireEnd { requirement, .. } => {
+                if let Err(error) = finish_prefix(io, prefix, requirement, deadline).await {
                     return Ended2::Lost(error);
                 }
             }
@@ -1053,6 +1238,12 @@ async fn close_by_core<S: AsyncWrite + Unpin>(
             return Ended2::Lost(error);
         }
         if let Err(error) = shut_bounded(io, deadline).await {
+            return Ended2::Lost(error);
+        }
+        if let Err(error) = io
+            .complete_flush(prefix)
+            .and_then(|()| io.complete_shutdown(prefix))
+        {
             return Ended2::Lost(error);
         }
     }
@@ -1083,13 +1274,19 @@ impl<S> From<Ended2> for Outcome<S> {
 pub async fn drive<S>(
     conn: TransportConn,
     first: Actions,
-    mut io: S,
+    io: S,
+    progress: Arc<dyn CarrierProgressReader>,
     mut wiring: Wiring,
 ) -> Outcome<S>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
     let mut conn = conn;
+    let mut io = DeliveryIo::new(
+        io,
+        Delivery::new(wiring.delivery, progress),
+        conn.storage().clone(),
+    );
     let mut task = Task {
         slots: Slots::default(),
         pending: VecDeque::new(),
@@ -1109,21 +1306,35 @@ where
     };
     let mut eof = false;
     let mut feeds_open = true;
+    let mut registrations_open = true;
 
     match task.apply(first, &mut io, wiring.write_timeout).await {
         Flow::Go => {}
-        Flow::Closed => return Outcome::Closed,
+        Flow::Closed => {
+            return finish_closed(
+                &mut conn,
+                &mut task,
+                &mut io,
+                &wiring.inbound,
+                wiring.drain_grace,
+            )
+            .await
+        }
+        Flow::Aborted => return Outcome::Closed,
+        Flow::Rejected(reason) => return Outcome::Ended(conn.reject_output(reason)),
         Flow::Lost(error) => {
             conn.mark_lost();
             return Outcome::Lost(error);
         }
         Flow::Upgrade(protocol, leftover) => {
+            let (io, delivery) = io.into_parts();
             return Outcome::Upgraded {
+                delivery,
                 conn,
                 io,
                 protocol,
                 leftover,
-            }
+            };
         }
     }
 
@@ -1132,14 +1343,21 @@ where
             while let Ok(feed) = wiring.feeds.try_recv() {
                 attach(&mut task.slots, feed);
             }
-            if task.idle() {
+            if task.idle() && !io.ledger().has_responses() {
                 return Outcome::PeerClosed;
             }
         }
-        if !feeds_open && task.idle() && !eof {
-            return close_by_core(conn, &mut io, wire::CR_NORMAL, &wiring)
-                .await
-                .into();
+        if !feeds_open && task.idle() && !eof && !io.ledger().has_responses() {
+            return close_by_core(
+                conn,
+                &mut io,
+                wire::CR_NORMAL,
+                wiring.write_timeout,
+                wiring.drain_grace,
+                &wiring.counters,
+            )
+            .await
+            .into();
         }
         let deadline = match (task.wake_at, conn.next_stall()) {
             (Some(a), Some(b)) => Some(a.min(b)),
@@ -1153,7 +1371,20 @@ where
         let step = tokio::select! {
             biased;
             reason = &mut wiring.close => Step::Close(reason.unwrap_or(wire::CR_NORMAL)),
-            () = tokio::time::sleep_until(sleep_until), if deadline.is_some() => Step::Tick,
+            registration = wiring.registrations.recv(), if registrations_open => {
+                match registration {
+                    Some(registration) => {
+                        let admitted = io.ledger().admit(registration.key);
+                        let stream = registration.key.stream;
+                        if registration.admitted.send(admitted).is_err() {
+                            let _ = io.ledger().stop(stream, ResponseStop::Cancelled);
+                        }
+                    }
+                    None => registrations_open = false,
+                }
+                Step::Again
+            },
+            event = next_io(&mut io, &mut buf, can_read, deadline.map(|_| sleep_until)) => event,
             permit = wiring.inbound.reserve(), if !task.pending.is_empty() => match permit {
                 Ok(permit) => {
                     if let Some(item) = task.pending.pop_front() {
@@ -1163,7 +1394,6 @@ where
                 }
                 Err(_) => Step::Close(wire::CR_NORMAL),
             },
-            read = read_secure(&mut io, &mut buf), if can_read => Step::Read(read),
             feed = wiring.feeds.recv(), if feeds_open => match feed {
                 Some(feed) => {
                     attach(&mut task.slots, feed);
@@ -1177,10 +1407,34 @@ where
             next = next_piece(&mut task.slots), if can_feed => Step::Feed(next),
         };
         let (now, _) = crate::off_path::framing::session_clock();
+        let mut settlement = None;
         let answered = match step {
             Step::Again => continue,
             Step::Close(reason) => {
-                return close_by_core(conn, &mut io, reason, &wiring).await.into();
+                return close_by_core(
+                    conn,
+                    &mut io,
+                    reason,
+                    wiring.write_timeout,
+                    wiring.drain_grace,
+                    &wiring.counters,
+                )
+                .await
+                .into();
+            }
+            Step::Control(DeliveryControl::Release { stream }) => {
+                conn.emit(stream, wire::E_RELEASE, 0, &[], now)
+            }
+            Step::Control(DeliveryControl::Cancel { stream, reason }) => {
+                task.slots.by_stream.remove(&stream);
+                if io.ledger().stop(stream, reason).is_err() {
+                    return Outcome::Lost(delivery::error(ResponseStop::Integrity));
+                }
+                conn.emit(stream, wire::E_RESET, 0, &[], now)
+            }
+            Step::Control(DeliveryControl::Settled { stream }) => {
+                settlement = Some(stream);
+                conn.emit(stream, wire::E_DELIVERY_SETTLED, 0, &[], now)
             }
             Step::Tick => {
                 let mut acts = match Actions::new(&conn.answers.source) {
@@ -1248,21 +1502,89 @@ where
         };
         match task.apply(acts, &mut io, wiring.write_timeout).await {
             Flow::Go => {}
-            Flow::Closed => return Outcome::Closed,
+            Flow::Closed => {
+                return finish_closed(
+                    &mut conn,
+                    &mut task,
+                    &mut io,
+                    &wiring.inbound,
+                    wiring.drain_grace,
+                )
+                .await
+            }
+            Flow::Aborted => return Outcome::Closed,
+            Flow::Rejected(reason) => return Outcome::Ended(conn.reject_output(reason)),
             Flow::Lost(error) => {
                 conn.mark_lost();
                 return Outcome::Lost(error);
             }
             Flow::Upgrade(protocol, leftover) => {
+                let (io, delivery) = io.into_parts();
                 return Outcome::Upgraded {
+                    delivery,
                     conn,
                     io,
                     protocol,
                     leftover,
-                }
+                };
             }
         }
+        if let Some(stream) = settlement {
+            if let Err(reason) = io.ledger().settled_ack(stream) {
+                return Outcome::Lost(delivery::error(reason));
+            }
+            // Input may still be running; never manufacture EOF to force retirement.
+            let _ = io.ledger().retire_response(stream);
+        }
     }
+}
+
+/// Framer CLOSE ends ordinary callbacks, but actual response input/settlement joins outlive it.
+/// The existing shutdown grace bounds this final retention; expiration retires the sole writer.
+async fn finish_closed<S: AsyncWrite + Unpin>(
+    conn: &mut TransportConn,
+    task: &mut Task,
+    io: &mut DeliveryIo<S>,
+    inbound: &mpsc::Sender<Inbound>,
+    grace: Duration,
+) -> Outcome<S> {
+    let finished = tokio::time::timeout(grace, async {
+        loop {
+            if !io.ledger().has_responses() { return Outcome::Closed; }
+            let control = tokio::select! {
+                biased;
+                control = poll_fn(|cx| {
+                    if let Poll::Ready(control) = io.poll_control(cx) { return Poll::Ready(Some(control)); }
+                    io.ledger().poll_idle(cx).map(|()| None)
+                }) => control,
+                permit = inbound.reserve(), if !task.pending.is_empty() => {
+                    match permit {
+                        Ok(permit) => if let Some(item) = task.pending.pop_front() { permit.send(item); },
+                        Err(_) => return Outcome::Lost(delivery::error(ResponseStop::Cancelled)),
+                    }
+                    continue;
+                }
+            };
+            let Some(control) = control else { return Outcome::Closed; };
+            match control {
+                DeliveryControl::Settled { stream } => {
+                    let acts = match conn.emit(stream, wire::E_DELIVERY_SETTLED, 0, &[], Instant::now()) {
+                        Ok(acts) => acts,
+                        Err(ended) => return Outcome::Ended(ended),
+                    };
+                    if let Err(reason) = io.prepare(&acts) { return Outcome::Ended(conn.reject_output(reason)); }
+                    if let Err(reason) = io.ledger().settled_ack(stream) { return Outcome::Lost(delivery::error(reason)); }
+                    let _ = io.ledger().retire_response(stream);
+                }
+                DeliveryControl::Cancel { stream, reason } => {
+                    let _ = io.ledger().stop(stream, reason);
+                    if io.ledger().settle_stopped(stream).is_err() { return Outcome::Lost(delivery::error(reason)); }
+                }
+                DeliveryControl::Release { .. } => return Outcome::Lost(delivery::error(ResponseStop::Protocol)),
+            }
+        }
+    }).await;
+    finished.unwrap_or_else(|_| Outcome::Lost(timed_out()))
 }
 
 /// One turn of the loop.
@@ -1272,33 +1594,68 @@ enum Step {
     Tick,
     Read(std::io::Result<usize>),
     Feed(Next),
+    Control(DeliveryControl),
+}
+
+async fn next_io<S: AsyncRead + Unpin>(
+    io: &mut DeliveryIo<S>,
+    buf: &mut SecureVec,
+    can_read: bool,
+    deadline: Option<tokio::time::Instant>,
+) -> Step {
+    let sleep = tokio::time::sleep_until(deadline.unwrap_or_else(tokio::time::Instant::now));
+    tokio::pin!(sleep);
+    poll_fn(|cx| {
+        if let Poll::Ready(control) = io.poll_control(cx) {
+            return Poll::Ready(Step::Control(control));
+        }
+        let had_responses = io.ledger().has_responses();
+        if io.ledger().poll_idle(cx).is_ready() && had_responses {
+            return Poll::Ready(Step::Again);
+        }
+        if deadline.is_some() && std::future::Future::poll(sleep.as_mut(), cx).is_ready() {
+            return Poll::Ready(Step::Tick);
+        }
+        if can_read {
+            poll_read_secure(io, buf, cx).map(Step::Read)
+        } else {
+            Poll::Pending
+        }
+    })
+    .await
 }
 
 /// A cancelled or pending read leaves no plaintext in the lent scratch region.
+#[cfg(test)]
 async fn read_secure<S: AsyncRead + Unpin>(
     io: &mut S,
     buf: &mut SecureVec,
 ) -> std::io::Result<usize> {
-    poll_fn(|cx| {
-        let mut pending = false;
-        let read = buf.read_into(READ_CHUNK, Tail::Wipe, |bytes| {
-            let mut read = ReadBuf::new(bytes);
-            match Pin::new(&mut *io).poll_read(cx, &mut read) {
-                Poll::Ready(Ok(())) => Ok(read.filled().len()),
-                Poll::Ready(Err(error)) => Err(error),
-                Poll::Pending => {
-                    pending = true;
-                    Err(std::io::ErrorKind::WouldBlock.into())
-                }
+    poll_fn(|cx| poll_read_secure(io, buf, cx)).await
+}
+
+fn poll_read_secure<S: AsyncRead + Unpin>(
+    io: &mut S,
+    buf: &mut SecureVec,
+    cx: &mut std::task::Context<'_>,
+) -> Poll<std::io::Result<usize>> {
+    let mut pending = false;
+    let read = buf.read_into(READ_CHUNK, Tail::Wipe, |bytes| {
+        let mut read = ReadBuf::new(bytes);
+        match Pin::new(&mut *io).poll_read(cx, &mut read) {
+            Poll::Ready(Ok(())) => Ok(read.filled().len()),
+            Poll::Ready(Err(error)) => Err(error),
+            Poll::Pending => {
+                pending = true;
+                Err(std::io::ErrorKind::WouldBlock.into())
             }
-        });
-        if pending {
-            Poll::Pending
-        } else {
-            Poll::Ready(read.unwrap_or_else(|_| Err(std::io::ErrorKind::OutOfMemory.into())))
         }
-    })
-    .await
+    });
+    if pending {
+        Poll::Pending
+    } else {
+        Poll::Ready(read.unwrap_or_else(|_| Err(std::io::ErrorKind::OutOfMemory.into())))
+    }
 }
 
 fn attach(slots: &mut Slots, feed: Feed) {
