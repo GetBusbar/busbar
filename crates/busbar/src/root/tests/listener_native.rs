@@ -187,6 +187,32 @@ async fn native_root_shape_retains_all_200_response_slots_until_actual_retiremen
     assert!(ledger.admit(key(202)).is_err());
 }
 
+#[tokio::test]
+async fn completed_public_request_dispatches_its_original_core_route_and_observes_reset() {
+    let (mut ingress, source) = ingress_fixture().await;
+    let ready = ingress
+        .accept(public_head(&source, 1, true), None)
+        .unwrap()
+        .unwrap();
+    let execution = ready.request.complete_public().unwrap();
+    let response = execution.http_response().await.unwrap();
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    assert_eq!(
+        axum::body::to_bytes(response.into_body(), 1024)
+            .await
+            .unwrap(),
+        "ok"
+    );
+    ingress
+        .accept(Inbound::Reset { stream: 1, code: 0 }, None)
+        .unwrap();
+    assert!(matches!(
+        execution.http_response().await,
+        Err(ArrivalRefusal::Cancelled)
+    ));
+    ingress.retire(&ready.owner).unwrap();
+}
+
 struct ObservedBegin {
     inner: Arc<dyn TransportPort>,
     slots: [Box<str>; 1],
