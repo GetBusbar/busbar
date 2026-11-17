@@ -580,10 +580,7 @@ fn configured(cfg: &RootCfg, planes: &[PlaneImage]) -> Result<Vec<Configured>, S
         config,
         limits: instance_limits(cfg, STORE_INSTANCE, STORE_INSTANCE),
     });
-    out.extend(plane_instances(
-        planes,
-        &super::door_steps::raw_sections(cfg),
-    )?);
+    out.extend(plane_instances(planes, &cfg.instance_sections())?);
     out.extend(hooks::configured(cfg)?);
     let mut providers = cfg.identity_providers.iter().collect::<Vec<_>>();
     providers.sort_by_key(|(name, _)| *name);
@@ -2446,3 +2443,9 @@ async fn guard_legacy_marks(
 #[cfg(test)]
 #[path = "tests/fixture_bootstrap.rs"]
 pub(crate) mod fixture;
+
+/// The store kit's open path (DES-STOREKIT r2 §2.1): S6's Needs, registry and seal, with default
+/// limits and a new instance per handle; harness builds only.
+#[cfg(feature = "test-harness")]
+#[path = "min3_store_kit.rs"]
+pub(crate) mod store_kit;

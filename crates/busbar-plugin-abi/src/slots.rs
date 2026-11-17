@@ -8,4 +8,4 @@
 //! module is gone.
 
 #[doc(hidden)]
-pub use busbar_ffi::{ChainBox, ChainRef, Inst, Slots, pack, unpack};
+pub use busbar_ffi::{ChainBox, ChainRef, Inst, OwnedSlot, Slots, pack, unpack};

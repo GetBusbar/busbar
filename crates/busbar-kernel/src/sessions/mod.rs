@@ -180,7 +180,7 @@ impl LoginStates for StoreLoginStates {
             let stored = self.stored(key);
             let raw = records.get(SCHEMA, &stored).await.ok()??;
             let request = Request {
-                op_id: operation(&self.store).ok()?,
+                op: operation(&self.store).await.ok()?,
                 predicates: vec![Predicate {
                     schema: SCHEMA.to_string(),
                     key: stored.clone(),

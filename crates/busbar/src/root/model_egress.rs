@@ -145,81 +145,10 @@ impl std::fmt::Debug for ModelServing {
     }
 }
 
-const LATENCY_RESERVOIR_LEN: usize = 128;
-
-/// ONE LANE'S P95 LATENCY RESERVOIR (1.5.5's `LatencyReservoir`, moved verbatim): a ring of the
-/// last [`LATENCY_RESERVOIR_LEN`] samples in microseconds, written lock-free. The p95 is computed
-/// once per new sample, not once per read: the ranking hooks read it per member per request.
-#[derive(Debug)]
-pub struct LatencyReservoir {
-    cursor: std::sync::atomic::AtomicUsize,
-    samples: [std::sync::atomic::AtomicU32; LATENCY_RESERVOIR_LEN],
-    /// Bumped after each sample lands: the generation a cached p95 is tagged with.
-    written: std::sync::atomic::AtomicU32,
-    /// The last p95 computed: its `written` generation in the high half, the value + 1 in the low
-    /// half (`0` = no sample held). Generation 0 holds no sample, so the initial `0` is exact.
-    p95: std::sync::atomic::AtomicU64,
-}
-
-impl Default for LatencyReservoir {
-    fn default() -> Self {
-        Self {
-            cursor: std::sync::atomic::AtomicUsize::new(0),
-            samples: std::array::from_fn(|_| std::sync::atomic::AtomicU32::new(0)),
-            written: std::sync::atomic::AtomicU32::new(0),
-            p95: std::sync::atomic::AtomicU64::new(0),
-        }
-    }
-}
-
-impl LatencyReservoir {
-    pub fn record(&self, latency_ms: f64) {
-        use std::sync::atomic::Ordering;
-        if !latency_ms.is_finite() || latency_ms <= 0.0 {
-            return;
-        }
-
-        let us = ((latency_ms * 1000.0).round() as u32).max(1);
-        let slot = self.cursor.fetch_add(1, Ordering::Relaxed) % LATENCY_RESERVOIR_LEN;
-        self.samples[slot].store(us, Ordering::Relaxed);
-        self.written.fetch_add(1, Ordering::Release);
-    }
-
-    #[must_use]
-    pub(crate) fn p95_ms(&self) -> Option<u64> {
-        use std::sync::atomic::Ordering;
-        let generation = self.written.load(Ordering::Acquire);
-        let cached = self.p95.load(Ordering::Relaxed);
-        if (cached >> 32) as u32 == generation {
-            return (cached as u32).checked_sub(1).map(u64::from);
-        }
-        let mut held = [0u32; LATENCY_RESERVOIR_LEN];
-        let mut n = 0;
-        for s in &self.samples {
-            let v = s.load(Ordering::Relaxed);
-            if v != 0 {
-                held[n] = v;
-                n += 1;
-            }
-        }
-        let p95 = (n > 0).then(|| {
-            // The p95 is one order statistic: select it (O(n)), no request-path sort.
-            let (_, p95, _) = held[..n].select_nth_unstable((n * 95).div_ceil(100) - 1);
-            p95.div_ceil(1000)
-        });
-        self.p95.store(
-            (u64::from(generation) << 32) | u64::from(p95.map_or(0, |v| v + 1)),
-            Ordering::Relaxed,
-        );
-        p95.map(u64::from)
-    }
-}
-
 pub struct ModelSignals {
     pub(crate) app: LiveApp,
     pub(crate) names: Arc<HashMap<DestinationId, String>>,
     pub(crate) permits: Arc<crate::root::egress_ports::MemberPermits>,
-    pub(crate) reservoirs: Arc<HashMap<usize, LatencyReservoir>>,
 }
 
 impl busbar_kernel::plane_driver::MemberSignals for ModelSignals {
@@ -251,10 +180,7 @@ impl busbar_kernel::plane_driver::MemberSignals for ModelSignals {
             budget_remaining: store.lane_budget_remaining(lane),
             breaker_state: Some(state),
             error_rate: store.error_rate_in(pool, lane, busbar_kernel::store::now()),
-            latency_p95_ms: self
-                .reservoirs
-                .get(&lane_of(destination))
-                .and_then(LatencyReservoir::p95_ms),
+            ..Default::default()
         }
     }
 }
@@ -606,8 +532,6 @@ pub(crate) struct ModelTelemetry {
     pub(crate) app: LiveApp,
     pub(crate) names: Arc<HashMap<DestinationId, String>>,
     pub(crate) queued: crate::root::egress_ports::WalkTelemetry,
-
-    pub(crate) reservoirs: Arc<HashMap<usize, LatencyReservoir>>,
 }
 
 impl busbar_kernel_egress::ports::Telemetry for ModelTelemetry {
@@ -644,15 +568,6 @@ impl busbar_kernel_egress::ports::Telemetry for ModelTelemetry {
         };
         app.store.record_latency_in("", lane, ms);
         busbar_kernel::telemetry::lane_request_finished(&app, lane, ms / 1000.0);
-
-        if app
-            .requested_signals
-            .wants(busbar_contract::signal::Signal::CandidateLatencyP95Ms)
-        {
-            if let Some(r) = self.reservoirs.get(&lane_of(destination)) {
-                r.record(ms);
-            }
-        }
     }
 
     fn queued(&self, pool: &str, delta: i64) {

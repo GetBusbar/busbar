@@ -8,7 +8,7 @@
 //! where any other `unsafe` can be parked. A non-plugin need for `unsafe` (allocators, ACLs, `AsyncFd`, OS
 //! calls, anything else) uses a safe crate or goes to the owner; it never comes here. Its `unsafe` total
 //! is pinned in the repository's `unsafe.yaml` and only falls:
-//! - the files are pinned: `src/{lib,raw,header,vt,shim,slots,host,image}.rs` and `tests/loom_slots.rs`;
+//! - the files are pinned: `src/{lib,raw,header,vt,shim,slots,host,image}.rs`;
 //!   any other file fails the check;
 //! - every file's own token count is pinned, so `unsafe` cannot move between files to make room;
 //! - the dependencies are pinned: `zerocopy`, and `libloading` and `object` behind feature `host`
@@ -60,7 +60,7 @@ pub use raw::{
     Arg, Bytes, ChainBytes, CryptoReq, CryptoRet, Ctx, DeploymentId, EntryScope, Host, HostFns,
     KindCode, Out, Pair, RawLent, RawOut, Slice, Status, Str, TOKEN_SESSION, Token, View,
 };
-pub use slots::{ChainBox, ChainRef, Inst, Slots, pack, unpack};
+pub use slots::{ChainBox, ChainRef, Inst, OwnedSlot, Slots, pack, unpack};
 pub use vt::{Built, Kind, VtEntry, kind};
 
 /// busbar-ffi's `mechanism!` blocks in their fixed order (raw types, header, the 7 layouts and their

@@ -6,6 +6,7 @@ use axum::extract::Path;
 use axum::http::{header::CONTENT_TYPE, StatusCode};
 use axum::response::{IntoResponse, Response};
 use busbar_contract::redacted::Secret;
+use busbar_contract::secure::SecureVec;
 use serde::{Deserialize, Deserializer};
 use serde_json::{json, Value};
 
@@ -699,7 +700,64 @@ fn join_error(op: &str, e: &tokio::task::JoinError) -> Response {
 
 const IDEMPOTENCY_KEY_HEADER: &str = "idempotency-key";
 
-pub type KeyReplayCache = crate::idempotency::IdempotencyCache<Value>;
+/// Idempotency-Key replays of a mint or rotate. The answer carries the once-shown token, so it
+/// is held only as the exact response bytes in wiped custody: eviction, replacement, expiry and
+/// drop wipe it, and a replay writes those bytes verbatim (DES-359 r3 L6).
+pub type KeyReplayCache = crate::idempotency::IdempotencyCache<SecureVec>;
+
+/// The key answer serialized straight into wiped custody, reserved to its exact size first, so no
+/// intermediate `Vec` or `String` holds the token. `None` only when the memory cannot be had.
+fn key_answer(body: &Value) -> Option<SecureVec> {
+    struct Measure(usize);
+    impl std::io::Write for Measure {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0 = self.0.saturating_add(bytes.len());
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut measure = Measure(0);
+    busbar_contract::json::to_writer(&mut measure, body).ok()?;
+    let mut answer = SecureVec::with_capacity(measure.0).ok()?;
+    busbar_contract::json::to_writer(&mut answer, body).ok()?;
+    Some(answer)
+}
+
+/// A held key answer as the response body, byte for byte: no re-parse and no `Value` tree.
+pub(crate) fn answer_response(status: StatusCode, answer: &SecureVec) -> Response {
+    (
+        status,
+        [(CONTENT_TYPE, busbar_contract::protocol::APPLICATION_JSON)],
+        answer.as_slice().to_vec(),
+    )
+        .into_response()
+}
+
+/// Answer a mint or rotate: the reserved replay slot keeps the answer in custody and the caller
+/// is sent the same bytes. If custody cannot be allocated the slot stays in flight (a retry is
+/// refused, never applied twice) and the caller still gets its answer.
+pub(crate) fn commit_key_answer(
+    reservation: Option<crate::idempotency::Reservation<'_, SecureVec>>,
+    status: StatusCode,
+    body: &Value,
+) -> Response {
+    let Some(reservation) = reservation else {
+        return json_response(status, body.clone());
+    };
+    match key_answer(body) {
+        Some(answer) => {
+            let response = answer_response(status, &answer);
+            reservation.commit(answer, busbar_kernel::store::now());
+            response
+        }
+        None => {
+            reservation.leak();
+            json_response(status, body.clone())
+        }
+    }
+}
 
 async fn complete_key_mutation(
     op: &'static str,
@@ -946,12 +1004,12 @@ async fn create_key_owned(
         .as_ref()
         .map(|k| (actor.clone(), crate::idempotency::create_replay_key(k)));
     let fingerprint = busbar_contract::abi::sdk::digest::sha256(&body);
-    let mut idem_reservation: Option<crate::idempotency::Reservation<'_, Value>> = None;
+    let mut idem_reservation: Option<crate::idempotency::Reservation<'_, SecureVec>> = None;
     if let Some(ref ck) = idem_ckey {
         match replays.probe_bound(ck.clone(), fingerprint, busbar_kernel::store::now()) {
             Ok(Probe::NoKey) => {}
 
-            Ok(Probe::Replay(cached)) => return json_response(StatusCode::CREATED, cached),
+            Ok(Probe::Replay(cached)) => return answer_response(StatusCode::CREATED, &cached),
 
             Ok(Probe::InFlight) => {
                 return key_err(
@@ -1394,16 +1452,14 @@ async fn create_key_owned(
         body["aws_secret_access_key"] =
             json!(secret_access_key.expose(&busbar_kernel::seal::lend()));
     }
-    if let Some(r) = idem_reservation.take() {
-        r.commit(body.clone(), busbar_kernel::store::now());
-    }
+    let response = commit_key_answer(idem_reservation.take(), StatusCode::CREATED, &body);
     settle_in_store(
         replay_store,
         claim,
         Settled::Applied(format!("key:{}", key.id)),
     )
     .await;
-    json_response(StatusCode::CREATED, body)
+    response
 }
 
 /// Partial update to an existing key. Keys are PURE AUTH (1.5.0), so the mutable surface is
@@ -1840,11 +1896,11 @@ async fn rotate_key_owned(
         .filter(|v| !v.is_empty())
         .map(|k| (actor.clone(), crate::idempotency::rotate_replay_key(&id, k)));
     let fingerprint = busbar_contract::abi::sdk::digest::sha256(&body);
-    let mut idem_reservation: Option<crate::idempotency::Reservation<'_, Value>> = None;
+    let mut idem_reservation: Option<crate::idempotency::Reservation<'_, SecureVec>> = None;
     if let Some(ref ck) = idem_ckey {
         match replays.probe_bound(ck.clone(), fingerprint, busbar_kernel::store::now()) {
             Ok(Probe::NoKey) => {}
-            Ok(Probe::Replay(cached)) => return json_response(StatusCode::OK, cached),
+            Ok(Probe::Replay(cached)) => return answer_response(StatusCode::OK, &cached),
             Ok(Probe::InFlight) => {
                 return key_err(
                     who,
@@ -1974,11 +2030,9 @@ async fn rotate_key_owned(
             body["token"] = json!(rotated.token.expose(&busbar_kernel::seal::lend()));
             body["expires_at"] = json!(rotated.exp);
 
-            if let Some(r) = idem_reservation.take() {
-                r.commit(body.clone(), busbar_kernel::store::now());
-            }
+            let response = commit_key_answer(idem_reservation.take(), StatusCode::OK, &body);
             settle_in_store(replay_store, claim, Settled::Applied(resource.clone())).await;
-            json_response(StatusCode::OK, body)
+            response
         }
 
         Ok(RotateOutcome::Unknown) => {

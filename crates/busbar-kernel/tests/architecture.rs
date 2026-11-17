@@ -169,7 +169,7 @@ const LIVE_AXIS_GRAMMAR: &[&str] = &[
     "admitted_sugars(",
     "grammar::admitted(",
     "catalog_admitted",
-    "SecretAxis::sugars(crate::root::linked::secret_rows()",
+    "SecretAxis::sugars(&crate::root::native_secrets::NATIVE",
 ];
 
 /// The production sites that may: process-lifetime machinery past admission that holds no
@@ -181,7 +181,7 @@ const LIVE_AXIS_GRAMMAR: &[&str] = &[
 const LIVE_AXIS_ALLOWED: &[(&str, &str)] = &[
     (
         "crates/busbar/src/root/connector.rs",
-        "SecretAxis::sugars(crate::root::linked::secret_rows()",
+        "SecretAxis::sugars(&crate::root::native_secrets::NATIVE",
     ),
     (
         "crates/busbar-kernel/src/config/secret.rs",
