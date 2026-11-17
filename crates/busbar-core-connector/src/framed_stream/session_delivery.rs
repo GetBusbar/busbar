@@ -40,6 +40,11 @@ impl Delivery {
         (self.ledger, self.reader)
     }
 
+    pub(super) fn writer_retired(mut self) {
+        self.ledger
+            .retire_carrier(self.reader.snapshot(), ResponseStop::CarrierRetired);
+    }
+
     fn sample(&mut self) -> io::Result<()> {
         self.ledger.observe(self.reader.snapshot()).map_err(error)
     }
@@ -160,10 +165,8 @@ impl<S> Drop for DeliveryIo<S> {
     fn drop(&mut self) {
         // The single session owns all polls. Dispose the only writer before its final observation.
         drop(self.io.take());
-        if let Some(mut delivery) = self.delivery.take() {
-            delivery
-                .ledger
-                .retire_carrier(delivery.reader.snapshot(), ResponseStop::CarrierRetired);
+        if let Some(delivery) = self.delivery.take() {
+            delivery.writer_retired();
         }
     }
 }
