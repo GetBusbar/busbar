@@ -316,6 +316,16 @@ impl PreparedRateAttempt {
     pub(crate) fn selection(&self) -> &SelectedWalkAttempt {
         &self.selected
     }
+
+    pub(crate) fn route(&self) -> u32 {
+        self._prepared.route()
+    }
+
+    pub(crate) fn original_route(
+        &self,
+    ) -> Option<&crate::plane_driver::route_identity::OriginalPlaneRoute> {
+        self._prepared.original_route()
+    }
 }
 
 impl std::fmt::Debug for PreparedRateAttempt {
