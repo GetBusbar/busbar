@@ -454,10 +454,13 @@ fn each_plugin_sink_instance_gets_its_own_admission_gate() {
     );
 }
 
+use busbar_contract::export_calls::{ExportDropReason, ExportLossKind};
+
 struct AnsweringSink {
     answer: Delivered,
     stated: Option<(bool, u64, String)>,
     sheds: std::sync::atomic::AtomicU64,
+    observations: std::sync::Mutex<Vec<ExportLossKind>>,
 }
 
 impl ExportCalls for AnsweringSink {
@@ -468,6 +471,9 @@ impl ExportCalls for AnsweringSink {
         &[]
     }
     fn deliver(&self, _: u8, _: Vec<u8>, _: Box<dyn Send>) -> Delivered {
+        if self.answer == Delivered::Shed {
+            self.shed(ExportLossKind::Dropped(ExportDropReason::QueueFull));
+        }
         self.answer
     }
     fn scrape(&self, _: &[busbar_contract::export_calls::Family]) -> Result<Vec<u8>, String> {
@@ -485,7 +491,8 @@ impl ExportCalls for AnsweringSink {
     fn admission(&self) -> Option<(bool, u64, String)> {
         self.stated.clone()
     }
-    fn shed(&self) {
+    fn shed(&self, kind: ExportLossKind) {
+        self.observations.lock().unwrap().push(kind);
         self.sheds
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
@@ -542,6 +549,7 @@ fn double(answer: Delivered, stated: Option<(bool, u64, String)>) -> Arc<Answeri
         answer,
         stated,
         sheds: std::sync::atomic::AtomicU64::new(0),
+        observations: std::sync::Mutex::new(Vec::new()),
     })
 }
 
@@ -602,6 +610,10 @@ async fn a_shed_line_is_not_audited_as_read_and_a_queued_one_is() {
         "a shed line is no read"
     );
     assert_eq!(shedding.sheds.load(std::sync::atomic::Ordering::Relaxed), 1);
+    assert_eq!(
+        *shedding.observations.lock().unwrap(),
+        vec![ExportLossKind::Dropped(ExportDropReason::QueueFull)]
+    );
 
     let queueing = double(Delivered::Queued, None);
     let (s, confirmed) = opened("q128b-u31-36-queued", Arc::clone(&queueing)).await;
@@ -629,6 +641,10 @@ async fn a_delivery_before_start_never_overrides_the_sinks_stated_admission() {
         "nothing is fed before start"
     );
     assert_eq!(paused.sheds.load(std::sync::atomic::Ordering::Relaxed), 1);
+    assert_eq!(
+        *paused.observations.lock().unwrap(),
+        vec![ExportLossKind::CaptureRefused]
+    );
     start_one(&s);
     deliver_event(&s, ExportStream::Logs, "q128b-u31-37-late", &mut payload);
     assert_eq!(

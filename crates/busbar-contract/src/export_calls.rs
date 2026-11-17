@@ -136,7 +136,7 @@ pub enum Delivered {
     /// Queued for the instance's next coalesced batch.
     Queued,
     /// Shed: the instance's bounded queue is full, or the instance is faulted or closed. Never
-    /// queued; the caller counts it.
+    /// queued; the adapter reports the exact refusal or drop once. The caller must not recount it.
     Shed,
 }
 
@@ -216,8 +216,9 @@ pub trait ExportCalls: Send + Sync {
         Ok(())
     }
 
-    /// The host shed a line for this instance before handing it over: an instance that declared a
-    fn shed(&self) {}
+    /// Report one host-side capture refusal or integrity failure with its exact classification.
+    /// Delivery adapters own their own terminal drops; callers never recount `Delivered::Shed`.
+    fn shed(&self, _kind: ExportLossKind) {}
 }
 
 /// Config probe result: declared streams, validation problems, and the explicit
