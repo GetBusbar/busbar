@@ -32,6 +32,8 @@ pub struct AdmissionRollback {
     money: Arc<PlaneMoney>,
     request: Option<AdmittedRequest>,
     selected: Option<Arc<super::native_terminal::TerminalSlot>>,
+    // The Node-owned original slot. Drop records intent there and takes no other lock.
+    ordinary: Option<Arc<super::NativeOrdinaryTerminalSlot>>,
 }
 
 impl AdmissionRollback {
@@ -63,6 +65,12 @@ impl AdmissionRollback {
 impl Drop for AdmissionRollback {
     fn drop(&mut self) {
         if let Some(request) = self.request.take() {
+            if let Some(slot) = &self.ordinary {
+                // Native ordinary startup cancellation: retain Open, fee participation and the
+                // original registration for the Node driver's single original transfer.
+                slot.startup_cancelled(&request);
+                return;
+            }
             if let Some(slot) = &self.selected {
                 if let Err(error) = self.money.abort_selected_startup(&request, slot) {
                     // Refusal leaves the exact Open and checkpoint owner intact. Surface the
@@ -167,6 +175,7 @@ impl PlaneMoney {
             money: self.clone(),
             request: Some(request.clone()),
             selected,
+            ordinary: open.ordinary_terminal.clone(),
         })
     }
 
@@ -347,6 +356,20 @@ impl PlaneMoney {
         fee: FeeRefund,
         mode: ExhaustionMode,
     ) -> Result<AdmittedRequest, NativeAdmissionError> {
+        self.admit_existing_with(request, classes, fee, mode, None)
+    }
+
+    fn admit_existing_with(
+        &self,
+        request: CommittingRequest,
+        classes: Arc<[String]>,
+        fee: FeeRefund,
+        mode: ExhaustionMode,
+        ordinary: Option<(
+            &Arc<super::NativeOrdinaryTerminalSlot>,
+            &mut super::native_ordinary::OrdinaryState,
+        )>,
+    ) -> Result<AdmittedRequest, NativeAdmissionError> {
         if !request.is_live() {
             return Err(NativeAdmissionError::NotLive);
         }
@@ -380,11 +403,48 @@ impl PlaneMoney {
             .map_err(NativeAdmissionError::Blocked)?;
         let pending = PendingAdmission::new(self.gov.clone(), money, grant);
         let key = request.unit();
-        self.install_native_pending(key, pending, |money, grant, identity| {
-            request
-                .admitted(money, grant, self.gov.clone(), self.book.clone(), identity)
-                .map_err(NativeAdmissionError::Phase)
+        self.install_native_pending_with(key, pending, |open| {
+            let admitted = request
+                .admitted(
+                    open.money.clone(),
+                    open.grant
+                        .as_ref()
+                        .expect("new admission holds its grant")
+                        .clone(),
+                    self.gov.clone(),
+                    self.book.clone(),
+                    open.identity.clone(),
+                )
+                .map_err(NativeAdmissionError::Phase)?;
+            // The same non-awaiting installation binds the exact admitted identity into the
+            // Node-owned slot; no admitted Open escapes without its original owner.
+            if let Some((slot, state)) = ordinary {
+                open.ordinary_terminal = Some(Arc::clone(slot));
+                state.request = Some(admitted.clone());
+            }
+            Ok(admitted)
         })
+    }
+
+    /// The native ordinary route: admission requires the original funded Node slot, validated
+    /// before the Open exists. Lock order is slot -> money shard, matching the terminal driver.
+    pub fn admit_existing_ordinary(
+        &self,
+        request: CommittingRequest,
+        slot: &Arc<super::NativeOrdinaryTerminalSlot>,
+        classes: Arc<[String]>,
+        fee: FeeRefund,
+        mode: ExhaustionMode,
+    ) -> Result<AdmittedRequest, NativeAdmissionError> {
+        let mut state = locked(&slot.state);
+        if !slot.accepts(&request)
+            || state.request.is_some()
+            || state.intent.is_some()
+            || state.has_terminal()
+        {
+            return Err(NativeAdmissionError::NotLive);
+        }
+        self.admit_existing_with(request, classes, fee, mode, Some((slot, &mut state)))
     }
 
     // The sole production caller above supplies the typed phase transition. Keeping this

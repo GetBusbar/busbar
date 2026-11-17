@@ -19,7 +19,7 @@ use busbar_kernel::plane_driver::port::{
 };
 use busbar_kernel::plane_driver::port_admission::AdmittedUnit;
 use busbar_kernel::plane_driver::port_auth::{Credentials, Principal};
-use busbar_kernel::plane_driver::port_billing::{end_of, PortBilling};
+use busbar_kernel::plane_driver::port_billing::{end_of, NativeOrdinaryTerminalSlot, PortBilling};
 use busbar_kernel::plane_driver::port_session::{ClientSink, ToClient};
 use busbar_kernel::plane_driver::{FeeRefund, HeadFields, NativeAdmissionError};
 use busbar_kernel::resource_admission::FrozenRequest;
@@ -67,11 +67,27 @@ pub(super) struct DataSettlement {
     ran: bool,
     status: u16,
     node: NativeNodeHandle,
+    ordinary: Arc<NativeOrdinaryTerminalSlot>,
 }
 
 impl DataSettlement {
     pub(super) fn native_node_handle(&self) -> Option<NativeNodeHandle> {
         Some(self.node.clone())
+    }
+
+    /// Elect the original terminal intent in the Node-owned slot, then attempt its one
+    /// transfer. A failed transfer retains the intent and Open; the Node pulse retries it.
+    /// Neither step is a receipt: the Node entry stays until the checkpoint R confirms.
+    fn ordinary_terminal(
+        &self,
+        request: &busbar_kernel::plane_driver::request_admission::AdmittedRequest,
+        end: busbar_kernel::plane_driver::UnitEnd,
+    ) -> Result<(), InputError> {
+        self.ordinary
+            .request_terminal(request, end)
+            .map_err(|_| InputError::Invalid)?;
+        let _ = self.billing.drive_ordinary_terminal(&self.ordinary);
+        Ok(())
     }
 
     /// Registration never exposed a response feed. The caller first drops the unpublished
@@ -93,15 +109,15 @@ impl DataSettlement {
         } else {
             false
         };
+        // Never registered: W04's carrier receipt is the physical half of this terminal.
+        self.node.unregistered(self.ran, failed)?;
         let admitted = self.authority.admitted().ok_or(InputError::Invalid)?;
         if admitted.selected.is_some() {
             return Err(InputError::Invalid);
         }
         let mut end = end_of(502, self.ran);
         end.cut = true;
-        self.billing
-            .settle_admitted(&admitted.request, end)
-            .map_err(|_| InputError::Invalid)?;
+        self.ordinary_terminal(&admitted.request, end)?;
         if failed {
             Err(InputError::Invalid)
         } else {
@@ -140,14 +156,14 @@ impl DataSettlement {
         }
         let mut end = end_of(u32::from(self.status), self.ran);
         end.cut = matches!(snapshot.terminal, Some(DeliveryTerminal::Failed(_)));
+        // Delivered output retired at delivery: the verified snapshot is the physical proof.
+        self.node.delivered(snapshot, self.ran, work_failed)?;
         // This first cohort uses the adopted ordinary DATA callback. Selected activation
         // requires its finite route ceiling and actual Node audit admission producer.
         if admitted.selected.is_some() {
             return Err(InputError::Invalid);
         }
-        self.billing
-            .settle_admitted(original, end)
-            .map_err(|_| InputError::Invalid)?;
+        self.ordinary_terminal(original, end)?;
         if work_failed {
             Err(InputError::Invalid)
         } else {
@@ -516,7 +532,7 @@ pub(super) async fn prepare(
     let mut allocation =
         NativeDataAllocation::register(authorized).map_err(|_| InputError::Invalid)?;
     let classes = seat.driver.usage_classes();
-    let (native_node, unit) = node
+    let (native_node, unit, ordinary) = node
         .install_native(
             &mut allocation,
             stream_owner,
@@ -530,6 +546,7 @@ pub(super) async fn prepare(
         })?;
     let result: Result<DataResponse, InputError> = async {
         let callback_billing = billing.clone();
+        let callback_slot = ordinary.clone();
         let journal = unit.journal.clone();
         let pending = Arc::new(
             allocation
@@ -540,8 +557,9 @@ pub(super) async fn prepare(
                             .for_core(route, busbar_plugin_abi::fail::refused::R_NO_ROUTE)
                     };
                     let request = callback_billing
-                        .admit_existing(
+                        .admit_existing_ordinary(
                             receipt.begin().map_err(|_| unavailable())?,
+                            &callback_slot,
                             classes,
                             FeeRefund::PlaneFeeUnits(Arc::from([])),
                             busbar_kernel::config::groups::ExhaustionMode::FinishUnit,
@@ -657,10 +675,14 @@ pub(super) async fn prepare(
                 .ok()
                 .and_then(Result::ok)
                 .is_some_and(|served| matches!(served.into_parts().0, Served::Ran(_)));
+            // No response was published: freeze the original terminal for the Node join.
+            native_node.unregistered(ran, false)?;
             if let Some(admitted) = pending.admitted() {
-                billing
-                    .settle_admitted(&admitted.request, end_of(502, ran))
+                // Record the original intent; the Node-owned slot transfers the exact Open.
+                ordinary
+                    .request_terminal(&admitted.request, end_of(502, ran))
                     .map_err(|_| InputError::Invalid)?;
+                let _ = billing.drive_ordinary_terminal(&ordinary);
             }
             return Err(InputError::Invalid);
         };
@@ -725,6 +747,7 @@ pub(super) async fn prepare(
                 ran,
                 status,
                 node: native_node.clone(),
+                ordinary: ordinary.clone(),
             }),
         })
     }

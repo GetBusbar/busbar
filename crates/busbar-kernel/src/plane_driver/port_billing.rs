@@ -25,6 +25,7 @@ use busbar_contract::caps::{CallId, OriginKind};
 use busbar_contract::records::VirtualKey;
 use busbar_contract::UnitKey;
 
+pub use super::money::NativeOrdinaryTerminalSlot;
 use super::money::{FeeRefund, PlaneMoney, UnitEnd, UnitMoney};
 use super::port::Unit;
 use super::port_money::PortMoney;
@@ -178,6 +179,35 @@ impl PortBilling {
         mode: ExhaustionMode,
     ) -> Result<AdmittedRequest, NativeAdmissionError> {
         self.money.admit_existing(request, classes, fee, mode)
+    }
+
+    /// The native ordinary route: the Node-owned original slot must own the admission.
+    pub fn admit_existing_ordinary(
+        &self,
+        request: CommittingRequest,
+        slot: &Arc<NativeOrdinaryTerminalSlot>,
+        classes: Arc<[String]>,
+        fee: FeeRefund,
+        mode: ExhaustionMode,
+    ) -> Result<AdmittedRequest, NativeAdmissionError> {
+        self.money
+            .admit_existing_ordinary(request, slot, classes, fee, mode)
+    }
+
+    /// Transfer the slot's elected original intent once; `Ok(false)` means no intent yet.
+    pub fn drive_ordinary_terminal(
+        &self,
+        slot: &Arc<NativeOrdinaryTerminalSlot>,
+    ) -> Result<bool, NativeAdmissionError> {
+        self.money.drive_ordinary_terminal(slot)
+    }
+
+    /// Whether the original checkpoint's actual R acknowledgement confirmed this slot's receipt.
+    pub fn ordinary_checkpoint_confirmed(
+        &self,
+        slot: &NativeOrdinaryTerminalSlot,
+    ) -> Result<bool, NativeAdmissionError> {
+        slot.checkpoint_confirmed(&self.money)
     }
 
     pub fn admit_existing_child(

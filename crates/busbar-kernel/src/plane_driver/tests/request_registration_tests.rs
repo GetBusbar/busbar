@@ -189,3 +189,63 @@ async fn same_scalar_unit_and_same_command_do_not_alias_another_real_admission()
     );
     assert!(!retained.is_live());
 }
+
+/// Ordinary terminal receipt r2 (B1): startup rollback of a native ordinary admission records
+/// intent only. It must not settle the original Open before the actual checkpoint R
+/// acknowledgement, retire the original registration, or mint a second bill.
+#[tokio::test]
+async fn native_ordinary_startup_rollback_retains_the_original_open() {
+    use crate::config::groups::ExhaustionMode;
+    use crate::plane_driver::{EndPost, PlaneMoney};
+    struct Posted;
+    impl EndPost for Posted {
+        fn post(&self, _: &crate::teller::UnitCtx, _: crate::teller::Ended) {}
+    }
+    let cost = Arc::new(CostModel::resolve_parts(None, 0, &Default::default()));
+    let key = Arc::new(VirtualKey {
+        id: "ordinary-rollback".into(),
+        enabled: true,
+        ..Default::default()
+    });
+    let routes = RequestRoutes::new("seat", None, None, None)
+        .unwrap()
+        .with_registrations(table(&[definition("command", true)]))
+        .unwrap();
+    let (ctx, _lease) = context_with_key(41, key);
+    let receipt = RequestAllocation::new(ctx.clone(), cost, 100)
+        .unwrap()
+        .registration(&routes, None, "command")
+        .unwrap();
+    let gov = Arc::new(
+        GovState::new_with_core(crate::real_store::core().await, None, None)
+            .await
+            .unwrap(),
+    );
+    let money = Arc::new(PlaneMoney::new(gov, Arc::new(Posted)));
+    let process = crate::limits::process_admission::ProcessAdmission::new(0);
+    let lease = process
+        .try_enter(crate::limits::process_admission::AdmissionClass::Data)
+        .unwrap();
+    let slot = crate::plane_driver::port_billing::NativeOrdinaryTerminalSlot::reserve(
+        &ctx,
+        &lease.storage(),
+    )
+    .unwrap();
+    let admitted = money
+        .admit_existing_ordinary(
+            receipt.begin().unwrap(),
+            &slot,
+            Arc::from([]),
+            super::super::super::money::FeeRefund::CallerStatus,
+            ExhaustionMode::FinishUnit,
+        )
+        .unwrap();
+    assert_eq!(money.open_units(), 1);
+    let rollback = money.admission_rollback(&admitted).unwrap();
+    drop(rollback);
+    assert_eq!(
+        money.open_units(),
+        1,
+        "native ordinary startup rollback destroyed the original Open before its receipt"
+    );
+}
