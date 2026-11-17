@@ -703,9 +703,9 @@ impl BootSteps for BootstrapSteps<'_> {
                 Ok(Some(OpenedPort::Secret(port)))
             }),
             KindCode::Store => Box::pin(async move {
-                // The secret instances are open (2a): the gate's key is published before the store's open asks.
+                // The secret prefix resolves the key once; only its nonsecret verdict enters this open.
                 let secrets = self.prefix();
-                publish_at_rest(self.at_rest.as_ref(), |what, reference| {
+                let verdict = publish_at_rest(self.at_rest.as_ref(), |what, reference| {
                     let secrets = Arc::clone(&secrets);
                     async move {
                         secrets
@@ -715,12 +715,37 @@ impl BootSteps for BootstrapSteps<'_> {
                     }
                 })
                 .await;
+                let admission = Arc::new(
+                    busbar_plugin_abi::host_side::entry::StoreMigrationAdmission::new(matches!(
+                        &verdict,
+                        Ok(true)
+                    )),
+                );
+                let spec = InstanceSpec {
+                    purpose: spec.purpose,
+                    store_migration: Some(Arc::clone(&admission)),
+                    identity: spec.identity,
+                    name: spec.name,
+                    config_json: spec.config_json,
+                    limits: spec.limits,
+                    public_url: spec.public_url,
+                    caller_upstreams: spec.caller_upstreams,
+                };
                 let needs = self.built.bootstrap_needs_for(self.prefix());
-                self.registry
-                    .open_store(spec, &needs, &secrets.refs(), Arc::clone(&self.store_seal))
-                    .await
-                    .map(OpenedPort::Store)
-                    .map(Some)
+                let opened = self
+                    .registry
+                    .open_store(&spec, &needs, &secrets.refs(), Arc::clone(&self.store_seal))
+                    .await;
+                if let Some(count) = admission.first_refused() {
+                    let _denied = busbar_plugin_abi::host_side::entry::MigrationScope::deny();
+                    drop(opened);
+                    return Err(OpenError::Config {
+                        code: busbar_plugin_abi::fail::refused::R_CONFIG,
+                        text: super::migrate::native_admission_refusal(count, verdict),
+                        error: None,
+                    });
+                }
+                opened.map(OpenedPort::Store).map(Some)
             }),
             _ => Box::pin(async {
                 Err(OpenError::Unknown(
@@ -1026,7 +1051,7 @@ async fn core_secrets_of(cfg: &RootCfg, secrets: &BootSecrets) -> Result<CoreSec
 /// (2a) before the store (2b), so `credentials.at_rest` is resolved through them here, parsed exactly as the records
 /// step parses it, and published for `root::migrate::admit_for_host` before the store's open asks. `resolve` is the
 /// walk's core-secret resolution (by reference, the text naming only `what`).
-async fn publish_at_rest<F, Fut>(at_rest: Option<&SecretRef>, resolve: F)
+async fn publish_at_rest<F, Fut>(at_rest: Option<&SecretRef>, resolve: F) -> Result<bool, String>
 where
     F: Fn(&'static str, SecretRef) -> Fut,
     Fut: std::future::Future<Output = Result<SecureVec, String>>,
@@ -1035,7 +1060,8 @@ where
         None => Ok(false),
         Some(keys) => at_rest_resolves(keys, resolve).await,
     };
-    busbar_kernel::appbuild::publish_bootstrap_at_rest(verdict);
+    busbar_kernel::appbuild::publish_bootstrap_at_rest(verdict.clone());
+    verdict
 }
 
 /// Whether `keys` resolve and parse as at-rest keys; `Err` the first refusal's text.
@@ -1214,6 +1240,7 @@ fn specifications<'a>(
             (
                 one.kind,
                 InstanceSpec {
+                    store_migration: None,
                     purpose: if converting {
                         busbar_plugin_loader::instance::OpenPurpose::ConvertUnstamped
                     } else {

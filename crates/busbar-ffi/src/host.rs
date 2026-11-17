@@ -36,6 +36,38 @@ use crate::vt::{
 #[path = "tests/fixed_loan_tests.rs"]
 mod fixed_loan_tests;
 
+std::thread_local! {
+    static TEARDOWN: Cell<bool> = const { Cell::new(false) };
+}
+
+/// True while a native cancel or close is executing, including implicit Drop and raw fallbacks.
+/// An unavailable thread-local is denied; hosts must never inherit an enclosing open's authority.
+pub fn teardown_active() -> bool {
+    TEARDOWN.try_with(Cell::get).unwrap_or(true)
+}
+
+struct Teardown {
+    previous: Option<bool>,
+    _thread: PhantomData<std::rc::Rc<()>>,
+}
+
+impl Teardown {
+    fn enter() -> Self {
+        Self {
+            previous: TEARDOWN.try_with(|active| active.replace(true)).ok(),
+            _thread: PhantomData,
+        }
+    }
+}
+
+impl Drop for Teardown {
+    fn drop(&mut self) {
+        if let Some(previous) = self.previous {
+            let _ = TEARDOWN.try_with(|active| active.set(previous));
+        }
+    }
+}
+
 // ---- answers ----
 
 /// A record head (IF §3): tag, reserved, body length; the body is padded to 8.
@@ -470,6 +502,7 @@ fn invoke5<K: Kind, A1: RawArg, A2: RawArg, A3: RawArg, A4: RawArg, A5: RawArg>(
 
 /// `cancel(inst, tok)` through the image's header.
 fn cancel_raw(header: &Plugin, inst: *const c_void, tok: Token) -> Status {
+    let _teardown = Teardown::enter();
     match header.entries().3 {
         // SAFETY: `cancel` is the image's own header entry; `inst` is null (the image's open slab) or the
         // image's live instance; the token belongs to the one `Chain` cancelling itself or the `Session`
@@ -664,6 +697,7 @@ impl<K: Kind> Instance<K> {
 
 impl<K: Kind> Drop for Instance<K> {
     fn drop(&mut self) {
+        let _teardown = Teardown::enter();
         if let Some(close) = self.image.header().entries().4 {
             // SAFETY: `close` is the image's own header entry and `inst` its live INSTANCE address. This is
             // the last use: every `Session` holds an `Arc` of this instance and every `Chain` borrows it, so

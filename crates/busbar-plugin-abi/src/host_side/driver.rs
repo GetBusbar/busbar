@@ -253,6 +253,7 @@ impl Drop for Instance {
     /// The slot lease (`_tether`, the last field) drops after this body, so after the close has returned. With
     /// busbar-ffi's ACTIVE stack full the guard runs nothing and the instance closes unguarded right after.
     fn drop(&mut self) {
+        let _migration = crate::host_side::entry::MigrationScope::deny();
         let closed: Arc<dyn Any + Send + Sync> = Arc::new(());
         let mut live = Some(core::mem::replace(&mut self.live, closed));
         let mut out = Pool::global().acquire(self.max_out);
@@ -281,6 +282,7 @@ pub struct Driver<'a, N: Needs> {
     row: NeedRow,
     /// An `open` chain: Image-owned (no Instance yet), so a FAULT is audited and refuses, never quarantines.
     open: bool,
+    store_migration: Option<Arc<crate::host_side::entry::StoreMigrationAdmission>>,
 }
 impl<'a, N: Needs> Driver<'a, N> {
     /// Sets `caller.chain = next_chain()` (whatever the adapter wrote is overwritten); `max_steps` = 10,000.
@@ -295,6 +297,7 @@ impl<'a, N: Needs> Driver<'a, N> {
             max_steps: 10_000,
             row: NeedRow::of(caller.kind, false),
             open: false,
+            store_migration: None,
         }
     }
     /// Override the step cap (tests, Image-owned chains); never touches `chain`.
@@ -303,6 +306,16 @@ impl<'a, N: Needs> Driver<'a, N> {
     }
     pub fn caller(&self) -> &Caller<'a> {
         &self.caller
+    }
+    /// Authority belongs only to this ordinary Store-open chain, never a serving call.
+    pub fn with_store_migration(
+        mut self,
+        admission: Arc<crate::host_side::entry::StoreMigrationAdmission>,
+    ) -> Self {
+        if self.open && self.caller.kind == KindCode::Store {
+            self.store_migration = Some(admission);
+        }
+        self
     }
     /// W1-H1: this Driver runs an `open` chain (Image-owned, §10.5 `ChainOwner::Image`): the kind's open row
     /// (§6.1: transport may SECRET in `open` only), and a FAULT is audited and refuses the instance-to-be
@@ -359,7 +372,13 @@ impl<'a, N: Needs> Driver<'a, N> {
         };
         let first = {
             let ChainBufs { req, out, .. } = &mut guard.bufs;
-            step(caller.slot, entry, &mut out[0], |lease| start(req, lease))
+            step(
+                caller.slot,
+                entry,
+                self.store_migration.as_ref(),
+                &mut out[0],
+                |lease| start(req, lease),
+            )
         };
         let (mut status, mut instance) = match first {
             None => return Err(CallError::Fault(FaultReason::BadInstance)),
@@ -414,6 +433,7 @@ impl<'a, N: Needs> Driver<'a, N> {
                 step(
                     caller.slot,
                     ENTRY_RESUME,
+                    self.store_migration.as_ref(),
                     &mut guard.bufs.out[next],
                     |lease| chain.resume(results, lease),
                 )
@@ -555,6 +575,7 @@ pub(crate) struct ChainGuard<'g, 'i, N: Needs, K: Kind> {
 
 impl<N: Needs, K: Kind> ChainGuard<'_, '_, N, K> {
     fn cancel(&mut self) {
+        let _migration = crate::host_side::entry::MigrationScope::deny();
         let Some(chain) = self.chain.take() else {
             return;
         };
@@ -610,9 +631,11 @@ impl Watched {
 pub(crate) fn step<R>(
     slot: u32,
     entry: u8,
+    migration: Option<&Arc<crate::host_side::entry::StoreMigrationAdmission>>,
     out: &mut PooledOut,
     call: impl FnOnce(&mut OutLease) -> R,
 ) -> Option<R> {
+    let _migration = crate::host_side::entry::MigrationScope::set(migration.map(Arc::clone));
     let _owner = crate::host_side::entry::Owning::set(slot);
     let _watched = Watched::enter(slot, entry);
     out.lend(call)
@@ -626,6 +649,7 @@ pub(crate) fn step_fixed<R>(
     out: &mut [u8],
     call: impl for<'loan> FnOnce(&mut OutLease<'loan>) -> R,
 ) -> Option<R> {
+    let _migration = crate::host_side::entry::MigrationScope::deny();
     let _owner = crate::host_side::entry::Owning::set(slot);
     let _watched = Watched::enter(slot, entry);
     OutLease::with_fixed(out, call)
