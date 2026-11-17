@@ -28,6 +28,8 @@ pub(crate) enum NativeAttemptError {
 /// The book-accepted complete checkpoint is the runtime's single factual source as well.
 /// Live selection/rate authority is separate and is never reconstructed from these facts.
 pub(super) struct NativeMoney {
+    pub(super) terminal: Arc<super::native_terminal::TerminalSlot>,
+    pub(super) work: Option<super::super::usage::Ending>,
     accepted: Arc<UnitCheckpoint>,
     /// Incurred facts remain owned here if publishing their successor was refused.
     unpublished: Option<Arc<UnitCheckpoint>>,
@@ -39,6 +41,8 @@ impl NativeMoney {
     #[cfg(test)]
     pub(super) fn from_accepted(accepted: Arc<UnitCheckpoint>) -> Self {
         Self {
+            terminal: super::native_terminal::TerminalSlot::new(&accepted),
+            work: None,
             accepted,
             unpublished: None,
             declaration: None,
@@ -47,6 +51,8 @@ impl NativeMoney {
 
     pub(super) fn admitted(accepted: Arc<UnitCheckpoint>, declaration: RequestDeclaration) -> Self {
         Self {
+            terminal: super::native_terminal::TerminalSlot::new(&accepted),
+            work: None,
             accepted,
             unpublished: None,
             declaration: Some(declaration),
@@ -55,6 +61,10 @@ impl NativeMoney {
 
     pub(super) fn checkpoint(&self) -> &Arc<UnitCheckpoint> {
         self.unpublished.as_ref().unwrap_or(&self.accepted)
+    }
+
+    pub(super) fn accepted_revision(&self) -> u64 {
+        self.accepted.revision
     }
 
     fn publish_incurred(
@@ -79,6 +89,7 @@ impl NativeMoney {
 /// The original money service and admitted request, issued only after selected initial custody.
 /// Runtime keeps this with the same allocation; there is no numeric-unit lookup constructor.
 pub struct NativeRequestMoney {
+    pub(super) terminal: Arc<super::native_terminal::TerminalSlot>,
     pub(super) money: Arc<super::PlaneMoney>,
     pub(super) request: AdmittedRequest,
 }
@@ -233,7 +244,7 @@ impl NativeRequestMoney {
         Ok(())
     }
 
-    fn check_open_identity(&self, open: &super::Open) -> Result<(), NativeAttemptError> {
+    pub(super) fn check_open_identity(&self, open: &super::Open) -> Result<(), NativeAttemptError> {
         if open.finished
             || open.ledgered
             || open.abandoned

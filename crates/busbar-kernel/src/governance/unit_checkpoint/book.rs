@@ -56,6 +56,7 @@ pub(super) struct Pending {
     memory_selected: bool,
     fee_completion: Option<Arc<dyn super::partitions::SelectedFeeCompletion>>,
     awaiting_terminal_reader: bool,
+    terminal_signal: Option<Arc<super::TerminalSignal>>,
 }
 
 /// One entry's custody facts at a non-retired exit (SHUTDOWN-HANG §5).
@@ -100,6 +101,7 @@ impl Pending {
             memory_selected: false,
             fee_completion: None,
             awaiting_terminal_reader: false,
+            terminal_signal: None,
         }
     }
 
@@ -464,6 +466,34 @@ pub(super) struct PendingEdit<'a> {
 }
 
 impl PendingEdit<'_> {
+    pub(super) fn terminal_signal(&mut self) -> Arc<super::TerminalSignal> {
+        self.entry
+            .terminal_signal
+            .get_or_insert_with(Default::default)
+            .clone()
+    }
+    pub(super) fn matches_terminal_signal(
+        &self,
+        expected: Option<&Arc<super::TerminalSignal>>,
+    ) -> bool {
+        match expected {
+            Some(expected) => self
+                .entry
+                .terminal_signal
+                .as_ref()
+                .is_some_and(|actual| Arc::ptr_eq(actual, expected)),
+            None => self
+                .entry
+                .terminal_signal
+                .as_ref()
+                .is_none_or(|signal| !signal.claimed.load(Ordering::Acquire)),
+        }
+    }
+    pub(super) fn notify_terminal(&self) {
+        if let Some(signal) = &self.entry.terminal_signal {
+            signal.notify();
+        }
+    }
     pub(super) fn awaiting_terminal_reader(&self) -> bool {
         self.entry.awaiting_terminal_reader
     }
@@ -474,6 +504,13 @@ impl PendingEdit<'_> {
         self.entry.memory_selected
     }
     pub(super) fn resolve_fee(&mut self) -> Result<bool, super::RecordStoreError> {
+        let result = self.resolve_fee_inner();
+        if !matches!(result, Ok(false)) {
+            self.notify_terminal();
+        }
+        result
+    }
+    fn resolve_fee_inner(&mut self) -> Result<bool, super::RecordStoreError> {
         let Some(parts) = self.entry.snapshot.partitions.as_ref() else {
             return Ok(true);
         };
