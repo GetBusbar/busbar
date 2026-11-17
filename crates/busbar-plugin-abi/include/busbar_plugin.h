@@ -43,6 +43,56 @@ typedef struct bb_host {
 } bb_host;
 enum { BB_LOG_ERROR = 1, BB_LOG_WARN = 2, BB_LOG_INFO = 3, BB_LOG_DEBUG = 4, BB_LOG_TRACE = 5 };
 
+/* #408: native plane resource facts. These records grant no execution authority. */
+#define BB_PLANE_FB_RESOURCE_ADMISSION (1ull << 3)
+#define BB_PLANE_M_SELECT_RESOURCES (1ull << 9)
+#define BB_RESOURCE_INVENTORY 1u
+#define BB_RESOURCE_SELECT 2u
+#define BB_TAG_RESOURCE_ENTRY 0x0168u
+#define BB_TAG_RESOURCE_DESCRIPTOR 0x0169u
+#define BB_TAG_RESOURCE_KIND 0x016Au
+#define BB_TAG_RESOURCE_VALUE 0x016Bu
+#define BB_TAG_RESOURCE_FORWARD 0x016Cu
+#define BB_TAG_RESOURCE_UPSTREAM 0x016Du
+#define BB_TAG_RESOURCE_DIALECT 0x016Eu
+#define BB_TAG_RESOURCE_MODEL 0x016Fu
+#define BB_TAG_RESOURCE_SELECTED 0x0170u
+#define BB_TAG_RESOURCE_ECHO 0x0171u
+#define BB_TAG_RESOURCE_POOL 0x0172u
+#define BB_TAG_RESOURCE_MEMBER 0x0173u
+#define BB_TAG_D_ROUTE_RESOURCES 0x0199u
+
+typedef struct { bb_str name; bb_bytes value; } bb_pair;
+typedef struct { const bb_pair *ptr; size_t len; } bb_pairs;
+typedef struct {
+    uint32_t route, flags, auth, _r;
+    bb_str method, path, query;
+    bb_pairs headers;
+    bb_bytes identity;
+    uint64_t request_id, carrier;
+    bb_str work;
+    bb_bytes ticket_record;
+} bb_plane_req;
+typedef struct {
+    uint32_t attempt, flags;
+    bb_str dialect, model, base_path, upstream, provider;
+    bb_pairs params;
+    bb_bytes admission;
+} bb_target;
+typedef struct { uint64_t invocation, generation; uint32_t route, descriptor; } bb_resource_echo_rec;
+typedef struct {
+    bb_status (*request)(const void *, const bb_host *, const bb_plane_req *, bb_bytes, bb_raw_out *);
+    bb_status (*upstream)(const void *, const bb_host *, uint64_t, const bb_target *, bb_raw_out *);
+    bb_status (*piece)(const void *, const bb_host *, uint64_t, uint32_t, uint32_t, uint32_t, bb_bytes, bb_raw_out *);
+    bb_status (*end)(const void *, const bb_host *, uint64_t, bb_raw_out *);
+    bb_status (*rewrite)(const void *, const bb_host *, uint64_t, bb_bytes, bb_raw_out *);
+    bb_status (*render)(const void *, const bb_host *, const bb_plane_req *, uint32_t, bb_bytes, bb_raw_out *);
+    bb_status (*admin)(const void *, const bb_host *, uint32_t, bb_bytes, bb_raw_out *);
+    bb_status (*probe)(const void *, const bb_host *, const bb_target *, bb_raw_out *);
+    bb_status (*demux)(const void *, const bb_host *, bb_str, bb_bytes, bb_raw_out *);
+    bb_status (*select_resources)(const void *, const bb_host *, uint32_t, const bb_plane_req *, bb_bytes, bb_raw_out *);
+} bb_plane_vt;
+
 /* §3: records. [bb_rec_head][body][zero pad to 8]. */
 typedef struct { uint16_t tag; uint16_t _r; uint32_t len; } bb_rec_head;
 enum {
