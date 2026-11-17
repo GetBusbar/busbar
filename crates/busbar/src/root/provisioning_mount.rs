@@ -40,9 +40,12 @@ impl IdentityPolicy for ClientPolicy {
         self.epoch
     }
 
-    fn authorize(&self, instance: u64, identity: &Identity, _req: &AuthIn<'_>) -> Result<(), u32> {
+    fn authorize(&self, instance: u64, identity: &Identity, req: &AuthIn<'_>) -> Result<(), u32> {
         if self.current_epoch.load(Ordering::Acquire) == self.epoch
             && instance == self.instance
+            && !identity
+                .expires_at_s()
+                .is_some_and(|until| req.now_s >= until)
             && provision::client_entry(&self.clients, identity.subject()).is_some()
         {
             Ok(())
@@ -306,7 +309,7 @@ mod tests {
     #[test]
     fn client_policy_refuses_expired_identity_before_replay() {
         use busbar_plugin_abi::auth::F_EXPIRES_AT_S;
-        use busbar_plugin_abi::records::{tag, FactRec, Records, Reply, Writer};
+        use busbar_plugin_abi::records::{tag, Records, Reply, Writer};
         use busbar_ports::auth::{decode_verify_ok, VerifyOk};
 
         let policy = ClientPolicy {
