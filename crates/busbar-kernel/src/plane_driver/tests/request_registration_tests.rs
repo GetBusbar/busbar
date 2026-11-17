@@ -578,3 +578,62 @@ async fn a_refunded_native_fee_settles_through_the_original_flusher() {
     }
     assert!(rig.slot.fee_join_complete());
 }
+
+fn pool_scoped(id: &str, pools: &[&str]) -> Arc<VirtualKey> {
+    Arc::new(VirtualKey {
+        id: id.into(),
+        enabled: true,
+        allowed_scopes: Some(
+            pools
+                .iter()
+                .map(|pool| busbar_contract::records::ScopeRef::pool(*pool))
+                .collect(),
+        ),
+        ..Default::default()
+    })
+}
+
+/// DES-NATIVE-ROUTE-CLASSES test 3 (#462, D2): root seats pass `scope_kind: None`. That
+/// must not let a pool-scoped key walk another pool's members.
+#[test]
+fn undeclared_scope_kind_never_widens_a_scoped_key_walk() {
+    let routes = catalog_routes_with(None);
+    for (unit, selector) in [(41, "p"), (42, "q"), (43, "m")] {
+        let (ctx, _lease) = context_with_key(unit, pool_scoped("scoped", &["p"]));
+        let walk = RequestWalk::new(&ctx).unwrap();
+        let resolved = allocation(ctx).forward(&routes, &walk, Some(selector));
+        let widened = resolved
+            .as_ref()
+            .ok()
+            .map(|receipt| receipt.member_grants().keys().cloned().collect::<Vec<_>>());
+        assert_eq!(
+            resolved.err(),
+            Some(AdmissionError::Scope),
+            "scope_kind None let a pool:p key walk {selector} with grants {widened:?}"
+        );
+    }
+    // Guard: an unrestricted key keeps every configured walk.
+    let (ctx, _lease) = context(44);
+    let walk = RequestWalk::new(&ctx).unwrap();
+    assert!(allocation(ctx).forward(&routes, &walk, Some("q")).is_ok());
+}
+
+/// Test 3, registration half: W_UPSTREAM is not admitted for a scoped key under `None`.
+#[test]
+fn undeclared_scope_kind_never_admits_a_scoped_key_registration() {
+    let routes = RequestRoutes::new("seat", None, None, None)
+        .unwrap()
+        .with_registrations(table(&[definition("command", true)]))
+        .unwrap();
+    let (ctx, _lease) = context_with_key(45, pool_scoped("scoped", &["a"]));
+    assert_eq!(
+        allocation(ctx).registration(&routes, None, "command").err(),
+        Some(AdmissionError::Scope),
+        "scope_kind None admitted upstream `command` for a pool:a key"
+    );
+    // Guard: an unrestricted key still reaches its configured command.
+    let (ctx, _lease) = context(46);
+    assert!(allocation(ctx)
+        .registration(&routes, None, "command")
+        .is_ok());
+}

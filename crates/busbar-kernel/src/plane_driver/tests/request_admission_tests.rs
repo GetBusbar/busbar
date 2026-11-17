@@ -156,6 +156,10 @@ fn retiring_old_context_preserves_a_reused_numeric_allocation() {
 }
 
 fn catalog_routes() -> RequestRoutes {
+    catalog_routes_with(Some(Arc::from("pool")))
+}
+
+fn catalog_routes_with(scope_kind: Option<Arc<str>>) -> RequestRoutes {
     use crate::config::{self, providers, Grammar};
     use crate::plane_driver::provider_catalog::ProviderPlane;
     let grammar = Grammar::empty();
@@ -178,7 +182,7 @@ fn catalog_routes() -> RequestRoutes {
     .unwrap();
     RequestRoutes::new(
         "seat",
-        Some(Arc::from("pool")),
+        scope_kind,
         Some(Arc::new(resolved.catalogs.remove("seat").unwrap())),
         None,
     )

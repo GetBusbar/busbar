@@ -798,3 +798,7 @@ impl ValidatedForward {
         &self.exchange
     }
 }
+
+#[cfg(test)]
+#[path = "tests/resource_admission_tests.rs"]
+mod tests;
