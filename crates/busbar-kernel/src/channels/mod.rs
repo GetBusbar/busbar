@@ -13,6 +13,9 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 
 pub mod ask_line;
+pub mod budget;
+#[cfg(test)]
+mod budget_tests;
 pub mod carrier;
 #[cfg(test)]
 mod carrier_tests;
@@ -21,6 +24,9 @@ pub mod frame;
 mod frame_tests;
 pub mod line_carriers;
 pub mod link;
+pub mod protected;
+#[cfg(test)]
+mod protected_tests;
 pub mod respawn;
 pub mod signals;
 pub mod stdio;
