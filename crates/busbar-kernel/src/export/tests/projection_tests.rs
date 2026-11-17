@@ -8,7 +8,7 @@ use crate::export::projection::{
 };
 use busbar_contract::abi::export::ExportField;
 use busbar_contract::export_stream::ExportStream;
-use busbar_contract::json::{self, JsonValueTrait as _};
+use busbar_contract::json::{self, JsonContainerTrait as _};
 
 fn resolve_errs(yaml: &str, carries: &[ExportStream]) -> Vec<String> {
     let defs: ExportDefs = busbar_contract::yaml::from_str(yaml).expect("fixture parses");

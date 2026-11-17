@@ -4,7 +4,7 @@
 use super::*;
 use busbar_contract::abi::export::ExportField;
 use busbar_contract::export_stream::ExportStream;
-use busbar_contract::json::{JsonValueTrait as _, Value};
+use busbar_contract::json::{JsonContainerTrait as _, JsonValueTrait as _, Value};
 use tracing_subscriber::layer::SubscriberExt as _;
 
 /// A rendered value, read back as JSON.
