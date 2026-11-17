@@ -1765,7 +1765,8 @@ pub(super) async fn finish_with_store(
     // Runtime completion must use the durable reservation attached by the actual
     // configuration transaction, before any native OPEN. Initial completion runs
     // only after root boot has installed its confirmed NodeBook generation.
-    let generation = match (startup.is_some(), environment.as_ref()) {
+    let initial = startup.is_some();
+    let generation = match (initial, environment.as_ref()) {
         (false, Some(environment)) => Some(
             environment
                 .app
@@ -2063,6 +2064,18 @@ pub(super) async fn finish_with_store(
                 return Err("CONFIG: a transport cannot normalize core-owned config".to_owned());
             }
             continue;
+        }
+        if !initial {
+            let authored = busbar_contract::json::parse_value(&instance.config)
+                .map_err(|_| "CONFIG: invalid candidate authoring settings")?;
+            let settled = busbar_contract::json::parse_value(answer.config_json.as_slice())
+                .map_err(|_| "CONFIG: invalid candidate normalized settings")?;
+            if authored != settled {
+                return Err(format!(
+                    "CONFIG: instance `{}` requires a new normalized configuration read",
+                    instance.name
+                ));
+            }
         }
         if let Some(retained) = declared.get(&instance.name) {
             let visible = busbar_contract::json::parse_value(answer.config_json.as_slice())
