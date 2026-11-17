@@ -101,6 +101,7 @@ pub struct InvocationContext {
     caller: Caller,
     unit: u64,
     record: Arc<crate::host_units::UnitRecord>,
+    phase: Arc<crate::plane_driver::request_admission::AdmissionPhase>,
 }
 
 impl InvocationContext {
@@ -117,11 +118,17 @@ impl InvocationContext {
             .units()
             .invocation_record(unit, &caller)
             .ok_or(NEST_NO_UNIT)?;
+        let phase = generation
+            .core
+            .units()
+            .invocation_phase(unit, &caller, &record)
+            .ok_or(NEST_NO_UNIT)?;
         Ok(Self {
             generation,
             caller,
             unit,
             record,
+            phase,
         })
     }
 
@@ -139,9 +146,38 @@ impl InvocationContext {
         self.record.principal.as_ref()
     }
 
+    pub fn instance(&self) -> &str {
+        self.caller.namespace()
+    }
+
+    pub fn is_live(&self) -> bool {
+        self.accepts(&self.caller)
+    }
+
+    /// Required before effectful host services; pre-admission keeps only read prerequisites.
+    pub fn effects_allowed(&self) -> bool {
+        self.is_live() && self.phase.effects_allowed()
+    }
+
+    pub(crate) fn admission_phase(
+        &self,
+    ) -> &crate::plane_driver::request_admission::AdmissionPhase {
+        &self.phase
+    }
+
+    pub(crate) fn same_unit(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.record, &other.record)
+            && Arc::ptr_eq(&self.generation, &other.generation)
+            && self.caller.same_incarnation(&other.caller)
+            && Arc::ptr_eq(&self.phase, &other.phase)
+    }
+
     /// Keep hook work on the exact retained generation's bounded executor, including after
     /// the request stops waiting for a tap or an expired call.
     pub(crate) fn offload_hook(&self, job: Box<dyn FnOnce() + Send>) -> Result<(), &'static str> {
+        if !self.effects_allowed() {
+            return Err(NEST_NO_UNIT);
+        }
         self.generation.core.pool().ok_or(super::NO_POOL)?.run(job);
         Ok(())
     }
@@ -152,7 +188,7 @@ impl InvocationContext {
         nest: Nest,
         done: NestDone,
     ) -> Result<(), &'static str> {
-        if nest.parent != self.unit || !self.accepts(&self.caller) {
+        if nest.parent != self.unit || !self.effects_allowed() {
             return Err(NEST_NO_UNIT);
         }
         self.generation
@@ -173,7 +209,7 @@ impl InvocationContext {
     }
 
     pub fn nest(&self, caller: &Caller, ask: NestAsk, done: NestDone) -> Result<(), &'static str> {
-        if !self.accepts(caller) {
+        if !self.accepts(caller) || !self.effects_allowed() {
             return Err(NEST_NO_UNIT);
         }
         let retained = self.clone();
