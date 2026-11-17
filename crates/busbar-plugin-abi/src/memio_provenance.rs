@@ -249,9 +249,25 @@ impl Provenance {
                 if id != 0 && p.response(id).is_none() {
                     return Err(invalid());
                 }
+                // Earlier entries in this same batch are provisional state.
+                // Validate against them without committing a partial prefix.
+                let prior_end = events[..index].iter().any(|e| {
+                    matches!(e, SerializedEvent::End { stream, .. } if *stream == id)
+                });
+                let prior_abort = events[..index].iter().any(|e| {
+                    matches!(e, SerializedEvent::Abort { stream } if *stream == id)
+                });
+                let prior_quiet = events[..index].iter().any(|e| {
+                    matches!(e, SerializedEvent::Quiescent { stream } if *stream == id)
+                });
                 match e {
                     SerializedEvent::Span { stream, class, len } => {
-                        if p.response(*stream).is_some_and(|r| r.finished) || *len == 0 || (*stream == 0 && *class == SerializedClass::Payload) {
+                        if prior_end
+                            || prior_quiet
+                            || p.response(*stream).is_some_and(|r| r.finished || r.quiescent)
+                            || *len == 0
+                            || (*stream == 0 && *class == SerializedClass::Payload)
+                        {
                             return Err(invalid());
                         }
                         serialized = serialized.checked_add(*len).ok_or_else(invalid)?;
@@ -259,19 +275,29 @@ impl Provenance {
                         descriptors = descriptors.checked_add(1).ok_or_else(invalid)?;
                     }
                     SerializedEvent::End { stream, .. } => {
-                        if events[..index].iter().any(|e| matches!(e, SerializedEvent::End { stream: prior, .. } if prior == stream)) { return Err(invalid()); }
-
-                        if *stream == 0
-                            || p.response(*stream).is_some_and(|r| r.finished || r.aborted)
+                        if prior_end
+                            || prior_abort
+                            || prior_quiet
+                            || *stream == 0
+                            || p.response(*stream)
+                                .is_some_and(|r| r.finished || r.aborted || r.quiescent)
                         {
                             return Err(invalid());
                         }
                         descriptors = descriptors.checked_add(1).ok_or_else(invalid)?;
                     }
                     SerializedEvent::ReleaseBarrier { stream } => {
-                        if p.response(*stream).is_some_and(|r| r.barrier) || events[..index].iter().any(|e| matches!(e, SerializedEvent::ReleaseBarrier { stream: prior } if prior == stream)) { return Err(invalid()); }
-
-                        if *stream == 0 {
+                        if prior_end
+                            || prior_abort
+                            || prior_quiet
+                            || *stream == 0
+                            || p.response(*stream).is_some_and(|r| {
+                                r.barrier || r.finished || r.aborted || r.quiescent
+                            })
+                            || events[..index].iter().any(|e| {
+                                matches!(e, SerializedEvent::ReleaseBarrier { stream: prior } if prior == stream)
+                            })
+                        {
                             return Err(invalid());
                         }
                         descriptors = descriptors.checked_add(1).ok_or_else(invalid)?;
