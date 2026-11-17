@@ -241,15 +241,15 @@ fn app_of(engine: &Arc<dyn std::any::Any + Send + Sync>) -> Option<Arc<App>> {
 
 /// The principal `bearer` names under the data auth chain, for a route the chain did not gate. No credential, or a
 /// chain with nothing configured, is anonymous.
-async fn chain_principal(ctx: &PlaneReqCtx, bearer: Option<&str>) -> Seen {
+async fn chain_principal(ctx: &PlaneReqCtx, bearer: Option<&str>) -> (Seen, Option<GovCtx>) {
     let Some(token) = bearer else {
-        return Seen::Anonymous;
+        return (Seen::Anonymous, None);
     };
     let Some(app) = app_of(&ctx.engine) else {
-        return Seen::Rejected;
+        return (Seen::Rejected, None);
     };
     if app.auth.is_open() {
-        return Seen::Anonymous;
+        return (Seen::Anonymous, None);
     }
     let target = ctx
         .uri
@@ -264,9 +264,10 @@ async fn chain_principal(ctx: &PlaneReqCtx, bearer: Option<&str>) -> Seen {
         None,
     )
     .await;
-    seen_of(busbar_kernel::auth::resolve_data_plane_identity(
-        &app, verdict,
-    ))
+    match busbar_kernel::auth::resolve_data_plane_identity(&app, verdict) {
+        Ok((principal, gov)) => (seen_of(Ok((principal, GovCtx::default()))), Some(gov)),
+        Err(why) => (seen_of(Err(why)), None),
+    }
 }
 
 /// The webhook secret configured for (plane instance, route), if any.
@@ -431,9 +432,21 @@ async fn answer(
     ingress: Option<&Ingress>,
     billing: Option<&PortBilling>,
     generation: Option<&Arc<super::serve::DataRoutes>>,
-    ctx: PlaneReqCtx,
+    mut ctx: PlaneReqCtx,
 ) -> PlaneResponse {
     let now_s = busbar_kernel::store::now();
+    let bearer = bearer_of(&ctx.headers, route.cred_header.as_deref());
+    // Resolve the optional credential before billing. Retain the exact admitted key; the
+    // principal's subject text alone cannot reconstruct external identity grants or budgets.
+    let seen = match ctx.principal.as_ref().and_then(|p| p.0.as_ref()) {
+        Some(p) => Seen::Verified(Arc::from(p.id.as_str())),
+        None if resolves_credential(route.effective) => {
+            let (seen, gov) = chain_principal(&ctx, bearer.as_deref()).await;
+            ctx.gov = gov;
+            seen
+        }
+        None => Seen::Anonymous,
+    };
     let unit = match open_unit(seat, billing, &ctx, now_s) {
         Ok(unit) => unit,
         Err(blocked) => return blocked_response(&blocked),
@@ -456,16 +469,6 @@ async fn answer(
         },
         (Some(_), None) => return failed(StatusCode::SERVICE_UNAVAILABLE),
         (None, _) => None,
-    };
-    let bearer = bearer_of(&ctx.headers, route.cred_header.as_deref());
-    // The data chain's verdict, when the route sat behind it: the verified principal's id is its subject. A route
-    // the chain did not gate resolves its credential here.
-    let seen = match ctx.principal.as_ref().and_then(|p| p.0.as_ref()) {
-        Some(p) => Seen::Verified(Arc::from(p.id.as_str())),
-        None if resolves_credential(route.effective) => {
-            chain_principal(&ctx, bearer.as_deref()).await
-        }
-        None => Seen::Anonymous,
     };
     let (principal, identity) = match &seen {
         Seen::Verified(id) => (Some(Arc::clone(id)), Some(subject_identity(id))),
