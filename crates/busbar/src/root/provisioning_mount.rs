@@ -304,6 +304,32 @@ mod tests {
     }
 
     #[test]
+    fn client_policy_refuses_expired_identity_before_replay() {
+        use busbar_plugin_abi::auth::F_EXPIRES_AT_S;
+        use busbar_plugin_abi::records::{tag, FactRec, Records, Reply, Writer};
+        use busbar_ports::auth::{decode_verify_ok, VerifyOk};
+
+        let policy = ClientPolicy {
+            instance: 41,
+            epoch: 7,
+            current_epoch: Arc::new(AtomicU64::new(7)),
+            clients: vec!["IdP".into()],
+        };
+        let mut records = Reply::new();
+        records.put_text(tag::ID_SUBJECT, "IdP").unwrap();
+        records.put_fact(F_EXPIRES_AT_S, 1).unwrap();
+        let VerifyOk::Identity(identity) =
+            decode_verify_ok(Records::new(records.as_bytes())).unwrap()
+        else {
+            panic!("identity records");
+        };
+        assert_eq!(policy.authorize(41, &identity, &request()), Err(R_POLICY));
+        let mut before_expiry = request();
+        before_expiry.now_s = 0;
+        assert_eq!(policy.authorize(41, &identity, &before_expiry), Ok(()));
+    }
+
+    #[test]
     fn provisioning_path_is_relative_to_exact_instance_mount() {
         assert_eq!(
             relative_path("directory", "/provision/directory/Groups"),
