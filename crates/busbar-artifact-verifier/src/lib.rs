@@ -3,6 +3,8 @@
 
 //! Read-only artifact verification. Publisher trust does not qualify a cryptographic provider.
 #![forbid(unsafe_code)]
+/// The same shared JSON facade used by release documents and manifest serialization.
+pub use busbar_json as json;
 pub mod refusal;
 pub mod release_trust;
 pub mod scan;
