@@ -1460,8 +1460,8 @@ impl DataRoutes {
         }))
     }
 
-    /// Register the actual billed native unit against this selected immutable dispatch snapshot.
-    /// The exact driver Caller and checked unit record jointly create execution authority.
+    /// Register the allocated native unit against this selected immutable dispatch snapshot.
+    /// Monetary/effect authority remains pending until the retained task resolves its actual pool.
     pub(crate) fn native_unit(
         self: &Arc<Self>,
         seat: &busbar_kernel::plane_driver::port::PortSeat,
@@ -1487,14 +1487,16 @@ impl DataRoutes {
         if self.frames_lock().contains_key(&id) || generation.core().units().get(id).is_some() {
             return Err("native unit is already registered");
         }
-        generation.core().units().admitted_for(
+        if !generation.core().units().pre_admitted_for(
             id,
             seat.driver.caller(),
             busbar_kernel::host_units::UnitRecord {
                 principal: Some(key),
                 depth: 0,
             },
-        );
+        ) {
+            return Err("native allocation could not be registered");
+        }
         let context = match seat.driver.invocation(Arc::clone(generation), id) {
             Ok(context) => context,
             Err(why) => {
@@ -1573,7 +1575,7 @@ pub(crate) struct NativeUnit {
 impl Drop for NativeUnit {
     fn drop(&mut self) {
         let id = self.context.unit();
-        self.context.generation().core().units().ended(id);
+        self.context.retire();
         self.routes.frames_lock().remove(&id);
     }
 }

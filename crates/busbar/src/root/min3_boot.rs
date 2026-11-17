@@ -940,6 +940,7 @@ impl Steps<'_> {
                 audience: audience_of(spec.config_json),
                 intents: Arc::new(intents),
                 who,
+                request_routes: wiring.request_routes,
                 upstream: wiring.upstream,
                 carrier: Some(wiring.carrier),
             });
