@@ -205,3 +205,40 @@ fn exact_request_binding_precedes_secret_replay_and_inflight() {
         Ok(Probe::Reserved(_))
     ));
 }
+
+/// #359 SEC-L6 (DES-359 r3): the key replay cache holds the once-shown answer (a live token)
+/// only in wiped custody, so the stored copy is wiped when the window evicts it and when the
+/// cache itself drops. Driven on the test thread, where `wipe_counts` observes the drop wipes.
+#[test]
+fn the_key_replay_cache_wipes_a_held_answer_on_eviction_and_drop() {
+    use busbar_contract::secure::wipe_counts;
+    let answer = br#"{"id":"vk_1","token":"bb_live_once_shown"}"#.to_vec();
+
+    let cache = crate::keys::KeyReplayCache::new();
+    match cache.probe(key("alice", "create:evicted"), 1_000) {
+        Probe::Reserved(r) => r.commit(answer.clone().into(), 1_000),
+        _ => panic!("first sighting must reserve"),
+    }
+    let (_, before) = wipe_counts();
+    assert!(matches!(
+        cache.probe(key("alice", "create:other"), 1_000 + IDEMPOTENCY_TTL_SECS),
+        Probe::Reserved(_)
+    ));
+    let (_, evicted) = wipe_counts();
+    assert!(
+        evicted > before,
+        "an answer the replay window evicts is wiped, not freed in the clear"
+    );
+
+    match cache.probe(key("alice", "create:dropped"), 5_000) {
+        Probe::Reserved(r) => r.commit(answer.into(), 5_000),
+        _ => panic!("first sighting must reserve"),
+    }
+    let (_, before) = wipe_counts();
+    drop(cache);
+    let (_, dropped) = wipe_counts();
+    assert!(
+        dropped > before,
+        "an answer still held when the cache drops is wiped"
+    );
+}
