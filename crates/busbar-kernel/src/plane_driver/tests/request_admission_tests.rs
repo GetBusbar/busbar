@@ -9,6 +9,9 @@ use crate::host_units::UnitRecord;
 use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::services::Caller;
 
+#[path = "request_registration_tests.rs"]
+mod registration_tests;
+
 struct NoChildren;
 impl NestRoute for NoChildren {
     fn nest(&self, _: InvocationContext, _: Nest, _: NestDone) {
@@ -401,24 +404,67 @@ fn real_admission_view_keeps_selected_pool_and_rejects_retired_authority() {
 
 #[test]
 fn command_registration_retains_the_real_definition_without_a_url_walk() {
-    use crate::upstreams::{ConfiguredUpstreams, ProgramPin, StdioCommand, UpstreamDef, UpstreamTls};
+    use crate::upstreams::{
+        ConfiguredUpstreams, ProgramPin, StdioCommand, UpstreamDef, UpstreamTls,
+    };
     let definition = Arc::new(UpstreamDef {
-        name: "command".into(), allow_private: false, url: None,
-        command: Some(StdioCommand { argv: vec!["/usr/bin/true".into()], env: vec![], cwd: None, pin: ProgramPin::Unpinned, idle_s: 30 }),
-        tls: UpstreamTls { pin_spki: vec![], client_identity: None, trust: None }, auth: None,
+        name: "command".into(),
+        allow_private: false,
+        url: None,
+        command: Some(StdioCommand {
+            argv: vec!["/usr/bin/true".into()],
+            env: vec![],
+            cwd: None,
+            pin: ProgramPin::Unpinned,
+            idle_s: 30,
+        }),
+        tls: UpstreamTls {
+            pin_spki: vec![],
+            client_identity: None,
+            trust: None,
+        },
+        auth: None,
     });
-    let table = Arc::new(ConfiguredUpstreams::from_definitions([("command".into(), definition.clone())].into()));
-    let routes = RequestRoutes::new("seat", Some(Arc::from("server")), None, None).unwrap().with_registrations(table).unwrap();
+    let table = Arc::new(ConfiguredUpstreams::from_definitions(
+        [("command".into(), definition.clone())].into(),
+    ));
+    let routes = RequestRoutes::new("seat", Some(Arc::from("server")), None, None)
+        .unwrap()
+        .with_registrations(table)
+        .unwrap();
     let (ctx, _lease) = context(19);
-    let receipt = allocation(ctx).registration(&routes, None, "command").unwrap();
-    assert!(Arc::ptr_eq(receipt.registered_command().unwrap(), &definition));
-    assert_eq!(receipt.domain(), &RequestDomain::Registration("command".into()));
-    assert!(receipt.walk_key().is_none(), "a command cannot masquerade as an HTTP exchange");
+    let receipt = allocation(ctx)
+        .registration(&routes, None, "command")
+        .unwrap();
+    assert!(Arc::ptr_eq(
+        receipt.registered_command().unwrap(),
+        &definition
+    ));
+    assert_eq!(
+        receipt.domain(),
+        &RequestDomain::Registration("command".into())
+    );
+    assert!(
+        receipt.walk_key().is_none(),
+        "a command cannot masquerade as an HTTP exchange"
+    );
     assert!(receipt.member_grants().is_empty());
     for (model, selected) in [(Some("unknown"), "command"), (None, "missing")] {
         let (ctx, _lease) = context(20);
-        assert!(allocation(ctx).registration(&routes, model, selected).is_err());
+        assert!(allocation(ctx)
+            .registration(&routes, model, selected)
+            .is_err());
     }
-    let (ctx, _lease) = context_with_key(21, Arc::new(VirtualKey { id: "denied".into(), enabled: true, allowed_scopes: Some(vec![]), ..Default::default() }));
-    assert!(allocation(ctx).registration(&routes, None, "command").is_err());
+    let (ctx, _lease) = context_with_key(
+        21,
+        Arc::new(VirtualKey {
+            id: "denied".into(),
+            enabled: true,
+            allowed_scopes: Some(vec![]),
+            ..Default::default()
+        }),
+    );
+    assert!(allocation(ctx)
+        .registration(&routes, None, "command")
+        .is_err());
 }
