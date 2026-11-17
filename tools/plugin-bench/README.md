@@ -9,11 +9,9 @@ The plugin is reached the way core reaches it. A dropped-in cdylib goes through 
 discovery (`busbar_plugin_door`, `rendering_of_library` + `load_dropped`). A compiled-in door goes
 through `LinkedRow` + `load_linked`. The loader validates and binds both.
 
-The instance is opened with the loader's own lifecycle. A store opens through `LoadedPersistence`
-and has its dataset bootstrapped; a plane is opened, readied, hydrated and started. After that,
+The instance is opened with the loader's own lifecycle: a plane is opened, readied, hydrated and started. After that,
 every measured op is ONE inline crossing (`Plugin::answer`) over frames and lent buffers that the
-bench allocates once and reuses. The host-mediated crossing costs about 0.2 µs; `store.clock` shows
-that floor.
+bench allocates once and reuses. The host-mediated crossing costs about 0.2 µs.
 
 The measured path has no dispatcher hop, sealing, journal, HTTP or router. The bench's host
 services are a fake clock and a fast `random.fill`. Every other service answers "unimplemented"
@@ -39,10 +37,12 @@ The output is a table on stdout plus `target/plugin-bench/<kind>.json`.
 
 ## Workloads
 
-**store.** These are the kernel journal's append shape:
+**store.** A store is a MIN-3 image: it is admitted from its cdylib (`--plugin`), opened through
+`Registry::open_store` and its dataset initialized, as core does. Measured ops are the store adapter's
+`PersistenceBackend` calls (codec, one crossing, decode), in the kernel journal's append shape:
 
-- `commit`: a CAS on a head key plus a 1 KiB record put (`--record-bytes`), a 64-byte result, and a
-  fresh attempt id each time, so every commit leaves one receipt behind.
+- `commit`: a CAS on a head key plus a 1 KiB record put, a 64-byte result, and a fresh attempt id each
+  time, so every commit leaves one receipt behind.
 - `read`: two keys.
 - `clock`: the floor.
 
@@ -90,7 +90,7 @@ From a core checkout, against any cdylib:
 
 ```sh
 cargo run --release --manifest-path tools/plugin-bench/Cargo.toml --example busbar-plugin-bench -- \
-  --plugin /path/to/target/release/libbusbar_store_memory_plugin.so --kind store
+  --plugin /path/to/target/release/libbusbar_secret_env_plugin.so --kind secret
 ```
 
 In a dropped-in cdylib, the plugin's allocations go through the cdylib's own allocator and are not
@@ -107,13 +107,13 @@ busbar-plugin-bench = { git = "https://github.com/GetBusbar/busbar", rev = "<the
 Then add a one-line example, `examples/bench.rs`:
 
 ```rust
-busbar_plugin_bench::bench_main!(busbar_store_memory::door);
+busbar_plugin_bench::bench_main!(busbar_secret_env::door);
 ```
 
 Then run:
 
 ```sh
-cargo run --release --example bench -- --kind store
+cargo run --release --example bench -- --kind secret
 ```
 
 `--plugin target/release/libX.so` on the same binary benches the dropped-in image instead.

@@ -60,11 +60,7 @@ async fn each_app_generation_constructs_its_own_credential_read() {
     let kind = signed_kind();
     let handle = Arc::new(busbar_kernel::state::AppHandle::new({
         crate::dist_root_install::install();
-        let module = busbar_kernel::preflight::root_rows()
-            .stores
-            .first()
-            .expect("the distribution links its actual store")
-            .0;
+        let module = crate::root::test_plugins::linked_store_module();
         let settings: json::Value = json::parse_value(
             std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS")
                 .unwrap_or_else(|_| "{}".into())
@@ -124,11 +120,7 @@ async fn each_app_generation_constructs_its_own_credential_read() {
     handle
         .swap({
             crate::dist_root_install::install();
-            let module = busbar_kernel::preflight::root_rows()
-                .stores
-                .first()
-                .expect("the distribution links its actual store")
-                .0;
+            let module = crate::root::test_plugins::linked_store_module();
             let settings: json::Value = json::parse_value(
                 std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS")
                     .unwrap_or_else(|_| "{}".into())
@@ -240,11 +232,7 @@ async fn absent_custody_stays_refused_and_complete_custody_retains_no_app_owner(
     assert!(!credentials.installed());
     let handle = Arc::new(busbar_kernel::state::AppHandle::new({
         crate::dist_root_install::install();
-        let module = busbar_kernel::preflight::root_rows()
-            .stores
-            .first()
-            .expect("the distribution links its actual store")
-            .0;
+        let module = crate::root::test_plugins::linked_store_module();
         let settings: json::Value = json::parse_value(
             std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS")
                 .unwrap_or_else(|_| "{}".into())

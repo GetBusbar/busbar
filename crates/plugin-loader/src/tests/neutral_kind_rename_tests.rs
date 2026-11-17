@@ -34,7 +34,6 @@ macro_rules! renamed {
         }
     };
 }
-renamed!(store, crate::neutral_store::door);
 renamed!(auth, crate::neutral_auth::door);
 renamed!(hook, crate::hook_door_plugin::conforming::door);
 renamed!(export, crate::neutral_export::door);
@@ -107,10 +106,8 @@ fn lifecycle_with_settings<K: Kind>(plugin: &Plugin<K>, settings: &[u8]) -> Vec<
 #[test]
 fn renaming_neutral_implementations_preserves_every_kind_capability_and_lifecycle() {
     use crate::dispatch::kinds::{
-        auth::Auth, export::Export, hook::Hook, plane::Plane, store_v4::StoreV4,
-        transport::Transport,
+        auth::Auth, export::Export, hook::Hook, plane::Plane, transport::Transport,
     };
-    compare::<StoreV4>(crate::neutral_store::door, store, lifecycle);
     compare::<Auth>(crate::neutral_auth::door, auth, lifecycle);
     compare::<Hook>(crate::hook_door_plugin::conforming::door, hook, |plugin| {
         lifecycle_with_settings(plugin, br#"{"reject_over_messages":3}"#)

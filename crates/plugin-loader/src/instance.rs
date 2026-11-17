@@ -2574,8 +2574,11 @@ mod endpoint_decode_tests {
 #[path = "tests/transport_endpoint_tests.rs"]
 mod transport_endpoint_tests;
 
+/// Native metadata readers for the composition root (LIFECYCLE-A-PLAN WP1).
+mod facts;
 /// The recognizer's plane instance names and the `--stdio` judgement (WP1-GAP r3).
 pub mod plane_sections;
+pub use facts::{AuthStyle, PublicSettings};
 
 #[cfg(test)]
 mod needs_tests;

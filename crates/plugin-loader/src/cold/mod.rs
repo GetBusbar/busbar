@@ -18,4 +18,3 @@ pub(crate) mod highwater;
 pub(crate) mod host;
 pub(crate) mod observe;
 pub(crate) mod rows;
-pub(crate) mod store_v4;

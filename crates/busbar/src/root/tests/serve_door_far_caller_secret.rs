@@ -26,12 +26,7 @@ use crate::root::serve::DoorFar;
 
 async fn far_end_app() -> busbar_kernel::state::App {
     crate::dist_root_install::install();
-    let module = crate::LINKED
-        .stores
-        .iter()
-        .find(|row| row.1)
-        .expect("the assembled product links an ephemeral store")
-        .0;
+    let module = crate::root::test_plugins::linked_store_module();
     let deploy = busbar_kernel::config::deploy_from_deserializer(
         serde_json::json!({
             "providers": {}, "models": {}, "auth": {"chain": []},

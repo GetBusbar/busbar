@@ -82,12 +82,6 @@ fn drift(rows: &[Row], entries: &[Entry]) -> (Vec<String>, Vec<String>, Vec<Stri
 
 fn linked_rows() -> (Vec<Row>, Vec<String>) {
     let mut rows: Vec<Row> = Vec::new();
-    let stores = crate::LINKED.stores.iter();
-    rows.extend(stores.map(|s| {
-        Row::of(&crate::root::boot::linked_row(
-            &busbar_kernel::preflight::LinkedRow::Store(*s),
-        ))
-    }));
     let auths = crate::LINKED.auths.iter();
     rows.extend(auths.map(|a| {
         Row::of(&crate::root::boot::linked_row(

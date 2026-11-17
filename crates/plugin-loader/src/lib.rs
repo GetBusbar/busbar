@@ -218,27 +218,10 @@ pub mod pack_native;
 pub mod settings_schema;
 pub mod sign;
 mod stage;
-/// Authority-bound canonical release verification.
-pub mod verification;
-// busbar:request-path
-#[cfg_attr(
-    not(test),
-    deny(
-        clippy::disallowed_macros,
-        clippy::disallowed_methods,
-        clippy::disallowed_types,
-        clippy::redundant_clone,
-        clippy::format_push_string,
-        clippy::needless_collect,
-        clippy::or_fun_call,
-        clippy::needless_pass_by_value,
-        clippy::allow_attributes,
-        clippy::allow_attributes_without_reason
-    )
-)]
-pub mod store_v4;
 #[deny(unsafe_code)]
 pub mod tarball;
+/// Authority-bound canonical release verification.
+pub mod verification;
 
 // MIN-3 (ABI-MIN3-INTERFACE §4.3, §8.8, §11): the frozen request encoders and answer decoders, the ports and
 // adapters the kernel consumes, admission, the stamp scan, refusals and instances. Wave-0 stubs (W0-ABI);
@@ -513,10 +496,6 @@ mod ordinary_auth_short;
 mod ordinary_suite_hook_ticket_tests;
 
 #[cfg(test)]
-#[path = "tests/neutral_store.rs"]
-mod neutral_store;
-
-#[cfg(test)]
 #[path = "tests/neutral_export.rs"]
 mod neutral_export;
 
@@ -539,10 +518,6 @@ mod ordinary_plane_deadline;
 #[cfg(test)]
 #[path = "tests/ordinary_plane_fault_outputs.rs"]
 mod ordinary_plane_fault_outputs;
-
-#[cfg(test)]
-#[path = "tests/ordinary_declared_metadata.rs"]
-mod ordinary_declared_metadata;
 
 #[cfg(test)]
 #[path = "tests/retired_store_fixture.rs"]

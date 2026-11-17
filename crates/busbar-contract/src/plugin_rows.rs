@@ -55,8 +55,6 @@ pub struct Row {
     pub trust: Trust,
     /// Whether what it holds is lost on restart (a store's own statement).
     pub ephemeral: bool,
-    /// The build's in-process store: handed no configuration across a boundary.
-    pub in_process: bool,
     /// Compiled into this build rather than dropped in.
     pub linked: bool,
     /// A hook's declared prompt need.

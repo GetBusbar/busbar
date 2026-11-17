@@ -4,20 +4,7 @@
 //! `open_dropped_image`: a test that drives a dropped image's raw tables opens it through the
 //! loader's one `dlopen`, never its own (LINT-RULES LR-123), and gets the validated door held open.
 
-use crate::dispatch::load::{open_dropped_image, read_door, LoadError};
-use busbar_contract::abi::mechanism::KindCode;
-
-#[test]
-fn a_dropped_image_opens_through_the_loader_with_its_validated_door_held_open() {
-    let path = crate::both_ways::example_cdylib("neutral_store_door");
-    let image = open_dropped_image(&path)
-        .expect("the image opens")
-        .expect("the image exports its door");
-    assert!(!image.door().is_null(), "a validated door is never NULL");
-    // Held open: the door still reads as the store door it was validated as.
-    let (_, kind) = read_door(image.door(), None).expect("the held door reads");
-    assert_eq!(kind, KindCode::Store);
-}
+use crate::dispatch::load::{open_dropped_image, LoadError};
 
 #[test]
 fn a_path_that_is_no_library_is_refused_as_an_open_error() {

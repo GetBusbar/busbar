@@ -44,7 +44,7 @@ const WAIT: Duration = Duration::from_millis(50);
 /// One store under test. `fresh` makes a new, empty dataset owned by one case; `open` returns a
 /// handle on it as a second process sharing that dataset would hold one. A store whose dataset
 /// lives inside one opened instance returns the same `Arc` each time. Both run inside the kit's
-/// tokio runtime: open with the async `LoadedPersistence::open` directly, never through a helper
+/// tokio runtime: open through the async `Registry::open_store` directly, never through a helper
 /// that builds its own runtime or blocks a worker thread.
 #[async_trait::async_trait]
 pub trait Fixture: Send + Sync {

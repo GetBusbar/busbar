@@ -41,7 +41,6 @@ pub const AXES: &[(&str, &str, &str)] = &[
     ("diagnostics", "diagnostics", "DIAGNOSTICS"),
     ("on-host", "on_host", "on_host"),
     ("compose", "compose", "compose"),
-    ("stores", "stores", "STORE"),
 ];
 
 const TRANSPORT_AXIS: &str = "transport";
@@ -130,7 +129,6 @@ pub const CFG_AXES: &[&str] = &[
     DOOR_AXIS,
     EXPORT_DOOR_AXIS,
     AUTH_AXIS,
-    "stores",
     "protocols",
 ];
 
@@ -334,21 +332,13 @@ pub fn linked_source(
             |door| format!("{door}.former_names()"),
         )
     };
-    out.push_str(
-        "/// The store axis: each linked store's `(key, ephemeral, door, canonical)`.\n\
-         static LINKED_STORES: ::std::sync::LazyLock<::std::vec::Vec<busbar_kernel::preflight::LinkedStore>> =\n    \
-         ::std::sync::LazyLock::new(|| ::std::vec![",
-    );
-    for (entry, axes) in &linked {
-        if !axes.iter().any(|a| a == "stores") {
-            continue;
-        }
-
-        out.push_str(&format!(
-            "busbar_kernel::preflight::StoreRow({entry}::STORE).linked(), "
-        ));
+    // WP3: stores are MIN-3 images only; the door `stores` axis is retired. A row still on it is a manifest
+    // that predates the re-pin, refused here rather than silently dropped.
+    if let Some((entry, _)) = linked.iter().find(|(_, axes)| axes.iter().any(|a| a == "stores")) {
+        panic!(
+            "linked row `{entry}` is on the retired `stores` axis: link a store on `{MIN3_AXIS}` (a MIN-3 image)"
+        );
     }
-    out.push_str("]);\n");
     out.push_str(
         "/// The export axis on the memory ABI: each linked export sink's statement and door.\n\
          static LINKED_EXPORT_DOORS: ::std::sync::LazyLock<::std::vec::Vec<crate::root::linked::LinkedDoorExport>> =\n    \
@@ -379,15 +369,6 @@ pub fn linked_source(
                  former_names: {former} }}, "
             )
         };
-        if axes.iter().any(|a| a == "stores") {
-            let store = format!("busbar_kernel::preflight::StoreRow({entry}::STORE)");
-            out.push_str(&row(
-                "store",
-                &format!("{store}.linked().0"),
-                &format!("{store}.linked().2"),
-                &format!("{store}.former_names()"),
-            ));
-        }
         let declared = metadata_value(
             manifest,
             "package.metadata.busbar.linked-former-names",
@@ -474,7 +455,6 @@ pub fn linked_source(
 
     out.push_str("    export_doors: &LINKED_EXPORT_DOORS,\n");
     out.push_str("    former: &LINKED_FORMER,\n");
-    out.push_str("    stores: &LINKED_STORES,\n");
     out.push_str("    images: &[\n");
     for ((_, axes), (feature, krate)) in linked.iter().zip(&on) {
         if !axes.iter().any(|axis| axis == MIN3_AXIS) {
@@ -503,7 +483,7 @@ pub fn linked_source(
     }
     out.push_str("],\n");
     for (axis, field, item) in AXES {
-        if matches!(*field, "stores" | "protocols") {
+        if matches!(*field, "protocols") {
             continue;
         }
 

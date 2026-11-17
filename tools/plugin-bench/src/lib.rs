@@ -47,7 +47,7 @@ use stats::{OpStats, Recorder};
 ///
 /// ```ignore
 /// // examples/bench.rs in a plugin repo
-/// busbar_plugin_bench::bench_main!(busbar_store_memory::door);
+/// busbar_plugin_bench::bench_main!(busbar_secret_env::door);
 /// ```
 #[macro_export]
 macro_rules! bench_main {
@@ -96,7 +96,6 @@ pub struct Config {
     pub only: Vec<String>,
     pub settings: Option<Vec<u8>>,
     pub body_sizes: Vec<usize>,
-    pub record_bytes: usize,
     pub deltas: usize,
 }
 
@@ -117,7 +116,6 @@ OPTIONS:
   --json <path>          machine-readable output (default target/plugin-bench/<kind>.json)
   --settings <file>      the instance settings JSON (default: the kind's built-in fixture)
   --body-sizes <list>    plane request bodies in bytes (default 1024,8192,102400)
-  --record-bytes <n>     store record value bytes per commit (default 1024)
   --deltas <n>           plane SSE deltas per streamed answer (default 200)
 ";
 
@@ -131,7 +129,6 @@ fn parse(args: &[String]) -> Result<(Config, Option<PathBuf>), String> {
         only: Vec::new(),
         settings: None,
         body_sizes: vec![1024, 8192, 100 * 1024],
-        record_bytes: 1024,
         deltas: 200,
     };
     let mut plugin = None;
@@ -169,9 +166,6 @@ fn parse(args: &[String]) -> Result<(Config, Option<PathBuf>), String> {
                 cfg.settings = Some(std::fs::read(&p).map_err(|e| format!("{p}: {e}"))?);
             }
             "--body-sizes" => cfg.body_sizes = list(&val()?)?,
-            "--record-bytes" => {
-                cfg.record_bytes = val()?.parse().map_err(|_| "--record-bytes: not a number")?;
-            }
             "--deltas" => cfg.deltas = val()?.parse().map_err(|_| "--deltas: not a number")?,
             other => return Err(format!("unknown argument {other}")),
         }

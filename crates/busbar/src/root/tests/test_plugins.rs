@@ -339,6 +339,24 @@ pub(crate) fn trusted_config_with_key(
     config
 }
 
+/// The identity of the store this build links: a MIN-3 image on `LINKED.images` (WP3: the door `stores` axis is
+/// retired). The build links one store, the default ephemeral one.
+pub fn linked_store_module() -> &'static str {
+    static NAME: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    NAME.get_or_init(|| {
+        crate::LINKED
+            .images
+            .iter()
+            .find_map(|row| {
+                let admitted = (row.admit)().ok()?;
+                (admitted.kind() == busbar_plugin_abi::types::KindCode::Store)
+                    .then(|| admitted.identity().to_owned())
+            })
+            .expect("the build links a store image")
+    })
+    .as_str()
+}
+
 /// A native MIN-3 image's stamped identity and its header's ordered `former_names`.
 pub struct NativeImage {
     pub name: String,

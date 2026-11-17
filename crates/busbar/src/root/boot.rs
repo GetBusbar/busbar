@@ -382,10 +382,6 @@ pub(crate) fn registry_rows(
 pub(crate) fn linked_row(row: &LinkedRow) -> LinkedPlugin {
     let former = crate::LINKED.former;
     match *row {
-        LinkedRow::Store((key, ephemeral, door, canonical)) => {
-            LinkedPlugin::store_named(canonical, key, door, ephemeral)
-                .with_former_names(super::linked::words_of(former, "store", key))
-        }
         LinkedRow::Auth((key, canonical, door)) => {
             LinkedPlugin::auth_door_named(canonical, key, door)
                 .with_former_names(super::linked::words_of(former, "auth", key))

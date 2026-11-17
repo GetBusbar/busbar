@@ -35,7 +35,6 @@ pub(crate) fn row(p: &LoadablePlugin) -> Row {
             },
         },
         ephemeral: p.ephemeral,
-        in_process: p.in_process(),
         linked: p.linked(),
         needs_prompt: m.needs.prompt,
         needs_user: m.needs.user,

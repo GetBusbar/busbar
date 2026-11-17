@@ -191,7 +191,6 @@ fn linked_catalog_exposes_the_same_schema_and_error_as_inspection() {
                 first_party: true,
             },
             ephemeral: false,
-            in_process: false,
             linked: true,
             needs_prompt: Default::default(),
             needs_user: Default::default(),

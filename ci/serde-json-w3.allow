@@ -39,7 +39,6 @@ crates/busbar/src/tests/kernel_application/misc_router_door.rs
 crates/plugin-loader/src/auth_door.rs
 crates/plugin-loader/src/boot.rs
 crates/plugin-loader/src/cold/export_door.rs
-crates/plugin-loader/src/cold/store_v4.rs
 crates/plugin-loader/src/export_door.rs
 crates/plugin-loader/src/integer_token.rs
 crates/plugin-loader/src/observe.rs

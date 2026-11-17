@@ -121,13 +121,7 @@ async fn actual_retained_usage_resolution(compatibility_history: bool) {
     crate::dist_root_install::install();
     busbar_core_admin::install();
     let backend = crate::root::real_store::native_backend().await;
-    let module = crate::LINKED
-        .stores
-        .iter()
-        .find(|row| row.1)
-        .unwrap()
-        .0
-        .to_owned();
+    let module = crate::root::test_plugins::linked_store_module().to_owned();
     let boundary = Arc::new(LoseOneCommittedReply {
         inner: backend,
         lose: AtomicBool::new(false),

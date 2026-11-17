@@ -243,13 +243,14 @@ fn a_first_party_plugins_declared_codes_join_the_catalogue_and_nothing_else_does
 
 #[test]
 fn the_linked_store_is_a_row_of_the_linked_tables() {
-    let stores: Vec<_> = crate::LINKED.stores.iter().map(|s| s.1).collect();
-    assert_eq!(stores, [true], "one linked store: ephemeral");
-    assert_eq!(
-        (crate::LINKED.stores[0].2)().magic(),
-        busbar_contract::abi::mechanism::DOOR_MAGIC,
-        "the linked store states its door"
-    );
+    // WP3: the linked store is a MIN-3 image (`LINKED.images`), not a door row.
+    let stores = crate::LINKED
+        .images
+        .iter()
+        .filter_map(|row| (row.admit)().ok())
+        .filter(|image| image.kind() == busbar_plugin_abi::types::KindCode::Store)
+        .count();
+    assert_eq!(stores, 1, "one linked store, a MIN-3 image");
 }
 
 #[test]

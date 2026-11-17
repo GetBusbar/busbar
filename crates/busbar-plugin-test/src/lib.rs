@@ -44,7 +44,7 @@ pub use busbar_contract::secure::wipe_counts;
 pub use busbar_contract::services::{Caller, Later, Ran, Reading, Stored, UNSERVED};
 /// The kinds an [`Image`] loads as.
 pub use busbar_plugin_loader::dispatch::kinds::{
-    auth::Auth, export::Export, hook::Hook, plane::Plane, store_v4::StoreV4, transport::Transport,
+    auth::Auth, export::Export, hook::Hook, plane::Plane, transport::Transport,
 };
 pub use busbar_plugin_loader::dispatch::{
     rendering_of, ConnTable, Diagnostic, DispatchConfig, Dropped, EnvelopeSink, LoadError, Metric,

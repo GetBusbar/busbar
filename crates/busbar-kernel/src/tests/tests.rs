@@ -619,7 +619,6 @@ pub(crate) fn dropped(name: &str, alias: &str, kind: &str) -> busbar_contract::p
             setting: "allow_untrusted",
         },
         ephemeral: false,
-        in_process: false,
         linked: false,
         needs_prompt: NeedLevel::No,
         needs_user: NeedLevel::No,

@@ -66,7 +66,7 @@ use busbar_contract::conn::InstanceId;
 use busbar_contract::services::{CallerBinding, HostServices};
 
 use crate::dispatch::kinds::{
-    auth::Auth, export::Export, hook::Hook, plane::Plane, store_v4::StoreV4, transport::Transport,
+    auth::Auth, export::Export, hook::Hook, plane::Plane, transport::Transport,
 };
 use crate::dispatch::plugin::str_bytes;
 use crate::dispatch::Done as Settled;
@@ -550,7 +550,7 @@ pub trait Openable: Kind + Sized + sealed::Sealed {
 macro_rules! openable {
     ($($k:ty),+) => {$( impl sealed::Sealed for $k {} impl Openable for $k {} )+};
 }
-openable!(Transport, StoreV4, Auth, Hook, Export);
+openable!(Transport, Auth, Hook, Export);
 impl sealed::Sealed for Plane {}
 impl Openable for Plane {
     fn open(plugin: &Plugin<Self>, settings: &[u8], secrets: &[&[u8]]) -> Result<(), String> {
@@ -1482,5 +1482,103 @@ impl NativeStores {
         let needs = Arc::new(crate::chains::DeniedNeeds);
         let refs: Arc<dyn busbar_ports::binder::RefSource> = Arc::new(crate::chains::DeniedRefs);
         self.registry.open_store(spec, &needs, &refs, seal).await
+    }
+}
+
+/// A binder for a store that binds nothing: its config passes through unchanged and no secret, trust, dest or
+/// reference position is bound (a local file store's `db_path`, the bench's in-memory store). A declared position
+/// that holds a value is refused, so a store that needs custody is never opened over it.
+struct PlainBinder;
+
+impl busbar_ports::binder::ConfigBinder for PlainBinder {
+    fn bind(
+        &self,
+        _instance: u64,
+        config: &[u8],
+        secret_paths: &[&str],
+        trust_paths: &[&str],
+        dest_paths: &[&str],
+        _ref_paths: &[&str],
+    ) -> Result<Vec<u8>, busbar_ports::binder::BindError> {
+        if let Some(pointer) = secret_paths
+            .iter()
+            .chain(trust_paths)
+            .chain(dest_paths)
+            .next()
+        {
+            return Err(busbar_ports::binder::BindError::NotAReference {
+                pointer: (*pointer).into(),
+            });
+        }
+        Ok(config.to_vec())
+    }
+    fn resolve_refs<'a>(
+        &'a self,
+        _instance: u64,
+        _slot: u32,
+        bound: Vec<u8>,
+        _source: &'a dyn busbar_ports::binder::RefSource,
+    ) -> busbar_plugin_abi::host_side::caller::BoxFut<
+        'a,
+        Result<busbar_contract::secure::SecureVec, busbar_ports::binder::BindError>,
+    > {
+        Box::pin(async move { Ok(busbar_contract::secure::SecureVec::from(bound)) })
+    }
+    fn unbind(&self, _instance: u64) {}
+    fn bind_any(
+        &self,
+        instance: u64,
+        config: &[u8],
+        secret_paths: &[&str],
+        trust_paths: &[&str],
+        dest_paths: &[&str],
+        ref_paths: &[&str],
+    ) -> Result<Vec<u8>, busbar_ports::binder::BindError> {
+        self.bind(
+            instance,
+            config,
+            secret_paths,
+            trust_paths,
+            dest_paths,
+            ref_paths,
+        )
+    }
+    fn unbind_refs(
+        &self,
+        _instance: u64,
+        bound: &[u8],
+    ) -> Result<Vec<u8>, busbar_ports::binder::BindError> {
+        Ok(bound.to_vec())
+    }
+    fn secret(
+        &self,
+        _instance: u64,
+        _handle: u32,
+    ) -> Option<busbar_contract::secret_ref::SecretRef> {
+        None
+    }
+    fn trust(
+        &self,
+        _instance: u64,
+        _handle: u32,
+    ) -> Option<Arc<busbar_ports::binder::TrustAnchor>> {
+        None
+    }
+    fn unix_path(&self, _instance: u64, _path: &str) -> bool {
+        false
+    }
+    fn dest(&self, _instance: u64, _handle: u32) -> Option<Arc<busbar_ports::binder::DestDef>> {
+        None
+    }
+}
+
+impl NativeStores {
+    /// [`NativeStores::new`] with a binder that binds nothing ([`PlainBinder`]): for a store whose config holds no
+    /// secret, trust or dest position (plugin-bench's native store workload).
+    ///
+    /// # Errors
+    /// As [`NativeStores::new`].
+    pub fn plain(admitted: crate::admit::Admitted) -> Result<Self, crate::refusal::Refusal> {
+        Self::new(admitted, Arc::new(PlainBinder))
     }
 }

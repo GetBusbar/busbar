@@ -16,55 +16,6 @@ pub fn fleet_data_dir() -> Option<std::path::PathBuf> {
     (!path.as_os_str().is_empty()).then_some(path)
 }
 
-pub type LinkedStore = (
-    &'static str,
-    bool,
-    busbar_contract::abi::mechanism::door::DoorFn,
-    &'static str,
-);
-
-type LinkedStoreDoor = (
-    &'static str,
-    bool,
-    busbar_contract::abi::sdk::door::MacroDoor,
-    &'static str,
-);
-
-/// ONE STORE-AXIS ROW as the store crate states it: its `linked::STORE`
-/// in either shape, a [`LinkedStore`] or the door-carrying tuple, read as the [`LinkedStore`] the
-/// root's install carries. The composition root's generated table wraps every `STORE` in it.
-#[derive(Debug, Clone, Copy)]
-pub struct StoreRow<T>(pub T);
-
-impl StoreRow<LinkedStore> {
-    #[must_use]
-    pub const fn linked(self) -> LinkedStore {
-        self.0
-    }
-
-    /// The names an earlier release answered to: none on this shape, which carries no door
-    /// declarations.
-    #[must_use]
-    pub const fn former_names(self) -> &'static [&'static str] {
-        &[]
-    }
-}
-
-impl StoreRow<LinkedStoreDoor> {
-    #[must_use]
-    pub const fn linked(self) -> LinkedStore {
-        let (key, ephemeral, door, canonical) = self.0;
-        (key, ephemeral, door.door_fn(), canonical)
-    }
-
-    /// The names an earlier release answered to: the door's `FORMER_NAMES`.
-    #[must_use]
-    pub const fn former_names(self) -> &'static [&'static str] {
-        let (_, _, door, _) = self.0;
-        door.former_names()
-    }
-}
-
 use busbar_contract::plugin_rows::PluginRows;
 pub use busbar_kernel_identity::operator::LinkedAuth;
 
@@ -76,8 +27,6 @@ pub type RegistryBuild =
 /// legacy table gives its key).
 #[derive(Clone, Copy)]
 pub enum LinkedRow {
-    /// A linked store ([`LinkedStore`]).
-    Store(LinkedStore),
     /// A linked auth row ([`LinkedAuth`]).
     Auth(LinkedAuth),
 }
@@ -151,6 +100,15 @@ pub type PluginsFetch = fn(
     &[String],
 ) -> Result<Vec<Fetched>, Vec<String>>;
 
+/// One compiled-in MIN-3 image: its verified identity, the alias it is linked under and its kind word
+/// (`store`, `plane`, ...).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LinkedImage {
+    pub identity: String,
+    pub alias: String,
+    pub kind: &'static str,
+}
+
 /// WHAT THE COMPOSITION ROOT INSTALLS into the kernel, by name: its linked entries and its registry
 /// build — and, as each kind's axis lands, that kind's
 /// `<kind>_axis` field. The kernel receives contract `<Kind>Axis` seams from the root, never
@@ -159,8 +117,9 @@ pub type PluginsFetch = fn(
 /// root.
 #[derive(Clone, Copy, Default)]
 pub struct RootInstall {
-    /// The build's linked in-process stores.
-    pub stores: &'static [LinkedStore],
+    /// The build's compiled-in MIN-3 images (`LINKED.images`), admitted by the root: what the operator surface
+    /// lists as compiled in. The root's data; the kernel and the admin crate spell none of them.
+    pub linked_images: &'static [LinkedImage],
     /// The root's registry build.
     pub registry_build: Option<RegistryBuild>,
     /// Resolve a provider target through an admitted transport's pure LOCATE operation.
@@ -341,10 +300,11 @@ pub fn style_flags(word: &str) -> u32 {
 }
 
 pub fn linked_rows() -> Vec<LinkedRow> {
-    let RootInstall { stores, .. } = root_rows();
-    let auths = busbar_kernel_identity::operator::linked().iter();
-    let rows = stores.iter().copied().map(LinkedRow::Store);
-    rows.chain(auths.copied().map(LinkedRow::Auth)).collect()
+    busbar_kernel_identity::operator::linked()
+        .iter()
+        .copied()
+        .map(LinkedRow::Auth)
+        .collect()
 }
 
 /// The admitted native hook images' facts (WP3 hook step).

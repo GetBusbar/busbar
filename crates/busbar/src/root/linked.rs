@@ -6,7 +6,7 @@ use std::sync::Arc;
 use busbar_kernel::plane_driver::registry::PlaneDecl;
 use busbar_kernel::plane_driver::registry::PlaneDeclaration;
 use busbar_kernel::plane_driver::EngineHost;
-use busbar_kernel::preflight::{LinkedAuth, LinkedStore, RootInstall};
+use busbar_kernel::preflight::{LinkedAuth, RootInstall};
 
 pub type Compose = Box<dyn FnOnce(&dyn busbar_contract::secret::SecretResolve) + Send>;
 
@@ -30,8 +30,6 @@ pub struct Linked {
     pub compose: &'static [fn(&busbar_kernel::config::RootCfg) -> Option<Compose>],
 
     pub export_doors: &'static std::sync::LazyLock<Vec<LinkedDoorExport>>,
-
-    pub stores: &'static std::sync::LazyLock<Vec<LinkedStore>>,
 
     pub auths: &'static [LinkedAuth],
 
@@ -304,7 +302,7 @@ pub fn register_protocols(linked: &Linked) {
 
 pub fn register_stores(linked: &Linked) {
     busbar_kernel::preflight::install_linked_rows(RootInstall {
-        stores: linked.stores,
+        linked_images: linked_images(),
         registry_build: Some(crate::root::boot::registry_rows),
         endpoint_locate: Some(crate::root::boot::locate_provider_destination),
         plugins_fetch: Some(crate::root::boot::plugins_fetch),
@@ -773,3 +771,25 @@ mod linked_store_double;
 #[cfg(test)]
 #[path = "tests/linked_declarations.rs"]
 mod linked_declarations;
+
+/// The build's compiled-in MIN-3 images (`LINKED.images`), each admitted (the loader's `admit_linked`, a read of
+/// the static header) for its verified identity and kind: the kernel's `RootInstall::linked_images` rows. An image
+/// that does not admit has no row; the boot's own admission of the same rows refuses it.
+fn linked_images() -> &'static [busbar_kernel::preflight::LinkedImage] {
+    static ROWS: std::sync::OnceLock<Vec<busbar_kernel::preflight::LinkedImage>> =
+        std::sync::OnceLock::new();
+    ROWS.get_or_init(|| {
+        crate::LINKED
+            .images
+            .iter()
+            .filter_map(|row| {
+                let admitted = (row.admit)().ok()?;
+                Some(busbar_kernel::preflight::LinkedImage {
+                    identity: admitted.identity().to_owned(),
+                    alias: row.alias.to_owned(),
+                    kind: crate::root::loader::admit::kind_word(admitted.kind()),
+                })
+            })
+            .collect()
+    })
+}

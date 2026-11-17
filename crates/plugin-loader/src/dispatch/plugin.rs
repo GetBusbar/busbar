@@ -1124,51 +1124,6 @@ impl Instance {
             && self.store_phase.load(Ordering::Acquire) != 0
             && !self.ptr.load(Ordering::Acquire).is_null()
     }
-    pub(crate) fn store_phase(&self) -> busbar_contract::persistence::lifecycle::Phase {
-        use busbar_contract::persistence::lifecycle::Phase;
-        match self.store_phase.load(Ordering::Acquire) {
-            1 => Phase::Prepared,
-            2 => Phase::Upgrading,
-            3 => Phase::RecoveryReady,
-            4 => Phase::Open,
-            _ => Phase::Bound,
-        }
-    }
-    // `fetch_update` keeps this crate's MSRV floor below 1.95, where `try_update` is new.
-    pub(crate) fn advance_store_phase(
-        &self,
-        phase: busbar_contract::persistence::lifecycle::Phase,
-    ) -> bool {
-        use busbar_contract::persistence::lifecycle::Phase;
-        if self.kind != KindCode::Store || self.is_closed() || self.faulted.load(Ordering::Acquire)
-        {
-            return false;
-        }
-        let next = match phase {
-            Phase::Bound => 0,
-            Phase::Prepared => 1,
-            Phase::Upgrading => 2,
-            Phase::RecoveryReady => 3,
-            Phase::Open => 4,
-        };
-        self.store_phase
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |previous| {
-                ((previous == next)
-                    || matches!((previous, next), (1, 2) | (2, 3) | (3, 4))
-                        && (next != 4 || self.is_open()))
-                .then_some(next)
-            })
-            .is_ok()
-    }
-    pub(crate) fn admit_store_target(&self) -> bool {
-        if self.kind != KindCode::Store
-            || !matches!(self.store_phase.load(Ordering::Acquire), 2 | 3)
-        {
-            return false;
-        }
-        self.store_target.store(true, Ordering::Release);
-        true
-    }
     fn store_primitive(&self, slot: u32) -> bool {
         self.kind == KindCode::Store
             && (busbar_contract::abi::store::v4::slot::READ
@@ -2748,9 +2703,9 @@ pub(crate) fn copy_str(s: AbiStr) -> Option<Vec<u8>> {
 
 /// A validated binding. Its implementation cannot be replaced by another kind.
 /// ```compile_fail,E0616
-/// use busbar_plugin_loader::dispatch::{Plugin, kinds::{store_v4::StoreV4, auth::Auth}};
-/// fn swap(store: &mut Plugin<StoreV4>, auth: &Plugin<Auth>) {
-///     store.inner = auth.inner.clone();
+/// use busbar_plugin_loader::dispatch::{Plugin, kinds::{export::Export, auth::Auth}};
+/// fn swap(export: &mut Plugin<Export>, auth: &Plugin<Auth>) {
+///     export.inner = auth.inner.clone();
 /// }
 /// ```
 pub struct Plugin<K: Kind> {
@@ -3250,19 +3205,6 @@ impl<K: Kind> Plugin<K> {
         self.inner.targets_from_settings
     }
 
-    pub(crate) fn store_phase(&self) -> busbar_contract::persistence::lifecycle::Phase {
-        self.inner.store_phase()
-    }
-    pub(crate) fn advance_store_phase(
-        &self,
-        phase: busbar_contract::persistence::lifecycle::Phase,
-    ) -> bool {
-        self.inner.advance_store_phase(phase)
-    }
-    pub(crate) fn admit_store_target(&self) -> bool {
-        self.inner.admit_store_target()
-    }
-
     pub fn is_open(&self) -> bool {
         self.inner.is_open()
     }
@@ -3553,10 +3495,6 @@ mod open_reason_tests;
 #[cfg(test)]
 #[path = "../tests/transport_answer_lease_tests.rs"]
 mod transport_answer_lease_tests;
-
-#[cfg(test)]
-#[path = "../tests/lifecycle_worker_tests.rs"]
-mod lifecycle_worker_tests;
 
 fn from_settings(need: &ReadNeed) -> bool {
     !need.target_from.is_empty() || !need.trust_from.is_empty()

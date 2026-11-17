@@ -1512,7 +1512,11 @@ async fn the_store_catalog_heads_with_the_linked_store_rows() {
     assert_eq!(response.status().as_u16(), 200);
     let view = json::parse_value(&response.bytes().await.unwrap()).unwrap();
     let catalog = view["items"].as_array().unwrap();
-    let linked = busbar_kernel::preflight::root_rows().stores;
+    let linked: Vec<_> = busbar_kernel::preflight::root_rows()
+        .linked_images
+        .iter()
+        .filter(|image| image.kind == "store")
+        .collect();
     assert!(
         !linked.is_empty(),
         "the assembled distribution links a Store row"
@@ -1530,7 +1534,7 @@ async fn the_store_catalog_heads_with_the_linked_store_rows() {
         .collect();
     let want: Vec<_> = linked
         .iter()
-        .map(|s| (s.0, "store", "compiled-in", None))
+        .map(|s| (s.identity.as_str(), "store", "compiled-in", None))
         .collect();
     assert_eq!(head, want);
 

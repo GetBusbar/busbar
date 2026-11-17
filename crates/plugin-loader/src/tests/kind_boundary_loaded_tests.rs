@@ -139,11 +139,6 @@ fn exercise<K: Kind>(
 
 #[test]
 fn well_formed_raw_callbacks_refuse_wrong_kinds_before_provider_in_both_loading_modes() {
-    exercise::<crate::dispatch::kinds::store_v4::StoreV4>(
-        crate::neutral_store::door,
-        "neutral_store_door",
-        false,
-    );
     exercise::<crate::dispatch::kinds::export::Export>(
         crate::neutral_export::door,
         "neutral_export_door",

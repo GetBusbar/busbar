@@ -1,43 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use std::sync::Arc;
-
-use busbar_contract::plugin_rows::{NeedLevel, PluginRows, Trust};
+use busbar_contract::plugin_rows::PluginRows;
 
 use crate::{LinkedPlugin, PluginRegistry};
 
-fn registry() -> PluginRegistry {
-    let door = crate::neutral_store::door;
-    PluginRegistry::empty()
-        .link(vec![LinkedPlugin::store("the-store", door, true)])
-        .expect("the linked row registers")
-}
-
-#[test]
-fn a_linked_store_row_reads_back_through_the_view() {
-    let rows: &dyn PluginRows = &registry();
-    let row = rows.resolve("the-store").expect("the row resolves by name");
-    assert_eq!(
-        (row.name.as_str(), row.alias.as_str()),
-        ("the-store", "the-store")
-    );
-    assert_eq!(row.kind, busbar_contract::abi::mechanism::kind::STORE);
-    assert_eq!(row.abi_version, busbar_contract::abi::store::ABI_VERSION);
-    assert_eq!(row.file, crate::registry::LINKED_FILE);
-    assert!(row.linked && row.in_process && row.ephemeral);
-    assert!(matches!(row.trust, Trust::Trusted { .. }));
-    assert_eq!(
-        (row.needs_prompt, row.needs_user),
-        (NeedLevel::No, NeedLevel::No)
-    );
-    assert_eq!(rows.linked(), vec![row]);
-    assert!(rows.loadable().is_empty() && rows.skipped().is_empty());
-}
-
 #[test]
 fn the_refusals_are_the_registrys() {
-    let reg = registry();
+    let reg = PluginRegistry::empty();
     let rows: &dyn PluginRows = &reg;
     assert!(rows.resolve("nope").is_none() && rows.unresolved_reason("nope").is_none());
     assert_eq!(rows.secret_refusal("nope"), reg.secret_refusal("nope"));
@@ -119,51 +89,6 @@ fn secret_slots_are_the_secret_refs_the_statement_names() {
     assert!(rows.secret_slots("nope").is_empty());
 }
 
-#[test]
-fn the_root_gets_its_registry_back() {
-    let rows: Arc<dyn PluginRows> = Arc::new(registry());
-    let reg = crate::rows::registry_of(rows.as_ref()).expect("the view is a registry");
-    assert!(reg.resolve("the-store").is_some());
-    let owned = crate::rows::registry_arc(rows).expect("owned, too");
-    assert!(owned.resolve("the-store").is_some());
-
-    #[derive(Debug)]
-    struct NotARegistry;
-    impl PluginRows for NotARegistry {
-        fn resolve(&self, _: &str) -> Option<busbar_contract::plugin_rows::Row> {
-            None
-        }
-        fn unresolved_reason(&self, _: &str) -> Option<busbar_contract::plugin_rows::Skipped> {
-            None
-        }
-        fn loadable(&self) -> Vec<busbar_contract::plugin_rows::Row> {
-            Vec::new()
-        }
-        fn linked(&self) -> Vec<busbar_contract::plugin_rows::Row> {
-            Vec::new()
-        }
-        fn skipped(&self) -> Vec<busbar_contract::plugin_rows::Skipped> {
-            Vec::new()
-        }
-        fn secret_refusal(&self, _: &str) -> String {
-            String::new()
-        }
-        fn kind_refusal(&self, _: &str, _: &str, _: &str) -> String {
-            String::new()
-        }
-        fn secret_slots(&self, _: &str) -> Vec<String> {
-            Vec::new()
-        }
-        fn as_any(&self) -> &dyn std::any::Any {
-            self
-        }
-        fn into_any(self: Arc<Self>) -> Arc<dyn std::any::Any + Send + Sync> {
-            self
-        }
-    }
-    assert!(crate::rows::registry_of(&NotARegistry).is_none());
-}
-
 mod referencing {
     const EXT: &[u8] = &busbar_contract::abi::mechanism::extensions::entry::<
         {
@@ -203,32 +128,4 @@ fn reference_slots_are_the_reference_fields_the_statement_names() {
     assert_eq!(rows.secret_slots("referencing"), vec!["client_secret"]);
     assert!(rows.reference_slots("unslotted").is_empty());
     assert!(rows.reference_slots("nope").is_empty());
-}
-
-#[test]
-fn plugin_configuration_linked_discovery_uses_cached_statement_without_calling_door() {
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    static CALLS: AtomicUsize = AtomicUsize::new(0);
-    extern "C" fn counting_door() -> &'static busbar_contract::abi::mechanism::door::Door {
-        CALLS.fetch_add(1, Ordering::SeqCst);
-        crate::neutral_store::door()
-    }
-    let registry = PluginRegistry::empty()
-        .link(vec![LinkedPlugin::store(
-            "cached-store",
-            counting_door,
-            true,
-        )])
-        .unwrap();
-    let calls = CALLS.load(Ordering::SeqCst);
-    let row = registry.resolve("cached-store").unwrap();
-    let cached = row.configuration_statement().unwrap();
-    assert_eq!(
-        cached.kind,
-        busbar_contract::abi::mechanism::KindCode::Store as u32
-    );
-    for _ in 0..3 {
-        assert_eq!(row.configuration_statement(), Some(cached));
-    }
-    assert_eq!(CALLS.load(Ordering::SeqCst), calls);
 }
