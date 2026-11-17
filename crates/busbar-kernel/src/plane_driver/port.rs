@@ -131,9 +131,14 @@ pub(crate) fn carrier_end_arg(carrier: u64) -> Vec<u8> {
 /// of its config block, `None` when it states none), what its intents run against and who it is to the store.
 #[derive(Clone)]
 pub struct PortSeat {
+    /// Actual admitted image metadata retained by the same read that opened this seat.
+    pub image: Arc<super::image_identity::PlaneImageIdentity>,
     pub instance: String,
     /// Exact catalog and registration request domains retained by this serving generation.
     pub request_routes: Arc<super::request_admission::RequestRoutes>,
+    /// The same stable instance capacity used by this seat's channel driver.
+    /// Original unit allocation derives one unit account here and retains it through every attach.
+    pub channel_budget: crate::channels::budget::InstanceBudget,
     pub driver: Arc<PortDriver>,
     pub audience: Option<String>,
     /// What this instance's intents (records, push, signals, WORK) run against: [`PortDriver::serve`]'s `intents`.
@@ -1080,7 +1085,15 @@ fn drive_blocking(
         None => Resolver::new(intents, None),
     }
     .with_route(route);
-    let session = carrier.map(|carrier| carrier.session());
+    let session = carrier.map(|carrier| {
+        carrier.session_with_budget(
+            effects
+                .admission
+                .as_ref()
+                .and_then(|pending| pending.channel_budget())
+                .cloned(),
+        )
+    });
     let resolver = match &session {
         Some(session) => resolver.with_channels(&session.host),
         None => resolver,
@@ -1129,10 +1142,7 @@ fn drive_blocking(
                             })
                         })
                         .unwrap_or(busbar_contract::UnitKey::new(0)),
-                    pending: effects
-                        .admission
-                        .as_ref()
-                        .map(|pending| pending.context().clone()),
+                    pending: effects.admission.clone(),
                 };
                 let mut ran = None;
                 upstream.walk(facts, &mut |members, send| {

@@ -31,21 +31,29 @@
 
 use std::collections::VecDeque;
 use std::future::poll_fn;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::task::Poll;
 use std::time::{Duration, Instant};
 
+use busbar_contract::secure::{SecureVec, Tail};
 use busbar_plugin_abi::fail::FaultReason;
 use busbar_plugin_abi::records::RecErr;
 use busbar_plugin_abi::transport as wire;
 use busbar_ports::transport::{ConnIn, TransportOut, TransportPort, TransportSession};
 use busbar_ports::PortError;
 use foldhash::HashMap;
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, ReadBuf};
 use tokio::sync::{mpsc, oneshot};
 
 use super::StreamHolds;
+
+#[path = "session_storage.rs"]
+mod storage;
+pub use storage::{Name, Payload};
+/// A complete callback answer whose backing charge follows its consumer.
+pub type Actions = storage::Items<Act>;
 
 /// A breach of the per-call answer grammar (count, order, place): `RecErr::Size`, as the adapter's own
 /// grammar breaches are.
@@ -84,10 +92,10 @@ fn protocol_ids(ids: &[Box<str>]) -> Vec<Vec<u8>> {
 
 /// What one transport answer asks of core, owned: a `TransportOut` borrows the framer's buffer, and the
 /// session task acts on it only after the call returned.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
 pub enum Act {
     /// WRITE: bytes for the socket, in order.
-    Write(Vec<u8>),
+    Write(Payload),
     /// CLOSE: close the connection (`abort` = without flushing).
     Close {
         /// CLOSE_ABORT rather than CLOSE_GRACEFUL.
@@ -98,9 +106,9 @@ pub enum Act {
     /// UPGRADE + LEFTOVER: hand the connection to `protocol`'s transport with the bytes read past the head.
     Upgrade {
         /// The protocol named (e.g. `websocket`).
-        protocol: Box<str>,
+        protocol: Name,
         /// The bytes the framer read past the head.
-        leftover: Vec<u8>,
+        leftover: Payload,
     },
     /// STREAM_HEAD: a stream's head records.
     Head {
@@ -109,7 +117,7 @@ pub enum Act {
         /// SH_END_STREAM: no body follows.
         end_stream: bool,
         /// The nested head records, as written.
-        head: Vec<u8>,
+        head: Payload,
     },
     /// STREAM_BODY.
     Body {
@@ -118,7 +126,7 @@ pub enum Act {
         /// MSG_* for a message stream, 0 for a byte stream.
         flags: u32,
         /// The body bytes.
-        bytes: Vec<u8>,
+        bytes: Payload,
     },
     /// STREAM_END.
     End(u64),
@@ -134,7 +142,7 @@ pub enum Act {
         /// The stream.
         stream: u64,
         /// The PAIR records, as written.
-        pairs: Vec<u8>,
+        pairs: Payload,
     },
     /// STREAM_OPENED: the id the framer gave the stream a ROLE_CLIENT `emit(0, E_HEAD)` opened.
     Opened(u64),
@@ -170,9 +178,11 @@ pub(crate) struct Answers {
     holds: StreamHolds,
     called: Called,
     now: Instant,
-    acts: Vec<Act>,
+    acts: Actions,
+    source: busbar_contract::storage::StorageSource,
+    capacity_failed: bool,
     /// STREAM_FULL streams of this answer, judged at its end (STREAM_OPENED may come later in it).
-    full: smallvec::SmallVec<[u64; 2]>,
+    full: storage::Items<u64>,
     opened: Option<u64>,
     /// An `emit(E_CLOSE)` answer already carried its CLOSE.
     closing: bool,
@@ -180,17 +190,34 @@ pub(crate) struct Answers {
 }
 
 impl Answers {
-    pub(crate) fn new(stall_ms: Option<u32>, now: Instant) -> Self {
-        Self {
+    fn with_source(
+        stall_ms: Option<u32>,
+        now: Instant,
+        source: busbar_contract::storage::StorageSource,
+    ) -> Result<Self, busbar_contract::storage::StorageDenied> {
+        Ok(Self {
             holds: StreamHolds::new(stall_ms),
             called: Called::Begin,
             now,
-            acts: Vec::new(),
-            full: smallvec::SmallVec::new(),
+            acts: Actions::new(&source)?,
+            full: storage::Items::new(&source)?,
+            source,
+            capacity_failed: false,
             opened: None,
             closing: false,
             broke: None,
-        }
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new(stall_ms: Option<u32>, now: Instant) -> Self {
+        use busbar_kernel::limits::process_admission::{AdmissionClass, ProcessAdmission};
+        Self::with_source(
+            stall_ms,
+            now,
+            ProcessAdmission::new(1).connection_storage(AdmissionClass::Data),
+        )
+        .expect("test source")
     }
 
     /// The next answer is `called`'s, at `now`.
@@ -202,6 +229,7 @@ impl Answers {
         self.opened = None;
         self.closing = false;
         self.broke = None;
+        self.capacity_failed = false;
     }
 
     fn breach(&mut self) {
@@ -210,32 +238,44 @@ impl Answers {
 
     /// One record of the answer, in order. After a breach the rest is ignored.
     pub(crate) fn take(&mut self, out: TransportOut<'_>) {
-        if self.broke.is_some() {
-            return;
+        if self.capture(out).is_err() {
+            self.capacity_failed = true;
+        }
+    }
+
+    fn capture(
+        &mut self,
+        out: TransportOut<'_>,
+    ) -> Result<(), busbar_contract::storage::StorageDenied> {
+        if self.broke.is_some() || self.capacity_failed {
+            return Ok(());
         }
         if self.called == Called::Close {
             match out {
                 TransportOut::Write(bytes) if !self.closing => {
-                    self.acts.push(Act::Write(Vec::from(bytes)));
+                    self.acts
+                        .push(Act::Write(Payload::copy(&self.source, bytes)?))?;
                 }
                 TransportOut::Close { abort } if !self.closing => {
                     self.closing = true;
-                    self.acts.push(Act::Close { abort });
+                    self.acts.push(Act::Close { abort })?;
                 }
                 _ => self.breach(),
             }
-            return;
+            return Ok(());
         }
         match out {
-            TransportOut::Write(bytes) => self.acts.push(Act::Write(Vec::from(bytes))),
-            TransportOut::Close { abort } => self.acts.push(Act::Close { abort }),
-            TransportOut::WakeAt(ns) => self.acts.push(Act::Wake(ns)),
+            TransportOut::Write(bytes) => self
+                .acts
+                .push(Act::Write(Payload::copy(&self.source, bytes)?))?,
+            TransportOut::Close { abort } => self.acts.push(Act::Close { abort })?,
+            TransportOut::WakeAt(ns) => self.acts.push(Act::Wake(ns))?,
             TransportOut::Upgrade { protocol } => self.acts.push(Act::Upgrade {
-                protocol: Box::from(protocol),
-                leftover: Vec::new(),
-            }),
+                protocol: Name::copy(&self.source, protocol)?,
+                leftover: Payload::copy(&self.source, &[])?,
+            })?,
             TransportOut::Leftover(bytes) => match self.acts.last_mut() {
-                Some(Act::Upgrade { leftover, .. }) => leftover.extend_from_slice(bytes),
+                Some(Act::Upgrade { leftover, .. }) => leftover.append(bytes)?,
                 _ => self.breach(),
             },
             TransportOut::StreamHead {
@@ -245,8 +285,8 @@ impl Answers {
             } => self.acts.push(Act::Head {
                 stream,
                 end_stream,
-                head: Vec::from(head.rest()),
-            }),
+                head: Payload::copy(&self.source, head.rest())?,
+            })?,
             TransportOut::StreamBody {
                 stream,
                 flags,
@@ -254,34 +294,34 @@ impl Answers {
             } => self.acts.push(Act::Body {
                 stream,
                 flags,
-                bytes: Vec::from(bytes),
-            }),
-            TransportOut::StreamEnd(stream) => self.acts.push(Act::End(stream)),
+                bytes: Payload::copy(&self.source, bytes)?,
+            })?,
+            TransportOut::StreamEnd(stream) => self.acts.push(Act::End(stream))?,
             TransportOut::StreamReset { stream, code } => {
                 self.holds.release(stream);
-                self.acts.push(Act::Reset { stream, code });
+                self.acts.push(Act::Reset { stream, code })?;
             }
             TransportOut::StreamTrailers { stream, pairs } => self.acts.push(Act::Trailers {
                 stream,
-                pairs: Vec::from(pairs.rest()),
-            }),
+                pairs: Payload::copy(&self.source, pairs.rest())?,
+            })?,
             TransportOut::StreamOpened(stream) => {
                 if self.opened.replace(stream).is_some() {
                     self.breach();
                 } else {
-                    self.acts.push(Act::Opened(stream));
+                    self.acts.push(Act::Opened(stream))?;
                 }
             }
-            TransportOut::Pause => self.acts.push(Act::Pause),
-            TransportOut::Resume => self.acts.push(Act::Resume),
+            TransportOut::Pause => self.acts.push(Act::Pause)?,
+            TransportOut::Resume => self.acts.push(Act::Resume)?,
             TransportOut::StreamFull(stream) => match self.called {
-                Called::Emit { .. } => self.full.push(stream),
+                Called::Emit { .. } => self.full.push(stream)?,
                 _ => self.breach(),
             },
             TransportOut::StreamWritable(stream) => match self.called {
                 Called::Ingest | Called::Timer => {
                     if self.holds.release(stream) {
-                        self.acts.push(Act::Writable(stream));
+                        self.acts.push(Act::Writable(stream))?;
                     }
                 }
                 _ => self.breach(),
@@ -290,10 +330,16 @@ impl Answers {
             // byte-stream session cannot carry.
             _ => self.breach(),
         }
+        Ok(())
     }
 
     /// The whole answer judged: what it asks of core, in order, or the breach.
-    pub(crate) fn finish(&mut self) -> Result<Vec<Act>, FaultReason> {
+    pub(crate) fn finish(&mut self) -> Result<Actions, FaultReason> {
+        if self.capacity_failed {
+            self.acts.clear();
+            self.full.clear();
+            return Err(GRAMMAR);
+        }
         if let Some(reason) = self.broke.take() {
             self.acts.clear();
             self.full.clear();
@@ -321,11 +367,18 @@ impl Answers {
                 self.holds.release(stream);
             } else if let (Some(held), false) = (mine, self.full.is_empty()) {
                 self.holds.hold(held, self.now);
-                self.acts.push(Act::Full(held));
+                if self.acts.push(Act::Full(held)).is_err() {
+                    self.capacity_failed = true;
+                    self.acts.clear();
+                    return Err(GRAMMAR);
+                }
             }
         }
         self.full.clear();
-        Ok(std::mem::take(&mut self.acts))
+        self.acts.take().map_err(|_| {
+            self.capacity_failed = true;
+            GRAMMAR
+        })
     }
 
     pub(crate) fn is_held(&self, stream: u64) -> bool {
@@ -344,6 +397,8 @@ impl Answers {
 /// Why a [`TransportConn`] call ended the session (the handle is dropped, which cancels the session).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Ended {
+    /// The host's admitted callback storage could not retain the complete answer; no prefix is emitted.
+    Capacity,
     /// The framer broke the per-call answer grammar (§11.3): its instance was charged (quarantine, audit
     /// `plugin_fault`).
     Fault(FaultReason),
@@ -375,6 +430,8 @@ pub struct TransportConn {
     peer_closed: bool,
     /// The socket failed.
     lost: bool,
+    /// E_CLOSE was sent; the handle remains owned until its output is flushed or abandoned.
+    core_closed: bool,
 }
 
 impl std::fmt::Debug for TransportConn {
@@ -386,7 +443,7 @@ impl std::fmt::Debug for TransportConn {
 }
 
 /// A call's port method, with its arguments.
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy)]
 pub(crate) enum Call<'a> {
     Ingest(&'a [u8]),
     Emit {
@@ -399,16 +456,26 @@ pub(crate) enum Call<'a> {
 }
 
 impl TransportConn {
+    /// The immutable admitted connection account; upgrades retain this origin rather than
+    /// constructing another process budget or selecting a class from protocol input.
+    #[must_use]
+    pub fn storage(&self) -> &busbar_contract::storage::StorageSource {
+        &self.answers.source
+    }
+
     /// `begin` the framer's session on a connection (`conn`: role, flags, the negotiated ALPN, SNI, peer,
     /// local, the peer certificate, leftover, head, `mono_ns`), holding streams under `stall_ms`
-    /// (`limits.stream_stall_ms`, `None` = the default). Returns the session and its first answer.
+    /// (`limits.stream_stall_ms`, `None` = the default). `storage` is the original trusted listener
+    /// or dial account, required before any callback copy. Returns the session and its funded answer.
     pub fn begin(
         port: Arc<dyn TransportPort>,
         conn: &ConnIn<'_>,
         stall_ms: Option<u32>,
         now: Instant,
-    ) -> Result<(Self, Vec<Act>), Ended> {
-        let mut answers = Answers::new(stall_ms, now);
+        storage: busbar_contract::storage::StorageSource,
+    ) -> Result<(Self, Actions), Ended> {
+        let mut answers =
+            Answers::with_source(stall_ms, now, storage).map_err(|_| Ended::Capacity)?;
         answers.start(Called::Begin, now);
         let handle = port
             .begin(conn, &mut |out| answers.take(out))
@@ -419,6 +486,7 @@ impl TransportConn {
             framer_closed: false,
             peer_closed: false,
             lost: false,
+            core_closed: false,
         };
         let acts = session.judged()?;
         Ok((session, acts))
@@ -432,13 +500,14 @@ impl TransportConn {
             framer_closed: false,
             peer_closed: false,
             lost: false,
+            core_closed: false,
         }
     }
 
     /// Whether the session still takes calls.
     #[must_use]
     pub fn is_live(&self) -> bool {
-        self.backend.is_some()
+        self.backend.is_some() && !self.framer_closed && !self.lost && !self.core_closed
     }
 
     /// Whether `stream` is held (core must not `emit` on it, nor pull its feed).
@@ -454,7 +523,7 @@ impl TransportConn {
     }
 
     /// Bytes read from the connection; empty = EOF (after which core never sends E_CLOSE).
-    pub fn ingest(&mut self, bytes: &[u8], now: Instant) -> Result<Vec<Act>, Ended> {
+    pub fn ingest(&mut self, bytes: &[u8], now: Instant) -> Result<Actions, Ended> {
         if bytes.is_empty() {
             self.peer_closed = true;
         }
@@ -462,7 +531,7 @@ impl TransportConn {
     }
 
     /// The WAKE_AT the framer asked for has passed.
-    pub fn timer(&mut self, now: Instant) -> Result<Vec<Act>, Ended> {
+    pub fn timer(&mut self, now: Instant) -> Result<Actions, Ended> {
         self.call(Called::Timer, Call::Timer, now)
     }
 
@@ -475,7 +544,7 @@ impl TransportConn {
         arg: u32,
         bytes: &[u8],
         now: Instant,
-    ) -> Result<Vec<Act>, Ended> {
+    ) -> Result<Actions, Ended> {
         if piece == wire::E_CLOSE {
             return Err(Ended::Misuse("E_CLOSE goes through TransportConn::close"));
         }
@@ -500,7 +569,7 @@ impl TransportConn {
         head_sent: bool,
         text: &str,
         now: Instant,
-    ) -> Result<Vec<Act>, Ended> {
+    ) -> Result<Actions, Ended> {
         if !(400..=599).contains(&status) {
             return Err(Ended::Misuse("a refusal status outside 400..=599"));
         }
@@ -516,11 +585,12 @@ impl TransportConn {
     /// Every held stream whose stall deadline has passed at `now` is reset with
     /// `emit(stream, E_RESET, RESET_STALLED)`. Returns those streams, ascending (the caller ends each feed as for
     /// a peer reset and counts `transport_stream_stalled_total`), and what the answers asked of core.
-    pub fn stall(&mut self, now: Instant) -> Result<(Vec<u64>, Vec<Act>), Ended> {
+    pub fn stall(&mut self, now: Instant) -> Result<(Vec<u64>, Actions), Ended> {
         let stalled = self.answers.take_stalled(now);
-        let mut acts = Vec::new();
+        let mut acts = Actions::new(&self.answers.source).map_err(|_| Ended::Capacity)?;
         for &stream in &stalled {
-            acts.append(&mut self.emit(stream, wire::E_RESET, wire::RESET_STALLED, &[], now)?);
+            acts.append(self.emit(stream, wire::E_RESET, wire::RESET_STALLED, &[], now)?)
+                .map_err(|_| Ended::Capacity)?;
         }
         Ok((stalled, acts))
     }
@@ -528,20 +598,24 @@ impl TransportConn {
     /// The socket failed: nothing more can be written, so no E_CLOSE will be sent.
     pub fn mark_lost(&mut self) {
         self.lost = true;
+        self.backend = None;
     }
 
     /// Core ends the live session itself with `reason` (CR_*): `emit(0, E_CLOSE, reason)`, once. `None` = not
     /// sent, because the framer already answered CLOSE, EOF was ingested, the socket failed, or the instance
     /// is quarantined (the caller counts it). Either way the session takes no further call; the caller
     /// writes the answer's bytes, applies its CLOSE, and then drops this value.
-    pub fn close(&mut self, reason: u32, now: Instant) -> Result<Option<Vec<Act>>, Ended> {
+    pub fn close(&mut self, reason: u32, now: Instant) -> Result<Option<Actions>, Ended> {
+        if self.core_closed || self.framer_closed {
+            return Ok(None);
+        }
         let quarantined = match &self.backend {
             Some(Backend::Port { handle, .. }) => !handle.instance().is_live(),
             #[cfg(test)]
             Some(Backend::Script(script)) => script.quarantined,
             None => true,
         };
-        if quarantined || self.framer_closed || self.peer_closed || self.lost {
+        if quarantined || self.peer_closed || self.lost {
             self.backend = None;
             return Ok(None);
         }
@@ -552,11 +626,14 @@ impl TransportConn {
             bytes: &[],
         };
         let acts = self.call(Called::Close, call, now)?;
-        self.backend = None;
+        self.core_closed = true;
         Ok(Some(acts))
     }
 
-    fn call(&mut self, called: Called, call: Call<'_>, now: Instant) -> Result<Vec<Act>, Ended> {
+    fn call(&mut self, called: Called, call: Call<'_>, now: Instant) -> Result<Actions, Ended> {
+        if !self.is_live() {
+            return Err(Ended::Misuse("a call after the session was over"));
+        }
         let Self {
             backend, answers, ..
         } = self;
@@ -587,13 +664,17 @@ impl TransportConn {
     }
 
     /// The answer just taken, judged; a breach charges the instance and ends the session.
-    fn judged(&mut self) -> Result<Vec<Act>, Ended> {
+    fn judged(&mut self) -> Result<Actions, Ended> {
         match self.answers.finish() {
             Ok(acts) => {
                 if acts.iter().any(|act| matches!(act, Act::Close { .. })) {
                     self.framer_closed = true;
                 }
                 Ok(acts)
+            }
+            Err(_) if self.answers.capacity_failed => {
+                self.backend = None;
+                Err(Ended::Capacity)
             }
             Err(reason) => {
                 match self.backend.take() {
@@ -628,7 +709,7 @@ pub struct Piece {
     /// The piece's argument (SH_END_STREAM, MSG_*, a reset code, a refusal status).
     pub arg: u32,
     /// The piece's bytes (head records, body, PAIR records, core text).
-    pub bytes: Vec<u8>,
+    pub bytes: Payload,
 }
 
 /// Core's side of one stream: its pieces, in order. A ROLE_SERVER session's core attaches one for each
@@ -647,7 +728,7 @@ pub struct Feed {
 }
 
 /// What the framer handed core for a stream, owned, in order.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
 pub enum Inbound {
     /// STREAM_HEAD.
     Head {
@@ -656,7 +737,7 @@ pub enum Inbound {
         /// No body follows.
         end_stream: bool,
         /// The nested head records.
-        head: Vec<u8>,
+        head: Payload,
     },
     /// STREAM_BODY.
     Body {
@@ -665,7 +746,7 @@ pub enum Inbound {
         /// MSG_* or 0.
         flags: u32,
         /// The bytes.
-        bytes: Vec<u8>,
+        bytes: Payload,
     },
     /// STREAM_END.
     End(u64),
@@ -674,7 +755,7 @@ pub enum Inbound {
         /// The stream.
         stream: u64,
         /// The PAIR records.
-        pairs: Vec<u8>,
+        pairs: Payload,
     },
     /// STREAM_RESET: the far end reset the stream; its feed is dropped.
     Reset {
@@ -727,9 +808,9 @@ pub enum Outcome<S> {
         /// The connection.
         io: S,
         /// The protocol named.
-        protocol: Box<str>,
+        protocol: Name,
         /// The bytes read past the head.
-        leftover: Vec<u8>,
+        leftover: Payload,
     },
 }
 
@@ -777,7 +858,7 @@ enum Flow {
     Go,
     Closed,
     Lost(std::io::Error),
-    Upgrade(Box<str>, Vec<u8>),
+    Upgrade(Name, Payload),
 }
 
 /// The loop's state beside the session.
@@ -792,15 +873,16 @@ impl Task {
     /// The answer's acts, in order: socket writes now, stream items queued for core.
     async fn apply<S: AsyncWrite + Unpin>(
         &mut self,
-        acts: Vec<Act>,
+        acts: Actions,
         io: &mut S,
         write_timeout: Duration,
     ) -> Flow {
         let mut wrote = false;
+        let deadline = tokio::time::Instant::now() + write_timeout;
         for act in acts {
             match act {
-                Act::Write(bytes) => {
-                    if let Err(error) = write_bounded(io, &bytes, write_timeout).await {
+                Act::Write(mut bytes) => {
+                    if let Err(error) = write_bounded(io, &mut bytes, deadline).await {
                         return Flow::Lost(error);
                     }
                     wrote = true;
@@ -808,9 +890,13 @@ impl Task {
                 Act::Close { abort } => {
                     if !abort {
                         if wrote {
-                            let _ = flush_bounded(io, write_timeout).await;
+                            if let Err(error) = flush_bounded(io, deadline).await {
+                                return Flow::Lost(error);
+                            }
                         }
-                        let _ = shut_bounded(io, write_timeout).await;
+                        if let Err(error) = shut_bounded(io, deadline).await {
+                            return Flow::Lost(error);
+                        }
                     }
                     return Flow::Closed;
                 }
@@ -820,7 +906,7 @@ impl Task {
                 }
                 Act::Upgrade { protocol, leftover } => {
                     if wrote {
-                        if let Err(error) = flush_bounded(io, write_timeout).await {
+                        if let Err(error) = flush_bounded(io, deadline).await {
                             return Flow::Lost(error);
                         }
                     }
@@ -869,7 +955,7 @@ impl Task {
             }
         }
         if wrote {
-            if let Err(error) = flush_bounded(io, write_timeout).await {
+            if let Err(error) = flush_bounded(io, deadline).await {
                 return Flow::Lost(error);
             }
         }
@@ -888,22 +974,37 @@ fn timed_out() -> std::io::Error {
 
 async fn write_bounded<S: AsyncWrite + Unpin>(
     io: &mut S,
-    bytes: &[u8],
-    limit: Duration,
+    bytes: &mut Payload,
+    deadline: tokio::time::Instant,
 ) -> std::io::Result<()> {
-    tokio::time::timeout(limit, io.write_all(bytes))
+    tokio::time::timeout_at(deadline, async {
+        while !bytes.is_empty() {
+            let written = io.write(bytes.as_slice()).await?;
+            if written == 0 {
+                return Err(std::io::ErrorKind::WriteZero.into());
+            }
+            bytes.consume(written);
+        }
+        Ok(())
+    })
+    .await
+    .unwrap_or_else(|_| Err(timed_out()))
+}
+
+async fn flush_bounded<S: AsyncWrite + Unpin>(
+    io: &mut S,
+    deadline: tokio::time::Instant,
+) -> std::io::Result<()> {
+    tokio::time::timeout_at(deadline, io.flush())
         .await
         .unwrap_or_else(|_| Err(timed_out()))
 }
 
-async fn flush_bounded<S: AsyncWrite + Unpin>(io: &mut S, limit: Duration) -> std::io::Result<()> {
-    tokio::time::timeout(limit, io.flush())
-        .await
-        .unwrap_or_else(|_| Err(timed_out()))
-}
-
-async fn shut_bounded<S: AsyncWrite + Unpin>(io: &mut S, limit: Duration) -> std::io::Result<()> {
-    tokio::time::timeout(limit, io.shutdown())
+async fn shut_bounded<S: AsyncWrite + Unpin>(
+    io: &mut S,
+    deadline: tokio::time::Instant,
+) -> std::io::Result<()> {
+    tokio::time::timeout_at(deadline, io.shutdown())
         .await
         .unwrap_or_else(|_| Err(timed_out()))
 }
@@ -918,10 +1019,11 @@ async fn close_by_core<S: AsyncWrite + Unpin>(
     wiring: &Wiring,
 ) -> Ended2 {
     let limit = if reason == wire::CR_DRAIN {
-        wiring.drain_grace
+        wiring.drain_grace.min(wiring.write_timeout)
     } else {
         wiring.write_timeout
     };
+    let deadline = tokio::time::Instant::now() + limit;
     let (now, _) = crate::off_path::framing::session_clock();
     let acts = match conn.close(reason, now) {
         Ok(Some(acts)) => acts,
@@ -937,10 +1039,9 @@ async fn close_by_core<S: AsyncWrite + Unpin>(
     let mut abort = false;
     for act in acts {
         match act {
-            Act::Write(bytes) => {
-                if write_bounded(io, &bytes, limit).await.is_err() {
-                    abort = true;
-                    break;
+            Act::Write(mut bytes) => {
+                if let Err(error) = write_bounded(io, &mut bytes, deadline).await {
+                    return Ended2::Lost(error);
                 }
             }
             Act::Close { abort: hard } => abort = hard,
@@ -948,8 +1049,12 @@ async fn close_by_core<S: AsyncWrite + Unpin>(
         }
     }
     if !abort {
-        let _ = flush_bounded(io, limit).await;
-        let _ = shut_bounded(io, limit).await;
+        if let Err(error) = flush_bounded(io, deadline).await {
+            return Ended2::Lost(error);
+        }
+        if let Err(error) = shut_bounded(io, deadline).await {
+            return Ended2::Lost(error);
+        }
     }
     drop(conn);
     Ended2::Core(reason)
@@ -959,6 +1064,7 @@ async fn close_by_core<S: AsyncWrite + Unpin>(
 enum Ended2 {
     Core(u32),
     Ended(Ended),
+    Lost(std::io::Error),
 }
 
 impl<S> From<Ended2> for Outcome<S> {
@@ -966,6 +1072,7 @@ impl<S> From<Ended2> for Outcome<S> {
         match e {
             Ended2::Core(reason) => Outcome::CoreClosed(reason),
             Ended2::Ended(ended) => Outcome::Ended(ended),
+            Ended2::Lost(error) => Outcome::Lost(error),
         }
     }
 }
@@ -975,7 +1082,7 @@ impl<S> From<Ended2> for Outcome<S> {
 /// framer upgrades the connection.
 pub async fn drive<S>(
     conn: TransportConn,
-    first: Vec<Act>,
+    first: Actions,
     mut io: S,
     mut wiring: Wiring,
 ) -> Outcome<S>
@@ -989,7 +1096,17 @@ where
         reading: true,
         wake_at: None,
     };
-    let mut buf = vec![0u8; READ_CHUNK];
+    // The fixed read scratch is reserved before allocation and retained for the whole driver.
+    // StreamHolds, feed maps and the inbound deque remain separate accounting boundaries.
+    let storage = conn.answers.source.clone();
+    let _scratch_credit = match storage.try_reserve(READ_CHUNK) {
+        Ok(credit) => credit,
+        Err(_) => return Outcome::Ended(Ended::Capacity),
+    };
+    let mut buf = match SecureVec::with_capacity(READ_CHUNK) {
+        Ok(buf) if buf.capacity() <= READ_CHUNK => buf,
+        _ => return Outcome::Ended(Ended::Capacity),
+    };
     let mut eof = false;
     let mut feeds_open = true;
 
@@ -1046,7 +1163,7 @@ where
                 }
                 Err(_) => Step::Close(wire::CR_NORMAL),
             },
-            read = io.read(&mut buf), if can_read => Step::Read(read),
+            read = read_secure(&mut io, &mut buf), if can_read => Step::Read(read),
             feed = wiring.feeds.recv(), if feeds_open => match feed {
                 Some(feed) => {
                     attach(&mut task.slots, feed);
@@ -1066,16 +1183,21 @@ where
                 return close_by_core(conn, &mut io, reason, &wiring).await.into();
             }
             Step::Tick => {
-                let mut acts = Vec::new();
+                let mut acts = match Actions::new(&conn.answers.source) {
+                    Ok(acts) => acts,
+                    Err(_) => return Outcome::Ended(Ended::Capacity),
+                };
                 if conn.next_stall().is_some_and(|due| due <= now) {
                     match conn.stall(now) {
-                        Ok((stalled, mut more)) => {
+                        Ok((stalled, more)) => {
                             for stream in stalled {
                                 task.slots.by_stream.remove(&stream);
                                 task.pending.push_back(Inbound::Stalled(stream));
                                 wiring.counters.stalled.fetch_add(1, Ordering::Relaxed);
                             }
-                            acts.append(&mut more);
+                            if acts.append(more).is_err() {
+                                return Outcome::Ended(Ended::Capacity);
+                            }
                         }
                         Err(ended) => return Outcome::Ended(ended),
                     }
@@ -1083,7 +1205,11 @@ where
                 if task.wake_at.is_some_and(|due| due <= now) {
                     task.wake_at = None;
                     match conn.timer(now) {
-                        Ok(mut more) => acts.append(&mut more),
+                        Ok(more) => {
+                            if acts.append(more).is_err() {
+                                return Outcome::Ended(Ended::Capacity);
+                            }
+                        }
                         Err(ended) => return Outcome::Ended(ended),
                     }
                 }
@@ -1093,7 +1219,11 @@ where
                 eof = true;
                 conn.ingest(&[], now)
             }
-            Step::Read(Ok(n)) => conn.ingest(&buf[..n], now),
+            Step::Read(Ok(n)) => {
+                let answered = conn.ingest(&buf[..n], now);
+                buf.clear();
+                answered
+            }
             Step::Read(Err(error)) => {
                 conn.mark_lost();
                 return Outcome::Lost(error);
@@ -1144,6 +1274,33 @@ enum Step {
     Feed(Next),
 }
 
+/// A cancelled or pending read leaves no plaintext in the lent scratch region.
+async fn read_secure<S: AsyncRead + Unpin>(
+    io: &mut S,
+    buf: &mut SecureVec,
+) -> std::io::Result<usize> {
+    poll_fn(|cx| {
+        let mut pending = false;
+        let read = buf.read_into(READ_CHUNK, Tail::Wipe, |bytes| {
+            let mut read = ReadBuf::new(bytes);
+            match Pin::new(&mut *io).poll_read(cx, &mut read) {
+                Poll::Ready(Ok(())) => Ok(read.filled().len()),
+                Poll::Ready(Err(error)) => Err(error),
+                Poll::Pending => {
+                    pending = true;
+                    Err(std::io::ErrorKind::WouldBlock.into())
+                }
+            }
+        });
+        if pending {
+            Poll::Pending
+        } else {
+            Poll::Ready(read.unwrap_or_else(|_| Err(std::io::ErrorKind::OutOfMemory.into())))
+        }
+    })
+    .await
+}
+
 fn attach(slots: &mut Slots, feed: Feed) {
     if feed.stream == 0 {
         slots.opening.push_back((feed.pieces, feed.opened));
@@ -1166,7 +1323,7 @@ fn emit_piece(
     stream: u64,
     piece: &Piece,
     now: Instant,
-) -> Result<Vec<Act>, Ended> {
+) -> Result<Actions, Ended> {
     let acts = conn.emit(stream, piece.piece, piece.arg, &piece.bytes, now)?;
     if matches!(piece.piece, wire::E_END | wire::E_RESET | wire::E_REFUSE) {
         slots.by_stream.remove(&stream);
@@ -1186,13 +1343,13 @@ fn open_stream(
     slots: &mut Slots,
     piece: Option<Piece>,
     now: Instant,
-) -> Result<Vec<Act>, Ended> {
+) -> Result<Actions, Ended> {
     let Some((pieces, opened)) = slots.opening.pop_front() else {
-        return Ok(Vec::new());
+        return Actions::new(&conn.answers.source).map_err(|_| Ended::Capacity);
     };
     let Some(piece) = piece else {
         // The opener gave up before sending its head: nothing was opened.
-        return Ok(Vec::new());
+        return Actions::new(&conn.answers.source).map_err(|_| Ended::Capacity);
     };
     if piece.piece != wire::E_HEAD {
         return Err(Ended::Misuse(

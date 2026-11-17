@@ -90,6 +90,24 @@ pub(crate) struct BootImages {
 }
 
 impl FileImages {
+    /// Metadata comes from the same admitted image whose lease this read retains.
+    pub(crate) fn plane_identity(
+        &self,
+        canonical: &str,
+    ) -> Result<Arc<busbar_kernel::plane_driver::image_identity::PlaneImageIdentity>, String> {
+        let proof = self
+            .proofs
+            .get(canonical)
+            .filter(|proof| proof.kind == busbar_plugin_abi::types::KindCode::Plane)
+            .ok_or_else(|| format!("plane `{canonical}` has no retained admitted image proof"))?;
+        busbar_kernel::plane_driver::image_identity::PlaneImageIdentity::new(
+            canonical.into(),
+            proof.digest,
+        )
+        .map(Arc::new)
+        .map_err(str::to_owned)
+    }
+
     pub(crate) fn protect(
         &self,
         cfg: &busbar_kernel::config::RootCfg,

@@ -15,6 +15,7 @@ use busbar_contract::conn::{ConnError, ConnId, Conns, Piece, PollConns, Ticket};
 use busbar_contract::json::{json, JsonValueTrait as _};
 use busbar_contract::transport::trust::Anchors;
 use busbar_contract::transport::ConnFacts;
+use busbar_kernel::channels::budget::{ChannelBudget, Claim, UnitBudget};
 use busbar_kernel::channels::carrier::Wires;
 use busbar_kernel::channels::ChannelReq;
 use busbar_kernel::upstreams::{ProgramPin, StdioCommand, UpstreamTls};
@@ -244,6 +245,7 @@ fn shared(table: Option<ConnTable>) -> SeatShared {
     SeatShared {
         upstreams: BTreeMap::from([("mcp".to_owned(), upstreams())]),
         catalogs: BTreeMap::new(),
+        channel_budgets: BTreeMap::from([("mcp".to_owned(), ChannelBudget::new().instance())]),
         signals: SignalRegistry::new(),
         secrets: Arc::new(Fixed),
         kernel: Arc::new(Kernel::new()),
@@ -725,8 +727,9 @@ fn stdio(argv: &[&str]) -> UpstreamDef {
     }
 }
 
-fn channel() -> ChannelReq<'static> {
+fn channel(budget: &UnitBudget) -> ChannelReq<'_> {
     ChannelReq {
+        budget,
         exchange: 1,
         carrier: CARRIER_STDIO,
         flags: 0,
@@ -737,12 +740,164 @@ fn channel() -> ChannelReq<'static> {
     }
 }
 
+#[tokio::test]
+async fn a_seat_without_its_retained_channel_account_refuses_before_declaring_routes() {
+    let table = Arc::new(Table::default());
+    let mut shared = shared(Some(ConnTable {
+        declared: table.clone(),
+        conns: table.clone(),
+    }));
+    shared.channel_budgets.clear();
+    assert!(compose(
+        &shared,
+        "mcp",
+        Accept::default(),
+        &who(7),
+        Arc::new(Quiet),
+        Handle::current()
+    )
+    .is_err());
+    assert!(table.declared.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn the_seat_exposes_the_same_instance_account_to_original_unit_admission() {
+    let shared = shared(None);
+    let wiring = compose(
+        &shared,
+        "mcp",
+        Accept::default(),
+        &who(7),
+        Arc::new(Quiet),
+        Handle::current(),
+    )
+    .unwrap();
+    let budget = &shared.channel_budgets["mcp"];
+    let held: Vec<_> = (0..32)
+        .map(|_| {
+            budget
+                .unit()
+                .reserve(
+                    Claim {
+                        leases: 8,
+                        ..Claim::default()
+                    },
+                    None,
+                )
+                .unwrap()
+        })
+        .collect();
+    let original_unit = wiring.channel_budget.unit();
+    assert!(original_unit
+        .reserve(
+            Claim {
+                leases: 1,
+                ..Claim::default()
+            },
+            None
+        )
+        .is_err());
+    drop(held);
+    assert!(original_unit
+        .reserve(
+            Claim {
+                leases: 1,
+                ..Claim::default()
+            },
+            None
+        )
+        .is_ok());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn channel_drivers_across_generations_share_the_retained_instance_account() {
+    use busbar_kernel::channels::UpstreamChannels;
+    let shared = shared(None);
+    let budget = &shared.channel_budgets["mcp"];
+    let namespace = who(7);
+    let first = channels_of(&shared, budget.clone(), &namespace, Arc::new(Quiet), None);
+    let second = channels_of(&shared, budget.clone(), &namespace, Arc::new(Quiet), None);
+    // This is capacity from the same actual instance, held across both generation drivers.
+    let held: Vec<_> = (0..32)
+        .map(|_| {
+            budget
+                .unit()
+                .reserve(
+                    Claim {
+                        leases: 8,
+                        ..Claim::default()
+                    },
+                    None,
+                )
+                .unwrap()
+        })
+        .collect();
+    let unit = budget.unit();
+    let upstream = stdio(&["/bin/cat"]);
+    assert!(first
+        .attach(&namespace.caller(), &upstream, channel(&unit))
+        .await
+        .is_err());
+    assert!(second
+        .attach(&namespace.caller(), &upstream, channel(&unit))
+        .await
+        .is_err());
+    drop(held);
+    let one = first
+        .attach(&namespace.caller(), &upstream, channel(&unit))
+        .await
+        .unwrap();
+    let held: Vec<_> = (0..31)
+        .map(|_| {
+            budget
+                .unit()
+                .reserve(
+                    Claim {
+                        leases: 8,
+                        ..Claim::default()
+                    },
+                    None,
+                )
+                .unwrap()
+        })
+        .collect();
+    let remaining = budget
+        .unit()
+        .reserve(
+            Claim {
+                leases: 7,
+                ..Claim::default()
+            },
+            None,
+        )
+        .unwrap();
+    assert!(second
+        .attach(&namespace.caller(), &upstream, channel(&unit))
+        .await
+        .is_err());
+    drop(one);
+    let two = second
+        .attach(&namespace.caller(), &upstream, channel(&unit))
+        .await
+        .unwrap();
+    drop((two, remaining, held));
+    let foreign = ChannelBudget::new().instance().unit();
+    assert!(second
+        .attach(&namespace.caller(), &upstream, channel(&foreign))
+        .await
+        .is_err());
+}
+
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_contained_stdio_channel_opens_and_carries_bytes_both_ways() {
     let wires = ProcessWires::new(Arc::new(Fixed), None).spawning(Arc::new(ContainedSpawn));
     let up = stdio(&["/bin/cat"]);
-    let req = channel();
+    let process = ChannelBudget::new();
+    let instance = process.instance();
+    let unit = instance.unit();
+    let req = channel(&unit);
     let wire = wires.open(&up, &req).await.expect("the child starts");
     let mut write = wire.write.expect("a stdio wire takes writes");
     let mut read = wire.read;
@@ -773,7 +928,10 @@ async fn a_stdio_child_s_whole_process_tree_stops_with_its_generation() {
     let wires = ProcessWires::new(Arc::new(Fixed), None).spawning(Arc::new(ContainedSpawn));
     // The child forks a grandchild and reports its pid; `exec` keeps the child itself alive on its stdin.
     let up = stdio(&["/bin/sh", "-c", "/bin/sleep 300 & echo $!; exec /bin/cat"]);
-    let req = channel();
+    let process = ChannelBudget::new();
+    let instance = process.instance();
+    let unit = instance.unit();
+    let req = channel(&unit);
     let wire = wires.open(&up, &req).await.expect("the child starts");
     let mut line = String::new();
     let mut reader = BufReader::new(wire.read);
