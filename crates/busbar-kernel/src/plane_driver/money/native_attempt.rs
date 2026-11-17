@@ -10,7 +10,7 @@ use busbar_contract::MeterClassId;
 
 use super::UnitMoney;
 use crate::governance::AdmitGrant;
-use crate::plane_driver::invocation::InvocationContext;
+use crate::invocation::InvocationContext;
 use crate::plane_driver::port_session::UpExchange;
 
 /// One prepared exchange under an actual request admission.
