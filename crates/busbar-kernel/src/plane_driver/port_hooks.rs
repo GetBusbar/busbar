@@ -33,7 +33,7 @@ pub struct Call {
     pub strategy: Option<Arc<str>>,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct Taps {
     pub request: Vec<Arc<Call>>,
     pub candidate: Vec<Arc<Call>>,
@@ -42,6 +42,7 @@ pub struct Taps {
 }
 
 /// One invocation's selection. Every service is already constructed and generation-bound.
+#[derive(Clone)]
 pub struct Selected {
     pub rewrites: Vec<Arc<Call>>,
     /// Stable priority order; concurrent results are reconciled in this order.
@@ -62,6 +63,8 @@ pub struct Selection<'a> {
     pub container: &'a str,
     pub dialect: &'a str,
     pub principal: Option<&'a str>,
+    /// The exact admitted billing key retained by InvocationContext, including external keys.
+    pub key: Option<&'a busbar_contract::records::VirtualKey>,
     pub request_id: u64,
     pub now_s: u64,
 }

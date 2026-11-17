@@ -2,14 +2,17 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use busbar_plugin_abi::fail::fact::PJ_END_USER;
+use busbar_plugin_abi::kinds::hook::hook as abi;
 use busbar_ports::{FactRef, FactVal};
 
 use super::Call;
 
 /// Borrow the exact typed plane projection for one configured hook call.
-pub(super) fn signals<'a>(facts: &'a [(u32, FactVal)], _call: &Call) -> Vec<(u32, FactRef<'a>)> {
+pub(super) fn signals<'a>(facts: &'a [(u32, FactVal)], call: &Call) -> Vec<(u32, FactRef<'a>)> {
+    let identity = call.user.sends_user() && call.port.facts() & abi::FB_WANTS_IDENTITY != 0;
     facts
         .iter()
+        .filter(|(key, _)| *key != PJ_END_USER || identity)
         .map(|(key, value)| {
             let value = match value {
                 FactVal::U(value) => FactRef::U(*value),
