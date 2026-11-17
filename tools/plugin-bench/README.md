@@ -37,8 +37,16 @@ The output is a table on stdout plus `target/plugin-bench/<kind>.json`.
 
 ## Workloads
 
-**store.** Retired with the door store kind (WP3): a store is a MIN-3 image. A native store workload
-returns with the native store harness.
+**store.** A store is a MIN-3 image: it is admitted from its cdylib (`--plugin`), opened through
+`Registry::open_store` and its dataset initialized, as core does. Measured ops are the store adapter's
+`PersistenceBackend` calls (codec, one crossing, decode), in the kernel journal's append shape:
+
+- `commit`: a CAS on a head key plus a 1 KiB record put, a 64-byte result, and a fresh attempt id each
+  time, so every commit leaves one receipt behind.
+- `read`: two keys.
+- `clock`: the floor.
+
+Records rotate over 1024 keys per thread, so only what the store keeps per commit grows.
 
 **plane.** Each unit is driven the way the plane driver drives it: `arrive` → ATTEMPT piece →
 caller-body piece → far-end answer. The answer is either one whole piece, or a status piece plus
