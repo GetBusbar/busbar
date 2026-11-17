@@ -169,7 +169,7 @@ tokio::task_local! {
 
 fn probe() {
     #[cfg(test)]
-    debug_assert!(
+    assert!(
         !ON_REQUEST_PATH.try_with(|on| *on).unwrap_or(false),
         "R24: an audit signature was requested on the request path"
     );

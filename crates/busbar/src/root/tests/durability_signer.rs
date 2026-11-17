@@ -18,6 +18,21 @@ use crate::root::durability::signer::{spawn, SignFailure, Signers};
 const SEED: [u8; 32] = [0x26; 32];
 const DELEGATED: [u8; 32] = [0x62; 32];
 
+#[tokio::test]
+#[should_panic(expected = "R24: an audit signature was requested on the request path")]
+async fn generic_checkpoint_handle_still_rejects_request_signing() {
+    let rig = rig(true);
+    crate::root::durability::signer::ON_REQUEST_PATH
+        .scope(
+            true,
+            rig.signers
+                .checkpoint
+                .sign_checkpoints(&[b"not a response purpose"]),
+        )
+        .await
+        .unwrap();
+}
+
 /// A delegated live signer that records the thread each sign runs on, and can hold a sign until
 /// released.
 struct Recording {
