@@ -230,6 +230,7 @@ pub enum Violation {
 /// Why a session call produced no usable answer.
 #[derive(Debug)]
 pub enum SessionError {
+    SelectedRefused(super::port_egress::SelectedSendError),
     /// A core-owned running-unit refusal, rendered through the actual route's mapping.
     CoreRefused(u32),
     /// The original request's one monetary admission refused before effects.
@@ -1327,6 +1328,20 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
     pub(crate) fn finish_attempt(&mut self) -> Result<(), SessionError> {
         if let Some(attempt) = self.active_attempt.take() {
             attempt.seal().map_err(|_| SessionError::NotDriven)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn answered_attempt(&mut self) -> Result<(), SessionError> {
+        if let Some(attempt) = self.active_attempt.as_mut() {
+            attempt.answered().map_err(|_| SessionError::NotDriven)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn served_attempt(&mut self) -> Result<(), SessionError> {
+        if let Some(attempt) = self.active_attempt.as_mut() {
+            attempt.served().map_err(|_| SessionError::NotDriven)?;
         }
         Ok(())
     }
