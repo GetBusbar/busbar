@@ -21,10 +21,11 @@ async fn a_kept_approval_cannot_apply_after_a_newer_same_key_revoke() {
     r.observe(ORIGINAL).await;
     r.backend.park_commit.store(true, Ordering::SeqCst);
     let node = r.node.clone();
-    let approval = tokio::spawn(async move { node.trust_rule(KEY, Ruling::Approve).await });
+    let approval =
+        tokio::spawn(async move { node.trust_rule_reviewed(KEY, Ruling::Approve).await });
     entered(&r.backend).await;
     assert_eq!(
-        r.node.trust_rule(KEY, Ruling::Revoke).await,
+        r.node.trust_rule_reviewed(KEY, Ruling::Revoke).await,
         Err(TrustRefused::Stale)
     );
     let blocked = call(|later| r.node.trust_sight(&caller(), PEER, CHANGED, later)).await;
@@ -101,13 +102,16 @@ async fn a_store_callback_can_reenter_and_an_unwind_retires_its_decision_owner()
     r.backend.panic_commit.store(true, Ordering::SeqCst);
     let node = r.node.clone();
     assert!(
-        tokio::spawn(async move { node.trust_rule(KEY, Ruling::Approve).await })
+        tokio::spawn(async move { node.trust_rule_reviewed(KEY, Ruling::Approve).await })
             .await
             .unwrap_err()
             .is_panic()
     );
     assert_eq!(judged(&r.node, None), Err(Distrust::NotApproved));
-    r.node.trust_rule(KEY, Ruling::Revoke).await.unwrap();
+    r.node
+        .trust_rule_reviewed(KEY, Ruling::Revoke)
+        .await
+        .unwrap();
     assert_eq!(r.kept(None).await.approved, None);
 }
 
@@ -122,12 +126,15 @@ async fn failed_and_unknown_store_results_leave_ram_unchanged_and_release_the_ow
             r.backend.refuse_commit.store(true, Ordering::SeqCst)
         }
         assert!(matches!(
-            r.node.trust_rule(KEY, Ruling::Approve).await,
+            r.node.trust_rule_reviewed(KEY, Ruling::Approve).await,
             Err(TrustRefused::Store(_))
         ));
         assert_eq!(judged(&r.node, None), Err(Distrust::NotApproved));
         r.backend.refuse_commit.store(false, Ordering::SeqCst);
-        r.node.trust_rule(KEY, Ruling::Revoke).await.unwrap();
+        r.node
+            .trust_rule_reviewed(KEY, Ruling::Revoke)
+            .await
+            .unwrap();
         assert_eq!(r.kept(None).await.approved, None);
     }
 }
@@ -156,7 +163,8 @@ async fn a_failed_ruling_and_a_re_admit_both_retire_the_original_decision_owner(
     r.observe(ORIGINAL).await;
     r.backend.park_commit.store(true, Ordering::SeqCst);
     let node = r.node.clone();
-    let approval = tokio::spawn(async move { node.trust_rule(KEY, Ruling::Approve).await });
+    let approval =
+        tokio::spawn(async move { node.trust_rule_reviewed(KEY, Ruling::Approve).await });
     entered(&r.backend).await;
     let node = r.node.clone();
     let mut changed = facts();
@@ -174,7 +182,8 @@ async fn a_reentrant_resync_does_not_apply_an_unconfirmed_store_write() {
     r.observe(ORIGINAL).await;
     r.backend.park_commit.store(true, Ordering::SeqCst);
     let node = r.node.clone();
-    let approval = tokio::spawn(async move { node.trust_rule(KEY, Ruling::Approve).await });
+    let approval =
+        tokio::spawn(async move { node.trust_rule_reviewed(KEY, Ruling::Approve).await });
     entered(&r.backend).await;
     r.node.trust_resync_tick();
     tokio::task::yield_now().await;
@@ -190,7 +199,7 @@ async fn a_resync_started_during_a_local_write_cannot_replay_it_after_completion
     r.approve().await;
     r.backend.park_commit.store(true, Ordering::SeqCst);
     let node = r.node.clone();
-    let revoke = tokio::spawn(async move { node.trust_rule(KEY, Ruling::Revoke).await });
+    let revoke = tokio::spawn(async move { node.trust_rule_reviewed(KEY, Ruling::Revoke).await });
     entered(&r.backend).await;
     r.node.trust_resync_tick();
     r.backend.release.notify_one();
@@ -206,14 +215,17 @@ async fn a_store_unwind_after_upsert_preserves_ram_and_releases_the_owner() {
     r.backend.panic_after.store(true, Ordering::SeqCst);
     let node = r.node.clone();
     assert!(
-        tokio::spawn(async move { node.trust_rule(KEY, Ruling::Approve).await })
+        tokio::spawn(async move { node.trust_rule_reviewed(KEY, Ruling::Approve).await })
             .await
             .unwrap_err()
             .is_panic()
     );
     assert_eq!(judged(&r.node, None), Err(Distrust::NotApproved));
     assert_eq!(r.kept(None).await.approved.as_deref(), Some(ORIGINAL));
-    r.node.trust_rule(KEY, Ruling::Revoke).await.unwrap();
+    r.node
+        .trust_rule_reviewed(KEY, Ruling::Revoke)
+        .await
+        .unwrap();
     assert_eq!(r.kept(None).await.approved, None);
 }
 
@@ -222,7 +234,10 @@ async fn ordinary_sightings_do_not_defer_a_fresh_remote_revoke() {
     let r = Rig::new().await;
     r.approve().await;
     let (follower, _) = r.follower(Arc::new(AsyncPool)).await;
-    r.node.trust_rule(KEY, Ruling::Revoke).await.unwrap();
+    r.node
+        .trust_rule_reviewed(KEY, Ruling::Revoke)
+        .await
+        .unwrap();
     r.backend.park_scan.store(true, Ordering::SeqCst);
     follower.trust_resync_tick();
     entered(&r.backend).await;

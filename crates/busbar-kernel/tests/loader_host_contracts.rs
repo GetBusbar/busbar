@@ -419,12 +419,26 @@ async fn trust_serves_item_less_answers_the_counterpartys_own_verdict() {
     )
     .await
     .unwrap();
-    h.trust_rule("plane/agent", Ruling::Approve)
-        .await
-        .expect("actual authority approves declared fingerprint");
-    h.trust_rule("plane/agent/tool", Ruling::Revoke)
-        .await
-        .expect("actual authority revokes declared item");
+    h.trust_rule_by(
+        "plane/agent",
+        Ruling::Approve,
+        busbar_kernel::trust::book::Reviewed::Unsighted,
+        "op",
+        None,
+    )
+    .await
+    .result
+    .expect("actual authority approves declared fingerprint");
+    h.trust_rule_by(
+        "plane/agent/tool",
+        Ruling::Revoke,
+        busbar_kernel::trust::book::Reviewed::Unsighted,
+        "op",
+        None,
+    )
+    .await
+    .result
+    .expect("actual authority revokes declared item");
     let c = caller("plane");
     let verdict = |cp: &str, item: Option<&str>| h.trust_serves(&c, cp, item, None).value;
     assert_eq!(verdict("agent", None), DISTRUST_NONE);

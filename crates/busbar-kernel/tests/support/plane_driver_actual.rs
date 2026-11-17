@@ -2170,10 +2170,22 @@ async fn the_kernels_approve_judges_the_trust_facts_a_plane_states() {
     let sight = async |hash: &'static str| {
         answer(|later| services.trust_sight(&instance(), "peer", hash, later)).await
     };
+    // The operator reviews the key's current state, then decides (TRUST-ADMIN-PRODUCER-DESIGN r3
+    // §10.1 (R)).
     let decide = async |key: &str, decision| {
+        let seen = services
+            .trust_rows()
+            .into_iter()
+            .find(|row| row.key() == key)
+            .and_then(|row| row.seen);
+        let reviewed = seen.as_deref().map_or(
+            busbar_kernel::trust::book::Reviewed::Unsighted,
+            busbar_kernel::trust::book::Reviewed::Seen,
+        );
         services
-            .trust_rule(key, decision)
+            .trust_rule_by(key, decision, reviewed, "op", None)
             .await
+            .result
             .expect("an admitted key")
     };
     use busbar_kernel::trust::book::Ruling;
@@ -2247,7 +2259,16 @@ async fn the_kernels_approve_judges_the_trust_facts_a_plane_states() {
     assert_eq!(body, refused(4), "revoked");
 
     assert_eq!(
-        services.trust_rule("inst/stranger", Ruling::Approve).await,
+        services
+            .trust_rule_by(
+                "inst/stranger",
+                Ruling::Approve,
+                busbar_kernel::trust::book::Reviewed::Unsighted,
+                "op",
+                None,
+            )
+            .await
+            .result,
         Err(busbar_kernel::host_services::TrustRefused::NoSuchKey)
     );
 }

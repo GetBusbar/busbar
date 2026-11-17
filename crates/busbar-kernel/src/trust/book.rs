@@ -244,6 +244,53 @@ pub enum Ruling {
 
 pub const UNVERIFIED_SIGHTING: &str = "unverified";
 
+/// WHAT THE OPERATOR REVIEWED before deciding: the key's `seen` digest, or the fact that it had
+/// never been sighted (`seen: null`). Approve requires it to be the current sighting; revoke
+/// accepts the current sighting or the current approval, so a churning counterparty can never
+/// starve a protective revoke (TRUST-ADMIN-PRODUCER-DESIGN r3 §4.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reviewed<'a> {
+    /// The reviewed `seen` digest.
+    Seen(&'a str),
+    /// Reviewed while `seen` was null.
+    Unsighted,
+}
+
+impl Reviewed<'_> {
+    fn matches(self, value: Option<&str>) -> bool {
+        match self {
+            Reviewed::Seen(digest) => value == Some(digest),
+            Reviewed::Unsighted => value.is_none(),
+        }
+    }
+}
+
+/// WHO DECIDED a kept decision (r3 §4.3). Internally tagged, so a principal can never read as an
+/// instance: `{"kind":"principal","id":…}`, `{"kind":"instance","instance":…,"principal":…}`,
+/// `{"kind":"kernel"}`.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum DecidedBy {
+    /// An authenticated admin principal through `POST /trust/approve|revoke`.
+    Principal { id: String },
+    /// A plane instance relaying a decision under the authority of an admin principal.
+    Instance { instance: String, principal: String },
+    /// The kernel itself: a drift demotion or a quarantine.
+    Kernel,
+}
+
+impl DecidedBy {
+    /// The principal id the audit ring records for this actor.
+    #[must_use]
+    pub fn principal(&self) -> &str {
+        match self {
+            DecidedBy::Principal { id } => id,
+            DecidedBy::Instance { principal, .. } => principal,
+            DecidedBy::Kernel => "kernel",
+        }
+    }
+}
+
 /// Why a decision was not made.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Undecided {
@@ -288,6 +335,36 @@ pub struct RulingRow {
     /// item replaces it. `false` for every operator decision, and for a row kept before the field.
     #[serde(default)]
     pub demoted: bool,
+    /// WHO DECIDED (r3 §4.3). `None` only for a row kept before the field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decided_by: Option<DecidedBy>,
+    /// WHEN, in Unix seconds on core's clock. `None` only for a row kept before the field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decided_at: Option<u64>,
+    /// The request's `Idempotency-Key` (the client's operation id), echoed so the client can join
+    /// the decision to its own record. `None` without one, and for plane and kernel decisions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operation: Option<String>,
+}
+
+/// One admitted counterparty's trust facts, copied under the book's lock for the admin API
+/// (r3 §3.4 `subjects`). A copy, never a live borrow.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CounterpartyFacts {
+    /// Its key row (`item` is `None`).
+    pub row: KeyRow,
+    /// The registration's declared pin.
+    pub pin: Option<DeclaredPin>,
+    /// Its re-verify cadence.
+    pub policy: super::reverify::Policy,
+    /// Its re-verify ledger.
+    pub ledger: Ledger,
+    pub pending: bool,
+    pub quarantined: bool,
+    pub revoked: bool,
+    pub confirmed: bool,
+    /// The items demoted by drift, in name order.
+    pub demoted: Vec<String>,
 }
 
 fn declared_pin(entry: &TrustEntry) -> Option<String> {
@@ -629,10 +706,10 @@ impl TrustBook {
         counterparty: &str,
         item: Option<&str>,
         decision: Ruling,
-        expected: Option<&str>,
+        reviewed: Option<Reviewed<'_>>,
     ) -> Result<(KeyRow, RulingRow), Undecided> {
         let permit = self.begin_decision(instance, counterparty, item)?;
-        let fact = self.rule(instance, counterparty, item, decision, expected)?;
+        let fact = self.rule(instance, counterparty, item, decision, reviewed)?;
         let row = permit.apply(&fact)?;
         Ok((row, fact))
     }
@@ -643,7 +720,7 @@ impl TrustBook {
         counterparty: &str,
         item: Option<&str>,
         decision: Ruling,
-        expected: Option<&str>,
+        reviewed: Option<Reviewed<'_>>,
     ) -> Result<RulingRow, Undecided> {
         let map = self.lock();
         let book = map.get(instance).ok_or(Undecided::NoSuchKey)?;
@@ -652,15 +729,20 @@ impl TrustBook {
             return Err(Undecided::Rootless);
         }
 
-        if let Some(expected) = expected {
-            let current = match item {
-                None => s.last_seen.as_deref(),
-                Some(item) => s.items.get(item).map(String::as_str),
+        if let Some(reviewed) = reviewed {
+            let (seen, approved) = match item {
+                None => (s.last_seen.as_deref(), s.pinned.as_deref()),
+                Some(item) => (
+                    s.items.get(item).map(String::as_str),
+                    s.approval(entry, item),
+                ),
             };
-            match current {
-                None => return Err(Undecided::NothingSighted),
-                Some(c) if c != expected => return Err(Undecided::Stale),
-                Some(_) => {}
+            let current = match decision {
+                Ruling::Approve => reviewed.matches(seen),
+                Ruling::Revoke => reviewed.matches(seen) || reviewed.matches(approved),
+            };
+            if !current {
+                return Err(Undecided::Stale);
             }
         }
         let approved = match (item, decision) {
@@ -703,6 +785,9 @@ impl TrustBook {
             approved,
             declared: entry.pin.clone(),
             demoted: false,
+            decided_by: None,
+            decided_at: None,
+            operation: None,
         })
     }
 
@@ -795,6 +880,35 @@ impl TrustBook {
         out
     }
 
+    /// Every admitted counterparty's trust facts (r3 §3.4 `subjects`), copied under the lock and
+    /// ordered by instance then counterparty. An admin-path read.
+    #[must_use]
+    pub fn counterparties(&self) -> Vec<CounterpartyFacts> {
+        let map = self.lock();
+        let mut instances: Vec<_> = map.iter().collect();
+        instances.sort_by(|a, b| a.0.cmp(b.0));
+        let mut out = Vec::new();
+        for (instance, book) in instances {
+            for name in book.entries.keys() {
+                let Some((entry, s)) = book.subject(name) else {
+                    continue;
+                };
+                out.push(CounterpartyFacts {
+                    row: row_of(instance, name, None, entry, &s),
+                    pin: entry.pin.clone(),
+                    policy: entry.policy.clone(),
+                    ledger: s.ledger.clone(),
+                    pending: s.pending,
+                    quarantined: s.quarantined,
+                    revoked: s.revoked,
+                    confirmed: s.confirmed,
+                    demoted: s.demoted.iter().cloned().collect(),
+                });
+            }
+        }
+        out
+    }
+
     pub fn sight_item(
         &self,
         instance: &str,
@@ -833,6 +947,9 @@ impl TrustBook {
                 approved: Some(at),
                 declared: entry.pin.clone(),
                 demoted: true,
+                decided_by: Some(DecidedBy::Kernel),
+                decided_at: Some(crate::store::now()),
+                operation: None,
             }
         });
         let sight = if s.quarantined {

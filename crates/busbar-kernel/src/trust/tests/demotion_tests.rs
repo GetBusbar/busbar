@@ -18,6 +18,9 @@ fn ruling() -> RulingRow {
         approved: Some("digest".into()),
         declared: None,
         demoted: false,
+        decided_by: None,
+        decided_at: None,
+        operation: None,
     }
 }
 

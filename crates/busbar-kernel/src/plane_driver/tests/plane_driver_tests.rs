@@ -85,7 +85,7 @@ async fn approve(services: &KernelServices) {
     };
     assert_eq!(answer.outcome, AbiOutcome::Ready);
     services
-        .trust_rule(&format!("{INSTANCE}/peer"), Ruling::Approve)
+        .trust_rule_reviewed(&format!("{INSTANCE}/peer"), Ruling::Approve)
         .await
         .expect("the operator approves the sighted card");
     assert_eq!(judge(services), Ok(()));

@@ -80,7 +80,10 @@ async fn refused_and_completed_reads_keep_the_ttl_and_apply_later_remote_decisio
     node.trust_resync_tick();
     assert_eq!(held.drain().await, 1);
     assert_eq!(judged(&node, None), Ok(()));
-    r.node.trust_rule(KEY, Ruling::Revoke).await.unwrap();
+    r.node
+        .trust_rule_reviewed(KEY, Ruling::Revoke)
+        .await
+        .unwrap();
     node.trust_resync_tick();
     assert_eq!(held.drain().await, 0);
     r.next_window();

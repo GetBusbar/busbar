@@ -10,7 +10,7 @@ use busbar_contract::abi::host::service as svc;
 use busbar_contract::services::{Caller, HostServices, Later, Ran, Stored, TrustKeyRef};
 
 use super::{InstanceFacts, KernelServices};
-use crate::trust::book::{Ruling, TrustBook};
+use crate::trust::book::{Reviewed, Ruling, TrustBook};
 use crate::trust::reverify::Policy;
 use crate::trust::section::TrustEntry;
 
@@ -69,7 +69,9 @@ fn recordless() -> KernelServices {
 fn an_admin_decision_without_bound_custody_is_refused_and_changes_nothing() {
     let k = recordless();
     assert!(
-        ready(k.trust_rule_if_seen("inst/cp", Ruling::Approve, Some("h1"))).is_err(),
+        ready(k.trust_rule_by("inst/cp", Ruling::Approve, Reviewed::Seen("h1"), "op", None))
+            .result
+            .is_err(),
         "a decision that cannot be kept durably is never made in memory only"
     );
     let row = k
@@ -88,7 +90,14 @@ fn a_plane_relayed_approve_without_a_reviewed_digest_is_refused() {
         slot: 1,
         generation: 1,
     };
-    let _grant = k.grant_trust_decision(&me, ticket, "cp").unwrap();
+    let _grant = k
+        .grant_trust_decision(
+            &me,
+            ticket,
+            "cp",
+            crate::host_services::TrustDecisionAuthority::for_test(),
+        )
+        .unwrap();
     let key = TrustKeyRef {
         counterparty: "cp",
         item: None,
@@ -117,7 +126,7 @@ fn a_revoke_reviewed_at_the_current_approval_survives_a_newer_sighting() {
     b.decide(&i, "cp", None, Ruling::Approve, None).unwrap();
     // The counterparty's catalogue moves after the operator reviewed it at its approval `h1`.
     b.sight(&i, "cp", "h2", 2).unwrap();
-    let revoked = b.rule(&i, "cp", None, Ruling::Revoke, Some("h1"));
+    let revoked = b.rule(&i, "cp", None, Ruling::Revoke, Some(Reviewed::Seen("h1")));
     assert!(
         revoked.is_ok(),
         "a protective revoke reviewed at the current approval is not starved by churn: {revoked:?}"
@@ -130,7 +139,7 @@ fn an_approve_reviewed_at_a_digest_that_is_not_the_current_sighting_is_stale() {
     let i: Arc<str> = Arc::from("inst");
     b.admit(&i, [("cp".to_string(), entry())], []);
     assert_eq!(
-        b.rule(&i, "cp", None, Ruling::Approve, Some("h1")),
+        b.rule(&i, "cp", None, Ruling::Approve, Some(Reviewed::Seen("h1"))),
         Err(crate::trust::book::Undecided::Stale),
         "a review that names a digest the key was never sighted at is stale, not 'nothing sighted'"
     );
