@@ -587,3 +587,52 @@ async fn native_proxy_open_preserves_tunnel_prefix_and_confines_credentials() {
     assert_eq!(&reply, b"ping");
     task.await.unwrap();
 }
+
+#[tokio::test]
+async fn proxied_ip_literal_verifies_the_origin_address_without_sni() {
+    let (ca, acceptor) = tls_server(&["93.184.216.34"]);
+    let (listener, addr) = listener().await;
+    let task = tokio::spawn(async move {
+        let (mut peer, _) = listener.accept().await.unwrap();
+        let mut head = Vec::new();
+        let mut byte = [0];
+        while !head.ends_with(b"\r\n\r\n") {
+            peer.read_exact(&mut byte).await.unwrap();
+            head.push(byte[0]);
+        }
+        peer.write_all(b"HTTP/1.1 200 Connected\r\n\r\n")
+            .await
+            .unwrap();
+        let mut tls = acceptor
+            .accept(peer)
+            .await
+            .expect("origin certificate through proxy");
+        let mut command = [0; 5];
+        tls.read_exact(&mut command).await.unwrap();
+        assert_eq!(&command, b"hello");
+    });
+    let io = test_io();
+    let route = super::super::judge::Route {
+        addrs: vec![addr],
+        tunnel: Some(super::super::judge::Tunnel {
+            hop: Arc::new(crate::proxy::ProxyHop::new(
+                addr.ip().to_string(),
+                addr.port(),
+                None,
+            )),
+            target: "93.184.216.34:443".into(),
+        }),
+    };
+    let mut held = io
+        .dial(Dial {
+            dest: "93.184.216.34:443",
+            route,
+            unix: None,
+            tls: Some(plan("", Some(anchor(ca)), false)),
+            timeout: BUDGET,
+        })
+        .await
+        .expect("verification uses logical origin IP, not the proxy socket peer");
+    io.write(&mut held.conn, b"hello", BUDGET).await.unwrap();
+    task.await.unwrap();
+}
