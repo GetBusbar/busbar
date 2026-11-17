@@ -10,8 +10,6 @@ use busbar_kernel::preflight::{LinkedAuth, LinkedStore, RootInstall};
 
 pub type Compose = Box<dyn FnOnce(&dyn busbar_contract::secret::SecretResolve) + Send>;
 
-pub type CliHelpRow = (&'static str, &'static str);
-
 pub struct Linked {
     /// Compiled MIN-3 headers, admitted through the same checked loader path on every platform.
     pub images: &'static [LinkedImage],
@@ -34,8 +32,6 @@ pub struct Linked {
     pub on_host: &'static [fn(&Arc<dyn EngineHost>)],
 
     pub compose: &'static [fn(&busbar_kernel::config::RootCfg) -> Option<Compose>],
-
-    pub cli_help: &'static [&'static [CliHelpRow]],
 
     pub export_doors: &'static std::sync::LazyLock<Vec<LinkedDoorExport>>,
 
@@ -671,6 +667,7 @@ pub(crate) const HOST_SERIES: &[&str] = &[
     busbar_kernel::snapshot::FAILOVERS_TOTAL,
     busbar_kernel::snapshot::REQUEST_DURATION_SECONDS,
     busbar_kernel::snapshot::TRANSLATIONS_TOTAL,
+    busbar_kernel::snapshot::INSECURE_TRANSPORT_ADMITTED_TOTAL,
     busbar_kernel::snapshot::PLANE_REQUESTS_TOTAL,
     busbar_kernel::snapshot::PLANE_REQUEST_DURATION_SECONDS,
     busbar_kernel::snapshot::LANE_REQUEST_DURATION_SECONDS,

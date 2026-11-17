@@ -25,6 +25,12 @@ fn process() -> Result<&'static Process, String> {
         .map_err(Clone::clone)
 }
 
+/// The test process's one loader resources, shared by every fixture in it.
+pub(crate) fn resources() -> Result<&'static busbar_plugin_loader::process::ProcessResources, String>
+{
+    process().map(|process| &process.resources)
+}
+
 pub(crate) fn grammar(plugins: &PluginsCfg) -> Result<busbar_kernel::config::Grammar, String> {
     super::super::boot::images::fixture(&process()?.resources, plugins).map(|images| images.grammar)
 }
@@ -581,3 +587,6 @@ impl busbar_contract::persistence::PersistenceBackend for Backend {
         self.inner.clock(dataset)
     }
 }
+
+#[path = "native_export_lifecycle.rs"]
+mod native_export_lifecycle;

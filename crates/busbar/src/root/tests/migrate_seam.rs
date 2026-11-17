@@ -820,6 +820,44 @@ mod records_step {
         );
     }
 
+    /// #328 (UPG-2): a step-5 refusal fires before the store is converted. The records step and the
+    /// write run together, and a document the check refuses leaves IMPORT, the native records and
+    /// config.yaml exactly as found.
+    #[test]
+    fn a_step5_refusal_leaves_the_store_and_config_unconverted() {
+        let rt = runtime();
+        let store = store(&rt);
+        put(&store, IMPORT_NS, &fixture());
+        let scratch = Scratch::new("records-328");
+        let config = scratch.config(super::CONFIG_1_5_5);
+        let plan = super::step1(&config, false, false, &super::accept)
+            .unwrap()
+            .expect("planned");
+        let refused = migrate_records::convert_and_write(
+            &store,
+            &keyed(),
+            &plan,
+            &[],
+            &|_: &str, _: Option<&str>| Err("a plane refused the settled document".to_owned()),
+            &config,
+            false,
+        )
+        .expect_err("the step-5 check refuses");
+        assert!(
+            refused.contains("a plane refused the settled document"),
+            "{refused}"
+        );
+        assert!(
+            !all(&store, IMPORT_NS).is_empty(),
+            "IMPORT is untouched: the store was not converted"
+        );
+        assert!(!has_native_key(&store), "no native record was written");
+        assert_eq!(
+            std::fs::read_to_string(&config).unwrap(),
+            super::CONFIG_1_5_5,
+            "config.yaml is unchanged"
+        );
+    }
     /// 5S, 5d and 5C (§A6 "Attempts", red (n)(9)'s store half): step 5 over the opened store records
     /// the attempt before writing, names it beside config.yaml before the rename, and consumes it
     /// with MIGRATION_COMPLETED once config.yaml is stamped; IMPORT is empty afterwards.

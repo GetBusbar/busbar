@@ -60,9 +60,14 @@ fn the_builds_carrier_is_read_off_its_linked_rows() {
 fn the_credential_variable_is_spelled_from_the_plane_and_the_carrier() {
     assert_eq!(
         env_credential("tool-door", "pipe"),
-        "BUSBAR_TOOL-DOOR_PIPE_CREDENTIAL"
+        "BUSBAR_TOOL_DOOR_PIPE_CREDENTIAL"
     );
     assert_eq!(env_credential("x", "y"), "BUSBAR_X_Y_CREDENTIAL");
+    // B-N11: an identity-named instance still spells a name a shell can export.
+    assert_eq!(
+        env_credential("busbar-plane-mcp.v2", "stdio"),
+        "BUSBAR_BUSBAR_PLANE_MCP_V2_STDIO_CREDENTIAL"
+    );
 }
 
 #[tokio::test]

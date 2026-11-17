@@ -41,7 +41,6 @@ pub const AXES: &[(&str, &str, &str)] = &[
     ("diagnostics", "diagnostics", "DIAGNOSTICS"),
     ("on-host", "on_host", "on_host"),
     ("compose", "compose", "compose"),
-    ("cli-help", "cli_help", "CLI_HELP"),
     ("stores", "stores", "STORE"),
     ("hooks", "hook_doors", "door"),
 ];

@@ -483,7 +483,7 @@ pub(crate) fn mount_node_admin(
         core,
         book,
         None,
-        late,
+        late.kernel(),
         crate::root::adapters::BreakerPolicy::new(),
     )
     .expect("the native node admin scope opens")

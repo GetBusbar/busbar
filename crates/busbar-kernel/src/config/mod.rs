@@ -1326,7 +1326,7 @@ impl PluginsCfg {
 
     pub fn warn_invalid_floors(&self) {
         for (name, floor) in &self.min_versions {
-            if !floor.is_empty() && !busbar_contract::plugin::valid_semver(floor) {
+            if !floor.is_empty() && !busbar_contract::semver::valid_authored(floor) {
                 diag_warn!(
                     CONFIG_ANTIDOWNGRADE_FLOOR_INVALID,
                     key = %format!("plugins.min_versions['{name}']"),
@@ -1338,7 +1338,7 @@ impl PluginsCfg {
             }
         }
         for (name, floor) in &self.first_party_floors {
-            if !floor.is_empty() && !busbar_contract::plugin::valid_semver(floor) {
+            if !floor.is_empty() && !busbar_contract::semver::valid_authored(floor) {
                 diag_warn!(
                     CONFIG_FIRSTPARTY_FLOOR_INVALID,
                     key = %format!("plugins.first_party_floors['{name}']"),

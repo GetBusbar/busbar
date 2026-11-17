@@ -766,6 +766,20 @@ impl Services {
     }
 }
 
+/// THE ONE TRUST BINDING (TRUST-ADMIN-PRODUCER-DESIGN r3 §2.2): the serving kernel twice, as the
+/// admin governance's decide-capable handle and as the read-only handle the `AppHandle` carries.
+/// Bootstrap services have neither.
+pub(crate) fn admin_trust(
+    services: &Services,
+) -> (
+    Option<Arc<KernelServices>>,
+    Option<busbar_kernel::trust::TrustReadout>,
+) {
+    let kernel = services.kernel();
+    let readout = kernel.clone().map(busbar_kernel::trust::TrustReadout::over);
+    (kernel, readout)
+}
+
 pub(crate) struct BootstrapServices;
 
 fn not_installed() -> Stored {
@@ -2266,17 +2280,6 @@ impl DataRoutes {
         req: DoorRequest,
     ) -> Response {
         self.answer_with_session(plane, claim, req, None).await
-    }
-
-    async fn answer_on_line(
-        self: Arc<Self>,
-        plane: usize,
-        claim: u32,
-        req: DoorRequest,
-        session: std::num::NonZeroU64,
-    ) -> Response {
-        self.answer_with_session(plane, claim, req, Some(session))
-            .await
     }
 
     async fn answer_with_session(

@@ -1877,6 +1877,15 @@ diagnostics! {
         "The configuration was read under the grammar its admitted modules declared at that moment. A secret shorthand word, a core grammar role, a plane section or an outbound auth style the configuration uses is declared differently by what admission now gives (plugins.dir changed after the read), or by the Store's plugin version pins at boot, or would be at the next start after a pin. Busbar refuses rather than read a value under one declaration and resolve it under another: a reload or apply is refused and the running generation keeps serving, a boot exits, and a pin is not written. The message names the item and both owners with their files. A module upgraded with an equal declaration never refuses, and an item the configuration does not use never refuses.",
         "Reload (or restart) to read the configuration again. At boot, make config.yaml's plugins: block admit the same module, write the canonical `{ module: ..., settings: ... }` reference, or start once with --ignore-overlay and remove the pin with POST /api/v1/admin/plugins/rollback.";
 
+    /// A configuration key that is reserved or retired was written.
+    CONFIG_RESERVED_KEY = 3171, Config, Fatal, "config-reserved-key", "1.6.0", false,
+        "A reserved configuration key was written",
+        "A key busbar reserves or has retired was written in config.yaml or in an admin configuration publication. It is refused by name before the document is read, rather than with the generic unknown-field error, so the reason and the remedy are stated. Another unknown key keeps the generic error.",
+        "Remove the key the message names. For `plugins.trust.operator`: 1.6.0 operator plugins must be first-party signed, so there is no operator trust setting to write."
+        => config_reserved_key(detail) "{detail}",
+        example "plugins:\n  trust:\n    operator: my-publisher",
+        detail "plugins.trust.operator: reserved; 1.6.0 operator plugins must be first-party signed (Q13)";
+
     /// An outbound dial was refused (destination guard, plaintext rule or trust store).
     EGRESS_DIAL_REFUSED = 5051, Proxy, BenignRecurring, "egress-dial-refused", "1.6.0", false,
         "An outbound dial was refused",

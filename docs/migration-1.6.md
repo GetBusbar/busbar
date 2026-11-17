@@ -401,8 +401,9 @@ to add pre-release keys**. Replace this section with verified final behavior bef
 
 - Exercise the declared upstream registration and private-reach rules below with the selected
   plane artifacts; a schema or source correction does not establish through-boot migration.
-- Confirm `auth.policy.require_if_match` becomes `auth.require_if_match`, and list the removed
-  `auth.policy` keys and fixed engine constants against the final strict schema.
+- `auth.require_if_match` is the 1.6.0 spelling; `auth.policy.require_if_match` is refused as an
+  unknown field (the kernel parser and the admin config form both place it at the auth level). List
+  the removed `auth.policy` keys and fixed engine constants against the final strict schema.
 - Confirm the removals of pool-level legacy fields, browser-login tuning, plugin log settings,
   credential-at-rest configuration and the remaining retired settings; distinguish automatic
   rewrites from required operator edits.
