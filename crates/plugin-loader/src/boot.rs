@@ -13,8 +13,8 @@ use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::plugin::Kind;
 
 use crate::dispatch::kinds::{
-    auth::Auth, export::Export, hook::Hook, plane::Plane, secret::Secret,
-    store_v4::StoreV4 as Store, transport::Transport,
+    auth::Auth, export::Export, hook::Hook, plane::Plane, store_v4::StoreV4 as Store,
+    transport::Transport,
 };
 use crate::dispatch::{
     load_dropped_bytes, load_linked, Adopter, Bind, ConnTable, EnvelopeSink, LinkedRow, Plugin,
@@ -776,7 +776,6 @@ pub fn inbound(
 #[allow(missing_docs)]
 pub enum Bound {
     Store(Plugin<Store>),
-    Secret(Plugin<Secret>),
     Auth(Plugin<Auth>),
     Hook(Plugin<Hook>),
     Export(Plugin<Export>),
@@ -950,7 +949,12 @@ fn bind_one(c: &Candidate, bind: Bind) -> Result<Bound, String> {
     }
     Ok(match c.kind {
         KindCode::Store => Bound::Store(one(c, bind)?),
-        KindCode::Secret => Bound::Secret(one(c, bind)?),
+        KindCode::Secret => {
+            return Err(format!(
+                "{}: the door secret kind is retired; a secret plugin is a native (MIN-3) image",
+                c.name
+            ))
+        }
         KindCode::Auth => Bound::Auth(one(c, bind)?),
         KindCode::Hook => Bound::Hook(one(c, bind)?),
         KindCode::Export => Bound::Export(one(c, bind)?),

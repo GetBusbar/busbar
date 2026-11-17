@@ -337,14 +337,6 @@ fn a_hook_envelope_reaches_the_host_observer() {
 }
 
 #[test]
-fn a_secret_envelope_reaches_the_host_observer() {
-    observed_through_its_bind::<crate::dispatch::kinds::secret::Secret>(
-        crate::neutral_secret::door,
-        busbar_contract::abi::mechanism::kind::SECRET,
-    );
-}
-
-#[test]
 fn a_transport_envelope_reaches_the_host_observer() {
     observed_through_its_bind::<crate::dispatch::kinds::transport::Transport>(
         crate::neutral_transport::door,

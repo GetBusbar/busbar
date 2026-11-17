@@ -226,13 +226,14 @@ pub fn admit_linked(door: DoorFn) -> Result<LoadedDoor, LoadError> {
 
 pub(crate) fn validate_any(p: *const Door) -> Result<Validated, LoadError> {
     use super::kinds::{
-        auth::Auth, export::Export, hook::Hook, plane::Plane, secret::Secret,
-        store_v4::StoreV4 as Store, transport::Transport,
+        auth::Auth, export::Export, hook::Hook, plane::Plane, store_v4::StoreV4 as Store,
+        transport::Transport,
     };
     let (_, kind) = read_door(p, None)?;
     match kind {
         KindCode::Store => validate_door::<Store>(p),
-        KindCode::Secret => validate_door::<Secret>(p),
+        // WP3 step 2: the door secret kind is retired; secret plugins are native (MIN-3) images.
+        KindCode::Secret => Err(LoadError::UnknownKind(KindCode::Secret as u32)),
         KindCode::Auth => validate_door::<Auth>(p),
         KindCode::Hook => validate_door::<Hook>(p),
         KindCode::Export => validate_door::<Export>(p),

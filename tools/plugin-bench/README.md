@@ -59,7 +59,7 @@ one piece per SSE event. Every unit runs to `EMIT_DONE`. The scenarios are:
 The default settings name providers `oai` and `ant` and models `gpt` and `claude`. Use
 `--settings` to override them.
 
-**secret.** `resolve` of a 40 B and a 200 B reference, the not-found path, and `check`.
+**secret.** No workload: the door secret kind is retired (WP3 step 2); a native secret workload is a follow-up.
 
 **auth.** Outbound `fields` as the far-end request path calls it (`POST /v1/chat/completions`):
 the operator's own key, a caller passthrough key, and an invalid passthrough key. Inbound
