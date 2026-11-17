@@ -94,6 +94,69 @@ impl PlaneFixture {
     ) -> Result<std::collections::BTreeMap<String, HookFixture>, String> {
         Ok(self.hooks.clone())
     }
+
+    /// Publish the actual native HTTP mounts and their checked generation before starting any
+    /// prepared instance worker. Callers retain this owner while either router can serve.
+    pub(crate) fn publish(
+        mut self,
+        app: Arc<busbar_kernel::state::App>,
+        post: Arc<crate::root::plane_node::NodeEndPost>,
+        billing: busbar_kernel::plane_driver::port_billing::PortBilling,
+        body_limit: usize,
+    ) -> Result<PublishedFixture, String> {
+        let served = crate::root::serve::Served {
+            ports: vec![self.seat.clone()],
+            billing: Some(billing),
+            post: Some(post),
+            tables: app.serve_tables.clone(),
+            ..Default::default()
+        };
+        let mounts = crate::root::serve::door_mounts(
+            served,
+            || crate::root::kernel::ROOT_CARD.pin(),
+            &[],
+            &[],
+            &[],
+            &[],
+        )?;
+        let (data, admin, handle) = busbar_kernel::build_split_routers_serving_doors(
+            app,
+            mounts.routes,
+            mounts.sessions,
+            mounts.refusals,
+            body_limit,
+            0,
+            false,
+        );
+        let workers = std::mem::replace(
+            &mut self.workers,
+            crate::root::boot::workers::PreparedWorkers::new(),
+        )
+        .start();
+        Ok(PublishedFixture {
+            data,
+            admin,
+            handle,
+            routes: mounts.data,
+            _plane: self,
+            workers,
+        })
+    }
+}
+
+pub(crate) struct PublishedFixture {
+    pub(crate) data: axum::Router,
+    pub(crate) admin: axum::Router,
+    pub(crate) handle: Arc<busbar_kernel::state::AppHandle>,
+    pub(crate) routes: Arc<crate::root::serve::DataRoutes>,
+    _plane: PlaneFixture,
+    workers: crate::root::boot::workers::RunningWorkers,
+}
+
+impl PublishedFixture {
+    pub(crate) async fn stop(self) -> Result<(), String> {
+        self.workers.stop().await
+    }
 }
 
 impl ServingFixture {
