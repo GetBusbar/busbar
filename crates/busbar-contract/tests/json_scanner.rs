@@ -214,10 +214,10 @@ fn costs(rounds: usize, runs: &mut [&mut dyn FnMut()]) -> Vec<f64> {
 const SMALL: usize = 1 << 17;
 const LARGE: usize = 1 << 20;
 
-/// A full walk of `body` by a production JSON reader (serde_json, every value read and ignored):
+/// A full walk of `body` by the production JSON reader (the facade, every value read and ignored):
 fn reference_walk(body: &[u8]) {
     let walked: serde::de::IgnoredAny =
-        serde_json::from_slice(std::hint::black_box(body)).expect("the body is JSON");
+        busbar_contract::json::parse(std::hint::black_box(body)).expect("the body is JSON");
     std::hint::black_box(walked);
 }
 
@@ -237,7 +237,7 @@ fn judge(scan: &dyn Fn(&[u8])) -> Result<String, String> {
     let against_walk = large_ns / walk_ns;
     let seen = format!(
         "{} bytes in {large_ns:.0} ns of CPU ({:.1} ns per KiB), {} bytes in {small_ns:.0} ns: \
-         {growth:.2}x the cost for {size_ratio:.2}x the bytes; {against_walk:.3}x a full serde_json \
+         {growth:.2}x the cost for {size_ratio:.2}x the bytes; {against_walk:.3}x a full facade \
          walk of the same bytes",
         large.len(),
         large_ns / (large.len() as f64 / 1024.0),
