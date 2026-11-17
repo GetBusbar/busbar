@@ -108,14 +108,14 @@ fn read(st: &Statement) -> Result<(HookFacts, Vec<Route>), String> {
     Ok((facts, declared_routes))
 }
 
-#[derive(Debug, Clone)]
-pub(crate) struct HookContext {
-    pub routes: Vec<Route>,
-}
-
 #[cfg(test)]
 pub(crate) fn facts(st: &Statement) -> Result<HookFacts, String> {
     read(st).map(|(facts, _)| facts)
+}
+
+#[cfg(test)]
+pub(crate) fn routes(st: &Statement) -> Result<Vec<Route>, String> {
+    read(st).map(|(_, routes)| routes)
 }
 
 /// The hook kind.
@@ -142,8 +142,8 @@ impl Kind for Hook {
     const TIMEOUT: Outcome = Outcome::Failed;
 
     fn context(st: &Statement) -> Result<Option<Box<Context>>, String> {
-        let (_, routes) = read(st)?;
-        Ok(Some(Box::new(HookContext { routes })))
+        read(st)?;
+        Ok(None)
     }
 
     fn optional_by_statement(s: u32, st: &Statement) -> bool {
