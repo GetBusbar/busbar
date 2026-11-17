@@ -4779,6 +4779,21 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
             "discovery":"/kinds/{kind}/instances/{id}",
             "effect":"configuration_publication_not_physical_activation"
         });
+        let idempotency = json!({
+            "name":"Idempotency-Key",
+            "in":"header",
+            "required":false,
+            "schema":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"},
+            "description":"Required exactly once for instance_edit; optional for other settings request modes. Use 1..128 ASCII letters, digits, dot, underscore, colon or hyphen. The authenticated principal and key retain the exact separately framed method, path, query and body identity. Identical authenticated replay returns the original outcome and ETag before checking the original now-stale precondition; changed request bytes conflict. A failed response or canceled HTTP request does not prove no effect. Preserve this key for operation lookup and uncertain-outcome recovery; never automatically retry under a new key."
+        });
+        if let Some(parameters) = operation
+            .get_mut("parameters")
+            .and_then(|p| p.as_array_mut())
+        {
+            parameters.push(idempotency);
+        } else {
+            operation["parameters"] = json!([idempotency]);
+        }
         if let Some(parameters) = operation
             .get_mut("parameters")
             .and_then(|p| p.as_array_mut())
