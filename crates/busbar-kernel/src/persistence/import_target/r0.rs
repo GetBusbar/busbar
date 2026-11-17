@@ -47,6 +47,16 @@ pub struct Commit {
     pub delete: Vec<Address>,
 }
 
+/// One native page: its records in key order and the store's continuation (`None`: no record of
+/// the namespace follows).
+#[derive(Debug, Default)]
+pub struct ScanPage {
+    /// The records, in key order.
+    pub rows: Vec<(Vec<u8>, SecureVec)>,
+    /// The last row's key while more may follow; `None` at the namespace's end.
+    pub next: Option<Vec<u8>>,
+}
+
 /// The records step's access to the admitted store.
 #[derive(Clone)]
 pub struct Access {
@@ -64,22 +74,25 @@ impl Access {
         Self { store }
     }
 
-    /// Up to `limit` records of `namespace` whose keys sort after `after` (empty: from the first),
-    /// in key order: one native page, never more than the store's own scan bound.
+    /// Up to `limit` records of `namespace` whose keys sort after `after` (`None`: from the first;
+    /// `Some` may name the empty key), in key order: one native page, never more than the store's
+    /// own scan bounds, with the store's continuation. A page shorter than asked (a byte bound)
+    /// may still have one; only an absent continuation is the namespace's end (#319 r4 §7.3).
     ///
     /// # Errors
-    /// The store's failure, or a page that is not in order or not of `namespace`.
+    /// The store's failure, or a page that is not in order, not of `namespace`, or whose
+    /// continuation is not its last row.
     pub async fn scan(
         &self,
         namespace: NamespaceId,
-        after: &[u8],
+        after: Option<&[u8]>,
         limit: u32,
-    ) -> Result<Vec<(Vec<u8>, SecureVec)>, String> {
+    ) -> Result<ScanPage, String> {
         let limits = self.store.limits();
         let max_items = usize::try_from(limit)
             .unwrap_or(usize::MAX)
             .clamp(1, limits.scan_items);
-        let after = (!after.is_empty()).then(|| after.to_vec());
+        let after = after.map(<[u8]>::to_vec);
         let page = self
             .store
             .backend()
@@ -111,7 +124,19 @@ impl Access {
             previous = Some(address.key.clone());
             rows.push((address.key.clone(), secure(value)));
         }
-        Ok(rows)
+        if page
+            .next
+            .as_ref()
+            .is_some_and(|next| previous.as_ref() != Some(next))
+        {
+            return Err(
+                "the store answered a scan whose continuation is not its last row".to_owned(),
+            );
+        }
+        Ok(ScanPage {
+            rows,
+            next: page.next,
+        })
     }
 
     /// The record at `address`, `None` when absent.

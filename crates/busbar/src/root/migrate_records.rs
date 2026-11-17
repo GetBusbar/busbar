@@ -28,7 +28,7 @@ use busbar_kernel::persistence::facade::CoreStore;
 use busbar_kernel::persistence::import_target::r0::{Access, Commit, Outcome};
 use busbar_kernel::persistence::import_target::records as encode;
 use busbar_migrate::records::{
-    self, attempts, Audit, Candidate, Committed, Native, RecordStore, Report, StoreFail,
+    self, attempts, Audit, Candidate, Committed, Native, Page, RecordStore, Report, StoreFail,
 };
 
 /// Where the records step's audit records live: core's own namespace, beside IMPORT, never a
@@ -140,14 +140,20 @@ impl Store {
 }
 
 impl RecordStore for Store {
-    fn scan(
-        &self,
-        ns: NamespaceId,
-        after: &[u8],
-        limit: u32,
-    ) -> Result<Vec<(Vec<u8>, SecureVec)>, StoreFail> {
-        self.runtime
+    fn scan(&self, ns: NamespaceId, after: Option<&[u8]>, limit: u32) -> Result<Page, StoreFail> {
+        let page = self
+            .runtime
             .block_on(self.access.scan(ns, after, limit))
+            .map_err(StoreFail)?;
+        Ok(Page {
+            rows: page.rows,
+            next: page.next,
+        })
+    }
+
+    fn read(&self, ns: NamespaceId, key: &[u8]) -> Result<Option<SecureVec>, StoreFail> {
+        self.runtime
+            .block_on(self.access.read(at(ns, key.to_vec())))
             .map_err(StoreFail)
     }
 
@@ -439,8 +445,9 @@ pub(crate) fn run_blocking(
     stamped: bool,
 ) -> Result<Option<Report>, String> {
     if store
-        .scan(IMPORT_NS, &[], 1)
+        .scan(IMPORT_NS, None, 1)
         .map_err(|fail| format!("STORE: {}", fail.0))?
+        .rows
         .is_empty()
     {
         return Ok(None);
