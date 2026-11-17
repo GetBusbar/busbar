@@ -7,6 +7,7 @@
 use busbar_plugin_abi::fail::FaultReason;
 use busbar_plugin_abi::plane::{self as p, tag, ExMsg};
 use busbar_plugin_abi::records::Records;
+use busbar_ports::codec::fallback_usage::Declaration;
 
 use super::{decode_answer, fault, Call};
 
@@ -29,9 +30,32 @@ pub fn classify(
     answer: &[u8],
     max_message: usize,
 ) -> Result<Classification<'_>, FaultReason> {
+    classify_declared(
+        from,
+        has_demux,
+        Declaration::legacy(),
+        None,
+        answer,
+        max_message,
+    )
+}
+
+/// The same classifier for an actual opted-in instance: use its frozen declaration and the callback's
+/// exact exchange. General output keeps all existing attempt/resource rules, without a second call.
+pub fn classify_declared<'a>(
+    from: u32,
+    has_demux: bool,
+    declaration: Declaration<'_>,
+    exchange: Option<u32>,
+    answer: &'a [u8],
+    max_message: usize,
+) -> Result<Classification<'a>, FaultReason> {
     decode_answer(
         Call::Piece(from),
         has_demux,
+        declaration,
+        None,
+        exchange,
         Records::new(answer),
         &mut |_| {},
     )?;

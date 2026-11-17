@@ -432,6 +432,22 @@ pub trait PlanePort: Send + Sync + 'static {
             error: None,
         })
     }
+
+    /// Decode a fixed piece answer with this instance's declaration. No plugin is invoked. The caller
+    /// retains the bytes returned by piece_fixed and admits the complete general answer before effects.
+    fn decode_fixed_piece(
+        &self,
+        _from: u32,
+        _exchange: u32,
+        _bytes: &[u8],
+        _sink: &mut dyn FnMut(PlaneOut<'_>),
+    ) -> Result<(), PortError> {
+        Err(PortError::Refused {
+            code: busbar_plugin_abi::fail::refused::R_UNSUPPORTED,
+            text: "fixed piece decoding is unavailable".into(),
+            error: None,
+        })
+    }
     fn rewrite(
         &self,
         s: &mut PlaneSession,

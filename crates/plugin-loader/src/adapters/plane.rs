@@ -1666,6 +1666,25 @@ impl<N: Needs> PlanePort for PlaneAdapter<N> {
         Ok(len)
     }
 
+    fn decode_fixed_piece(
+        &self,
+        from: u32,
+        exchange: u32,
+        bytes: &[u8],
+        sink: &mut dyn FnMut(PlaneOut<'_>),
+    ) -> Result<(), PortError> {
+        let max_out = self.live()?;
+        if bytes.len() > max_out || Records::new(bytes).any(|r| r.is_ok_and(|r| r.tag == g::TOKEN))
+        {
+            return Err(PortError::Call(CallError::Fault(FaultReason::BadRecords(
+                RecErr::Reserved,
+            ))));
+        }
+        let answer = Answer::parse(Status::OK, bytes)
+            .map_err(|reason| PortError::Call(CallError::Fault(reason)))?;
+        self.finish(Call::Piece(from), &answer, sink, None, Some(exchange))
+    }
+
     fn rewrite(
         &self,
         s: &mut PlaneSession,

@@ -763,6 +763,36 @@ mod fixed_piece {
     }
 
     #[test]
+    fn fixed_answer_decoding_never_reinvokes_the_plugin_or_emits_a_partial_prefix() {
+        let (adapter, mut session) = opened();
+        let mut backing = [0; 256];
+        let len = adapter
+            .piece_fixed(&mut session, plane::FROM_CORE, 7, 0, b"reply", &mut backing)
+            .unwrap();
+        assert_eq!(fixture::pieces(), 1);
+        let mut delivered = 0;
+        adapter
+            .decode_fixed_piece(plane::FROM_CORE, 7, &backing[..len], &mut |_| {
+                delivered += 1
+            })
+            .unwrap();
+        assert_eq!(delivered, 1);
+        assert_eq!(
+            fixture::pieces(),
+            0,
+            "decoding is not another native callback"
+        );
+        delivered = 0;
+        assert!(adapter
+            .decode_fixed_piece(plane::FROM_CORE, 7, &backing[..len + 1], &mut |_| {
+                delivered += 1
+            })
+            .is_err());
+        assert_eq!(delivered, 0);
+        assert_eq!(fixture::pieces(), 0);
+    }
+
+    #[test]
     fn fixed_piece_refuses_a_foreign_instance_session_before_entry() {
         let (adapter, _own_session) = opened();
         let (_other_adapter, mut foreign) = opened();
