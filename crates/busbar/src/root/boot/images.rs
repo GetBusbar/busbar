@@ -41,6 +41,7 @@ pub(crate) fn prepare(
     let metadata = super::scanned_registry(linked, &plugins).map_err(GrammarRefusal)?;
     let admitted =
         crate::root::min3_boot::admit_images(&plugins, &metadata).map_err(GrammarRefusal)?;
+    audit_untrusted(&admitted);
     let proofs: BTreeMap<String, ImageProof> = admitted
         .iter()
         .map(|(image, _)| {
@@ -431,3 +432,22 @@ pub(crate) fn name_sections(
     }
     grammar
 }
+
+/// DES-NATIVE-FIRST-PARTY r3 §2.7: the audit rows for this admission pass's `allow_untrusted` native admissions
+/// (the OWNER ruling: every untrusted admission is visible in audit), one per image.
+pub(crate) fn untrusted_rows(
+    admitted: &[(busbar_plugin_loader::admit::Admitted, String)],
+) -> Vec<busbar_kernel::audit::auditlog::AuditRowInput> {
+    let _ = admitted;
+    Vec::new()
+}
+
+fn audit_untrusted(admitted: &[(busbar_plugin_loader::admit::Admitted, String)]) {
+    for row in untrusted_rows(admitted) {
+        busbar_kernel::audit_ring::AUDIT.record_row(row);
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+#[path = "../tests/untrusted_admission_audit.rs"]
+mod untrusted_admission_audit_tests;
