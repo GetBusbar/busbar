@@ -322,3 +322,46 @@ fn outcomes_fold_into_one_cohort_and_refused_events_do_not_increment_errors() {
     assert_eq!(unix_millis(UNIX_EPOCH - Duration::from_millis(1)), None);
     assert_eq!(unix_millis(UNIX_EPOCH), Some(0));
 }
+
+#[test]
+fn phase_registration_never_creates_a_generic_raw_histogram() {
+    let source = make_source();
+    let histogram = source.register_histogram(
+        &outcome_key("ok"),
+        &metrics::Metadata::new(module_path!(), metrics::Level::INFO, Some(module_path!())),
+    );
+    for _ in 0..17 * crate::telemetry::HIST_DRAIN_THRESHOLD {
+        histogram.record(0.001);
+    }
+    assert!(source.registry.get_histogram_handles().is_empty());
+    let snapshot = source.request_snapshot(32).unwrap();
+    assert_eq!(
+        snapshot.identities[0].count,
+        17 * crate::telemetry::HIST_DRAIN_THRESHOLD as u64
+    );
+}
+
+#[test]
+fn exact_capture_does_not_wait_for_an_unrelated_distribution_drain() {
+    let source = make_source();
+    source
+        .register_histogram(
+            &outcome_key("ok"),
+            &metrics::Metadata::new(module_path!(), metrics::Level::INFO, Some(module_path!())),
+        )
+        .record(0.001);
+    let unrelated = lock(&source.distributions);
+    let (send, receive) = std::sync::mpsc::channel();
+    let capture = std::thread::spawn(move || {
+        send.send(
+            source
+                .request_snapshot(32)
+                .map(|snapshot| snapshot.identities[0].count),
+        )
+        .unwrap();
+    });
+    let result = receive.recv_timeout(Duration::from_secs(1));
+    drop(unrelated);
+    capture.join().unwrap();
+    assert_eq!(result.unwrap(), Some(1));
+}
