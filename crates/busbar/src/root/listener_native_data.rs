@@ -13,8 +13,10 @@ use axum::response::Response;
 use busbar_contract::response_delivery::{DeliverySnapshot, DeliveryTerminal};
 use busbar_contract::storage::{StorageCredit, StorageSource};
 use busbar_kernel::auth::native_data::{NativeDataAllocation, NativeDataPending};
-use busbar_kernel::inbound::native::{CompletingPhysicalRequest, RouteTarget};
-use busbar_kernel::plane_driver::port::{HttpIn, ServeIn, Served};
+use busbar_kernel::inbound::native::{CompletingPhysicalRequest, RouteTarget, StreamOwner};
+use busbar_kernel::plane_driver::port::{
+    HttpIn, NativeServed, NativeTaskRetirement, ServeError, ServeIn, Served,
+};
 use busbar_kernel::plane_driver::port_admission::AdmittedUnit;
 use busbar_kernel::plane_driver::port_auth::{Credentials, Principal};
 use busbar_kernel::plane_driver::port_billing::{end_of, PortBilling};
@@ -27,33 +29,63 @@ use tokio::sync::{mpsc, oneshot};
 
 use super::{InputError, RegisteredDelivery};
 use crate::root::min3_physical::NativeSlot;
-use crate::root::plane_node::Node;
+use crate::root::plane_node::{NativeNodeHandle, Node};
+
+pub(super) enum DataPrepareError {
+    Input(InputError),
+    HeldNode {
+        error: InputError,
+        handle: NativeNodeHandle,
+    },
+    HeldPreunit {
+        error: InputError,
+        audit: busbar_kernel::audit::auditlog::NativeRefusalAudit,
+    },
+    HeldPhysical {
+        error: InputError,
+        refusal: busbar_kernel::inbound::native::PhysicalRefusal,
+    },
+}
+
+pub(super) enum DataAuthority {
+    Executing(Arc<NativeDataPending>),
+    Refused(busbar_kernel::inbound::native::PhysicalRefusal),
+}
 
 pub(super) struct DataResponse {
     pub(super) response: Response,
-    pub(super) authority: Arc<NativeDataPending>,
-    pub(super) settlement: DataSettlement,
+    pub(super) authority: DataAuthority,
+    pub(super) settlement: Option<DataSettlement>,
 }
 
 pub(super) struct DataSettlement {
     authority: Arc<NativeDataPending>,
     billing: PortBilling,
-    work: Option<tokio::task::JoinHandle<bool>>,
+    work: Option<tokio::task::JoinHandle<Result<NativeServed, ServeError>>>,
+    retirement: Option<NativeTaskRetirement>,
+    refusal: Option<busbar_kernel::refusal::ClientRefusal>,
     ran: bool,
     status: u16,
+    node: NativeNodeHandle,
 }
 
 impl DataSettlement {
+    pub(super) fn native_node_handle(&self) -> Option<NativeNodeHandle> {
+        Some(self.node.clone())
+    }
+
     /// Registration never exposed a response feed. The caller first drops the unpublished
     /// body so its blocked producer can stop, then retains this join through actual retirement.
     pub(super) async fn registration_failed(mut self) -> Result<(), InputError> {
         let failed = if let Some(work) = self.work.take() {
             match work.await {
-                Ok(ran) => {
-                    self.ran = ran;
+                Ok(Ok(served)) => {
+                    let (served, retirement) = served.into_parts();
+                    self.ran = matches!(served, Served::Ran(_));
+                    self.retirement = Some(retirement);
                     false
                 }
-                Err(_) => {
+                Ok(Err(_)) | Err(_) => {
                     self.ran = false;
                     true
                 }
@@ -84,11 +116,13 @@ impl DataSettlement {
     ) -> Result<(), InputError> {
         let work_failed = if let Some(work) = self.work.take() {
             match work.await {
-                Ok(ran) => {
-                    self.ran = ran;
+                Ok(Ok(served)) => {
+                    let (served, retirement) = served.into_parts();
+                    self.ran = matches!(served, Served::Ran(_));
+                    self.retirement = Some(retirement);
                     false
                 }
-                Err(_) => {
+                Ok(Err(_)) | Err(_) => {
                     self.ran = false;
                     true
                 }
@@ -130,6 +164,117 @@ impl AsRef<[u8]> for ChargedBytes {
     fn as_ref(&self) -> &[u8] {
         &self.bytes
     }
+}
+
+struct RefusalBody {
+    items: std::vec::IntoIter<ToClient>,
+    credit: StorageCredit,
+    source: StorageSource,
+    trailer_credit: Option<StorageCredit>,
+    trailers: bool,
+    ended: bool,
+}
+impl http_body::Body for RefusalBody {
+    type Data = Bytes;
+    type Error = std::io::Error;
+    fn poll_frame(
+        mut self: Pin<&mut Self>,
+        _: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<Bytes>, Self::Error>>> {
+        if self.ended {
+            return Poll::Ready(None);
+        }
+        let result = match self.items.next() {
+            Some(ToClient::Body(bytes)) if !self.trailers => self
+                .credit
+                .split(bytes.capacity())
+                .map(|credit| {
+                    Frame::data(Bytes::from_owner(ChargedBytes {
+                        bytes,
+                        _credit: credit,
+                    }))
+                })
+                .map_err(|_| ()),
+            Some(ToClient::Trailers(values)) if !self.trailers => {
+                match fields(&self.source, values) {
+                    Ok((headers, credit)) => {
+                        self.trailers = true;
+                        self.trailer_credit = Some(credit);
+                        Ok(Frame::trailers(headers))
+                    }
+                    Err(()) => Err(()),
+                }
+            }
+            Some(ToClient::End) if self.items.as_slice().is_empty() => {
+                self.ended = true;
+                return Poll::Ready(None);
+            }
+            _ => Err(()),
+        };
+        match result {
+            Ok(frame) => Poll::Ready(Some(Ok(frame))),
+            Err(()) => {
+                self.ended = true;
+                Poll::Ready(Some(Err(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "native refusal producer ended without valid END",
+                ))))
+            }
+        }
+    }
+    fn is_end_stream(&self) -> bool {
+        self.ended
+    }
+}
+
+fn refusal_response(items: Vec<ToClient>, source: &StorageSource) -> Result<Response, InputError> {
+    let mut extent = items
+        .capacity()
+        .checked_mul(std::mem::size_of::<ToClient>())
+        .ok_or(InputError::Capacity)?;
+    for item in &items {
+        let bytes = match item {
+            ToClient::Head { fields, .. } | ToClient::Trailers(fields) => fields.iter().try_fold(
+                fields
+                    .capacity()
+                    .checked_mul(std::mem::size_of::<(Vec<u8>, Vec<u8>)>())
+                    .ok_or(InputError::Capacity)?,
+                |sum, (name, value)| {
+                    sum.checked_add(name.capacity())
+                        .and_then(|sum| sum.checked_add(value.capacity()))
+                        .ok_or(InputError::Capacity)
+                },
+            )?,
+            ToClient::Body(bytes) | ToClient::Msg { bytes, .. } => bytes.capacity(),
+            ToClient::End => 0,
+        };
+        extent = extent.checked_add(bytes).ok_or(InputError::Capacity)?;
+    }
+    let credit = source
+        .try_reserve(extent)
+        .map_err(|_| InputError::Capacity)?;
+    let mut items = items.into_iter();
+    let Some(ToClient::Head {
+        status,
+        fields: values,
+    }) = items.next()
+    else {
+        return Err(InputError::Invalid);
+    };
+    let (headers, head_credit) = fields(source, values).map_err(|_| InputError::Capacity)?;
+    let status = StatusCode::from_u16(status).map_err(|_| InputError::Invalid)?;
+    let mut response = Response::new(Body::new(RefusalBody {
+        items,
+        credit,
+        source: source.clone(),
+        trailer_credit: None,
+        trailers: false,
+        ended: false,
+    }));
+    *response.status_mut() = status;
+    *response.headers_mut() = headers;
+    response.extensions_mut().insert(Arc::new(head_credit));
+    Ok(response)
 }
 
 struct BodyItem {
@@ -294,10 +439,11 @@ impl ClientSink for Sink {
 }
 
 pub(super) async fn prepare(
-    request: CompletingPhysicalRequest,
+    mut request: CompletingPhysicalRequest,
     slot: Arc<NativeSlot>,
     node: Arc<Node>,
-) -> Result<DataResponse, InputError> {
+    stream_owner: Arc<StreamOwner>,
+) -> Result<DataResponse, DataPrepareError> {
     let binding = request.binding().clone();
     let routes = binding
         .prepared()
@@ -305,11 +451,12 @@ pub(super) async fn prepare(
         .ok_or(InputError::Invalid)?
         .downcast::<crate::root::serve::DataRoutes>()
         .map_err(|_| InputError::Invalid)?;
-    if !Arc::ptr_eq(routes.post.node(), &node) {
-        return Err(InputError::Invalid);
+    let original_node = routes.post.node().ok_or(InputError::Invalid)?;
+    if !Arc::ptr_eq(&original_node, &node) {
+        return Err(DataPrepareError::Input(InputError::Invalid));
     }
     let RouteTarget::Plane(target) = binding.route().target() else {
-        return Err(InputError::Invalid);
+        return Err(DataPrepareError::Input(InputError::Invalid));
     };
     let route = target.mounted().route;
     let seat = routes
@@ -345,9 +492,12 @@ pub(super) async fn prepare(
         .select_wire(frozen, target.mounted(), &selection)
         .map_err(|_| InputError::Invalid)?;
     let deadline = binding.deadline().ok_or(InputError::Invalid)?;
-    let authorized = data_route
+    let preparation = request
+        .begin_data_preparation()
+        .map_err(|_| InputError::Invalid)?;
+    let authorization = data_route
         .prepare(
-            request,
+            preparation,
             selected,
             busbar_ports::CallCx {
                 deadline,
@@ -360,175 +510,228 @@ pub(super) async fn prepare(
         .complete()
         .await
         .map_err(|_| InputError::Invalid)?;
-    let allocation = NativeDataAllocation::register(authorized).map_err(|_| InputError::Invalid)?;
-    let classes = seat.driver.usage_classes();
-    let unit = billing
-        .allocated_data(&allocation, classes.clone())
+    let authorized = request
+        .complete(authorization)
         .map_err(|_| InputError::Invalid)?;
-    let callback_billing = billing.clone();
-    let journal = unit.journal.clone();
-    let pending = Arc::new(
-        allocation
-            .into_pending_runtime(&seat, journal, move |receipt| {
-                use busbar_kernel::refusal::RefusalMap;
-                let unavailable = || {
-                    busbar_kernel::refusal::CoreRefusals::new()
-                        .for_core(route, busbar_plugin_abi::fail::refused::R_NO_ROUTE)
-                };
-                let request = callback_billing
-                    .admit_existing(
-                        receipt.begin().map_err(|_| unavailable())?,
-                        classes,
-                        FeeRefund::PlaneFeeUnits(Arc::from([])),
-                        busbar_kernel::config::groups::ExhaustionMode::FinishUnit,
-                    )
-                    .map_err(|error| match error {
-                        NativeAdmissionError::Blocked(blocked) => {
-                            crate::root::port_mount::blocked_client(&blocked).0
-                        }
-                        _ => unavailable(),
-                    })?;
-                let rollback = callback_billing
-                    .admission_rollback(&request)
-                    .map_err(|_| unavailable())?;
-                AdmittedUnit::ordinary(request, unit, rollback).map_err(|_| unavailable())
-            })
-            .map_err(|_| InputError::Invalid)?,
-    );
-    let snapshot = pending.snapshot();
-    let header_extent = snapshot
-        .headers()
-        .try_fold(0usize, |sum, (name, value)| {
-            sum.checked_add(std::mem::size_of::<(String, Vec<u8>)>())?
-                .checked_add(name.len())?
-                .checked_add(value.len())
-        })
-        .ok_or(InputError::Capacity)?;
-    let header_credit = snapshot
-        .request()
-        .storage()
-        .try_reserve(header_extent)
-        .map_err(|_| InputError::Capacity)?;
-    let http = HttpIn {
-        method: snapshot.method().to_owned(),
-        path: snapshot.path().to_owned(),
-        query: snapshot.query().to_owned(),
-        headers: snapshot
+    let mut allocation =
+        NativeDataAllocation::register(authorized).map_err(|_| InputError::Invalid)?;
+    let classes = seat.driver.usage_classes();
+    let (native_node, unit) = node
+        .install_native(
+            &mut allocation,
+            stream_owner,
+            routes.post.clone(),
+            &billing,
+            classes.clone(),
+        )
+        .map_err(|(error, handle)| match handle {
+            Some(handle) => DataPrepareError::HeldNode { error, handle },
+            None => DataPrepareError::Input(error),
+        })?;
+    let result: Result<DataResponse, InputError> = async {
+        let callback_billing = billing.clone();
+        let journal = unit.journal.clone();
+        let pending = Arc::new(
+            allocation
+                .into_pending_runtime(&seat, journal, move |receipt| {
+                    use busbar_kernel::refusal::RefusalMap;
+                    let unavailable = || {
+                        busbar_kernel::refusal::CoreRefusals::new()
+                            .for_core(route, busbar_plugin_abi::fail::refused::R_NO_ROUTE)
+                    };
+                    let request = callback_billing
+                        .admit_existing(
+                            receipt.begin().map_err(|_| unavailable())?,
+                            classes,
+                            FeeRefund::PlaneFeeUnits(Arc::from([])),
+                            busbar_kernel::config::groups::ExhaustionMode::FinishUnit,
+                        )
+                        .map_err(|error| match error {
+                            NativeAdmissionError::Blocked(blocked) => {
+                                crate::root::port_mount::blocked_client(&blocked).0
+                            }
+                            _ => unavailable(),
+                        })?;
+                    let rollback = callback_billing
+                        .admission_rollback(&request)
+                        .map_err(|_| unavailable())?;
+                    AdmittedUnit::ordinary(request, unit, rollback).map_err(|_| unavailable())
+                })
+                .map_err(|_| InputError::Invalid)?,
+        );
+        native_node.bind_pending(pending.clone())?;
+        let snapshot = pending.snapshot();
+        let header_extent = snapshot
             .headers()
-            .map(|(name, value)| (name.to_owned(), value.to_vec()))
-            .collect(),
-        body: snapshot.body_bytes(),
-        request_id: binding.invocation().request_id().get(),
-    };
-    let lease = snapshot.request().clone();
-    let now_s = snapshot.now_s();
-    let (head_tx, mut head_rx) = oneshot::channel();
-    let (body_tx, body_rx) = mpsc::channel(1);
-    let ended = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let sink = Arc::new(Sink {
-        source: lease.storage().clone(),
-        state: Mutex::new(SinkState {
-            head: Some(head_tx),
-            body: Some(body_tx),
-            trailers: false,
-        }),
-        ended: ended.clone(),
-    });
-    let authority = pending.clone();
-    let mut work = tokio::spawn(async move {
-        let _header_credit = header_credit;
-        let served = seat
-            .driver
-            .serve_admitted(
-                ServeIn {
-                    request: lease,
-                    admission: None,
-                    invocation: None,
-                    route,
-                    http,
-                    creds: Credentials {
-                        bearer: None,
-                        principal: Principal::Anonymous,
-                        operator: false,
-                        signed: None,
+            .try_fold(0usize, |sum, (name, value)| {
+                sum.checked_add(std::mem::size_of::<(String, Vec<u8>)>())?
+                    .checked_add(name.len())?
+                    .checked_add(value.len())
+            })
+            .ok_or(InputError::Capacity)?;
+        let header_credit = snapshot
+            .request()
+            .storage()
+            .try_reserve(header_extent)
+            .map_err(|_| InputError::Capacity)?;
+        let http = HttpIn {
+            method: snapshot.method().to_owned(),
+            path: snapshot.path().to_owned(),
+            query: snapshot.query().to_owned(),
+            headers: snapshot
+                .headers()
+                .map(|(name, value)| (name.to_owned(), value.to_vec()))
+                .collect(),
+            body: snapshot.body_bytes(),
+            request_id: binding.invocation().request_id().get(),
+        };
+        let lease = snapshot.request().clone();
+        let now_s = snapshot.now_s();
+        let (head_tx, mut head_rx) = oneshot::channel();
+        let (body_tx, body_rx) = mpsc::channel(1);
+        let ended = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let sink = Arc::new(Sink {
+            source: lease.storage().clone(),
+            state: Mutex::new(SinkState {
+                head: Some(head_tx),
+                body: Some(body_tx),
+                trailers: false,
+            }),
+            ended: ended.clone(),
+        });
+        let authority = pending.clone();
+        let response_source = lease.storage().clone();
+        let mut work = tokio::spawn(async move {
+            let _header_credit = header_credit;
+            let served = seat
+                .driver
+                .serve_admitted(
+                    ServeIn {
+                        request: lease,
+                        admission: None,
+                        invocation: None,
+                        route,
+                        http,
+                        creds: Credentials {
+                            bearer: None,
+                            principal: Principal::Anonymous,
+                            operator: false,
+                            signed: None,
+                        },
+                        audience: seat.audience.as_deref().unwrap_or_default(),
+                        now_s,
+                        principal: None,
+                        unit: None,
+                        upstream: seat.upstream.clone(),
+                        client: Some(sink.clone()),
+                        carrier: seat.carrier.clone(),
+                        intents: seat.intents.clone(),
+                        models: Vec::new(),
                     },
-                    audience: seat.audience.as_deref().unwrap_or_default(),
-                    now_s,
-                    principal: None,
-                    unit: None,
-                    upstream: seat.upstream.clone(),
-                    client: Some(sink.clone()),
-                    carrier: seat.carrier.clone(),
-                    intents: seat.intents.clone(),
-                    models: Vec::new(),
-                },
-                authority,
-            )
-            .await;
-        let ran = matches!(served, Ok(Served::Ran(_)));
-        // Closing an unfinished producer reports a body error; Drop never manufactures END.
-        let mut state = sink
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        state.head.take();
-        state.body.take();
-        ran
-    });
-    // The listener retains this future until completion. On cancellation we close the
-    // unpublished response receivers, then join the actual blocking Task before settling.
-    // Dropping a JoinHandle cannot establish that an upstream effect stopped.
-    let head = tokio::select! {
-        biased;
-        head = &mut head_rx => Some(head),
-        () = binding.cancelled() => None,
-        () = tokio::time::sleep_until(deadline.into()) => None,
-    };
-    let Some(head) = head else {
-        drop(head_rx);
-        drop(body_rx);
-        let ran = work.await.unwrap_or(false);
-        if let Some(admitted) = pending.admitted() {
-            billing
-                .settle_admitted(&admitted.request, end_of(502, ran))
-                .map_err(|_| InputError::Invalid)?;
+                    authority,
+                )
+                .await;
+            // Closing an unfinished producer reports a body error; Drop never manufactures END.
+            let mut state = sink
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state.head.take();
+            state.body.take();
+            served
+        });
+        // The listener retains this future until completion. On cancellation we close the
+        // unpublished response receivers, then join the actual blocking Task before settling.
+        // Dropping a JoinHandle cannot establish that an upstream effect stopped.
+        let head = tokio::select! {
+            biased;
+            head = &mut head_rx => Some(head),
+            () = binding.cancelled() => None,
+            () = tokio::time::sleep_until(deadline.into()) => None,
+        };
+        let Some(head) = head else {
+            drop(head_rx);
+            drop(body_rx);
+            let ran = work
+                .await
+                .ok()
+                .and_then(Result::ok)
+                .is_some_and(|served| matches!(served.into_parts().0, Served::Ran(_)));
+            if let Some(admitted) = pending.admitted() {
+                billing
+                    .settle_admitted(&admitted.request, end_of(502, ran))
+                    .map_err(|_| InputError::Invalid)?;
+            }
+            return Err(InputError::Invalid);
+        };
+        let mut refusal = None;
+        let mut output_authority = None;
+        let (response, status, ran, work, retirement) = match head {
+            Ok((status, headers, credit)) => {
+                let mut response = Response::new(Body::new(DataBody {
+                    receiver: body_rx,
+                    ended,
+                    trailer_credit: None,
+                    failed: false,
+                }));
+                let status = StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY);
+                *response.status_mut() = status;
+                *response.headers_mut() = headers;
+                response.extensions_mut().insert(credit);
+                (response, status.as_u16(), false, Some(work), None)
+            }
+            Err(_) => {
+                let result = (&mut work)
+                    .await
+                    .ok()
+                    .and_then(Result::ok)
+                    .map(NativeServed::into_parts);
+                match result {
+                    Some((Served::Refused(refused), retirement)) => {
+                        let response = refusal_response(refused.items, &response_source)?;
+                        let status = response.status().as_u16();
+                        let physical = retirement.refuse().map_err(|_| InputError::Invalid)?;
+                        output_authority = Some(DataAuthority::Refused(physical));
+                        refusal = Some(refused.decision);
+                        (response, status, false, None, None)
+                    }
+                    result => {
+                        let (ran, retirement) = match result {
+                            Some((served, retirement)) => {
+                                (matches!(served, Served::Ran(_)), Some(retirement))
+                            }
+                            None => (false, None),
+                        };
+                        let mut response = Response::new(Body::empty());
+                        *response.status_mut() = StatusCode::BAD_GATEWAY;
+                        (response, 502, ran, None, retirement)
+                    }
+                }
+            }
+        };
+        if output_authority.is_none() && pending.execution().is_none() {
+            return Err(InputError::Invalid);
         }
-        return Err(InputError::Invalid);
-    };
-    let (response, status, ran, work) = match head {
-        Ok((status, headers, credit)) => {
-            let mut response = Response::new(Body::new(DataBody {
-                receiver: body_rx,
-                ended,
-                trailer_credit: None,
-                failed: false,
-            }));
-            let status = StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY);
-            *response.status_mut() = status;
-            *response.headers_mut() = headers;
-            response.extensions_mut().insert(credit);
-            (response, status.as_u16(), false, Some(work))
-        }
-        Err(_) => {
-            let ran = (&mut work).await.unwrap_or(false);
-            let mut response = Response::new(Body::empty());
-            *response.status_mut() = StatusCode::BAD_GATEWAY;
-            (response, 502, ran, None)
-        }
-    };
-    if pending.execution().is_none() {
-        return Err(InputError::Invalid);
+        Ok(DataResponse {
+            response,
+            authority: output_authority
+                .unwrap_or_else(|| DataAuthority::Executing(pending.clone())),
+            settlement: Some(DataSettlement {
+                authority: pending,
+                billing,
+                work,
+                retirement,
+                refusal,
+                ran,
+                status,
+                node: native_node.clone(),
+            }),
+        })
     }
-    Ok(DataResponse {
-        response,
-        authority: pending.clone(),
-        settlement: DataSettlement {
-            authority: pending,
-            billing,
-            work,
-            ran,
-            status,
-        },
+    .await;
+    result.map_err(|error| DataPrepareError::HeldNode {
+        error,
+        handle: native_node,
     })
 }
 

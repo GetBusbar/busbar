@@ -51,6 +51,7 @@ pub struct NativeAuditState {
     principal: Arc<VirtualKey>,
     binding: Arc<RequestBinding>,
     state: Mutex<State>,
+    _credit: busbar_contract::storage::StorageCredit,
 }
 
 impl NativeAuditState {
@@ -58,8 +59,13 @@ impl NativeAuditState {
         invocation: InvocationContext,
         principal: Arc<VirtualKey>,
         binding: Arc<RequestBinding>,
-    ) -> Arc<Self> {
-        Arc::new(Self {
+    ) -> Result<Arc<Self>, NativeAuditError> {
+        let credit = binding
+            .request()
+            .storage()
+            .try_reserve(std::alloc::Layout::new::<Self>().size())
+            .map_err(|_| NativeAuditError::Capacity)?;
+        Ok(Arc::new(Self {
             invocation,
             principal,
             binding,
@@ -68,7 +74,8 @@ impl NativeAuditState {
                 ctx: None,
                 admitted: None,
             }),
-        })
+            _credit: credit,
+        }))
     }
 
     pub(crate) fn take_registration(
