@@ -105,10 +105,20 @@ fn an_upstream_pin_is_held_and_a_check_this_path_cannot_hold_refuses_the_seat() 
 #[test]
 fn a_seat_reads_only_its_own_upstreams_as_targets() {
     let table: Arc<dyn Upstreams> = three();
-    let targets = upstream_targets(table);
-    assert!(targets("alpha").is_some());
-    assert!(targets("files").is_some());
-    assert!(targets("ghost").is_none());
+    let targets = upstream_targets("mcp", table);
+    assert!(targets("mcp", "mcp\u{1f}alpha").is_some());
+    assert!(targets("mcp", "mcp\u{1f}files").is_some());
+    assert!(targets("mcp", "mcp\u{1f}ghost").is_none());
+    assert!(targets("other", "mcp\u{1f}alpha").is_none());
+    assert!(targets("mcp", "other\u{1f}alpha").is_none());
+    assert!(targets("mcp", "alpha").is_none());
+    assert_eq!(
+        targets("mcp", "mcp\u{1f}alpha")
+            .unwrap()
+            .registered_upstream
+            .as_deref(),
+        Some("alpha")
+    );
 }
 
 #[test]
@@ -141,7 +151,7 @@ fn a_forward_on_a_seat_composed_from_its_upstreams_reaches_the_upstream() {
         rt.handle().clone(),
         pool.pool.clone(),
         Accept::default(),
-        upstream_targets(three()),
+        upstream_targets("mcp", three()),
     );
     let exchange = UpExchange {
         method: Some("POST".into()),
