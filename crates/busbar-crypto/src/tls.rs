@@ -81,6 +81,7 @@ impl From<TlsRefused> for TlsError {
 fn refused(e: b::Error) -> TlsRefused {
     let reason = match e {
         b::Error::Refused { reason, .. } => reason,
+        b::Error::ProviderUnavailable => "the crypto provider is unavailable",
         b::Error::Rng => "the random number generator failed",
         b::Error::Invalid(w) | b::Error::SelfTest(w) => w,
         b::Error::Mismatch => "verification failed",
