@@ -615,6 +615,12 @@ impl PendingEdit<'_> {
         }
     }
 
+    /// Test-only: replace the exact pending snapshot between a flush capture and its R ACK.
+    #[cfg(test)]
+    pub(super) fn stale_for_test(&mut self) {
+        self.entry.snapshot.revision = self.entry.snapshot.revision.saturating_add(1);
+    }
+
     pub(super) fn set_terminal(&mut self, events: Vec<RecoveryEvent>, revision: u64) {
         self.entry.snapshot.terminal = Some(events);
         self.entry.snapshot.revision = revision;

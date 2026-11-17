@@ -15,8 +15,9 @@
 // point each; see `boot.rs`.
 
 #![deny(unsafe_code)]
-// Auto-trait proofs walk SeatPool -> MemberRoute -> AuthBinding -> NativeRouteBindings -> nested
-// BTreeMaps -> SelectedCredential -> CredCache deeper than the default 128 (E0275 in govern/plane_driver).
+// The serving App graph (App -> PortSeat -> SeatPool -> auth bindings -> credential flights,
+// and the KernelServices it reaches) is deeper than the default 128 auto-trait steps when an
+// async fn proves its future Send. The graph is acyclic; the limit only admits its depth.
 #![recursion_limit = "256"]
 
 extern crate self as busbar_kernel;

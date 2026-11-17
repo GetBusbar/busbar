@@ -80,7 +80,7 @@ impl PreparePhysicalFixture for Arc<NativeDataRoute> {
     }
 }
 
-struct Owners(AtomicUsize);
+struct Owners(AtomicUsize, AtomicBool);
 impl IssuedCredentials for Owners {
     fn lookup<'a>(&'a self, _: u64, _: &'a str, _: &'a str) -> BoxFut<'a, SecureVec> {
         panic!("an identity answer must not perform issued lookup");
@@ -94,8 +94,12 @@ impl ReplayGuard for Owners {
         _: u64,
     ) -> BoxFut<'a, Result<bool, RecordsDenied>> {
         let first = self.0.fetch_add(1, Ordering::SeqCst) == 0;
+        let unavailable = self.1.load(Ordering::SeqCst);
         Box::pin(async move {
             tokio::task::yield_now().await;
+            if unavailable {
+                return Err(RecordsDenied::Unavailable);
+            }
             Ok(first)
         })
     }
@@ -393,7 +397,7 @@ fn fixture(allowed: bool) -> Fixture {
         1 << 20,
     )
     .unwrap();
-    let replay = Arc::new(Owners(AtomicUsize::new(0)));
+    let replay = Arc::new(Owners(AtomicUsize::new(0), AtomicBool::new(false)));
     let calls = Arc::new(Port {
         calls: AtomicUsize::new(0),
         not_mine: false,
@@ -461,12 +465,12 @@ fn arrival_with_fields(
         .connection
         .head(
             stream,
-            crate::inbound::Head {
-                method: "POST".into(),
-                target: "/resource".into(),
-                fields,
-                authority: String::new(),
-                query: None,
+            {
+                let mut head = crate::inbound::Head::default();
+                head.method = "POST".into();
+                head.target = "/resource".into();
+                head.fields = fields;
+                head
             },
             f.budget.try_enter(AdmissionClass::Data).unwrap(),
             Some(deadline),
@@ -605,6 +609,23 @@ async fn native_data_without_node_audit_custody_refuses_before_money_or_effects(
     assert!(!context.effects_allowed());
     assert!(binding.check_executing().is_err());
     assert!(pending.execution().is_none());
+}
+
+#[tokio::test]
+async fn native_data_replay_store_error_is_not_confirmed_duplicate() {
+    let f = fixture(true);
+    f.replay.1.store(true, Ordering::SeqCst);
+    let (request, selected, cx, _owner) = arrival(&f, 1);
+    let binding = request.binding().clone();
+    let pending = f.route.prepare_test(request, selected, cx).await.unwrap();
+    let result = pending.complete().await;
+    assert!(result.is_err());
+    assert!(
+        !matches!(result, Err(DataRefused::Replay)),
+        "an unavailable original Store claim is not a confirmed duplicate"
+    );
+    assert_eq!(f.replay.0.load(Ordering::SeqCst), 1);
+    assert!(binding.check_executing().is_err());
 }
 
 #[tokio::test]

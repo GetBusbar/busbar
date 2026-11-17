@@ -257,6 +257,8 @@ struct GatedCheckpoints {
     held: std::sync::Mutex<Vec<crate::governance::unit_checkpoint::UnitCheckpoint>>,
     refuse_remove: std::sync::atomic::AtomicBool,
     removed: std::sync::atomic::AtomicUsize,
+    // Test-only stale-flush hook: change the pending entry while its R is at the sink.
+    stale: std::sync::Mutex<Option<std::sync::Weak<GovState>>>,
 }
 
 #[async_trait::async_trait]
@@ -279,6 +281,10 @@ impl crate::governance::unit_checkpoint::UnitCheckpointSink for GatedCheckpoints
             return Err(busbar_contract::records::RecordStoreError(
                 "original R acknowledgement held".into(),
             ));
+        }
+        let stale = self.stale.lock().unwrap().take();
+        if let Some(gov) = stale.and_then(|gov| gov.upgrade()) {
+            assert!(gov.stale_pending_checkpoint_for_test(snapshot.id));
         }
         self.held
             .lock()
@@ -496,4 +502,79 @@ async fn forced_teardown_cannot_confirm_an_ordinary_receipt() {
         rig.sink.removed.load(std::sync::atomic::Ordering::SeqCst),
         0
     );
+}
+
+/// FEE-DEBT r1 source-first regression: after the hot refund and the ordinary checkpoint's
+/// actual R acknowledgement, the original fee-budget Store operation has not been
+/// acknowledged (no budget flush ran). The native fee join must remain unresolved;
+/// FeeState.completed alone only proves the hot mutations finished.
+#[tokio::test]
+async fn native_fee_join_waits_for_the_original_fee_store_operation() {
+    let rig = ordinary_rig(55).await;
+    rig.slot
+        .request_terminal(&rig.admitted, ended(502))
+        .unwrap();
+    assert!(rig.money.drive_ordinary_terminal(&rig.slot).unwrap());
+    rig.gov.flush_unit_checkpoints().await.unwrap();
+    assert!(rig.slot.checkpoint_confirmed(&rig.money).unwrap());
+    assert!(
+        !rig.slot.fee_join_complete(),
+        "the fee join completed before the original fee-budget Store operation was Applied"
+    );
+}
+
+/// Stale flush: the pending entry changes while its flushed snapshot is at the sink. The
+/// successful R for the old snapshot cannot confirm the receipt; the retained entry's own
+/// later flush confirms it once.
+#[tokio::test]
+async fn a_stale_flush_cannot_confirm_a_changed_ordinary_entry() {
+    let rig = ordinary_rig(56).await;
+    *rig.sink.stale.lock().unwrap() = Some(Arc::downgrade(&rig.gov));
+    rig.slot
+        .request_terminal(&rig.admitted, ended(200))
+        .unwrap();
+    assert!(rig.money.drive_ordinary_terminal(&rig.slot).unwrap());
+    let _ = rig.gov.flush_unit_checkpoints().await;
+    assert!(
+        !rig.slot.checkpoint_confirmed(&rig.money).unwrap(),
+        "a stale R acknowledged a changed original entry"
+    );
+    rig.gov.flush_unit_checkpoints().await.unwrap();
+    assert!(rig.slot.checkpoint_confirmed(&rig.money).unwrap());
+}
+
+/// FEE-DEBT r1 through the actual flusher: the original charge and refund net to zero inside
+/// one finite capture, so the honest result is CancelledBeforeSend, never Applied.
+#[tokio::test]
+async fn a_refunded_native_fee_settles_through_the_original_flusher() {
+    let rig = ordinary_rig(57).await;
+    rig.slot
+        .request_terminal(&rig.admitted, ended(502))
+        .unwrap();
+    assert!(rig.money.drive_ordinary_terminal(&rig.slot).unwrap());
+    rig.gov.flush_unit_checkpoints().await.unwrap();
+    assert!(!rig.slot.fee_join_complete());
+    // The trusted observer owner (the Node book in production) offers captures to the slot.
+    struct SlotOwner(Arc<crate::plane_driver::port_billing::NativeOrdinaryTerminalSlot>);
+    impl crate::governance::fee_debt::FeeDebtAssociate for SlotOwner {
+        fn associate(
+            &self,
+            capture: &Arc<crate::governance::fee_debt::FeeCapture>,
+            _: crate::governance::fee_debt::FeeCursor,
+        ) -> crate::governance::fee_debt::FeeAssociation {
+            self.0.offer_fee_capture(capture);
+            crate::governance::fee_debt::FeeAssociation::Complete
+        }
+    }
+    let owner: Arc<dyn crate::governance::fee_debt::FeeDebtAssociate> =
+        Arc::new(SlotOwner(rig.slot.clone()));
+    rig.gov.bind_fee_debt_owner(Arc::downgrade(&owner)).unwrap();
+    rig.gov.flush_budgets_final().await;
+    match rig.slot.fee_status() {
+        Some(crate::governance::fee_debt::FeeDebtStatus::Complete(receipt)) => {
+            assert_eq!(receipt.applied + receipt.cancelled_before_send, 1);
+        }
+        other => panic!("original fee debt not resolved by the flusher: {other:?}"),
+    }
+    assert!(rig.slot.fee_join_complete());
 }

@@ -426,9 +426,9 @@ criteria = "safe-to-deploy"
 notes = "ed25519-dalek 3 line (busbar's ONE Ed25519; deny.toml [bans]): replaces the exempted ed25519-dalek 2 stack to drop der 0.7/pkcs8 0.10; no imported audit covers this version yet."
 
 [[exemptions.hyper]]
-version = "1.11.1@git:5b1c5189a69c701c70221b04ff0f0a2fbcb4574c"
+version = "1.11.1@git:c140435f43477ca3ffbdb2078a5994e9dfb11969"
 criteria = "safe-to-deploy"
-notes = "DEP-5 coordinator exemption for this exact adopted fork revision: Native serializer attribution binds actual bytes to response identity and release barriers. Trusted imported audits do not cover these local deltas. Source selection and approval are recorded in house-recovery-execution/w07/SOURCE.md; remote qualification and owner-reviewed upstream publication remain required. No self-audit is claimed."
+notes = "DEP-5 coordinator exemption for the adopted fork successor c140435f: exactly 5b1c5189 plus one compile-only commit in src/proto/h1/encode.rs (chunked serialization spans read through the bytes Chain accessors); hyper manifest unchanged. Same source record as 5b1c5189 (house-recovery-execution/w07/SOURCE.md); remote qualification and owner-reviewed upstream publication remain required. No self-audit is claimed."
 
 [[exemptions.hyper-rustls]]
 version = "0.27.9"
@@ -858,9 +858,9 @@ version = "1.1.4"
 criteria = "safe-to-deploy"
 
 [[exemptions.rustls]]
-version = "0.23.46@git:a33d40bc1e034c617f566a7e2d70fef8422f43ba"
+version = "0.23.46@git:02181ad51e81f9cb33a0648117b03039274716a3"
 criteria = "safe-to-deploy"
-notes = "DEP-5 coordinator exemption for the exact adopted TLS-OUTPUT-STORAGE-392-r2 and TLS-TICKET-STORAGE-392-r2 source, including original wire progress and charged resumption buffers. Trusted imported audits do not cover these deltas. Preserve verified TLS, actual custody, remote qualification and owner review before upstream PR publication. No self-audit is claimed."
+notes = "DEP-5 coordinator exemption for the adopted fork successor 02181ad5: exactly a33d40bc plus one compile fix (rustls/src/client/ech.rs propagates the fallible PSK binder; rustls/src/server/server_conn.rs restores the server builder); manifest unchanged. Same TLS-OUTPUT-STORAGE-392-r2 / TLS-TICKET-STORAGE-392-r2 source record as a33d40bc; remote qualification and owner-reviewed upstream publication remain required. No self-audit is claimed."
 
 [[exemptions.rustls-pki-types]]
 version = "1.15.1"

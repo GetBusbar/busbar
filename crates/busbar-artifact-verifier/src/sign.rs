@@ -1074,9 +1074,25 @@ pub(crate) fn public_key_from_hex_guarded(
         .as_slice()
         .try_into()
         .map_err(|_| format!("public key must be 32 bytes, got {}", bytes.len()))?;
-    Verifier::primitive(verifier.crypto.validate_ed25519(&arr))?;
-    let key = VerifyingKey::from_facade(Verifier::primitive(verifier.crypto.import_ed25519(&arr))?);
+    Verifier::primitive(verifier.crypto.validate_ed25519(&arr)).map_err(invalid_public_key)?;
+    let key = VerifyingKey::from_facade(
+        Verifier::primitive(verifier.crypto.import_ed25519(&arr)).map_err(invalid_public_key)?,
+    );
     Ok(key)
+}
+
+/// A refused key keeps its INVALID context; an unavailable backend stays unavailable.
+fn invalid_public_key(
+    error: crate::verification::VerificationError<String>,
+) -> crate::verification::VerificationError<String> {
+    match error {
+        crate::verification::VerificationError::Refused(text) => {
+            crate::verification::VerificationError::Refused(format!(
+                "invalid ed25519 public key: {text}"
+            ))
+        }
+        unavailable => unavailable,
+    }
 }
 
 /// Why [`first_party_signer`] named no key.

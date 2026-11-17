@@ -5,7 +5,8 @@
 
 #![deny(unsafe_code)]
 #![deny(missing_docs)]
-// Send proofs over busbar-kernel futures in this crate exceed the default 128 (see busbar-kernel lib.rs).
+// Futures over the serving App's credential custody graph prove Send through more than the
+// default 128 auto-trait steps (see busbar-kernel's lib.rs); the graph is acyclic.
 #![recursion_limit = "256"]
 
 // busbar:request-path

@@ -822,7 +822,6 @@ impl App {
             port_seats,
             exports,
             root_rules,
-            // A boot assembly holds no candidate transaction reservation (see prepared_generation).
             publication_generation: None,
             config_projection,
             configured_view: None,

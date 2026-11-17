@@ -826,7 +826,7 @@ impl CommandAdmission {
             .admit_existing(
                 receipt.begin().unwrap(),
                 Arc::from([]),
-                busbar_kernel::plane_driver::money::FeeRefund::CallerStatus,
+                busbar_kernel::plane_driver::FeeRefund::CallerStatus,
                 busbar_kernel::config::groups::ExhaustionMode::FinishUnit,
             )
             .unwrap();

@@ -52,6 +52,7 @@ pub(super) fn encode_records(
                 tag::H_STATUS,
                 &U32Rec {
                     value: u32::from(status),
+                    _r: 0,
                 },
             )?;
         }

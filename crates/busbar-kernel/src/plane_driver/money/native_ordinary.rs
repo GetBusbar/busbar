@@ -12,12 +12,17 @@ use std::sync::{Arc, Mutex};
 
 pub struct NativeOrdinaryTerminalSlot {
     context: crate::host_services::InvocationContext,
+    // The original request source that funds this slot's dependent fee observer.
+    source: busbar_contract::storage::StorageSource,
     pub(super) state: Mutex<OrdinaryState>,
     _credit: StorageCredit,
 }
 
 pub(super) struct OrdinaryState {
     pub(super) request: Option<AdmittedRequest>,
+    // The original fee observer, installed with the admission so captures before the terminal
+    // transfer still reach it.
+    pub(super) fee: Option<Arc<crate::governance::fee_debt::FeeDebtObserver>>,
     pub(super) intent: Option<UnitEnd>,
     reservation: OrdinaryTerminalReservation,
     terminal: Option<OrdinaryTerminalOwner>,
@@ -43,9 +48,11 @@ impl NativeOrdinaryTerminalSlot {
             OrdinaryTerminalReservation::reserve(source).map_err(NativeAdmissionError::Custody)?;
         Ok(Arc::new(Self {
             context: context.clone(),
+            source: source.clone(),
             state: Mutex::new(OrdinaryState {
                 request: None,
                 intent: None,
+                fee: None,
                 reservation,
                 terminal: None,
             }),
@@ -177,7 +184,10 @@ impl PlaneMoney {
             && !removed.ledgered
             && removed.last.iter().all(|unit| unit.amount == 0)
         {
-            self.gov.release_request(&removed.money.charge);
+            self.gov.release_request_observed(
+                &removed.money.charge,
+                removed.fee.account.observer.as_deref(),
+            );
         }
         drop(removed);
         Ok(true)
@@ -216,5 +226,44 @@ impl NativeOrdinaryTerminalSlot {
             .terminal
             .as_ref()
             .map(|owner| Arc::clone(&owner.money.classes))
+    }
+}
+
+impl NativeOrdinaryTerminalSlot {
+    /// Whether the whole original fee target set has its FEE-DEBT r1 receipt: the original
+    /// parent/child fee decision completed AND every target is Applied or honestly
+    /// CancelledBeforeSend. Hot FeeAccount completion alone is never sufficient.
+    pub fn fee_join_complete(&self) -> bool {
+        matches!(
+            self.fee_status(),
+            Some(crate::governance::fee_debt::FeeDebtStatus::Complete(_))
+        )
+    }
+
+    /// The typed original fee receipt; None before the single transfer or without an observer.
+    pub fn fee_status(&self) -> Option<crate::governance::fee_debt::FeeDebtStatus> {
+        let state = locked(&self.state);
+        let owner = state.terminal.as_ref()?;
+        let observer = state.fee.as_ref()?;
+        if locked(&owner.fee.state).completed.is_none() {
+            return Some(crate::governance::fee_debt::FeeDebtStatus::Pending);
+        }
+        Some(observer.status())
+    }
+
+    /// Offer one original flush capture to this slot's observer (Node association callback).
+    pub fn offer_fee_capture(&self, capture: &Arc<crate::governance::fee_debt::FeeCapture>) {
+        let observer = locked(&self.state).fee.clone();
+        if let Some(observer) = observer {
+            observer.offer(capture);
+        }
+    }
+
+    pub(crate) fn fee_observer(&self) -> Option<Arc<crate::governance::fee_debt::FeeDebtObserver>> {
+        locked(&self.state).fee.clone()
+    }
+
+    pub(super) fn source(&self) -> &busbar_contract::storage::StorageSource {
+        &self.source
     }
 }

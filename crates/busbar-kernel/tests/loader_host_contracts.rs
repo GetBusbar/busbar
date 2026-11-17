@@ -3,6 +3,9 @@
 // Send proofs over busbar-kernel futures exceed the default 128 (see busbar-kernel lib.rs).
 #![recursion_limit = "256"]
 // Actual KernelServices controls relocated from the deleted conformance Host simulator.
+// Futures over the serving App's credential custody graph prove Send through more than the
+// default 128 auto-trait steps (see busbar-kernel's lib.rs); the graph is acyclic.
+#![recursion_limit = "256"]
 use busbar_contract::abi::host::service::MAX_RANDOM_FILL;
 use busbar_contract::abi::mechanism::{call::Outcome, KindCode};
 use busbar_contract::abi::plane::{RecordChain, CHAIN_LENGTH_PREFIXED};
