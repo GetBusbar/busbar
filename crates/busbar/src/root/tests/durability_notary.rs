@@ -55,6 +55,7 @@ async fn notarised(every_ms: u64) -> (NativeFixture, Arc<Mutex<Durability>>, Not
         journal,
         feed,
         signers.live,
+        None,
     );
     (fixture, book, task)
 }
@@ -289,6 +290,7 @@ async fn clean_stop_stamps_a_final_page() {
         journal,
         feed,
         signers.live,
+        None,
     );
     let end = task.stop().await.unwrap();
     assert_eq!(end.committed_through, 12);

@@ -86,7 +86,7 @@ impl AuditServices {
     /// `audit.seal_every` and SHUTDOWN-HANG's drain clock, and its 1 s watch. Returns whether this
     /// call started it.
     pub(crate) fn start_notary(&self, every_ms: u64, clock: Arc<DrainClock>) -> bool {
-        let _ = self.clock.set(clock);
+        let _ = self.clock.set(Arc::clone(&clock));
         let Some(Unstarted { live, threads }) = self
             .unstarted
             .lock()
@@ -106,6 +106,7 @@ impl AuditServices {
             Arc::clone(&self.journal),
             Arc::clone(&self.feed),
             live,
+            Some(clock),
         );
         let progress = Arc::clone(task.progress());
         let stall_after_ms = task.stall_after_ms();

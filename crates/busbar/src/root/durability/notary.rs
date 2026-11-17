@@ -201,6 +201,7 @@ struct Notary {
     parked: bool,
     halted: Option<String>,
     stopping: bool,
+    drain_clock: Option<Arc<busbar_kernel::governance::drain::DrainClock>>,
 }
 
 /// START THE NOTARY on the current runtime (the control runtime, from boot).
@@ -210,6 +211,7 @@ pub(crate) fn spawn(
     journal: Arc<RuntimeJournal>,
     feed: Arc<HeadFeed>,
     live: SignerHandle<Live>,
+    drain_clock: Option<Arc<busbar_kernel::governance::drain::DrainClock>>,
 ) -> NotaryTask {
     let every_ms = cfg.every_ms.clamp(1, 1_000);
     let cfg = NotaryConfig { every_ms, ..cfg };
@@ -246,6 +248,7 @@ pub(crate) fn spawn(
         parked: false,
         halted: None,
         stopping: false,
+        drain_clock,
     };
     let exited = Arc::new(AtomicBool::new(false));
     let flag = ExitFlag(Arc::clone(&exited));
@@ -335,7 +338,7 @@ impl Notary {
     /// so pages stay contiguous and never overlap. The drain detaches this task at its cut.
     async fn final_page(&mut self) -> Option<bool> {
         if let Some(signing) = self.signing.take() {
-            let _ = tokio::time::timeout_at(signing.deadline, signing.rx).await;
+            let _ = self.final_sign(signing.deadline, signing.rx).await;
         }
         if self.halted.is_some() {
             return None;
@@ -343,6 +346,9 @@ impl Notary {
         let head = self.feed.head();
         if head.seq <= self.committed_through {
             return None;
+        }
+        if self.seal_cut_expired() {
+            return Some(false);
         }
         let stamp = Stamp {
             node: self.cfg.node,
@@ -363,9 +369,9 @@ impl Notary {
             signature: Vec::new(),
         };
         let signed = match self.live.submit(stamp) {
-            Ok(rx) => match tokio::time::timeout(SIGN_DEADLINE, rx).await {
-                Ok(Ok(Ok(stamp))) => stamp,
-                _ => return Some(false),
+            Ok(rx) => match self.final_sign(Instant::now() + SIGN_DEADLINE, rx).await {
+                Some(stamp) => stamp,
+                None => return Some(false),
             },
             Err(_) => return Some(false),
         };
@@ -373,6 +379,9 @@ impl Notary {
             return Some(false);
         };
         let entry = Entry::new(RecordClass::Transaction, body).at(signed.stamped_ms / 1000, 0);
+        if self.seal_cut_expired() {
+            return Some(false);
+        }
         match self.journal.stage_run(&[entry]) {
             Ok(_) => {
                 self.committed_through = head.seq;
@@ -390,6 +399,40 @@ impl Notary {
                 }
                 Some(false)
             }
+        }
+    }
+
+    fn seal_cut_expired(&self) -> bool {
+        self.drain_clock.as_ref().is_some_and(|clock| {
+            clock.expired()
+                || clock.armed_at().is_some_and(|at| {
+                    Instant::now() >= clock.limit(at, busbar_kernel::governance::drain::Cut::Seal)
+                })
+        })
+    }
+
+    /// Both the discarded live job and the final job share the seal phase's remaining time.
+    /// A second shutdown signal ends the wait as well; detachment never grants a later stage.
+    async fn final_sign(
+        &self,
+        deadline: Instant,
+        rx: oneshot::Receiver<Result<Stamp, SignFailure>>,
+    ) -> Option<Stamp> {
+        if self.seal_cut_expired() {
+            return None;
+        }
+        if let Some(clock) = &self.drain_clock {
+            let deadline = clock.armed_at().map_or(deadline, |at| {
+                deadline.min(clock.limit(at, busbar_kernel::governance::drain::Cut::Seal))
+            });
+            let mut expired = clock.expired_rx();
+            tokio::select! {
+                biased;
+                _ = expired.wait_for(|value| *value) => None,
+                result = tokio::time::timeout_at(deadline, rx) => result.ok()?.ok()?.ok(),
+            }
+        } else {
+            tokio::time::timeout_at(deadline, rx).await.ok()?.ok()?.ok()
         }
     }
 
