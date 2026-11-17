@@ -70,13 +70,17 @@ pub fn with_idempotency(
     router: axum::Router,
     app: std::sync::Arc<busbar_kernel::state::App>,
 ) -> axum::Router {
+    let handle = std::sync::Arc::new(busbar_kernel::state::AppHandle::new(app));
     router
+        .route(
+            "/api/v1/admin/operations/{key}",
+            axum::routing::get(crate::v1::json::generation::get_operation)
+                .with_state(handle.clone()),
+        )
         .layer(axum::middleware::from_fn(
             crate::v1::json::generation::preconditions,
         ))
-        .layer(axum::Extension(std::sync::Arc::new(
-            busbar_kernel::state::AppHandle::new(app),
-        )))
+        .layer(axum::Extension(handle))
 }
 
 #[cfg(feature = "openapi-schema")]

@@ -57,6 +57,7 @@ struct Store {
     fail_refresh_after_write: AtomicBool,
     fail_list: AtomicBool,
     refuse_write: AtomicBool,
+    refuse_replay: AtomicBool,
 }
 
 impl Store {
@@ -74,6 +75,7 @@ impl Store {
             fail_refresh_after_write: AtomicBool::new(false),
             fail_list: AtomicBool::new(false),
             refuse_write: AtomicBool::new(false),
+            refuse_replay: AtomicBool::new(false),
         })
     }
 }
@@ -148,6 +150,9 @@ impl PersistenceBackend for Store {
                 }
                 _ => false,
             });
+            if replay && self.refuse_replay.load(Ordering::SeqCst) {
+                return Err(Failure::Refused);
+            }
             let answer = self.inner.commit(candidate, commit_key).await?;
             if matches!(answer, Decision::Applied(_)) {
                 if claim {
@@ -956,6 +961,47 @@ async fn a_store_error_cannot_spoof_the_typed_committed_mint_outcome() {
         .await,
         Err(busbar_core_admin::idempotency::durable::Refused::InFlight)
     ));
+    println!("custody assertions completed");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn unknown_effect_receipt_refusal_prevents_handler_dispatch() {
+    if isolated() {
+        return;
+    }
+    use std::sync::atomic::AtomicUsize;
+    use tower::ServiceExt as _;
+
+    let (store, handle, _router, _book) = app().await;
+    store.refuse_replay.store(true, Ordering::SeqCst);
+    let effects = Arc::new(AtomicUsize::new(0));
+    let handler_effects = effects.clone();
+    let effect = axum::Router::new().route(
+        "/api/v1/admin/receipt-before-effect",
+        axum::routing::post(move || {
+            let effects = handler_effects.clone();
+            async move {
+                effects.fetch_add(1, Ordering::SeqCst);
+                StatusCode::OK
+            }
+        }),
+    );
+    let router = busbar_core_admin::test_support::with_idempotency(effect, handle.load());
+    let request = || {
+        axum::http::Request::builder()
+            .method("POST")
+            .uri("/api/v1/admin/receipt-before-effect")
+            .header("idempotency-key", "receipt-refused")
+            .body(axum::body::Body::from("exact request"))
+            .unwrap()
+    };
+    let response = router.clone().oneshot(request()).await.unwrap();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(effects.load(Ordering::SeqCst), 0);
+    store.refuse_replay.store(false, Ordering::SeqCst);
+    let retry = router.oneshot(request()).await.unwrap();
+    assert_eq!(retry.status(), StatusCode::CONFLICT);
+    assert_eq!(effects.load(Ordering::SeqCst), 0);
     println!("custody assertions completed");
 }
 

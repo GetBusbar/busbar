@@ -413,3 +413,68 @@ async fn operations_lookup() {
         "a caller sees only its own keys"
     );
 }
+
+#[tokio::test]
+async fn retained_operation_lookup_survives_expiry_and_unrelated_cleanup() {
+    let now = busbar_kernel::store::now();
+    let old = now.saturating_sub(IDEMPOTENCY_TTL_SECS * 3);
+    let store = durable_store().await;
+    let k = key("alice", "op:retained-lookup");
+    let claim = durable::claim_held(store.as_ref(), &k, old).await.unwrap();
+    let receipt = b"exact non-secret intent and fingerprint".to_vec();
+    durable::settle(
+        store.as_ref(),
+        &claim,
+        old,
+        &Settled::Retained(receipt.clone()),
+    )
+    .await
+    .unwrap();
+    let other = durable::claim(store.as_ref(), &key("alice", "unrelated-cleanup"), now)
+        .await
+        .unwrap();
+    durable::settle(store.as_ref(), &other, now, &Settled::Answer(vec![1]))
+        .await
+        .unwrap();
+    assert_eq!(
+        durable::claim_held(store.as_ref(), &k, now).await,
+        Err(Refused::Retained(receipt)),
+        "elapsed time and unrelated cleanup cannot authorize another effect"
+    );
+    assert!(
+        durable::lookup(store.as_ref(), &k, now)
+            .await
+            .unwrap()
+            .is_some(),
+        "the unresolved operation remains discoverable after completed-answer retention"
+    );
+}
+
+#[tokio::test]
+async fn held_operation_lookup_follows_the_current_generation() {
+    let now = busbar_kernel::store::now();
+    let store = durable_store().await;
+    let k = key("alice", "op:held-generation-lookup");
+    let first = durable::claim_held(store.as_ref(), &k, now).await.unwrap();
+    durable::settle(store.as_ref(), &first, now, &Settled::Released)
+        .await
+        .unwrap();
+    let next = durable::claim_held(store.as_ref(), &k, now + 1)
+        .await
+        .unwrap();
+    durable::settle(store.as_ref(), &next, now + 1, &Settled::Answer(vec![4, 2]))
+        .await
+        .unwrap();
+    assert_eq!(
+        durable::lookup(store.as_ref(), &k, now + 2).await,
+        Ok(Some(durable::Looked::Done {
+            answer: vec![4, 2],
+            completed_at: now + 1
+        }))
+    );
+    assert_eq!(
+        durable::lookup(store.as_ref(), &k, now + IDEMPOTENCY_TTL_SECS * 2).await,
+        Ok(None),
+        "completed held answers keep the ordinary retention boundary"
+    );
+}
