@@ -3,8 +3,10 @@
 
 //! `ir::facts` — THE ONE PROJECTION. What the shared pipeline is allowed to know about a request,
 
+use crate::json::Value;
 use crate::operation::OpVerb;
-use serde_json::Value;
+use crate::secret_json::SecretJson;
+use crate::secure::SecureVec;
 use std::borrow::Cow;
 
 /// Fixed non-content marker substituted for content busbar cannot read. Busbar cannot decrypt
@@ -52,8 +54,15 @@ impl Slot {
 }
 
 /// The JSON document a [`ContentItem::Data`] item carries: structured content (tool arguments, a
-/// door's projected body) as the IR exposes it to a screening hook.
-pub type DataValue = Value;
+/// door's projected body) as the IR exposes it to a screening hook, borrowed from the IR.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum DataRef<'a> {
+    /// A public tree (a tool result member, a plane's own projection): shown as its rendering.
+    Tree(&'a Value),
+    /// Secret-bearing text in custody (an invocation's arguments): shown as the text itself, so no
+    /// rendered copy of it is ever made.
+    Text(&'a SecretJson),
+}
 
 /// One content item, borrowed. The shared pipeline walks these; it never knows which protocol
 /// produced them and never downcasts.
@@ -77,13 +86,13 @@ pub enum ContentItem<'a> {
         text: Cow<'a, str>,
     },
     /// A structured payload: a tool call's arguments, or a structured tool-result member. Carried as
-    /// the `Value` itself rather than pre-serialized, so a consumer that wants to walk it can, and
+    /// the document itself rather than pre-serialized, so a consumer that wants to walk it can, and
     /// one that wants text calls [`ContentItem::screenable_text`].
     Data {
         author: &'static str,
         slot: Slot,
         label: &'a str,
-        value: &'a Value,
+        value: DataRef<'a>,
     },
     /// Content busbar cannot read. `marker` stands in for it; the bytes never leave the IR.
     Opaque {
@@ -117,11 +126,18 @@ impl ContentItem<'_> {
     pub fn screenable_text(&self) -> Cow<'_, str> {
         match self {
             ContentItem::Text { text, .. } => Cow::Borrowed(text.as_ref()),
-            ContentItem::Data { value, .. } => {
+            ContentItem::Data {
+                value: DataRef::Tree(value),
+                ..
+            } => {
                 #[cfg(test)]
                 DATA_RENDERS.with(|c| c.set(c.get() + 1));
                 Cow::Owned(value.to_string())
             }
+            ContentItem::Data {
+                value: DataRef::Text(text),
+                ..
+            } => Cow::Borrowed(text.as_json()),
             ContentItem::Opaque { marker, .. } => Cow::Borrowed(marker),
         }
     }
@@ -133,7 +149,7 @@ impl ContentItem<'_> {
 
     /// [`Self::screening_digest`] over an ALREADY-RENDERED text — the body of the digest, so a
     pub fn digest_of(&self, text: &str) -> String {
-        fn framed(buf: &mut Vec<u8>, bytes: &[u8]) {
+        fn framed(buf: &mut SecureVec, bytes: &[u8]) {
             buf.extend_from_slice(&(bytes.len() as u64).to_be_bytes());
             buf.extend_from_slice(bytes);
         }
@@ -151,7 +167,11 @@ impl ContentItem<'_> {
         };
         let author = self.author();
 
-        let mut buf = Vec::with_capacity(5 * 8 + 1 + 1 + 8 + author.len() + text.len());
+        // The text is content (an invocation's arguments, verbatim): its framed copy is held in
+        // custody and wiped when the digest is made. A buffer that cannot be had at its exact size
+        // up front grows (wiping each block it leaves) as `Vec` would.
+        let mut buf = SecureVec::with_capacity(5 * 8 + 1 + 1 + 8 + author.len() + text.len())
+            .unwrap_or_default();
         framed(&mut buf, &[variant]);
         framed(&mut buf, &[slot_kind]);
         framed(&mut buf, &slot_idx.to_be_bytes());
@@ -277,7 +297,14 @@ impl Shape {
         let mut system_chars = 0usize;
         for item in items {
             let n = match item {
-                ContentItem::Data { value, .. } => {
+                ContentItem::Data {
+                    value: DataRef::Text(text),
+                    ..
+                } => text.as_json().chars().count(),
+                ContentItem::Data {
+                    value: DataRef::Tree(value),
+                    ..
+                } => {
                     use std::fmt::Write as _;
                     struct CharCount(usize);
                     impl std::fmt::Write for CharCount {

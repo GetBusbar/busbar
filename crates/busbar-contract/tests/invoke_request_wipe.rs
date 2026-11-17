@@ -14,9 +14,9 @@ use std::sync::Arc;
 use std::task::{Context, Poll, Waker};
 
 use busbar_contract::ir::invoke::InvokeReq;
-use busbar_contract::ir::SourceScopedExtra;
-use busbar_contract::secure::SecureString;
-use serde_json::{Map, Value};
+use busbar_contract::{
+    ir::invoke::SecretScopedExtra, secret_json::SecretJson, secure::SecureString,
+};
 
 #[allow(dead_code)]
 #[path = "../../busbar-plugin-test/src/canary_scan.rs"]
@@ -30,40 +30,26 @@ static ALLOCATOR: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
 /// A request whose string `field` holds `secret` (its only copy); every other string is plain.
 fn request(field: &str, secret: &str) -> InvokeReq {
-    let pick = |name: &str, plain: &str| {
-        if field == name {
-            secret.to_owned()
-        } else {
-            plain.to_owned()
-        }
-    };
-    let mut nested = Map::new();
-    nested.insert(
-        pick("nested-name", "private-nested-name"),
-        Value::String(pick("nested-value", "private-nested-value")),
-    );
-    let mut arguments = Map::new();
-    arguments.insert(
-        pick("argument-name", "private-argument-name"),
-        Value::Array(vec![
-            Value::String(pick("argument-value", "private-argument-value")),
-            Value::Object(nested),
-        ]),
-    );
+    let pick = |name: &str, plain: &'static str| if field == name { secret } else { plain };
+    let arguments = SecureString::from_args(format_args!(
+        r#"{{"{an}":["{av}",{{"{nn}":"{nv}"}}]}}"#,
+        an = pick("argument-name", "private-argument-name"),
+        av = pick("argument-value", "private-argument-value"),
+        nn = pick("nested-name", "private-nested-name"),
+        nv = pick("nested-value", "private-nested-value"),
+    ));
+    let value = SecureString::from_args(format_args!(
+        r#""{ev}""#,
+        ev = pick("extra-value", "private-extra-value"),
+    ));
     InvokeReq {
-        tool: pick("tool", "private-tool"),
-        arguments: Value::Object(arguments),
-        extra: [(
-            pick("extra-source", "private-source"),
-            [(
-                pick("extra-name", "private-extra-name"),
-                Value::String(pick("extra-value", "private-extra-value")),
-            )]
-            .into_iter()
-            .collect(),
-        )]
-        .into_iter()
-        .collect(),
+        tool: pick("tool", "private-tool").to_owned(),
+        arguments: SecretJson::from_secure(arguments.into_bytes()).expect("a valid document"),
+        extra: SecretScopedExtra::from_iter([(
+            pick("extra-source", "private-source").to_owned(),
+            pick("extra-name", "private-extra-name").to_owned(),
+            SecretJson::from_secure(value.into_bytes()).expect("a valid document"),
+        )]),
     }
 }
 
@@ -179,29 +165,26 @@ const EXITS: [&str; 6] = ["return", "failure", "cancel", "clone", "shared", "tra
 
 /// The arguments (or an extra value) a JSON text in custody reads as. The text is the only place
 /// the caller put the secret; it is wiped when dropped here.
-fn secret_json(text: SecureString) -> Value {
-    serde_json::from_slice(text.as_bytes()).expect("a valid fixture document")
+fn secret_json(text: SecureString) -> SecretJson {
+    SecretJson::from_secure(text.into_bytes()).expect("a valid fixture document")
 }
 
 /// Extras built one `(source, name, value)` at a time, as a reader adds them.
-fn extra_inserted(entries: Vec<(String, String, Value)>) -> SourceScopedExtra {
-    let mut extra = SourceScopedExtra::new();
+fn extra_inserted(entries: Vec<(String, String, SecretJson)>) -> SecretScopedExtra {
+    let mut extra = SecretScopedExtra::default();
     for (source, name, value) in entries {
-        extra.entry(source).or_default().insert(name, value);
+        extra.insert(source, name, value);
     }
     extra
 }
 
 /// Extras collected from `(source, name, value)` entries.
-fn extra_collected(entries: Vec<(String, String, Value)>) -> SourceScopedExtra {
-    entries
-        .into_iter()
-        .map(|(source, name, value)| (source, [(name, value)].into_iter().collect()))
-        .collect()
+fn extra_collected(entries: Vec<(String, String, SecretJson)>) -> SecretScopedExtra {
+    entries.into_iter().collect()
 }
 
 /// A request with these arguments and extras; its tool name is plain.
-fn request_of(arguments: Value, extra: SourceScopedExtra) -> InvokeReq {
+fn request_of(arguments: SecretJson, extra: SecretScopedExtra) -> InvokeReq {
     InvokeReq {
         tool: "private-tool".to_owned(),
         arguments,
@@ -333,7 +316,7 @@ fn a_wide_object_of_short_keys_is_wiped_on_every_exit() {
             let staging = proof.text_payload();
             let request = request_of(
                 secret_json(wide_arguments(&staging, in_key)),
-                SourceScopedExtra::default(),
+                SecretScopedExtra::default(),
             );
             drop(staging);
             leave(exit, request, &mut proof);
@@ -362,7 +345,7 @@ fn escaped_argument_strings_are_wiped() {
                 SecureString::from_args(format_args!(r#"{{"plain-name":"{}"}}"#, canary.as_str()))
             };
             drop(canary);
-            let request = request_of(secret_json(text), SourceScopedExtra::default());
+            let request = request_of(secret_json(text), SecretScopedExtra::default());
             proof.assert_held(&format!("{what}: the request holds it"));
             drop(request);
             proof.assert_absent(&what);
@@ -414,7 +397,7 @@ fn escaped_extra_values_and_overridden_duplicates_are_wiped() {
             canary.as_str()
         ));
         drop(canary);
-        let request = request_of(secret_json(text), SourceScopedExtra::default());
+        let request = request_of(secret_json(text), SecretScopedExtra::default());
         drop(request);
         proof.assert_absent(&what);
     }
@@ -424,7 +407,7 @@ fn escaped_extra_values_and_overridden_duplicates_are_wiped() {
 /// is not kept; it must be wiped too.
 #[test]
 fn duplicate_extra_keys_are_wiped_at_both_levels() {
-    type Build = fn(Vec<(String, String, Value)>) -> SourceScopedExtra;
+    type Build = fn(Vec<(String, String, SecretJson)>) -> SecretScopedExtra;
     let builds: [(&str, Build); 2] = [("insert", extra_inserted), ("collect", extra_collected)];
     for (how, build) in builds {
         for short in [false, true] {
@@ -501,7 +484,7 @@ fn screening_an_invocation_leaves_no_argument_copy() {
         let staging = proof.text_payload();
         let text = SecureString::from_args(format_args!(r#"{{"credential":"{}"}}"#, &*staging));
         drop(staging);
-        let request = request_of(secret_json(text), SourceScopedExtra::default());
+        let request = request_of(secret_json(text), SecretScopedExtra::default());
         let items = request.content();
         let shown = items[0].screenable_text().chars().count();
         let shape = request.shape();
@@ -541,4 +524,135 @@ fn a_sonic_map_of_short_keys_keeps_inline_copies_after_drop() {
         proof.canary_copies("a dropped sonic map of short keys") >= 1,
         "sonic kept no inline copy of a short key: DES-SONIC-WIPE §2's premise changed"
     );
+}
+
+/// V-1: reading arguments on demand (a view walked to the canary, a string taken into custody, a
+/// typed borrowed decode, an egress copy) leaves no copy once the readers and the request drop.
+/// One member keeps an escape in canonical form, so its view is decoded into the arena.
+#[test]
+fn reading_secret_arguments_on_demand_leaves_no_copy() {
+    use busbar_contract::json::BorrowedRaw;
+    use busbar_contract::secret_json::JsonView;
+    use busbar_contract::secure::SecureVec;
+    use std::collections::BTreeMap;
+    for short in [false, true] {
+        let what = format!("on-demand reads (short: {short})");
+        let mut proof = if short {
+            WipeProof::short_text()
+        } else {
+            WipeProof::text()
+        };
+        let staging = proof.text_payload();
+        let request = request_of(
+            secret_json(SecureString::from_args(format_args!(
+                r#"{{"escaped":"\"{canary}","list":[1,"x"],"plain":"{canary}"}}"#,
+                canary = staging.as_str()
+            ))),
+            SecretScopedExtra::default(),
+        );
+
+        let mut arena = SecureVec::new();
+        let view = request
+            .arguments
+            .view(&mut arena)
+            .expect("a document in custody reads");
+        assert!(
+            matches!(view.pointer("/plain"), Some(JsonView::Str(text)) if *text == staging.as_str())
+        );
+        assert!(
+            matches!(view.pointer("/escaped"), Some(JsonView::Str(text)) if text.ends_with(staging.as_str()))
+        );
+        assert!(matches!(
+            view.pointer("/list/0"),
+            Some(JsonView::Number("1"))
+        ));
+        assert!(matches!(view.pointer("/list/1"), Some(JsonView::Str("x"))));
+        drop(view);
+
+        let taken = request
+            .arguments
+            .take_str("/plain")
+            .expect("a string member");
+        assert_eq!(taken.as_str(), staging.as_str());
+        drop(staging);
+
+        let mut decoded = SecureVec::new();
+        let members: BTreeMap<&str, BorrowedRaw<'_>> = request
+            .arguments
+            .decode(&mut decoded)
+            .expect("an object of members");
+        assert_eq!(members.len(), 3);
+        drop(members);
+
+        let mut egress = SecureVec::new();
+        request.arguments.write_into(&mut egress);
+        assert_eq!(&egress[..], request.arguments.as_json().as_bytes());
+
+        proof.assert_held(&format!("{what}: the readers and the request hold it"));
+        drop((taken, egress, decoded, arena));
+        drop(request);
+        proof.assert_absent(&what);
+    }
+}
+
+/// F-1: text refused on the way into custody (truncated, trailing bytes, too deep, not UTF-8) is
+/// wiped, and the refusal never quotes it.
+#[test]
+fn refused_secret_text_is_wiped_and_never_quoted() {
+    use busbar_contract::json::MAX_JSON_DEPTH;
+    use busbar_contract::secret_json::SecretJsonError;
+    use busbar_contract::secure::SecureVec;
+    for short in [false, true] {
+        for case in ["truncated", "trailing", "too deep", "not UTF-8"] {
+            let what = format!("a refused document, {case} (short: {short})");
+            let proof = if short {
+                WipeProof::short_text()
+            } else {
+                WipeProof::text()
+            };
+            let staging = proof.text_payload();
+            let mut text = SecureVec::new();
+            match case {
+                "truncated" => {
+                    text.extend_from_slice(br#"{"k":""#);
+                    text.extend_from_slice(staging.as_bytes());
+                }
+                "trailing" => {
+                    text.extend_from_slice(br#"{"k":""#);
+                    text.extend_from_slice(staging.as_bytes());
+                    text.extend_from_slice(br#""} x"#);
+                }
+                "too deep" => {
+                    for _ in 0..=MAX_JSON_DEPTH {
+                        text.extend_from_slice(b"[");
+                    }
+                    text.extend_from_slice(b"\"");
+                    text.extend_from_slice(staging.as_bytes());
+                    text.extend_from_slice(b"\"");
+                    for _ in 0..=MAX_JSON_DEPTH {
+                        text.extend_from_slice(b"]");
+                    }
+                }
+                _ => {
+                    text.extend_from_slice(br#"{"k":""#);
+                    text.extend_from_slice(staging.as_bytes());
+                    text.extend_from_slice(b"\xff\"}");
+                }
+            }
+            let refused = SecretJson::from_secure(text).expect_err("the document is refused");
+            assert_eq!(
+                matches!(refused, SecretJsonError::TooDeep),
+                case == "too deep",
+                "{case}: {refused}"
+            );
+            let shown = format!("{refused} {refused:?}");
+            assert!(
+                !shown.contains(staging.as_str()),
+                "{what}: the refusal quotes the input"
+            );
+            drop(shown);
+            drop(staging);
+            proof.assert_absent(&what);
+        }
+    }
 }

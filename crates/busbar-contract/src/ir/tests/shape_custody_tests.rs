@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use super::{ContentItem, Shape, Slot};
-use serde_json::json;
+use super::{ContentItem, DataRef, Shape, Slot};
+use crate::json::json;
 use std::borrow::Cow;
 use std::cell::Cell;
 
@@ -36,7 +36,7 @@ fn shape_counting_does_not_retire_cleartext_argument_copies() {
         author: "caller",
         slot: Slot::ToolArgs(0),
         label: "arguments",
-        value: &secret,
+        value: DataRef::Tree(&secret),
     };
     let expected = secret.to_string().chars().count();
     EXPOSED.with(|exposed| exposed.set(false));
@@ -71,7 +71,7 @@ fn shape_counts_keep_compact_json_unicode_and_system_semantics() {
                 author: "caller",
                 slot: Slot::System,
                 label: "",
-                value: &value,
+                value: DataRef::Tree(&value),
             },
             ContentItem::Text {
                 author: "caller",
@@ -88,4 +88,40 @@ fn shape_counts_keep_compact_json_unicode_and_system_semantics() {
         assert_eq!(Shape::counts_over(&items), (expected + 2 + 6, expected));
         assert_eq!(value.to_string().chars().count(), expected);
     }
+}
+
+/// The `DataRef::Text` twin of `shape_counting_does_not_retire_cleartext_argument_copies`: an
+/// invocation's arguments are text in custody, and counting them over the invocation's own content
+/// projection makes no copy either.
+#[test]
+fn shape_counting_does_not_retire_cleartext_copies_of_secret_text_arguments() {
+    use crate::ir::facts::IrFacts as _;
+    let secret = json!({"credential": "shape-private-credential", "nested": ["私密🔑", "\n\""]});
+    let request = crate::ir::invoke::InvokeReq {
+        tool: "lookup".to_owned(),
+        arguments: crate::secret_json::SecretJson::from_public(&secret).expect("a public fixture"),
+        extra: Default::default(),
+    };
+    let items = request.content();
+    assert!(matches!(
+        items[0],
+        ContentItem::Data {
+            value: DataRef::Text(_),
+            ..
+        }
+    ));
+    let expected = secret.to_string().chars().count();
+    EXPOSED.with(|exposed| exposed.set(false));
+    WATCH.with(|watch| watch.set(true));
+    let watch = Watch;
+    assert_eq!(Shape::counts_over(&items), (expected, 0));
+    drop(watch);
+    assert!(
+        !EXPOSED.with(Cell::get),
+        "counting retired an unwiped argument copy"
+    );
+    assert_eq!(
+        request.arguments.take_str("/credential").as_deref(),
+        Some("shape-private-credential")
+    );
 }

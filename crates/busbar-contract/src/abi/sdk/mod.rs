@@ -619,6 +619,9 @@ pub mod expiry;
 /// The settings documents as configure-time code reads them (re-exported by each kind's module).
 pub mod settings;
 
+/// The serde_json readers the settings and lifecycle code above parse with (deleted with `abi/`).
+pub(crate) mod typed_json;
+
 pub mod migrate;
 
 // busbar:request-path

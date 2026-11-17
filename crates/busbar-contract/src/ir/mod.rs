@@ -9,11 +9,11 @@ pub mod invoke;
 pub mod neutral_handles;
 pub mod subscribe;
 
-use serde_json::{Map, Value};
+use crate::json::Map;
 use std::collections::BTreeMap;
 
 /// Request/response extras NAMESPACED BY SOURCE PROTOCOL. Outer key = source protocol name, inner
-pub type SourceScopedExtra = BTreeMap<String, Map<String, Value>>;
+pub type SourceScopedExtra = BTreeMap<String, Map>;
 
 #[cfg(test)]
 #[path = "tests/source_scoped_extra_tests.rs"]

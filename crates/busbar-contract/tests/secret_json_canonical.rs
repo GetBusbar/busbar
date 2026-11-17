@@ -10,6 +10,8 @@
 
 use busbar_contract::ir::facts::IrFacts as _;
 use busbar_contract::ir::invoke::InvokeReq;
+use busbar_contract::secret_json::{JsonView, SecretJson};
+use busbar_contract::secure::SecureVec;
 
 /// `(input, canonical text)`.
 const CORPUS: &[(&str, &str)] = &[
@@ -56,13 +58,13 @@ const CORPUS: &[(&str, &str)] = &[
 ];
 
 /// The arguments `input` reads as.
-fn arguments(input: &str) -> serde_json::Value {
-    serde_json::from_slice(input.as_bytes()).expect("a valid corpus document")
+fn arguments(input: &str) -> SecretJson {
+    SecretJson::from_secure(SecureVec::from(input.as_bytes())).expect("a valid corpus document")
 }
 
 /// The canonical text of `input`.
 fn canonical(input: &str) -> String {
-    serde_json::to_string(&arguments(input)).expect("a written document")
+    arguments(input).as_json().to_owned()
 }
 
 #[test]
@@ -88,4 +90,16 @@ fn an_invocation_is_screened_and_counted_over_its_canonical_text() {
             "{input}"
         );
     }
+}
+
+/// A view borrows every string; one handed over as an owned copy (here by a deserializer that
+/// owns its text) is refused, never kept.
+#[test]
+fn a_view_refuses_strings_handed_over_owned() {
+    use serde::de::value::{Error, StrDeserializer, StringDeserializer};
+    use serde::de::{Deserialize as _, IntoDeserializer as _};
+    let owned: StringDeserializer<Error> = String::from("an owned copy").into_deserializer();
+    assert!(JsonView::deserialize(owned).is_err());
+    let transient: StrDeserializer<'_, Error> = "a transient copy".into_deserializer();
+    assert!(JsonView::deserialize(transient).is_err());
 }

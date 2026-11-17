@@ -5,6 +5,7 @@
 # the deleting MR deletes its lines too. Do not add a path here; move the code to busbar_contract::json.
 
 # W3-D-CONTRACT: the old ABI, its settings, services and lifecycle codecs, and their old-ABI users.
+# also covers abi/sdk/typed_json.rs, json_grammar's wave-3-only serde_json half, moved here by #162 S1 (COORD ack 2026-11-17); deleted with abi/ by W3-D-CONTRACT
 crates/busbar-contract/src/abi/
 crates/busbar-contract/src/auth_calls.rs
 crates/busbar-contract/src/persistence/lifecycle/codec/source.rs

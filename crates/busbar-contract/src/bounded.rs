@@ -459,7 +459,7 @@ impl<'u> Labels<'u> {
 }
 
 /// A half-open byte range inside a scanned prefix.
-pub use crate::json_grammar::Span;
+pub use busbar_count::json_span::Span;
 
 /// The kernel's view of a unit's body: the bytes plus the resolved pointer spans.
 ///

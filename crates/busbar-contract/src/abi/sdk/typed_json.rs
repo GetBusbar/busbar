@@ -1,13 +1,16 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The closed JSON span grammar: the one serialization busbar reads, read once.
+//! The old ABI's serde_json readers of settings documents: a typed reading, a wiping one and an
+//! exact one (moved here from `json_grammar.rs` by #162 S1, DES-SONIC-WIPE r3 §1 #3). Only the
+//! old ABI's settings and lifecycle code calls them; they are deleted with `abi/` (W3-D-CONTRACT),
+//! never ported. Public JSON reads through `json::parse_value`.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 #![deny(missing_debug_implementations)]
 
-pub use busbar_count::json_span::{resolve_pointer, scan_frontier, Resolved, Span, MAX_JSON_DEPTH};
+use busbar_count::json_span::MAX_JSON_DEPTH;
 
 use serde::{Deserialize, Deserializer};
 use serde_json::{value::RawValue, Value};

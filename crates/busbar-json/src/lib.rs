@@ -54,6 +54,16 @@ pub use sonic_rs::{
 /// [`exceeds_max_depth`]: exceeds_max_depth
 pub use sonic_rs::Deserializer;
 
+/// The borrowed reader, for text that must not be copied out of its owner's custody (secret
+/// JSON, DES-SECURE-JSON-DECODE): [`from_slice_borrowed`] reads one document into `T`, every string
+/// and key borrowed from the input or from a caller-owned decode arena at least as long as the
+/// input, numbers handed as [`NUMBER_TOKEN`] maps (tell one with [`is_number_token`]) and raw tokens
+/// as [`BorrowedRaw`]. A refusal is a [`BorrowedError`]: a fixed reason and a position, never input.
+/// It applies no depth guard: check [`exceeds_max_depth`] first.
+pub use sonic_rs::{
+    from_slice_borrowed, is_number_token, BorrowedError, BorrowedRaw, NUMBER_TOKEN,
+};
+
 #[cfg(feature = "axum")]
 mod body;
 #[cfg(feature = "axum")]
