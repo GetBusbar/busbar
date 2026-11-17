@@ -42,7 +42,7 @@ pub mod config;
 pub mod config_time;
 pub mod confined_path;
 pub mod conn;
-pub mod count;
+pub use busbar_count::count;
 pub mod dest;
 
 pub mod diagnostic;
@@ -103,6 +103,8 @@ pub mod plugin_settings;
 
 pub mod secret_fields;
 pub mod section;
+/// SemVer 2.0 precedence for plugin version floors (#359 SEC-L11).
+pub mod semver;
 pub mod services;
 pub mod signal;
 

@@ -393,7 +393,7 @@ preimage is 489 bytes; the digest is
   "recipe": "busbar.audit.digest.v4",
   "signature_domain": "busbar.audit.record.v1",
   "algorithm": "ed25519",
-  "keys": [
+  "items": [
     {
       "key_id": "21fe31dfa154a261",
       "algorithm": "ed25519",

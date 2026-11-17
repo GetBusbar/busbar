@@ -10,6 +10,9 @@ use std::collections::BTreeMap;
 
 use crate::store::now_ms as wall_ms;
 
+#[path = "admitted_view.rs"]
+pub(super) mod admitted_view;
+
 use crate::diagnostics::{
     diag_debug, diag_error, diag_warn, ACCRUAL_GROUP_MISSING, BUDGET_FLUSH_PARTIAL_FAILURE,
 };
@@ -149,23 +152,6 @@ impl From<MintError> for RecordStoreError {
     }
 }
 
-/// The current signing key id, read in place from the shared signing material (no copy).
-pub struct SigningKid(Arc<SigningMaterial>);
-
-impl std::ops::Deref for SigningKid {
-    type Target = str;
-
-    fn deref(&self) -> &str {
-        self.0.signer.kid()
-    }
-}
-
-impl serde::Serialize for SigningKid {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(self.0.signer.kid())
-    }
-}
-
 fn signed_binding(spec: NewKeySpec, now: u64) -> RecordStoreResult<(VirtualKey, String)> {
     let mut raw = [0u8; 16];
     let drawn = busbar_contract::crypto::fill(&mut raw);
@@ -218,6 +204,11 @@ impl GovState {
         let mut boot_caller_ref = busbar_contract::secure::SecureArray::<32>::zeroed();
         busbar_contract::crypto::fill(&mut boot_caller_ref[..])
             .expect("OS randomness for the per-boot caller-reference key");
+        let at_rest = signer.as_ref().map(|s| {
+            Arc::new(super::at_rest::AtRestKeys::from_signing_secret(
+                &s.secret_bytes(),
+            ))
+        });
         let unit_checkpoints = unit_checkpoint::UnitCheckpointBook::default();
         let admissions = Arc::new(super::drain::AdmissionGate::over(
             unit_checkpoints.terminal_counter(),
@@ -232,6 +223,7 @@ impl GovState {
                 admin_token.map(|t| busbar_contract::redacted::sha256_hex(t.as_bytes())),
             ),
             budget: Sharded::new(),
+            selected_rates: Arc::new(super::selected_resource::SelectedRates::new()),
             recovery_book: recovery::RecoveryBook::default(),
             correction_claims: claims::AsyncClaimSet::new(),
             corrections: std::sync::Mutex::default(),
@@ -250,7 +242,7 @@ impl GovState {
             deployment_caller_ref: RwLock::new(None),
             boot_caller_ref,
             signing: RwLock::new(signer.map(|s| Arc::new(SigningMaterial::new(s)))),
-            at_rest: RwLock::new(None),
+            at_rest: RwLock::new(at_rest),
             denylist,
             refresh_order,
             #[cfg(test)]
@@ -410,10 +402,6 @@ impl GovState {
             },
         };
         *self.caller_refs.write().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(key));
-    }
-
-    pub fn signing_kid(&self) -> Option<SigningKid> {
-        self.signing_material().map(SigningKid)
     }
 
     pub fn card_issuer(&self) -> Option<crate::plane_driver::registry::CardIssuer> {
@@ -758,6 +746,7 @@ impl GovState {
             MeterCounts::request(exact)
         } else {
             MeterCounts {
+                pricing: None,
                 requests: 1,
                 tokens_input: whole_count(usage.map(|u| u.input).unwrap_or(0)),
                 tokens_output: whole_count(usage.map(|u| u.output).unwrap_or(0)),
@@ -939,19 +928,26 @@ impl GovState {
         now: u64,
     ) -> Option<f64> {
         let chain = cost.chain_for(key).ok()?;
+        self.rate_headroom_on(
+            chain.iter().copied().filter(|bucket| match pool {
+                Some(pool) => bucket.applies_to_pool(pool),
+                None => bucket.scope.is_none(),
+            }),
+            now,
+        )
+    }
+
+    fn rate_headroom_on<'a>(
+        &self,
+        buckets: impl Iterator<Item = crate::cost::ChainBucket<'a>>,
+        now: u64,
+    ) -> Option<f64> {
         let mut headroom: Option<f64> = None;
-        for bucket in chain.iter() {
+        for bucket in buckets {
             if bucket.requests_cap.is_none() && bucket.tokens_cap.is_none() {
                 continue;
             }
 
-            let applies = match pool {
-                Some(p) => bucket.applies_to_pool(p),
-                None => bucket.scope.is_none(),
-            };
-            if !applies {
-                continue;
-            }
             let window = budget_window(bucket.window, now);
 
             let (requests, tokens) = match self.budget.read(bucket.bucket_id).get(bucket.bucket_id)
@@ -1007,8 +1003,15 @@ impl GovState {
     }
 
     pub fn set_signing_key(&self, signer: Option<crate::governance::signing::TokenSigner>) {
+        // The at-rest key is derived from the signing secret, so the two move together.
+        let at_rest = signer.as_ref().map(|s| {
+            Arc::new(super::at_rest::AtRestKeys::from_signing_secret(
+                &s.secret_bytes(),
+            ))
+        });
         let next = signer.map(|s| Arc::new(SigningMaterial::new(s)));
         *self.signing.write().unwrap_or_else(|e| e.into_inner()) = next;
+        *self.at_rest.write().unwrap_or_else(|e| e.into_inner()) = at_rest;
         self.refresh_caller_refs();
     }
 
@@ -1286,11 +1289,19 @@ impl GovState {
         now: u64,
     ) -> Vec<busbar_contract::hooks::BudgetBucketState> {
         let mut states = self.ordinary_budget_state(cost, key, now);
+        self.apply_observation_liability(&mut states);
+        states
+    }
+
+    fn apply_observation_liability(
+        &self,
+        states: &mut [busbar_contract::hooks::BudgetBucketState],
+    ) {
         let observed = self
             .observation_view
             .read()
             .unwrap_or_else(|e| e.into_inner());
-        for state in &mut states {
+        for state in states {
             let total = observed
                 .get(state.bucket_id.as_str())
                 .and_then(|windows| windows.get(&state.window_start));
@@ -1309,7 +1320,6 @@ impl GovState {
                     .map(|n| n.saturating_sub(liability).max(0));
             }
         }
-        states
     }
 
     pub(crate) fn ordinary_budget_state(
@@ -1339,8 +1349,17 @@ impl GovState {
         chain: &crate::cost::Chain<'_>,
         now: u64,
     ) -> Vec<busbar_contract::hooks::BudgetBucketState> {
-        let mut out = Vec::with_capacity(chain.len());
-        for bucket in chain.iter() {
+        self.ordinary_budget_state_buckets(cost, chain.iter().copied(), now)
+    }
+
+    fn ordinary_budget_state_buckets<'a>(
+        &self,
+        cost: &crate::cost::CostModel,
+        buckets: impl Iterator<Item = crate::cost::ChainBucket<'a>>,
+        now: u64,
+    ) -> Vec<busbar_contract::hooks::BudgetBucketState> {
+        let mut out = Vec::with_capacity(buckets.size_hint().0);
+        for bucket in buckets {
             let window = budget_window(bucket.window, now);
             let spend = {
                 let map = self.budget.read(bucket.bucket_id);

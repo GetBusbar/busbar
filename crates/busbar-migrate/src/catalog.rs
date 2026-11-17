@@ -65,19 +65,6 @@ fn source(dir: &Path, resolved: &Value, facts: &Facts) -> (PathBuf, Selected) {
     }
 }
 
-/// The catalog 1.5.5 read, as its resolved tree: the catalog half of `allow_dest`'s candidate walk.
-/// [`plan`] has read the same file already, so a refusal here is the same refusal.
-pub(crate) fn effective(config: &Path, resolved: &Value, facts: &Facts) -> Result<Value, Refusal> {
-    let dir = match config.parent() {
-        Some(parent) if !parent.as_os_str().is_empty() => parent.to_path_buf(),
-        _ => PathBuf::from("."),
-    };
-    let (source, _) = source(&dir, resolved, facts);
-    let shown = source.display().to_string();
-    let raw = read(&source)?;
-    Ok(Template::read(&raw, facts.env, &shown)?.resolved().clone())
-}
-
 /// 1k over the document `root` (R) with its resolved twin.
 pub(crate) fn plan(
     config: &Path,
@@ -178,6 +165,18 @@ fn strip(catalog: &mut Value, keys: &[String], shown: &str) -> Result<Vec<String
                     "{shown}: {name} holds a key that is not a string; write it as text, then boot \
                      again"
                 )));
+            }
+            if key == "allow_metadata_hosts" {
+                // The retired cloud-metadata carve-out (BUSBAR-3136): removed with a warning that
+                // names the path and never a value (#293).
+                let code = busbar_kernel::diagnostics::MIGRATE_METADATA_CARVE_OUT_REMOVED.banner();
+                changes.push(format!(
+                    "{code}: {shown}: removed the retired cloud-metadata carve-out key {}.allow_metadata_hosts; \
+                     1.6.0 refuses cloud metadata for every outbound connection and no configuration \
+                     admits it",
+                    crate::migrate_1_6::escape_control(name)
+                ));
+                continue;
             }
             changes.push(format!(
                 "{shown}: {name}.{key}: removed (1.5.5 ignored this catalog key; removing it \

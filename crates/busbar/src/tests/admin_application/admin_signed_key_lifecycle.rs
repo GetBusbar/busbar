@@ -31,7 +31,7 @@ async fn test_admin_v1_key_idempotent_mint_and_if_match() {
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
         "identity-providers": {},
     });
     document["identity-providers"][operator] = serde_json::json!({
@@ -133,7 +133,7 @@ async fn test_admin_v1_idempotency_reservation_frees_on_failure() {
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
         "identity-providers": {},
     });
     document["identity-providers"][operator] = serde_json::json!({
@@ -192,7 +192,7 @@ async fn test_admin_v1_rotate_idempotent_replay_survives_the_ttl_sweep() {
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
         "identity-providers": {},
     });
     document["identity-providers"][operator] = serde_json::json!({
@@ -208,13 +208,12 @@ async fn test_admin_v1_rotate_idempotent_replay_survives_the_ttl_sweep() {
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let anchor = busbar_kernel::appbuild::bootstrap_config_store(
-        &config,
-        &plugin_config,
-        &busbar_kernel::preflight::Unopened,
-    )
-    .await
-    .expect("the actual Store opens the configuration authority");
+    let crate::root::min3_boot::fixture::Fixture {
+        backend: anchor,
+        rules,
+    } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
+        .await
+        .expect("the actual Store opens the configuration authority");
     let anchor = crate::root::real_store::core_over(anchor).await;
     let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
         .expect("the actual Store supports conditional configuration records");
@@ -313,7 +312,7 @@ async fn test_admin_v1_rotate_idempotency_cache_key_does_not_collide_across_colo
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
         "identity-providers": {},
     });
     document["identity-providers"][operator] = serde_json::json!({
@@ -329,13 +328,12 @@ async fn test_admin_v1_rotate_idempotency_cache_key_does_not_collide_across_colo
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let anchor = busbar_kernel::appbuild::bootstrap_config_store(
-        &config,
-        &plugin_config,
-        &busbar_kernel::preflight::Unopened,
-    )
-    .await
-    .expect("the actual Store opens the configuration authority");
+    let crate::root::min3_boot::fixture::Fixture {
+        backend: anchor,
+        rules,
+    } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
+        .await
+        .expect("the actual Store opens the configuration authority");
     let anchor = crate::root::real_store::core_over(anchor).await;
     let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
         .expect("the actual Store supports conditional configuration records");
@@ -479,7 +477,7 @@ async fn test_signed_mint_returns_token_and_expiry_never_stored() {
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
         "identity-providers": {},
     });
     document["identity-providers"][operator] = serde_json::json!({
@@ -561,7 +559,7 @@ async fn test_signed_mint_expiry_parsing_matrix() {
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
         "identity-providers": {},
     });
     document["identity-providers"][operator] = serde_json::json!({
@@ -633,16 +631,16 @@ async fn test_signed_mint_expiry_parsing_matrix() {
     println!("{WITNESS}");
 }
 
+/// ADMIN-API-1.6-ONE-MODEL §2 row 68: `POST /signing-key/rotate` reported intent and changed nothing,
+/// so 1.6.0 deletes it; a real rotation action is 1.6.x.
 #[tokio::test]
-async fn test_signing_key_rotate_reports_kid_and_revoke_all() {
+async fn signing_key_rotate_is_gone() {
     const CHILD: &str = "BUSBAR_ADMIN_BOOT_800A98AB78DB";
-    const WITNESS: &str =
-        "actual root case test_signing_key_rotate_reports_kid_and_revoke_all completed";
+    const WITNESS: &str = "actual root case signing_key_rotate_is_gone completed";
     isolated!(CHILD, WITNESS);
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    let (module, directory, settings) = crate::distribution::rig::actual_store(
-        "test_signing_key_rotate_reports_kid_and_revoke_all-actual-store",
-    );
+    let (module, directory, settings) =
+        crate::distribution::rig::actual_store("signing_key_rotate_is_gone-actual-store");
     assert!(
         settings.is_object(),
         "the actual Store settings are an object"
@@ -657,7 +655,7 @@ async fn test_signing_key_rotate_reports_kid_and_revoke_all() {
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
         "identity-providers": {},
     });
     document["identity-providers"][operator] = serde_json::json!({
@@ -673,13 +671,12 @@ async fn test_signing_key_rotate_reports_kid_and_revoke_all() {
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let anchor = busbar_kernel::appbuild::bootstrap_config_store(
-        &config,
-        &plugin_config,
-        &busbar_kernel::preflight::Unopened,
-    )
-    .await
-    .expect("the actual Store opens the configuration authority");
+    let crate::root::min3_boot::fixture::Fixture {
+        backend: anchor,
+        rules,
+    } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
+        .await
+        .expect("the actual Store opens the configuration authority");
     let anchor = crate::root::real_store::core_over(anchor).await;
     let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
         .expect("the actual Store supports conditional configuration records");
@@ -716,29 +713,18 @@ async fn test_signing_key_rotate_reports_kid_and_revoke_all() {
     let client = reqwest::Client::new();
     let url = format!("http://{addr}/api/v1/admin/signing-key/rotate");
 
-    let unauth = client.post(&url).send().await.unwrap();
-    assert_eq!(
-        unauth.status().as_u16(),
-        401,
-        "signing-key rotate is admin-guarded"
-    );
-
     let r = client
         .post(&url)
         .header("x-admin-token", "admintok")
         .send()
         .await
         .unwrap();
-    assert_eq!(r.status().as_u16(), 200);
-    let body = r.bytes().await.unwrap();
-    let body = json::parse_value(&body).unwrap();
     assert_eq!(
-        body["current_kid"],
-        busbar_kernel::governance::signing::DEFAULT_KID,
-        "reports the current signing-key id: {body}"
+        r.status().as_u16(),
+        404,
+        "the deleted route is not served: {:?}",
+        r.text().await
     );
-    assert_eq!(body["revoke_all"], true, "rotation is revoke-all by design");
-
     let rows = busbar_kernel::audit::auditlog::AUDIT_LOG.list_filtered(
         0,
         audit_ring::MAX_AUDIT_ENTRIES,
@@ -746,13 +732,8 @@ async fn test_signing_key_rotate_reports_kid_and_revoke_all() {
         Some("signing-key"),
     );
     assert!(
-        rows.iter()
-            .any(|e| e.action == "signing_key.report" && e.outcome == audit_ring::OUTCOME_APPLIED),
-        "the report is recorded under a verb that does not claim a mutation"
-    );
-    assert!(
-        !rows.iter().any(|e| e.action == "signing_key.rotate"),
-        "and never under a verb asserting key material changed"
+        !rows.iter().any(|e| e.action.starts_with("signing_key.")),
+        "nothing is recorded for a route that does not exist"
     );
 
     handle.abort();
@@ -782,7 +763,7 @@ async fn test_admin_v1_audit_records_key_mutations() {
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
         "identity-providers": {},
     });
     document["identity-providers"][operator] = serde_json::json!({
@@ -798,13 +779,12 @@ async fn test_admin_v1_audit_records_key_mutations() {
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let anchor = busbar_kernel::appbuild::bootstrap_config_store(
-        &config,
-        &plugin_config,
-        &busbar_kernel::preflight::Unopened,
-    )
-    .await
-    .expect("the actual Store opens the configuration authority");
+    let crate::root::min3_boot::fixture::Fixture {
+        backend: anchor,
+        rules,
+    } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
+        .await
+        .expect("the actual Store opens the configuration authority");
     let anchor = crate::root::real_store::core_over(anchor).await;
     let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
         .expect("the actual Store supports conditional configuration records");

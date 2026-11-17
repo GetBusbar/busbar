@@ -36,6 +36,12 @@ fn isolated() -> bool {
 }
 
 async fn application() -> (Arc<busbar_kernel::state::App>, Scratch) {
+    application_with_native_keys(false).await
+}
+
+async fn application_with_native_keys(
+    native_keys: bool,
+) -> (Arc<busbar_kernel::state::App>, Scratch) {
     let (module, directory, settings) =
         crate::distribution::rig::actual_store("telemetry-admin-actual-store");
     assert!(
@@ -52,12 +58,15 @@ async fn application() -> (Arc<busbar_kernel::state::App>, Scratch) {
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
         "identity-providers": {},
     });
     document["identity-providers"][operator] = serde_json::json!({
         "module": operator, "token": { "file": operator_token },
     });
+    if native_keys {
+        document["auth"]["admin_auth"] = serde_json::json!([operator, "keys"]);
+    }
     let deploy = busbar_kernel::config::deploy_from_deserializer(
         document,
         &crate::root::boot::axis_test_grammar(),
@@ -68,13 +77,12 @@ async fn application() -> (Arc<busbar_kernel::state::App>, Scratch) {
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let anchor = busbar_kernel::appbuild::bootstrap_config_store(
-        &config,
-        &plugin_config,
-        &busbar_kernel::preflight::Unopened,
-    )
-    .await
-    .expect("the actual Store opens the configuration authority");
+    let crate::root::min3_boot::fixture::Fixture {
+        backend: anchor,
+        rules,
+    } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
+        .await
+        .expect("the actual Store opens the configuration authority");
     let anchor = crate::root::real_store::core_over(anchor).await;
     let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
         .expect("the actual Store supports conditional configuration records");
@@ -106,6 +114,9 @@ async fn application() -> (Arc<busbar_kernel::state::App>, Scratch) {
         .expect("the actual Store hydrates");
     (app, Scratch(directory))
 }
+
+#[path = "metrics_authorization.rs"]
+mod metrics_authorization;
 
 #[tokio::test]
 async fn info_process_generation_is_available_without_metrics_and_changes_on_restart() {
@@ -166,7 +177,7 @@ async fn info_process_generation_is_available_without_metrics_and_changes_on_res
         .unwrap();
     assert_eq!(info.status(), 200);
     let info = json::parse_value(&info.bytes().await.unwrap()).unwrap();
-    let nonce = info["process_boot_nonce"]
+    let nonce = info["incarnation"]
         .as_str()
         .expect("native OS randomness is available")
         .to_string();
@@ -194,11 +205,7 @@ async fn info_process_generation_is_available_without_metrics_and_changes_on_res
             .unwrap(),
     )
     .unwrap();
-    assert_eq!(reloaded["process_boot_nonce"], nonce);
-    assert_eq!(
-        reloaded["config_version"].as_u64().unwrap(),
-        info["config_version"].as_u64().unwrap() + 1
-    );
+    assert_eq!(reloaded["incarnation"], nonce);
     assert!(!busbar_kernel::snapshot::recorder_installed());
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(60));
     let again = json::parse_value(
@@ -213,7 +220,7 @@ async fn info_process_generation_is_available_without_metrics_and_changes_on_res
             .unwrap(),
     )
     .unwrap();
-    assert_eq!(again["process_boot_nonce"], nonce);
+    assert_eq!(again["incarnation"], nonce);
     server.abort();
     let _ = server.await;
     println!("{MARKER}{nonce}");

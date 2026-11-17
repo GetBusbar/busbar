@@ -10,6 +10,8 @@ members = [
     "crates/busbar-core-admin",
     "crates/busbar-core-oauth2",
     "crates/busbar-contract",
+    "crates/busbar-count",
+    "crates/busbar-secure",
     "crates/busbar-crypto",
     "crates/busbar-kernel",
     "crates/busbar-migrate",
@@ -27,6 +29,8 @@ members = [
     "crates/busbar-plugin-test",
     # Core's repository checks (no-getrandom, crypto-graph), one CI job line each.
     "tools/ci-checks",
+    # The additive-only gate for the admin OpenAPI document (#309), one CI job line.
+    "tools/openapi-diff",
     # ci/hop: no thread hop around a plugin entry (IF §15 rule 10), one CI job line.
     "ci/hop",
 ]
@@ -34,6 +38,8 @@ members = [
 # Each version is written once here; members inherit with `workspace = true` and may add features.
 # `default-features = false` must be set here: a member cannot turn workspace defaults off.
 [workspace.dependencies]
+# Existing fleet HTTP envelope parser, also used by native test-host subjects.
+httparse = { version = "1", default-features = false }
 busbar-contract = { path = "crates/busbar-contract" }
 # The one crypto backend: busbar-crypto names it by this URL; a private build patches its own in.
 busbar-crypto-backend = { path = "crates/busbar-crypto-backend" }
@@ -228,7 +234,7 @@ serde-saphyr = { git = "https://github.com/MattJackson/serde-saphyr", rev = "a94
 granit-parser = { git = "https://github.com/MattJackson/granit-parser", rev = "d31e9292a0be49de7d3a85ee07555bb9d0afce20" }
 # JSON (SERDE-NUMBERS r17 P0-P3): sonic-rs 0.5.11 plus exact numbers through foreign deserializers
 # (serde buffering, YAML) and an authenticated Value hand-off, offered upstream (cloudwego/sonic-rs).
-sonic-rs = { git = "https://github.com/MattJackson/sonic-rs", rev = "10b80cdcbfb07c0edc6535df28f7b248dc4f5223" }
+sonic-rs = { git = "https://github.com/MattJackson/sonic-rs", rev = "1241c129cef83686109f820825206f56ff470f67" }
 # Canonical JSON: olpc-cjson 0.1.4 with serde_json optional and a sonic-rs Formatter, offered upstream
 # (awslabs/tough). busbar's workspace row turns its default (serde_json) off and takes the sonic-rs formatter.
 olpc-cjson = { git = "https://github.com/MattJackson/olpc-cjson", rev = "0a96a65b1122a2bbb93fd36cae3b36dd2b045c7e" }

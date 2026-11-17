@@ -2084,47 +2084,6 @@ async fn revoke_key_owned(
     }
 }
 
-pub(crate) async fn rotate_signing_key(
-    busbar_kernel::state::CurrentApp(app): busbar_kernel::state::CurrentApp,
-    axum::Extension(principal): axum::Extension<busbar_kernel::auth::AuthPrincipal>,
-) -> Response {
-    let actor = principal.actor_id().to_string();
-
-    let who = KeyAudit::Mutation {
-        verb: "signing_key.report",
-        resource: "signing-key",
-        actor: &actor,
-    };
-    let Some(gov) = &app.governance else {
-        return disabled_write(who);
-    };
-    let Some(kid) = gov.signing_kid() else {
-        return key_err(
-            who,
-            &AdminError::Conflict("no signing key is configured; nothing to rotate".into()),
-            Cond::NothingToRotate,
-        );
-    };
-
-    audit::AUDIT.record_by(
-        "signing_key.report",
-        "signing-key",
-        audit::OUTCOME_APPLIED,
-        &actor,
-    );
-    json_response(
-        StatusCode::OK,
-        json!({
-            "current_kid": kid,
-            "revoke_all": true,
-            "message": "rotating the signing key REVOKES ALL outstanding keys (every token must be \
-                        re-minted). 1.5.0 is single-key: replace auth.signing_key (or the persisted \
-                        signing-key file) with fresh material and restart/reload every node in \
-                        lockstep, then re-mint keys."
-        }),
-    )
-}
-
 pub(crate) async fn get_key(
     busbar_kernel::state::CurrentApp(app): busbar_kernel::state::CurrentApp,
     Path(id): Path<String>,

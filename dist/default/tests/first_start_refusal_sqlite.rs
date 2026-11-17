@@ -328,13 +328,13 @@ fn runtime() -> tokio::runtime::Runtime {
 }
 
 /// Drop an in-process owner without a hand-over (a crash): its Store closes in the runtime it
-/// opened in; the door axis outlives it.
+/// opened in; its registry outlives it.
 fn crash(runtime: &tokio::runtime::Runtime, owner: common::fresh_namespace::Owner) {
-    let axis = runtime.block_on(async move {
-        let common::fresh_namespace::Owner { axis, .. } = owner;
-        axis
+    let stores = runtime.block_on(async move {
+        let common::fresh_namespace::Owner { stores, .. } = owner;
+        stores
     });
-    drop(axis);
+    drop(stores);
 }
 
 fn hex(id: [u8; 16]) -> String {

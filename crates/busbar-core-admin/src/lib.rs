@@ -41,6 +41,12 @@ pub use verbs::{required_scope, Verbs};
 #[path = "tests/table_matches_openapi.rs"]
 mod table_matches_openapi;
 
+#[cfg(test)]
+#[path = "tests/trust_authority_verb_list_tests.rs"]
+mod trust_authority_verb_list_tests;
+
+pub use v1::json::generation::valid_idempotency_key;
+pub use v1::json::trust_inventory;
 pub use v1::service::mark_start;
 
 pub fn install() {
@@ -65,19 +71,25 @@ fn seam_record_boot(app: &busbar_kernel::state::App) {
 }
 
 fn seam_mount(
-    router: axum::Router<std::sync::Arc<busbar_kernel::state::AppHandle>>,
-) -> axum::Router<std::sync::Arc<busbar_kernel::state::AppHandle>> {
+    router: busbar_kernel::core_routes::CoreRouter,
+) -> busbar_kernel::core_routes::CoreRouter {
+    use busbar_contract::abi::mechanism::route::{RouteAuth, RouteMethod};
+
     // `/metrics` and `/metrics/hooks` are the unprefixed Named surfaces; core encodes them itself.
     let router = router
         .route(
             "/metrics",
-            axum::routing::get(crate::v1::json::metrics::get),
+            RouteMethod::Get,
+            RouteAuth::Admin,
+            crate::v1::json::metrics::get,
         )
         .route(
             "/metrics/hooks",
-            axum::routing::get(crate::v1::json::metrics::get_hooks),
+            RouteMethod::Get,
+            RouteAuth::Admin,
+            crate::v1::json::metrics::get_hooks,
         );
-    crate::transport::mount(router, &crate::v1::json::JsonV1)
+    router.map_router(|router| crate::transport::mount(router, &crate::v1::json::JsonV1))
 }
 
 #[cfg(any(test, feature = "test-support"))]

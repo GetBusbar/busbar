@@ -228,14 +228,8 @@ async fn app() -> (
     busbar_kernel::snapshot::init_for_test(Duration::from_secs(3600));
     crate::dist_root_install::install();
     let library = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library)
-        .unwrap()
-        .unwrap();
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .unwrap()
-        .name;
-    let mut manifest = plugins::manifest("store", &module, "third-party");
-    manifest.statement = Some(hex::encode(statement));
+    let module = crate::root::test_plugins::native_image(&library).name;
+    let manifest = crate::root::test_plugins::native_manifest("store", &library, "third-party");
     let directory = plugins::scratch("admin-custody-outcomes");
     let archive = plugins::signed(
         &plugins::key(0x33),
@@ -261,7 +255,7 @@ async fn app() -> (
         "providers":{},"models":{},
         "identity-providers":{"custody-auth":{"module":oidc_module,"max_admin_scope":"full","settings":common::credentials::settings("api://admin-custody")}},
         "auth":{"chain":[],"admin_auth":["custody-auth"],"signing_key":{"file":signing},"role_bindings":{"custody-auth":{"custodians":{"admin_scope":"full"}}}},
-        "store":{"module":module,"settings":settings},"advanced":{"allow_destinations":["127.0.0.1"]}
+        "store":{"module":module,"settings":settings},"advanced":{}
     }), &crate::root::boot::axis_test_grammar()).unwrap();
     let config = busbar_kernel::config::resolve(&deploy, &Default::default()).unwrap();
     let mut plugin_config = busbar_kernel::config::PluginsCfg {
@@ -280,7 +274,11 @@ async fn app() -> (
         .publishers
         .push(busbar_kernel::config::PluginPublisher {
             name: "third-party".into(),
-            public_key: hex::encode(plugins::key(0x33).verifying_key().as_bytes()),
+            plugins: vec![module.clone()],
+            keys: vec![busbar_kernel::config::PluginPublisherKey {
+                public_key: hex::encode(plugins::key(0x33).verifying_key().as_bytes()),
+                revoked: false,
+            }],
         });
     let mut observed = None;
     let fresh = crate::root::test_plugins::provision_fresh_application_store_with_backend(
@@ -295,15 +293,16 @@ async fn app() -> (
     )
     .await
     .expect("the custody fixture exclusively provisions its wrapped native Store");
-    let anchor = fresh
+    let crate::root::min3_boot::fixture::Admitted {
+        core: anchor,
+        rules,
+    } = fresh
         .initialize_principal_format(&config, &plugin_config)
         .await
         .expect("the new custody namespace receives its principal baseline before serving");
     let store = observed.expect("the primitive custody fault wrapper was installed");
     store.core.set(anchor.clone()).ok().unwrap();
     let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone()).unwrap();
-    let rules = Arc::new(crate::root::door_steps::Rules::default())
-        as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
         plugin_config,

@@ -191,7 +191,17 @@ fn validate_ledger(row: &UsageLedger) -> Result<(), &'static str> {
     Ok(())
 }
 
-fn metering_identity(row: &MeteringRow) -> (&str, &str, &str, &str, &str, u64) {
+fn metering_identity(
+    row: &MeteringRow,
+) -> (
+    &str,
+    &str,
+    &str,
+    &str,
+    &str,
+    u64,
+    Option<super::MeteringRole>,
+) {
     (
         &row.key_id,
         &row.model,
@@ -199,6 +209,7 @@ fn metering_identity(row: &MeteringRow) -> (&str, &str, &str, &str, &str, u64) {
         &row.key_group_at_use,
         &row.pricing_version,
         row.priced_from_ms,
+        row.pricing.as_ref().map(|pricing| pricing.identity()),
     )
 }
 
@@ -246,6 +257,7 @@ mod exact_count_validation_tests {
             key_id: "key".into(),
             day_start: 0,
             metering: vec![MeteringRow {
+                pricing: None,
                 scale,
                 key_id: "key".into(),
                 model: "model".into(),

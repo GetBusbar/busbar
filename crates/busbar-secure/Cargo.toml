@@ -1,0 +1,18 @@
+[package]
+name = "busbar-secure"
+version = "1.6.0"
+publish = false
+edition = "2024"
+rust-version = "1.97"
+description = "Shared wiping byte storage reexported by the core contract and plugin ABI"
+license = "Apache-2.0"
+
+[features]
+default = []
+test-support = []
+
+[dependencies]
+zeroize = { workspace = true }
+
+[lints]
+workspace = true

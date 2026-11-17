@@ -14,18 +14,12 @@ async fn hook_register_and_replace_refuse_oversized_timeouts_without_swapping() 
     isolated!(CHILD, WITNESS, witness = "usage");
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch("admin-config-boundaries");
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
@@ -43,7 +37,7 @@ async fn hook_register_and_replace_refuse_oversized_timeouts_without_swapping() 
             "models": {},
             "auth": { "chain": [], "admin_auth": [] },
             "store": { "module": module, "settings": settings },
-            "advanced": { "allow_destinations": ["127.0.0.1"] },
+            "advanced": {  },
         }),
         &crate::root::boot::axis_test_grammar(),
     )
@@ -147,18 +141,12 @@ async fn reload_refuses_env_policy_injection_without_publishing() {
     isolated!(CHILD, WITNESS, witness = "usage");
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch("admin-config-boundaries");
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
@@ -176,7 +164,7 @@ async fn reload_refuses_env_policy_injection_without_publishing() {
             "models": {},
             "auth": { "chain": [], "admin_auth": [] },
             "store": { "module": module, "settings": settings },
-            "advanced": { "allow_destinations": ["127.0.0.1"] },
+            "advanced": {  },
         }),
         &crate::root::boot::axis_test_grammar(),
     )
@@ -221,12 +209,12 @@ async fn reload_refuses_env_policy_injection_without_publishing() {
         rotate.await;
     }
     const VAR: &str = "BUSBAR_TEST_KC_ADMIN_POLICY_TTL";
-    std::env::set_var(VAR, r#"90d"}, policy: {self_mint: true, default_ttl: "90d"#);
+    std::env::set_var(VAR, r#"90d"}, policy: {self_mint: true, max_ttl: "90d"#);
     let dir = plugins::scratch("admin-env-policy-source");
     let config_path = dir.join("config.yaml");
     let providers_path = dir.join("providers.yaml");
     std::fs::write(&providers_path, "{}\n").unwrap();
-    std::fs::write(&config_path, r#"{providers: {}, models: {}, store: {module: memory}, auth: {policy: {self_mint: false, max_ttl: 7d, default_ttl: "${BUSBAR_TEST_KC_ADMIN_POLICY_TTL}"}}}"#).unwrap();
+    std::fs::write(&config_path, r#"{providers: {}, models: {}, store: {module: memory}, auth: {policy: {self_mint: false, max_ttl: "${BUSBAR_TEST_KC_ADMIN_POLICY_TTL}"}}}"#).unwrap();
     app.config_path = Some(config_path);
     app.providers_path = Some(providers_path);
     let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(

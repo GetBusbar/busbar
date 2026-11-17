@@ -41,7 +41,6 @@ pub const AXES: &[(&str, &str, &str)] = &[
     ("diagnostics", "diagnostics", "DIAGNOSTICS"),
     ("on-host", "on_host", "on_host"),
     ("compose", "compose", "compose"),
-    ("cli-help", "cli_help", "CLI_HELP"),
     ("stores", "stores", "STORE"),
     ("hooks", "hook_doors", "door"),
 ];
@@ -129,6 +128,7 @@ pub fn ident(krate: &str) -> String {
 /// The axes whose `linked_axis_<axis>` cfg a build declares (the composition root's sources gate
 /// on them) and sets when an enabled row names the axis.
 pub const CFG_AXES: &[&str] = &[
+    MIN3_AXIS,
     PLANE_DOOR_AXIS,
     DOOR_AXIS,
     EXPORT_DOOR_AXIS,

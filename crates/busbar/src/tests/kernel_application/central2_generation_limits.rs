@@ -38,18 +38,12 @@ async fn a_built_generations_limits_are_in_force_only_once_it_is_live() {
     isolated!(CHILD, WITNESS, witness = "usage");
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch("central2-limits-live");
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
@@ -67,7 +61,7 @@ async fn a_built_generations_limits_are_in_force_only_once_it_is_live() {
             "models": {},
             "auth": { "chain": [], "admin_auth": [] },
             "store": { "module": module.clone(), "settings": settings },
-            "advanced": { "allow_destinations": ["127.0.0.1"] },
+            "advanced": {  },
         }),
         &crate::root::boot::axis_test_grammar(),
     )
@@ -84,16 +78,13 @@ async fn a_built_generations_limits_are_in_force_only_once_it_is_live() {
     config.limits = running.clone();
     let native_config = config;
     let native_plugins = plugin_config.clone();
-    let native_core = crate::root::real_store::core_over(
-        busbar_kernel::appbuild::bootstrap_config_store(
-            &native_config,
-            &native_plugins,
-            &busbar_kernel::preflight::Unopened,
-        )
+    let crate::root::min3_boot::fixture::Fixture {
+        backend: native_core,
+        rules,
+    } = crate::root::min3_boot::fixture::open(&native_config, &native_plugins, rules.clone())
         .await
-        .expect("actual Store opens for native startup"),
-    )
-    .await;
+        .expect("actual Store opens for native startup");
+    let native_core = crate::root::real_store::core_over(native_core).await;
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         native_config,
         native_plugins,

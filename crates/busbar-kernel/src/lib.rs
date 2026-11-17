@@ -19,11 +19,12 @@
 extern crate self as busbar_kernel;
 
 #[cfg(all(test, not(target_env = "msvc")))]
-pub(crate) use alloc_gate_instrument::CountingJemalloc;
+pub(crate) use alloc_gate_instrument::ThreadAllocated;
 
+// The kernel test binary runs on the shipped allocator; the allocation gates read its per-thread counter.
 #[cfg(all(test, not(target_env = "msvc")))]
 #[global_allocator]
-static GLOBAL: CountingJemalloc = CountingJemalloc;
+static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
 #[cfg(all(test, not(target_env = "msvc")))]
 #[path = "tests/alloc_gate_instrument.rs"]
@@ -559,6 +560,7 @@ pub mod port_call;
 pub mod push;
 pub mod recorder;
 pub mod refusal;
+pub mod resource_admission;
 pub mod sessions;
 pub mod upstreams;
 

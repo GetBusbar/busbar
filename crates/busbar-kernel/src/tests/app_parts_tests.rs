@@ -17,7 +17,7 @@ impl crate::appbuild::RootRules for UncalledRules {
         ROOT_EFFECTS.fetch_add(1, Ordering::SeqCst);
         panic!("pure snapshot ownership cannot validate a configuration")
     }
-    fn check_built(&self, _: &crate::state::App) -> Result<(), String> {
+    fn check_built(&self, _: &mut crate::state::App) -> Result<(), String> {
         ROOT_EFFECTS.fetch_add(1, Ordering::SeqCst);
         panic!("pure snapshot ownership cannot invoke a root observer")
     }

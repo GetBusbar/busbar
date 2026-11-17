@@ -28,6 +28,7 @@ fn zero_cost() -> CostModel {
 
 fn row(model: &str, era: u64, count: i128) -> MeteringRow {
     MeteringRow {
+        pricing: None,
         scale: 0,
         key_id: KEY.into(),
         model: model.into(),

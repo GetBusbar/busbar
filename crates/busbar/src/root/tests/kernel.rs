@@ -587,18 +587,12 @@ async fn actual_card_store_and_root_rate_apply_gate_the_real_app_generation_comm
     }
     let release = crate::root::test_plugins::key(0x5a);
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = crate::root::loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
-    let mut manifest = crate::root::test_plugins::manifest(
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = crate::root::test_plugins::scratch("confirmed-card-generation");
     std::fs::write(
@@ -607,9 +601,6 @@ async fn actual_card_store_and_root_rate_apply_gate_the_real_app_generation_comm
     )
     .expect("stage the actual store archive");
     let settings = crate::root::test_plugins::application_store_settings(&directory);
-    let late = crate::root::serve::LateServices::new();
-    let dispatcher = crate::root::dispatch::boot(1, &late);
-    crate::root::doors::install_dispatcher(dispatcher);
 
     crate::register_protocols();
     crate::register_planes();
@@ -620,7 +611,7 @@ async fn actual_card_store_and_root_rate_apply_gate_the_real_app_generation_comm
             "models": {},
             "auth": { "chain": [], "admin_auth": [] },
             "store": { "module": module, "settings": settings },
-            "advanced": { "allow_destinations": ["127.0.0.1"] },
+            "advanced": {  },
         }),
         &crate::root::boot::axis_test_grammar(),
     )
@@ -628,10 +619,15 @@ async fn actual_card_store_and_root_rate_apply_gate_the_real_app_generation_comm
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the actual product deployment resolves");
     let judge = crate::root::connector::dest_judge(&config);
-    let (credentials, _handle) = crate::root::credentials::AppCredentials::late();
-    crate::root::serve::compose(judge.clone(), &late, credentials);
+    let credentials = crate::root::credentials::AppCredentials::new(None);
+    let late = crate::root::serve::Services::serving(Arc::new(
+        crate::root::serve::kernel_services(judge.clone()).with_credentials(Arc::new(credentials)),
+    ));
+    let dispatcher = crate::root::dispatch::boot(1, &late);
+    crate::root::doors::install_dispatcher(dispatcher);
     crate::root::doors::install_plugin_logs(crate::root::boot::plugin_logs());
     crate::root::connector::boot(
+        tokio::runtime::Handle::current(),
         crate::LINKED_TRANSPORT_DOORS,
         &crate::root::policy::client_settings(&config.limits),
         judge,
@@ -682,6 +678,9 @@ async fn actual_card_store_and_root_rate_apply_gate_the_real_app_generation_comm
     let pinned = ROOT_CARD.pin().unwrap();
     for (fee, fail_activation) in [(FIRST_FEE, false), (SECOND_FEE, true)] {
         let before = handle.load();
+        let before_generation = before
+            .config_generation
+            .load(std::sync::atomic::Ordering::Acquire);
         let before_limits = busbar_kernel::config::limits::installed();
         let before_era = CardRepricer.era_at(busbar_kernel::store::now_ms());
         let before_own = ROOT_CARD.card_store().unwrap().own();
@@ -709,6 +708,13 @@ async fn actual_card_store_and_root_rate_apply_gate_the_real_app_generation_comm
         let candidate = store.pending().unwrap();
         assert!(Arc::ptr_eq(&handle.load(), &before));
         assert_eq!(handle.load().config_version, before.config_version);
+        assert_eq!(
+            before
+                .config_generation
+                .load(std::sync::atomic::Ordering::Acquire),
+            before_generation,
+            "a refused candidate must not invalidate the still-published auth generation"
+        );
         assert_eq!(store.own(), before_own);
         assert_eq!(
             CardRepricer.era_at(busbar_kernel::store::now_ms()),

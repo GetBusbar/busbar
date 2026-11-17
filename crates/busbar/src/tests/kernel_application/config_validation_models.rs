@@ -42,23 +42,14 @@ fn make_root_cfg(
         admin_auth: config::default_admin_auth_names(),
         groups: std::collections::BTreeMap::new(),
         rate_card: None,
-        plugin_rate_cards: Default::default(),
         per_request_fee: 0,
         plane_fees: Default::default(),
         store: Some(config::StoreCfg {
             module: {
                 let path = crate::root::test_plugins::application_store_library();
-                let statement = busbar_plugin_loader::dispatch::rendering_of_library(
-                    std::path::Path::new(&path),
-                )
-                .expect("the actual store statement reads")
-                .expect("the actual store exports its statement");
-                busbar_contract::abi::mechanism::rendering::read(&statement)
-                    .expect("the actual store statement is valid")
-                    .name
+                crate::root::test_plugins::native_image(&path).name
             },
             settings: Default::default(),
-            limits: None,
             insecure_transport: None,
         }),
         secrets: std::collections::BTreeMap::new(),
@@ -128,9 +119,10 @@ fn make_model(provider: &str, max_concurrent: usize) -> config::ModelCfg {
 
 fn make_model_unbounded(provider: &str) -> config::ModelCfg {
     config::ModelCfg {
+        resource: None,
+        protocol: None,
         reasoning: None,
         prompt_caching: None,
-        protocol: None,
         max_requests: -1,
         provider: provider.into(),
         max_concurrent: None,

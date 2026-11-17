@@ -46,10 +46,10 @@ use busbar_contract::abi::transport::{
     YIELD_ENDED, YIELD_MORE,
 };
 use busbar_contract::framing_scope::FramingScope;
+use busbar_contract::json::{self, json, Value};
 use busbar_plugin_loader::dispatch::framing_context::with_context;
 use busbar_plugin_loader::dispatch::kinds::transport::Transport;
 use busbar_plugin_loader::dispatch::{ConnTable, Dispatcher, Frame, InlineTicket, Plugin};
-use serde_json::json;
 
 use crate::frames::{abi, input, json as json_blob, output};
 use crate::stats::Recorder;
@@ -145,7 +145,7 @@ fn request_body(size: usize, stream: bool) -> Vec<u8> {
         v["stream"] = json!(true);
         v["stream_options"] = json!({"include_usage": true});
     }
-    let base = serde_json::to_vec(&v).expect("json").len();
+    let base = json::to_vec(&v).expect("json").len();
     let words = "the quick brown fox jumps over the lazy dog ";
     let pad: String = words
         .chars()
@@ -153,7 +153,7 @@ fn request_body(size: usize, stream: bool) -> Vec<u8> {
         .take(size.saturating_sub(base))
         .collect();
     v["messages"][1]["content"] = json!(pad);
-    serde_json::to_vec(&v).expect("json")
+    json::to_vec(&v).expect("json")
 }
 
 const H2_DATA: u8 = 0;
@@ -254,7 +254,7 @@ fn h2_request(body: &[u8], answer_data: usize) -> (Vec<u8>, Vec<usize>) {
 /// The whole JSON answer (~0.7 KiB).
 fn whole_answer() -> Vec<u8> {
     let text = "Here is a short answer with a handful of sentences. ".repeat(8);
-    serde_json::to_vec(&json!({
+    json::to_vec(&json!({
         "id": "chatcmpl-bench", "object": "chat.completion", "created": 1_700_000_000,
         "model": "gpt", "system_fingerprint": "fp_bench",
         "choices": [{"index": 0, "message": {"role": "assistant", "content": text},
@@ -267,13 +267,13 @@ fn whole_answer() -> Vec<u8> {
 /// The SSE answer's events: `deltas` content chunks, a finish chunk and a usage chunk; `[DONE]`
 /// is the final emit.
 fn sse_chunks(deltas: usize) -> Vec<Box<[u8]>> {
-    let event = |v: serde_json::Value| {
+    let event = |v: Value| {
         let mut b = b"data: ".to_vec();
-        b.extend_from_slice(&serde_json::to_vec(&v).expect("json"));
+        b.extend_from_slice(&json::to_vec(&v).expect("json"));
         b.extend_from_slice(b"\n\n");
         b.into_boxed_slice()
     };
-    let chunk = |delta: serde_json::Value, finish: serde_json::Value| {
+    let chunk = |delta: Value, finish: Value| {
         event(json!({
             "id": "chatcmpl-bench", "object": "chat.completion.chunk", "created": 1_700_000_000,
             "model": "gpt", "system_fingerprint": "fp_bench",

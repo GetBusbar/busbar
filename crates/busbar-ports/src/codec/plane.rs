@@ -377,14 +377,14 @@ pub fn encode_committed(w: &mut impl Writer, answers: &[(u32, u32, u32, u32)]) -
 pub fn encode_trust_answers(w: &mut impl Writer, answers: &[TrustAnswer<'_>]) -> Result<(), Full> {
     for answer in answers {
         debug_assert!(
-            answer.items.is_empty() || answer.named.is_empty(),
+            (answer.items.is_empty() && answer.catalog.is_none()) || answer.named.is_empty(),
             "a TRUST_ANS tail is item states or a named member, never both"
         );
         let ans = plane::TrustAns {
             check: answer.check,
             verdict: answer.verdict,
         };
-        if answer.items.is_empty() {
+        if answer.items.is_empty() && answer.catalog.is_none() {
             w.put_pod_tail(
                 tag::TRUST_ANS,
                 &ans,
@@ -393,6 +393,9 @@ pub fn encode_trust_answers(w: &mut impl Writer, answers: &[TrustAnswer<'_>]) ->
             continue;
         }
         let mut states = Reply::new();
+        if let Some(catalog) = &answer.catalog {
+            states.put(tag::TR_CATALOG, catalog)?;
+        }
         for item in answer.items {
             let mut flags = 0;
             if item.approved.is_some() {
@@ -764,18 +767,21 @@ mod tests {
             TrustAnswer {
                 check: 7,
                 verdict: plane::DISTRUST_CHANGED,
+                catalog: None,
                 items: &items,
                 named: "",
             },
             TrustAnswer {
                 check: 8,
                 verdict: plane::SIGNED_ALGORITHM,
+                catalog: None,
                 items: &[],
                 named: "HS256",
             },
             TrustAnswer {
                 check: 9,
                 verdict: plane::SIGNED_VERIFIED,
+                catalog: None,
                 items: &[],
                 named: "",
             },
@@ -835,6 +841,7 @@ mod tests {
         let answers = [TrustAnswer {
             check: 1,
             verdict: plane::SIGNED_CRITICAL,
+            catalog: None,
             items: &[],
             named: &named,
         }];
@@ -843,6 +850,29 @@ mod tests {
         let records = recs(w.as_bytes());
         let (_, tail) = records[0].pod_tail::<plane::TrustAns>().expect("TrustAns");
         assert_eq!(tail, "x".repeat(127).as_bytes());
+    }
+
+    #[test]
+    fn trust_state_carries_catalog_even_without_items() {
+        let mut w = Reply::new();
+        encode_trust_answers(
+            &mut w,
+            &[TrustAnswer {
+                check: 9,
+                verdict: plane::DISTRUST_NONE,
+                catalog: Some([42; 32]),
+                items: &[],
+                named: "",
+            }],
+        )
+        .expect("fits");
+        let records = recs(w.as_bytes());
+        let (answer, tail) = records[0].pod_tail::<plane::TrustAns>().expect("answer");
+        assert_eq!(answer.check, 9);
+        let state = recs(tail);
+        assert_eq!(state.len(), 1);
+        assert_eq!(state[0].tag, tag::TR_CATALOG);
+        assert_eq!(state[0].body, [42; 32]);
     }
 
     #[test]

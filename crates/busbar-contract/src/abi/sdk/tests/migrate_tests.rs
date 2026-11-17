@@ -401,30 +401,20 @@ type Instance<'a, T> = crate::abi::sdk::safe::Instance<'a, T, FixtureKind>;
 
 type FixtureKind = crate::plugin::markers::SecretKind;
 
+/// The credential conversion channel is retired (MIGRATE-ON-BOOT r41 §A4: the deferred style
+/// binding and the owner's own open replace MigrateCredential). An octet input is no settings
+/// section, so every kind refuses it before any plugin code runs.
 #[test]
-fn credential_entry_is_guarded_kind_specific_and_separate_from_settings() {
+fn an_octet_input_is_refused_for_every_kind() {
     struct Auth;
     impl Migrate for Auth {
         type Kind = crate::plugin::markers::AuthKind;
         fn migrate(_: serde_json::Value, _: &str) -> Migrated {
             panic!("wrong entry")
         }
-        fn migrate_credential(
-            value: super::MigrationCredential<'_, Self::Kind>,
-            from: &str,
-        ) -> Result<super::CredentialMigration, super::CredentialRefusal> {
-            assert_eq!(value.text(), "SYNTHETIC_CREDENTIAL");
-            assert_eq!(from, "1.5.5");
-            Ok(super::CredentialMigration::unchanged())
-        }
     }
+    let bytes = b"SYNTHETIC_CREDENTIAL";
     let mut input = ValidateIn::default();
-    let encoded = super::encode_credential_input(
-        &crate::Secret::new("SYNTHETIC_CREDENTIAL".to_owned()),
-        None,
-        &crate::plugin::TestKernelSeal,
-    );
-    let bytes = encoded.expose(&crate::plugin::TestKernelSeal);
     input.settings = Blob {
         ptr: bytes.as_ptr(),
         len: bytes.len(),
@@ -436,60 +426,11 @@ fn credential_entry_is_guarded_kind_specific_and_separate_from_settings() {
     input.err_buf = buffer.as_mut_ptr();
     input.err_cap = buffer.len();
     let mut out = OutHead::default();
-    // SAFETY: all lent buffers live for each complete synchronous call.
-    let outcome = unsafe { Migrator::<Auth>::call(std::ptr::null_mut(), &input, &mut out) };
-    assert_eq!(outcome, Outcome::Ready);
-    let answer: super::CredentialMigration =
-        serde_json::from_slice(&buffer[..out.error.len]).unwrap();
-    assert_eq!(answer.step(), super::CredentialMigrationStep::Unchanged);
-    input.settings.flags = 0;
-    // SAFETY: same complete frame, missing the required secret flag.
-    assert_eq!(
-        unsafe { Migrator::<Auth>::call(std::ptr::null_mut(), &input, &mut out) },
-        Outcome::Refused
-    );
-    input.settings.flags = crate::abi::mechanism::call::BLOB_SECRET;
-    // SAFETY: same frame; an unrelated kind must refuse before delivery.
-    assert_eq!(
-        unsafe { Migrator::<Stub>::call(std::ptr::null_mut(), &input, &mut out) },
-        Outcome::Refused
-    );
-}
-
-#[test]
-fn credential_file_protocol_cannot_substitute_paths_accept_without_a_loan_or_repeat_reads() {
-    use super::{CredentialMigration, CredentialMigrationStep, MigrationCredential};
-    use crate::plugin::{markers::AuthKind, TestKernelSeal};
-    let credential: MigrationCredential<'_, AuthKind> = MigrationCredential {
-        text: "authorized-filename",
-        file: None,
-        kind: std::marker::PhantomData,
-    };
-    assert_eq!(
-        credential.request_file().unwrap().step(),
-        CredentialMigrationStep::ReadFile
-    );
-    assert!(credential.file().is_none());
-    assert!(
-        serde_json::from_value::<CredentialMigration>(serde_json::json!({
-            "action":"read_file", "path":"/unrelated-file"
-        }))
-        .is_err()
-    );
-    let premature: CredentialMigration = serde_json::from_str(r#"{"action":"use_file"}"#).unwrap();
-    assert!(premature.finish(None, &TestKernelSeal).is_err());
-    let supplied: MigrationCredential<'_, AuthKind> = MigrationCredential {
-        text: "authorized-filename",
-        file: Some(b"SYNTHETIC_FILE"),
-        kind: std::marker::PhantomData,
-    };
-    assert!(supplied.request_file().is_err());
-    assert_eq!(supplied.file().unwrap().bytes(), b"SYNTHETIC_FILE");
-    let repeated: CredentialMigration = serde_json::from_str(r#"{"action":"read_file"}"#).unwrap();
-    assert!(repeated
-        .finish(
-            Some(&crate::Secret::new("/authorized-filename".into())),
-            &TestKernelSeal
-        )
-        .is_err());
+    // SAFETY: all lent buffers live for the complete synchronous call.
+    let auth = unsafe { Migrator::<Auth>::call(std::ptr::null_mut(), &input, &mut out) };
+    assert_eq!(auth, Outcome::Refused);
+    assert_eq!(out.error.len, 0, "no answer is named");
+    // SAFETY: the same complete frame, for an unrelated kind.
+    let other = unsafe { Migrator::<Stub>::call(std::ptr::null_mut(), &input, &mut out) };
+    assert_eq!(other, Outcome::Refused);
 }

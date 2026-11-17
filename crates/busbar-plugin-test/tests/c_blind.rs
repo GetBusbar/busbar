@@ -47,7 +47,7 @@ fn no_stamp_name_reaches_a_config_view_or_need_result() {
         (
             PROBE,
             "blind-b",
-            br#"{"tag":"blind-b","password":"pw-blind-5531"}"#.as_slice(),
+            br#"{"tag":"blind-b","password":{"env":"PW_BLIND"}}"#.as_slice(),
         ),
         (
             ALIAS_WORDS[0],
@@ -60,7 +60,10 @@ fn no_stamp_name_reaches_a_config_view_or_need_result() {
         h.block_on(h.registry().check(&check))
             .unwrap_or_else(|e| panic!("{tag} checks: {e:?}"));
         let port = h
-            .block_on(h.registry().open_secret(&check))
+            .block_on(
+                h.registry()
+                    .open_secret(&check, &h.needs_arc(), &h.refs_arc()),
+            )
             .unwrap_or_else(|e| panic!("{tag} opens: {e:?}"));
         let base = at as u64 * 10;
         let references: [&[u8]; 3] = [

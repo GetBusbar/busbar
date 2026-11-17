@@ -28,7 +28,7 @@ use busbar_kernel::persistence::facade::CoreStore;
 use busbar_kernel::persistence::import_target::r0::{Access, Commit, Outcome};
 use busbar_kernel::persistence::import_target::records as encode;
 use busbar_migrate::records::{
-    self, attempts, Audit, Candidate, Committed, Native, RecordStore, Report, StoreFail,
+    self, attempts, Audit, Candidate, Committed, Native, Page, RecordStore, Report, StoreFail,
 };
 
 /// Where the records step's audit records live: core's own namespace, beside IMPORT, never a
@@ -140,14 +140,20 @@ impl Store {
 }
 
 impl RecordStore for Store {
-    fn scan(
-        &self,
-        ns: NamespaceId,
-        after: &[u8],
-        limit: u32,
-    ) -> Result<Vec<(Vec<u8>, SecureVec)>, StoreFail> {
-        self.runtime
+    fn scan(&self, ns: NamespaceId, after: Option<&[u8]>, limit: u32) -> Result<Page, StoreFail> {
+        let page = self
+            .runtime
             .block_on(self.access.scan(ns, after, limit))
+            .map_err(StoreFail)?;
+        Ok(Page {
+            rows: page.rows,
+            next: page.next,
+        })
+    }
+
+    fn read(&self, ns: NamespaceId, key: &[u8]) -> Result<Option<SecureVec>, StoreFail> {
+        self.runtime
+            .block_on(self.access.read(at(ns, key.to_vec())))
             .map_err(StoreFail)
     }
 
@@ -253,6 +259,7 @@ fn rows_of(native: &Native) -> Result<Vec<(Address, SecureVec)>, StoreFail> {
                 .parse()
                 .map_err(|_| fail("metering row", "a bucket that is not a whole number"))?;
             let metering = MeteringRow {
+                pricing: None,
                 scale: busbar_contract::COUNT_SCALE,
                 key_id: row.key_id.clone(),
                 model: row.model.clone(),
@@ -411,27 +418,16 @@ pub(crate) struct Keys {
 }
 
 impl Keys {
-    /// Moved out of the kernel's bootstrap (once per boot); none when no bootstrap resolved any.
-    /// On a MIN-3 boot the store opened through the registry walk, so no old-ABI bootstrap ran: the keys are the
-    /// walk's resolved core secrets (an unparsable key is treated as absent here; the boot's own preflight
-    /// refuses it with its text).
-    pub(crate) fn from_bootstrap() -> Self {
-        let keys = busbar_kernel::appbuild::take_bootstrap_records_keys().or_else(|| {
-            let core = &crate::root::min3_boot::booted()?.core;
-            busbar_kernel::appbuild::records_keys_from(
-                core.at_rest_key.as_deref(),
-                core.at_rest_previous.as_deref(),
-                core.signing_key.as_deref(),
-            )
-            .ok()
-        });
-        Self {
+    /// Derive migration custody from the secrets owned by this boot, before publication.
+    pub(crate) fn from_core(core: &crate::root::min3_boot::CoreSecrets) -> Result<Self, String> {
+        let keys = busbar_kernel::appbuild::records_keys_from(core.signing_key.as_deref())?;
+        Ok(Self {
             seed: keys
+                .signer
                 .as_ref()
-                .and_then(|keys| keys.signer.as_ref())
                 .map(busbar_kernel::governance::signing::TokenSigner::secret_bytes),
-            at_rest: keys.and_then(|keys| keys.at_rest),
-        }
+            at_rest: keys.at_rest,
+        })
     }
 }
 
@@ -449,8 +445,9 @@ pub(crate) fn run_blocking(
     stamped: bool,
 ) -> Result<Option<Report>, String> {
     if store
-        .scan(IMPORT_NS, &[], 1)
+        .scan(IMPORT_NS, None, 1)
         .map_err(|fail| format!("STORE: {}", fail.0))?
+        .rows
         .is_empty()
     {
         return Ok(None);
@@ -484,21 +481,16 @@ pub(crate) fn run_blocking(
     Ok(report)
 }
 
-/// Step 4 (§3 4a, 4b): after FST admission, before step 5 and before anything serves.
-///
-/// # Errors
-/// As [`run_blocking`]; the boot refuses with the text.
-#[cold]
-#[inline(never)]
-pub(crate) async fn step4(
+/// Step 4 with custody supplied by the boot owner, without consulting published MIN-3 state.
+pub(crate) async fn step4_with_keys(
     core: Arc<CoreStore>,
+    keys: Keys,
     config: PathBuf,
     stamped: bool,
 ) -> Result<(), String> {
     let runtime = tokio::runtime::Handle::current();
     tokio::task::spawn_blocking(move || {
         let store = Store::new(core, runtime);
-        let keys = Keys::from_bootstrap();
         run_blocking(&store, &keys, &config, stamped)
     })
     .await
@@ -599,4 +591,57 @@ pub(crate) fn write_with_attempt(
         }
     }
     written
+}
+
+/// Step 4 then step 5 over the opened store: the records conversion and the config.yaml write the
+/// converting boot performs together. A refusal of the step-5 document must leave the store as it
+/// was found (MIGRATE-ON-BOOT r42: nothing has been changed until the document is accepted).
+///
+/// # Errors
+/// The records step's refusal, or the write's refusal text.
+pub(crate) fn convert_and_write(
+    store: &Store,
+    keys: &Keys,
+    plan: &busbar_migrate::Plan,
+    settled: &[busbar_migrate::Settled],
+    check: busbar_migrate::Check<'_>,
+    config: &Path,
+    stamped: bool,
+) -> Result<busbar_migrate::Written, String> {
+    // Every refusal of step 5 is judged first, read-only, so it changes nothing (#328).
+    busbar_migrate::check_settled(plan, settled, check).map_err(|refusal| refusal.to_string())?;
+    if let Some(report) = run_blocking(store, keys, config, stamped)? {
+        tracing::info!(
+            target: "busbar::migrate",
+            "the 1.5.5 records were migrated: {}",
+            report_line(&report)
+        );
+    }
+    write_with_attempt(store, plan, settled, check, config).map_err(|refusal| refusal.to_string())
+}
+
+#[cfg(test)]
+mod key_handoff_tests {
+    use super::Keys;
+    use crate::root::min3_boot::CoreSecrets;
+    use busbar_contract::secure::SecureVec;
+
+    #[test]
+    fn explicit_boot_keys_are_derived_before_publication_and_invalid_keys_refuse() {
+        let missing = Keys::from_core(&CoreSecrets::default()).unwrap();
+        assert!(missing.seed.is_none());
+        assert!(missing.at_rest.is_none());
+        let core = CoreSecrets {
+            signing_key: Some(SecureVec::from(&[7u8; 32][..])),
+            ..CoreSecrets::default()
+        };
+        let supplied = Keys::from_core(&core).unwrap();
+        assert_eq!(supplied.seed, Some([7u8; 32]));
+        assert!(supplied.at_rest.is_some());
+        let invalid = CoreSecrets {
+            signing_key: Some(SecureVec::from(&[7u8; 3][..])),
+            ..CoreSecrets::default()
+        };
+        assert!(Keys::from_core(&invalid).is_err());
+    }
 }

@@ -3,36 +3,27 @@
 
 //! The boot's MIN-3 registry (ROOT-BOOT; ABI-MIN3-INTERFACE §11.2, §12.10 item 4, §13).
 //!
-//! The root builds one `Registry<HostNeeds<..>>` over the process's custody (`BootSecrets`), the guard, the config
-//! binder and the records and directory handles, admits the MIN-3 images the plugins directory holds, installs the
-//! kernel's sides (store seal, auth core, store opener, auth opener) and walks the boot plan (2a, 2b,
-//! `set_deployment`, re-check, 2c) before any listener serves. A plugin image that is not MIN-3 is not admitted
-//! here: the old path still serves it (the WBS's switch-overs, then the W3 deletions).
-//!
-//! Records and directory are built before the store (the store opens through the registry), so the Need handlers
-//! own late handles the walk fills at the deployment point, after the store opened and before the first 2c
-//! instance.
+//! Bootstrap Secret and Store opens use permanently restricted record and directory capabilities.
+//! After the deployment identity is established and rechecked, serving opens receive complete shared
+//! record and directory owners and the immutable prefix of successfully opened secret instances.
 
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
+use super::boot::restricted::{BootstrapDirectory, BootstrapRecords};
+use super::boot::walk::{deployment_bytes, BootSteps, DeploymentRead};
 use busbar_contract::secret_ref::{SecretRef, Sugars};
 use busbar_contract::secure::SecureVec;
 use busbar_core_connector::guard::Guard;
 use busbar_core_connector::need::{HostNeeds, NeedLimits};
-use busbar_kernel::appbuild::boot_registry::{boot, install_kernel_sides, KernelAuthCore};
-use busbar_kernel::appbuild::boot_walk::{
-    deployment_bytes, BootSteps, DeploymentRead, RegistryBoot,
-};
 use busbar_kernel::channels::signals::SignalRegistry;
 use busbar_kernel::channels::SessionSignals;
-use busbar_kernel::config::{AtRestCfg, PluginsCfg, RootCfg};
-use busbar_kernel::directory::{KernelDirectory, LateDirectory, LogEvents};
+use busbar_kernel::config::{PluginsCfg, RootCfg};
+use busbar_kernel::directory::{KernelDirectory, LogEvents};
 use busbar_kernel::host_services::{DestJudge, KernelServices};
 use busbar_kernel::ingress::replay::StoreReplay;
 use busbar_kernel::ingress::signed_ingress::{RouteSecrets, StandardWebhooks};
-use busbar_kernel::issued::IssuedCredentials;
 use busbar_kernel::persistence::boot_identity::BootIdentity;
 use busbar_kernel::persistence::startup::Startup;
 use busbar_kernel::plane_driver::plane_judge::PlaneJudge;
@@ -43,110 +34,57 @@ use busbar_kernel::plane_driver::port_intents::{
 use busbar_kernel::plane_driver::port_observations::ObsCustody;
 use busbar_kernel::plane_driver::port_serve::TicketGate;
 use busbar_kernel::plane_driver::port_services::Services;
-use busbar_kernel::plane_driver::port_work::{governed_binder, LateBinder, LateStore, StoreWork};
+use busbar_kernel::plane_driver::port_work::{Binder as WorkBinder, StoreWork};
 use busbar_kernel::plane_grants::{
     SealedTickets, TicketAdmitted, TicketDenied, TicketMint, Tickets,
 };
 use busbar_kernel::plugin_config::{Binder, ConfigBinder};
-use busbar_kernel::plugin_records::{LateRecords, RecordsDenied, StoreRecords};
+use busbar_kernel::plugin_records::{PluginRecords, RecordsDenied, StoreRecords};
 use busbar_kernel::push::{PushQueue, StorePushQueue};
 use busbar_kernel::retry::Policy as RetryPolicyImpl;
 use busbar_plugin_abi::host_side::caller::{BoxFut, Caller as LoaderCaller};
-use busbar_plugin_abi::host_side::host_vt::HOST;
 use busbar_plugin_abi::types::KindCode;
 use busbar_plugin_loader::admit::Admitted;
 use busbar_plugin_loader::instance::{
-    Ceilings, InstanceSpec, OpenError, OpenedPort, Registry, StoreSeal,
+    InstanceSpec, OpenError, OpenedPort, PreparedInstance, Registry,
 };
 use busbar_ports::store::StoreHandle;
 
 use busbar_kernel::teller::Kernel;
-use busbar_kernel::upstreams::ConfiguredUpstreams;
 
 use super::plane_seats::{compose as compose_seat, ConnTable, SeatShared, SpawnCustody};
 use super::port_mount::Ingress;
-use super::secret_custody::{self, BootCustody, BootRefs, BootSecrets};
+use super::secret_custody::{BootCustody, BootSecrets};
 
-/// The records every Need handler, the replay guard and the plane driver share: filled once the store is open.
-pub(crate) type Records = LateRecords<Arc<StoreRecords>>;
-/// The directory the DIRECTORY Need reads: filled once the store is open.
-pub(crate) type Directory = LateDirectory<KernelDirectory>;
+/// The complete records owner shared by serving Needs, replay and plane drivers.
+pub(crate) type Records = Arc<StoreRecords>;
+/// The complete directory owner shared by serving DIRECTORY Needs.
+pub(crate) type Directory = Arc<KernelDirectory>;
 /// The Need handlers the registry runs every plugin under.
 pub(crate) type Needs = HostNeeds<BootCustody, Records, Directory>;
+type BootstrapNeeds = HostNeeds<BootCustody, BootstrapRecords, BootstrapDirectory>;
+#[path = "min3_hooks.rs"]
+pub(crate) mod hooks;
 /// The process's MIN-3 registry.
-pub(crate) type MinRegistry = Registry<Needs>;
+pub(crate) type MinRegistry = Registry;
 
 /// How long a core-internal secret may take to resolve at boot.
-const CORE_SECRET_DEADLINE: Duration = Duration::from_secs(30);
-/// `auth.unknown_key_refresh_s` (IF §12.11): at least 5 s, 30 s by default.
-const UNKNOWN_KEY_REFRESH: Duration = Duration::from_secs(30);
-
-/// The issued credentials core has minted. The admin surface that issues them on this path has not landed, so
-/// every id is unknown: the empty value, through the one code path every unknown id takes (IF §12.8).
-struct Unissued;
-
-impl IssuedCredentials for Unissued {
-    fn lookup<'a>(
-        &'a self,
-        _auth_instance: u64,
-        _kind: &'a str,
-        _id: &'a str,
-    ) -> BoxFut<'a, SecureVec> {
-        Box::pin(core::future::ready(SecureVec::from(&[0u8; 0][..])))
-    }
-}
-
+pub(crate) const CORE_SECRET_DEADLINE: Duration = Duration::from_secs(30);
 /// Core's own secrets, resolved at boot through the secret kind into owned values (IF §11.2: the admin token,
-/// the signing key, the at-rest keys). `None` = the config states no such reference.
+/// the signing key). `None` = the config states no such reference.
 #[derive(Default)]
 pub(crate) struct CoreSecrets {
     pub(crate) operator_token: Option<SecureVec>,
     pub(crate) signing_key: Option<SecureVec>,
-    pub(crate) at_rest_key: Option<SecureVec>,
-    pub(crate) at_rest_previous: Option<SecureVec>,
 }
 
-/// The push queue the plane instances' PUSH intents and ticks enqueue into: filled once the store is open (the
-/// queue is rows in the core store), `Unavailable` until then. Clones share the one slot.
-#[derive(Clone, Default)]
-pub(crate) struct LatePush {
-    slot: Arc<OnceLock<StorePushQueue>>,
-}
-
-impl LatePush {
-    /// The queue every clone enqueues into from now on (the first install stays).
-    fn install(&self, queue: StorePushQueue) {
-        let _ = self.slot.set(queue);
-    }
-}
-
-impl PushQueue for LatePush {
-    fn enqueue<'a>(
-        &'a self,
-        who: &'a LoaderCaller<'_>,
-        ttl_s: u64,
-        recs: &'a [u8],
-    ) -> BoxFut<'a, Result<(), RecordsDenied>> {
-        match self.slot.get() {
-            Some(queue) => queue.enqueue(who, ttl_s, recs),
-            None => Box::pin(core::future::ready(Err(RecordsDenied::Unavailable))),
-        }
-    }
-}
-
-/// What the plane instances' intents, tickets and tick share, built before any instance opens and filled as the
-/// boot proceeds: the records and push queue are filled at the deployment point.
+/// The serving instances' shared owners, constructed after the Store deployment checks.
 struct Shared {
     records: Records,
-    push: LatePush,
+    push: Arc<dyn PushQueue>,
     signals: Arc<SignalRegistry>,
-    next_instance: AtomicU64,
     /// The observation custody every seat's OBS_SCOPE and OBSERVE run on (units register as requests bill).
     observations: ObsCustody,
-    /// The core store (filled at the deployment point) and the governance binder (filled when governance
-    /// attaches): the two things durable WORK waits for.
-    work_store: LateStore,
-    work_binder: LateBinder,
     /// Durable WORK for every seat (rows are scoped by instance name).
     work: Arc<StoreWork>,
 }
@@ -182,7 +120,10 @@ impl Tickets for ClosedTickets {
 /// The ticket store every plane seat is built with (IF §12.11): its host key is derived from core's
 /// `auth.signing_key`, which the walk resolves (the secret instances are open before any plane, step 2a) before
 /// the seat is built. Without a signing key, or when the key cannot be derived, the store is shut.
-fn ticket_store(records: &Records, signing: Option<&SecureVec>) -> Arc<dyn Tickets> {
+fn ticket_store<R: PluginRecords + Clone>(
+    records: &R,
+    signing: Option<&SecureVec>,
+) -> Arc<dyn Tickets> {
     let Some(signing) = signing else {
         tracing::info!("no auth.signing_key: plane tickets are not admitted");
         return Arc::new(ClosedTickets);
@@ -214,14 +155,14 @@ fn ticket_store(records: &Records, signing: Option<&SecureVec>) -> Arc<dyn Ticke
 /// SIGN, CONNECT, SIGHT/TRUST and RENDEZVOUS have no production owner at boot yet (no grant resolver, host signing
 /// key, caller-connection store, trust book or media carrier is built here), so each answers its fail-closed value.
 fn plane_services(
-    shared: &Shared,
+    observations: &ObsCustody,
     tickets: Arc<dyn Tickets>,
     judge: Option<Arc<dyn DestJudge>>,
 ) -> Services {
     Services {
         judge: Some(judge.map_or_else(PlaneJudge::unavailable, PlaneJudge::new)),
         tickets: Some(tickets),
-        observations: Some(Arc::new(shared.observations.clone())),
+        observations: Some(Arc::new(observations.clone())),
         ..Services::default()
     }
 }
@@ -238,22 +179,22 @@ fn recovery_matcher(patterns: Vec<Box<str>>) -> Box<dyn Fn(&str) -> bool + Send 
 }
 
 impl Shared {
-    fn new(records: Records, push: LatePush) -> Self {
-        let work_store = LateStore::default();
-        let work_binder = LateBinder::default();
+    fn new(
+        records: Records,
+        push: Arc<dyn PushQueue>,
+        store: Arc<busbar_kernel::persistence::facade::CoreStore>,
+        binder: Arc<WorkBinder>,
+    ) -> Self {
         Self {
             records,
             push,
             signals: SignalRegistry::new(),
-            next_instance: AtomicU64::new(1),
             observations: ObsCustody::new(Arc::new(busbar_kernel::store::now_ms)),
             work: Arc::new(StoreWork::new(
-                work_store.clone(),
-                work_binder.clone(),
+                store,
+                binder,
                 Arc::new(busbar_kernel::store::now_ms),
             )),
-            work_store,
-            work_binder,
         }
     }
 }
@@ -261,24 +202,36 @@ impl Shared {
 /// What a boot through the MIN-3 registry leaves running.
 pub(crate) struct Booted {
     pub(crate) registry: Arc<MinRegistry>,
+    _bootstrap_registry: Arc<MinRegistry>,
+    _transports: Vec<transports::ServedTransport>,
+    _native_invocations: Vec<busbar_kernel::host_services::NativeInvocationAdmission>,
+    _opened: Vec<(
+        u32,
+        busbar_plugin_loader::instance::BootPhase,
+        Option<OpenedPort>,
+    )>,
+    pub(crate) auth: Arc<super::min3_auth::AuthSet>,
+    pub(crate) provisioning: Vec<Arc<super::provisioning_mount::ProvisionMount>>,
+    pub(crate) config_version: u64,
     pub(crate) seats: Vec<PortSeat>,
-    pub(crate) core: CoreSecrets,
+    pub(crate) core: Arc<CoreSecrets>,
     /// The secret kind the boot opened its secret instances into (webhook secrets resolve through it).
-    pub(crate) secrets: &'static BootSecrets,
+    pub(crate) secrets: Arc<BootSecrets>,
+    pub(crate) resolver: Arc<busbar_kernel::config::secret::SecretResolver>,
     pub(crate) deployment: [u8; 16],
-    /// The format admission the walk attached the store through.
-    pub(crate) startup: Mutex<Option<Startup>>,
-    /// Durable WORK: the governance binder, filled when governance attaches ([`attach_governance`]).
-    work_binder: LateBinder,
     /// The records the signed-ingress replay claims are written through.
     records: Records,
     /// Durable WORK of every seat: what the recovery scheduler scans ([`recover_ports`]).
     work: Arc<StoreWork>,
-    /// The seats' probe targets: their probers hold them weakly, so the process holds them here.
-    _probes: Vec<Arc<dyn Send + Sync>>,
 }
 
-static BOOTED: OnceLock<Booted> = OnceLock::new();
+impl std::fmt::Debug for Booted {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Booted")
+            .field("seats", &self.seats)
+            .finish_non_exhaustive()
+    }
+}
 
 impl Booted {
     /// The boot's one summary line: what ran, never a value.
@@ -290,42 +243,15 @@ impl Booted {
                 "not configured"
             }
         };
-        let attached = self
-            .startup
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .is_some();
         format!(
             "MIN-3 boot: {} planes served through ports, {} shorthands declared, deployment dep_{}, \
-             store attached: {attached}; core secrets: admin token {}, signing key {}, at-rest key {}, \
-             previous at-rest key {}",
+             store attached: true; core secrets: admin token {}, signing key {}",
             self.seats.len(),
             self.registry.sugars().len(),
             hex::encode(self.deployment),
             held(&self.core.operator_token),
             held(&self.core.signing_key),
-            held(&self.core.at_rest_key),
-            held(&self.core.at_rest_previous),
         )
-    }
-}
-
-/// What the MIN-3 boot left running, once it ran.
-pub(crate) fn booted() -> Option<&'static Booted> {
-    BOOTED.get()
-}
-
-/// The MIN-3 plane instances the boot opened, for `Served.ports`.
-pub(crate) fn seats() -> Vec<PortSeat> {
-    booted().map(|b| b.seats.clone()).unwrap_or_default()
-}
-
-/// Governance is attached (after the app's first build): durable WORK binds a principal's recovery standing through
-/// it from now on. Until then every WORK_OPEN answers `R_UNSUPPORTED` (core cannot recover), the IF's fail-closed
-/// answer. A boot that took the old path has no MIN-3 instances and nothing to attach.
-pub(crate) fn attach_governance(handle: Arc<busbar_kernel::state::AppHandle>) {
-    if let Some(booted) = booted() {
-        booted.work_binder.install(governed_binder(handle));
     }
 }
 
@@ -337,10 +263,8 @@ static RECOVERY_REQUESTS: AtomicU64 = AtomicU64::new(1);
 
 /// The recovery scheduler runs (`true`) or stopped (`false`): WORK_OPEN answers `R_UNSUPPORTED` while it does not
 /// (core cannot recover, IF §12.24 step 1). A boot that took the old path has no MIN-3 instances.
-pub(crate) fn set_recovery_ready(ready: bool) {
-    if let Some(booted) = booted() {
-        booted.work.set_recovery_ready(ready);
-    }
+pub(crate) fn set_recovery_ready(booted: &Booted, ready: bool) {
+    booted.work.set_recovery_ready(ready);
 }
 
 /// One recovery pass over the MIN-3 plane seats (IF §12.24 step 3), on the scheduler's cadence: per seat with a
@@ -348,10 +272,7 @@ pub(crate) fn set_recovery_ready(ready: bool) {
 /// still restores (`restore_for_app` + `standing_over`, today's standing and expiry rules) one poll as the restored
 /// principal (`PortSeat::recover`), the row held for the poll's life. Core never infers settlement: a row stays live
 /// until the plane settles it. Answers how many polls were attempted.
-pub(crate) async fn recover_ports(app: Arc<busbar_kernel::state::App>) -> usize {
-    let Some(booted) = booted() else {
-        return 0;
-    };
+pub(crate) async fn recover_ports(booted: &Booted, app: Arc<busbar_kernel::state::App>) -> usize {
     if app.governance.is_none() {
         return 0;
     }
@@ -399,7 +320,7 @@ pub(crate) async fn recover_ports(app: Arc<busbar_kernel::state::App>) -> usize 
 
 /// Webhook secrets by reference, through custody (a route's secret resolves like any other reference: by reference,
 /// an empty call stack, no source named in an error). A reference that does not resolve verifies nothing.
-struct CustodySecrets(&'static BootSecrets);
+struct CustodySecrets(Arc<BootSecrets>);
 
 impl RouteSecrets for CustodySecrets {
     fn resolve<'a>(&'a self, reference: &'a SecretRef) -> BoxFut<'a, Option<SecureVec>> {
@@ -416,13 +337,14 @@ impl RouteSecrets for CustodySecrets {
 /// Standard Webhooks verifier over custody and the replay claim in the core store. The IF names no config key for a
 /// route's webhook secret and K7's `Min3Config` carries none yet, so no route has one: every signed route answers
 /// `R_BAD_CREDENTIAL` until the operator's `routes.<id>` block supplies it (the same answer the unwired route gave).
-pub(crate) fn signed_ingress() -> Option<Arc<Ingress>> {
-    let booted = booted()?;
-    Some(Arc::new(Ingress {
-        verifier: Arc::new(StandardWebhooks::new(CustodySecrets(booted.secrets))),
+pub(crate) fn signed_ingress(booted: &Booted) -> Arc<Ingress> {
+    Arc::new(Ingress {
+        verifier: Arc::new(StandardWebhooks::new(CustodySecrets(Arc::clone(
+            &booted.secrets,
+        )))),
         replay: Arc::new(StoreReplay::new(booted.records.clone())),
         secrets: Arc::new(|_: &str, _: u32| None),
-    }))
+    })
 }
 
 /// The MIN-3 images the plugins directory's scan holds, each with its signed manifest's `alias` (a plane instance is
@@ -482,12 +404,12 @@ fn admit_dropped_images(
 }
 
 /// One configured instance, owned until the plan borrows it.
-struct Configured {
-    kind: KindCode,
-    identity: String,
-    name: String,
-    config: Vec<u8>,
-    limits: busbar_plugin_abi::host_side::caller::InstanceLimits,
+pub(crate) struct Configured {
+    pub(crate) kind: KindCode,
+    pub(crate) identity: String,
+    pub(crate) name: String,
+    pub(crate) config: Vec<u8>,
+    pub(crate) limits: busbar_plugin_abi::host_side::caller::InstanceLimits,
 }
 
 /// One admitted MIN-3 plane image: its identity and its signed manifest's `alias` (today's plane name, IF §12.10:
@@ -501,20 +423,14 @@ pub(crate) struct PlaneImage {
 /// (IF §12.23 rule 1: "no config word is added"), so each admitted plane image is one instance. Its name is the
 /// image's alias, so an instance keeps today's plane name (ADMIN-API A-1), else its identity. Its config is the
 /// document's top-level section of that name, the plane's 1.x bag, which its own `migrate` converts (IF §12.10 item
-/// 2), else `{}`. The config grammar has no `planes.<name>` block yet (K7 owns it); when it lands, it replaces this
-/// rule here and nowhere else. Two images answering one name are refused.
+/// 2), else `{}`. The config grammar has no `planes.<name>` block, so a plane runs at the kind's default limits. Two images answering one name are refused.
 fn plane_instances(
     images: &[PlaneImage],
     sections: &std::collections::BTreeMap<&'static str, busbar_contract::yaml::Value>,
-    limits: &dyn Fn(&str) -> busbar_plugin_abi::host_side::caller::InstanceLimits,
 ) -> Result<Vec<Configured>, String> {
     let mut out: Vec<Configured> = Vec::with_capacity(images.len());
     for image in images {
-        let name = if image.alias.is_empty() {
-            image.identity.clone()
-        } else {
-            image.alias.clone()
-        };
+        let name = instance_name(image).to_owned();
         if let Some(first) = out.iter().find(|one| one.name == name) {
             return Err(format!(
                 "the plane images `{}` and `{}` both answer to the instance name `{name}`; remove one",
@@ -529,12 +445,37 @@ fn plane_instances(
         out.push(Configured {
             kind: KindCode::Plane,
             identity: image.identity.clone(),
-            limits: limits(&name),
+            limits: busbar_plugin_abi::host_side::caller::InstanceLimits::default(),
             name,
             config,
         });
     }
     Ok(out)
+}
+
+/// A plane image's instance name (IF §12.23 rule 1): its alias, else its identity.
+fn instance_name(image: &PlaneImage) -> &str {
+    if image.alias.is_empty() {
+        &image.identity
+    } else {
+        &image.alias
+    }
+}
+
+/// The one plane instance `--stdio` binds: the single admitted plane declaring a ROUTE_LINE route,
+/// read off its describe before any instance opens (WP1-GAP r3 §1.3, A-C4). None or several refuse
+/// the boot (exit 1), naming the instances.
+pub(crate) fn stdio_line_plane(
+    images: &busbar_plugin_loader::instance::Images,
+    planes: &[PlaneImage],
+) -> Result<String, String> {
+    busbar_plugin_loader::instance::plane_sections::stdio_instance(
+        planes
+            .iter()
+            .map(|image| (instance_name(image), images.serves_lines(&image.identity))),
+    )
+    .map(str::to_owned)
+    .map_err(|refusal| refusal.to_string())
 }
 
 /// Every configured instance of a kind the MIN-3 path serves, in config order: the secret instances, the store, then
@@ -544,15 +485,19 @@ fn configured(cfg: &RootCfg, planes: &[PlaneImage]) -> Result<Vec<Configured>, S
     use busbar_kernel::appbuild::{instance_limits, STORE_INSTANCE};
     let seal = busbar_kernel::seal::lend();
     let mut out = Vec::new();
-    for (name, secret) in &cfg.secrets {
-        let config = secret
-            .settings
-            .encode()
-            .map_err(|error| format!("secrets.{name}: {error}"))?
-            .into_exposed(&seal);
+    let grammar = cfg.grammar().map_err(|error| error.0)?;
+    for (name, source) in &grammar.secret_instances {
+        let config = match cfg.secrets.get(name) {
+            Some(secret) => secret
+                .settings
+                .encode()
+                .map_err(|error| format!("secrets.{name}: {error}"))?
+                .into_exposed(&seal),
+            None => b"{}".to_vec(),
+        };
         out.push(Configured {
             kind: KindCode::Secret,
-            identity: name.clone(),
+            identity: source.identity.clone(),
             name: name.clone(),
             config,
             limits: instance_limits(cfg, "secrets", name),
@@ -577,8 +522,39 @@ fn configured(cfg: &RootCfg, planes: &[PlaneImage]) -> Result<Vec<Configured>, S
     out.extend(plane_instances(
         planes,
         &super::door_steps::raw_sections(cfg),
-        &|name| instance_limits(cfg, "planes", name),
     )?);
+    out.extend(hooks::configured(cfg)?);
+    let mut providers = cfg.identity_providers.iter().collect::<Vec<_>>();
+    providers.sort_by_key(|(name, _)| *name);
+    for (name, provider) in providers {
+        if busbar_kernel::config::is_builtin_identity_module(&provider.module) {
+            continue;
+        }
+        out.push(Configured {
+            kind: KindCode::Auth,
+            identity: provider.module.clone(),
+            name: name.clone(),
+            config: provider
+                .settings
+                .encode()
+                .map_err(|error| format!("identity-providers.{name}: {error}"))?
+                .into_exposed(&seal),
+            limits: instance_limits(cfg, "identity-providers", name),
+        });
+    }
+    for (name, def) in &cfg.export_defs {
+        out.push(Configured {
+            kind: KindCode::Export,
+            identity: def.module.clone(),
+            name: name.clone(),
+            config: def
+                .settings
+                .encode()
+                .map_err(|error| format!("export.{name}: {error}"))?
+                .into_exposed(&seal),
+            limits: instance_limits(cfg, "export", name),
+        });
+    }
     Ok(out)
 }
 
@@ -586,77 +562,54 @@ fn configured(cfg: &RootCfg, planes: &[PlaneImage]) -> Result<Vec<Configured>, S
 /// typed over the config's `upstreams:` section and each entry's parsed binding (`cfg.min3`, W1-K7). The load
 /// already typed the same section once (`config::resolve`), so a refusal here means the config changed shape
 /// between load and boot; a binding naming an upstream with no entry still refuses the boot.
-fn configured_upstreams(cfg: &RootCfg) -> Result<Arc<ConfiguredUpstreams>, String> {
-    upstreams_of(&cfg.min3.upstream_section, cfg)
-}
-
-/// The table typed over `section` (upstream name to entry) and the config's bindings; Err = every refusal, joined.
-fn upstreams_of(
-    section: &serde_json::Map<String, serde_json::Value>,
-    cfg: &RootCfg,
-) -> Result<Arc<ConfiguredUpstreams>, String> {
-    ConfiguredUpstreams::from_config(
-        section,
-        &cfg.min3.upstreams,
-        &busbar_kernel::plugin_config::upstream_anchor,
-    )
-    .map(Arc::new)
-    .map_err(|refused| refused.join("; "))
-}
-
-/// The shorthands the admitted secret images declare, as the one `Sugars` the binder and the config parser read.
-fn sugars_of(registry: &MinRegistry) -> Result<Sugars, String> {
-    use busbar_contract::abi::mechanism::door::{
-        REWRITE_ALIAS, REWRITE_SUGAR, REWRITE_SUGAR_NAMES, REWRITE_SUGAR_ROLE, REWRITE_SUGAR_SHOWN,
-        SUGAR_ROLE_FILL, SUGAR_ROLE_PATH,
-    };
-    let decls = registry.sugars();
-    let mut owners: Vec<Arc<str>> = Vec::new();
-    for decl in decls {
-        if !owners.iter().any(|owner| **owner == *decl.identity) {
-            owners.push(Arc::clone(&decl.identity));
-        }
+pub(crate) fn declared_planes(
+    registry: &MinRegistry,
+    instances: &mut [Configured],
+) -> Result<std::collections::BTreeMap<String, busbar_kernel::upstreams::Declared>, String> {
+    let mut declarations = std::collections::BTreeMap::new();
+    for instance in instances
+        .iter_mut()
+        .filter(|one| matches!(one.kind, KindCode::Plane))
+    {
+        let described = registry
+            .described(&instance.identity)
+            .ok_or_else(|| format!("{}: the plane image has not been admitted", instance.name))?;
+        let pointers: Vec<_> = described
+            .paths(busbar_plugin_abi::records::tag::D_UPSTREAM_PATH)
+            .collect();
+        let authored = busbar_contract::json::parse_value(&instance.config)
+            .map_err(|e| format!("{}: its authored config is invalid: {e}", instance.name))?;
+        let declared = busbar_kernel::upstreams::declared(
+            &instance.name,
+            &authored,
+            &pointers,
+            &busbar_kernel::plugin_config::upstream_anchor,
+        )
+        .map_err(|errors| errors.join("; "))?;
+        instance.config = busbar_contract::json::to_vec(&declared.visible_bag).map_err(|e| {
+            format!(
+                "{}: its visible config cannot be encoded: {e}",
+                instance.name
+            )
+        })?;
+        declarations.insert(instance.name.clone(), declared);
     }
-    let mut sugars = Sugars::default();
-    for owner in owners {
-        let mut rewrites: Vec<(u32, String, String)> = Vec::new();
-        for decl in decls.iter().filter(|decl| *decl.identity == *owner) {
-            let word = decl.word.to_string();
-            if decl.alias {
-                rewrites.push((REWRITE_ALIAS, word.clone(), owner.to_string()));
-            }
-            rewrites.push((REWRITE_SUGAR, word.clone(), decl.key.to_string()));
-            rewrites.push((REWRITE_SUGAR_SHOWN, word.clone(), decl.shown.to_string()));
-            rewrites.push((REWRITE_SUGAR_NAMES, word.clone(), decl.names.to_string()));
-            let role = match decl.role {
-                busbar_plugin_abi::secret::SUGAR_ROLE_FILL => Some(SUGAR_ROLE_FILL),
-                busbar_plugin_abi::secret::SUGAR_ROLE_PATH => Some(SUGAR_ROLE_PATH),
-                _ => None,
-            };
-            if let Some(role) = role {
-                rewrites.push((REWRITE_SUGAR_ROLE, word, role.to_owned()));
-            }
-        }
-        sugars.declare(&owner, &rewrites)?;
-    }
-    Ok(sugars)
+    Ok(declarations)
 }
 
-/// Each configured secret instance's reference schema (its image's D_REF_SCHEMA), by configured name.
-fn ref_schemas(registry: &MinRegistry, cfg: &RootCfg) -> Vec<(Arc<str>, Box<str>)> {
-    cfg.secrets
-        .keys()
-        .filter_map(|name| {
-            let identity = registry.identity_of(name)?;
-            let described = registry.described(&identity)?;
-            let (_, body) = described
-                .items
-                .iter()
-                .find(|(tag, _)| *tag == busbar_plugin_abi::secret::tag::D_REF_SCHEMA)?;
-            let text = core::str::from_utf8(body).ok()?;
-            Some((Arc::from(name.as_str()), Box::from(text)))
+/// Reference schemas include implicit instances and are keyed by the exact configured reference target.
+fn ref_schemas(cfg: &RootCfg) -> Result<Vec<(Arc<str>, Box<str>)>, String> {
+    let grammar = cfg.grammar().map_err(|error| error.0)?;
+    Ok(grammar
+        .secret_instances
+        .iter()
+        .map(|(name, source)| {
+            (
+                Arc::from(name.as_str()),
+                Box::from(source.ref_schema.as_str()),
+            )
         })
-        .collect()
+        .collect())
 }
 
 /// The registry over the production Need handlers, every image added, the binder told the shorthands and the
@@ -665,82 +618,263 @@ fn ref_schemas(registry: &MinRegistry, cfg: &RootCfg) -> Vec<(Arc<str>, Box<str>
 struct Built {
     registry: Arc<MinRegistry>,
     sugars: Sugars,
-    secrets: &'static BootSecrets,
-    records: Records,
-    directory: Directory,
+    secrets: Arc<BootSecrets>,
+    binder: Arc<dyn ConfigBinder>,
+    guard: Guard,
 }
 
-fn build(guard: Guard, cfg: &RootCfg, images: Vec<Admitted>) -> Result<Built, String> {
-    let binder: Arc<dyn ConfigBinder> = Arc::new(Binder::new(Arc::new(BootRefs)));
-    // The process's one secret kind, built over the binder and kept for the life of the process.
-    let secrets: &'static BootSecrets = Box::leak(Box::new(BootSecrets::new(Arc::clone(&binder))));
-    let records = Records::default();
-    let directory = Directory::default();
-    let needs = HostNeeds::production(
-        guard,
-        BootCustody(secrets),
-        records.clone(),
-        directory.clone(),
-        Arc::clone(&binder),
-        NeedLimits::default(),
-    );
-    let mut registry = Registry::new(
-        &HOST,
-        Arc::new(needs),
-        Arc::clone(&binder),
-        Ceilings::DEFAULT,
-    );
-    for image in images {
-        registry
-            .add(image)
-            .map_err(|refusal| format!("plugin image refused: {refusal}"))?;
+impl Built {
+    fn bootstrap_needs_for(&self, prefix: Arc<BootSecrets>) -> Arc<BootstrapNeeds> {
+        Arc::new(HostNeeds::production(
+            self.guard.clone(),
+            BootCustody(prefix),
+            BootstrapRecords,
+            BootstrapDirectory,
+            Arc::clone(&self.binder),
+            NeedLimits::default(),
+        ))
     }
-    let sugars = sugars_of(&registry)?;
-    binder.set_sugars(Arc::new(sugars.clone()));
-    binder.set_ref_schemas(ref_schemas(&registry, cfg));
+
+    fn needs_for(
+        &self,
+        prefix: Arc<BootSecrets>,
+        records: Records,
+        directory: Directory,
+    ) -> Arc<Needs> {
+        Arc::new(HostNeeds::production(
+            self.guard.clone(),
+            BootCustody(prefix),
+            records,
+            directory,
+            Arc::clone(&self.binder),
+            NeedLimits::default(),
+        ))
+    }
+}
+
+fn build(
+    process: &busbar_plugin_loader::process::ProcessResources,
+    guard: Guard,
+    cfg: &RootCfg,
+    images: busbar_plugin_loader::instance::Images,
+) -> Result<Built, String> {
+    let sugars = cfg.grammar().map_err(|error| error.0)?.sugars.clone();
+    let binder: Arc<dyn ConfigBinder> =
+        Arc::new(Binder::new(Arc::new(sugars.clone()), ref_schemas(cfg)?));
+    // The process's one secret kind, built over the binder and kept for the life of the process.
+    let secrets = BootSecrets::empty(Arc::clone(&binder), Arc::clone(process.slots()));
+    let registry = Registry::new(images, Arc::clone(&binder), Arc::clone(process.ids()));
+
     let registry = Arc::new(registry);
-    registry.start_watchdog();
-    let weak = Arc::downgrade(&registry);
-    secrets.attach(Arc::new(move |slot| weak.upgrade()?.scrub_of(slot)));
-    let seal: StoreSeal = Box::new(|| Box::new(busbar_kernel::seal::lend()));
-    let auth_core = Arc::new(KernelAuthCore::new(
-        Unissued,
-        StoreReplay::new(records.clone()),
-    ));
-    install_kernel_sides(Arc::clone(&registry), seal, auth_core, UNKNOWN_KEY_REFRESH);
     Ok(Built {
         registry,
         sugars,
         secrets,
-        records,
-        directory,
+        binder,
+        guard,
     })
 }
 
-/// The walk's steps: the registry's own, except that a secret instance opens through `open_secret_steps` (its
-/// port enters the table the store's SECRET Needs read, at once) and a plane through `PortDriver` (which opens
-/// the instance and keeps its seat).
+/// S5/S6-only authority. No serving service or worker exists in this step owner.
+struct BootstrapSteps<'r> {
+    registry: &'r MinRegistry,
+    instances: &'r [(KindCode, InstanceSpec<'r>)],
+    deployment: &'r DeploymentRead,
+    store_seal: busbar_plugin_loader::instance::StoreSeal,
+    secrets: Mutex<Arc<BootSecrets>>,
+    built: &'r Built,
+    at_rest: Option<SecretRef>,
+}
+
+impl BootstrapSteps<'_> {
+    fn prefix(&self) -> Arc<BootSecrets> {
+        Arc::clone(&self.secrets.lock().unwrap_or_else(PoisonError::into_inner))
+    }
+}
+
+impl BootSteps for BootstrapSteps<'_> {
+    type Opened = Option<OpenedPort>;
+
+    fn open(&self, index: u32) -> BoxFut<'_, Result<Self::Opened, OpenError>> {
+        let Some((kind, spec)) = self.instances.get(index as usize) else {
+            return Box::pin(async {
+                Err(OpenError::Unknown("unconfigured bootstrap step".into()))
+            });
+        };
+        match kind {
+            KindCode::Secret => Box::pin(async move {
+                let prefix = self.prefix();
+                let needs = self.built.bootstrap_needs_for(Arc::clone(&prefix));
+                let prepared = self.registry.reserve(spec)?;
+                let id = prepared.id();
+                let port = self
+                    .registry
+                    .open_secret_reserved(prepared, &needs, &prefix.refs())
+                    .await?;
+                let next = prefix
+                    .with_opened(
+                        spec.name,
+                        busbar_kernel::custody::SecretSource {
+                            instance: id,
+                            port: Arc::clone(&port),
+                        },
+                    )
+                    .map_err(|_| OpenError::Unknown("secret prefix extension refused".into()))?;
+                *self.secrets.lock().unwrap_or_else(PoisonError::into_inner) = next;
+                Ok(Some(OpenedPort::Secret(port)))
+            }),
+            KindCode::Store => Box::pin(async move {
+                // The secret instances are open (2a): the gate's key is published before the store's open asks.
+                let secrets = self.prefix();
+                publish_at_rest(self.at_rest.as_ref(), |what, reference| {
+                    let secrets = Arc::clone(&secrets);
+                    async move {
+                        secrets
+                            .resolve_ref(Instant::now() + CORE_SECRET_DEADLINE, &reference)
+                            .await
+                            .map_err(|denied| format!("{what} could not be resolved ({denied:?})"))
+                    }
+                })
+                .await;
+                let needs = self.built.bootstrap_needs_for(self.prefix());
+                self.registry
+                    .open_store(spec, &needs, &secrets.refs(), Arc::clone(&self.store_seal))
+                    .await
+                    .map(OpenedPort::Store)
+                    .map(Some)
+            }),
+            _ => Box::pin(async {
+                Err(OpenError::Unknown(
+                    "serving instance requested before S7".into(),
+                ))
+            }),
+        }
+    }
+
+    fn check(&self, index: u32) -> BoxFut<'_, Result<(), OpenError>> {
+        match self.instances.get(index as usize) {
+            Some((_, spec)) => self.registry.check(spec),
+            None => {
+                Box::pin(async { Err(OpenError::Unknown("unconfigured bootstrap step".into())) })
+            }
+        }
+    }
+
+    fn deployment<'a>(&'a self, store: &'a Self::Opened) -> BoxFut<'a, Result<[u8; 16], String>> {
+        match store {
+            Some(OpenedPort::Store(port)) => (self.deployment)(port),
+            _ => Box::pin(async { Err("bootstrap did not open the Store".into()) }),
+        }
+    }
+}
+
+/// S8 steps hold the completed S5 secret prefix. They cannot extend or replace it.
 struct Steps<'r> {
-    inner: RegistryBoot<'r, Needs>,
+    registry: &'r MinRegistry,
+    instances: &'r [(KindCode, InstanceSpec<'r>)],
     services: Option<Arc<KernelServices>>,
     seats: Mutex<Vec<PortSeat>>,
+    invocations: Mutex<Vec<busbar_kernel::host_services::NativeInvocationAdmission>>,
     shared: Arc<Shared>,
+    directory: Directory,
     /// `auth.signing_key`: the reference the ticket host key is derived from (IF §12.11).
-    signing_key: Option<SecretRef>,
+    core: Arc<CoreSecrets>,
     /// The process's secret kind: the open secret instances and the custody that resolves through them.
-    secrets: &'static BootSecrets,
-    /// `credentials.at_rest`: what the recoverable gate seals with, resolved before the store opens (2b).
-    at_rest: Option<AtRestCfg>,
+    secrets: Arc<BootSecrets>,
+    built: &'r Built,
     /// K9: what every seat's egress walk and carrier are composed over (the boot's one upstream table).
     seat: SeatShared,
-    /// The seats' probe targets, held for their probers.
-    probes: Mutex<Vec<Arc<dyn Send + Sync>>>,
+    /// Dormant probes prepared while opening seats, consumed only at publication.
+    probes: Mutex<Vec<std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>>>,
 }
 
 impl Steps<'_> {
-    async fn open_plane(&self, spec: &InstanceSpec<'_>) -> Result<(), OpenError> {
+    fn prefix(&self) -> Arc<BootSecrets> {
+        Arc::clone(&self.secrets)
+    }
+
+    async fn open_port(
+        &self,
+        index: u32,
+        prepared: PreparedInstance,
+    ) -> Result<OpenedPort, OpenError> {
+        let prefix = self.prefix();
+        let refs = prefix.refs();
+        let needs =
+            self.built
+                .needs_for(prefix, self.shared.records.clone(), self.directory.clone());
+        let Some((kind, _spec)) = self.instances.get(index as usize) else {
+            return Err(OpenError::Unknown("unconfigured serving step".into()));
+        };
+        match kind {
+            KindCode::Auth => self
+                .registry
+                .open_auth_reserved(prepared, &needs, &refs)
+                .await
+                .map(OpenedPort::Auth),
+            KindCode::Hook => self
+                .registry
+                .open_hook_reserved(prepared, &needs, &refs)
+                .await
+                .map(OpenedPort::Hook),
+            KindCode::Export => self
+                .registry
+                .open_export_reserved(prepared, &needs, &refs)
+                .await
+                .map(OpenedPort::Export),
+            KindCode::Transport => self
+                .registry
+                .open_transport_reserved(prepared, &needs, &refs)
+                .await
+                .map(OpenedPort::Transport),
+            KindCode::Plane => self
+                .registry
+                .open_plane_reserved(prepared, &needs, &refs)
+                .await
+                .map(OpenedPort::Plane),
+            _ => Err(OpenError::Unknown("bootstrap kind in serving step".into())),
+        }
+    }
+
+    #[cfg(test)]
+    async fn open_plane(
+        &self,
+        spec: &InstanceSpec<'_>,
+        prepared: PreparedInstance,
+        hooks: &hooks::Environment,
+        opened_hooks: &std::collections::BTreeMap<String, hooks::Opened>,
+    ) -> Result<(), OpenError> {
+        let who = Namespace {
+            plugin: Arc::from(prepared.identity()),
+            name: Arc::from(prepared.name()),
+            instance: prepared.id(),
+            slot: prepared.slot(),
+        };
+        let prefix = self.prefix();
+        let needs = self.built.needs_for(
+            Arc::clone(&prefix),
+            self.shared.records.clone(),
+            self.directory.clone(),
+        );
+        let port = self
+            .registry
+            .open_plane_reserved(prepared, &needs, &prefix.refs())
+            .await?;
+        self.compose_plane(spec, who, port, hooks, opened_hooks)
+    }
+
+    fn compose_plane(
+        &self,
+        spec: &InstanceSpec<'_>,
+        who: Namespace,
+        port: Arc<dyn busbar_ports::plane::PlanePort>,
+        hooks: &hooks::Environment,
+        opened_hooks: &std::collections::BTreeMap<String, hooks::Opened>,
+    ) -> Result<(), OpenError> {
         let services = self.services.clone().ok_or_else(|| {
-            OpenError::Unknown("the kernel services are not installed: a plane cannot open".into())
+            OpenError::Unknown(
+                "the kernel services are not installed: a plane cannot compose".into(),
+            )
         })?;
         let seal = busbar_kernel::seal::acquire();
         let caller = busbar_contract::services::Caller::issue(
@@ -748,45 +882,40 @@ impl Steps<'_> {
             Arc::from(spec.name),
             busbar_contract::abi::mechanism::KindCode::Plane,
         );
-        let driver = PortDriver::open(
-            self.inner.registry,
-            spec,
-            services,
-            caller,
+        let prefix = self.prefix();
+        let driver = PortDriver::new(
+            port,
+            Arc::clone(&services),
+            caller.clone(),
             Arc::new(busbar_kernel::refusal::CoreRefusals::new()),
             // The operator's `routes.<id>.auth` choice arrives with the K7 config (slice 9 leaves it unset).
             &|_| None,
         )
-        .await?;
-        let who = Namespace {
-            plugin: Arc::from(spec.identity),
-            name: Arc::from(spec.name),
-            instance: self.shared.next_instance.fetch_add(1, Ordering::Relaxed),
-            slot: 0,
-        };
+        .map_err(|error| OpenError::Unknown(format!("plane route declaration refused: {error}")))?;
+        let driver = hooks
+            .bind(self.registry, spec.name, driver, opened_hooks)
+            .map_err(OpenError::Unknown)?;
+        let invocation = services
+            .admit_native_invocation(&caller)
+            .map_err(|why| OpenError::Unknown(why.into()))?;
         // Tickets: the host key is resolved here (the secret instances are open, step 2a), so the gate and the
         // MINT store are built whole, with the key, before the seat exists.
-        let signing = match &self.signing_key {
-            Some(reference) => Some(
-                self.secrets
-                    .resolve_ref(Instant::now() + CORE_SECRET_DEADLINE, reference)
-                    .await
-                    .map_err(|denied| {
-                        OpenError::Unknown(format!(
-                            "the signing key could not be resolved ({denied:?})"
-                        ))
-                    })?,
-            ),
-            None => None,
-        };
-        let tickets = ticket_store(&self.shared.records, signing.as_ref());
+        let tickets = ticket_store(&self.shared.records, self.core.signing_key.as_ref());
         let driver =
             driver.with_tickets(Arc::new(TicketGate::new(Arc::clone(&tickets), who.clone())));
         let rt = tokio::runtime::Handle::current();
         // K9: the seat's egress walk and carrier over the boot's upstream table, under the instance's core-held
         // `insecure_transport.accept`.
+        let seat = SeatShared {
+            upstreams: self.seat.upstreams.clone(),
+            catalogs: self.seat.catalogs.clone(),
+            signals: Arc::clone(&self.seat.signals),
+            secrets: Arc::new(SpawnCustody(prefix)),
+            kernel: Arc::clone(&self.seat.kernel),
+            table: self.seat.table.clone(),
+        };
         let wiring = compose_seat(
-            &self.seat,
+            &seat,
             spec.name,
             spec.limits.accept,
             &who,
@@ -816,13 +945,13 @@ impl Steps<'_> {
             .and_then(|s| s.installed_dest_judge());
         let intents = KernelIntents::new(
             Arc::new(self.shared.records.clone()),
-            Arc::new(self.shared.push.clone()),
+            self.shared.push.clone(),
             Arc::clone(&self.shared.signals) as Arc<dyn SessionSignals>,
             who.clone(),
             rt.clone(),
         )
         .with_work(Arc::new(DurableDecider::new(work, recovers, rt)))
-        .with_services(plane_services(&self.shared, tickets, judge));
+        .with_services(plane_services(&self.shared.observations, tickets, judge));
         self.seats
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -835,6 +964,10 @@ impl Steps<'_> {
                 upstream: wiring.upstream,
                 carrier: Some(wiring.carrier),
             });
+        self.invocations
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(invocation);
         Ok(())
     }
 }
@@ -848,107 +981,35 @@ fn audience_of(config_json: &[u8]) -> Option<String> {
         .map(str::to_owned)
 }
 
-impl BootSteps for Steps<'_> {
-    /// `None` for a plane: its port lives in its seat.
-    type Opened = Option<OpenedPort>;
-
-    fn open(&self, index: u32) -> BoxFut<'_, Result<Option<OpenedPort>, OpenError>> {
-        let found = usize::try_from(index)
-            .ok()
-            .and_then(|at| self.inner.instances.get(at));
-        let Some((kind, spec)) = found else {
-            return Box::pin(core::future::ready(Err(OpenError::Unknown(format!(
-                "the boot plan names instance {index}, which is not configured"
-            )))));
+impl Steps<'_> {
+    async fn open_reserved(
+        &self,
+        index: u32,
+        prepared: PreparedInstance,
+    ) -> Result<Option<OpenedPort>, OpenError> {
+        let Some((kind, _)) = self.instances.get(index as usize) else {
+            return Err(OpenError::Unknown("unconfigured serving step".into()));
         };
         match kind {
-            KindCode::Secret => Box::pin(async move {
-                secret_custody::open_secret_steps(
-                    self.secrets,
-                    self.inner.registry,
-                    &[index],
-                    self.inner.instances,
-                )
-                .await?;
-                self.secrets
-                    .port(spec.name)
-                    .map(|port| Some(OpenedPort::Secret(port)))
-                    .ok_or_else(|| {
-                        OpenError::Unknown(format!(
-                            "secret instance {index} opened but is not in the process table"
-                        ))
-                    })
-            }),
-            KindCode::Plane => Box::pin(async move { self.open_plane(spec).await.map(|()| None) }),
-            KindCode::Store => Box::pin(async move {
-                // The secret instances are open (2a): the gate's key is published before the store's open asks.
-                let secrets = self.secrets;
-                publish_at_rest(self.at_rest.as_ref(), |what, reference| async move {
-                    secrets
-                        .resolve_ref(Instant::now() + CORE_SECRET_DEADLINE, &reference)
-                        .await
-                        .map_err(|denied| format!("{what} could not be resolved ({denied:?})"))
-                })
-                .await;
-                self.inner.open(index).await.map(Some)
-            }),
-            _ => {
-                let opened = self.inner.open(index);
-                Box::pin(async move { opened.await.map(Some) })
-            }
-        }
-    }
-
-    fn check(&self, index: u32) -> BoxFut<'_, Result<(), OpenError>> {
-        self.inner.check(index)
-    }
-
-    fn deployment<'a>(
-        &'a self,
-        store: &'a Option<OpenedPort>,
-    ) -> BoxFut<'a, Result<[u8; 16], String>> {
-        match store {
-            Some(port) => self.inner.deployment(port),
-            None => Box::pin(core::future::ready(Err(
-                "the step-2b instance did not open as a store".to_owned(),
-            ))),
+            KindCode::Secret | KindCode::Store => Err(OpenError::Unknown(
+                "bootstrap instances cannot reopen in the serving stage".into(),
+            )),
+            _ => self.open_port(index, prepared).await.map(Some),
         }
     }
 }
 
-/// The deployment point (IF §11.2 round 29): the store just opened is attached to the kernel's core store, the
-/// records and directory handles the Need handlers hold are filled from it, and the deployment id is read or kept
-/// through it. The attached format admission is parked in `startup`.
-fn deployment_read(
-    records: Records,
-    directory: Directory,
-    startup: Arc<Mutex<Option<Startup>>>,
-    push: LatePush,
-    work_store: LateStore,
-) -> Box<DeploymentRead> {
+/// S6 attaches the Store and establishes its deployment identity without constructing serving dependencies.
+fn deployment_read(startup: Arc<Mutex<Option<Startup>>>) -> Box<DeploymentRead> {
     Box::new(
         move |handle: &StoreHandle| -> BoxFut<'static, Result<[u8; 16], String>> {
             let backend = handle.backend.clone();
-            let records = records.clone();
-            let directory = directory.clone();
             let startup = Arc::clone(&startup);
-            let push = push.clone();
-            let work_store = work_store.clone();
             Box::pin(async move {
                 let admitted = super::boot::admit_format(backend, true).await?;
                 let core = admitted
                     .store()
-                    .ok_or_else(|| "the store format admission left no core store".to_owned())?;
-                records.install(Arc::new(StoreRecords::new(Arc::clone(&core))));
-                work_store.install(Arc::clone(&core));
-                push.install(StorePushQueue::new(
-                    Arc::clone(&core),
-                    Arc::new(RetryPolicyImpl::default()),
-                ));
-                let (served, _holds) =
-                    KernelDirectory::build(Arc::clone(&core), Arc::new(LogEvents), Vec::new())
-                        .await?;
-                directory.install(served);
+                    .ok_or("the Store admission has no core store")?;
                 let kept = BootIdentity::new(core)?.keep_deployment_id().await?;
                 *startup.lock().unwrap_or_else(PoisonError::into_inner) = Some(admitted);
                 deployment_bytes(&kept)
@@ -979,12 +1040,6 @@ async fn core_secrets_of(cfg: &RootCfg, secrets: &BootSecrets) -> Result<CoreSec
             out.signing_key = Some(resolve("the signing key", reference).await?);
         }
     }
-    if let Some(keys) = &cfg.credentials.at_rest {
-        out.at_rest_key = Some(resolve("the at-rest key", &keys.key).await?);
-        if let Some(previous) = &keys.previous {
-            out.at_rest_previous = Some(resolve("the previous at-rest key", previous).await?);
-        }
-    }
     Ok(out)
 }
 
@@ -992,7 +1047,7 @@ async fn core_secrets_of(cfg: &RootCfg, secrets: &BootSecrets) -> Result<CoreSec
 /// (2a) before the store (2b), so `credentials.at_rest` is resolved through them here, parsed exactly as the records
 /// step parses it, and published for `root::migrate::admit_for_host` before the store's open asks. `resolve` is the
 /// walk's core-secret resolution (by reference, the text naming only `what`).
-async fn publish_at_rest<F, Fut>(at_rest: Option<&AtRestCfg>, resolve: F)
+async fn publish_at_rest<F, Fut>(at_rest: Option<&SecretRef>, resolve: F)
 where
     F: Fn(&'static str, SecretRef) -> Fut,
     Fut: std::future::Future<Output = Result<SecureVec, String>>,
@@ -1005,117 +1060,830 @@ where
 }
 
 /// Whether `keys` resolve and parse as at-rest keys; `Err` the first refusal's text.
-async fn at_rest_resolves<F, Fut>(keys: &AtRestCfg, resolve: F) -> Result<bool, String>
+async fn at_rest_resolves<F, Fut>(keys: &SecretRef, resolve: F) -> Result<bool, String>
 where
     F: Fn(&'static str, SecretRef) -> Fut,
     Fut: std::future::Future<Output = Result<SecureVec, String>>,
 {
-    let key = resolve("the at-rest key", keys.key.clone()).await?;
-    let previous = match &keys.previous {
-        Some(previous) => Some(resolve("the previous at-rest key", previous.clone()).await?),
-        None => None,
-    };
-    busbar_kernel::appbuild::records_keys_from(Some(&*key), previous.as_deref(), None)
-        .map(|parsed| parsed.at_rest.is_some())
+    let key = resolve("the signing key", keys.clone()).await?;
+    busbar_kernel::appbuild::records_keys_from(Some(&*key)).map(|parsed| parsed.at_rest.is_some())
 }
 
-/// Boot through the MIN-3 registry, before any listener serves. `Ok(false)`: the configured store is not a MIN-3
-/// image, so the old path boots (nothing here ran past admission). `Ok(true)`: every instance opened in plan
-/// order, core's own secrets are resolved and the process holds the registry ([`registry`], [`seats`]).
-pub(crate) async fn run(
-    cfg: &RootCfg,
-    plugins: &PluginsCfg,
-    guard: Guard,
-    services: Option<Arc<KernelServices>>,
-) -> Result<bool, String> {
-    let images = admit_images(plugins)?;
-    if images.is_empty() {
-        return Ok(false);
+/// S6 owners. No serving instance has opened when this value is returned.
+pub(crate) struct BootstrapReady {
+    built: Built,
+    instances: Vec<Configured>,
+    bootstrap: super::boot::walk::Bootstrap<Option<OpenedPort>>,
+    pub(crate) core: Arc<CoreSecrets>,
+    prefix: Arc<BootSecrets>,
+    converting: bool,
+    normalization_source: Option<(std::path::PathBuf, busbar_contract::secure::SecureString)>,
+}
+
+/// S4b's effective registry and its retained bootstrap leases, before serving opens.
+pub(crate) struct ServingReady {
+    hook_plan: hooks::Plan,
+    provider_plan: super::min3_provider_plan::Plan,
+    provider_catalogs: busbar_kernel::plane_driver::provider_catalog::ProviderCatalogs,
+    implicit_auth: std::collections::BTreeSet<String>,
+    staged_catalogs:
+        std::collections::BTreeMap<String, super::min3_provider_catalog::StagedCatalog>,
+    auth_policy: busbar_kernel::config::min3::Min3Config,
+    request_body_cap: usize,
+    built: Built,
+    instances: Vec<Configured>,
+    declared: std::collections::BTreeMap<String, busbar_kernel::upstreams::Declared>,
+    leases: super::boot::walk::BootstrapLeases<Option<OpenedPort>>,
+    reserved: Vec<(u32, PreparedInstance)>,
+    provisioning: Vec<busbar_kernel::directory::ProvisioningInstance>,
+    core: Arc<CoreSecrets>,
+    public_url: Option<String>,
+    prefix: Arc<BootSecrets>,
+    converting: bool,
+    normalization_source: Option<(std::path::PathBuf, busbar_contract::secure::SecureString)>,
+    _bootstrap_registry: Arc<MinRegistry>,
+}
+
+impl ServingReady {
+    /// Reserve the complete candidate before any export pump receives a producer handle.
+    pub(crate) fn export_names(&self) -> impl Iterator<Item = String> + '_ {
+        self.instances
+            .iter()
+            .filter(|instance| instance.kind == KindCode::Export)
+            .map(|instance| instance.name.clone())
     }
-    let transport_images = transports::identities(images.iter().map(|(image, _)| image));
-    let planes: Vec<PlaneImage> = images
-        .iter()
-        .filter(|(image, _)| matches!(image.kind(), KindCode::Plane))
-        .map(|(image, alias)| PlaneImage {
-            identity: image.identity().to_owned(),
-            alias: alias.clone(),
+}
+
+impl BootstrapReady {
+    pub(crate) fn converting(&self) -> bool {
+        self.converting
+    }
+    pub(crate) fn resolver(
+        &self,
+        reactor: tokio::runtime::Handle,
+    ) -> Arc<busbar_kernel::config::secret::SecretResolver> {
+        self.prefix.resolver(reactor, self.built.sugars.clone())
+    }
+}
+
+pub(crate) async fn prepare_bootstrap(
+    process: &busbar_plugin_loader::process::ProcessResources,
+    file_images: super::boot::images::FileImages,
+    cfg: &RootCfg,
+    guard: Guard,
+    stdio: bool,
+) -> Result<Option<(BootstrapReady, Startup)>, String> {
+    let images = file_images.images;
+    let transport_images: Vec<String> = images
+        .identities()
+        .filter(|identity| {
+            images
+                .described(identity)
+                .is_some_and(|facts| facts.kind == KindCode::Transport)
         })
+        .map(str::to_owned)
         .collect();
-    let built = build(
-        guard,
-        cfg,
-        images.into_iter().map(|(image, _)| image).collect(),
-    )?;
+    let planes: Vec<PlaneImage> = file_images
+        .aliases
+        .into_iter()
+        .filter(|(identity, _)| {
+            images
+                .described(identity)
+                .is_some_and(|facts| facts.kind == KindCode::Plane)
+        })
+        .map(|(identity, alias)| PlaneImage { identity, alias })
+        .collect();
+    // WP1-GAP r3 §1.3, A-C4, B1: `--stdio` is judged over the admitted planes' describe here, before
+    // `build` and the boot plan open any instance, so a refusal leaves the Store untouched.
+    if stdio {
+        stdio_line_plane(&images, &planes)?;
+    }
+    let built = build(process, guard, cfg, images)?;
     let store_module = cfg
         .store
         .as_ref()
         .map(|store| store.module.as_str())
         .ok_or_else(busbar_kernel::config::store_required)?;
     if built.registry.identity_of(store_module).is_none() {
-        return Ok(false);
+        return Ok(None);
     }
+    let converting = !super::migrate::stamped();
+    let normalization_source = super::migrate::normalization_source()?;
     let mut instances = configured(cfg, &planes)?;
     // Transports have no config section: one instance per admitted image (its schema is the registry's).
-    instances.extend(transports::configured(
-        cfg,
-        &built.registry,
-        &transport_images,
-    )?);
-    let specs: Vec<(KindCode, InstanceSpec<'_>)> = instances
+    if !converting {
+        instances.extend(transports::configured(
+            cfg,
+            &built.registry,
+            &transport_images,
+        )?);
+    }
+    let specs = specifications(&instances, cfg.public_url.as_deref(), converting);
+    let mut core_modules = busbar_kernel::appbuild::core_secret_modules(cfg);
+    core_modules.extend(
+        instances
+            .iter()
+            .filter(|instance| instance.kind == KindCode::Secret)
+            .map(|instance| instance.name.clone()),
+    );
+    core_modules.sort();
+    core_modules.dedup();
+    let core_refs: Vec<&str> = core_modules.iter().map(String::as_str).collect();
+    let startup: Arc<Mutex<Option<Startup>>> = Arc::default();
+    let reader = deployment_read(Arc::clone(&startup));
+    let bootstrap_steps = BootstrapSteps {
+        registry: &built.registry,
+        instances: &specs,
+        deployment: &*reader,
+        store_seal: Arc::new(|| Box::new(busbar_kernel::seal::lend())),
+        secrets: Mutex::new(Arc::clone(&built.secrets)),
+        built: &built,
+        at_rest: cfg.auth.as_ref().and_then(|a| a.signing_key.clone()),
+    };
+    let plan = built
+        .registry
+        .boot_plan_with_core(&specs, &built.sugars, &core_refs)
+        .map_err(|error| format!("{error:?}"))?;
+    let bootstrap = super::boot::walk::bootstrap(&plan, &bootstrap_steps)
+        .await
+        .map_err(|refused| refused.to_string())?;
+    let prefix = bootstrap_steps.prefix();
+    drop(bootstrap_steps);
+    let startup = startup
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .take()
+        .ok_or("S6 did not retain the admitted Store")?;
+    drop(specs);
+    let core = Arc::new(core_secrets_of(cfg, &prefix).await?);
+    Ok(Some((
+        BootstrapReady {
+            built,
+            instances,
+            bootstrap,
+            core,
+            prefix,
+            converting,
+            normalization_source,
+        },
+        startup,
+    )))
+}
+
+fn specifications<'a>(
+    instances: &'a [Configured],
+    public_url: Option<&'a str>,
+    converting: bool,
+) -> Vec<(KindCode, InstanceSpec<'a>)> {
+    instances
         .iter()
         .map(|one| {
             (
                 one.kind,
                 InstanceSpec {
+                    purpose: if converting {
+                        busbar_plugin_loader::instance::OpenPurpose::ConvertUnstamped
+                    } else {
+                        busbar_plugin_loader::instance::OpenPurpose::Canonical
+                    },
                     identity: &one.identity,
                     name: &one.name,
                     config_json: &one.config,
                     limits: one.limits,
-                    public_url: cfg.public_url.as_deref(),
+                    public_url,
                     caller_upstreams: &[],
                 },
             )
         })
+        .collect()
+}
+
+pub(crate) fn prepare_serving(
+    ready: BootstrapReady,
+    process: &busbar_plugin_loader::process::ProcessResources,
+    effective_images: super::boot::images::FileImages,
+    cfg: &RootCfg,
+    catalogs: &busbar_kernel::plane_driver::provider_catalog::ProviderCatalogs,
+    guard: Guard,
+) -> Result<ServingReady, String> {
+    let mut provider_plan = super::min3_provider_plan::capture(&effective_images, cfg, catalogs)?;
+    let BootstrapReady {
+        built: bootstrap_built,
+        instances: before,
+        bootstrap,
+        core,
+        prefix,
+        converting,
+        normalization_source,
+    } = ready;
+    let images = effective_images.images;
+    let transports: Vec<String> = images
+        .identities()
+        .filter(|id| {
+            images
+                .described(id)
+                .is_some_and(|facts| facts.kind == KindCode::Transport)
+        })
+        .map(str::to_owned)
         .collect();
-    let startup: Arc<Mutex<Option<Startup>>> = Arc::default();
-    let push = LatePush::default();
-    let shared = Arc::new(Shared::new(built.records.clone(), push.clone()));
-    let reader = deployment_read(
-        built.records.clone(),
-        built.directory.clone(),
-        Arc::clone(&startup),
-        push,
-        shared.work_store.clone(),
-    );
+    let planes: Vec<PlaneImage> = effective_images
+        .aliases
+        .into_iter()
+        .filter(|(id, _)| {
+            images
+                .described(id)
+                .is_some_and(|facts| facts.kind == KindCode::Plane)
+        })
+        .map(|(identity, alias)| PlaneImage { identity, alias })
+        .collect();
+    let sugars = cfg.grammar().map_err(|error| error.0)?.sugars.clone();
+    let binder: Arc<dyn ConfigBinder> =
+        Arc::new(Binder::new(Arc::new(sugars.clone()), ref_schemas(cfg)?));
+    let prefix = prefix.with_binder(Arc::clone(&binder));
+    let registry = Arc::new(Registry::new(
+        images,
+        Arc::clone(&binder),
+        Arc::clone(process.ids()),
+    ));
+    let mut instances = configured(cfg, &planes)?;
+    let authored_auth: std::collections::BTreeSet<_> = instances
+        .iter()
+        .filter(|instance| instance.kind == KindCode::Auth)
+        .map(|instance| instance.name.clone())
+        .collect();
+    let implicit_auth = provider_plan
+        .auth
+        .iter()
+        .filter(|instance| !authored_auth.contains(&instance.name))
+        .map(|instance| instance.name.clone())
+        .collect();
+    instances.retain(|instance| instance.kind != KindCode::Auth);
+    instances.extend(std::mem::take(&mut provider_plan.auth));
+    if !converting {
+        instances.extend(transports::configured(cfg, &registry, &transports)?);
+    }
+    let declared = if converting {
+        Default::default()
+    } else {
+        declared_planes(&registry, &mut instances)?
+    };
+    let mut staged_catalogs = std::collections::BTreeMap::new();
+    let registrations = declared
+        .iter()
+        .map(|(name, split)| {
+            busbar_kernel::plane_driver::port_egress::SeatPool::of(name, &split.definitions)
+                .map(|pool| (name.clone(), pool))
+        })
+        .collect::<Result<std::collections::BTreeMap<_, _>, _>>()?;
+    let mut next_destination = registrations
+        .values()
+        .flat_map(|pool| pool.members.iter().map(|member| member.destination.get()))
+        .max()
+        .map_or(Ok(0), |last| {
+            last.checked_add(1)
+                .ok_or("catalog destination IDs exhausted")
+        })?;
+    let mut next_need = registrations
+        .values()
+        .flat_map(|pool| pool.members.iter().map(|member| member.need.0))
+        .max()
+        .map_or(Ok(0), |last| {
+            last.checked_add(1).ok_or("catalog Need IDs exhausted")
+        })?;
+    for (name, catalog) in catalogs {
+        let registration = registrations
+            .get(name)
+            .ok_or_else(|| format!("plane {name}: catalog has no admitted registration owner"))?;
+        let definitions = &declared
+            .get(name)
+            .ok_or("catalog owner lost its definitions")?
+            .definitions;
+        let mut allocations = super::min3_provider_catalog::Allocations::new();
+        for pair in catalog.targets().keys() {
+            let destination = busbar_kernel_egress::ports::DestinationId::new(next_destination);
+            next_destination = next_destination
+                .checked_add(1)
+                .ok_or("catalog destination IDs exhausted")?;
+            let need = busbar_contract::conn::NeedId(next_need);
+            next_need = next_need
+                .checked_add(1)
+                .ok_or("catalog Need IDs exhausted")?;
+            allocations.insert(
+                pair.clone(),
+                super::min3_provider_catalog::Allocation {
+                    destination,
+                    need,
+                    upstream: format!("catalog-{}", destination.get()).into(),
+                },
+            );
+        }
+        let staged = provider_plan.stage(cfg, catalog, &allocations, registration, definitions)?;
+        staged_catalogs.insert(name.clone(), staged);
+    }
+    let mut leases = bootstrap.into_leases();
+    for (index, _, _) in &mut leases.opened {
+        let old = before
+            .get(*index as usize)
+            .ok_or("bootstrap lease has no configured owner")?;
+        let (next, candidate) = instances
+            .iter()
+            .enumerate()
+            .find(|(_, one)| one.kind == old.kind && one.name == old.name)
+            .ok_or("effective configuration removed a bootstrap instance")?;
+        if old.identity != candidate.identity
+            || old.config != candidate.config
+            || old.limits != candidate.limits
+        {
+            return Err("effective configuration changes an opened bootstrap instance".into());
+        }
+        *index = u32::try_from(next).map_err(|_| "too many effective instances")?;
+    }
+    let core_names: Vec<&str> = instances
+        .iter()
+        .filter(|one| one.kind == KindCode::Secret)
+        .map(|one| one.name.as_str())
+        .collect();
+    let specs = specifications(&instances, cfg.public_url.as_deref(), converting);
+    let plan = registry
+        .boot_plan_with_core(&specs, &sugars, &core_names)
+        .map_err(|error| format!("{error:?}"))?;
+    let mut rest = Vec::new();
+    for (index, phase) in plan.steps {
+        if phase == busbar_plugin_loader::instance::BootPhase::Rest {
+            rest.push(index);
+        } else if !leases
+            .opened
+            .iter()
+            .any(|(held, held_phase, _)| *held == index && *held_phase == phase)
+        {
+            return Err("effective configuration introduces a new bootstrap dependency".into());
+        }
+    }
+    let reserved = rest
+        .into_iter()
+        .map(|index| {
+            let (_, spec) = specs
+                .get(index as usize)
+                .ok_or("serving plan index is not configured")?;
+            registry
+                .reserve(spec)
+                .map(|prepared| (index, prepared))
+                .map_err(|error| format!("{error:?}"))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    drop(specs);
+    let auth = reserved
+        .iter()
+        .filter(|(_, prepared)| prepared.kind() == KindCode::Auth)
+        .map(|(_, prepared)| {
+            let described = registry
+                .described(prepared.identity())
+                .ok_or("reserved auth image has no admitted description")?;
+            let inbound = cfg.auth.as_ref().is_some_and(|auth| {
+                auth.chain
+                    .iter()
+                    .chain(&auth.admin_auth)
+                    .any(|entry| entry.name == prepared.name())
+            });
+            Ok(super::provisioning::ProvisioningAuth::described(
+                prepared.name(),
+                prepared.identity(),
+                prepared.id(),
+                inbound,
+                described.facts,
+                described.methods,
+            ))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    let provisioning = super::provisioning::specifications(&cfg.min3, &auth)
+        .map_err(|refusals| refusals.join("\n"))?;
+    let built = Built {
+        registry,
+        sugars,
+        secrets: Arc::clone(&prefix),
+        binder,
+        guard,
+    };
+    let hook_plan = hooks::Plan::capture(cfg, &instances)?;
+    Ok(ServingReady {
+        hook_plan,
+        provider_plan,
+        provider_catalogs: catalogs.clone(),
+        implicit_auth,
+        staged_catalogs,
+        auth_policy: cfg.min3.clone(),
+        request_body_cap: cfg.limits.request_body_max_bytes,
+        built,
+        instances,
+        declared,
+        leases,
+        reserved,
+        provisioning,
+        core,
+        prefix,
+        public_url: cfg.public_url.clone(),
+        converting,
+        normalization_source,
+        _bootstrap_registry: bootstrap_built.registry,
+    })
+}
+
+pub(crate) struct ServingEnvironment<'a> {
+    app: &'a busbar_kernel::state::App,
+}
+
+impl<'a> ServingEnvironment<'a> {
+    pub(crate) fn new(app: &'a busbar_kernel::state::App) -> Self {
+        Self { app }
+    }
+}
+
+pub(crate) async fn finish(
+    ready: ServingReady,
+    reactor: tokio::runtime::Handle,
+    startup: Startup,
+    services: Option<Arc<KernelServices>>,
+    work_binder: Arc<WorkBinder>,
+    environment: Option<ServingEnvironment<'_>>,
+    export_observers: &super::export_observer::ExportReservation,
+) -> Result<
+    (
+        Startup,
+        super::boot::workers::PreparedWorkers,
+        super::exports::ports::Exports,
+        Arc<Booted>,
+    ),
+    String,
+> {
+    let ServingReady {
+        hook_plan,
+        provider_plan,
+        mut provider_catalogs,
+        implicit_auth,
+        mut staged_catalogs,
+        auth_policy,
+        request_body_cap,
+        built,
+        instances,
+        declared,
+        leases,
+        reserved,
+        provisioning,
+        _bootstrap_registry,
+        core: core_secrets,
+        public_url,
+        prefix,
+        converting,
+        normalization_source,
+    } = ready;
+    let hook_environment = environment
+        .as_ref()
+        .map(|environment| hooks::Environment::new(hook_plan, environment.app))
+        .transpose()?;
+    let hooks = hook_environment.as_ref();
+    if let Some(hooks) = hooks {
+        hooks.check_pools(&instances)?;
+    }
+    let core = startup
+        .store()
+        .ok_or("S6 did not retain the admitted Store")?;
+    let specs = specifications(&instances, public_url.as_deref(), converting);
+    let records = Arc::new(StoreRecords::new(Arc::clone(&core)));
+    let super::provisioning::PreparedProvisioning {
+        directory,
+        holds,
+        refresh,
+    } = super::provisioning::prepare(Arc::clone(&core), Arc::new(LogEvents), provisioning).await?;
+    let push = Arc::new(StorePushQueue::new(
+        Arc::clone(&core),
+        Arc::new(RetryPolicyImpl::default()),
+    ));
+    let shared = Arc::new(Shared::new(records.clone(), push, core, work_binder));
     let seat = SeatShared {
-        upstreams: configured_upstreams(cfg)?,
+        upstreams: declared
+            .iter()
+            .map(|(name, split)| (name.clone(), Arc::new(split.definitions.clone())))
+            .collect(),
+        catalogs: Default::default(),
         signals: Arc::clone(&shared.signals),
-        secrets: Arc::new(SpawnCustody(built.secrets)),
+        secrets: Arc::new(SpawnCustody(Arc::clone(&prefix))),
         kernel: Arc::new(Kernel::new()),
         table: ConnTable::installed(),
     };
-    let steps = Steps {
-        inner: RegistryBoot {
-            registry: &*built.registry,
-            instances: &specs,
-            deployment: &*reader,
-        },
+    let mut steps = Steps {
+        registry: &built.registry,
+        instances: &specs,
         services,
         seats: Mutex::default(),
+        invocations: Mutex::default(),
         shared: Arc::clone(&shared),
-        signing_key: cfg.auth.as_ref().and_then(|auth| auth.signing_key.clone()),
-        secrets: built.secrets,
-        at_rest: cfg.credentials.at_rest.clone(),
+        directory: Arc::clone(&directory),
+        core: Arc::clone(&core_secrets),
+        secrets: prefix,
+        built: &built,
         seat,
         probes: Mutex::default(),
     };
-    let core_modules = busbar_kernel::appbuild::core_secret_modules(cfg);
-    let core_refs: Vec<&str> = core_modules.iter().map(String::as_str).collect();
-    let walked = boot(&*built.registry, &specs, &built.sugars, &core_refs, &steps)
-        .await
-        .map_err(|refused| refused.to_string())?;
-    transports::publish(transports::opened(&walked.opened, &specs))?;
-    let core = core_secrets_of(cfg, built.secrets).await?;
+    let mut opened = leases.opened;
+    let mut opened_auth = Vec::new();
+    let mut export_doors = Vec::new();
+    let mut opened_hooks = std::collections::BTreeMap::new();
+    let mut opened_planes = Vec::new();
+    for (index, prepared) in reserved {
+        let instance_id = prepared.id();
+        let who = Namespace {
+            plugin: Arc::from(prepared.identity()),
+            name: Arc::from(prepared.name()),
+            instance: prepared.id(),
+            slot: prepared.slot(),
+        };
+        let plane = (prepared.kind() == KindCode::Plane).then(|| who.clone());
+        let port = if prepared.kind() == KindCode::Auth {
+            let prefix = steps.prefix();
+            let needs = built.needs_for(
+                Arc::clone(&prefix),
+                Arc::clone(&records),
+                Arc::clone(&directory),
+            );
+            let opening = built
+                .registry
+                .open_auth_reserved_with_metadata(prepared, &needs, &prefix.refs())
+                .await
+                .map_err(|error| format!("serving auth {index}: {error:?}"))?;
+            let port = Arc::clone(&opening.port);
+            opened_auth.push(super::min3_auth::OpenedAuth {
+                who,
+                port: opening.port,
+                methods: opening.methods,
+                limits: opening.limits,
+                out_of_process: false,
+            });
+            Some(OpenedPort::Auth(port))
+        } else if prepared.kind() == KindCode::Hook {
+            let hook = hooks::open(
+                &built,
+                prepared,
+                steps.prefix(),
+                Arc::clone(&records),
+                Arc::clone(&directory),
+            )
+            .await
+            .map_err(|error| format!("serving hook {index}: {error:?}"))?;
+            let port = Arc::clone(&hook.port);
+            opened_hooks.insert(hook.who.name.to_string(), hook);
+            Some(OpenedPort::Hook(port))
+        } else {
+            steps
+                .open_reserved(index, prepared)
+                .await
+                .map_err(|error| format!("serving open {index}: {error:?}"))?
+        };
+        if let (Some(who), Some(OpenedPort::Plane(port))) = (plane, &port) {
+            opened_planes.push((index, who, Arc::clone(port)));
+        }
+        if let Some(OpenedPort::Export(port)) = &port {
+            let instance = instances
+                .get(index as usize)
+                .ok_or("opened export has no configured owner")?;
+            let disk = Arc::new(super::exports::ports::BoundDisk::new(
+                instance_id,
+                Arc::clone(&built.binder),
+                super::linked::disk_lane(),
+            ));
+            let door = busbar_plugin_loader::export_door::port::PortDoor::prepare(
+                &instance.name,
+                Arc::clone(port),
+                disk,
+                &instance.limits,
+                export_observers
+                    .observer(&instance.name)
+                    .ok_or("opened export has no reserved observation owner")?,
+            );
+            export_doors.push((instance.name.clone(), door));
+        }
+        opened.push((index, busbar_plugin_loader::instance::BootPhase::Rest, port));
+    }
+    let walked = super::boot::walk::Booted {
+        opened,
+        deployment: leases.deployment,
+    };
+    if converting {
+        let mut settled = Vec::new();
+        let mut plane_checks = Vec::new();
+        for (index, instance) in instances.iter().enumerate() {
+            let identity = built
+                .registry
+                .identity_of(&instance.identity)
+                .ok_or("CONFIG: settlement image is no longer admitted")?;
+            let described = built
+                .registry
+                .described(&identity)
+                .ok_or("CONFIG: settlement image has no describe")?;
+            if instance.kind == KindCode::Plane {
+                plane_checks.push((
+                    instance.name.clone(),
+                    described
+                        .paths(busbar_plugin_abi::records::tag::D_UPSTREAM_PATH)
+                        .map(str::to_owned)
+                        .collect(),
+                ));
+            }
+            let settlement_registry = if matches!(instance.kind, KindCode::Secret | KindCode::Store)
+            {
+                &_bootstrap_registry
+            } else {
+                &built.registry
+            };
+            let answer = settlement_registry
+                .take_settled(&instance.name)
+                .ok_or_else(|| {
+                    format!("CONFIG: instance {index} did not settle its converting CONFIG")
+                })?;
+            settled.push(settlement::answer(
+                u32::try_from(index).map_err(|_| "CONFIG: too many configured instances")?,
+                instance,
+                &described,
+                answer,
+            )?);
+        }
+        // Temporary planes are never composed into seats or published. Keep bootstrap owners
+        // while the record/config writers run, then close them before replacing this process.
+        drop(opened_planes);
+        let mut opened = walked.opened;
+        opened.retain(|(index, _, _)| instances[*index as usize].kind != KindCode::Plane);
+        let admission = startup;
+        let core = admission
+            .store()
+            .ok_or("CONFIG: conversion has no admitted core store")?;
+        let keys = super::migrate_records::Keys::from_core(&core_secrets)?;
+        let written = super::migrate::convert_and_finish_checked(
+            Arc::clone(&core),
+            keys,
+            settled,
+            Arc::new(move |text| settlement::candidate(text, &plane_checks)),
+        )
+        .await?
+        .ok_or("CONFIG: conversion lost its pending source plan")?;
+        super::migrate::record_completed_changes(&written);
+        drop(steps);
+        drop(specs);
+        return Err(super::migrate::restart(
+            written,
+            (opened, admission, core, built, shared, _bootstrap_registry),
+            drop,
+            super::migrate::reexec,
+        ));
+    }
+    let mut normalized = Vec::new();
+    let mut plane_checks = Vec::new();
+    for (index, instance) in instances.iter().enumerate() {
+        // Provider bindings synthesize these instances from admitted style metadata. They
+        // have no authored identity-provider block to rewrite during normalization.
+        if instance.kind == KindCode::Auth && implicit_auth.contains(&instance.name) {
+            continue;
+        }
+        let identity = built
+            .registry
+            .identity_of(&instance.identity)
+            .ok_or("CONFIG: normalization image is no longer admitted")?;
+        let described = built
+            .registry
+            .described(&identity)
+            .ok_or("CONFIG: normalization image has no describe")?;
+        if instance.kind == KindCode::Plane {
+            plane_checks.push((
+                instance.name.clone(),
+                described
+                    .paths(busbar_plugin_abi::records::tag::D_UPSTREAM_PATH)
+                    .map(str::to_owned)
+                    .collect(),
+            ));
+        }
+        let settlement_registry = if matches!(instance.kind, KindCode::Secret | KindCode::Store) {
+            &_bootstrap_registry
+        } else {
+            &built.registry
+        };
+        let Some(mut answer) = settlement_registry.take_settled(&instance.name) else {
+            continue;
+        };
+        if instance.kind == KindCode::Transport {
+            let before = busbar_contract::json::parse_value(&instance.config)
+                .map_err(|_| "CONFIG: invalid transport config")?;
+            let after = busbar_contract::json::parse_value(answer.config_json.as_slice())
+                .map_err(|_| "CONFIG: invalid transport CONFIG")?;
+            if before != after {
+                return Err("CONFIG: a transport cannot normalize core-owned config".to_owned());
+            }
+            continue;
+        }
+        if let Some(retained) = declared.get(&instance.name) {
+            let visible = busbar_contract::json::parse_value(answer.config_json.as_slice())
+                .map_err(|_| "CONFIG: invalid plane CONFIG")?;
+            let complete = retained
+                .reattach(&visible)
+                .map_err(|errors| errors.join("; "))?;
+            answer.config_json = SecureVec::from(
+                busbar_contract::json::to_vec(&complete)
+                    .map_err(|_| "CONFIG: cannot encode normalized plane config")?,
+            );
+        }
+        normalized.push(settlement::answer(
+            u32::try_from(index).map_err(|_| "CONFIG: too many configured instances")?,
+            instance,
+            &described,
+            answer,
+        )?);
+    }
+    super::migrate::normalize_settled(
+        normalization_source,
+        normalized,
+        Arc::new(move |text| settlement::candidate(text, &plane_checks)),
+    )
+    .await?;
+    let environment = environment.ok_or("serving composition has no candidate authority")?;
+    let owners = super::min3_admin_auth::owners(
+        environment.app,
+        &auth_policy,
+        &opened_auth,
+        Arc::clone(&records),
+    )?;
+    let auth = Arc::new(super::min3_auth::AuthSet::new(
+        opened_auth,
+        &holds,
+        owners,
+        Duration::from_secs(auth_policy.unknown_key_refresh_s),
+    )?);
+    use busbar_kernel::retry::{RetryPolicy, RetrySite};
+    let retry = RetryPolicyImpl::default();
+    let cache = Arc::new(busbar_kernel::custody::CredCache::new(
+        auth_policy.outbound,
+        move |attempt, error| retry.next(RetrySite::AuthOutbound, attempt, error),
+        |key, event| {
+            let action = match event {
+                busbar_kernel::custody::CredEvent::Backoff => "outbound_credential_backoff",
+                busbar_kernel::custody::CredEvent::NoLifetime => "outbound_credential_no_lifetime",
+            };
+            busbar_kernel::audit_ring::AUDIT.record_by(
+                action,
+                &format!("auth:{}:upstream:{}", key.auth_instance, key.upstream),
+                busbar_kernel::audit_ring::OUTCOME_APPLIED,
+                "system",
+            );
+        },
+    ));
+    let rows = staged_catalogs
+        .values_mut()
+        .flat_map(super::min3_provider_catalog::StagedCatalog::take_auth_rows)
+        .collect();
+    let outbound = super::min3_outbound_auth::prepare(
+        &provider_plan.bindings,
+        rows,
+        &auth,
+        &provider_plan.styles,
+        cache,
+    )?;
+    for (name, staged) in staged_catalogs {
+        let pools = provider_plan
+            .pools
+            .get(&name)
+            .ok_or("staged catalog has no retained pool policy")?
+            .clone();
+        let catalog = super::plane_seats::CatalogSeat {
+            plan: Arc::new(
+                provider_catalogs
+                    .remove(&name)
+                    .ok_or("staged catalog lost its exact resolved plan")?,
+            ),
+            sealed: staged.seal(&outbound)?,
+            pools,
+        };
+        steps.seat.catalogs.insert(name, Arc::new(catalog));
+    }
+    let hooks = hooks.ok_or("native planes have no frozen hook construction inputs")?;
+    for (index, who, port) in opened_planes {
+        let (_, spec) = specs
+            .get(index as usize)
+            .ok_or("opened plane has no configured owner")?;
+        steps
+            .compose_plane(spec, who, port, hooks, &opened_hooks)
+            .map_err(|error| format!("serving plane {index}: {error:?}"))?;
+    }
+    let provisioning = super::provisioning::mounts(
+        &auth_policy,
+        &auth,
+        environment.app,
+        environment
+            .app
+            .config_generation
+            .load(std::sync::atomic::Ordering::Acquire),
+        request_body_cap,
+        crate::root::dispatch::dispatcher().budgets().call,
+        Arc::clone(&environment.app.request_id_counter),
+    )?;
+    let transports = transports::table(transports::opened(&walked.opened, &specs))?;
+    let secrets = steps.prefix();
+    let core = core_secrets;
     let seats = steps
         .seats
         .into_inner()
@@ -1124,39 +1892,46 @@ pub(crate) async fn run(
         .probes
         .into_inner()
         .unwrap_or_else(PoisonError::into_inner);
+    let invocations = steps
+        .invocations
+        .into_inner()
+        .unwrap_or_else(PoisonError::into_inner);
     let ticking = seats.clone();
-    // The admin listener serves the planes' ROUTE_ADMIN routes from here on.
-    busbar_kernel::plane_driver::port_admin::install(seats.clone());
-    let installed = BOOTED.set(Booted {
+    let booted = Arc::new(Booted {
+        resolver: secrets.resolver(reactor, built.sugars.clone()),
         registry: built.registry,
+        _bootstrap_registry,
+        _transports: transports,
+        _native_invocations: invocations,
+        _opened: walked.opened,
+        auth,
+        provisioning,
+        config_version: environment.app.config_version,
         seats,
         core,
-        secrets: built.secrets,
+        secrets,
         deployment: walked.deployment,
-        work_binder: shared.work_binder.clone(),
         work: Arc::clone(&shared.work),
-        records: built.records.clone(),
-        _probes: probes,
-        startup: Mutex::new(
-            startup
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .take(),
-        ),
+        records,
     });
-    if installed.is_err() {
-        return Err("the MIN-3 boot ran twice in one process".to_owned());
+    // Retain dormant maintenance until root has published the serving routes.
+    let mut workers = super::boot::workers::PreparedWorkers::new();
+    workers.push(refresh.run());
+    for probe in probes {
+        workers.push(probe);
     }
-    // The tick timer task of every seat whose plane states a period (§8.6 `tick_s`): its PUSHes queue under the
-    // instance's namespace, its EMITs go to their carriers.
-    let queue: Arc<dyn PushQueue> = Arc::new(shared.push.clone());
-    for seat in &ticking {
-        tokio::spawn(seat.clone().tick_task(Arc::clone(&queue)));
+    let queue: Arc<dyn PushQueue> = shared.push.clone();
+    for seat in ticking {
+        let queue = Arc::clone(&queue);
+        workers.push(async move { seat.tick_task(queue).await });
     }
-    if let Some(held) = booted() {
-        tracing::info!("{}", held.describe());
-    }
-    Ok(true)
+    tracing::info!("{}", booted.describe());
+    Ok((
+        startup,
+        workers,
+        super::exports::ports::Exports::new(export_doors)?,
+        booted,
+    ))
 }
 
 #[cfg(test)]
@@ -1167,3 +1942,10 @@ mod tests;
 /// `Registry::open_transport` and published for the connector.
 #[path = "min3_transports.rs"]
 pub(crate) mod transports;
+
+#[path = "min3_settled.rs"]
+mod settlement;
+
+#[cfg(test)]
+#[path = "tests/fixture_bootstrap.rs"]
+pub(crate) mod fixture;

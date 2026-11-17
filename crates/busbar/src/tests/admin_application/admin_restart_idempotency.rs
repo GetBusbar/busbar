@@ -133,17 +133,15 @@ async fn application(
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     crate::dist_root_install::install();
     let store_library = plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&store_library)
-        .expect("the actual Store statement reads")
-        .expect("the actual Store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the Store statement is valid")
-        .name;
+    let module = crate::root::test_plugins::native_image(&store_library).name;
     let signing_key = directory.join("signing-key");
     let operator_token = directory.join("operator-token");
     if first {
-        let mut manifest = plugins::manifest("store", &module, plugins::FIXTURE_PUBLISHER);
-        manifest.statement = Some(hex::encode(statement));
+        let manifest = crate::root::test_plugins::native_manifest(
+            "store",
+            &store_library,
+            plugins::FIXTURE_PUBLISHER,
+        );
         let archive = plugins::signed(
             &crate::dist_root_install::release_key(),
             manifest,
@@ -163,7 +161,7 @@ async fn application(
         "providers": {}, "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] }, "identity-providers": {},
+        "advanced": {  }, "identity-providers": {},
     });
     document["identity-providers"][operator] = serde_json::json!({
         "module": operator, "token": { "file": operator_token },
@@ -178,13 +176,12 @@ async fn application(
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let plugin_config = plugins::trusted_config(directory);
-    let backend = busbar_kernel::appbuild::bootstrap_config_store(
-        &config,
-        &plugin_config,
-        &busbar_kernel::preflight::Unopened,
-    )
-    .await
-    .expect("the actual Store reopens the configuration authority");
+    let crate::root::min3_boot::fixture::Fixture {
+        backend: backend,
+        rules,
+    } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
+        .await
+        .expect("the actual Store reopens the configuration authority");
     let store = crate::root::real_store::core_over(backend).await;
     let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(store.clone())
         .expect("the actual Store supports conditional configuration records");

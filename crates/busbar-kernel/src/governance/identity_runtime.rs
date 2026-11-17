@@ -341,6 +341,9 @@ impl GovState {
             .await?;
         let key = committed_key(&commit, id)?;
         self.publish_identity(commit);
+        // Rotation replaces the secret, not the principal's hard expiry. Keep the
+        // signed claim and returned expiry within both the key and mint-policy limits.
+        let exp = key.expires_at.map_or(exp, |deadline| exp.min(deadline));
         Ok(Some(RotatedCredential {
             token: material.signer.mint(id, exp, Some(&generation)).into(),
             key,

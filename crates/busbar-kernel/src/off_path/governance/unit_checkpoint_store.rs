@@ -32,8 +32,11 @@ use std::{
 const FAMILY: NamespaceId = NamespaceId(*b"busbar.unitcp.v1");
 const TAG: &str = "unit.accrued";
 const MEASUREMENT_TAG: &str = "measurement.accrued";
+const PARTITIONED_TAG: &str = "unit.partitioned.v1";
 fn checkpoint_tag(snapshot: &UnitCheckpoint) -> &'static str {
-    if snapshot.measurement.is_some() {
+    if snapshot.partitions.is_some() {
+        PARTITIONED_TAG
+    } else if snapshot.measurement.is_some() {
         MEASUREMENT_TAG
     } else {
         TAG
@@ -114,7 +117,7 @@ impl UnitCheckpointEvidence {
     async fn proof(&self) -> RecordStoreResult<Arc<VerifiedHead>> {
         self.journal.live_proof().await.map_err(error)
     }
-    pub fn pending_audit(&self, unit: u64, incarnation: u64) -> Option<AuditRecord> {
+    pub fn pending_audit(&self, unit: u64, incarnation: u64) -> Option<(u64, AuditRecord)> {
         self.audit_pending
             .lock()
             .unwrap_or_else(|p| p.into_inner())
@@ -122,14 +125,19 @@ impl UnitCheckpointEvidence {
             .filter(|p| {
                 p.audit.what.unit_key.get() == unit && p.audit.what.incarnation == incarnation
             })
-            .map(|p| p.audit.clone())
+            .and_then(|p| {
+                p.run
+                    .records()
+                    .first()
+                    .map(|record| (record.node_seq, p.audit.clone()))
+            })
     }
     /// Complete the native chain before returning any reconstructed audit facts.
     pub async fn find_audit(
         &self,
         unit: u64,
         incarnation: u64,
-    ) -> RecordStoreResult<Option<AuditRecord>> {
+    ) -> RecordStoreResult<Option<(u64, AuditRecord)>> {
         crate::off_path::governance::runtime::unit_checkpoint_store_find_audit(
             &self.journal,
             unit,
@@ -162,8 +170,8 @@ impl UnitCheckpointEvidence {
     /// Retain the exact signed audit and original sealed frame before native IO.
     /// Callers reuse pending_audit after uncertainty rather than sealing a new line.
     /// Append a recovered running unit's audit line and confirm it. Returns the WAL `node_seq` of
-    /// the record that carries it (SEALING-FIX §3.5 r16), or 0 when the identical line was already
-    /// in the journal (found by scan, whose position this path does not keep).
+    /// the record that carries it (SEALING-FIX §3.5 r16), including when the identical line was
+    /// already confirmed in the journal by an earlier attempt.
     pub async fn append_audit(&self, audit: AuditRecord) -> RecordStoreResult<u64> {
         let _driving = self.audit_driving.lock().await;
         let existing = self
@@ -177,12 +185,12 @@ impl UnitCheckpointEvidence {
             }
             pending
         } else {
-            if let Some(selected) = self
+            if let Some((node_seq, selected)) = self
                 .find_audit(audit.what.unit_key.get(), audit.what.incarnation)
                 .await?
             {
                 return if selected == audit {
-                    Ok(0)
+                    Ok(node_seq)
                 } else {
                     Err(refusal("running audit identity already differs"))
                 };
@@ -199,7 +207,12 @@ impl UnitCheckpointEvidence {
             pending
         };
         self.journal.confirm(&pending.run).await.map_err(error)?;
-        let node_seq = pending.run.records().first().map_or(0, |r| r.node_seq);
+        let node_seq = pending
+            .run
+            .records()
+            .first()
+            .ok_or_else(|| refusal("running audit staging produced no original"))?
+            .node_seq;
         self.audit_pending
             .lock()
             .unwrap_or_else(|p| p.into_inner())
@@ -359,8 +372,9 @@ impl StoreUnitCheckpoints {
         raw: &Secret<Vec<u8>>,
         proof: &VerifiedHead,
     ) -> RecordStoreResult<(Head, UnitCheckpoint, Record, Option<u64>, Carried)> {
-        let head: Head = serde_json::from_slice(raw.expose(&crate::seal::lend())).map_err(error)?;
-        if head.version != 1 || head.node != self.evidence.node || head.sequence == 0 {
+        let head: Head =
+            busbar_contract::json::parse(raw.expose(&crate::seal::lend())).map_err(error)?;
+        if !matches!(head.version, 1 | 2) || head.node != self.evidence.node || head.sequence == 0 {
             return Err(refusal("invalid running money head"));
         }
         let journal = self.evidence.journal.history().map_err(error)?;
@@ -387,7 +401,9 @@ impl StoreUnitCheckpoints {
         let record = JournalRecord::decode(&original.body).map_err(error)?;
         let mut reader = BodyReader::new(&record.body);
         let tag = reader.text();
-        if record.class != RecordClass::Checkpoint || !matches!(tag, Some(TAG | MEASUREMENT_TAG)) {
+        if record.class != RecordClass::Checkpoint
+            || !matches!(tag, Some(TAG | MEASUREMENT_TAG | PARTITIONED_TAG))
+        {
             return Err(refusal(
                 "running money head does not name unit.accrued evidence",
             ));
@@ -414,7 +430,15 @@ impl StoreUnitCheckpoints {
         {
             return Err(refusal("host measurement evidence exceeds bound"));
         }
-        let snapshot: UnitCheckpoint = serde_json::from_slice(encoded).map_err(error)?;
+        if (head.version == 2) != (tag == Some(PARTITIONED_TAG)) {
+            return Err(refusal(
+                "checkpoint head version differs from its signed domain",
+            ));
+        }
+        if tag == Some(PARTITIONED_TAG) {
+            crate::governance::unit_checkpoint::partitions::check_encoded(encoded)?;
+        }
+        let snapshot: UnitCheckpoint = busbar_contract::json::parse(encoded).map_err(error)?;
         snapshot.validate()?;
         if tag != Some(checkpoint_tag(&snapshot)) {
             return Err(refusal(
@@ -867,7 +891,7 @@ impl StoreUnitCheckpoints {
                 continue;
             };
             let head = Head {
-                version: 1,
+                version: if snapshot.partitions.is_some() { 2 } else { 1 },
                 node: self.evidence.node,
                 sequence: record.node_seq,
                 revision: snapshot.revision,
@@ -932,6 +956,11 @@ impl StoreUnitCheckpoints {
                 return Err(refusal(
                     "running money checkpoint would overwrite selected custody",
                 ));
+            }
+            if selected.partitions.is_some() || snapshot.partitions.is_some() {
+                crate::governance::unit_checkpoint::partitions::validate_successor(
+                    &selected, snapshot,
+                )?;
             }
         }
         let encoded = crate::off_path::governance::runtime::unit_checkpoint_store_encode(snapshot)

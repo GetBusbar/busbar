@@ -142,22 +142,23 @@ async fn governed_full(
         use crate::root::loader::dispatch::{
             load_dropped, rendering_of_library, Bind, ConnTable, NoSink,
         };
-        let late = super::LateServices::new();
-        let dispatcher = crate::root::dispatch::boot(1, &late);
-        crate::root::doors::install_dispatcher(dispatcher);
 
         crate::register_protocols();
         crate::register_planes();
         crate::register_diagnostics();
         let initial = busbar_kernel::config::deploy_from_yaml_str(
-            "providers: {}\nmodels: {}\nadvanced:\n  allow_destinations: [127.0.0.1]\n",
+            "providers: {}\nmodels: {}\n",
             &crate::root::boot::axis_test_grammar(),
         )
         .expect("the loopback deployment parses");
         let initial = busbar_kernel::config::resolve(&initial, &Default::default()).unwrap();
         let judge = crate::root::connector::dest_judge(&initial);
-        let (credentials, _handle) = crate::root::credentials::AppCredentials::late();
-        super::compose(judge.clone(), &late, credentials);
+        let credentials = crate::root::credentials::AppCredentials::new(None);
+        let late = super::Services::serving(Arc::new(
+            super::kernel_services(judge.clone()).with_credentials(Arc::new(credentials)),
+        ));
+        let dispatcher = crate::root::dispatch::boot(1, &late);
+        crate::root::doors::install_dispatcher(dispatcher);
         crate::root::doors::install_plugin_logs(crate::root::boot::plugin_logs());
         if crate::root::connector::installed().is_none() {
             let on = crate::root::dispatch::dispatcher();
@@ -237,22 +238,31 @@ async fn governed_full(
         } else {
             std::path::PathBuf::from(std::env::var_os(variable).expect(variable))
         };
-        let statement = crate::root::loader::dispatch::rendering_of_library(&path)
-            .unwrap()
-            .expect("the actual product states itself");
-        let facts = busbar_contract::abi::mechanism::rendering::read(&statement).unwrap();
-        let mut manifest = crate::root::test_plugins::manifest(
-            kind,
-            &facts.name,
-            crate::root::test_plugins::FIXTURE_PUBLISHER,
-        );
-        manifest.statement = Some(hex::encode(statement));
+        // The application Store is a native MIN-3 image (its stamp names it); the hook is a door image.
+        let mut manifest = if kind == "store" {
+            store_module = Some(crate::root::test_plugins::native_image(&path).name);
+            crate::root::test_plugins::native_manifest(
+                kind,
+                &path,
+                crate::root::test_plugins::FIXTURE_PUBLISHER,
+            )
+        } else {
+            let statement = crate::root::loader::dispatch::rendering_of_library(&path)
+                .unwrap()
+                .expect("the actual product states itself");
+            let facts = busbar_contract::abi::mechanism::rendering::read(&statement).unwrap();
+            let mut manifest = crate::root::test_plugins::manifest(
+                kind,
+                &facts.name,
+                crate::root::test_plugins::FIXTURE_PUBLISHER,
+            );
+            manifest.statement = Some(hex::encode(statement));
+            hook_module = Some(facts.name);
+            manifest
+        };
         if kind == "hook" {
             manifest.needs.prompt = busbar_contract::plugin_rows::NeedLevel::Rw;
             manifest.needs.user = busbar_contract::plugin_rows::NeedLevel::Ro;
-            hook_module = Some(facts.name);
-        } else {
-            store_module = Some(facts.name);
         }
         let archive = crate::root::test_plugins::signed(
             &crate::root::test_plugins::key(0x5a),
@@ -271,7 +281,7 @@ async fn governed_full(
             "auth": {"chain": if keys_chain { vec!["keys"] } else { vec![] }, "admin_auth": [],
                 "signing_key": {"file": signing_file}},
             "store": {"module": store_module, "settings": settings},
-            "advanced": {"allow_destinations": ["127.0.0.1"]}
+            "advanced": {}
         }),
         &crate::root::boot::axis_test_grammar(),
     )
@@ -310,6 +320,7 @@ async fn governed_full(
     let groups: BTreeMap<String, busbar_kernel::config::GroupCfg> = budget
         .map(|amount| {
             let limit = busbar_kernel::config::groups::LimitCfg {
+                selected: None,
                 metric: busbar_kernel::config::groups::LimitMetric::Budget,
                 amount,
                 per: Some(busbar_kernel::config::groups::LimitWindow::Total),
@@ -907,6 +918,7 @@ async fn the_boot_composition_serves_a_dropped_in_door_plane_in_every_build() {
     );
     let doors = [(instance.to_string(), plane)];
     let served = compose_served_checked(
+        None,
         Some(Arc::clone(&gov)),
         &doors,
         &dispatcher,
@@ -1119,6 +1131,31 @@ async fn an_arrival_opens_its_claims_span_with_the_units_forward_span_beneath_it
     assert_ne!(forward.1, Some("test_arrival"), "{opened:?}");
 }
 
+#[tokio::test]
+async fn serving_generation_retains_its_exact_dispatch_snapshot_without_a_route_slot() {
+    let mut g = governed("generation-owned-routes", false).await;
+    let routes = session_custody_routes(&mut g, false);
+    let snapshot = Arc::downgrade(&routes.snapshot);
+    let generation = routes
+        .generation
+        .clone()
+        .expect("a served plane owns a generation");
+    assert!(Arc::ptr_eq(
+        generation.core(),
+        &routes.served.planes[0].kernel
+    ));
+    drop(routes);
+    assert!(
+        snapshot.upgrade().is_some(),
+        "retained invocation generation owns dispatch"
+    );
+    drop(generation);
+    assert!(
+        snapshot.upgrade().is_none(),
+        "no weak route registry keeps a retired snapshot alive"
+    );
+}
+
 fn session_custody_routes(g: &mut Governed, pools_plane: bool) -> Arc<super::DataRoutes> {
     g.router = axum::Router::new();
     let served = std::mem::take(&mut g.served);
@@ -1140,7 +1177,7 @@ fn session_custody_routes(g: &mut Governed, pools_plane: bool) -> Arc<super::Dat
             lines.push(line);
         }
     }
-    Arc::new(super::DataRoutes {
+    super::DataRoutes::new(super::DispatchSnapshot {
         live: served
             .planes
             .iter()
@@ -1155,10 +1192,14 @@ fn session_custody_routes(g: &mut Governed, pools_plane: bool) -> Arc<super::Dat
         of_line,
         frames: Default::default(),
     })
+    .expect("complete fixture dispatch generation")
 }
 
 fn session_custody_request(g: &Governed, target: &str) -> super::DoorRequest {
     super::DoorRequest {
+        request: busbar_kernel::limits::process_admission::ProcessAdmission::new(0)
+            .try_enter(busbar_kernel::limits::process_admission::AdmissionClass::Data)
+            .unwrap(),
         method: axum::http::Method::POST,
         uri: target.parse().expect("fixture target"),
         headers: Default::default(),
@@ -1683,6 +1724,7 @@ struct ReservedSource {
 async fn reserved_source(g: &Governed, group: &str) -> ReservedSource {
     use busbar_kernel::config::groups::{GroupCfg, LimitCfg, LimitMetric, LimitWindow};
     let limit = |metric, per| LimitCfg {
+        selected: None,
         metric,
         amount: 1,
         per,
@@ -1841,6 +1883,7 @@ async fn assert_concurrent_custody(g: &Governed, group: &str, held: bool, now: u
         GroupCfg {
             enabled: true,
             limits: vec![LimitCfg {
+                selected: None,
                 metric: LimitMetric::Concurrent,
                 amount: 1,
                 per: None,
@@ -2380,9 +2423,6 @@ async fn only_the_host_line_carrier_adds_a_session_after_external_fields_are_fil
     kernel.close_carrier_session(session.get());
 }
 
-#[path = "serve_hook_child.rs"]
-mod hook_child_tests;
-
 #[path = "serve_ticket_custody.rs"]
 mod ticket_custody_tests;
 
@@ -2398,4 +2438,91 @@ async fn a_line_arrival_carries_its_carrier_id_in_the_typed_field() {
     let session = std::num::NonZeroU64::new(7).expect("non-zero");
     let (_, line, _) = routes.arrived_on_line(0, 1, session_custody_request(&g, "/open"), session);
     assert_eq!(line.carrier, 7);
+}
+
+#[tokio::test]
+async fn nested_frame_carries_the_same_admitted_request_after_parent_retirement() {
+    use busbar_kernel::limits::process_admission::{AdmissionClass, ProcessAdmission};
+    let mut g = governed("nested-request-lease", false).await;
+    let routes = session_custody_routes(&mut g, false);
+    let budget = ProcessAdmission::with_limits(2, 32, 8);
+    let request = budget.try_enter(AdmissionClass::Data).unwrap();
+    let mut parent_credit = request.try_reserve(1).unwrap();
+    routes.frames_lock().insert(
+        991,
+        super::DispatchFrame {
+            app: Arc::clone(&g.app),
+            request,
+        },
+    );
+    let parent = super::UnitFrame {
+        routes: &routes,
+        unit: 991,
+    };
+    let child = routes.frames_lock().get(&991).unwrap().clone();
+    assert!(Arc::ptr_eq(&child.app, &g.app));
+    assert_eq!(child.request.class(), AdmissionClass::Data);
+    let child_credit = child.request.try_reserve(1).unwrap();
+    assert!(
+        parent_credit.try_merge(child_credit).is_ok(),
+        "child credit must have the identical originating request"
+    );
+    drop(parent_credit);
+    drop(parent);
+    assert!(routes.frames_lock().is_empty());
+    assert!(
+        budget.try_enter(AdmissionClass::Data).is_err(),
+        "child retains the single Data admission"
+    );
+    let operator = budget.try_enter(AdmissionClass::Operator).unwrap();
+    drop(operator);
+    drop(child);
+    assert!(budget.try_enter(AdmissionClass::Data).is_ok());
+    assert_eq!(budget.used(), (0, 0));
+}
+
+#[tokio::test]
+async fn cancelled_nested_frame_does_not_retire_its_retained_input_lease() {
+    use busbar_kernel::limits::process_admission::{AdmissionClass, ProcessAdmission};
+    let mut g = governed("cancelled-nested-request-lease", false).await;
+    let routes = session_custody_routes(&mut g, false);
+    let budget = ProcessAdmission::with_limits(2, 32, 8);
+    routes.frames_lock().insert(
+        992,
+        super::DispatchFrame {
+            app: Arc::clone(&g.app),
+            request: budget.try_enter(AdmissionClass::Data).unwrap(),
+        },
+    );
+    let parent = super::UnitFrame {
+        routes: &routes,
+        unit: 992,
+    };
+    let child = routes.frames_lock().get(&992).unwrap().clone();
+    let retained = child.request.copy_input(b"child").unwrap().into_bytes();
+    routes.frames_lock().insert(993, child);
+    let child_routes = Arc::clone(&routes);
+    let (started, ready) = tokio::sync::oneshot::channel();
+    let task = tokio::spawn(async move {
+        let _child = super::UnitFrame {
+            routes: &child_routes,
+            unit: 993,
+        };
+        started.send(()).unwrap();
+        std::future::pending::<()>().await;
+    });
+    ready.await.unwrap();
+    drop(parent);
+    assert!(routes.frames_lock().contains_key(&993));
+    task.abort();
+    assert!(task.await.unwrap_err().is_cancelled());
+    assert!(routes.frames_lock().is_empty());
+    assert_eq!(budget.used(), (5, 5));
+    assert!(
+        budget.try_enter(AdmissionClass::Data).is_err(),
+        "retained child input still owns the admitted request"
+    );
+    drop(retained);
+    assert_eq!(budget.used(), (0, 0));
+    assert!(budget.try_enter(AdmissionClass::Data).is_ok());
 }

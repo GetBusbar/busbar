@@ -14,12 +14,15 @@ fn holds(hay: &[u8], needle: &[u8]) -> bool {
 }
 
 fn moved_so_far() -> usize {
-    MOVED.with(std::cell::Cell::get)
+    moved_bytes()
 }
 
 /// Every byte outside `[head, end)` is zero.
 fn outside_live_is_zero(s: &SecureVec) -> bool {
-    s.v[..s.head].iter().all(|b| *b == 0) && s.v[s.end..].iter().all(|b| *b == 0)
+    s.allocation()[..s.live_range().start]
+        .iter()
+        .all(|b| *b == 0)
+        && s.allocation()[s.live_range().end..].iter().all(|b| *b == 0)
 }
 
 /// RED against a front-memmove `consume`: consuming moves nothing, it advances the view.
@@ -212,6 +215,140 @@ fn secure_vec_read_into_rejects_overlong_count() {
         s.allocation().iter().all(|b| *b == 0),
         "the lent region is wiped"
     );
+}
+
+#[test]
+fn secure_vec_read_into_unwind_wipes_loan() {
+    for tail in [Tail::Wipe, Tail::Trusted] {
+        // Exercise an unchanged allocation, compaction, and growth before the loan.
+        for (capacity, loan) in [(128, 4), (8, 4), (8, 8)] {
+            let mut s = SecureVec::with_capacity(capacity).unwrap();
+            s.extend(b"skipKEEP").unwrap();
+            s.consume(4);
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let _ = s.read_into(loan, tail, |dst| {
+                    dst[..2].copy_from_slice(b"PW");
+                    panic!("reader panicked after a partial write");
+                });
+            }));
+            assert!(result.is_err(), "the reader's panic must propagate");
+            assert_eq!(s.as_slice(), b"KEEP", "prior live bytes survive");
+            assert!(outside_live_is_zero(&s), "the abandoned loan is wiped");
+            s.read_into(4, tail, |dst| {
+                assert!(dst.iter().all(|byte| *byte == 0));
+                dst[..2].copy_from_slice(b"OK");
+                Ok(2)
+            })
+            .unwrap()
+            .unwrap();
+            assert_eq!(s.as_slice(), b"KEEPOK");
+            assert!(outside_live_is_zero(&s));
+        }
+    }
+}
+
+#[test]
+fn secure_vec_read_into_unwind_wipes_before_free() {
+    for tail in [Tail::Wipe, Tail::Trusted] {
+        let mut s = SecureVec::with_capacity(128).unwrap();
+        s.extend(b"skipKEEP").unwrap();
+        s.consume(4);
+        let (pointer, len) = (s.allocation().as_ptr(), s.capacity());
+        let (result, wiped, _) = crate::support::observe_wipe(pointer, len, || {
+            std::panic::catch_unwind(move || {
+                let _ = s.read_into(SENTINEL.len() + 8, tail, |dst| {
+                    dst[..SENTINEL.len()].copy_from_slice(SENTINEL);
+                    panic!("reader panicked while owning the buffer");
+                });
+            })
+        });
+        assert!(
+            result.is_err(),
+            "the buffer drops during the reader's unwind"
+        );
+        assert_eq!(
+            wiped,
+            Some(true),
+            "all initialized bytes are wiped before free"
+        );
+    }
+}
+
+#[test]
+fn secure_vec_read_into_error_wipes_loan() {
+    for tail in [Tail::Wipe, Tail::Trusted] {
+        let mut s = SecureVec::with_capacity(128).unwrap();
+        s.extend(b"skipKEEP").unwrap();
+        s.consume(4);
+        let error = s
+            .read_into(SENTINEL.len() + 8, tail, |dst| {
+                dst[..SENTINEL.len()].copy_from_slice(SENTINEL);
+                Err(io::ErrorKind::Interrupted.into())
+            })
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+        assert_eq!(s.as_slice(), b"KEEP");
+        assert!(outside_live_is_zero(&s), "Err abandons every loan byte");
+    }
+}
+
+#[test]
+fn secure_vec_read_into_overlong_wipes_both_tail_modes() {
+    for tail in [Tail::Wipe, Tail::Trusted] {
+        let mut s = SecureVec::with_capacity(128).unwrap();
+        s.extend(b"skipKEEP").unwrap();
+        s.consume(4);
+        let error = s
+            .read_into(16, tail, |dst| {
+                dst.fill(0xBB);
+                Ok(usize::MAX)
+            })
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(s.as_slice(), b"KEEP");
+        assert!(outside_live_is_zero(&s));
+    }
+}
+
+#[test]
+fn secure_vec_read_into_empty_and_full_success_preserve_live_bytes() {
+    for tail in [Tail::Wipe, Tail::Trusted] {
+        let mut s = SecureVec::with_capacity(128).unwrap();
+        s.extend(b"KEEP").unwrap();
+        assert_eq!(
+            s.read_into(0, tail, |dst| {
+                assert!(dst.is_empty());
+                Ok(0)
+            })
+            .unwrap()
+            .unwrap(),
+            0
+        );
+        assert_eq!(
+            s.read_into(4, tail, |dst| {
+                dst.copy_from_slice(b"MORE");
+                Ok(dst.len())
+            })
+            .unwrap()
+            .unwrap(),
+            4
+        );
+        assert_eq!(s.as_slice(), b"KEEPMORE");
+        assert!(outside_live_is_zero(&s));
+    }
+}
+
+#[test]
+fn secure_vec_read_into_overflow_never_calls_reader() {
+    let mut s = SecureVec::from(&b"KEEP"[..]);
+    let result = s.read_into(usize::MAX, Tail::Wipe, |_| {
+        panic!("allocation refusal must precede the callback");
+    });
+    assert!(matches!(result, Err(Overflow)));
+    assert_eq!(s.as_slice(), b"KEEP");
+    assert!(outside_live_is_zero(&s));
 }
 
 // SECURE-TYPES (core #164): the types that replace the banned zeroize wrapper. RED until they land.

@@ -306,7 +306,7 @@ pub(crate) fn ledger_correction_unit_map(unit: &str, count: i128) -> BTreeMap<St
 pub(crate) fn ledger_correction_recovery_encode<T: serde::Serialize>(
     custody: &T,
 ) -> Option<Vec<u8>> {
-    serde_json::to_vec(custody).ok()
+    busbar_contract::json::to_vec(custody).ok()
 }
 
 /// `ledger_correction_recovery`: the child operation `owns` picks among a custody's handoffs.

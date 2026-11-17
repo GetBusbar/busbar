@@ -31,7 +31,7 @@
 //! The canary is 32 random bytes placed at offset 32 of a payload far below jemalloc's small-size
 //! limit; a match is any 16-byte window of it, so a partly overwritten secret still counts. The
 //! patterns are held XOR-masked and compared masked, so the scan never builds the plaintext, and
-//! hits inside the scan's own read buffer are not counted. Staging buffers are [`Zeroizing`] and
+//! hits inside the scan's own read buffer are not counted. Staging buffers are [`SecureVec`] and
 //! are dropped before [`WipeProof::assert_absent`].
 //!
 //! Linux only (A23): elsewhere [`WipeProof::assert_absent`] checks nothing and the wipe counters and
@@ -40,15 +40,21 @@
 //! ```ignore
 //! let proof = WipeProof::new();
 //! {
-//!     let secret = proof.payload();          // Zeroizing<Vec<u8>> holding the canary
+//!     let secret = proof.payload();          // SecureVec holding the canary
 //!     code_under_test(&secret);
 //! }                                           // dropped before the scan
 //! proof.assert_absent("code_under_test wipes its copies");
 //! ```
+//!
+//! Code that holds the secret as text takes [`WipeProof::text`] and [`WipeProof::text_payload`] (the
+//! canary drawn from 64 ASCII characters). A test that must also show the secret is still owned
+//! part-way (a pending future, a shared owner not yet dropped) calls [`WipeProof::assert_held`]
+//! there: the canary must still be found, so the later "absent" is the drop at the end, not an
+//! early free.
 
+use busbar_contract::secure::{SecureString, SecureVec};
 use std::collections::hash_map::RandomState;
 use std::hash::{BuildHasher, Hasher};
-use zeroize::Zeroizing;
 
 /// Bytes in a canary.
 pub const CANARY_LEN: usize = 32;
@@ -60,6 +66,12 @@ pub const OFFSET: usize = 32;
 pub const PAYLOAD_LEN: usize = 128;
 /// The filler around the canary.
 const FILLER: u8 = 0xA5;
+/// The filler around a text canary (ASCII, so the payload is a `String`).
+const TEXT_FILLER: u8 = b'.';
+/// The 64 characters a text canary is drawn from.
+const TEXT: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-";
+/// Alphanumeric-only canaries also survive URL/form encoding unchanged.
+const ALPHANUMERIC: &[u8; 62] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
 
 /// 32 random bytes held as `masked ^ mask`, so the plaintext is never at rest in this struct.
 #[derive(Clone)]
@@ -70,17 +82,32 @@ struct Pattern {
 
 impl Pattern {
     fn random() -> Self {
-        let mut plain = [0_u8; CANARY_LEN];
+        Self::random_from(None)
+    }
+
+    fn random_from(alphabet: Option<&[u8]>) -> Self {
+        let mut draw = [0_u8; CANARY_LEN];
         let mut mask = [0_u8; CANARY_LEN];
-        fill_random(&mut plain);
+        fill_random(&mut draw);
         fill_random(&mut mask);
         let mut masked = [0_u8; CANARY_LEN];
-        for ((m, p), k) in masked.iter_mut().zip(&plain).zip(&mask) {
-            *m = p ^ k;
+        for ((m, d), k) in masked.iter_mut().zip(&draw).zip(&mask) {
+            let plain = alphabet.map_or(*d, |chars| chars[usize::from(*d) % chars.len()]);
+            *m = plain ^ k;
         }
-        plain.fill(0);
-        std::hint::black_box(&mut plain);
+        draw.fill(0);
+        std::hint::black_box(&mut draw);
         Self { masked, mask }
+    }
+
+    /// 32 characters drawn from [`TEXT`], so the canary can stand in a `String` (192 random bits).
+    fn random_text() -> Self {
+        Self::random_from(Some(TEXT))
+    }
+
+    /// Whether every canary byte is one of [`TEXT`] (the pattern was drawn by [`Self::random_text`]).
+    fn is_text(&self) -> bool {
+        (0..CANARY_LEN).all(|at| TEXT.contains(&self.byte(at)))
     }
 
     /// One plaintext byte, unmasked on the way out so no whole copy is made.
@@ -104,11 +131,22 @@ impl Pattern {
         }
     }
 
-    /// A payload in a [`Zeroizing`] staging buffer.
-    fn payload(&self) -> Zeroizing<Vec<u8>> {
-        let mut out = Zeroizing::new(vec![0_u8; PAYLOAD_LEN]);
+    /// A payload in a [`SecureVec`] staging buffer.
+    fn payload(&self) -> SecureVec {
+        let mut out = SecureVec::zeroed(PAYLOAD_LEN);
         self.fill(&mut out);
         out
+    }
+
+    /// A text payload (filler [`TEXT_FILLER`], the canary at [`OFFSET`]) in a [`SecureString`] staging
+    /// string. The pattern must be a text one ([`Self::random_text`]).
+    fn text_payload(&self) -> SecureString {
+        let mut out = vec![TEXT_FILLER; PAYLOAD_LEN];
+        for (at, slot) in out[OFFSET..OFFSET + CANARY_LEN].iter_mut().enumerate() {
+            *slot = self.byte(at);
+        }
+        // ASCII throughout (checked by the caller), so this keeps the same block: no copy is made.
+        SecureString::from(String::from_utf8(out).expect("a text canary payload is ASCII"))
     }
 
     /// A payload in a plain block, made in place (no staging copy that could take a freed block).
@@ -168,7 +206,25 @@ impl WipeProof {
     /// (unwiped) control.
     #[must_use]
     pub fn new() -> Self {
-        let canary = Pattern::random();
+        Self::with_canary(Pattern::random())
+    }
+
+    /// As [`Self::new`], with a text canary (32 characters of 64 ASCII ones), for code that holds
+    /// the secret as a `String`: plant it with [`Self::text_payload`].
+    #[must_use]
+    pub fn text() -> Self {
+        Self::with_canary(Pattern::random_text())
+    }
+
+    /// An ASCII alphanumeric canary, unchanged by URL/form encoding, using the same masked scanner and
+    /// controls as [`Self::new`]. Write it directly into guarded ASCII staging with [`Self::write_canary`].
+    /// [`Self::payload`] still has binary filler and is not a UTF-8 payload.
+    #[must_use]
+    pub fn new_text() -> Self {
+        Self::with_canary(Pattern::random_from(Some(ALPHANUMERIC)))
+    }
+
+    fn with_canary(canary: Pattern) -> Self {
         let sentinel = Pattern::random();
         let control = Pattern::random();
         // First, so the scan never allocates after a block it must read is freed.
@@ -188,10 +244,60 @@ impl WipeProof {
     }
 
     /// A staging buffer holding the canary (a [`PAYLOAD_LEN`]-byte payload, the canary at
-    /// [`OFFSET`]). It is [`Zeroizing`]: drop it before [`Self::assert_absent`].
+    /// [`OFFSET`]). It is [`SecureVec`]: drop it before [`Self::assert_absent`].
     #[must_use]
-    pub fn payload(&self) -> Zeroizing<Vec<u8>> {
+    pub fn payload(&self) -> SecureVec {
         self.canary.payload()
+    }
+
+    /// A staging string holding the text canary (a [`PAYLOAD_LEN`]-byte ASCII payload, the canary at
+    /// [`OFFSET`]). It is [`SecureString`]: clone the text into the code under test and drop this
+    /// before [`Self::assert_absent`].
+    ///
+    /// # Panics
+    /// If the canary contains non-text bytes; use [`Self::text`] or [`Self::new_text`].
+    #[must_use]
+    pub fn text_payload(&self) -> SecureString {
+        assert!(
+            self.canary.is_text(),
+            "a text payload needs a proof made by WipeProof::text()"
+        );
+        self.canary.text_payload()
+    }
+
+    /// Scan now, while the code under test must still own its copy of the canary (a pending future,
+    /// a shared owner not yet dropped), and panic unless the live sentinel and the canary are found.
+    /// The proof stays whole for the final [`Self::assert_absent`]. On a target without
+    /// `/proc/self/mem` it checks nothing.
+    ///
+    /// # Panics
+    /// On a blind scan (the sentinel missing), or when the canary is gone already: freed early, or
+    /// never planted.
+    pub fn assert_held(&mut self, what: &str) {
+        #[cfg(target_os = "linux")]
+        {
+            let scanner = self
+                .scanner
+                .as_mut()
+                .unwrap_or_else(|error| panic!("{what}: the memory scan could not run: {error}"));
+            let found = scanner
+                .scan([&self.sentinel, &self.control, &self.canary])
+                .unwrap_or_else(|error| panic!("{what}: the memory scan could not run: {error}"));
+            assert!(
+                found[0] > 0,
+                "{what}: the live sentinel was not found, so /proc/self/mem is not readable here \
+                 and \"held\" would prove nothing"
+            );
+            assert!(
+                found[2] > 0,
+                "{what}: the canary is not in memory while its owner should still hold it (freed \
+                 early, or never planted)"
+            );
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = what;
+        }
     }
 
     /// Write the canary into `out` (which must be [`CANARY_LEN`] bytes), for code that takes the

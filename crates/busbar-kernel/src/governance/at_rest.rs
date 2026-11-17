@@ -15,9 +15,8 @@ pub const LABEL: &[u8] = b"busbar credential-at-rest v1";
 pub(crate) const KID_LABEL: &[u8] = b"busbar credential-at-rest kid v1";
 
 pub const NO_KEY_REFUSAL: &str = "a recoverable credential cannot be minted: no at-rest key is \
-     configured, so it could not be stored sealed. Set credentials.at_rest.key to a secret \
-     reference that resolves to 32 random bytes (a file read by a secret module, for example, \
-     holding the output of `openssl rand -hex 32`), give every node that shares this store the \
+     configured, so it could not be stored sealed. The at-rest key is derived from \
+     `auth.signing_key`: set `auth.signing_key` (the same secret every node that shares this \
      same key, and reload";
 
 const PLAIN: &str = "v1:plain:";
@@ -143,6 +142,14 @@ impl AtRestKeys {
         }
     }
 
+    /// The at-rest keys of a node whose token-signing secret is `secret` (`auth.signing_key`):
+    /// HKDF-SHA256 under [`LABEL`], so one configured secret covers both uses, and rotating the
+    /// signing key retires the credentials sealed under it.
+    #[must_use]
+    pub fn from_signing_secret(secret: &[u8; 32]) -> Self {
+        Self::new(secret, None)
+    }
+
     #[must_use]
     pub fn kid(&self) -> &str {
         &self.key.kid
@@ -168,19 +175,6 @@ impl AtRestKeys {
     }
 }
 
-pub fn parse_key(path: &str, bytes: &[u8]) -> Result<SecureVec, String> {
-    let text = std::str::from_utf8(bytes).ok().map(str::trim);
-    if let Some(hex) = text.filter(|t| t.len() == 64) {
-        if let Ok(raw) = hex::decode(hex) {
-            return Ok(SecureVec::from(raw));
-        }
-    }
-    if bytes.len() == 32 {
-        return Ok(crate::cold::governance::runtime::at_rest_raw_key(bytes));
-    }
-    Err(crate::cold::governance::runtime::at_rest_key_refusal(path))
-}
-
 #[must_use]
 pub fn sealed_kid(envelope: &str) -> Option<&str> {
     envelope.strip_prefix(AEAD)?.split(':').next()
@@ -202,8 +196,8 @@ pub fn open(
                 crate::diagnostics::CREDENTIAL_AT_REST_LEGACY_PLAIN,
                 kind = %meta.kind,
                 "a recoverable credential is stored in the clear (written before 1.6.0); it still \
-                 authenticates, and it is re-sealed under credentials.at_rest.key at the next boot \
-                 or reload that has one configured"
+                 authenticates, and it is re-sealed under the key derived from auth.signing_key at the next boot \
+                 or reload with a signing key configured"
             );
         }
         return Some(SecureString::from(plain));
@@ -234,7 +228,7 @@ struct NodeKids<'a>(Option<&'a AtRestKeys>);
 impl std::fmt::Display for NodeKids<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self.0 {
-            None => f.write_str("none (credentials.at_rest is not configured)"),
+            None => f.write_str("none (auth.signing_key is not configured)"),
             Some(k) => match k.previous_kid() {
                 Some(p) => write!(f, "{} (previous {p})", k.kid()),
                 None => f.write_str(k.kid()),
@@ -259,10 +253,11 @@ fn refused(keys: Option<&AtRestKeys>, meta: &CredentialMeta, kid: &str) {
         kind = %meta.kind,
         sealed_under = %kid,
         node_kids = %node,
-        "a recoverable credential sealed under at-rest key {kid} opens under neither \
-         credentials.at_rest.key nor credentials.at_rest.previous on this node, so it does not \
-         authenticate. Configure the key with kid {kid} as credentials.at_rest.previous (or as \
-         key) and reload; a row whose key is lost cannot be recovered and must be re-minted"
+        "a recoverable credential sealed under at-rest key {kid} does not open under the key \
+         derived from auth.signing_key on this node, so it does not authenticate. It was sealed \
+         under a different auth.signing_key (rotating the signing key invalidates the \
+         credentials sealed under it); every node that shares the store must use the same \
+         auth.signing_key, and a row whose key is lost cannot be recovered and must be re-minted"
     );
     let resource = crate::cold::governance::runtime::at_rest_kid_resource(kid);
     crate::audit_ring::AUDIT.record_by(

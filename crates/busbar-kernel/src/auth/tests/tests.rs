@@ -3,7 +3,7 @@
 
 use super::*;
 use busbar_contract::json;
-use busbar_contract::json::JsonValueTrait as _;
+use busbar_contract::json::{JsonContainerTrait as _, JsonValueTrait as _};
 use busbar_contract::records::ScopeRef;
 
 fn binding(

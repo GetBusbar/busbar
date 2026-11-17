@@ -295,12 +295,7 @@ impl FirstStart {
                         startup::exact(startup::manifest_address(), manifest_bytes.clone()),
                         startup::exact(startup::writer_address(me), row_bytes.clone()),
                     ],
-                    vec![Mutation::Put {
-                        address: startup::writer_address(me),
-                        value: Secret::new(
-                            retired.encode().ok_or(startup::Error::Corrupt)?.to_vec(),
-                        ),
-                    }],
+                    control::writer_put(me, Some(row), retired).ok_or(startup::Error::Corrupt)?,
                 )?;
                 Attempt::proven(candidate, self.backend.clone())
                     .map_err(|_| startup::Error::Authority)?

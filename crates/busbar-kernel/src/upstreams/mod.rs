@@ -8,11 +8,15 @@
 //! [`ConfiguredUpstreams`] is the table every consumer reads through [`Upstreams`]. There is no egress judge here:
 //! the connector's destination guard is it (§12.1).
 
+mod declared;
+#[cfg(test)]
+mod declared_tests;
 mod entry;
 mod table;
 #[cfg(test)]
 mod tests;
 
+pub use declared::{core_field_paths, core_secret_paths, declared, Declared, DeclaredAuth};
 pub use entry::{implicit_instance, DEFAULT_IDLE_S, MAX_NAME};
 pub use table::ConfiguredUpstreams;
 
@@ -21,8 +25,13 @@ pub use table::ConfiguredUpstreams;
 /// presents, and (stdio) the command core runs. Filled at boot from core config; a 1.5.x plane-a2a `agents:` entry (url, `cert_spki`/`mtls` pins, client
 /// identity) or plane-mcp member (url, stdio command) arrives here as a CORE_CFG(UPSTREAM) fragment from that
 /// plane's own `migrate` (§12.10), never from a core table that knows the plane.
+#[derive(Clone)]
 pub struct UpstreamDef {
     pub name: Box<str>,
+    /// Core-owned selected-rate label, retained independently of plane normalization.
+    pub resource: Option<Box<str>>,
+    /// Private-address authority for this registration only; metadata and TLS policy still apply.
+    pub allow_private: bool,
     pub url: Option<Box<str>>,
     /// CARRIER_STDIO: argv and env (env values may be secret references, resolved through custody at spawn).
     pub command: Option<StdioCommand>,
@@ -58,6 +67,7 @@ pub struct UpstreamAuth {
 /// (today's plane-mcp `pin`, moved to core with the command). `ProgramPin::LocalProgram` requires `cwd` to be
 /// Some and `key == argv[0]`, both absolute (today's tools_config.rs:1068-1095 rules, enforced by core at config
 /// load); `ProgramPin::Unpinned` = no approval claim.
+#[derive(Clone)]
 pub struct StdioCommand {
     pub argv: Vec<Box<str>>,
     pub env: Vec<(Box<str>, busbar_contract::secret_ref::SecretRef)>,
@@ -74,6 +84,7 @@ pub enum ProgramPin {
 /// connector after the handshake and before any request byte, mismatch = the exchange fails P_ERROR (R_NOT_TRUSTED)
 /// and is audited `upstream_pin_mismatch`. client_identity = a secret holding a PEM cert chain + key, presented as
 /// the TLS client certificate. trust = an operator CA added to the roots for this upstream only.
+#[derive(Clone)]
 pub struct UpstreamTls {
     pub pin_spki: Vec<[u8; 32]>,
     pub client_identity: Option<busbar_contract::secret_ref::SecretRef>,

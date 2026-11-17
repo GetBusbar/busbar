@@ -34,7 +34,7 @@ pub type Held = busbar_contract::redacted::Secret<Vec<u8>>;
 
 pub type HeldText = busbar_contract::redacted::Secret<String>;
 
-pub(crate) type ScopedPluginResolve = dyn Fn(
+pub type ScopedPluginResolve = dyn Fn(
         &str,
         &busbar_contract::plugin_settings::Settings,
         Option<&busbar_contract::config_time::ConfigScope>,
@@ -42,7 +42,7 @@ pub(crate) type ScopedPluginResolve = dyn Fn(
     + Send
     + Sync;
 
-pub(crate) type ScopedPluginResolveFn = Box<ScopedPluginResolve>;
+pub type ScopedPluginResolveFn = Box<ScopedPluginResolve>;
 
 pub use busbar_contract::secret::SecretRefused;
 
@@ -86,7 +86,7 @@ impl SecretResolver {
         }
     }
 
-    pub(crate) fn with_scoped_plugin(plugin: ScopedPluginResolveFn) -> Self {
+    pub fn with_scoped_plugin(plugin: ScopedPluginResolveFn) -> Self {
         Self {
             plugin: Some(std::sync::Arc::from(plugin)),
             sources: std::sync::Arc::default(),

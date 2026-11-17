@@ -65,9 +65,9 @@ impl StoreLoginStates {
     #[must_use]
     pub fn with_clock(store: Arc<CoreStore>, clock: fn() -> u64) -> Self {
         Self {
+            in_doubt: InDoubt::new(Arc::clone(&store)),
             store,
             clock,
-            in_doubt: InDoubt::default(),
         }
     }
 
@@ -87,6 +87,7 @@ impl StoreLoginStates {
 
     fn scoped(&self, auth: &Caller<'_>) -> Result<ScopedStore, RecordsDenied> {
         ScopedStore::host_private(Arc::clone(&self.store), &label(auth), [SCHEMA.to_string()])
+            .and_then(|records| self.in_doubt.bind(records))
             .map_err(denied)
     }
 }
@@ -128,7 +129,7 @@ impl LoginStates for StoreLoginStates {
                 return Err(RecordsDenied::TooLarge);
             }
             let records = self.scoped(auth)?;
-            self.in_doubt.settle_one(&self.store).await;
+            self.in_doubt.settle_one().await;
             let value = envelope(expiry((self.clock)(), STATE_TTL_S), state);
             let first = records.put(SCHEMA, key.as_bytes(), value).await;
             if self.in_doubt.decided(&records, first).await? {
@@ -149,7 +150,7 @@ impl LoginStates for StoreLoginStates {
                 return None;
             }
             let records = self.scoped(auth).ok()?;
-            self.in_doubt.settle_one(&self.store).await;
+            self.in_doubt.settle_one().await;
             let raw = records.get(SCHEMA, key.as_bytes()).await.ok()??;
             let request = Request {
                 op_id: operation(&self.store).ok()?,

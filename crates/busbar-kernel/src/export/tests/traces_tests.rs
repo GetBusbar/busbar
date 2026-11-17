@@ -4,7 +4,7 @@
 use super::*;
 use busbar_contract::abi::export::ExportField;
 use busbar_contract::export_stream::ExportStream;
-use busbar_contract::json::{JsonValueTrait as _, Value};
+use busbar_contract::json::{JsonContainerTrait as _, JsonValueTrait as _, Value};
 use tracing_subscriber::layer::SubscriberExt as _;
 
 /// A rendered value, read back as JSON.
@@ -385,4 +385,71 @@ fn request_timing_export_includes_termination_after_the_last_transport_poll() {
         .unwrap()
         .iter()
         .any(|field| field["key"] == "producer_complete_us" && field["value"] == "123"));
+}
+
+#[test]
+fn export_loss_diagnostic_is_visible_on_stderr_but_never_attached_to_exported_spans() {
+    use std::sync::{Arc, Mutex};
+    #[derive(Clone)]
+    struct Writer(Arc<Mutex<Vec<u8>>>);
+    impl std::io::Write for Writer {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let stderr = Arc::new(Mutex::new(Vec::new()));
+    let projected = Arc::new(Mutex::new(Vec::new()));
+    let capture = projected.clone();
+    let writer = Writer(stderr.clone());
+    let subscriber = tracing_subscriber::registry()
+        .with(Producer(
+            move |_: &Fields, span: Option<&[u8]>| {
+                if let Some(span) = span {
+                    capture.lock().unwrap().extend_from_slice(span);
+                }
+            },
+            records,
+        ))
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_ansi(false)
+                .without_time()
+                .with_writer(move || writer.clone()),
+        );
+    tracing::subscriber::with_default(subscriber, || {
+        tracing::callsite::rebuild_interest_cache();
+        let ordinary = tracing::info_span!("ordinary-exported-span");
+        ordinary.in_scope(|| {
+            tracing::warn!("positive-control");
+            crate::diagnostics::export_loss(true, "failing-a");
+            crate::diagnostics::export_loss(false, "failing-b");
+        });
+        drop(ordinary);
+        let reserved = tracing::info_span!(target: crate::diagnostics::EXPORT_LOSS_TARGET, "reserved-observer-span");
+        drop(reserved);
+    });
+    let stderr = String::from_utf8(stderr.lock().unwrap().clone()).unwrap();
+    assert!(stderr.contains("BUSBAR-2052"));
+    assert!(stderr.contains("BUSBAR-2053"));
+    let projected = String::from_utf8(projected.lock().unwrap().clone()).unwrap();
+    assert!(
+        projected.contains("positive-control"),
+        "ordinary events still export"
+    );
+    for excluded in [
+        "BUSBAR-2052",
+        "BUSBAR-2053",
+        "failing-a",
+        "failing-b",
+        "reserved-observer-span",
+    ] {
+        assert!(
+            !projected.contains(excluded),
+            "reserved observation recursed through export: {projected}"
+        );
+    }
 }

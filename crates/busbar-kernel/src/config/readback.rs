@@ -36,6 +36,7 @@ impl ConfiguredView {
         deploy: &super::DeployCfg,
         catalog: &std::collections::HashMap<String, super::ProviderDef>,
     ) {
+        super::restart::capture_documents(app, deploy);
         app.document_source_fingerprints = deploy.document_source_fingerprints;
         let Some(view) = app.configured_view.as_mut() else {
             return;
@@ -79,6 +80,7 @@ impl ConfiguredView {
             }),
         );
         if let Some(Value::Object(advanced)) = view.sections.get_mut("advanced") {
+            advanced.insert("shutdown".into(), json!(deploy.advanced.shutdown));
             advanced.insert(
                 "worker_threads".into(),
                 json!(deploy.advanced.worker_threads),
@@ -124,7 +126,6 @@ impl ConfiguredView {
         put!("admin_tls", tls_view(cfg.admin_tls.as_ref()));
         put!("per_request_fee", cfg.per_request_fee);
         put!("rate_card", cfg.rate_card);
-        put!("plugin_rate_cards", cfg.plugin_rate_cards);
         put!("groups", cfg.groups);
         put!(
             "security",
@@ -150,7 +151,6 @@ impl ConfiguredView {
             fields!(
                 upstream_request_timeout_secs,
                 request_body_max_bytes,
-                datagram_line_memory_bytes,
                 pool_max_idle_per_host,
                 pool_idle_timeout_secs,
                 max_inbound_concurrent,
@@ -173,7 +173,6 @@ impl ConfiguredView {
                 "upstream_http1_only": l.upstream_http1_only,
                 "upstream_h2_prior_knowledge": l.upstream_h2_prior_knowledge,
                 "block_private_addresses": cfg.guard.block_private_addresses,
-                "allow_destinations": presence(!cfg.guard.allow.is_empty()),
             })
         );
         put!(
@@ -209,7 +208,6 @@ impl ConfiguredView {
                 "other_fields": "hidden",
             })
         );
-        put!("credentials", presence(cfg.credentials.at_rest.is_some()));
         put!("oauth_as", presence(cfg.oauth_as.is_some()));
 
         put!("export", exporters_view(&cfg.export_defs, sources));
@@ -248,7 +246,6 @@ impl ConfiguredView {
             "max_concurrent": m.max_concurrent, "default_max_tokens": m.default_max_tokens,
             "upstream_model": m.upstream_model, "attempt_timeout_ms": m.attempt_timeout_ms,
             "reasoning": m.reasoning, "prompt_caching": m.prompt_caching,
-            "protocol": m.protocol,
         }))).collect();
         put!("models", models);
         put!(
@@ -270,18 +267,12 @@ impl ConfiguredView {
                 "enabled": plugins.enabled, "dir": plugins.dir,
                 "min_versions": plugins.min_versions,
                 "trust": {
-                    "allow_unsigned": plugins.trust.allow_unsigned,
-                    "allow_third_party": plugins.trust.allow_third_party,
+                    "allow_untrusted": plugins.trust.allow_untrusted,
                     "publishers": plugins.trust.publishers.iter().map(|p| json!({
-                        "name": p.name, "public_key": p.public_key,
+                        "name": p.name, "plugins": p.plugins, "keys": p.keys.iter().map(|key| json!({"public_key_sha256": hex::decode(&key.public_key).ok().map(|bytes| hex::encode(crate::hashing::Sha256::digest(&bytes))), "revoked": key.revoked})).collect::<Vec<_>>(),
                     })).collect::<Vec<_>>(),
                 },
                 "fetch": {"count": plugins.fetch.len(), "values": "hidden"},
-                "logs": {
-                    "dir": plugins.logs.dir, "level": plugins.logs.level,
-                    "levels": plugins.logs.levels, "rotate_mb": plugins.logs.rotate_mb,
-                    "keep": plugins.logs.keep,
-                },
             })
         );
         Self {
@@ -294,6 +285,7 @@ impl ConfiguredView {
                 "providers_file",
                 "admin_require_mtls",
                 "advanced.worker_threads",
+                "advanced.shutdown.deregister_delay",
             ],
         }
     }

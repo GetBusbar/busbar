@@ -96,18 +96,12 @@ async fn the_usage_read_prices_through_the_kernels_rate_dater() {
     );
 
     let store_library = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&store_library)
-        .expect("the actual Store statement reads")
-        .expect("the actual Store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the Store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
+    let module = crate::root::test_plugins::native_image(&store_library).name;
+    let manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &store_library,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    manifest.statement = Some(hex::encode(statement));
     let directory = plugins::scratch("admin-dated-usage-actual-store");
     let archive = plugins::signed(
         &crate::dist_root_install::release_key(),
@@ -130,7 +124,7 @@ async fn the_usage_read_prices_through_the_kernels_rate_dater() {
             LANE,
             busbar_kernel::config::RateEntryCfg { input_utok: 10.0, ..Default::default() },
         )]),
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
     });
     let provider_defs = complete_usage_fixture(&mut document, &directory, &[(LANE, PROVIDER)]);
     let mut current_document = document.clone();
@@ -152,13 +146,12 @@ async fn the_usage_read_prices_through_the_kernels_rate_dater() {
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let anchor = busbar_kernel::appbuild::bootstrap_config_store(
-        &config,
-        &plugin_config,
-        &busbar_kernel::preflight::Unopened,
-    )
-    .await
-    .expect("the actual Store opens the configuration authority");
+    let crate::root::min3_boot::fixture::Fixture {
+        backend: anchor,
+        rules,
+    } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
+        .await
+        .expect("the actual Store opens the configuration authority");
     let anchor = crate::root::real_store::core_over(anchor).await;
     let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
         .expect("the actual Store supports conditional configuration records");
@@ -227,6 +220,7 @@ async fn the_usage_read_prices_through_the_kernels_rate_dater() {
         .expect("the actual Store remains admitted")
         .ledger()
         .add_metering(&MeteringDelta {
+            pricing: None,
             scale: 0,
             usage_units: Default::default(),
             key_id: "vk_dated_read".into(),

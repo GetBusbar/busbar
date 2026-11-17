@@ -3,7 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use busbar_contract::json::JsonValueTrait as _;
+use busbar_contract::json::{JsonContainerTrait as _, JsonValueTrait as _};
 use busbar_contract::secret_ref::SecretRef;
 
 /// One entry in the top-level `identity-providers:` NAMED-DEFINITION map (1.5.3). The map
@@ -70,14 +70,31 @@ pub struct IdentityProviderCfg {
     /// The module's own opaque settings (pushed to the auth plugin verbatim).
     #[serde(default)]
     pub settings: busbar_contract::plugin_settings::Settings,
-    /// `limits` beside `module` (IF §12.22), as written: parsed and stripped by [`super::min3::parse_min3`].
-    #[serde(default, deserialize_with = "busbar_contract::yaml::untyped_option")]
-    pub limits: Option<busbar_contract::yaml::Value>,
     /// `insecure_transport` beside `module` (TRANSPORT-SECURITY-POLICY §4), as written: parsed and stripped by
     /// [`super::min3::parse_min3`].
     #[serde(default, deserialize_with = "busbar_contract::yaml::untyped_option")]
     pub insecure_transport: Option<busbar_contract::yaml::Value>,
+    /// Core-owned provisioning policy (IF §12.29), never passed as plugin settings.
+    #[serde(default, deserialize_with = "provisioning_policy")]
+    pub provisioning: Option<busbar_contract::yaml::Value>,
+    /// Explicit core-issued credential kinds this instance may read; declarations never grant access.
+    #[serde(default, deserialize_with = "issued_kind_grants")]
+    pub issued_kinds: Option<Vec<Box<str>>>,
 }
+
+fn issued_kind_grants<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Vec<Box<str>>>, D::Error> {
+    Vec::<Box<str>>::deserialize(deserializer).map(Some)
+}
+
+// Preserve explicit null so policy parsing refuses it instead of silently disabling the mount.
+fn provisioning_policy<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<busbar_contract::yaml::Value>, D::Error> {
+    busbar_contract::yaml::untyped(deserializer).map(Some)
+}
+
 impl IdentityProviderCfg {
     /// Borrow the exact authoring representation under concrete kernel authority.
     pub fn authoring<'a>(
@@ -92,9 +109,11 @@ impl IdentityProviderCfg {
             browser_login: F1,
             settings: F2,
             #[serde(skip_serializing_if = "Option::is_none")]
-            limits: Option<&'a busbar_contract::yaml::Value>,
-            #[serde(skip_serializing_if = "Option::is_none")]
             insecure_transport: Option<&'a busbar_contract::yaml::Value>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            provisioning: Option<&'a busbar_contract::yaml::Value>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            issued_kinds: Option<&'a Vec<Box<str>>>,
         }
         View {
             module: &self.module,
@@ -105,8 +124,9 @@ impl IdentityProviderCfg {
                 .as_ref()
                 .map(|value| value.authoring(seal)),
             settings: self.settings.authoring(seal),
-            limits: self.limits.as_ref(),
             insecure_transport: self.insecure_transport.as_ref(),
+            provisioning: self.provisioning.as_ref(),
+            issued_kinds: self.issued_kinds.as_ref(),
         }
     }
 }
@@ -379,24 +399,13 @@ pub struct AuthPolicyCfg {
     /// narrows what a minter may request; a mint of a mode outside it IS refused at
     /// `MintPolicy::check_mint` (`admin/mod.rs`).
     pub binding_modes: Option<Vec<BindingMode>>,
-    /// The DEFAULT TTL applied to a minted token when the request names none, a duration string.
-    /// Absent ⇒ the built-in `DEFAULT_KEY_TTL_SECS` path (via `auth.key_ttl`) is unchanged.
-    pub default_ttl: Option<String>,
     /// The MAX TTL any minted token may carry, a duration string. Absent ⇒ no policy ceiling (the
-    /// admin API's own default applies). When both are set, `default_ttl` must be ≤ `max_ttl`
-    /// (enforced at validate, fail boot).
+    /// admin API's own default applies).
     pub max_ttl: Option<String>,
     /// Per-role mint ceilings (`mint_ceilings.<role>:`) — the delegated-app-admin caps (review H2/H3).
     /// Empty by default.
     #[serde(default)]
     pub mint_ceilings: std::collections::BTreeMap<String, MintCeilingCfg>,
-    /// The most unredeemed tickets (ephemeral secrets, `POST /v1/realtime/client_secrets`) one key
-    /// may hold on one node. Absent ⇒ 256. A key over it is refused 429 with `Retry-After`; other
-    /// keys are unaffected. At least 1 (enforced at validate, fail boot).
-    pub max_outstanding_tickets_per_key: Option<u32>,
-    /// ADMIN-API-1.6 6.2: when `true`, a guarded config mutation without `If-Match` is refused 428
-    /// (`invalid_request` / `if_match_required`). Absent or `false` ⇒ a missing `If-Match` is accepted.
-    pub require_if_match: Option<bool>,
 }
 
 /// Per-provider browser-login parameters (`identity-providers.<name>.browser_login:`). PRESENCE of
@@ -503,6 +512,11 @@ pub type AuthMethods = indexmap::IndexMap<String, AuthMethodCfg>;
 #[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields, default)]
 pub struct AuthDeployCfg {
+    /// Unknown-key refresh interval; the host enforces the adopted five-second minimum.
+    pub unknown_key_refresh_s: u64,
+    /// ADMIN-API-1.6 6.2: when true, a guarded config mutation without `If-Match` is refused
+    /// with 428 (`invalid_request` / `if_match_required`). Absent or false accepts its absence.
+    pub require_if_match: Option<bool>,
     /// See [`AuthCfg::signing_key`].
     #[serde(default)]
     pub signing_key: Option<SecretRef>,
@@ -528,6 +542,82 @@ pub struct AuthDeployCfg {
     /// [`LoginLimitsCfg`]). Absent ⇒ the owner-signed defaults; the limiter is always on.
     #[serde(default)]
     pub login_limits: LoginLimitsCfg,
+    /// Core-owned native verifier cache policy (IF §12.28), never plugin settings.
+    #[serde(default)]
+    pub verdict_cache: VerdictCacheCfg,
+    /// Core-owned outbound credential custody policy (IF §12.18).
+    #[serde(default)]
+    pub outbound: OutboundCredentialCfg,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq)]
+#[serde(deny_unknown_fields, default)]
+pub struct OutboundCredentialCfg {
+    pub refresh_ahead_s: u32,
+    pub min_mint_interval_s: u32,
+    pub mint_deadline_s: u32,
+    pub max_keys_per_instance: u32,
+    pub max_hold_s: u32,
+}
+
+impl Default for OutboundCredentialCfg {
+    fn default() -> Self {
+        let policy = crate::custody::CredPolicy::DEFAULT;
+        Self {
+            refresh_ahead_s: policy.refresh_ahead_s,
+            min_mint_interval_s: policy.min_mint_interval_s,
+            mint_deadline_s: policy.mint_deadline_s,
+            max_keys_per_instance: policy.max_keys_per_instance,
+            max_hold_s: policy.max_hold_s,
+        }
+    }
+}
+
+impl OutboundCredentialCfg {
+    pub fn resolve(self) -> Result<crate::custody::CredPolicy, &'static str> {
+        crate::custody::CredPolicy {
+            refresh_ahead_s: self.refresh_ahead_s,
+            min_mint_interval_s: self.min_mint_interval_s,
+            mint_deadline_s: self.mint_deadline_s,
+            max_keys_per_instance: self.max_keys_per_instance,
+            max_hold_s: self.max_hold_s,
+        }
+        .checked()
+    }
+}
+
+/// `auth.verdict_cache` uses the kernel cache's adopted defaults and bounds.
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq)]
+#[serde(deny_unknown_fields, default)]
+pub struct VerdictCacheCfg {
+    pub default_ttl_s: u32,
+    pub max_ttl_s: u32,
+    pub max_entries: u32,
+    pub max_identity_bytes: u32,
+}
+
+impl Default for VerdictCacheCfg {
+    fn default() -> Self {
+        let policy = crate::auth::verdicts::VerdictPolicy::DEFAULT;
+        Self {
+            default_ttl_s: policy.default_ttl_s,
+            max_ttl_s: policy.max_ttl_s,
+            max_entries: policy.max_entries,
+            max_identity_bytes: policy.max_identity_bytes,
+        }
+    }
+}
+
+impl VerdictCacheCfg {
+    pub fn resolve(self) -> Result<crate::auth::verdicts::VerdictPolicy, &'static str> {
+        crate::auth::verdicts::VerdictPolicy {
+            default_ttl_s: self.default_ttl_s,
+            max_ttl_s: self.max_ttl_s,
+            max_entries: self.max_entries,
+            max_identity_bytes: self.max_identity_bytes,
+        }
+        .checked()
+    }
 }
 
 /// `auth.login_limits:` as written. Every key is optional; absent keys take the defaults in
@@ -590,6 +680,8 @@ pub struct GlobalLimitCfg {
 impl Default for AuthDeployCfg {
     fn default() -> Self {
         Self {
+            unknown_key_refresh_s: 30,
+            require_if_match: None,
             signing_key: None,
             chain: Vec::new(),
             admin_auth: default_admin_auth_names(),
@@ -597,6 +689,8 @@ impl Default for AuthDeployCfg {
             key_ttl: None,
             policy: AuthPolicyCfg::default(),
             login_limits: LoginLimitsCfg::default(),
+            verdict_cache: VerdictCacheCfg::default(),
+            outbound: OutboundCredentialCfg::default(),
         }
     }
 }
@@ -606,6 +700,12 @@ impl Default for AuthDeployCfg {
 /// constructed by `resolve`, never parsed from YAML.
 #[derive(Debug, Clone)]
 pub struct AuthCfg {
+    pub outbound: OutboundCredentialCfg,
+    pub unknown_key_refresh_s: u64,
+    /// The authored native verifier cache policy, retained for config round trips.
+    pub verdict_cache: VerdictCacheCfg,
+    /// Whether guarded admin mutations require `If-Match`; copied from the direct `auth` key.
+    pub require_if_match: Option<bool>,
     /// The key-signing key: a SECRET REFERENCE resolving to the ed25519 signing key busbar
     /// mints + verifies virtual-key tokens with. Fleet-shared (every node verifying the same tokens
     /// resolves the same key). REQUIRED when the data-plane chain names the built-in `keys` verifier
@@ -643,6 +743,10 @@ impl AuthCfg {
     ) -> impl Serialize + 'a {
         #[derive(Serialize)]
         struct View<'a, F0: Serialize, F1: Serialize, F2: Serialize, F3: Serialize> {
+            outbound: &'a OutboundCredentialCfg,
+            unknown_key_refresh_s: u64,
+            verdict_cache: &'a VerdictCacheCfg,
+            require_if_match: &'a Option<bool>,
             signing_key: F0,
             chain: F1,
             admin_auth: F2,
@@ -652,6 +756,10 @@ impl AuthCfg {
             policy: &'a AuthPolicyCfg,
         }
         View {
+            outbound: &self.outbound,
+            unknown_key_refresh_s: self.unknown_key_refresh_s,
+            verdict_cache: &self.verdict_cache,
+            require_if_match: &self.require_if_match,
             signing_key: self.signing_key.as_ref().map(|value| value.authoring(seal)),
             chain: self
                 .chain
@@ -678,6 +786,10 @@ impl AuthCfg {
 impl AuthCfg {
     pub fn default_none() -> Self {
         Self {
+            outbound: OutboundCredentialCfg::default(),
+            unknown_key_refresh_s: 30,
+            verdict_cache: VerdictCacheCfg::default(),
+            require_if_match: None,
             signing_key: None,
             chain: vec![],
             admin_auth: default_admin_auth(),

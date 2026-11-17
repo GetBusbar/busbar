@@ -8,8 +8,8 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use busbar_contract::config::UpstreamCreds;
+use busbar_contract::json::{json, JsonContainerTrait as _, Value};
 use busbar_contract::secret_ref::SecretRef;
-use serde_json::{json, Value};
 
 use super::{
     implicit_instance, ConfiguredUpstreams, ProgramPin, UpstreamAuth, UpstreamDef, Upstreams,
@@ -71,6 +71,7 @@ fn bearer() -> UpstreamCfg {
             cache_max_s: None,
         }),
         upstream_credentials: None,
+        resource: None,
     }
 }
 
@@ -211,6 +212,7 @@ fn a_stdio_upstream_refuses_auth_upstream_credentials_and_tls() {
     );
 
     let creds = UpstreamCfg {
+        resource: None,
         auth: None,
         upstream_credentials: Some(UpstreamCreds::Own),
     };

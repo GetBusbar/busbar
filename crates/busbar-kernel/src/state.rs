@@ -51,6 +51,9 @@ pub struct App {
     /// carried onto every generation built after it (a clone shares the one table). The admin
     /// router's fallback and every stated admin route answer off it.
     pub serve_tables: crate::plane_driver::serve::ServeTables,
+    /// Native admin routes retained with this complete application generation.
+    pub port_seats: Arc<[crate::plane_driver::port::PortSeat]>,
+    pub exports: Arc<crate::export::plugin::Exports>,
     /// The composition root's rules this generation was built under
     /// ([`crate::appbuild::RootRules`]): every build after it (an apply, a rebuild, a
     /// dry run) is judged by them.
@@ -72,6 +75,8 @@ pub struct App {
     pub grammar: crate::config::GrammarField,
     /// Configured changes whose physical activation needs a restart. Cleared only at boot.
     pub config_pending_restart: Vec<String>,
+    pub(crate) boot_restart_root: Option<Arc<crate::config::restart::Root>>,
+    pub(crate) boot_restart_source: Option<Arc<crate::config::restart::Source>>,
     /// Generation-local observations of synchronous ordinary plane refresh callbacks.
     pub plane_refresh: activation::PlaneRefreshReport,
     /// The kernel's own tables over the `pools:`/`models:` sections this generation resolved: the
@@ -266,6 +271,7 @@ pub struct App {
     /// is offloaded off the reactor (a plugin can do blocking JWKS/introspection I/O).
     /// Rebuilt on boot AND reload (`build_app_from_config`), Arc-shared so `App::clone` is cheap.
     pub admin_modules: Arc<crate::auth::AdminAuthChain>,
+    pub native_admin: Option<Arc<dyn crate::auth::native_admin::NativeAdmin>>,
     /// The build's auth instances by provider (WASTE-AUTH-SECRETS W1/W2): what the chain,
     /// `admin_modules` and the login methods hold, kept so the next build can carry an unchanged,
     /// healthy instance instead of opening it again.
@@ -357,7 +363,7 @@ pub struct App {
     /// advanced by compare-and-set to `max(stored, prior) + 1` before every publication, so it never
     /// repeats across restarts (unlike `config_version`). One cell is shared by every snapshot of a handle.
     pub config_generation: Arc<std::sync::atomic::AtomicU64>,
-    /// `auth.policy.require_if_match`: a guarded config mutation without `If-Match` is 428.
+    /// `auth.require_if_match`: a guarded config mutation without `If-Match` is 428.
     pub require_if_match: bool,
     /// Anti-sprawl cap on keys BOUND TO ONE GROUP.
     /// Because a `user:<sub>` leaf IS the principal, this is effectively "max keys per principal".
@@ -455,6 +461,9 @@ pub struct AppParts {
     pub fallback_runtime_key: &'static str,
 
     pub serve_tables: crate::plane_driver::serve::ServeTables,
+    /// Native admin routes retained with this complete application generation.
+    pub port_seats: Arc<[crate::plane_driver::port::PortSeat]>,
+    pub exports: Arc<crate::export::plugin::Exports>,
 
     pub root_rules: Arc<dyn crate::appbuild::RootRules>,
 
@@ -643,6 +652,8 @@ impl App {
         let AppParts {
             fallback_runtime_key,
             serve_tables,
+            port_seats,
+            exports,
             root_rules,
             config_projection,
             config_tables,
@@ -726,6 +737,8 @@ impl App {
             tslots,
             fallback_runtime_key,
             serve_tables,
+            port_seats,
+            exports,
             root_rules,
             config_projection,
             configured_view: None,
@@ -734,6 +747,8 @@ impl App {
             grammar: crate::config::GrammarField::default(),
             providers_override: providers_path.clone(),
             config_pending_restart: Vec::new(),
+            boot_restart_root: None,
+            boot_restart_source: None,
             plane_refresh: activation::PlaneRefreshReport::default(),
             config_tables,
             store,
@@ -769,6 +784,7 @@ impl App {
             admin,
             admin_chain,
             admin_modules,
+            native_admin: None,
             auth_instances,
             login_methods,
             public_url,
@@ -1009,9 +1025,49 @@ pub fn seed_request_id_counter() -> u64 {
     request_id::seed()
 }
 
+/// The host's existing request identity, shared by selection and final admission. This is
+/// correlation only: authority comes from a checked selection and the publication gate.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct InvocationId(std::num::NonZeroU64);
+
+impl InvocationId {
+    pub fn from_request_id(request_id: std::num::NonZeroU64) -> Self {
+        Self(request_id)
+    }
+
+    pub fn request_id(self) -> std::num::NonZeroU64 {
+        self.0
+    }
+}
+
+/// Final admission is either for the currently published generation or fails before replay.
+#[derive(Debug, PartialEq, Eq)]
+pub enum AdmissionRefusal<E> {
+    StaleGeneration,
+    Policy(E),
+}
+
+/// A single invocation's retained generation after final synchronous authorization. The
+/// replay owner must retain this non-Clone value through replay and successful execution.
+pub struct AdmissionLease {
+    generation: Arc<App>,
+    invocation: InvocationId,
+}
+
+impl AdmissionLease {
+    pub fn generation(&self) -> &Arc<App> {
+        &self.generation
+    }
+
+    pub fn invocation(&self) -> InvocationId {
+        self.invocation
+    }
+}
+
 pub struct AppHandle {
     current: arc_swap::ArcSwap<App>,
     publication: std::sync::Mutex<()>,
+    admission: std::sync::Mutex<()>,
     application: tokio::sync::Mutex<()>,
     async_appliers: std::sync::Mutex<Vec<Arc<AsyncApplier>>>,
 
@@ -1025,6 +1081,9 @@ pub struct AppHandle {
     appliers: std::sync::Mutex<Vec<SharedApplier>>,
 
     door_refuser: std::sync::OnceLock<busbar_kernel::plane_routes::PlaneRefuseByPathFn>,
+    /// The read-only trust handle over the serving kernel (TRUST-ADMIN-PRODUCER-DESIGN r3 §2.1):
+    /// what the `core/trust` reads borrow. Set once, by value, before the handle is shared.
+    trust: Option<busbar_kernel::trust::TrustReadout>,
 }
 
 pub type ApplyFuture = std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'static>>;
@@ -1037,6 +1096,7 @@ impl AppHandle {
         Self {
             current: arc_swap::ArcSwap::new(app),
             publication: std::sync::Mutex::new(()),
+            admission: std::sync::Mutex::new(()),
             application: tokio::sync::Mutex::new(()),
             async_appliers: std::sync::Mutex::new(Vec::new()),
             #[cfg(debug_assertions)]
@@ -1045,7 +1105,21 @@ impl AppHandle {
             attach: std::sync::OnceLock::new(),
             appliers: std::sync::Mutex::new(Vec::new()),
             door_refuser: std::sync::OnceLock::new(),
+            trust: None,
         }
+    }
+
+    /// This handle with the serving kernel's read-only trust handle (r3 §2.2).
+    #[must_use]
+    pub fn with_trust(mut self, trust: Option<busbar_kernel::trust::TrustReadout>) -> Self {
+        self.trust = trust;
+        self
+    }
+
+    /// The serving kernel's read-only trust handle; `None` = no native trust custody.
+    #[must_use]
+    pub fn trust(&self) -> Option<&busbar_kernel::trust::TrustReadout> {
+        self.trust.as_ref()
     }
 
     pub fn bind_door_refuser(&self, refuser: busbar_kernel::plane_routes::PlaneRefuseByPathFn) {
@@ -1102,33 +1176,54 @@ impl AppHandle {
         self.current.load_full()
     }
 
+    /// `authorize` checks the exact frozen request against this App. It must not perform I/O,
+    /// call a plugin or consume replay. A successful replay owner retains the returned lease.
+    pub fn admit_current<E>(
+        &self,
+        expected: &Arc<App>,
+        invocation: InvocationId,
+        authorize: impl FnOnce(&App) -> Result<(), E>,
+    ) -> Result<AdmissionLease, AdmissionRefusal<E>> {
+        let _admission = self
+            .admission
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if !Arc::ptr_eq(expected, &self.current.load_full()) {
+            return Err(AdmissionRefusal::StaleGeneration);
+        }
+        authorize(expected).map_err(AdmissionRefusal::Policy)?;
+        Ok(AdmissionLease {
+            generation: Arc::clone(expected),
+            invocation,
+        })
+    }
+
     pub fn snapshot(&self) -> arc_swap::Guard<Arc<App>> {
         self.current.load()
     }
 
-    /// ADMIN-API-1.6 6.1: before a publication, advance the durable generation and set it on the
-    /// shared cell. A failed put refuses the publication. Without a boot identity (no Store: tests,
-    /// ephemeral) the generation is process-local and still monotonic.
-    async fn advance_generation(&self) -> Result<(), String> {
+    /// Reserve the durable generation without invalidating the still-published generation.
+    /// Only successful publication updates the shared fence; failed activation may leave a gap
+    /// in durable numbering, but cannot revoke the currently serving auth policy.
+    async fn reserve_generation(&self) -> Result<u64, String> {
         let cell = self.load().config_generation.clone();
         let prior = cell.load(std::sync::atomic::Ordering::Acquire);
         match crate::persistence::boot_identity::live() {
-            Some(live) => {
-                let generation = live.advance_generation(prior).await.map_err(|why| {
-                    format!("{}: {why}", crate::config::transaction::GENERATION_REFUSED)
-                })?;
-                cell.store(generation, std::sync::atomic::Ordering::Release);
-            }
-            None => {
-                cell.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-            }
+            Some(live) => live.advance_generation(prior).await.map_err(|why| {
+                format!("{}: {why}", crate::config::transaction::GENERATION_REFUSED)
+            }),
+            None => prior.checked_add(1).ok_or_else(|| {
+                format!(
+                    "{}: generation exhausted",
+                    crate::config::transaction::GENERATION_REFUSED
+                )
+            }),
         }
-        Ok(())
     }
 
     pub async fn swap(&self, next: Arc<App>) {
         let _application = self.application.lock().await;
-        self.swap_with_commit(next.clone(), None, || Ok(None), &mut false)
+        self.swap_with_commit(next.clone(), None, None, || Ok(None), &mut false)
             .expect("a swap with no price preparation cannot refuse publication");
         self.finish_apply(&next).await;
     }
@@ -1137,6 +1232,7 @@ impl AppHandle {
         &self,
         next: Arc<App>,
         expected: Option<&Arc<App>>,
+        generation: Option<u64>,
         confirm: impl FnOnce() -> Result<Option<crate::appbuild::ConfirmedLimits>, String>,
         published: &mut bool,
     ) -> Result<(), String> {
@@ -1179,6 +1275,12 @@ impl AppHandle {
         }
 
         let confirmed = confirm()?;
+        // Candidate work and callbacks above finish before the short admission boundary.
+        // Final policy either observes the prior App and retains it, or observes this swap.
+        let admission = self
+            .admission
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         let committed = match confirmed {
             Some(confirmed) => Some(confirmed.keep()),
             None => {
@@ -1187,9 +1289,17 @@ impl AppHandle {
             }
         };
         next.plane_refresh.begin();
+        if let Some(generation) = generation {
+            prior
+                .config_generation
+                .store(generation, std::sync::atomic::Ordering::Release);
+            next.config_generation
+                .store(generation, std::sync::atomic::Ordering::Release);
+        }
         self.current.store(next.clone());
         *published = true;
-        crate::export::plugin::queue_refresh(&next.export_defs, next.config_version);
+        drop(admission);
+        crate::export::plugin::queue_refresh(&next.exports, &next.export_defs, next.config_version);
         if let Some(committed) = committed {
             committed.notify();
         }
@@ -1219,8 +1329,14 @@ impl AppHandle {
         let _application = self.application.lock().await;
         persist()?;
         let mut publication = UnpublishedOverlay::new(self.load().overlay_path.clone());
-        self.advance_generation().await?;
-        self.swap_with_commit(next.clone(), None, || Ok(None), &mut publication.published)?;
+        let generation = self.reserve_generation().await?;
+        self.swap_with_commit(
+            next.clone(),
+            None,
+            Some(generation),
+            || Ok(None),
+            &mut publication.published,
+        )?;
         self.finish_apply(&next).await;
         Ok(())
     }
@@ -1268,11 +1384,12 @@ impl AppHandle {
                 "App generation changed during rate preparation; reload before retrying".into(),
             );
         }
-        self.advance_generation().await?;
+        let generation = self.reserve_generation().await?;
         let confirmed = prepared.confirm_activation().await?;
         self.swap_with_commit(
             next.clone(),
             Some(&expected),
+            Some(generation),
             || Ok(Some(confirmed)),
             &mut publication.published,
         )?;

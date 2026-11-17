@@ -60,23 +60,14 @@ pub(crate) fn make_root_cfg(
         admin_auth: config::default_admin_auth_names(),
         groups: std::collections::BTreeMap::new(),
         rate_card: None,
-        plugin_rate_cards: Default::default(),
         per_request_fee: 0,
         plane_fees: Default::default(),
         store: Some(config::StoreCfg {
             module: {
                 let path = crate::root::test_plugins::application_store_library();
-                let statement = busbar_plugin_loader::dispatch::rendering_of_library(
-                    std::path::Path::new(&path),
-                )
-                .expect("the actual store statement reads")
-                .expect("the actual store exports its statement");
-                busbar_contract::abi::mechanism::rendering::read(&statement)
-                    .expect("the actual store statement is valid")
-                    .name
+                crate::root::test_plugins::native_image(&path).name
             },
             settings: Default::default(),
-            limits: None,
             insecure_transport: None,
         }),
         secrets: std::collections::BTreeMap::new(),
@@ -159,9 +150,10 @@ fn make_model(provider: &str, max_concurrent: usize) -> config::ModelCfg {
 
 fn make_model_unbounded(provider: &str) -> config::ModelCfg {
     config::ModelCfg {
+        resource: None,
+        protocol: None,
         reasoning: None,
         prompt_caching: None,
-        protocol: None,
         max_requests: -1,
         provider: provider.into(),
         max_concurrent: None,
@@ -2458,7 +2450,6 @@ fn plugin_pool_cfg(plugin: &str) -> RootCfg {
 
 fn gate_hook(plugin: &str, timeout_ms: u64) -> config::HookCfg {
     config::HookCfg {
-        child_dispatch: None,
         kind: config::HookKind::Gate,
         plugin: plugin.to_string(),
         timeout_ms,
@@ -3575,7 +3566,6 @@ fn test_validate_rejects_empty_store_module() {
     cfg.store = Some(config::StoreCfg {
         module: "   ".to_string(),
         settings: Default::default(),
-        limits: None,
         insecure_transport: None,
     });
     let errs = validate(&cfg).expect_err("an empty store.module must fail validation");
@@ -3603,6 +3593,7 @@ fn group(
 
 fn limit_requests_per_minute(amount: u64) -> busbar_kernel::config::groups::LimitCfg {
     busbar_kernel::config::groups::LimitCfg {
+        selected: None,
         metric: busbar_kernel::config::groups::LimitMetric::Requests,
         amount,
         per: Some(busbar_kernel::config::groups::LimitWindow::Minute),
@@ -4137,84 +4128,36 @@ fn an_empty_error_map_is_valid_and_an_unknown_class_word_is_not() {
     assert!(errs.join(" | ").contains("invalid StatusClass"), "{errs:?}");
 }
 
+/// UPSTREAMS-DECLARED r3 §2.4: a selected provider route owns its configured target reach.
 #[test]
-fn test_a_provider_the_destination_guard_will_refuse_is_named_at_validate() {
+fn configured_provider_private_origins_do_not_emit_the_retired_global_allowlist_advisory() {
     use tracing_subscriber::layer::SubscriberExt as _;
-    let warned = |base_url: &str, block: bool, allow: &[&str]| -> Vec<String> {
+    for base_url in [
+        "http://127.0.0.1:11434",
+        "http://10.1.2.3/",
+        "http://localhost:8080/v1",
+        "http://[::1]:8080",
+    ] {
         let mut providers = HashMap::new();
         providers.insert(
             "local".to_string(),
             make_provider(proto_a(), base_url, "API_KEY"),
         );
         let mut cfg = make_root_cfg(providers, HashMap::new(), HashMap::new());
-        cfg.guard.block_private_addresses = block;
-        cfg.guard.allow = allow.iter().map(|s| s.to_string()).collect();
+        cfg.guard.block_private_addresses = true;
         let cap = WarnCapture::default();
         let subscriber = tracing_subscriber::registry().with(cap.clone());
         let result = tracing::subscriber::with_default(subscriber, || validate(&cfg));
-        assert!(result.is_ok(), "it still validates: {base_url}: {result:?}");
-        cap.messages()
-            .into_iter()
-            .filter(|m| m.contains("names the private or loopback host"))
-            .collect()
-    };
-    for (url, host) in [
-        ("http://127.0.0.1:11434", "127.0.0.1"),
-        ("http://\x310.1.2.3/", "\x310.1.2.3"),
-        ("http://localhost:8080/v1", "localhost"),
-        ("http://[::1]:8080", "::1"),
-    ] {
-        let lines = warned(url, true, &[]);
-        assert_eq!(lines.len(), 1, "one line for {url}: {lines:?}");
         assert!(
-            lines[0].starts_with(&format!(
-                "provider 'local' base_url names the private or loopback host '{host}': "
-            )) && lines[0].contains(&format!("Add '{host}' to advanced.allow_destinations"))
-                && lines[0].contains("diag=BUSBAR-3025"),
-            "{}",
-            lines[0]
+            result.is_ok(),
+            "provider route remains valid: {base_url}: {result:?}"
+        );
+        assert!(
+            cap.messages().iter().all(|m| !m.contains("BUSBAR-3025")),
+            "a configured provider origin owns its private reach: {base_url}: {:?}",
+            cap.messages()
         );
     }
-    for allow in [
-        &["\x310.1.2.3"][..],
-        &["\x310.0.0.0/8"][..],
-        &["\x310.1.2.3/32"][..],
-    ] {
-        assert!(
-            warned("http://\x310.1.2.3/", true, allow).is_empty(),
-            "{allow:?}"
-        );
-    }
-    for (url, allow) in [
-        ("http://localhost/", "LOCALHOST."),
-        ("http://service.localhost/", "*.LOCALHOST."),
-        ("http://[::1]/", "[::1]"),
-        ("http://[::1]/", "[::1]/128"),
-    ] {
-        assert!(
-            warned(url, true, &[allow]).is_empty(),
-            "the guard admits {url} through {allow}"
-        );
-    }
-    for (url, allow) in [
-        ("http://localhost/", "*.localhost."),
-        ("http://other.localhost/", "service.localhost."),
-        ("http://[::1]/", "[::2]"),
-    ] {
-        assert!(
-            !warned(url, true, &[allow]).is_empty(),
-            "{allow} does not admit {url}"
-        );
-    }
-    assert!(warned("http://\x310.1.2.3/", true, &["\x310.2.0.0/16"]).len() == 1);
-    assert!(
-        warned("http://\x310.1.2.3/", false, &[]).is_empty(),
-        "the guard is off"
-    );
-    assert!(
-        warned("https://api.example.com", true, &[]).is_empty(),
-        "a public host"
-    );
 }
 
 fn base_url_verdict(base: &str) -> Result<(), Vec<String>> {

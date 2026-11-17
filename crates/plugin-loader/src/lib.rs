@@ -243,6 +243,9 @@ mod sdk_registration_tests;
 #[cfg(feature = "pack")]
 #[deny(unsafe_code)]
 pub mod integer_token;
+#[cfg(feature = "pack")]
+#[deny(unsafe_code)]
+pub mod pack_native;
 #[deny(unsafe_code)]
 pub mod settings_schema;
 pub mod sign;
@@ -277,6 +280,9 @@ pub mod admit;
 #[deny(unsafe_code)]
 pub mod answer;
 mod chains;
+#[cfg(target_os = "linux")]
+#[deny(unsafe_code)]
+pub mod inspect;
 #[deny(unsafe_code)]
 #[deny(unsafe_code)]
 pub mod instance;
@@ -595,3 +601,8 @@ mod neutral_transport;
 #[cfg(test)]
 #[path = "tests/neutral_auth.rs"]
 mod neutral_auth;
+
+/// Process-owned MIN-3 resources.
+pub mod process;
+
+mod reopen;

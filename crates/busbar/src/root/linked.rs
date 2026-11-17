@@ -10,8 +10,6 @@ use busbar_kernel::preflight::{LinkedAuth, LinkedStore, RootInstall};
 
 pub type Compose = Box<dyn FnOnce(&dyn busbar_contract::secret::SecretResolve) + Send>;
 
-pub type CliHelpRow = (&'static str, &'static str);
-
 pub struct Linked {
     /// Compiled MIN-3 headers, admitted through the same checked loader path on every platform.
     pub images: &'static [LinkedImage],
@@ -34,8 +32,6 @@ pub struct Linked {
     pub on_host: &'static [fn(&Arc<dyn EngineHost>)],
 
     pub compose: &'static [fn(&busbar_kernel::config::RootCfg) -> Option<Compose>],
-
-    pub cli_help: &'static [&'static [CliHelpRow]],
 
     pub export_doors: &'static std::sync::LazyLock<Vec<LinkedDoorExport>>,
 
@@ -340,7 +336,6 @@ pub fn register_stores(linked: &Linked) {
             plugins_fetch: Some(crate::root::boot::plugins_fetch),
             hook_axis: Some(crate::root::hooks::axis),
             hook_names: crate::LINKED_HOOK_NAMES,
-            store_axis: Some(store_axis),
             secret_axis: Some(secrets),
             secret_admit: Some(crate::root::boot::admit_secrets),
             secret_snapshot: Some(secret_snapshot),
@@ -350,7 +345,6 @@ pub fn register_stores(linked: &Linked) {
             export_axis: Some(&crate::root::exports::EXPORTS),
             admission: Some(&crate::root::admission::ADMISSION),
             durable: Some(&crate::root::admission::DURABLE),
-            plugin_logs: Some(crate::root::admission::plugin_logs),
             hook_answers: Some(crate::root::admission::hook_answers),
             auth_chain_module: Some(crate::root::admission::auth_chain_module),
             dispatch_latched: Some(crate::root::admission::dispatch_latched),
@@ -358,7 +352,6 @@ pub fn register_stores(linked: &Linked) {
 
             in_process_auth: None,
             config_projection: Some(crate::root::door_steps::door_config),
-            grammar: Some(crate::root::boot::phase_one),
             admitted_grammar: Some(crate::root::boot::admitted_grammar),
         }),
         Err(refusal) => {
@@ -366,25 +359,6 @@ pub fn register_stores(linked: &Linked) {
             crate::root::exit::exit(2);
         }
     }
-}
-
-fn store_axis() -> std::sync::Arc<dyn busbar_contract::persistence::axis::PersistenceAxis> {
-    let conns: std::sync::Arc<dyn busbar_contract::conn::DeclaredConns> =
-        crate::root::connector::the().clone();
-    std::sync::Arc::new(crate::root::loader::store_v4::DoorPersistenceAxis {
-        dispatcher: crate::root::dispatch::dispatcher(),
-        logs: crate::root::boot::plugin_logs().clone(),
-        conns: crate::root::loader::dispatch::ConnTable::Host(crate::root::connector::admit(conns)),
-        // Resource admission for one crossing, not a persisted-record or transaction limit.
-        // Includes descriptor overhead above the existing raw conditional carrier.
-        limits: crate::root::loader::store_v4::Limits {
-            descriptor_bytes: 512 * 1024 * 1024,
-            output_items: (512 * 1024 * 1024)
-                / std::mem::size_of::<busbar_contract::abi::store::v4::ReadValue>(),
-            output_bytes: 512 * 1024 * 1024,
-            decode_bytes: 512 * 1024 * 1024,
-        },
-    })
 }
 
 static SECRETS: std::sync::OnceLock<crate::root::loader::secret_calls::SecretRows> =
@@ -651,11 +625,12 @@ pub(crate) fn door_breaker(
     Ok(None)
 }
 
-pub(crate) fn logs() -> &'static crate::root::loader::dispatch::PluginLogConfig {
-    crate::root::boot::plugin_logs()
-}
-
 pub(crate) const HOST_SERIES: &[&str] = &[
+    busbar_kernel::snapshot::EXPORT_DROPPED_TOTAL,
+    busbar_kernel::export::delivery::EXPORT_CUSTODY_TOTAL,
+    busbar_kernel::snapshot::EXPORT_CAPTURE_REFUSALS_TOTAL,
+    busbar_kernel::snapshot::EXPORT_INTEGRITY_FAILURES_TOTAL,
+    busbar_kernel::snapshot::EXPORT_HELD_LINES,
     busbar_kernel::snapshot::AUDIT_STAGE_FAILURES_TOTAL,
     busbar_kernel::snapshot::ROUTE_POLICY_SELECTIONS_TOTAL,
     busbar_kernel::snapshot::ROUTE_POLICY_REJECTIONS_TOTAL,
@@ -663,6 +638,8 @@ pub(crate) const HOST_SERIES: &[&str] = &[
     busbar_kernel::snapshot::BILLING_TRUNCATED_TOTAL,
     busbar_kernel::snapshot::PLUGIN_OBSERVATIONS_DROPPED_TOTAL,
     busbar_kernel::snapshot::PLUGIN_TEXT_CUT_TOTAL,
+    busbar_kernel::snapshot::PLUGIN_INSPECT_CAP_REFUSALS_TOTAL,
+    busbar_kernel::snapshot::PLUGIN_INSPECT_SLOT_HELD_SECONDS,
     busbar_kernel::snapshot::JOURNAL_QUARANTINED_TOTAL,
     busbar_kernel::snapshot::STORE_SLOTS,
     busbar_kernel::snapshot::UNIT_CHECKPOINTS_TERMINAL,
@@ -672,6 +649,7 @@ pub(crate) const HOST_SERIES: &[&str] = &[
     busbar_kernel::snapshot::FAILOVERS_TOTAL,
     busbar_kernel::snapshot::REQUEST_DURATION_SECONDS,
     busbar_kernel::snapshot::TRANSLATIONS_TOTAL,
+    busbar_kernel::snapshot::INSECURE_TRANSPORT_ADMITTED_TOTAL,
     busbar_kernel::snapshot::PLANE_REQUESTS_TOTAL,
     busbar_kernel::snapshot::PLANE_REQUEST_DURATION_SECONDS,
     busbar_kernel::snapshot::LANE_REQUEST_DURATION_SECONDS,

@@ -177,7 +177,8 @@
               "applied",
               "not_applied",
               "unknown"
-            ]
+            ],
+            "x-busbar-extensible-enum": true
           },
           "fingerprint": {
             "description": "SHA256 of exact request bytes",
@@ -196,11 +197,16 @@
             "pattern": "^[0-9a-f]{64}$",
             "type": "string"
           },
+          "receipt_durable": {
+            "description": "false when the effect is known in this process but final receipt persistence was not confirmed. After restart the retained pre-effect receipt may remain unknown; reconcile before any new action.",
+            "type": "boolean"
+          },
           "recovery": {
             "enum": [
               "receipt",
               "reconcile_ledger_recovery"
-            ]
+            ],
+            "x-busbar-extensible-enum": true
           },
           "retry": {
             "const": "same_action_only"
@@ -221,7 +227,8 @@
           "applied",
           "retry",
           "recovery",
-          "count_scale"
+          "count_scale",
+          "receipt_durable"
         ],
         "type": "object"
       },
@@ -551,12 +558,19 @@
           "algorithm": {
             "type": "string"
           },
-          "keys": {
-            "description": "Every public key this node signs records under; empty when it signs none.",
+          "items": {
+            "description": "This page of public keys, in key-id order; empty when the node signs none.",
             "items": {
               "$ref": "#/components/schemas/AuditChainKeyView"
             },
             "type": "array"
+          },
+          "next_cursor": {
+            "description": "The shared cursor for the next page, or null after the final key.",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "recipe": {
             "type": "string"
@@ -569,7 +583,7 @@
           "recipe",
           "signature_domain",
           "algorithm",
-          "keys"
+          "items"
         ],
         "type": "object"
       },
@@ -794,6 +808,21 @@
             "description": "The action, `noun.verb` (e.g. `hook.register`, `hook.delete`).",
             "type": "string"
           },
+          "at_ms": {
+            "default": null,
+            "description": "Epoch milliseconds of the same instant as `ts`, sealed by scheme 4; absent on older schemes.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ],
+            "x-busbar-exact-number": {
+              "client": "lossless-number-token-v1; preserve raw token before binary64 conversion",
+              "integer_format": "uint64",
+              "representation": "json-integer-token"
+            }
+          },
           "config_generation": {
             "default": null,
             "description": "The config generation after the change, as a decimal string: on every applied row of a\nconfig-changing request, null otherwise.",
@@ -808,7 +837,7 @@
             "description": "Members typed per action. Always an object; `{}` when the action has none."
           },
           "hash": {
-            "description": "The tamper-evidence digest: lowercase hex SHA-256 over the bytes this record's `scheme` names.\nIntegers are written in decimal ASCII and strings as their UTF-8 bytes unless stated.\n\nScheme 1: `prev_hash|seq|ts|action|resource|outcome|principal`, the fields joined by `|`\n(1.5.5's formula).\n\nScheme 2: `prev_hash|seq` as in scheme 1, then one zero byte (0x00), then `ts`, `action`,\n`resource`, `outcome` and `principal`, each as its byte length (8 bytes, big-endian) followed\nby its bytes; `ts` is its 8-byte big-endian value, so its length is 8.\n\nScheme 3 (ADMIN-API-1.6 section 7.2): `prev_hash|seq` as before, then the row suffix: one 0x03\nbyte, `ts` as scheme 2 writes it, `action`, `resource`, `outcome` and `principal` each\nlength-prefixed, then `config_generation`, `request_id`, `idempotency_key`, `kind` and\n`instance` (each length-prefixed: a single 0x00 byte when absent, 0x01 and the bytes when\npresent), `sections_changed` (an 8-byte big-endian count, then each name length-prefixed),\n`severity` and `message` (length-prefixed) and `data` as one length-prefixed field holding its\ncanonical JSON (members in ascending order of their names' UTF-8 bytes, no whitespace,\nminimal string escapes), so every member of `data` is inside the digest.",
+            "description": "The tamper-evidence digest: lowercase hex SHA-256 over the bytes this record's `scheme` names.\nIntegers are written in decimal ASCII and strings as their UTF-8 bytes unless stated.\n\nScheme 1: `prev_hash|seq|ts|action|resource|outcome|principal`, the fields joined by `|`\n(1.5.5's formula).\n\nScheme 2: `prev_hash|seq` as in scheme 1, then one zero byte (0x00), then `ts`, `action`,\n`resource`, `outcome` and `principal`, each as its byte length (8 bytes, big-endian) followed\nby its bytes; `ts` is its 8-byte big-endian value, so its length is 8.\n\nScheme 3 (ADMIN-API-1.6 section 7.2): `prev_hash|seq` as before, then the row suffix: one 0x03\nbyte, `ts` as scheme 2 writes it, `action`, `resource`, `outcome` and `principal` each\nlength-prefixed, then `config_generation`, `request_id`, `idempotency_key`, `kind` and\n`instance` (each length-prefixed: a single 0x00 byte when absent, 0x01 and the bytes when\npresent), `sections_changed` (an 8-byte big-endian count, then each name length-prefixed),\n`severity` and `message` (length-prefixed) and `data` as one length-prefixed field holding its\ncanonical JSON (members in ascending order of their names' UTF-8 bytes, no whitespace,\nminimal string escapes), so every member of `data` is inside the digest.\n\nScheme 4 (ADMIN-API-1.6-ONE-MODEL section 7.1): `prev_hash|seq` as before, then one 0x04 byte\nand scheme 3's row fields in scheme 3's order and framing (`ts` is `at_ms` divided by 1000),\nthen `at_ms` as its 8-byte big-endian value, then `client_request_id`, `trace_id`,\n`operation_id` and `on_behalf_of` (each framed like `request_id`), then `unconditional` as one\nbyte (0x01 when true, 0x00 when false), then `before_digest` and `after_digest` (framed like\n`request_id`). A member this record does not serve is absent (a single 0x00 field).",
             "type": "string"
           },
           "idempotency_key": {
@@ -866,7 +895,7 @@
           },
           "scheme": {
             "default": 1,
-            "description": "WHICH RECIPE `hash` was sealed under: 1 (the 1.5.5 pipe join), 2 (length-prefixed fields) or 3 (the row fields);\nall are stated on `hash`. A record is sealed under 3 when it is written through the row path\n(`AUDIT.record_by` and `emit_row_now`: every admin request's rows), under 1 otherwise when its\n`action`, `resource` and `outcome` carry no `|`, and under 2 when they do, so its fields always\nread back exactly. A\nrecord without this field is scheme 1. A verifier checks each record under its own scheme.",
+            "description": "WHICH RECIPE `hash` was sealed under: 1 (the 1.5.5 pipe join), 2 (length-prefixed fields), 3 (the row fields)\nor 4 (the row fields and the request fields); all are stated on `hash`. A record is sealed under 4\nwhen it is written through the row path (`AUDIT.record_by` and `emit_row_now`: every admin\nrequest's rows; an earlier engine sealed those under 3), under 1 otherwise when its\n`action`, `resource` and `outcome` carry no `|`, and under 2 when they do, so its fields always\nread back exactly. A\nrecord without this field is scheme 1. A verifier checks each record under its own scheme.",
             "format": "uint8",
             "maximum": 255,
             "minimum": 0,
@@ -906,6 +935,14 @@
               "integer_format": "uint64",
               "representation": "json-integer-token"
             }
+          },
+          "unconditional": {
+            "default": null,
+            "description": "Scheme 4: whether the request was admitted on `If-Match: *`, a deliberately unconditional\nmutation; absent on older schemes.",
+            "type": [
+              "boolean",
+              "null"
+            ]
           }
         },
         "required": [
@@ -1104,35 +1141,6 @@
           "chain",
           "upstream_credentials",
           "open"
-        ],
-        "type": "object"
-      },
-      "BuildInfo": {
-        "description": "The compiled-in feature proof (`InfoView.build`).",
-        "properties": {
-          "auth_modules": {
-            "description": "Auth modules baked into this binary (e.g. `[\"tokens\"]`; empty under `--no-default-features`).",
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          },
-          "hook_plugins": {
-            "description": "Hook plugins baked into this binary (e.g. `[]`).",
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          },
-          "weighted_floor": {
-            "description": "The inline SWRR floor: ALWAYS `true` (compiled in unconditionally, non-removable).",
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "auth_modules",
-          "hook_plugins",
-          "weighted_floor"
         ],
         "type": "object"
       },
@@ -2014,7 +2022,7 @@
         ]
       },
       "ConfigSettingsView": {
-        "description": "`GET`/`PUT /config/settings` (1.5.0 full-config coverage): the API-settable single-value config\noverlay (`root` section) and, on a PUT, the apply metadata. `settings` is the CURRENT effective\nroot override (the merge of prior overlay + this request). It is overlay-persisted so it survives\na restart. 1.5.3: a MUTABLE config always has a writable `config.overlay` backend (the boot\ninvariant), so a successful PUT is ALWAYS durable; a LOCKED config (`config.locked: true`) refuses\nthe PUT (`400`) instead of applying it in memory only; the silent-loss outcome is gone.\n`reload_to_apply` names the fields whose new value is DURABLY STORED but not yet LIVE: the\nprocess-level binds (`listen`/`admin_listen` socket, `tls`/`admin_tls` bind, and the\n`admin_require_mtls` boot-guard) are read once at process start, and the durable `store` backend\nis reused across a hot reload; none can hot-swap, so they take effect on the next RESTART (or a\nsupervisor restart), NEVER on a\n`POST /config/reload`: a reload re-reads disk and rebuilds the `App` but does not rebind sockets,\nrebuild the TLS acceptor, or re-open the store. It is always EMPTY when nothing was durably stored\n(no overlay); `note` names the affected fields instead. Everything else\n(`rate_card`/`per_request_fee`/`security`/`health`/`routing`) is LIVE on the swap;\n`limits` is live EXCEPT four boot-scoped fields (see `reload_to_apply_fields`):\n`upstream_request_timeout_secs`/`pool_max_idle_per_host`/`pool_idle_timeout_secs`, which the\nreused `UpstreamClients` only reads once at boot, and `max_inbound_concurrent`, which is baked\nonce into the data router's `GlobalConcurrencyLimitLayer` at process start (a config apply swaps\nonly `Arc<App>`, never the router): two independent freezing mechanisms.\nThe optional `limits.datagram_line_memory_bytes` setting is off by default. Setting it to\na positive integer enables a retained-capacity limit for new datagram LINE pairings; null\ndisables it. Existing connections retain their chosen limit. Exhaustion closes the affected\nconnection. The limit counts retained requested capacity across both directions, queued output\nownership and metadata, not process RSS or allocator overhead.\nThere is NO\n`observability` section here, and no `metrics` one either: 1.5.3 DELETED both from the config\ngrammar, and `RootSettings` (what this endpoint projects) carries neither field: a PUT naming\n`observability` is a loud `400` (`deny_unknown_fields`), never a silent no-op. All telemetry\negress uses the named `export:` map. Export definitions and explicit supported field projections\nare authored through the named exporter routes or source-fenced configuration document edits.\nModule-carried streams, produced fields and required pinned fields are published in the export\nform schema; lifecycle and restart requirements remain explicit in mutation responses.\n`advanced` is live EXCEPT `response_headers`: `response_headers.server_timing` is\nbaked into router middleware state at boot (same \"config apply swaps `Arc<App>`, never the\nrouter\" freezing as `max_inbound_concurrent`) and `response_headers.route_policy` seeds a\nprocess-global `OnceLock`; neither is rebuilt by an apply.",
+        "description": "`GET`/`PUT /config/settings` (1.5.0 full-config coverage): the API-settable single-value config\noverlay (`root` section) and, on a PUT, the apply metadata. `settings` is the CURRENT effective\nroot override (the merge of prior overlay + this request). It is overlay-persisted so it survives\na restart. 1.5.3: a MUTABLE config always has a writable `config.overlay` backend (the boot\ninvariant), so a successful PUT is ALWAYS durable; a LOCKED config (`config.locked: true`) refuses\nthe PUT (`400`) instead of applying it in memory only; the silent-loss outcome is gone.\n`reload_to_apply` names the fields whose new value is DURABLY STORED but not yet LIVE: the\nprocess-level binds (`listen`/`admin_listen` socket, `tls`/`admin_tls` bind, and the\n`admin_require_mtls` boot-guard) are read once at process start, and the durable `store` backend\nis reused across a hot reload; none can hot-swap, so they take effect on the next RESTART (or a\nsupervisor restart), NEVER on a\n`POST /config/reload`: a reload re-reads disk and rebuilds the `App` but does not rebind sockets,\nrebuild the TLS acceptor, or re-open the store. It is always EMPTY when nothing was durably stored\n(no overlay); `note` names the affected fields instead. Everything else\n(`rate_card`/`per_request_fee`/`security`/`health`/`routing`) is LIVE on the swap;\n`limits` is live EXCEPT four boot-scoped fields (see `reload_to_apply_fields`):\n`upstream_request_timeout_secs`/`pool_max_idle_per_host`/`pool_idle_timeout_secs`, which the\nreused `UpstreamClients` only reads once at boot, and `max_inbound_concurrent`, which is baked\nonce into the data router's `GlobalConcurrencyLimitLayer` at process start (a config apply swaps\nonly `Arc<App>`, never the router): two independent freezing mechanisms.\nThere is NO\n`observability` section here, and no `metrics` one either: 1.5.3 DELETED both from the config\ngrammar, and `RootSettings` (what this endpoint projects) carries neither field: a PUT naming\n`observability` is a loud `400` (`deny_unknown_fields`), never a silent no-op. All telemetry\negress uses the named `export:` map. Export definitions and explicit supported field projections\nare authored through the named exporter routes or source-fenced configuration document edits.\nModule-carried streams, produced fields and required pinned fields are published in the export\nform schema; lifecycle and restart requirements remain explicit in mutation responses.\n`advanced` is live EXCEPT `response_headers`: `response_headers.server_timing` is\nbaked into router middleware state at boot (same \"config apply swaps `Arc<App>`, never the\nrouter\" freezing as `max_inbound_concurrent`) and `response_headers.route_policy` seeds a\nprocess-global `OnceLock`; neither is rebuilt by an apply.",
         "properties": {
           "applied": {
             "description": "`true` on a PUT that stored + swapped; `false` on a GET (a pure read).",
@@ -2049,7 +2057,8 @@
               "unreadable",
               "newer_version"
             ],
-            "type": "string"
+            "type": "string",
+            "x-busbar-extensible-enum": true
           },
           "note": {
             "description": "A human note describing the live-vs-reload split (absent on a GET).",
@@ -2111,7 +2120,8 @@
               "base",
               "overlay",
               "merged"
-            ]
+            ],
+            "x-busbar-extensible-enum": true
           },
           "layers": {
             "additionalProperties": {
@@ -2148,7 +2158,8 @@
             "enum": [
               "effective",
               "declared"
-            ]
+            ],
+            "x-busbar-extensible-enum": true
           }
         },
         "required": [
@@ -2594,7 +2605,6 @@
         "type": "object"
       },
       "Describe": {
-        "additionalProperties": false,
         "properties": {
           "actions": {
             "maxItems": 0,
@@ -3508,28 +3518,10 @@
         "type": "object"
       },
       "InfoView": {
-        "description": "The compiled-in plugin catalog + topology + uptime returned by `GET /api/v1/admin/info`. Powers\nversion negotiation for tooling AND the compliance-by-compilation proof: `auth_modules`/`hook_plugins` reflect\nthe ACTUAL binary (feature-gated at compile time), not config, so `--no-default-features` shows a\nprovably smaller surface. No LLM content, ever.",
+        "description": "`GET /api/v1/admin/info`: this node's identity and nothing else (ADMIN-API-1.6-ONE-MODEL §10.1).\nEvery admin credential reads it, so it names no topology, no compiled-in plugin and no\nprocess-local counter: node lease rows are the `core/process` view `nodes`, counts come from\n`/kinds`, and the `/kinds` ETag is the discovery revision.",
         "properties": {
-          "build": {
-            "$ref": "#/components/schemas/BuildInfo"
-          },
           "config_generation": {
             "description": "The durable config generation (ADMIN-API-1.6 6.1): advanced in the Store before every\npublication, so it never repeats across restarts. The ETag of every config resource is\n`\"<deployment_id>.<config_generation>\"`.",
-            "format": "uint64",
-            "minimum": 0,
-            "type": "integer",
-            "x-busbar-exact-number": {
-              "client": "lossless-number-token-v1; preserve raw token before binary64 conversion",
-              "integer_format": "uint64",
-              "representation": "json-integer-token"
-            }
-          },
-          "config_persistence": {
-            "description": "Whether config-overlay persistence is enabled, i.e. the config is MUTABLE with a writable\n`config.overlay` backend: `true` = API-applied config changes are durable across restarts;\n`false` = the config is LOCKED (`config.locked: true`) and admin-API config mutations are\nrefused. Lets tooling tell an operator whether runtime changes are accepted and durable.",
-            "type": "boolean"
-          },
-          "config_version": {
-            "description": "Monotonic config version: `0` at boot, +1 per API config apply. Drift-detection: re-read and\ncompare to tell whether the running config changed. Process-local (resets on restart).",
             "format": "uint64",
             "minimum": 0,
             "type": "integer",
@@ -3547,9 +3539,13 @@
               "null"
             ]
           },
-          "kinds_revision": {
-            "description": "The `/kinds` ETag (ADMIN-API-1.6 §5.1): a digest over every (category, kind, instance,\nimage, instance config digest), kept once per generation. It moves whenever a kind or an\ninstance is added, removed or reconfigured.",
-            "type": "string"
+          "incarnation": {
+            "description": "This process's incarnation, the join-id term (`{node_id}.{incarnation}.{unit_key}`): a\nrandom 128-bit process generation, shared with the `/metrics` build_info series. Stable\nacross configuration reloads; a new process draws a new one. Null when OS randomness failed;\nclients must not fabricate a restart identity.",
+            "pattern": "^[0-9a-f]{32}$",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "node_id": {
             "description": "This process's node (`node_` + 16 hex, opaque): changes whenever a new writer takes over.",
@@ -3559,44 +3555,8 @@
               "null"
             ]
           },
-          "nodes": {
-            "description": "Every node the Store holds a lease row for, so a client can prove it reads the whole\ndeployment.",
-            "items": {
-              "$ref": "#/components/schemas/NodeView"
-            },
-            "type": "array"
-          },
-          "overlay_ignored": {
-            "description": "Present and `true` when this process was booted with `--ignore-overlay`; a later\nreload/apply re-merges the overlay.",
-            "type": "boolean"
-          },
-          "process_boot_nonce": {
-            "description": "Random 128-bit process generation, shared with the `/metrics` build_info series and available even when\nmetrics are disabled. Stable across configuration reloads; a new process generates a new\nnonce. Null when OS randomness failed; clients must not fabricate a restart identity.",
-            "pattern": "^[0-9a-f]{32}$",
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "started_at": {
-            "description": "Epoch seconds of process start, the BOOT EPOCH marker: `config_version` (and any\nprocess-local counter) resets on restart, so a consumer that sees `started_at` change knows\nto read a counter reset as \"new epoch\", never as \"reverted\".",
-            "format": "uint64",
-            "minimum": 0,
-            "type": [
-              "integer",
-              "null"
-            ],
-            "x-busbar-exact-number": {
-              "client": "lossless-number-token-v1; preserve raw token before binary64 conversion",
-              "integer_format": "uint64",
-              "representation": "json-integer-token"
-            }
-          },
-          "topology": {
-            "$ref": "#/components/schemas/TopologyInfo"
-          },
-          "uptime_seconds": {
-            "description": "Seconds since process start, or `None` if the start instant was never stamped.",
+          "started_at_ms": {
+            "description": "Epoch milliseconds of process start, or null if the start instant was never stamped. A\nchanged value means a new process.",
             "format": "uint64",
             "minimum": 0,
             "type": [
@@ -3610,22 +3570,53 @@
             }
           },
           "version": {
-            "description": "busbar semantic version (`CARGO_PKG_VERSION`).",
+            "description": "busbar semantic version (`CARGO_PKG_VERSION`). Informational: clients negotiate on\n`/whoami.features` and discovery, never on this.",
             "type": "string"
+          },
+          "warnings": {
+            "description": "Conditions an operator should know about this process, oldest first; empty normally.",
+            "items": {
+              "$ref": "#/components/schemas/InfoWarning"
+            },
+            "type": "array"
           }
         },
         "required": [
           "version",
-          "build",
-          "uptime_seconds",
-          "started_at",
-          "process_boot_nonce",
-          "topology",
-          "config_persistence",
+          "incarnation",
+          "started_at_ms",
           "config_generation",
-          "config_version",
-          "kinds_revision",
-          "nodes"
+          "warnings"
+        ],
+        "type": "object"
+      },
+      "InfoWarning": {
+        "description": "One `InfoView.warnings` entry.",
+        "properties": {
+          "code": {
+            "description": "What the warning is, an extensible set: `overlay_ignored` (booted with `--ignore-overlay`:\nthe persisted config overlay was not merged; a later reload or apply re-merges it).",
+            "type": "string"
+          },
+          "message": {
+            "description": "Core-written English for an operator; never parsed.",
+            "type": "string"
+          },
+          "since_ms": {
+            "description": "Epoch milliseconds since the condition holds.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer",
+            "x-busbar-exact-number": {
+              "client": "lossless-number-token-v1; preserve raw token before binary64 conversion",
+              "integer_format": "uint64",
+              "representation": "json-integer-token"
+            }
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "since_ms"
         ],
         "type": "object"
       },
@@ -3662,11 +3653,9 @@
         "type": "object"
       },
       "InstancesPage": {
-        "additionalProperties": false,
         "properties": {
           "items": {
             "items": {
-              "additionalProperties": false,
               "properties": {
                 "etag": {
                   "type": "string"
@@ -3731,7 +3720,8 @@
                         "failed",
                         "disabled",
                         "starting"
-                      ]
+                      ],
+                      "x-busbar-extensible-enum": true
                     }
                   },
                   "required": [
@@ -4338,14 +4328,13 @@
           "metering",
           "correction"
         ],
-        "type": "string"
+        "type": "string",
+        "x-busbar-extensible-enum": true
       },
       "KindsPage": {
-        "additionalProperties": false,
         "properties": {
           "items": {
             "items": {
-              "additionalProperties": false,
               "properties": {
                 "category": {
                   "enum": [
@@ -4357,7 +4346,8 @@
                     "hook",
                     "transport",
                     "core"
-                  ]
+                  ],
+                  "x-busbar-extensible-enum": true
                 },
                 "descriptors_uniform": {
                   "type": "boolean"
@@ -5280,13 +5270,15 @@
               "key.rotate",
               "key.patch",
               "key.delete"
-            ]
+            ],
+            "x-busbar-extensible-enum": true
           },
           "recovery": {
             "enum": [
               "rotate_with_new_action",
               "reread_resource"
-            ]
+            ],
+            "x-busbar-extensible-enum": true
           },
           "resource": {
             "description": "Non-secret key:<id> identity",
@@ -5300,52 +5292,6 @@
           "resource",
           "recovery",
           "credential_recoverable"
-        ],
-        "type": "object"
-      },
-      "NodeView": {
-        "description": "One node of `InfoView.nodes`: a Store node lease row.",
-        "properties": {
-          "last_seen_at": {
-            "description": "Epoch seconds of the node's last lease refresh.",
-            "format": "uint64",
-            "minimum": 0,
-            "type": "integer",
-            "x-busbar-exact-number": {
-              "client": "lossless-number-token-v1; preserve raw token before binary64 conversion",
-              "integer_format": "uint64",
-              "representation": "json-integer-token"
-            }
-          },
-          "node_id": {
-            "type": "string"
-          },
-          "role": {
-            "description": "`writer` for the node this Store's current writer authority runs, otherwise `replica`.",
-            "type": "string"
-          },
-          "started_at": {
-            "description": "Epoch seconds the node started.",
-            "format": "uint64",
-            "minimum": 0,
-            "type": "integer",
-            "x-busbar-exact-number": {
-              "client": "lossless-number-token-v1; preserve raw token before binary64 conversion",
-              "integer_format": "uint64",
-              "representation": "json-integer-token"
-            }
-          },
-          "state": {
-            "description": "`live` (lease unexpired), `lost` (expired without release) or `stopped` (released).",
-            "type": "string"
-          }
-        },
-        "required": [
-          "node_id",
-          "started_at",
-          "last_seen_at",
-          "state",
-          "role"
         ],
         "type": "object"
       },
@@ -5406,7 +5352,8 @@
           "__rejected",
           "__in_flight"
         ],
-        "type": "string"
+        "type": "string",
+        "x-busbar-extensible-enum": true
       },
       "OperationView": {
         "description": "`GET /operations/{key}`: one idempotent operation record.",
@@ -5828,8 +5775,7 @@
             ]
           },
           "trust": {
-            "description": "The server-side trust verdict from the RE-VERIFY: `\"trusted\"` | `\"unverified\"`. (A `\"rejected\"`\nverdict is an error, never a success body.)",
-            "type": "string"
+            "$ref": "#/components/schemas/PluginTrustView"
           },
           "version": {
             "description": "The manifest version, when the upload carried a signed manifest.",
@@ -6000,8 +5946,7 @@
             "type": "string"
           },
           "trust": {
-            "description": "`\"trusted\" | \"unverified\" | \"rejected\"`: the same vocabulary the plugin catalog already\nuses (never `\"verified\"`).",
-            "type": "string"
+            "$ref": "#/components/schemas/PluginTrustView"
           },
           "version": {
             "description": "The plugin's semantic version from its manifest. Present on `POST /plugins/inspect` (which\npreviews an on-disk candidate's manifest) and installed_archive schema reads; absent on\nlegacy loaded-registry schema reads. Declared here so a codegen'd client keeps the field the inspect\nhandler always sends, rather than silently dropping it.",
@@ -6112,10 +6057,13 @@
             ]
           },
           "trust": {
-            "description": "The server-side trust verdict for a dynamic-library plugin, re-evaluated against the running\n`plugins.trust` posture: `\"trusted\"` (signed by an allowlisted publisher), `\"unverified\"`\n(loaded but not verified, the posture permits it), or `\"rejected\"` (the `halt` posture would\nrefuse it). `None` for compiled-in/external.",
-            "type": [
-              "string",
-              "null"
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PluginTrustView"
+              },
+              {
+                "type": "null"
+              }
             ]
           },
           "type": {
@@ -6256,7 +6204,7 @@
         "type": "object"
       },
       "RecordsSource": {
-        "description": "Who answered a `/records` read. Records are per node: `/info.nodes` lists every node.",
+        "description": "Who answered a `/records` read. Records are per node: the `core/process` view `nodes` lists every node.",
         "properties": {
           "deployment_id": {
             "description": "`dep_` + 32 hex; null before the node has published its identity.",
@@ -6356,15 +6304,10 @@
           },
           "restarting": {
             "type": "boolean"
-          },
-          "supervisor_detected": {
-            "description": "Whether a process supervisor was detected. False means the caller confirmed explicitly.",
-            "type": "boolean"
           }
         },
         "required": [
           "restarting",
-          "supervisor_detected",
           "note"
         ],
         "type": "object"
@@ -6635,29 +6578,6 @@
         ],
         "type": "object"
       },
-      "SigningKeyRotateView": {
-        "description": "`POST /signing-key/rotate`: the current key-signing key id plus the REVOKE-ALL warning. 1.5.0 is\nsingle-key: the actual swap is an operator action, so this reports intent, not an in-process swap.",
-        "properties": {
-          "current_kid": {
-            "description": "The current signing-key id (`kid`) that tokens are minted under.",
-            "type": "string"
-          },
-          "message": {
-            "description": "Human-readable guidance for the operator-driven lockstep rotation.",
-            "type": "string"
-          },
-          "revoke_all": {
-            "description": "Always `true`: rotating the signing key revokes every outstanding key (all must be re-minted).",
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "current_kid",
-          "revoke_all",
-          "message"
-        ],
-        "type": "object"
-      },
       "StateView": {
         "enum": [
           "intent",
@@ -6668,7 +6588,8 @@
           "verdict_not_landed",
           "settled"
         ],
-        "type": "string"
+        "type": "string",
+        "x-busbar-extensible-enum": true
       },
       "StoreRestoreReq": {
         "description": "`POST /store-restore`: the backup to restore. There is no default and no empty one.",
@@ -6680,47 +6601,6 @@
         },
         "required": [
           "backup_ref"
-        ],
-        "type": "object"
-      },
-      "TopologyInfo": {
-        "description": "Pool/model/provider counts (`InfoView.topology`).",
-        "properties": {
-          "models": {
-            "format": "uint",
-            "minimum": 0,
-            "type": "integer",
-            "x-busbar-exact-number": {
-              "client": "lossless-number-token-v1; preserve raw token before binary64 conversion",
-              "integer_format": "uint",
-              "representation": "json-integer-token"
-            }
-          },
-          "pools": {
-            "format": "uint",
-            "minimum": 0,
-            "type": "integer",
-            "x-busbar-exact-number": {
-              "client": "lossless-number-token-v1; preserve raw token before binary64 conversion",
-              "integer_format": "uint",
-              "representation": "json-integer-token"
-            }
-          },
-          "providers": {
-            "format": "uint",
-            "minimum": 0,
-            "type": "integer",
-            "x-busbar-exact-number": {
-              "client": "lossless-number-token-v1; preserve raw token before binary64 conversion",
-              "integer_format": "uint",
-              "representation": "json-integer-token"
-            }
-          }
-        },
-        "required": [
-          "pools",
-          "models",
-          "providers"
         ],
         "type": "object"
       },
@@ -7566,7 +7446,6 @@
         "type": "object"
       },
       "ViewPage": {
-        "additionalProperties": false,
         "properties": {
           "as_of": {
             "description": "Unix milliseconds",
@@ -7746,6 +7625,57 @@
           "verbs_all",
           "require_if_match",
           "rate"
+        ],
+        "type": "object"
+      },
+      "PluginTrustView": {
+        "description": "Signed admin image trust evidence (ADMIN-API-1.6.r5 §16.3). Signature presence is informational; only a satisfying verifier result supplies a fingerprint.",
+        "type": "object",
+        "properties": {
+          "signature_present": {
+            "type": "boolean"
+          },
+          "key_fingerprint": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "verdict": {
+            "type": "string"
+          },
+          "keys_doc_version": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint64",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "signature_present",
+          "verdict"
+        ]
+      },
+      "CoreState_durability": {
+        "description": "The core/durability instance's state.",
+        "properties": {
+          "store": {
+            "properties": {
+              "persistence": {
+                "description": "Whether configuration changes made through the admin API are kept in the Store and survive a restart; false when the configuration is locked and those changes are refused.",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "persistence"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "store"
         ],
         "type": "object"
       }
@@ -8015,6 +7945,13 @@
         },
         "noun": "plugin"
       },
+      "plugin.inspect": {
+        "data_schema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "noun": "plugin"
+      },
       "plugin.install": {
         "data_schema": {
           "additionalProperties": true,
@@ -8135,7 +8072,6 @@
       "action_in_flight": {
         "code": "conflict",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 409,
@@ -8144,7 +8080,6 @@
       "archive_changed": {
         "code": "conflict",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 409,
@@ -8153,7 +8088,6 @@
       "at_key_cap": {
         "code": "conflict",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 409,
@@ -8162,7 +8096,6 @@
       "base_defined": {
         "code": "conflict",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 409,
@@ -8171,7 +8104,6 @@
       "bound_keys": {
         "code": "conflict",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 409,
@@ -8180,7 +8112,6 @@
       "config_locked": {
         "code": "conflict",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 409,
@@ -8189,7 +8120,6 @@
       "credential_expired": {
         "code": "unauthorized",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 401,
@@ -8198,7 +8128,6 @@
       "credential_invalid": {
         "code": "unauthorized",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 401,
@@ -8207,7 +8136,6 @@
       "credential_revoked": {
         "code": "unauthorized",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 401,
@@ -8216,7 +8144,6 @@
       "currency_change": {
         "code": "conflict",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 409,
@@ -8225,7 +8152,6 @@
       "cursor_expired": {
         "code": "invalid_request",
         "details_schema": {
-          "additionalProperties": false,
           "properties": {
             "oldest_available": {
               "type": "string"
@@ -8242,7 +8168,6 @@
       "cursor_mismatch": {
         "code": "invalid_request",
         "details_schema": {
-          "additionalProperties": false,
           "properties": {
             "cursor_node_id": {
               "type": "string"
@@ -8262,7 +8187,6 @@
         ],
         "code": "conflict",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 409,
@@ -8271,7 +8195,6 @@
       "grant_change": {
         "code": "conflict",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 409,
@@ -8280,7 +8203,6 @@
       "hook_no_ack": {
         "code": "invalid_request",
         "details_schema": {
-          "additionalProperties": false,
           "properties": {
             "condition": {
               "type": [
@@ -8313,7 +8235,6 @@
       "idempotency_in_flight": {
         "code": "conflict",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 409,
@@ -8322,7 +8243,6 @@
       "idempotency_mismatch": {
         "code": "conflict",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 409,
@@ -8331,7 +8251,6 @@
       "if_match_required": {
         "code": "invalid_request",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 428,
@@ -8340,7 +8259,6 @@
       "instance_not_configured": {
         "code": "not_found",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 404,
@@ -8349,7 +8267,6 @@
       "invalid_config": {
         "code": "invalid_request",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 400,
@@ -8358,7 +8275,6 @@
       "invalid_filename": {
         "code": "invalid_request",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 400,
@@ -8367,7 +8283,6 @@
       "invalid_labels": {
         "code": "invalid_request",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 400,
@@ -8376,7 +8291,6 @@
       "invalid_query_value": {
         "code": "invalid_request",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 400,
@@ -8385,7 +8299,6 @@
       "invalid_tree": {
         "code": "invalid_request",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 400,
@@ -8394,7 +8307,6 @@
       "key_expiry_fields": {
         "code": "invalid_request",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 400,
@@ -8403,7 +8315,6 @@
       "key_revoked": {
         "code": "conflict",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 409,
@@ -8412,7 +8323,6 @@
       "lockout_self": {
         "code": "conflict",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 409,
@@ -8421,7 +8331,6 @@
       "malformed_body": {
         "code": "invalid_request",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 400,
@@ -8430,7 +8339,6 @@
       "malformed_cursor": {
         "code": "invalid_request",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 400,
@@ -8439,7 +8347,6 @@
       "malformed_if_match": {
         "code": "invalid_request",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 400,
@@ -8448,7 +8355,6 @@
       "method_not_allowed": {
         "code": "method_not_allowed",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 405,
@@ -8457,7 +8363,6 @@
       "missing_required_query": {
         "code": "invalid_request",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 400,
@@ -8466,7 +8371,6 @@
       "mutation_applied": {
         "code": "conflict",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 409,
@@ -8475,7 +8379,6 @@
       "mutation_budget": {
         "code": "rate_limited",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 429,
@@ -8484,7 +8387,6 @@
       "name_collision": {
         "code": "conflict",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 409,
@@ -8493,7 +8395,6 @@
       "no_disk_base": {
         "code": "invalid_request",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 400,
@@ -8502,7 +8403,6 @@
       "no_signing_key": {
         "code": "conflict",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 409,
@@ -8511,7 +8411,6 @@
       "no_supervisor": {
         "code": "conflict",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 409,
@@ -8520,7 +8419,6 @@
       "non_numeric_path": {
         "code": "invalid_request",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 400,
@@ -8535,7 +8433,6 @@
         ],
         "code": "conflict",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 409,
@@ -8544,16 +8441,6 @@
       "not_restartable": {
         "code": "conflict",
         "details_schema": {
-          "additionalProperties": false,
-          "type": "object"
-        },
-        "http": 409,
-        "retryable": false
-      },
-      "nothing_to_rotate": {
-        "code": "conflict",
-        "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 409,
@@ -8562,7 +8449,6 @@
       "operator_file_policy": {
         "code": "conflict",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 409,
@@ -8571,7 +8457,6 @@
       "overlong": {
         "code": "invalid_request",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 400,
@@ -8580,7 +8465,6 @@
       "parent_without_group": {
         "code": "invalid_request",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 400,
@@ -8589,7 +8473,6 @@
       "plugin_refused": {
         "code": "conflict",
         "details_schema": {
-          "additionalProperties": false,
           "properties": {
             "byte": {
               "type": "integer"
@@ -8631,7 +8514,6 @@
       "plugin_rejected": {
         "code": "invalid_request",
         "details_schema": {
-          "additionalProperties": false,
           "properties": {
             "condition": {
               "type": [
@@ -8664,7 +8546,6 @@
       "range_too_large": {
         "code": "invalid_request",
         "details_schema": {
-          "additionalProperties": false,
           "properties": {
             "max_buckets": {
               "type": "integer"
@@ -8681,7 +8562,6 @@
       "read_budget": {
         "code": "rate_limited",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 429,
@@ -8690,7 +8570,6 @@
       "rebind_target_missing": {
         "code": "invalid_request",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 400,
@@ -8699,7 +8578,6 @@
       "recovery_conflict": {
         "code": "conflict",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 409,
@@ -8708,7 +8586,6 @@
       "request_too_large": {
         "code": "request_too_large",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 413,
@@ -8717,7 +8594,6 @@
       "restart_required": {
         "code": "conflict",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 409,
@@ -8726,7 +8602,6 @@
       "restart_unreachable": {
         "code": "conflict",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 409,
@@ -8735,7 +8610,6 @@
       "scope_insufficient": {
         "code": "forbidden",
         "details_schema": {
-          "additionalProperties": false,
           "properties": {
             "needed_scope": {
               "type": "string"
@@ -8759,7 +8633,6 @@
       "service_unavailable": {
         "code": "unavailable",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 503,
@@ -8768,7 +8641,6 @@
       "settings_push": {
         "code": "conflict",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 409,
@@ -8777,7 +8649,6 @@
       "stale_if_match": {
         "code": "version_conflict",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 409,
@@ -8786,7 +8657,6 @@
       "state_conflict": {
         "code": "conflict",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 409,
@@ -8795,7 +8665,6 @@
       "still_parent": {
         "code": "conflict",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 409,
@@ -8804,7 +8673,6 @@
       "still_referenced": {
         "code": "conflict",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 409,
@@ -8813,7 +8681,6 @@
       "telemetry_disabled": {
         "code": "unavailable",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 503,
@@ -8822,7 +8689,6 @@
       "trust_ceiling_raise": {
         "code": "conflict",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 409,
@@ -8831,7 +8697,6 @@
       "unknown_module": {
         "code": "invalid_request",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 400,
@@ -8840,7 +8705,6 @@
       "unknown_resource": {
         "code": "not_found",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 404,
@@ -8849,7 +8713,6 @@
       "unknown_section": {
         "code": "invalid_request",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 400,
@@ -8858,7 +8721,6 @@
       "unpriced": {
         "code": "unpriced_class",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 409,
@@ -8867,7 +8729,6 @@
       "untrusted_upload": {
         "code": "conflict",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 409,
@@ -8876,7 +8737,6 @@
       "view_unavailable": {
         "code": "unavailable",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 503,
@@ -9597,8 +9457,7 @@
     "version": "1.6.0",
     "x-busbar-marks": {
       "money": "Money fields use the representation declared by their schema: ledger Amount values are decimal-integer JSON strings; spend_cents and spend_micros are JSON integers. Counts are JSON numbers.",
-      "scope": "ONE generated document, describing every administrative operation this build can serve; a node serves it filtered to the planes it configured.",
-      "x-busbar-plane": "The operation is mounted only on a node whose config carries that plane's `<section>:` block; elsewhere its path answers `404 not_found` and the node's served `GET /openapi.json` omits it (and every schema only it references).",
+      "scope": "ONE generated document, describing every administrative operation this build can serve, served unfiltered.",
       "x-busbar-since": "Added in that release, and answered by the node's administrative loop."
     }
   },
@@ -9657,22 +9516,6 @@
                   "const": "no-store",
                   "type": "string"
                 }
-              },
-              "x-busbar-adjust-effect": {
-                "description": "Host-created applied/not_applied/unknown effect classification when an action outcome is available; not derived from a request header.",
-                "schema": {
-                  "enum": [
-                    "applied",
-                    "not_applied",
-                    "unknown"
-                  ]
-                }
-              },
-              "x-busbar-receipt-durable": {
-                "description": "false when the effect is known in this process but final receipt persistence was not confirmed. After restart the retained pre-effect receipt may remain unknown; reconcile before any new action.",
-                "schema": {
-                  "const": "false"
-                }
               }
             }
           },
@@ -9701,22 +9544,6 @@
                 "schema": {
                   "const": "no-store",
                   "type": "string"
-                }
-              },
-              "x-busbar-adjust-effect": {
-                "description": "Host-created applied/not_applied/unknown effect classification when an action outcome is available; not derived from a request header.",
-                "schema": {
-                  "enum": [
-                    "applied",
-                    "not_applied",
-                    "unknown"
-                  ]
-                }
-              },
-              "x-busbar-receipt-durable": {
-                "description": "false when the effect is known in this process but final receipt persistence was not confirmed. After restart the retained pre-effect receipt may remain unknown; reconcile before any new action.",
-                "schema": {
-                  "const": "false"
                 }
               }
             }
@@ -9804,22 +9631,6 @@
                   "const": "no-store",
                   "type": "string"
                 }
-              },
-              "x-busbar-adjust-effect": {
-                "description": "Host-created applied/not_applied/unknown effect classification when an action outcome is available; not derived from a request header.",
-                "schema": {
-                  "enum": [
-                    "applied",
-                    "not_applied",
-                    "unknown"
-                  ]
-                }
-              },
-              "x-busbar-receipt-durable": {
-                "description": "false when the effect is known in this process but final receipt persistence was not confirmed. After restart the retained pre-effect receipt may remain unknown; reconcile before any new action.",
-                "schema": {
-                  "const": "false"
-                }
               }
             }
           },
@@ -9893,22 +9704,6 @@
                 "schema": {
                   "const": "no-store",
                   "type": "string"
-                }
-              },
-              "x-busbar-adjust-effect": {
-                "description": "Host-created applied/not_applied/unknown effect classification when an action outcome is available; not derived from a request header.",
-                "schema": {
-                  "enum": [
-                    "applied",
-                    "not_applied",
-                    "unknown"
-                  ]
-                }
-              },
-              "x-busbar-receipt-durable": {
-                "description": "false when the effect is known in this process but final receipt persistence was not confirmed. After restart the retained pre-effect receipt may remain unknown; reconcile before any new action.",
-                "schema": {
-                  "const": "false"
                 }
               }
             }
@@ -10765,6 +10560,28 @@
       "get": {
         "description": "A pull, never a push: the node answers and opens no connection. A read: it mutates nothing and is never posture-gated.",
         "operationId": "GetAuditKeys",
+        "parameters": [
+          {
+            "description": "Opaque continuation cursor from `next_cursor`.",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Page size (default 200, max 1000).",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "maximum": 1000,
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -10775,6 +10592,25 @@
               }
             },
             "description": "The published verifying keys (empty when the node signs nothing)",
+            "headers": {
+              "Cache-Control": {
+                "description": "Administrative responses, including credential issuance and replay, must not be stored.",
+                "schema": {
+                  "const": "no-store",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`invalid_request`: malformed pagination `cursor`",
             "headers": {
               "Cache-Control": {
                 "description": "Administrative responses, including credential issuance and replay, must not be stored.",
@@ -13258,7 +13094,7 @@
                             "type": "null"
                           }
                         ],
-                        "description": "Per-field LimitsPatch; omitted members preserve their value. Null datagram_line_memory_bytes explicitly disables that limit.",
+                        "description": "Per-field LimitsPatch; omitted or null members preserve their value.",
                         "x-busbar-runtime-validation": "The owning section parser validates field names, types and positional forms."
                       },
                       "listen": {
@@ -13273,44 +13109,6 @@
                         "minimum": -9223372036854775808,
                         "type": [
                           "integer",
-                          "null"
-                        ]
-                      },
-                      "plugin_rate_cards": {
-                        "additionalProperties": {
-                          "additionalProperties": {
-                            "additionalProperties": {
-                              "description": "Exact non-negative micro-units; the resolved nano-unit rate must fit uint64.",
-                              "oneOf": [
-                                {
-                                  "minimum": 0,
-                                  "type": "integer"
-                                },
-                                {
-                                  "pattern": "^[0-9]+(\\.[0-9]{1,3})?$",
-                                  "type": "string"
-                                }
-                              ]
-                            },
-                            "maxProperties": 64,
-                            "type": "object"
-                          },
-                          "type": "object"
-                        },
-                        "description": "Exact common measurement rates by plugin kind, actual configured namespace, and declared class. Integer or decimal-string micro-units per quantity; missing rates remain unpriced. The whole map is replaced when supplied, including an empty map to clear it.",
-                        "propertyNames": {
-                          "enum": [
-                            "plane",
-                            "transport",
-                            "auth",
-                            "store",
-                            "secret",
-                            "hook",
-                            "export"
-                          ]
-                        },
-                        "type": [
-                          "object",
                           "null"
                         ]
                       },
@@ -19200,7 +18998,7 @@
             "bearerAuth": []
           }
         ],
-        "summary": "Version, compiled-in plugin proof, uptime, topology",
+        "summary": "Node identity: version, deployment, node, incarnation, warnings",
         "x-busbar-required-scope": "read-only",
         "x-busbar-verb": "get_info"
       }
@@ -21170,7 +20968,7 @@
     },
     "/api/v1/admin/kinds": {
       "get": {
-        "description": "One row per kind: the seven engine kinds (one per registered plane) and `core`, core's own subsystems. `category` is the engine kind; `kind` is the id a client routes on. `instance_count` counts the running instances; `views` and `record_attributes` are on the row when every instance declares the same descriptors (`descriptors_uniform`). The ETag is `/info.kinds_revision`. Pages with `cursor` and `limit`.",
+        "description": "One row per kind: the seven engine kinds (one per registered plane) and `core`, core's own subsystems. `category` is the engine kind; `kind` is the id a client routes on. `instance_count` counts the running instances; `views` and `record_attributes` are on the row when every instance declares the same descriptors (`descriptors_uniform`). The ETag moves whenever a kind or an instance is added, removed or reconfigured. Pages with `cursor` and `limit`.",
         "operationId": "GetKinds",
         "parameters": [
           {
@@ -22352,129 +22150,6 @@
         "x-busbar-required-scope": "read-only",
         "x-busbar-since": "1.6.0",
         "x-busbar-verb": "get_ledger_migration"
-      }
-    },
-    "/api/v1/admin/ledger/openapi.json": {
-      "get": {
-        "description": "The committed, generated document, unfiltered: every operation this BUILD can serve, including each plane's. `GET /openapi.json` serves the same document filtered to the planes this node configured.",
-        "operationId": "GetLedgerOpenapiJson",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "description": "An OpenAPI 3.1 document (this document's shape)",
-                  "type": "object"
-                }
-              }
-            },
-            "description": "The one administrative OpenAPI document",
-            "headers": {
-              "Cache-Control": {
-                "description": "Administrative responses, including credential issuance and replay, must not be stored.",
-                "schema": {
-                  "const": "no-store",
-                  "type": "string"
-                }
-              }
-            }
-          },
-          "401": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "Missing/invalid admin credential (error code `unauthorized`)",
-            "headers": {
-              "Cache-Control": {
-                "description": "Administrative responses, including credential issuance and replay, must not be stored.",
-                "schema": {
-                  "const": "no-store",
-                  "type": "string"
-                }
-              }
-            }
-          },
-          "413": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "Admin request exceeds the listener body limit (request_too_large)",
-            "headers": {
-              "Cache-Control": {
-                "description": "Administrative responses, including credential issuance and replay, must not be stored.",
-                "schema": {
-                  "const": "no-store",
-                  "type": "string"
-                }
-              }
-            }
-          },
-          "503": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "`unavailable`: the node could not take the unit. The body is the admin error envelope with code `unavailable`",
-            "headers": {
-              "Cache-Control": {
-                "description": "Administrative responses, including credential issuance and replay, must not be stored.",
-                "schema": {
-                  "const": "no-store",
-                  "type": "string"
-                }
-              },
-              "Retry-After": {
-                "description": "Delay in seconds when supplied by the listener's rate/backpressure refusal; absence makes no retry promise.",
-                "schema": {
-                  "minimum": 0,
-                  "type": "integer"
-                }
-              }
-            }
-          },
-          "default": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "Other typed administrative refusal. Branch on known codes while preserving unknown strings; retry depends on operation semantics.",
-            "headers": {
-              "Cache-Control": {
-                "description": "Administrative responses, including credential issuance and replay, must not be stored.",
-                "schema": {
-                  "const": "no-store",
-                  "type": "string"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "adminToken": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "summary": "The full administrative OpenAPI 3.1 document, served at the ledger's own path",
-        "x-busbar-required-scope": "read-only",
-        "x-busbar-since": "1.6.0",
-        "x-busbar-verb": "get_ledger_openapi_json"
       }
     },
     "/api/v1/admin/ledger/reconciliation": {
@@ -25597,7 +25272,7 @@
     },
     "/api/v1/admin/records": {
       "get": {
-        "description": "A read-time projection of this node's sealed per-unit audit records, oldest first. `next_cursor` is always a string; `complete: true` means caught up. With no cursor the feed starts at the oldest retained record. A request scans at most 10000 sealed records, so a filtered page may be short or empty with a cursor that continues. Records are per node: `/info.nodes` lists every node. Spend is priced at read by the rule `GET /usage` uses. A read: it mutates nothing and is never posture-gated.",
+        "description": "A read-time projection of this node's sealed per-unit audit records, oldest first. `next_cursor` is always a string; `complete: true` means caught up. With no cursor the feed starts at the oldest retained record. A request scans at most 10000 sealed records, so a filtered page may be short or empty with a cursor that continues. Records are per node: the `core/process` view `nodes` lists every node. Spend is priced at read by the rule `GET /usage` uses. A read: it mutates nothing and is never posture-gated.",
         "operationId": "GetRecords",
         "parameters": [
           {
@@ -25952,7 +25627,7 @@
                 }
               }
             },
-            "description": "`{restarting, supervisor_detected, note}`: draining; in-flight requests finish first",
+            "description": "`{restarting, note}`: draining; in-flight requests finish first",
             "headers": {
               "Cache-Control": {
                 "description": "Administrative responses, including credential issuance and replay, must not be stored.",
@@ -26160,209 +25835,6 @@
         "summary": "Restart busbar to apply the restart-scoped settings (listen, admin_listen, tls, admin_tls, admin_require_mtls, store). Drains first; the supervisor brings it back",
         "x-busbar-required-scope": "full",
         "x-busbar-verb": "post_restart"
-      }
-    },
-    "/api/v1/admin/signing-key/rotate": {
-      "post": {
-        "operationId": "PostSigningKeyRotate",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SigningKeyRotateView"
-                }
-              }
-            },
-            "description": "`{current_kid, revoke_all, message}`: the rotation intent + revoke-all warning",
-            "headers": {
-              "Cache-Control": {
-                "description": "Administrative responses, including credential issuance and replay, must not be stored.",
-                "schema": {
-                  "const": "no-store",
-                  "type": "string"
-                }
-              }
-            }
-          },
-          "401": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "Missing/invalid admin credential (error code `unauthorized`)",
-            "headers": {
-              "Cache-Control": {
-                "description": "Administrative responses, including credential issuance and replay, must not be stored.",
-                "schema": {
-                  "const": "no-store",
-                  "type": "string"
-                }
-              }
-            }
-          },
-          "403": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "Authenticated but under-scoped: requires `full` (error code `forbidden`)",
-            "headers": {
-              "Cache-Control": {
-                "description": "Administrative responses, including credential issuance and replay, must not be stored.",
-                "schema": {
-                  "const": "no-store",
-                  "type": "string"
-                }
-              }
-            }
-          },
-          "409": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "`conflict`: governance is not enabled on this server, no signing key is configured; nothing to rotate",
-            "headers": {
-              "Cache-Control": {
-                "description": "Administrative responses, including credential issuance and replay, must not be stored.",
-                "schema": {
-                  "const": "no-store",
-                  "type": "string"
-                }
-              }
-            }
-          },
-          "413": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "Admin request exceeds the listener body limit (request_too_large)",
-            "headers": {
-              "Cache-Control": {
-                "description": "Administrative responses, including credential issuance and replay, must not be stored.",
-                "schema": {
-                  "const": "no-store",
-                  "type": "string"
-                }
-              }
-            }
-          },
-          "429": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "Per-principal mutation budget exhausted (error code `rate_limited`; `Retry-After` header)",
-            "headers": {
-              "Cache-Control": {
-                "description": "Administrative responses, including credential issuance and replay, must not be stored.",
-                "schema": {
-                  "const": "no-store",
-                  "type": "string"
-                }
-              },
-              "Retry-After": {
-                "description": "Delay in seconds when supplied by the listener's rate/backpressure refusal; absence makes no retry promise.",
-                "schema": {
-                  "minimum": 0,
-                  "type": "integer"
-                }
-              }
-            }
-          },
-          "500": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned",
-            "headers": {
-              "Cache-Control": {
-                "description": "Administrative responses, including credential issuance and replay, must not be stored.",
-                "schema": {
-                  "const": "no-store",
-                  "type": "string"
-                }
-              }
-            }
-          },
-          "503": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "The node could not take the request into its administrative loop, or could not record what the operation would do (error code `unavailable`)",
-            "headers": {
-              "Cache-Control": {
-                "description": "Administrative responses, including credential issuance and replay, must not be stored.",
-                "schema": {
-                  "const": "no-store",
-                  "type": "string"
-                }
-              },
-              "Retry-After": {
-                "description": "Delay in seconds when supplied by the listener's rate/backpressure refusal; absence makes no retry promise.",
-                "schema": {
-                  "minimum": 0,
-                  "type": "integer"
-                }
-              }
-            }
-          },
-          "default": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "Other typed administrative refusal. Branch on known codes while preserving unknown strings; retry depends on operation semantics.",
-            "headers": {
-              "Cache-Control": {
-                "description": "Administrative responses, including credential issuance and replay, must not be stored.",
-                "schema": {
-                  "const": "no-store",
-                  "type": "string"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "adminToken": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "summary": "ROTATE the busbar key-signing key. Rotation is REVOKE-ALL by design: a new signing key means every token minted under the OLD key stops verifying, so every outstanding key must be re-minted. 1.5.0 is single-key, so this reports the intent + current kid; the actual swap is an operator action (replace auth.signing_key / the persisted key file and restart/reload every node in lockstep) (1.5.0)",
-        "x-busbar-required-scope": "full",
-        "x-busbar-verb": "post_signing_key_rotate"
       }
     },
     "/api/v1/admin/store-restore": {
@@ -27879,11 +27351,6 @@
       },
       {
         "bound": true,
-        "name": "post_signing_key_rotate",
-        "scope": "full"
-      },
-      {
-        "bound": true,
         "name": "get_usage",
         "scope": "read-only"
       },
@@ -28014,11 +27481,6 @@
       },
       {
         "bound": true,
-        "name": "get_ledger_openapi_json",
-        "scope": "read-only"
-      },
-      {
-        "bound": true,
         "name": "get_audit_head",
         "scope": "read-only"
       },
@@ -28132,27 +27594,6 @@
                     ]
                   },
                   "type": "array"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "default_ttl": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "max_outstanding_tickets_per_key": {
-              "anyOf": [
-                {
-                  "minimum": 1,
-                  "type": "integer"
                 },
                 {
                   "type": "null"
@@ -29902,17 +29343,6 @@
               ],
               "default": null
             },
-            "protocol": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "default": null
-            },
             "provider": {
               "type": "string"
             },
@@ -29970,70 +29400,30 @@
           ],
           "description": "One `plugins.fetch:` entry — an UNTAGGED enum discriminated by which key is present. `github` is a\n`org/repo@tag` release ref (asset resolved by the loader); `url` is a direct tarball URL; `env`\nnames an environment variable holding a URL (or `url@sha256`). `sha256` (github/url) is the\nlowercase-hex integrity pin: it is BOTH the download-skip cache key (a file in `dir` already\nhashing to it ⇒ no network) and the verify-before-write gate. Per-variant `deny_unknown_fields`\nso a typo'd key can't be silently reinterpreted as a different variant."
         },
-        "PluginLogsCfg": {
-          "additionalProperties": false,
-          "description": "`plugins.logs:` — `dir` (default `logs/plugins`), `level` (default `info`), per-instance\n`levels`, `rotate_mb` (unset: never rotate; the host's rename rotation) and `keep` (default 5).\nEvery default and every refusal is the plugin log configuration's own; the binary resolves this\nblock at boot, so a bad value fails the boot naming its key.",
-          "properties": {
-            "dir": {
-              "default": null,
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "keep": {
-              "default": null,
-              "format": "uint32",
-              "maximum": 4294967295,
-              "minimum": 0,
-              "type": [
-                "integer",
-                "null"
-              ],
-              "x-busbar-integer-token": "unsigned"
-            },
-            "level": {
-              "default": null,
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "levels": {
-              "additionalProperties": {
-                "type": "string"
-              },
-              "default": {},
-              "type": "object"
-            },
-            "rotate_mb": {
-              "default": null,
-              "format": "uint64",
-              "maximum": 18446744073709551615,
-              "minimum": 0,
-              "type": [
-                "integer",
-                "null"
-              ],
-              "x-busbar-integer-token": "unsigned"
-            }
-          },
-          "type": "object"
-        },
         "PluginPublisher": {
           "additionalProperties": false,
-          "description": "One allowlisted plugin publisher: a name and its hex ed25519 public key.",
+          "description": "One scoped publisher authority with exact plugin names and overlapping Ed25519 keys.",
           "properties": {
             "name": {
               "type": "string"
             },
-            "public_key": {
-              "type": "string"
+            "plugins": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "keys": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/PluginPublisherKey"
+              }
             }
           },
           "required": [
             "name",
-            "public_key"
+            "plugins",
+            "keys"
           ],
           "type": "object"
         },
@@ -30059,17 +29449,6 @@
               },
               "type": "array"
             },
-            "logs": {
-              "$ref": "#/$defs/PluginLogsCfg",
-              "default": {
-                "dir": null,
-                "keep": null,
-                "level": null,
-                "levels": {},
-                "rotate_mb": null
-              },
-              "description": "PLUGIN LOGS (`plugins.logs:`): every plugin instance logs to its own file, which the host\nwrites from what the plugin reported on its replies (`BUSBAR-1.6.0.md` decision #85)."
-            },
             "min_versions": {
               "additionalProperties": {
                 "type": "string"
@@ -30081,8 +29460,7 @@
             "trust": {
               "$ref": "#/$defs/PluginsTrustCfg",
               "default": {
-                "allow_third_party": false,
-                "allow_unsigned": false,
+                "allow_untrusted": false,
                 "publishers": []
               },
               "description": "Trust policy for plugin signatures. busbar's OWN release key is EMBEDDED in the binary —\nfirst-party plugins verify with zero configuration; this block is for THIRD-PARTY keys and\nthe explicit untrusted opt-ins."
@@ -30107,25 +29485,20 @@
         },
         "PluginsTrustCfg": {
           "additionalProperties": false,
-          "description": "`plugins.trust` — how the engine treats plugin signatures. A first-party (busbar-signed) plugin\nverifies against the EMBEDDED release key; a third-party plugin verifies against `publishers`;\nanything else (unsigned, tampered, unknown publisher) is UNTRUSTED and, by DEFAULT, logged and\nSKIPPED (never `dlopen`ed) unless the matching opt-in flag is set.",
+          "description": "Verified embedded Busbar and explicitly scoped configured publishers admit automatically. The single allow_untrusted opt-in permits unsigned or unknown-publisher artifacts; known invalid signatures and hard trust gates always refuse.",
           "properties": {
-            "allow_third_party": {
-              "default": false,
-              "description": "EXPLICIT opt-in: load plugins that ARE validly signed but by a publisher NOT in\n`publishers`. Default `false` — a third-party-signed plugin is LOGGED and SKIPPED.",
-              "type": "boolean"
-            },
-            "allow_unsigned": {
-              "default": false,
-              "description": "EXPLICIT opt-in: load plugins that carry NO valid signature (unsigned / tampered). Default\n`false` — an unsigned plugin found in `plugins.dir` is LOGGED and SKIPPED (never `dlopen`ed\n/ executed), at boot and in the admin catalog.",
-              "type": "boolean"
-            },
             "publishers": {
               "default": [],
-              "description": "THIRD-PARTY allowlist: publishers whose signatures mark a plugin TRUSTED. Each maps a\npublisher name to a hex ed25519 public key. The first-party `busbar` key is embedded in the\nbinary and never configured here.",
+              "description": "Explicit scoped publisher authorities. Duplicate identities, duplicate key bytes, malformed keys and empty scopes refuse configuration.",
               "items": {
                 "$ref": "#/$defs/PluginPublisher"
               },
               "type": "array"
+            },
+            "allow_untrusted": {
+              "description": "Admit unsigned or unknown-publisher artifacts without claiming verified origin. Known invalid signatures, revoked keys, and hard trust gates always refuse.",
+              "default": false,
+              "type": "boolean"
             }
           },
           "type": "object"
@@ -31300,7 +30673,6 @@
                       "delete_plugins_file",
                       "get_plugins_file_schema",
                       "post_restart",
-                      "post_signing_key_rotate",
                       "get_usage",
                       "verify",
                       "plane_record_write",
@@ -31327,7 +30699,6 @@
                       "get_ledger_checkpoints",
                       "get_ledger_reconciliation",
                       "get_ledger_migration",
-                      "get_ledger_openapi_json",
                       "get_audit_head",
                       "get_audit_range",
                       "get_audit_keys",
@@ -31517,6 +30888,23 @@
             "url"
           ],
           "type": "object"
+        },
+        "PluginPublisherKey": {
+          "description": "A configured Ed25519 publisher key. Revoked keys remain visible but never admit code.",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "public_key": {
+              "type": "string"
+            },
+            "revoked": {
+              "default": false,
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "public_key"
+          ]
         }
       },
       "$schema": "https://json-schema.org/draft/2020-12/schema",

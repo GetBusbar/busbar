@@ -203,25 +203,31 @@ pub(crate) fn poll_once<T>(
 }
 
 /// A `Registry<YieldNeeds>` over the real `HOST` and a `MemBinder`, with `plugin` admitted; and its identity.
-pub(crate) fn rig(plugin: &'static Plugin, on_release: fn()) -> (Registry<YieldNeeds>, String) {
+pub(crate) fn rig(
+    plugin: &'static Plugin,
+    on_release: fn(),
+) -> (Registry, Arc<YieldNeeds>, String) {
     let binder: Arc<dyn ConfigBinder> = Arc::new(MemBinder::new());
-    let mut registry = Registry::new(
+    let process = crate::process_resources();
+    let mut images = busbar_plugin_loader::instance::ImagesBuilder::new(
         &HOST,
-        Arc::new(YieldNeeds::new(on_release)),
-        binder,
+        Arc::clone(process.slots()),
         Ceilings::DEFAULT,
     );
     let admitted = admit_header(plugin).expect("the fixture image is admitted");
     let identity = admitted.identity().to_owned();
-    registry
-        .add(admitted)
-        .expect("the fixture image is added to the registry");
-    (registry, identity)
+    images
+        .admit(admitted)
+        .expect("the fixture image is described");
+    let needs = Arc::new(YieldNeeds::new(on_release));
+    let registry = Registry::new(images.finish(), binder, Arc::clone(process.ids()));
+    (registry, needs, identity)
 }
 
 /// The spec of instance `name` of `identity` with `config`, no limits, no public URL, no caller upstreams.
 pub(crate) fn spec<'a>(identity: &'a str, name: &'a str, config: &'a [u8]) -> InstanceSpec<'a> {
     InstanceSpec {
+        purpose: busbar_plugin_loader::instance::OpenPurpose::Canonical,
         identity,
         name,
         config_json: config,
@@ -432,7 +438,7 @@ fn assert_cancelled_once(what: &str) {
 #[test]
 fn every_open_and_reconfigure_boundary_drop_cancels_or_closes_exactly_once() {
     let _serial = ONE_AT_A_TIME.lock().unwrap_or_else(PoisonError::into_inner);
-    let (registry, identity) = rig(fixture::PLUGIN.plugin(), fixture::released);
+    let (registry, needs, identity) = rig(fixture::PLUGIN.plugin(), fixture::released);
     let (waker, wakes) = counting_waker();
     fixture::take();
 
@@ -441,7 +447,11 @@ fn every_open_and_reconfigure_boundary_drop_cancels_or_closes_exactly_once() {
     for cut in 1..=2 {
         let what = format!("open, dropped after poll {cut}");
         let spec = spec(&identity, "cut", two);
-        let mut fut = registry.open_export(&spec);
+        let mut fut = registry.open_export(
+            &spec,
+            &needs,
+            &busbar_plugin_test::suites::harness::no_refs(),
+        );
         pending_polls(&what, &mut fut, &waker, cut);
         drop(fut);
         assert_cancelled_once(&what);
@@ -451,7 +461,11 @@ fn every_open_and_reconfigure_boundary_drop_cancels_or_closes_exactly_once() {
     // (Ready in that poll, no Pending between); no cancel; dropping it closes exactly once, inline.
     let before = wakes.count();
     let spec_two = spec(&identity, "two", two);
-    let mut fut = registry.open_export(&spec_two);
+    let mut fut = registry.open_export(
+        &spec_two,
+        &needs,
+        &busbar_plugin_test::suites::harness::no_refs(),
+    );
     pending_polls("open (e)", &mut fut, &waker, 2);
     let port = match poll_once(&mut fut, &waker) {
         Poll::Ready(Ok(port)) => port,
@@ -489,7 +503,11 @@ fn every_open_and_reconfigure_boundary_drop_cancels_or_closes_exactly_once() {
 
     // (b): a start step that answered OK + INSTANCE: Ready in the first poll; one close on drop, no release.
     let spec_now = spec(&identity, "now", b"{}");
-    let mut fut = registry.open_export(&spec_now);
+    let mut fut = registry.open_export(
+        &spec_now,
+        &needs,
+        &busbar_plugin_test::suites::harness::no_refs(),
+    );
     let port = match poll_once(&mut fut, &waker) {
         Poll::Ready(Ok(port)) => port,
         Poll::Ready(Err(e)) => panic!("open (b): the open answered {e:?}"),
@@ -517,7 +535,11 @@ fn every_open_and_reconfigure_boundary_drop_cancels_or_closes_exactly_once() {
     ] {
         let what = format!("open (d) after {polls} NEED(s)");
         let spec = spec(&identity, "refused", config);
-        let mut fut = registry.open_export(&spec);
+        let mut fut = registry.open_export(
+            &spec,
+            &needs,
+            &busbar_plugin_test::suites::harness::no_refs(),
+        );
         pending_polls(&what, &mut fut, &waker, polls);
         match poll_once(&mut fut, &waker) {
             Poll::Ready(Err(OpenError::Call(e))) => {
@@ -539,7 +561,11 @@ fn every_open_and_reconfigure_boundary_drop_cancels_or_closes_exactly_once() {
 
     // The reconfigure future: an open instance, then a reconfigure whose open NEEDs, dropped after its poll.
     let spec_live = spec(&identity, "live", b"{}");
-    let mut fut = registry.open_export(&spec_live);
+    let mut fut = registry.open_export(
+        &spec_live,
+        &needs,
+        &busbar_plugin_test::suites::harness::no_refs(),
+    );
     let live = match poll_once(&mut fut, &waker) {
         Poll::Ready(Ok(port)) => port,
         Poll::Ready(Err(e)) => panic!("reconfigure: the first open answered {e:?}"),

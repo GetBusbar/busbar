@@ -50,14 +50,15 @@ use busbar_kernel::channels::SessionSignals;
 use busbar_kernel::plane_driver::port_carrier::PortCarrier;
 use busbar_kernel::plane_driver::port_channels::PortDemuxer;
 use busbar_kernel::plane_driver::port_egress::{
-    upstream_targets, EgressProbes, PortEgress, PortUpstream, SeatPool,
+    upstream_targets, EgressProbes, PortEgress, PortUpstream, ProbeTarget, SeatPool, Targets,
 };
 use busbar_kernel::plane_driver::port_intents::Namespace;
 use busbar_kernel::plane_driver::port_probes::PortProbes;
 use busbar_kernel::plane_driver::port_session::Effects;
+use busbar_kernel::plane_driver::provider_catalog::{CatalogPlan, CatalogPool, RouteKind};
 use busbar_kernel::plane_driver::route_input::HealthModeInput;
 use busbar_kernel::plugin_records::RecordsDenied;
-use busbar_kernel::probe::{spawn_probers, ProbeCfg, ProbeMember, ProbeSchedule};
+use busbar_kernel::probe::{run_probers, ProbeCfg, ProbeMember, ProbeSchedule};
 use busbar_kernel::teller::Kernel;
 use busbar_kernel::upstreams::{ConfiguredUpstreams, UpstreamDef, Upstreams};
 use busbar_kernel_egress::ports::{Dispatched, DurabilityUnavailable, Journal};
@@ -103,10 +104,19 @@ impl ConnTable {
     }
 }
 
+/// Immutable model routing facts and sealed destinations from one candidate.
+pub(crate) struct CatalogSeat {
+    pub(crate) plan: Arc<CatalogPlan>,
+    pub(crate) sealed: super::min3_provider_catalog::SealedCatalog,
+    pub(crate) pools: BTreeMap<String, CatalogPool>,
+}
+
 /// What every seat of one boot composes over.
 pub(crate) struct SeatShared {
-    /// The boot's configured upstreams, shared by every seat's egress and carrier.
-    pub(crate) upstreams: Arc<ConfiguredUpstreams>,
+    /// Per-instance registration tables; a seat never sees another plane's registrations.
+    pub(crate) upstreams: BTreeMap<String, Arc<ConfiguredUpstreams>>,
+    /// Auth-sealed model destinations and owned pool policy from this same candidate.
+    pub(crate) catalogs: BTreeMap<String, Arc<CatalogSeat>>,
     pub(crate) signals: Arc<SignalRegistry>,
     pub(crate) secrets: Arc<dyn SpawnSecrets>,
     pub(crate) kernel: Arc<Kernel>,
@@ -120,8 +130,8 @@ pub(crate) struct SeatWiring {
     /// `None` = no connection table: a FORWARD fails `NotDriven`.
     pub(crate) upstream: Option<Arc<dyn PortUpstream>>,
     pub(crate) carrier: Arc<PortCarrier>,
-    /// The seat's probe target, kept alive for its probers (they hold it weakly); `None` = nothing is probed.
-    pub(crate) probes: Option<Arc<dyn Send + Sync>>,
+    /// Dormant probe work that retains its target until stopped by the generation owner.
+    pub(crate) probes: Option<std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>>,
 }
 
 /// The connection-table owner of a seat's upstream exchanges: its own identity, never a dispatch handle's.
@@ -275,7 +285,7 @@ impl Events for SeatEvents {
 
 /// Child `env` references resolved through the process's custody at every spawn (§12.2: by reference, an empty
 /// call stack, no source named in an error).
-pub(crate) struct SpawnCustody(pub(crate) &'static BootSecrets);
+pub(crate) struct SpawnCustody(pub(crate) Arc<BootSecrets>);
 
 impl SpawnSecrets for SpawnCustody {
     fn resolve<'a>(&'a self, secret: &'a SecretRef) -> BoxFut<'a, Option<String>> {
@@ -484,12 +494,116 @@ impl Drop for HeldBody {
     }
 }
 
+/// Join only the exact sealed associations to the candidate's configured pool policies.
+/// Registration membership remains in its own default pool and CHANNEL table.
+fn extend_catalog(
+    instance: &str,
+    seat: &mut SeatPool,
+    catalog: &CatalogSeat,
+) -> Result<(), String> {
+    if catalog.sealed.instance != instance || catalog.plan.instance != instance {
+        return Err("catalog belongs to another plane instance".into());
+    }
+    for (name, configured) in &catalog.pools {
+        if seat.pools.contains_key(name) {
+            return Err("catalog pool collides with the registration pool".into());
+        }
+        let cfg = &configured.config;
+        let members = cfg
+            .members
+            .iter()
+            .map(|member| {
+                let qualified = format!(
+                    "{instance}{}{name}",
+                    busbar_kernel::governance::PLANE_LANE_SEP,
+                    name = member.name()
+                );
+                let association = catalog
+                    .sealed
+                    .associations
+                    .get(&(name.clone(), qualified.clone()))
+                    .ok_or("catalog pool member has no sealed association")?;
+                let mut walked = busbar_kernel_egress::Member::new(
+                    association.destination,
+                    qualified,
+                    member.weight,
+                );
+                walked.attempt_timeout_ms = association.attempt_timeout_ms;
+                walked.context_max = association.context_max.map(|limit| limit as u64);
+                walked.passthrough = association.credential_mode
+                    == busbar_contract::config::UpstreamCreds::Passthrough;
+                Ok(walked)
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        let mut pool = busbar_kernel_egress::Pool::new(name, members);
+        if let Some(failover) = &cfg.failover {
+            pool.failover = busbar_kernel_egress::Failover {
+                timeout_secs: failover.timeout_secs,
+                max_hops: failover.max_hops,
+                exclusions: failover
+                    .exclusions
+                    .iter()
+                    .flatten()
+                    .map(|member| {
+                        format!(
+                            "{instance}{}{member}",
+                            busbar_kernel::governance::PLANE_LANE_SEP
+                        )
+                    })
+                    .collect(),
+            };
+        }
+        pool.on_exhausted = match &cfg.on_exhausted {
+            None | Some(busbar_kernel::config::OnExhaustedCfg::Reject) => {
+                busbar_kernel_egress::OnExhausted::Status503
+            }
+            Some(busbar_kernel::config::OnExhaustedCfg::LeastBad) => {
+                busbar_kernel_egress::OnExhausted::LeastBad
+            }
+            Some(busbar_kernel::config::OnExhaustedCfg::Queue { max_ms }) => {
+                busbar_kernel_egress::OnExhausted::Queue { max_ms: *max_ms }
+            }
+            Some(busbar_kernel::config::OnExhaustedCfg::FallbackPool(fallback)) => {
+                let (actual, _) = catalog.pools.iter().find(|(_, pool)| matches!(&pool.kind, RouteKind::NamedPool(logical) if logical == fallback))
+                    .ok_or("catalog fallback has no pool in this plane")?;
+                busbar_kernel_egress::OnExhausted::FallbackPool(actual.clone())
+            }
+        };
+        seat.pools.insert(name.clone(), pool);
+    }
+    for (destination, route) in &catalog.sealed.routes {
+        if seat.routes.insert(*destination, route.clone()).is_some() {
+            return Err("catalog destination collides with a registration".into());
+        }
+    }
+    seat.members.extend(catalog.sealed.members.iter().cloned());
+    Ok(())
+}
+
+/// Every probe retains the selected pool/member pair, including repeated models across pools.
+fn probe_targets(pool: &SeatPool) -> Vec<ProbeTarget> {
+    let mut targets: Vec<_> = pool
+        .pools
+        .values()
+        .flat_map(|walked| {
+            walked.members.iter().map(|member| ProbeTarget {
+                destination: member.destination,
+                pool: walked.name.clone(),
+                qualified_member: member.name.clone(),
+            })
+        })
+        .collect();
+    targets.sort_by(|a, b| (&a.pool, &a.qualified_member).cmp(&(&b.pool, &b.qualified_member)));
+    targets
+}
+
 /// The seat's egress walk over `table`: its members' needs declared and their anchors sealed, then the walk.
 fn egress_of(
     instance: &str,
     owner: InstanceId,
     table: &ConnTable,
     pool: &SeatPool,
+    catalog: Option<&CatalogSeat>,
 ) -> Result<busbar_kernel::plane_driver::Egress, String> {
     for member in &pool.members {
         table
@@ -503,8 +617,7 @@ fn egress_of(
                 )
             })?;
         if let Some(route) = pool.routes.get(&member.destination) {
-            if route.anchors.secures() {
-                table
+            table
                     .conns
                     .anchor(owner, member.need, &route.provider, &route.base_url, &route.anchors)
                     .map_err(|refused| {
@@ -514,7 +627,6 @@ fn egress_of(
                             member.upstream
                         )
                     })?;
-            }
         }
     }
     let names: Vec<(busbar_kernel_egress::ports::DestinationId, String)> = pool
@@ -526,7 +638,15 @@ fn egress_of(
     let cell = || busbar_kernel::store::pool_breaker_cfg(None);
     let policy = pool.pools.keys().fold(
         super::adapters::BreakerPolicy::new().with_default_cell(cell()),
-        |policy, name| policy.with_pool(name.as_str(), cell()),
+        |policy, name| {
+            let configured = catalog.and_then(|catalog| catalog.pools.get(name));
+            policy.with_pool(
+                name.as_str(),
+                busbar_kernel::store::pool_breaker_cfg(
+                    configured.and_then(|pool| pool.config.breaker.as_ref()),
+                ),
+            )
+        },
     );
     let limits = busbar_kernel::config::limits::installed();
     let (hard_down_cooldown_secs, max_honored_retry_after_secs) = limits.as_ref().map_or(
@@ -544,7 +664,18 @@ fn egress_of(
         breaker: busbar_kernel::plane_driver::fixed_breaker(Arc::new(
             super::adapters::BreakerAdapter::new(unit, policy),
         )),
-        capacity: Arc::new(super::egress_ports::MemberPermits::new(Vec::new())),
+        capacity: Arc::new(super::egress_ports::MemberPermits {
+            limits: catalog
+                .into_iter()
+                .flat_map(|catalog| {
+                    catalog
+                        .sealed
+                        .capacity
+                        .iter()
+                        .map(|(destination, slots)| (*destination, Arc::clone(slots)))
+                })
+                .collect(),
+        }),
         clock: Arc::new(super::egress_ports::NodeClock::new()),
         journal: Arc::new(SeatJournal),
         telemetry: Arc::new(super::egress_ports::WalkTelemetry::new(names)),
@@ -563,25 +694,25 @@ fn egress_of(
     })
 }
 
-/// The probe target of a seat whose plane states FB_PROBES, its probers started: recovery probes only
+/// Dormant probes for a seat whose plane states FB_PROBES: recovery probes only
 /// (`HealthModeInput::Dead`: a member is probed while the breaker holds it off), the limits' default interval and
 /// timeout. `None` = the plane states no probes or walks no member.
 fn probes_of(
     port: &Arc<dyn PlanePort>,
     egress: &PortEgress,
     pool: &SeatPool,
-) -> Option<Arc<dyn Send + Sync>> {
+) -> Option<std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>> {
     if port.facts() & busbar_plugin_abi::plane::FB_PROBES == 0 || pool.members.is_empty() {
         return None;
     }
-    let members = pool.probe_members();
+    let members = probe_targets(pool);
     let schedule = Arc::new(ProbeSchedule::new(members.len()));
     let probers: Vec<ProbeMember> = members
         .iter()
         .enumerate()
-        .map(|(index, (_, name))| ProbeMember {
+        .map(|(index, member)| ProbeMember {
             index,
-            name: name.clone(),
+            name: member.name().to_owned(),
             cfg: ProbeCfg::resolve(
                 HealthModeInput::Dead,
                 None,
@@ -607,8 +738,7 @@ fn probes_of(
         )
         .charging(Arc::clone(port)),
     );
-    spawn_probers(&target, &schedule, &probers);
-    Some(target as Arc<dyn Send + Sync>)
+    Some(Box::pin(run_probers(target, schedule, probers)))
 }
 
 /// Composes one seat's egress and carrier (see the module docs). `accept` is the instance's core-held
@@ -625,31 +755,50 @@ pub(crate) fn compose(
     port: Arc<dyn PlanePort>,
     rt: Handle,
 ) -> Result<SeatWiring, String> {
-    let pool = SeatPool::of(instance, &shared.upstreams)?;
+    let upstreams = shared.upstreams.get(instance).ok_or_else(|| {
+        format!("plane {instance}: no declared registration table was built for this generation")
+    })?;
+    let mut pool = SeatPool::of(instance, upstreams)?;
+    // Held HTTP channels receive only the registration domain, before model destinations join egress.
+    let registration_needs = pool
+        .members
+        .iter()
+        .map(|member| (member.upstream.clone(), member.need))
+        .collect();
+    let catalog = shared.catalogs.get(instance);
+    if let Some(catalog) = catalog {
+        extend_catalog(instance, &mut pool, catalog)?;
+    }
     audit_acceptance(instance, accept, &pool);
     let owner = seat_owner(who.instance);
-    let table_upstreams: Arc<dyn Upstreams> = Arc::clone(&shared.upstreams) as Arc<dyn Upstreams>;
+    let table_upstreams: Arc<dyn Upstreams> = Arc::clone(upstreams) as Arc<dyn Upstreams>;
+    let registrations = upstream_targets(instance, Arc::clone(&table_upstreams));
+    let targets: Targets = match catalog {
+        Some(catalog) => {
+            let catalog = Arc::clone(catalog);
+            Arc::new(move |pool, member| {
+                (catalog.sealed.targets)(pool, member).or_else(|| registrations(pool, member))
+            })
+        }
+        None => registrations,
+    };
     let (upstream, held, probes) = match &shared.table {
         Some(table) => {
-            let egress = egress_of(instance, owner, table, &pool)?;
+            let egress = egress_of(instance, owner, table, &pool, catalog.map(Arc::as_ref))?;
             let walk = PortEgress::new(
                 Arc::new(egress),
                 Arc::clone(&shared.kernel),
                 rt.clone(),
                 pool.pool.clone(),
                 accept,
-                upstream_targets(Arc::clone(&table_upstreams)),
+                targets,
             );
             let probes = probes_of(&port, &walk, &pool);
             let held: Arc<dyn HeldHttp> = Arc::new(UpstreamHttp {
                 owner,
                 instance: Arc::from(instance),
                 table: table.clone(),
-                needs: pool
-                    .members
-                    .iter()
-                    .map(|member| (member.upstream.clone(), member.need))
-                    .collect(),
+                needs: registration_needs,
                 accept,
             });
             let walk: Arc<dyn PortUpstream> = Arc::new(walk);

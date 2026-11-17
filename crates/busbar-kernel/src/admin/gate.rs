@@ -170,6 +170,161 @@ pub fn request_id_of(counter: u64) -> String {
     format!("r_{counter:016x}")
 }
 
+/// The header a client's own request id comes in on: the same `X-Request-Id` the engine answers
+/// with its own id (ADMIN-API-1.6-ONE-MODEL section 7).
+pub const HEADER_CLIENT_REQUEST_ID: &str = "x-client-request-id";
+
+/// The W3C trace context header, in and out.
+pub const HEADER_TRACEPARENT: &str = "traceparent";
+
+/// The longest client request id the engine keeps.
+pub const CLIENT_REQUEST_ID_MAX: usize = 128;
+
+/// A client `X-Request-Id` the engine keeps: 1 to 128 of `[A-Za-z0-9._:-]`.
+#[must_use]
+pub fn valid_client_request_id(value: &[u8]) -> bool {
+    (1..=CLIENT_REQUEST_ID_MAX).contains(&value.len())
+        && value
+            .iter()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b':' | b'-'))
+}
+
+fn lower_hex(text: &str, len: usize) -> bool {
+    text.len() == len
+        && text
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+/// The W3C trace an admin request arrived in (`traceparent`, W3C Trace Context level 1).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TraceParent {
+    /// 32 lowercase hex digits, never all zero.
+    pub trace_id: String,
+    /// The caller's span: 16 lowercase hex digits, never all zero.
+    pub parent_id: String,
+    /// The trace flags: 2 lowercase hex digits.
+    pub flags: String,
+}
+
+impl TraceParent {
+    /// Read a `traceparent` value. Version `00` is exactly `00-<trace>-<parent>-<flags>`; a later
+    /// version (never `ff`) is read by its first four fields, as the specification asks. Anything
+    /// else is no trace: the request is not refused for it.
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        let head = value.get(..55)?;
+        let rest = &value[55..];
+        let mut fields = head.split('-');
+        let (version, trace_id, parent_id, flags) = (
+            fields.next()?,
+            fields.next()?,
+            fields.next()?,
+            fields.next()?,
+        );
+        let well_formed = lower_hex(version, 2)
+            && version != "ff"
+            && lower_hex(trace_id, 32)
+            && trace_id.bytes().any(|b| b != b'0')
+            && lower_hex(parent_id, 16)
+            && parent_id.bytes().any(|b| b != b'0')
+            && lower_hex(flags, 2)
+            && if version == "00" {
+                rest.is_empty()
+            } else {
+                rest.is_empty() || rest.starts_with('-')
+            };
+        well_formed.then(|| Self {
+            trace_id: trace_id.to_owned(),
+            parent_id: parent_id.to_owned(),
+            flags: flags.to_owned(),
+        })
+    }
+
+    /// The `traceparent` the engine answers with: the caller's trace and flags, and the admin
+    /// span's own id.
+    #[must_use]
+    pub fn child(&self, span_id: &[u8; 8]) -> String {
+        format!(
+            "00-{}-{}-{}",
+            self.trace_id,
+            hex::encode(span_id),
+            self.flags
+        )
+    }
+}
+
+/// What a caller sent to correlate its admin request with its own records
+/// (ADMIN-API-1.6-ONE-MODEL section 7): its own request id, when valid, and the trace it arrived in.
+/// Neither is ever the request's `request_id`, which the engine always mints.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Correlation {
+    pub client_request_id: Option<String>,
+    pub trace: Option<TraceParent>,
+}
+
+impl Correlation {
+    /// Read the correlation from a request's headers. A header sent more than once, or a value
+    /// that is not valid, is dropped without comment: a proxy may have set it.
+    #[must_use]
+    pub fn of(headers: &axum::http::HeaderMap) -> Self {
+        let single = |name: &str| {
+            let mut values = headers.get_all(name).iter();
+            match (values.next(), values.next()) {
+                (Some(value), None) => Some(value),
+                _ => None,
+            }
+        };
+        Self {
+            client_request_id: single(HEADER_REQUEST_ID)
+                .filter(|value| valid_client_request_id(value.as_bytes()))
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_owned),
+            trace: single(HEADER_TRACEPARENT)
+                .and_then(|value| value.to_str().ok())
+                .and_then(TraceParent::parse),
+        }
+    }
+
+    /// Answer the caller's correlation on `headers`: `X-Client-Request-Id` when it sent a valid
+    /// id, and `traceparent` on its trace, naming the admin span `span_id`, when it sent one.
+    pub fn answer(&self, span_id: Option<&[u8; 8]>, headers: &mut axum::http::HeaderMap) {
+        if let Some(value) = self
+            .client_request_id
+            .as_deref()
+            .and_then(|id| axum::http::HeaderValue::from_str(id).ok())
+        {
+            headers.insert(HEADER_CLIENT_REQUEST_ID, value);
+        }
+        if let Some(value) =
+            self.trace.as_ref().zip(span_id).and_then(|(trace, span)| {
+                axum::http::HeaderValue::from_str(&trace.child(span)).ok()
+            })
+        {
+            headers.insert(HEADER_TRACEPARENT, value);
+        }
+    }
+}
+
+tokio::task_local! {
+    /// The correlation of the admin request in flight, set at the admin boundary beside its id.
+    static CORRELATION: Correlation;
+}
+
+/// Run `future` with the admin request's correlation in scope.
+pub async fn with_correlation<F: std::future::Future>(
+    correlation: Correlation,
+    future: F,
+) -> F::Output {
+    CORRELATION.scope(correlation, future).await
+}
+
+/// The correlation of the admin request in flight, or `None` outside one.
+#[must_use]
+pub fn correlation_in_scope() -> Option<Correlation> {
+    CORRELATION.try_with(Clone::clone).ok()
+}
+
 /// The `error` object of the admin envelope (ADMIN-API-1.6 section 1.2): `code`, `reason`
 /// (`null` only for `internal`), `message`, `request_id`, `retryable` and `details`. A `reason` the
 /// raiser did not name is the default of `code`.
@@ -245,6 +400,36 @@ pub fn admin_envelope_body_with(
     )
 }
 
+/// [`admin_envelope_body`] with the raiser's `reason` and typed `details`, built through the JSON
+/// facade end to end (TRUST-ADMIN-PRODUCER-DESIGN r3 §4.5): for answers whose `details` the raiser
+/// assembles as facade values, so no `serde_json` value is passed in.
+#[must_use]
+pub fn admin_envelope_body_details(
+    code: &str,
+    reason: Option<&str>,
+    message: &str,
+    details: &busbar_contract::json::Value,
+) -> String {
+    let reason = if code == "internal" {
+        None
+    } else {
+        reason.or_else(|| super::reasons::default_reason(code))
+    };
+    let body = busbar_contract::json::json!({
+        "code": admin_diag(code).banner().to_string(),
+        "error": {
+            "code": code,
+            "reason": reason,
+            "message": message,
+            "request_id": current_request_id(),
+            "retryable": super::reasons::retryable(code, reason),
+            "details": details,
+        },
+    });
+    busbar_contract::json::to_string(&body)
+        .expect("the admin envelope holds only strings, booleans and facade values")
+}
+
 /// The admin error envelope response, with the reason `code` defaults to and empty `details`.
 pub fn admin_error_envelope(status: u16, code: &str, message: &str) -> Response {
     admin_error_envelope_with(status, code, None, message, &serde_json::json!({}))
@@ -265,6 +450,30 @@ pub fn admin_error_envelope_with(
         status,
         [(CONTENT_TYPE, busbar_contract::protocol::APPLICATION_JSON)],
         envelope_text(code, reason, message, details, &request_id),
+    )
+        .into_response();
+    if let Ok(value) = axum::http::HeaderValue::from_str(&request_id) {
+        response.headers_mut().insert(HEADER_REQUEST_ID, value);
+    }
+    response
+}
+
+/// [`admin_error_envelope_with`] whose `details` are a JSON facade value
+/// ([`admin_envelope_body_details`]). The response carries `X-Request-Id`, equal to the body's
+/// `request_id`.
+pub fn admin_error_envelope_details(
+    status: u16,
+    code: &str,
+    reason: Option<&str>,
+    message: &str,
+    details: &busbar_contract::json::Value,
+) -> Response {
+    let status = StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    let request_id = current_request_id();
+    let mut response = (
+        status,
+        [(CONTENT_TYPE, busbar_contract::protocol::APPLICATION_JSON)],
+        admin_envelope_body_details(code, reason, message, details),
     )
         .into_response();
     if let Ok(value) = axum::http::HeaderValue::from_str(&request_id) {
@@ -324,3 +533,7 @@ pub fn scope_insufficient_for(needed_scope: &str, needed_verb: Option<&str>) -> 
         &scope_details_for(needed_scope, needed_verb),
     )
 }
+
+#[cfg(test)]
+#[path = "tests/correlation_tests.rs"]
+mod correlation_tests;

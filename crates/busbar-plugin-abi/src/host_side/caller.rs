@@ -112,7 +112,8 @@ std::thread_local! {
     static COUNTER: Cell<u32> = const { Cell::new(0) };
 }
 
-/// Round 8 (§12.22): core-owned per-instance limits, operator config `<kind>.<name>.limits` beside `module`.
+/// Round 8 (§12.22): core-owned per-instance limits. There is no `limits` config key: 0 = the kind default, and the
+/// plugin's settled LIMITS answer is applied in memory at its open.
 /// Never part of the bag a plugin sees. 0 = unset (kind default) in every numeric field.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 /// Round 32: `plaintext: Plaintext` is replaced by `accept`, the instance's parsed `insecure_transport.accept`
@@ -394,7 +395,7 @@ mod stack_tests {
             .collect();
         let mut all: Vec<u64> = ids.into_iter().flatten().collect();
         let n = all.len();
-        all.sort_unstable();
+        all.sort();
         all.dedup();
         assert_eq!(all.len(), n, "every chain id is unique");
         assert!(

@@ -36,6 +36,27 @@ fn an_open_answer_with_only_an_instance_has_no_settled_part() {
 }
 
 #[test]
+fn converting_open_requires_config_and_canonical_open_refuses_core_fragments() {
+    const CONVERT_UNSTAMPED: bool = true;
+    const CANONICAL: bool = false;
+    let empty = open();
+    assert!(for_purpose(Records::new(empty.as_bytes()), CONVERT_UNSTAMPED).is_err());
+    assert!(for_purpose(Records::new(empty.as_bytes()), CANONICAL)
+        .unwrap()
+        .is_none());
+    let mut w = open();
+    w.put(tag::CONFIG, b"{}").unwrap();
+    assert!(for_purpose(Records::new(w.as_bytes()), CONVERT_UNSTAMPED)
+        .unwrap()
+        .is_some());
+    cfg(&mut w, core_cfg::LIFT, "", br#""/token""#);
+    assert!(for_purpose(Records::new(w.as_bytes()), CANONICAL).is_err());
+    assert!(for_purpose(Records::new(w.as_bytes()), CONVERT_UNSTAMPED)
+        .unwrap()
+        .is_some());
+}
+
+#[test]
 fn config_alone_and_config_with_core_cfg_are_borrowed_from_the_answer() {
     let mut w = open();
     w.put(tag::CONFIG, br#"{"a":1}"#).unwrap();
@@ -157,4 +178,28 @@ fn config_and_core_cfg_values_are_utf8_and_names_follow_the_grammar() {
     };
     w.put_pod_tail(tag::CORE_CFG, &head, b"abc").unwrap();
     assert_eq!(settled(&w).err(), Some(RecErr::Size));
+}
+
+#[test]
+fn a_settled_limits_value_is_applied_in_memory_clamped_and_never_over_a_set_number() {
+    let base = InstanceLimits {
+        max_inflight: 4,
+        ..InstanceLimits::default()
+    };
+    let got = with_limits_json(
+        base,
+        br#"{"timeout_ms": 700000, "connect_timeout_ms": 1500, "max_inflight": 9, "plaintext": "deny"}"#,
+    );
+    assert_eq!(
+        (got.timeout_ms, got.connect_timeout_ms, got.max_inflight),
+        (MAX_LIMIT_MS, 1_500, 4),
+        "clamped to 600,000 ms; a number the instance already carries is kept"
+    );
+    let big = with_limits_json(InstanceLimits::default(), br#"{"max_inflight": 70000}"#);
+    assert_eq!(big.max_inflight, MAX_INFLIGHT);
+    assert_eq!(
+        with_limits_json(InstanceLimits::default(), b"[1]"),
+        InstanceLimits::default(),
+        "not an object: unchanged"
+    );
 }

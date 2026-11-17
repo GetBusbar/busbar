@@ -109,7 +109,6 @@ pub enum Cond {
     InvalidFilename,
     NotLoadable,
     Overlong,
-    NothingToRotate,
     /// A restart was requested but nothing would bring busbar back up.
     NoSupervisor,
     /// A restart was requested but the process has no shutdown channel to drain.
@@ -178,7 +177,6 @@ impl Cond {
             Cond::InvalidFilename => "invalid_filename",
             Cond::NotLoadable => "not_loadable",
             Cond::Overlong => "overlong",
-            Cond::NothingToRotate => "nothing_to_rotate",
             Cond::NoSupervisor => "no_supervisor",
             Cond::NotRestartable => "not_restartable",
             Cond::UnknownSection => "unknown_section",
@@ -237,7 +235,6 @@ impl Cond {
                  validation"
             }
             Cond::Overlong => "an id or name exceeds its length cap",
-            Cond::NothingToRotate => "no signing key is configured; nothing to rotate",
             Cond::NoSupervisor => {
                 "no process supervisor was detected, so exiting would leave busbar down; re-send \
                  with `confirm: true` if a supervisor will restart it"
@@ -528,6 +525,7 @@ pub fn declared_errors(method: MethodTag, rel: &str) -> &'static [DocErr] {
 
         (Get, "/groups") => de![Validation / MalformedCursor],
         (Get, "/audit") => de![Validation / MalformedCursor],
+        (Get, "/audit/keys") => de![Validation / MalformedCursor],
         (Get, "/config/versions") => de![Validation / MalformedCursor],
         (Get, "/config/tree") => {
             de![Validation / InvalidQueryValue, NotFound / UnknownResource]
@@ -616,7 +614,6 @@ pub fn declared_errors(method: MethodTag, rel: &str) -> &'static [DocErr] {
             NotFound / UnknownResource,
             Conflict / GovernanceOff,
         ],
-        (Post, "/signing-key/rotate") => de![Conflict / GovernanceOff, Conflict / NothingToRotate,],
         (Post, "/restart") => de![
             Validation / MalformedBody,
             Validation / MalformedIfMatch,

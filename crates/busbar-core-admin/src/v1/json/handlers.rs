@@ -262,8 +262,13 @@ pub(crate) struct InspectPluginReq {
 
 pub(crate) async fn inspect_plugin(
     State(handle): State<Arc<AppHandle>>,
+    principal: Option<axum::Extension<busbar_kernel::auth::AuthPrincipal>>,
     body: axum::body::Bytes,
 ) -> Response {
+    let actor = principal.map_or_else(
+        || "anonymous".to_string(),
+        |axum::Extension(p)| p.actor_id().to_string(),
+    );
     use base64::Engine as _;
     let req: InspectPluginReq = ok_or_respond!(boxed json_body(&body, "plugin"));
     let tarball = match base64::engine::general_purpose::STANDARD.decode(req.tarball_b64.as_bytes())
@@ -277,7 +282,7 @@ pub(crate) async fn inspect_plugin(
     };
 
     let service = service(&handle);
-    inspect_candidate(move || service.inspect_plugin(&tarball)).await
+    inspect_candidate(move || service.inspect_plugin(&tarball, &actor)).await
 }
 
 pub(super) async fn inspect_candidate(
@@ -494,7 +499,7 @@ pub(crate) async fn rollback_plugin(
             if let (Some(config_path), Ok(used)) =
                 (snapshot.config_path.as_deref(), snapshot.grammar.used())
             {
-                busbar_kernel::appbuild::pin_write_refusal(config_path, &pins, used)
+                busbar_kernel::appbuild::pin_write_refusal(config_path, &pins, used, snapshot.root_rules.as_ref())
                     .map_err(AdminError::Validation)?;
             }
 
@@ -1485,14 +1490,13 @@ pub(crate) async fn reset_overlay_section(
 
 
                 if let Some(doc) = cleared_doc.as_ref() {
+                    loaded.resource_ownership.validate_named_maps(doc)?;
                     busbar_kernel::config::overlay::apply_root_to_deploy(&mut loaded.deploy, doc)?;
                 }
                 let mut cfg = busbar_kernel::config::resolve(&loaded.deploy, &loaded.defs)
                     .map_err(|errs| format!("config errors:\n  - {}", errs.join("\n  - ")))?;
-                let base_hook_names: std::collections::HashSet<String> =
-                    cfg.hooks.keys().cloned().collect();
-                let base_group_names: std::collections::HashSet<String> =
-                    cfg.groups.keys().cloned().collect();
+                let base_hook_names = loaded.resource_ownership.hook_names().clone();
+                let base_group_names = loaded.resource_ownership.group_names().clone();
 
 
                 if let Some(doc) = cleared_doc {
@@ -2226,8 +2230,8 @@ pub(crate) async fn rebuild_app_from_disk(
 
     let mut cfg = loaded.disk_candidate().map_err(AdminError::Validation)?;
 
-    let base_hook_names: std::collections::HashSet<String> = cfg.hooks.keys().cloned().collect();
-    let base_group_names: std::collections::HashSet<String> = cfg.groups.keys().cloned().collect();
+    let base_hook_names = loaded.resource_ownership.hook_names().clone();
+    let base_group_names = loaded.resource_ownership.group_names().clone();
     if let Some(doc) = loaded.overlay_doc {
         busbar_kernel::config::overlay::merge_into(&mut cfg, doc);
     }
@@ -2295,11 +2299,10 @@ pub(crate) async fn reload_config(
             installed.record_version(&actor, "config.reload (from disk)");
             let mut body = json!({ "reloaded": true, "config_version": installed.config_version });
 
-            if let Some(note) =
-                super::named_map::restart_note(&[], &installed.planes_awaiting_restart)
-            {
-                body["reload_to_apply"] = json!(installed.planes_awaiting_restart);
-                body["note"] = json!(note);
+            let pending = super::config_document::configuration_and_restart(&installed).1;
+            if !pending.is_empty() {
+                body["reload_to_apply"] = json!(pending);
+                body["note"] = json!("configuration installed; reload_to_apply entries require a process restart before they take effect");
             }
             with_config_etag(ok_json(StatusCode::OK, &body), installed.config_version)
         }
@@ -2357,11 +2360,11 @@ pub(crate) async fn restart(
         // Keep the task-local UnitDrain identity: moving this into store_write loses it.
         audit::AUDIT.record_by("admin.restart", "process", audit::OUTCOME_APPLIED, &actor);
         crate::restart::begin_drain();
-        Ok(Outcome::Value(Ok(supervised)))
+        Ok(Outcome::Value(Ok(())))
     })
     .await;
-    let supervised = match out {
-        Ok(Ok(supervised)) => supervised,
+    match out {
+        Ok(Ok(())) => {}
         Ok(Err(condition)) => {
             audit::AUDIT.record_by("admin.restart", "process", audit::OUTCOME_REJECTED, &actor);
             let message = match condition {
@@ -2371,13 +2374,12 @@ pub(crate) async fn restart(
             return err_json_cond(&AdminError::Conflict(message.into()), condition);
         }
         Err(error) => return reject("admin.restart", "process", &actor, &error),
-    };
+    }
 
     ok_json(
         StatusCode::ACCEPTED,
         &json!({
             "restarting": true,
-            "supervisor_detected": supervised,
             "note": "draining now; in-flight requests finish first. The process exits when the \
                      drain completes and the supervisor restarts it."
         }),
@@ -2447,13 +2449,17 @@ async fn read_apply_body(
     .map_err(AdminError::Validation)?;
     busbar_kernel::config::security_policy::precheck(snapshot, &candidate)?;
     let grammar = crate::v1::service::read_grammar(
+        snapshot.root_rules.clone(),
         candidate.plugins,
         candidate.blocked_metadata_hosts,
         busbar_kernel::config::grammar::Fetch::Reload,
         "config.apply",
     )
     .await?;
-    let deploy = typed_body(config, &grammar, parse)?;
+    let mut deploy = typed_body(config, grammar.grammar(), parse)?;
+    grammar
+        .attach(&mut deploy)
+        .map_err(AdminError::Validation)?;
     if let Some(refusal) =
         config_body_refusal(&deploy, &snapshot.operator_file_defs, "config.apply")
     {
@@ -2530,7 +2536,11 @@ pub(crate) async fn apply_config(
                     Ok(deploy) => deploy,
                     Err(refusal) => return Ok(Outcome::Value(Applied::FilePolicy(refusal))),
                 };
+            let resource_ownership = busbar_kernel::config::ResourceOwnership::capture(&deploy);
             if let Some(doc) = overlay_doc.as_ref() {
+                resource_ownership
+                    .validate_named_maps(doc)
+                    .map_err(AdminError::Validation)?;
                 busbar_kernel::config::overlay::apply_root_to_deploy(&mut deploy, doc)
                     .map_err(AdminError::Validation)?;
 
@@ -2541,10 +2551,8 @@ pub(crate) async fn apply_config(
                     .map_err(|errs| format!("config errors:\n  - {}", errs.join("\n  - ")))?;
                 // The body is held to the running generation's disk reference (§3.6.1).
                 cfg.operator_file_defs = Some(Arc::clone(&snapshot.operator_file_defs));
-                let base_hook_names: std::collections::HashSet<String> =
-                    cfg.hooks.keys().cloned().collect();
-                let base_group_names: std::collections::HashSet<String> =
-                    cfg.groups.keys().cloned().collect();
+                let base_hook_names = resource_ownership.hook_names().clone();
+                let base_group_names = resource_ownership.group_names().clone();
                 if let Some(doc) = overlay_doc {
                     busbar_kernel::config::overlay::merge_into(&mut cfg, doc);
                 }
@@ -2605,14 +2613,10 @@ pub(crate) async fn apply_config(
                          by updating config.yaml",
             });
 
-            if let Some(pending) =
-                super::named_map::restart_note(&[], &installed.planes_awaiting_restart)
-            {
-                body["reload_to_apply"] = json!(installed.planes_awaiting_restart);
-                body["note"] = json!(format!(
-                    "live until the next reload/restart returns to disk truth; persist by \
-                     updating config.yaml; {pending}"
-                ));
+            let pending = super::config_document::configuration_and_restart(&installed).1;
+            if !pending.is_empty() {
+                body["reload_to_apply"] = json!(pending);
+                body["note"] = json!("configuration installed; reload_to_apply entries require a process restart before they take effect. Persist by updating config.yaml before restarting; reload/restart returns to disk truth");
             }
             with_config_etag(ok_json(StatusCode::OK, &body), installed.config_version)
         }
@@ -2650,7 +2654,6 @@ fn merge_root_settings(
         admin_tls,
         admin_require_mtls,
         rate_card,
-        plugin_rate_cards,
         per_request_fee,
         store,
         security,
@@ -2677,9 +2680,6 @@ fn merge_root_settings(
     }
     if rate_card.is_some() {
         base.rate_card = rate_card;
-    }
-    if plugin_rate_cards.is_some() {
-        base.plugin_rate_cards = plugin_rate_cards;
     }
     if per_request_fee.is_some() {
         base.per_request_fee = per_request_fee;
@@ -2711,7 +2711,6 @@ fn reload_to_apply_fields(req: &busbar_kernel::config::overlay::RootSettings) ->
         store,
 
         rate_card: _,
-        plugin_rate_cards: _,
         per_request_fee: _,
         security: _,
         health: _,
@@ -2744,7 +2743,6 @@ fn reload_to_apply_fields(req: &busbar_kernel::config::overlay::RootSettings) ->
 
             max_keys_per_principal: _,
 
-            datagram_line_memory_bytes: _,
             max_auto_provisioned_groups: _,
 
             hard_down_cooldown_secs: _,
@@ -2967,6 +2965,9 @@ pub(crate) async fn put_config_settings(
             )
             .await?;
             let next = Box::pin(async {
+                if let Some(doc) = loaded.overlay_doc.as_ref() {
+                    loaded.resource_ownership.validate_named_maps(doc)?;
+                }
                 merged_for_build.apply_to_deploy(&mut loaded.deploy);
 
                 if let Some(doc) = loaded.overlay_doc.as_ref() {
@@ -2977,10 +2978,8 @@ pub(crate) async fn put_config_settings(
                 }
                 let mut cfg = busbar_kernel::config::resolve(&loaded.deploy, &loaded.defs)
                     .map_err(|errs| format!("config errors:\n  - {}", errs.join("\n  - ")))?;
-                let base_hook_names: std::collections::HashSet<String> =
-                    cfg.hooks.keys().cloned().collect();
-                let base_group_names: std::collections::HashSet<String> =
-                    cfg.groups.keys().cloned().collect();
+                let base_hook_names = loaded.resource_ownership.hook_names().clone();
+                let base_group_names = loaded.resource_ownership.group_names().clone();
                 if let Some(doc) = loaded.overlay_doc {
                     busbar_kernel::config::overlay::merge_into(&mut cfg, doc);
                 }
@@ -3269,6 +3268,7 @@ pub(crate) async fn patch_hook_settings(
 
 pub(crate) async fn plugin_schema(
     State(handle): State<Arc<AppHandle>>,
+    principal: Option<axum::Extension<busbar_kernel::auth::AuthPrincipal>>,
     Path(name): Path<String>,
     Query(query): Query<std::collections::HashMap<String, String>>,
 ) -> Response {
@@ -3298,13 +3298,20 @@ pub(crate) async fn plugin_schema(
                 "expected_archive_sha256 must be 64 lowercase hexadecimal characters".into(),
             ));
         }
+        let actor = principal.map_or_else(
+            || "anonymous".to_string(),
+            |axum::Extension(p)| p.actor_id().to_string(),
+        );
         let out =
             busbar_kernel::config::transaction::config_reload_transaction(&handle, move |txn| {
                 let snapshot = txn.app().clone();
                 Ok(txn.store_write_async(async move {
                     Ok(Outcome::Value(
-                        AdminService::new(snapshot)
-                            .installed_plugin_schema(&name, expected.as_deref())?,
+                        AdminService::new(snapshot).installed_plugin_schema(
+                            &name,
+                            expected.as_deref(),
+                            &actor,
+                        )?,
                     ))
                 }))
             })
@@ -3352,6 +3359,7 @@ pub(crate) async fn plugin_schema(
         );
         if let Some(row) = loadable.as_ref() {
             selection["configuration"] = loaded_plugin_configuration(&current, row);
+            selection["trust"] = json!(loaded_image_trust(&current, row));
         }
         return ok_json(StatusCode::OK, &selection);
     }
@@ -3361,7 +3369,7 @@ pub(crate) async fn plugin_schema(
         }
         return err_json(&AdminError::not_found(format!("plugin `{name}`")));
     };
-    let trust = verdict_trust(&loadable.trust);
+    let trust = loaded_image_trust(&current, &loadable);
     let (schema, schema_error) = manifest_schema(loadable.settings_schema.as_deref());
     ok_json(
         StatusCode::OK,
@@ -3433,10 +3441,10 @@ fn hook_schema_selection(
     restart_required_default: Option<bool>,
 ) -> serde_json::Value {
     if described.is_some() {
-        return json!({ "name": name, "schema": described, "schema_error": null, "trust": trust, "source": "describe", "kind": kind, "restart_required_default": restart_required_default });
+        return json!({ "name": name, "schema": described, "schema_error": null, "trust": crate::v1::contract::PluginTrustView::from_verification(false, if trust == "trusted" {"trusted"} else if trust == "rejected" {"rejected"} else {"unverified"}, &Default::default()), "source": "describe", "kind": kind, "restart_required_default": restart_required_default });
     }
     let (schema, schema_error) = manifest_schema(settings_schema);
-    json!({ "name": name, "schema": schema, "schema_error": schema_error, "trust": trust, "source": fallback_source, "kind": kind, "restart_required_default": restart_required_default })
+    json!({ "name": name, "schema": schema, "schema_error": schema_error, "trust": crate::v1::contract::PluginTrustView::from_verification(false, if trust == "trusted" {"trusted"} else if trust == "rejected" {"rejected"} else {"unverified"}, &Default::default()), "source": fallback_source, "kind": kind, "restart_required_default": restart_required_default })
 }
 
 #[cfg(test)]
@@ -3564,7 +3572,7 @@ pub(crate) async fn hook_status(
 pub(crate) const V1_GET_PATHS: &[(&str, &str)] = &[
     (
         "/info",
-        "Version, compiled-in plugin proof, uptime, topology",
+        "Node identity: version, deployment, node, incarnation, warnings",
     ),
     (PATH_HOOKS, "Hook registry (definitions)"),
     (
@@ -3986,7 +3994,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 "summary": "Restart busbar to apply the restart-scoped settings (listen, admin_listen, tls, admin_tls, admin_require_mtls, store). Drains first; the supervisor brings it back",
                 "security": [{"adminToken": []}],
                 RESPONSES_KEY: {
-                    "202": {"description": "`{restarting, supervisor_detected, note}`: draining; in-flight requests finish first"},
+                    "202": {"description": "`{restarting, note}`: draining; in-flight requests finish first"},
                 }
             }
         }),
@@ -4170,18 +4178,6 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string"}}],
                 RESPONSES_KEY: {
                     "200": {"description": "`{revoked}`: the id, now denylisted"},
-                }
-            }
-        }),
-    );
-    paths.insert(
-        ap("/signing-key/rotate"),
-        json!({
-            "post": {
-                "summary": "ROTATE the busbar key-signing key. Rotation is REVOKE-ALL by design: a new signing key means every token minted under the OLD key stops verifying, so every outstanding key must be re-minted. 1.5.0 is single-key, so this reports the intent + current kid; the actual swap is an operator action (replace auth.signing_key / the persisted key file and restart/reload every node in lockstep) (1.5.0)",
-                "security": [{"adminToken": []}],
-                RESPONSES_KEY: {
-                    "200": {"description": "`{current_kid, revoke_all, message}`: the rotation intent + revoke-all warning"},
                 }
             }
         }),
@@ -4670,12 +4666,6 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
     typed!("/keys/{id}/usage", "get", "200", sview::KeyMeteringView);
     typed!("/keys/{id}/rotate", "post", "200", sview::RotatedKeyView);
     typed!("/keys/{id}/revoke", "post", "200", sview::RevokeView);
-    typed!(
-        "/signing-key/rotate",
-        "post",
-        "200",
-        sview::SigningKeyRotateView
-    );
 
     for (path, method, op) in super::kernel_verbs::operations(&mut gen, &mut req_gen) {
         let item = paths.entry(path).or_insert_with(|| json!({}));
@@ -4848,7 +4838,28 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         );
     }
 
+    super::kinds::doc::trust_components(&mut gen);
     let mut schemas = gen.definitions().clone();
+    schemas.insert(
+        super::kinds::CORE_STATE_DURABILITY.to_string(),
+        json!({
+            "type": "object",
+            "description": "The core/durability instance's state.",
+            "required": ["store"],
+            "properties": {
+                "store": {
+                    "type": "object",
+                    "required": ["persistence"],
+                    "properties": {
+                        "persistence": {
+                            "type": "boolean",
+                            "description": "Whether configuration changes made through the admin API are kept in the Store and survive a restart; false when the configuration is locked and those changes are refused."
+                        }
+                    }
+                }
+            }
+        }),
+    );
     schemas.insert(
         "ConfigSettingsMutationView".to_string(),
         json!({"oneOf": [
@@ -4902,30 +4913,6 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         }),
     );
 
-    for decl in busbar_kernel::plane_driver::registry::plane_decls() {
-        if decl.openapi.is_none() && decl.named_def_list.is_none() {
-            continue;
-        }
-        let root = ap(&format!("/{}", decl.config_section));
-        let nested = format!("{root}/");
-        for (path, item) in paths.iter_mut() {
-            if *path != root && !path.starts_with(&nested) {
-                continue;
-            }
-            let Some(item) = item.as_object_mut() else {
-                continue;
-            };
-            for (method, op) in item.iter_mut() {
-                if method.starts_with("x-") {
-                    continue;
-                }
-                if let Some(op) = op.as_object_mut() {
-                    op.insert("x-busbar-plane".to_string(), json!(decl.config_section));
-                }
-            }
-        }
-    }
-
     super::config_forms::insert_core_components(&mut schemas);
     super::contract_metadata::complete(&mut paths, &mut schemas);
 
@@ -4943,7 +4930,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         }
     }
 
-    json!({
+    let mut doc = json!({
         "openapi": "3.1.0",
         "x-busbar-config-schemas": super::config_forms::extension(),
         "x-busbar-exact-numbers": super::contract_metadata::number_profile(),
@@ -4957,11 +4944,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
             // client already has): how to read the marks the one document carries.
             "x-busbar-marks": {
                 "scope": "ONE generated document, describing every administrative operation this \
-                          build can serve; a node serves it filtered to the planes it configured.",
-                "x-busbar-plane": "The operation is mounted only on a node whose config carries \
-                                   that plane's `<section>:` block; elsewhere its path answers \
-                                   `404 not_found` and the node's served `GET /openapi.json` \
-                                   omits it (and every schema only it references).",
+                          build can serve, served unfiltered.",
                 "x-busbar-since": "Added in that release, and answered by the node's \
                                    administrative loop.",
                 "money": "Money fields use the representation declared by their schema: ledger \
@@ -4982,7 +4965,9 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
             "schemas": schemas
         },
         "paths": paths
-    })
+    });
+    super::evolution::mark_response_enums(&mut doc);
+    doc
 }
 
 /// `components.x-busbar-reasons`: every reason of the closed table with the code and status it
@@ -5078,31 +5063,14 @@ pub(crate) fn openapi_json() -> String {
     out
 }
 
-pub(crate) async fn openapi(State(handle): State<Arc<AppHandle>>) -> Response {
-    let app = handle.load();
-
-    render_openapi(move |section: &str| {
-        busbar_kernel::plane_driver::registry::plane_decl_for_config_section(section)
-            .is_some_and(|decl| app.plane_configured(decl))
-    })
-    .await
+/// `GET /openapi.json`: the one generated document, unfiltered (ADMIN-API-1.6 r5, #304). It is
+/// inflated off the async worker.
+pub(crate) async fn openapi() -> Response {
+    render_openapi().await
 }
 
-pub(super) async fn render_openapi(configured: impl Fn(&str) -> bool + Send + 'static) -> Response {
-    render_openapi_of(openapi_json, configured).await
-}
-
-/// [`render_openapi`] over the document `committed` produces.
-pub(super) async fn render_openapi_of(
-    committed: impl FnOnce() -> String + Send + 'static,
-    configured: impl Fn(&str) -> bool + Send + 'static,
-) -> Response {
-    let served = tokio::task::spawn_blocking(move || {
-        let committed = committed();
-        openapi_for_configured_planes(&committed, configured).unwrap_or(committed)
-    })
-    .await;
-    match served {
+pub(super) async fn render_openapi() -> Response {
+    match tokio::task::spawn_blocking(openapi_json).await {
         Ok(body) => openapi_document_response(body),
         Err(join_err) => {
             diag_error!(
@@ -5123,83 +5091,6 @@ pub(super) fn openapi_document_response(body: String) -> Response {
         body,
     )
         .into_response()
-}
-
-pub(crate) fn openapi_for_configured_planes(
-    committed: &str,
-    configured: impl Fn(&str) -> bool,
-) -> Option<String> {
-    use busbar_contract::json::{self, JsonValueMutTrait as _, JsonValueTrait as _};
-    let mut doc = json::parse_value(committed.as_bytes()).ok()?;
-    let reachable_before = openapi_reachable_schemas(&doc);
-    let mut dropped = false;
-    let paths = doc.get_mut("paths")?.as_object_mut()?;
-    for (_, item) in paths.iter_mut() {
-        let Some(item) = item.as_object_mut() else {
-            continue;
-        };
-        item.retain(|method, op| {
-            if method.starts_with("x-") {
-                return true;
-            }
-            match op.get("x-busbar-plane").and_then(|p| p.as_str()) {
-                Some(section) if !configured(section) => {
-                    dropped = true;
-                    false
-                }
-                _ => true,
-            }
-        });
-    }
-    if !dropped {
-        return None;
-    }
-    paths.retain(|_, item| {
-        item.as_object()
-            .is_some_and(|o| o.iter().any(|(k, _)| !k.starts_with("x-")))
-    });
-    let reachable_after = openapi_reachable_schemas(&doc);
-    if let Some(schemas) =
-        json::pointer_mut(&mut doc, "/components/schemas").and_then(|s| s.as_object_mut())
-    {
-        schemas
-            .retain(|name, _| !reachable_before.contains(name) || reachable_after.contains(name));
-    }
-    json::to_string_pretty(&doc)
-        .ok()
-        .map(|text| format!("{text}\n"))
-}
-
-fn openapi_reachable_schemas(
-    doc: &busbar_contract::json::Value,
-) -> std::collections::BTreeSet<String> {
-    use busbar_contract::json::{self, JsonValueTrait as _};
-    fn refs(v: &json::Value, out: &mut Vec<String>) {
-        if let Some(map) = v.as_object() {
-            if let Some(r) = map.get(&"$ref").and_then(|r| r.as_str()) {
-                if let Some(name) = r.strip_prefix("#/components/schemas/") {
-                    out.push(name.to_string());
-                }
-            }
-            map.iter().for_each(|(_, v)| refs(v, out));
-        } else if let Some(items) = v.as_array() {
-            items.iter().for_each(|v| refs(v, out));
-        }
-    }
-    let schemas = json::pointer(doc, "/components/schemas");
-    let mut pending = Vec::new();
-    if let Some(paths) = doc.get("paths") {
-        refs(paths, &mut pending);
-    }
-    let mut seen = std::collections::BTreeSet::new();
-    while let Some(name) = pending.pop() {
-        if seen.insert(name.clone()) {
-            if let Some(schema) = schemas.and_then(|s| s.get(name.as_str())) {
-                refs(schema, &mut pending);
-            }
-        }
-    }
-    seen
 }
 
 /// The `POST /api/v1/admin/config/validate` request body: a full proposed config — the `config.yaml`
@@ -5402,4 +5293,18 @@ mod archive_precondition_contract_tests {
                 .any(|p| p == field));
         }
     }
+}
+
+fn loaded_image_trust(
+    app: &busbar_kernel::state::App,
+    row: &busbar_contract::plugin_rows::Row,
+) -> crate::v1::contract::PluginTrustView {
+    crate::v1::contract::PluginTrustView::from_verification(
+        app.hook_env.registry.signature_present(&row.name),
+        verdict_trust(&row.trust),
+        &app.hook_env
+            .registry
+            .verification(&row.name)
+            .unwrap_or_default(),
+    )
 }

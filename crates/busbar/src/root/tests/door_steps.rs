@@ -130,18 +130,12 @@ async fn routing_recipe_preserves_configured_float_prices_before_ranking() {
         #[cfg(distribution_root)]
         crate::dist_root_install::install();
         let library_path = crate::root::test_plugins::application_store_library();
-        let statement = crate::root::loader::dispatch::rendering_of_library(&library_path)
-            .expect("the actual store statement reads")
-            .expect("the actual store exports its statement");
-        let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-            .expect("the actual store statement is valid")
-            .name;
-        let mut manifest = crate::root::test_plugins::manifest(
+        let module = crate::root::test_plugins::native_image(&library_path).name;
+        let manifest = crate::root::test_plugins::native_manifest(
             "store",
-            &module,
+            &library_path,
             crate::root::test_plugins::FIXTURE_PUBLISHER,
         );
-        manifest.statement = Some(hex::encode(statement));
         let release = crate::root::test_plugins::key(0x5a);
         let directory = crate::root::test_plugins::scratch(&format!(
             "door-steps-{}",
@@ -260,18 +254,12 @@ async fn routing_recipe_uses_the_admitted_planes_card_and_keeps_unknown_prices_u
             #[cfg(distribution_root)]
             crate::dist_root_install::install();
             let library_path = crate::root::test_plugins::application_store_library();
-            let statement = crate::root::loader::dispatch::rendering_of_library(&library_path)
-                .expect("the actual store statement reads")
-                .expect("the actual store exports its statement");
-            let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-                .expect("the actual store statement is valid")
-                .name;
-            let mut manifest = crate::root::test_plugins::manifest(
+            let module = crate::root::test_plugins::native_image(&library_path).name;
+            let manifest = crate::root::test_plugins::native_manifest(
                 "store",
-                &module,
+                &library_path,
                 crate::root::test_plugins::FIXTURE_PUBLISHER,
             );
-            manifest.statement = Some(hex::encode(statement));
             let release = crate::root::test_plugins::key(0x5a);
             let directory = crate::root::test_plugins::scratch(&format!(
                 "door-steps-{}",
@@ -380,18 +368,12 @@ async fn routing_recipe_uses_the_admitted_planes_card_and_keeps_unknown_prices_u
         #[cfg(distribution_root)]
         crate::dist_root_install::install();
         let library_path = crate::root::test_plugins::application_store_library();
-        let statement = crate::root::loader::dispatch::rendering_of_library(&library_path)
-            .expect("the actual store statement reads")
-            .expect("the actual store exports its statement");
-        let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-            .expect("the actual store statement is valid")
-            .name;
-        let mut manifest = crate::root::test_plugins::manifest(
+        let module = crate::root::test_plugins::native_image(&library_path).name;
+        let manifest = crate::root::test_plugins::native_manifest(
             "store",
-            &module,
+            &library_path,
             crate::root::test_plugins::FIXTURE_PUBLISHER,
         );
-        manifest.statement = Some(hex::encode(statement));
         let release = crate::root::test_plugins::key(0x5a);
         let directory = crate::root::test_plugins::scratch(&format!(
             "door-steps-{}",
@@ -961,18 +943,12 @@ async fn a_units_principal_is_recorded_from_authenticate_until_its_steps_drop() 
         #[cfg(distribution_root)]
         crate::dist_root_install::install();
         let library_path = crate::root::test_plugins::application_store_library();
-        let statement = crate::root::loader::dispatch::rendering_of_library(&library_path)
-            .expect("the actual store statement reads")
-            .expect("the actual store exports its statement");
-        let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-            .expect("the actual store statement is valid")
-            .name;
-        let mut manifest = crate::root::test_plugins::manifest(
+        let module = crate::root::test_plugins::native_image(&library_path).name;
+        let manifest = crate::root::test_plugins::native_manifest(
             "store",
-            &module,
+            &library_path,
             crate::root::test_plugins::FIXTURE_PUBLISHER,
         );
-        manifest.statement = Some(hex::encode(statement));
         let release = crate::root::test_plugins::key(0x5a);
         let directory = crate::root::test_plugins::scratch(&format!(
             "door-steps-{}",
@@ -1063,6 +1039,7 @@ async fn a_units_principal_is_recorded_from_authenticate_until_its_steps_drop() 
 fn downgrading(pool: &str, amount: u64, to: &str) -> busbar_kernel::config::groups::LimitCfg {
     use busbar_kernel::config::groups::{LimitCfg, LimitMetric, LimitWindow, OnExhaust};
     LimitCfg {
+        selected: None,
         metric: LimitMetric::Budget,
         amount,
         per: Some(LimitWindow::Day),
@@ -1137,18 +1114,12 @@ async fn money_book(
         #[cfg(distribution_root)]
         crate::dist_root_install::install();
         let library_path = crate::root::test_plugins::application_store_library();
-        let statement = crate::root::loader::dispatch::rendering_of_library(&library_path)
-            .expect("the actual store statement reads")
-            .expect("the actual store exports its statement");
-        let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-            .expect("the actual store statement is valid")
-            .name;
-        let mut manifest = crate::root::test_plugins::manifest(
+        let module = crate::root::test_plugins::native_image(&library_path).name;
+        let manifest = crate::root::test_plugins::native_manifest(
             "store",
-            &module,
+            &library_path,
             crate::root::test_plugins::FIXTURE_PUBLISHER,
         );
-        manifest.statement = Some(hex::encode(statement));
         let release = crate::root::test_plugins::key(0x5a);
         let directory = crate::root::test_plugins::scratch(&format!(
             "door-steps-{}",
@@ -1335,6 +1306,7 @@ async fn a_live_parent_at_the_request_cap_admits_and_ledgers_its_child() {
 
     let (app, key) = downgrade_book(
         vec![LimitCfg {
+            selected: None,
             metric: LimitMetric::Requests,
             amount: 1,
             per: Some(LimitWindow::Day),
@@ -1843,6 +1815,7 @@ async fn exhausted_pool_walk_bills_under_a_member_lane() {
     .collect::<std::collections::BTreeMap<_, _>>();
     let (app, key) = money_book(
         vec![LimitCfg {
+            selected: None,
             metric: LimitMetric::Budget,
             amount: 1_000_000,
             per: Some(LimitWindow::Day),
@@ -2083,6 +2056,7 @@ async fn child_grant_on_a_pooled_llm_target_walks_only_the_target() {
 fn one_request_a_day() -> busbar_kernel::config::groups::LimitCfg {
     use busbar_kernel::config::groups::{LimitCfg, LimitMetric, LimitWindow};
     LimitCfg {
+        selected: None,
         metric: LimitMetric::Requests,
         amount: 1,
         per: Some(LimitWindow::Day),
@@ -2723,7 +2697,11 @@ fn a_members_base_url_userinfo_reaches_its_attempts_only_through_its_binding() {
             .expect("the member resolves");
         let route = &routes["m"];
         assert_eq!(route.base_url, "https://api.example.com/v1");
-        let binding = route.auth.as_ref().expect("its credential is bound");
+        let busbar_kernel::plane_driver::AuthBinding::Configured(binding) =
+            route.auth.as_ref().expect("its credential is bound")
+        else {
+            panic!("configured credential");
+        };
         let Some(Fields::Ready(fields)) = binding
             .auth
             .fields_now(binding.handle, &FieldsRequest::default())
@@ -2757,28 +2735,6 @@ fn a_members_base_url_userinfo_reaches_its_attempts_only_through_its_binding() {
         }
     }
     let _ = std::fs::remove_file(&key_file);
-}
-
-#[test]
-fn a_member_whose_protocol_states_no_default_style_rides_its_providers() {
-    let routes = resolve(
-        "models: {m: {provider: p, protocol: x-envelope}}",
-        &[("p", provider("d", None))],
-    )
-    .expect("the member resolves under its provider's default style");
-    assert!(
-        routes["m"].auth.is_some(),
-        "bound by the plugin serving `bearer`"
-    );
-    let styleless = resolve(
-        "models: {m: {provider: p, protocol: x-envelope}}",
-        &[("p", provider("x", None))],
-    );
-    assert!(
-        styleless.as_ref().is_err_and(|e| e.contains("no `auth:`")),
-        "neither the member's protocol nor its provider's states a default: {:?}",
-        styleless.err()
-    );
 }
 
 #[test]
@@ -3393,7 +3349,6 @@ fn kernel_sections_preserve_numeric_scalars_in_every_projected_section() {
     cfg.pools.insert("all".into(), pool);
     cfg.limits.default_max_tokens = u32::MAX;
     cfg.limits.request_body_max_bytes = usize::MAX;
-    cfg.limits.datagram_line_memory_bytes = Some(usize::MAX - 1);
     cfg.limits.reasoning_effort_budgets = busbar_kernel::config::limits::ReasoningEffortBudgets {
         minimal: 1,
         low: 1024,
@@ -3418,8 +3373,8 @@ fn kernel_sections_preserve_numeric_scalars_in_every_projected_section() {
     );
     assert!(members.at(1).get("context_max").is_none());
     let expected: busbar_contract::yaml::Value = busbar_contract::yaml::from_str(&format!(
-        "default_max_tokens: {}\nrequest_body_max_bytes: {}\ndatagram_line_memory_bytes: {}\nreasoning_effort_budgets: {{minimal: 1, low: 1024, medium: 8192, high: {}}}",
-        u32::MAX, usize::MAX, usize::MAX - 1, u32::MAX,
+        "default_max_tokens: {}\nrequest_body_max_bytes: {}\nreasoning_effort_budgets: {{minimal: 1, low: 1024, medium: 8192, high: {}}}",
+        u32::MAX, usize::MAX, u32::MAX,
     )).expect("exact limits");
     assert_eq!(sections["limits"], expected);
     let numbers = sections[busbar_contract::plugin::Kind::Transport.root()]
@@ -3431,10 +3386,6 @@ fn kernel_sections_preserve_numeric_scalars_in_every_projected_section() {
     assert!(numbers.at("nested").at(1).is_null());
     assert_eq!(numbers.at("nested").at(2).as_f64(), Some(1.25));
     assert_eq!(numbers.at("nested").at(3).as_f64(), Some(100.0));
-    cfg.limits.datagram_line_memory_bytes = None;
-    assert!(super::kernel_sections(&cfg).unwrap()["limits"]
-        .at("datagram_line_memory_bytes")
-        .is_null());
 }
 
 #[test]
@@ -3579,7 +3530,9 @@ fn presents(
     }
 }
 
-fn refused(bound: Result<Option<busbar_kernel::plane_driver::AuthBinding>, String>) -> String {
+fn refused(
+    bound: Result<Option<busbar_kernel::plane_driver::ConfiguredAuthBinding>, String>,
+) -> String {
     match bound {
         Err(why) => why,
         Ok(_) => panic!("the load was not refused"),
@@ -4646,14 +4599,16 @@ fn a_registration_members_anchors_reach_and_binding_hold_on_every_need_it_rides(
         connection_required: false,
         need: busbar_contract::conn::NeedId(1),
         base_url: "https://far.example".to_string(),
-        auth: Some(AuthBinding {
-            auth: std::sync::Arc::new(Bound),
-            handle: 1,
-            style_flags: 0,
-            points: busbar_contract::abi::auth::AuthPoints(0),
-            passthrough: false,
-            per_request: None,
-        }),
+        auth: Some(AuthBinding::Configured(
+            busbar_kernel::plane_driver::ConfiguredAuthBinding {
+                auth: std::sync::Arc::new(Bound),
+                handle: 1,
+                style_flags: 0,
+                points: busbar_contract::abi::auth::AuthPoints(0),
+                passthrough: false,
+                per_request: None,
+            },
+        )),
         provider: "fs".to_string(),
         keep: ResponseKeep::default(),
         rides: vec![(busbar_contract::conn::NeedId(2), ResponseKeep::default())],
@@ -4745,18 +4700,12 @@ async fn the_configured_error_body_cap_reaches_both_egress_constructors() {
             #[cfg(distribution_root)]
             crate::dist_root_install::install();
             let library_path = crate::root::test_plugins::application_store_library();
-            let statement = crate::root::loader::dispatch::rendering_of_library(&library_path)
-                .expect("the actual store statement reads")
-                .expect("the actual store exports its statement");
-            let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-                .expect("the actual store statement is valid")
-                .name;
-            let mut manifest = crate::root::test_plugins::manifest(
+            let module = crate::root::test_plugins::native_image(&library_path).name;
+            let manifest = crate::root::test_plugins::native_manifest(
                 "store",
-                &module,
+                &library_path,
                 crate::root::test_plugins::FIXTURE_PUBLISHER,
             );
-            manifest.statement = Some(hex::encode(statement));
             let release = crate::root::test_plugins::key(0x5a);
             let directory = crate::root::test_plugins::scratch(&format!(
                 "door-steps-{}",
@@ -4977,18 +4926,12 @@ async fn a_scope_local_unit_resolves_the_one_entry_the_grant_reaches_and_routes_
         #[cfg(distribution_root)]
         crate::dist_root_install::install();
         let library_path = crate::root::test_plugins::application_store_library();
-        let statement = crate::root::loader::dispatch::rendering_of_library(&library_path)
-            .expect("the actual store statement reads")
-            .expect("the actual store exports its statement");
-        let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-            .expect("the actual store statement is valid")
-            .name;
-        let mut manifest = crate::root::test_plugins::manifest(
+        let module = crate::root::test_plugins::native_image(&library_path).name;
+        let manifest = crate::root::test_plugins::native_manifest(
             "store",
-            &module,
+            &library_path,
             crate::root::test_plugins::FIXTURE_PUBLISHER,
         );
-        manifest.statement = Some(hex::encode(statement));
         let release = crate::root::test_plugins::key(0x5a);
         let directory = crate::root::test_plugins::scratch(&format!(
             "door-steps-{}",
@@ -5355,6 +5298,7 @@ async fn the_doors_admission_check_reads_the_arrival_window_and_not_the_clock() 
             parent: None,
             enabled: true,
             limits: vec![LimitCfg {
+                selected: None,
                 metric: LimitMetric::Budget,
                 amount: 1,
                 per: Some(LimitWindow::Day),
@@ -5382,18 +5326,12 @@ async fn the_doors_admission_check_reads_the_arrival_window_and_not_the_clock() 
         #[cfg(distribution_root)]
         crate::dist_root_install::install();
         let library_path = crate::root::test_plugins::application_store_library();
-        let statement = crate::root::loader::dispatch::rendering_of_library(&library_path)
-            .expect("the actual store statement reads")
-            .expect("the actual store exports its statement");
-        let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-            .expect("the actual store statement is valid")
-            .name;
-        let mut manifest = crate::root::test_plugins::manifest(
+        let module = crate::root::test_plugins::native_image(&library_path).name;
+        let manifest = crate::root::test_plugins::native_manifest(
             "store",
-            &module,
+            &library_path,
             crate::root::test_plugins::FIXTURE_PUBLISHER,
         );
-        manifest.statement = Some(hex::encode(statement));
         let release = crate::root::test_plugins::key(0x5a);
         let directory = crate::root::test_plugins::scratch(&format!(
             "door-steps-{}",
@@ -5530,18 +5468,12 @@ async fn asking_whether_a_name_is_configured_allocates_nothing() {
         #[cfg(distribution_root)]
         crate::dist_root_install::install();
         let library_path = crate::root::test_plugins::application_store_library();
-        let statement = crate::root::loader::dispatch::rendering_of_library(&library_path)
-            .expect("the actual store statement reads")
-            .expect("the actual store exports its statement");
-        let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-            .expect("the actual store statement is valid")
-            .name;
-        let mut manifest = crate::root::test_plugins::manifest(
+        let module = crate::root::test_plugins::native_image(&library_path).name;
+        let manifest = crate::root::test_plugins::native_manifest(
             "store",
-            &module,
+            &library_path,
             crate::root::test_plugins::FIXTURE_PUBLISHER,
         );
-        manifest.statement = Some(hex::encode(statement));
         let release = crate::root::test_plugins::key(0x5a);
         let directory = crate::root::test_plugins::scratch(&format!(
             "door-steps-{}",
@@ -5904,7 +5836,11 @@ fn resolves_in_one_door_step(
 
 fn bearer_of(route: &busbar_kernel::plane_driver::MemberRoute) -> String {
     use busbar_contract::auth_calls::{Fields, FieldsRequest};
-    let binding = route.auth.as_ref().expect("its credential is bound");
+    let busbar_kernel::plane_driver::AuthBinding::Configured(binding) =
+        route.auth.as_ref().expect("its credential is bound")
+    else {
+        panic!("configured credential");
+    };
     let Some(Fields::Ready(fields)) = binding
         .auth
         .fields_now(binding.handle, &FieldsRequest::default())

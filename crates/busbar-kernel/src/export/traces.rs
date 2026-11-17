@@ -12,74 +12,101 @@ use tracing_subscriber::filter::LevelFilter;
 use tracing_subscriber::layer::{Context, Layer};
 use tracing_subscriber::registry::LookupSpan;
 
-pub fn layer<S: Subscriber + for<'a> LookupSpan<'a>>(floor: LevelFilter) -> Option<impl Layer<S>> {
-    let wanted = move |m: &tracing::Metadata<'_>| {
-        let subscribed = |s: &super::plugin::PluginSink| s.projection.wants_stream(Traces);
-        let records = |s: &super::plugin::PluginSink| subscribed(s) && s.span_record;
-        *m.level() <= floor
-            && if m.is_span() {
-                super::plugin::sinks().any(subscribed)
-            } else {
-                super::plugin::sinks().any(records)
-            }
-    };
-    let filter = SinkFilter { wanted, floor };
-    let producer = Producer(deliver, records_wanted).with_filter(filter);
-    super::plugin::axis().map(|_| producer)
-}
+type Delivery = Box<dyn Fn(&Fields, Option<&[u8]>) + Send + Sync>;
+type WantsRecords = Box<dyn Fn() -> bool + Send + Sync>;
+type WantsMetadata = Box<dyn Fn(&tracing::Metadata<'_>) -> bool + Send + Sync>;
+type ExportLayer = tracing_subscriber::filter::Filtered<
+    Producer<Delivery, WantsRecords>,
+    SinkFilter,
+    tracing_subscriber::Registry,
+>;
 
-/// Whether any opened sink wants the Traces stream; set once, right before the
-/// interest rebuild that follows OPEN. The sink set is fixed for the process
-/// (a membership or projection change requires a restart), so is this.
-static TRACES: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-
-/// Called by OPEN once the sink set is fixed, before its interest rebuild, so
-/// that rebuild reads this layer's final hint.
-pub(crate) fn sinks_fixed() {
-    let _ = TRACES.set(super::plugin::sinks().any(|s| s.projection.wants_stream(Traces)));
-}
-
-/// The traces layer's filter. Before OPEN it consults `wanted` per callsite,
-/// as boot needs. After OPEN with no Traces sink it is `never` everywhere and
-/// hints OFF, so it neither runs per event nor holds the process level up.
-struct SinkFilter<W> {
-    wanted: W,
+/// Root-owned activation of the process subscriber. Its stderr layer is already live during
+/// boot; the export layer receives one completed registry before serving workers start.
+pub struct TracePublisher {
+    handle: tracing_subscriber::reload::Handle<ExportLayer, tracing_subscriber::Registry>,
     floor: LevelFilter,
 }
 
-impl<S, W: Fn(&tracing::Metadata<'_>) -> bool> tracing_subscriber::layer::Filter<S>
-    for SinkFilter<W>
-{
-    fn enabled(&self, meta: &tracing::Metadata<'_>, _: &Context<'_, S>) -> bool {
-        match TRACES.get() {
-            Some(false) => false,
-            None | Some(true) => (self.wanted)(meta),
+impl TracePublisher {
+    pub fn publish(self, exports: std::sync::Arc<super::plugin::Exports>) -> Result<(), String> {
+        let (producer, filter) = producers(self.floor, exports);
+        self.handle
+            .modify(|layer| {
+                // Preserve Filtered's registered filter identity when replacing its contents.
+                *layer.inner_mut() = producer;
+                *layer.filter_mut() = filter;
+            })
+            .map_err(|error| format!("export tracing activation: {error}"))
+    }
+}
+
+pub(crate) fn dormant(
+    floor: LevelFilter,
+) -> (impl Layer<tracing_subscriber::Registry>, TracePublisher) {
+    let (producer, filter) = producers(floor, std::sync::Arc::default());
+    let (layer, handle) = tracing_subscriber::reload::Layer::new(producer.with_filter(filter));
+    (layer, TracePublisher { handle, floor })
+}
+
+fn producers(
+    floor: LevelFilter,
+    exports: std::sync::Arc<super::plugin::Exports>,
+) -> (Producer<Delivery, WantsRecords>, SinkFilter) {
+    let traces = exports
+        .sinks
+        .iter()
+        .any(|s| s.projection.wants_stream(Traces));
+    let records = exports
+        .sinks
+        .iter()
+        .any(|s| s.projection.wants_stream(Traces) && s.span_record);
+    let wanted: WantsMetadata =
+        Box::new(move |m| *m.level() <= floor && if m.is_span() { traces } else { records });
+    let deliver: Delivery = Box::new(move |facts, span| {
+        let ingress = first_text(facts, F::Ingress).unwrap_or_default();
+        if tokio::runtime::Handle::try_current().is_ok() {
+            super::plugin::deliver_to(&exports, Traces, ingress, |p, takes| {
+                record(p, facts, span.filter(|_| takes))
+            });
         }
+    });
+    let records: WantsRecords = Box::new(move || records);
+    (
+        Producer(deliver, records),
+        SinkFilter {
+            wanted,
+            floor,
+            traces,
+        },
+    )
+}
+
+struct SinkFilter {
+    wanted: WantsMetadata,
+    floor: LevelFilter,
+    traces: bool,
+}
+
+impl<S> tracing_subscriber::layer::Filter<S> for SinkFilter {
+    fn enabled(&self, meta: &tracing::Metadata<'_>, _: &Context<'_, S>) -> bool {
+        meta.target() != crate::diagnostics::EXPORT_LOSS_TARGET && (self.wanted)(meta)
     }
 
     fn callsite_enabled(&self, meta: &'static tracing::Metadata<'static>) -> Interest {
-        match TRACES.get() {
-            None => Interest::sometimes(),
-            Some(false) => Interest::never(),
-            Some(true) if (self.wanted)(meta) => Interest::always(),
-            Some(true) => Interest::never(),
+        if meta.target() != crate::diagnostics::EXPORT_LOSS_TARGET && (self.wanted)(meta) {
+            Interest::always()
+        } else {
+            Interest::never()
         }
     }
 
     fn max_level_hint(&self) -> Option<LevelFilter> {
-        match TRACES.get() {
-            Some(false) => Some(LevelFilter::OFF),
-            None | Some(true) => Some(self.floor),
-        }
-    }
-}
-
-fn deliver(facts: &Fields, span: Option<&[u8]>) {
-    let ingress = first_text(facts, F::Ingress).unwrap_or_default();
-    if tokio::runtime::Handle::try_current().is_ok() {
-        super::plugin::deliver_to(Traces, ingress, |p, takes| {
-            record(p, facts, span.filter(|_| takes))
-        });
+        Some(if self.traces {
+            self.floor
+        } else {
+            LevelFilter::OFF
+        })
     }
 }
 
@@ -778,14 +805,18 @@ impl tracing::field::Visit for EventFields<'_> {
     }
 }
 
-fn records_wanted() -> bool {
-    super::plugin::sinks().any(|s| s.projection.wants_stream(Traces) && s.span_record)
-}
+struct Producer<D, W>(D, W);
 
-struct Producer(fn(&Fields, Option<&[u8]>), fn() -> bool);
-
-impl<S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Producer {
+impl<S, D, W> Layer<S> for Producer<D, W>
+where
+    S: Subscriber + for<'a> LookupSpan<'a>,
+    D: Fn(&Fields, Option<&[u8]>) + Send + Sync + 'static,
+    W: Fn() -> bool + Send + Sync + 'static,
+{
     fn on_new_span(&self, attrs: &Attributes<'_>, id: &Id, ctx: Context<'_, S>) {
+        if attrs.metadata().target() == crate::diagnostics::EXPORT_LOSS_TARGET {
+            return;
+        }
         let Some(span) = ctx.span(id) else { return };
         let mut fields = Fields::default();
         attrs.record(&mut fields);
@@ -838,6 +869,9 @@ impl<S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Producer {
     }
 
     fn on_event(&self, event: &tracing::Event<'_>, ctx: Context<'_, S>) {
+        if event.metadata().target() == crate::diagnostics::EXPORT_LOSS_TARGET {
+            return;
+        }
         let span = event.parent().and_then(|id| ctx.span(id)).or_else(|| {
             event
                 .is_contextual()

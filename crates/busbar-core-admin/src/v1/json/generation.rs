@@ -103,6 +103,7 @@ fn check_if_match(req: &mut Request, app: &App, rel: &str) -> Result<(), Box<Res
     };
     let value = raw.to_str().unwrap_or("").trim();
     if value == "*" {
+        busbar_kernel::audit::auditlog::note_unconditional();
         return Ok(());
     }
     let bare = value.strip_prefix("W/").unwrap_or(value);
@@ -243,7 +244,9 @@ fn restamp(response: &mut Response, handle: &Arc<AppHandle>) {
     }
 }
 
-fn valid_key(key: &str) -> bool {
+/// THE ONE `Idempotency-Key` predicate (TRUST-ADMIN-PRODUCER-DESIGN r3 condition B-C4): 1..=128 of
+/// `A-Z a-z 0-9 . _ : -`. The root replay wrapper applies this same rule.
+pub fn valid_idempotency_key(key: &str) -> bool {
     (1..=128).contains(&key.len())
         && key
             .bytes()
@@ -266,6 +269,15 @@ fn operation_store(app: &App) -> Option<busbar_kernel::persistence::scoped::Scop
     durable::scoped_store(core).ok()
 }
 
+/// The id of the operation `principal`'s request with `Idempotency-Key` `key` creates: served by
+/// `GET /operations/{key}` and sealed on the request's audit rows.
+fn operation_id(principal: &str, key: &str) -> String {
+    format!(
+        "op_{}",
+        &busbar_contract::redacted::sha256_hex(format!("{principal}\0{key}").as_bytes())[..32]
+    )
+}
+
 fn principal_of(req: &Request) -> String {
     req.extensions()
         .get::<busbar_kernel::auth::AuthPrincipal>()
@@ -277,7 +289,7 @@ async fn idempotent(req: Request, next: Next, app: &Arc<App>, key: String) -> Re
     if self_idempotent(&req, &rel) {
         return next.run(req).await;
     }
-    if !valid_key(&key) {
+    if !valid_idempotency_key(&key) {
         return refusal(
             400,
             "invalid_request",
@@ -294,6 +306,7 @@ async fn idempotent(req: Request, next: Next, app: &Arc<App>, key: String) -> Re
         );
     };
     let principal = principal_of(&req);
+    let operation = operation_id(&principal, &key);
     let (parts, body) = req.into_parts();
     let Ok(bytes) = axum::body::to_bytes(body, BODY_CAP).await else {
         return gate::admin_error_envelope(
@@ -302,11 +315,23 @@ async fn idempotent(req: Request, next: Next, app: &Arc<App>, key: String) -> Re
             "admin request body exceeds the configured limit",
         );
     };
-    let mut framed = Vec::with_capacity(bytes.len() + 64);
-    framed.extend_from_slice(parts.method.as_str().as_bytes());
-    framed.extend_from_slice(parts.uri.path().as_bytes());
-    framed.extend_from_slice(parts.uri.query().unwrap_or("").as_bytes());
-    framed.extend_from_slice(&bytes);
+    let mut framed = Vec::with_capacity(bytes.len() + 96);
+    framed.extend_from_slice(b"busbar.admin.request.v2\0");
+    // Bind component boundaries as well as their bytes: moving a byte between the query and
+    // body must never turn a different request into a replay of the original operation.
+    for component in [
+        parts.method.as_str().as_bytes(),
+        parts.uri.path().as_bytes(),
+        parts.uri.query().unwrap_or("").as_bytes(),
+        bytes.as_ref(),
+    ] {
+        framed.extend_from_slice(
+            &u64::try_from(component.len())
+                .expect("request component length fits u64")
+                .to_be_bytes(),
+        );
+        framed.extend_from_slice(component);
+    }
     let fingerprint = busbar_contract::abi::sdk::digest::sha256(&framed);
     let now = busbar_kernel::store::now();
     let claim_key = (principal, format!("op:{key}"));
@@ -343,6 +368,7 @@ async fn idempotent(req: Request, next: Next, app: &Arc<App>, key: String) -> Re
         }
         Ok(Ok(claim)) => claim,
     };
+    busbar_kernel::audit::auditlog::note_operation_id(&operation);
     let response = next
         .run(Request::from_parts(parts, Body::from(bytes)))
         .await;
@@ -352,25 +378,22 @@ async fn idempotent(req: Request, next: Next, app: &Arc<App>, key: String) -> Re
         return gate::admin_error_envelope(500, "internal", "response could not be read");
     };
     let status = rparts.status;
-    let settled = if status.is_server_error() || status == StatusCode::TOO_MANY_REQUESTS {
-        // Not applied, or not known to be: the next claim under this key may run.
-        Settled::Released
-    } else {
-        let content_type = rparts
-            .headers
-            .get(header::CONTENT_TYPE)
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("");
-        Settled::Answer(encode_answer(
-            status.as_u16(),
-            now,
-            app.config_generation
-                .load(std::sync::atomic::Ordering::Acquire),
-            &fingerprint,
-            content_type,
-            &rbytes,
-        ))
-    };
+    // Dispatch may have committed an effect even when its public reply is 5xx or 429.
+    // A response status cannot authorize another execution of the same action.
+    let content_type = rparts
+        .headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    let settled = Settled::Answer(encode_answer(
+        status.as_u16(),
+        now,
+        app.config_generation
+            .load(std::sync::atomic::Ordering::Acquire),
+        &fingerprint,
+        content_type,
+        &rbytes,
+    ));
     settle(&store, &claim, &settled).await;
     Response::from_parts(rparts, Body::from(rbytes))
 }
@@ -477,7 +500,7 @@ pub(crate) async fn get_operation(
         );
     }
     let missing = || err_json(&AdminError::not_found("operation"));
-    if !valid_key(&key) {
+    if !valid_idempotency_key(&key) {
         return missing();
     }
     let Some(store) = operation_store(&app) else {
@@ -502,10 +525,7 @@ pub(crate) async fn get_operation(
             );
         }
     };
-    let operation_id = format!(
-        "op_{}",
-        &busbar_contract::redacted::sha256_hex(format!("{actor}\0{key}").as_bytes())[..32]
-    );
+    let operation_id = operation_id(&actor, &key);
     let body = match looked {
         Looked::InFlight {
             request_sha256,

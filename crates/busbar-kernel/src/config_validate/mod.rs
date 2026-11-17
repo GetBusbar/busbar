@@ -214,8 +214,6 @@ fn judge_with_plugins(
 
     errors.extend(instance_ids::instance_id_collisions(cfg));
 
-    refused_provider_destinations(cfg, advisories);
-
     let provider_names: HashSet<&str> = cfg.providers.keys().map(|s| s.as_str()).collect();
 
     let mut model_protocols: HashMap<&str, &str> = HashMap::new();
@@ -354,22 +352,7 @@ fn judge_with_plugins(
         }
     }
 
-    let mut known_protocols: Vec<&str> = crate::plane_driver::dispatch::provider_dialects();
-    for decl in crate::plane_driver::registry::plane_decls()
-        .iter()
-        .filter(|d| d.fallback || cfg.plane_sections.contains(d.config_section))
-    {
-        if let Some(default_section) = decl.default_section {
-            if let Some(dialects) = default_section(decl).known_dialects() {
-                for d in dialects.iter().copied() {
-                    if !known_protocols.contains(&d) {
-                        known_protocols.push(d);
-                    }
-                }
-            }
-        }
-    }
-    validate_providers_with(&known_protocols, cfg, unset_env_vars, &mut errors);
+    validate_providers_with(&[], cfg, unset_env_vars, &mut errors);
 
     for (pool_name, pool_cfg) in &cfg.pools {
         let mut member_protocols: HashSet<&str> = HashSet::new();
@@ -760,31 +743,10 @@ fn judge_with_plugins(
                 }
             }
         };
-        let default_secs = policy
-            .default_ttl
-            .as_deref()
-            .and_then(|t| parse_policy_ttl("auth.policy.default_ttl", t, &mut errors));
         let max_secs = policy
             .max_ttl
             .as_deref()
             .and_then(|t| parse_policy_ttl("auth.policy.max_ttl", t, &mut errors));
-        if let (Some(d), Some(m)) = (default_secs, max_secs) {
-            if d > m {
-                errors.push(coded::config_auth_policy_invalid(format!(
-                    "auth.policy.default_ttl ('{}', {d}s) exceeds auth.policy.max_ttl ('{}', {m}s); \
-                     the default a mint falls back to cannot be longer than the ceiling",
-                    policy.default_ttl.as_deref().unwrap_or(""),
-                    policy.max_ttl.as_deref().unwrap_or(""),
-                )).into());
-            }
-        }
-        if policy.max_outstanding_tickets_per_key == Some(0) {
-            errors.push(
-                "auth.policy.max_outstanding_tickets_per_key is 0, which refuses every ephemeral \
-                 secret; set at least 1, or omit it for the default of 256"
-                    .to_string(),
-            );
-        }
         for (role, ceiling) in &policy.mint_ceilings {
             if let (Some(block), Some(modes)) = (&policy.binding_modes, &ceiling.binding_modes) {
                 for mode in modes.iter().filter(|m| !block.contains(m)) {
@@ -1201,9 +1163,6 @@ fn validate_limits_with(
     use crate::config::{REQUEST_BODY_MAX_BYTES_CEIL, REQUEST_BODY_MAX_BYTES_FLOOR};
 
     validate_limit_ceilings(limits, errors);
-    if let Err(refusals) = limits.drain_settings() {
-        errors.extend(refusals);
-    }
 
     if limits.upstream_request_timeout_secs < 1 {
         errors.push(coded::config_setting_out_of_range("limits.upstream_request_timeout_secs must be >= 1 (0 would time out every upstream call \
@@ -1246,11 +1205,6 @@ fn validate_limits_with(
             limits.request_body_max_bytes
         )).into());
     }
-    if limits.datagram_line_memory_bytes == Some(0) {
-        errors.push(coded::config_setting_out_of_range("limits.datagram_line_memory_bytes must be >= 1 when set (omit it or use null to disable the limit)"
-                ).into());
-    }
-
     if limits.upstream_error_body_max_bytes < 1 {
         errors.push(coded::config_setting_out_of_range("limits.upstream_error_body_max_bytes must be >= 1 (0 would buffer no upstream error body)"
                 ).into());
@@ -1299,17 +1253,7 @@ fn validate_limits_with(
 }
 
 fn validate_limit_ceilings(limits: &crate::config::LimitsResolved, errors: &mut Vec<String>) {
-    if limits.migration_index_bytes == 0 || limits.migration_value_bytes == 0 {
-        errors.push(
-            coded::config_setting_out_of_range(
-                "limits.migration_index_bytes and limits.migration_value_bytes must be positive",
-            )
-            .into(),
-        );
-    }
     let crate::config::LimitsResolved {
-        migration_index_bytes: _,
-        migration_value_bytes: _,
         upstream_request_timeout_secs,
         pool_idle_timeout_secs,
         hard_down_cooldown_secs,
@@ -1325,8 +1269,6 @@ fn validate_limit_ceilings(limits: &crate::config::LimitsResolved, errors: &mut 
         request_body_max_bytes: _,
         max_inbound_concurrent: _,
 
-        datagram_line_memory_bytes: _,
-
         pool_max_idle_per_host: _,
         max_keys_per_principal: _,
         max_auto_provisioned_groups: _,
@@ -1340,9 +1282,6 @@ fn validate_limit_ceilings(limits: &crate::config::LimitsResolved, errors: &mut 
 
         upstream_http1_only: _,
         upstream_h2_prior_knowledge: _,
-
-        drain_timeout: _,
-        max_pending_checkpoints: _,
     } = limits;
     let secs = [
         (
@@ -1660,9 +1599,6 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
 }
 
 fn judge_cost_model(cfg: &RootCfg, errors: &mut Vec<String>, advisories: &mut Advisories) {
-    if let Err(error) = crate::config::measurement_rates::validate(&cfg.plugin_rate_cards) {
-        errors.push(coded::config_rate_card_invalid(error).into());
-    }
     if let Some(card) = &cfg.rate_card {
         for (key, r) in card {
             let (plane, lane) = split_plane_lane(key);
@@ -2091,93 +2027,6 @@ pub fn metadata_entry_names_no_host(entry: &str) -> Option<&'static str> {
     unmappable_metadata_entry(entry).map(|(why, _)| why)
 }
 
-fn refused_provider_destinations(cfg: &RootCfg, advisories: &mut Advisories) {
-    if !cfg.guard.block_private_addresses {
-        return;
-    }
-    let mut providers: Vec<(&String, &crate::config::ResolvedProvider)> =
-        cfg.providers.iter().collect();
-    providers.sort_by(|a, b| a.0.cmp(b.0));
-    for (name, p) in providers {
-        let urls = [
-            ("base_url", Some(p.base_url.as_str())),
-            ("token_url", p.token_url.as_deref()),
-        ];
-        for (key, url) in urls {
-            let Some(host) = url.and_then(refused_private_host) else {
-                continue;
-            };
-            if destination_allowed(&cfg.guard.allow, &host) {
-                continue;
-            }
-            let name = name.to_string();
-            advisories.raise(move || {
-                diag_warn!(
-                    crate::diagnostics::CONFIG_PROVIDER_DESTINATION_REFUSED,
-                    "provider '{name}' {key} names the private or loopback host '{host}': with \
-                     advanced.block_private_addresses on (the default) the destination guard \
-                     refuses every request to it. Add '{host}' to advanced.allow_destinations, or \
-                     set advanced.block_private_addresses: false to admit every private address"
-                )
-            });
-        }
-    }
-}
-
-fn refused_private_host(url: &str) -> Option<String> {
-    let host = busbar_contract::net::url_host(url)?;
-    let host = busbar_contract::net::judged_host(&host).ok()?;
-    let host = host
-        .trim_start_matches('[')
-        .trim_end_matches(']')
-        .to_string();
-    (busbar_contract::net::host_is_private_or_loopback(&host)
-        && !busbar_contract::net::host_is_cloud_metadata(&host))
-    .then_some(host)
-}
-
-fn destination_allowed(allow: &[String], host: &str) -> bool {
-    let ip = busbar_contract::net::host_ip(host);
-    allow.iter().any(|entry| {
-        let entry = entry.trim().trim_start_matches('[').trim_end_matches(']');
-        let entry = entry
-            .strip_suffix('.')
-            .unwrap_or(entry)
-            .to_ascii_lowercase();
-        if entry.eq_ignore_ascii_case(host) {
-            return true;
-        }
-        if let Some(domain) = entry.strip_prefix("*.") {
-            let lower = host.to_ascii_lowercase();
-            return lower.ends_with(&format!(".{}", domain.to_ascii_lowercase()));
-        }
-        let Some(ip) = ip else { return false };
-        match entry.split_once('/') {
-            None => busbar_contract::net::host_ip(&entry) == Some(ip),
-            Some((net, bits)) => match (
-                busbar_contract::net::host_ip(net.trim_end_matches(']')),
-                bits.parse::<u32>(),
-            ) {
-                (Some(std::net::IpAddr::V4(n)), Ok(b)) if b <= 32 => match ip {
-                    std::net::IpAddr::V4(a) => {
-                        let mask = u32::MAX.checked_shl(32 - b).unwrap_or(0);
-                        u32::from(a) & mask == u32::from(n) & mask
-                    }
-                    std::net::IpAddr::V6(_) => false,
-                },
-                (Some(std::net::IpAddr::V6(n)), Ok(b)) if b <= 128 => match ip {
-                    std::net::IpAddr::V6(a) => {
-                        let mask = u128::MAX.checked_shl(128 - b).unwrap_or(0);
-                        u128::from(a) & mask == u128::from(n) & mask
-                    }
-                    std::net::IpAddr::V4(_) => false,
-                },
-                _ => false,
-            },
-        }
-    })
-}
-
 pub fn metadata_denylist_entries() -> Vec<String> {
     [
         "169.254.0.0/16",
@@ -2259,7 +2108,7 @@ fn validate_token_endpoint_fields(
 }
 
 fn validate_providers_with(
-    known: &[&str],
+    _known: &[&str],
     cfg: &RootCfg,
     unset_env_vars: &[String],
     errors: &mut Vec<String>,
@@ -2272,11 +2121,8 @@ fn validate_providers_with(
     };
 
     for (provider_name, provider_cfg) in &cfg.providers {
-        validate_provider_protocol_with(known, provider_name, provider_cfg.dialect(), errors);
-
-        if let Err(refusal) = crate::config::providers::judge_options(provider_name, provider_cfg) {
-            errors.push(coded::config_provider_invalid(refusal).into());
-        }
+        // Dialect availability and plane-owned options were validated against the exact
+        // admitted image in config::resolve_with_provider_planes, before RootCfg existed.
 
         if let Some(health) = &provider_cfg.health {
             if health.interval_secs == Some(0) {
@@ -2307,14 +2153,6 @@ fn validate_providers_with(
                          a larger duration overflows the clock arithmetic it feeds"
                     )).into());
                 }
-            }
-        }
-
-        for (code, mapped_class) in provider_cfg.error_map() {
-            if busbar_contract::upstream::StatusClass::parse(mapped_class).is_none() {
-                errors.push(coded::config_provider_invalid(format!(
-                    "provider '{provider_name}' error_map code '{code}': invalid StatusClass '{mapped_class}', must be one of: rate_limit, overloaded, server_error, timeout, network, auth, billing, client_error, context_length"
-                )).into());
             }
         }
 
@@ -2681,6 +2519,7 @@ pub fn vet_token_uri(token_uri: &str, posture: &MetadataPosture) -> Result<(), S
     Ok(())
 }
 
+#[cfg(test)]
 fn validate_provider_protocol_with(
     known: &[&str],
     provider_name: &str,

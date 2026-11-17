@@ -35,13 +35,22 @@ pub struct AuthIn<'a> {
 /// The verified answer, kept as its record bytes: one allocation (the Arc) per uncached verify, none on a
 /// verdict-cache hit (this is the cache value; round 23: the kernel `VerdictCache`, §12.28, rules 1-6). `identity_records()` is passed unchanged as
 /// `PlaneIn::identity` and into hook views (generic ID_* tags, so no re-encode).
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct Identity {
-    recs: Arc<[u8]>,
+    recs: Arc<SecureVec>,
     id_len: u32,
     cache_s: Option<u32>,
     expires_at_s: Option<u64>,
-    replay: Option<(Box<[u8]>, u64)>,
+    replay: Option<(Arc<SecureVec>, u64)>,
+}
+
+impl core::fmt::Debug for Identity {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Identity")
+            .field("identity_bytes", &self.id_len)
+            .field("has_replay", &self.replay.is_some())
+            .finish_non_exhaustive()
+    }
 }
 
 impl Identity {
@@ -91,8 +100,7 @@ impl Identity {
         self.expires_at_s
     }
 
-    /// The REPLAY claim (key, ttl_s). The adapter has already claimed it (§12.11 `ReplayGuard`) before
-    /// returning `Verdict::Identity`; a lost claim is returned as `Rejected { code: R_REPLAYED }`.
+    /// The raw REPLAY claim (key, ttl_s); kernel policy runs before its atomic claim.
     pub fn replay(&self) -> Option<(&[u8], u64)> {
         self.replay.as_ref().map(|(key, ttl_s)| (&key[..], *ttl_s))
     }
@@ -107,7 +115,7 @@ impl Identity {
         debug_assert!(written.is_ok(), "a ticket identity fits a Reply");
         let id_len = u32::try_from(w.len()).unwrap_or(0);
         Identity {
-            recs: Arc::from(w.as_bytes()),
+            recs: Arc::new(SecureVec::from(w.as_bytes())),
             id_len,
             cache_s: None,
             expires_at_s: None,
@@ -145,7 +153,7 @@ pub fn decode_verify_ok(records: Records<'_>) -> Result<VerifyOk, RecErr> {
     let mut wanted: Option<&str> = None;
     let mut cache_s: Option<u32> = None;
     let mut expires_at_s: Option<u64> = None;
-    let mut replay: Option<(Box<[u8]>, u64)> = None;
+    let mut replay: Option<(Arc<SecureVec>, u64)> = None;
     let mut any = false;
     let full = |_: Full| RecErr::Size;
     for rec in records {
@@ -195,7 +203,7 @@ pub fn decode_verify_ok(records: Records<'_>) -> Result<VerifyOk, RecErr> {
                     return Err(RecErr::Size);
                 }
                 let ttl_s = head.value.clamp(*REPLAY_TTL_S.start(), *REPLAY_TTL_S.end());
-                replay = Some((Box::from(key), ttl_s));
+                replay = Some((Arc::new(SecureVec::from(key)), ttl_s));
             }
             other => return Err(RecErr::Unknown(other)),
         }
@@ -209,7 +217,7 @@ pub fn decode_verify_ok(records: Records<'_>) -> Result<VerifyOk, RecErr> {
     }
     let id_len = u32::try_from(id_len.unwrap_or(w.len())).map_err(|_| RecErr::Size)?;
     Ok(VerifyOk::Identity(Identity {
-        recs: Arc::from(w.as_bytes()),
+        recs: Arc::new(SecureVec::from(w.as_bytes())),
         id_len,
         cache_s,
         expires_at_s,
@@ -228,21 +236,20 @@ pub fn decode_login_identity(records: Records<'_>) -> Result<Identity, RecErr> {
     }
 }
 
-/// Round 24: Clone, so a verdict-cache lead hands its outcome to its followers (§12.28 rule 4).
+/// The raw answer of exactly one plugin verify invocation. Host policy decides subsequent steps.
 #[derive(Clone, Debug)]
-pub enum Verdict {
+pub enum VerifyAnswer {
     Identity(Identity),
     NotMine,
-    Rejected { code: u32, text: Box<str> },
+    Refused { code: u32, text: Box<str> },
+    IssuedWanted(Box<str>),
+    KeysStale,
 }
 
-/// Sync plugins finish without boxing; verify_io plugins, sync plugins that answered ISSUED_WANTED (the
-/// adapter looks the credential up through IssuedCredentials §12.8 and calls verify again), sync answers with
-/// REPLAY (the claim is a store round trip), and KEYS_STALE refusals (single-flight `refresh`, then verify once
-/// more; rate limit and single-flight owned by the adapter's `KeyRefresh` state, §12.11) return the box.
+/// Sync verification returns inline; verify_io drives exactly one plugin invocation.
 pub enum Verify<'a> {
-    Done(Result<Verdict, PortError>),
-    Io(BoxFut<'a, Result<Verdict, PortError>>),
+    Done(Result<VerifyAnswer, PortError>),
+    Io(BoxFut<'a, Result<VerifyAnswer, PortError>>),
 }
 
 pub enum LoginIn<'a> {
@@ -309,7 +316,7 @@ pub trait AuthPort: Send + Sync + 'static {
     fn cred_headers(&self) -> &[Box<str>];
     /// D_ISSUED_KIND, if declared.
     fn issued_kind(&self) -> Option<&str>;
-    fn verify<'a>(&'a self, cx: CallCx, req: &'a AuthIn<'a>) -> Verify<'a>;
+    fn verify<'a>(&'a self, cx: CallCx, req: &AuthIn<'_>, issued: Option<&[u8]>) -> Verify<'a>;
     fn login<'a>(
         &'a self,
         cx: CallCx,
@@ -361,6 +368,83 @@ pub struct IssuedShape {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn replay_identity() -> Identity {
+        let mut reply = Reply::new();
+        reply
+            .put_text(tag::ID_SUBJECT, "identity-private-canary")
+            .unwrap();
+        reply
+            .put_pair(tag::ID_CLAIM, "claim", b"claim-private-canary")
+            .unwrap();
+        reply
+            .put_pod_tail(t::REPLAY, &U64Rec { value: 10 }, b"replay-private-canary")
+            .unwrap();
+        identity(&reply)
+    }
+
+    #[test]
+    fn native_identity_nested_debug_redacts_records_and_replay() {
+        let answer = VerifyOk::Identity(replay_identity());
+        let debug = format!("{answer:?}");
+        for canary in [
+            "identity-private-canary",
+            "claim-private-canary",
+            "replay-private-canary",
+        ] {
+            assert!(!debug.contains(canary));
+            let bytes = canary
+                .bytes()
+                .map(|byte| byte.to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            assert!(
+                !debug.contains(&bytes),
+                "Debug exposed credential-bearing record bytes"
+            );
+        }
+    }
+
+    #[test]
+    fn native_identity_shares_secure_backing_until_last_owner_drops() {
+        let first = replay_identity();
+        let follower = first.clone();
+        assert!(Arc::ptr_eq(&first.recs, &follower.recs));
+        assert_eq!(
+            first.replay().unwrap().0.as_ptr(),
+            follower.replay().unwrap().0.as_ptr()
+        );
+        let before = busbar_contract::secure::wipe_counts().1;
+        drop(first);
+        assert_eq!(busbar_contract::secure::wipe_counts().1, before);
+        assert_eq!(follower.subject(), "identity-private-canary");
+        assert_eq!(follower.replay().unwrap().0, b"replay-private-canary");
+        drop(follower);
+        assert_eq!(busbar_contract::secure::wipe_counts().1, before + 2);
+    }
+
+    #[test]
+    fn native_identity_decode_failure_releases_replay_custody() {
+        let mut reply = Reply::new();
+        reply.put_text(tag::ID_SUBJECT, "subject").unwrap();
+        reply
+            .put_pod_tail(t::REPLAY, &U64Rec { value: 10 }, b"failed-replay-canary")
+            .unwrap();
+        reply
+            .put_text(tag::ID_GROUP, "invalid-after-replay")
+            .unwrap();
+        let before = busbar_contract::secure::wipe_counts().1;
+        assert!(decode_verify_ok(Records::new(reply.as_bytes())).is_err());
+        assert_eq!(busbar_contract::secure::wipe_counts().1, before + 1);
+    }
+
+    #[test]
+    fn native_ticket_identity_releases_secure_records() {
+        let identity = Identity::from_ticket("private-ticket-subject", "scope");
+        let before = busbar_contract::secure::wipe_counts().1;
+        drop(identity);
+        assert_eq!(busbar_contract::secure::wipe_counts().1, before + 1);
+    }
 
     fn identity(w: &Reply) -> Identity {
         match decode_verify_ok(Records::new(w.as_bytes())).unwrap() {

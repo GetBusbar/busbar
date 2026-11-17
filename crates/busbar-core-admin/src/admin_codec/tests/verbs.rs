@@ -4,7 +4,7 @@
 //! Tests for `verbs.rs`. Lifted out of the implementation file so its line count
 
 use super::*;
-use busbar_contract::json::JsonValueTrait as _;
+use busbar_contract::json::{JsonContainerTrait as _, JsonValueTrait as _};
 
 /// The root's view of a row and this module's own view of it are the same row. If they ever
 #[test]
@@ -37,6 +37,71 @@ fn resolve_reads_through_a_query_string_to_the_same_row() {
 fn resolve_refuses_a_pair_the_table_does_not_declare() {
     assert!(resolve("GET", "/api/v1/admin/not-a-verb").is_none());
     assert!(resolve("TRACE", "/api/v1/admin/audit").is_none());
+}
+
+#[test]
+fn metrics_names_resolve_only_for_admin_authorization() {
+    use busbar_contract::authz::Scope;
+    use std::collections::BTreeSet;
+
+    let executable: BTreeSet<_> = admin_rows().map(|row| row.name).collect();
+    let grantable: BTreeSet<_> = crate::verb::TABLE
+        .iter()
+        .filter(|row| named_rung(row.name).is_some())
+        .map(|row| row.name)
+        .collect();
+    assert_eq!(
+        grantable,
+        crate::verb::admin_grant_rows()
+            .map(|row| row.name)
+            .collect::<BTreeSet<_>>(),
+        "the authorization projection is the grant resolver's exact vocabulary"
+    );
+    assert!(executable.is_subset(&grantable));
+    assert_eq!(
+        grantable
+            .difference(&executable)
+            .copied()
+            .collect::<BTreeSet<_>>(),
+        BTreeSet::from(["get_metrics", "get_metrics_hooks"]),
+        "authorization adds exactly the two administrative Named surfaces"
+    );
+    for (path, name) in [
+        ("/metrics", "get_metrics"),
+        ("/metrics/hooks", "get_metrics_hooks"),
+    ] {
+        assert_eq!(named_rung(name), Some(Scope::ReadOnly));
+        assert_eq!(name_at("GET", path), Some(name));
+        assert_eq!(name_at("GET", &format!("{path}?format=json")), Some(name));
+        assert_eq!(name_at("POST", path), None);
+        assert_eq!(
+            name_at("HEAD", path),
+            None,
+            "named HEAD authority is unchanged"
+        );
+        assert_eq!(name_at("GET", &format!("{path}/")), None);
+        assert_eq!(name_at("GET", &format!("{path}/other")), None);
+        assert!(
+            resolve("GET", path).is_none(),
+            "the handler is outside codec execution"
+        );
+        assert!(table().iter().all(|row| row.verb != name));
+    }
+    for row in crate::verb::TABLE.iter().filter(|row| {
+        row.class == crate::verb::Class::Named
+            && !matches!(
+                row.verb,
+                crate::verb::KernelVerb::GetMetrics | crate::verb::KernelVerb::GetMetricsHooks
+            )
+    }) {
+        assert_eq!(
+            named_rung(row.name),
+            None,
+            "{} must remain ungrantable",
+            row.name
+        );
+        assert_eq!(name_at(row.method, row.path), None);
+    }
 }
 
 #[test]

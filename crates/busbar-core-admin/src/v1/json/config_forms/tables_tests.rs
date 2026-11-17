@@ -66,7 +66,7 @@ fn model_table_preserves_nullable_defaults_and_integer_tokens() {
             json!({"provider":"p","max_requests":i64::MIN}),
             json!({"provider":"p","max_requests":u64::MAX}),
             json!({"provider":"p","max_requests":1.0}),
-            json!({"provider":"p","max_concurrent":null,"reasoning":null,"protocol":null}),
+            json!({"provider":"p","max_concurrent":null,"reasoning":null}),
             json!({"provider":"p","max_concurrent":0,"default_max_tokens":0}),
             json!({"provider":"p","max_concurrent":-1}),
             json!({"provider":"p","default_max_tokens":u64::from(u32::MAX)+1}),

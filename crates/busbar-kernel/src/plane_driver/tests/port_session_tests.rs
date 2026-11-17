@@ -25,9 +25,11 @@ use crate::plane_driver::{CallerEnd, HeadFields};
 /// One scripted sink item.
 #[derive(Clone)]
 enum It {
+    ResourceEcho,
     Respond(u16),
     Header(&'static str, &'static [u8]),
     Body(&'static [u8]),
+    Conversation(&'static [u8]),
     Msg(u32, &'static [u8]),
     Trailers,
     End,
@@ -46,9 +48,19 @@ enum It {
 fn play(items: &[It], sink: &mut dyn FnMut(PlaneOut<'_>)) {
     for it in items {
         sink(match it {
+            It::ResourceEcho => {
+                PlaneOut::ResourceEcho(busbar_plugin_abi::resource_admission::DescriptorEcho {
+                    invocation: 7,
+                    generation: 8,
+                    route: 9,
+                    descriptor: 10,
+                    instance: "seat",
+                })
+            }
             It::Respond(status) => PlaneOut::Respond { status: *status },
             It::Header(n, v) => PlaneOut::Header(n, v),
             It::Body(b) => PlaneOut::Body(b),
+            It::Conversation(b) => PlaneOut::Conversation(b),
             It::Msg(flags, b) => PlaneOut::Msg {
                 flags: *flags,
                 bytes: b,
@@ -93,6 +105,77 @@ fn play(items: &[It], sink: &mut dyn FnMut(PlaneOut<'_>)) {
     }
 }
 
+#[test]
+fn an_unadmitted_resource_echo_cannot_be_ignored_in_request() {
+    let script = Script {
+        request: vec![It::Emit(5, b"must stay private"), It::ResourceEcho],
+        ..Script::default()
+    };
+    let fx = Emitted::default();
+    assert!(Task::begin(&script, &req(), b"", &fx).is_err());
+    assert!(fx.0.lock().unwrap().is_empty());
+}
+
+#[test]
+fn the_actual_resource_echo_is_retained_on_exchange_zero() {
+    use busbar_plugin_abi::resource_admission::DescriptorEcho;
+    let echo = DescriptorEcho {
+        invocation: 7,
+        generation: 8,
+        route: 9,
+        descriptor: 10,
+        instance: "seat",
+    };
+    for echo_first in [false, true] {
+        let mut answer = super::Answer::default();
+        let mut once = super::Once::default();
+        let fx = Emitted::default();
+        let mut take = |out| answer.take(out, Origin::Upstream, &mut once, &fx);
+        if echo_first {
+            take(PlaneOut::ResourceEcho(echo));
+        }
+        take(PlaneOut::UpCarrier {
+            carrier: 0,
+            outbound: 0,
+        });
+        take(PlaneOut::UpMethod("POST"));
+        take(PlaneOut::UpPath("/configured"));
+        if !echo_first {
+            take(PlaneOut::ResourceEcho(echo));
+        }
+        take(PlaneOut::UpEnd);
+        let answer = answer.seal();
+        assert_eq!(answer.violation, None);
+        assert_eq!(answer.exchanges.len(), 1);
+        assert_eq!(
+            answer.exchanges[0]
+                .resource_echo
+                .as_ref()
+                .unwrap()
+                .borrowed(),
+            echo
+        );
+    }
+}
+
+#[test]
+fn an_unsolicited_upstream_echo_releases_neither_emits_nor_usage() {
+    let script = Script {
+        upstream_items: Mutex::new(VecDeque::from([vec![
+            It::Emit(5, b"must stay private"),
+            It::Usage("requests", 3, 0, SRC_REPORTED),
+            It::ResourceEcho,
+        ]])),
+        ..Script::default()
+    };
+    let fx = Emitted::default();
+    let (mut task, _) = Task::begin(&script, &req(), b"", &fx).unwrap();
+    assert!(task.upstream(&target(), &fx).is_err());
+    assert!(fx.0.lock().unwrap().is_empty());
+    assert!(task.usage().is_empty());
+    assert!(!task.open());
+}
+
 /// A session handle that says when it was dropped (a drop without `end` is a cancel).
 struct Live(Arc<AtomicBool>);
 
@@ -111,6 +194,7 @@ struct Script {
     fail_render: bool,
     upstream_items: Mutex<VecDeque<Vec<It>>>,
     refuse_request: bool,
+    refuse_rewrite: bool,
     dropped: Arc<AtomicBool>,
 }
 
@@ -158,6 +242,13 @@ impl Calls for Script {
         _: &[u8],
         _: &mut dyn FnMut(PlaneOut<'_>),
     ) -> Result<(), PortError> {
+        if self.refuse_rewrite {
+            return Err(PortError::Refused {
+                code: busbar_plugin_abi::fail::refused::R_INVALID,
+                text: "rewrite does not fit this request".into(),
+                error: None,
+            });
+        }
         Ok(())
     }
 
@@ -246,6 +337,52 @@ fn a_forward_with_its_wants_is_one_forward() {
     assert_eq!(forward.wants, vec![(0x100, FactVal::U(7))]);
     assert!(first.client.is_empty());
     assert!(task.open());
+}
+
+#[test]
+fn a_hook_projection_is_driven_without_exposing_it_to_the_client() {
+    let script = Script {
+        request: vec![
+            It::Conversation(br#"{"messages":[{"role":"user","text":"private"}]}"#),
+            It::Forward,
+        ],
+        ..Script::default()
+    };
+    let mut request = req();
+    request.flags = busbar_plugin_abi::plane::RQ_PROJECT;
+    let fx = Emitted::default();
+    let (task, first) = Task::begin(&script, &request, b"", &fx).unwrap();
+    assert!(!first.later, "CONVERSATION is a native hook projection");
+    assert_eq!(
+        first.conversation.as_deref(),
+        Some(br#"{"messages":[{"role":"user","text":"private"}]}"#.as_slice()),
+        "the stage receives the plane's exact projection"
+    );
+    assert!(first.client.is_empty(), "projection is never client output");
+    assert!(first.forward.is_some());
+    assert!(task.open());
+}
+
+#[test]
+fn an_inapplicable_hook_rewrite_keeps_the_original_session() {
+    let script = Script {
+        request: vec![It::Forward],
+        refuse_rewrite: true,
+        ..Script::default()
+    };
+    let fx = Emitted::default();
+    let (mut task, _) = Task::begin(&script, &req(), b"original", &fx).unwrap();
+    let result = task.rewrite(br#"{"messages":[]}"#, &fx);
+    assert!(matches!(
+        result,
+        Err(SessionError::Port(PortError::Refused {
+            code: busbar_plugin_abi::fail::refused::R_INVALID,
+            ..
+        }))
+    ));
+    assert!(task.open(), "IF §8.6 keeps the original after R_INVALID");
+    assert!(!script.dropped.load(Ordering::SeqCst));
+    task.end(&fx).expect("original session still ends normally");
 }
 
 #[test]
@@ -613,6 +750,7 @@ fn target() -> TargetIn<'static> {
         upstream: "u",
         provider: "{}",
         params: &[],
+        admission: &[],
     }
 }
 

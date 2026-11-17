@@ -457,6 +457,9 @@ use busbar_contract::records::{RecordStoreError, RecordStoreResult};
 /// checkpoint Store).
 pub(crate) fn unit_checkpoint_validate(snapshot: &UnitCheckpoint) -> RecordStoreResult<()> {
     let error = |message: &str| RecordStoreError(message.to_owned());
+    if let Some(partitions) = &snapshot.partitions {
+        partitions.validate(snapshot)?;
+    }
     if let Some(evidence) = &snapshot.measurement {
         evidence
             .validate(snapshot)
@@ -601,7 +604,7 @@ pub(crate) async fn unit_checkpoint_store_find_audit(
     journal: &crate::persistence::journal::runtime::RuntimeJournal,
     unit: u64,
     incarnation: u64,
-) -> RecordStoreResult<Option<busbar_kernel_audit::AuditRecord>> {
+) -> RecordStoreResult<Option<(u64, busbar_kernel_audit::AuditRecord)>> {
     use busbar_kernel_wal::{JournalRecord, RecordClass};
     let error = |e: &dyn std::fmt::Debug| RecordStoreError(format!("unit checkpoint: {e:?}"));
     journal.flush().await.map_err(|e| error(&e))?;
@@ -623,7 +626,7 @@ pub(crate) async fn unit_checkpoint_store_find_audit(
                         "duplicate original audit for recovered unit".into(),
                     ));
                 }
-                found = Some(audit);
+                found = Some((original.node_seq, audit));
             }
         }
     }
@@ -647,8 +650,8 @@ pub(crate) fn unit_checkpoint_store_prefix(family: &[u8], node: u64) -> Vec<u8> 
 /// `unit_checkpoint_store`: a checkpoint head or body, encoded once per persisted revision.
 pub(crate) fn unit_checkpoint_store_encode<T: serde::Serialize>(
     value: &T,
-) -> serde_json::Result<Vec<u8>> {
-    serde_json::to_vec(value)
+) -> Result<Vec<u8>, json::Error> {
+    json::to_vec(value)
 }
 
 /// `unit_checkpoint_store`: the replayed checkpoints in id order (boot, when the sink attaches).
@@ -763,7 +766,6 @@ pub(crate) fn mint_policy_from_auth(
             .and_then(|s| crate::config::parse::parse_duration_secs(s).ok()),
         block_binding_modes: modes_to_wire(&policy.binding_modes),
         ceilings,
-        max_outstanding_tickets_per_key: policy.max_outstanding_tickets_per_key,
     }
 }
 

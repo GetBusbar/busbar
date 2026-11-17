@@ -55,7 +55,7 @@ pub(crate) fn cancelled_once(tag: &str) {
 fn an_open_parked_mid_need_is_cancelled_three_ways_once_inline() {
     let me = std::thread::current().id();
     let needs = Arc::new(ParkNeeds::default());
-    let registry: &'static Registry<ParkNeeds> = Box::leak(Box::new(fx::registry(
+    let registry: &'static Registry = Box::leak(Box::new(fx::registry(
         Arc::clone(&needs),
         MAX_STEPS,
         &[fx::probe::PLUGIN.plugin()],
@@ -71,10 +71,18 @@ fn an_open_parked_mid_need_is_cancelled_three_ways_once_inline() {
         "cancel-deadline",
         br#"{"tag":"cancel-deadline","hold":true,"loop":1}"#,
     );
-    let timed_out = rt.block_on(tokio::time::timeout(
-        Duration::from_millis(200),
-        registry.open_secret(&spec),
-    ));
+    // The timer is made inside the runtime: tokio's timeout needs the runtime when it is built.
+    let timed_out = rt.block_on(async {
+        tokio::time::timeout(
+            Duration::from_millis(200),
+            registry.open_secret(
+                &spec,
+                &needs,
+                &busbar_plugin_test::suites::harness::no_refs(),
+            ),
+        )
+        .await
+    });
     assert!(timed_out.is_err(), "the parked open never finished");
     assert_eq!(needs.parked(), 1, "the open parked on its SECRET");
     cancelled_once("cancel-deadline");
@@ -90,7 +98,11 @@ fn an_open_parked_mid_need_is_cancelled_three_ways_once_inline() {
         "cancel-steps",
         br#"{"tag":"cancel-steps","hold":true,"loop":2}"#,
     );
-    match rt.block_on(registry.open_secret(&spec)) {
+    match rt.block_on(registry.open_secret(
+        &spec,
+        &needs,
+        &busbar_plugin_test::suites::harness::no_refs(),
+    )) {
         Err(OpenError::Call(CallError::Steps)) => {}
         Err(other) => panic!("the step cap ends the open: {other:?}"),
         Ok(_) => panic!("an open that NEEDs for ever opened"),
@@ -109,13 +121,22 @@ fn an_open_parked_mid_need_is_cancelled_three_ways_once_inline() {
         .build()
         .expect("a multi-thread runtime");
     let before = needs.parked();
+    let worker_needs = Arc::clone(&needs);
     let task = workers.spawn(async move {
+        let needs = worker_needs;
         let spec = fx::spec(
             PROBE,
             "cancel-dropped",
             br#"{"tag":"cancel-dropped","hold":true,"loop":1}"#,
         );
-        registry.open_secret(&spec).await.map(drop)
+        registry
+            .open_secret(
+                &spec,
+                &needs,
+                &busbar_plugin_test::suites::harness::no_refs(),
+            )
+            .await
+            .map(drop)
     });
     parked_past(&needs, before);
     task.abort();
@@ -129,7 +150,11 @@ fn an_open_parked_mid_need_is_cancelled_three_ways_once_inline() {
     // The registry still serves: a plain open builds and answers.
     let spec = fx::spec(PROBE, "cancel-after", br#"{"tag":"cancel-after"}"#);
     let port = rt
-        .block_on(registry.open_secret(&spec))
+        .block_on(registry.open_secret(
+            &spec,
+            &needs,
+            &busbar_plugin_test::suites::harness::no_refs(),
+        ))
         .unwrap_or_else(|e| panic!("{e:?}"));
     let cx = CallCx {
         deadline: Instant::now() + Duration::from_secs(10),
@@ -145,7 +170,7 @@ fn an_open_parked_mid_need_is_cancelled_three_ways_once_inline() {
 }
 
 /// The registry the pool observer asks about the watched slot.
-static WATCHED: OnceLock<&'static Registry<ParkNeeds>> = OnceLock::new();
+static WATCHED: OnceLock<&'static Registry> = OnceLock::new();
 /// The slot of the parked chain, once known (`u32::MAX` before).
 static SLOT: AtomicU32 = AtomicU32::new(u32::MAX);
 
@@ -179,7 +204,7 @@ fn buffers_are_released_zeroed_after_cancel_returns_and_the_lease_last() {
     observe_pool(observe);
     let me = std::thread::current().id();
     let needs = Arc::new(ParkNeeds::default());
-    let registry: &'static Registry<ParkNeeds> = Box::leak(Box::new(fx::registry(
+    let registry: &'static Registry = Box::leak(Box::new(fx::registry(
         Arc::clone(&needs),
         MAX_STEPS,
         &[fx::probe::PLUGIN.plugin()],
@@ -196,8 +221,13 @@ fn buffers_are_released_zeroed_after_cancel_returns_and_the_lease_last() {
         "cancel-bufs",
         br#"{"tag":"cancel-bufs","hold":true,"loop":1}"#,
     );
-    let mut boot = registry.open_secret(&spec);
-    let polled = rt.block_on(tokio::time::timeout(Duration::from_millis(200), &mut boot));
+    let mut boot = registry.open_secret(
+        &spec,
+        &needs,
+        &busbar_plugin_test::suites::harness::no_refs(),
+    );
+    let polled =
+        rt.block_on(async { tokio::time::timeout(Duration::from_millis(200), &mut boot).await });
     assert!(polled.is_err(), "the parked open never finished");
     let parked = fx::trace();
     let (at_park, slot) = parked

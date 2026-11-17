@@ -162,28 +162,8 @@ impl<'a> Chain<'a> {
     }
 }
 
-/// Resolve common measurement prices once, using the host's collision-free namespace.
-/// The same cells feed live pricing and the existing dated rate-card history.
-pub fn measurement_rate_cells(
-    rates: &crate::config::PluginRateCards,
-) -> impl Iterator<Item = (busbar_kernel_ledger::cost::LaneClass, u64)> + '_ {
-    rates.iter().flat_map(|(kind, namespaces)| {
-        namespaces.iter().flat_map(move |(namespace, classes)| {
-            let lane = busbar_kernel_ledger::cost::measurement_lane(kind, namespace);
-            classes.iter().map(move |(class, rate)| {
-                (
-                    busbar_kernel_ledger::cost::LaneClass::new(&lane, class),
-                    rate.nanos_per_unit(),
-                )
-            })
-        })
-    })
-}
-
 pub struct CostModel {
     card: busbar_kernel_ledger::cost::RateCard,
-    measurement_rates: std::sync::Arc<crate::config::PluginRateCards>,
-
     routing_prices: std::sync::Arc<BTreeMap<String, BTreeMap<String, f64>>>,
     groups: Vec<GroupRuntime>,
     group_idx: HashMap<String, usize>,
@@ -194,20 +174,6 @@ pub struct CostModel {
 }
 
 impl CostModel {
-    /// Add host-configured prices for common plugin measurements. These cells do not
-    /// enable or change legacy plane pricing, and never pass through routing estimates.
-    #[must_use]
-    pub fn with_measurement_rates(mut self, rates: &crate::config::PluginRateCards) -> Self {
-        self.card = self.card.with_unit_rates(measurement_rate_cells(rates));
-        self.measurement_rates = std::sync::Arc::new(rates.clone());
-        self
-    }
-
-    /// The same frozen configuration used to build the card, for instance declaration checks.
-    pub fn measurement_rates(&self) -> &crate::config::PluginRateCards {
-        &self.measurement_rates
-    }
-
     pub fn resolve_parts(
         rate_card: Option<&std::collections::BTreeMap<String, crate::config::RateEntryCfg>>,
         per_request_fee: i64,
@@ -243,7 +209,6 @@ impl CostModel {
             capped_bucket_ids: Self::capped_bucket_ids(&groups),
             generation: crate::trust::validate::next_generation(),
             card,
-            measurement_rates: std::sync::Arc::default(),
             routing_prices: std::sync::Arc::new(
                 rate_card
                     .into_iter()
@@ -278,7 +243,6 @@ impl CostModel {
             capped_bucket_ids: Self::capped_bucket_ids(&groups),
             generation: crate::trust::validate::next_generation(),
             card: self.card.clone(),
-            measurement_rates: std::sync::Arc::clone(&self.measurement_rates),
             routing_prices: std::sync::Arc::clone(&self.routing_prices),
             groups,
             group_idx,
@@ -318,6 +282,9 @@ impl CostModel {
                 let mut buckets: Vec<GroupBucket> = Vec::new();
                 let mut concurrent_cap: Option<u64> = None;
                 for l in &g.limits {
+                    if l.selected.is_some() {
+                        continue;
+                    }
                     match (l.metric, l.per) {
                         (LimitMetric::Concurrent, _) => {
                             concurrent_cap =
@@ -383,7 +350,6 @@ impl CostModel {
     pub fn flat(price_per_request_cents: i64) -> Self {
         Self {
             card: busbar_kernel_ledger::cost::RateCard::absent(price_per_request_cents),
-            measurement_rates: std::sync::Arc::default(),
             routing_prices: std::sync::Arc::default(),
             groups: Vec::new(),
             group_idx: HashMap::new(),
@@ -559,6 +525,16 @@ impl CostModel {
             Some(plan) if self.walks_to(key, &plan.0) => Ok(self.chain_of(key, plan.0.to_vec())),
             _ => self.chain_for(key),
         }
+    }
+
+    /// Read the actual admission's chain, refusing a mismatch instead of resolving another chain.
+    pub(crate) fn admitted_chain<'a>(
+        &'a self,
+        key: &'a busbar_contract::records::VirtualKey,
+        plan: &ChainPlan,
+    ) -> Option<Chain<'a>> {
+        self.walks_to(key, &plan.0)
+            .then(|| self.chain_of(key, plan.0.to_vec()))
     }
 
     /// Whether [`Self::chain_for`]'s walk for `key` reaches exactly `groups`, in order: the key's

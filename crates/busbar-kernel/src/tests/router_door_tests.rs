@@ -43,3 +43,54 @@ fn a_door_route_is_recorded_at_the_bar_it_declares() {
         .map(|r| (r.method.as_str(), r.auth));
     assert_eq!(row, Some(("POST", RouteAuth::Key)));
 }
+
+#[test]
+fn adding_an_instance_owned_route_preserves_existing_bars_and_exact_method_scope() {
+    use axum::http::{Method, StatusCode};
+    let (router, core_routes) = crate::router::base_data_router(
+        &crate::plugin_routes::PluginRouteTable::default(),
+        &Default::default(),
+        None,
+        vec![door(RouteAuth::Key)],
+        Vec::new(),
+    );
+    let prepared = crate::router::PreparedListener {
+        router,
+        core_routes,
+        data: None,
+        refusals: Vec::new(),
+        refuse_by_path: None,
+        root_surface: true,
+        dispatch_layer: |router| router,
+    }
+    .with_core_routes(|routes| {
+        routes.route(
+            "/provision/idp/{*rest}",
+            RouteMethod::Post,
+            RouteAuth::None,
+            || async { StatusCode::NO_CONTENT },
+        )
+    });
+    assert_eq!(
+        prepared.core_routes.declared_auth(DOOR, &Method::POST),
+        Some(RouteAuth::Key)
+    );
+    assert_eq!(
+        prepared
+            .core_routes
+            .declared_auth("/provision/idp/{*rest}", &Method::POST),
+        Some(RouteAuth::None)
+    );
+    assert_eq!(
+        prepared
+            .core_routes
+            .declared_auth("/provision/idp/{*rest}", &Method::DELETE),
+        None
+    );
+    assert_eq!(
+        prepared
+            .core_routes
+            .declared_auth("/provision/other/{*rest}", &Method::POST),
+        None
+    );
+}

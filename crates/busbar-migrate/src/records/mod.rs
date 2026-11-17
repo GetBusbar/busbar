@@ -5,12 +5,13 @@
 //! 1.5.5 logical rows a store's data step left under IMPORT (R0, `persistence::cells`) into native
 //! records, and the record-format chain ([`evolve`]).
 //!
-//! The crate reaches the store only through [`RecordStore`]: three calls (scan, commit, register)
-//! that the gateway's seam implements over the opened store under the boot's owner authority, with
-//! the kernel's own candidate encoders. It links no loader, no store driver and no kernel. Every
-//! page is one commit: exact predicates on every IMPORT row it consumes and on SUMMARY, an absent
-//! predicate on every native record it writes, so a page applies exactly once, a crash resumes
-//! where IMPORT still has rows, and a stale or concurrent owner loses on the predicates.
+//! The crate reaches the store only through [`RecordStore`]: four calls (scan, read, commit,
+//! register) that the gateway's seam implements over the opened store under the boot's owner
+//! authority, with the kernel's own candidate encoders. It links no loader, no store driver and no
+//! kernel. Every page is one commit: exact predicates on every IMPORT row it consumes and on
+//! SUMMARY, an absent predicate on every native record it writes, so a page applies exactly once, a
+//! crash resumes where IMPORT still has rows, and a stale or concurrent owner loses on the
+//! predicates.
 //!
 //! Cold code: a stamped boot whose IMPORT is empty and whose manifest is current enters none of it.
 
@@ -72,18 +73,31 @@ pub struct Candidate {
     pub audit: Vec<Audit>,
 }
 
+/// One page of a scan: its rows in key order and the store's own continuation. A page may hold
+/// fewer rows than asked (a byte or item bound) and still not be the namespace's end: only an
+/// absent [`Page::next`] says no row follows (#319 r4 §7.3).
+#[derive(Debug, Default)]
+pub struct Page {
+    /// The rows, in key order.
+    pub rows: Vec<(Vec<u8>, SecureVec)>,
+    /// `Some(key)`: more rows may follow; the next page starts after `key`, the last row's key.
+    /// `None`: no row of the namespace follows this page.
+    pub next: Option<Vec<u8>>,
+}
+
 /// THE STORE, as the records step reaches it.
 pub trait RecordStore {
-    /// Up to `limit` rows of `ns` whose keys sort after `after`, in key order.
+    /// Up to `limit` rows of `ns` whose keys sort after `after` (`None`: from the first; `Some`
+    /// may name the empty key), in key order, with the store's continuation.
     ///
     /// # Errors
     /// The store's failure.
-    fn scan(
-        &self,
-        ns: NamespaceId,
-        after: &[u8],
-        limit: u32,
-    ) -> Result<Vec<(Vec<u8>, SecureVec)>, StoreFail>;
+    fn scan(&self, ns: NamespaceId, after: Option<&[u8]>, limit: u32) -> Result<Page, StoreFail>;
+    /// The record at `(ns, key)`, `None` when absent.
+    ///
+    /// # Errors
+    /// The store's failure.
+    fn read(&self, ns: NamespaceId, key: &[u8]) -> Result<Option<SecureVec>, StoreFail>;
     /// Apply `c` atomically, or nothing.
     ///
     /// # Errors
@@ -324,7 +338,7 @@ pub fn already_migrated_text(n: u64) -> String {
     format!(
         "1.5.5 stored {n} recoverable credentials in the clear; 1.6.0 stores them only sealed. \
          The store is already migrated by its plugin and IMPORT is untouched: restore \
-         `credentials.at_rest.key` and boot again, or roll back the store (docs/migration-1.6)"
+         `auth.signing_key` (the key 1.6.0 derives the at-rest key from) and boot again, or roll back the store (docs/migration-1.6)"
     )
 }
 
@@ -421,6 +435,23 @@ fn is_row(key: &[u8]) -> bool {
         && !key.starts_with(ATTEMPT_PREFIX)
 }
 
+/// Where the scan after `page` starts: `None` at the namespace's explicit end. A continuation must
+/// be the page's last row key, so a page that names one always progresses.
+///
+/// # Errors
+/// VERIFY for an empty page that is not the end, or a continuation that is not its last row.
+pub(crate) fn continuation(page: &Page) -> Result<Option<Vec<u8>>, Refusal> {
+    match (&page.next, page.rows.last()) {
+        (None, _) => Ok(None),
+        (Some(next), Some((last, _))) if next == last => Ok(Some(next.clone())),
+        (Some(_), _) => Err(Refusal::Verify(
+            "the store answered a scan page that does not progress (its continuation is not its \
+             last row)"
+                .to_owned(),
+        )),
+    }
+}
+
 /// The closure pre-check (§A6): one read-only pass over IMPORT, before any core write, on the
 /// first run and on every resume. Every row is converted (without sealing) so a value 1.5.5 could
 /// not have returned, or a counter 1.6.0 cannot store, refuses here and not mid-way.
@@ -432,14 +463,10 @@ fn pass(store: &dyn RecordStore) -> Result<Survey, Refusal> {
         audit_breaks: 0,
     };
     let mut chain: std::collections::BTreeMap<i64, (String, String)> = Default::default();
-    let mut after: Vec<u8> = Vec::new();
+    let mut after: Option<Vec<u8>> = None;
     loop {
-        let page = store.scan(IMPORT_NS, &after, PAGE)?;
-        let Some((last, _)) = page.last() else {
-            break;
-        };
-        let next = last.clone();
-        for (key, value) in &page {
+        let page = store.scan(IMPORT_NS, after.as_deref(), PAGE)?;
+        for (key, value) in &page.rows {
             if key.as_slice() == SUMMARY_KEY {
                 found.summary = Some((Summary::decode(value)?, value.clone()));
             } else if is_row(key) {
@@ -453,10 +480,10 @@ fn pass(store: &dyn RecordStore) -> Result<Survey, Refusal> {
                 }
             }
         }
-        if page.len() < PAGE as usize {
-            break;
-        }
-        after = next;
+        after = match continuation(&page)? {
+            Some(next) => Some(next),
+            None => break,
+        };
     }
     found.audit_breaks = chain
         .iter()
@@ -516,7 +543,8 @@ pub fn run(store: &dyn RecordStore, inputs: &Inputs<'_>) -> Result<Option<Report
     };
     loop {
         let page: Vec<(Vec<u8>, SecureVec)> = store
-            .scan(IMPORT_NS, SUMMARY_KEY, PAGE)?
+            .scan(IMPORT_NS, Some(SUMMARY_KEY), PAGE)?
+            .rows
             .into_iter()
             .filter(|(key, _)| is_row(key))
             .collect();

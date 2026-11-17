@@ -7,6 +7,53 @@ fn test_key(seed: u8) -> SigningKey {
     SigningKey::from_bytes(&[seed; 32])
 }
 
+#[test]
+fn known_publisher_invalid_signature_never_uses_the_untrusted_override() {
+    let trusted = test_key(91);
+    let imposter = test_key(92);
+    let bytes = b"known-publisher artifact";
+    let m = sign(&imposter, manifest("acme-store", "acme", "acme"), bytes);
+    let pol = policy(
+        None,
+        &[("acme", &trusted.verifying_key(), &["acme-store"])],
+        true,
+    );
+    assert!(evaluate(bytes, &m, &pol).is_err());
+}
+
+#[test]
+fn untrusted_override_never_accepts_a_library_hash_mismatch() {
+    let key = test_key(93);
+    let m = sign(
+        &key,
+        manifest("unknown-store", "unknown", "unknown"),
+        b"original",
+    );
+    let pol = policy(None, &[], true);
+    assert!(evaluate(b"altered", &m, &pol).is_err());
+}
+
+#[test]
+fn busbar_root_cannot_sign_an_artifact_directly_to_bypass_the_keys_floor() {
+    let root = test_key(94);
+    let bytes = b"bare-root artifact";
+    let m = sign(
+        &root,
+        manifest("busbar-store-test", "test", FIRST_PARTY_PUBLISHER),
+        bytes,
+    );
+    for permissive in [false, true] {
+        for floor in [0, 9] {
+            let mut pol = policy(Some(&root), &[], permissive);
+            pol.release_keys_floor = floor;
+            assert!(
+                evaluate(bytes, &m, &pol).is_err(),
+                "override={permissive}, floor={floor}"
+            );
+        }
+    }
+}
+
 fn manifest(name: &str, alias: &str, publisher: &str) -> Manifest {
     Manifest {
         name: name.to_string(),
@@ -78,18 +125,30 @@ fn abi(_kind: &str) -> Option<u32> {
 
 fn policy(
     first_party: Option<&SigningKey>,
-    pairs: &[(&str, &VerifyingKey)],
-    allow_unsigned: bool,
-    allow_third_party: bool,
+    pairs: &[(&str, &VerifyingKey, &[&str])],
+    allow_untrusted: bool,
 ) -> TrustPolicy {
     TrustPolicy {
         first_party_key: first_party.map(|k| k.verifying_key()),
         binary_version: "1.5.0".to_string(),
         first_party_floors: BTreeMap::new(),
         first_party_high_water: BTreeMap::new(),
-        publishers: pairs.iter().map(|(n, k)| (n.to_string(), **k)).collect(),
-        allow_unsigned,
-        allow_third_party,
+        publishers: pairs
+            .iter()
+            .map(|(n, k, scope)| {
+                (
+                    n.to_string(),
+                    PublisherTrust {
+                        plugins: scope.iter().map(|name| (*name).to_string()).collect(),
+                        keys: vec![PublisherKey {
+                            key: **k,
+                            revoked: false,
+                        }],
+                    },
+                )
+            })
+            .collect(),
+        allow_untrusted,
         min_versions: BTreeMap::new(),
         ..TrustPolicy::default()
     }
@@ -101,9 +160,9 @@ fn a_first_party_replay_below_the_high_water_mark_is_refused() {
     let artifact = b"genuine busbar-signed 1.0.0 with a known fixed defect";
     let mut old = manifest("busbar-store-gamma-plugin", "gamma", FIRST_PARTY_PUBLISHER);
     old.version = "1.0.0".into();
-    let old = sign(&release, old, artifact);
+    let old = seal_test_artifact(&release, old, artifact);
 
-    let pol = policy(Some(&release), &[], false, false);
+    let pol = policy(Some(&release), &[], false);
     assert!(
         matches!(
             evaluate(artifact, &old, &pol),
@@ -115,7 +174,7 @@ fn a_first_party_replay_below_the_high_water_mark_is_refused() {
         "a name with no high-water mark carries no floor"
     );
 
-    let mut pol = policy(Some(&release), &[], true, true);
+    let mut pol = policy(Some(&release), &[], true);
     pol.first_party_high_water
         .insert("busbar-store-gamma-plugin".to_string(), "1.2.0".to_string());
     let err = evaluate(artifact, &old, &pol).unwrap_err();
@@ -129,7 +188,7 @@ fn a_first_party_replay_below_the_high_water_mark_is_refused() {
     for v in ["1.2.0", "1.3.0"] {
         let mut cur = manifest("busbar-store-gamma-plugin", "gamma", FIRST_PARTY_PUBLISHER);
         cur.version = v.into();
-        let cur = sign(&release, cur, artifact);
+        let cur = seal_test_artifact(&release, cur, artifact);
         assert!(
             matches!(
                 evaluate(artifact, &cur, &pol),
@@ -149,9 +208,9 @@ fn an_explicit_rollback_pin_overrides_the_high_water_mark() {
     let artifact = b"the 1.0.0 an operator deliberately rolled back to";
     let mut old = manifest("busbar-store-gamma-plugin", "gamma", FIRST_PARTY_PUBLISHER);
     old.version = "1.0.0".into();
-    let old = sign(&release, old, artifact);
+    let old = seal_test_artifact(&release, old, artifact);
 
-    let mut pol = policy(Some(&release), &[], false, false);
+    let mut pol = policy(Some(&release), &[], false);
     pol.first_party_high_water
         .insert("busbar-store-gamma-plugin".to_string(), "1.2.0".to_string());
 
@@ -172,7 +231,7 @@ fn an_explicit_rollback_pin_overrides_the_high_water_mark() {
 
     let mut b = manifest("busbar-hook-ranker", "ranker", FIRST_PARTY_PUBLISHER);
     b.version = "1.0.0".into();
-    let b = sign(&release, b, artifact);
+    let b = seal_test_artifact(&release, b, artifact);
     pol.first_party_high_water
         .insert("busbar-hook-ranker".to_string(), "1.2.0".to_string());
     assert!(
@@ -192,8 +251,7 @@ fn the_high_water_mark_does_not_floor_a_third_party_plugin() {
 
     let mut pol = policy(
         Some(&release),
-        &[("acme", &vendor.verifying_key())],
-        false,
+        &[("acme", &vendor.verifying_key(), &["acme-store-plugin"])],
         false,
     );
     pol.first_party_high_water
@@ -214,7 +272,7 @@ fn the_high_water_mark_does_not_floor_a_third_party_plugin() {
 fn first_party_signed_is_trusted_with_zero_config() {
     let release = test_key(1);
     let artifact = b"\x7fELF first-party plugin";
-    let m = sign(
+    let m = seal_test_artifact(
         &release,
         manifest("busbar-store-gamma-plugin", "gamma", FIRST_PARTY_PUBLISHER),
         artifact,
@@ -223,7 +281,7 @@ fn first_party_signed_is_trusted_with_zero_config() {
     let j = serde_json::to_string(&m).unwrap();
     assert_eq!(serde_json::from_str::<Manifest>(&j).unwrap(), m);
 
-    let pol = policy(Some(&release), &[], false, false);
+    let pol = policy(Some(&release), &[], false);
     assert_eq!(
         evaluate(artifact, &m, &pol).unwrap(),
         Verdict::Trusted {
@@ -240,10 +298,10 @@ fn secret_kind_is_known_and_signs_like_any_plugin() {
     let artifact = b"\x7fELF secret plugin";
     let mut m0 = manifest("busbar-secret-delta", "delta", FIRST_PARTY_PUBLISHER);
     m0.kind = "secret".to_string();
-    let m = sign(&release, m0, artifact);
+    let m = seal_test_artifact(&release, m0, artifact);
     validate_structure(&m, artifact, &abi, HOST_IDENTITY)
         .expect("kind secret is structurally valid");
-    let pol = policy(Some(&release), &[], false, false);
+    let pol = policy(Some(&release), &[], false);
     assert_eq!(
         evaluate(artifact, &m, &pol).unwrap(),
         Verdict::Trusted {
@@ -254,7 +312,7 @@ fn secret_kind_is_known_and_signs_like_any_plugin() {
 
     let mut bad = manifest("busbar-x", "x", FIRST_PARTY_PUBLISHER);
     bad.kind = "gizmo".to_string();
-    let bad = sign(&release, bad, artifact);
+    let bad = seal_test_artifact(&release, bad, artifact);
     let err = validate_structure(&bad, artifact, &abi, HOST_IDENTITY).unwrap_err();
     assert!(err.contains("gizmo"), "got {err}");
 }
@@ -266,10 +324,10 @@ fn export_kind_is_known_and_signs_like_any_plugin() {
     let artifact = b"\x7fELF export plugin";
     let mut m0 = manifest("busbar-export-sink", "sink", FIRST_PARTY_PUBLISHER);
     m0.kind = "export".to_string();
-    let m = sign(&release, m0, artifact);
+    let m = seal_test_artifact(&release, m0, artifact);
     validate_structure(&m, artifact, &abi, HOST_IDENTITY)
         .expect("kind export is structurally valid");
-    let pol = policy(Some(&release), &[], false, false);
+    let pol = policy(Some(&release), &[], false);
     assert_eq!(
         evaluate(artifact, &m, &pol).unwrap(),
         Verdict::Trusted {
@@ -285,8 +343,8 @@ fn first_party_version_floats_free_of_the_binary_version() {
     let artifact = b"current first-party build on its own version line";
     let mut m = manifest("busbar-store-gamma-plugin", "gamma", FIRST_PARTY_PUBLISHER);
     m.version = "1.0.1".into();
-    let m = sign(&release, m, artifact);
-    let pol = policy(Some(&release), &[], false, false);
+    let m = seal_test_artifact(&release, m, artifact);
+    let pol = policy(Some(&release), &[], false);
     assert!(
         matches!(
             evaluate(artifact, &m, &pol),
@@ -298,7 +356,7 @@ fn first_party_version_floats_free_of_the_binary_version() {
         "a verified first-party plugin with no per-name floor loads regardless of the binary version"
     );
 
-    let mut floored = policy(Some(&release), &[], true, true);
+    let mut floored = policy(Some(&release), &[], true);
     floored
         .first_party_floors
         .insert("busbar-store-gamma-plugin".to_string(), "1.0.2".to_string());
@@ -308,7 +366,7 @@ fn first_party_version_floats_free_of_the_binary_version() {
         "got {err:?}"
     );
 
-    let mut met = policy(Some(&release), &[], true, true);
+    let mut met = policy(Some(&release), &[], true);
     met.first_party_floors
         .insert("busbar-store-gamma-plugin".to_string(), "1.0.0".to_string());
     assert!(
@@ -330,12 +388,12 @@ fn first_party_floor_override_is_scoped_per_name() {
     let artifact_b = b"old first-party B";
     let mut a = manifest("busbar-store-gamma-plugin", "gamma", FIRST_PARTY_PUBLISHER);
     a.version = "1.4.0".into();
-    let a = sign(&release, a, artifact_a);
+    let a = seal_test_artifact(&release, a, artifact_a);
     let mut b = manifest("busbar-hook-ranker", "ranker", FIRST_PARTY_PUBLISHER);
     b.version = "1.4.0".into();
-    let b = sign(&release, b, artifact_b);
+    let b = seal_test_artifact(&release, b, artifact_b);
 
-    let mut pol = policy(Some(&release), &[], false, false);
+    let mut pol = policy(Some(&release), &[], false);
     pol.first_party_floors
         .insert("busbar-store-gamma-plugin".to_string(), "1.4.1".to_string());
 
@@ -358,30 +416,27 @@ fn first_party_floor_override_is_scoped_per_name() {
 }
 
 #[test]
-fn first_party_claim_without_embedded_key_is_unsigned() {
+fn first_party_claim_without_embedded_key_is_refused_even_with_override() {
     let release = test_key(1);
     let artifact = b"bytes";
-    let m = sign(
+    let m = seal_test_artifact(
         &release,
         manifest("busbar-store-gamma-plugin", "gamma", FIRST_PARTY_PUBLISHER),
         artifact,
     );
 
-    let pol = policy(None, &[], false, false);
+    let pol = policy(None, &[], false);
     let err = evaluate(artifact, &m, &pol).unwrap_err();
+    assert_eq!(err.kind, RejectKind::Tampered);
     assert!(
-        err.reason.contains("embeds no busbar release key"),
-        "got {err:?}"
+        err.reason.contains("Busbar release proof refused"),
+        "{err:?}"
     );
-
-    let loose = policy(None, &[], true, false);
-    assert!(matches!(
-        evaluate(artifact, &m, &loose).unwrap(),
-        Verdict::Allowed {
-            allow: AllowReason::Unsigned,
-            ..
-        }
-    ));
+    let loose = policy(None, &[], true);
+    assert!(
+        evaluate(artifact, &m, &loose).is_err(),
+        "unknown Busbar authority is a hard refusal"
+    );
 }
 
 #[test]
@@ -396,23 +451,30 @@ fn first_party_publisher_name_cannot_be_forged_with_another_key() {
         artifact,
     );
 
-    let pol = policy(Some(&release), &[], false, false);
+    let pol = policy(Some(&release), &[], false);
     let err = evaluate(artifact, &m, &pol).unwrap_err();
     assert!(
-        err.reason.contains("first-party signature failed"),
+        err.reason.contains("Busbar release proof refused"),
         "impersonation must be reported as a first-party signature failure, got {err:?}"
     );
 
-    let third_party_open = policy(Some(&release), &[], false, true);
+    let third_party_open = policy(Some(&release), &[], true);
     assert!(
         evaluate(artifact, &m, &third_party_open).is_err(),
-        "allow_third_party must NOT permit a forged first-party plugin"
+        "allow_untrusted must NOT permit a forged first-party plugin"
     );
 
-    let mut mislead = policy(Some(&release), &[], false, false);
-    mislead
-        .publishers
-        .insert(FIRST_PARTY_PUBLISHER.to_string(), attacker.verifying_key());
+    let mut mislead = policy(Some(&release), &[], false);
+    mislead.publishers.insert(
+        FIRST_PARTY_PUBLISHER.to_string(),
+        PublisherTrust {
+            plugins: [m.name.clone()].into_iter().collect(),
+            keys: vec![PublisherKey {
+                key: attacker.verifying_key(),
+                revoked: false,
+            }],
+        },
+    );
     assert!(
         evaluate(artifact, &m, &mislead).is_err(),
         "a 'busbar' entry in publishers must never override the embedded first-party key"
@@ -425,14 +487,14 @@ fn stripped_signature_old_first_party_is_rejected_by_default() {
     let artifact = b"old vulnerable first-party build";
     let mut old = manifest("busbar-store-gamma-plugin", "gamma", FIRST_PARTY_PUBLISHER);
     old.version = "1.0.0".into();
-    let old = sign(&release, old, artifact);
+    let old = seal_test_artifact(&release, old, artifact);
 
     let mut stripped = old.clone();
     stripped.signature = String::new();
-    let pol = policy(Some(&release), &[], false, false);
+    let pol = policy(Some(&release), &[], false);
     let err = evaluate(artifact, &stripped, &pol).unwrap_err();
     assert!(
-        err.reason.contains("unsigned") || err.reason.contains("no signature"),
+        err.reason.contains("require a release seal"),
         "a stripped-signature old first-party plugin must be rejected as unsigned, got {err:?}"
     );
 }
@@ -446,7 +508,11 @@ fn third_party_allowlisted_publisher_is_trusted() {
         manifest("acme-store-dynamo", "dynamo", "acme"),
         artifact,
     );
-    let pol = policy(None, &[("acme", &acme.verifying_key())], false, false);
+    let pol = policy(
+        None,
+        &[("acme", &acme.verifying_key(), &["acme-store-dynamo"])],
+        false,
+    );
     assert_eq!(
         evaluate(artifact, &m, &pol).unwrap(),
         Verdict::Trusted {
@@ -461,7 +527,7 @@ fn tampering_any_signed_field_fails() {
     let key = test_key(1);
     let artifact = b"bytes";
     let m = sign(&key, manifest("acme-p", "p", "acme"), artifact);
-    let pol = policy(None, &[("acme", &key.verifying_key())], false, false);
+    let pol = policy(None, &[("acme", &key.verifying_key(), &["acme-p"])], false);
 
     let mut forged = m.clone();
     forged.description = "Busbar Official".into();
@@ -480,45 +546,48 @@ fn wrong_publisher_key_does_not_verify() {
     let attacker = test_key(2);
     let artifact = b"bytes";
     let m = sign(&key, manifest("acme-p", "p", "acme"), artifact);
-    let pol = policy(None, &[("acme", &attacker.verifying_key())], false, false);
+    let pol = policy(
+        None,
+        &[("acme", &attacker.verifying_key(), &["acme-p"])],
+        false,
+    );
     assert!(evaluate(artifact, &m, &pol).is_err());
 }
 
 #[test]
-fn unknown_publisher_needs_allow_third_party() {
+fn unknown_publisher_needs_allow_untrusted() {
     let key = test_key(3);
     let artifact = b"third-party bytes";
     let m = sign(&key, manifest("acme-p", "p", "acme"), artifact);
 
-    let err = evaluate(artifact, &m, &policy(None, &[], false, false)).unwrap_err();
-    assert!(err.reason.contains("allow_third_party"), "got {err:?}");
+    let err = evaluate(artifact, &m, &policy(None, &[], false)).unwrap_err();
+    assert!(err.reason.contains("allow_untrusted"), "got {err:?}");
 
-    assert!(evaluate(artifact, &m, &policy(None, &[], true, false)).is_err());
+    assert!(evaluate(artifact, &m, &policy(None, &[], false)).is_err());
 
     assert!(matches!(
-        evaluate(artifact, &m, &policy(None, &[], false, true)).unwrap(),
+        evaluate(artifact, &m, &policy(None, &[], true)).unwrap(),
         Verdict::Allowed {
-            allow: AllowReason::ThirdParty,
+            allow: AllowReason::Untrusted,
             ..
         }
     ));
 }
 
 #[test]
-fn unsigned_needs_allow_unsigned() {
+fn unsigned_needs_allow_untrusted() {
     let artifact = b"unsigned bytes";
     let mut m = manifest("acme-p", "p", "acme");
     m.sha256 = sha256_hex(artifact);
 
-    let key = test_key(1);
-    let pol = policy(None, &[("acme", &key.verifying_key())], false, false);
+    let pol = policy(None, &[], false);
     let err = evaluate(artifact, &m, &pol).unwrap_err();
-    assert!(err.reason.contains("allow_unsigned"), "got {err:?}");
-    let loose = policy(None, &[("acme", &key.verifying_key())], true, false);
+    assert!(err.reason.contains("allow_untrusted"), "got {err:?}");
+    let loose = policy(None, &[], true);
     assert!(matches!(
         evaluate(artifact, &m, &loose).unwrap(),
         Verdict::Allowed {
-            allow: AllowReason::Unsigned,
+            allow: AllowReason::Untrusted,
             ..
         }
     ));
@@ -552,7 +621,8 @@ fn version_ordering_is_numeric_not_lexical() {
     assert!(version_at_least("2.0.0", "1.99.99"));
     assert!(version_at_least("1.4.0", "1.4.0"), "equal clears the floor");
     assert!(!version_at_least("1.3.9", "1.4.0"));
-    assert!(version_at_least("1.4.0-rc1", "1.4.0"));
+    // DES-359 r3 L11 (PM ruling 2026-11-17): a pre-release sorts below its release.
+    assert!(!version_at_least("1.4.0-rc1", "1.4.0"));
     assert!(!version_at_least("not-a-version", "0.0.1"));
 }
 
@@ -648,7 +718,11 @@ fn configured_floor_rejects_downgrade_and_is_not_bypassable() {
     old.version = "1.0.0".into();
     let old = sign(&acme, old, artifact);
 
-    let mut pol = policy(None, &[("acme", &acme.verifying_key())], false, false);
+    let mut pol = policy(
+        None,
+        &[("acme", &acme.verifying_key(), &["acme-store-dynamo"])],
+        false,
+    );
     assert!(matches!(
         evaluate(artifact, &old, &pol).unwrap(),
         Verdict::Trusted { .. }
@@ -661,7 +735,7 @@ fn configured_floor_rejects_downgrade_and_is_not_bypassable() {
 
     let mut stripped = old.clone();
     stripped.signature = String::new();
-    let mut loose = policy(None, &[], true, true);
+    let mut loose = policy(None, &[], true);
     loose
         .min_versions
         .insert("acme-store-dynamo".to_string(), "2.0.0".to_string());
@@ -685,7 +759,11 @@ fn garbage_min_version_floor_is_unsatisfiable_not_void() {
     old.version = "1.0.0".into();
     let old = sign(&acme, old, artifact);
 
-    let mut pol = policy(None, &[("acme", &acme.verifying_key())], false, false);
+    let mut pol = policy(
+        None,
+        &[("acme", &acme.verifying_key(), &["acme-store-dynamo"])],
+        false,
+    );
     pol.min_versions
         .insert("acme-store-dynamo".to_string(), "v2.0.0".to_string());
 
@@ -704,9 +782,9 @@ fn garbage_first_party_floor_does_not_erase_the_binary_floor() {
     let artifact = b"old first-party build";
     let mut old = manifest("busbar-store-gamma-plugin", "gamma", FIRST_PARTY_PUBLISHER);
     old.version = "1.0.0".into();
-    let old = sign(&release, old, artifact);
+    let old = seal_test_artifact(&release, old, artifact);
 
-    let mut pol = policy(Some(&release), &[], false, false);
+    let mut pol = policy(Some(&release), &[], false);
     pol.first_party_floors.insert(
         "busbar-store-gamma-plugin".to_string(),
         "v9.9.9".to_string(),
@@ -808,7 +886,7 @@ fn trusted_third_party() -> Verdict {
 fn allowed_unsigned() -> Verdict {
     Verdict::Allowed {
         reason: "dev opt-in".to_string(),
-        allow: AllowReason::Unsigned,
+        allow: AllowReason::Untrusted,
     }
 }
 
@@ -911,7 +989,7 @@ fn manifest_with_foreign_host_is_rejected() {
         "rejection must name both the offending host and the field, got: {err}"
     );
 
-    let pol = policy(Some(&key), &[], true, true);
+    let pol = policy(Some(&key), &[], true);
     assert!(
         validate_structure(&m, artifact, &abi, HOST_IDENTITY).is_err(),
         "the host gate is structural and does not consult TrustPolicy at all"
@@ -994,9 +1072,12 @@ fn off_curve_publisher_key_is_refused_at_config_load() {
     );
     let none = BTreeMap::new();
     let err = TrustPolicy::from_config(TrustInput {
-        publishers: &[("acme", OFF_CURVE_PUBLIC_KEY_HEX)],
-        allow_unsigned: false,
-        allow_third_party: false,
+        publishers: &[(
+            "acme",
+            &["acme-p".to_string()],
+            vec![(OFF_CURVE_PUBLIC_KEY_HEX, false)],
+        )],
+        allow_untrusted: false,
         min_versions: &none,
         first_party_floors: &none,
         binary_version: "1.6.0",
@@ -1334,32 +1415,40 @@ fn a_signed_need_retention_policy_must_equal_the_actual_modules_policy() {
 #[test]
 fn from_config_keeps_its_refusal_bytes_and_carries_every_floor_exactly() {
     let none = BTreeMap::new();
-    let input = |publishers| TrustInput {
-        publishers,
-        allow_unsigned: false,
-        allow_third_party: false,
+    let input = TrustInput {
+        publishers: &[],
+        allow_untrusted: false,
         min_versions: &none,
         first_party_floors: &none,
         binary_version: "1.6.0",
     };
     assert_eq!(
-        TrustPolicy::from_config(input(&[("busbar", "00")]))
-            .map(drop)
-            .unwrap_err(),
+        TrustPolicy::from_config(TrustInput {
+            publishers: &[("busbar", &["acme-p".to_string()], vec![("00", false)])],
+            ..input
+        })
+        .map(drop)
+        .unwrap_err(),
         "plugins.trust.publishers['busbar']: the publisher name 'busbar' is reserved for busbar's \
          embedded release key and cannot be configured"
     );
     assert_eq!(
-        TrustPolicy::from_config(input(&[("acme", "zz")]))
-            .map(drop)
-            .unwrap_err(),
+        TrustPolicy::from_config(TrustInput {
+            publishers: &[("acme", &["acme-p".to_string()], vec![("zz", false)])],
+            ..input
+        })
+        .map(drop)
+        .unwrap_err(),
         "plugins.trust.publishers['acme']: public key not valid hex: Invalid character 'z' at \
          position 0"
     );
     assert_eq!(
-        TrustPolicy::from_config(input(&[("acme", "00")]))
-            .map(drop)
-            .unwrap_err(),
+        TrustPolicy::from_config(TrustInput {
+            publishers: &[("acme", &["acme-p".to_string()], vec![("00", false)])],
+            ..input
+        })
+        .map(drop)
+        .unwrap_err(),
         "plugins.trust.publishers['acme']: public key must be 32 bytes, got 1"
     );
 
@@ -1369,9 +1458,8 @@ fn from_config_keeps_its_refusal_bytes_and_carries_every_floor_exactly() {
     mins.insert("acme-hook".to_string(), "2.1.0".to_string());
     let key = hex::encode(test_key(3).verifying_key().to_bytes());
     let p = TrustPolicy::from_config(TrustInput {
-        publishers: &[("acme", key.as_str())],
-        allow_unsigned: true,
-        allow_third_party: true,
+        publishers: &[("acme", &["acme-p".to_string()], vec![(key.as_str(), false)])],
+        allow_untrusted: true,
         min_versions: &mins,
         first_party_floors: &floors,
         binary_version: "1.6.0",
@@ -1384,9 +1472,9 @@ fn from_config_keeps_its_refusal_bytes_and_carries_every_floor_exactly() {
         "the registry build arms the automatic floor"
     );
     assert_eq!(p.binary_version, "1.6.0");
-    assert!(p.allow_unsigned && p.allow_third_party);
+    assert!(p.allow_untrusted);
     assert_eq!(
-        p.publishers.get("acme").map(|k| k.to_bytes()),
+        p.publishers.get("acme").map(|p| p.keys[0].key.to_bytes()),
         Some(test_key(3).verifying_key().to_bytes())
     );
     assert_eq!(p.first_party_key, embedded_release_pubkey());
@@ -1433,123 +1521,56 @@ fn a_manifest_signed_by_a_retired_key_is_refused() {
     let artifact = b"\x7fELF signed by a retired key";
     let (key, hex, signed) = stand_in_retired(artifact);
     let retired = [(hex.as_str(), "a stand-in retired key")];
-    let pol = policy(Some(&key), &[], false, false);
+    let pol = policy(Some(&key), &[], false);
     let r = evaluate_against(artifact, &signed, &pol, &retired).unwrap_err();
     assert_eq!(r.kind, RejectKind::RetiredKey, "got {r:?}");
     assert!(r.reason.contains(&hex) && r.reason.contains("a stand-in retired key"));
-    assert_eq!(
-        evaluate_against(artifact, &signed, &pol, &[]).unwrap(),
-        Verdict::Trusted {
-            publisher: FIRST_PARTY_PUBLISHER.into(),
-            first_party: true
-        }
+    assert!(
+        evaluate_against(artifact, &signed, &pol, &[]).is_err(),
+        "a bare root signature is not a release seal even without retirement"
     );
 }
 
 #[test]
-fn a_manifest_signed_by_a_retired_key_loads_only_when_the_operator_trusts_it_explicitly() {
+fn a_retired_busbar_key_cannot_be_reallowed_under_another_publisher() {
     let artifact = b"\x7fELF signed by a retired key";
     let (key, hex, signed) = stand_in_retired(artifact);
-    let vk = key.verifying_key();
     let retired = [(hex.as_str(), "a stand-in retired key")];
-
-    let r = evaluate_against(
-        artifact,
-        &signed,
-        &policy(None, &[], false, false),
-        &retired,
-    )
-    .unwrap_err();
-    assert_eq!(r.kind, RejectKind::RetiredKey);
-
-    let pol = policy(None, &[("busbar-1-5-retired", &vk)], false, false);
-    match evaluate_against(artifact, &signed, &pol, &retired) {
-        Ok(Verdict::Allowed {
-            reason,
-            allow: AllowReason::RetiredKey,
-        }) => {
-            assert!(reason.contains(&hex), "names the key: {reason}");
-            assert!(reason.contains("RETIRED"), "says it is retired: {reason}");
-            assert!(
-                reason.contains("a stand-in retired key"),
-                "says why: {reason}"
-            );
-            assert!(
-                reason.contains("busbar-1-5-retired"),
-                "names the entry: {reason}"
-            );
-        }
-        other => panic!("an explicitly trusted retired key loads as an opt-in, got {other:?}"),
-    }
-
-    assert_eq!(
-        evaluate_against(b"\x7fELF another library", &signed, &pol, &retired)
-            .unwrap_err()
-            .kind,
-        RejectKind::Tampered
-    );
-
-    let mut floored = pol.clone();
-    floored
-        .min_versions
-        .insert("busbar-store-retired".into(), "1.0.0".into());
-    assert_eq!(
-        evaluate_against(artifact, &signed, &floored, &retired)
-            .unwrap_err()
-            .kind,
-        RejectKind::UntrustedFloored
-    );
-
-    for permissive in [
-        policy(None, &[], true, false),
-        policy(None, &[], true, true),
-    ] {
-        let r = evaluate_against(artifact, &signed, &permissive, &retired)
-            .expect_err("allow_unsigned never admits a retired-key signature");
-        assert_eq!(r.kind, RejectKind::RetiredKey, "got {r:?}");
-        assert_eq!(r.kind.code(), "retired_key");
-        assert!(r.reason.contains(&hex), "names the key: {}", r.reason);
-        assert!(
-            r.reason
-                .contains("plugins.trust.allow_unsigned does not admit a retired key"),
-            "says allow_unsigned does not admit it: {}",
-            r.reason
+    for allow_untrusted in [false, true] {
+        let pol = policy(
+            None,
+            &[(
+                "busbar-1-5-retired",
+                &key.verifying_key(),
+                &["busbar-store-retired"],
+            )],
+            allow_untrusted,
+        );
+        let refusal = evaluate_against(artifact, &signed, &pol, &retired).unwrap_err();
+        assert_eq!(refusal.kind, RejectKind::RetiredKey);
+        assert!(refusal.reason.contains(&hex));
+        assert!(refusal.reason.contains("a stand-in retired key"));
+        assert_eq!(
+            evaluate_against(b"altered", &signed, &pol, &retired)
+                .unwrap_err()
+                .kind,
+            RejectKind::Tampered
         );
     }
-
-    let unsigned = manifest("busbar-store-unsigned", "unsigned", FIRST_PARTY_PUBLISHER);
-    assert!(unsigned.signature.is_empty(), "the helper signs nothing");
-    match evaluate_against(
-        artifact,
-        &unsigned,
-        &policy(None, &[], true, false),
-        &retired,
-    ) {
-        Ok(Verdict::Allowed {
-            allow: AllowReason::Unsigned,
-            ..
-        }) => {}
-        other => panic!("an unsigned plugin under allow_unsigned loads unverified, got {other:?}"),
-    }
-
-    let mins = BTreeMap::new();
-    let floors = BTreeMap::new();
-    let pol = TrustPolicy::from_config(TrustInput {
-        publishers: &[("retired-fixture", hex.as_str())],
-        allow_unsigned: false,
-        allow_third_party: false,
-        min_versions: &mins,
-        first_party_floors: &floors,
+    let known_retired = RETIRED_RELEASE_KEYS[0].0;
+    let none = BTreeMap::new();
+    assert!(TrustPolicy::from_config(TrustInput {
+        publishers: &[(
+            "retired-fixture",
+            &["busbar-store-retired".to_string()],
+            vec![(known_retired, false)]
+        )],
+        allow_untrusted: true,
+        min_versions: &none,
+        first_party_floors: &none,
         binary_version: "1.6.0",
     })
-    .expect("the operator's entry for the retired key parses");
-    let r = evaluate_against(b"\x7fELF any library", &signed, &pol, &retired).unwrap_err();
-    assert_eq!(
-        r.kind,
-        RejectKind::Tampered,
-        "trusted explicitly, the retired key is no longer the refusal: {}",
-        r.reason
-    );
+    .is_err());
 }
 
 #[test]
@@ -1660,7 +1681,11 @@ fn overflowing_min_version_components_refuse_a_real_signed_artifact() {
         "1.18446744073709551616.0",
         "1.0.18446744073709551616",
     ] {
-        let mut pol = policy(None, &[("acme", &acme.verifying_key())], false, false);
+        let mut pol = policy(
+            None,
+            &[("acme", &acme.verifying_key(), &["acme-store-dynamo"])],
+            false,
+        );
         pol.min_versions
             .insert("acme-store-dynamo".into(), floor.into());
         let err = evaluate(artifact, &old, &pol).unwrap_err();
@@ -1678,7 +1703,9 @@ fn overflowing_min_version_components_refuse_a_real_signed_artifact() {
         "18446744073709551616.0.0"
     ));
     assert!(version_at_least("1.0.0", "0.18446744073709551616.0"));
-    assert!(version_at_least("0001.0000.0000-rc1+build", "1.0.0"));
+    // DES-359 r3 L11 (PM ruling 2026-11-17): a pre-release sorts below its release; build metadata never counts.
+    assert!(!version_at_least("0001.0000.0000-rc1+build", "1.0.0"));
+    assert!(version_at_least("0001.0000.0000+build", "1.0.0"));
     assert!(version_at_least(
         "00000000000000000000000000000000000000000000001.0.0",
         "1.0.0"
@@ -1821,4 +1848,52 @@ fn signing_from_a_fixed_seed_matches_the_rfc_8032_known_answers() {
             .verify_strict(&message, &Signature::from_bytes(&wire))
             .expect("the RFC signature verifies strictly");
     }
+}
+
+/// #359 SEC-L11 (DES-359 r3, B-R2): SemVer 2.0 precedence. A pre-release sorts below its release;
+/// identifiers compare left to right, numeric ones numerically without leading zeros or narrowing,
+/// numeric below alphanumeric; a shorter list is lower; build metadata never counts; an empty floor
+/// still clears.
+#[test]
+fn version_floors_follow_semver_precedence() {
+    assert!(!version_at_least("1.6.0-rc.1", "1.6.0"));
+    assert!(version_at_least("1.6.0", "1.6.0-rc.1"));
+    assert!(version_at_least("1.6.0-rc.2", "1.6.0-rc.1"));
+    assert!(version_at_least("1.6.0-rc.10", "1.6.0-rc.2"));
+    assert!(!version_at_least("1.6.0-rc.2", "1.6.0-rc.10"));
+    assert!(version_at_least("1.6.0-rc.02", "1.6.0-rc.2"));
+    assert!(version_at_least("1.6.0-rc.2", "1.6.0-rc.02"));
+    assert!(!version_at_least("1.6.0-alpha", "1.6.0-alpha.1"));
+    assert!(!version_at_least("1.6.0-1", "1.6.0-alpha"));
+    assert!(version_at_least(
+        "1.6.0-rc.99999999999999999999",
+        "1.6.0-rc.99999999999999999998"
+    ));
+    assert!(version_at_least("1.6.0+b1", "1.6.0+b2"));
+    assert!(version_at_least("1.6.0-rc.3", ""));
+    assert!(
+        !version_at_least("1.6.0-rc.3", "1.6.0"),
+        "a 1.6.0 high-water mark refuses rc.3"
+    );
+}
+
+/// #359 SEC-L11: a first-party rc release under an rc floor still loads, and under its release floor
+/// it does not.
+#[test]
+fn a_first_party_rc_build_clears_an_rc_floor_but_not_its_release_floor() {
+    let release = test_key(1);
+    let artifact = b"first-party rc bytes";
+    let mut rc = manifest("busbar-store-gamma-plugin", "gamma", FIRST_PARTY_PUBLISHER);
+    rc.version = "1.6.0-rc.3".into();
+    let rc = seal_test_artifact(&release, rc, artifact);
+    let mut pol = policy(Some(&release), &[], false);
+    pol.first_party_high_water
+        .insert("busbar-store-gamma-plugin".into(), "1.6.0-rc.2".into());
+    assert!(evaluate(artifact, &rc, &pol).is_ok());
+    pol.first_party_high_water
+        .insert("busbar-store-gamma-plugin".into(), "1.6.0".into());
+    assert_eq!(
+        evaluate(artifact, &rc, &pol).unwrap_err().kind,
+        RejectKind::AntiDowngrade
+    );
 }

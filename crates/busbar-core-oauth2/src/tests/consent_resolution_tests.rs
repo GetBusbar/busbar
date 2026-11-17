@@ -23,3 +23,16 @@ async fn an_unresolved_consent_grant_cannot_offer_an_approval_form_or_be_cached(
         "no approval form on lookup failure: {page}"
     );
 }
+
+/// #359 SEC-L8: the consent pages refuse to render inside another origin's frame.
+#[tokio::test]
+async fn a_consent_page_refuses_framing() {
+    let response = unresolved_grant(&oauth_as::store::StorageError(
+        "client lookup unavailable".into(),
+    ));
+    assert_eq!(response.headers()[http::header::X_FRAME_OPTIONS], "DENY");
+    assert_eq!(
+        response.headers()[http::header::CONTENT_SECURITY_POLICY],
+        "frame-ancestors 'none'"
+    );
+}

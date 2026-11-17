@@ -26,7 +26,6 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 
 mod absent_store;
-pub mod allow_dest;
 mod catalog;
 #[cfg(any(test, feature = "counted"))]
 pub mod counted;
@@ -39,6 +38,7 @@ mod overlay;
 mod overlay_hooks;
 pub mod patch;
 pub mod records;
+mod secret_instances;
 mod settle;
 mod steps;
 mod styles;
@@ -46,8 +46,8 @@ mod templates;
 
 pub use overlay::{Selected, SelectedBy};
 pub use settle::{
-    apply_settled, section as core_cfg_section, write_secrets, Applied, CoreCfg, SecretFile,
-    Settled,
+    apply_settled, section as core_cfg_section, write_secrets, Applied, BagPlacement, CoreCfg,
+    SecretFile, Settled,
 };
 
 /// Count one entry of `$field` in a test build (§9 C1 (sz2)); nothing in a shipped one.
@@ -207,8 +207,6 @@ pub struct Facts {
     /// fact (IF §12.10 item 1): `Some` and the document names no store module, exactly one is named, zero or several
     /// refuse CONFIG. `None` on today's ABI, where the 1.5.5-shape constant stands (1d).
     pub ephemeral_stores: Option<Vec<String>>,
-    /// How `allow_dest` resolves a provider host name (once, at migrate time).
-    pub resolve: allow_dest::Resolve,
 }
 
 impl Facts {
@@ -224,7 +222,6 @@ impl Facts {
             env,
             cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             ephemeral_stores: None,
-            resolve: allow_dest::system_resolve,
         }
     }
 }
@@ -449,7 +446,10 @@ pub fn plan(inputs: &Inputs<'_>) -> Result<Plan, Refusal> {
     };
     // Refuse existing conflicts before boot opens or converts the store. Step 5 repeats
     // these checks under its lock because another writer can change the files meanwhile.
-    files::backup_absent_or_equal(&backup_path(inputs.path), source.as_bytes())?;
+    files::backup_absent_or_equal(
+        &files::sibling(inputs.path, BACKUP_SUFFIX),
+        source.as_bytes(),
+    )?;
     if let Some(read) = &read {
         overlay::backup_absent_or_equal(read)?;
     }
@@ -570,27 +570,27 @@ pub trait Attempted {
     fn before_rename(&self) -> Result<(), Refusal>;
 }
 
-/// [`write_settled`] with the store side of step 5: `attempted` begins (5S) after the re-run and the
-/// read-only preconditions and before 5a, and marks (5d) before the rename. `None` writes no attempt.
-///
-/// # Errors
-/// As [`write_settled`], and the attempt's refusal.
-#[cold]
-#[inline(never)]
-pub fn write_attempted(
-    plan: &Plan,
-    settled: &[Settled],
-    check: Check<'_>,
-    attempted: Option<&dyn Attempted>,
-) -> Result<Written, Refusal> {
-    entered!(write);
-    let _held = lock::Held::take(&plan.path)?;
-    if let Some(selected) = &plan.overlay {
-        overlay::sweep(selected);
-    }
+/// What step 5 re-runs from disk, under the directory lock, before it writes anything.
+enum Rerun {
+    /// A peer already stamped config.yaml: there is nothing to write or check.
+    StampedByPeer,
+    Ready(Box<Ready>),
+}
+
+struct Ready {
+    now: String,
+    read: Option<overlay::Read>,
+    again: Chained,
+    applied: Applied,
+}
+
+/// 5R: re-run 1b from disk, re-plan the same document, file the settled answers into it, and judge
+/// the result with `check`. Read-only: it is the whole of step 5's refusals, so the converting boot
+/// can run it before the store is touched (#328).
+fn rerun(plan: &Plan, settled: &[Settled], check: Check<'_>) -> Result<Rerun, Refusal> {
     let now = files::read_bounded(&plan.path)?;
     if read_version(&now)? >= CONFIG_FORMAT {
-        return Ok(Written::StampedByPeer);
+        return Ok(Rerun::StampedByPeer);
     }
     // 5R re-runs 1b from disk too: an interrupted 5c reads back to the same bytes.
     let read = match &plan.overlay {
@@ -633,6 +633,54 @@ pub fn write_attempted(
     let applied = apply_settled(&again.text, &plan.path, settled, false, plan.facts.env)?;
     again.text = applied.text().to_owned();
     judge(&again, &plan.facts, check)?;
+    Ok(Rerun::Ready(Box::new(Ready {
+        now,
+        read,
+        again,
+        applied,
+    })))
+}
+
+/// Step 5's refusals without its writes: the settled document is re-planned and judged exactly as
+/// [`write_attempted`] will judge it, under the same lock, and nothing is written. The converting
+/// boot calls this before it converts the store, so a refusal changes nothing (#328).
+///
+/// # Errors
+/// As [`write_settled`], for everything before its first write.
+#[cold]
+#[inline(never)]
+pub fn check_settled(plan: &Plan, settled: &[Settled], check: Check<'_>) -> Result<(), Refusal> {
+    let _held = lock::Held::take(&plan.path)?;
+    rerun(plan, settled, check).map(drop)
+}
+
+/// [`write_settled`] with the store side of step 5: `attempted` begins (5S) after the re-run and the
+/// read-only preconditions and before 5a, and marks (5d) before the rename. `None` writes no attempt.
+///
+/// # Errors
+/// As [`write_settled`], and the attempt's refusal.
+#[cold]
+#[inline(never)]
+pub fn write_attempted(
+    plan: &Plan,
+    settled: &[Settled],
+    check: Check<'_>,
+    attempted: Option<&dyn Attempted>,
+) -> Result<Written, Refusal> {
+    entered!(write);
+    let _held = lock::Held::take(&plan.path)?;
+    if let Some(selected) = &plan.overlay {
+        overlay::sweep(selected);
+    }
+    let Ready {
+        now,
+        read,
+        again,
+        applied,
+    } = match rerun(plan, settled, check)? {
+        Rerun::StampedByPeer => return Ok(Written::StampedByPeer),
+        Rerun::Ready(ready) => *ready,
+    };
     let backup = files::sibling(&plan.path, BACKUP_SUFFIX);
     files::backup_absent_or_equal(&backup, now.as_bytes())?;
     if let Some(read) = &read {

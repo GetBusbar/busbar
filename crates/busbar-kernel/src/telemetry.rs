@@ -213,14 +213,17 @@ pub fn model_request_finished(
         .wants_stream(busbar_contract::export_stream::ExportStream::Logs)
     {
         let correlation_id = unit_id.map(ToString::to_string);
-        crate::export::deliver_request_log(&crate::export::RequestLogFacts {
-            correlation_id: correlation_id.as_deref(),
-            ts: busbar_kernel::store::now(),
-            ingress_protocol,
-            pool,
-            outcome,
-            latency_ms: (seconds * 1000.0) as u64,
-        });
+        crate::export::deliver_request_log(
+            &app.exports,
+            &crate::export::RequestLogFacts {
+                correlation_id: correlation_id.as_deref(),
+                ts: busbar_kernel::store::now(),
+                ingress_protocol,
+                pool,
+                outcome,
+                latency_ms: (seconds * 1000.0) as u64,
+            },
+        );
     }
 }
 

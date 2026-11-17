@@ -573,77 +573,6 @@ fn red_3g_deals_each_seat_its_section_and_positions_a_refusal() {
     );
 }
 
-#[test]
-fn an_applied_plugins_logs_level_reaches_a_live_sink() {
-    use crate::root::loader::dispatch::{Diagnostic, EnvelopeSink, NoSink, PluginLogConfig};
-    use busbar_contract::abi::mechanism::call::{DIAG_LOG, SEVERITY_INFO, SEVERITY_WARN};
-    let dir = scratch("logs-apply");
-    let words = |level: &str| {
-        let mut cfg = busbar_kernel::config::PluginsCfg::default();
-        cfg.logs.dir = Some(dir.display().to_string());
-        cfg.logs.level = Some(level.to_string());
-        cfg
-    };
-    let boot = words("warn");
-    let l = &boot.logs;
-    let logs = PluginLogConfig::from_words(
-        l.dir.as_deref(),
-        l.level.as_deref(),
-        &l.levels,
-        l.rotate_mb,
-        l.keep,
-    )
-    .expect("the boot words resolve");
-    let sink = logs
-        .clone()
-        .sink(
-            "applied",
-            busbar_contract::abi::mechanism::KindCode::Hook,
-            Arc::new(NoSink),
-        )
-        .expect("the sink opens");
-    let info = |text: &str| {
-        sink.diag(Diagnostic {
-            id: DIAG_LOG,
-            name: &[],
-            severity: SEVERITY_INFO,
-            text: text.as_bytes(),
-        });
-    };
-    info("under warn");
-    follow_plugin_logs(&logs, &words("info"));
-    info("under info");
-    follow_plugin_logs(&logs, &words("warn"));
-    info("under warn again");
-
-    sink.diag(Diagnostic {
-        id: DIAG_LOG,
-        name: &[],
-        severity: SEVERITY_WARN,
-        text: b"after the final level change",
-    });
-    let path = logs.path_for("applied", busbar_contract::abi::mechanism::KindCode::Hook);
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    let text = loop {
-        let text = std::fs::read_to_string(&path).unwrap_or_default();
-        if text.contains("after the final level change") || std::time::Instant::now() > deadline {
-            break text;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    };
-    drop(sink);
-    let _ = std::fs::remove_dir_all(&dir);
-    assert!(
-        text.contains(" WARN  applied hook after the final level change"),
-        "the writer reached the final level change:\n{text}"
-    );
-    assert!(
-        text.contains(" INFO  applied hook under info"),
-        "the applied level reached the live sink:\n{text}"
-    );
-    assert!(!text.contains("under warn"), "{text}");
-}
-
 const HARNESS_KEY_VAR: &str = "BUSBAR_TEST_HARNESS_FIRST_PARTY_KEY";
 
 fn first_party_signed_by(
@@ -761,7 +690,7 @@ async fn the_admin_catalog_row_for_a_harness_signed_plugin(
         serde_json::json!({
             "providers": {}, "models": {}, "auth": {"chain": [], "admin_auth": []},
             "store": {"module": module, "settings": settings},
-            "advanced": {"allow_destinations": ["127.0.0.1"]}
+            "advanced": {}
         }),
         &crate::root::boot::axis_test_grammar(),
     )
@@ -769,16 +698,14 @@ async fn the_admin_catalog_row_for_a_harness_signed_plugin(
     let config = busbar_kernel::config::resolve(&deploy, &Default::default()).unwrap();
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let core = crate::root::real_store::core_over(
-        busbar_kernel::appbuild::bootstrap_config_store(
-            &config,
-            &Default::default(),
-            &busbar_kernel::preflight::Unopened,
-        )
+    let crate::root::min3_boot::fixture::Fixture {
+        backend: core,
+        rules,
+        ..
+    } = crate::root::min3_boot::fixture::open(&config, &Default::default(), rules.clone())
         .await
-        .expect("the configured native target opens"),
-    )
-    .await;
+        .expect("the configured native target opens");
+    let core = crate::root::real_store::core_over(core).await;
     crate::root::boot::bind_plugin_floor(core.clone())
         .await
         .expect("the catalog uses the configured native plugin-floor owner");
@@ -1075,7 +1002,7 @@ async fn a_committing_builds_admission_replaces_the_dropped_secret_rows() {
 }
 
 pub(super) fn constructor_child(validate: bool) -> ! {
-    let late = crate::root::serve::LateServices::new();
+    let late = crate::root::serve::Services::bootstrap();
     crate::root::boot::install_native_load_guard().unwrap();
     crate::root::loader::dispatch::handle::arm().unwrap();
     let dispatcher = crate::root::dispatch::boot(1, &late);

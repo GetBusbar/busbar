@@ -41,8 +41,7 @@ fn write_configs(dir: &Path, data_port: u16, admin_port: u16) {
         include_str!("fixtures/mock_provider.yaml"),
     )
     .unwrap();
-    let mut plugins = common::plugins::trusted_config_document(&dir.join("plugins"));
-    plugins["logs"] = serde_json::json!({"dir": dir.join("plugin-logs")});
+    let plugins = common::plugins::trusted_config_document(&dir.join("plugins"));
     std::fs::write(
         dir.join("config.yaml"),
         format!(

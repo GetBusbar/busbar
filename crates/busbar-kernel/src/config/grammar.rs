@@ -16,6 +16,125 @@ use busbar_contract::secret_ref::Sugars;
 
 use super::PluginsCfg;
 
+/// One read's immutable metadata and the root-owned admission that produced it.
+/// The opaque context owns executable image leases; metadata alone grants no OPEN authority.
+pub struct PreparedConfigRead {
+    grammar: Grammar,
+    planes: Vec<crate::plane_driver::provider_catalog::ProviderPlane>,
+    context: Option<Arc<dyn std::any::Any + Send + Sync>>,
+    input: Option<(PluginsCfg, BTreeMap<String, String>)>,
+}
+
+impl PreparedConfigRead {
+    #[must_use]
+    pub fn new(grammar: Grammar) -> Self {
+        Self {
+            grammar,
+            planes: Vec::new(),
+            context: None,
+            input: None,
+        }
+    }
+
+    #[must_use]
+    pub fn with_context(mut self, context: Arc<dyn std::any::Any + Send + Sync>) -> Self {
+        self.context = Some(context);
+        self
+    }
+
+    #[must_use]
+    pub fn with_provider_planes(
+        mut self,
+        planes: Vec<crate::plane_driver::provider_catalog::ProviderPlane>,
+    ) -> Self {
+        self.planes = planes;
+        self
+    }
+
+    pub fn grammar(&self) -> &Grammar {
+        &self.grammar
+    }
+    pub fn provider_planes(&self) -> &[crate::plane_driver::provider_catalog::ProviderPlane] {
+        &self.planes
+    }
+    pub fn context<T: std::any::Any + Send + Sync>(&self) -> Option<&T> {
+        self.context.as_ref()?.downcast_ref()
+    }
+    pub fn has_context(&self) -> bool {
+        self.context.is_some()
+    }
+
+    /// Bind the actual admission parameters, including runtime-only Store version pins.
+    #[must_use]
+    pub fn for_input(mut self, input: &PhaseOneIn<'_>) -> Self {
+        let mut plugins = input.plugins.clone();
+        plugins.dir = input.dir.to_string_lossy().into_owned();
+        self.input = Some((plugins, input.pins.clone()));
+        self
+    }
+
+    pub fn check_plugins(&self, plugins: &PluginsCfg) -> Result<(), String> {
+        let Some((admitted, pins)) = &self.input else {
+            return if self.has_context() {
+                Err("the native read has no admission input".into())
+            } else {
+                Ok(())
+            };
+        };
+        let effective = |plugins: &PluginsCfg| {
+            let mut plugins = plugins.clone();
+            for (name, version) in pins {
+                plugins.min_versions.insert(name.clone(), version.clone());
+                plugins
+                    .first_party_floors
+                    .insert(name.clone(), version.clone());
+            }
+            plugins
+        };
+        if effective(admitted) != effective(plugins) {
+            return Err("plugins changed after this configuration's admission".into());
+        }
+        Ok(())
+    }
+
+    /// Retain this read only on a document actually parsed under its grammar.
+    /// Secret instance binding is the parser's canonical transformation, not another admission.
+    pub fn attach(self: &Arc<Self>, deploy: &mut super::DeployCfg) -> Result<(), String> {
+        let expected = if self.grammar.secret_binding_required() {
+            self.grammar.bind_secret_instances(&deploy.secrets)?
+        } else {
+            self.grammar.clone()
+        };
+        if deploy.grammar.get().map_err(String::from)? != &expected {
+            return Err("the configuration was parsed under a different admission".into());
+        }
+        let used = deploy.grammar.used().map_err(String::from)?.clone();
+        deploy.grammar = GrammarField::Prepared {
+            grammar: Arc::new(expected),
+            used: Arc::new(used),
+            read: Arc::clone(self),
+            catalogs: None,
+        };
+        Ok(())
+    }
+
+    #[must_use]
+    pub fn trimmed(mut self) -> Self {
+        self.grammar = self.grammar.trimmed();
+        self
+    }
+}
+
+impl std::fmt::Debug for PreparedConfigRead {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PreparedConfigRead")
+            .field("owners", &self.grammar.owners.keys().collect::<Vec<_>>())
+            .field("provider_planes", &self.planes.len())
+            .field("admitted", &self.has_context())
+            .finish()
+    }
+}
+
 /// Who declares a grammar item: its version, where it comes from (`linked`, or the archive's file
 /// name) and its trust label. Reported in refusals and boot lines; never compared by the pin.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -93,9 +212,22 @@ impl Used {
     }
 }
 
+/// A secret image declaration admitted before strict configuration parsing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SecretSource {
+    pub identity: String,
+    pub ref_schema: String,
+}
+
 /// The grammar one read parses under.
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Grammar {
+    secret_binding_required: bool,
+    /// Image identities and former names mapped to the verified secret declaration.
+    pub secret_sources: BTreeMap<String, SecretSource>,
+    /// Configured and implicit instance names, bound for this read.
+    pub secret_instances: BTreeMap<String, SecretSource>,
     /// The secret shorthand and roles the admissible secret modules declare.
     pub sugars: Sugars,
     /// Every admissible module by name.
@@ -107,11 +239,76 @@ pub struct Grammar {
 }
 
 impl Grammar {
+    #[must_use]
+    pub fn with_secret_sources(mut self, sources: BTreeMap<String, SecretSource>) -> Self {
+        self.secret_binding_required = true;
+        self.secret_sources = sources;
+        self
+    }
+
+    /// Even an empty admitted image set must reject configured unknown sources.
+    pub fn secret_binding_required(&self) -> bool {
+        self.secret_binding_required
+    }
+
+    /// Bind the raw secret-instance envelope before parsing any SecretRef in the document.
+    /// The image's empty settings acceptance is judged at description, before an implicit instance exists.
+    pub fn bind_secret_instances(
+        &self,
+        configured: &BTreeMap<String, super::SecretModuleCfg>,
+    ) -> Result<Self, String> {
+        let mut bound = self.clone();
+        bound.secret_instances.clear();
+        for (name, config) in configured {
+            if name.trim().is_empty() {
+                return Err("a secret instance name must not be blank".to_owned());
+            }
+            let source = self.secret_sources.get(&config.module).ok_or_else(|| {
+                format!(
+                    "secrets.{name}.module: '{}' is not an admitted secret image",
+                    config.module
+                )
+            })?;
+            bound.secret_instances.insert(name.clone(), source.clone());
+        }
+        let instances: Vec<_> = bound
+            .secret_instances
+            .iter()
+            .map(|(name, source)| (name.as_str(), source.identity.as_str()))
+            .collect();
+        bound.sugars = self.sugars.bind_instances(&instances)?;
+        let explicit_identities: Vec<_> = instances
+            .iter()
+            .map(|(_, identity)| (*identity).to_owned())
+            .collect();
+        for sugar in bound.sugars.iter() {
+            if explicit_identities
+                .iter()
+                .any(|identity| *identity == sugar.plugin)
+            {
+                continue;
+            }
+            let source = self.secret_sources.get(&sugar.plugin).ok_or_else(|| {
+                format!(
+                    "secret shorthand '{}' has no admitted declaring image",
+                    sugar.word
+                )
+            })?;
+            bound
+                .secret_instances
+                .insert(sugar.word.clone(), source.clone());
+        }
+        Ok(bound)
+    }
+
     /// The grammar of a read that admits nothing: canonical `{ module, settings }` references only.
     /// Built by tests and by `--list-plugins`' report mode; no production reader falls back to it.
     #[must_use]
     pub fn empty() -> Self {
         Self {
+            secret_binding_required: false,
+            secret_sources: BTreeMap::new(),
+            secret_instances: BTreeMap::new(),
             sugars: Sugars::default(),
             owners: BTreeMap::new(),
             items: Vec::new(),
@@ -122,6 +319,9 @@ impl Grammar {
     #[must_use]
     pub fn new(sugars: Sugars, owners: BTreeMap<String, Owner>, report: Vec<String>) -> Self {
         Self {
+            secret_binding_required: false,
+            secret_sources: BTreeMap::new(),
+            secret_instances: BTreeMap::new(),
             sugars,
             owners,
             items: Vec::new(),
@@ -140,6 +340,17 @@ impl Grammar {
     #[must_use]
     pub fn report(&self) -> &[String] {
         &self.report
+    }
+
+    /// Exact admission metadata correspondence, independent of diagnostic-only redaction or
+    /// pending-fetch report lines. Every authority-bearing field still participates in equality.
+    #[must_use]
+    pub fn same_authority(&self, other: &Self) -> bool {
+        let mut left = self.clone();
+        let mut right = other.clone();
+        left.report.clear();
+        right.report.clear();
+        left == right
     }
 
     /// This grammar as an admin response may show it (SECRET-SHORTHAND-BOOT §3.9): a refusal names
@@ -433,6 +644,12 @@ pub enum GrammarField {
     #[default]
     Unbound,
     Bound(Arc<Grammar>, Arc<Used>),
+    Prepared {
+        grammar: Arc<Grammar>,
+        used: Arc<Used>,
+        read: Arc<PreparedConfigRead>,
+        catalogs: Option<Arc<crate::plane_driver::provider_catalog::ProviderCatalogs>>,
+    },
 }
 
 impl GrammarField {
@@ -449,7 +666,7 @@ impl GrammarField {
 
     pub fn get(&self) -> Result<&Grammar, GrammarRefusal> {
         match self {
-            Self::Bound(grammar, _) => Ok(&**grammar),
+            Self::Bound(grammar, _) | Self::Prepared { grammar, .. } => Ok(&**grammar),
             Self::Unbound => Err(GrammarRefusal(UNBOUND.to_owned())),
         }
     }
@@ -457,7 +674,7 @@ impl GrammarField {
     /// What the read used of its grammar: what the grammar pin compares.
     pub fn used(&self) -> Result<&Used, GrammarRefusal> {
         match self {
-            Self::Bound(_, used) => Ok(&**used),
+            Self::Bound(_, used) | Self::Prepared { used, .. } => Ok(&**used),
             Self::Unbound => Err(GrammarRefusal(UNBOUND.to_owned())),
         }
     }
@@ -465,8 +682,36 @@ impl GrammarField {
     /// Add what a later parse of the same read used (its providers catalog, a stored definition
     /// typed under its grammar). An unbound read records nothing; reading it refuses anyway.
     pub fn record(&mut self, more: &Used) {
-        if let Self::Bound(_, used) = self {
-            Arc::make_mut(used).extend(more);
+        match self {
+            Self::Bound(_, used) | Self::Prepared { used, .. } => Arc::make_mut(used).extend(more),
+            Self::Unbound => {}
+        }
+    }
+
+    pub fn prepared(&self) -> Option<&Arc<PreparedConfigRead>> {
+        match self {
+            Self::Prepared { read, .. } => Some(read),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub fn with_provider_catalogs(
+        mut self,
+        catalogs: Arc<crate::plane_driver::provider_catalog::ProviderCatalogs>,
+    ) -> Self {
+        if let Self::Prepared { catalogs: held, .. } = &mut self {
+            *held = Some(catalogs);
+        }
+        self
+    }
+
+    pub fn provider_catalogs(
+        &self,
+    ) -> Option<&Arc<crate::plane_driver::provider_catalog::ProviderCatalogs>> {
+        match self {
+            Self::Prepared { catalogs, .. } => catalogs.as_ref(),
+            _ => None,
         }
     }
 }
@@ -475,7 +720,7 @@ impl std::fmt::Debug for GrammarField {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Unbound => f.write_str("Unbound"),
-            Self::Bound(grammar, _) => f
+            Self::Bound(grammar, _) | Self::Prepared { grammar, .. } => f
                 .debug_tuple("Bound")
                 .field(&grammar.owners.keys().collect::<Vec<_>>())
                 .finish(),
@@ -518,25 +763,12 @@ impl<'a> PhaseOneIn<'a> {
     }
 }
 
-/// The composition root's phase 1 ([`crate::preflight::RootInstall::grammar`]).
-pub type GrammarFn = fn(&PhaseOneIn<'_>) -> Result<Grammar, GrammarRefusal>;
-
-/// Phase 1 for one read: the grammar the modules `input` admits declare, through the root's
-/// registry scan and judgement. A read that loads no plugin (`plugins.enabled: false`) in a binary
-/// with no composition root admits nothing, so its grammar is empty; a read that would scan
-/// `plugins.dir` with no root to scan it is refused.
-pub fn grammar_for(input: &PhaseOneIn<'_>) -> Result<Grammar, GrammarRefusal> {
-    let mut grammar = match crate::preflight::root_rows().grammar {
-        Some(phase_one) => phase_one(input)?,
-        None if !input.plugins.enabled => Grammar::empty(),
-        None => {
-            return Err(GrammarRefusal(
-                "no composition root installed the config grammar: plugins.enabled needs the \
-                 root's scan of plugins.dir to read this configuration"
-                    .to_owned(),
-            ))
-        }
-    };
+/// Compute one read's grammar through its explicitly owned root context.
+pub fn grammar_for(
+    input: &PhaseOneIn<'_>,
+    rules: &dyn crate::appbuild::RootRules,
+) -> Result<Grammar, GrammarRefusal> {
+    let mut grammar = rules.grammar(input)?;
     // A read that does not fetch cannot see a module only the fetch delivers (§3.14): a refusal
     // names each pending file.
     if input.fetch == Fetch::None {
@@ -545,6 +777,20 @@ pub fn grammar_for(input: &PhaseOneIn<'_>) -> Result<Grammar, GrammarRefusal> {
         }
     }
     Ok(grammar)
+}
+
+/// Admit once and retain the executable owner alongside its declarations through construction.
+pub fn prepare_read_for(
+    input: &PhaseOneIn<'_>,
+    rules: &dyn crate::appbuild::RootRules,
+) -> Result<PreparedConfigRead, GrammarRefusal> {
+    let mut read = rules.prepare_read(input)?.for_input(input);
+    if input.fetch == Fetch::None {
+        for line in pending_fetch_lines(input.plugins, input.dir) {
+            read.grammar.push_report(line);
+        }
+    }
+    Ok(read)
 }
 
 #[cfg(test)]

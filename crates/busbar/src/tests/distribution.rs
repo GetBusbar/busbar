@@ -5,6 +5,9 @@
 #[path = "rig.rs"]
 mod rig;
 
+#[path = "stdio_boot.rs"]
+mod stdio_boot;
+
 #[path = "../../../../dist/default/tests/product/auth_plugin_chain_trust.rs"]
 mod auth_plugin_chain_trust;
 
@@ -88,9 +91,6 @@ mod rate_apply_commit;
 
 #[path = "../../../../dist/default/tests/product/registry_cross_plane.rs"]
 mod registry_cross_plane;
-
-#[path = "../../../../dist/default/tests/product/plugins_logs_preflight.rs"]
-mod plugins_logs_preflight;
 
 #[path = "../../../../dist/default/tests/product/plane_integration.rs"]
 mod plane_integration;

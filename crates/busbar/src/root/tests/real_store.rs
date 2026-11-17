@@ -15,6 +15,18 @@ pub(crate) async fn native_backend() -> Arc<dyn busbar_contract::persistence::Pe
     Arc::new(memory_backend::MemoryBackend::default())
 }
 
+pub(crate) fn clocked_native_backend() -> (
+    Arc<dyn busbar_contract::persistence::PersistenceBackend>,
+    impl Fn(u64),
+) {
+    use busbar_contract::abi::sdk::store::v4::conformance::Subject;
+    let backend = Arc::new(memory_backend::MemoryBackend::default());
+    let clock = Arc::clone(&backend);
+    (backend, move |seconds| {
+        assert!(clock.jump_clock(seconds));
+    })
+}
+
 pub(crate) async fn core() -> Arc<busbar_kernel::persistence::facade::CoreStore> {
     core_over(native_backend().await).await
 }
@@ -97,25 +109,24 @@ pub(crate) async fn build_app(
     ),
     String,
 > {
-    let core = if let Some(prior) = prior {
-        prior
-            .governance
-            .as_ref()
-            .ok_or("test reload has no admitted governance")?
-            .core_store_handle()
-            .map_err(|error| error.to_string())?
-    } else if let Some(overlay) = &overlay {
-        overlay.core_store_handle()?
-    } else {
-        core_over(
-            busbar_kernel::appbuild::bootstrap_config_store(
-                &cfg,
-                &plugins,
-                &busbar_kernel::preflight::Unopened,
-            )
-            .await?,
+    let (core, rules) = if let Some(prior) = prior {
+        (
+            prior
+                .governance
+                .as_ref()
+                .ok_or("test reload has no admitted governance")?
+                .core_store_handle()
+                .map_err(|error| error.to_string())?,
+            crate::root::min3_boot::fixture::carry(prior.root_rules.clone(), rules.clone()),
         )
-        .await
+    } else if let Some(overlay) = &overlay {
+        (overlay.core_store_handle()?, rules.clone())
+    } else {
+        let opened = crate::root::min3_boot::fixture::open(&cfg, &plugins, rules.clone())
+            .await?
+            .admit()
+            .await;
+        (opened.core, opened.rules)
     };
     busbar_kernel::appbuild::build_app_from_config_with_store(
         cfg,
@@ -125,7 +136,7 @@ pub(crate) async fn build_app(
         base_groups,
         paths,
         prior,
-        rules,
+        &rules,
         Some(core),
         false,
     )

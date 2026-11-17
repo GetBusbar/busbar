@@ -13,11 +13,14 @@ use busbar_contract::config::dialect_styles::{self as styles, Row, Settings};
 use busbar_contract::config::outbound_owner;
 use busbar_ports::codec::plane::{DialectAuthOwned, PresentationOwned};
 
+pub mod native;
 mod outbound;
 mod upstream;
 
 pub use outbound::{upstream_credential, OwnedUpstreamIn};
-pub use upstream::{bind_upstreams, check_upstream_credentials, UpstreamBinding, UpstreamView};
+pub use upstream::{
+    bind_upstreams, bind_upstreams_for, check_upstream_credentials, UpstreamBinding, UpstreamView,
+};
 
 /// Where an implicit instance's `credential` reference comes from. The binder reads that reference from the
 /// config it already walked (no second copy of a secret reference is held here).
@@ -107,8 +110,8 @@ pub struct MemberView<'a> {
     /// The identity of `v`'s image (selects its D_DIALECT_AUTH rows).
     pub image: &'a str,
     pub provider: &'a str,
-    /// `models.<m>.protocol` (or `dialect`), the model's dialect override.
-    pub model_protocol: Option<&'a str>,
+    /// The model's override, if configured; resolution remains image-local.
+    pub dialect: Option<&'a str>,
 }
 
 /// Everything one load's provider bindings read.
@@ -136,11 +139,6 @@ pub struct ProviderBindings {
     pub by_attempt: BTreeMap<AttemptKey, Box<str>>,
     /// Explicit bindings' core-vocabulary keys their `settings` lacked, to add in memory before bind.
     pub fills: BTreeMap<Box<str>, Fills>,
-}
-
-/// The dialect of a member: the model's override first, else the provider's protocol (round 15).
-pub(crate) fn member_dialect<'a>(member: &MemberView<'a>, provider: &ProviderView<'a>) -> &'a str {
-    member.model_protocol.unwrap_or(provider.protocol)
 }
 
 fn row_of<'r>(
@@ -228,7 +226,7 @@ pub fn bind_providers(plan: &ProviderPlan<'_>) -> Result<ProviderBindings, Vec<S
         let Some(p) = plan.providers.iter().find(|p| p.name == m.provider) else {
             continue;
         };
-        let d = member_dialect(m, p);
+        let d = m.dialect.unwrap_or(p.protocol);
         let attempt = (Box::from(m.plane), Box::from(p.name), Box::from(d));
         match p.auth {
             ProviderAuth::None => {
@@ -369,3 +367,6 @@ pub fn bind_providers(plan: &ProviderPlan<'_>) -> Result<ProviderBindings, Vec<S
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+pub(crate) mod native_tests;

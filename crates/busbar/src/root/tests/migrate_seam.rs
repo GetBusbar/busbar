@@ -72,28 +72,21 @@ fn the_recoverable_gate_answers_from_the_at_rest_key() {
     );
     assert!(
         no_key.contains(
-            "`openssl rand -hex 32 > /etc/busbar/at-rest.key && chmod 600 /etc/busbar/at-rest.key`"
+            "`openssl rand -hex 32 > /etc/busbar/signing.key && chmod 600 /etc/busbar/signing.key`"
         ),
         "{no_key}"
     );
     assert!(
-        no_key.contains("`credentials: {at_rest: {key: {file: /etc/busbar/at-rest.key}}}`"),
+        no_key.contains("`auth: {signing_key: {file: /etc/busbar/signing.key}}`"),
         "{no_key}"
     );
-    assert!(no_key.contains("`config.yaml.1.5.5`"), "{no_key}");
-    assert!(no_key.contains("\"At-rest key\""), "{no_key}");
     let unresolved = admit_answer(
         2,
-        Some(Err(
-            "credentials.at_rest.key did not resolve: gone".to_owned()
-        )),
+        Some(Err("auth.signing_key did not resolve: gone".to_owned())),
         dir,
     )
     .unwrap_err();
-    assert_eq!(
-        unresolved,
-        "CONFIG: credentials.at_rest.key did not resolve: gone"
-    );
+    assert_eq!(unresolved, "CONFIG: auth.signing_key did not resolve: gone");
     let unknown = admit_answer(1, None, dir).unwrap_err();
     assert!(unknown.starts_with("CONFIG: "), "{unknown}");
     assert_ne!(unknown, text_add_key(1, dir), "no verdict is not 'no key'");
@@ -379,6 +372,9 @@ fn a_stamped_boot_writes_the_settled_answer_back_once() {
     let stamped = "config_version: 1\nstore: {module: m, settings: {url: old, junk: 1}}\n";
     let config = scratch.config(stamped);
     let settled = [busbar_migrate::Settled {
+        placement: busbar_migrate::BagPlacement::Settings,
+        allowed_lifts: Default::default(),
+        known_secrets: Vec::new(),
         index: 0,
         path: vec!["store".to_owned()],
         settings: Some(busbar_contract::secure::SecureString::from(
@@ -462,8 +458,9 @@ mod records_step {
 
     fn all(store: &Store, ns: NamespaceId) -> Vec<(Vec<u8>, Vec<u8>)> {
         store
-            .scan(ns, &[], 4096)
+            .scan(ns, None, 4096)
             .unwrap()
+            .rows
             .into_iter()
             .map(|(k, v)| (k, v.to_vec()))
             .collect()
@@ -825,6 +822,44 @@ mod records_step {
         );
     }
 
+    /// #328 (UPG-2): a step-5 refusal fires before the store is converted. The records step and the
+    /// write run together, and a document the check refuses leaves IMPORT, the native records and
+    /// config.yaml exactly as found.
+    #[test]
+    fn a_step5_refusal_leaves_the_store_and_config_unconverted() {
+        let rt = runtime();
+        let store = store(&rt);
+        put(&store, IMPORT_NS, &fixture());
+        let scratch = Scratch::new("records-328");
+        let config = scratch.config(super::CONFIG_1_5_5);
+        let plan = super::step1(&config, false, false, &super::accept)
+            .unwrap()
+            .expect("planned");
+        let refused = migrate_records::convert_and_write(
+            &store,
+            &keyed(),
+            &plan,
+            &[],
+            &|_: &str, _: Option<&str>| Err("a plane refused the settled document".to_owned()),
+            &config,
+            false,
+        )
+        .expect_err("the step-5 check refuses");
+        assert!(
+            refused.contains("a plane refused the settled document"),
+            "{refused}"
+        );
+        assert!(
+            !all(&store, IMPORT_NS).is_empty(),
+            "IMPORT is untouched: the store was not converted"
+        );
+        assert!(!has_native_key(&store), "no native record was written");
+        assert_eq!(
+            std::fs::read_to_string(&config).unwrap(),
+            super::CONFIG_1_5_5,
+            "config.yaml is unchanged"
+        );
+    }
     /// 5S, 5d and 5C (§A6 "Attempts", red (n)(9)'s store half): step 5 over the opened store records
     /// the attempt before writing, names it beside config.yaml before the rename, and consumes it
     /// with MIGRATION_COMPLETED once config.yaml is stamped; IMPORT is empty afterwards.

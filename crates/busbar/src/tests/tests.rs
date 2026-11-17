@@ -922,23 +922,6 @@ async fn one_seal_after_two_reloads() {
     );
 }
 
-#[test]
-fn the_line_serve_flag_is_read_off_the_planes_declared_rows() {
-    let planted: &[crate::root::linked::CliHelpRow] = &[(
-        "flag",
-        "    --planted-serve      serve the planted plane on stdin/stdout",
-    )];
-    assert!(line_serve_requested(
-        &[planted],
-        &Argv::parse(["busbar", "--planted-serve"])
-    ));
-    assert!(!line_serve_requested(
-        &[],
-        &Argv::parse(["busbar", "--planted-serve"])
-    ));
-    assert!(!line_serve_requested(&[planted], &Argv::parse(["busbar"])));
-}
-
 /// The crate root denies `dead_code`, `unused_imports` and `unused_macros` outside tests. An
 /// item-level `allow` or `expect` naming one of them would silence that, so every such escape in
 /// this crate's source, build script and generators is listed here by file, and each listed one is
@@ -988,7 +971,7 @@ fn no_dead_code_escape_outside_the_listed_test_only_sites() {
 }
 
 /// BOOT-130: the `store.module` plugin-preflight refusal, built once in
-/// `busbar-kernel` preflight, as `prepare_config_store` returns it.
+/// `busbar-kernel` preflight, as `bootstrap_store_inputs` returns it.
 const STORE_MODULE_SQLITE_REFUSAL: &str = "store.module: 'sqlite' requires the plugin subsystem, \
      but plugins.enabled is false (the default). Set plugins.enabled: true and place the signed \
      'sqlite' store plugin tarball in the plugins directory ('plugins'). The published binary links no store of its own: store.module selects a plugin of kind store by name.";
@@ -1014,7 +997,7 @@ fn store_boot_refusal_transition_does_not_leak_the_store_module_refusal() {
 }
 
 #[test]
-fn prepare_config_store_refusal_goes_through_store_boot_refusal() {
+fn admitted_min3_store_refusal_goes_through_store_boot_refusal() {
     let source: String = include_str!("../main.rs")
         .chars()
         .filter(|c| !c.is_whitespace())
@@ -1026,7 +1009,7 @@ fn prepare_config_store_refusal_goes_through_store_boot_refusal() {
     assert_eq!(
         source.matches(call_site).count(),
         1,
-        "the prepare_config_store boot refusal must be printed through store_boot_refusal"
+        "the admitted MIN-3 store boot refusal must be printed through store_boot_refusal"
     );
     let false_prefix: String = concat!("base Store overlay ", "anchor")
         .chars()
@@ -1077,3 +1060,16 @@ fn store_boot_refusal_prints_the_context_alone_under_a_principal_transition() {
         "a principal transition summary carries no inner detail"
     );
 }
+
+/// #428: on dev no plane states a CLI row, so the stdio trigger was unreachable. Core's own
+/// `--stdio` selects line serving through `main`'s CLI path on every build, and nothing else does
+/// (WP1-GAP r3 §1.3).
+#[test]
+fn stdio_selects_line_serving_through_mains_cli_path() {
+    assert!(line_serve_requested(&Argv::parse(["--stdio"])));
+    assert!(!line_serve_requested(&Argv::parse(Vec::<String>::new())));
+    assert!(!line_serve_requested(&Argv::parse(["--mcp-stdio"])));
+}
+
+#[path = "openapi_evolution.rs"]
+mod openapi_evolution;

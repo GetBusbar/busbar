@@ -43,8 +43,12 @@ pub struct SecurityCfg {
 /// `busy_timeout_ms`; postgres/valkey read `url`). Required: exactly one store resolves
 /// from config — a config with no `store:` block is refused
 /// with [`store_required`], and no linked row stands in as a default.
+///
+/// Read as the map form or the positional `[module, settings]` ([`positional`]); `insecure_transport`
+/// is only ever a key beside `module` (TRANSPORT-SECURITY-POLICY §4), never a third position.
 #[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
+#[serde(remote = "Self")]
 pub struct StoreCfg {
     /// The store module, by plugin ALIAS or CANONICAL NAME: a linked row's name opens in process; any
     /// other name is a STORE PLUGIN resolved from the `plugins.*` registry - the shipped first-party
@@ -57,9 +61,6 @@ pub struct StoreCfg {
     /// The module's own opaque settings, passed through verbatim as its config JSON.
     #[serde(default)]
     pub settings: busbar_contract::plugin_settings::Settings,
-    /// `limits` beside `module` (IF §12.22), as written: parsed and stripped by [`super::min3::parse_min3`].
-    #[serde(default, deserialize_with = "busbar_contract::yaml::untyped_option")]
-    pub limits: Option<busbar_contract::yaml::Value>,
     /// `insecure_transport` beside `module` (TRANSPORT-SECURITY-POLICY §4), as written: parsed
     /// and stripped by [`super::min3::parse_min3`].
     #[serde(default, deserialize_with = "busbar_contract::yaml::untyped_option")]
@@ -76,14 +77,11 @@ impl StoreCfg {
             module: &'a String,
             settings: F0,
             #[serde(skip_serializing_if = "Option::is_none")]
-            limits: Option<&'a busbar_contract::yaml::Value>,
-            #[serde(skip_serializing_if = "Option::is_none")]
             insecure_transport: Option<&'a busbar_contract::yaml::Value>,
         }
         View {
             module: &self.module,
             settings: self.settings.authoring(seal),
-            limits: self.limits.as_ref(),
             insecure_transport: self.insecure_transport.as_ref(),
         }
     }
@@ -100,45 +98,95 @@ pub fn store_required() -> String {
         .into()
 }
 
-/// A top-level `secrets:` entry — MODULE-LEVEL initialization config for a `kind: secret` plugin,
-/// keyed by the module NAME (alias or canonical). This is the delivery path for the config a secret
-/// plugin needs in its `open()` (a Vault plugin's address / namespace / auth token / TLS CA), exactly
-/// as `store.settings` carries a store plugin's `open()` config. WITHOUT this block a `kind: secret`
-/// plugin's `open()` receives `{}`, forcing operators to repeat every piece of module config in EVERY
-/// individual `SecretRef.settings` (multiplying exposure of the Vault address/token). The built-in
-/// `env` / `file` modules take no module config and MUST NOT appear here (validated).
-///
-/// The `settings` are resolved against the BUILT-IN `env` / `file` secret resolvers ONLY (so
-/// `{ token: { env: VAULT_TOKEN } }` works) — NEVER against another secret plugin, which would be a
-/// bootstrap cycle (a secret module cannot resolve its OWN config through itself).
-///
-/// # FREEZE BLOCKER: `secrets:` IS A DELIBERATE EXEMPTION FROM THE NAMED-INSTANCE PATTERN
-///
-/// Every OTHER plugin-instance kind in 1.5.3 is a top-level NAMED-DEFINITION map — `hooks:`,
-/// `identity-providers:`, `export:`, `store:` are all `name → {module, settings, …}` and are
-/// referenced by bare name. **`secrets:` is deliberately NOT, and must stay that way.**
-///
-/// The reason is that `secrets:` does not configure an INSTANCE. It configures a MODULE's `open()` —
-/// the one-time initialization of the secret backend itself. There is nothing to reference by name:
-/// a `SecretRef` already names its module (`{ module: vault, settings: {…} }`), and the entry here
-/// supplies the module-wide half of that module's configuration. Wrapping it in a named map would
-/// invent an instance identity that no reference site can use, and would then require every
-/// `SecretRef` in the config to be rewritten to point at an instance name instead of a module — a
-/// large break that buys nothing.
-///
-/// This is recorded HERE, on the struct, precisely so nobody later "fixes" the inconsistency: the
-/// module-keyed shape is the correct shape for module-level `open()` config, and it is frozen.
+/// The positional reading [`StoreCfg`] and [`SecretModuleCfg`] share: `[module]` or
+/// `[module, settings]`, `module` defaulting to empty only where `module_default`. A third item is
+/// refused: it would otherwise land in `insecure_transport`, which is a key beside `module`
+/// (TRANSPORT-SECURITY-POLICY §4), never a position.
+fn positional<'de, A: serde::de::SeqAccess<'de>>(
+    mut seq: A,
+    module_default: bool,
+    expecting: &dyn serde::de::Expected,
+) -> Result<(String, busbar_contract::plugin_settings::Settings), A::Error> {
+    let module = match seq.next_element::<String>()? {
+        Some(module) => module,
+        None if module_default => String::new(),
+        None => return Err(serde::de::Error::invalid_length(0, expecting)),
+    };
+    let settings = seq.next_element()?.unwrap_or_default();
+    if seq.next_element::<serde::de::IgnoredAny>()?.is_some() {
+        return Err(serde::de::Error::invalid_length(3, expecting));
+    }
+    Ok((module, settings))
+}
+
+impl<'de> Deserialize<'de> for StoreCfg {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Block;
+        impl<'de> serde::de::Visitor<'de> for Block {
+            type Value = StoreCfg;
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("a store block `{ module, settings }` or `[module, settings]`")
+            }
+            fn visit_map<A: serde::de::MapAccess<'de>>(self, map: A) -> Result<StoreCfg, A::Error> {
+                StoreCfg::deserialize(serde::de::value::MapAccessDeserializer::new(map))
+            }
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(self, seq: A) -> Result<StoreCfg, A::Error> {
+                let (module, settings) = positional(seq, true, &self)?;
+                Ok(StoreCfg {
+                    module,
+                    settings,
+                    insecure_transport: None,
+                })
+            }
+        }
+        deserializer.deserialize_any(Block)
+    }
+}
+
+impl<'de> Deserialize<'de> for SecretModuleCfg {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Block;
+        impl<'de> serde::de::Visitor<'de> for Block {
+            type Value = SecretModuleCfg;
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("a secret instance `{ module, settings }` or `[module, settings]`")
+            }
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                map: A,
+            ) -> Result<SecretModuleCfg, A::Error> {
+                SecretModuleCfg::deserialize(serde::de::value::MapAccessDeserializer::new(map))
+            }
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                seq: A,
+            ) -> Result<SecretModuleCfg, A::Error> {
+                let (module, settings) = positional(seq, false, &self)?;
+                Ok(SecretModuleCfg {
+                    module,
+                    settings,
+                    insecure_transport: None,
+                })
+            }
+        }
+        deserializer.deserialize_any(Block)
+    }
+}
+
+/// One named secret instance (IF §8.2): its image identity and opaque opening settings.
+/// References select the configured map key; shorthands select its unique instance.
+/// Read as the map form or the positional `[module, settings]` ([`positional`]), as [`StoreCfg`].
 #[derive(Debug, Deserialize, Clone, Default)]
 #[serde(deny_unknown_fields)]
+#[serde(remote = "Self")]
 pub struct SecretModuleCfg {
+    /// Admitted image identity or declared former name. Required in canonical 1.6 configuration.
+    pub module: String,
     /// The module's own opaque module-level settings, delivered to the plugin's `open()` as its config
     /// JSON. Any `SecretRef`-typed value (e.g. `token: { env: VAULT_TOKEN }`) is resolved via the
     /// built-in env/file modules before it crosses the ABI.
     #[serde(default)]
     pub settings: busbar_contract::plugin_settings::Settings,
-    /// `limits` beside the settings (IF §12.22), as written: parsed and stripped by [`super::min3::parse_min3`].
-    #[serde(default, deserialize_with = "busbar_contract::yaml::untyped_option")]
-    pub limits: Option<busbar_contract::yaml::Value>,
     /// `insecure_transport` beside the settings (TRANSPORT-SECURITY-POLICY §4), as written: parsed
     /// and stripped by [`super::min3::parse_min3`].
     #[serde(default, deserialize_with = "busbar_contract::yaml::untyped_option")]
@@ -152,15 +200,14 @@ impl SecretModuleCfg {
     ) -> impl Serialize + 'a {
         #[derive(Serialize)]
         struct View<'a, F0: Serialize> {
+            module: &'a str,
             settings: F0,
-            #[serde(skip_serializing_if = "Option::is_none")]
-            limits: Option<&'a busbar_contract::yaml::Value>,
             #[serde(skip_serializing_if = "Option::is_none")]
             insecure_transport: Option<&'a busbar_contract::yaml::Value>,
         }
         View {
+            module: &self.module,
             settings: self.settings.authoring(seal),
-            limits: self.limits.as_ref(),
             insecure_transport: self.insecure_transport.as_ref(),
         }
     }
@@ -171,6 +218,9 @@ impl SecretModuleCfg {
 #[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct AdvancedCfg {
+    /// Operator deregistration allowance, captured at boot; edit through the config document.
+    #[serde(default)]
+    pub shutdown: super::shutdown::AdvancedShutdownCfg,
     /// Amortization interval for the rate-limiter stale-entry sweep: every Nth `check_rate` pays
     /// the full retain (default 256).
     #[serde(default = "default_rate_sweep_interval")]
@@ -209,21 +259,12 @@ pub struct AdvancedCfg {
     /// `proxy::wire::maybe_attach_route_policy` — neither is rebuilt by a config apply.
     #[serde(default)]
     pub response_headers: ResponseHeadersCfg,
-    /// The destination guard refuses a provider dial, or
-    /// an outbound connection whose target came from
-    /// request data or the network, when it is, or resolves to, a private, loopback, link-local,
-    /// CGNAT or unique-local address, unless `allow_destinations` names it; judged after resolution
-    /// and dialled at the judged address. Operator infrastructure (a database, secret service or
-    /// directory a plugin's config names) is allowed private and loopback (§5 egress-class table).
-    /// Default `true`. Cloud metadata is refused for every target, in every class, and stays
-    /// refused when `false`; no entry of `allow_destinations` admits it (an entry naming it is
-    /// refused at boot, BUSBAR-3134). BOOT-TIME (the connector is built once).
+    /// The destination guard refuses ordinary private-address dials by default. A core-selected
+    /// registration may carry its own `allow_private`; configured providers retain reach only to
+    /// their own base/token origins. Operator-infrastructure Needs retain their declared-target
+    /// policy. Metadata, own-listener protection and TLS policy remain enforced. BOOT-TIME.
     #[serde(default = "default_block_private_addresses")]
     pub block_private_addresses: bool,
-    /// Destinations always allowed, checked before any refusal: an exact host, a `*.domain`
-    /// wildcard (names under it, never the apex), an IP, or a CIDR. Default empty. BOOT-TIME.
-    #[serde(default)]
-    pub allow_destinations: Vec<String>,
     /// The ingresses and load balancers that may state a client's address for it (an IP or a
     /// CIDR each, read by the destination guard's CIDR reader). Their `forwarded_header` is
     /// honoured; nobody else's is. Default empty: the socket peer is the client. BOOT-TIME.
@@ -245,49 +286,6 @@ pub struct AdvancedCfg {
     /// does not resolve here is the proxy's to check). BOOT-TIME.
     #[serde(default, skip_serializing_if = "is_local_resolution")]
     pub proxy_resolution: super::tls::ProxyResolution,
-    /// `advanced.shutdown`: the shutdown drain (SHUTDOWN-HANG F4). BOOT-TIME.
-    #[serde(default, skip_serializing_if = "AdvancedShutdownCfg::is_default")]
-    pub shutdown: AdvancedShutdownCfg,
-    /// `advanced.governance`: governed-admission custody (SHUTDOWN-HANG F4a). BOOT-TIME.
-    #[serde(default, skip_serializing_if = "AdvancedGovernanceCfg::is_default")]
-    pub governance: AdvancedGovernanceCfg,
-}
-
-/// `advanced.shutdown:`. A 1.5.5 config does not set it.
-#[derive(Debug, Deserialize, Serialize, Clone, Default, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct AdvancedShutdownCfg {
-    /// The drain budget from the first shutdown signal to exit, a duration (`<n><s|m|h|d>`):
-    /// default `20s`, at least `1s`. A value that does not parse, or is below `1s`, refuses boot
-    /// (BUSBAR-3117); it is never clamped. A quarter of it is the reserve the drain keeps for
-    /// settling, sealing, the journal flush and retirement.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub drain_timeout: Option<String>,
-}
-
-impl AdvancedShutdownCfg {
-    pub(crate) fn is_default(&self) -> bool {
-        self.drain_timeout.is_none()
-    }
-}
-
-/// `advanced.governance:`. A 1.5.5 config does not set it.
-#[derive(Debug, Deserialize, Serialize, Clone, Default, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct AdvancedGovernanceCfg {
-    /// The most finished governed requests whose spend may await settlement in the store before
-    /// new governed admission is refused with `503 durability_unavailable` (`Retry-After: 1`):
-    /// an integer, at least 1; default 1,000 per second of `advanced.shutdown.drain_timeout`
-    /// (20,000 at the default 20 s). Running requests never count. Below 1 refuses boot
-    /// (BUSBAR-3117); it is never clamped.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_pending_checkpoints: Option<u64>,
-}
-
-impl AdvancedGovernanceCfg {
-    pub(crate) fn is_default(&self) -> bool {
-        self.max_pending_checkpoints.is_none()
-    }
 }
 
 fn is_local_resolution(r: &super::tls::ProxyResolution) -> bool {
@@ -307,8 +305,6 @@ pub(crate) fn default_block_private_addresses() -> bool {
 pub struct Destinations {
     /// `advanced.block_private_addresses`.
     pub block_private_addresses: bool,
-    /// `advanced.allow_destinations`, as written (each entry validated by the guard at boot).
-    pub allow: Vec<String>,
     /// `security.blocked_metadata_hosts`: extra refusals inside the one guard.
     pub blocked: Vec<String>,
 }
@@ -330,6 +326,7 @@ impl super::RootCfg {
 impl Default for AdvancedCfg {
     fn default() -> Self {
         Self {
+            shutdown: super::shutdown::AdvancedShutdownCfg::default(),
             rate_sweep_interval: default_rate_sweep_interval(),
             usage_flush_interval_ms: default_usage_flush_interval_ms(),
             worker_threads: None,
@@ -337,13 +334,10 @@ impl Default for AdvancedCfg {
             upstream_h2_prior_knowledge: false,
             response_headers: ResponseHeadersCfg::default(),
             block_private_addresses: DEFAULT_BLOCK_PRIVATE_ADDRESSES,
-            allow_destinations: Vec::new(),
             tls: super::tls::OutboundTlsCfg::default(),
             proxy_resolution: super::tls::ProxyResolution::Local,
             trusted_proxies: Vec::new(),
             forwarded_header: None,
-            shutdown: AdvancedShutdownCfg::default(),
-            governance: AdvancedGovernanceCfg::default(),
         }
     }
 }
@@ -648,9 +642,6 @@ pub struct ExportDefCfg {
     /// typed per module by busbar-core's `resolve_export`, so a typo inside it still fails boot loudly.
     #[serde(default)]
     pub settings: busbar_contract::plugin_settings::Settings,
-    /// `limits` beside `module` (IF §12.22), as written: parsed and stripped by [`super::min3::parse_min3`].
-    #[serde(default, deserialize_with = "busbar_contract::yaml::untyped_option")]
-    pub limits: Option<busbar_contract::yaml::Value>,
     /// `insecure_transport` beside `module` (TRANSPORT-SECURITY-POLICY §4), as written: parsed
     /// and stripped by [`super::min3::parse_min3`].
     #[serde(default, deserialize_with = "busbar_contract::yaml::untyped_option")]
@@ -670,8 +661,6 @@ impl ExportDefCfg {
             durable: &'a bool,
             settings: F0,
             #[serde(skip_serializing_if = "Option::is_none")]
-            limits: Option<&'a busbar_contract::yaml::Value>,
-            #[serde(skip_serializing_if = "Option::is_none")]
             insecure_transport: Option<&'a busbar_contract::yaml::Value>,
         }
         View {
@@ -680,7 +669,6 @@ impl ExportDefCfg {
             fields: &self.fields,
             durable: &self.durable,
             settings: self.settings.authoring(seal),
-            limits: self.limits.as_ref(),
             insecure_transport: self.insecure_transport.as_ref(),
         }
     }
@@ -753,4 +741,20 @@ fn seal_every_ms<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<u6
         }
     }
     deserializer.deserialize_any(Ms)
+}
+
+#[cfg(test)]
+mod secret_instance_shape_tests {
+    use super::SecretModuleCfg;
+    #[test]
+    fn a_secret_instance_requires_its_image_separately_from_its_name() {
+        let configured: SecretModuleCfg =
+            busbar_contract::yaml::from_str("module: source-image\nsettings: {}\n").unwrap();
+        assert_eq!(configured.module, "source-image");
+        assert!(busbar_contract::yaml::from_str::<SecretModuleCfg>("settings: {}\n").is_err());
+        assert!(busbar_contract::yaml::from_str::<SecretModuleCfg>(
+            "module: source-image\nunknown: true\n"
+        )
+        .is_err());
+    }
 }

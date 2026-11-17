@@ -8,12 +8,11 @@ use std::sync::Arc;
 
 fn trust_document(config: &busbar_kernel::config::PluginsCfg) -> serde_json::Value {
     let publishers: Vec<_> = config.trust.publishers.iter().map(|publisher| {
-        serde_json::json!({"name": publisher.name, "public_key": publisher.public_key})
+        serde_json::json!({"name": publisher.name, "plugins": publisher.plugins, "keys": publisher.keys.iter().map(|key| serde_json::json!({"public_key": key.public_key, "revoked": key.revoked})).collect::<Vec<_>>()})
     }).collect();
     serde_json::json!({
         "publishers": publishers,
-        "allow_unsigned": config.trust.allow_unsigned,
-        "allow_third_party": config.trust.allow_third_party,
+        "allow_untrusted": config.trust.allow_untrusted,
     })
 }
 
@@ -25,20 +24,15 @@ async fn rollback_refuses_the_anchor_below_its_operator_bootstrap_floor_before_a
         std::env::var_os("BUSBAR_BOOTSTRAP_TEST_STORE_PLUGIN")
             .expect("BUSBAR_BOOTSTRAP_TEST_STORE_PLUGIN names the actual built store"),
     );
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let store = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid");
+    let store = crate::root::test_plugins::native_image(&library_path);
     let module = store.name;
     let module_version = store.version;
-    let mut manifest = plugins::manifest(
+    let mut manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     manifest.version = module_version.clone();
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch(&format!(
         "admin-service-bootstrap-{}",
@@ -69,7 +63,7 @@ async fn rollback_refuses_the_anchor_below_its_operator_bootstrap_floor_before_a
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": {"file": signing_key} },
         "identity-providers": {},
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
     });
     document["identity-providers"][operator] =
         serde_json::json!({"module": operator, "token": {"file": operator_token}});
@@ -118,7 +112,11 @@ async fn rollback_refuses_the_anchor_below_its_operator_bootstrap_floor_before_a
         .publishers
         .push(busbar_kernel::config::PluginPublisher {
             name: "acme".into(),
-            public_key: publisher_hex.clone(),
+            plugins: vec![target_name.clone()],
+            keys: vec![busbar_kernel::config::PluginPublisherKey {
+                public_key: publisher_hex.clone(),
+                revoked: false,
+            }],
         });
     app.plugins_cfg
         .min_versions
@@ -241,20 +239,15 @@ async fn safe_anchor_and_nonanchor_rollbacks_preserve_the_existing_pin_merge() {
             std::env::var_os("BUSBAR_BOOTSTRAP_TEST_STORE_PLUGIN")
                 .expect("BUSBAR_BOOTSTRAP_TEST_STORE_PLUGIN names the actual built store"),
         );
-        let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-            .expect("the actual store statement reads")
-            .expect("the actual store exports its statement");
-        let store = busbar_contract::abi::mechanism::rendering::read(&statement)
-            .expect("the actual store statement is valid");
+        let store = crate::root::test_plugins::native_image(&library_path);
         let module = store.name;
         let module_version = store.version;
-        let mut manifest = plugins::manifest(
+        let mut manifest = crate::root::test_plugins::native_manifest(
             "store",
-            &module,
+            &library_path,
             crate::root::test_plugins::FIXTURE_PUBLISHER,
         );
         manifest.version = module_version.clone();
-        manifest.statement = Some(hex::encode(statement));
         let library = std::fs::read(library_path).expect("the actual store library reads");
         let directory = plugins::scratch(&format!(
             "admin-service-bootstrap-{}",
@@ -284,7 +277,7 @@ async fn safe_anchor_and_nonanchor_rollbacks_preserve_the_existing_pin_merge() {
             "auth": { "chain": [], "admin_auth": [operator], "signing_key": {"file": signing_key} },
             "identity-providers": {},
             "store": { "module": module, "settings": settings },
-            "advanced": { "allow_destinations": ["127.0.0.1"] },
+            "advanced": {  },
         });
         document["identity-providers"][operator] =
             serde_json::json!({"module": operator, "token": {"file": operator_token}});
@@ -367,7 +360,11 @@ async fn safe_anchor_and_nonanchor_rollbacks_preserve_the_existing_pin_merge() {
             .publishers
             .push(busbar_kernel::config::PluginPublisher {
                 name: "acme".into(),
-                public_key: publisher_hex.clone(),
+                plugins: vec![target_name.clone()],
+                keys: vec![busbar_kernel::config::PluginPublisherKey {
+                    public_key: publisher_hex.clone(),
+                    revoked: false,
+                }],
             });
         app.plugins_cfg
             .min_versions
@@ -455,20 +452,15 @@ async fn an_upload_cannot_replace_the_anchor_with_a_target_only_the_running_pin_
         std::env::var_os("BUSBAR_BOOTSTRAP_TEST_STORE_PLUGIN")
             .expect("BUSBAR_BOOTSTRAP_TEST_STORE_PLUGIN names the actual built store"),
     );
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let store = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid");
+    let store = crate::root::test_plugins::native_image(&library_path);
     let module = store.name;
     let module_version = store.version;
-    let mut manifest = plugins::manifest(
+    let mut manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     manifest.version = module_version.clone();
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch(&format!(
         "admin-service-bootstrap-{}",
@@ -499,7 +491,7 @@ async fn an_upload_cannot_replace_the_anchor_with_a_target_only_the_running_pin_
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": {"file": signing_key} },
         "identity-providers": {},
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
     });
     document["identity-providers"][operator] =
         serde_json::json!({"module": operator, "token": {"file": operator_token}});
@@ -548,7 +540,11 @@ async fn an_upload_cannot_replace_the_anchor_with_a_target_only_the_running_pin_
         .publishers
         .push(busbar_kernel::config::PluginPublisher {
             name: "acme".into(),
-            public_key: publisher_hex.clone(),
+            plugins: vec![target_name.clone()],
+            keys: vec![busbar_kernel::config::PluginPublisherKey {
+                public_key: publisher_hex.clone(),
+                revoked: false,
+            }],
         });
     app.plugins_cfg
         .min_versions

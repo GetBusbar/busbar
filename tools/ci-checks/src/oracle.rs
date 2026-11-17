@@ -1122,3 +1122,7 @@ fn regex_search(pattern: &str, texts: &[&str]) -> Answer {
 #[cfg(test)]
 #[path = "oracle_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "oracle_cells_tests.rs"]
+mod cells_tests;
