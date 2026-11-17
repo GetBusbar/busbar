@@ -21,6 +21,95 @@ use busbar_plugin_abi::plugin::{Endpoints, Open, OPEN_DRY_RUN};
 use busbar_plugin_abi::records::{core_cfg, settled, tag, CoreCfgRec, FailRec, Full, Out, Records};
 use busbar_plugin_abi::types::Status;
 
+#[cfg(feature = "test-seal")]
+#[test]
+fn store_recovery_gate_is_scoped_to_initial_and_resumed_open() {
+    use busbar_plugin_abi::host_side::entry::StoreMigrationAdmission;
+    use std::sync::Arc;
+    let mut needs = busbar_plugin_test::FakeNeeds::new();
+    needs.secret("/secret", b"synthetic");
+    let h = crate::min3_store::booted(crate::min3_store::inline::PLUGIN.plugin(), needs);
+    let bag = br#"{"id":"gate-resume","recovery":7,"secret":{"module":"file","path":"synthetic"}}"#;
+    let mut spec = h.spec("store", bag);
+    let admission = Arc::new(StoreMigrationAdmission::new(true));
+    spec.store_migration = Some(Arc::clone(&admission));
+    drop(
+        h.open_spec(&spec)
+            .expect("initial and resumed Store gate admit"),
+    );
+    assert_eq!(admission.first_refused(), None);
+    assert!(
+        h.check_spec(&spec).is_err(),
+        "DRY_RUN has no recovery authority"
+    );
+    assert_eq!(
+        admission.first_refused(),
+        None,
+        "denied check cannot poison the open"
+    );
+    let weak = Arc::downgrade(&admission);
+    drop(spec);
+    drop(admission);
+    assert!(
+        weak.upgrade().is_none(),
+        "Applied/reopen must retain no admission Arc"
+    );
+}
+
+#[cfg(feature = "test-seal")]
+#[test]
+fn ignored_store_refusal_is_vetoed_before_settlement_and_applied_state() {
+    use busbar_plugin_abi::host_side::entry::StoreMigrationAdmission;
+    use busbar_plugin_abi::types::KindCode;
+    use busbar_plugin_loader::instance::OpenError;
+    use std::sync::Arc;
+    let h = crate::min3_store::booted(
+        crate::min3_store::inline::PLUGIN.plugin(),
+        busbar_plugin_test::FakeNeeds::new(),
+    );
+    let bag = br#"{"id":"ignored-gate","recovery":18446744073709551615,"ignore_recovery":true,"settle":true}"#;
+    let mut spec = h.spec("ignored", bag);
+    let admission = Arc::new(StoreMigrationAdmission::new(false));
+    spec.store_migration = Some(Arc::clone(&admission));
+    assert!(
+        matches!(h.open_spec(&spec), Err(OpenError::Config { code, .. }) if code == refused::R_CONFIG)
+    );
+    assert_eq!(admission.first_refused(), Some(u64::MAX));
+    assert!(h.settled("ignored").is_none());
+    let seen = crate::min3_store::counts("ignored-gate");
+    assert_eq!(seen.closes, 1);
+    assert_eq!(seen.info, 0, "no Store adapter may be constructed");
+    assert_eq!(seen.commits, 0);
+    assert!(
+        matches!(
+            h.block_on(
+                h.registry()
+                    .reconfigure(KindCode::Store, "ignored", b"{}", 1)
+            ),
+            Err(OpenError::Unknown(_))
+        ),
+        "no Applied entry from refused open"
+    );
+}
+
+#[cfg(feature = "test-seal")]
+#[test]
+fn explicit_unavailable_key_allows_zero_but_missing_authority_does_not() {
+    use busbar_plugin_abi::host_side::entry::StoreMigrationAdmission;
+    use std::sync::Arc;
+    let h = crate::min3_store::booted(
+        crate::min3_store::inline::PLUGIN.plugin(),
+        busbar_plugin_test::FakeNeeds::new(),
+    );
+    let mut spec = h.spec("zero", br#"{"recovery":0}"#);
+    assert!(h.open_spec(&spec).is_err());
+    spec.store_migration = Some(Arc::new(StoreMigrationAdmission::new(false)));
+    drop(
+        h.open_spec(&spec)
+            .expect("explicit Store admission permits zero"),
+    );
+}
+
 mod suite_fixture {
     use super::*;
     use busbar_contract::json::{self, JsonValueTrait, Value};

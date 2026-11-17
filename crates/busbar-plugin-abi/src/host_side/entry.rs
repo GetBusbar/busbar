@@ -65,3 +65,41 @@ pub fn guard<R>(
 ) -> Option<R> {
     crate::host_side::driver::step(slot, entry, out, call)
 }
+
+#[cfg(test)]
+mod migration_tests {
+    use super::*;
+    use crate::host::HostExt;
+    use crate::host_side::host_vt::HOST;
+    use std::sync::Arc;
+
+    #[test]
+    fn migration_scope_restores_after_nested_denial_and_unwind() {
+        let permit = Arc::new(StoreMigrationAdmission::new(true));
+        assert!(HOST.migrate_admit(0).is_err());
+        let _owner = Owning::set(7);
+        let _scope = MigrationScope::set(Some(Arc::clone(&permit)));
+        assert!(HOST.migrate_admit(9).is_ok());
+        let result = std::panic::catch_unwind(|| {
+            let _denied = MigrationScope::set(None);
+            assert!(HOST.migrate_admit(0).is_err());
+            assert!(HOST.migrate_admit(9).is_err());
+            panic!("nested host unwind");
+        });
+        assert!(result.is_err());
+        assert!(HOST.migrate_admit(9).is_ok());
+        assert_eq!(permit.first_refused(), None);
+    }
+
+    #[test]
+    fn first_positive_refusal_is_sticky_and_zero_does_not_clear_it() {
+        let permit = Arc::new(StoreMigrationAdmission::new(false));
+        let _owner = Owning::set(7);
+        let _scope = MigrationScope::set(Some(Arc::clone(&permit)));
+        assert!(HOST.migrate_admit(0).is_ok());
+        assert!(HOST.migrate_admit(u64::MAX).is_err());
+        assert!(HOST.migrate_admit(1).is_err());
+        assert!(HOST.migrate_admit(0).is_ok());
+        assert_eq!(permit.first_refused(), Some(u64::MAX));
+    }
+}

@@ -221,6 +221,8 @@ pub struct Plan {
     looping: Option<u32>,
     deployment: bool,
     install: Option<String>,
+    recovery: Option<u64>,
+    ignore_recovery: bool,
 }
 
 impl Plan {
@@ -252,6 +254,8 @@ impl Plan {
                 .and_then(|n| u32::try_from(n).ok()),
             deployment: config.get("deployment").and_then(|v| v.as_bool()) == Some(true),
             install: text("install"),
+            recovery: config.get("recovery").and_then(number),
+            ignore_recovery: config.get("ignore_recovery").and_then(Value::as_bool) == Some(true),
         }
     }
 }
@@ -284,9 +288,21 @@ impl<const MODE: u8> Open for Fixture<MODE> {
         }
         std::thread::sleep(sleep);
         let held = plan.hold.then(|| HeldOpen(plan.id.clone()));
+        if let Some(count) = plan.recovery {
+            let result = h.migrate_admit(count);
+            if !plan.ignore_recovery {
+                result?;
+            }
+        }
         if let Some(handle) = handle {
             // The backend password: resolved and used once, never kept (wiped on drop).
             drop(secret(handle).await?);
+            if let Some(count) = plan.recovery {
+                let result = h.migrate_admit(count);
+                if !plan.ignore_recovery {
+                    result?;
+                }
+            }
         }
         if let Some(handle) = plan.looping {
             loop {
@@ -307,6 +323,9 @@ impl<const MODE: u8> Open for Fixture<MODE> {
 
     fn check(h: &Host, config: &[u8], _ends: &mut Endpoints<'_>) -> Result<(), Fail> {
         let plan = Plan::of(&object(config)?);
+        if let Some(count) = plan.recovery {
+            h.migrate_admit(count)?;
+        }
         let seen = deployment_seen(h);
         if plan.deployment {
             bump(&plan.id, |c| c.checks_saw.push(seen.clone()));
