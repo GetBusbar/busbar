@@ -56,6 +56,7 @@ pub(crate) fn prepare(
             .map_err(|error| GrammarRefusal(error.to_string()))?;
     }
     let images = builder.finish();
+    crate::root::settings_public::install_native(&images).map_err(GrammarRefusal)?;
     let mut linked: Vec<_> = busbar_kernel::preflight::linked_rows()
         .iter()
         .map(super::linked_row)
@@ -232,6 +233,7 @@ pub(crate) fn fixture(
         builder.admit(image).map_err(|error| error.to_string())?;
     }
     let images = builder.finish();
+    crate::root::settings_public::install_native(&images)?;
     let grammar = crate::root::secret_grammar::of_images(
         &images,
         super::owners_of(&metadata),

@@ -159,8 +159,16 @@ fn install_table(t: Table) -> &'static Table {
 /// The public-settings rows of the admitted native images: each image's D_SCHEMA `x-busbar-public` settings,
 /// under its identity and former names (`Images::public_settings`).
 fn native_rows(images: &busbar_plugin_loader::instance::Images) -> Result<Vec<Row>, String> {
-    let _ = images;
-    Ok(Vec::new())
+    let mut rows = Vec::new();
+    for identity in images.identities() {
+        if let Some(settings) = images.public_settings(identity, &[])? {
+            rows.push(Row {
+                words: settings.words,
+                public: settings.public,
+            });
+        }
+    }
+    Ok(rows)
 }
 
 /// Join the admitted native images' rows to the installed table (once per process: the first boot's images).
