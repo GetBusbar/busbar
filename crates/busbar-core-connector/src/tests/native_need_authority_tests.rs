@@ -260,6 +260,16 @@ impl RefSource for DeniedRefs {
 struct DeniedRecords;
 
 impl PluginRecords for DeniedRecords {
+    fn claim_until(
+        &self,
+        _who: &Caller<'_>,
+        _scope: Scope,
+        _key: &[u8],
+        _value: &[u8],
+        _expires_at_s: u64,
+    ) -> impl core::future::Future<Output = Result<bool, RecordsDenied>> + Send {
+        std::future::ready(Err(RecordsDenied::Unavailable))
+    }
     fn get(
         &self,
         _who: &Caller<'_>,

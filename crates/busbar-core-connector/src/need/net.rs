@@ -27,7 +27,7 @@ use tokio_rustls::TlsConnector;
 use super::exchange;
 use super::tlsconf::Configs;
 use super::{Admission, Dial, Dialled, FetchReq, NeedIo, TlsPlan};
-use crate::io::{register_on, timeout_on, Direction, Registered};
+use crate::io::{register, Direction, Registered};
 use crate::socket::{self, Sock};
 
 /// A dialled socket on the reactor, as a tokio byte stream.
@@ -174,12 +174,11 @@ fn io_err(e: &io::Error) -> NeedErr {
 /// One connect, begun and settled on the reactor.
 async fn connect_one(
     instance: u64,
-    runtime: &tokio::runtime::Handle,
     dest: &str,
     epoch: u64,
     sock: io::Result<Sock>,
 ) -> io::Result<Net> {
-    let sock = register_on(runtime, sock?)?;
+    let sock = register(sock?)?;
     poll_fn(|cx| socket::poll_connected(&sock, cx)).await?;
     Ok(Net {
         sock,
@@ -196,7 +195,6 @@ async fn connect_one(
 /// of anything the plugin sent.
 pub(super) async fn connect(
     instance: u64,
-    runtime: &tokio::runtime::Handle,
     dest: &str,
     epoch: u64,
     addrs: &[SocketAddr],
@@ -205,12 +203,10 @@ pub(super) async fn connect(
 ) -> Result<Net, NeedErr> {
     if let Some(path) = unix {
         #[cfg(unix)]
-        return match timeout_on(
-            runtime,
+        return match tokio::time::timeout(
             timeout,
             connect_one(
                 instance,
-                runtime,
                 dest,
                 epoch,
                 socket::connect_unix(path).map(Sock::Unix),
@@ -239,16 +235,9 @@ pub(super) async fn connect(
             return Err(NeedErr::Timeout);
         }
         let share = left / u32::try_from(addrs.len() - i).unwrap_or(1).max(1);
-        match timeout_on(
-            runtime,
+        match tokio::time::timeout(
             share,
-            connect_one(
-                instance,
-                runtime,
-                dest,
-                epoch,
-                socket::connect(*addr).map(Sock::Tcp),
-            ),
+            connect_one(instance, dest, epoch, socket::connect(*addr).map(Sock::Tcp)),
         )
         .await
         {
@@ -324,16 +313,7 @@ impl ConnectorIo {
     ) -> Result<Net, NeedErr> {
         let epoch = self.state.configs.epoch();
         let operation = async {
-            let mut net = connect(
-                instance,
-                self.runtime(),
-                dest,
-                epoch,
-                &route.addrs,
-                unix,
-                timeout,
-            )
-            .await?;
+            let mut net = connect(instance, dest, epoch, &route.addrs, unix, timeout).await?;
             if let Some(tunnel) = &route.tunnel {
                 use tokio::io::{AsyncReadExt, AsyncWriteExt};
                 let request = busbar_contract::secure::SecureVec::from(
@@ -365,7 +345,7 @@ impl ConnectorIo {
             }
             Ok(net)
         };
-        timeout_on(self.runtime(), timeout, operation)
+        tokio::time::timeout(timeout, operation)
             .await
             .map_err(|_| NeedErr::Timeout)?
     }
@@ -384,7 +364,7 @@ impl ConnectorIo {
             let config = self.configs().get(&host, plan, offered)?;
             handshake(net, config, name).await
         };
-        let result = timeout_on(self.runtime(), timeout, result)
+        let result = tokio::time::timeout(timeout, result)
             .await
             .map_err(|_| NeedErr::Timeout)?;
         if matches!(result, Err(NeedErr::Tls)) {
@@ -407,7 +387,7 @@ impl NeedIo for ConnectorIo {
         duration: Duration,
         future: F,
     ) -> Result<F::Output, NeedErr> {
-        timeout_on(self.runtime(), duration, future)
+        tokio::time::timeout(duration, future)
             .await
             .map_err(|_| NeedErr::Timeout)
     }
@@ -470,7 +450,7 @@ impl NeedIo for ConnectorIo {
                 .map_err(|e| io_err(&e))?;
             Ok::<usize, NeedErr>(n)
         };
-        timeout_on(self.runtime(), timeout, sent)
+        tokio::time::timeout(timeout, sent)
             .await
             .map_err(|_| NeedErr::Timeout)?
     }
@@ -489,7 +469,7 @@ impl NeedIo for ConnectorIo {
                 Poll::Pending => Poll::Pending,
             }
         });
-        timeout_on(self.runtime(), timeout, got)
+        tokio::time::timeout(timeout, got)
             .await
             .map_err(|_| NeedErr::Timeout)?
             .map_err(|e| io_err(&e))

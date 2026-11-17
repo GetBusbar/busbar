@@ -7,8 +7,6 @@
 mod binder;
 #[cfg(test)]
 mod network_tests;
-#[cfg(test)]
-mod network_tests;
 mod pem;
 mod pointer;
 #[cfg(test)]

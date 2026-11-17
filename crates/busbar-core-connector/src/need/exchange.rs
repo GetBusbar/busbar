@@ -154,7 +154,7 @@ pub(super) async fn fetch<P: Reply>(
     reply: &mut P,
 ) -> Result<(), NeedErr> {
     let timeout = req.timeout;
-    crate::io::timeout_on(io.runtime(), timeout, exchange(io, req, admission, reply))
+    tokio::time::timeout(timeout, exchange(io, req, admission, reply))
         .await
         .map_err(|_| NeedErr::Timeout)?
 }
@@ -198,7 +198,7 @@ async fn exchange<P: Reply>(
     let connect_budget = req
         .timeout
         .min(super::dial_policy(req.class).connect_timeout);
-    let (stream, h2) = crate::io::timeout_on(io.runtime(), connect_budget, async {
+    let (stream, h2) = tokio::time::timeout(connect_budget, async {
         let route = admission.dial(host, port, https).await?;
         let net = io
             .connect_route(req.instance, &authority, &route, None, req.timeout)
