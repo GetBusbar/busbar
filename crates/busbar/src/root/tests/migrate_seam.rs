@@ -458,8 +458,9 @@ mod records_step {
 
     fn all(store: &Store, ns: NamespaceId) -> Vec<(Vec<u8>, Vec<u8>)> {
         store
-            .scan(ns, &[], 4096)
+            .scan(ns, None, 4096)
             .unwrap()
+            .rows
             .into_iter()
             .map(|(k, v)| (k, v.to_vec()))
             .collect()
