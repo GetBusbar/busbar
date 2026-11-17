@@ -205,3 +205,30 @@ async fn selected_fee_observer_neither_participates_nor_retains_the_admission_ho
         );
     }
 }
+
+#[tokio::test]
+async fn child_activation_refusal_does_not_mark_original_fee_incurred() {
+    for child in [2, 17] {
+        let (gov, money, unit) = fixture().await;
+        money
+            .install_native_pending(UnitKey::new(1), pending(&gov, &unit), |_, _, _| Ok(()))
+            .unwrap();
+        let parent = money.parent_money(UnitKey::new(1), &unit.key).unwrap();
+        let result: Result<(), NativeAdmissionError> = money.install_child_with(
+            &parent,
+            UnitKey::new(child),
+            "child\u{1f}model".into(),
+            unit.classes.clone(),
+            FeeRefund::CallerStatus,
+            |_, _, _| Err(NativeAdmissionError::NotLive),
+        );
+        assert!(matches!(result, Err(NativeAdmissionError::NotLive)));
+        assert_eq!(money.open_units(), 1);
+        assert_eq!(totals(&gov, &unit).await, (1, 5));
+        assert_eq!(gov.concurrent_in_flight("g"), 1);
+        drop(parent);
+        money.settle_end(UnitKey::new(1), 503);
+        assert_eq!(totals(&gov, &unit).await, (1, 0));
+        assert_eq!(gov.concurrent_in_flight("g"), 0);
+    }
+}
