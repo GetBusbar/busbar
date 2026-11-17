@@ -76,7 +76,7 @@ impl SelectedRateAdmission {
         let prepared = reservation.cancel();
         let Some(policy) = &current.selected_policy else {
             return Err(SelectedCommitRejected::Policy {
-                reason: SelectedPolicyRefusal::CurrentAuthority,
+                reason: SelectedPolicyRefusal::InvalidBinding,
                 prepared,
             });
         };
@@ -86,7 +86,7 @@ impl SelectedRateAdmission {
         };
         let Some(governance) = &current.governance else {
             return Err(SelectedCommitRejected::Policy {
-                reason: SelectedPolicyRefusal::CurrentAuthority,
+                reason: SelectedPolicyRefusal::InvalidBinding,
                 prepared,
             });
         };
@@ -121,7 +121,7 @@ impl SelectedRateAdmission {
             .selected_policy
             .as_ref()
             .ok_or(SelectedHeadroomRejected::Policy(
-                SelectedPolicyRefusal::CurrentAuthority,
+                SelectedPolicyRefusal::InvalidBinding,
             ))?;
         let resolved = policy
             .resolve_headroom(&current, receipt, origin, candidate, definition, now)
@@ -130,7 +130,7 @@ impl SelectedRateAdmission {
             .governance
             .as_ref()
             .ok_or(SelectedHeadroomRejected::Policy(
-                SelectedPolicyRefusal::CurrentAuthority,
+                SelectedPolicyRefusal::InvalidBinding,
             ))?;
         governance
             .selected_rates()
@@ -157,7 +157,7 @@ impl SelectedRateAdmission {
         let current = self.handle.current.load_full();
         let Some(policy) = &current.selected_policy else {
             return Err(SelectedRateRejected::Policy {
-                reason: SelectedPolicyRefusal::CurrentAuthority,
+                reason: SelectedPolicyRefusal::InvalidBinding,
                 prepared,
             });
         };
@@ -167,7 +167,7 @@ impl SelectedRateAdmission {
         };
         let Some(governance) = &current.governance else {
             return Err(SelectedRateRejected::Policy {
-                reason: SelectedPolicyRefusal::CurrentAuthority,
+                reason: SelectedPolicyRefusal::InvalidBinding,
                 prepared,
             });
         };

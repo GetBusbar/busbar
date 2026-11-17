@@ -19,7 +19,7 @@ pub(super) struct FrozenUsage {
     route: Option<u32>,
     origin: Option<crate::plane_driver::route_identity::OriginalPlaneRoute>,
     facts: u64,
-    classes: Vec<UsageClass>,
+    pub(super) classes: Vec<UsageClass>,
     attempt_classes: Vec<Box<str>>,
 }
 
@@ -195,6 +195,9 @@ pub struct RequestDeclaration {
 }
 
 impl RequestDeclaration {
+    pub(crate) fn same_declaration(&self, other: &Self) -> bool {
+        self.context.same_unit(&other.context) && Arc::ptr_eq(&self.declaration, &other.declaration)
+    }
     pub fn original_route(
         &self,
     ) -> Option<&crate::plane_driver::route_identity::OriginalPlaneRoute> {

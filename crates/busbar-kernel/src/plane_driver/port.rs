@@ -86,6 +86,9 @@ struct ServeEffects<'a> {
 }
 
 impl Effects for ServeEffects<'_> {
+    fn admission_owner(&self) -> Option<&Arc<super::port_admission::Pending>> {
+        self.admission.as_ref()
+    }
     fn data(&self) -> Option<&Arc<crate::auth::native_data::NativeDataPending>> {
         self.data.as_ref()
     }
@@ -1231,6 +1234,41 @@ fn drive_blocking(
     };
     match ran {
         Ok(ran) => Ok(Served::Ran(ran)),
+        Err(SessionError::CoreRefused(code)) => {
+            let refusal = refusals.for_core(req.route, code);
+            Ok(Served::Refused(refuse(port, req, &refusal, effects)))
+        }
+        Err(SessionError::SelectedRefused(error)) => {
+            use super::port_egress::SelectedFailure;
+            use crate::governance::selected_policy::SelectedPolicyRefusal;
+            let refusal = match &error.0 {
+                SelectedFailure::Quota => {
+                    refusals.for_core(req.route, busbar_plugin_abi::fail::refused::R_RATE_LIMITED)
+                }
+                SelectedFailure::NoSend
+                | SelectedFailure::Policy(SelectedPolicyRefusal::StalePolicyTarget) => {
+                    refusals.for_core(req.route, busbar_plugin_abi::fail::refused::R_NO_ROUTE)
+                }
+                SelectedFailure::Policy(SelectedPolicyRefusal::CurrentAuthority) => {
+                    return Err(ServeError::Session(SessionError::SelectedRefused(error)))
+                }
+                failure => refusals.for_port(
+                    req.route,
+                    &PortError::Failed {
+                        code: if matches!(failure, SelectedFailure::Backend) {
+                            busbar_plugin_abi::fail::failed::F_UNAVAILABLE
+                        } else {
+                            busbar_plugin_abi::fail::failed::F_INTERNAL
+                        },
+                        text: "".into(),
+                        retry_after_s: None,
+                        backend_status: None,
+                        error: None,
+                    },
+                ),
+            };
+            Ok(Served::Refused(refuse(port, req, &refusal, effects)))
+        }
         Err(SessionError::HookRefused(refusal) | SessionError::AdmissionRefused(refusal)) => {
             Ok(Served::Refused(refuse(port, req, &refusal, effects)))
         }

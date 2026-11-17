@@ -42,6 +42,7 @@ pub use money::native_attempt::NativeRequestMoney;
 pub(crate) use money::native_attempt::PreparedRateAttempt;
 pub(crate) use money::native_attempt::{NativeAttempt, NativeAttemptError, NativeCommitError};
 pub(crate) use money::observation_budget_id;
+pub use money::SelectedTerminalReceipt;
 pub use money::{AdmissionRollback, NativeAdmissionError};
 pub(crate) mod needs;
 mod probe;
