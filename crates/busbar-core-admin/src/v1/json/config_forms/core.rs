@@ -214,4 +214,24 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn selected_limit_schema_is_reachable_and_preserves_complete_scope() {
+        let validator = compiled("Limit");
+        for metric in ["requests", "tokens"] {
+            let valid = json!({"id":"r","upstream_resource":"p/r","per_key":true,"enforcement":"process",metric:1,"per":"minute"});
+            assert!(validator.is_valid(&valid));
+            assert!(
+                serde_json::from_value::<busbar_kernel::config::LimitCfg>(valid.clone()).is_ok()
+            );
+            for field in ["id", "upstream_resource", "per_key", "enforcement"] {
+                let mut incomplete = valid.clone();
+                incomplete.as_object_mut().unwrap().remove(field);
+                assert!(!validator.is_valid(&incomplete), "{incomplete}");
+                assert!(
+                    serde_json::from_value::<busbar_kernel::config::LimitCfg>(incomplete).is_err()
+                );
+            }
+        }
+    }
 }

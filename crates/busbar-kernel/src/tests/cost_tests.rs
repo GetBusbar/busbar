@@ -60,6 +60,16 @@ fn limit(metric: LimitMetric, amount: u64, per: Option<LimitWindow>) -> LimitCfg
     }
 }
 
+#[test]
+fn selected_resource_limits_never_enter_request_money_buckets() {
+    let groups = busbar_contract::yaml::from_str("team:\n  limits:\n    - {requests: 9, per: minute}\n    - {id: rpm, upstream_resource: p/r, per_key: true, enforcement: process, requests: 1, per: minute}\n    - {id: tpm, upstream_resource: p/r, per_key: true, enforcement: process, tokens: 2, per: minute}").unwrap();
+    let cost = CostModel::resolve_parts(None, 0, &groups);
+    let group = cost.group_named("team").unwrap();
+    assert_eq!(group.buckets.len(), 1);
+    assert_eq!(group.buckets[0].requests_cap, Some(9));
+    assert_eq!(group.buckets[0].tokens_cap, None);
+}
+
 fn group(parent: Option<&str>, limits: Vec<LimitCfg>) -> GroupCfg {
     GroupCfg {
         parent: parent.map(str::to_string),
