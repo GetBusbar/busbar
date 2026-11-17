@@ -84,6 +84,48 @@ pub(crate) fn auth_of(effective: u32) -> RouteAuth {
     }
 }
 
+/// The same native route table admitted by the driver seals physical listener claims. The
+/// route id is the renderer's native selector; native render has no legacy dialect number.
+pub(crate) fn guest_lines(
+    seats: &[PortSeat],
+    chain: &[(String, busbar_contract::abi::auth::AuthPoints)],
+) -> Vec<busbar_kernel::guest::Line> {
+    use busbar_contract::abi::transport::route::{method_bit, PATH_EXACT, PATH_PATTERN};
+    use busbar_kernel::guest::{Claimant, Line, LineAuth, Route};
+    seats
+        .iter()
+        .flat_map(|seat| {
+            seat.driver.routes().data.iter().filter_map(|route| {
+                let methods = methods_of(route.methods)
+                    .into_iter()
+                    .fold(0, |mask, method| mask | method_bit(method.as_str()));
+                (methods != 0).then(|| Line {
+                    route: Route {
+                        methods,
+                        path_form: if route.pattern.contains('{') {
+                            PATH_PATTERN
+                        } else {
+                            PATH_EXACT
+                        },
+                        path: route.pattern.to_string(),
+                        fields: Vec::new(),
+                        rung: route.route,
+                    },
+                    claimant: Claimant::Plane(seat.instance.clone()),
+                    dialect: 0,
+                    auth: if auth_of(route.effective) == RouteAuth::Key {
+                        super::serve::chain_auth(chain)
+                    } else {
+                        LineAuth::None
+                    },
+                    upgrade: None,
+                    offered: crate::root::doors::offers_unstated(),
+                })
+            })
+        })
+        .collect()
+}
+
 /// The credential the request carries: the route's own header when it names one (`D_ROUTE_CRED_HEADER`), else the
 /// `Authorization: Bearer` token.
 pub(crate) fn bearer_of(headers: &HeaderMap, cred_header: Option<&str>) -> Option<String> {

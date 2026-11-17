@@ -1926,6 +1926,13 @@ impl ListenerPlan {
                 });
             }
         }
+        for line in crate::root::port_mount::guest_lines(&served.ports, &chain) {
+            lines.push(ListenerPlaneLine {
+                line,
+                transport: self.root_claim()?.into(),
+                root_only: true,
+            });
+        }
         mounted.plane_keys = Some(
             served
                 .planes
@@ -3129,6 +3136,14 @@ pub(crate) fn door_mounts_planned(
         }
     }
 
+    // Without a physical ListenerPlan (the actual-root fixtures), seal the same native lines.
+    // A planned listener already supplied these in its complete immutable guest list.
+    if physical.is_none() {
+        lines.extend(crate::root::port_mount::guest_lines(
+            &served.ports,
+            data_chain,
+        ));
+    }
     for (rung, (path, method, auth)) in (0u32..).zip(core) {
         lines.push(busbar_kernel::guest::Line {
             route: busbar_kernel::guest::Route {
