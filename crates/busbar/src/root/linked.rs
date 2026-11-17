@@ -671,6 +671,7 @@ pub(crate) const HOST_SERIES: &[&str] = &[
     busbar_kernel::snapshot::FAILOVERS_TOTAL,
     busbar_kernel::snapshot::REQUEST_DURATION_SECONDS,
     busbar_kernel::snapshot::TRANSLATIONS_TOTAL,
+    busbar_kernel::snapshot::INSECURE_TRANSPORT_ADMITTED_TOTAL,
     busbar_kernel::snapshot::PLANE_REQUESTS_TOTAL,
     busbar_kernel::snapshot::PLANE_REQUEST_DURATION_SECONDS,
     busbar_kernel::snapshot::LANE_REQUEST_DURATION_SECONDS,

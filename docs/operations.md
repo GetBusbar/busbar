@@ -397,6 +397,7 @@ All metrics are Prometheus counters/histograms exposed at `/metrics`, which is o
 | `busbar_breaker_trips_total` | counter | `pool`, `lane` | Each hard-down/trip. Spikes = a backend going down. |
 | `busbar_failovers_total` | counter | `pool`, `reason` | `reason` is `timeout` / `connect` / `transient_upstream` / `attempt_timeout` / `hard_down` / `context_length`. |
 | `busbar_translations_total` | counter | `from`, `to` | Cross-protocol translation hops. |
+| `busbar_insecure_transport_admitted_total` | counter | `kind`, `instance`, `accept` | Needs (OPEN, STARTTLS, FETCH) admitted under the instance's `insecure_transport.accept` (`plaintext` or `unverified_tls`). It counts admitted Needs, pooled reuse included, not TCP dials. The acceptance itself is audited once at boot (`config.insecure_transport_accepted`). |
 | `busbar_request_duration_seconds` | histogram | `ingress_protocol`, `pool` | Model (LLM) plane only. End-to-end latency. |
 | `busbar_plane_request_duration_seconds` | histogram | `plane`, `ingress_protocol`, `pool` | Mounted planes (`mcp` / `a2a`). End-to-end latency for tool calls and agent tasks. |
 | `busbar_key_spend_cents` | gauge | `key` (+ mint labels) | Per-virtual-key derived spend (all-time attribution bucket), calculated from exact ledger quantities and dated rate history. The legacy metric name does not select a currency; cost units are operator-defined. |
