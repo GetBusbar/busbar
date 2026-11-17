@@ -11,8 +11,7 @@ fn identity(subject: &str, groups: &[&str]) -> Identity {
     for group in groups {
         records.put_text(tag::ID_GROUP, group).unwrap();
     }
-    let VerifyOk::Identity(identity) =
-        decode_verify_ok(Records::new(records.as_bytes())).unwrap()
+    let VerifyOk::Identity(identity) = decode_verify_ok(Records::new(records.as_bytes())).unwrap()
     else {
         panic!("identity records");
     };
@@ -72,7 +71,7 @@ fn native_data_policy_requires_its_provider_binding_and_current_instance_generat
 }
 
 #[test]
-fn native_operator_policy_uses_existing_scope_and_named_verb_decision() {
+fn native_operator_policy_reuses_scopes_and_refuses_an_external_operator_subject() {
     let policy = policy(Surface::Operator {
         chain: Arc::new(super::super::AdminAuthChain {
             modules: Default::default(),
@@ -91,7 +90,11 @@ fn native_operator_policy_uses_existing_scope_and_named_verb_decision() {
         Err(R_POLICY)
     );
     assert_eq!(
-        policy.authorize(41, &identity("operator:local", &[]), &request("GET", "/api/v1/config")),
+        policy.authorize(
+            41,
+            &identity("operator:local", &[]),
+            &request("GET", "/api/v1/config")
+        ),
         Err(R_POLICY),
         "an external provider cannot manufacture the operator principal"
     );
