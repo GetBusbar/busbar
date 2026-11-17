@@ -733,6 +733,7 @@ dependencies = [
  "busbar-plugin-test",
  "busbar-ports",
  "http-body-util",
+ "httparse",
  "hyper",
  "hyper-util",
  "rustls",
