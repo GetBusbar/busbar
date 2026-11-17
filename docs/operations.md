@@ -207,6 +207,24 @@ check. A client with a missing or wrong certificate is dropped at handshake; the
 rejection is contained to that one connection and never affects the server or other
 clients.
 
+### Readiness propagation before shutdown
+
+The first operator signal or an admin restart released by its asking unit immediately makes
+`/readyz` return 503. `/livez` remains independent of this shutdown state. Existing listeners,
+ordinary request handling and credential refresh continue for the boot-captured
+`advanced.shutdown.deregister_delay` (default `5s`, configurable `0s..300s`). At that fixed
+deadline listeners begin draining and the full 20-second engine drain starts. Repeated operator
+requests do not restart the allowance. Native writer renewal continues until retirement.
+
+A persistence safety failure or natural end of serving skips propagation and starts draining.
+A second OS signal skips propagation and permanently expires the drain clock. These safety
+paths intentionally give up the ordinary propagation allowance.
+
+Set supervisor grace to at least `deregister_delay + 20s + 6s + operator margin`. The default
+therefore requires 31 seconds before margin; the Kubernetes example uses 40 seconds. Increase
+both the allowance and grace if your endpoint/load-balancer propagation needs more time. The
+allowance does not guarantee delivery through an arbitrarily slow external load balancer.
+
 ### Certificate rotation
 
 Certs are loaded once at startup, so rotation always needs a restart. It does not, however, need a
@@ -379,6 +397,7 @@ All metrics are Prometheus counters/histograms exposed at `/metrics`, which is o
 | `busbar_breaker_trips_total` | counter | `pool`, `lane` | Each hard-down/trip. Spikes = a backend going down. |
 | `busbar_failovers_total` | counter | `pool`, `reason` | `reason` is `timeout` / `connect` / `transient_upstream` / `attempt_timeout` / `hard_down` / `context_length`. |
 | `busbar_translations_total` | counter | `from`, `to` | Cross-protocol translation hops. |
+| `busbar_insecure_transport_admitted_total` | counter | `kind`, `instance`, `accept` | Needs (OPEN, STARTTLS, FETCH) admitted under the instance's `insecure_transport.accept` (`plaintext` or `unverified_tls`). It counts admitted Needs, pooled reuse included, not TCP dials. The acceptance itself is audited once at boot (`config.insecure_transport_accepted`). |
 | `busbar_request_duration_seconds` | histogram | `ingress_protocol`, `pool` | Model (LLM) plane only. End-to-end latency. |
 | `busbar_plane_request_duration_seconds` | histogram | `plane`, `ingress_protocol`, `pool` | Mounted planes (`mcp` / `a2a`). End-to-end latency for tool calls and agent tasks. |
 | `busbar_key_spend_cents` | gauge | `key` (+ mint labels) | Per-virtual-key derived spend (all-time attribution bucket), calculated from exact ledger quantities and dated rate history. The legacy metric name does not select a currency; cost units are operator-defined. |

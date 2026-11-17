@@ -1,10 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Observe registered, initialized request bytes while their allocation is still live.
+//! Owned exchange-request bytes are wiped on every exit (Q24, UNSAFE-MIN §4.4). Each buffer in turn
+//! carries a fresh canary; the request leaves by return, failure, cancellation, a clone's drop, its
+//! last shared owner, a transfer or unwinding, or is framed into (or refused by) an exchange; then a
+//! scan of this process's memory must not find the canary. Wherever an owner is still alive
+//! part-way, the canary must still be found. Linux only (A23).
+#![cfg(target_os = "linux")]
+#![forbid(unsafe_code)]
 
-use std::alloc::{GlobalAlloc, Layout, System};
-use std::cell::Cell;
 use std::future::Future;
 use std::sync::Arc;
 use std::task::{Context, Poll, Waker};
@@ -12,67 +16,17 @@ use std::task::{Context, Poll, Waker};
 use busbar_contract::abi::sdk::exchange::{Exchange, Request};
 use busbar_contract::secure::SecureVec;
 
-thread_local! {
-    static WATCH: Cell<Option<(usize, usize)>> = const { Cell::new(None) };
-    static WIPED: Cell<Option<bool>> = const { Cell::new(None) };
-}
+#[allow(dead_code)]
+#[path = "../../busbar-plugin-test/src/canary_scan.rs"]
+mod canary_scan;
 
-struct InspectBeforeFree;
+use canary_scan::WipeProof;
 
-// SAFETY: allocations are forwarded unchanged to System. The observer reads only the initialized
-// prefix registered by this thread, before forwarding that same live allocation to System.
-unsafe impl GlobalAlloc for InspectBeforeFree {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        // SAFETY: the allocator caller supplies a valid layout.
-        unsafe { System.alloc(layout) }
-    }
-
-    unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
-        let _ = WATCH.try_with(|watch| {
-            if let Some((_, len)) = watch
-                .get()
-                .filter(|(address, _)| *address == pointer.addr())
-            {
-                watch.set(None);
-                let wiped = len <= layout.size()
-                    && (0..len).all(|index| {
-                        // SAFETY: registration identified initialized Vec contents. This matching
-                        // live allocation has not been freed. Read through dealloc's current
-                        // owning pointer, not the shared registration borrow. No padding or
-                        // spare capacity is read.
-                        unsafe { pointer.add(index).read_volatile() == 0 }
-                    });
-                let _ = WIPED.try_with(|result| result.set(Some(wiped)));
-            }
-        });
-        // SAFETY: pointer and layout describe the allocator caller's live allocation.
-        unsafe { System.dealloc(pointer, layout) }
-    }
-}
-
+/// The shipped allocator, so the scan reads what production would leave behind.
 #[global_allocator]
-static ALLOCATOR: InspectBeforeFree = InspectBeforeFree;
+static ALLOCATOR: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
-fn watch(bytes: &[u8]) {
-    assert!(!bytes.is_empty());
-    WATCH.with(|watched| {
-        assert!(watched.get().is_none());
-        watched.set(Some((bytes.as_ptr().addr(), bytes.len())));
-    });
-    WIPED.with(|result| result.set(None));
-}
-
-fn request() -> Request {
-    Request {
-        method: b"private-method".to_vec(),
-        target: b"/private-target?credential=private-query".to_vec(),
-        fields: vec![(b"private-name".to_vec(), b"private-value".to_vec())],
-        body: br#"{"credential":"private-body"}"#.to_vec(),
-        timeout_ms: Request::default().timeout_ms,
-    }
-}
-
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Field {
     Method,
     Target,
@@ -81,15 +35,24 @@ enum Field {
     Body,
 }
 
-impl Field {
-    fn bytes(self, request: &Request) -> &[u8] {
-        match self {
-            Self::Method => &request.method,
-            Self::Target => &request.target,
-            Self::Name => &request.fields[0].0,
-            Self::Value => &request.fields[0].1,
-            Self::Body => &request.body,
+/// A request whose `field` holds `secret` (its only copy); every other buffer is plain.
+fn request(field: Field, secret: &[u8]) -> Request {
+    let pick = |name: Field, plain: &[u8]| {
+        if field == name {
+            secret.to_vec()
+        } else {
+            plain.to_vec()
         }
+    };
+    Request {
+        method: pick(Field::Method, b"private-method"),
+        target: pick(Field::Target, b"/private-target?credential=private-query"),
+        fields: vec![(
+            pick(Field::Name, b"private-name"),
+            pick(Field::Value, b"private-value"),
+        )],
+        body: pick(Field::Body, br#"{"credential":"private-body"}"#),
+        timeout_ms: Request::default().timeout_ms,
     }
 }
 
@@ -113,16 +76,19 @@ fn returned(_request: Request, fail: bool) -> Result<(), ()> {
 }
 
 #[test]
-fn the_registered_payload_witness_distinguishes_plain_and_wiped_vectors() {
-    let plain = b"plain-initialized-control".to_vec();
-    watch(&plain);
+fn the_scan_distinguishes_plain_and_wiped_vectors() {
+    let proof = WipeProof::new();
+    let plain = proof.payload().to_vec();
     drop(plain);
-    assert_eq!(WIPED.with(Cell::get), Some(false));
+    assert!(
+        proof.canary_copies("a plain vector") >= 1,
+        "a plain vector's freed bytes must be found"
+    );
 
-    let wiped = SecureVec::from(b"wiped-initialized-control".to_vec());
-    watch(&wiped);
+    let proof = WipeProof::new();
+    let wiped = SecureVec::from(proof.payload().to_vec());
     drop(wiped);
-    assert_eq!(WIPED.with(Cell::get), Some(true));
+    proof.assert_absent("a SecureVec");
 }
 
 #[test]
@@ -143,13 +109,16 @@ fn request_payloads_wipe_on_return_failure_cancel_clone_and_last_owner_drop() {
             Exit::Transfer,
             Exit::Panic,
         ] {
-            let mut request = request();
+            let what = format!("{field:?} on {exit:?}");
+            let mut proof = WipeProof::text();
+            let staging = proof.text_payload();
+            let mut request = request(field, staging.as_bytes());
+            drop(staging);
             if matches!(exit, Exit::Clone) {
                 let clone = request.clone();
                 drop(request);
                 request = clone;
             }
-            watch(field.bytes(&request));
             match exit {
                 Exit::Panic => {
                     let unwound = std::panic::catch_unwind(move || {
@@ -170,14 +139,14 @@ fn request_payloads_wipe_on_return_failure_cancel_clone_and_last_owner_drop() {
                             .poll(&mut Context::from_waker(Waker::noop())),
                         Poll::Pending
                     );
-                    assert_eq!(WIPED.with(Cell::get), None);
+                    proof.assert_held("the pending future still owns the request");
                     drop(pending);
                 }
                 Exit::Shared => {
                     let shared = Arc::new(request);
                     let last = Arc::clone(&shared);
                     drop(shared);
-                    assert_eq!(WIPED.with(Cell::get), None);
+                    proof.assert_held("the last shared owner still holds the request");
                     drop(last);
                 }
                 Exit::Transfer => {
@@ -189,7 +158,7 @@ fn request_payloads_wipe_on_return_failure_cancel_clone_and_last_owner_drop() {
                         timeout_ms: request.timeout_ms,
                     };
                     drop(request);
-                    assert_eq!(WIPED.with(Cell::get), None);
+                    proof.assert_held("the final owner still holds the request");
                     drop(final_owner);
                 }
                 _ => {
@@ -197,26 +166,30 @@ fn request_payloads_wipe_on_return_failure_cancel_clone_and_last_owner_drop() {
                     assert_eq!(returned(request, fail).is_err(), fail);
                 }
             }
-            assert_eq!(WIPED.with(Cell::get), Some(true), "{field:?} on {exit:?}");
+            proof.assert_absent(&what);
         }
     }
 }
 
 #[test]
 fn framing_transfers_the_body_without_releasing_it_before_the_exchange_owner() {
-    let request = request();
-    watch(&request.body);
+    let mut proof = WipeProof::text();
+    let staging = proof.text_payload();
+    let request = request(Field::Body, staging.as_bytes());
+    drop(staging);
     let exchange = Exchange::request(request).expect("the request frames");
-    assert_eq!(WIPED.with(Cell::get), None);
+    proof.assert_held("the exchange owns the framed body");
     drop(exchange);
-    assert_eq!(WIPED.with(Cell::get), Some(true));
+    proof.assert_absent("the exchange owner's drop");
 }
 
 #[test]
 fn a_refused_request_wipes_the_body_it_never_sent() {
-    let mut request = request();
+    let proof = WipeProof::text();
+    let staging = proof.text_payload();
+    let mut request = request(Field::Body, staging.as_bytes());
+    drop(staging);
     request.fields[0].0.insert(0, b':');
-    watch(&request.body);
     assert!(Exchange::request(request).is_err());
-    assert_eq!(WIPED.with(Cell::get), Some(true));
+    proof.assert_absent("a refused request");
 }

@@ -27,6 +27,11 @@ const RANGE_DETAILS: &str = r#"{"type":"object","additionalProperties":false,"re
 const PLUGIN_REFUSED_DETAILS: &str = r#"{"type":"object","additionalProperties":false,"required":["refusal","field","have","want","link"],"properties":{"refusal":{"type":"string"},"field":{"type":"string"},"have":{"type":"string"},"want":{"type":"string"},"link":{"type":["string","null"]},"byte":{"type":"integer"},"rule":{"type":"string"}}}"#;
 /// `PluginTextDetails` (section 1.3): a plugin's own words and code, scrubbed, never in `message`.
 const PLUGIN_TEXT_DETAILS: &str = r#"{"type":"object","additionalProperties":false,"required":["text","plugin_diag"],"properties":{"text":{"type":["string","null"]},"plugin_diag":{"type":["string","null"]},"condition":{"type":["string","null"]}}}"#;
+/// The `details` of an unknown trust decision outcome (TRUST-ADMIN-PRODUCER-DESIGN r3 §4.5): the
+/// attempt the replay of the same `Idempotency-Key` resolves. Absent on every other 503.
+const SERVICE_UNAVAILABLE_DETAILS: &str = r#"{"type":"object","additionalProperties":false,"properties":{"key":{"type":"string"},"ruling":{"enum":["approve","revoke"]},"decided_at":{"type":"integer","description":"Wall seconds the attempt was stamped at"},"decided_by":{"type":"object","required":["kind","id"],"properties":{"kind":{"const":"principal"},"id":{"type":"string"}}},"operation":{"type":["string","null"],"description":"The deciding request's Idempotency-Key"}}}"#;
+/// The `details` of `outcome_not_applied` (r3 §4.6): the replayed operation and its stamp.
+const OUTCOME_NOT_APPLIED_DETAILS: &str = r#"{"type":"object","additionalProperties":false,"required":["operation","decided_at"],"properties":{"operation":{"type":["string","null"]},"decided_at":{"type":"integer"}}}"#;
 
 macro_rules! row {
     ($r:literal, $c:literal, $h:literal) => {
@@ -135,12 +140,17 @@ pub const REASONS: &[ReasonRow] = &[
     // The frozen codes that no condition names.
     row!("method_not_allowed", "method_not_allowed", 405),
     row!("mutation_budget", "rate_limited", 429),
-    row!("service_unavailable", "unavailable", 503),
+    row!("service_unavailable", "unavailable", 503, details SERVICE_UNAVAILABLE_DETAILS),
     row!("request_too_large", "request_too_large", 413),
     row!("state_conflict", "conflict", 409),
     row!("idempotency_mismatch", "conflict", 409),
     row!("mutation_applied", "conflict", 409),
     row!("action_in_flight", "conflict", 409),
+    // TRUST-ADMIN-PRODUCER-DESIGN r3 §4.1, §4.6: the trust decision reasons, stable.
+    row!("reviewed_digest_required", "invalid_request", 428),
+    row!("reviewed_digest_stale", "conflict", 409),
+    row!("decision_in_progress", "conflict", 409),
+    row!("outcome_not_applied", "conflict", 409, details OUTCOME_NOT_APPLIED_DETAILS),
 ];
 
 /// The closed list of `refusal` names a `plugin_refused` carries: the snake-case names of the 22

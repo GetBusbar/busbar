@@ -1485,14 +1485,13 @@ pub(crate) async fn reset_overlay_section(
 
 
                 if let Some(doc) = cleared_doc.as_ref() {
+                    loaded.resource_ownership.validate_named_maps(doc)?;
                     busbar_kernel::config::overlay::apply_root_to_deploy(&mut loaded.deploy, doc)?;
                 }
                 let mut cfg = busbar_kernel::config::resolve(&loaded.deploy, &loaded.defs)
                     .map_err(|errs| format!("config errors:\n  - {}", errs.join("\n  - ")))?;
-                let base_hook_names: std::collections::HashSet<String> =
-                    cfg.hooks.keys().cloned().collect();
-                let base_group_names: std::collections::HashSet<String> =
-                    cfg.groups.keys().cloned().collect();
+                let base_hook_names = loaded.resource_ownership.hook_names().clone();
+                let base_group_names = loaded.resource_ownership.group_names().clone();
 
 
                 if let Some(doc) = cleared_doc {
@@ -2226,8 +2225,8 @@ pub(crate) async fn rebuild_app_from_disk(
 
     let mut cfg = loaded.disk_candidate().map_err(AdminError::Validation)?;
 
-    let base_hook_names: std::collections::HashSet<String> = cfg.hooks.keys().cloned().collect();
-    let base_group_names: std::collections::HashSet<String> = cfg.groups.keys().cloned().collect();
+    let base_hook_names = loaded.resource_ownership.hook_names().clone();
+    let base_group_names = loaded.resource_ownership.group_names().clone();
     if let Some(doc) = loaded.overlay_doc {
         busbar_kernel::config::overlay::merge_into(&mut cfg, doc);
     }
@@ -2453,7 +2452,10 @@ async fn read_apply_body(
         "config.apply",
     )
     .await?;
-    let deploy = typed_body(config, &grammar, parse)?;
+    let mut deploy = typed_body(config, grammar.grammar(), parse)?;
+    grammar
+        .attach(&mut deploy)
+        .map_err(AdminError::Validation)?;
     if let Some(refusal) =
         config_body_refusal(&deploy, &snapshot.operator_file_defs, "config.apply")
     {
@@ -2530,7 +2532,11 @@ pub(crate) async fn apply_config(
                     Ok(deploy) => deploy,
                     Err(refusal) => return Ok(Outcome::Value(Applied::FilePolicy(refusal))),
                 };
+            let resource_ownership = busbar_kernel::config::ResourceOwnership::capture(&deploy);
             if let Some(doc) = overlay_doc.as_ref() {
+                resource_ownership
+                    .validate_named_maps(doc)
+                    .map_err(AdminError::Validation)?;
                 busbar_kernel::config::overlay::apply_root_to_deploy(&mut deploy, doc)
                     .map_err(AdminError::Validation)?;
 
@@ -2541,10 +2547,8 @@ pub(crate) async fn apply_config(
                     .map_err(|errs| format!("config errors:\n  - {}", errs.join("\n  - ")))?;
                 // The body is held to the running generation's disk reference (§3.6.1).
                 cfg.operator_file_defs = Some(Arc::clone(&snapshot.operator_file_defs));
-                let base_hook_names: std::collections::HashSet<String> =
-                    cfg.hooks.keys().cloned().collect();
-                let base_group_names: std::collections::HashSet<String> =
-                    cfg.groups.keys().cloned().collect();
+                let base_hook_names = resource_ownership.hook_names().clone();
+                let base_group_names = resource_ownership.group_names().clone();
                 if let Some(doc) = overlay_doc {
                     busbar_kernel::config::overlay::merge_into(&mut cfg, doc);
                 }
@@ -2957,6 +2961,9 @@ pub(crate) async fn put_config_settings(
             )
             .await?;
             let next = Box::pin(async {
+                if let Some(doc) = loaded.overlay_doc.as_ref() {
+                    loaded.resource_ownership.validate_named_maps(doc)?;
+                }
                 merged_for_build.apply_to_deploy(&mut loaded.deploy);
 
                 if let Some(doc) = loaded.overlay_doc.as_ref() {
@@ -2967,10 +2974,8 @@ pub(crate) async fn put_config_settings(
                 }
                 let mut cfg = busbar_kernel::config::resolve(&loaded.deploy, &loaded.defs)
                     .map_err(|errs| format!("config errors:\n  - {}", errs.join("\n  - ")))?;
-                let base_hook_names: std::collections::HashSet<String> =
-                    cfg.hooks.keys().cloned().collect();
-                let base_group_names: std::collections::HashSet<String> =
-                    cfg.groups.keys().cloned().collect();
+                let base_hook_names = loaded.resource_ownership.hook_names().clone();
+                let base_group_names = loaded.resource_ownership.group_names().clone();
                 if let Some(doc) = loaded.overlay_doc {
                     busbar_kernel::config::overlay::merge_into(&mut cfg, doc);
                 }
@@ -4839,6 +4844,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         );
     }
 
+    super::kinds::doc::trust_components(&mut gen);
     let mut schemas = gen.definitions().clone();
     schemas.insert(
         "ConfigSettingsMutationView".to_string(),
@@ -4893,30 +4899,6 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         }),
     );
 
-    for decl in busbar_kernel::plane_driver::registry::plane_decls() {
-        if decl.openapi.is_none() && decl.named_def_list.is_none() {
-            continue;
-        }
-        let root = ap(&format!("/{}", decl.config_section));
-        let nested = format!("{root}/");
-        for (path, item) in paths.iter_mut() {
-            if *path != root && !path.starts_with(&nested) {
-                continue;
-            }
-            let Some(item) = item.as_object_mut() else {
-                continue;
-            };
-            for (method, op) in item.iter_mut() {
-                if method.starts_with("x-") {
-                    continue;
-                }
-                if let Some(op) = op.as_object_mut() {
-                    op.insert("x-busbar-plane".to_string(), json!(decl.config_section));
-                }
-            }
-        }
-    }
-
     super::config_forms::insert_core_components(&mut schemas);
     super::contract_metadata::complete(&mut paths, &mut schemas);
 
@@ -4948,11 +4930,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
             // client already has): how to read the marks the one document carries.
             "x-busbar-marks": {
                 "scope": "ONE generated document, describing every administrative operation this \
-                          build can serve; a node serves it filtered to the planes it configured.",
-                "x-busbar-plane": "The operation is mounted only on a node whose config carries \
-                                   that plane's `<section>:` block; elsewhere its path answers \
-                                   `404 not_found` and the node's served `GET /openapi.json` \
-                                   omits it (and every schema only it references).",
+                          build can serve, served unfiltered.",
                 "x-busbar-since": "Added in that release, and answered by the node's \
                                    administrative loop.",
                 "money": "Money fields use the representation declared by their schema: ledger \
@@ -5069,31 +5047,14 @@ pub(crate) fn openapi_json() -> String {
     out
 }
 
-pub(crate) async fn openapi(State(handle): State<Arc<AppHandle>>) -> Response {
-    let app = handle.load();
-
-    render_openapi(move |section: &str| {
-        busbar_kernel::plane_driver::registry::plane_decl_for_config_section(section)
-            .is_some_and(|decl| app.plane_configured(decl))
-    })
-    .await
+/// `GET /openapi.json`: the one generated document, unfiltered (ADMIN-API-1.6 r5, #304). It is
+/// inflated off the async worker.
+pub(crate) async fn openapi() -> Response {
+    render_openapi().await
 }
 
-pub(super) async fn render_openapi(configured: impl Fn(&str) -> bool + Send + 'static) -> Response {
-    render_openapi_of(openapi_json, configured).await
-}
-
-/// [`render_openapi`] over the document `committed` produces.
-pub(super) async fn render_openapi_of(
-    committed: impl FnOnce() -> String + Send + 'static,
-    configured: impl Fn(&str) -> bool + Send + 'static,
-) -> Response {
-    let served = tokio::task::spawn_blocking(move || {
-        let committed = committed();
-        openapi_for_configured_planes(&committed, configured).unwrap_or(committed)
-    })
-    .await;
-    match served {
+pub(super) async fn render_openapi() -> Response {
+    match tokio::task::spawn_blocking(openapi_json).await {
         Ok(body) => openapi_document_response(body),
         Err(join_err) => {
             diag_error!(
@@ -5114,85 +5075,6 @@ pub(super) fn openapi_document_response(body: String) -> Response {
         body,
     )
         .into_response()
-}
-
-pub(crate) fn openapi_for_configured_planes(
-    committed: &str,
-    configured: impl Fn(&str) -> bool,
-) -> Option<String> {
-    use busbar_contract::json::{
-        self, JsonContainerTrait as _, JsonValueMutTrait as _, JsonValueTrait as _,
-    };
-    let mut doc = json::parse_value(committed.as_bytes()).ok()?;
-    let reachable_before = openapi_reachable_schemas(&doc);
-    let mut dropped = false;
-    let paths = doc.get_mut("paths")?.as_object_mut()?;
-    for (_, item) in paths.iter_mut() {
-        let Some(item) = item.as_object_mut() else {
-            continue;
-        };
-        item.retain(|method, op| {
-            if method.starts_with("x-") {
-                return true;
-            }
-            match op.get("x-busbar-plane").and_then(|p| p.as_str()) {
-                Some(section) if !configured(section) => {
-                    dropped = true;
-                    false
-                }
-                _ => true,
-            }
-        });
-    }
-    if !dropped {
-        return None;
-    }
-    paths.retain(|_, item| {
-        item.as_object()
-            .is_some_and(|o| o.iter().any(|(k, _)| !k.starts_with("x-")))
-    });
-    let reachable_after = openapi_reachable_schemas(&doc);
-    if let Some(schemas) =
-        json::pointer_mut(&mut doc, "/components/schemas").and_then(|s| s.as_object_mut())
-    {
-        schemas
-            .retain(|name, _| !reachable_before.contains(name) || reachable_after.contains(name));
-    }
-    json::to_string_pretty(&doc)
-        .ok()
-        .map(|text| format!("{text}\n"))
-}
-
-fn openapi_reachable_schemas(
-    doc: &busbar_contract::json::Value,
-) -> std::collections::BTreeSet<String> {
-    use busbar_contract::json::{self, JsonContainerTrait as _, JsonValueTrait as _};
-    fn refs(v: &json::Value, out: &mut Vec<String>) {
-        if let Some(map) = v.as_object() {
-            if let Some(r) = map.get(&"$ref").and_then(|r| r.as_str()) {
-                if let Some(name) = r.strip_prefix("#/components/schemas/") {
-                    out.push(name.to_string());
-                }
-            }
-            map.iter().for_each(|(_, v)| refs(v, out));
-        } else if let Some(items) = v.as_array() {
-            items.iter().for_each(|v| refs(v, out));
-        }
-    }
-    let schemas = json::pointer(doc, "/components/schemas");
-    let mut pending = Vec::new();
-    if let Some(paths) = doc.get("paths") {
-        refs(paths, &mut pending);
-    }
-    let mut seen = std::collections::BTreeSet::new();
-    while let Some(name) = pending.pop() {
-        if seen.insert(name.clone()) {
-            if let Some(schema) = schemas.and_then(|s| s.get(name.as_str())) {
-                refs(schema, &mut pending);
-            }
-        }
-    }
-    seen
 }
 
 /// The `POST /api/v1/admin/config/validate` request body: a full proposed config — the `config.yaml`

@@ -545,9 +545,23 @@ fn the_demotion_owner_is_the_one_plane_declaring_the_demotion_kind() {
 #[tokio::test(flavor = "multi_thread")]
 async fn constructed_services_sign_and_write_trust_changes_down() {
     use busbar_kernel::host_services::{InstanceFacts, Signing};
+    use busbar_kernel::trust::book::{Reviewed, Ruling};
     use busbar_kernel::trust::reverify::Policy;
     use busbar_kernel::trust::section::TrustEntry;
-    let late = Services::serving(Arc::new(kernel(&[])));
+    // The operator reviews the key's current `seen` and then decides (r3 §10.1 (R)).
+    let current_seen = |k: &KernelServices| {
+        k.trust_rows()
+            .into_iter()
+            .find(|row| row.key() == "owner/peer")
+            .and_then(|row| row.seen)
+    };
+    // Decisions need bound custody (r3 §10.1 (F), A-C1): a record over an in-memory Store whose
+    // owner is not this caller, so this source's drift is still not written down.
+    let custody = Arc::new(DemotionRecord::default());
+    custody
+        .set_store(crate::root::real_store::core().await)
+        .expect("a fresh record attaches");
+    let late = Services::serving(Arc::new(kernel(&[]).with_demotions(custody, "")));
     let k = late.kernel().expect("kept");
 
     let entry = TrustEntry {
@@ -600,9 +614,17 @@ async fn constructed_services_sign_and_write_trust_changes_down() {
     );
 
     assert_eq!(sight("h1"), (svc::TRUST_NEW, false));
-    k.trust_rule("owner/peer", busbar_kernel::trust::book::Ruling::Approve)
-        .await
-        .expect("approved");
+    let seen = current_seen(&k);
+    k.trust_rule_by(
+        "owner/peer",
+        Ruling::Approve,
+        seen.as_deref().map_or(Reviewed::Unsighted, Reviewed::Seen),
+        "op",
+        None,
+    )
+    .await
+    .result
+    .expect("approved");
     assert_eq!(sight("h1"), (svc::TRUST_SAME, false));
     assert_eq!(sight("h2"), (svc::TRUST_DRIFTED, false), "not written down");
     let demotions = Arc::new(DemotionRecord::default());
@@ -641,9 +663,17 @@ async fn constructed_services_sign_and_write_trust_changes_down() {
         }
     };
     assert_eq!(complete_sight("h1"), (svc::TRUST_NEW, false));
+    let seen = current_seen(&complete_kernel);
     complete_kernel
-        .trust_rule("owner/peer", busbar_kernel::trust::book::Ruling::Approve)
+        .trust_rule_by(
+            "owner/peer",
+            Ruling::Approve,
+            seen.as_deref().map_or(Reviewed::Unsighted, Reviewed::Seen),
+            "op",
+            None,
+        )
         .await
+        .result
         .expect("complete approved");
     assert_eq!(complete_sight("h1"), (svc::TRUST_SAME, false));
     assert_eq!(
@@ -775,7 +805,10 @@ async fn a_framed_claims_caller_reads_the_deframed_messages() {
         carrier: 0,
     };
     let messages = vec![b"ab".to_vec(), b"cd".to_vec()];
-    let (arrival, caller, _reply) = deframed_arrival(framed, messages);
+    let request = busbar_kernel::limits::process_admission::ProcessAdmission::new(0)
+        .try_enter(busbar_kernel::limits::process_admission::AdmissionClass::Data)
+        .unwrap();
+    let (arrival, caller, _reply) = deframed_arrival(framed, messages, &request).unwrap();
     assert_eq!(
         &arrival.body[..],
         b"abcd",
@@ -786,6 +819,55 @@ async fn a_framed_claims_caller_reads_the_deframed_messages() {
         Some(&b"abcd"[..]),
         "the caller leg reads the messages, never the framing"
     );
+}
+
+#[tokio::test]
+async fn a_budgeted_pipe_moves_custody_through_owned_reads_only() {
+    use busbar_kernel::limits::process_admission::{AdmissionClass, ProcessAdmission};
+    use busbar_kernel::plane_driver::SessionCaller as _;
+    let budget = ProcessAdmission::new(2);
+    let request = budget.try_enter(AdmissionClass::Data).unwrap();
+    let (from, received) = mpsc::channel(1);
+    let (to, _) = mpsc::channel(1);
+    let caller = PipeCaller {
+        from: tokio::sync::Mutex::new(received),
+        to,
+    };
+    let input = request
+        .adopt_input(b"owned".to_vec())
+        .unwrap()
+        .into_session_input();
+    assert!(from.send(input).await.is_ok());
+    assert!(
+        caller.read().await.is_none(),
+        "a bare read cannot strip or dequeue ownership"
+    );
+    let input = caller.read_owned().await.unwrap();
+    assert_eq!(input.bytes, b"owned");
+    drop(caller);
+    drop(from);
+    drop(request);
+    assert!(
+        budget.try_enter(AdmissionClass::Data).is_err(),
+        "the detached input still owns its request slot"
+    );
+    assert!(budget.try_enter(AdmissionClass::Operator).is_ok());
+    drop(input);
+    assert!(budget.try_enter(AdmissionClass::Data).is_ok());
+}
+
+#[test]
+fn a_failed_decoded_gather_retires_every_partial_payload_credit() {
+    use busbar_kernel::limits::process_admission::{AdmissionClass, ProcessAdmission};
+    let budget = ProcessAdmission::new(2);
+    let request = budget.try_enter(AdmissionClass::Data).unwrap();
+    let full = request.try_reserve(224 * 1024 * 1024 - 3).unwrap();
+    assert!(gathered_input(vec![b"ab".to_vec(), b"cd".to_vec()], &request).is_err());
+    assert!(
+        request.try_reserve(3).is_ok(),
+        "the refused gather keeps no partial credit"
+    );
+    drop(full);
 }
 
 #[test]
@@ -1042,4 +1124,15 @@ async fn record_unit_is_request_id() {
     for other in [other_node, restarted] {
         assert_ne!(other.map(|o| o.to_string()), Some(canonical.clone()));
     }
+}
+
+#[test]
+fn admin_trust_binds_one_kernel() {
+    let kernel = Arc::new(KernelServices::new());
+    let services = Services::serving(Arc::clone(&kernel));
+    let (decide, read) = admin_trust(&services);
+    assert!(decide.as_ref().is_some_and(|k| Arc::ptr_eq(k, &kernel)));
+    assert!(read.as_ref().is_some_and(|r| r.same_kernel(&kernel)));
+    let (decide, read) = admin_trust(&Services::bootstrap());
+    assert!(decide.is_none() && read.is_none());
 }

@@ -9,7 +9,7 @@
 //! There is no per-instance `limits` key and no `routes` section: an instance
 //! runs at its kind's defaults, and the plugin's settled LIMITS answer is applied in memory at its open.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use busbar_contract::config::UpstreamCreds;
 use busbar_contract::json::{
@@ -23,13 +23,34 @@ use super::DeployCfg;
 
 /// Every MIN-3 key of one config load, carried on [`RootCfg::min3`](super::RootCfg::min3). Empty (the default)
 /// for a config that writes none of them.
-#[derive(Clone, Default, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Min3Config {
+    /// Checked host outbound credential custody policy (IF §12.18).
+    pub outbound: crate::custody::CredPolicy,
+    /// Checked host refresh interval (IF §8.3), never a plugin setting.
+    pub unknown_key_refresh_s: u64,
+    /// Explicit issued-kind grants keyed by configured auth instance, never image name.
+    pub issued_kinds: BTreeMap<Box<str>, BTreeSet<Box<str>>>,
+    /// The checked core-owned `auth.verdict_cache` policy (IF §12.28).
+    pub verdict_cache: crate::auth::verdicts::VerdictPolicy,
     /// `identity-providers.<name>.provisioning`, by configured auth instance name (IF §12.29).
     pub provisioning: BTreeMap<Box<str>, ProvisioningCfg>,
     /// `<kind>.<name>.insecure_transport`, by (kind section, configured instance name) (TRANSPORT-SECURITY-POLICY
     /// §4); absent = verified TLS only. Read into `InstanceLimits.accept` by `appbuild::instance_limits`.
     pub insecure_transport: InsecureTransportMap,
+}
+
+impl Default for Min3Config {
+    fn default() -> Self {
+        Self {
+            outbound: crate::custody::CredPolicy::DEFAULT,
+            unknown_key_refresh_s: 30,
+            issued_kinds: BTreeMap::new(),
+            verdict_cache: Default::default(),
+            provisioning: BTreeMap::new(),
+            insecure_transport: BTreeMap::new(),
+        }
+    }
 }
 
 /// Per-instance `insecure_transport`, by (kind section, configured instance name).
@@ -38,6 +59,8 @@ pub type InsecureTransportMap = BTreeMap<(Box<str>, Box<str>), InsecureTransport
 /// The MIN-3 keys of one `upstreams.<name>` entry (the rest of the entry is W1-K1's `UpstreamDef`).
 #[derive(Clone, Default, PartialEq, Eq)]
 pub struct UpstreamCfg {
+    /// Opaque configured rate identity; omitted/null means no selected resource.
+    pub resource: Option<Box<str>>,
     /// `upstreams.<name>.auth`: the operator form or one core-vocabulary form (IF §12.18 upstream bindings).
     pub auth: Option<UpstreamAuthCfg>,
     /// `upstreams.<name>.upstream_credentials`; None = derived from the binding (IF §12.18 round 22).
@@ -122,13 +145,66 @@ pub fn parse_min3(deploy: &DeployCfg) -> Result<Min3Config, Vec<String>> {
     let mut refused = Vec::new();
     let insecure_transport = kept(parse_insecure_transport(deploy), &mut refused);
     let provisioning = kept(parse_provisioning(deploy), &mut refused);
+    let issued_kinds = kept(parse_issued_kinds(deploy), &mut refused);
+    let outbound = kept(
+        deploy
+            .auth
+            .as_ref()
+            .map_or_else(Default::default, |auth| auth.outbound)
+            .resolve()
+            .map_err(|why| vec![why.to_owned()]),
+        &mut refused,
+    );
+    let verdict_cache = kept(
+        deploy
+            .auth
+            .as_ref()
+            .map_or_else(Default::default, |auth| auth.verdict_cache)
+            .resolve()
+            .map_err(|why| vec![why.to_owned()]),
+        &mut refused,
+    );
     if !refused.is_empty() {
         return Err(refused);
     }
     Ok(Min3Config {
+        outbound,
+        unknown_key_refresh_s: deploy
+            .auth
+            .as_ref()
+            .map_or(30, |auth| auth.unknown_key_refresh_s)
+            .max(5),
+        issued_kinds,
+        verdict_cache,
         provisioning,
         insecure_transport,
     })
+}
+
+fn parse_issued_kinds(
+    deploy: &DeployCfg,
+) -> Result<BTreeMap<Box<str>, BTreeSet<Box<str>>>, Vec<String>> {
+    let mut grants = BTreeMap::new();
+    let mut refused = Vec::new();
+    for (name, provider) in &deploy.identity_providers {
+        let Some(kinds) = &provider.issued_kinds else {
+            continue;
+        };
+        let mut unique = BTreeSet::new();
+        for kind in kinds {
+            if kind.trim().is_empty() || !unique.insert(kind.clone()) {
+                refused.push(format!(
+                    "identity-providers.{name}.issued_kinds: expected distinct nonblank kind names"
+                ));
+            }
+        }
+        grants.insert(name.as_str().into(), unique);
+    }
+    if refused.is_empty() {
+        Ok(grants)
+    } else {
+        Err(refused)
+    }
 }
 
 /// The parsed value, or its default with its refusals appended to `refused`.
@@ -206,6 +282,19 @@ pub fn parse_upstream_entry(at: &str, entry: &JsonValue) -> Result<UpstreamCfg, 
     let Some(map) = entry.as_object() else {
         return Err(vec![format!("{at}: a registration must be an object")]);
     };
+    let resource = match map.get(&"resource").filter(|value| !value.is_null()) {
+        None => None,
+        Some(value) => match value
+            .as_str()
+            .filter(|text| super::groups::valid_selected_identifier(text))
+        {
+            Some(text) => Some(text.into()),
+            None => {
+                refused.push(format!("{at}.resource must be a nonempty string of at most 128 UTF-8 bytes without controls"));
+                None
+            }
+        },
+    };
     let auth = match map.get(&"auth").filter(|v| !v.is_null()) {
         None => None,
         Some(value) => match upstream_auth(at, value) {
@@ -230,6 +319,7 @@ pub fn parse_upstream_entry(at: &str, entry: &JsonValue) -> Result<UpstreamCfg, 
     };
     if refused.is_empty() {
         Ok(UpstreamCfg {
+            resource,
             auth,
             upstream_credentials,
         })

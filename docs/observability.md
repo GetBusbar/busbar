@@ -132,6 +132,7 @@ deliberate, and it is the signal an operator most often has nothing else to see.
 | `busbar_breaker_trips_total` | counter | `pool`, `lane` | One per Closed→Open trip (reopens don't count). A spike means a backend just went down. |
 | `busbar_failovers_total` | counter | `pool`, `reason` | `reason` is `timeout`, `connect`, `transient_upstream`, `attempt_timeout`, `hard_down`, or `context_length`. A high rate on one pool indicates a flapping member. |
 | `busbar_translations_total` | counter | `from`, `to` | Cross-protocol translation hops. Useful for auditing unexpected protocol conversion. |
+| `busbar_insecure_transport_admitted_total` | counter | `kind`, `instance`, `accept` | Needs (OPEN, STARTTLS, FETCH) admitted under the instance's `insecure_transport.accept` (`plaintext` or `unverified_tls`). It counts admitted Needs, pooled reuse included, not TCP dials. The acceptance itself is audited once at boot (`config.insecure_transport_accepted`). |
 | `busbar_request_duration_seconds` | histogram | `ingress_protocol`, `pool` | Model (LLM) plane only. End-to-end latency including failover hops. |
 | `busbar_plane_request_duration_seconds` | histogram | `plane`, `ingress_protocol`, `pool` | Mounted planes (`plane` is `mcp` / `a2a`). End-to-end latency for tool calls and agent tasks. |
 | `busbar_key_spend_cents` | gauge | `key` + mint labels | Per-virtual-key DERIVED spend (abstract minor units, all-time attribution bucket), recomputed at scrape time from the ledger, each request priced at the card in force when it was served, plus the flat fee. |
@@ -283,3 +284,21 @@ without false positives, so it is enforced by review, not CI.
 the rest of the gate tooling, and no CI check holds the rule today ([what CI checks](ci.md)).
 
 ---
+
+### Export loss observation
+
+The root observer distinguishes terminal line loss from capture refusal, audit-integrity failure and retained ciphertext. Its constructor binds each observation to one configured logical instance; generation replacement shares that instance's first-loss state.
+
+| Metric | Labels | Meaning |
+|---|---|---|
+| `busbar_export_dropped_total` | `instance`, `reason` | Terminally discarded lines; reasons are `queue_full`, `stopped`, `attempts_exhausted`, `refused`, `foreign_destination`, `expired`, `key_unavailable`. |
+| `busbar_export_custody_total` | `instance`, `stream`, `level` | Accepted prefix lines at checked `accepted`, `durable` or `indexed` custody. |
+| `busbar_export_capture_refusals_total` | `instance`, `reason` | Capture refusal occurrences; reason is `admission_rejected`. |
+| `busbar_export_audit_integrity_failures_total` | `instance` | Audit-integrity failure occurrences, independent of later delivery. |
+| `busbar_export_held_lines` | `instance`, `reason` | Absolute retained ciphertext lines; reason is `key_unavailable`. Held bytes are not counted as dropped. |
+
+The first loss or failure retains its original timestamp, class and count until native audit confirms it. Later observations continue updating metrics without manufacturing additional first-loss records. A failed notification does not require a later request to retry. BUSBAR-2052 reports the first observation; BUSBAR-2053 reports unconfirmed evidence or a callback after producer quiescence. These coded warnings remain visible on stderr and are excluded from exported events and trace records, including events attached to an ordinary exported span.
+
+The reservation bound is the native audit pending-queue bound, currently 256 logical names. Removed instances with unresolved evidence retain their reservation, and a retiring producer keeps its cell alive until it stops. A candidate configuration that cannot reserve all required names is refused atomically while the current generation continues. This can temporarily prevent configuration admission during an audit outage. It does not evict evidence or refuse customer content to obtain a reservation.
+
+Production activation requires the serving generation to inject its reserved observer into every export producer and retain the generation guard. Shutdown must quiesce those producers before closing observer intake, then confirm retained evidence before native writer retirement. The observer API alone does not establish pump quiescence or successful shutdown; unresolved evidence or late callbacks require incomplete-shutdown reporting.

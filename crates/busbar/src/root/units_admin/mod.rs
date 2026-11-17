@@ -110,19 +110,38 @@ pub(crate) trait AdminDispatch: Send + Sync {
     ) -> AdminAnswer {
         self.execute(verb, request).await
     }
+
+    async fn execute_authorized(
+        &self,
+        verb: KernelVerb,
+        request: &AdminRequest,
+        admission: Option<&busbar_kernel::inbound::RequestAdmission>,
+        _execution: Option<&Arc<busbar_kernel::auth::native_admin::ExecutionAdmission>>,
+    ) -> AdminAnswer {
+        match admission {
+            Some(admission) => self.execute_admitted(verb, request, admission).await,
+            None => self.execute(verb, request).await,
+        }
+    }
 }
 
 /// Host-owned request context, never part of the serialized administrative request.
 struct AdmittedDispatch {
     inner: Arc<dyn AdminDispatch>,
-    admission: busbar_kernel::inbound::RequestAdmission,
+    admission: Option<busbar_kernel::inbound::RequestAdmission>,
+    execution: Option<Arc<busbar_kernel::auth::native_admin::ExecutionAdmission>>,
 }
 
 #[async_trait::async_trait]
 impl AdminDispatch for AdmittedDispatch {
     async fn execute(&self, verb: KernelVerb, request: &AdminRequest) -> AdminAnswer {
         self.inner
-            .execute_admitted(verb, request, &self.admission)
+            .execute_authorized(
+                verb,
+                request,
+                self.admission.as_ref(),
+                self.execution.as_ref(),
+            )
             .await
     }
 }
@@ -292,9 +311,9 @@ pub(crate) trait AuditView: Send + Sync {
             return Err(busbar_core_admin::GovernanceError::Validation);
         }
         let mut answer = Err(busbar_core_admin::GovernanceError::Store);
-        self.read_window(from, to, &mut |chain, records| {
+        self.read_window(from, to, &mut |_chain, records| {
             answer = records
-                .map(|records| expose::range_body(chain, records, from, to).into_bytes())
+                .map(|records| expose::range_body(records, from, to).into_bytes())
                 .ok_or(busbar_core_admin::GovernanceError::NotFound);
         })
         .await;
@@ -453,8 +472,6 @@ async fn render_audit_view(
                 });
             view.range_page(from, to, cursor).await
         }
-        KernelVerb::GetAuditKeys => Ok(expose::keys_body(&view.keys()).into_bytes()),
-
         _ => Err(GovernanceError::NotFound),
     }
 }
@@ -495,7 +512,13 @@ pub(crate) struct CoreGovernance {
 
     replay_store: Option<bound::ReplayStore>,
 
-    trust: TrustDesk,
+    /// The serving kernel the trust arms decide through and `GET /trust` reads (r3 §2.1).
+    trust: Option<Arc<busbar_kernel::host_services::KernelServices>>,
+    /// The resolved principal (`anonymous` only under an open door), never the unresolved
+    /// fallback: what a trust decision is stamped with (r3 §4.3).
+    resolved_principal: Option<String>,
+    /// Host-only, per request: the kernel wrote this request's typed trust audit row (A-C4b).
+    trust_audited: Arc<std::sync::atomic::AtomicBool>,
     effect: Option<(busbar_kernel::auth::effect::Context, EffectAdmission)>,
 }
 
@@ -526,14 +549,31 @@ impl CoreGovernance {
             records: None,
             replays: Arc::new(bound::ReplayCache::new()),
             replay_store: None,
-            trust: no_trust(),
+            trust: None,
+            resolved_principal: None,
+            trust_audited: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             effect: None,
         }
     }
 
     #[must_use]
-    pub(crate) fn trusting(mut self, trust: TrustDesk) -> Self {
+    pub(crate) fn trusting(
+        mut self,
+        trust: Option<Arc<busbar_kernel::host_services::KernelServices>>,
+    ) -> Self {
         self.trust = trust;
+        self
+    }
+
+    /// The request's resolved principal and its host-only trust audit flag (r3 §4.3, A-C4b).
+    #[must_use]
+    pub(crate) fn attributed(
+        mut self,
+        resolved_principal: Option<String>,
+        trust_audited: Arc<std::sync::atomic::AtomicBool>,
+    ) -> Self {
+        self.resolved_principal = resolved_principal;
+        self.trust_audited = trust_audited;
         self
     }
 
@@ -640,13 +680,7 @@ impl busbar_core_admin::Governance for CoreGovernance {
         _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
         request: &[u8],
     ) -> Result<AdminAnswer, busbar_core_admin::GovernanceError> {
-        let _effect = if matches!(
-            verb,
-            KernelVerb::AmendRateHistory
-                | KernelVerb::Adjust
-                | KernelVerb::TrustApprove
-                | KernelVerb::TrustRevoke
-        ) {
+        let _effect = if matches!(verb, KernelVerb::AmendRateHistory | KernelVerb::Adjust) {
             match self.admit_effect().await {
                 Ok(guard) => guard,
                 Err(answer) => return Ok(answer),
@@ -692,7 +726,7 @@ impl busbar_core_admin::Governance for CoreGovernance {
                 .await;
             }
             KernelVerb::GetTrust => {
-                return bound::trust_list_effect(&self.trust);
+                return bound::trust_list_effect(self.trust.as_ref());
             }
             KernelVerb::TrustApprove | KernelVerb::TrustRevoke => {
                 let ruling = if verb == KernelVerb::TrustApprove {
@@ -700,7 +734,39 @@ impl busbar_core_admin::Governance for CoreGovernance {
                 } else {
                     busbar_kernel::trust::book::Ruling::Revoke
                 };
-                return bound::trust_decide_effect(request, ruling, &self.trust).await;
+                let Some(actor) = self.resolved_principal.as_deref() else {
+                    return Ok(bound::trust_actor_unresolved(verb));
+                };
+                // r3 §4.6: replayed inside the wrapper; effect admission only for a decision that
+                // runs, so a replay is answered without being re-admitted.
+                return bound::replayable(
+                    &self.replays,
+                    self.replay_store.as_ref(),
+                    bound::ReplayScope { verb, actor },
+                    &self.request,
+                    request,
+                    self.amendments.as_deref(),
+                    bound::ReplayContext::Trust {
+                        kernel: self.trust.as_deref(),
+                        audited: &self.trust_audited,
+                    },
+                    || async {
+                        let _effect = match self.admit_effect().await {
+                            Ok(guard) => guard,
+                            Err(answer) => return Ok(bound::EffectAnswer::unapplied(answer)),
+                        };
+                        bound::trust_decide_effect(
+                            request,
+                            ruling,
+                            self.trust.as_deref(),
+                            actor,
+                            bound::idempotency_key(&self.request),
+                            &self.trust_audited,
+                        )
+                        .await
+                    },
+                )
+                .await;
             }
 
             KernelVerb::PlaneRecordWrite => {
@@ -714,6 +780,7 @@ impl busbar_core_admin::Governance for CoreGovernance {
                     &self.request,
                     request,
                     self.amendments.as_deref(),
+                    bound::ReplayContext::None,
                     || async {
                         let _effect = match self.admit_effect().await {
                             Ok(guard) => guard,
@@ -741,6 +808,7 @@ impl busbar_core_admin::Governance for CoreGovernance {
                     &self.request,
                     request,
                     self.amendments.as_deref(),
+                    bound::ReplayContext::None,
                     || async {
                         let _effect = match self.admit_effect().await {
                             Ok(guard) => guard,
@@ -782,6 +850,9 @@ impl busbar_core_admin::Governance for CoreGovernance {
             .audit
             .as_deref()
             .ok_or(busbar_core_admin::GovernanceError::NotFound)?;
+        if verb == KernelVerb::GetAuditKeys {
+            return audit_keys_page(&self.request.path, view).await;
+        }
         if verb == KernelVerb::GetRecords {
             return Ok(records::records_answer(view, &*self.planes, &self.request.path).await);
         }
@@ -789,6 +860,72 @@ impl busbar_core_admin::Governance for CoreGovernance {
             .await
             .map(json_answer)
     }
+}
+
+async fn audit_keys_page(
+    target: &str,
+    view: &dyn AuditView,
+) -> Result<AdminAnswer, busbar_core_admin::GovernanceError> {
+    use busbar_contract::json::{self, JsonContainerTrait, JsonValueTrait};
+    use busbar_core_admin::v1::contract::LIST_LIMIT_DEFAULT;
+    use busbar_core_admin::v1::json::cursor;
+
+    let uri = target
+        .parse()
+        .map_err(|_| busbar_core_admin::GovernanceError::Validation)?;
+    let axum::extract::Query(query) =
+        axum::extract::Query::<std::collections::HashMap<String, String>>::try_from_uri(&uri)
+            .map_err(|_| busbar_core_admin::GovernanceError::Validation)?;
+    let window = match cursor::window(&query, "audit-keys", "", LIST_LIMIT_DEFAULT) {
+        Ok(window) => window,
+        Err(response) => {
+            let (parts, body) = (*response).into_parts();
+            let bytes = axum::body::to_bytes(body, 64 * 1024)
+                .await
+                .map_err(|_| busbar_core_admin::GovernanceError::Store)?;
+            return Ok(AdminAnswer {
+                status: parts.status.as_u16(),
+                headers: parts
+                    .headers
+                    .iter()
+                    .map(|(name, value)| {
+                        (
+                            name.as_str().to_string(),
+                            value.to_str().unwrap_or_default().to_string(),
+                        )
+                    })
+                    .collect(),
+                body: bytes.to_vec(),
+            });
+        }
+    };
+    let body: json::Value = json::parse_value(expose::keys_body(&view.keys()).as_bytes())
+        .map_err(|_| busbar_core_admin::GovernanceError::Store)?;
+    let mut body = body
+        .into_object()
+        .ok_or(busbar_core_admin::GovernanceError::Store)?;
+    let keys = body
+        .remove(&"items")
+        .and_then(|keys| keys.as_array().map(|keys| keys.to_vec()))
+        .ok_or(busbar_core_admin::GovernanceError::Store)?;
+    let page = cursor::keyset(
+        keys,
+        &window,
+        "audit-keys",
+        "",
+        |key| key["key_id"].as_str().unwrap_or_default().to_string(),
+        false,
+    );
+    body.insert("items", json::Value::from(page.items));
+    body.insert(
+        "next_cursor",
+        page.next_cursor
+            .as_deref()
+            .map_or_else(json::Value::new_null, json::Value::from),
+    );
+    json::to_vec(&json::Value::from(body))
+        .map(json_answer)
+        .map_err(|_| busbar_core_admin::GovernanceError::Store)
 }
 
 fn json_answer(body: Vec<u8>) -> AdminAnswer {
@@ -830,7 +967,7 @@ async fn amend_rate_history_effect(
     attribution: &AmendAttribution,
 ) -> Result<AdminAnswer, busbar_core_admin::GovernanceError> {
     use busbar_contract::abi::sdk::digest::sha256;
-    use busbar_contract::json::{self, JsonValueTrait};
+    use busbar_contract::json::{self, JsonContainerTrait, JsonValueTrait};
     use busbar_core_admin::GovernanceError;
 
     let doc: json::Value = json::parse_value(body).map_err(|_| GovernanceError::Validation)?;
@@ -1454,9 +1591,6 @@ async fn render_ledger_view(
 
         KernelVerb::GetLedgerMigration => b"{\"migrated\":false,\"marker\":null}".to_vec(),
 
-        KernelVerb::GetLedgerOpenapiJson => {
-            busbar_core_admin::v1::json::openapi_document().into_bytes()
-        }
         _ => return Err(busbar_core_admin::GovernanceError::NotFound),
     })
 }
@@ -1565,7 +1699,12 @@ pub(crate) struct AdminWalk {
     /// The replay claim the door's identity asks for, UNWON until every step that may still refuse
     /// the request has passed ([`claim`]).
     claim: Option<busbar_kernel::auth::PendingClaim>,
+    execution: Option<Arc<busbar_kernel::auth::native_admin::ExecutionAdmission>>,
     answer: Option<AdminAnswer>,
+    /// Host-only: the kernel wrote this request's typed trust audit row, so the generic root row is
+    /// not written too (TRUST-ADMIN-PRODUCER-DESIGN r3 condition A-C4b). Never a header, never
+    /// stored with a replayed answer.
+    trust_audited: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl AdminWalk {
@@ -1580,18 +1719,23 @@ impl AdminWalk {
             listed: None,
             principal: None,
             claim: None,
+            execution: None,
             answer: None,
+            trust_audited: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
 }
 
-pub(crate) type AdminDoorFn =
-    Arc<dyn Fn(&AdminRequest) -> busbar_kernel::auth::AdminVerdict + Send + Sync>;
+pub(crate) type AdminDoorFuture =
+    busbar_plugin_abi::host_side::caller::BoxFut<'static, busbar_kernel::auth::AdminVerdict>;
+pub(crate) type AdminDoorFn = Arc<dyn Fn(&AdminRequest) -> AdminDoorFuture + Send + Sync>;
 
 #[cfg(test)]
 pub(crate) fn open_door() -> AdminDoorFn {
     Arc::new(|_: &AdminRequest| {
-        busbar_kernel::auth::AdminVerdict::from(busbar_kernel::auth::AdminDoor::Open)
+        Box::pin(std::future::ready(busbar_kernel::auth::AdminVerdict::from(
+            busbar_kernel::auth::AdminDoor::Open,
+        )))
     })
 }
 
@@ -1600,11 +1744,9 @@ pub(crate) fn open_door() -> AdminDoorFn {
 pub(crate) fn door_of(
     f: impl Fn(Option<&str>) -> busbar_kernel::auth::AdminDoor + Send + Sync + 'static,
 ) -> AdminDoorFn {
-    Arc::new(
-        move |request: &AdminRequest| -> busbar_kernel::auth::AdminVerdict {
-            f(request.credential.as_deref()).into()
-        },
-    )
+    Arc::new(move |request: &AdminRequest| {
+        Box::pin(std::future::ready(f(request.credential.as_deref()).into()))
+    })
 }
 
 /// A test door that identifies exactly one credential as `id` and denies everything else; the
@@ -1668,7 +1810,8 @@ pub(crate) struct AdminBinding {
 
     pub records: Option<PlaneRecordSink>,
 
-    pub trust: TrustDesk,
+    /// The serving kernel (TRUST-ADMIN-PRODUCER-DESIGN r3 §2.1); `None` = no native trust custody.
+    pub trust: Option<Arc<busbar_kernel::host_services::KernelServices>>,
 
     pub replays: Arc<std::sync::OnceLock<Arc<bound::ReplayCache>>>,
 
@@ -1697,7 +1840,7 @@ impl AdminBinding {
             adjuster: adjust::no_ledger(),
             planes: no_planes(),
             records: None,
-            trust: no_trust(),
+            trust: None,
             replays: Arc::new(std::sync::OnceLock::new()),
             mutations: Arc::new(busbar_kernel::ratelimit::MutationLimiter::new()),
         }
@@ -1736,15 +1879,15 @@ pub(crate) async fn decide(
 ) -> Outcome {
     use busbar_contract::caps::StepName;
     let at = |step: StepName| move |reason: ReasonCode| Outcome::Refused(step, reason);
-    let ran = decode(walk)
-        .map_err(at(StepName::Decode))
-        .and_then(|()| {
-            authenticate(&units.admin, &units.auth_bindings, walk)
-                .map_err(at(StepName::Authenticate))
-        })
-        .and_then(|principal| verify(walk, &principal).map_err(at(StepName::Verify)))
-        .and_then(|()| approve(walk).map_err(at(StepName::Approve)))
-        .and_then(|()| admit(walk).map_err(at(StepName::Admit)));
+    let ran = match decode(walk).map_err(at(StepName::Decode)) {
+        Ok(()) => authenticate(&units.admin, &units.auth_bindings, walk)
+            .await
+            .map_err(at(StepName::Authenticate)),
+        Err(ended) => Err(ended),
+    }
+    .and_then(|principal| verify(walk, &principal).map_err(at(StepName::Verify)))
+    .and_then(|()| approve(walk).map_err(at(StepName::Approve)))
+    .and_then(|()| admit(walk).map_err(at(StepName::Admit)));
     let ran = match ran {
         Ok(()) => claim(walk).await.map_err(at(StepName::Authenticate)),
         Err(ended) => Err(ended),
@@ -1771,7 +1914,7 @@ pub(crate) fn decode(walk: &mut AdminWalk) -> Result<(), ReasonCode> {
     }
 }
 
-pub(crate) fn authenticate(
+pub(crate) async fn authenticate(
     binding: &AdminBinding,
     bindings: &crate::root::auth_bindings::AuthBindings,
     walk: &mut AdminWalk,
@@ -1783,10 +1926,10 @@ pub(crate) fn authenticate(
             .zip(request.credential.as_deref())
             .is_some_and(|(set, credential)| set.is_revoked(credential))
     };
-    let verdict = walk.admission.as_ref().map_or_else(
-        || (binding.door)(request),
-        busbar_kernel::inbound::RequestAdmission::admin_verdict,
-    );
+    let verdict = match &walk.admission {
+        Some(admission) => admission.admin_verdict(),
+        None => (binding.door)(request).await,
+    };
     walk.effect_context = Some(walk.admission.as_ref().map_or_else(
         || {
             let headers = request
@@ -1851,16 +1994,34 @@ pub(crate) fn authenticate(
 
 pub(crate) async fn claim(walk: &mut AdminWalk) -> Result<(), ReasonCode> {
     if let Some(admission) = &walk.admission {
-        return admission
-            .claim_admin_replay()
-            .await
-            .then_some(())
-            .ok_or(ReasonCode::Unauthenticated);
+        if !admission.claim_admin_replay().await {
+            return Err(ReasonCode::Unauthenticated);
+        }
+        if let Some(execution) = admission.admin_execution() {
+            if let Some(context) = &mut walk.effect_context {
+                context
+                    .attach_execution(execution.clone())
+                    .map_err(|_| ReasonCode::Unauthenticated)?;
+            }
+            walk.execution = Some(execution);
+        }
+        return Ok(());
     }
-    match walk.claim.take() {
-        Some(pending) if !pending.win().await => Err(ReasonCode::Unauthenticated),
-        _ => Ok(()),
+    if let Some(pending) = walk.claim.take() {
+        let execution = Arc::new(
+            pending
+                .complete_admin()
+                .await
+                .map_err(|_| ReasonCode::Unauthenticated)?,
+        );
+        if let Some(context) = &mut walk.effect_context {
+            context
+                .attach_execution(execution.clone())
+                .map_err(|_| ReasonCode::Unauthenticated)?;
+        }
+        walk.execution = Some(execution);
     }
+    Ok(())
 }
 
 pub(crate) fn verify(walk: &mut AdminWalk, principal: &PrincipalId) -> Result<(), ReasonCode> {
@@ -1920,15 +2081,15 @@ pub(crate) async fn route(
     let granted = walk.granted.ok_or(ReasonCode::ScopeDenied)?;
     let request = &walk.request;
 
-    let dispatch: Arc<dyn AdminDispatch> = walk.admission.as_ref().map_or_else(
-        || Arc::clone(&binding.dispatch),
-        |admission| {
-            Arc::new(AdmittedDispatch {
-                inner: Arc::clone(&binding.dispatch),
-                admission: admission.clone(),
-            }) as Arc<dyn AdminDispatch>
-        },
-    );
+    let dispatch: Arc<dyn AdminDispatch> = if walk.admission.is_some() || walk.execution.is_some() {
+        Arc::new(AdmittedDispatch {
+            inner: Arc::clone(&binding.dispatch),
+            admission: walk.admission.clone(),
+            execution: walk.execution.clone(),
+        })
+    } else {
+        Arc::clone(&binding.dispatch)
+    };
 
     if mints_its_own_identity(verb) {
         walk.answer = Some(dispatch.execute(verb, request).await);
@@ -1960,7 +2121,8 @@ pub(crate) async fn route(
         .pooled(Arc::clone(&binding.pools))
         .adjusting(Arc::clone(&binding.adjuster))
         .planed(Arc::clone(&binding.planes), binding.records.clone())
-        .trusting(Arc::clone(&binding.trust))
+        .trusting(binding.trust.clone())
+        .attributed(resolved_actor(walk), Arc::clone(&walk.trust_audited))
         .replaying(
             Arc::clone(
                 binding
@@ -2122,6 +2284,15 @@ pub(crate) fn audit(walk: &AdminWalk, ended: &Outcome) -> busbar_contract::Audit
 fn seal_root_only(walk: &AdminWalk, resolved: &ResolvedVerb, applied: bool) {
     let root_only =
         !resolved.read_only && kernel_verb(resolved).is_some_and(|v| NEW_VERBS.contains(&v));
+    // A trust decision the kernel already audited by its typed row keeps one row per request
+    // (TRUST-ADMIN-PRODUCER-DESIGN r3 §5.2). Refusals before the kernel leave the flag unset.
+    let trust_typed = matches!(
+        kernel_verb(resolved),
+        Some(KernelVerb::TrustApprove | KernelVerb::TrustRevoke)
+    ) && walk.trust_audited.load(std::sync::atomic::Ordering::SeqCst);
+    if trust_typed {
+        return;
+    }
     if let (true, Some(actor)) = (root_only, resolved_actor(walk)) {
         let outcome = if kernel_verb(resolved) == Some(KernelVerb::Adjust) {
             // Only the host-owned adjustment handler constructs this response. Never consult
@@ -2194,8 +2365,8 @@ pub(crate) use adjust::live_adjuster;
 pub(crate) mod bound;
 pub(crate) mod records;
 pub(crate) use bound::{
-    live_admin_door, live_planes, live_records, live_replay_store, no_planes, no_trust,
-    PlaneLookup, PlaneRecordSink, TrustDesk,
+    live_admin_door, live_planes, live_records, live_replay_store, no_planes, PlaneLookup,
+    PlaneRecordSink,
 };
 
 #[cfg(test)]

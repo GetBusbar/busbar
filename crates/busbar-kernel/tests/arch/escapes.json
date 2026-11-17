@@ -65,6 +65,8 @@
     "crates/busbar-core-admin/src/lib.rs",
     "crates/busbar-core-connector/src/tls/mod.rs",
     "crates/busbar-core-oauth2/src/lib.rs",
+    "crates/busbar-count/src/json_span.rs",
+    "crates/busbar-count/src/lib.rs",
     "crates/busbar-crypto/src/lib.rs",
     "crates/busbar-kernel-audit/src/bin/busbar-audit-verify.rs",
     "crates/busbar-kernel-audit/src/lib.rs",
@@ -82,6 +84,8 @@
     "crates/busbar-plugin-test/src/lib.rs",
     "crates/busbar-plugin-test/tests/fixtures/carrier_target.rs",
     "crates/busbar-plugin-test/tests/fixtures/framer_target.rs",
+    "crates/busbar-ports/src/lib.rs",
+    "crates/busbar-secure/src/lib.rs",
     "crates/busbar/src/main.rs",
     "tools/ci-checks/src/main.rs"
   ],

@@ -606,6 +606,95 @@ mod standard_crypto {
     }
 
     #[test]
+    fn one_seal_survives_old_overlap_and_new_root_inventories_without_resetting_floors() {
+        for p256 in [false, true] {
+            let c = Chain::new(p256);
+            let m = c.manifest();
+            let roots = c.roots();
+            let mut expected_signers: Vec<_> = c.signers.iter().map(TestSigner::id).collect();
+            expected_signers.sort();
+            for inventory in [
+                vec![roots[0].clone()],
+                roots.clone(),
+                vec![roots[1].clone()],
+            ] {
+                let mut policy = TrustPolicy {
+                    first_party_keys: inventory.clone(),
+                    release_keys_floor: c.keys.version,
+                    ..c.policy()
+                };
+                let (verdict, mut proof) =
+                    sign::evaluate_with_verification(LIB, &m, &policy).unwrap();
+                assert!(matches!(
+                    verdict,
+                    Verdict::Trusted {
+                        first_party: true,
+                        ..
+                    }
+                ));
+                assert!(inventory
+                    .iter()
+                    .any(|root| Some(wire::key_id(&root.key)) == proof.root));
+                proof.signers.sort();
+                assert_eq!(proof.signers, expected_signers);
+                assert_eq!(proof.keys_version, Some(c.keys.version));
+
+                policy.release_keys_floor = c.keys.version + 1;
+                for allow_untrusted in [false, true] {
+                    policy.allow_untrusted = allow_untrusted;
+                    let refusal = sign::evaluate(LIB, &m, &policy).unwrap_err();
+                    assert_eq!(refusal.kind, RejectKind::AntiDowngrade);
+                }
+            }
+
+            // A delegated signer is known to the seal but has no root signature on its keys
+            // document. Merely pinning it as the only root cannot bootstrap that authority.
+            let mut unknown_root_policy = TrustPolicy {
+                first_party_keys: vec![c.signers[0].root("unrelated-root")],
+                ..c.policy()
+            };
+            for allow_untrusted in [false, true] {
+                unknown_root_policy.allow_untrusted = allow_untrusted;
+                let refusal = sign::evaluate(LIB, &m, &unknown_root_policy).unwrap_err();
+                assert_eq!(refusal.kind, RejectKind::Tampered);
+                assert!(refusal.reason.contains("(keys-signature)"));
+            }
+        }
+    }
+
+    #[test]
+    fn root_removal_refuses_old_only_seals_and_new_root_signatures_do_not_bootstrap() {
+        for p256 in [false, true] {
+            let c = Chain::new(p256);
+            let roots = c.roots();
+            let targets = seal_targets(&c.targets, &c.signers.iter().collect::<Vec<_>>());
+            for (signing_root, absent_root) in [(0, 1), (1, 0)] {
+                let keys = seal_keys(&c.keys, &[&c.roots[signing_root]]);
+                let m = Manifest {
+                    signature: wire::write_seal(&keys, &targets).unwrap(),
+                    ..manifest()
+                };
+                let policy = TrustPolicy {
+                    first_party_keys: vec![roots[signing_root].clone()],
+                    ..c.policy()
+                };
+                let (_, proof) = sign::evaluate_with_verification(LIB, &m, &policy).unwrap();
+                assert_eq!(proof.root, Some(wire::key_id(&roots[signing_root].key)));
+                let mut removed_policy = TrustPolicy {
+                    first_party_keys: vec![roots[absent_root].clone()],
+                    ..policy
+                };
+                for allow_untrusted in [false, true] {
+                    removed_policy.allow_untrusted = allow_untrusted;
+                    let refusal = sign::evaluate(LIB, &m, &removed_policy).unwrap_err();
+                    assert_eq!(refusal.kind, RejectKind::Tampered);
+                    assert!(refusal.reason.contains("(keys-signature)"));
+                }
+            }
+        }
+    }
+
+    #[test]
     fn expiry_rollback_revocation_and_tampering_are_refused() {
         for p256 in [false, true] {
             for case in 0..11 {

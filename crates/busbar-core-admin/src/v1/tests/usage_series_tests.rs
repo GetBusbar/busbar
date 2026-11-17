@@ -42,6 +42,7 @@ fn row(
     tokens: i128,
 ) -> MeteringRow {
     MeteringRow {
+        pricing: None,
         scale: 0,
         usage_units: Default::default(),
         key_id: key.into(),

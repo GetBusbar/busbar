@@ -54,6 +54,8 @@ mod audit_page;
 
 pub(crate) mod audit_services;
 pub(crate) mod notary;
+pub(crate) mod predecessor;
+pub(crate) mod restart_seal;
 pub(crate) mod signer;
 pub(crate) use notary::HeadFeed;
 
@@ -101,6 +103,7 @@ pub struct Durability {
     pub incarnation: u64,
 
     pub restart_findings: Vec<String>,
+    boot_records: Vec<JournalRecord>,
 
     pub voided_claims: Vec<String>,
 
@@ -526,6 +529,7 @@ pub(crate) async fn build_on_store(
         audit_signed_from: None,
         incarnation: 0,
         restart_findings: Vec::new(),
+        boot_records: Vec::new(),
         voided_claims: Vec::new(),
         amendments_through: None,
         history_budget,
@@ -563,6 +567,7 @@ pub(crate) async fn build_on_store(
     durability.void_claims(open).await?;
     findings.dedup();
     durability.restart_findings = findings;
+    durability.boot_records = records;
     Ok(durability)
 }
 

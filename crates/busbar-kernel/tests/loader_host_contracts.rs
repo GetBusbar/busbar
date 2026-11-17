@@ -409,7 +409,12 @@ async fn trust_serves_item_less_answers_the_counterpartys_own_verdict() {
         },
         approved: std::collections::BTreeMap::from([("tool".into(), "one".into())]),
     };
-    let h = Host::new();
+    // Trust custody, as production has (TRUST-ADMIN-PRODUCER-DESIGN r3 §6, condition A-C1).
+    let record = Arc::new(busbar_kernel::trust::DemotionRecord::default());
+    record
+        .set_store(real_store::core().await)
+        .expect("a fresh record attaches");
+    let h = Host::new().with_demotions(record, "");
     h.admit(
         "plane",
         InstanceFacts {
@@ -419,12 +424,26 @@ async fn trust_serves_item_less_answers_the_counterpartys_own_verdict() {
     )
     .await
     .unwrap();
-    h.trust_rule("plane/agent", Ruling::Approve)
-        .await
-        .expect("actual authority approves declared fingerprint");
-    h.trust_rule("plane/agent/tool", Ruling::Revoke)
-        .await
-        .expect("actual authority revokes declared item");
+    h.trust_rule_by(
+        "plane/agent",
+        Ruling::Approve,
+        busbar_kernel::trust::book::Reviewed::Unsighted,
+        "op",
+        None,
+    )
+    .await
+    .result
+    .expect("actual authority approves declared fingerprint");
+    h.trust_rule_by(
+        "plane/agent/tool",
+        Ruling::Revoke,
+        busbar_kernel::trust::book::Reviewed::Unsighted,
+        "op",
+        None,
+    )
+    .await
+    .result
+    .expect("actual authority revokes declared item");
     let c = caller("plane");
     let verdict = |cp: &str, item: Option<&str>| h.trust_serves(&c, cp, item, None).value;
     assert_eq!(verdict("agent", None), DISTRUST_NONE);

@@ -446,7 +446,7 @@ fn fallible_namespace_plan_keeps_lock_order_and_mutation_only_generations() {
     let plan = try_prelude_order(items).unwrap();
     assert_eq!(plan, prelude_order(items));
     let mut expected = vec![b, wire::SLOT_NS];
-    expected.sort_unstable();
+    expected.sort();
     assert_eq!(
         plan.iter()
             .filter_map(|(ns, exclusive)| exclusive.then_some(*ns))
@@ -517,6 +517,13 @@ impl Writer for FailingRowWriter {
         unreachable!()
     }
     fn put(&mut self, _: u16, _: &[u8]) -> Result<(), crate::records::Full> {
+        unreachable!()
+    }
+    fn put_u32s(
+        &mut self,
+        _: u16,
+        _: impl FnOnce(&mut crate::records::U32s<'_>) -> Result<(), crate::records::Full>,
+    ) -> Result<(), crate::records::Full> {
         unreachable!()
     }
     fn put_pod<T: crate::records::Pod>(

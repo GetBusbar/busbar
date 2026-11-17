@@ -25,6 +25,7 @@ use crate::plane_driver::{CallerEnd, HeadFields};
 /// One scripted sink item.
 #[derive(Clone)]
 enum It {
+    ResourceEcho,
     Respond(u16),
     Header(&'static str, &'static [u8]),
     Body(&'static [u8]),
@@ -47,6 +48,15 @@ enum It {
 fn play(items: &[It], sink: &mut dyn FnMut(PlaneOut<'_>)) {
     for it in items {
         sink(match it {
+            It::ResourceEcho => {
+                PlaneOut::ResourceEcho(busbar_plugin_abi::resource_admission::DescriptorEcho {
+                    invocation: 7,
+                    generation: 8,
+                    route: 9,
+                    descriptor: 10,
+                    instance: "seat",
+                })
+            }
             It::Respond(status) => PlaneOut::Respond { status: *status },
             It::Header(n, v) => PlaneOut::Header(n, v),
             It::Body(b) => PlaneOut::Body(b),
@@ -93,6 +103,77 @@ fn play(items: &[It], sink: &mut dyn FnMut(PlaneOut<'_>)) {
             },
         });
     }
+}
+
+#[test]
+fn an_unadmitted_resource_echo_cannot_be_ignored_in_request() {
+    let script = Script {
+        request: vec![It::Emit(5, b"must stay private"), It::ResourceEcho],
+        ..Script::default()
+    };
+    let fx = Emitted::default();
+    assert!(Task::begin(&script, &req(), b"", &fx).is_err());
+    assert!(fx.0.lock().unwrap().is_empty());
+}
+
+#[test]
+fn the_actual_resource_echo_is_retained_on_exchange_zero() {
+    use busbar_plugin_abi::resource_admission::DescriptorEcho;
+    let echo = DescriptorEcho {
+        invocation: 7,
+        generation: 8,
+        route: 9,
+        descriptor: 10,
+        instance: "seat",
+    };
+    for echo_first in [false, true] {
+        let mut answer = super::Answer::default();
+        let mut once = super::Once::default();
+        let fx = Emitted::default();
+        let mut take = |out| answer.take(out, Origin::Upstream, &mut once, &fx);
+        if echo_first {
+            take(PlaneOut::ResourceEcho(echo));
+        }
+        take(PlaneOut::UpCarrier {
+            carrier: 0,
+            outbound: 0,
+        });
+        take(PlaneOut::UpMethod("POST"));
+        take(PlaneOut::UpPath("/configured"));
+        if !echo_first {
+            take(PlaneOut::ResourceEcho(echo));
+        }
+        take(PlaneOut::UpEnd);
+        let answer = answer.seal();
+        assert_eq!(answer.violation, None);
+        assert_eq!(answer.exchanges.len(), 1);
+        assert_eq!(
+            answer.exchanges[0]
+                .resource_echo
+                .as_ref()
+                .unwrap()
+                .borrowed(),
+            echo
+        );
+    }
+}
+
+#[test]
+fn an_unsolicited_upstream_echo_releases_neither_emits_nor_usage() {
+    let script = Script {
+        upstream_items: Mutex::new(VecDeque::from([vec![
+            It::Emit(5, b"must stay private"),
+            It::Usage("requests", 3, 0, SRC_REPORTED),
+            It::ResourceEcho,
+        ]])),
+        ..Script::default()
+    };
+    let fx = Emitted::default();
+    let (mut task, _) = Task::begin(&script, &req(), b"", &fx).unwrap();
+    assert!(task.upstream(&target(), &fx).is_err());
+    assert!(fx.0.lock().unwrap().is_empty());
+    assert!(task.usage().is_empty());
+    assert!(!task.open());
 }
 
 /// A session handle that says when it was dropped (a drop without `end` is a cancel).
@@ -669,6 +750,7 @@ fn target() -> TargetIn<'static> {
         upstream: "u",
         provider: "{}",
         params: &[],
+        admission: &[],
     }
 }
 

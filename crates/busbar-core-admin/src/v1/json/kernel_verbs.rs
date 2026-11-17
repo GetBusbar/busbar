@@ -250,7 +250,8 @@ pub(crate) struct AuditChainHeadView {
 }
 
 /// `GET /audit/range`: records by position, `from` through `to` inclusive, each carrying every
-/// field its digest was taken over, plus the head this node published at or before `to`.
+/// field its fingerprint was taken over, under the link recipe (`busbar.audit.link.v1`), with the
+/// evidence that authenticates them (SEALING-FIX r20 §3.5 "Reads").
 #[cfg(feature = "openapi-schema")]
 #[derive(Serialize, JsonSchema)]
 pub(crate) struct AuditChainRangeView {
@@ -259,9 +260,20 @@ pub(crate) struct AuditChainRangeView {
     algorithm: String,
     from: u64,
     to: u64,
-    /// The head published at or before `to`, or null when none was.
-    anchor: Option<AuditChainSignedHead>,
+    /// The covering stamp of the page's last line (the first stamp whose `to` is at or after
+    /// it), or null when none exists yet.
+    anchor: Option<AuditStampView>,
     records: Vec<AuditChainRecordView>,
+    /// Every page stamp over the page's lines plus the covering stamp of its last line, and every
+    /// break notice over the walked lines (`kind` `break`).
+    stamps: Vec<AuditEvidenceView>,
+    /// The lines after the page's last line up to its covering stamp: authentication evidence,
+    /// not part of the range.
+    cover: Vec<AuditChainRecordView>,
+    /// The `notary_key` line each returned stamp's `key_cert` names.
+    certs: Vec<AuditChainRecordView>,
+    /// The node's `sealed:<node>` row, or null when there is none.
+    seal_row: Option<AuditSealRowView>,
     /// Fixed upper audit position captured on the first page; exact decimal string.
     snapshot_to: String,
     /// `bounded_live_range`: upper bound is fixed, retention is live, no snapshot is retained.
@@ -280,6 +292,89 @@ pub(crate) struct AuditChainRangeView {
     retention: AuditRetentionView,
     scanned_positions: String,
     scan_limit: String,
+}
+
+/// One page stamp (`audit.stamp.v1`): every signed field, and the WAL position it was read at.
+#[cfg(feature = "openapi-schema")]
+#[derive(Serialize, JsonSchema)]
+struct AuditStampView {
+    /// The WAL `node_seq` the stamp was read at; absent for a stamp read from a seal row.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    node_seq: Option<u64>,
+    node: u64,
+    from: u64,
+    to: u64,
+    /// Line `to`'s fingerprint, 64 lowercase hex digits.
+    fingerprint: String,
+    /// `live`, `final` or `after_restart`.
+    kind: String,
+    sealer: u64,
+    host: String,
+    every: u64,
+    stamped_ms: u64,
+    down_from_ms: u64,
+    down_to_ms: u64,
+    crypto: String,
+    sig_alg: String,
+    key_id: String,
+    /// The WAL `node_seq` of the certifying `notary_key` line; 0 for the Bootstrap key.
+    key_cert: u64,
+    /// 128 lowercase hex digits.
+    signature: String,
+}
+
+/// One break notice (`audit.break.v1`, `kind` `break`): it vouches for no line.
+#[cfg(feature = "openapi-schema")]
+#[derive(Serialize, JsonSchema)]
+struct AuditBreakView {
+    /// The WAL `node_seq` the notice was read at; absent for a notice read from a seal row.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    node_seq: Option<u64>,
+    /// `break`.
+    kind: String,
+    node: u64,
+    sealer: u64,
+    last_good: u64,
+    unsealed_from: u64,
+    unsealed_to: u64,
+    journal_from: u64,
+    journal_to: u64,
+    reason: String,
+    detected_ms: u64,
+    host: String,
+    crypto: String,
+    sig_alg: String,
+    key_id: String,
+    /// 128 lowercase hex digits.
+    signature: String,
+}
+
+/// A page stamp or a break notice.
+#[cfg(feature = "openapi-schema")]
+#[derive(Serialize, JsonSchema)]
+#[serde(untagged)]
+enum AuditEvidenceView {
+    _Stamp(AuditStampView),
+    _Break(AuditBreakView),
+}
+
+/// A node's seal row: who sealed it and how (`clean`, `stamp`, `break`, or `undecodable`).
+#[cfg(feature = "openapi-schema")]
+#[derive(Serialize, JsonSchema)]
+struct AuditSealRowView {
+    /// The successor node that wrote it; absent when the row does not decode.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sealer: Option<u64>,
+    outcome: String,
+    /// `clean` only: the node's tail line.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    through: Option<u64>,
+    /// `stamp` only: the signed `after_restart` page.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stamp: Option<AuditStampView>,
+    /// `break` only: the signed break notice.
+    #[serde(skip_serializing_if = "Option::is_none", rename = "break")]
+    break_notice: Option<AuditBreakView>,
 }
 
 #[cfg(feature = "openapi-schema")]
@@ -374,8 +469,10 @@ pub(crate) struct AuditChainKeysView {
     recipe: String,
     signature_domain: String,
     algorithm: String,
-    /// Every public key this node signs records under; empty when it signs none.
-    keys: Vec<AuditChainKeyView>,
+    /// This page of public keys, in key-id order; empty when the node signs none.
+    items: Vec<AuditChainKeyView>,
+    /// The shared cursor for the next page, or null after the final key.
+    next_cursor: Option<String>,
 }
 
 /// One published verifying key. Public halves only.
@@ -582,7 +679,7 @@ pub(crate) struct TrustKeyView {
     /// `new` (sighted and never approved, or revoked: refused), `approved` (approved, not sighted
     /// since), `same` (sighted as approved), `drifted` (sighted other than approved: refused until
     /// re-approved) or `quarantined` (the counterparty's catalogue moved: refused until re-approved).
-    #[schemars(regex(pattern = r"^(new|approved|same|drifted|quarantined)$"))]
+    #[schemars(extend("enum" = ["new", "approved", "same", "drifted", "quarantined"]))]
     state: String,
     /// What it is approved at: the catalogue hash, or the item's digest.
     approved: Option<String>,
@@ -605,12 +702,12 @@ pub(crate) struct TrustKeyReq {
     /// `<instance>/<counterparty>[/<item>]`, as `GET /trust` lists it.
     #[serde(rename = "key")]
     _key: String,
-    /// Optional compare-and-set guard against this key's current `seen` digest, for both approve
-    /// and revoke. Supply the exact digest reviewed from `GET /trust`, not `approved`. A changed
-    /// or absent sighting returns 409 without changing the decision. Omission keeps key-only
-    /// behavior; an explicitly supplied null, empty string or non-string is invalid.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(with = "String", regex(pattern = r"\S"))]
+    /// Required: the digest the operator reviewed from `GET /trust` (TRUST-ADMIN-PRODUCER-DESIGN
+    /// r3 §4.1). Approve: exactly the key's current `seen`; `null` only while it was never
+    /// sighted. Revoke: the current `seen` or the current `approved`; `null` matches a null one of
+    /// them. Omitted: 428 `reviewed_digest_required`. Anything else: 409 `reviewed_digest_stale`,
+    /// and nothing changes.
+    #[schemars(required, regex(pattern = r"\S"))]
     #[serde(rename = "expected_digest")]
     _expected_digest: Option<String>,
 }
@@ -649,8 +746,6 @@ pub(crate) struct StoreRestoreReq {
 #[cfg(feature = "openapi-schema")]
 enum Success {
     Json(Value, &'static str),
-
-    Document,
 
     NoContent(&'static str),
 }
@@ -922,7 +1017,10 @@ fn doc_for(
             summary: "Every trust key of the kernel's trust book and its state",
             description: "The counterparties every plane instance this node serves declares, and \
                           the items sighted or approved at each: its key, state, what it is \
-                          approved at and what it was last sighted at. A read: it mutates nothing \
+                          approved at and what it was last sighted at. Unpaged: the set is \
+                          bounded by the configured registrations, and a reviewer reads all of it \
+                          (TRUST-ADMIN-PRODUCER-DESIGN r3 §0). The same projection as the \
+                          `core/trust` `subjects` and `items` views. A read: it mutates nothing \
                           and needs `read-only`."
                 .to_string(),
             success: Success::Json(
@@ -931,67 +1029,98 @@ fn doc_for(
             ),
             request: None,
             query: Vec::new(),
-            errors: vec![unavailable_503("the node could not take the unit")],
+            errors: vec![unavailable_503(
+                "`service_unavailable`: native trust custody is not installed on this node \
+                 (never an empty list), or the node could not take the unit",
+            )],
         },
         KernelVerb::TrustApprove | KernelVerb::TrustRevoke => {
             let approve = verb == KernelVerb::TrustApprove;
             VerbDoc {
                 summary: if approve {
-                    "Approve one trust key at what it was last sighted at"
+                    "Approve one trust key at the digest the operator reviewed"
                 } else {
                     "Revoke one trust key"
                 },
-                description: if approve {
-                    "A counterparty is approved at the catalogue hash it last reported, which \
-                     clears its quarantine; an item at the digest it was last sighted at. The \
-                     decision is kept durably and outlives a restart. Optional `expected_digest` \
-                     compares the current `seen` digest atomically before writing; a stale \
-                     review conflicts. Without it, the key is approved at execution-time sighting."
-                } else {
-                    "Refused until approved again: a counterparty revoked refuses everything at \
-                     it, an item revoked refuses it over its configured approval. The decision \
-                     is kept durably and outlives a restart. Optional `expected_digest` compares \
-                     the current `seen` digest, not `approved`, before writing. A stale review \
-                     conflicts; omission keeps the unconditional revoke."
-                }
-                .to_string(),
+                description: format!(
+                    "{} Both members of the body are required: `expected_digest` is the digest \
+                     reviewed from `GET /trust` (omitted: 428 `reviewed_digest_required`; not \
+                     current: 409 `reviewed_digest_stale`, nothing changes). {} The decision is \
+                     kept durably before the answer and outlives a restart; every attempt is \
+                     audited as `trust_approve` or `trust_revoke`, naming the key. \
+                     `Idempotency-Key` (1..128 of `A-Z a-z 0-9 . _ : -`; it is echoed as the \
+                     kept decision's `operation`) makes the request replayable: the same key and \
+                     bytes answer the original outcome with `idempotent-replayed: true` and \
+                     never decide again; other bytes are 409 `idempotency_mismatch`, a request \
+                     still running 409 `idempotency_in_flight`. A durable write whose outcome is \
+                     unknown answers 503 `service_unavailable` with `details` naming the \
+                     attempt: replay the same key and bytes to resolve it, to 200 when it is \
+                     in force or to 409 `outcome_not_applied` when the store proves it never \
+                     applied; until then it stays the same 503 (read the key's state and decide \
+                     again under a new key). `x-busbar-trust-effect` classifies every answer: \
+                     `applied`, `not_applied` or `unknown`.",
+                    if approve {
+                        "A counterparty is approved at the catalogue hash it last reported, which \
+                         clears its quarantine; an item at the digest it was last sighted at."
+                    } else {
+                        "Refused until approved again: a counterparty revoked refuses everything \
+                         at it, an item revoked refuses it over its configured approval."
+                    },
+                    if approve {
+                        "Approve is strict: `expected_digest` must equal the current `seen`, and \
+                         `null` is valid only while the key was never sighted."
+                    } else {
+                        "Revoke accepts the current `seen` or the current `approved` digest; \
+                         `null` matches a null one of them."
+                    },
+                ),
                 success: Success::Json(
                     schema_of(gen.subschema_for::<TrustKeyView>()),
                     "The key, decided",
                 ),
                 request: Some(schema_of(req_gen.subschema_for::<TrustKeyReq>())),
                 query: Vec::new(),
-                errors: {
-                    let mut errors = vec![
-                        (
-                            "400",
-                            format!(
-                                "`invalid_request`: malformed body, `key is required`, invalid \
-                                 `expected_digest` (must be a non-empty string when supplied), or \
-                                 {BODY_UNREADABLE}"
-                            ),
+                errors: vec![
+                    (
+                        "400",
+                        format!(
+                            "`invalid_request`: `malformed_body` — a body that is not the closed \
+                             object `{{key, expected_digest}}`, an empty key, or an invalid \
+                             `Idempotency-Key`; or {BODY_UNREADABLE}"
                         ),
-                        gated_403(),
-                        (
-                            "404",
-                            "`not_found`: ``trust key `<key>` not found`` — no plane instance \
-                             this node serves has the key"
-                                .to_string(),
-                        ),
-                    ];
-                    let mut conflict = "`conflict`: `expected_digest` differs from the current \
-                        sighting, no sighting exists for the supplied guard, or another decision \
-                        is in progress".to_string();
-                    if approve {
-                        conflict.push_str("; or the key was never sighted, has no authenticity \
-                            root, or its last sighting failed verification");
-                    }
-                    errors.push(("409", conflict));
-                    errors.push(unavailable_503(
-                        "the node could not take the unit, or could not keep the decision",
-                    ));
-                    errors
-                },
+                    ),
+                    gated_403(),
+                    (
+                        "404",
+                        "`not_found`: `unknown_resource` — no plane instance this node serves \
+                         has the key"
+                            .to_string(),
+                    ),
+                    (
+                        "409",
+                        "`conflict`: `reviewed_digest_stale` (the review is not current), \
+                         `decision_in_progress` (another decision on the key holds it), \
+                         `action_in_flight` (an earlier decision on the key is still settling), \
+                         `state_conflict` (the key names more than one row, was never sighted, \
+                         has no authenticity root, or its last sighting failed verification), \
+                         `outcome_not_applied` (a replay proved the original attempt never \
+                         applied; `details` `{operation, decided_at}`), `idempotency_mismatch` \
+                         or `idempotency_in_flight`"
+                            .to_string(),
+                    ),
+                    (
+                        "428",
+                        "`invalid_request`: `reviewed_digest_required` — `expected_digest` was \
+                         omitted"
+                            .to_string(),
+                    ),
+                    unavailable_503(
+                        "`service_unavailable`: native trust custody is not installed or cannot \
+                         keep decisions, the store did not apply the decision, or its outcome is \
+                         unknown (`details` `{key, ruling, decided_at, decided_by, operation}`; \
+                         do not re-submit with this key)",
+                    ),
+                ],
             }
         }
         KernelVerb::PlaneRecordWrite => VerbDoc {
@@ -1189,18 +1318,6 @@ fn doc_for(
             schema_of(gen.subschema_for::<LedgerMigration>()),
             "Whether this deployment has migrated, and the marker if it has",
         ),
-        KernelVerb::GetLedgerOpenapiJson => VerbDoc {
-            summary: "The full administrative OpenAPI 3.1 document, served at the ledger's own path",
-            description: "The committed, generated document, unfiltered: every operation this \
-                          BUILD can serve, including each plane's. `GET /openapi.json` serves the \
-                          same document filtered to the planes this node configured."
-                .to_string(),
-            success: Success::Document,
-            request: None,
-            query: Vec::new(),
-            errors: vec![unavailable_503("the node could not take the unit")],
-        },
-
 
         KernelVerb::GetAuditHead => audit_read(
             "The audit record chain's tip: position, digest, signature, key identifier and clock",
@@ -1211,7 +1328,7 @@ fn doc_for(
             let mut doc = audit_read(
                 "Audit records by position, each with every field its digest was taken over",
                 schema_of(gen.subschema_for::<AuditChainRangeView>()),
-                "The window's records and the head published at or before `to`",
+                "The window's records, their stamps, cover and certificates, and the node's seal row",
             );
             doc.query = ["from", "to"]
                 .into_iter()
@@ -1250,11 +1367,19 @@ fn doc_for(
             );
             doc
         }
-        KernelVerb::GetAuditKeys => audit_read(
-            "The public keys the audit chain is signed with",
-            schema_of(gen.subschema_for::<AuditChainKeysView>()),
-            "The published verifying keys (empty when the node signs nothing)",
-        ),
+        KernelVerb::GetAuditKeys => {
+            let mut doc = audit_read(
+                "The public keys the audit chain is signed with",
+                schema_of(gen.subschema_for::<AuditChainKeysView>()),
+                "The published verifying keys (empty when the node signs nothing)",
+            );
+            doc.query = super::kinds::doc::query(&["cursor", "limit"]);
+            doc.errors.insert(0, (
+                "400",
+                "`invalid_request`: malformed or mismatched pagination cursor".to_string(),
+            ));
+            doc
+        },
         KernelVerb::GetOperationsKey => VerbDoc {
             summary: "One idempotent operation, by its Idempotency-Key",
             description: "The caller's own operation under `Idempotency-Key`: `state` is one of \
@@ -1486,15 +1611,6 @@ pub(crate) fn operations(
                            "content": {"application/json": {"schema": schema}}}),
                 );
             }
-            Success::Document => {
-                by_status.insert(
-                    "200".into(),
-                    json!({"description": "The one administrative OpenAPI document",
-                           "content": {"application/json": {"schema": {
-                               "type": "object",
-                               "description": "An OpenAPI 3.1 document (this document's shape)"}}}}),
-                );
-            }
             Success::NoContent(description) => {
                 by_status.insert("204".into(), json!({ "description": description }));
             }
@@ -1546,6 +1662,24 @@ pub(crate) fn operations(
                 "content": {"application/json": {"schema": schema}}
             });
         }
+        if matches!(verb, KernelVerb::TrustApprove | KernelVerb::TrustRevoke) {
+            // TRUST-ADMIN-PRODUCER-DESIGN r3 §4.5: every answer carries the host's classification.
+            // Refusals before the decision (authentication, scope, budget) do not carry it.
+            if let Some(responses) = op[RESPONSES_KEY].as_object_mut() {
+                for (_, response) in responses
+                    .iter_mut()
+                    .filter(|(status, _)| !matches!(status.as_str(), "401" | "403" | "429"))
+                {
+                    response["headers"]["x-busbar-trust-effect"] = json!({
+                        "description": "Host-created classification of this answer's effect: \
+                                        `applied`, `not_applied` (nothing changed) or `unknown` \
+                                        (the decision may still land; replay the same \
+                                        Idempotency-Key). Never derived from a request header.",
+                        "schema": {"enum": ["applied", "not_applied", "unknown"]}
+                    });
+                }
+            }
+        }
         out.push((path, method, op));
     }
     out
@@ -1553,9 +1687,26 @@ pub(crate) fn operations(
 
 #[cfg(all(test, feature = "openapi-schema"))]
 #[test]
-fn trust_request_schema_has_an_optional_nonnullable_digest_guard() {
+fn trust_request_schema_requires_a_reviewed_digest_or_null() {
+    // TRUST-ADMIN-PRODUCER-DESIGN r3 §4.1: both members are required; `null` is a review.
     let schema = serde_json::to_value(schemars::schema_for!(TrustKeyReq)).unwrap();
-    assert_eq!(schema["required"], serde_json::json!(["key"]));
-    assert_eq!(schema["properties"]["expected_digest"]["type"], "string");
+    assert_eq!(
+        schema["required"],
+        serde_json::json!(["key", "expected_digest"])
+    );
+    assert_eq!(
+        schema["properties"]["expected_digest"]["type"],
+        serde_json::json!(["string", "null"])
+    );
     assert_eq!(schema["properties"]["expected_digest"]["pattern"], r"\S");
+}
+
+#[cfg(all(test, feature = "openapi-schema"))]
+#[test]
+fn trust_key_state_is_the_frozen_enum() {
+    let schema = serde_json::to_value(schemars::schema_for!(TrustKeyView)).unwrap();
+    assert_eq!(
+        schema["properties"]["state"]["enum"],
+        serde_json::json!(crate::trust_inventory::KEY_STATES)
+    );
 }

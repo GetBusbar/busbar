@@ -17,19 +17,17 @@
 //! then submits ONE CoreStore commit whose native predicates pin exactly the bytes it judged (absent or exact)
 //! and whose mutations are the ops. A concurrent writer turns that into a native conflict and the commit is
 //! judged again from a fresh read (bounded), so two conflicting commits never both apply. An in-doubt write is
-//! driven again a bounded number of times, then parked and collected later ([`StoreRecords::settle`]), so it
-//! never holds a CoreStore queue slot forever.
+//! driven again a bounded number of times, then retained by its CoreStore domain for maintenance
+//! ([`StoreRecords::settle`]). Cancellation cannot lose the owner's pending membership.
 
 use core::future::Future;
-use std::collections::VecDeque;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::Arc;
 
 use busbar_contract::Secret;
 use busbar_plugin_abi::host_side::caller::Caller;
 use busbar_plugin_abi::records::commit::MAX_OPS;
 
-use crate::persistence::commit::SubmitResult;
-use crate::persistence::facade::{CoreStore, PendingId};
+use crate::persistence::facade::{CoreStore, DomainOwner, SETTLE_PER_TICK};
 use crate::persistence::scoped::{self, Expected, Mutation, Predicate, Request, ScopedStore};
 
 use super::{
@@ -41,7 +39,7 @@ use super::{
 pub(super) const RECORDS: &str = "busbar.plugin-records.v1";
 /// Host chains: one head row and one row per entry (chain.rs).
 pub(super) const CHAINS: &str = "busbar.plugin-chains.v1";
-/// How many times an in-doubt write is driven again before it is parked.
+/// How many times an in-doubt write is driven before foreground ownership ends.
 const IN_DOUBT_RETRIES: usize = 2;
 /// The most expired records one sweep deletes (one CoreStore commit).
 const SWEEP_BATCH: usize = 32;
@@ -68,21 +66,16 @@ impl StoreRecords {
     #[must_use]
     pub fn with_clock(store: Arc<CoreStore>, clock: fn() -> u64) -> Self {
         Self {
+            in_doubt: InDoubt::new(Arc::clone(&store)),
             store,
             clock,
-            in_doubt: InDoubt::default(),
         }
     }
 
-    /// Drive the parked in-doubt writes once more; answers how many are still parked. The owner's
-    /// maintenance tick calls it; every write also collects one parked write first.
+    /// Collect a bounded pass of this owner's retained writes, including canceled
+    /// first submissions. A nonzero answer also preserves unknown maintenance failure.
     pub async fn settle(&self) -> usize {
-        for _ in 0..self.in_doubt.len() {
-            if !self.in_doubt.settle_one(&self.store).await {
-                break;
-            }
-        }
-        self.in_doubt.len()
+        self.in_doubt.settle(SETTLE_PER_TICK).await
     }
 
     /// Delete expired records of `who`'s namespace (every scope), at most one batch, each under an exact
@@ -121,6 +114,7 @@ impl StoreRecords {
             &label(who),
             [RECORDS.to_string(), CHAINS.to_string()],
         )
+        .and_then(|records| self.in_doubt.bind(records))
         .map_err(denied)
     }
 
@@ -138,7 +132,7 @@ impl StoreRecords {
     }
 
     pub(super) async fn collect_one(&self) {
-        self.in_doubt.settle_one(&self.store).await;
+        self.in_doubt.settle_one().await;
     }
 
     /// One commit over resolved ops (keys already in their scope).
@@ -183,6 +177,14 @@ impl StoreRecords {
                 return Err(RecordsDenied::Unavailable);
             }
             let now = self.now();
+            if let Some(failed) = ops
+                .iter()
+                .position(|op| matches!(op.kind, Kind::PutUntil(_, until) if now >= until))
+            {
+                return Ok(CommitOutcome::Conflict {
+                    failed: u32::try_from(failed).unwrap_or(u32::MAX),
+                });
+            }
             let request = {
                 let seal = crate::seal::lend();
                 for (i, (op, at)) in ops.iter().zip(&slot).enumerate() {
@@ -195,7 +197,7 @@ impl StoreRecords {
                         Kind::Absent => value.is_none(),
                         Kind::Present => value.is_some(),
                         Kind::Equals(expected) => value == Some(expected),
-                        Kind::Put(..) | Kind::Del => true,
+                        Kind::Put(..) | Kind::PutUntil(..) | Kind::Del => true,
                     };
                     if !holds {
                         return Ok(CommitOutcome::Conflict {
@@ -225,6 +227,11 @@ impl StoreRecords {
                                 key: op.key.clone(),
                                 value: envelope(expiry(now, ttl_s), value),
                             }),
+                            Kind::PutUntil(value, until) => Some(Mutation::Put {
+                                schema: RECORDS.to_string(),
+                                key: op.key.clone(),
+                                value: envelope(until, value),
+                            }),
                             Kind::Del => Some(Mutation::Delete {
                                 schema: RECORDS.to_string(),
                                 key: op.key.clone(),
@@ -234,6 +241,13 @@ impl StoreRecords {
                         .collect(),
                 }
             };
+            // Preparing the immutable conditional request must not renew a deferred window.
+            if ops
+                .iter()
+                .any(|op| matches!(op.kind, Kind::PutUntil(_, until) if self.now() >= until))
+            {
+                return Ok(CommitOutcome::Conflict { failed: 0 });
+            }
             if self
                 .decided(&records, records.conditional_native(&request).await)
                 .await?
@@ -310,6 +324,33 @@ impl StoreRecords {
             },
             Op {
                 kind: Kind::Put(value, ttl_s),
+                key: at,
+            },
+        ];
+        Ok(self.run(who, &ops).await? == CommitOutcome::Applied)
+    }
+
+    async fn claim_until_one(
+        &self,
+        who: &Caller<'_>,
+        scope: Scope,
+        key: &[u8],
+        value: &[u8],
+        expires_at_s: u64,
+    ) -> Result<bool, RecordsDenied> {
+        sized(key, value)?;
+        if expires_at_s.saturating_sub(self.now()) > MAX_TTL_S {
+            return Err(RecordsDenied::Invalid);
+        }
+        self.collect_one().await;
+        let at = scoped_key(scope, key);
+        let ops = [
+            Op {
+                kind: Kind::Absent,
+                key: at.clone(),
+            },
+            Op {
+                kind: Kind::PutUntil(value, expires_at_s),
                 key: at,
             },
         ];
@@ -424,6 +465,16 @@ impl StoreRecords {
 }
 
 impl PluginRecords for StoreRecords {
+    fn claim_until(
+        &self,
+        who: &Caller<'_>,
+        scope: Scope,
+        key: &[u8],
+        value: &[u8],
+        expires_at_s: u64,
+    ) -> impl Future<Output = Result<bool, RecordsDenied>> + Send {
+        self.claim_until_one(who, scope, key, value, expires_at_s)
+    }
     fn get(
         &self,
         who: &Caller<'_>,
@@ -520,6 +571,7 @@ enum Kind<'a> {
     Present,
     Equals(&'a [u8]),
     Put(&'a [u8], u64),
+    PutUntil(&'a [u8], u64),
     Del,
 }
 
@@ -550,7 +602,7 @@ fn resolve<'a>(scope: Scope, ops: &[CommitOp<'a>]) -> Result<Vec<Op<'a>>, Record
             CommitOp::Del { key, caller } => (Kind::Del, key, caller),
         };
         let value = match kind {
-            Kind::Equals(value) | Kind::Put(value, _) => value,
+            Kind::Equals(value) | Kind::Put(value, _) | Kind::PutUntil(value, _) => value,
             Kind::Absent | Kind::Present | Kind::Del => &[],
         };
         sized(key, value)?;
@@ -714,44 +766,35 @@ pub(crate) async fn sweep(
     Ok(if applied { deleted } else { 0 })
 }
 
-/// In-doubt CoreStore writes this owner still has to collect. CoreStore keeps an uncertain attempt (and its
-/// queue slot) until its owner drives it to a decision with `retry`; an owner that walks away leaks the slot.
-#[derive(Default)]
+/// Decode Record outcomes over a shared cancellation-safe persistence domain.
+/// Pending membership belongs only to CoreStore, never a Record-local queue.
 pub(crate) struct InDoubt {
-    parked: Mutex<VecDeque<PendingId>>,
+    owner: DomainOwner,
 }
 
 impl InDoubt {
-    fn lock(&self) -> MutexGuard<'_, VecDeque<PendingId>> {
-        self.parked.lock().unwrap_or_else(|e| e.into_inner())
-    }
-
-    fn len(&self) -> usize {
-        self.lock().len()
-    }
-
-    fn park(&self, id: PendingId) {
-        let mut parked = self.lock();
-        if !parked.contains(&id) {
-            parked.push_back(id);
+    pub(crate) fn new(store: Arc<CoreStore>) -> Self {
+        Self {
+            owner: DomainOwner::new(store),
         }
     }
 
-    /// Drive the oldest parked write once; a still-undecided one goes to the back. false = none parked.
-    pub(crate) async fn settle_one(&self, store: &CoreStore) -> bool {
-        let Some(id) = self.lock().pop_front() else {
-            return false;
-        };
-        if let Ok(submission) = store.retry(id).await {
-            if matches!(
-                submission.result,
-                SubmitResult::Uncertain | SubmitResult::Reconcile | SubmitResult::Busy
-            ) {
-                self.park(id);
+    pub(crate) fn bind(&self, records: ScopedStore) -> Result<ScopedStore, scoped::Error> {
+        records.in_domain(&self.owner)
+    }
+
+    async fn settle(&self, limit: usize) -> usize {
+        match self.owner.settle(limit).await {
+            Ok(left) => left,
+            Err(error) => {
+                tracing::warn!(?error, "record maintenance retains unresolved ownership");
+                self.owner.pending().unwrap_or(usize::MAX).max(1)
             }
         }
-        // Err: CoreStore no longer holds it (another driver collected it).
-        true
+    }
+
+    pub(crate) async fn settle_one(&self) {
+        self.settle(1).await;
     }
 
     /// Ok(true) = applied, Ok(false) = a native predicate failed and nothing applied.
@@ -773,17 +816,13 @@ impl InDoubt {
                     match records.retry(id).await {
                         Ok(next) => outcome = next,
                         Err(_) => {
-                            self.park(id);
                             return Err(RecordsDenied::Unavailable);
                         }
                     }
                 }
-                scoped::Outcome::Pending(id)
-                | scoped::Outcome::Reconcile(id)
-                | scoped::Outcome::Busy(Some(id)) => {
-                    self.park(id);
-                    return Err(RecordsDenied::Unavailable);
-                }
+                scoped::Outcome::Pending(_)
+                | scoped::Outcome::Reconcile(_)
+                | scoped::Outcome::Busy(Some(_)) => return Err(RecordsDenied::Unavailable),
                 scoped::Outcome::OpIdConflict
                 | scoped::Outcome::Busy(None)
                 | scoped::Outcome::NoEffect(_) => return Err(RecordsDenied::Unavailable),

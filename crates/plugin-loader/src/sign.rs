@@ -143,8 +143,8 @@ pub const KNOWN_KINDS: &[&str] = &["store", "auth", "hook", "secret", "export", 
 pub const HOST_IDENTITY: &str = "busbar";
 
 /// One first-party ROOT key this build trusts: the id every refusal names, and the public key.
-/// A root key vouches for keys documents ([`crate::release_trust`]); an ed25519 root key also
-/// verifies a per-plugin `signature` directly (the pre-1.6.0 shape, kept for run keys and tests).
+/// A root key vouches for keys documents ([`crate::release_trust`]); plugin admission requires
+/// a delegated release seal, never a bare root signature on an artifact.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FirstPartyKey {
     /// The key's name (`busbar-plugins-root`), stated beside it in the key list. A bare-hex entry
@@ -1237,38 +1237,13 @@ fn signature_ok(manifest: &Manifest, bytes: &[u8], key: &VerifyingKey) -> Result
     }
 }
 
-fn version_components(v: &str) -> Option<[&str; 3]> {
-    if !valid_semver(v) {
-        return None;
-    }
-    let core = v.split(['-', '+']).next()?;
-    let mut parts = core.split('.');
-    let mut component = || {
-        let digits = parts.next()?.trim_start_matches('0');
-        Some(if digits.is_empty() { "0" } else { digits })
-    };
-    Some([component()?, component()?, component()?])
-}
-
+/// `have` ≥ `floor` by SemVer 2.0 precedence (the one comparator, DES-359 r3 L11); an empty floor is no floor.
 pub fn version_at_least(have: &str, floor: &str) -> bool {
-    if floor.is_empty() {
-        return true;
-    }
-    let (Some(have), Some(floor)) = (version_components(have), version_components(floor)) else {
-        return false;
-    };
-    for (have, floor) in have.into_iter().zip(floor) {
-        match have.len().cmp(&floor.len()).then_with(|| have.cmp(floor)) {
-            std::cmp::Ordering::Less => return false,
-            std::cmp::Ordering::Greater => return true,
-            std::cmp::Ordering::Equal => {}
-        }
-    }
-    true
+    busbar_contract::semver::version_at_least(have, floor)
 }
 
 fn floor_note(floor: &str) -> &'static str {
-    if floor.is_empty() || valid_semver(floor) {
+    if floor.is_empty() || busbar_contract::semver::valid_authored(floor) {
         ""
     } else {
         " — NOTE: this floor is not a valid MAJOR.MINOR.PATCH version (no leading 'v', e.g. \
@@ -1296,7 +1271,8 @@ pub fn validate_structure(
     supported_abi: &dyn Fn(&str) -> Option<u32>,
     host_identity: &str,
 ) -> Result<(), String> {
-    validate_identity(m, host_identity)?;
+    let native = native_stamp(lib_bytes)?;
+    validate_identity_for(m, host_identity, native.is_some())?;
     if m.sha256.len() != 64 || !m.sha256.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err(format!(
             "manifest sha256 '{}' is not a 64-char hex digest",
@@ -1308,10 +1284,56 @@ pub fn validate_structure(
             "library bytes do not match the manifest sha256 (integrity failure)".to_string(),
         );
     }
-    validate_abi(m, supported_abi)
+    match native {
+        Some(stamp) => validate_native_manifest(m, &stamp),
+        None => validate_abi(m, supported_abi),
+    }
 }
 
 pub fn validate_identity(m: &Manifest, host_identity: &str) -> Result<(), String> {
+    validate_identity_for(m, host_identity, false)
+}
+
+/// Classify the actual image bytes, never a manifest claim. A broken native stamp is not legacy.
+pub(crate) fn native_stamp(
+    bytes: &[u8],
+) -> Result<Option<busbar_plugin_abi::stamp::Stamp>, String> {
+    match crate::scan::stamp(bytes) {
+        Ok(stamp) => Ok(Some(stamp)),
+        Err(crate::scan::StampScanErr::Missing) => Ok(None),
+        Err(error) => Err(error.refusal().to_string()),
+    }
+}
+
+fn validate_native_manifest(
+    m: &Manifest,
+    stamp: &busbar_plugin_abi::stamp::Stamp,
+) -> Result<(), String> {
+    let kind = busbar_plugin_abi::types::KindCode::from_raw(stamp.kind)
+        .ok_or("native stamp names an unknown kind")?;
+    if m.name != crate::scan::text(&stamp.name)
+        || m.version != crate::scan::text(&stamp.version)
+        || m.kind != crate::admit::kind_word(kind)
+        || m.abi_version != stamp.kind_abi
+        || stamp.kind_abi != busbar_plugin_abi::versions::abi_of(kind)
+    {
+        return Err("native manifest name/version/kind/ABI must match its validated stamp and the current native ABI".into());
+    }
+    if m.statement.is_some()
+        || m.settings_schema.is_some()
+        || m.schema_derived
+        || m.declares != Declares::default()
+        || m.needs != HookNeeds::default()
+    {
+        return Err(
+            "native operational metadata belongs to the signed image, not legacy manifest fields"
+                .into(),
+        );
+    }
+    Ok(())
+}
+
+fn validate_identity_for(m: &Manifest, host_identity: &str, native: bool) -> Result<(), String> {
     if !valid_name(&m.name) {
         return Err(format!(
             "manifest name '{}' is not a valid plugin name (lowercase [a-z0-9-]+)",
@@ -1330,11 +1352,25 @@ pub fn validate_identity(m: &Manifest, host_identity: &str) -> Result<(), String
                 "manifest former name '{former}' is not a valid plugin name (lowercase [a-z0-9-]+)"
             ));
         }
-        if *former == m.name || *former == m.alias || m.former_names[..i].contains(former) {
+        if *former == m.name
+            || (!native && *former == m.alias)
+            || m.former_names[..i].contains(former)
+        {
             return Err(format!(
                 "manifest former name '{former}' repeats another name of the plugin"
             ));
         }
+    }
+    if native
+        && (m.former_names.len() > 8
+            || m.former_names.iter().any(|name| name.len() > 64)
+            || m.former_names
+                .iter()
+                .filter(|name| **name == m.alias)
+                .count()
+                != 1)
+    {
+        return Err("native former_names must contain the alias exactly once and at most eight words of at most 64 bytes".into());
     }
     if !KNOWN_KINDS.contains(&m.kind.as_str()) {
         return Err(format!(
@@ -1419,9 +1455,11 @@ const fn fips_backend_linked() -> bool {
 /// manifest verified against busbar's embedded release roots (`Verdict::Trusted { first_party:
 /// true }`; never the self-declared `publisher` string) passes. Everything else that phase 2
 /// would load, through an allowlisted publisher or an `allow_untrusted`
-/// opt-in, is refused [`RejectKind::ExternalCrypto`], and so is an unsigned, tampered or
-/// unknown-publisher reject, so its remedy never names an opt-in that cannot help. The hard
-/// rejects (revoked, retired, below a floor) keep their own code. A compiled-in plugin never
+/// opt-in, is refused [`RejectKind::ExternalCrypto`], and so is an unsigned or unknown-publisher
+/// reject, so its remedy never names an opt-in that cannot help. Proof is verified before this
+/// policy: invalid proof from a known publisher (a Busbar artifact without a valid release seal
+/// included) refuses as tampered and is audited as tampering, never hidden as the backend's policy
+/// refusal (AGREED l.474). The hard rejects (revoked, retired, below a floor) keep their own code. A compiled-in plugin never
 /// reaches here: it is built in the same build, against the same backend.
 ///
 /// GAP (#260, DES-1): busbar's release seal does not yet attest that the crypto-graph and
@@ -1746,7 +1784,10 @@ fn evaluate_against_with_evidence(
             .or_else(|| policy.first_party_high_water.get(&manifest.name))
             .map(String::as_str)
             .unwrap_or("");
-        if !floor.is_empty() && !version_at_least(&manifest.version, floor) {
+        // An authored pin must also be a well-formed authored version (DES-359 r3 L11); a stored
+        // high-water mark is read as it was written.
+        let unreadable_pin = pinned.is_some() && !busbar_contract::semver::valid_authored(floor);
+        if !floor.is_empty() && (unreadable_pin || !version_at_least(&manifest.version, floor)) {
             let why = if pinned.is_some() {
                 "the PINNED first-party rollback floor"
             } else {
@@ -1772,7 +1813,9 @@ fn evaluate_against_with_evidence(
 
     if let Some(floor) = policy.min_versions.get(&manifest.name) {
         match &trusted_or_untrusted {
-            Ok(_) if version_at_least(&manifest.version, floor) => {}
+            Ok(_)
+                if version_at_least(&manifest.version, floor)
+                    && (floor.is_empty() || busbar_contract::semver::valid_authored(floor)) => {}
             Ok(_) => {
                 return Err(Rejected::new(
                     RejectKind::AntiDowngrade,
@@ -1838,3 +1881,7 @@ mod declares_reader_tests;
 #[cfg(test)]
 #[path = "tests/release_seal_tests.rs"]
 mod release_seal_tests;
+
+#[cfg(test)]
+#[path = "tests/native_pack_sign_tests.rs"]
+mod native_pack_sign_tests;

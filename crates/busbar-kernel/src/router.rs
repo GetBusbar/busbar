@@ -528,6 +528,10 @@ pub(crate) fn base_data_router(
         .into_parts()
 }
 
+/// The configured body bound used to prepare this router, including test overrides.
+#[derive(Clone, Copy)]
+struct PlaneBodyLimit(usize);
+
 pub(crate) fn mount_plane_route(
     router: crate::core_routes::CoreRouter,
     slot: std::sync::Arc<dyn std::any::Any + Send + Sync>,
@@ -545,7 +549,16 @@ pub(crate) fn mount_plane_route(
         path,
         method,
         auth,
-        move |state::CurrentApp(app): state::CurrentApp,
+        move |axum::extract::Extension(request): axum::extract::Extension<
+            limits::process_admission::RequestLease,
+        >,
+              axum::extract::State(handle): axum::extract::State<
+            std::sync::Arc<state::AppHandle>,
+        >,
+              axum::extract::Extension(PlaneBodyLimit(body_limit)): axum::extract::Extension<
+            PlaneBodyLimit,
+        >,
+              state::CurrentApp(app): state::CurrentApp,
 
               _: axum::extract::RawPathParams,
               uri: axum::http::Uri,
@@ -556,7 +569,7 @@ pub(crate) fn mount_plane_route(
             axum::extract::Extension<busbar_kernel::plane_routes::ListenerScheme>,
         >,
               mut headers: axum::http::HeaderMap,
-              body: axum::body::Bytes| {
+              body: axum::body::Body| {
             let consumed_fields =
                 auth::ConsumedCredentials::fields_of(consumed.as_deref(), &headers);
             auth::ConsumedCredentials::strip_from(consumed.as_deref(), &mut headers);
@@ -569,8 +582,41 @@ pub(crate) fn mount_plane_route(
             let slot = slot.clone();
             let ctx_path = ctx_path.clone();
             async move {
+                let body = match limits::input_body::gather(body, &request, body_limit).await {
+                    Ok(body) => body,
+                    Err(error) => {
+                        let (reason, status, kind, message) = match error {
+                            limits::input_body::GatherError::Capacity(_) => {
+                                return limits::admission::inbound_overloaded_response();
+                            }
+                            limits::input_body::GatherError::TooLarge => (
+                                busbar_contract::caps::ReasonCode::BodyTooLarge,
+                                axum::http::StatusCode::PAYLOAD_TOO_LARGE,
+                                busbar_contract::protocol::KIND_REQUEST_TOO_LARGE,
+                                OVERSIZED_MESSAGE,
+                            ),
+                            limits::input_body::GatherError::Body(_) => (
+                                busbar_contract::caps::ReasonCode::DecodeFailed,
+                                axum::http::StatusCode::BAD_REQUEST,
+                                busbar_contract::protocol::ERR_TYPE_INVALID_REQUEST,
+                                "request body could not be read",
+                            ),
+                        };
+                        return kernel_refusal_response(
+                            &handle,
+                            &app.planes,
+                            reason,
+                            uri.path(),
+                            target_of(&uri),
+                            status,
+                            kind,
+                            message,
+                        );
+                    }
+                };
                 let engine: std::sync::Arc<dyn std::any::Any + Send + Sync> = app;
                 let ctx = busbar_kernel::plane_routes::PlaneReqCtx {
+                    request,
                     path: ctx_path,
                     uri,
                     method,
@@ -611,7 +657,10 @@ pub(crate) fn mount_plane_session(
         path,
         RouteMethod::Get,
         auth,
-        move |upgrade: busbar_kernel::ingress::session::SessionUpgrade,
+        move |axum::extract::Extension(request): axum::extract::Extension<
+            limits::process_admission::RequestLease,
+        >,
+              upgrade: busbar_kernel::ingress::session::SessionUpgrade,
               state::CurrentApp(app): state::CurrentApp,
               _: axum::extract::RawPathParams,
               uri: axum::http::Uri,
@@ -636,6 +685,7 @@ pub(crate) fn mount_plane_session(
             async move {
                 let engine: std::sync::Arc<dyn std::any::Any + Send + Sync> = app;
                 let ctx = busbar_kernel::plane_routes::PlaneReqCtx {
+                    request,
                     path: ctx_path,
                     uri,
                     method: RouteMethod::Get,
@@ -692,6 +742,7 @@ fn apply_common_layers_for_mounts(
     observe_mounts: bool,
 ) -> Router {
     let core_routes = std::sync::Arc::new(core_routes);
+    let auth_handle = handle.clone();
     let router = router
         .layer(axum::middleware::from_fn_with_state(
             handle.clone(),
@@ -699,10 +750,22 @@ fn apply_common_layers_for_mounts(
                   req: axum::extract::Request,
                   next: axum::middleware::Next| {
                 let core_routes = core_routes.clone();
-                async move { auth::auth_middleware(app, &core_routes, req, next).await }
+                let auth_handle = auth_handle.clone();
+                async move {
+                    auth::auth_middleware(
+                        app,
+                        auth_handle,
+                        request_body_max_bytes,
+                        &core_routes,
+                        req,
+                        next,
+                    )
+                    .await
+                }
             },
         ))
         .layer(axum::extract::DefaultBodyLimit::max(request_body_max_bytes))
+        .layer(axum::Extension(PlaneBodyLimit(request_body_max_bytes)))
         .layer(axum::middleware::from_fn_with_state(
             handle.clone(),
             reshape_body_limit_413,
@@ -1209,6 +1272,16 @@ impl std::fmt::Debug for PreparedListener {
 }
 
 impl PreparedListener {
+    /// Complete root-owned routes and their authentication declarations together before publication.
+    pub fn with_core_routes(
+        mut self,
+        mount: impl FnOnce(crate::core_routes::CoreRouter) -> crate::core_routes::CoreRouter,
+    ) -> Self {
+        let routes = crate::core_routes::CoreRouter::from_parts(self.router, self.core_routes);
+        (self.router, self.core_routes) = mount(routes).into_parts();
+        self
+    }
+
     /// The refusal producer captured with this prepared listener's route snapshot.
     pub fn refusal_renderer(&self) -> Option<crate::plane_routes::PlaneRefuseByPathFn> {
         self.refuse_by_path.clone()

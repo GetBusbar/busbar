@@ -253,6 +253,7 @@ fn rows_of(native: &Native) -> Result<Vec<(Address, SecureVec)>, StoreFail> {
                 .parse()
                 .map_err(|_| fail("metering row", "a bucket that is not a whole number"))?;
             let metering = MeteringRow {
+                pricing: None,
                 scale: busbar_contract::COUNT_SCALE,
                 key_id: row.key_id.clone(),
                 model: row.model.clone(),
@@ -422,19 +423,6 @@ impl Keys {
             at_rest: keys.at_rest,
         })
     }
-
-    /// Legacy bootstrap keys only. The MIN-3 caller passes its owned core keys explicitly
-    /// through `from_core` before any serving generation exists.
-    pub(crate) fn from_bootstrap() -> Self {
-        let keys = busbar_kernel::appbuild::take_bootstrap_records_keys();
-        Self {
-            seed: keys
-                .as_ref()
-                .and_then(|keys| keys.signer.as_ref())
-                .map(busbar_kernel::governance::signing::TokenSigner::secret_bytes),
-            at_rest: keys.and_then(|keys| keys.at_rest),
-        }
-    }
 }
 
 /// Steps 4b and 4a over `store`, blocking. `Ok(None)` when IMPORT is empty (one one-row scan).
@@ -484,20 +472,6 @@ pub(crate) fn run_blocking(
     };
     let report = records::run(store, &inputs).map_err(|r| r.to_string())?;
     Ok(report)
-}
-
-/// Step 4 (§3 4a, 4b): after FST admission, before step 5 and before anything serves.
-///
-/// # Errors
-/// As [`run_blocking`]; the boot refuses with the text.
-#[cold]
-#[inline(never)]
-pub(crate) async fn step4(
-    core: Arc<CoreStore>,
-    config: PathBuf,
-    stamped: bool,
-) -> Result<(), String> {
-    step4_with_keys(core, Keys::from_bootstrap(), config, stamped).await
 }
 
 /// Step 4 with custody supplied by the boot owner, without consulting published MIN-3 state.
@@ -610,6 +584,33 @@ pub(crate) fn write_with_attempt(
         }
     }
     written
+}
+
+/// Step 4 then step 5 over the opened store: the records conversion and the config.yaml write the
+/// converting boot performs together. A refusal of the step-5 document must leave the store as it
+/// was found (MIGRATE-ON-BOOT r42: nothing has been changed until the document is accepted).
+///
+/// # Errors
+/// The records step's refusal, or the write's refusal text.
+pub(crate) fn convert_and_write(
+    store: &Store,
+    keys: &Keys,
+    plan: &busbar_migrate::Plan,
+    settled: &[busbar_migrate::Settled],
+    check: busbar_migrate::Check<'_>,
+    config: &Path,
+    stamped: bool,
+) -> Result<busbar_migrate::Written, String> {
+    // Every refusal of step 5 is judged first, read-only, so it changes nothing (#328).
+    busbar_migrate::check_settled(plan, settled, check).map_err(|refusal| refusal.to_string())?;
+    if let Some(report) = run_blocking(store, keys, config, stamped)? {
+        tracing::info!(
+            target: "busbar::migrate",
+            "the 1.5.5 records were migrated: {}",
+            report_line(&report)
+        );
+    }
+    write_with_attempt(store, plan, settled, check, config).map_err(|refusal| refusal.to_string())
 }
 
 #[cfg(test)]

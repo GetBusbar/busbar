@@ -27,6 +27,8 @@ pub mod named_map;
 pub mod operator_file;
 pub use operator_file::{operator_file_policy, OperatorFileDefs};
 pub mod readback;
+mod resource_ownership;
+pub use resource_ownership::ResourceOwnership;
 pub(crate) mod restart;
 
 pub mod parse;
@@ -636,6 +638,10 @@ pub fn resolve_auth(
         .collect();
 
     AuthCfg {
+        verdict_cache: auth.verdict_cache,
+        outbound: auth.outbound,
+        unknown_key_refresh_s: auth.unknown_key_refresh_s,
+        require_if_match: auth.require_if_match,
         signing_key: auth.signing_key.clone(),
         chain,
         admin_auth,
@@ -1411,7 +1417,7 @@ impl PluginsCfg {
 
     pub fn warn_invalid_floors(&self) {
         for (name, floor) in &self.min_versions {
-            if !floor.is_empty() && !busbar_contract::plugin::valid_semver(floor) {
+            if !floor.is_empty() && !busbar_contract::semver::valid_authored(floor) {
                 diag_warn!(
                     CONFIG_ANTIDOWNGRADE_FLOOR_INVALID,
                     key = %format!("plugins.min_versions['{name}']"),
@@ -1423,7 +1429,7 @@ impl PluginsCfg {
             }
         }
         for (name, floor) in &self.first_party_floors {
-            if !floor.is_empty() && !busbar_contract::plugin::valid_semver(floor) {
+            if !floor.is_empty() && !busbar_contract::semver::valid_authored(floor) {
                 diag_warn!(
                     CONFIG_FIRSTPARTY_FLOOR_INVALID,
                     key = %format!("plugins.first_party_floors['{name}']"),
@@ -1647,6 +1653,25 @@ pub fn resolve(
     deploy: &DeployCfg,
     defs: &HashMap<String, ProviderDef>,
 ) -> Result<RootCfg, Vec<String>> {
+    let planes = deploy
+        .grammar
+        .prepared()
+        .map_or(&[][..], |read| read.provider_planes());
+    resolve_with_provider_planes(deploy, defs, planes).map(|resolved| resolved.config)
+}
+
+/// Configuration and immutable provider projections validated against this read's admitted images.
+/// Keeping these together prevents boot/reload from substituting another generation's descriptors.
+pub struct ResolvedConfig {
+    pub config: RootCfg,
+    pub catalogs: crate::plane_driver::provider_catalog::ProviderCatalogs,
+}
+
+pub fn resolve_with_provider_planes(
+    deploy: &DeployCfg,
+    defs: &HashMap<String, ProviderDef>,
+    planes: &[crate::plane_driver::provider_catalog::ProviderPlane],
+) -> Result<ResolvedConfig, Vec<String>> {
     let mut errors = Vec::new();
     for name in deploy
         .rate_card
@@ -1671,25 +1696,6 @@ pub fn resolve(
 
     let mut resolved_providers = ResolvedProviders::default();
 
-    let resolve_provider_hook = crate::plane_driver::registry::plane_decl_for(
-        crate::plane_driver::dispatch::fallback_key(),
-    )
-    .and_then(|d| d.resolve_provider);
-
-    let mut catalog_names: Vec<&String> = defs.keys().collect();
-    catalog_names.sort();
-    for name in catalog_names {
-        let judged = if deploy.providers.is_empty() {
-            providers::judge_unused_catalog_entry(name, &defs[name])
-        } else {
-            providers::judge_catalog_entry(name, &defs[name])
-        };
-        if let Err(refusal) = judged {
-            errors
-                .push(coded::config_provider_invalid(format!("providers.yaml: {refusal}")).into());
-        }
-    }
-
     for (deploy_name, deploy_cfg) in &deploy.providers {
         let Some(def) = defs.get(deploy_name) else {
             errors.push(
@@ -1702,10 +1708,7 @@ pub fn resolve(
             continue;
         };
 
-        let merged = match resolve_provider_hook {
-            Some(f) => f(def, deploy_cfg),
-            None => merge_provider_fallback(def, deploy_cfg),
-        };
+        let merged = merge_provider_fallback(def, deploy_cfg);
         resolved_providers.insert(deploy_name.clone(), merged);
     }
 
@@ -2042,68 +2045,87 @@ pub fn resolve(
         });
 
     let min3 = resolve_min3(deploy, &mut errors);
+    let catalogs = match crate::plane_driver::provider_catalog::resolve(
+        deploy,
+        &resolved_providers,
+        &pools,
+        planes,
+    ) {
+        Ok(catalogs) => catalogs,
+        Err(refused) => {
+            errors.extend(refused);
+            Default::default()
+        }
+    };
 
     if errors.is_empty() {
         let security = deploy.security.clone().unwrap_or_default();
-        Ok(RootCfg {
-            listen: deploy.listen.clone(),
-            listen_explicit: deploy.listen_explicit,
-            public_url: deploy.public_url.clone(),
-            endpoint_resources,
-            oauth_as,
+        let retained_catalogs = std::sync::Arc::new(catalogs.clone());
+        Ok(ResolvedConfig {
+            catalogs,
+            config: RootCfg {
+                listen: deploy.listen.clone(),
+                listen_explicit: deploy.listen_explicit,
+                public_url: deploy.public_url.clone(),
+                endpoint_resources,
+                oauth_as,
 
-            plane_defs: raw_judged
-                .into_iter()
-                .chain(deploy.declared.0.iter().map(|(s, c)| (*s, c.clone_box())))
-                .collect(),
-            plane_pools,
-            tls: deploy.tls.clone(),
-            admin_listen: deploy.admin_listen.clone(),
-            admin_tls: deploy.admin_tls.clone(),
-            auth: resolved_auth,
-            providers: resolved_providers,
-            models: deploy.models.clone(),
-            pools,
-            upstream_credentials: deploy
-                .pools
-                .all_pool_upstream_credentials
-                .unwrap_or_default(),
-            hooks: hooks_registry,
+                plane_defs: raw_judged
+                    .into_iter()
+                    .chain(deploy.declared.0.iter().map(|(s, c)| (*s, c.clone_box())))
+                    .collect(),
+                plane_pools,
+                tls: deploy.tls.clone(),
+                admin_listen: deploy.admin_listen.clone(),
+                admin_tls: deploy.admin_tls.clone(),
+                auth: resolved_auth,
+                providers: resolved_providers,
+                models: deploy.models.clone(),
+                pools,
+                upstream_credentials: deploy
+                    .pools
+                    .all_pool_upstream_credentials
+                    .unwrap_or_default(),
+                hooks: hooks_registry,
 
-            admin_auth: admin_auth_names,
-            groups: deploy.groups.clone(),
-            rate_card: compose_plane_cards(deploy.rate_card.as_ref(), &deploy.plane_rate_cards),
-            per_request_fee: deploy.per_request_fee,
-            plane_fees: deploy.plane_fees.clone(),
-            store: deploy.store.clone(),
-            secrets: deploy.secrets.clone(),
-            global_hooks: global_hook_names,
-            blocked_metadata_hosts: security.blocked_metadata_hosts,
-            allow_metadata_hosts: security.allow_metadata_hosts,
-            allow_all_metadata: security.allow_all_metadata,
-            guard: Destinations {
-                block_private_addresses: deploy.advanced.block_private_addresses,
-                ..Destinations::default()
+                admin_auth: admin_auth_names,
+                groups: deploy.groups.clone(),
+                rate_card: compose_plane_cards(deploy.rate_card.as_ref(), &deploy.plane_rate_cards),
+                per_request_fee: deploy.per_request_fee,
+                plane_fees: deploy.plane_fees.clone(),
+                store: deploy.store.clone(),
+                secrets: deploy.secrets.clone(),
+                global_hooks: global_hook_names,
+                blocked_metadata_hosts: security.blocked_metadata_hosts,
+                allow_metadata_hosts: security.allow_metadata_hosts,
+                allow_all_metadata: security.allow_all_metadata,
+                guard: Destinations {
+                    block_private_addresses: deploy.advanced.block_private_addresses,
+                    ..Destinations::default()
+                },
+                outbound_tls: deploy.advanced.tls.clone(),
+                proxy_resolution: deploy.advanced.proxy_resolution,
+                login_limits,
+
+                limits: LimitsResolved::from_sections(
+                    &deploy.limits,
+                    &deploy.advanced,
+                    &export,
+                    &deploy.health,
+                    &deploy.routing,
+                ),
+                export,
+                identity_providers: deploy.identity_providers.clone(),
+                operator_overlay_names: deploy.operator_overlay_names.clone(),
+                operator_file_defs: None,
+                export_defs: deploy.export.clone(),
+                plane_sections,
+                grammar: deploy
+                    .grammar
+                    .clone()
+                    .with_provider_catalogs(retained_catalogs),
+                min3,
             },
-            outbound_tls: deploy.advanced.tls.clone(),
-            proxy_resolution: deploy.advanced.proxy_resolution,
-            login_limits,
-
-            limits: LimitsResolved::from_sections(
-                &deploy.limits,
-                &deploy.advanced,
-                &export,
-                &deploy.health,
-                &deploy.routing,
-            ),
-            export,
-            identity_providers: deploy.identity_providers.clone(),
-            operator_overlay_names: deploy.operator_overlay_names.clone(),
-            operator_file_defs: None,
-            export_defs: deploy.export.clone(),
-            plane_sections,
-            grammar: deploy.grammar.clone(),
-            min3,
         })
     } else {
         Err(errors)
@@ -2194,6 +2216,7 @@ pub use providers::ProviderAuth;
 #[path = "tests/config_boundary_tests.rs"]
 mod config_boundary_tests;
 
+#[cfg(test)]
 mod provider_grammar;
 
 impl std::fmt::Debug for RootCfg {
@@ -2302,3 +2325,6 @@ impl std::fmt::Debug for FetchTarget {
             .finish()
     }
 }
+
+mod shutdown;
+pub use shutdown::AdvancedShutdownCfg;

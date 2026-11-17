@@ -331,7 +331,11 @@ async fn the_formerly_irreducible_verbs_are_authorized_by_the_grant_alone() {
 }
 
 fn a_door_answering(door: busbar_kernel::auth::AdminDoor) -> AdminDoorFn {
-    Arc::new(move |_: &AdminRequest| busbar_kernel::auth::AdminVerdict::from(door.clone()))
+    Arc::new(move |_: &AdminRequest| {
+        Box::pin(std::future::ready(busbar_kernel::auth::AdminVerdict::from(
+            door.clone(),
+        )))
+    })
 }
 
 fn listed_door(named: &[&str], needs: Scope) -> busbar_kernel::auth::AdminDoor {
@@ -357,7 +361,15 @@ fn approved_under(
     let mut walk = AdminWalk::new(request);
     decode(&mut walk).expect("the plane's table declares this operation");
     let bindings = crate::root::auth_bindings::AuthBindings::without_directory();
-    authenticate(&binding, &bindings, &mut walk)?;
+    {
+        let mut future = std::pin::pin!(authenticate(&binding, &bindings, &mut walk));
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        let std::task::Poll::Ready(answer) = std::future::Future::poll(future.as_mut(), &mut cx)
+        else {
+            panic!("this fixture is a ready door")
+        };
+        answer?;
+    }
     approve(&walk)
 }
 
@@ -569,6 +581,7 @@ async fn a_replayed_idempotency_key_answers_the_first_answers_bytes() {
             &request,
             &request.body,
             None,
+            bound::ReplayContext::None,
             mint,
         )
         .await
@@ -586,7 +599,12 @@ async fn a_replayed_idempotency_key_answers_the_first_answers_bytes() {
         ("another node", &sibling),
     ] {
         assert_eq!(replayed.status, first.status, "{who}: the first status");
-        assert_eq!(replayed.headers, first.headers, "{who}: the first headers");
+        let mut marked = first.headers.clone();
+        marked.push(("idempotent-replayed".to_string(), "true".to_string()));
+        assert_eq!(
+            replayed.headers, marked,
+            "{who}: the first headers, marked as replayed (r3 §4.6)"
+        );
         assert_eq!(replayed.body, first.body, "{who}: the first body's bytes");
     }
     assert_eq!(
@@ -681,6 +699,44 @@ async fn answer_at_the_closed_door(door: AdminDoorFn, credential: Option<&str>) 
     AdminNode::new(crate::root::kernel::new_kernel(), units)
         .answer(request)
         .await
+}
+
+#[tokio::test]
+async fn authoritative_admin_door_awaits_before_revocation_and_approval() {
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let observed = calls.clone();
+    let door: AdminDoorFn = Arc::new(move |_: &AdminRequest| {
+        let calls = calls.clone();
+        Box::pin(async move {
+            tokio::task::yield_now().await;
+            calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            busbar_kernel::auth::AdminDoor::Identified(
+                busbar_contract::auth::Principal::from_id(
+                    busbar_kernel::config::operator_principal_id(),
+                ),
+                busbar_contract::authz::Grants::of(Scope::Full),
+            )
+            .into()
+        })
+    });
+    assert_eq!(
+        answer_at_the_closed_door(door.clone(), Some("credential"))
+            .await
+            .status,
+        200
+    );
+    let units = crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch), door)
+        .await
+        .with_auth_bindings(crate::root::auth_bindings::AuthBindings::new(Arc::new(
+            Denylist(true),
+        )));
+    let mut request = a_request();
+    request.credential = Some("credential".into());
+    let answer = AdminNode::new(crate::root::kernel::new_kernel(), units)
+        .answer(request)
+        .await;
+    assert_eq!(answer.status, 401);
+    assert_eq!(observed.load(std::sync::atomic::Ordering::SeqCst), 2);
 }
 
 #[tokio::test]
@@ -1522,7 +1578,6 @@ const LEDGER_PATHS: &[&str] = &[
     "/api/v1/admin/ledger/checkpoints",
     "/api/v1/admin/ledger/reconciliation",
     "/api/v1/admin/ledger/migration",
-    "/api/v1/admin/ledger/openapi.json",
 ];
 
 fn a_ledger_request(path: &str) -> AdminRequest {
@@ -1836,9 +1891,6 @@ async fn each_view_serves_the_figures_the_ledger_holds() {
         body("/api/v1/admin/ledger/migration").await,
         json::json!({"migrated": false, "marker": null})
     );
-
-    let document = body("/api/v1/admin/ledger/openapi.json").await;
-    assert_eq!(document["info"]["version"], "1.6.0");
 }
 
 async fn real_admin_dispatch() -> RouterDispatch {
@@ -2386,6 +2438,57 @@ async fn answer_over_a_sealed_chain(request: AdminRequest) -> AdminAnswer {
 }
 
 #[tokio::test]
+async fn audit_verifying_keys_use_the_shared_cursor_page() {
+    let mut audit = a_sealed_chain();
+    for seed in [11u8, 19, 23] {
+        let signer = busbar_kernel_audit::AuditSigningKey::from_seed(&[seed; 32]);
+        audit.keys.insert(
+            busbar_kernel_audit::AuditVerifyingKey::from_hex(&signer.public_key_hex()).unwrap(),
+        );
+    }
+    let mut expected: Vec<String> = audit
+        .keys
+        .keys()
+        .iter()
+        .map(|key| key.key_id().to_owned())
+        .collect();
+    expected.sort();
+    let mut units =
+        crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch), open_door())
+            .await;
+    units.admin = AdminBinding::new(Arc::new(AnsweringDispatch), open_door())
+        .with_audit_view(Arc::new(audit) as Arc<dyn AuditView>);
+    let node = AdminNode::new(crate::root::kernel::new_kernel(), units);
+    let mut path = "/api/v1/admin/audit/keys?limit=1".to_string();
+    let mut ids = Vec::new();
+    for page in 0..4 {
+        let answer = node.answer(a_ledger_request(&path)).await;
+        assert_eq!(answer.status, 200);
+        let body: json::Value = json::parse_value(&answer.body).unwrap();
+        let items = body["items"].as_array().expect("every list uses items");
+        assert_eq!(items.len(), 1);
+        ids.push(items[0]["key_id"].as_str().unwrap().to_string());
+        assert_eq!(body["algorithm"].as_str(), Some("ed25519"));
+        assert!(body.get("keys").is_none(), "one collection member only");
+        if page == 3 {
+            assert!(body["next_cursor"].is_null());
+        } else {
+            let cursor = body["next_cursor"].as_str().expect("another key remains");
+            assert!(cursor.starts_with("k1."), "use the common cursor format");
+            path = format!("/api/v1/admin/audit/keys?limit=1&cursor={cursor}");
+        }
+    }
+    assert_eq!(ids, expected, "each public key appears exactly once");
+    let answer = node
+        .answer(a_ledger_request("/api/v1/admin/audit/keys?cursor=invalid"))
+        .await;
+    assert_eq!(answer.status, 400);
+    assert!(String::from_utf8(answer.body)
+        .unwrap()
+        .contains("malformed_cursor"));
+}
+
+#[tokio::test]
 async fn the_three_chain_reads_answer_with_the_chains_own_bytes() {
     let head = answer_over_a_sealed_chain(a_ledger_request("/api/v1/admin/audit/head")).await;
     assert_eq!(head.status, 200, "the head read did not answer");
@@ -2540,21 +2643,14 @@ fn every_1_6_0_row_names_a_kernel_verb_and_no_name_is_empty() {
 }
 
 #[tokio::test]
-async fn the_ledger_document_path_serves_the_one_document_and_it_describes_the_views() {
-    let answer =
-        answer_over_seeded_ledger(a_ledger_request("/api/v1/admin/ledger/openapi.json")).await;
-    assert_eq!(answer.status, 200);
-    let served = String::from_utf8(answer.body).expect("the document is text");
-    assert_eq!(
-        served,
-        busbar_core_admin::v1::json::openapi_document(),
-        "the ledger's document path must serve the one generated document, byte for byte"
-    );
+async fn the_one_document_describes_the_ledger_views() {
+    // The ledger no longer has a document path of its own (#304): the one document is `GET /openapi.json`.
+    let served = busbar_core_admin::v1::json::openapi_document();
     let document: json::Value = json::parse_value(served.as_bytes()).expect("it is JSON");
     let paths = document["paths"].as_object().expect("it declares paths");
     assert!(
         paths.contains_key(&"/api/v1/admin/usage"),
-        "the ledger path serves a document that is not the administrative one"
+        "the one document is the administrative one"
     );
 
     for path in LEDGER_PATHS {
@@ -3789,9 +3885,9 @@ async fn a_signed_record_verifies_against_the_served_audit_keys() {
                 .body,
         )
         .expect("valid JSON");
-        served["keys"]
+        served["items"]
             .as_array()
-            .expect("keys")
+            .expect("items")
             .iter()
             .map(|k| k["public_key"].as_str().expect("public_key").to_string())
             .collect()
@@ -4193,6 +4289,7 @@ async fn a_keyed_commit_refused_before_sealing_accepts_corrected_input() {
             request,
             &request.body,
             Some(&journal),
+            bound::ReplayContext::None,
             || async {
                 bound::commit_upgrade_effect(&request.body, request.at, "admin", Some(&journal))
                     .await
@@ -4211,7 +4308,11 @@ async fn a_keyed_commit_refused_before_sealing_accepts_corrected_input() {
     request.body = json::to_vec(&json::json!({ "version": bound::RUNNING_RELEASE })).unwrap();
     let accepted = ask(&request).await;
     assert_eq!(accepted.status, 200);
-    assert_eq!(ask(&request).await, accepted);
+    let mut replayed = accepted.clone();
+    replayed
+        .headers
+        .push(("idempotent-replayed".to_string(), "true".to_string()));
+    assert_eq!(ask(&request).await, replayed);
     assert_eq!(journal.sealed_through(), before + 1);
 }
 
@@ -4266,6 +4367,7 @@ async fn a_keyed_write_retried_after_a_restart_replays_and_runs_nothing_again() 
         &request,
         &request.body,
         None,
+        bound::ReplayContext::None,
         effect,
     )
     .await
@@ -4281,11 +4383,19 @@ async fn a_keyed_write_retried_after_a_restart_replays_and_runs_nothing_again() 
         &request,
         &request.body,
         None,
+        bound::ReplayContext::None,
         effect,
     )
     .await
     .expect("the retry answers");
-    assert_eq!(retried, first, "the retry answers the first answer's bytes");
+    let mut marked = first.clone();
+    marked
+        .headers
+        .push(("idempotent-replayed".to_string(), "true".to_string()));
+    assert_eq!(
+        retried, marked,
+        "the retry answers the first answer's bytes, marked as replayed"
+    );
     assert_eq!(
         ran.load(std::sync::atomic::Ordering::SeqCst),
         1,

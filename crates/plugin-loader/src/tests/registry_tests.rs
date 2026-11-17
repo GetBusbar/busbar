@@ -5,6 +5,64 @@ use super::*;
 use crate::sign::{sign, SigningKey};
 
 #[test]
+fn native_archives_are_not_legacy_supersession_candidates() {
+    use busbar_plugin_abi::stamp::{emit, Spec};
+    let bytes = emit(&Spec {
+        kind: busbar_plugin_abi::types::KindCode::Store,
+        kind_abi: busbar_plugin_abi::versions::STORE,
+        layout: busbar_plugin_abi::store::FP,
+        out_of_process: false,
+        engine_min: None,
+        engine_max: None,
+        name: "busbar-store-alpha",
+        version: "1.6.0",
+        build_id: None,
+        crypto: "host",
+    })
+    .0
+    .to_vec();
+    let release = key(1);
+    let mut native = manifest("busbar-store-alpha", "alpha", "busbar");
+    native.version = "1.6.0".into();
+    native.abi_version = busbar_plugin_abi::versions::STORE;
+    native.former_names = vec!["alpha".into()];
+    let native = crate::sign::seal_test_artifact(&release, native, &bytes);
+    let mut legacy = manifest("busbar-store-alpha", "alpha", "busbar");
+    legacy.version = "1.6.0".into();
+    let legacy = stating(legacy, Some("1.6.0"));
+    let legacy_bytes = b"legacy store artifact";
+    let legacy = crate::sign::seal_test_artifact(&release, legacy, legacy_bytes);
+    for (native_file, legacy_file) in [("a.tar.gz", "z.tar.gz"), ("z.tar.gz", "a.tar.gz")] {
+        let dir = tmpdir("native-no-supersession");
+        write_tarball(&dir, native_file, &native, &bytes);
+        write_tarball(&dir, legacy_file, &legacy, legacy_bytes);
+        let rows = inventory(&dir, &policy(&release));
+        assert!(rows.iter().all(|r| r.signature != "superseded"));
+        assert!(
+            rows.iter()
+                .any(|r| r.file == native_file && r.status.starts_with("CONFLICT:")),
+            "native archive reaches duplicate conflict handling"
+        );
+        assert!(scan_and_validate(&dir, &policy(&release)).is_err());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+    let dir = tmpdir("native-invalid-is-not-outdated");
+    let mut invalid = native;
+    invalid.abi_version += 1;
+    let invalid = crate::sign::seal_test_artifact(&release, invalid, &bytes);
+    write_tarball(&dir, "native.tar.gz", &invalid, &bytes);
+    write_tarball(&dir, "legacy.tar.gz", &legacy, legacy_bytes);
+    assert!(matches!(
+        examine(&dir.join("native.tar.gz"), &policy(&release)),
+        FileOutcome::Invalid { .. }
+    ));
+    assert!(inventory(&dir, &policy(&release))
+        .iter()
+        .all(|row| row.signature != "superseded"));
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn two_linked_rows_cannot_claim_one_canonical_name() {
     let first = renamed("hook", "acme-one", "one", &[]);
     for mut second in [

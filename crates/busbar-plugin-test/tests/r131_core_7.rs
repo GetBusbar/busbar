@@ -31,10 +31,6 @@ const LEFT_OUT: &[(&str, &str)] = &[
     ("crates/busbar-kernel/src/plane_driver/tests/plane_driver_tests.rs", HANDOFF),
     // Rows not built.
     (
-        "crates/busbar-kernel/src/tests/alloc_gate_instrument.rs",
-        "the test binary's global allocator counts allocations over jemalloc (mallctl_tests and telemetry_tests read jemalloc's per-thread counters, so the allocator cannot become Watch's System): needs Watch over a chosen backing allocator",
-    ),
-    (
         "crates/busbar-kernel/src/tests/host_disk_export_tests.rs",
         "crosses an ExportInstance's raw door with dispatch::Frame, Plugin::call/call_inline and inline tickets, and forwards ops through a hand-built Door to strip the #85 envelope: needs an Export instance-level crossing row, and a Mutant/Recorder row that rewrites an op's envelope (not built)",
     ),

@@ -107,6 +107,7 @@ fn plane_upstream_surface_compiles() {
             upstream: "test-upstream",
             provider: "test-provider",
             params: &[],
+            admission: &[],
         };
         let mut sink = |_: PlaneOut<'_>| {};
         let mut session = plane.request(request, b"{}", &mut sink)?;

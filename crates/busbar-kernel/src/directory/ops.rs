@@ -377,6 +377,7 @@ async fn count(cx: &Cx<'_>, kind: u32, group: &str, out: &mut impl Sink) -> Resu
 async fn write(cx: &Cx<'_>, n: DirNeed<'_>, out: &mut impl Sink) -> Result<(), NeedErr> {
     for _ in 0..MAX_ATTEMPTS {
         let mut tx = Tx::new(cx.scope());
+        let epoch = tx.read_epoch().await?;
         let d = match n {
             DirNeed::Create {
                 kind,
@@ -417,6 +418,7 @@ async fn write(cx: &Cx<'_>, n: DirNeed<'_>, out: &mut impl Sink) -> Result<(), N
         if d.code != dir::OK || !tx.writes_anything() {
             return emit(out, d);
         }
+        tx.advance_epoch(epoch)?;
         match tx.commit(cx.store).await? {
             Committed::Applied => {
                 if let (Some((principal, held)), Some(set)) = (&d.hold, &cx.inst.held) {

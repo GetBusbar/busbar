@@ -123,7 +123,18 @@ pub fn run_chain<'a>(
     cx: CallCx,
     req: &AuthIn<'_>,
 ) -> impl std::future::Future<Output = ChainEnd> + Send + 'a {
-    let req = Request::new(req);
+    run_owned_chain(services, cache, chain, cx, Request::new(req))
+}
+
+/// The same walk for a consumer retaining its own ports and callers. Snapshot before constructing
+/// the future so borrowed ABI request views never cross a suspension point.
+pub fn run_owned_chain<'a>(
+    services: &'a AuthServices<'a>,
+    cache: &'a dyn VerdictCache,
+    chain: &'a [ChainInstance<'a>],
+    cx: CallCx,
+    req: Request,
+) -> impl std::future::Future<Output = ChainEnd> + Send + 'a {
     async move {
         for instance in chain {
             match verify_owned(services, cache, *instance, cx, &req).await {
@@ -183,9 +194,41 @@ async fn verify_owned(
     cx: CallCx,
     req: &Request,
 ) -> Result<Verdict, PortError> {
+    let verdict = prepare_owned(services, cache, instance, cx, req).await?;
+    finish(services, instance, req, verdict).await
+}
+
+/// Verification only. This result carries no route authority or replay admission. Every recipient
+/// must perform its own final admission; cache followers share only the raw verification result.
+pub async fn prepare_owned(
+    services: &AuthServices<'_>,
+    cache: &dyn VerdictCache,
+    instance: ChainInstance<'_>,
+    cx: CallCx,
+    req: &Request,
+) -> Result<Verdict, PortError> {
+    let verdict = cached_raw(services, cache, instance, cx, req).await?;
+    if let Verdict::Identity(id) = &verdict {
+        if crate::holds::held_by(Some(instance.holds), id.subject()).is_some() {
+            return Ok(Verdict::Held);
+        }
+        if id.subject().is_empty() || id.expires_at_s().is_some_and(|until| req.now_s >= until) {
+            return Ok(rejected(BAD_CREDENTIAL));
+        }
+    }
+    Ok(verdict)
+}
+
+async fn cached_raw(
+    services: &AuthServices<'_>,
+    cache: &dyn VerdictCache,
+    instance: ChainInstance<'_>,
+    cx: CallCx,
+    req: &Request,
+) -> Result<Verdict, PortError> {
     let port = instance.port;
     if !eligible(port.cred_headers().len(), port.facts()) {
-        return decide(services, cache, instance, cx, req).await;
+        return settle(services, cache, instance, cx, req).await;
     }
     let key = VerdictKey {
         auth_instance: instance.id,
@@ -195,19 +238,17 @@ async fn verify_owned(
         ),
     };
     let lead = match cache.begin(key, req.now_s) {
-        VerdictGet::Hit(identity) => {
-            return finish(services, instance, req, Verdict::Identity(identity)).await
-        }
-        VerdictGet::Bypass => return decide(services, cache, instance, cx, req).await,
+        VerdictGet::Hit(identity) => return Ok(Verdict::Identity(identity)),
+        VerdictGet::Bypass => return settle(services, cache, instance, cx, req).await,
         VerdictGet::Lead(lead) => lead,
         VerdictGet::Follow(follow) => match follow.await {
-            Ok(shared) => return finish(services, instance, req, shared?).await,
+            Ok(shared) => return shared,
             Err(lead) => lead,
         },
     };
     let outcome = settle(services, cache, instance, cx, req).await;
     lead.settle(&outcome, req.now_s);
-    finish(services, instance, req, outcome?).await
+    outcome
 }
 
 /// Rule 6: a `refresh` that completed OK (scheduled, or after KEYS_STALE) drops every entry of the instance.
@@ -252,13 +293,6 @@ async fn settle(
     loop {
         match verify(instance.port, cx, req, issued.as_deref()).await? {
             VerifyAnswer::Identity(id) => {
-                if crate::holds::held_by(Some(instance.holds), id.subject()).is_some() {
-                    return Ok(Verdict::Held);
-                }
-                if let Err(code) = req.view(|req| services.policy.authorize(instance.id, &id, req))
-                {
-                    return Ok(Verdict::PolicyRejected { code });
-                }
                 return Ok(Verdict::Identity(id));
             }
             VerifyAnswer::NotMine => return Ok(Verdict::NotMine),
@@ -283,17 +317,6 @@ async fn settle(
             }
         }
     }
-}
-
-async fn decide(
-    services: &AuthServices<'_>,
-    cache: &dyn VerdictCache,
-    instance: ChainInstance<'_>,
-    cx: CallCx,
-    req: &Request,
-) -> Result<Verdict, PortError> {
-    let verdict = settle(services, cache, instance, cx, req).await?;
-    finish(services, instance, req, verdict).await
 }
 
 /// Policy is checked for every recipient of a cached/shared decision. Replay is the final operation,
@@ -333,7 +356,7 @@ async fn finish(
 
 /// A request snapshot owns every carrier before any await. ABI Pair views are rebuilt only for
 /// synchronous port entry and policy checks, and never cross a suspension point.
-struct Request {
+pub struct Request {
     method: String,
     path: String,
     query: String,
@@ -344,8 +367,18 @@ struct Request {
     body: SecureVec,
     now_s: u64,
 }
+impl Drop for Request {
+    fn drop(&mut self) {
+        use zeroize::Zeroize;
+        self.method.zeroize();
+        self.path.zeroize();
+        self.query.zeroize();
+        self.authority.zeroize();
+        self.peer.zeroize();
+    }
+}
 impl Request {
-    fn new(req: &AuthIn<'_>) -> Self {
+    pub fn new(req: &AuthIn<'_>) -> Self {
         let copy = |bytes: &[u8]| {
             let mut out = SecureVec::new();
             out.extend_from_slice(bytes);
@@ -367,7 +400,7 @@ impl Request {
             now_s: req.now_s,
         }
     }
-    fn view<R>(&self, f: impl FnOnce(&AuthIn<'_>) -> R) -> R {
+    pub fn view<R>(&self, f: impl FnOnce(&AuthIn<'_>) -> R) -> R {
         let headers: Vec<Pair<'_>> = self
             .headers
             .iter()

@@ -32,6 +32,9 @@ const UNITCP: &[u8] = b"busbar.unitcp.v1";
 const JOURNAL: &[u8] = b"busbar.journal4\0";
 const INJECTED: &[u8] = b"a27c concurrent request-path append";
 
+#[path = "unit_checkpoint_selected_tests.rs"]
+mod selected_partitions;
+
 /// What the interposer does with a running-unit checkpoint candidate.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Mode {
@@ -570,6 +573,7 @@ fn unit(revision: u64) -> UnitCheckpoint {
         audit: Some(b"{}".to_vec()),
         measurement: None,
         unread: None,
+        partitions: None,
     }
 }
 fn selected_revision(backend: &Mem) -> Option<u64> {
@@ -829,9 +833,10 @@ fn audit_line() -> busbar_kernel_audit::AuditRecord {
         AuditChain, AuditInputs, Controls, FinishClass, OpClassId, OutcomeFacts, Subject, Usage,
         What,
     };
-    let mut chain = AuditChain::new()
-        .signing_with(AuditSigningKey::from_seed(&[0x5a; 32]))
-        .sealing_as(NODE);
+    // A production chain holds no key: its V8 link line is unsigned, and the journal body is that
+    // line exactly (a stamp vouches for it, SF-4). A test-only per-line signature has no journal
+    // field, so a fixture sealed with one could never round-trip through recovery.
+    let mut chain = AuditChain::new().sealing_as(NODE);
     let inputs = AuditInputs {
         subject: Subject::PrincipalId("race-principal".into()),
         what: What {
@@ -870,6 +875,59 @@ fn audit_line() -> busbar_kernel_audit::AuditRecord {
         inputs,
         &busbar_contract::caps::Pass::<AuditStep>::mint(&crate::seal::acquire()),
     )
+}
+
+/// #370: recovery carries the original WAL position, distinct from the audit chain sequence.
+#[tokio::test]
+async fn recovered_audit_lookup_and_reappend_keep_the_original_wal_position() {
+    bounded(async {
+        let fixture = fixture().await;
+        fixture.sink.persist(&unit(1)).await.unwrap();
+        let audit = audit_line();
+        let position = fixture.evidence.append_audit(audit.clone()).await.unwrap();
+        assert_ne!(position, 0);
+        assert_ne!(
+            position, audit.seq,
+            "the checkpoint occupies its own WAL record"
+        );
+
+        let recovered = RuntimeJournal::open(
+            fixture.journal.store().clone(),
+            NODE,
+            BufferBudget {
+                records: 1024,
+                bytes: 4 * 1024 * 1024,
+            },
+        )
+        .await
+        .unwrap();
+        let evidence =
+            UnitCheckpointEvidence::new(recovered, crate::teller::Kernel::new().durability_token());
+        assert_eq!(evidence.pending_audit(17, 7), None);
+        assert_eq!(
+            evidence.find_audit(17, 7).await.unwrap(),
+            Some((position, audit.clone()))
+        );
+        let applied = fixture.backend.appends_applied.load(Ordering::SeqCst);
+        assert_eq!(
+            evidence.append_audit(audit.clone()).await.unwrap(),
+            position
+        );
+        assert_eq!(
+            evidence.append_audit(audit.clone()).await.unwrap(),
+            position
+        );
+        assert_eq!(
+            fixture.backend.appends_applied.load(Ordering::SeqCst),
+            applied,
+            "reappending the recovered line writes no new original"
+        );
+        assert_eq!(
+            evidence.find_audit(17, 7).await.unwrap(),
+            Some((position, audit))
+        );
+    })
+    .await;
 }
 
 /// One request-path append on the shared journal, confirmed.

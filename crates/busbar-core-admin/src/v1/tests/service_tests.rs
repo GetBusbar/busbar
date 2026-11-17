@@ -629,6 +629,7 @@ mod dated_rate_card_history {
                 (
                     bucket,
                     busbar_kernel::governance::MeteringRow {
+                        pricing: None,
                         scale: 0,
                         usage_units: Default::default(),
                         key_id: KEY.to_string(),
@@ -1364,6 +1365,7 @@ fn fractional_metering_row_matches_canonical_tally_and_keeps_numeric_json() {
         &BTreeMap::new(),
     );
     let row = MeteringRow {
+        pricing: None,
         scale: 6,
         key_id: "fractional-key".into(),
         model: "fractional-model".into(),
@@ -1433,6 +1435,7 @@ fn submicro_metering_rows_project_once_per_final_usage_view() {
     ));
     let history = Arc::new(History::opening(cost.card().clone(), 0));
     let row = |key: String, micros: i128| MeteringRow {
+        pricing: None,
         scale: 6,
         key_id: key,
         model: "fractional-model".into(),
@@ -1602,6 +1605,7 @@ fn full_range_free_usage_projects_all_classes_and_exact_inverse() {
     ] {
         let quantity = Count::parse(decimal).unwrap();
         let row = MeteringRow {
+            pricing: None,
             scale: 6,
             key_id: "wide-key".into(),
             model: "wide-model".into(),
@@ -1804,6 +1808,7 @@ fn class_parent_export_projects_counts_after_disjoint_pricing() {
     );
     let cost = Arc::new(cost);
     let row = MeteringRow {
+        pricing: None,
         scale: 0,
         key_id: "key".into(),
         model: "subject".into(),
@@ -1909,6 +1914,7 @@ fn observation_export_merges_once_and_preserves_original_accounting() {
         ))
     };
     let ordinary = MeteringRow {
+        pricing: None,
         scale: 6,
         key_id: "key".into(),
         model: "ordinary".into(),

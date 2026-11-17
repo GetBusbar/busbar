@@ -198,56 +198,6 @@ impl LoadablePlugin {
                 }
             )
     }
-
-    pub fn validate_migrated(&self, settings: &serde_json::Value) -> Result<(), String> {
-        use crate::dispatch::migrate::{validate_migrated_door, validate_migrated_library};
-        match self.door() {
-            Some(door) => validate_migrated_door(door, settings),
-            None => validate_migrated_library(&self.lib_bytes, &self.file, settings),
-        }
-    }
-
-    /// Discover credential references in a registered owner's borrowed source sections.
-    pub fn migrate_references(
-        &self,
-        settings: &serde_json::Value,
-        from: &str,
-    ) -> Result<Option<busbar_contract::abi::sdk::migrate::MigrationAnswer>, String> {
-        use crate::dispatch::migrate::{migrate_references_door, migrate_references_library};
-        match self.door() {
-            Some(door) => migrate_references_door(door, settings, from),
-            None => migrate_references_library(&self.lib_bytes, &self.file, settings, from),
-        }
-    }
-
-    /// Route guarded credential custody through the receiving owner's migration door.
-    pub fn migrate_credential(
-        &self,
-        credential: &busbar_contract::Secret<String>,
-        from: &str,
-        seal: &dyn busbar_contract::plugin::KernelSeal,
-    ) -> Result<busbar_contract::abi::sdk::migrate::MigratedCredential, String> {
-        use crate::dispatch::migrate::{migrate_credential_door, migrate_credential_library};
-        match self.door() {
-            Some(door) => migrate_credential_door(door, credential, from, seal),
-            None => migrate_credential_library(&self.lib_bytes, &self.file, credential, from, seal),
-        }
-    }
-
-    pub fn migrate(
-        &self,
-        settings: &serde_json::Value,
-        from: &str,
-    ) -> Result<Option<busbar_contract::abi::sdk::migrate::MigrationAnswer>, String> {
-        use crate::dispatch::migrate::{migrate_door, migrate_library};
-        match &self.entry {
-            Some(LinkedEntry::Store { door }) => {
-                migrate_door(crate::dispatch::load::raw(*door), settings, from)
-            }
-            Some(LinkedEntry::Door(door)) => migrate_door(*door, settings, from),
-            None => migrate_library(&self.lib_bytes, &self.file, settings, from),
-        }
-    }
 }
 
 /// Why a loadable row did not open: its Statement did not read, it has no door, the site's
@@ -1161,7 +1111,9 @@ fn examine(path: &Path, policy: &TrustPolicy) -> FileOutcome {
         HOST_IDENTITY,
     ) {
         let speaks = supported_abi(&unpacked.manifest.kind);
-        if speaks.is_some_and(|v| v != unpacked.manifest.abi_version) {
+        if matches!(crate::sign::native_stamp(&unpacked.lib_bytes), Ok(None))
+            && speaks.is_some_and(|v| v != unpacked.manifest.abi_version)
+        {
             return FileOutcome::Outdated {
                 file,
                 reason,
@@ -1291,6 +1243,7 @@ fn superseder<'a>(
     outcomes.iter().find_map(|o| match o {
         FileOutcome::Loadable(q)
             if q.file != file
+                && matches!(crate::sign::native_stamp(&q.lib_bytes), Ok(None))
                 && q.manifest.kind == old.kind
                 && (!stated || q.manifest.statement.is_some())
                 && (q.manifest.name == old.name || q.manifest.former_names.contains(&old.name))
@@ -1308,7 +1261,10 @@ fn supersede(outcomes: Vec<FileOutcome>) -> Vec<FileOutcome> {
         .map(|o| {
             let (file, old, stated) = match o {
                 FileOutcome::Outdated { file, manifest, .. } => (file, manifest, false),
-                FileOutcome::Loadable(p) if p.manifest.statement.is_none() => {
+                FileOutcome::Loadable(p)
+                    if p.manifest.statement.is_none()
+                        && matches!(crate::sign::native_stamp(&p.lib_bytes), Ok(None)) =>
+                {
                     (&p.file, &p.manifest, true)
                 }
                 _ => return None,

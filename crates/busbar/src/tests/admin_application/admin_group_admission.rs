@@ -5,6 +5,7 @@ use busbar_contract::json::{self, JsonValueTrait as _};
 
 fn budget_limit(cents: u64) -> busbar_kernel::config::groups::LimitCfg {
     busbar_kernel::config::groups::LimitCfg {
+        selected: None,
         metric: busbar_kernel::config::groups::LimitMetric::Budget,
         amount: cents,
         per: Some(busbar_kernel::config::groups::LimitWindow::Month),
@@ -25,6 +26,7 @@ async fn test_patch_key_three_state_group_and_enabled() {
             parent: None,
             enabled: true,
             limits: vec![busbar_kernel::config::groups::LimitCfg {
+                selected: None,
                 metric: busbar_kernel::config::groups::LimitMetric::Requests,
                 amount: 100,
                 per: Some(busbar_kernel::config::groups::LimitWindow::Minute),

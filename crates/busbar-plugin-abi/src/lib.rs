@@ -37,6 +37,7 @@ macro_rules! mechanism {
 #[doc(hidden)]
 pub mod bridge;
 pub mod fail;
+pub mod fallback_usage;
 pub mod fp;
 pub mod host;
 #[cfg(feature = "host")]
@@ -48,6 +49,7 @@ pub mod memio;
 pub mod need;
 pub mod plugin;
 pub mod records;
+pub mod resource_admission;
 /// Wiping byte storage shared with the core contract; plugins name only this facade.
 pub mod secure {
     pub use busbar_secure::{Overflow, SecureVec, Tail};

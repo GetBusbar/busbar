@@ -9,6 +9,7 @@
 //! core builds once per request from its `HeaderMap` and shares between auth, plane and hooks (no per-port copy).
 
 #![forbid(unsafe_code)]
+#![doc(test(attr(forbid(unsafe_code))))]
 
 pub mod auth;
 pub mod export;

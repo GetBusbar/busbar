@@ -280,7 +280,7 @@ impl ConcurrencyGauge {
         let mut counts = self.counts.lock().unwrap_or_else(|e| e.into_inner());
         let entry = counts.entry(*bucket).or_insert(0);
         if *entry >= cap {
-            return Err(ReasonCode::OverBudget);
+            return Err(ReasonCode::RateLimited);
         }
         *entry += 1;
         Ok(())
@@ -302,5 +302,22 @@ impl ConcurrencyGauge {
         if let Some(entry) = counts.get_mut(bucket) {
             *entry = entry.saturating_sub(1);
         }
+    }
+}
+
+#[cfg(test)]
+mod concurrency_tests {
+    use super::*;
+
+    #[test]
+    fn a_full_concurrency_bucket_refuses_as_rate_without_taking_another_lease() {
+        let gauge = ConcurrencyGauge::new();
+        let bucket = group_lease("capacity");
+        assert_eq!(gauge.acquire(&bucket, 1), Ok(()));
+        assert_eq!(gauge.acquire(&bucket, 1), Err(ReasonCode::RateLimited));
+        assert_eq!(gauge.count(&bucket), 1);
+        gauge.release(&bucket);
+        assert_eq!(gauge.acquire(&bucket, 1), Ok(()));
+        assert_eq!(gauge.count(&bucket), 1);
     }
 }

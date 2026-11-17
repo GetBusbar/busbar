@@ -11,6 +11,7 @@ use super::{
     facade::CoreStore,
     scoped::{Expected, Mutation, Predicate},
 };
+use busbar_contract::semver::version_at_least;
 use busbar_contract::{plugin::valid_semver, Secret};
 
 pub const PLUGIN_FLOOR_SCHEMA: &str = "busbar.plugin_floor.v1";
@@ -45,24 +46,15 @@ fn decode_keys(bytes: Option<&[u8]>) -> Result<u64, String> {
             .map_err(|_| "the release keys-document floor is malformed".into())
     })
 }
-fn version_at_least(have: &str, floor: &str) -> bool {
-    if !valid_semver(have) || !valid_semver(floor) {
-        return false;
-    }
-    fn core(value: &str) -> &str {
-        value.split(['-', '+']).next().unwrap_or("")
-    }
-    // Compare decimal strings without narrowing arbitrary semver components to u64.
-    for (have, floor) in core(have).split('.').zip(core(floor).split('.')) {
-        let have = have.trim_start_matches('0');
-        let floor = floor.trim_start_matches('0');
-        match have.len().cmp(&floor.len()).then_with(|| have.cmp(floor)) {
-            std::cmp::Ordering::Less => return false,
-            std::cmp::Ordering::Greater => return true,
-            std::cmp::Ordering::Equal => {}
-        }
-    }
-    true
+/// A first-party candidate whose version does not read: refused with its remedy, never exempt from its
+/// floor (DES-359 r3 L11, B-R5).
+fn unreadable_version(candidate: &Candidate<'_>) -> String {
+    format!(
+        "the first-party plugin `{}` declares version `{}`, which is not a MAJOR.MINOR.PATCH version, \
+         so its anti-downgrade floor cannot be checked and it does not load; install a release whose \
+         manifest version reads as MAJOR.MINOR.PATCH (for example 1.6.0 or 1.6.0-rc.1)",
+        candidate.name, candidate.version
+    )
 }
 impl PluginFloor {
     pub fn new(core: Arc<CoreStore>) -> Result<Self, String> {
@@ -134,15 +126,17 @@ impl PluginFloor {
                 Ok(generation)
             })
         };
-        let plugin_floor =
-            if candidate.first_party && !candidate.linked && valid_semver(candidate.version) {
-                values[0]
-                    .as_ref()
-                    .map(|v| String::from_utf8(v.expose(&seal).clone()).map_err(error))
-                    .transpose()?
-            } else {
-                None
-            };
+        if candidate.first_party && !candidate.linked && !valid_semver(candidate.version) {
+            return Err(unreadable_version(&candidate));
+        }
+        let plugin_floor = if candidate.first_party && !candidate.linked {
+            values[0]
+                .as_ref()
+                .map(|v| String::from_utf8(v.expose(&seal).clone()).map_err(error))
+                .transpose()?
+        } else {
+            None
+        };
         let release_floor = decode_keys(values[1].as_ref().map(|v| v.expose(&seal).as_slice()))?;
         let proof = AdmissionProof {
             host: host.into(),
@@ -252,8 +246,11 @@ impl PluginFloor {
         candidate: Candidate<'_>,
         raise: bool,
     ) -> Result<(), String> {
-        if !candidate.first_party || candidate.linked || !valid_semver(candidate.version) {
+        if !candidate.first_party || candidate.linked {
             return Ok(());
+        }
+        if !valid_semver(candidate.version) {
+            return Err(unreadable_version(&candidate));
         }
         let _gate = self.records.gate.lock().await;
         self.records.resume().await?;
@@ -272,7 +269,7 @@ impl PluginFloor {
                         .ok()
                         .filter(|v| valid_semver(v))
                         .ok_or_else(|| {
-                            format!("the first-party floor of `{}` is malformed", candidate.name)
+                            format!("the stored first-party floor of `{}` does not read as a version; its anti-downgrade check cannot run, so the plugin does not load. Roll it back on purpose with the audited `POST /api/v1/admin/plugins/rollback`, which pins a readable floor in the overlay's `plugin_versions`", candidate.name)
                         })
                 })
                 .transpose()?;
@@ -370,7 +367,7 @@ impl AdmissionProof {
         }
         if let Some(floor) = &self.plugin_floor {
             if !valid_semver(floor) {
-                return Err("malformed observed plugin floor".into());
+                return Err(format!("the observed floor of `{}` does not read as a version; re-run admission (restart) so the floor is observed again, or roll the plugin back with the audited `POST /api/v1/admin/plugins/rollback`", candidate.name));
             }
             if !candidate.rollback_pinned && !version_at_least(candidate.version, floor) {
                 return Err(format!(

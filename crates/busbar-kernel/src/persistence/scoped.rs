@@ -6,7 +6,7 @@
 //! secret custody; this API does not encode the bounded plane transaction carrier.
 
 use super::{
-    facade::{CoreStore, PendingId},
+    facade::{CoreStore, DomainCall, DomainOwner, PendingId},
     host_records::HostRecords,
 };
 use busbar_contract::{
@@ -150,6 +150,7 @@ pub struct ScopedStore {
     instance: String,
     schemas: BTreeSet<String>,
     private: bool,
+    domain: Option<DomainCall>,
 }
 impl ScopedStore {
     /// The host has already authenticated this instance and authorized its schemas.
@@ -179,12 +180,13 @@ impl ScopedStore {
             instance: instance.into(),
             schemas: schemas.into_iter().collect(),
             private,
+            domain: None,
         };
         result.owner()?;
         Ok(result)
     }
     fn owner(&self) -> Result<HostRecords<'_>, Error> {
-        if self.private {
+        let owner = if self.private {
             HostRecords::host_private(
                 &self.store,
                 &self.instance,
@@ -196,7 +198,17 @@ impl ScopedStore {
                 &self.instance,
                 self.schemas.iter().map(String::as_str),
             )
+        }?;
+        owner.in_domain(self.domain.as_ref())
+    }
+
+    /// Bind one operation's foreground reservation to the exact durable owner.
+    pub(crate) fn in_domain(mut self, owner: &DomainOwner) -> Result<Self, Error> {
+        if !owner.owns(&self.store) {
+            return Err(Error::Unauthorized);
         }
+        self.domain = Some(owner.call());
+        Ok(self)
     }
     fn key(&self, key: &[u8]) -> Vec<u8> {
         crate::host_records::record_key(&self.instance, key)

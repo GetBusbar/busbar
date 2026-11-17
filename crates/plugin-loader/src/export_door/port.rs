@@ -21,7 +21,8 @@ use std::time::{Duration, Instant};
 
 use busbar_contract::abi::mechanism::route::{Route, RouteAuth, RouteMethod};
 use busbar_contract::export_calls::{
-    Delivered as Queued, ExportCalls, Family, RecorderRequirements, ServeRequest, Served,
+    Delivered as Queued, ExportCalls, ExportCustodyLevel, ExportDropReason, ExportLossKind,
+    ExportObservation, ExportObserver, Family, RecorderRequirements, ServeRequest, Served,
 };
 use busbar_contract::secure::SecureVec;
 use busbar_plugin_abi::fail::CallError;
@@ -148,6 +149,7 @@ impl StopReport {
 struct Shared {
     port: Arc<dyn ExportPort>,
     disk: Arc<dyn DestAppend>,
+    observer: Arc<dyn ExportObserver>,
     label: Box<str>,
     timeout: Duration,
     queue: Mutex<VecDeque<Line>>,
@@ -284,20 +286,47 @@ impl Shared {
         }
     }
 
-    fn drop_lines(&self, n: usize, why: &str) {
+    fn drop_lines(&self, n: usize, reason: ExportDropReason) {
         if n == 0 {
             return;
         }
         self.shed.fetch_add(n as u64, Ordering::Relaxed);
-        tracing::warn!(instance = %self.label, lines = n, "{why}");
+        // The bound root observer owns coded, export-excluded diagnostics and durable evidence.
+        // Logging here would feed this loss back into the same export queue.
+        self.observer.observe(ExportObservation::Dropped {
+            reason,
+            lines: n as u64,
+        });
     }
 
     fn count_custody(&self, stream: u8, level: u32, n: usize) {
-        if let Some(row) = self.custody.get(stream as usize) {
-            if let Some(cell) = row.get(level as usize) {
-                cell.fetch_add(n as u64, Ordering::Relaxed);
-            }
+        // The loader owns wire classification; the observer receives only neutral checked levels.
+        let checked = match level {
+            x::CUSTODY_ACCEPTED => ExportCustodyLevel::Accepted,
+            x::CUSTODY_DURABLE => ExportCustodyLevel::Durable,
+            x::CUSTODY_INDEXED => ExportCustodyLevel::Indexed,
+            _ => return,
+        };
+        let Some(&stream_kind) =
+            busbar_contract::export_stream::ExportStream::ALL.get(stream as usize)
+        else {
+            return;
+        };
+        if n == 0 {
+            return;
         }
+        if let Some(cell) = self
+            .custody
+            .get(stream as usize)
+            .and_then(|row| row.get(level as usize))
+        {
+            cell.fetch_add(n as u64, Ordering::Relaxed);
+        }
+        self.observer.observe(ExportObservation::Custody {
+            stream: stream_kind,
+            level: checked,
+            lines: n as u64,
+        });
     }
 
     fn cx(&self, delivery: u64) -> CallCx {
@@ -329,25 +358,16 @@ impl Shared {
             self.in_flight
                 .store((lines.len() - start) as u64, Ordering::Release);
             if self.expired() {
-                self.drop_lines(
-                    lines.len() - start,
-                    "export delivery stopped at its drain deadline",
-                );
+                self.drop_lines(lines.len() - start, ExportDropReason::Stopped);
                 return;
             }
             if attempt > DELIVER_ATTEMPTS {
-                self.drop_lines(
-                    lines.len() - start,
-                    "export lines were not delivered within their attempts and are dropped",
-                );
+                self.drop_lines(lines.len() - start, ExportDropReason::AttemptsExhausted);
                 return;
             }
             let views: Vec<&[u8]> = lines[start..].iter().map(|l| l.bytes.as_slice()).collect();
             let Some(answer) = self.call(stream, delivery, attempt, &views) else {
-                self.drop_lines(
-                    lines.len() - start,
-                    "export delivery was cancelled while stopping",
-                );
+                self.drop_lines(lines.len() - start, ExportDropReason::Stopped);
                 return;
             };
             let resend = |attempt: &mut u32, retry_after_s: Option<u64>| {
@@ -396,10 +416,7 @@ impl Shared {
                             }
                         }
                         Err(AppendDenied::Foreign) => {
-                            self.drop_lines(
-                                views.len(),
-                                "an export append named no destination of this instance; its lines are dropped",
-                            );
+                            self.drop_lines(views.len(), ExportDropReason::ForeignDestination);
                             return;
                         }
                         Err(_) => resend(&mut attempt, None),
@@ -409,26 +426,23 @@ impl Shared {
                     code: busbar_plugin_abi::fail::failed::F_LIMIT,
                     ..
                 }) => {
-                    self.drop_lines(
-                        views.len(),
-                        "an export delivery reached a terminal limit; its lines are dropped",
-                    );
+                    self.drop_lines(views.len(), ExportDropReason::Refused);
                     return;
                 }
                 Err(PortError::Failed { retry_after_s, .. }) => resend(&mut attempt, retry_after_s),
                 Err(PortError::Call(CallError::Deadline)) => resend(&mut attempt, None),
-                Err(e) => {
-                    self.drop_lines(
-                        views.len(),
-                        &format!(
-                            "an export delivery was refused ({}); its lines are dropped",
-                            why(&e)
-                        ),
-                    );
+                Err(_) => {
+                    self.drop_lines(views.len(), ExportDropReason::Refused);
                     return;
                 }
             }
         }
+    }
+
+    fn discard_queue(&self) {
+        let left = std::mem::take(&mut *self.lock());
+        self.drop_lines(left.len(), ExportDropReason::Stopped);
+        drop(left);
     }
 
     fn pump(self: Arc<Self>) {
@@ -436,12 +450,7 @@ impl Shared {
             self.deliver_set(stream, &lines);
             self.in_flight.store(0, Ordering::Release);
         }
-        let left = std::mem::take(&mut *self.lock());
-        self.drop_lines(
-            left.len(),
-            "queued export lines are shed while the instance stops",
-        );
-        drop(left);
+        self.discard_queue();
         self.lifecycle().finished = true;
         self.settled.notify_all();
     }
@@ -537,8 +546,9 @@ impl PortDoor {
         port: Arc<dyn ExportPort>,
         disk: Arc<dyn DestAppend>,
         limits: &InstanceLimits,
+        observer: Arc<dyn ExportObserver>,
     ) -> Result<Arc<Self>, String> {
-        let door = Self::prepare(label, port, disk, limits);
+        let door = Self::prepare(label, port, disk, limits, observer);
         door.start()?;
         Ok(door)
     }
@@ -549,6 +559,7 @@ impl PortDoor {
         port: Arc<dyn ExportPort>,
         disk: Arc<dyn DestAppend>,
         limits: &InstanceLimits,
+        observer: Arc<dyn ExportObserver>,
     ) -> Arc<Self> {
         let timeout = match limits.timeout_ms {
             0 => DEFAULT_DELIVER_TIMEOUT,
@@ -572,6 +583,7 @@ impl PortDoor {
         let shared = Arc::new(Shared {
             port,
             disk,
+            observer,
             label: label.into(),
             timeout,
             queue: Mutex::new(VecDeque::new()),
@@ -687,6 +699,9 @@ impl Drop for PortDoor {
             }
             // A still-running worker owns Shared, including the live port and its buffers. Detaching
             // here is deliberate: Drop is not a shutdown protocol and must never wait without a bound.
+        } else {
+            // A rolled-back prepared candidate has no worker to account its retained lines.
+            self.shared.discard_queue();
         }
     }
 }
@@ -755,15 +770,20 @@ impl ExportCalls for PortDoor {
     }
 
     fn deliver(&self, stream: u8, line: Vec<u8>, hold: Box<dyn Send>) -> Queued {
-        if !self.streams.contains(&stream) || self.shared.stop.load(Ordering::Acquire) {
+        if !self.streams.contains(&stream) {
+            self.shed(ExportLossKind::CaptureRefused);
             return Queued::Shed;
         }
         {
             let mut q = self.shared.lock();
             if self.shared.stop.load(Ordering::Acquire) {
+                drop(q);
+                self.shared.drop_lines(1, ExportDropReason::Stopped);
                 return Queued::Shed;
             }
             if q.len() >= MAX_QUEUED_LINES {
+                drop(q);
+                self.shared.drop_lines(1, ExportDropReason::QueueFull);
                 return Queued::Shed;
             }
             q.push_back(Line {
@@ -805,8 +825,18 @@ impl ExportCalls for PortDoor {
         Err("a MIN-3 export instance serves no routes of its own".to_string())
     }
 
-    fn shed(&self) {
-        self.shared.shed.fetch_add(1, Ordering::Relaxed);
+    fn shed(&self, kind: ExportLossKind) {
+        match kind {
+            ExportLossKind::Dropped(reason) => self.shared.drop_lines(1, reason),
+            ExportLossKind::CaptureRefused => self
+                .shared
+                .observer
+                .observe(ExportObservation::CaptureRefused),
+            ExportLossKind::IntegrityFailed => self
+                .shared
+                .observer
+                .observe(ExportObservation::IntegrityFailed),
+        }
     }
 }
 

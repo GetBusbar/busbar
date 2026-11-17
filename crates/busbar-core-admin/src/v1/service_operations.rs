@@ -2187,7 +2187,10 @@ fn validate_config_blocking(
         "config.validate",
         rules.as_ref(),
     )?;
-    let deploy = crate::v1::json::typed_body(config, &grammar, parse)?;
+    let mut deploy = crate::v1::json::typed_body(config, grammar.grammar(), parse)?;
+    grammar
+        .attach(&mut deploy)
+        .map_err(AdminError::Validation)?;
     // A dry run never says yes to what apply refuses: the same pre-check, status and text.
     if let Some(refusal) =
         crate::v1::json::config_body_refusal(&deploy, &reference, "config.validate")

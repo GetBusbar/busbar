@@ -296,12 +296,29 @@ async fn port_admin_response(
     parts: axum::http::request::Parts,
     body: axum::body::Body,
 ) -> Response {
-    let Ok(body) = axum::body::to_bytes(body, PLANE_ADMIN_BODY_MAX).await else {
-        return err_json(&AdminError::Validation(
-            "the request body is over the plane admin limit".to_owned(),
+    use busbar_kernel::limits::input_body::{gather, GatherError};
+    use busbar_kernel::limits::process_admission::RequestLease;
+
+    let Some(request) = parts.extensions.get::<RequestLease>().cloned() else {
+        return err_json(&AdminError::Unavailable(
+            "the request has no process admission".to_owned(),
         ));
     };
+    let body = match gather(body, &request, PLANE_ADMIN_BODY_MAX).await {
+        Ok(body) => body,
+        Err(GatherError::Capacity(_)) => {
+            return err_json(&AdminError::Unavailable(
+                "the process input capacity is exhausted".to_owned(),
+            ));
+        }
+        Err(GatherError::Body(_) | GatherError::TooLarge) => {
+            return err_json(&AdminError::Validation(
+                "the request body is over the plane admin limit".to_owned(),
+            ));
+        }
+    };
     let request = port_admin::AdminRequest {
+        request,
         method: parts.method.as_str().to_owned(),
         path: parts.uri.path().to_owned(),
         query: parts.uri.query().unwrap_or_default().to_owned(),
@@ -310,7 +327,7 @@ async fn port_admin_response(
             .iter()
             .map(|(name, value)| (name.as_str().to_owned(), value.as_bytes().to_vec()))
             .collect(),
-        body: body.to_vec(),
+        body,
         request_id,
         now_s: busbar_kernel::store::now(),
     };
@@ -375,6 +392,10 @@ fn mount_one_admin_spec(
               Path(name): Path<String>,
               principal: Option<axum::Extension<busbar_kernel::auth::AuthPrincipal>>,
               consumed: Option<axum::Extension<busbar_kernel::auth::ConsumedCredentials>>,
+              // Inserted only by the admin gate, from its own admission verdict (r3 condition B-C1).
+              trust_authority: Option<
+            axum::Extension<busbar_kernel::host_services::TrustDecisionAuthority>,
+        >,
               axum::extract::RawQuery(query): axum::extract::RawQuery,
               headers: axum::http::HeaderMap,
               body: axum::body::Bytes| {
@@ -396,6 +417,7 @@ fn mount_one_admin_spec(
                     consumed: consumed.map(|axum::Extension(c)| c),
                     query,
                     serve: handle.load().serve_tables.clone(),
+                    trust_authority: trust_authority.map(|axum::Extension(granted)| granted),
                 };
                 finish_admin_reply(plane, &name, kind, principal, handler(ctx).await)
             }
@@ -675,14 +697,15 @@ mod config_document;
 mod config_tree;
 pub(crate) mod kinds;
 mod plane_input_schemas;
+pub mod trust_inventory;
 mod views;
 pub use plane_input_schemas::install_plane_input_schemas;
 #[cfg(feature = "openapi-schema")]
 mod config_forms;
 #[cfg(feature = "openapi-schema")]
 mod contract_metadata;
-pub(crate) mod cursor;
-mod generation;
+pub mod cursor;
+pub(crate) mod generation;
 mod hook_attachments;
 pub(crate) use hook_attachments::attachments_of;
 mod handlers;

@@ -41,6 +41,14 @@ impl Served {
 }
 
 async fn serve(name: &str, require_if_match: bool) -> Served {
+    serve_with_effect(name, require_if_match, None).await
+}
+
+async fn serve_with_effect(
+    name: &str,
+    require_if_match: bool,
+    effect: Option<axum::Router>,
+) -> Served {
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let (module, directory, settings) = crate::distribution::rig::actual_store(name);
     let signing_key = directory.join("signing-key");
@@ -51,7 +59,7 @@ async fn serve(name: &str, require_if_match: bool) -> Served {
     let mut document = serde_json::json!({
         "providers": {}, "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key },
-                  "policy": { "require_if_match": require_if_match } },
+                  "require_if_match": require_if_match },
         "store": { "module": module, "settings": settings },
         "advanced": {  },
         "identity-providers": {},
@@ -104,8 +112,11 @@ async fn serve(name: &str, require_if_match: bool) -> Served {
     if let Some(rotate) = rotate {
         rotate.await;
     }
-    let router =
-        busbar_kernel::build_router(crate::root::real_store::hydrated(Arc::new(app)).await);
+    let app = crate::root::real_store::hydrated(Arc::new(app)).await;
+    let router = match effect {
+        Some(router) => busbar_core_admin::test_support::with_idempotency(router, app),
+        None => busbar_kernel::build_router(app),
+    };
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -118,9 +129,77 @@ async fn serve(name: &str, require_if_match: bool) -> Served {
 }
 
 #[tokio::test]
+async fn failed_reply_after_effect_is_replayed_without_a_second_effect() {
+    isolated!(CHILD, WITNESS, witness = "generation");
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let effects = Arc::new(AtomicUsize::new(0));
+    let handler_effects = effects.clone();
+    let router = axum::Router::new().route(
+        "/api/v1/admin/counted-effect/{status}",
+        axum::routing::post(
+            move |axum::extract::Path(status): axum::extract::Path<u16>| {
+                let effects = handler_effects.clone();
+                async move {
+                    effects.fetch_add(1, Ordering::SeqCst);
+                    (
+                        axum::http::StatusCode::from_u16(status).unwrap(),
+                        [("content-type", "application/json")],
+                        r#"{"effect":"applied","receipt":"retained"}"#,
+                    )
+                }
+            },
+        ),
+    );
+    let s = serve_with_effect("failed-reply-retained", false, Some(router)).await;
+    for (index, status) in [500, 503, 429].into_iter().enumerate() {
+        let path = format!("/counted-effect/{status}");
+        let key = format!("failed-reply-{status}");
+        let first = s
+            .send(reqwest::Method::POST, &path)
+            .header("idempotency-key", &key)
+            .body("original")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(first.status().as_u16(), status);
+        let content_type = first.headers()["content-type"].clone();
+        let body = first.bytes().await.unwrap();
+        let retry = s
+            .send(reqwest::Method::POST, &path)
+            .header("idempotency-key", &key)
+            .body("original")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(retry.status().as_u16(), status);
+        assert_eq!(retry.headers().get("idempotent-replayed").unwrap(), "true");
+        assert_eq!(retry.headers()["content-type"], content_type);
+        assert_eq!(retry.bytes().await.unwrap(), body);
+        assert_eq!(effects.load(Ordering::SeqCst), index + 1);
+        let mismatch = s
+            .send(reqwest::Method::POST, &path)
+            .header("idempotency-key", &key)
+            .body("different")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(mismatch.status().as_u16(), 409);
+        let mismatch: serde_json::Value = mismatch.json().await.unwrap();
+        assert_eq!(mismatch["error"]["reason"], "idempotency_mismatch");
+        assert_eq!(effects.load(Ordering::SeqCst), index + 1);
+    }
+    s.finish();
+    println!("{WITNESS}");
+}
+
+#[tokio::test]
 async fn every_get_has_etag_and_304() {
     isolated!(CHILD, WITNESS, witness = "generation");
     let s = serve("every-get-has-etag", false).await;
+    let whoami = s.get("/whoami").send().await.unwrap();
+    let whoami = json::parse_value(&whoami.bytes().await.unwrap()).unwrap();
+    assert_eq!(whoami["require_if_match"], false);
     for path in [
         "/info",
         "/kinds/core/instances",
@@ -200,6 +279,9 @@ async fn generation_etag_moves_on_write_and_if_match_guards() {
 async fn require_if_match_428() {
     isolated!(CHILD, WITNESS, witness = "generation");
     let s = serve("require-if-match", true).await;
+    let whoami = s.get("/whoami").send().await.unwrap();
+    let whoami = json::parse_value(&whoami.bytes().await.unwrap()).unwrap();
+    assert_eq!(whoami["require_if_match"], true);
     let refused = s
         .send(reqwest::Method::DELETE, "/overlay/groups")
         .send()
@@ -273,6 +355,49 @@ async fn idempotent_replay_every_mutation() {
     assert_eq!(operation["idempotency_key"], "grp-1");
     let missing = s.get("/operations/never-sent").send().await.unwrap();
     assert_eq!(missing.status().as_u16(), 404);
+    s.finish();
+    println!("{WITNESS}");
+}
+
+#[tokio::test]
+async fn idempotency_binding_keeps_query_and_body_boundaries() {
+    isolated!(CHILD, WITNESS, witness = "generation");
+    let s = serve("idempotent-request-framing", false).await;
+    let body = json::json!({"name": "user:framed", "config": {"parent": "team"}}).to_string();
+    let first = s
+        .send(reqwest::Method::POST, "/groups?marker=")
+        .header("idempotency-key", "framed-request")
+        .body(body.clone())
+        .send()
+        .await
+        .unwrap();
+    assert!(first.status().is_success(), "{}", first.status());
+    let first_status = first.status();
+    let first_body = first.bytes().await.unwrap();
+
+    // Both requests concatenate to the same method/path/query/body bytes without framing.
+    let different = s
+        .send(reqwest::Method::POST, "/groups?marker")
+        .header("idempotency-key", "framed-request")
+        .body(format!("={body}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(different.status().as_u16(), 409);
+    assert!(different.headers().get("idempotent-replayed").is_none());
+    let refusal = json::parse_value(&different.bytes().await.unwrap()).unwrap();
+    assert_eq!(refusal["error"]["reason"], "idempotency_mismatch");
+
+    let replay = s
+        .send(reqwest::Method::POST, "/groups?marker=")
+        .header("idempotency-key", "framed-request")
+        .body(body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(replay.status(), first_status);
+    assert_eq!(replay.headers()["idempotent-replayed"], "true");
+    assert_eq!(replay.bytes().await.unwrap(), first_body);
     s.finish();
     println!("{WITNESS}");
 }

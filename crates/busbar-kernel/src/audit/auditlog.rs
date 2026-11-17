@@ -279,7 +279,6 @@ fn entry_of(
 /// and `store.disconnected` are the engine events section 17 writes; they are published ahead of
 /// their emitters.
 pub const AUDIT_ACTIONS: &[&str] = &[
-    "export.loss",
     "admin.forbidden",
     "admin.rate_limited",
     "admin.restart",
@@ -297,6 +296,7 @@ pub const AUDIT_ACTIONS: &[&str] = &[
     "credential.at_rest.open",
     "credential.at_rest.rewrap",
     "diagnostic.raised",
+    "export.loss",
     "group.create",
     "group.delete",
     "group.patch",
@@ -790,7 +790,8 @@ impl PlaneAuditLog {
     }
 }
 
-const MAX_PENDING_AUDIT: usize = 256;
+/// Shared bound for native audit originals and logical export first-loss reservations.
+pub const MAX_PENDING_AUDIT: usize = 256;
 
 /// Confirmation observers for one administrative execution, independent of queue custody.
 #[derive(Default)]

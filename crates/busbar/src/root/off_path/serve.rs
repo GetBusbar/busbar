@@ -214,6 +214,7 @@ impl Served {
     pub(crate) fn spawn_work_recovery(
         &self,
         app: Arc<busbar_kernel::state::AppHandle>,
+        admission: Arc<busbar_kernel::limits::process_admission::ProcessAdmission>,
         mut shutdown: tokio::sync::broadcast::Receiver<()>,
     ) -> tokio::task::JoinHandle<()> {
         let routes = self.nests.clone();
@@ -270,7 +271,7 @@ impl Served {
                     .unwrap_or_default();
                 let cycle = async {
                     for routes in live {
-                        routes.recover_work(app.load()).await;
+                        routes.recover_work(app.load(), &admission).await;
                     }
                     if let Some(native) = &native {
                         crate::root::min3_boot::recover_ports(native, app.load()).await;
@@ -1696,6 +1697,18 @@ pub(crate) fn data_routes_with_dispatch(
 }
 
 impl ListenerPlan {
+    fn core_lines(&self, app: &busbar_kernel::state::App) -> Vec<(String, RouteMethod, RouteAuth)> {
+        let mut lines = busbar_kernel::base_data_core_lines(app);
+        if let Some(native) = self
+            .served
+            .as_ref()
+            .and_then(|served| served.native.as_ref())
+        {
+            lines.extend(crate::root::provisioning::route_lines(&native.provisioning));
+        }
+        lines
+    }
+
     pub(crate) fn new(
         mut initial: crate::root::boot::ListenerNeeds,
         offers: Vec<TransportOffer>,
@@ -1926,6 +1939,13 @@ impl ListenerPlan {
                 });
             }
         }
+        for line in crate::root::port_mount::guest_lines(&served.ports, &chain) {
+            lines.push(ListenerPlaneLine {
+                line,
+                transport: self.root_claim()?.into(),
+                root_only: true,
+            });
+        }
         mounted.plane_keys = Some(
             served
                 .planes
@@ -2054,7 +2074,7 @@ impl ListenerPlan {
         let mut prepared = PreparedListeners::default();
         for (at, guests) in self.lists(app)? {
             let core = if at == "listen" {
-                busbar_kernel::base_data_core_lines(app)
+                self.core_lines(app)
             } else {
                 Vec::new()
             };
@@ -2080,6 +2100,16 @@ impl ListenerPlan {
             )?
             .with_data(data)
             .with_dispatch_layer(crate::root::listener::deferred_dispatch_layer);
+            let router = if at == "listen" {
+                match served.native.as_ref() {
+                    Some(native) => router.with_core_routes(|routes| {
+                        crate::root::provisioning::mount_routes(routes, &native.provisioning)
+                    }),
+                    None => router,
+                }
+            } else {
+                router
+            };
             prepared.insert(at, Arc::new(router));
         }
 
@@ -2140,6 +2170,16 @@ impl ListenerPlan {
     }
 
     pub(crate) fn check_mounts(&self, app: &busbar_kernel::state::App) -> Result<(), String> {
+        if self
+            .served
+            .as_ref()
+            .and_then(|served| served.native.as_ref())
+            .is_some_and(|native| {
+                !native.auth.is_empty() && native.config_version != app.config_version
+            })
+        {
+            return Err("identity-providers: candidate needs freshly prepared auth and route owners; restart required".into());
+        }
         for route in app.plugin_routes.descriptors() {
             if !route.dispatch_available
                 && self
@@ -2563,7 +2603,7 @@ impl ListenerPlan {
         }
         for (rung, (path, method, auth)) in (0u32..).zip(
             self.has_root_listener()
-                .then(|| busbar_kernel::base_data_core_lines(app))
+                .then(|| self.core_lines(app))
                 .into_iter()
                 .flatten(),
         ) {
@@ -3085,7 +3125,7 @@ pub(crate) fn door_mounts_planned(
     use busbar_kernel::guest::{Claimant, GuestList, LineAuth, Matched};
     use foldhash::HashMap;
 
-    let public = if plan.is_none_or(|(_, _, at)| at == "listen") {
+    let mut public = if plan.is_none_or(|(_, _, at)| at == "listen") {
         public_routes(&served)
     } else {
         Vec::new()
@@ -3129,6 +3169,14 @@ pub(crate) fn door_mounts_planned(
         }
     }
 
+    // Without a physical ListenerPlan (the actual-root fixtures), seal the same native lines.
+    // A planned listener already supplied these in its complete immutable guest list.
+    if physical.is_none() {
+        lines.extend(crate::root::port_mount::guest_lines(
+            &served.ports,
+            data_chain,
+        ));
+    }
     for (rung, (path, method, auth)) in (0u32..).zip(core) {
         lines.push(busbar_kernel::guest::Line {
             route: busbar_kernel::guest::Route {
@@ -3244,6 +3292,18 @@ pub(crate) fn door_mounts_planned(
             .collect(),
         frames: Mutex::default(),
     })?;
+    if plan.is_none_or(|(_, _, at)| at == "listen") {
+        public.extend(crate::root::port_mount::routes(
+            &routes.served.ports,
+            routes
+                .served
+                .native
+                .as_deref()
+                .map(crate::root::min3_boot::signed_ingress),
+            routes.served.billing.as_ref(),
+            Some(Arc::clone(&routes)),
+        ));
+    }
     if let Some((plan, _, _)) = plan {
         {
             let mut nests = plan
@@ -3296,7 +3356,7 @@ pub(crate) fn door_mounts_planned(
         .iter()
         .map(|p| signed_paths(&p.snapshot.claims))
         .collect();
-    let refusals: Vec<PlaneRefusalSpec> = requests
+    let mut refusals: Vec<PlaneRefusalSpec> = requests
         .iter()
         .chain(&session_mounts)
         .filter(|(_, _, auth, _)| matches!(auth, RouteAuth::Key))
@@ -3341,6 +3401,8 @@ pub(crate) fn door_mounts_planned(
         })
         .collect();
 
+    refusals.extend(crate::root::port_mount::refusal_specs(&routes.served.ports));
+
     let refuse_by_path: busbar_kernel::plane_routes::PlaneRefuseByPathFn = {
         let routes = Arc::clone(&routes);
         Arc::new(move |r: &busbar_kernel::plane_routes::KernelRefusal<'_>| {
@@ -3356,6 +3418,30 @@ pub(crate) fn door_mounts_planned(
             let Claimant::Plane(instance) = &line.claimant else {
                 return None;
             };
+            if let Some(seat) = routes
+                .served
+                .ports
+                .iter()
+                .find(|seat| &seat.instance == instance)
+            {
+                if !seat
+                    .driver
+                    .routes()
+                    .data
+                    .iter()
+                    .any(|route| route.route == line.route.rung)
+                {
+                    return None;
+                }
+                let refusal = crate::root::native_refusals::client(r.reason, r.status, r.text);
+                return Some(crate::root::port_mount::render_kernel_refusal(
+                    seat,
+                    line.route.rung,
+                    "",
+                    r.target,
+                    refusal,
+                ));
+            }
             let (plane, _) = *routes.of_line.get(&(instance.clone(), line.route.rung))?;
             let rendered = routes.served.planes[plane].driver.refuse_kernel(
                 r.reason,
@@ -3462,59 +3548,9 @@ pub(crate) fn door_mounts_planned(
     })
 }
 
-pub(crate) fn line_routes(
-    served: Served,
-    pin: fn() -> Option<crate::root::kernel::PinnedHistory>,
-) -> Result<Arc<DataRoutes>, String> {
-    use busbar_kernel::guest::GuestList;
-    let mut lines_of = Vec::new();
-    let mut of_line = foldhash::HashMap::default();
-    for (p, plane) in served.planes.iter().enumerate() {
-        for (i, claim) in plane.snapshot.claims.iter().enumerate() {
-            if !routed(claim) || lines::carrier() == Some(claim.carrier.as_str()) {
-                continue;
-            }
-            let rung =
-                u32::try_from(i).map_err(|_| format!("{}: too many claims", plane.instance))?;
-            let (line, _) = claim_line(&plane.instance, rung, claim, &[], &[], &[])?;
-            of_line.insert((plane.instance.clone(), rung), (p, rung));
-            lines_of.push(line);
-        }
-    }
-    let guests =
-        GuestList::seal(lines_of).map_err(|refusal| guest_refusal("the line carrier", refusal))?;
-    let post = served.post.clone().unwrap_or_else(|| {
-        Arc::new(crate::root::plane_node::NodeEndPost::new(
-            crate::root::plane_node::node(),
-        ))
-    });
-    let routes = DataRoutes::new(DispatchSnapshot {
-        live: served
-            .planes
-            .iter()
-            .map(|plane| plane.live.current())
-            .collect(),
-        entries: arrival_entries(&served),
-        served,
-        claim_doors: None,
-        post,
-        pin,
-        guests,
-        of_line,
-        frames: Mutex::default(),
-    })?;
-    if let Some(nests) = &routes.served.nests {
-        nests
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push(Arc::downgrade(&routes));
-    }
-    Ok(routes)
-}
-
 pub(crate) fn public_routes(served: &Served) -> Vec<PlaneRouteSpec> {
     let tables = &served.tables;
-    let mut tail: Vec<PlaneRouteSpec> = served
+    let tail: Vec<PlaneRouteSpec> = served
         .planes
         .iter()
         .flat_map(|p| p.snapshot.admin_routes.iter())
@@ -3551,15 +3587,6 @@ pub(crate) fn public_routes(served: &Served) -> Vec<PlaneRouteSpec> {
             })
         })
         .collect();
-    // The MIN-3 plane instances serve their data routes through their ports (PLANE-BOOT-MOUNT).
-    tail.extend(crate::root::port_mount::routes(
-        &served.ports,
-        served
-            .native
-            .as_deref()
-            .map(crate::root::min3_boot::signed_ingress),
-        served.billing.as_ref(),
-    ));
     tail
 }
 
@@ -4005,6 +4032,7 @@ impl DataRoutes {
     pub(crate) async fn recover_work(
         self: &Arc<Self>,
         app: Arc<busbar_kernel::state::App>,
+        admission: &Arc<busbar_kernel::limits::process_admission::ProcessAdmission>,
     ) -> usize {
         use busbar_kernel::guest::{Claimant, Matched};
         if app.governance.is_none() {
@@ -4066,6 +4094,11 @@ impl DataRoutes {
                     body: bytes::Bytes::new(),
                     carrier: 0,
                 };
+                let Ok(request) = admission
+                    .try_enter(busbar_kernel::limits::process_admission::AdmissionClass::Data)
+                else {
+                    continue;
+                };
                 let principal = PrincipalId::new(key.id.as_str());
                 let (caller, reply) = IngressCaller::new();
                 let routes = self.clone();
@@ -4081,6 +4114,7 @@ impl DataRoutes {
                             arrival,
                             None,
                             None,
+                            &request,
                         )
                         .await
                 };
