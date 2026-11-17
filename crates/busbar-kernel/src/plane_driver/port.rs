@@ -236,6 +236,11 @@ impl PortDriver {
         &self.caller
     }
 
+    /// Complete core owned by this seat, for root's same-generation assembly check.
+    pub fn core(&self) -> &Arc<KernelServices> {
+        &self.services
+    }
+
     /// Bind execution to this driver's core and exact registered instance/unit.
     pub fn invocation(
         &self,
