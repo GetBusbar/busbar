@@ -59,6 +59,8 @@ struct Store {
     refuse_write: AtomicBool,
     refuse_replay: AtomicBool,
     held_reads: AtomicUsize,
+    lose_head_reply: AtomicBool,
+    fail_head_read: AtomicBool,
 }
 
 impl Store {
@@ -78,6 +80,8 @@ impl Store {
             refuse_write: AtomicBool::new(false),
             refuse_replay: AtomicBool::new(false),
             held_reads: AtomicUsize::new(0),
+            lose_head_reply: AtomicBool::new(false),
+            fail_head_read: AtomicBool::new(false),
         })
     }
 }
@@ -91,6 +95,16 @@ impl PersistenceBackend for Store {
     }
     fn read(&self, request: Arc<Read>) -> Call<'_, ReadResult> {
         Box::pin(async move {
+            if self.fail_head_read.load(Ordering::SeqCst)
+                && request.addresses.iter().any(|address| {
+                    address
+                        .key
+                        .windows(b"held-head:".len())
+                        .any(|part| part == b"held-head:")
+                })
+            {
+                return Err(Failure::Unavailable);
+            }
             self.held_reads.fetch_add(
                 request
                     .addresses
@@ -169,8 +183,15 @@ impl PersistenceBackend for Store {
             if replay && self.refuse_replay.load(Ordering::SeqCst) {
                 return Err(Failure::Refused);
             }
+            let head = candidate.candidate().mutations.iter().any(|mutation| {
+                matches!(mutation, Mutation::Put { address, .. } if address.key.windows(b"held-head:".len()).any(|part| part == b"held-head:"))
+            });
             let answer = self.inner.commit(candidate, commit_key).await?;
             if matches!(answer, Decision::Applied(_)) {
+                if head && self.lose_head_reply.load(Ordering::SeqCst) {
+                    self.fail_head_read.store(true, Ordering::SeqCst);
+                    return Err(Failure::Unknown);
+                }
                 if claim {
                     self.claimed.notify_one();
                 }
@@ -1151,6 +1172,98 @@ async fn cursor_persistence_refusal_cannot_admit_a_successor() {
             Err(Refused::Unavailable(_))
         ),
         "an unconfirmed cursor publication must not return an effect capability"
+    );
+    println!("custody assertions completed");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn uncertain_cursor_write_cannot_grant_until_its_state_is_observed() {
+    if isolated() {
+        return;
+    }
+    use busbar_core_admin::idempotency::durable::{self, Refused, Settled};
+    let (store, handle, _router, _book) = app().await;
+    let scoped = durable::scoped_store(
+        handle
+            .load()
+            .governance
+            .as_ref()
+            .unwrap()
+            .core_store_handle()
+            .unwrap(),
+    )
+    .unwrap();
+    let now = busbar_kernel::store::now();
+    let key = ("cursor-owner".into(), "op:uncertain-cursor".into());
+    let first = durable::claim_held(&scoped, &key, now).await.unwrap();
+    durable::settle(&scoped, &first, now, &Settled::Released)
+        .await
+        .unwrap();
+    store.lose_head_reply.store(true, Ordering::SeqCst);
+    let uncertain = tokio::time::timeout(
+        Duration::from_secs(10),
+        durable::claim_held(&scoped, &key, now),
+    )
+    .await
+    .expect("unknown cursor outcome returns without dispatch");
+    assert!(matches!(uncertain, Err(Refused::Unavailable(_))));
+    store.lose_head_reply.store(false, Ordering::SeqCst);
+    store.fail_head_read.store(false, Ordering::SeqCst);
+    assert!(durable::claim_held(&scoped, &key, now).await.is_ok());
+    assert_eq!(
+        durable::claim_held(&scoped, &key, now).await,
+        Err(Refused::InFlight)
+    );
+    println!("custody assertions completed");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn concurrent_cursor_advances_still_grant_exactly_one_claim() {
+    if isolated() {
+        return;
+    }
+    use busbar_core_admin::idempotency::durable::{self, Refused, Settled};
+    let (_store, handle, _router, _book) = app().await;
+    let scoped = Arc::new(
+        durable::scoped_store(
+            handle
+                .load()
+                .governance
+                .as_ref()
+                .unwrap()
+                .core_store_handle()
+                .unwrap(),
+        )
+        .unwrap(),
+    );
+    let now = busbar_kernel::store::now();
+    let key = ("cursor-owner".into(), "op:concurrent-cursor".into());
+    let first = durable::claim_held(&scoped, &key, now).await.unwrap();
+    durable::settle(&scoped, &first, now, &Settled::Released)
+        .await
+        .unwrap();
+    let barrier = Arc::new(tokio::sync::Barrier::new(8));
+    let mut callers = Vec::new();
+    for _ in 0..8 {
+        let scoped = scoped.clone();
+        let key = key.clone();
+        let barrier = barrier.clone();
+        callers.push(tokio::spawn(async move {
+            barrier.wait().await;
+            durable::claim_held(&scoped, &key, now).await
+        }));
+    }
+    let mut grants = 0;
+    for caller in callers {
+        match caller.await.unwrap() {
+            Ok(_) => grants += 1,
+            Err(Refused::InFlight | Refused::Unavailable(_)) => {}
+            other => panic!("unexpected cursor contender: {other:?}"),
+        }
+    }
+    assert_eq!(
+        grants, 1,
+        "cursor publication does not itself grant an effect capability"
     );
     println!("custody assertions completed");
 }
