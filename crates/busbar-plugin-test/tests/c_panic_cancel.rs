@@ -501,3 +501,54 @@ fn cancel_at_full_output_depth_restores_the_enclosing_watch_on_success_and_fault
         assert_guarded_cancel_before_release();
     }
 }
+
+#[test]
+fn native_cancellation_preserves_an_enclosing_fixed_output_loan() {
+    let _serial = ONE_AT_A_TIME.lock().unwrap_or_else(PoisonError::into_inner);
+    let (registry, needs, identity) = rig(fixture::PLUGIN.plugin(), fixture::released);
+    let (waker, _) = counting_waker();
+    let lines: [&[u8]; 1] = [b"fixed loan cancellation"];
+    for (attempt, name) in [(2, "fixed-cancel-ok"), (1, "fixed-cancel-panic")] {
+        let port = open(&registry, &needs, &identity, name, b"{}");
+        fixture::take_events();
+        let mut future = port.deliver(
+            cx(),
+            busbar_plugin_abi::export::STREAM_LOGS,
+            1,
+            attempt,
+            &lines,
+        );
+        assert!(poll_once(&mut future, &waker).is_pending());
+        let mut backing = [0; 32];
+        let address = backing.as_ptr();
+        busbar_ffi::host::OutLease::with_fixed(&mut backing, |lease| {
+            assert!(
+                busbar_ffi::raw::Out::new(lease.arm(), &busbar_plugin_abi::host_side::HOST)
+                    .append(b"before")
+            );
+            drop(future);
+            lease.with_answer(|bytes| {
+                assert_eq!(
+                    bytes.as_ptr(),
+                    address,
+                    "cancellation retains the original lender"
+                );
+                assert_eq!(
+                    bytes, b"before",
+                    "cancellation leaves borrowed output intact"
+                );
+            });
+            assert!(
+                busbar_ffi::host::grow(lease.arm(), 1),
+                "the enclosing ACTIVE registration is restored"
+            );
+            assert!(
+                busbar_ffi::raw::Out::new(lease.arm(), &busbar_plugin_abi::host_side::HOST)
+                    .append(b"-after")
+            );
+        })
+        .expect("fixed output loan");
+        assert_eq!(&backing[..12], b"before-after");
+        assert_guarded_cancel_before_release();
+    }
+}
