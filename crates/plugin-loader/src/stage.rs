@@ -3,90 +3,8 @@
 
 use libloading::Library;
 use std::io::Write as _;
-#[cfg(target_os = "linux")]
-use std::mem::ManuallyDrop;
-use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
-
-#[cfg(test)]
-#[path = "tests/lifecycle_custody_tests.rs"]
-mod lifecycle_custody_tests;
-
-/// Before admission, the native image and its staging identity are one retaining owner.
-/// Generic parameters let safe witnesses exercise the actual retention/close-once mechanism.
-pub(crate) struct ImageCustody<L = busbar_ffi::image::Opened, B = Staged> {
-    opened: Option<L>,
-    backing: Option<B>,
-    close_started: bool,
-}
-
-impl<L, B> ImageCustody<L, B> {
-    fn new(backing: B) -> Self {
-        Self {
-            opened: None,
-            backing: Some(backing),
-            close_started: false,
-        }
-    }
-
-    fn close_once(&mut self, close: impl FnOnce(L) -> bool) -> bool {
-        if std::mem::replace(&mut self.close_started, true) {
-            return false;
-        }
-        let Some(opened) = self.opened.take() else {
-            return false;
-        };
-        if !close(opened) {
-            return false;
-        }
-        drop(self.backing.take());
-        true
-    }
-}
-
-#[cfg(unix)]
-impl ImageCustody {
-    pub(crate) fn opened(&self) -> &busbar_ffi::image::Opened {
-        self.opened.as_ref().expect("native image has opened")
-    }
-
-    pub(crate) fn admit(
-        mut self,
-    ) -> Result<(busbar_ffi::image::Admitted, Staged), (Self, busbar_ffi::image::ImageError)> {
-        let opened = self.opened.take().expect("native image has opened");
-        match opened.admit() {
-            Ok(admitted) => Ok((
-                admitted,
-                self.backing.take().expect("native backing is retained"),
-            )),
-            Err((opened, error)) => {
-                self.opened = Some(opened);
-                Err((self, error))
-            }
-        }
-    }
-}
-
-impl<L, B> Drop for ImageCustody<L, B> {
-    fn drop(&mut self) {
-        std::mem::forget(self.opened.take());
-        std::mem::forget(self.backing.take());
-    }
-}
-
-fn close_with<L, B>(
-    mut owner: ImageCustody<L, B>,
-    submit: impl FnOnce(&mut ImageCustody<L, B>) -> std::thread::Result<bool>,
-) -> bool {
-    match catch_unwind(AssertUnwindSafe(|| submit(&mut owner))) {
-        Ok(Ok(closed)) => closed,
-        Ok(Err(payload)) | Err(payload) => {
-            std::mem::forget(payload);
-            false
-        }
-    }
-}
 
 // THE ONE LOAD (LINT-RULES R23). Every dynamic library this process loads is opened here, by
 // `dlopen_on_worker`, and libloading is busbar-plugin-loader's alone (cargo-deny). Signed images
@@ -97,16 +15,13 @@ fn close_with<L, B>(
 pub(crate) fn dlopen_on_worker(path: &std::ffi::OsStr) -> Result<Library, String> {
     // SAFETY: loading an operator-placed library runs its init code, which is the same trust as
     // compiling it in. Callers apply the trust gate first.
-    match busbar_ffi::lifecycle::run(|| {
-        debug_assert!(busbar_ffi::lifecycle::is_worker());
+    match crate::ffi_thread::on_plugin_thread(|| {
+        crate::ffi_thread::debug_assert_permanent("dlopen");
         unsafe { Library::new(path) }
     }) {
         Ok(r) => r.map_err(|e| loader_error(&e)),
 
-        Err(payload) => {
-            std::mem::forget(payload);
-            Err("the library's initializer panicked while loading".to_string())
-        }
+        Err(_) => Err("the library's initializer panicked while loading".to_string()),
     }
 }
 
@@ -161,30 +76,10 @@ pub(crate) fn loader_reason(text: &str) -> String {
 pub(crate) fn dlclose_on_worker(lib: Library) {
     #[cfg(test)]
     crate::UNLOADS_ON_WORKER.with(|n| n.set(n.get() + 1));
-    if let Err(payload) = busbar_ffi::lifecycle::run(move || {
-        debug_assert!(busbar_ffi::lifecycle::is_worker());
+    let _ = crate::ffi_thread::on_plugin_thread(move || {
+        crate::ffi_thread::debug_assert_permanent("dlclose");
         drop(lib);
-    }) {
-        std::mem::forget(payload);
-    }
-}
-
-/// Retire a legacy image and its staging identity as one owner. A failed close or
-/// worker unwind keeps the backing retained, just like native image refusal.
-pub(crate) fn close_library_with_backing(lib: Library, backing: Staged) -> bool {
-    let mut owner = ImageCustody::new(backing);
-    owner.opened = Some(lib);
-    let closed = close_with(owner, |owner| {
-        busbar_ffi::lifecycle::run(|| {
-            debug_assert!(busbar_ffi::lifecycle::is_worker());
-            owner.close_once(|lib| lib.close().is_ok())
-        })
     });
-    #[cfg(test)]
-    if closed {
-        crate::UNLOADS_ON_WORKER.with(|n| n.set(n.get() + 1));
-    }
-    closed
 }
 
 /// Why admit step 8 opened no image.
@@ -192,8 +87,8 @@ pub(crate) fn close_library_with_backing(lib: Library, backing: Staged) -> bool 
 pub(crate) enum Unopened {
     /// The verified bytes could not be staged unchanged, or the native load guard refused them.
     Stage(String),
-    /// busbar-ffi refused the image. Any library destructor ran on the permanent worker;
-    /// backing remains retained because implicit native teardown has no confirmed close outcome.
+    /// busbar-ffi refused the image: dlopen failed, or a step-9 header check failed (the library, if one was
+    /// loaded, has already been dropped on the permanent worker).
     Image(busbar_ffi::image::ImageError),
     /// The image's initializer or `busbar_plugin()` panicked on the worker.
     Panicked,
@@ -204,46 +99,37 @@ pub(crate) enum Unopened {
 /// thread that runs an image's code before admission.
 #[cfg(unix)]
 fn open_on_worker(
-    owner: &mut ImageCustody,
     path: &std::ffi::OsStr,
     bytes: &[u8],
-) -> Result<(), Unopened> {
-    match catch_unwind(AssertUnwindSafe(|| {
-        busbar_ffi::lifecycle::run(|| {
-            debug_assert!(busbar_ffi::lifecycle::is_worker());
-            owner.opened = Some(busbar_ffi::image::Opened::open(path, bytes)?);
-            Ok(())
-        })
-    })) {
-        Ok(Ok(opened)) => opened.map_err(Unopened::Image),
-        Ok(Err(payload)) | Err(payload) => {
-            std::mem::forget(payload);
-            Err(Unopened::Panicked)
-        }
+) -> Result<busbar_ffi::image::Opened, Unopened> {
+    match crate::ffi_thread::on_plugin_thread(|| {
+        crate::ffi_thread::debug_assert_permanent("dlopen");
+        busbar_ffi::image::Opened::open(path, bytes)
+    }) {
+        Ok(opened) => opened.map_err(Unopened::Image),
+        Err(_) => Err(Unopened::Panicked),
     }
 }
 
 /// Exit b (IF §11.1, I13): a refused image's library is dropped on the permanent ffi worker.
 #[cfg(unix)]
-pub(crate) fn close_on_worker(owner: ImageCustody) -> bool {
-    let closed = close_with(owner, |owner| {
-        busbar_ffi::lifecycle::run(|| {
-            debug_assert!(busbar_ffi::lifecycle::is_worker());
-            owner.close_once(|opened| opened.close().is_ok())
-        })
-    });
+pub(crate) fn close_on_worker(opened: busbar_ffi::image::Opened) {
     #[cfg(test)]
-    if closed {
-        crate::UNLOADS_ON_WORKER.with(|n| n.set(n.get() + 1));
-    }
-    closed
+    crate::UNLOADS_ON_WORKER.with(|n| n.set(n.get() + 1));
+    let _ = crate::ffi_thread::on_plugin_thread(move || {
+        crate::ffi_thread::debug_assert_permanent("dlclose");
+        opened.close();
+    });
 }
 
 /// Admit step 8 (IF §11.1): stage the verified bytes under the native load guard (a sealed memfd on Linux, else
 /// the pinned private temp file, re-verified at its name around the open) and open them through busbar-ffi on
 /// the permanent worker. The returned `Staged` is held with the image for the life of the process (I13).
 #[cfg(unix)]
-pub(crate) fn open_image(bytes: &[u8], display: &str) -> Result<ImageCustody, Unopened> {
+pub(crate) fn open_image(
+    bytes: &[u8],
+    display: &str,
+) -> Result<(busbar_ffi::image::Opened, Staged), Unopened> {
     if let Some(guard) = NATIVE_LOAD_GUARD.get() {
         guard(bytes, display).map_err(Unopened::Stage)?;
     }
@@ -254,9 +140,18 @@ pub(crate) fn open_image(bytes: &[u8], display: &str) -> Result<ImageCustody, Un
         match sealed_memfd(bytes) {
             Ok(fd) => {
                 let path = memfd_name(&fd);
-                let mut owner = ImageCustody::new(Staged::Memfd { fd: Some(fd) });
-                open_on_worker(&mut owner, std::ffi::OsStr::new(&path), bytes)?;
-                return Ok(owner);
+                let staged = Staged::Memfd { fd: Some(fd) };
+                match open_on_worker(std::ffi::OsStr::new(&path), bytes) {
+                    Ok(opened) => return Ok((opened, staged)),
+                    Err(Unopened::Image(busbar_ffi::image::ImageError::Load(e))) => {
+                        eprintln!(
+                            "[warn] memfd load failed for plugin '{display}' ({}); falling back to \
+                             private temp staging",
+                            loader_error(&e)
+                        );
+                    }
+                    Err(refused) => return Err(refused),
+                }
             }
             Err(e) => {
                 eprintln!(
@@ -275,27 +170,27 @@ pub(crate) fn open_image(bytes: &[u8], display: &str) -> Result<ImageCustody, Un
         abandon(pin, &path);
         return Err(Unopened::Stage(format!("its staged file {why}")));
     }
-    let mut owner = ImageCustody::new(Staged::TempFile {
-        path: path.clone(),
-        pin: Some(pin),
-    });
-    open_on_worker(&mut owner, path.as_os_str(), bytes)?;
-    let verified = match owner.backing.as_ref() {
-        Some(Staged::TempFile { pin: Some(pin), .. }) => verify_pinned(pin, &path, bytes),
-        _ => unreachable!("native temporary image retains its pin"),
+    let opened = match open_on_worker(std::ffi::OsStr::new(&path), bytes) {
+        Ok(opened) => opened,
+        Err(refused) => {
+            abandon(pin, &path);
+            return Err(refused);
+        }
     };
-    if let Err(why) = verified {
-        let closed = close_on_worker(owner);
+    if let Err(why) = verify_pinned(&pin, &path, bytes) {
+        close_on_worker(opened);
+        abandon(pin, &path);
         return Err(Unopened::Stage(format!(
-            "its staged file changed while it was loading ({why}); {}",
-            if closed {
-                "unload confirmed"
-            } else {
-                "teardown uncertain; backing retained"
-            }
+            "its staged file changed while it was loading ({why}); unloaded"
         )));
     }
-    Ok(owner)
+    Ok((
+        opened,
+        Staged::TempFile {
+            path,
+            pin: Some(pin),
+        },
+    ))
 }
 
 /// The door of the library at `path`, loaded through this module and kept for the life of the
@@ -747,31 +642,16 @@ fn load_via_staged_file(
     let lib = match crate::stage::dlopen_on_worker(std::ffi::OsStr::new(&path)) {
         Ok(lib) => lib,
         Err(e) => {
-            // An attempted native open has no confirmed teardown result. Preserve
-            // its backing identity even when no Library handle was returned.
-            std::mem::forget(Staged::TempFile {
-                path,
-                pin: Some(pin),
-            });
+            abandon(pin, &path);
             return Err(format!("failed to load plugin '{display}': {e}"));
         }
     };
     if let Err(why) = verify_pinned(&pin, &path, bytes) {
-        let closed = close_library_with_backing(
-            lib,
-            Staged::TempFile {
-                path,
-                pin: Some(pin),
-            },
-        );
-        let retirement = if closed {
-            "unloaded"
-        } else {
-            "backing retained after unconfirmed unload"
-        };
+        crate::stage::dlclose_on_worker(lib);
+        abandon(pin, &path);
         return Err(format!(
             "refusing to load plugin '{display}': its staged file changed while it was loading \
-             ({why}); {retirement}"
+             ({why}); unloaded"
         ));
     }
     Ok((
@@ -790,16 +670,8 @@ fn load_via_memfd(bytes: &[u8], display: &str) -> Result<(Library, Staged), Stri
     // SAFETY: same operator-trust as any plugin load; the fd content is exactly the verified bytes
     // and is not reachable by path from any other process's namespace. The name is not held by any
     // resident image: a released image that stays resident keeps its fd, so `N` is not free.
-    let lib = match crate::stage::dlopen_on_worker(std::ffi::OsStr::new(&path)) {
-        Ok(lib) => lib,
-        Err(error) => {
-            // Do not recycle a staging name after an unconfirmed native open.
-            std::mem::forget(fd);
-            return Err(format!(
-                "failed to load plugin '{display}' from memfd: {error}"
-            ));
-        }
-    };
+    let lib = crate::stage::dlopen_on_worker(std::ffi::OsStr::new(&path))
+        .map_err(|e| format!("failed to load plugin '{display}' from memfd: {e}"))?;
     Ok((lib, Staged::Memfd { fd: Some(fd) }))
 }
 
@@ -867,43 +739,28 @@ fn memfd_name(fd: &std::os::fd::OwnedFd) -> String {
 }
 
 #[cfg(target_os = "linux")]
-fn retire_memfd(fd: std::os::fd::OwnedFd) {
-    retire_backing(fd, |fd| name_still_loaded(&memfd_name(fd)));
-}
+static RETAINED_MEMFDS: Mutex<Vec<std::os::fd::OwnedFd>> = Mutex::new(Vec::new());
 
 #[cfg(target_os = "linux")]
-fn retire_backing<B>(backing: B, resident: impl FnOnce(&B) -> bool) {
-    let backing = ManuallyDrop::new(backing);
-    if !resident(&backing) {
-        drop(ManuallyDrop::into_inner(backing));
+fn retire_memfd(fd: std::os::fd::OwnedFd) {
+    if name_still_loaded(&memfd_name(&fd)) {
+        RETAINED_MEMFDS
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .push(fd);
     }
 }
 
 #[cfg(target_os = "linux")]
 fn name_still_loaded(name: &str) -> bool {
-    name_still_loaded_with(name, |name| {
-        busbar_ffi::lifecycle::run(|| {
-            // SAFETY: RTLD_NOLOAD loads nothing and runs no initialiser; see the doc comment.
-            let found = unsafe {
-                libloading::os::unix::Library::open(Some(name), libc::RTLD_NOLOAD | libc::RTLD_LAZY)
-            };
-            found.is_ok()
-        })
-    })
-}
-
-#[cfg(target_os = "linux")]
-fn name_still_loaded_with(
-    name: &str,
-    submit: impl FnOnce(&str) -> std::thread::Result<bool>,
-) -> bool {
-    match catch_unwind(AssertUnwindSafe(|| submit(name))) {
-        Ok(Ok(resident)) => resident,
-        Ok(Err(payload)) | Err(payload) => {
-            std::mem::forget(payload);
-            true
-        }
-    }
+    let probe = crate::ffi_thread::on_plugin_thread(|| {
+        // SAFETY: RTLD_NOLOAD loads nothing and runs no initialiser; see the doc comment.
+        let found = unsafe {
+            libloading::os::unix::Library::open(Some(name), libc::RTLD_NOLOAD | libc::RTLD_LAZY)
+        };
+        found.is_ok()
+    });
+    probe.unwrap_or(true)
 }
 
 fn pid_alive(pid: u32) -> bool {

@@ -519,7 +519,7 @@ fn admit_with(
         });
     }
     // 8: stage and open on the permanent worker (busbar-ffi runs dlopen, `busbar_plugin()` and the H4 checks).
-    let custody = crate::stage::open_image(&bytes, &name).map_err(|e| {
+    let (opened, staged) = crate::stage::open_image(&bytes, &name).map_err(|e| {
         match e {
             crate::stage::Unopened::Stage(why) => Refusal::new(
                 RefusalCode::Integrity,
@@ -538,7 +538,6 @@ fn admit_with(
         .named(&name)
     })?;
     // 9: the header presents the verified stamp and the signed former names; then exit a (or exit b).
-    let opened = custody.opened();
     let refused = if opened.stamp().0 != stamp_bytes(&stamp) {
         Some(Refusal::new(
             RefusalCode::DoorStampMismatch,
@@ -564,13 +563,15 @@ fn admit_with(
         }
     };
     if let Some(refusal) = refused {
-        crate::stage::close_on_worker(custody);
+        crate::stage::close_on_worker(opened);
+        drop(staged);
         return Err(refusal.named(&name));
     }
-    let (plugin, staged) = match custody.admit() {
+    let plugin = match opened.admit() {
         Ok(plugin) => plugin,
-        Err((custody, e)) => {
-            crate::stage::close_on_worker(custody);
+        Err((opened, e)) => {
+            crate::stage::close_on_worker(opened);
+            drop(staged);
             return Err(image_refusal(&e).named(&name));
         }
     };

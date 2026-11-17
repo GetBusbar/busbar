@@ -1046,10 +1046,7 @@ pub(crate) fn enter_lifecycle(
     input: *const c_void,
     output: *mut c_void,
 ) -> RawOutcome {
-    debug_assert!(
-        busbar_ffi::lifecycle::is_worker(),
-        "{what} entered plugin code on a thread that is not a permanent FFI worker"
-    );
+    crate::ffi_thread::debug_assert_permanent(what);
     // SAFETY: this private crossing is reached after cross_gated validates its selected slot
     // and lends its initialized host frames and live instance for the synchronous worker call.
     // The fixture caller selects a slot explicitly accepting NULL frames without reading them.
