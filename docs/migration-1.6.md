@@ -50,6 +50,9 @@ removed CLI flags, administrative paths or pre-release configuration aliases.
    writer; they are not a substitute for stopping the old deployment.
 2. Back up the complete Store and configuration directory, including the old file overlay,
    providers catalog and any credential files. Retain the old launch environment for rollback.
+   Take the whole set in the documented order, with the Store backup and the exported audit
+   stream taken at the same point in time: see
+   [backup set and order](operations.md#backup-set-and-order).
 3. Install the intended 1.6.0 executable and compatible external artifacts. A native artifact
    used before Store-backed admission, including an early grammar/check callback, requires
    its complete archive SHA-256 in the operator base `plugins.fetch` entry matching that
@@ -143,7 +146,9 @@ interruption, recovery and rollback evidence before this procedure is qualified.
 
 Stop every 1.6.0 process. Restore the complete pre-upgrade Store backup and configuration
 snapshot together, including the providers catalog, credential files, overlay and old launch
-settings. Then start 1.5.5. Changes made after the upgrade are not carried back.
+settings. Then start 1.5.5. Changes made after the upgrade are not carried back; this
+includes key revocations and trust demotions made under 1.6.0, which must be re-applied (see
+[backup set and order](operations.md#backup-set-and-order)).
 
 Restoring only `config.yaml.1.5.5` does **not** undo Store migrations. Restore the old overlay
 path too: the upgrader may have replaced it with a directory containing `busbar-1.6-folded`.

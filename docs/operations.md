@@ -832,6 +832,39 @@ An upstream outage can make `/readyz` or `/healthz` return 503 while the process
 
 ## Configuration recovery boundaries
 
-Admin mutations persist through the configured Store. A read-only config directory does not prevent Store writes. Keep the base configuration, Store backup, signing material and required plugin packages together when planning recovery. A failed persistence operation must not be treated as a successful configuration update; retain ETag/concurrency checks and inspect the effective configuration after recovery. Memory Store state is lost on restart. `config.locked: true` selects configuration managed outside runtime mutation; retired file-overlay settings are migration inputs only.
+Admin mutations persist through the configured Store. A read-only config directory does not prevent Store writes. Keep the base configuration, Store backup, signing material and required plugin packages together when planning recovery (see [backup set and order](#backup-set-and-order)). A failed persistence operation must not be treated as a successful configuration update; retain ETag/concurrency checks and inspect the effective configuration after recovery. Memory Store state is lost on restart. `config.locked: true` selects configuration managed outside runtime mutation; retired file-overlay settings are migration inputs only.
 
 Durable MCP task records can be queried through a shared persistent Store. Legacy MCP transport sessions remain process-local: preserve session affinity and expect clients to reconnect after a node restart. Shared task storage does not make every live session portable.
+
+### Backup set and order
+
+A deployment is recoverable only from a complete, consistent set. Back up these items, in this
+order:
+
+1. **Configuration.** `config.yaml`, the stamped `config.yaml.1.5.5` if migration left one,
+   and the providers catalog.
+2. **The Store dataset.** Use the backend's own consistent point-in-time backup, for example a
+   PostgreSQL base backup with its WAL archive, a MySQL consistent snapshot, the SQLite online
+   backup API, or a Valkey RDB snapshot. A copy of live database files taken while a node
+   writes is not a backup. The Memory Store holds nothing across a restart and cannot be
+   backed up.
+3. **Signing material and at-rest keys.** Back these up by reference: each secret source
+   keeps its keys under its own backup, so record which secret source and key versions the
+   configuration names.
+4. **The exported audit stream.** Keep the audit export's own retention covering the Store
+   backup point. It is the only record of what changed in the Store after the backup.
+5. **Plugin packages and the release keys document** that the deployment runs.
+
+Take items 2 and 4 from the same point in time. To restore, stop **every** node that can
+reach the Store, restore in the reverse order (packages and keys document, signing material,
+Store dataset, configuration), then start the nodes again.
+`POST /api/v1/admin/store-restore` does not perform a restore; it always refuses. Restore
+off-node with the backend's own tooling.
+
+A restore returns every Store-held fact to the backup point. Key revocations, trust
+demotions, principal transitions, plugin and keys-document floors, consumed replay claims and
+redeemed single-use tickets recorded after the backup are lost, so a credential consumed after
+the backup point can be presented again until it expires. Before admitting traffic
+again, use the exported audit stream to re-apply every revocation, demotion and principal
+transition made after the backup point, and load packages and a keys document no older than
+the ones the deployment ran before the restore.
