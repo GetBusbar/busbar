@@ -32,6 +32,7 @@ pub mod port_services;
 pub mod port_session;
 pub mod port_upstream;
 pub mod port_work;
+pub mod provider_catalog;
 pub(crate) use money::observation_budget_id;
 pub(crate) mod needs;
 mod probe;
