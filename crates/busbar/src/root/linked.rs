@@ -331,6 +331,7 @@ pub fn register_stores(linked: &Linked) {
     match link_secrets(linked.secrets, linked.secret_declares, linked.former) {
         Ok(secrets) => busbar_kernel::preflight::install_linked_rows(RootInstall {
             stores: linked.stores,
+            linked_images: &[],
             registry_build: Some(crate::root::boot::registry_rows),
             endpoint_locate: Some(crate::root::boot::locate_provider_destination),
             plugins_fetch: Some(crate::root::boot::plugins_fetch),

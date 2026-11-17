@@ -2382,3 +2382,39 @@ fn image_trust(
         proof,
     )
 }
+
+#[cfg(test)]
+mod linked_store_rows_tests {
+    use super::*;
+
+    /// A compiled-in native store (a `LINKED.images` row of kind store) is a compiled-in row of the store
+    /// catalog under its identity; images of other kinds are not.
+    #[test]
+    fn a_compiled_in_native_store_is_listed_under_its_identity() {
+        static IMAGES: std::sync::LazyLock<Vec<busbar_kernel::preflight::LinkedImage>> =
+            std::sync::LazyLock::new(|| {
+                vec![
+                    busbar_kernel::preflight::LinkedImage {
+                        identity: "busbar-store-memory".into(),
+                        alias: "memory".into(),
+                        kind: "store",
+                    },
+                    busbar_kernel::preflight::LinkedImage {
+                        identity: "busbar-plane-llm".into(),
+                        alias: "llm".into(),
+                        kind: "plane",
+                    },
+                ]
+            });
+        busbar_kernel::preflight::publish_root_rows(busbar_kernel::preflight::RootInstall {
+            linked_images: IMAGES.as_slice(),
+            ..Default::default()
+        });
+        let rows = linked_store_rows();
+        let named: Vec<(&str, &str, &str)> = rows
+            .iter()
+            .map(|row| (row.name.as_str(), row.r#type, row.loader))
+            .collect();
+        assert_eq!(named, [("busbar-store-memory", "store", "compiled-in")]);
+    }
+}

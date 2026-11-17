@@ -158,6 +158,15 @@ pub type PluginsFetch = fn(
     &[String],
 ) -> Result<Vec<Fetched>, Vec<String>>;
 
+/// One compiled-in MIN-3 image: its verified identity, the alias it is linked under and its kind word
+/// (`store`, `plane`, ...).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LinkedImage {
+    pub identity: String,
+    pub alias: String,
+    pub kind: &'static str,
+}
+
 /// WHAT THE COMPOSITION ROOT INSTALLS into the kernel, by name: its linked entries and its registry
 /// build — and, as each kind's axis lands, that kind's
 /// `<kind>_axis` field. The kernel receives contract `<Kind>Axis` seams from the root, never
@@ -168,6 +177,9 @@ pub type PluginsFetch = fn(
 pub struct RootInstall {
     /// The build's linked in-process stores.
     pub stores: &'static [LinkedStore],
+    /// The build's compiled-in MIN-3 images (`LINKED.images`), admitted by the root: what the operator surface
+    /// lists as compiled in. The root's data; the kernel and the admin crate spell none of them.
+    pub linked_images: &'static [LinkedImage],
     /// The root's registry build.
     pub registry_build: Option<RegistryBuild>,
     /// Resolve a provider target through an admitted transport's pure LOCATE operation.
