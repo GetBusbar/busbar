@@ -136,6 +136,10 @@ pub struct CoreRouter {
 }
 
 impl CoreRouter {
+    pub(crate) fn from_parts(router: Router<Arc<AppHandle>>, table: CoreRouteTable) -> Self {
+        Self { router, table }
+    }
+
     pub(crate) fn new() -> Self {
         Self {
             router: Router::new(),

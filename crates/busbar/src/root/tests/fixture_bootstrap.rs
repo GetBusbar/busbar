@@ -291,7 +291,8 @@ impl ServingFixture {
             .map_err(|why| format!("{why:?}"))?;
             opened_hooks.insert(spec.name.to_owned(), hook);
         }
-        let hook_inputs = hooks::Environment::new(cfg, app)?;
+        let hook_plan = hooks::Plan::capture(cfg, &instances)?;
+        let hook_inputs = hooks::Environment::new(hook_plan, app)?;
         hook_inputs.check_pools(&instances)?;
         let steps = Steps {
             registry: &built.registry,
@@ -309,6 +310,7 @@ impl ServingFixture {
                     .into_iter()
                     .map(|(name, split)| (name, Arc::new(split.definitions)))
                     .collect(),
+                catalogs: Default::default(),
                 signals: Arc::clone(&shared.signals),
                 secrets: Arc::new(SpawnCustody(Arc::clone(&prefix))),
                 kernel: Arc::new(Kernel::new()),
